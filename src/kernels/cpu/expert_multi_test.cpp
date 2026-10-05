@@ -7,6 +7,7 @@
 // The bench measures the speculation model's `extra_use_cost`: the CPU time of each extra token routed to an
 // expert, as a fraction of reading the expert once (tools/spec_economics.py assumes 0.2).
 #include "guild/kernels/cpu/expert.hpp"
+#include "guild/kernels/cpu/expert_layout.hpp"
 
 #include <chrono>
 #include <cstdio>
@@ -32,7 +33,12 @@ double now_ms() {
 }  // namespace
 
 int main(int argc, char** argv) {
-    c::cpu_require_expert_support();
+    const auto features = c::cpu_features();
+    if (!c::cpu_avx512_ok()) {
+        std::printf("expert_multi_test: SKIP VNNI multi-token parity (%s)\n",
+                    features.usable() ? "AVX-512 disabled by Guild ISA controls" : features.reason());
+        return 77;
+    }
     std::mt19937 rng(9);
     const bool bench = argc > 1 && std::strcmp(argv[1], "--bench") == 0;
     const int E = bench ? (argc > 2 ? std::atoi(argv[2]) : 256) : 4;

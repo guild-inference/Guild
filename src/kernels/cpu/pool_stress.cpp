@@ -27,7 +27,7 @@ int main(int argc, char** argv) {
     const cpu::CpuFeatures feat = cpu::cpu_features();
     if (!feat.usable()) {
         std::printf("CPU lacks %s: pool_stress SKIPPED\n", feat.reason());
-        return 0;
+        return 77;
     }
     constexpr int NJ = 4;
     std::vector<std::vector<uint8_t>> blobs(NJ, std::vector<uint8_t>(cpu::BLOB, 0));

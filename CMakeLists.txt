@@ -1212,6 +1212,7 @@ if(GUILD_BUILD_TESTS)
   add_executable(expert_multi_test src/kernels/cpu/expert_multi_test.cpp)
   target_link_libraries(expert_multi_test PRIVATE guild_kernels_cpu)
   add_test(NAME expert_multi_test COMMAND expert_multi_test)
+  set_tests_properties(expert_multi_test PROPERTIES SKIP_RETURN_CODE 77)
   add_executable(expert_isa_test tests/core/expert_isa_test.cpp)
   target_link_libraries(expert_isa_test PRIVATE guild_kernels_cpu)
   add_test(NAME expert_isa_test COMMAND expert_isa_test)
@@ -1222,14 +1223,17 @@ if(GUILD_BUILD_TESTS)
   # missing file would otherwise be reported as a pass by a test that skipped everything.
   add_test(NAME expert_parity COMMAND expert_parity --selftest
            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+  set_tests_properties(expert_parity PROPERTIES SKIP_RETURN_CODE 77)
 
   add_executable(pool_test src/kernels/cpu/pool_test.cpp)
   target_link_libraries(pool_test PRIVATE guild_kernels_cpu)
   add_test(NAME pool_test COMMAND pool_test --selftest WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+  set_tests_properties(pool_test PROPERTIES SKIP_RETURN_CODE 77)
   # issue #29: tiny batches with sleeping workers, as on a big-VRAM card; a hang fails it
   add_executable(pool_stress src/kernels/cpu/pool_stress.cpp)
   target_link_libraries(pool_stress PRIVATE guild_kernels_cpu)
   add_test(NAME pool_stress COMMAND pool_stress 20)
+  set_tests_properties(pool_stress PROPERTIES SKIP_RETURN_CODE 77)
 
   if(UNIX AND NOT APPLE)
     add_executable(direct_file_async_test tests/platform/direct_file_async.cpp src/platform/direct_file.cpp)

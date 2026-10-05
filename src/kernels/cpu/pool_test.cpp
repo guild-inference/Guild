@@ -68,7 +68,7 @@ int main(int argc, char** argv) {
         std::printf("  CPU lacks %s - the VNNI path cannot run here; pool test SKIPPED, not passed.\n",
                     feat.reason());
         std::printf("\npool: 0 failures, 1 SKIPPED\n");
-        return 0;
+        return 77;
     }
 
     int bad = 0;
