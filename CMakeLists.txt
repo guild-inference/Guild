@@ -954,6 +954,24 @@ endif()
 find_package(Threads REQUIRED)
 target_link_libraries(guild_kernels_cpu PUBLIC Threads::Threads)
 
+# ---- guild_cli (Hardware profiling & Native CLI) ----------------------------
+add_library(guild_cli STATIC src/cli/hardware.cpp)
+target_include_directories(guild_cli PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(guild_cli PUBLIC guild_kernels_cpu guild_warnings)
+if(GUILD_ENABLE_CUDA)
+  target_link_libraries(guild_cli PUBLIC ${_guild_gpu_runtime_target})
+  target_compile_definitions(guild_cli PUBLIC GUILD_ENABLE_CUDA=1)
+endif()
+
+add_executable(guild src/cli/guild_main.cpp)
+target_link_libraries(guild PRIVATE guild_cli guild_model guild_artifact guild_warnings)
+
+if(GUILD_BUILD_TESTS)
+  add_executable(guild_cli_test tests/cli/guild_cli_test.cpp)
+  target_link_libraries(guild_cli_test PRIVATE guild_cli)
+  add_test(NAME guild_cli_test COMMAND guild_cli_test)
+endif()
+
 # ---- plan v0.3 P6: the i-quant models' CPU experts (IQ2_XS / IQ3_XXS files) ----
 #
 # The CPU computes a native expert with ggml-cpu's own dot products (`ggml_get_type_traits_cpu`), so an IQ
