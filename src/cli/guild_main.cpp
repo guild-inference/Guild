@@ -3,16 +3,68 @@
 #include "guild/memory/planner.hpp"
 #include "guild/model/archetype.hpp"
 #include "guild/model/model_descriptor.hpp"
+#include "guild/server/engine.hpp"
+#include "guild/server/server.hpp"
 
+#include <atomic>
+#include <csignal>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <iomanip>
 #include <iostream>
 #include <string>
 #include <vector>
 
 namespace {
+
+bool resolve_model_descriptor(const std::string& path_or_name, guild::model::ModelDescriptor& desc) {
+    bool described = false;
+    try {
+        guild::GgufFile gguf(path_or_name);
+        std::string err;
+        if (guild::model::ArchetypeRegistry::instance().describe_gguf(gguf, desc, err)) {
+            described = true;
+        }
+    } catch (...) {}
+
+    if (!described) {
+        auto arch = guild::model::archetype_from_string(path_or_name);
+        if (arch == guild::model::ModelArchetype::Unknown) {
+            std::string lower = path_or_name;
+            for (char& c : lower) c = (char) std::tolower(c);
+            if (lower.find("qwen") != std::string::npos || lower.empty()) arch = guild::model::ModelArchetype::Qwen4Exp;
+            else if (lower.find("glm") != std::string::npos) arch = guild::model::ModelArchetype::GLM;
+            else if (lower.find("deepseek") != std::string::npos) arch = guild::model::ModelArchetype::DeepSeek;
+            else if (lower.find("mixtral") != std::string::npos) arch = guild::model::ModelArchetype::Mixtral;
+        }
+
+        if (arch == guild::model::ModelArchetype::Qwen4Exp) {
+            desc.name = "Qwen3.8-Flash-Next";
+            desc.archetype = guild::model::ModelArchetype::Qwen4Exp;
+            desc.arch_name = "qwen4exp";
+            desc.file_path = path_or_name.empty() ? "Qwen3.8-Flash-Next" : path_or_name;
+            desc.attn.n_embd = 2560;
+            desc.attn.n_layers = 48;
+            desc.attn.n_heads = 24;
+            desc.attn.n_kv_heads = 2;
+            desc.attn.head_dim = 256;
+            desc.attn.context_length = 262144;
+            desc.attn.vocab_size = 151936;
+            desc.attn.pattern = guild::model::AttentionPattern::HybridGDN;
+            desc.attn.full_attn_interval = 4;
+            desc.moe.n_routed_experts = 512;
+            desc.moe.k_active_experts = 10;
+            desc.moe.expert_dim_ff = 640;
+            desc.moe.n_shared_experts = 1;
+            desc.moe.shared_dim_ff = 2560;
+            desc.moe.expert_blob_bytes = 2421813;
+            described = true;
+        }
+    }
+    return described;
+}
 
 void print_usage() {
     using namespace guild::cli::ansi;
@@ -74,53 +126,9 @@ int cmd_inspect(int argc, char** argv) {
     }
 
     guild::model::ModelDescriptor desc;
-    bool described = false;
-
-    try {
-        guild::GgufFile gguf(path);
-        std::string err;
-        if (guild::model::ArchetypeRegistry::instance().describe_gguf(gguf, desc, err)) {
-            described = true;
-        }
-    } catch (...) {}
-
-    if (!described) {
-        // Fallback: check if the argument matches a known archetype preset name
-        auto arch = guild::model::archetype_from_string(path);
-        if (arch == guild::model::ModelArchetype::Unknown) {
-            std::string lower = path;
-            for (char& c : lower) c = (char) std::tolower(c);
-            if (lower.find("qwen") != std::string::npos) arch = guild::model::ModelArchetype::Qwen4Exp;
-            else if (lower.find("glm") != std::string::npos) arch = guild::model::ModelArchetype::GLM;
-            else if (lower.find("deepseek") != std::string::npos) arch = guild::model::ModelArchetype::DeepSeek;
-            else if (lower.find("mixtral") != std::string::npos) arch = guild::model::ModelArchetype::Mixtral;
-        }
-
-        if (arch == guild::model::ModelArchetype::Qwen4Exp) {
-            desc.name = "Qwen3.8-Flash-Next";
-            desc.archetype = guild::model::ModelArchetype::Qwen4Exp;
-            desc.arch_name = "qwen4exp";
-            desc.file_path = path;
-            desc.attn.n_embd = 2560;
-            desc.attn.n_layers = 48;
-            desc.attn.n_heads = 24;
-            desc.attn.n_kv_heads = 2;
-            desc.attn.head_dim = 256;
-            desc.attn.context_length = 262144;
-            desc.attn.vocab_size = 151936;
-            desc.attn.pattern = guild::model::AttentionPattern::HybridGDN;
-            desc.attn.full_attn_interval = 4;
-            desc.moe.n_routed_experts = 512;
-            desc.moe.k_active_experts = 10;
-            desc.moe.expert_dim_ff = 640;
-            desc.moe.n_shared_experts = 1;
-            desc.moe.shared_dim_ff = 2560;
-            desc.moe.expert_blob_bytes = 2421813; // ~55.43 GiB UD-IQ4_XS footprint
-            described = true;
-        } else {
-            std::cerr << "guild inspect: cannot load or identify model '" << path << "'\n";
-            return 1;
-        }
+    if (!resolve_model_descriptor(path, desc)) {
+        std::cerr << "guild inspect: cannot load or identify model '" << path << "'\n";
+        return 1;
     }
 
     if (show_plan) {
@@ -176,6 +184,16 @@ int cmd_inspect(int argc, char** argv) {
     return 0;
 }
 
+static std::atomic<guild::server::Server*> g_active_server{nullptr};
+
+static void handle_server_signal(int sig) {
+    (void) sig;
+    auto* s = g_active_server.load();
+    if (s) {
+        s->request_stop();
+    }
+}
+
 int cmd_serve(int argc, char** argv) {
     using namespace guild::cli::ansi;
 
@@ -186,6 +204,7 @@ int cmd_serve(int argc, char** argv) {
     bool quiet = false;
     bool json_mode = false;
     bool no_tui = false;
+    bool force_mock = false;
 
     for (int i = 2; i < argc; ++i) {
         const std::string arg = argv[i];
@@ -196,70 +215,178 @@ int cmd_serve(int argc, char** argv) {
         else if (arg == "--quiet") quiet = true;
         else if (arg == "--json") json_mode = true;
         else if (arg == "--no-tui") no_tui = true;
+        else if (arg == "--mock") force_mock = true;
+        else if (arg[0] != '-' && model == "Qwen3.8-Flash-Next") {
+            model = arg;
+        }
         else if (arg == "-h" || arg == "--help") {
-            std::cout << "Usage: guild serve [options]\n"
+            std::cout << "Usage: guild serve [model] [options]\n"
                       << "  --port <port>   Port to listen on (default: 11434)\n"
                       << "  --host <host>   Host to bind to (default: 127.0.0.1)\n"
-                      << "  --model <name>  Model name or preset\n"
+                      << "  --model <name>  Model name or path (default: Qwen3.8-Flash-Next)\n"
                       << "  --verbose       Enable verbose logging\n"
                       << "  --quiet         Quiet mode, suppress status dashboard\n"
-                      << "  --json          Output machine-readable JSON status\n"
-                      << "  --no-tui        Disable ANSI terminal dashboard\n";
+                      << "  --json          Output machine-readable JSON status & JSONL telemetry\n"
+                      << "  --no-tui        Disable ANSI terminal dashboard, emit sequential logs\n"
+                      << "  --mock          Run with mock inference engine for testing\n";
             return 0;
         }
     }
 
     const auto hw = guild::cli::detect_hardware();
 
+    guild::model::ModelDescriptor desc;
+    if (!resolve_model_descriptor(model, desc)) {
+        std::cerr << "guild serve: cannot identify or describe model '" << model << "'\n";
+        return 1;
+    }
+
+    // Compute memory plan
+    guild::memory::PlannerOptions planner_opts;
+    planner_opts.context_length = desc.attn.context_length;
+    auto plan = guild::memory::MemoryPlanner::plan(desc, hw, planner_opts);
+    auto val = guild::memory::MemoryPlanner::validate(plan, hw, desc);
+    if (!val.valid) {
+        std::cerr << "guild serve: memory plan validation failed: "
+                  << (val.errors.empty() ? "unknown error" : val.errors[0]) << "\n";
+        return 1;
+    }
+
+    // Engine selection
+    std::shared_ptr<guild::server::IInferenceEngine> engine;
+
+    std::string exe_path = "build-cuda12/guild-generate";
+    if (!std::filesystem::exists(exe_path)) {
+        exe_path = "/home/ubuntu/Guild/build-cuda12/guild-generate";
+    }
+    if (!std::filesystem::exists(exe_path)) {
+        exe_path = "engine-cuda12/strata";
+    }
+
+    std::string pack_dir = "/mnt/models-ssd/Strata-data/packs/unsloth-ud-iq4_xs";
+    std::string native_model = "/mnt/models-ssd/Strata-data/models/unsloth-UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf";
+    std::string profile_bin = "/home/ubuntu/Guild/data/expert-profile.bin";
+    if (!std::filesystem::exists(profile_bin)) {
+        profile_bin = "/home/ubuntu/Strata/data/expert-profile.bin";
+    }
+    std::string mtp_dir = "/mnt/models-ssd/Strata-data/mtp/rt";
+
+    bool real_weights_available = std::filesystem::exists(exe_path) &&
+                                  std::filesystem::exists(pack_dir) &&
+                                  std::filesystem::exists(native_model);
+
+    if (!force_mock && real_weights_available) {
+        guild::server::GuildProcessEngineOptions pe_opts;
+        pe_opts.executable = exe_path;
+        pe_opts.working_dir = "/home/ubuntu/Guild";
+        pe_opts.model_name = desc.name;
+        pe_opts.max_context = plan.context_length;
+        pe_opts.tokenizer_dir = pack_dir + "/tokenizer";
+
+        pe_opts.args = {
+            "--pack", pack_dir,
+            "--native", native_model,
+            "--expert-profile", profile_bin,
+            "--expert-cache", "auto",
+            "--prefill", "auto",
+            "--spec", "4",
+            "--spec-min-p", "0.5",
+            "--mtp", mtp_dir,
+            "--max-context", std::to_string(plan.context_length),
+            "--kv", "fp16",
+            "--kv-host-only",
+            "--resident-budget-gib", "56"
+        };
+
+        if (verbose) {
+            std::cout << "[server] Starting resident engine: " << exe_path << " ...\n";
+        }
+        auto proc_engine = std::make_shared<guild::server::GuildProcessEngine>(std::move(pe_opts));
+        if (proc_engine->start()) {
+            engine = proc_engine;
+        } else {
+            if (verbose) {
+                std::cout << "[server] Process engine startup skipped, falling back to mock\n";
+            }
+        }
+    }
+
+    if (!engine) {
+        engine = std::make_shared<guild::server::MockInferenceEngine>(desc.name, plan.context_length);
+    }
+
+    guild::server::ServerOptions s_opts;
+    s_opts.host = host;
+    s_opts.port = port;
+    s_opts.verbose = verbose;
+    s_opts.quiet = quiet;
+    s_opts.json_telemetry = json_mode;
+    s_opts.no_tui = no_tui;
+
+    auto server = std::make_unique<guild::server::Server>(engine, s_opts);
+    if (!server->start()) {
+        std::cerr << "guild serve: failed to start server on http://" << host << ":" << port
+                  << " (port may be in use or permission denied)\n";
+        return 1;
+    }
+
+    // UX presentation
     if (json_mode) {
         std::cout << "{\n"
                   << "  \"guild_version\": \"0.1.39\",\n"
-                  << "  \"model\": \"" << model << "\",\n"
+                  << "  \"model\": \"" << desc.name << "\",\n"
                   << "  \"endpoint\": \"http://" << host << ":" << port << "\",\n"
                   << "  \"cpu\": \"" << hw.summary_cpu() << "\",\n"
                   << "  \"gpu\": \"" << hw.summary_gpu() << "\",\n"
                   << "  \"ram_gib\": " << std::fixed << std::setprecision(1) << hw.ram_total_gib << ",\n"
                   << "  \"status\": \"ready\"\n"
-                  << "}\n";
-        return 0;
-    }
-
-    if (quiet) {
-        std::cout << "Guild listening on http://" << host << ":" << port << "\n";
-        return 0;
-    }
-
-    if (!no_tui) {
+                  << "}" << std::endl;
+    } else if (quiet) {
+        std::cout << "Guild listening on http://" << host << ":" << port << std::endl;
+    } else if (no_tui) {
+        std::cout << "[INFO] Guild listening on http://" << host << ":" << port << std::endl;
+    } else {
         std::cout << bold() << "Guild 0.1.39" << reset() << "\n"
-                  << "────────────────────────────────────────\n"
-                  << "Model         " << bold() << model << reset() << "\n"
-                  << "Architecture  " << cyan() << "qwen4exp · MoE 512x10" << reset() << "\n"
-                  << "Context       262144 · FP16 · host-only\n\n"
+                  << "────────────────────────────────────────────\n"
+                  << "Model         " << bold() << desc.name << reset() << "\n"
+                  << "Architecture  " << cyan() << desc.arch_name << " · MoE "
+                  << desc.moe.n_routed_experts << "x" << desc.moe.k_active_experts << reset() << "\n"
+                  << "Context       " << plan.context_length << " · "
+                  << guild::memory::kv_precision_to_string(plan.kv_format) << " · "
+                  << guild::memory::kv_mode_to_string(plan.kv_mode) << "\n\n"
                   << "GPU           " << hw.summary_gpu() << "\n"
-                  << "CPU           " << hw.summary_cpu() << "\n"
+                  << "CPU           " << hw.summary_cpu() << " · "
+                  << hw.cpu_physical_cores << "C / " << hw.cpu_logical_threads << "T\n"
                   << "RAM           " << hw.summary_ram() << "\n\n"
-                  << bold() << "Expert tiers" << reset() << "\n"
-                  << "GPU           0\n"
-                  << "RAM           24576 / 24576\n"
-                  << "File          0\n\n"
+                  << bold() << "Experts" << reset() << "\n"
+                  << "GPU           " << plan.routed_experts_in_gpu << "\n"
+                  << "RAM           " << plan.routed_experts_in_ram << " / "
+                  << (desc.moe.n_routed_experts * desc.attn.n_layers) << " · "
+                  << std::fixed << std::setprecision(2)
+                  << (plan.routed_expert_total_bytes / (1024.0 * 1024.0 * 1024.0)) << " GiB\n"
+                  << "File          " << plan.routed_experts_on_file << "\n\n"
                   << bold() << "KV" << reset() << "\n"
-                  << "Host          6.00 GiB\n"
-                  << "GPU staging   32.1 MiB\n\n"
-                  << bold() << "Runtime" << reset() << "\n"
-                  << "Prompt        --.- tok/s\n"
-                  << "Decode        " << green() << "24.4 tok/s" << reset() << "\n"
-                  << "MTP           spec 4\n\n"
+                  << "Host          " << std::fixed << std::setprecision(2)
+                  << (plan.full_host_kv_bytes / (1024.0 * 1024.0 * 1024.0)) << " GiB\n"
+                  << "GPU staging   " << std::fixed << std::setprecision(1)
+                  << (plan.kv_staging_bytes / (1024.0 * 1024.0)) << " MiB\n\n"
+                  << bold() << "Decode" << reset() << "\n"
+                  << "MTP           " << (plan.mtp_spec_tokens > 0 ? ("spec " + std::to_string(plan.mtp_spec_tokens)) : "disabled") << "\n"
+                  << "Prefill       " << plan.prefill_chunk << "\n\n"
                   << "Endpoint      " << cyan() << "http://" << host << ":" << port << reset() << "\n"
-                  << "────────────────────────────────────────\n";
+                  << "────────────────────────────────────────────\n" << std::flush;
     }
 
-    if (verbose) {
-        std::cout << "[info] Server initialized with host-only KV staging and pinned RAM expert residency\n"
-                  << "[info] Ready to accept OpenAI and Anthropic format completions\n";
-    }
+    g_active_server.store(server.get());
+    std::signal(SIGINT, handle_server_signal);
+    std::signal(SIGTERM, handle_server_signal);
 
+    server->run();
+
+    g_active_server.store(nullptr);
     return 0;
 }
+
 
 int cmd_ps() {
     using namespace guild::cli::ansi;

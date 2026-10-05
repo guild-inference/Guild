@@ -19,6 +19,7 @@ namespace ansi {
     inline const char* bold()    { return is_tty() ? "\033[1m" : ""; }
     inline const char* dim()     { return is_tty() ? "\033[2m" : ""; }
     inline const char* cyan()    { return is_tty() ? "\033[36m" : ""; }
+    inline const char* red()     { return is_tty() ? "\033[31m" : ""; }
     inline const char* green()   { return is_tty() ? "\033[32m" : ""; }
     inline const char* yellow()  { return is_tty() ? "\033[33m" : ""; }
     inline const char* blue()    { return is_tty() ? "\033[34m" : ""; }

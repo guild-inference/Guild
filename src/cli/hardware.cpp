@@ -172,7 +172,7 @@ std::string HardwareInfo::summary_gpu() const {
     else if ((pos = name.find(nvid2)) != std::string::npos) name.erase(pos, nvid2.length());
 
     char buf[64];
-    std::snprintf(buf, sizeof(buf), "%.0f GiB", gpu_vram_gib);
+    std::snprintf(buf, sizeof(buf), "%.1f GiB", gpu_vram_gib);
     return trim(name) + " · " + buf;
 }
 

@@ -971,8 +971,17 @@ add_library(guild_memory STATIC
 target_include_directories(guild_memory PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(guild_memory PUBLIC guild_model guild_cli guild_warnings)
 
+# ---- guild_server (Native HTTP & OpenAI serving layer) --------------------
+add_library(guild_server STATIC
+  src/server/server.cpp
+  src/server/openai.cpp
+  src/server/telemetry.cpp
+  src/server/engine.cpp)
+target_include_directories(guild_server PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(guild_server PUBLIC guild_memory guild_cli guild_warnings Threads::Threads)
+
 add_executable(guild src/cli/guild_main.cpp)
-target_link_libraries(guild PRIVATE guild_cli guild_model guild_memory guild_artifact guild_warnings)
+target_link_libraries(guild PRIVATE guild_cli guild_model guild_memory guild_server guild_artifact guild_warnings)
 
 if(GUILD_BUILD_TESTS)
   add_executable(guild_cli_test tests/cli/guild_cli_test.cpp)
@@ -982,6 +991,10 @@ if(GUILD_BUILD_TESTS)
   add_executable(planner_test tests/memory/planner_test.cpp)
   target_link_libraries(planner_test PRIVATE guild_memory)
   add_test(NAME planner_test COMMAND planner_test)
+
+  add_executable(server_test tests/server/server_test.cpp)
+  target_link_libraries(server_test PRIVATE guild_server)
+  add_test(NAME server_test COMMAND server_test)
 endif()
 
 # ---- plan v0.3 P6: the i-quant models' CPU experts (IQ2_XS / IQ3_XXS files) ----

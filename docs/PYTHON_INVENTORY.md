@@ -19,11 +19,12 @@ This document inventories every Python component in the repository into four cat
 - Model archetype and geometry decoding in `setup.py` and `tools/` → Replaced by C++ `ArchetypeRegistry` (`src/model/archetype.cpp`).
 
 ### REPLACE LATER (Phase 2 & 3: Server, Memory Planning & Downloader)
-- `serve/server.py`, `serve/responses.py`, `serve/structured.py` → Replace with native C++ HTTP server (OpenAI/Anthropic compatible) linked directly into `guild serve`.
+- `serve/server.py`, `serve/responses.py`, `serve/structured.py` → Replaced by native C++ HTTP server (`include/guild/server/`, `src/server/`) supporting `/health`, `/v1/models`, `/v1/chat/completions`, and `/v1/completions` (JSON and SSE streaming). Python implementations retained temporarily as behavioral reference.
 - `serve/runconfig.py` → Replace with C++ engine configuration loader.
-- `serve/telemetry.py`, `serve/winjob.py` → Replace with native OS process management and metrics.
+- `serve/telemetry.py` → Replaced by native C++ `guild::server::Telemetry` (`src/server/telemetry.cpp`).
+- `serve/winjob.py` → Replace with native OS process management.
 - `serve/mcp.py` → Replace with native C++ MCP server handler.
-- Memory budget calculation in `setup.py` (`compute_budget`, `choose_model`) → Replace with native C++ memory planner in `guild-plan` / `guild_model`.
+- Memory budget calculation in `setup.py` (`compute_budget`, `choose_model`) → Replaced by native C++ `guild::memory::MemoryPlanner` (`include/guild/memory/`, `src/memory/`).
 - Model downloading in `setup.py` → Replace with native curl/libcurl download engine in `guild pull` / `guild run`.
 
 ### DELETE (Obsolete / Redundant once Native CLI Lands)
@@ -43,15 +44,15 @@ This document inventories every Python component in the repository into four cat
 ## 2. Seven-Stage Migration Roadmap
 
 ```
-1. CLI/config parsing -> C++          [IN PROGRESS: native guild binary skeleton]
+1. CLI/config parsing -> C++          [DONE: native guild binary with inspect, serve, ps, bench, run]
         │
 2. Hardware detection -> C++          [DONE: guild::cli::detect_hardware]
         │
-3. Memory planning -> C++             [NEXT: native budget & tier calculations]
+3. Memory planning -> C++             [DONE: guild::memory::MemoryPlanner]
         │
 4. Model metadata/archetypes -> C++   [DONE: ModelDescriptor & ArchetypeRegistry]
         │
-5. HTTP/OpenAI-compatible server -> C++
+5. HTTP/OpenAI-compatible server -> C++ [DONE: native HTTP / SSE server in guild serve]
         │
 6. Downloader/install logic -> C++
         │
