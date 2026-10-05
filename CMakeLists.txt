@@ -963,13 +963,25 @@ if(GUILD_ENABLE_CUDA)
   target_compile_definitions(guild_cli PUBLIC GUILD_ENABLE_CUDA=1)
 endif()
 
+# ---- guild_memory (Native Execution Memory Planner) -----------------------
+add_library(guild_memory STATIC
+  src/memory/planner.cpp
+  src/memory/kv_budget.cpp
+  src/memory/expert_budget.cpp)
+target_include_directories(guild_memory PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(guild_memory PUBLIC guild_model guild_cli guild_warnings)
+
 add_executable(guild src/cli/guild_main.cpp)
-target_link_libraries(guild PRIVATE guild_cli guild_model guild_artifact guild_warnings)
+target_link_libraries(guild PRIVATE guild_cli guild_model guild_memory guild_artifact guild_warnings)
 
 if(GUILD_BUILD_TESTS)
   add_executable(guild_cli_test tests/cli/guild_cli_test.cpp)
   target_link_libraries(guild_cli_test PRIVATE guild_cli)
   add_test(NAME guild_cli_test COMMAND guild_cli_test)
+
+  add_executable(planner_test tests/memory/planner_test.cpp)
+  target_link_libraries(planner_test PRIVATE guild_memory)
+  add_test(NAME planner_test COMMAND planner_test)
 endif()
 
 # ---- plan v0.3 P6: the i-quant models' CPU experts (IQ2_XS / IQ3_XXS files) ----

@@ -1,3 +1,4 @@
+#include "guild/hardware/hardware_info.hpp"
 #include "guild/cli/hardware.hpp"
 #include "guild/kernels/cpu/expert.hpp"
 #include "guild/kernels/cpu/expert_layout.hpp"
@@ -13,7 +14,7 @@
 #include <cuda_runtime.h>
 #endif
 
-namespace guild::cli {
+namespace guild::hardware {
 
 namespace {
 
@@ -24,7 +25,7 @@ std::string trim(const std::string& str) {
     return str.substr(first, (last - first + 1));
 }
 
-void probe_linux_cpu(HardwareProfile& hw) {
+void probe_linux_cpu(HardwareInfo& hw) {
     std::ifstream cpuinfo("/proc/cpuinfo");
     if (!cpuinfo.is_open()) return;
 
@@ -64,7 +65,7 @@ void probe_linux_cpu(HardwareProfile& hw) {
     if (hw.cpu_physical_cores == 0) hw.cpu_physical_cores = hw.cpu_logical_threads;
 }
 
-void probe_linux_ram(HardwareProfile& hw) {
+void probe_linux_ram(HardwareInfo& hw) {
     std::ifstream meminfo("/proc/meminfo");
     if (!meminfo.is_open()) return;
 
@@ -79,11 +80,13 @@ void probe_linux_ram(HardwareProfile& hw) {
             iss >> avail_kb;
         }
     }
+    hw.ram_total_bytes = total_kb * 1024ULL;
+    hw.ram_free_bytes = avail_kb * 1024ULL;
     hw.ram_total_gib = (double) total_kb / (1024.0 * 1024.0);
     hw.ram_free_gib = (double) avail_kb / (1024.0 * 1024.0);
 }
 
-void probe_gpu(HardwareProfile& hw) {
+void probe_gpu(HardwareInfo& hw) {
 #if defined(GUILD_ENABLE_CUDA)
     int count = 0;
     cudaError_t err = cudaGetDeviceCount(&count);
@@ -93,6 +96,7 @@ void probe_gpu(HardwareProfile& hw) {
         cudaDeviceProp prop{};
         if (cudaGetDeviceProperties(&prop, 0) == cudaSuccess) {
             hw.gpu_name = prop.name;
+            hw.gpu_vram_bytes = prop.totalGlobalMem;
             hw.gpu_vram_gib = (double) prop.totalGlobalMem / (1024.0 * 1024.0 * 1024.0);
         }
         return;
@@ -110,6 +114,7 @@ void probe_gpu(HardwareProfile& hw) {
                 hw.has_cuda = true;
                 hw.gpu_name = trim(s.substr(0, comma));
                 double mib = std::atof(trim(s.substr(comma + 1)).c_str());
+                hw.gpu_vram_bytes = (uint64_t) (mib * 1024.0 * 1024.0);
                 hw.gpu_vram_gib = mib / 1024.0;
             }
         }
@@ -119,8 +124,8 @@ void probe_gpu(HardwareProfile& hw) {
 
 }  // namespace
 
-HardwareProfile detect_hardware() {
-    HardwareProfile hw;
+HardwareInfo detect_hardware() {
+    HardwareInfo hw;
     probe_linux_cpu(hw);
     probe_linux_ram(hw);
     probe_gpu(hw);
@@ -131,15 +136,15 @@ HardwareProfile detect_hardware() {
     hw.isa_vbmi = feat.avx512_vbmi;
     hw.isa_avx2 = kernels::cpu::cpu_avx2_ok();
 
+    hw.sync_gib();
     return hw;
 }
 
-std::string HardwareProfile::summary_cpu() const {
+std::string HardwareInfo::summary_cpu() const {
     std::string s;
     if (cpu_sockets > 1) {
         s += std::to_string(cpu_sockets) + "x ";
     }
-    // Clean up generic "Intel(R) Xeon(R) Gold 6130 CPU @ 2.10GHz" -> "Xeon Gold 6130"
     std::string name = cpu_model;
     const std::string intel = "Intel(R) ";
     const std::string reg = "(R)";
@@ -157,7 +162,7 @@ std::string HardwareProfile::summary_cpu() const {
     return s.empty() ? "x86_64 CPU" : s;
 }
 
-std::string HardwareProfile::summary_gpu() const {
+std::string HardwareInfo::summary_gpu() const {
     if (gpu_name.empty()) return "None (CPU-only)";
     std::string name = gpu_name;
     const std::string nvid = "NVIDIA GeForce ";
@@ -171,10 +176,10 @@ std::string HardwareProfile::summary_gpu() const {
     return trim(name) + " · " + buf;
 }
 
-std::string HardwareProfile::summary_ram() const {
+std::string HardwareInfo::summary_ram() const {
     char buf[64];
     std::snprintf(buf, sizeof(buf), "%.0f GiB", ram_total_gib);
     return std::string(buf);
 }
 
-}  // namespace guild::cli
+}  // namespace guild::hardware
