@@ -1,4 +1,4 @@
-﻿# Guild Engine - top-level build (P1.S1).
+# Guild Engine - top-level build (P1.S1).
 #
 # Targets (phase-1 Ă‚Â§P1.S1): `guild_artifact` (no CUDA dependency), `tests`.  `guild_plan` and the C++
 # `guild-pack` are added when their sources exist - a target with no sources would make the build graph
@@ -927,7 +927,7 @@ if(GUILD_BUILD_TESTS OR GUILD_BUILD_CONVERSATION_TESTS)
   add_test(NAME bf16_bits_test COMMAND bf16_bits_test)
 endif()
 
-add_library(guild_kernels_cpu STATIC src/kernels/cpu/expert.cpp src/kernels/cpu/pool.cpp
+add_library(guild_kernels_cpu STATIC src/kernels/cpu/expert.cpp src/kernels/cpu/features.cpp src/kernels/cpu/pool.cpp
             src/kernels/cpu/expert_layout.cpp src/kernels/cpu/q2_avx2.cpp)
 target_include_directories(guild_kernels_cpu PUBLIC include)
 # Plan v0.3 P6: only the kernel files get the AVX-512 / AVX2 flags; the pool and the probe run on any x86-64,
@@ -1212,6 +1212,9 @@ if(GUILD_BUILD_TESTS)
   add_executable(expert_multi_test src/kernels/cpu/expert_multi_test.cpp)
   target_link_libraries(expert_multi_test PRIVATE guild_kernels_cpu)
   add_test(NAME expert_multi_test COMMAND expert_multi_test)
+  add_executable(expert_isa_test tests/core/expert_isa_test.cpp)
+  target_link_libraries(expert_isa_test PRIVATE guild_kernels_cpu)
+  add_test(NAME expert_isa_test COMMAND expert_isa_test)
 
   add_executable(expert_parity src/kernels/cpu/expert_parity.cpp)
   target_link_libraries(expert_parity PRIVATE guild_kernels_cpu)

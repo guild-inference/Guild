@@ -85,7 +85,7 @@ guild_resolve(_spec src/spec/suffix_drafter.cpp src/spec/controller.cpp src/spec
 add_library(guild_spec STATIC ${_spec})
 target_link_libraries(guild_spec PUBLIC guild_includes)
 
-guild_resolve(_cpu src/kernels/cpu/expert.cpp src/kernels/cpu/pool.cpp src/kernels/cpu/expert_layout.cpp
+guild_resolve(_cpu src/kernels/cpu/expert.cpp src/kernels/cpu/features.cpp src/kernels/cpu/pool.cpp src/kernels/cpu/expert_layout.cpp
                     src/kernels/cpu/q2_avx2.cpp)
 add_library(guild_kernels_cpu STATIC ${_cpu})
 set_source_files_properties(${GUILD_ROOT}/src/kernels/cpu/expert.cpp PROPERTIES COMPILE_OPTIONS

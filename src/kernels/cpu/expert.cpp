@@ -6,11 +6,6 @@
 #include "guild/kernels/cpu/expert.hpp"
 
 #include <immintrin.h>
-#if defined(_MSC_VER)
-#include <intrin.h>
-#else
-#include <cpuid.h>
-#endif
 
 #include <cmath>
 #include <atomic>
@@ -337,51 +332,6 @@ void expert_oracle_q8_0(const uint8_t* blob, const ActQ& a1, float* out, ExpertS
 }
 
 }  // namespace
-
-const char* CpuFeatures::reason() const {
-    if (usable()) return "ok";
-    // Named individually: "AVX-512 not supported" sends a user looking for a new CPU when the machine may have
-    // AVX-512F and be missing only VNNI, which is a much narrower and more explicable gap.
-    static char buf[160];
-    std::snprintf(buf, sizeof buf, "missing %s%s%s%s%s", avx512f ? "" : "AVX512F ",
-                  avx512bw ? "" : "AVX512BW ", avx512vl ? "" : "AVX512VL ",
-                  avx512_vnni ? "" : "AVX512-VNNI ", avx512_vbmi ? "" : "AVX512-VBMI");
-    return buf;
-}
-
-CpuFeatures cpu_features() {
-    CpuFeatures f;
-    int reg[4] = {0, 0, 0, 0};
-#if defined(_MSC_VER)
-    __cpuid(reg, 0);
-    if (reg[0] < 7) return f;
-    __cpuidex(reg, 7, 0);
-#else
-    unsigned r[4] = {0, 0, 0, 0};
-    __cpuid_count(0, 0, r[0], r[1], r[2], r[3]);
-    if (r[0] < 7) return f;
-    __cpuid_count(7, 0, r[0], r[1], r[2], r[3]);
-    for (int i = 0; i < 4; ++i) reg[i] = (int) r[i];
-#endif
-    const unsigned ebx = (unsigned) reg[1], ecx = (unsigned) reg[2];
-    f.avx512f = (ebx >> 16) & 1u;
-    f.avx512bw = (ebx >> 30) & 1u;
-    f.avx512vl = (ebx >> 31) & 1u;
-    f.avx512_vnni = (ecx >> 11) & 1u;
-    f.avx512_vbmi = (ecx >> 1) & 1u;
-    return f;
-}
-
-void cpu_require_expert_support() {
-    const CpuFeatures f = cpu_features();
-    if (f.usable()) return;
-    std::fprintf(stderr,
-                 "guild: this CPU cannot run the expert kernel: %s.\n"
-                 "        The engine needs AVX512-VNNI and AVX512-VBMI (Intel Ice Lake / AMD Zen 4 or newer).\n"
-                 "        The scalar fallback exists for tests only and is far too slow to decode with.\n",
-                 f.reason());
-    std::exit(1);
-}
 
 void act_quant_q8_1(const float* x, int n, ActQ& a) {
     if (oracle_q8_0.load(std::memory_order_relaxed)) {

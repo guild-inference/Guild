@@ -83,10 +83,15 @@ struct ExpertScratch {
 struct CpuFeatures {
     bool avx512f = false;
     bool avx512bw = false;
+    bool avx512dq = false;
     bool avx512vl = false;
     bool avx512_vnni = false;
     bool avx512_vbmi = false;
-    bool usable() const { return avx512f && avx512bw && avx512vl && avx512_vnni && avx512_vbmi; }
+    bool fma = false, f16c = false, os_avx512 = false;
+    bool usable() const {
+        return avx512f && avx512bw && avx512dq && avx512vl && avx512_vnni && avx512_vbmi &&
+               fma && f16c && os_avx512;
+    }
     /// A one-line description of what is missing, or "ok".
     const char* reason() const;
 };
