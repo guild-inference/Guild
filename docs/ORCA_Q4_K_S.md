@@ -6,15 +6,15 @@ The ordinary GGUF quantizes some small projections which Strata reads as BF16. `
 
 ## Build and prepare
 
-Build Strata with CUDA, native experts, `STRATA_ORCA_Q4KS_MMQ=ON` (and `STRATA_BUILD_TESTS=ON` for the two parity programs below). This opt-in compiles the Q5_0 GGML MMQ instance for CUDA or HIP (the Q4_K and Q5_1 instances come with the engine's K-quant MMQ build on CUDA); the usual Q8_0 draft-layer instance remains in both builds. HIP also needs `STRATA_PREFILL_MMQ=ON`. Select your card's compute capability, for example `89` on an L40S. On Windows with Ninja and CUDA 12.6, use the Visual Studio developer environment and `-DCMAKE_CUDA_RUNTIME_LIBRARY=Shared` to keep the CUDA runtime linkage consistent. The default pinned ggml checkout is supported by the project build.
+Build Strata with CUDA, native experts, `GUILD_ORCA_Q4KS_MMQ=ON` (and `GUILD_BUILD_TESTS=ON` for the two parity programs below). This opt-in compiles the Q5_0 GGML MMQ instance for CUDA or HIP (the Q4_K and Q5_1 instances come with the engine's K-quant MMQ build on CUDA); the usual Q8_0 draft-layer instance remains in both builds. HIP also needs `GUILD_PREFILL_MMQ=ON`. Select your card's compute capability, for example `89` on an L40S. On Windows with Ninja and CUDA 12.6, use the Visual Studio developer environment and `-DCMAKE_CUDA_RUNTIME_LIBRARY=Shared` to keep the CUDA runtime linkage consistent. The default pinned ggml checkout is supported by the project build.
 
 ```sh
-cmake -S . -B build -G Ninja -DSTRATA_ENABLE_CUDA=ON -DSTRATA_NATIVE_EXPERTS=ON -DSTRATA_ORCA_Q4KS_MMQ=ON -DCMAKE_CUDA_ARCHITECTURES=89 -DCMAKE_CUDA_RUNTIME_LIBRARY=Shared -DCMAKE_BUILD_TYPE=Release
+cmake -S . -B build -G Ninja -DGUILD_ENABLE_CUDA=ON -DGUILD_NATIVE_EXPERTS=ON -DGUILD_ORCA_Q4KS_MMQ=ON -DCMAKE_CUDA_ARCHITECTURES=89 -DCMAKE_CUDA_RUNTIME_LIBRARY=Shared -DCMAKE_BUILD_TYPE=Release
 cmake --build build --target strata native_expert_parity ple_q5_parity
 python tools/iq_pack.py --gguf /models/Qwen3.8-Flash-Next-Uncensored-Q4_K_S-00001-of-00003.gguf --out packs/orca-q4_k_s --compat-bf16
 ```
 
-`iq_pack.py` needs NumPy and the `gguf-py` module from the pinned llama.cpp dependency (`STRATA_GGUF_PY` can point to that directory). It writes a roughly 1.43 GiB dense pack and a native-expert manifest. The original 112 GB of model shards are read in place; `experts.bin` is optional and is not written by this command.
+`iq_pack.py` needs NumPy and the `gguf-py` module from the pinned llama.cpp dependency (`GUILD_GGUF_PY` can point to that directory). It writes a roughly 1.43 GiB dense pack and a native-expert manifest. The original 112 GB of model shards are read in place; `experts.bin` is optional and is not written by this command.
 
 Check the changed kernels against the real files before starting the service:
 

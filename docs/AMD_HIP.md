@@ -31,8 +31,8 @@ the kernel's amdgpu driver (no ROCm install needed):
 - **ROCm:** a system ROCm 7 in `/opt/rocm` (or `$ROCM_PATH`) with hipcc and hipBLAS is used when present. Otherwise
   (or when it is older than 7.0) ROCm is installed into `.venv` from AMD's TheRock wheels (~10 GB, no sudo), pinned
   to the version this backend was tested with, from the card family's index: `gfx110X-dgpu` for gfx1100 / gfx1101,
-  `gfx120X-all` for gfx1200 / gfx1201, `gfx103X-all` for gfx1030 (`STRATA_ROCM_VERSION` /
-  `STRATA_ROCM_INDEX` override them; the gfx1030 index is not checked to carry the pinned version: a system
+  `gfx120X-all` for gfx1200 / gfx1201, `gfx103X-all` for gfx1030 (`GUILD_ROCM_VERSION` /
+  `GUILD_ROCM_INDEX` override them; the gfx1030 index is not checked to carry the pinned version: a system
   ROCm 7 is the tested path there).
 - **Engine:** compiled on your PC for the card's architecture (10-20 minutes, once; again after a `git pull` that
   changes it, or when you pick a card of another architecture). This needs a C++ compiler and git
@@ -71,12 +71,12 @@ On a PC with no NVIDIA card Strata can use, the AMD card is chosen by itself; wi
   amd_comgr and the Microsoft C++ runtime; ROCm 10.2.0a20260930 from AMD's TheRock builds, licenses in
   `engine\rocm\licenses`). The HIP runtime works through the AMD driver's own components, so the driver is the one
   thing it needs from the PC.
-- **The HIP runtime next to `strata.exe` (0.1.35, #468 #461):** `amdhip64_7.dll` and `amd_comgr.dll` are also put in
+- **The HIP runtime next to `guild.exe` (0.1.35, #468 #461):** `amdhip64_7.dll` and `amd_comgr.dll` are also put in
   `engine\` (setup copies them there on every start). Windows looks in the program's folder before System32, where
   some AMD drivers install their own `amdhip64_7.dll`; with that one, the bundled libraries crashed on the first
   prompt (an access violation, or `hipErrorInvalidDeviceFunction`). The engine's log names the runtime it loaded
   (`strata generate: HIP runtime ...`).
-- **Before the ~60 GB model download** setup runs `engine\strata-device.exe --list-devices` (with `engine\rocm\bin` on
+- **Before the ~60 GB model download** setup runs `engine\guild-device.exe --list-devices` (with `engine\rocm\bin` on
   the PATH): if the HIP runtime does not see the card, setup stops there and points to the driver. It also gives the
   card's HIP number: with an integrated Radeon that is device 1, not 0 (#325). From then on setup lists the AMD cards
   as HIP numbers them, so `--gpu N` and the config's `"gpu"` are HIP numbers.
@@ -91,7 +91,7 @@ On a PC with no NVIDIA card Strata can use, the AMD card is chosen by itself; wi
   does not subtract what the desktop and other programs hold on the card, so `--expert-cache auto` filled the card
   past what Windows keeps in VRAM and decode fell from 41 to 30 tok/s. The engine now lowers that free figure by
   what Windows' video memory budget for the process withholds (logged once: `strata: Windows budgets N of this
-  card's M MiB ...`; `STRATA_WDDM_BUDGET=0` turns it off). And the PCIe probe times its copies on the host clock
+  card's M MiB ...`; `GUILD_WDDM_BUDGET=0` turns it off). And the PCIe probe times its copies on the host clock
   there, since HIP's events read impossible speeds (3,300-26,000 GB/s), so a slow link now gets a smaller
   `pcie_frac` as on NVIDIA.
 
@@ -99,15 +99,15 @@ On a PC with no NVIDIA card Strata can use, the AMD card is chosen by itself; wi
 10.2.0a20260930 in `.venv`, compiled on the PC): Coder IQ1_M at 32K, 29.2 tok/s decode, ~181 tok/s prefill,
 correct answers; ctest 42 of 46. The maintainers have no Windows AMD card: the release zip was built on an NVIDIA PC,
 and checked there on the Ryzen CPU's integrated Radeon (gfx1036, a test build of the same tree): with only the zip's
-libraries on the PATH, `strata-device` lists the card and a hipBLAS BF16 GEMM matches the CPU; the HIP ctest passes
+libraries on the PATH, `guild-device` lists the card and a hipBLAS BF16 GEMM matches the CPU; the HIP ctest passes
 52 of 56, the 4 failures the same as on the RX 9070 XT (`hip_handoff`, and three tests that need a pack fixture).
 The ready-made zip itself has not run a model on a discrete card yet - please report.
 
 **Reporting a Windows AMD run** (an issue, or on #325): your card and driver version (AMD Software > System), then
 
 ```bat
-engine\strata-device.exe --list-devices
-engine\strata-device.exe --selftest
+engine\guild-device.exe --list-devices
+engine\guild-device.exe --selftest
 ```
 
 (from the Strata folder, after `set PATH=%CD%\engine\rocm\bin;%PATH%`), the end of `strata-<model>.log`, and the
@@ -117,7 +117,7 @@ speed lines the server window prints for a first answer.
 git; no admin, no AMD GPU) installs ROCm from AMD's TheRock wheels into `.rocm-win`, builds, and packages
 `dist\strata-windows-x64-hip.zip`; `START-HERE.bat --backend hip --prebuilt dist\` installs that one.
 `tools\hip\build_windows.bat tests` also builds the HIP tests (`ctest` in `build-hip-win`, with
-`.rocm-win\Lib\site-packages\_rocm_sdk_devel\bin` on the PATH). `STRATA_HIP_ARCHS` picks other architectures.
+`.rocm-win\Lib\site-packages\_rocm_sdk_devel\bin` on the PATH). `GUILD_HIP_ARCHS` picks other architectures.
 
 ## Build
 
@@ -129,14 +129,14 @@ table. VRAM occupancy alone is not a throughput measurement.
 ```sh
 cmake -S . -B build-hip \
   -DCMAKE_BUILD_TYPE=Release \
-  -DSTRATA_ENABLE_HIP=ON -DSTRATA_ENABLE_CUDA=OFF \
+  -DGUILD_ENABLE_HIP=ON -DGUILD_ENABLE_CUDA=OFF \
   -DCMAKE_HIP_ARCHITECTURES=gfx1100
 cmake --build build-hip --target strata -j2
 ```
 
 `CMAKE_HIP_ARCHITECTURES` is `gfx1100`, `gfx1101`, `gfx1200`, `gfx1201`, or a list such as `"gfx1100;gfx1201"`
 (one binary for both). gfx1102 (the same wave32, 64 KiB LDS and dot4 instruction) builds with a warning: it passed
-ctest (#192) but no model run has been reported; so does gfx1030 (RDNA2: the older `v_dot4_i32_i8`, a community run in #311). At startup the engine and `strata-device` compare each GPU they use
+ctest (#192) but no model run has been reported; so does gfx1030 (RDNA2: the older `v_dot4_i32_i8`, a community run in #311). At startup the engine and `guild-device` compare each GPU they use
 (`gcnArchName` up to the `:` feature suffix) with the architectures the binary was compiled for, and require
 wave32. A binary carried to another card stops with the card's name, its architecture and the build's list,
 instead of failing later with "invalid device function".
@@ -147,7 +147,7 @@ host this was `/usr/lib64/rocm/llvm/bin/clang++`. Use the compiler and libraries
 from the same ROCm installation. Do not enable both GPU backends in one build.
 
 Native IQ experts are enabled by default. CMake fetches the llama.cpp revision
-pinned by this repository. For an offline build, point `STRATA_GGML_DIR` at a
+pinned by this repository. For an offline build, point `GUILD_GGML_DIR` at a
 checkout of that exact revision; using an arbitrary newer checkout changes the
 dependency being tested.
 
@@ -188,7 +188,7 @@ build-hip/strata --serve \
 `--serve` is the engine's internal token protocol. For a browser or OpenAI API,
 put these args in the `args` array of the [server JSON example](ORCA.md#local-server),
 set `exe` to `build-hip/strata`, and use the matching pack's `tokenizer` directory.
-Launch with `.venv/bin/python -m serve.server --engine strata --config strata-hip.json --port 8080`.
+Launch with `.venv/bin/python -m serve.server --engine strata --config guild-hip.json --port 8080`.
 The worker count above was used on a 16-core CPU; measure it for your CPU.
 The 4K context is a smoke-test starting point, not a model limit. The expert cache
 sizes itself automatically and leaves 1 GiB of VRAM headroom.
@@ -209,15 +209,15 @@ clock. The first report and patch came from doplxyz (#178). Validated on 2026-09
 an RX 9070 XT 16 GB and a Radeon AI PRO R9700 32 GB (both gfx1201), a Ryzen 9 3900X (16 threads, no AVX-512),
 47 GB RAM, Ubuntu 24.04 in a KVM/VFIO guest.
 
-- **Build:** complete HIP build with tests (`-DCMAKE_HIP_ARCHITECTURES=gfx1201 -DSTRATA_BUILD_TESTS=ON
-  -DSTRATA_PREFILL_MMQ=ON`), with the system ROCm 7.14 (hipBLASLt 1.4.1) and with setup's own path: TheRock
+- **Build:** complete HIP build with tests (`-DCMAKE_HIP_ARCHITECTURES=gfx1201 -DGUILD_BUILD_TESTS=ON
+  -DGUILD_PREFILL_MMQ=ON`), with the system ROCm 7.14 (hipBLASLt 1.4.1) and with setup's own path: TheRock
   7.10.0a20251120 wheels from `gfx120X-all` (hipBLASLt 1.2.0) and `build_engine_hip`.
 - **ctest** (all 45 registered tests, R9700): 42 pass, `hip_prefill_hipblaslt_gemm` skips (no table), and two
   fail for reasons outside the GPU: `ple_parity` needs the Q2_0 model fixture, `expert_multi_test` needs an
   AVX-512 CPU. `hip_handoff` needed the volatile ring store: on gfx1201 a plain store to mapped pinned memory
   stays in the GPU's L2 until the stream is synchronized.
 - **Arch check:** a gfx1100-only build stops on the gfx1201 card at startup with the message above (engine and
-  `strata-device`).
+  `guild-device`).
 - **End to end** (Coder IQ1_M, setup's arguments: `--expert-cache auto --prefill auto --spec 4 --spec-min-p 0.5`,
   MTP, `--kv int8`, `--max-context 32768`; 128 greedy tokens, system ROCm 7.14, no hipBLASLt table). The answers
   are coherent and the same on both cards. The live server smoke (`serve/server.py`: web page, models, props,
@@ -266,18 +266,18 @@ an RX 9070 XT 16 GB and a Radeon AI PRO R9700 32 GB (both gfx1201), a Ryzen 9 39
     tokens (5 + 5 starts). Decode: 62.4 -> 70.0 tok/s on the R9700 and +4% on the 9070 XT in one A/B here (ROCm 10.2
     nightly); a user's repeated A/B/A/B with setup's TheRock 7.10 wheels and an i5-12600K measured +1-4%, inside a
     12-20% run-to-run spread (#432) - how much it gains depends on how much of decode the router is on that setup.
-    `STRATA_HIP_ROUTER_OLD=1` runs the portable kernel.
-  - `STRATA_HIP_WMMA=1` (opt-in, gfx12 only, int8 KV): the prompt path's QSA attention on RDNA4 matrix cores
+    `GUILD_HIP_ROUTER_OLD=1` runs the portable kernel.
+  - `GUILD_HIP_WMMA=1` (opt-in, gfx12 only, int8 KV): the prompt path's QSA attention on RDNA4 matrix cores
     (`v_wmma_f32_16x16x16_f16`, FP16 hi + lo halves like the CUDA tensor-core kernel; `hip_prompt_attn_wmma` bounds it
     against the FP32 kernel and FP64). 7.2-7.5x the portable kernel; R9700 prompts 4K 1,784 -> 2,427 tok/s, 16K
     1,797 -> 2,700 (a user with TheRock 7.10: +29-34%, #432). Not bitwise: greedy text differs from token ~50 on, as with the CUDA tensor-core attention. With it
-    the prompt path's expert ring is 96 slots (as STRATA_PREFILL_RING=96): with the default 384 the 9070 XT's 4K
+    the prompt path's expert ring is 96 slots (as GUILD_PREFILL_RING=96): with the default 384 the 9070 XT's 4K
     prompts fell to 718 tok/s; with 96 they gain (1,017 -> 1,211; 16K 1,518 -> 2,032). PR #329
     (bsorensen110) contributed an equivalent gfx12 WMMA kernel of the same speed (within 1%); this one also masks KV
     pages that KV streaming has not made resident, as the decode kernel does.
   - The prompt path's QSA top-k picks its kernel by the blocks a query actually has, not the cache's capacity (#337,
     bsorensen110): the same ids, on by default with AMD (NVIDIA keeps its capacity rule: there the 64K prompts read
-    1-3% slower with it). `STRATA_SELECT_WMMA=1` (opt-in, gfx12) adds #337's
+    1-3% slower with it). `GUILD_SELECT_WMMA=1` (opt-in, gfx12) adds #337's
     matrix-core block scorer; it selects slightly differently (254 of 256 queries the same) and gained +1.5% on 16K
     prompts at a 262K context on the R9700.
 - **Known:** rarely (about 1 start in 10) a HIP run's greedy output differs from another start's at some token, on
@@ -291,7 +291,7 @@ hipBLASLt table for gfx1200 (the numbers below); gfx1101 has none (make one with
 and compare the prompt speed with and without it).
 
 - **gfx1101, RX 7800 XT 16 GB** (jhohertz, #254; engine 0.1.29, Ryzen 9 5950X, 121 GiB RAM, system ROCm with
-  hipBLASLt 1.4.1): `./setup.sh --backend hip` detected the card and compiled the engine; `strata-device --selftest`
+  hipBLASLt 1.4.1): `./setup.sh --backend hip` detected the card and compiled the engine; `guild-device --selftest`
   passed; ctest 30/32 (`ple_parity` needs the Q2_0 fixture, `platform_memory_test` the memlock limit). Coder IQ1_M,
   64K context, MTP, with a table the owner calibrated: fresh prompts of 4K-9K tokens at 898-953 tok/s, decode
   38-44 tok/s (128 tokens).
@@ -357,7 +357,7 @@ run it; the report below is from a community machine: an RX 6900 XT 16 GB (gfx10
 ## gfx906 (Instinct MI50 / MI60, Radeon VII): wave64, built from source
 
 gfx906 is wave64 and has no WMMA and no packed byte arithmetic, so the wave32 backend above refuses it. A separate opt-in build compiles the CUDA sources as HIP through a small compat layer
-(`include/strata/platform/hip_compat/`), with a CUDA warp mapped to a logical half of the 64-lane wavefront
+(`include/guild/platform/hip_compat/`), with a CUDA warp mapped to a logical half of the 64-lane wavefront
 (32-wide shuffles, a ballot of its own half). The hot kernels have wave64 layouts of their own (below). Setup does
 not build it yet: build by hand, and run `serve/server.py` with a config as on any other card.
 
@@ -369,26 +369,26 @@ used.
 ```sh
 # inside the image, with this checkout at /src and llama.cpp at the pinned commit in third_party/llama.cpp
 apt-get update && apt-get install -y cmake ninja-build git python3 build-essential
-cmake -S . -B build-906 -G Ninja -DSTRATA_HIP_GFX906=ON -DCMAKE_HIP_ARCHITECTURES=gfx906 \
-  -DSTRATA_GGML_DIR=/src/third_party/llama.cpp \
+cmake -S . -B build-906 -G Ninja -DGUILD_HIP_GFX906=ON -DCMAKE_HIP_ARCHITECTURES=gfx906 \
+  -DGUILD_GGML_DIR=/src/third_party/llama.cpp \
   -DCMAKE_C_COMPILER=/opt/rocm/llvm/bin/clang -DCMAKE_CXX_COMPILER=/opt/rocm/llvm/bin/clang++
 ninja -C build-906 strata
 ```
 
-`STRATA_HIP_GFX906` turns on the CUDA targets and refuses `STRATA_ENABLE_HIP` (one HIP build at a time). Run the
+`GUILD_HIP_GFX906` turns on the CUDA targets and refuses `GUILD_ENABLE_HIP` (one HIP build at a time). Run the
 container with `--device=/dev/kfd --device=/dev/dri --group-add video --ipc=host --ulimit memlock=-1`; on some boards
 `HSA_OVERRIDE_GFX_VERSION=9.0.6` is needed for the runtime to accept the card.
 
-**What differs from the CUDA build** (all under `STRATA_HIP_GFX906`; each A/B switch restores the CUDA layout):
+**What differs from the CUDA build** (all under `GUILD_HIP_GFX906`; each A/B switch restores the CUDA layout):
 
 | | gfx906 | switch |
 |---|---|---|
-| grouped native experts | mode 7: signs as `dp4a(g ^ m, u) - dp4a(m, u)` (no byte SIMD), grids and activations in LDS, one weight load per group; the IQ formats only (Unsloth's K-quant / Q5_1 / Q8_0 experts take the CUDA layout) | `STRATA_EXP_MODE=2` (previous AMD layout) |
-| MMVQ | one wavefront per row, 64-lane butterfly, no LDS | `STRATA_MMVQ_WAVE=0` |
+| grouped native experts | mode 7: signs as `dp4a(g ^ m, u) - dp4a(m, u)` (no byte SIMD), grids and activations in LDS, one weight load per group; the IQ formats only (Unsloth's K-quant / Q5_1 / Q8_0 experts take the CUDA layout) | `GUILD_EXP_MODE=2` (previous AMD layout) |
+| MMVQ | one wavefront per row, 64-lane butterfly, no LDS | `GUILD_MMVQ_WAVE=0` |
 | router top-10 | one wavefront, register argmax | - |
-| verify-window routing (256-expert router) | the window's tokens in one multi-column BF16 projection + one top-k, ~3 ms of a ~55 ms window | `STRATA_ROUTE_PER_TOKEN=1` |
-| hyper-connection read | norm loads in flight, 8 lanes per row for `up` | `STRATA_GR_FAST=0` |
-| `gr_down_multi`, opt-in | split along K (8 rows x 5 slices of 2048), ~3% per window; sums in another order than the single-token read, so off by default | `STRATA_GR_SPLIT=1` |
+| verify-window routing (256-expert router) | the window's tokens in one multi-column BF16 projection + one top-k, ~3 ms of a ~55 ms window | `GUILD_ROUTE_PER_TOKEN=1` |
+| hyper-connection read | norm loads in flight, 8 lanes per row for `up` | `GUILD_GR_FAST=0` |
+| `gr_down_multi`, opt-in | split along K (8 rows x 5 slices of 2048), ~3% per window; sums in another order than the single-token read, so off by default | `GUILD_GR_SPLIT=1` |
 | IQ4 table lookup | llama.cpp's `v_perm_b32` sequence (HIP's `__byte_perm` is a scratch array) | - |
 | QSA prompt attention | the FP32 kernel (no tensor cores / WMMA) | - |
 
@@ -398,7 +398,7 @@ Every switch above was checked bitwise against the layout it replaces: the parit
 **Measured** on 2x Instinct MI50 16 GB (85 W power limit each, PCIe 3.0 x16 both, peer access between them),
 Xeon E5-2666 v3 (10 cores, AVX2), 32 GB DDR4, SATA SSD; Coder IQ1_M (`--native` pack), 131,072-token context,
 `--kv int8 --kv-resident 32768`, `--layer-split 27`, `--prefill 4096`, MTP `--spec 4 --spec-min-p 0.5`,
-`--pcie-frac 0`, `STRATA_ARENA_MMAP=1`. Measured on the port this build was cut from (builds on the 0.1.30 and 0.1.33 bases, the same
+`--pcie-frac 0`, `GUILD_ARENA_MMAP=1`. Measured on the port this build was cut from (builds on the 0.1.30 and 0.1.33 bases, the same
 kernels, plus the layer-split weight trim and the mapped arena, which are separate pull requests):
 
 - all 12,288 experts held in VRAM across the two cards;
@@ -426,8 +426,8 @@ CASES=$(awk 'NR>2 {printf " --case %s,%s,%s,%s,%s", $1, $5, $2, $3, $4}' tools/h
 ./build-hip/tune_hipblaslt $CASES --tuning-out table.txt
 ```
 
-The file's second line names the architecture and version (`STRATA_HIPBLASLT_TUNING_V1 gfx1201 100401`); save it
-as `tools/hip/<arch>-hipblaslt-<version>.txt` for setup, or point `STRATA_HIPBLASLT_TUNING` at it. Compare the
+The file's second line names the architecture and version (`GUILD_HIPBLASLT_TUNING_V1 gfx1201 100401`); save it
+as `tools/hip/<arch>-hipblaslt-<version>.txt` for setup, or point `GUILD_HIPBLASLT_TUNING` at it. Compare the
 prompt speed with and without it before keeping it.
 
 Shipped tables:
@@ -437,11 +437,11 @@ Shipped tables:
   (AMD's `gfx120X-all` nightly, hipBLASLt 1.5.0, library build `d3164197`). 16 dense GEMM geometries at T=4096 and
   T=8192, 32 rows. setup uses it only when the installed hipBLASLt reports 1.5.0 (it is found in `/opt/rocm`
   when that is a system ROCm 7 or newer). The version number is the only thing the engine can check, so another
-  1.5.0 build could number its solutions differently. `hip_prefill_hipblaslt_gemm` (with `STRATA_HIPBLASLT_TUNING`
+  1.5.0 build could number its solutions differently. `hip_prefill_hipblaslt_gemm` (with `GUILD_HIPBLASLT_TUNING`
   set) is a smoke test: it refuses a table for another architecture or version and checks that one BF16 and one
   F16 row exist and agree with hipBLASEx, which covers 2 of the 32 rows. It does not prove that a solution id is
   valid: the engine falls back to hipBLASEx for an id the library rejects, and the test still passes. Run it with
-  `STRATA_HIPBLASLT_VERBOSE=1` and look for `fallbacks=0` in its summary line, and recalibrate with
+  `GUILD_HIPBLASLT_VERBOSE=1` and look for `fallbacks=0` in its summary line, and recalibrate with
   `tune_hipblaslt` before using this table with a different 1.5.0 build.
 
 ## Original backend validation (PR #94)
@@ -473,7 +473,7 @@ latency-sensitive data on SSD and measure warm residency separately.
 - CUDA 13 / GCC 15 / sm_89 executable build passed; GR, sampler, quantization,
   and mmap tests passed on the same tree. This is a regression check, not a
   claim of complete CUDA inference validation.
-- CPU-only `strata-plan` build passed without either GPU backend.
+- CPU-only `guild-plan` build passed without either GPU backend.
 - Real GSQ-RCO IQ3_XXS server smoke with mmap, the shipped expert profile,
   automatic GPU cache, and MTP passed arithmetic, executable Python addition,
   system-marker recall, and 1,170-token batched-prefill recall. All four requests

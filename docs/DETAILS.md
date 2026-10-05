@@ -23,9 +23,9 @@ measured with Swift 1.5's IQ2_XS, which runs at the original's speed.
 4K 1,294 -> 1,570, 32K 2,170 -> 2,653, 128K 2,123 -> 2,468 tokens/s (+16-22%), as close to an FP16 reference as the
 previous kernels (closer at 32K: teacher-forced KL 0.009 vs 0.012). The decode path's block selection and greedy
 argmax run on thread-block clusters (RTX 50, sm_90+; other cards keep the previous kernels; the same tokens): Q2_0 output at 4K 89 -> 93.5, at 128K
-64.5 -> 76.4 tokens/s. `STRATA_PF_FUSED=0` keeps the previous prompt kernels (byte-identical answers to 0.1.35);
-`STRATA_PF_FUSED=1` also runs the native IQ packs' fused kernels (opt-in: IQ2_XS prompts +12% at 4K, +3% at 32K, the
-IQ3 packs about even); `STRATA_QSA_CLUSTER=0` / `STRATA_ARGMAX_MULTI=0` turn the decode kernels off. The tables
+64.5 -> 76.4 tokens/s. `GUILD_PF_FUSED=0` keeps the previous prompt kernels (byte-identical answers to 0.1.35);
+`GUILD_PF_FUSED=1` also runs the native IQ packs' fused kernels (opt-in: IQ2_XS prompts +12% at 4K, +3% at 32K, the
+IQ3 packs about even); `GUILD_QSA_CLUSTER=0` / `GUILD_ARGMAX_MULTI=0` turn the decode kernels off. The tables
 below are 0.1.26's.
 
 ### Prompt processing (tokens/s)
@@ -90,11 +90,11 @@ VRAM. RTX 3090, the Coder at 198K context: 99 instead of 85 tokens/s output, the
 slower. It does not stream its KV cache (KV streaming is on by default from 64K), so it pays off mostly on large
 cards at long contexts.
 
-**Reproducible greedy output (0.1.30, opt-in, `STRATA_IQ_MT_MIN=1`):** with the IQ models, the CPU computes an
+**Reproducible greedy output (0.1.30, opt-in, `GUILD_IQ_MT_MIN=1`):** with the IQ models, the CPU computes an
 expert for one token with ggml's dot product and for several tokens with Strata's multi-token kernels, which round
 slightly differently. How many tokens share an expert depends on the drafts in a verify window, so the same prompt
 at temperature 0 can end in a different (equally good) answer when the drafting, the cache state or a resumed
-conversation differ (issue #152). `STRATA_IQ_MT_MIN=1` (in the config's `env`) uses the multi-token kernels for
+conversation differ (issue #152). `GUILD_IQ_MT_MIN=1` (in the config's `env`) uses the multi-token kernels for
 every group: the answer then no longer depends on the drafting. Measured on a Ryzen 7600 (AVX-512): IQ3_S decode
 -1..-3%, the other models the same; the default stays the fastest rule. Through the server, two more things carry
 over from one request to the next (#410): the adaptive tier moves experts between RAM and VRAM (the GPU and the CPU
@@ -144,8 +144,8 @@ other ~18 GB), a 32 GB PC with a 12-16 GB GPU the Coder; IQ3_XXS on a 32 GB PC s
   RAM place of the one that replaces it, so the RAM copy keeps holding exactly what the GPU does not.
 - The answers are the plain mapped mode's for the same expert placement: the bytes are the file's. With a page-locked
   copy the GPU also takes its usual share of the misses over PCIe (`--pcie-frac`), as with enough RAM; `--pcie-frac 0`
-  (or `STRATA_RESIDENT_PIN=0`) gives the mapped mode's exact tokens.
-- The engine leaves 4 GB of the RAM it finds free (`STRATA_RESIDENT_HEADROOM_GIB`); when even the experts the GPU does
+  (or `GUILD_RESIDENT_PIN=0`) gives the mapped mode's exact tokens.
+- The engine leaves 4 GB of the RAM it finds free (`GUILD_RESIDENT_HEADROOM_GIB`); when even the experts the GPU does
   not hold do not fit, it says so and runs the plain mapped mode. The server log shows, per request, how many expert
   reads went to the file (`resident RAM: ... blob reads from the file`: 0 in steady use).
 - `--low-ram resident|mmap` forces one variant (also on a PC with enough RAM, e.g. to try it).
@@ -156,7 +156,7 @@ other ~18 GB), a 32 GB PC with a 12-16 GB GPU the Coder; IQ3_XXS on a 32 GB PC s
   with `--resident-experts` started with `--gpus` switches to `--mmap-experts` with a note, and the engine runs that
   pair as `--mmap-experts` with a warning instead of refusing it.
 
-**A mapped arena for small RAM (Linux, opt-in, 0.1.39, PR #640):** `STRATA_ARENA_MMAP=1` maps a native pack's expert
+**A mapped arena for small RAM (Linux, opt-in, 0.1.39, PR #640):** `GUILD_ARENA_MMAP=1` maps a native pack's expert
 arena read-only from the pack's `experts.bin` instead of reading it into locked RAM, for a PC whose GPUs hold most
 experts but whose RAM is small (2x 16 GB GPUs with 32 GB of RAM: ~1 GB -> 25 GB available while serving). The first
 start writes `experts.bin` (when the drive has room for it), later starts map it; the pages of the experts a GPU holds
@@ -170,7 +170,7 @@ maps the model's GGUF files themselves and reads each expert's gate, up and down
 says they are (the files are checked against it first: every tensor's name, type, shape, offset and bounds). That
 saves the 23-50 GB copy on the disk. The answers are the same: on the Coder, 64 greedy tokens from `experts.bin` and
 from the GGUF gave identical tokens and logits. An expert read from the GGUF is three reads instead of one, so the
-engine fetches a layer's missing experts on 8 threads (`STRATA_FETCH_THREADS`) with one batched page request
+engine fetches a layer's missing experts on 8 threads (`GUILD_FETCH_THREADS`) with one batched page request
 (Windows `PrefetchVirtualMemory`). With an `experts.bin` in the pack, nothing changes. Setup does not use this yet.
 
 **A RAM budget (engine 0.1.31, `--resident-budget-gib N`):** the resident variant for a model whose experts do not all
@@ -181,7 +181,7 @@ with a message; #403: a clamped budget no longer fails the safety check that fol
 kept at all is a warning, with every expert read from the files). Setup sets N with `--resident-budget-gib N`. With
 the GGUF read in place it also warms the next layer's likely experts: while the CPU works on a layer, a thread applies
 the next layer's router to this layer's input and asks the OS for the pages of the predicted experts that neither the
-GPU nor the RAM budget holds (only pages - the experts computed are the same; `STRATA_LOOKAHEAD=0` turns it off). This
+GPU nor the RAM budget holds (only pages - the experts computed are the same; `GUILD_LOOKAHEAD=0` turns it off). This
 is what runs [Unsloth's UD-Q4_K_XL](UNSLOTH_Q4.md) (72 GiB of experts) on a 64 GB PC: 7-8.5 tokens/s at N = 40 on an
 RTX 5070, against ~3 tokens/s before these changes.
 
@@ -201,8 +201,8 @@ Its `hit_rate` is the VRAM share of the experts looked up while answering: exper
 (engine 0.1.39 or newer, #588) is their share of all routed experts, and the server log and the Monitor tab show it
 beside the hit rate.
 
-**Where a decode window's time goes (profiling, #610):** start the server with `STRATA_DECODE_TIMING=1` (and
-`STRATA_VERIFY_PROFILE=1` for the GPU's side) in the environment. After each request the engine log then has one
+**Where a decode window's time goes (profiling, #610):** start the server with `GUILD_DECODE_TIMING=1` (and
+`GUILD_VERIFY_PROFILE=1` for the GPU's side) in the environment. After each request the engine log then has one
 `strata decode timing:` line - windows, tokens per window, and per window the verify time split into the wait for the
 GPU, the CPU expert pool (plan, activation quantization, jobs) and the stage, plus commit and draft - and one
 `strata decode GPU stages (ms/window):` line with the GPU time of each stage (GDN and QSA layers, the VRAM expert
@@ -608,7 +608,7 @@ print(r.choices[0].message.content)
   in an admin PowerShell, and make sure the network is set to Private.
 - **From the internet.** Put a tunnel in front of it, for example [cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/do-more-with-tunnels/trycloudflare/):
   `cloudflared tunnel --url http://127.0.0.1:8080`. **Set a key first**, or anyone with the link can use your PC:
-  add `"api_key": "some-long-secret"` to `strata-<model>.json` (or set the `STRATA_API_KEY` environment variable);
+  add `"api_key": "some-long-secret"` to `strata-<model>.json` (or set the `GUILD_API_KEY` environment variable);
   clients then send it as their API key. Streamed answers carry `X-Accel-Buffering: no`, so nginx-style proxies pass
   each token on at once. The web app's settings and MCP tools only answer Strata's own page: when you open it through
   a proxy or tunnel whose address differs, add that address, e.g. `"trusted_origins": ["https://strata.example.com"]`.
@@ -625,7 +625,7 @@ print(r.choices[0].message.content)
   and `host.docker.internal`; any port. Others get **403** naming the setting, and the server window prints one line
   for each. Reach it under another name (a reverse proxy that keeps the name, a tunnel, a DNS name on your network,
   another container's name for it)? Add the name: `"allowed_hosts": ["strata.example.com"]` in
-  `strata-<model>.json` or `STRATA_ALLOWED_HOSTS=strata.example.com` (comma-separated); `".example.com"` allows that
+  `strata-<model>.json` or `GUILD_ALLOWED_HOSTS=strata.example.com` (comma-separated); `".example.com"` allows that
   name and every name below it, and `["*"]` turns the check off (so does setting `api_key`). The hosts of
   `trusted_origins` count as allowed. Requests without a `Host` header (HTTP/1.0 clients) pass.
 - **Web pages without an API key.** Without `api_key`, a `POST` to `/v1/*` that carries an `Origin` header (a
@@ -690,7 +690,7 @@ state. Invalid entries are discarded; transfer/synchronization failure is fatal
 rather than permission to continue with partial state. Indexer spare keys and the
 moving spare row are preserved, including checkpoint rewinds.
 The engine log reports parking, restoration, bytes, evictions, individual snapshot
-sizes and K/V bytes reused during capture. `STRATA_SNAPSHOT_FULL_CAPTURE=1` disables
+sizes and K/V bytes reused during capture. `GUILD_SNAPSHOT_FULL_CAPTURE=1` disables
 retention for diagnostic comparisons. Snapshots are not
 persisted across restarts.
 
@@ -761,7 +761,7 @@ name = "Strata (local)"
 base_url = "http://127.0.0.1:8080/v1"
 wire_api = "responses"
 stream_idle_timeout_ms = 600000         # a first, long prompt can take minutes to read
-# env_key = "STRATA_API_KEY"            # only if the server has an api_key: the variable holding it
+# env_key = "GUILD_API_KEY"            # only if the server has an api_key: the variable holding it
 ```
 
 Then run `codex` (or `codex exec "..."`) as usual. Codex warns `Model metadata for ... not found` for a local model
@@ -801,8 +801,8 @@ with an `mcpServers` block; add it to the `serve/server.py` line of your run scr
   gives the model an `error: ...` result instead of ending the chat. Results longer than `max_result_chars`
   (default 20,000 characters) are cut, with a note, before the model reads them. Stop stops a running tool too.
 - Only the chat page uses them. API clients (omp, Claude Code, OpenAI and Anthropic SDKs) see the API exactly as
-  before and keep their own tools; a request to `/v1/chat/completions` opts in with `"strata_mcp": true` (it then
-  gets `strata_mcp` tool events in the stream).
+  before and keep their own tools; a request to `/v1/chat/completions` opts in with `"guild_mcp": true` (it then
+  gets `guild_mcp` tool events in the stream).
 
 **Security.** MCP tools run on your PC with your user's rights, and **the model decides when to call them** - also
 because of what it reads (a web page or a file can contain instructions). Give a filesystem server only the folders
@@ -851,12 +851,12 @@ unmeasured: all the runs above are text.
 
 ## Manage Strata from your AI assistant (MCP server)
 
-`tools/strata_mcp.py` is an MCP server for Claude Code, Claude Desktop, Cursor, VS Code, Codex and other assistants.
+`tools/guild_mcp.py` is an MCP server for Claude Code, Claude Desktop, Cursor, VS Code, Codex and other assistants.
 Once it is added, you can ask your assistant "install Strata for this PC", "start Strata" or "is Strata running?".
 In Claude Code, add it with:
 
 ```bash
-claude mcp add strata -- python C:\Users\you\Strata\tools\strata_mcp.py
+claude mcp add strata -- python C:\Users\you\Strata\tools\guild_mcp.py
 ```
 
 It has eight tools: status (the running model, what is installed, the hardware, a recommended size), the model
@@ -877,7 +877,7 @@ The config snippets for every client, the tool arguments and the safety rules ar
 The model has a vision encoder: [`mmproj-Qwen3.8-Flash-Next-BF16.gguf`](https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF)
 (0.9 GB, a 27-layer ViT plus the projector into the language model). It is **optional**: say yes when the setup asks
 "Images?", or run it again with `--vision gpu` (or `--vision cpu`). The setup downloads the encoder, builds a small
-helper (`strata-vision`, from llama.cpp's `mtmd` library) and adds it to your start script. Nothing else changes.
+helper (`guild-vision`, from llama.cpp's `mtmd` library) and adds it to your start script. Nothing else changes.
 
 | Encoder on | Time per picture | Cost |
 | --- | --- | --- |
@@ -1021,7 +1021,7 @@ the document, +0.4% on the chat. Details: `bench/results/2026-09-27-esp/`.
 | A picture is refused or `cannot read the image` | The file is not a picture Pillow can open (JPEG, PNG, WebP, GIF, BMP, TIFF, AVIF work). |
 | Pictures are slow (10-30 s) | The encoder runs on the CPU: run setup again with `--vision gpu` (needs ~1.4 GB of VRAM). |
 | A request never finishes: "reading the prompt", GPU "100%" at low power | The GPU ran out of VRAM (engines before 0.1.9 could end with ~30 MiB free at large contexts). Run `START-HERE.bat` once to get engine 0.1.9 or newer; the log then says `... MiB of VRAM free with everything loaded` (a few hundred) and names the `--vram-reserve-mib` to add if it is low. |
-| Generation stops mid-answer, GPU "100%", one CPU core busy | Fixed in engine 0.1.12 (issue #29, a race in the CPU expert pool on big-VRAM cards). Since then a request that stops moving ends with an error instead of hanging (after 2 minutes; 1 minute from 0.1.13): the log says `no progress for ... s ... (issue #29)` with where it stopped, and the next request starts the engine again. If you see that line, please open an issue with it. Engine 0.1.13 adds a stall report under it (what every expert-pool thread and the GPU handshake were doing, memory and page faults) and, on Windows, a `strata-stall-<pid>.dmp` file with every thread's stack: attach both. (`STRATA_WATCHDOG_S` sets the time in seconds; 0 turns it off.) Engine 0.1.14 fixes the stall those reports found (issue #31: with the IQ packs the host could wait forever inside the NVIDIA driver while copying experts in a verify window; the experts are now copied by a GPU kernel, `--pcie-mode dma` restores the old way). |
+| Generation stops mid-answer, GPU "100%", one CPU core busy | Fixed in engine 0.1.12 (issue #29, a race in the CPU expert pool on big-VRAM cards). Since then a request that stops moving ends with an error instead of hanging (after 2 minutes; 1 minute from 0.1.13): the log says `no progress for ... s ... (issue #29)` with where it stopped, and the next request starts the engine again. If you see that line, please open an issue with it. Engine 0.1.13 adds a stall report under it (what every expert-pool thread and the GPU handshake were doing, memory and page faults) and, on Windows, a `strata-stall-<pid>.dmp` file with every thread's stack: attach both. (`GUILD_WATCHDOG_S` sets the time in seconds; 0 turns it off.) Engine 0.1.14 fixes the stall those reports found (issue #31: with the IQ packs the host could wait forever inside the NVIDIA driver while copying experts in a verify window; the experts are now copied by a GPU kernel, `--pcie-mode dma` restores the old way). |
 | `no progress for 60 s ... reading the prompt` on Linux, and the stall report says `threads waiting on the disk (state D): 16 ...` | The engine waits for the drive, not a deadlock: the n-gram table is read at random (`--ple-io direct`), which a rotational disk cannot keep up with (#605). The engine warns at start when the table is on one; `--ple-io ram` (Linux, needs RAM for the table) or the model on an SSD fixes it. Setup adds `--ple-io ram` itself on a rotational disk when the RAM holds the table (0.1.39). |
 | `the engine said nothing for ... s during the request` or `... did not finish the request after it was stopped (STOP)` | Issue #481: the engine and the server lost step (the engine waits for its next command, the server for the request's end; GPU at 0 %, nothing in the log). The server ends the engine after 300 s without a line from it during a request (while a prompt is read: each chunk may take three times the previous one's time, the first one up to its tokens at 50 tok/s more), the request ends with an error and the next request starts the engine again. `"engine_silence_s": 600` in `strata-<model>.json` sets the time (0 = wait forever, as before). If you see it, please add the end of the engine log to #481. |
 | `out of memory: cudaFuncSetAttribute` in the log (IQ3_XXS, long prompt) | Fixed in engine 0.1.15: CUDA loaded a kernel's code when it was first needed, and mid-prompt there was no VRAM left for it. Run `START-HERE.bat` (Windows) or `./setup.sh` (Linux) once to update. |
@@ -1050,13 +1050,13 @@ the document, +0.4% on the chat. Details: `bench/results/2026-09-27-esp/`.
   largest chunk that keeps that ring full. It only gives up ring slots where 0.1.39's rule held the chunk at 4,096
   tokens or less; from 6,144 on it keeps 0.1.39's ring and only looks for a bigger chunk beside it (shrinking the
   ring there measured slower: the Coder -12%), and a prompt that fits 0.1.39's chunk keeps 0.1.39's ring (one
-  chunk: a smaller ring only slowed it). RTX 5070, 32K prompts against `STRATA_RING_BYTES=0`, 2-3 interleaved
+  chunk: a smaller ring only slowed it). RTX 5070, 32K prompts against `GUILD_RING_BYTES=0`, 2-3 interleaved
   rounds: IQ3_XXS +18.5% at a 1,500-slot cache and +9% in another memory state, the Coder +3%, IQ3_S unchanged; 4K
   prompts unchanged (-0.7% to +1.1%, bit-identical). Q2_0 (a fixed `--prefill 2048`) is not affected. It changes
   the bits of a long prompt against 0.1.39 (the experts go through a different
   mix of cached and streamed groups). Measured quality, teacher-forced over the next 2,001 tokens of a long document
   against the FP16 prompt path (IQ3_XXS, `--prefill auto`): 8K prompt KL 0.042 (0.1.39: 0.054), top-1 agreement
-  93.5% (92.2%); 32K prompt KL 0.020 (0.019), top-1 95.3% (95.0%) - the same band as before. `STRATA_RING_BYTES=0`
+  93.5% (92.2%); 32K prompt KL 0.020 (0.019), top-1 95.3% (95.0%) - the same band as before. `GUILD_RING_BYTES=0`
   restores 0.1.39's ring, loan and chunk choice.
 
 The full story, with measurements, bottlenecks and what comes next: **[docs/paper/Strata-Paper.pdf](paper/Strata-Paper.pdf)**.

@@ -30,7 +30,7 @@ With a layer split, the engine options go into the config's `args`:
 | --- | --- |
 | `"parallel": N` / `--batch N` / `--slots N` (2..8) | up to N conversations decoded together; more requests wait for a free slot. Each slot gets its own state (a session carved like the stage's own: GDN recurrence, QSA K/V and indexer, PLE history) on every GPU of the split. |
 | `--batch-groups G` | with a layer split: the N slots in G groups that flow through the GPUs as a pipeline (GPU k runs one group while GPU k+1 runs another). G must divide N. 1 = all slots in one window, GPU after GPU. |
-| `--trim-stage-weights` | with an **explicit** `--layer-split` (e.g. `12,24,36`, not `auto`): every GPU loads only the dense weights of its own layers instead of the whole model's (the same as `STRATA_STAGE_TRIM=1`, PR #639). The VRAM this frees goes to the expert cache. Useful without `--batch` too. |
+| `--trim-stage-weights` | with an **explicit** `--layer-split` (e.g. `12,24,36`, not `auto`): every GPU loads only the dense weights of its own layers instead of the whole model's (the same as `GUILD_STAGE_TRIM=1`, PR #639). The VRAM this frees goes to the expert cache. Useful without `--batch` too. |
 
 The engine never refuses a count it cannot run: it says so in its log and runs what it can - at most 8 slots (a
 window holds 8 rows), as many as fit in VRAM, or none (one request at a time) when not two fit. The server reads
@@ -60,7 +60,7 @@ about 10-25% speed per request on this card". `--parallel N` is honoured as aske
   new request is admitted next to it. A request in a slot decodes **without MTP drafts** (one token per window).
 - **A request left alone in a slot** (the others finished, nobody waits) goes back to the solo path: the slot is
   stopped, the engine copies its sessions back and decodes with MTP drafts again (at most twice per request; with
-  `--prompt-cache 0` it stays in the slot; `STRATA_PARALLEL_SOLO=0` turns it off). The draft layer's own K/V was
+  `--prompt-cache 0` it stays in the slot; `GUILD_PARALLEL_SOLO=0` turns it off). The draft layer's own K/V was
   built for another conversation then, but measured it accepted as many drafts (140 of 172) as a draft layer that
   read the conversation (140 of 173).
 - **More requests than slots** wait for a free one (`/metrics` -> `live.slots` shows each slot: idle, reading or
@@ -68,7 +68,7 @@ about 10-25% speed per request on this card". `--parallel N` is honoured as aske
 - **Each admission** reads the request's prompt through the usual prompt path (prompt cache and conversation
   checkpoints included) and produces its first token there; the state is then copied into the slot. Admissions
   are taken one at a time, and **the slots decode between the prompt's chunks**: after each chunk (`--prefill`,
-  2048-8192 tokens) they decode for half as long as the chunk took (`STRATA_BATCH_DECODE_SHARE`, default 0.5), so
+  2048-8192 tokens) they decode for half as long as the chunk took (`GUILD_BATCH_DECODE_SHARE`, default 0.5), so
   a long prompt slows the others down instead of stopping them. The chunks are the ones one uninterrupted read
   takes, so the prompt's arithmetic is unchanged.
 - **A long prompt gives way to a short one** (#656's cooperative preemption): when a request with a prompt under
@@ -93,7 +93,7 @@ slot (from all it holds, and from its turn checkpoint without the reply's thinki
 its slot and continued on the solo path (`tools/batch_interleave_test.py`). These
 settings make the comparison exact:
 
-- `STRATA_IQ_MT_MIN=1` (the multi-token CPU expert kernels for every group, as for the solo path's own
+- `GUILD_IQ_MT_MIN=1` (the multi-token CPU expert kernels for every group, as for the solo path's own
   exactness tests: by default an expert's rows round differently alone than in a group, so the output depends on
   how many rows of a window share an expert - which differs between a batch and a request alone),
 - `--pcie-frac 0`: the PCIe share of the missed experts is chosen per window from the window's misses, so the
@@ -183,7 +183,7 @@ tests the server's side with a scripted engine (no GPU).
 | `tools/parking_test.py` | a follow-up to a conversation decodes the same tokens whether its state stayed live or came back from the parking cache (with a layer split: every stage's image). |
 | `tools/early_close_test.py` | a client that stops reading a streamed answer early (alone, and with a second request running) does not leave its tokens to the next request (server). |
 
-For exact comparisons pass `--pcie-frac 0 --adapt-every 1000000` (and the scripts set `STRATA_IQ_MT_MIN=1`):
+For exact comparisons pass `--pcie-frac 0 --adapt-every 1000000` (and the scripts set `GUILD_IQ_MT_MIN=1`):
 
 ```
 python3 tools/batch_test.py --exe engine/strata --config strata-<model>.json --batch 8 --n 8 \
@@ -192,7 +192,7 @@ python3 tools/batch_interleave_test.py --exe engine/strata --config strata-<mode
     --extra "--pcie-frac 0 --adapt-every 1000000 --no-prefill-borrow"
 python3 tools/parking_test.py --exe engine/strata --config strata-<model>.json \
     --extra "--layer-split 12,24,36 --conversation-cache-mib 8192 --conversation-cache-slots 4 --pcie-frac 0"
-STRATA_KEY=<key> python3 tools/early_close_test.py http://127.0.0.1:8080
+GUILD_KEY=<key> python3 tools/early_close_test.py http://127.0.0.1:8080
 ```
 
 ## Engine protocol (`--serve`)

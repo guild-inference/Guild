@@ -19,7 +19,7 @@ finish downloading before packing. Pass the snapshot filename, not its hash-name
 ## Preparation
 
 Build Strata normally using the pinned llama.cpp dependency. Python needs numpy, regex and gguf-py
-from that dependency (`STRATA_GGUF_PY` can point to its `gguf-py` directory).
+from that dependency (`GUILD_GGUF_PY` can point to its `gguf-py` directory).
 
 ```sh
 .venv/bin/python tools/iq_pack.py \

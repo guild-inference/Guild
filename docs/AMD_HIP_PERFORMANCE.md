@@ -12,13 +12,13 @@ refills, to avoid repeated pageable-source registrations.
 
 Build instructions are in [AMD_HIP.md](AMD_HIP.md). Use the repository-pinned
 llama.cpp dependency; do not silently substitute another revision. Build with
-`STRATA_PREFILL_MMQ=ON` and use these runtime variables for the measured arm:
+`GUILD_PREFILL_MMQ=ON` and use these runtime variables for the measured arm:
 
 ```sh
-export STRATA_PREFILL_MMQ=1
-export STRATA_HIPBLASLT_TUNING="$PWD/tools/hip/gfx1100-hipblaslt-100100.txt"
-export STRATA_PREFILL_RING=96
-export STRATA_IO_THREADS=32
+export GUILD_PREFILL_MMQ=1
+export GUILD_HIPBLASLT_TUNING="$PWD/tools/hip/gfx1100-hipblaslt-100100.txt"
+export GUILD_PREFILL_RING=96
+export GUILD_IO_THREADS=32
 ```
 
 The supplied table is calibrated for gfx1100 and hipBLASLt version 100100.

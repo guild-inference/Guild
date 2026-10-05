@@ -115,7 +115,7 @@ Notes:
 - **AMD on Linux:** setup installs ROCm into `.venv` (~10 GB, no sudo) unless a system ROCm 7 exists, and compiles the
   engine for the card (10-20 minutes, once).
 - **AMD on Windows (new in 0.1.34):** setup downloads the ready-made AMD engine (~550 MB, ROCm included) - nothing
-  is compiled and only the AMD driver is needed. Before the model download it runs `engine\strata-device.exe
+  is compiled and only the AMD driver is needed. Before the model download it runs `engine\guild-device.exe
   --list-devices`; if that does not list the card, the driver is the problem (tell the user to update AMD Software).
   One card per model and no images on Windows for now. It is new: ask the user to report how it runs (docs/AMD_HIP.md).
 - **NVIDIA with no ready-made engine for the card:** setup offers to install build tools and compile (20-40 minutes);

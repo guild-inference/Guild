@@ -1,6 +1,6 @@
 # Strata's MCP server: let your AI assistant install and run Strata
 
-`tools/strata_mcp.py` is an [MCP](https://modelcontextprotocol.io) server for the AI assistant you already use
+`tools/guild_mcp.py` is an [MCP](https://modelcontextprotocol.io) server for the AI assistant you already use
 (Claude Code, Claude Desktop, Cursor, VS Code, Codex ...). Add it once, then ask in plain words:
 
 - "Install Strata for this PC."
@@ -28,8 +28,8 @@ Windows, use `py` if `python` is not on your PATH.
 ### Claude Code
 
 ```bash
-claude mcp add strata -- python C:\Users\you\Strata\tools\strata_mcp.py         # Windows
-claude mcp add strata -- python3 /home/you/Strata/tools/strata_mcp.py           # Linux
+claude mcp add strata -- python C:\Users\you\Strata\tools\guild_mcp.py         # Windows
+claude mcp add strata -- python3 /home/you/Strata/tools/guild_mcp.py           # Linux
 ```
 
 Add `--scope user` to have it in every project. `/mcp` in Claude Code shows that it is connected.
@@ -43,13 +43,13 @@ Open Settings > Developer > Edit Config (`claude_desktop_config.json`) and add:
   "mcpServers": {
     "strata": {
       "command": "python",
-      "args": ["C:\\Users\\you\\Strata\\tools\\strata_mcp.py"]
+      "args": ["C:\\Users\\you\\Strata\\tools\\guild_mcp.py"]
     }
   }
 }
 ```
 
-On Linux, use `"command": "python3"` and `"args": ["/home/you/Strata/tools/strata_mcp.py"]`. Restart Claude
+On Linux, use `"command": "python3"` and `"args": ["/home/you/Strata/tools/guild_mcp.py"]`. Restart Claude
 Desktop after the change.
 
 ### Cursor
@@ -62,7 +62,7 @@ Claude Desktop's:
   "mcpServers": {
     "strata": {
       "command": "python",
-      "args": ["C:\\Users\\you\\Strata\\tools\\strata_mcp.py"]
+      "args": ["C:\\Users\\you\\Strata\\tools\\guild_mcp.py"]
     }
   }
 }
@@ -78,13 +78,13 @@ Use `.vscode/mcp.json` in a workspace, or run "MCP: Open User Configuration" fro
     "strata": {
       "type": "stdio",
       "command": "python",
-      "args": ["C:\\Users\\you\\Strata\\tools\\strata_mcp.py"]
+      "args": ["C:\\Users\\you\\Strata\\tools\\guild_mcp.py"]
     }
   }
 }
 ```
 
-On Linux, use `"command": "python3"` and `"args": ["/home/you/Strata/tools/strata_mcp.py"]`.
+On Linux, use `"command": "python3"` and `"args": ["/home/you/Strata/tools/guild_mcp.py"]`.
 
 ### Codex CLI
 
@@ -93,17 +93,17 @@ In `~/.codex/config.toml`:
 ```toml
 [mcp_servers.strata]
 command = "python"
-args = ['C:\Users\you\Strata\tools\strata_mcp.py']    # Linux: command = "python3", args = ["/home/you/Strata/tools/strata_mcp.py"]
+args = ['C:\Users\you\Strata\tools\guild_mcp.py']    # Linux: command = "python3", args = ["/home/you/Strata/tools/guild_mcp.py"]
 tool_timeout_sec = 180                                # strata_stop / strata_benchmark can take longer than 60 s
 ```
 
 ### Any other MCP client
 
-The command is `python <Strata folder>/tools/strata_mcp.py`. The transport is stdio. It speaks MCP revision
+The command is `python <Strata folder>/tools/guild_mcp.py`. The transport is stdio. It speaks MCP revision
 2025-06-18, and also 2025-03-26 and 2024-11-05.
 
 `--root <folder>` manages a Strata folder other than the one the file is in. For example:
-`python D:\tools\strata_mcp.py --root D:\Strata`.
+`python D:\tools\guild_mcp.py --root D:\Strata`.
 
 ## The tools
 
@@ -194,12 +194,12 @@ If a config of the folder sets an `api_key`, the tool sends that key with its ow
 ## Troubleshooting
 
 - **The assistant does not see the tools.** Run the command by hand:
-  `python C:\Users\you\Strata\tools\strata_mcp.py`. It should print `[strata-mcp] ready (Strata folder ...)` to
+  `python C:\Users\you\Strata\tools\guild_mcp.py`. It should print `[strata-mcp] ready (Strata folder ...)` to
   stderr and wait for input (Ctrl+C ends it). If it reports `not a Strata folder`, the path is wrong or `--root` is
   needed. Python older than 3.10 is refused.
 - **The install failed.** Ask the assistant for the setup log (`strata_logs` with `source: setup`), or open
   `.strata-mcp/setup.log`. Setup's `[X]` line says what to fix. Then install again: every finished step is skipped.
 - **The model does not start.** Get the server log with `strata_logs`, and the engine log with `source: engine`.
   [Troubleshooting](DETAILS.md#troubleshooting) has the usual causes.
-- **Tests.** `python -m unittest tools/test_strata_mcp.py` runs the tests with a fake setup and server. They do not
+- **Tests.** `python -m unittest tools/test_guild_mcp.py` runs the tests with a fake setup and server. They do not
   download anything or use the GPU.

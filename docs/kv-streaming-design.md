@@ -228,9 +228,9 @@ head with only 178 MiB left after its own prompt buffers and verifier had alloca
 ## Changed files
 
 - Setup/accounting/progress/planning: `setup.py`.
-- Expert tier and verifier: `include/strata/core/expert_source.hpp`, `src/core/expert_source.cpp`,
+- Expert tier and verifier: `include/guild/core/expert_source.hpp`, `src/core/expert_source.cpp`,
   `src/core/verify.cpp`, and the tier/planning paths in `src/program/generate.cpp`.
-- KV staging/lifetime/prefill: `include/strata/core/layer.hpp`, `include/strata/kernels/kv_stream.hpp`,
+- KV staging/lifetime/prefill: `include/guild/core/layer.hpp`, `include/guild/kernels/kv_stream.hpp`,
   `src/core/layer.cpp`, `src/kernels/cuda/kv_stream.cu`, `src/prefill/prefill.cpp`, `src/core/mtp.cpp`,
   `src/core/conversation_snapshot.cpp`, and the CLI/serving paths in `src/program/generate.cpp`.
 - Engine tests/build: `CMakeLists.txt`, `tests/core/kv_host_only_test.cpp`,

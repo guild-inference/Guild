@@ -54,7 +54,7 @@ questions are setup's own. What changes:
 
 If a future `setup.py` drops a step this relies on, it stops with a message instead of writing a wrong config.
 The models, packs and checkout must sit under the folder `strata-sycl.sh` mounts at `/work` (the one above the
-checkout, or `STRATA_SYCL_ROOT`).
+checkout, or `GUILD_SYCL_ROOT`).
 
 Then `run-<model>.sh` (or `sycl/setup_intel.py` again) starts the model. The first start of a 30 GB model
 takes about two minutes. `--port N` and `--host 0.0.0.0` work as in upstream's setup.
@@ -123,7 +123,7 @@ migration tool.
 3. `sycl/tools/fixups.py` - what dpct got wrong or could not do, as an idempotent script with a reason per
    item. The ones that mattered:
    - CUDA's null stream means the default stream; dpct turned it into a null `sycl::queue*`. Every
-     stream cast now goes through `strata::q_of()` (`sycl/include/strata/sycl_queue.hpp`).
+     stream cast now goes through `guild::q_of()` (`sycl/include/guild/sycl_queue.hpp`).
    - `__ldg((const float*) p)` came out as `*p`, reading one byte of a float scale (two sites, s_gemv).
    - `__fadd_rn(a, b ? c : d)` lost its parentheses (two sites).
    - the ggml lookup tables were threaded through kernel parameters with the wrong table per template;
@@ -182,7 +182,7 @@ How to run it by hand (a greedy test run, the way every number in this section w
 `strata-sycl-dev` image, AOT build in `build-sycl-aot/`):
 
 ```
-STRATA_VERIFY_DEVICE_PLAN=1 STRATA_VERIFY_NO_HOST=1 \
+GUILD_VERIFY_DEVICE_PLAN=1 GUILD_VERIFY_NO_HOST=1 \
 build-sycl/strata --pack <iq pack> --native <shard1> --ple-gguf <shard2> \
     --expert-profile data/expert-profile-coder.bin --expert-cache auto --stream-experts \
     --prefill auto --spec 4 --spec-min-p 0.5 --max-context 8192 --tokens <ids> --max-new 64 --greedy
@@ -191,8 +191,8 @@ build-sycl/strata --pack <iq pack> --native <shard1> --ple-gguf <shard2> \
 - `--stream-experts` (this port): no resident host copy of the experts; every one of the 12,288 goes from
   the GGUF into the VRAM cache through a small staging ring (`GgufExpertSource`). Upstream needs 32 GB of
   RAM for this model; with the flag the engine runs on 23 GiB.
-- `STRATA_VERIFY_DEVICE_PLAN=1`: the GPU plans each layer itself (upstream's E-6; off by default there).
-- `STRATA_VERIFY_NO_HOST=1` (this port): the host waits for the whole window graph instead of per-layer
+- `GUILD_VERIFY_DEVICE_PLAN=1`: the GPU plans each layer itself (upstream's E-6; off by default there).
+- `GUILD_VERIFY_NO_HOST=1` (this port): the host waits for the whole window graph instead of per-layer
   rings. Only valid with every expert resident, which is the case on a 32 GB card.
 - `--no-prefill-borrow`: the prompt path must not lend expert slots (a lent expert is served from the host
   behind a flag the GPU does not see reliably here; long prompts hung without it).
@@ -210,7 +210,7 @@ What the port had to get right beyond compiling (each is an entry in `sycl/tools
   would run at Xe2's default 16 (`-fsycl-default-sub-group-size=32`).
 - **Synchronous copies.** `cudaMemcpy` blocks; dpct's default-queue `memcpy` did not wait. With the
   streaming ring that filled the expert cache from overwritten buffers: non-deterministic residuals, NaN by
-  layer 5. Found with the per-layer residual ladder (`STRATA_VERIFY_DEBUG=1` prints R after every layer).
+  layer 5. Found with the per-layer residual ladder (`GUILD_VERIFY_DEBUG=1` prints R after every layer).
 - `native_expert_parity` hand-ported: the GPU native expert kernel matches ggml's float reference on real
   IQ1_M rows (rel 1.1e-2, the same class as the CPU path).
 
@@ -229,15 +229,15 @@ same prompts as above (outputs identical before and after each change):
 
 | change | effect |
 |---|---|
-| every window graph and the drafter's graphs captured at load (`STRATA_WARM_GRAPHS=0`: as before) | the first request no longer pays 250-290 ms of captures |
+| every window graph and the drafter's graphs captured at load (`GUILD_WARM_GRAPHS=0`: as before) | the first request no longer pays 250-290 ms of captures |
 | the commit graph left running while the drafter's round runs on its own queue (`Verifier::commit(wait=false)` + `commit_finish`) | decode 38.3 -> 43.0 tok/s at the 2,184-token context, 46.5 -> 49.8 short |
 | upstream 0.1.29 merged (GDN recurrence pipelining, the block-scores read, sampler) | 2,184-token prompt 765 -> 792 tok/s, decode at that context 43.1 -> 45.2 |
 | the draft layer's batched prompt pass takes prompts under 64 rows (it fell back to per-6-token graphs) | its prompt cost on 19 tokens 106 -> 16 ms |
 | one device module per kernel (`-fsycl-device-code-split=per_kernel`) | the first launch in the prompt path (the embedding gather) 245 -> 1 ms |
 | the expert dequant writes each thread's run of FP16 values as one vector store (it wrote them one 2-byte store at a time) | dequant per expert 0.085 -> 0.030 ms; prompt 496 -> 575 tok/s at 2,184 tokens, 720 -> 841 at 8,000 |
 | SWAR sign compare/subtract in the expert dots, a local-memory resident-plan kernel, a split-K fused down kernel (bit-identical to the single-token one) | parity-clean, no measurable decode change; kept |
-| the PLE row reader's default queue depth 16 -> 64 blocking O_DIRECT threads (`STRATA_IO_THREADS`; 128 and 256 change nothing: the drive tops out near 85k IOPS on the 27k random 4 KB reads a 2,184-token prompt needs) | the rows of that prompt 466 -> 330 ms |
-| a short first prompt chunk (`STRATA_PREFILL_FIRST`, default 256 tokens) so the GPU starts while the remaining rows are still being read | 2,184 tokens: 711 -> 765 tok/s, 8,000: 857 -> 986; time to first token about 150 ms less. The chunk boundary moves rounding in the expert GEMMs, so a long greedy continuation can diverge late (token 45 of 64 on the test prompt) |
+| the PLE row reader's default queue depth 16 -> 64 blocking O_DIRECT threads (`GUILD_IO_THREADS`; 128 and 256 change nothing: the drive tops out near 85k IOPS on the 27k random 4 KB reads a 2,184-token prompt needs) | the rows of that prompt 466 -> 330 ms |
+| a short first prompt chunk (`GUILD_PREFILL_FIRST`, default 256 tokens) so the GPU starts while the remaining rows are still being read | 2,184 tokens: 711 -> 765 tok/s, 8,000: 857 -> 986; time to first token about 150 ms less. The chunk boundary moves rounding in the expert GEMMs, so a long greedy continuation can diverge late (token 45 of 64 on the test prompt) |
 
 Draft policy sweep (2,184-token prompt, 128 tokens): windows of 6 (`--spec 4`) at 41.6-43.5 tok/s; `--spec 2`
 33.6, `--spec 6` 35-37; `--spec-min-p` 0.3-0.7 within noise. Profiles (unitrace, `strata-sycl-dev:metrics` with
@@ -250,7 +250,7 @@ bound by the dequant that feeds them, not by the products. Two joint_matrix kern
 but lose to the existing paths on this card, so both stay opt-in: `xmx_gemm_iq` (a fused dequant + GEMM straight
 from the quantized rows, 4-5x slower than dequant + oneMKL) and `qsa_prompt_attn_xmx` (the port of the mma.sync
 prompt attention; `qsa_prompt_attn_parity` passes at 1e-6 of scale, 3x slower than the FP32 fallback per chunk;
-`STRATA_PROMPT_ATTN_XMX=1`). Where the prompt time goes now (2,184 / 8,000 tokens): dequant 28% / 27%, GEMMs
+`GUILD_PROMPT_ATTN_XMX=1`). Where the prompt time goes now (2,184 / 8,000 tokens): dequant 28% / 27%, GEMMs
 22% / 20%, the per-layer host grouping 9.5% / 9%, attention 7% / 14%, embeddings + PLE rows 13% / 5%.
 
 A trap worth knowing: with a native pack `--prefill-until N` does not feed the rest of the prompt through the
@@ -269,8 +269,8 @@ output tokens between paths, never only timings.
   held `GgufExpertSource::blob()` pointers across ~1,900 reads of a 512-slot ring (so blobs were overwritten
   before they were copied: the 75 s / 1,065 tok/s measured first was computed partly with the wrong experts), and
   the stream-all walk hangs on this card in its first large chunk (the copy engine stops on a barrier). The stager
-  threads now read the blobs themselves, and the port uses the per-layer routed-only walk (`STRATA_PREFILL_RING=8`
-  upstream, the port's default; `STRATA_PREFILL_STREAM_ALL=1` restores the other for debugging).
+  threads now read the blobs themselves, and the port uses the per-layer routed-only walk (`GUILD_PREFILL_RING=8`
+  upstream, the port's default; `GUILD_PREFILL_STREAM_ALL=1` restores the other for debugging).
 - **Correct result: 80,000 tokens in 101 s = 790 tok/s.** GPU time: expert down GEMM 26.0 s, attention 15.4 s,
   dequant 12.7 s, QSA block selection 9.3 s (0.2 s at 8k: it scans every block of the context per query), gate/up
   GEMM 8.9 s, gather 6.1 s, the per-layer grouping sync 5.2 s, GDN recurrence 4.8 s. The PLE rows are free at this
@@ -312,14 +312,14 @@ attention fallback (its dedicated prompt kernel is the XMX one below).
 one accumulator update per chunk: 1.4-1.5x faster than v1 and correct in all modes (`qsa_prompt_attn_parity`,
 and `kv_hybrid_parity` passes completely with it), but still ~2x slower than the FP32 fallback (13.4 vs 5.5 ms per
 chunk, INT8, 32K context). This attention is gather-bound: each query position selects its own ~2,000 cells, so
-the K/V fetch dominates and only 12 of the 16 matrix rows are real heads. Opt-in: `STRATA_PROMPT_ATTN_XMX=1`
+the K/V fetch dominates and only 12 of the 16 matrix rows are real heads. Opt-in: `GUILD_PROMPT_ATTN_XMX=1`
 (64-cell chunks, 120 KB of local memory) or `=32`.
 
-**XMX v2 in the full matrix, and why a grouped kernel is not next (2026-09-30).** With `STRATA_PROMPT_ATTN_XMX=1`
+**XMX v2 in the full matrix, and why a grouped kernel is not next (2026-09-30).** With `GUILD_PROMPT_ATTN_XMX=1`
 (stage timing on, ~8-10% overhead) the long prompts run 23-33% slower than with the FP32 attention: 128K int8 666 vs
 960 tok/s, k8v4 596 vs 983; 256K k8v4 506 vs 752, int8 536 vs 718 (q4_0 does not use the XMX kernel). The obvious
 fix, gathering the union of neighbouring positions' cells once, depends on how much their selections overlap.
-Measured on the last chunk of an 80K prompt (first QSA layer, `STRATA_DUMP_SEL=<file>`): the union of 8 consecutive
+Measured on the last chunk of an 80K prompt (first QSA layer, `GUILD_DUMP_SEL=<file>`): the union of 8 consecutive
 positions is 3.3x one position's 2,051 cells (16: 5.1x), and only 12% of a selection is shared by all 8. Grouping
 would cut the K/V gather to ~40% but multiply the arithmetic by 3-5x: at best 5-8 s of an 80K prompt. Not built.
 
@@ -375,11 +375,11 @@ runtime's teardown began); it now exits directly once its requests are done.
 
 1. Expert dot products on XMX in integer mode: a decode window (up to 6 tokens) fits one INT8 DPAS (1-8 rows), the
    i-quant grids decode to small integers, the activations are already INT8. Today: scalar dp4a, ALU-bound (77%).
-   **Parked**: three `joint_matrix` versions (opt-in `STRATA_EXPERT_XMX=1`, do not enable) were 1.4x and 2-3x slower
+   **Parked**: three `joint_matrix` versions (opt-in `GUILD_EXPERT_XMX=1`, do not enable) were 1.4x and 2-3x slower
    than dp4a, and the third (B filled in place with `joint_matrix_apply`) hung the GPU. At 1-6 rows the grid decode
    and the packed-B layout cost more than the DPAS saves.
 2. Experts missing from VRAM read from pinned host memory over PCIe instead of the SSD (the 256K decode collapse).
-   **Done**: at start-up every expert without a VRAM slot is read into a pinned host mirror (`STRATA_MIRROR_MIB`, by
+   **Done**: at start-up every expert without a VRAM slot is read into a pinned host mirror (`GUILD_MIRROR_MIB`, by
    default free RAM less 4 GiB), and the device-built verify plan points the expert kernels straight at it. Before,
    that plan dropped non-resident experts, so output with misses was wrong. Forced test (`--expert-cache 8000`,
    1,879 experts / 3.6 GiB out of VRAM): decode 2.6 -> 40.9 tok/s (full cache 43.3), prompt 451 -> 640 tok/s
@@ -388,7 +388,7 @@ runtime's teardown began); it now exits directly once its requests are done.
    31 tok/s (from 4-5).
 4. QSA block selection on XMX: every query against every pooled block, a dense product that grows with the context.
 5. The hot decode kernels re-tuned for Xe2's native 16-wide sub-groups (twice the registers per thread).
-   **Tried, no gain**: SIMD16 builds of the multi-column mmvq and the wide Q6_K kernel (`STRATA_MMVQ_SG`: 16 all,
+   **Tried, no gain**: SIMD16 builds of the multi-column mmvq and the wide Q6_K kernel (`GUILD_MMVQ_SG`: 16 all,
    1 IQ4_XS only, 2 short outputs only; default 32). Alone (`mmvq_sg_bench`) SIMD16 is up to 1.45x faster on IQ4_XS
    and 1.3x on the 640-row shared-expert projections, 10-25% slower on the large K-quant ones; in the engine no
    setting beats SIMD32 beyond run-to-run noise (SIMD32 itself lands at 39 or 45 tok/s). Output tokens identical.
@@ -400,7 +400,7 @@ runtime's teardown began); it now exits directly once its requests are done.
    does two aligned 16-byte loads and a shift (`load16_a2`; both stay inside the block) and takes every Q6_K
    shape and window width (it used to be gated to n_out >= 4096, 1-4 columns): 2560->10240 at 1/2/4/6 columns
    160/145/141/101 -> 493/432/331/273 GB/s, the 248K-row head 150 -> 407 GB/s at 1 column. Output tokens
-   identical. **Coder decode 44.9 -> 54 tok/s** (2k prompt, greedy). `STRATA_MMVQ_A2=0` restores the old path.
+   identical. **Coder decode 44.9 -> 54 tok/s** (2k prompt, greedy). `GUILD_MMVQ_A2=0` restores the old path.
    Still misaligned: IQ4_XS (136 B, 8-aligned, ~100 GB/s), IQ4_NL (18 B), Q8_0 (34 B); Q4_K/Q5_K are aligned
    but use 4-byte loads in the multi kernel (230-280 GB/s).
 
@@ -421,17 +421,17 @@ runtime's teardown began); it now exits directly once its requests are done.
 The last step changes the output: identical for 146 tokens, then a near-tie after a comma goes the other way (the new
 kernels sum in a different order). Q8_0 kernels 4-6x (189 -> 31 us at 2560 x 10240, 2 columns), IQ4_NL 640 -> 2560
 28 -> 6.6 us. The aligned-load helper only loads its second chunk when the address is unaligned, so it never reads a
-16-byte chunk without a needed byte and cannot cross a page at the end of an allocation. `STRATA_MMVQ_WIDE_32=0`
+16-byte chunk without a needed byte and cannot cross a page at the end of an allocation. `GUILD_MMVQ_WIDE_32=0`
 restores the old Q8_0/IQ4_NL kernels. The sliced GR down kernel (GR read 108.6 -> 76.5 us at 6 tokens, sums equal to
-~1e-7) flips that near-tie back: its output is the original one. `STRATA_GR_DOWN_SLICED=0` restores the direct kernel.
+~1e-7) flips that near-tie back: its output is the original one. `GUILD_GR_DOWN_SLICED=0` restores the direct kernel.
 
 Kernel level: IQ4_XS 107 -> 323 GB/s at 2 columns (61 -> 212 at 6), Q4_K/Q5_K 1.3-1.6x; the GR read 135 -> 110 us at
-6 tokens (bitwise equal). Switches to the old paths: `STRATA_PLAN_PARALLEL=0`, `STRATA_GR_DOWN_DIRECT=0`,
-`STRATA_MMVQ_WIDE_K=0`. (`iq_parity` reports 10 "missing fixture" failures with and without the change: the oracle
+6 tokens (bitwise equal). Switches to the old paths: `GUILD_PLAN_PARALLEL=0`, `GUILD_GR_DOWN_DIRECT=0`,
+`GUILD_MMVQ_WIDE_K=0`. (`iq_parity` reports 10 "missing fixture" failures with and without the change: the oracle
 fixtures are not in the port's tree.)
 
 **Two-speed runs, explained (2026-09-30).** Identical greedy runs decode at either ~45 or ~39 tok/s. A per-gather
-trace of the PLE reader (`STRATA_PLE_TRACE=1`) shows the slow runs pay one 226 ms PLE read stall in the first
+trace of the PLE reader (`GUILD_PLE_TRACE=1`) shows the slow runs pay one 226 ms PLE read stall in the first
 decode round, after the window graphs are captured; every other read and round matches the fast runs. Prompt time
 plus decode time is the same in both modes (4.95-5.17 s): the stall lands either in the prompt's PLE wait or in the
 first decode round, so it is a once-per-process cost, not lost throughput. Ruled out: NVMe APST, the I/O scheduler
@@ -479,7 +479,7 @@ part of the procedure now: it caught a dropped mirror hook and four doorbell wai
 - **The expert kernels.** Upstream sends the i-quant experts to new multi kernels (one warp per row, 8 rows a
   group); the port's grid is sized for its own kernels (8 lanes a row, 32 rows a group), so only a quarter of each
   expert's rows were written and the output was end-of-text tokens. The port's kernels stay the default (they also
-  serve upstream's new Q4_K/Q5_K/Q5_1/Q8_0 experts); `STRATA_EXPERT_SPLIT=1` runs upstream's, with their grid.
+  serve upstream's new Q4_K/Q5_K/Q5_1/Q8_0 experts); `GUILD_EXPERT_SPLIT=1` runs upstream's, with their grid.
 - **Prompt-slot borrowing hung** in the first chunk of any prompt with it on (40K, 128K; GPU busy) - fixed after
   the 0.1.32 merge, see "Prompt-slot borrowing: the hang" below.
 - **Upstream's new tests found three dpct mistranslations from the first migration.** dpct writes `__fadd_rn(a, b)`
@@ -489,9 +489,9 @@ part of the procedure now: it caught a dropped mirror hook and four doorbell wai
   path) and in the s2 activation rounding (every value 0; the Q2_0 s2 pack, unused here). Fixed, and `fixups.py`
   now parenthesises. `qsa_parity`'s batch-vs-sequential test passes; decode output after long prompts changed.
 - **Upstream's new kernels against the port's on the B70** (decode tok/s, Coder 19 / 2,184-token prompts, IQ2_XS
-  19): port defaults 78.1 / 75.7 / 58.6; `STRATA_EXPERT_SPLIT=1` 65.6-69.5 / 67.2 / 49.1 (-11 to -16%);
-  `STRATA_GR_V3=1` 73.2 / 72.4 (-4 to -6%). Both stay opt-in.
-- **Lanes per row of the port's expert kernels** (`STRATA_GU_LANES` / `STRATA_DOWN_LANES`, 4/8/16/32 at run time):
+  19): port defaults 78.1 / 75.7 / 58.6; `GUILD_EXPERT_SPLIT=1` 65.6-69.5 / 67.2 / 49.1 (-11 to -16%);
+  `GUILD_GR_V3=1` 73.2 / 72.4 (-4 to -6%). Both stay opt-in.
+- **Lanes per row of the port's expert kernels** (`GUILD_GU_LANES` / `GUILD_DOWN_LANES`, 4/8/16/32 at run time):
   gate/up 8 or 16 x down 4 or 8 all decode in 37.7-38.6 ms per verify round (2 runs each, Coder, both prompts); tok/s
   differences between them are draft acceptance (each split rounds differently). The default (8 / 8) stays.
 - **Speed after the merge:** Coder 78.2 / 75.7 tok/s (as before), IQ2_XS 58.6 / 64.2 (from 50.8 / 60.6).
@@ -506,7 +506,7 @@ files with real conflicts. What it needed:
   (`commit(n, err, false)` + `commit_finish`); `wait_commit` is `commit_finish`.
 - **Upstream's new hyper-connection read variants** (split / staged, chosen per card by a bit-for-bit self-test at
   start) are not used by the port, which keeps its sliced down / split norm read; the self-test segfaulted on the
-  B70, so on SYCL it runs only with `STRATA_HC_CHECK=1` (open). The port's split-norm kernel was renamed
+  B70, so on SYCL it runs only with `GUILD_HC_CHECK=1` (open). The port's split-norm kernel was renamed
   (`gr_norm_split_port_kernel`): upstream now has one of the same name.
 - Two kernel names collided after hash canonicalization (renamed), and fused_gr's per-block shared-memory query is
   a fixup now.
@@ -531,7 +531,7 @@ reuse one, waited on the copy queue's event for the DMA that last read it (the C
 Under the Level Zero v2 adapter that event, once a host thread had waited on it, no longer released the other
 queue's barrier that also listed it, and the GPU waited forever - only once a layer streamed more than 16 experts
 (the ring wrapped). The v1 adapter (`SYCL_UR_USE_LEVEL_ZERO_V2=0`) and a 256-buffer ring both ran; so did a sync
-after every phase (`STRATA_PREFILL_SYNC=1`, kept as a debug switch). The fix: the copy queue writes a sequence
+after every phase (`GUILD_PREFILL_SYNC=1`, kept as a debug switch). The fix: the copy queue writes a sequence
 number into page-locked host memory after each DMA and the stager polls it - no host thread waits on a queue's
 event. Output is bit-identical to the run without borrowing; borrowing is the default above 32K again.
 
@@ -542,7 +542,7 @@ family, the same GSQ-RCO layout) decoded token 0 forever: NaN logits from layer 
   (`3 * layer + role`; a shard boundary can fall inside a layer). The port's `GgufExpertSource` still indexed it by
   layer, so a layer in shard 2 was read from shard 1 at shard 2's offsets: garbage IQ1_M scales, infinities after the
   fp16 dequantization. The original model keeps every expert in shard 1 and never noticed; Swift's layers 13-47 are
-  in shard 2. `STRATA_DBG_NAN=1` now also reports the experts' fp16 GEMM inputs (activations, dequantized gate/up).
+  in shard 2. `GUILD_DBG_NAN=1` now also reports the experts' fp16 GEMM inputs (activations, dequantized gate/up).
 - **IQ2_XS products were garbage** (the long-failing `iq_multi_parity` IQ2_XS case): ggml's `vec_dot_iq2_xs` reads
   its four 16-bit codes through a `uint16_t*` to an `int2`, type punning the SYCL device compiler does not honour;
   the dequantizer, which reads the codes directly, was exact. The codes are extracted by shifts now (the dot and the
@@ -557,13 +557,13 @@ three slices, copied the blob and waited for the copy before the next read. It i
 admitted in profile order first (the same placement), the reads go in file order by up to 8 threads into
 page-locked batches of 64, and a batch's copies run while the next one is read. Cold page cache: 76.2 s -> 18.8 s
 (0.33 -> 1.34 GB/s); a whole Coder start from the engine's launch to its first token 82 s -> 26 s, the IQ2_XS
-120 s -> 41 s (its 8.2 GB host mirror is ~9 s of the rest). Output identical. `STRATA_FILL_SERIAL=1` is the old fill.
+120 s -> 41 s (its 8.2 GB host mirror is ~9 s of the rest). Output identical. `GUILD_FILL_SERIAL=1` is the old fill.
 
 **The stream-all prompt walk is back (2026-10-03).** It copies every expert the VRAM cache does not hold, layer by
 layer ahead of the compute, instead of only the routed ones. It hung on the B70 until the stager and PLE fixes of
 2026-10-02 and runs since. It now runs by default when the VRAM holds more than 90% of the (layer, expert) pairs;
 past that it would copy several times the routed experts (the IQ2_XS keeps a quarter of them in the RAM mirror: a
-2,184-token prompt fell from ~560 to 254 tok/s with it). `STRATA_PREFILL_STREAM_ALL=1` / `=0` force it on or off.
+2,184-token prompt fell from ~560 to 254 tok/s with it). `GUILD_PREFILL_STREAM_ALL=1` / `=0` force it on or off.
 Coder, outputs identical either way:
 
 | prompt | routed-only | stream-all |
@@ -584,11 +584,11 @@ than the plain kernel it uses for every KV format.
 **The 0.1.38 merge (2026-10-03).** Upstream 0.1.35 -> 0.1.38 (83 commits) merged the seven PRs the port had taken
 early, so their header forks in `sycl/include` are gone; the merge base for the 3-way merge was the port's own "main +
 PRs" migration. New in the port with it: the DeltaNet output norm without its dead FP32 store, two prompt-path
-fixes (the fused layout's buffers, the streamed walk's resident lookup), `STRATA_GR_DOWN_MAX4=1` (opt-in; neutral on
+fixes (the fused layout's buffers, the streamed walk's resident lookup), `GUILD_GR_DOWN_MAX4=1` (opt-in; neutral on
 the B70: 2,184-token prompt 793 vs 788 tok/s, decode 76.2 vs 76.3). Stubbed in the port: `--peer-device` (a second
 GPU as an expert-cache tier: upstream's code is CUDA calls; `open` refuses with a message) and the fused int8 prompt
 kernels (#136, part of the MMQ library the port does not build). Off on SYCL: the sm_90 thread-block-cluster greedy
-sampler and QSA top-k (no SYCL counterpart; the callers take the plain kernels). `STRATA_GDN_KEYHEAD=1` stays opt-in
+sampler and QSA top-k (no SYCL counterpart; the callers take the plain kernels). `GUILD_GDN_KEYHEAD=1` stays opt-in
 (still 8% slower here: 727 vs 788 tok/s). `qsa_prompt_attn_parity` now also tests upstream's Q4_0 tensor-core mode
 (#452), which the port does not have: those cases report "refused" (the int8 and fp16 XMX cases pass); a `--kv
 q4_0` prompt takes the older kernel, as before. Outputs identical (Coder, IQ2_XS, 40K); 128K int8 KV streaming
@@ -606,7 +606,7 @@ touch; `sycl/tools/merge_upstream.py`). Their header changes live in `sycl/inclu
 | #374 (sergqwer) | the first chunk's PLE rows read beside layer 0 | part of the 2,184-token prompt's 784 -> 825 tok/s |
 | #363 (BlueKingMuch) | the PCIe expert call: group stride, fused SwiGLU + q8_1 | IQ2_XS decode +1.7%; re-done on the port's lane kernels |
 | #407 (sergqwer) | `--adapt-tuned` (opt-in) | neutral here; stays opt-in |
-| #413 (BlueKingMuch) | DeltaNet recurrence per key head | bit-identical but 8% slower prompt here: off (`STRATA_GDN_KEYHEAD=1`) |
+| #413 (BlueKingMuch) | DeltaNet recurrence per key head | bit-identical but 8% slower prompt here: off (`GUILD_GDN_KEYHEAD=1`) |
 
 #374 needed two port fixes: its next-chunk read assumed every chunk is the full chunk length (the port's first chunk
 is 256 tokens: the second chunk's rows were read from the wrong place), and its host wait on the PLE upload's event,
@@ -619,14 +619,14 @@ test an SM-holding NVIDIA bench (not built). Outputs identical to 0.1.33 (Coder 
 - Three kernels carry inline PTX (`mma.sync` tensor-core matrix ops, `ldmatrix`, `cp.async`):
   `qsa_prompt_attn`, `qsa_select`'s block scores, `native_qsa_score`. The SYCL build takes the "older card"
   fallback the CUDA build uses below sm_80. `qsa_prompt_attn` also has an XMX version (`joint_matrix`, opt-in
-  `STRATA_PROMPT_ATTN_XMX=1`): correct, but slower than the fallback (see "XMX prompt attention v2").
+  `GUILD_PROMPT_ATTN_XMX=1`): correct, but slower than the fallback (see "XMX prompt attention v2").
 - The ggml MMQ prefill path (`moe_mmq.cu`) needs llama.cpp's ggml-cuda sources; not built.
 - AOT device code is what runs: `AOT=bmg-g31 BUILD_DIR=.../build-sycl-aot` (the JIT build costs ~47 s of
   compiling on the first window).
 
 ## Not done
 
-- Images, on both Intel engines. Strata's vision path encodes with `strata-vision` into embeddings the CUDA
+- Images, on both Intel engines. Strata's vision path encodes with `guild-vision` into embeddings the CUDA
   engine reads; neither the SYCL port nor the llama.cpp config wires it yet.
 - Speculative decoding on the llama.cpp path (the GGUF carries no draft layer llama.cpp can use). The SYCL
   port has it (MTP draft layer, `--mtp`).

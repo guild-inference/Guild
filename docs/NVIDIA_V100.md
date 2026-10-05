@@ -9,8 +9,8 @@ supported cards**: no ready-made engine is published for it and the numbers belo
 CUDA 13 dropped Volta, so the build needs a **CUDA 12.x** toolkit (12.8 was used) and a host GCC that toolkit accepts.
 
 ```sh
-cmake -S . -B build -DSTRATA_ENABLE_CUDA=ON -DSTRATA_BUILD_TESTS=OFF \
-      -DCMAKE_CUDA_ARCHITECTURES=70 -DSTRATA_EXPERIMENTAL_SM60=ON
+cmake -S . -B build -DGUILD_ENABLE_CUDA=ON -DGUILD_BUILD_TESTS=OFF \
+      -DCMAKE_CUDA_ARCHITECTURES=70 -DGUILD_EXPERIMENTAL_SM60=ON
 cmake --build build --target strata -j
 ```
 
@@ -29,16 +29,16 @@ select "old" kernels everywhere: which kernel runs is decided per architecture w
 | --- | --- |
 | MoE experts (ggml MMQ) | `dp4a` kernels (Volta has no int8 tensor cores) |
 | Dense projections (dequantized weights) | FP16 tensor-core GEMMs (cuBLAS / CUTLASS `s884`) |
-| BF16 projections (hyper-connection, router, indexer, ...) | converted to FP16 and run on the FP16 tensor cores (#655, #540; `STRATA_BF16_TC=0`: cuBLAS BF16, an FP32 SIMT kernel on Volta) |
-| QSA attention for decode and verify windows (and prompts with `STRATA_PROMPT_ATTN_OLD=1`) | #540's kernel (fewer shuffles, bit-exact; `STRATA_ATTN_PRE75=0`: the one other cards run) |
-| QSA prompt attention, int8 / FP16 / K8V4 KV | `prompt_attn_v70_kernel` on `mma.m8n8k4` (`STRATA_PROMPT_ATTN_OLD=1`: the decode kernel, one query at a time) |
+| BF16 projections (hyper-connection, router, indexer, ...) | converted to FP16 and run on the FP16 tensor cores (#655, #540; `GUILD_BF16_TC=0`: cuBLAS BF16, an FP32 SIMT kernel on Volta) |
+| QSA attention for decode and verify windows (and prompts with `GUILD_PROMPT_ATTN_OLD=1`) | #540's kernel (fewer shuffles, bit-exact; `GUILD_ATTN_PRE75=0`: the one other cards run) |
+| QSA prompt attention, int8 / FP16 / K8V4 KV | `prompt_attn_v70_kernel` on `mma.m8n8k4` (`GUILD_PROMPT_ATTN_OLD=1`: the decode kernel, one query at a time) |
 | QSA prompt attention, Q4_0 KV | the decode kernel |
 | QSA block scores | the warp kernel (the tensor-core scorer needs sm_80) |
 
 ## Measured
 
 One V100-PCIE-32GB, i9-7960X, Unsloth `UD-IQ4_XS` (not a setup model), int8 KV, MTP `--spec 2`; prompt read speed of random-word prompts, tokens/s,
-with and without the Volta attention kernel (`STRATA_PROMPT_ATTN_OLD=1`):
+with and without the Volta attention kernel (`GUILD_PROMPT_ATTN_OLD=1`):
 
 | Prompt tokens | old attention path | `prompt_attn_v70_kernel` |
 | --- | ---: | ---: |
@@ -56,7 +56,7 @@ summation order).
 ## Checking and benchmarking the Volta kernels
 
 ```sh
-cmake -S . -B build -DSTRATA_PARITY_PROMPT_ATTN=ON ... && cmake --build build --target qsa_prompt_attn_parity
+cmake -S . -B build -DGUILD_PARITY_PROMPT_ATTN=ON ... && cmake --build build --target qsa_prompt_attn_parity
 CUDA_VISIBLE_DEVICES=0 ./build/qsa_prompt_attn_parity 32768 2048 5     # synthetic, no model; exit 0 = PASS
 ```
 

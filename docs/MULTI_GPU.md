@@ -49,7 +49,7 @@ now on; the answer is kept.
 - Intel GPUs, and a mix of NVIDIA and AMD cards. (AMD cards share a model among themselves: `./setup.sh --backend
   hip --gpus 1,0`, see [AMD_HIP.md](AMD_HIP.md).)
 
-Or edit an existing config (`strata-*.json`), then restart:
+Or edit an existing config (`guild-*.json`), then restart:
 
 ```json
 "gpu": [0, 2],
@@ -71,12 +71,12 @@ stays. On an R9700 32 GB + RX 9070 XT the R9700 holds all of the Coder's experts
 refilled after every request; on cards that hold nearly all their experts that cost short prompts up to a third of
 their speed. 0.1.32 refills all cards at once, uses a smaller streaming ring on a split, and lets a card with free
 VRAM keep its own prompt buffers - the same output as 0.1.31, measured on an R9700 + RX 9070 XT: 2K prompts 993 ->
-1,265 tok/s, 16K 1,852 -> 1,950, decode unchanged. `STRATA_SPLIT_OWN=1` (opt-in) gives every card its own buffers:
+1,265 tok/s, 16K 1,852 -> 1,950, decode unchanged. `GUILD_SPLIT_OWN=1` (opt-in) gives every card its own buffers:
 2K 1,450 and 16K 2,227 tok/s there, but a full card then keeps a different set of experts resident, so the output
-differs from the default's (stable and coherent); `STRATA_SPLIT_OWN=auto` does that only where the buffers are at
+differs from the default's (stable and coherent); `GUILD_SPLIT_OWN=auto` does that only where the buffers are at
 most 12% of each card's VRAM.
 
-**The idle card can help one-chunk prompts (opt-in, `STRATA_PREFILL_HELP=1`).** A prompt that fits one chunk runs the stages one after the other, so while
+**The idle card can help one-chunk prompts (opt-in, `GUILD_PREFILL_HELP=1`).** A prompt that fits one chunk runs the stages one after the other, so while
 one card reads its layers the other idles. With it on, each stage hands a share of its streamed experts to the idle card: it
 streams them over its own PCIe link into its own (lent) prompt buffers, computes their rows on the MMQ path and sends
 them back - `--peer-device`'s peer streaming, without P2P (the activations and the rows go through mapped host memory,
@@ -87,8 +87,8 @@ overlap anyway and no share paid. Measured on 2x RTX 3090 (UD-Q4_K_XL, no P2P), 
 costs no VRAM (the idle card's own prompt buffers) and ~110 KB of mapped host memory per token of the largest chunk it
 helped (~360 MB at 3.3K tokens). The rows it computes round like a different MMQ grouping, so the output is not
 bit-identical to the default's (it is repeatable: same prompt, same output), which is why it is **opt-in**:
-`STRATA_PREFILL_HELP=1` turns it on. Native packs on the MMQ prompt path only (not with the fused prompt kernels,
-`STRATA_PF_FUSED=1`, nor with `--peer-device`). With it on, `STRATA_PREFILL_HELP_FRAC=f` fixes the share.
+`GUILD_PREFILL_HELP=1` turns it on. Native packs on the MMQ prompt path only (not with the fused prompt kernels,
+`GUILD_PF_FUSED=1`, nor with `--peer-device`). With it on, `GUILD_PREFILL_HELP_FRAC=f` fixes the share.
 
 The engine flags behind it: `--layer-split K1[,K2..]|auto` and `--split-device D1[,D2..]` (the later stages'
 devices; default the next visible ones). `--layer-split K --split-device 0` runs both stages on one card sharing
@@ -97,7 +97,7 @@ everything - the bit-exact check of the hand-off, not a speed mode.
 **Each card loads only its own layers' dense weights** (0.1.39, PR #639) with explicit split points (`--layer-split
 27`, not `auto`): every card used to keep a full copy (~3.4 GB for the Coder) though its stage reads only its own
 layers, and the VRAM it frees goes to that card's expert cache (2x MI50 16 GB, Coder: 8,819 -> 10,626 experts in
-VRAM, decode 39.2 -> 41.7 tok/s). Opt-in for now, on AMD and NVIDIA alike: `STRATA_STAGE_TRIM=1` (please report how
+VRAM, decode 39.2 -> 41.7 tok/s). Opt-in for now, on AMD and NVIDIA alike: `GUILD_STAGE_TRIM=1` (please report how
 it goes).
 A card holding more experts can change which experts run on the GPU, so the output can differ slightly from a run
 without it.
@@ -142,7 +142,7 @@ into the card that owns the layer.
 - Under WDDM (Windows, and WSL2) only 8 GiB of the expert arena is pinned (more, mapped into two GPU contexts,
   leaves WDDM refusing allocations); the rest streams through the pinned staging ring. A Linux driver has no such
   limit, so there the whole arena is pinned (since 0.1.31; the cap cost a 4090 + 3060 split two thirds of its
-  prompt speed, #253). `STRATA_ARENA_PIN_GIB=N` pins at most N GiB, `0` the whole arena, on any OS.
+  prompt speed, #253). `GUILD_ARENA_PIN_GIB=N` pins at most N GiB, `0` the whole arena, on any OS.
 - Every card needs compute capability 7.5 (RTX 20 or newer). The pre-sm_80 QSA scorer path is fp32 FMAs, so a
   Turing card runs the same kernels instead of the tensor-core prompt attention.
 

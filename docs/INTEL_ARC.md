@@ -29,7 +29,7 @@ yet**. The numbers in the table were measured on earlier versions.
 
 - **Compiles:** Ubuntu 24.04 (WSL2), Intel oneAPI DPC++ 2026.1.1 + oneMKL 2026.1. The whole `sycl/` project
   builds with 0 errors: the `strata` engine plus all 157 targets (the kernel parity tests and benches). The build is
-  SPIR-V (JIT). The AOT build (`STRATA_SYCL_AOT`) was not built here, because it needs `ocloc`.
+  SPIR-V (JIT). The AOT build (`GUILD_SYCL_AOT`) was not built here, because it needs `ocloc`.
 - **Kernel parity tests on a CPU** (`ONEAPI_DEVICE_SELECTOR=opencl:cpu`, Intel's OpenCL CPU runtime, AMD Ryzen 5 7600):
   14 of 25 pass. That is the same set that PR #423's own 0.1.38 port passes on that device: the failures are tight
   float tolerances on the CPU's math (rel 3e-6 against a 1e-6 limit), model fixtures that are not present, and two
@@ -49,7 +49,7 @@ images (not wired on Intel).
   Level Zero; on Ubuntu, `intel-opencl-icd libze1 libze-intel-gpu1`, or Intel's
   [client GPU guide](https://dgpu-docs.intel.com/driver/client/overview.html)).
 - **Intel oneAPI**: the DPC++ compiler (`icpx`, 2025.3 or newer; 2026.1 is what was built here) and **oneMKL**. About 5 GB.
-- `cmake` 3.24+, `ninja`, `git` (the build fetches ggml unless you point `STRATA_GGML_DIR` at a llama.cpp checkout),
+- `cmake` 3.24+, `ninja`, `git` (the build fetches ggml unless you point `GUILD_GGML_DIR` at a llama.cpp checkout),
   Python 3.
 - For `setup --backend sycl` today: **Docker**. `sycl/setup_intel.py` runs the engine in the `strata-sycl-dev`
   image built from `sycl/tools/Dockerfile`. Note that the Dockerfile starts from a community llama.cpp SYCL image
@@ -75,21 +75,21 @@ configures the `sycl/` project directly.
 
 ```sh
 source /opt/intel/oneapi/setvars.sh
-cmake -S . -B build-sycl -G Ninja -DCMAKE_C_COMPILER=icx -DCMAKE_CXX_COMPILER=icpx -DSTRATA_ENABLE_SYCL=ON
+cmake -S . -B build-sycl -G Ninja -DCMAKE_C_COMPILER=icx -DCMAKE_CXX_COMPILER=icpx -DGUILD_ENABLE_SYCL=ON
 #   or: cmake -S sycl -B build-sycl -G Ninja -DCMAKE_C_COMPILER=icx -DCMAKE_CXX_COMPILER=icpx
 cmake --build build-sycl --target strata
 ```
 
 Options:
 
-- `-DSTRATA_SYCL_AOT=bmg-g31` (Arc Pro B70) or `bmg-g21` (B580 / B570 / Pro B60) compiles the GPU code ahead of
+- `-DGUILD_SYCL_AOT=bmg-g31` (Arc Pro B70) or `bmg-g21` (B580 / B570 / Pro B60) compiles the GPU code ahead of
   time. This needs `ocloc` (Intel's `intel-ocloc` package). Without it, the first start JIT-compiles every kernel,
   which takes about 47 s.
-- `-DSTRATA_SYCL_PARITY=OFF` skips the kernel tests (on by default). Run them with
+- `-DGUILD_SYCL_PARITY=OFF` skips the kernel tests (on by default). Run them with
   `ctest --test-dir build-sycl` on the card.
 
 `setup_intel.py` looks for `build-sycl-aot/strata` or `build-sycl/strata` in the checkout. With the
-top-level option the engine is at `build-sycl/sycl/strata`, so either use `-S sycl` or set `STRATA_SYCL_BIN`.
+top-level option the engine is at `build-sycl/sycl/strata`, so either use `-S sycl` or set `GUILD_SYCL_BIN`.
 
 ## Setup and running
 
@@ -108,7 +108,7 @@ Things that matter on an Arc (details in INTEL.md):
 - `SYCL_CACHE_PERSISTENT=0`: the persistent JIT cache crashed on Xe2 during the first compile.
 - Two cards: `ONEAPI_DEVICE_SELECTOR=level_zero:*` (the image pins `level_zero:0`; `strata-sycl.sh` now passes the
   variable through) and `--layer-split`.
-- `STRATA_VERIFY_NO_HOST=1` (set by `strata-sycl.sh`) is only valid when every expert is in VRAM. On smaller cards
+- `GUILD_VERIFY_NO_HOST=1` (set by `strata-sycl.sh`) is only valid when every expert is in VRAM. On smaller cards
   that path is the one that has hung, and #667 found the likely reason: the GPU does not see the CPU's flag
   stores without a system fence.
 
