@@ -2,9 +2,9 @@
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
-#include "strata/core/weights.hpp"
+#include "guild/core/weights.hpp"
 
-#include "strata/kernels/f16_bits.hpp"
+#include "guild/kernels/f16_bits.hpp"
 
 #include <chrono>
 #include <algorithm>
@@ -18,7 +18,7 @@
 #include <unistd.h>
 #endif
 
-namespace strata::core {
+namespace guild::core {
 namespace {
 
 constexpr uint64_t CHUNK = 8ull << 20;   // 8 MiB of SOURCE per staging round
@@ -427,7 +427,7 @@ bool WeightTable::load(const std::string &pack_dir, void *arena_base,
                         for (uint64_t i = 0; i < elems; ++i) {
                             float v;
                             std::memcpy(&v, src + i * 4, 4);
-                            const uint16_t h = strata::kernels::f16_from_f32(v);
+                            const uint16_t h = guild::kernels::f16_from_f32(v);
                             std::memcpy(o + i * 2, &h, 2);
                         }
                         host_src = stage_out;
@@ -444,7 +444,7 @@ bool WeightTable::load(const std::string &pack_dir, void *arena_base,
                         for (uint64_t i = 0; i < elems; ++i) {
                             uint16_t h;
                             std::memcpy(&h, src + i * 2, 2);
-                            o[i] = strata::kernels::f32_from_f16(h);
+                            o[i] = guild::kernels::f32_from_f16(h);
                         }
                         host_src = stage_out;
                         out_at = s.dst_off + done * 2;
@@ -524,4 +524,4 @@ const WeightRef* WeightTable::find(const std::string& name) const {
     return it == table_.end() ? nullptr : &it->second;
 }
 
-}  // namespace strata::core
+}  // namespace guild::core

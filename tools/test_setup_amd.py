@@ -192,7 +192,7 @@ class GpuLists(unittest.TestCase):
 
 class WindowsDetection(unittest.TestCase):
     """Windows: the AMD cards from the display adapters (mocked Win32_VideoController rows and display-class registry
-    values), the HIP runtime's numbering from `strata-device --list-devices`, and the card setup chose matched to its
+    values), the HIP runtime's numbering from `guild-device --list-devices`, and the card setup chose matched to its
     HIP ordinal (#325: an integrated Radeon is HIP's device 0)."""
     ADAPTERS = [  # Win32_VideoController: name, PNPDeviceID, AdapterRAM (32-bit: at most 4 GB)
         {"name": "NVIDIA GeForce RTX 5070", "pnp": r"PCI\VEN_10DE&DEV_2F04&SUBSYS_1234&REV_A1\4&1", "ram": 4293918720},
@@ -213,7 +213,7 @@ class WindowsDetection(unittest.TestCase):
          "HardwareInformation.qwMemorySize": 16 << 30},
     ]
     LIST = ("device 0: AMD Radeon(TM) Graphics\n  arch gfx1036, 28.1 GiB, wave32\n"
-            "  cannot run: GPU 0 (AMD Radeon(TM) Graphics, gfx1036) is not an architecture this Strata engine was "
+            "  cannot run: GPU 0 (AMD Radeon(TM) Graphics, gfx1036) is not an architecture this Guild engine was "
             "compiled for (gfx1100,gfx1101,gfx1102,gfx1200,gfx1201,gfx1030); ...\n"
             "device 1: AMD Radeon RX 9070 XT\n  arch gfx1201, 15.9 GiB, wave32\n"
             "device 2: AMD Radeon RX 7800 XT\n  arch gfx1101, 16.0 GiB, wave32\n")
@@ -294,9 +294,9 @@ class WindowsDetection(unittest.TestCase):
     def test_no_hip_engine_no_probe(self):
         with tempfile.TemporaryDirectory() as d:
             eng = Path(d)
-            (eng / "strata-device.exe").write_text("x")
+            (eng / "guild-device.exe").write_text("x")
             (eng / "BUILD.json").write_text('{"backend": "cuda"}')     # an NVIDIA engine is never asked
-            self.assertIsNone(setup.hip_devices(eng / "strata-device.exe"))
+            self.assertIsNone(setup.hip_devices(eng / "guild-device.exe"))
 
     def test_prebuilt_hip_zip(self):
         """get_prebuilt_hip: a published zip (here a local folder) is unpacked into engine/; one without code for the
@@ -310,14 +310,14 @@ class WindowsDetection(unittest.TestCase):
 
             def publish(meta):
                 with zipfile.ZipFile(pub / setup.WIN_HIP_ASSET, "w") as z:
-                    z.writestr("strata.exe", "engine")
-                    z.writestr("strata-device.exe", "probe")
+                    z.writestr("guild-generate.exe", "engine")
+                    z.writestr("guild-device.exe", "probe")
                     z.writestr("rocm/bin/amdhip64_7.dll", "dll")
                     z.writestr("BUILD.json", json.dumps(meta))
             ver = ".".join(map(str, setup.WIN_HIP_MIN_ENGINE))
             good = {"source": "prebuilt", "backend": "hip", "version": ver, "archs": ["gfx1100", "gfx1201"],
                     "lib_dirs": ["rocm/bin"]}
-            with mock.patch.object(setup, "ROOT", root), mock.patch.object(setup, "EXE", "strata.exe"), \
+            with mock.patch.object(setup, "ROOT", root), mock.patch.object(setup, "EXE", "guild-generate.exe"), \
                     mock.patch.object(setup, "say", lambda *a, **k: None), \
                     mock.patch.object(setup, "ok", lambda *a: None), mock.patch.object(setup, "warn", lambda *a: None):
                 publish({**good, "archs": ["gfx1100"]})
@@ -425,7 +425,7 @@ class WindowsHipVision(unittest.TestCase):
 
 
 class HipRuntimeBesideExe(unittest.TestCase):
-    """#468 #461: the bundled HIP runtime (and amd_comgr) goes next to strata.exe, so an AMD driver's System32 copy is
+    """#468 #461: the bundled HIP runtime (and amd_comgr) goes next to guild-generate.exe, so an AMD driver's System32 copy is
     not found first; rocBLAS and the rest stay in rocm/bin."""
 
     def test_copies_only_the_runtime(self):

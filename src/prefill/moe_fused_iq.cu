@@ -1,4 +1,4 @@
-// src/prefill/moe_fused_iq.cu - see include/strata/prefill/moe_fused_iq.hpp (#136: the native packs' prompt experts on
+// src/prefill/moe_fused_iq.cu - see include/guild/prefill/moe_fused_iq.hpp (#136: the native packs' prompt experts on
 // the fused int8 kernels of moe_fused.cu).
 //
 // The arithmetic.  An activation block of 32 values is x = d_x * a, a = round(x / d_x) in -127..127, stored in natural
@@ -19,7 +19,7 @@
 // to 8 KB, IQ2_S).  The activations arrive by cp.async, four stages deep, as in moe_fused.cu; the fragments come by
 // ldmatrix.  The products are mma.sync m16n8k32 (m16n8k16 for the formats with a scale per 16 values); the epilogues
 // (SwiGLU, H to int8 per 32 features; down into the per-slot rows) are moe_fused.cu's.
-#include "strata/prefill/moe_fused_iq.hpp"
+#include "guild/prefill/moe_fused_iq.hpp"
 
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
@@ -35,7 +35,7 @@
 #include <cstdlib>
 #include <mutex>
 
-namespace strata::prefill::fused {
+namespace guild::prefill::fused {
 namespace {
 
 void ck(cudaError_t e, const char* what) {
@@ -516,7 +516,7 @@ struct DevInfo {
 std::mutex g_mu;
 DevInfo g_dev[32];
 
-#if !defined(STRATA_HIP_GFX906)
+#if !defined(GUILD_HIP_GFX906)
 template <int T, bool GU, int WW> bool setup_ww(int& occ) {
     cudaFuncAttributes fa{};
     if (cudaFuncGetAttributes(&fa, native_kernel<T, GU, WW>) != cudaSuccess || fa.ptxVersion < 80) return false;
@@ -540,7 +540,7 @@ const DevInfo& dev_info() {
     DevInfo& d = g_dev[dev & 31];
     if (d.done) return d;
     d.done = true;
-#if defined(STRATA_HIP_GFX906)
+#if defined(GUILD_HIP_GFX906)
     // gfx906 reports compute capability 9.0 through HIP, but the mma.sync bodies above are CUDA sm_80+ only and
     // empty in a hipcc build: never available here (the prompt path keeps its own expert GEMMs)
     return d;
@@ -577,10 +577,10 @@ void launch(int ww, unsigned grid, const Batch& b, const NativeGeom& g, const Ta
 // about one such tile (56 to 112 rows on average), else 64.  Measured on the RTX 5070 (tests/cuda/prefill_fused_iq_test,
 // a layer of 2048 / 3584 / 8192 tokens, ms, 64 -> 128): IQ2_S 5.2 -> 6.7, 9.5 -> 9.3, 17.5 -> 19.5; IQ2_XXS 4.2 ->
 // 5.8, 7.4 -> 7.6, 13.6 -> 16.5; IQ3_S 5.6 -> 6.6, 10.2 -> 8.8, 18.4 -> 19.0; IQ3_XXS 5.1 -> 6.3, 9.1 -> 8.3, 16.5 ->
-// 17.5 (256 rows was slower still).  STRATA_PF_FUSED_TILE=64|128 forces one.
+// 17.5 (256 rows was slower still).  GUILD_PF_FUSED_TILE=64|128 forces one.
 int pick_ww(int64_t n, int n_expert) {
     static const int forced = [] {
-        const char* v = std::getenv("STRATA_PF_FUSED_TILE");
+        const char* v = std::getenv("GUILD_PF_FUSED_TILE");
         const int t = v ? std::atoi(v) : 0;
         return t == 64 ? 4 : t == 128 ? 2 : 0;
     }();
@@ -592,8 +592,8 @@ int pick_ww(int64_t n, int n_expert) {
 }  // namespace
 
 bool native_supported(int gu_type, int d_type) {
-    static const bool off = [] {   // STRATA_PF_FUSED_NATIVE=0: the native packs keep MMQ under STRATA_PF_FUSED=1 (A/B)
-        const char* v = std::getenv("STRATA_PF_FUSED_NATIVE");
+    static const bool off = [] {   // GUILD_PF_FUSED_NATIVE=0: the native packs keep MMQ under GUILD_PF_FUSED=1 (A/B)
+        const char* v = std::getenv("GUILD_PF_FUSED_NATIVE");
         return v != nullptr && v[0] == '0';
     }();
     return !off && requested() && gu_covered(gu_type) && d_covered(d_type) && dev_info().ok;   // opt-in (=1)
@@ -635,4 +635,4 @@ void experts_native(const Batch& b, const NativeGeom& g, int n_expert, int64_t n
     ck(cudaGetLastError(), "experts_native");
 }
 
-}  // namespace strata::prefill::fused
+}  // namespace guild::prefill::fused

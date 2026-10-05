@@ -1,13 +1,13 @@
-// src/kernels/cuda/cvec.cu - see include/strata/kernels/cvec.hpp.
+// src/kernels/cuda/cvec.cu - see include/guild/kernels/cvec.hpp.
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
-#include "strata/sycl_queue.hpp"
-#include "strata/kernels/cvec.hpp"
+#include "guild/sycl_queue.hpp"
+#include "guild/kernels/cvec.hpp"
 
 #include <stdexcept>
 
-namespace strata::kernels {
+namespace guild::kernels {
 namespace {
 
 constexpr int THREADS = 256;
@@ -267,7 +267,7 @@ void cvec_apply(float *R, int64_t layer, int64_t T, int64_t r_ld,
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
+        guild::q_of(stream)
             ->submit([&](sycl::handler &cgh) {
                 auto g_cvec_mode_ct4 = g_cvec.mode;
                 auto g_cvec_n_embd_ct6 = (int)g_cvec.n_embd;
@@ -299,4 +299,4 @@ catch (sycl::exception const &exc) {
   std::exit(1);
 }
 
-}  // namespace strata::kernels
+}  // namespace guild::kernels

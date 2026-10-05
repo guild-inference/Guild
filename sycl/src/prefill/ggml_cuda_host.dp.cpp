@@ -1,5 +1,5 @@
 // src/prefill/ggml_cuda_host.cu - prompt-speed plan step 2b: the host-side symbols of llama.cpp's ggml-cuda that its MMQ
-// and quantize code reference, for the MMQ kernels compiled into strata_mmq without the rest of ggml-cuda.cu.
+// and quantize code reference, for the MMQ kernels compiled into guild_mmq without the rest of ggml-cuda.cu.
 #include "common.cuh"
 
 #define DPCT_PROFILING_ENABLED
@@ -11,7 +11,7 @@
 #include <vector>
 
 [[noreturn]] void ggml_cuda_error(const char * stmt, const char * func, const char * file, int line, const char * msg) {
-    std::fprintf(stderr, "ggml-cuda (strata mmq): %s: %s\n  in %s at %s:%d\n", msg, stmt, func, file, line);
+    std::fprintf(stderr, "ggml-cuda (guild mmq): %s: %s\n  in %s at %s:%d\n", msg, stmt, func, file, line);
     std::abort();
 }
 

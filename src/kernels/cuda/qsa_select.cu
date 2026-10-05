@@ -1,8 +1,8 @@
-// src/kernels/cuda/qsa_select.cu - see include/strata/kernels/qsa_select.hpp.
-#include "strata/core/emulate.hpp"
+// src/kernels/cuda/qsa_select.cu - see include/guild/kernels/qsa_select.hpp.
+#include "guild/core/emulate.hpp"
 #include <cstdlib>
 #include <cstring>
-#include "strata/kernels/qsa_select.hpp"
+#include "guild/kernels/qsa_select.hpp"
 
 #include <cuda_runtime.h>
 
@@ -11,7 +11,7 @@
 #include <cstdlib>
 #include <cstring>
 
-namespace strata::kernels {
+namespace guild::kernels {
 namespace {
 
 constexpr int IDX_DIM = 128, IDX_HEADS = 4, R = 4;
@@ -166,14 +166,14 @@ constexpr int TC_KS = IDX_DIM + 4;               // key row stride
 
 // TF32 conversion and MMA need sm_80: below it they compile to a trap and qsa_block_scores_tc refuses the device
 #if defined(__HIPCC__)          // AMD: no mma.sync / cp.async; the host keeps the warp kernel (below)
-#define STRATA_SEL_SM80 0
+#define GUILD_SEL_SM80 0
 #elif !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 800
-#define STRATA_SEL_SM80 1
+#define GUILD_SEL_SM80 1
 #else
-#define STRATA_SEL_SM80 0
+#define GUILD_SEL_SM80 0
 #endif
 __device__ __forceinline__ uint32_t tf32_hi(float x) {
-#if STRATA_SEL_SM80
+#if GUILD_SEL_SM80
     uint32_t r;
     asm("cvt.rna.tf32.f32 %0, %1;" : "=r"(r) : "f"(x));
     return r;
@@ -182,7 +182,7 @@ __device__ __forceinline__ uint32_t tf32_hi(float x) {
 #endif
 }
 __device__ __forceinline__ void mma_tf32(float* c, const uint32_t* a, const uint32_t* b) {
-#if !STRATA_SEL_SM80
+#if !GUILD_SEL_SM80
     __trap();
 #else
     asm volatile("mma.sync.aligned.m16n8k8.row.col.f32.tf32.tf32.f32 {%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, "
@@ -292,9 +292,9 @@ __global__ void __launch_bounds__(128) block_scores_tc_kernel(const float* __res
 //   32-byte slice of the key row from global (the 16 query tiles of a launch re-read them from L2); the queries are
 //   split once per CTA into LDS.
 #if defined(__gfx1200__) || defined(__gfx1201__)
-#define STRATA_SEL_GFX12 1
+#define GUILD_SEL_GFX12 1
 #else
-#define STRATA_SEL_GFX12 0
+#define GUILD_SEL_GFX12 0
 #endif
 typedef short sel_s8 __attribute__((ext_vector_type(8)));
 typedef float sel_f8 __attribute__((ext_vector_type(8)));
@@ -304,7 +304,7 @@ constexpr int WITER = 4;                   // key tiles per warp (the CTA covers
 constexpr int WQS = IDX_DIM + 8;           // bf16 elements per LDS row: 272 bytes, conflict-free 16-byte reads
 
 __device__ __forceinline__ sel_f8 wmma_bf16(const sel_s8& a, const sel_s8& b, const sel_f8& c) {
-#if STRATA_SEL_GFX12
+#if GUILD_SEL_GFX12
     return __builtin_amdgcn_wmma_f32_16x16x16_bf16_w32_gfx12(a, b, c);
 #else
     __trap();
@@ -319,7 +319,7 @@ __device__ __forceinline__ void split3(float x, uint32_t& hi, uint32_t& mid, uin
     lo = __float_as_uint(r1 - __uint_as_float(mid)) & 0xffff0000u;   // exact: at most 8 significant bits left
 }
 __device__ __forceinline__ uint32_t pack_bf16x2(uint32_t a, uint32_t b) {   // low half = a's bf16, high half = b's
-#if STRATA_SEL_GFX12
+#if GUILD_SEL_GFX12
     return __builtin_amdgcn_perm(b, a, 0x07060302u);
 #else
     return (a >> 16) | (b & 0xffff0000u);
@@ -793,12 +793,12 @@ constexpr int CL_N = 8;        // CTAs per query (the portable cluster size)
 constexpr int CL_T = 1024;     // threads per CTA
 constexpr int CL_MAXQ = 16;    // larger calls (prefill sub-batches) fill the GPU with one CTA per query already
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 900
-#define STRATA_SEL_CLUSTER 1
+#define GUILD_SEL_CLUSTER 1
 #else
-#define STRATA_SEL_CLUSTER 0   // an older target's code is a trap; qsa_block_topk_cluster never launches it there
+#define GUILD_SEL_CLUSTER 0   // an older target's code is a trap; qsa_block_topk_cluster never launches it there
 #endif
 
-#if STRATA_SEL_CLUSTER
+#if GUILD_SEL_CLUSTER
 __device__ __forceinline__ void cl_arrive_relaxed() {
     asm volatile("barrier.cluster.arrive.relaxed.aligned;\n" ::: "memory");
 }
@@ -847,7 +847,7 @@ __device__ __forceinline__ unsigned long long cl_excl_scan64(unsigned long long 
 __global__ void __launch_bounds__(CL_T) block_topk_cluster_kernel(const float* __restrict__ scores,
                                                                   const int32_t* __restrict__ steps, int64_t max_blocks,
                                                                   int64_t cap, int32_t* __restrict__ ids) {
-#if STRATA_SEL_CLUSTER
+#if GUILD_SEL_CLUSTER
     extern __shared__ uint32_t keys[];                  // this CTA's blocks' keys
     __shared__ __align__(16) int hin[2][CL_N][256];     // the cluster's histograms, slot = the pushing rank
     __shared__ __align__(16) int hloc[2][256];          // this CTA's histogram
@@ -996,7 +996,7 @@ void qsa_block_scores(const float* pooled, const float* dead, const float* q_idx
         std::exit(1);
     }
     // a block past a query's n_bid returns at once: the grid need only reach the batch's largest n_bid (C-1)
-    static const bool multi = [] { const char* v = std::getenv("STRATA_SCORES_MULTI"); return v == nullptr || std::atoi(v) != 0; }();
+    static const bool multi = [] { const char* v = std::getenv("GUILD_SCORES_MULTI"); return v == nullptr || std::atoi(v) != 0; }();
     if (multi && nq <= MQ && active_blocks <= 0) {   // no active count: decode (captured or not) and prefill's pooled16
         block_scores_multi_kernel<<<256, SCORE_WARPS * 32, 0, (cudaStream_t) stream>>>(pooled, dead, q_idx, steps, (int) nq,
                                                                                      max_blocks, scores);
@@ -1017,10 +1017,10 @@ bool qsa_block_scores_tc(const float* pooled, const float* dead, const float* q_
     if (nq <= 0) return true;
     if (s.idx_dim != IDX_DIM || s.idx_n_head != IDX_HEADS || s.idx_block != R || nq > 65535 * TC_QT) return false;
 #if defined(__HIPCC__)
-    // AMD: the gfx12 (RDNA4) WMMA scorer, opt-in (STRATA_SELECT_WMMA=1): it selects slightly differently from the warp
+    // AMD: the gfx12 (RDNA4) WMMA scorer, opt-in (GUILD_SELECT_WMMA=1): it selects slightly differently from the warp
     // kernel (254/256 queries the same), so the default keeps the warp kernel; every other target keeps it too (false)
     static const bool wmma_on = [] {
-        const char* v = std::getenv("STRATA_SELECT_WMMA");
+        const char* v = std::getenv("GUILD_SELECT_WMMA");
         return v != nullptr && v[0] != '\0' && v[0] != '0';
     }();
     if (!wmma_on || !sel_gfx12_device()) return false;
@@ -1045,9 +1045,9 @@ bool qsa_block_scores_tc(const float* pooled, const float* dead, const float* q_
                 cudaGetLastError();
                 return false;
             }
-            // STRATA_QSA_WARP=1|select (an A/B arm): the pre-sm_80 kernels on any card, as RTX 20 runs them
-            const char* w = std::getenv("STRATA_QSA_WARP");
-            cc_major[dev] = w && (!std::strcmp(w, "1") || !std::strcmp(w, "select")) ? 7 : strata::cc_major_of(major);
+            // GUILD_QSA_WARP=1|select (an A/B arm): the pre-sm_80 kernels on any card, as RTX 20 runs them
+            const char* w = std::getenv("GUILD_QSA_WARP");
+            cc_major[dev] = w && (!std::strcmp(w, "1") || !std::strcmp(w, "select")) ? 7 : guild::cc_major_of(major);
         }
         if (cc_major[dev] < 8) return false;
     }
@@ -1115,7 +1115,7 @@ bool qsa_block_topk_cluster(const float* scores, const int32_t* steps, int64_t n
     if (s.idx_block != R || cap < qsa_selection_width(kTopkMaxCells, s) || nq > 65535 || max_blocks <= 0) return false;
     const size_t smem = (size_t) ((max_blocks + CL_N - 1) / CL_N) * sizeof(uint32_t);
     // Per device (a layer split runs on several): 1 the cluster kernel runs here, 2 it does not. It needs sm_90+ (the
-    // card's, or STRATA_EMULATE_CC's) AND code built for it: a build with only older code JIT-compiles their PTX, whose
+    // card's, or GUILD_EMULATE_CC's) AND code built for it: a build with only older code JIT-compiles their PTX, whose
     // copy of this kernel is a trap - the function's PTX version says which. `opt`: the dynamic shared memory opted in.
     static int ok[64] = {};
     static size_t opt[64] = {};
@@ -1125,7 +1125,7 @@ bool qsa_block_topk_cluster(const float* scores, const int32_t* steps, int64_t n
         int major = 0;
         cudaFuncAttributes fa{};
         const bool code = cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev) == cudaSuccess &&
-                          strata::cc_major_of(major) >= 9 &&
+                          guild::cc_major_of(major) >= 9 &&
                           cudaFuncGetAttributes(&fa, block_topk_cluster_kernel) == cudaSuccess && fa.ptxVersion >= 90 &&
                           fa.binaryVersion >= 90;
         cudaGetLastError();
@@ -1174,14 +1174,14 @@ bool qsa_block_topk_cluster(const float* scores, const int32_t* steps, int64_t n
 void qsa_block_topk(const float* scores, const int32_t* steps, int64_t nq, int64_t max_blocks, int64_t cap,
                     const QsaShapes& s, int32_t* ids, void* stream, int64_t active_blocks) {
     // keys in registers when every query's blocks fit (contexts up to ~135K cells), else (CUDA) the same threads
-    // reading them from memory; the same ids. STRATA_TOPK_OLD=1: the original kernel
-    static const bool old = std::getenv("STRATA_TOPK_OLD") != nullptr;
+    // reading them from memory; the same ids. GUILD_TOPK_OLD=1: the original kernel
+    static const bool old = std::getenv("GUILD_TOPK_OLD") != nullptr;
     if (nq <= 0) return;
 #if !defined(__HIPCC__)
     // sm_90+: a cluster of CL_N CTAs per query for the calls of a few queries (decode windows); the same ids.
-    // STRATA_QSA_CLUSTER=0: the one-CTA kernels below
+    // GUILD_QSA_CLUSTER=0: the one-CTA kernels below
     static const bool cluster = [] {
-        const char* v = std::getenv("STRATA_QSA_CLUSTER");
+        const char* v = std::getenv("GUILD_QSA_CLUSTER");
         return !v || std::atoi(v) != 0;
     }();
     if (cluster && !old && nq <= CL_MAXQ && qsa_block_topk_cluster(scores, steps, nq, max_blocks, cap, s, ids, stream))
@@ -1196,10 +1196,10 @@ void qsa_block_topk(const float* scores, const int32_t* steps, int64_t nq, int64
     // TK_T * TK_PER registers. Use the prefill bound on sm_75, keeping max_blocks as the score-row stride.
     // Other CUDA devices keep 0.1.32's capacity rule: #337 was measured on RDNA4, and RTX 5070 64K prompts were
     // 1-3% slower. Decode/captured graphs omit the bound and never query the device here.
-    static const bool capacity_guard = std::getenv("STRATA_TOPK_CAPACITY_GUARD") != nullptr;
-    // STRATA_TOPK_ACTIVE_ANY=1 (tests): the Turing dispatch on any CUDA card, so qsa_topk_active_parity checks it
+    static const bool capacity_guard = std::getenv("GUILD_TOPK_CAPACITY_GUARD") != nullptr;
+    // GUILD_TOPK_ACTIVE_ANY=1 (tests): the Turing dispatch on any CUDA card, so qsa_topk_active_parity checks it
     // on whatever card runs the tests (the kernels are the same on every architecture)
-    static const bool any_card = [] { const char* v = std::getenv("STRATA_TOPK_ACTIVE_ANY"); return v && v[0] == '1'; }();
+    static const bool any_card = [] { const char* v = std::getenv("GUILD_TOPK_ACTIVE_ANY"); return v && v[0] == '1'; }();
     const bool counted = !capacity_guard && active_blocks > 0 && active_blocks <= max_blocks &&
                          (any_card || topk_active_turing_device());
 #endif
@@ -1234,4 +1234,4 @@ void qsa_block_topk(const float* scores, const int32_t* steps, int64_t nq, int64
     if (e != cudaSuccess) { std::fprintf(stderr, "qsa_block_topk: %s\n", cudaGetErrorString(e)); std::exit(1); }
 }
 
-}  // namespace strata::kernels
+}  // namespace guild::kernels

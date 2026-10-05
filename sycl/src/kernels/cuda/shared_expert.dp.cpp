@@ -21,15 +21,15 @@
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
-#include "strata/sycl_queue.hpp"
-#include "strata/kernels/shared_expert.hpp"
-#include "strata/kernels/bf16_gemv.hpp"
-#include "strata/kernels/bf16_bits.hpp"
-#include "strata/kernels/f16_bits.hpp"
-#include "strata/kernels/quantize_act.hpp"
-#include "strata/kernels/s2_gemv_q8.hpp"
-#include "strata/kernels/s_gemv.hpp"
-#include "strata/kernels/native_mmvq.hpp"
+#include "guild/sycl_queue.hpp"
+#include "guild/kernels/shared_expert.hpp"
+#include "guild/kernels/bf16_gemv.hpp"
+#include "guild/kernels/bf16_bits.hpp"
+#include "guild/kernels/f16_bits.hpp"
+#include "guild/kernels/quantize_act.hpp"
+#include "guild/kernels/s2_gemv_q8.hpp"
+#include "guild/kernels/s_gemv.hpp"
+#include "guild/kernels/native_mmvq.hpp"
 
 #include <cmath>
 #include <climits>
@@ -39,7 +39,7 @@
 #include <cstring>
 #include <stdexcept>
 
-namespace strata::kernels {
+namespace guild::kernels {
 namespace {
 
 constexpr int THREADS = 128;
@@ -233,7 +233,7 @@ void shared_expert_multi(int n_tok, const float* x, const uint16_t* x_bf16, cons
                          int64_t n_ff, void* stream) {
     if (n_tok < 1 || n_tok > 8 || !nw.q8_1 || !nw.gate_data || !nw.up_data || !nw.down_data || !stream)
         throw std::invalid_argument("shared_expert_multi: needs 1..8 tokens, native weights, scratch and a stream");
-    dpct::queue_ptr cs = strata::q_of(stream);
+    dpct::queue_ptr cs = guild::q_of(stream);
     native_quantize_q8_1(x, nw.q8_1, (int) n_embd, n_tok, stream);
     native_mmvq(nw.gate_type, nw.gate_data, nw.q8_1, gate, (int) n_embd, (int) n_ff, n_tok, stream);
     native_mmvq(nw.up_type, nw.up_data, nw.q8_1, up, (int) n_embd, (int) n_ff, n_tok, stream);
@@ -253,7 +253,7 @@ void shared_expert_multi(int n_tok, const float* x, const uint16_t* x_bf16, cons
     }
     native_quantize_q8_1(gate, nw.q8_1, (int) n_ff, n_tok, stream);
     native_mmvq(nw.down_type, nw.down_data, nw.q8_1, out, (int) n_ff, (int) n_embd, n_tok, stream);
-    static const bool batch = [] { const char* v = std::getenv("STRATA_DEC_BATCH"); return v == nullptr || std::atoi(v) != 0; }();
+    static const bool batch = [] { const char* v = std::getenv("GUILD_DEC_BATCH"); return v == nullptr || std::atoi(v) != 0; }();
     if (native_bf16 && batch && n_tok > 1) {   // one gemv for all rows (outputs identical), one sigmoid launch
         bf16_gemv_fp32_mmvf_multi(x, n_embd, gate_inp_bf16, g, 1, n_embd, 1, n_tok, stream);
         /*
@@ -439,7 +439,7 @@ void shared_expert(const uint8_t *x_q8_0, const uint8_t *x_q8k,
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
+        guild::q_of(stream)
             ->parallel_for<dpct_kernel_name<class native_swiglu_kernel_5e9503>>(
                 sycl::nd_range<3>(sycl::range(1, 1, g_ff) *
                                       sycl::range(1, 1, THREADS),
@@ -451,10 +451,10 @@ void shared_expert(const uint8_t *x_q8_0, const uint8_t *x_q8k,
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
         dpct::has_capability_or_fail(
-            strata::q_of(stream)->get_device(),
+            guild::q_of(stream)->get_device(),
             {sycl::aspect::fp64});
 
-        strata::q_of(stream)
+        guild::q_of(stream)
             ->parallel_for<dpct_kernel_name<class swiglu_kernel_fbfcfe>>(
                 sycl::nd_range<3>(sycl::range(1, 1, g_ff) *
                                       sycl::range(1, 1, THREADS),
@@ -497,7 +497,7 @@ void shared_expert(const uint8_t *x_q8_0, const uint8_t *x_q8k,
             auto exp_props = sycl::ext::oneapi::experimental::properties{
                 sycl::ext::oneapi::experimental::use_root_sync};
 
-            strata::q_of(stream)
+            guild::q_of(stream)
                 ->parallel_for<dpct_kernel_name<
                     class native_scalar_sigmoid_kernel_3dbcd0>>(
                     sycl::nd_range<3>(sycl::range(1, 1, 1),
@@ -510,10 +510,10 @@ void shared_expert(const uint8_t *x_q8_0, const uint8_t *x_q8k,
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
         dpct::has_capability_or_fail(
-            strata::q_of(stream)->get_device(),
+            guild::q_of(stream)->get_device(),
             {sycl::aspect::fp64});
 
-        strata::q_of(stream)
+        guild::q_of(stream)
             ->parallel_for<dpct_kernel_name<class scalar_gate_kernel_264fbf>>(
                 sycl::nd_range<3>(sycl::range(1, 1, 256),
                                   sycl::range(1, 1, 256)),
@@ -528,7 +528,7 @@ void shared_expert(const uint8_t *x_q8_0, const uint8_t *x_q8k,
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
+        guild::q_of(stream)
             ->parallel_for<dpct_kernel_name<class scale_kernel_a41a71>>(
                 sycl::nd_range<3>(sycl::range(1, 1, g_embd) *
                                       sycl::range(1, 1, THREADS),
@@ -563,10 +563,10 @@ void moe_combine(const float *parts, const float *weights, const float *shared,
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
         dpct::has_capability_or_fail(
-            strata::q_of(stream)->get_device(),
+            guild::q_of(stream)->get_device(),
             {sycl::aspect::fp64});
 
-        strata::q_of(stream)
+        guild::q_of(stream)
             ->submit([&](sycl::handler &cgh) {
                 int shared_nullptr_ct6 = shared != nullptr;
 
@@ -593,4 +593,4 @@ catch (sycl::exception const &exc) {
   std::exit(1);
 }
 
-}  // namespace strata::kernels
+}  // namespace guild::kernels

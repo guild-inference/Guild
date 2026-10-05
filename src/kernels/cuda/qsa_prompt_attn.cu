@@ -1,10 +1,10 @@
-// src/kernels/cuda/qsa_prompt_attn.cu - see include/strata/kernels/qsa_prompt_attn.hpp.
-#include "strata/core/emulate.hpp"
+// src/kernels/cuda/qsa_prompt_attn.cu - see include/guild/kernels/qsa_prompt_attn.hpp.
+#include "guild/core/emulate.hpp"
 #include <cstdlib>
 #include <cstring>
-#include "strata/kernels/qsa_prompt_attn.hpp"
-#include "strata/kernels/kv_q8.hpp"
-#include "strata/kernels/kv_q4.hpp"
+#include "guild/kernels/qsa_prompt_attn.hpp"
+#include "guild/kernels/kv_q8.hpp"
+#include "guild/kernels/kv_q4.hpp"
 
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
@@ -15,7 +15,7 @@
 #include <cstring>
 #include <type_traits>
 
-namespace strata::kernels {
+namespace guild::kernels {
 namespace {
 
 constexpr int HD = 256;           // head_dim
@@ -31,11 +31,11 @@ constexpr int QS = HD + 8;        // q row stride in halves (bank-conflict-free 
 // cards compile the MMA to a trap; qsa_prompt_attn_batch refuses such a device at run time, so the old kernel runs
 // there.  Turing compiles cp_async16 to a trap as well and takes the v1 kernel instead of launch_i8.
 #if defined(__HIPCC__)          // AMD: no mma.sync / cp.async; the host keeps the old kernel (below)
-#define STRATA_PA_SM80 0
+#define GUILD_PA_SM80 0
 #elif !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 800
-#define STRATA_PA_SM80 1
+#define GUILD_PA_SM80 1
 #else
-#define STRATA_PA_SM80 0
+#define GUILD_PA_SM80 0
 #endif
 
 // m16n8k16 with f16 inputs needs sm_80.  Turing (sm_75) has m16n8k8 with the SAME A/B/C register mapping, so the
@@ -44,9 +44,9 @@ constexpr int QS = HD + 8;        // q row stride in halves (bank-conflict-free 
 // products then add into the same FP32 C registers in the order hi-part-0, hi-part-1, which is the order the k16
 // instruction accumulates in as well - but the sum now rounds twice, so the two paths do not agree bit for bit.
 __device__ __forceinline__ void mma16816(float* c, const uint32_t* a, const uint32_t* b) {
-#if !STRATA_PA_SM80 && (defined(__HIPCC__) || !defined(__CUDA_ARCH__) || __CUDA_ARCH__ < 750)
+#if !GUILD_PA_SM80 && (defined(__HIPCC__) || !defined(__CUDA_ARCH__) || __CUDA_ARCH__ < 750)
     __trap();   // AMD and pre-Turing builds: no mma.sync (the host keeps the old kernel there)
-#elif !STRATA_PA_SM80
+#elif !GUILD_PA_SM80
     asm volatile("mma.sync.aligned.m16n8k8.row.col.f32.f16.f16.f32 {%0,%1,%2,%3}, {%4,%5}, {%6}, {%0,%1,%2,%3};\n"
                  : "+f"(c[0]), "+f"(c[1]), "+f"(c[2]), "+f"(c[3])
                  : "r"(a[0]), "r"(a[1]), "r"(b[0]));
@@ -442,7 +442,7 @@ __device__ __forceinline__ int swz(int cell, int byte) {   // byte offset of (ce
     return cell * 64 + ((((byte >> 4) ^ (cell >> 1)) & 3) << 4) + (byte & 15);
 }
 __device__ __forceinline__ void cp_async16(void* smem, const void* gmem, bool valid) {
-#if !STRATA_PA_SM80
+#if !GUILD_PA_SM80
     __trap();
 #else
     const unsigned sa = (unsigned) __cvta_generic_to_shared(smem);
@@ -450,12 +450,12 @@ __device__ __forceinline__ void cp_async16(void* smem, const void* gmem, bool va
 #endif
 }
 __device__ __forceinline__ void cp_async_commit() {
-#if STRATA_PA_SM80
+#if GUILD_PA_SM80
     asm volatile("cp.async.commit_group;\n" ::);
 #endif
 }
 __device__ __forceinline__ void cp_async_wait1() {
-#if STRATA_PA_SM80
+#if GUILD_PA_SM80
     asm volatile("cp.async.wait_group 1;\n" ::);
 #endif
 }
@@ -737,9 +737,9 @@ bool launch(const float* q, const QsaAttnPools& pools, const int32_t* ids, const
 }
 
 
-// PR #600: compiled only into the experimental build (-DSTRATA_EXPERIMENTAL_SM60=ON), the one build that runs on a
+// PR #600: compiled only into the experimental build (-DGUILD_EXPERIMENTAL_SM60=ON), the one build that runs on a
 // Volta card; the ready-made engine has none of it (no extra kernels to load, the same code as before).
-#if !defined(__HIPCC__) && defined(STRATA_EXPERIMENTAL_SM60)
+#if !defined(__HIPCC__) && defined(GUILD_EXPERIMENTAL_SM60)
 // ---- sm_70 (Volta): v1's structure on mma.m8n8k4 ------------------------------------------------------------------
 // Volta's tensor cores only have m8n8k4 (FP16 in, FP32 accumulate): per warp FOUR independent 8x8x4 products, one per
 // quad-pair (QP q = lanes 4q..4q+3 and 4q+16..4q+19; thread j = (lane & 3) + 4 * (lane >> 4) within it). Layout, measured on
@@ -752,13 +752,13 @@ bool launch(const float* q, const QsaAttnPools& pools, const int32_t* ids, const
 //   p.v: warp w owns dims [64w, 64w+64) again; QP q takes the 16 dims 64w+16q.. (two n-tiles of 8); k = the 32 cells in
 //        steps of 4; p carries the V scale (as v1) and is split into hi + lo halves.
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 700 && __CUDA_ARCH__ < 750
-#define STRATA_PA_VOLTA 1
+#define GUILD_PA_VOLTA 1
 #else
-#define STRATA_PA_VOLTA 0
+#define GUILD_PA_VOLTA 0
 #endif
 
 __device__ __forceinline__ void mma884(float* c, uint32_t a0, uint32_t a1, uint32_t b0, uint32_t b1) {
-#if STRATA_PA_VOLTA
+#if GUILD_PA_VOLTA
     asm volatile("mma.sync.aligned.m8n8k4.row.col.f32.f16.f16.f32 {%0,%1,%2,%3,%4,%5,%6,%7}, {%8,%9}, {%10,%11}, "
                  "{%0,%1,%2,%3,%4,%5,%6,%7};\n"
                  : "+f"(c[0]), "+f"(c[1]), "+f"(c[2]), "+f"(c[3]), "+f"(c[4]), "+f"(c[5]), "+f"(c[6]), "+f"(c[7])
@@ -1113,16 +1113,16 @@ bool launch70(const float* q, const QsaAttnPools& pools, const int32_t* ids, con
     }
     return true;
 }
-#else   // AMD, or a build without STRATA_EXPERIMENTAL_SM60: no m8n8k4 kernel (the caller keeps the old one)
+#else   // AMD, or a build without GUILD_EXPERIMENTAL_SM60: no m8n8k4 kernel (the caller keeps the old one)
 template <int KV_MODE>
 bool launch70(const float*, const QsaAttnPools&, const int32_t*, const int32_t*, int64_t, const QsaShapes&, float*,
               int64_t, cudaStream_t) {
     return false;
 }
-#endif  // !__HIPCC__ && STRATA_EXPERIMENTAL_SM60
+#endif  // !__HIPCC__ && GUILD_EXPERIMENTAL_SM60
 
 #if defined(__HIPCC__)
-// ---- S6: the int8-KV prompt attention on RDNA4 matrix cores (opt-in: STRATA_HIP_WMMA=1, gfx12 only). The design of
+// ---- S6: the int8-KV prompt attention on RDNA4 matrix cores (opt-in: GUILD_HIP_WMMA=1, gfx12 only). The design of
 // the v2 kernel above with gfx12's v_wmma_f32_16x16x16_f16 (wave32) in place of m16n8k16: wave w owns dims
 // [64w, 64w+64) (int8 scale group w) for q.k and p.v; q and p are split into FP16 hi + lo parts, the int8 codes enter
 // exactly as FP16, the scales are applied in FP32 and the four groups' q.k partials are added in a fixed order.
@@ -1130,9 +1130,9 @@ bool launch70(const float*, const QsaAttnPools&, const int32_t*, const int32_t*,
 // Fragment layout (16x16x16, wave32, checked on gfx1201): A lane l holds A[l % 16][(l / 16) * 8 + i], B lane l holds
 // B[(l / 16) * 8 + i][l % 16], C/D lane l holds D[(l / 16) * 8 + i][l % 16], i = 0..7.
 #if defined(__gfx1200__) || defined(__gfx1201__)
-#define STRATA_PA_WMMA 1
+#define GUILD_PA_WMMA 1
 #else
-#define STRATA_PA_WMMA 0
+#define GUILD_PA_WMMA 0
 #endif
 typedef _Float16 wh8 __attribute__((ext_vector_type(8)));
 typedef float wf8 __attribute__((ext_vector_type(8)));
@@ -1151,7 +1151,7 @@ struct alignas(16) SmemW {
 };
 
 __device__ __forceinline__ wf8 wmma_f16(wh8 a, wh8 b, wf8 c) {
-#if STRATA_PA_WMMA
+#if GUILD_PA_WMMA
     return __builtin_amdgcn_wmma_f32_16x16x16_f16_w32_gfx12(a, b, c);
 #else
     __builtin_trap();
@@ -1174,7 +1174,7 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_wmma_kernel(const float* 
                                                                    const int32_t* __restrict__ steps, int n_kv_heads,
                                                                    int page_size, float scale_log2,
                                                                    float* __restrict__ attn, int cap) {
-#if STRATA_PA_WMMA
+#if GUILD_PA_WMMA
     __shared__ SmemW S;
     const int qi = blockIdx.x, kvh = blockIdx.y;
     const int n_head = n_kv_heads * G;
@@ -1363,7 +1363,7 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_wmma_kernel(const float* 
 // gfx12 (RDNA4) only, and only on request: the output differs from the default kernel's in its last bits
 bool hip_wmma_usable() {
     static const bool want = [] {
-        const char* e = std::getenv("STRATA_HIP_WMMA");
+        const char* e = std::getenv("GUILD_HIP_WMMA");
         return e != nullptr && e[0] == '1';
     }();
     if (!want) return false;
@@ -1377,7 +1377,7 @@ bool hip_wmma_usable() {
         static bool told = false;
         if (!told) {
             told = true;
-            std::fprintf(stderr, "strata: STRATA_HIP_WMMA: the prompt attention on matrix cores %s (%s)\n",
+            std::fprintf(stderr, "guild: GUILD_HIP_WMMA: the prompt attention on matrix cores %s (%s)\n",
                          arch[dev] == 1 ? "on" : "unavailable", prop.gcnArchName);
         }
     }
@@ -1412,7 +1412,7 @@ bool qsa_prompt_attn_batch(const float* q, const QsaAttnPools& pools, const int3
         // no cp.async, so it runs the v1 kernel (launch<1>, same accuracy, another summation order).  An older card
         // keeps the old kernel.
         // #371: the compute capability with its minor - sm_70 (V100) has no m16n8k8 (the kernels trap below sm_75)
-#if defined(STRATA_HIP_GFX906)
+#if defined(GUILD_HIP_GFX906)
         return false;   // gfx906: the tensor-core and WMMA kernels are not for it; the FP32 kernel runs
 #endif
         static int cc[64] = {};
@@ -1425,18 +1425,18 @@ bool qsa_prompt_attn_batch(const float* q, const QsaAttnPools& pools, const int3
                 cudaGetLastError();
                 return false;
             }
-            // STRATA_QSA_WARP=1|attn (an A/B arm): the pre-sm_80 kernels on any card, as RTX 20 runs them
-            const char* w = std::getenv("STRATA_QSA_WARP");
+            // GUILD_QSA_WARP=1|attn (an A/B arm): the pre-sm_80 kernels on any card, as RTX 20 runs them
+            const char* w = std::getenv("GUILD_QSA_WARP");
             cc[dev] = w && (!std::strcmp(w, "1") || !std::strcmp(w, "attn")) ? 75
-                      : 10 * strata::cc_major_of(major) + strata::cc_minor_of(minor);
+                      : 10 * guild::cc_major_of(major) + guild::cc_minor_of(minor);
         }
         if (cc[dev] < 70) return false;
-        volta = cc[dev] < 75;     // sm_70: the m8n8k4 kernel (STRATA_PA_VOLTA); STRATA_QSA_WARP=1 still forces the old one
+        volta = cc[dev] < 75;     // sm_70: the m8n8k4 kernel (GUILD_PA_VOLTA); GUILD_QSA_WARP=1 still forces the old one
         turing = cc[dev] < 80;
     }
 #if defined(__HIPCC__)
     // the tensor-core kernels are compiled out on AMD (its major version is not a CUDA sm); RDNA4 has its own int8-KV
-    // matrix-core kernel, opt-in (STRATA_HIP_WMMA=1); everything else keeps the old kernel
+    // matrix-core kernel, opt-in (GUILD_HIP_WMMA=1); everything else keeps the old kernel
     (void) turing; (void) volta;
     if (pools.k_q != nullptr && pools.v_q != nullptr && pools.k_scale != nullptr && pools.v_scale != nullptr &&
         pools.k_q4 == nullptr && pools.v_q4 == nullptr && s.head_dim == HD && s.n_head == (int64_t) G * s.n_head_kv &&
@@ -1447,9 +1447,9 @@ bool qsa_prompt_attn_batch(const float* q, const QsaAttnPools& pools, const int3
     if (s.head_dim != HD || s.n_head != (int64_t) G * s.n_head_kv || cap <= 0 || !ids || !steps || !pools.page_table)
         return false;
     cudaStream_t st = (cudaStream_t) stream;
-    if (pools.k_q4 != nullptr) {   // Q4_0 K and V (--kv q4_0): mode 4.  STRATA_PROMPT_ATTN_Q4=0: the old kernel (A/B)
+    if (pools.k_q4 != nullptr) {   // Q4_0 K and V (--kv q4_0): mode 4.  GUILD_PROMPT_ATTN_Q4=0: the old kernel (A/B)
         static const bool q4_off = [] {
-            const char* v = std::getenv("STRATA_PROMPT_ATTN_Q4");
+            const char* v = std::getenv("GUILD_PROMPT_ATTN_Q4");
             return v != nullptr && v[0] == '0';
         }();
         // sm_80+ only: on Turing mode 4 would run as pairs of m16n8k8 MMAs, which no parity run has checked yet
@@ -1463,10 +1463,10 @@ bool qsa_prompt_attn_batch(const float* q, const QsaAttnPools& pools, const int3
     }
     if (pools.k_q != nullptr) {
         if (!pools.v_q || !pools.k_scale || !pools.v_scale) return false;
-        // STRATA_PROMPT_ATTN_V1=1 (debug): the first version, same accuracy, another summation order - the control
+        // GUILD_PROMPT_ATTN_V1=1 (debug): the first version, same accuracy, another summation order - the control
         // for how far the model amplifies an FP32-level change.  Turing always takes it: v2's cp.async does not
         // exist before sm_80.
-        static const bool v1 = std::getenv("STRATA_PROMPT_ATTN_V1") != nullptr;
+        static const bool v1 = std::getenv("GUILD_PROMPT_ATTN_V1") != nullptr;
         if (volta) return launch70<1>(q, pools, ids, steps, cap, s, attn, n_q, st);
         if (v1 || turing) return launch<1>(q, pools, ids, steps, cap, s, attn, n_q, st);
         return launch_i8(q, pools, ids, steps, cap, s, attn, n_q, st);
@@ -1476,4 +1476,4 @@ bool qsa_prompt_attn_batch(const float* q, const QsaAttnPools& pools, const int3
     return launch<0>(q, pools, ids, steps, cap, s, attn, n_q, st);
 }
 
-}  // namespace strata::kernels
+}  // namespace guild::kernels

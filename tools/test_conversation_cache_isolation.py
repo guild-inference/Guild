@@ -51,7 +51,7 @@ class IsolationGate(unittest.TestCase):
                         verify(data, scenario)
 
     def test_generated_fixtures(self):
-        with tempfile.TemporaryDirectory(prefix='strata-isolation-') as directory:
+        with tempfile.TemporaryDirectory(prefix='guild-isolation-') as directory:
             p = Path(directory)
             fixtures(p, 2560)
             cv = GGUFFile(p / 'control.gguf')
@@ -67,7 +67,7 @@ class IsolationGate(unittest.TestCase):
             self.assertEqual(a[20:], grid[20:])
 
     def test_dry_run_does_not_read_missing_config(self):
-        with tempfile.TemporaryDirectory(prefix='strata-isolation-dry-') as directory:
+        with tempfile.TemporaryDirectory(prefix='guild-isolation-dry-') as directory:
             p = Path(directory)
             result = subprocess.run([sys.executable, str(Path(__file__).with_name('conversation_cache_isolation.py')),
                                      '--config', str(p / 'missing.json'), '--engine', str(p / 'missing'),

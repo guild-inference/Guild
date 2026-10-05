@@ -51,7 +51,7 @@
 //     produced - computed in ONE parallel pass over the experts instead of k serial ones.  It is O(n^2)
 //     comparisons and that is the right trade here: n = 512, every comparison is independent, and the old
 //     version was O(k*n) with a serial `exp` inside.
-#include "strata/kernels/router_top10.hpp"
+#include "guild/kernels/router_top10.hpp"
 
 #include <cuda_runtime.h>
 
@@ -59,7 +59,7 @@
 #include <cstdio>
 #include <cstdlib>
 
-namespace strata::kernels {
+namespace guild::kernels {
 namespace {
 
 constexpr int RT_MAX_THREADS = 512;
@@ -187,7 +187,7 @@ __global__ void router_top10_kernel(const float* __restrict__ logits, int n_toke
 }
 
 
-#if defined(STRATA_HIP_GFX906)
+#if defined(GUILD_HIP_GFX906)
 // AMD (wave64): the same routing in ONE wavefront per token.  The block-wide kernel above spends its time in
 // barriers - 10 selection passes with two __syncthreads each over 8 logical warps - not in arithmetic (43 us per
 // token on gfx906).  Here every lane holds up to RW_PER probabilities in registers and each pass is a 64-lane
@@ -261,7 +261,7 @@ __global__ void __launch_bounds__(64) router_top10_wave_kernel(const float* __re
             weights[(size_t) t * k + i] = (float) ((double) weights[(size_t) t * k + i] / sc);
     }
 }
-#endif  // STRATA_HIP_GFX906
+#endif  // GUILD_HIP_GFX906
 
 #if defined(__HIPCC__)
 // ---- S6, AMD: the same router, BIT-IDENTICAL, without its serial parts. Measured on RDNA4 (gfx1201) the kernel
@@ -277,7 +277,7 @@ __global__ void __launch_bounds__(64) router_top10_wave_kernel(const float* __re
 //     lowest index on ties is unique, so the butterfly finds the same expert as the block reduction did;
 //   * the renormalisation sums the ten weights in rank order from registers and divides them in parallel.
 // Same expressions, same operands: the ids and weights are bitwise those of router_top10_kernel (hip_router_fast
-// checks it on 65,536 rows with ties, near-ties, NaN rows and the forced serial path). STRATA_HIP_ROUTER_OLD=1: the
+// checks it on 65,536 rows with ties, near-ties, NaN rows and the forced serial path). GUILD_HIP_ROUTER_OLD=1: the
 // kernel above.
 template <bool FORCE_SERIAL>
 __global__ void router_top10_fast_kernel(const float* __restrict__ logits, int n_tokens, int n_expert, int k,
@@ -423,12 +423,12 @@ void router_top10(const float* logits, int n_tokens, int n_expert, int k, int* i
                   void* stream) {
 #if defined(__HIPCC__)
     {
-#if defined(STRATA_HIP_GFX906)
+#if defined(GUILD_HIP_GFX906)
         // gfx906 (wave64): the one-wavefront kernel below stays the default; the S6 kernel is wave32-shaped and only
-        // runs here on request (STRATA_HIP_ROUTER_FAST=1) until it is measured on this card
-        static const bool old = std::getenv("STRATA_HIP_ROUTER_FAST") == nullptr;
+        // runs here on request (GUILD_HIP_ROUTER_FAST=1) until it is measured on this card
+        static const bool old = std::getenv("GUILD_HIP_ROUTER_FAST") == nullptr;
 #else
-        static const bool old = std::getenv("STRATA_HIP_ROUTER_OLD") != nullptr;
+        static const bool old = std::getenv("GUILD_HIP_ROUTER_OLD") != nullptr;
 #endif
         if (!old && n_tokens > 0 && n_expert > 64 && n_expert <= 512 && k > 0 && k <= 32) {
             launch_generic(logits, n_tokens, n_expert, k, ids, weights, stream, 1);
@@ -458,8 +458,8 @@ void router_top10(const float* logits, int n_tokens, int n_expert, int k, int* i
                      RT_MAX_THREADS * 64);
         std::exit(1);
     }
-#if defined(STRATA_HIP_GFX906)
-    if (n_expert <= 64 * RW_PER && !std::getenv("STRATA_ROUTER_BLOCK")) {
+#if defined(GUILD_HIP_GFX906)
+    if (n_expert <= 64 * RW_PER && !std::getenv("GUILD_ROUTER_BLOCK")) {
         router_top10_wave_kernel<<<(unsigned) n_tokens, 64, 0, (cudaStream_t) stream>>>(logits, n_tokens, n_expert, k,
                                                                                        ids, weights);
         const cudaError_t e = cudaGetLastError();
@@ -494,4 +494,4 @@ void router_top10(const float* logits, int n_tokens, int n_expert, int k, int* i
     }
 }
 
-}  // namespace strata::kernels
+}  // namespace guild::kernels

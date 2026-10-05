@@ -6,9 +6,9 @@
 //   2. the INT8 gather is BITWISE equal to the host dequantization of those codes;
 //   3. against the FP16 path, the INT8 values differ by at most half a quantization step of their group plus the
 //      fp16 rounding of both sides (0.624 steps).
-#include "strata/kernels/f16_bits.hpp"
-#include "strata/kernels/kv_q8.hpp"
-#include "strata/kernels/qsa.hpp"
+#include "guild/kernels/f16_bits.hpp"
+#include "guild/kernels/kv_q8.hpp"
+#include "guild/kernels/qsa.hpp"
 
 #include <cuda_runtime.h>
 
@@ -19,7 +19,7 @@
 #include <random>
 #include <vector>
 
-namespace k = strata::kernels;
+namespace k = guild::kernels;
 
 namespace {
 int g_fail = 0;

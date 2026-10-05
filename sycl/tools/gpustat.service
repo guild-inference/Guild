@@ -1,5 +1,5 @@
 [Unit]
-Description=Intel Arc telemetry sampler -> /run/gpustat.json (Strata's Monitor tab: GPU load and VRAM)
+Description=Intel Arc telemetry sampler -> /run/gpustat.json (Guild's Monitor tab: GPU load and VRAM)
 
 [Service]
 ExecStart=/usr/bin/python3 -u /usr/local/sbin/gpustat.py

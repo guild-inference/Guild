@@ -59,7 +59,7 @@ class SoakGate(unittest.TestCase):
         self.assertNotEqual(answer_text('The code is MANGO.'), 'mango')
 
     def test_dry_run_never_reads_config_or_starts_model(self):
-        with tempfile.TemporaryDirectory(prefix='strata-soak-dry-') as directory:
+        with tempfile.TemporaryDirectory(prefix='guild-soak-dry-') as directory:
             root = Path(directory)
             result = subprocess.run([sys.executable, str(Path(__file__).with_name('conversation_cache_soak.py')),
                                      '--config', str(root / 'missing.json'), '--engine', str(root / 'missing'),

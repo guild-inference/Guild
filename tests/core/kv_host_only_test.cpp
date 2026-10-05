@@ -1,9 +1,9 @@
 // Bounded shared staging at the full 262K context, including graph replay and different layers sharing storage.
-#include "strata/core/layer.hpp"
-#include "strata/kernels/kv_q4.hpp"
-#include "strata/kernels/kv_q8.hpp"
-#include "strata/kernels/qsa_decode_attn.hpp"
-#include "strata/kernels/verify_kernels.hpp"
+#include "guild/core/layer.hpp"
+#include "guild/kernels/kv_q4.hpp"
+#include "guild/kernels/kv_q8.hpp"
+#include "guild/kernels/qsa_decode_attn.hpp"
+#include "guild/kernels/verify_kernels.hpp"
 
 #include <cuda_runtime.h>
 
@@ -16,8 +16,8 @@
 #include <stdexcept>
 #include <vector>
 
-namespace c = strata::core;
-namespace k = strata::kernels;
+namespace c = guild::core;
+namespace k = guild::kernels;
 namespace {
 void check(cudaError_t e) {
     if (e != cudaSuccess) throw std::runtime_error(cudaGetErrorString(e));

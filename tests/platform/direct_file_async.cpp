@@ -1,4 +1,4 @@
-#include "strata/platform/direct_file.hpp"
+#include "guild/platform/direct_file.hpp"
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
@@ -8,11 +8,11 @@
 #include <thread>
 #include <vector>
 #include <unistd.h>
-using strata::platform::DirectFile;
-using strata::platform::Completion;
+using guild::platform::DirectFile;
+using guild::platform::Completion;
 static void check(bool ok, const char* why) { if (!ok) throw std::runtime_error(why); }
 int main() {
-    char name[] = "/tmp/strata-direct-test-XXXXXX";
+    char name[] = "/tmp/guild-direct-test-XXXXXX";
     int fd = mkstemp(name);
     if (fd < 0) return 1;
     close(fd);
@@ -22,7 +22,7 @@ int main() {
         { std::ofstream f(name, std::ios::binary); std::string bytes(4096 * 16 + 17, 'x'); f.write(bytes.data(), bytes.size()); }
         DirectFile f;
         std::string error;
-        setenv("STRATA_IO_THREADS", "4", 1);   // the pool's size (out-of-range values are clamped to 1..64)
+        setenv("GUILD_IO_THREADS", "4", 1);   // the pool's size (out-of-range values are clamped to 1..64)
         check(f.open(name, error), error.c_str());
         check(!f.submit(1, memory, 4096, 0, error), "unaligned request accepted");
         for (unsigned i = 0; i < 17; ++i)

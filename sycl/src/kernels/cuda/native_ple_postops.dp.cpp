@@ -21,10 +21,10 @@
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
-#include "strata/sycl_queue.hpp"
-#include "strata/kernels/native_ple_postops.hpp"
-#include "strata/kernels/native_gr_norm.hpp"
-#include "strata/kernels/ngram.hpp"
+#include "guild/sycl_queue.hpp"
+#include "guild/kernels/native_ple_postops.hpp"
+#include "guild/kernels/native_gr_norm.hpp"
+#include "guild/kernels/ngram.hpp"
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -32,7 +32,7 @@
 #include <stdexcept>
 #include <string>
 
-namespace strata::kernels {
+namespace guild::kernels {
 namespace {
 constexpr int N = 2560, H = 4, D = N * H, HISTORY = 9;
 inline float warp_sum(float x) {
@@ -337,7 +337,7 @@ void native_ple_postops(const float* projected_key, const float* hidden,
     }
     native_gr_rms_norm_weighted(projected_key,w.norm_key,b.key,N,H,NG_RMS_EPS,stream);
     native_gr_rms_norm_weighted(hidden,w.norm_query,b.query,N,H,NG_RMS_EPS,stream);
-    auto st = strata::q_of(stream);
+    auto st = guild::q_of(stream);
     /*
     DPCT1049: The work-group size passed to the SYCL kernel may exceed the
     limit. To get the device limit, query info::device::max_work_group_size.
@@ -395,7 +395,7 @@ void native_ple_postops_batch(float* key, float* hidden, const float* value, flo
                               float* query_norm, float* gated, float* gate, int T, void* stream) {
     if (!stream || T <= 0 || !key || !hidden || !value || !history || !query_norm || !gated || !gate)
         throw std::invalid_argument("native PLE postops batch: null input or empty batch");
-    auto st = strata::q_of(stream);
+    auto st = guild::q_of(stream);
     const unsigned rows = unsigned(T) * H;
     const unsigned blocks = unsigned((size_t(T) * D + 255) / 256);
     /*
@@ -513,4 +513,4 @@ void native_ple_postops_batch(float* key, float* hidden, const float* value, flo
     }
     launch_check();
 }
-} // namespace strata::kernels
+} // namespace guild::kernels

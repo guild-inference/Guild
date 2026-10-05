@@ -22,8 +22,8 @@
 // LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
-#include "strata/kernels/native_rope.hpp"
-#include "strata/kernels/mrope.hpp"
+#include "guild/kernels/native_rope.hpp"
+#include "guild/kernels/mrope.hpp"
 #include <cuda_runtime.h>
 #include <atomic>
 #include <cmath>
@@ -32,14 +32,14 @@
 #include <limits>
 #include <stdexcept>
 
-namespace strata::kernels {
+namespace guild::kernels {
 namespace {
 std::atomic<bool> enabled{false};
 bool overlaps(const void* a, size_t an, const void* b, size_t bn) {
     auto x = reinterpret_cast<uintptr_t>(a), y = reinterpret_cast<uintptr_t>(b);
     return x <= y ? y - x < an : x - y < bn;
 }
-// TAB (#280, STRATA_ROPE_TABLE=1): the angles from the session's float64 table.  The host launches <false> whenever
+// TAB (#280, GUILD_ROPE_TABLE=1): the angles from the session's float64 table.  The host launches <false> whenever
 // no table applies - the default - so the default kernel is 0.1.31's code exactly (the table read is not in it;
 // with it merely skipped at run time, the compiled default path changed its results).
 template <bool TAB>
@@ -91,10 +91,10 @@ bool same_scaling(const RopeScaling& a, const RopeScaling& b) {
            a.orig_ctx == b.orig_ctx && a.ext_factor == b.ext_factor && a.attn_factor == b.attn_factor &&
            a.beta_fast == b.beta_fast && a.beta_slow == b.beta_slow;
 }
-// opt-in: STRATA_ROPE_TABLE=1 (the table's angles differ from the fast-math ones in the last bits, so outputs move)
+// opt-in: GUILD_ROPE_TABLE=1 (the table's angles differ from the fast-math ones in the last bits, so outputs move)
 bool rope_table_enabled() {
     static const bool on = [] {
-        const char* e = std::getenv("STRATA_ROPE_TABLE");
+        const char* e = std::getenv("GUILD_ROPE_TABLE");
         return e != nullptr && e[0] == '1';
     }();
     return on;

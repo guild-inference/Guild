@@ -14,8 +14,8 @@ chunks interleaved with their windows), and a conversation's next turn continued
   7. F, A's history as a client sends it back without the reply's thinking, from slot 1's turn checkpoint: equal to
      F solo (which continues from the same checkpoint of the live chain)
 
-Exact comparisons need the same settings as batch_test.py (this script sets STRATA_IQ_MT_MIN=1):
-  python tools/batch_interleave_test.py --exe build/strata --config strata-<model>.json \\
+Exact comparisons need the same settings as batch_test.py (this script sets GUILD_IQ_MT_MIN=1):
+  python tools/batch_interleave_test.py --exe build/guild-generate --config guild-<model>.json \\
       --extra "--pcie-frac 0 --adapt-every 1000000 --no-prefill-borrow"
 Without --no-prefill-borrow the slots decoding during C's read see the expert cache without the slots C's prompt
 borrowed (those experts run on the CPU, which rounds differently): A's and B's text may then drift from solo.
@@ -69,7 +69,7 @@ def main():
     D = chat(body + "\nWhat are the three most important ideas in the text above?")
     E = chat("Describe the life cycle of a star like the Sun.")
     print(f"prompts: A {len(A)}, B {len(B)}, C {len(C)} tokens", flush=True)
-    eng = Engine(a.exe, cfg, 3, {"STRATA_IQ_MT_MIN": "1"}, a.extra.split())
+    eng = Engine(a.exe, cfg, 3, {"GUILD_IQ_MT_MIN": "1"}, a.extra.split())
     eng.pending = []
     out = eng.lines()
     ids = lambda v: ",".join(map(str, v))
@@ -227,7 +227,7 @@ def main():
     log = Path(eng.log_path).read_text(errors="replace")
     for l in log.splitlines():
         if "drafts accepted" in l:
-            print("  log:", l.split("strata serve: ")[-1][:160], flush=True)
+            print("  log:", l.split("guild serve: ")[-1][:160], flush=True)
     for key in ("gave back", "its turn checkpoint", "takes", "the prompt was read in", "gives way"):
         print(f"engine log '{key}': {log.count(key)} lines", flush=True)
     return 0 if ok else 2

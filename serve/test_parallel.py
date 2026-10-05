@@ -1,7 +1,7 @@
 """#465: "parallel": N - several requests decode together in the engine's batch slots (--batch N).
 
 A fake engine (a Python script speaking the engine's GEN / BGEN / BT / BDONE / BADM / BSTOP lines) runs behind the
-real StrataEngine and Service, so the server's side is tested without a GPU: requests up to N run at once, more
+real GuildEngine and Service, so the server's side is tested without a GPU: requests up to N run at once, more
 wait for a slot, /metrics shows the slots, each request's history row is its own, and a conversation's next turn
 goes back to the slot that holds it."""
 import json
@@ -15,7 +15,7 @@ from pathlib import Path
 from unittest import mock
 
 from serve.frontend import ChatTemplate
-from serve.server import ByteTokenizer, Service, StrataEngine, engine_args, parallel_args, serve
+from serve.server import ByteTokenizer, Service, GuildEngine, engine_args, parallel_args, serve
 
 # The fake engine: one token every STEP seconds per active slot (a "window" serves every active slot at once);
 # GEN (solo) streams T lines; BGEN reads the prompt (one T line, DONE), answers BADM and continues in the slot.
@@ -155,7 +155,7 @@ class ParallelArgs(unittest.TestCase):
 
 class PickSlot(unittest.TestCase):
     def engine(self, n):
-        e = StrataEngine("missing-executable", [], lazy=True)
+        e = GuildEngine("missing-executable", [], lazy=True)
         e.batch = n
         e.slot_order = list(range(n))
         e.slot_busy = [False] * n
@@ -190,12 +190,12 @@ class PickSlot(unittest.TestCase):
 
 
 class ParallelService(unittest.TestCase):
-    """The real StrataEngine and Service over HTTP, the fake engine behind them."""
+    """The real GuildEngine and Service over HTTP, the fake engine behind them."""
 
     def start(self, slots, fit=None, slot_cache=False):
         import serve.server as server
         self.tmp = tempfile.TemporaryDirectory()
-        script = Path(self.tmp.name) / "fake_strata.py"
+        script = Path(self.tmp.name) / "fake_guild.py"
         script.write_text(FAKE_BATCH, encoding="utf-8")
         self.log = Path(self.tmp.name) / "requests.log"
         real = server.subprocess.Popen
@@ -203,7 +203,7 @@ class ParallelService(unittest.TestCase):
         extra += ["--slotcache"] if slot_cache else []
         with mock.patch.object(server.subprocess, "Popen",
                                lambda cmd, **kw: real([sys.executable, str(script), *cmd[1:]], **kw)):
-            self.engine = StrataEngine("strata", extra)
+            self.engine = GuildEngine("guild", extra)
         tok = ByteTokenizer()
         self.svc = Service(self.engine, tok, ChatTemplate(Path(__file__).parent / "chat_template.jinja"))
         self.httpd = serve(self.svc, port=0)

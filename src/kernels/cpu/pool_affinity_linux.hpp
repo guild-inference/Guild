@@ -9,7 +9,7 @@
 #include <cstring>
 #include <vector>
 
-namespace strata::kernels::cpu::detail {
+namespace guild::kernels::cpu::detail {
 
 // CPU_ALLOC and the sized macros also handle kernels whose CPU mask exceeds CPU_SETSIZE.
 // Keep the native mask opaque: copy its bytes for storage and use CPU_*_S to inspect it.
@@ -65,5 +65,5 @@ inline int pin_thread_to_cpu(int core) {
     return pthread_setaffinity_np(pthread_self(), target.bytes, target.set);
 }
 
-}  // namespace strata::kernels::cpu::detail
+}  // namespace guild::kernels::cpu::detail
 #endif

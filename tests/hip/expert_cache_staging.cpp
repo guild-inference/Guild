@@ -1,9 +1,9 @@
-#include "strata/core/expert_cache.hpp"
+#include "guild/core/expert_cache.hpp"
 #include <cstdio>
 #include <vector>
 
 int main() {
-    strata::core::ExpertCache cache;
+    guild::core::ExpertCache cache;
     std::string err;
     auto check = [&](bool ok) {
         if (!ok) std::fprintf(stderr, "%s\n", err.c_str());

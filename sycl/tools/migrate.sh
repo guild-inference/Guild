@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# CUDA -> SYCL migration of the Strata engine with SYCLomatic (dpct), run inside strata-sycl-dev.
-#   sycl/migrate.sh [repo] [out]      repo defaults to the Strata_B70 checkout beside this dir
+# CUDA -> SYCL migration of the Guild engine with SYCLomatic (dpct), run with the host oneAPI toolchain.
+#   sycl/migrate.sh [repo] [out]      repo defaults to this checkout
 # Writes a compilation database first (there is no nvcc here, so CMake cannot make one), then migrates every
 # CUDA-touching source into <out> mirroring the tree. Files dpct leaves alone are not copied - the port's
 # CMake falls back to the original for those, so the diff against upstream stays the port itself.
 set -euo pipefail
-repo=${1:-/work/Strata_B70}
+repo=${1:-$(cd "$(dirname "$0")/../.." && pwd)}
 out=${2:-$repo/sycl}
 hdr=${CUDA_HEADERS:-/cuda-headers/include}
 source /opt/intel/oneapi/setvars.sh >/dev/null 2>&1 || true
@@ -26,7 +26,7 @@ db = []
 skip = {"src/prefill/moe_mmq.cu", "src/prefill/ggml_cuda_host.cu", "src/kernels/native_expert_parity.cpp"}
 for f in sorted(set(files) - skip):
     tool = "nvcc" if f.endswith(".cu") else "g++"
-    cmd = [tool, "-std=c++20", "-Iinclude", "-Ithird_party/ggml", "-I" + hdr, "-DSTRATA_VERSION=\"port\""]
+    cmd = [tool, "-std=c++20", "-Iinclude", "-Ithird_party/ggml", "-I" + hdr, "-DGUILD_VERSION=\"port\""]
     if tool == "nvcc": cmd += ["--cuda-gpu-arch=sm_80", "-x", "cuda"]
     cmd += ["-c", f, "-o", f + ".o"]
     db.append({"directory": repo, "file": os.path.join(repo, f), "arguments": cmd})

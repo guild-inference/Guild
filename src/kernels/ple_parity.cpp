@@ -10,10 +10,10 @@
 //      `ple_layer_xcheck.cpp`.  That file records EVERY intermediate (key, value, gate, gated, normalized,
 //      conv_out, result), so a mismatch can be attributed to a stage instead of guessed at - and the weights
 //      in it were checked to be the artifact's real ones before this test was written.
-#include "strata/kernels/ple.hpp"
-#include "strata/kernels/ngram.hpp"
-#include "strata/kernels/f16_bits.hpp"
-#include "strata/kernels/native_mmvq.hpp"
+#include "guild/kernels/ple.hpp"
+#include "guild/kernels/ngram.hpp"
+#include "guild/kernels/f16_bits.hpp"
+#include "guild/kernels/native_mmvq.hpp"
 #include "ple_oracle_vectors.inc"
 
 #include <cuda_runtime.h>
@@ -27,8 +27,8 @@
 #include <stdexcept>
 #include <vector>
 
-namespace k = strata::kernels;
-namespace o = strata::kernels::ple_oracle;
+namespace k = guild::kernels;
+namespace o = guild::kernels::ple_oracle;
 
 namespace {
 
@@ -251,8 +251,8 @@ int main(int argc, char** argv) {
     bool selftest = false;
     bool check_fixtures = false;
     std::string pack = "pack/full";
-    // --gguf, else $STRATA_PLE_GGUF, else the development layout (run from the engine root)
-    std::string gguf = std::getenv("STRATA_PLE_GGUF") ? std::getenv("STRATA_PLE_GGUF")
+    // --gguf, else $GUILD_PLE_GGUF, else the development layout (run from the engine root)
+    std::string gguf = std::getenv("GUILD_PLE_GGUF") ? std::getenv("GUILD_PLE_GGUF")
                                                       : "../../Q2_0/Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00002-of-00002.gguf";
     std::string in_bin = "bench/micro/ple_in.bin", out_bin = "bench/micro/ple_out.bin";
     for (int i = 1; i < argc; ++i) {

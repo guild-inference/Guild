@@ -1,7 +1,7 @@
-// prefill_fused_moe_test - #136: the fused int8 expert kernels of the prompt path (moe_fused.hpp, STRATA_PF_FUSED=1)
-// on random Strata Q2_0 expert blobs and random routing, against
+// prefill_fused_moe_test - #136: the fused int8 expert kernels of the prompt path (moe_fused.hpp, GUILD_PF_FUSED=1)
+// on random Guild Q2_0 expert blobs and random routing, against
 //   - a double-precision reference: the dequantized weights times the FP32 activations (gate/up, SwiGLU, down), and
-//   - the MMQ path in prefill.cpp's sequence (gather_strata_q2 into 16-expert groups, q8_1 of the slots' activations,
+//   - the MMQ path in prefill.cpp's sequence (gather_guild_q2 into 16-expert groups, q8_1 of the slots' activations,
 //     gate/up, SwiGLU, q8_1 of H, down).
 // Both round the activations and H to int8 per 32 values, differently, so this is not a bitwise test: the fused
 // path's error against the reference has to be comparable to MMQ's own (at most 1.5x its RMS and 2x its worst row).
@@ -9,8 +9,8 @@
 // tiles - an all-zero token, per-expert blobs at unrelated addresses, three launches of different expert ranges.
 // Part 2 (timing): one layer at a real chunk (2048 tokens, 512 experts, top 10) on both paths, with their agreement.
 // Exit 77 without a CUDA device of sm_80 or newer.
-#include "strata/prefill/moe_fused.hpp"
-#include "strata/prefill/moe_mmq.hpp"
+#include "guild/prefill/moe_fused.hpp"
+#include "guild/prefill/moe_mmq.hpp"
 
 #include "ggml.h"
 
@@ -29,8 +29,8 @@
 #include <vector>
 
 namespace {
-namespace mmq = strata::prefill::mmq;
-namespace fused = strata::prefill::fused;
+namespace mmq = guild::prefill::mmq;
+namespace fused = guild::prefill::fused;
 
 constexpr int N = 2560, FF = 640, K = 10, GROUP = 16, Q2 = 42;   // GGML_TYPE_Q2_0
 constexpr size_t BLOB = 1382400, O_D_CODES = (size_t) 1280 * 640, O_GU_SC = O_D_CODES + (size_t) 2560 * 160,
@@ -49,7 +49,7 @@ struct Dev {
     template <typename T> T* as() const { return (T*) p; }
 };
 
-// a Strata Q2_0 blob: random codes, scales in [0.004, 0.03] (a 2-bit expert's range)
+// a Guild Q2_0 blob: random codes, scales in [0.004, 0.03] (a 2-bit expert's range)
 std::vector<uint8_t> make_blob(std::mt19937& rng) {
     std::vector<uint8_t> b(BLOB);
     std::uniform_int_distribution<int> byte(0, 255);
@@ -155,7 +155,7 @@ void run_mmq(mmq::Context& ctx, MmqBufs& b, const Routing& r, const float* x_dev
     mmq::quantize(x_dev, src_dev, b.xq.p, Q2, N, N, rows, s);
     for (size_t j = 0; j < n; ++j) {
         const size_t q = j % GROUP;
-        mmq::gather_strata_q2(blob[(size_t) order[j]], b.grp_gu.as<uint8_t>() + q * gub, b.grp_d.as<uint8_t>() + q * db,
+        mmq::gather_guild_q2(blob[(size_t) order[j]], b.grp_gu.as<uint8_t>() + q * gub, b.grp_d.as<uint8_t>() + q * db,
                               s);
         if (q + 1 < GROUP && j + 1 < n) continue;
         const size_t j0 = j - q, g = j0 / GROUP;

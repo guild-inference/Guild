@@ -1,4 +1,4 @@
-// prefill_fused_iq_test - #136: the fused int8 expert kernels for the native packs (moe_fused_iq.hpp, STRATA_PF_FUSED=1)
+// prefill_fused_iq_test - #136: the fused int8 expert kernels for the native packs (moe_fused_iq.hpp, GUILD_PF_FUSED=1)
 // on random native expert blobs ([gate rows | up rows | down rows], GGUF blocks) and random routing, per format pair,
 // against
 //   - a double-precision reference: the weights dequantized by ggml's own to_float, times the FP32 activations
@@ -14,8 +14,8 @@
 // top 10) on both paths and on MMQ's products alone (no gathers), for the IQ2_XS, IQ3_XXS and IQ3_S packs' most
 // common layers, with the grouping checked and a sample of rows against the reference.  --no-ref, --no-timing,
 // --only=NAME, --chunks=A,B.  Exit 77 without a CUDA device of sm_80 or newer.
-#include "strata/prefill/moe_fused_iq.hpp"
-#include "strata/prefill/moe_mmq.hpp"
+#include "guild/prefill/moe_fused_iq.hpp"
+#include "guild/prefill/moe_mmq.hpp"
 
 #include "ggml.h"
 
@@ -35,8 +35,8 @@
 #include <vector>
 
 namespace {
-namespace mmq = strata::prefill::mmq;
-namespace fused = strata::prefill::fused;
+namespace mmq = guild::prefill::mmq;
+namespace fused = guild::prefill::fused;
 
 constexpr int N = 2560, FF = 640, K = 10, GROUP = 16;
 
@@ -579,9 +579,9 @@ void timing_part(const Pair& p, int T, cudaStream_t s) {
 int main(int argc, char** argv) {
     try {
 #ifdef _WIN32
-        _putenv_s("STRATA_PF_FUSED", "1");
+        _putenv_s("GUILD_PF_FUSED", "1");
 #else
-        setenv("STRATA_PF_FUSED", "1", 1);
+        setenv("GUILD_PF_FUSED", "1", 1);
 #endif
         int n = 0;
         if (cudaGetDeviceCount(&n) != cudaSuccess || n == 0) { std::printf("no CUDA device: skipped\n"); return 77; }

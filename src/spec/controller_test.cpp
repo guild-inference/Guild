@@ -1,9 +1,9 @@
 // src/spec/controller_test.cpp - plan v0.3 P6: the speculation controller's decisions (no model, no GPU).
-#include "strata/spec/controller.hpp"
+#include "guild/spec/controller.hpp"
 
 #include <cstdio>
 
-using namespace strata::spec;
+using namespace guild::spec;
 
 namespace {
 int g_fail = 0;

@@ -18,9 +18,9 @@ from serve.server import Detokenizer  # noqa: E402
 
 
 def find_tokenizer():
-    cands = [os.environ.get("STRATA_TOKENIZER", "")]
+    cands = [os.environ.get("GUILD_TOKENIZER", "")]
     cands += [str(p) for p in ROOT.glob("packs/*/tokenizer")] + [str(p) for p in ROOT.glob("pack/*/tokenizer")]
-    cands += [r"C:\Users\AI-Server\Desktop\Strata\Public\Engine\pack\full\tokenizer"]
+    cands += [r"C:\Users\AI-Server\Desktop\Guild\Public\Engine\pack\full\tokenizer"]
     for c in cands:
         if c and (Path(c) / "vocab.json").exists():
             return Path(c)
@@ -47,7 +47,7 @@ class Detok(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         import json
-        import strata_tokenizer as ST
+        import guild_tokenizer as ST
         t = find_tokenizer()
         vocab = json.loads((t / "vocab.json").read_text(encoding="utf-8"))
         toks = [None] * len(vocab)
@@ -115,7 +115,7 @@ def real_tokenizer():
             _REAL.append(None)
         else:
             import json
-            import strata_tokenizer as ST
+            import guild_tokenizer as ST
             vocab = json.loads((t / "vocab.json").read_text(encoding="utf-8"))
             toks = [None] * len(vocab)
             for s, i in vocab.items():
@@ -163,7 +163,7 @@ def encode_with(tok, text, parse_special, heap_min):
 def synthetic_tokenizer(seed=268, n_merges=1500):
     """A small byte-level BPE vocabulary with merges learned (randomly) from random_text, and a few specials of
     both kinds - so the parity test runs without a pack."""
-    import strata_tokenizer as ST
+    import guild_tokenizer as ST
     rng = random.Random(seed)
     tokens = sorted(set(ST.BYTE_TO_UNICODE.values()))
     have, merges = set(tokens), []
@@ -204,7 +204,7 @@ class HeapBpe(unittest.TestCase):
     def test_words_directly(self):
         tok = synthetic_tokenizer()
         rng = random.Random(1)
-        import strata_tokenizer as ST
+        import guild_tokenizer as ST
         for _ in range(300):
             for piece in ST.regex.compile(ST.QWEN35_PATTERN).findall(random_text(rng, 8)):
                 word = "".join(ST.BYTE_TO_UNICODE[b] for b in piece.encode("utf-8"))

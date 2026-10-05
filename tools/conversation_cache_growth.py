@@ -17,7 +17,7 @@ from conversation_cache_parity import STATE_KEYS, load_tokenizer, require, state
 from conversation_cache_disabled import SETTINGS, common_args
 from conversation_cache_soak import answer_text
 from serve.frontend import ChatTemplate
-from serve.server import StrataEngine, child_env
+from serve.server import GuildEngine, child_env
 
 NAMES = ['A', 'B-0', 'A-grow-0', 'B-1', 'A-grow-1', 'B-2', 'A-grow-2',
          'B-rewind', 'A-rewind', 'B-branch', 'A-branch', 'B-final']
@@ -97,20 +97,20 @@ def main():
             '<|im_start|>assistant\n<think>\n\n</think>\n\n')
     args = common_args(cfg, a.spec) + ['--conversation-cache-mib', str(a.cache_mib), '--conversation-cache-slots', '4']
     env = child_env(cfg)
-    env['STRATA_STATE_HASH'] = '1'
-    env['STRATA_SNAPSHOT_VERIFY'] = '1'
-    env['STRATA_MTP_BATCH'] = '1'
+    env['GUILD_STATE_HASH'] = '1'
+    env['GUILD_SNAPSHOT_VERIFY'] = '1'
+    env['GUILD_MTP_BATCH'] = '1'
     a.output.mkdir(mode=0o700, parents=False, exist_ok=False)
     results = {'requests': [], 'arms': [], 'spec': a.spec, 'paragraphs': a.paragraphs, 'cache_mib': a.cache_mib}
     for name in ('full', 'incremental'):
         current_env = dict(env)
         if name == 'full':
-            current_env['STRATA_SNAPSHOT_FULL_CAPTURE'] = '1'
+            current_env['GUILD_SNAPSHOT_FULL_CAPTURE'] = '1'
         else:
-            current_env.pop('STRATA_SNAPSHOT_FULL_CAPTURE', None)
+            current_env.pop('GUILD_SNAPSHOT_FULL_CAPTURE', None)
         print('START', name, flush=True)
         log = a.output / (name + '.log')
-        engine = StrataEngine(str(a.engine.resolve()), args, cwd=cfg.get('cwd'), log=str(log), env=current_env)
+        engine = GuildEngine(str(a.engine.resolve()), args, cwd=cfg.get('cwd'), log=str(log), env=current_env)
         arm = {'name': name, 'args': args, 'info': dict(engine.info), 'records': []}
         with a.engine.open('rb') as source:
             arm['exe_sha256'] = hashlib.file_digest(source, 'sha256').hexdigest()

@@ -2,11 +2,11 @@
 //
 //     build/mmvq_multi_parity
 //
-// WHY IT EXISTS.  `include/strata/kernels/native_mmvq.hpp` says of `native_mmvq_set_multi_exact`:
+// WHY IT EXISTS.  `include/guild/kernels/native_mmvq.hpp` says of `native_mmvq_set_multi_exact`:
 //
 //     "true (default): the ncols == 1 layout, every column bitwise equal to a single-column call"
 //
-// and `include/strata/core/verify.hpp` counts "multi-column MMVQ in exact mode" among the reasons the verify window
+// and `include/guild/core/verify.hpp` counts "multi-column MMVQ in exact mode" among the reasons the verify window
 // produces what greedy decode would, bit for bit.  Nothing tested that sentence: `iq_parity` calls `native_mmvq`
 // with two columns and compares against a float64 reference at 2e-2, which cannot see a difference between one
 // column and T columns.
@@ -28,8 +28,8 @@
 // reported as that coincidence rather than skipped.  The control needs a row long enough for the two layouts to
 // group blocks differently: IQ4_XS takes 16 blocks per iteration with 4 warps and 8 with 2, so at n_in = 2048 (8
 // blocks of 256) each thread holds at most one block in both layouts and they coincide; its case uses n_in = 4096.
-#include "strata/kernels/iq_kernels.hpp"
-#include "strata/kernels/native_mmvq.hpp"
+#include "guild/kernels/iq_kernels.hpp"
+#include "guild/kernels/native_mmvq.hpp"
 
 #include <cuda_runtime.h>
 
@@ -85,11 +85,11 @@ bool ck(cudaError_t e, const char* what) {
 // outputs that are finite in both paths.
 long long compare(const Case& c, int T, cudaStream_t s, long long& nonfinite, long long& diff_finite, bool& ran) {
     ran = false;
-    if (!strata::kernels::native_mmvq_supported(c.type)) return -1;
+    if (!guild::kernels::native_mmvq_supported(c.type)) return -1;
 
-    const std::size_t wbytes = strata::kernels::native_mmvq_weight_bytes(c.type, c.n_in, c.n_out);
-    const std::size_t qcol = strata::kernels::native_q8_1_bytes(c.n_in, 1);   // Q8_1 bytes of ONE column
-    const std::size_t qall = strata::kernels::native_q8_1_bytes(c.n_in, T);
+    const std::size_t wbytes = guild::kernels::native_mmvq_weight_bytes(c.type, c.n_in, c.n_out);
+    const std::size_t qcol = guild::kernels::native_q8_1_bytes(c.n_in, 1);   // Q8_1 bytes of ONE column
+    const std::size_t qall = guild::kernels::native_q8_1_bytes(c.n_in, T);
     if (qall != qcol * (std::size_t) T) {
         std::printf("%-12s T=%d: the Q8_1 bytes of T columns (%zu) are not T times those of one (%zu): the test "
                     "assumes contiguous columns and they are not\n", c.name, T, qall, qcol);
@@ -130,13 +130,13 @@ long long compare(const Case& c, int T, cudaStream_t s, long long& nonfinite, lo
         return -1;
 
     // ONE quantization, shared by both paths: the quantization is not under test
-    strata::kernels::quantize_q8_1_rows(dx, T, c.n_in, xq, s);
+    guild::kernels::quantize_q8_1_rows(dx, T, c.n_in, xq, s);
     if (!ck(cudaStreamSynchronize(s), "quantize")) return -1;
 
     try {
-        strata::kernels::native_mmvq(c.type, dw, xq, dmulti, c.n_in, c.n_out, T, s);
+        guild::kernels::native_mmvq(c.type, dw, xq, dmulti, c.n_in, c.n_out, T, s);
         for (int j = 0; j < T; ++j)
-            strata::kernels::native_mmvq(c.type, dw, (const uint8_t*) xq + (std::size_t) j * qcol,
+            guild::kernels::native_mmvq(c.type, dw, (const uint8_t*) xq + (std::size_t) j * qcol,
                                          dsingle + (std::size_t) j * c.n_out, c.n_in, c.n_out, 1, s);
     } catch (const std::exception& e) {
         std::printf("%-12s T=%d: %s\n", c.name, T, e.what());
@@ -175,8 +175,8 @@ struct Totals {
 };
 
 int sweep(bool exact, cudaStream_t s, Totals& t) {
-    strata::kernels::native_mmvq_set_multi_exact(exact);
-    if (strata::kernels::native_mmvq_multi_exact() != exact) {
+    guild::kernels::native_mmvq_set_multi_exact(exact);
+    if (guild::kernels::native_mmvq_multi_exact() != exact) {
         std::printf("native_mmvq_multi_exact() does not reflect what was set\n");
         return 1;
     }
@@ -217,7 +217,7 @@ int main() {
     Totals on, off;
     const int bad = sweep(true, s, on);
     const int bad_off = sweep(false, s, off);
-    strata::kernels::native_mmvq_set_multi_exact(true);   // back to the default
+    guild::kernels::native_mmvq_set_multi_exact(true);   // back to the default
 
     std::printf("\nmulti_exact on:   %lld outputs compared, %lld differ bitwise, %lld non-finite\n",
                 on.checked, on.diff, on.nonfinite);
@@ -238,11 +238,11 @@ int main() {
     }
     // THE NEGATIVE CONTROL, asserted where it can see something: past T = 4 the generic layout is a different one,
     // so if it still finds no difference the comparison cannot tell the layouts apart and the pass proves nothing.
-#if defined(STRATA_HIP_GFX906)
+#if defined(GUILD_HIP_GFX906)
     // gfx906: the wave64 layout (one wavefront per row) is the same kernel for every column count, so multi_exact
     // has nothing to switch and the control cannot see a difference.  The control with power is the CUDA layout:
-    // ctest's mmvq_multi_parity_cuda_layout runs this with STRATA_MMVQ_WAVE=0.
-    if (off.powerless_cases != 0 && !(std::getenv("STRATA_MMVQ_WAVE") && std::string(std::getenv("STRATA_MMVQ_WAVE")) == "0")) {
+    // ctest's mmvq_multi_parity_cuda_layout runs this with GUILD_MMVQ_WAVE=0.
+    if (off.powerless_cases != 0 && !(std::getenv("GUILD_MMVQ_WAVE") && std::string(std::getenv("GUILD_MMVQ_WAVE")) == "0")) {
         std::printf("\nmmvq_multi_parity: ok (gfx906 wave64 layout: every column count runs the same exact kernel, "
                     "so the negative control has no other layout to find; mmvq_multi_parity_cuda_layout checks it).\n");
         return 0;

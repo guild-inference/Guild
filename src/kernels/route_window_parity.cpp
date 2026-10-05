@@ -4,8 +4,8 @@
 // n-token top-k.  Speculative decoding is exact only if a token's route does not depend on how many tokens share
 // its window, so both batched kernels must equal their one-token forms exactly - this checks that on random data
 // shaped like the router (2560 -> 256, top-10) and like the shared-expert gate (2560 -> 1).
-#include "strata/kernels/bf16_gemv.hpp"
-#include "strata/kernels/router_top10.hpp"
+#include "guild/kernels/bf16_gemv.hpp"
+#include "guild/kernels/router_top10.hpp"
 
 #include <cuda_runtime.h>
 
@@ -39,8 +39,8 @@ int main() {
             ck(cudaMemcpy(dw, w.data(), w.size() * 2, cudaMemcpyHostToDevice), "up w");
             ck(cudaMemcpy(dx, x.data(), x.size() * 4, cudaMemcpyHostToDevice), "up x");
             for (int t = 0; t < T; ++t)
-                strata::kernels::bf16_gemv_fp32_mmvf(dx + (size_t) t * N, dw, dy1 + (size_t) t * n_out, N, n_out, nullptr);
-            strata::kernels::bf16_gemv_fp32_mmvf_cols(dx, dw, dyn, N, n_out, T, nullptr);
+                guild::kernels::bf16_gemv_fp32_mmvf(dx + (size_t) t * N, dw, dy1 + (size_t) t * n_out, N, n_out, nullptr);
+            guild::kernels::bf16_gemv_fp32_mmvf_cols(dx, dw, dyn, N, n_out, T, nullptr);
             ck(cudaDeviceSynchronize(), "sync");
             std::vector<float> y1((size_t) T * n_out), yn((size_t) T * n_out);
             ck(cudaMemcpy(y1.data(), dy1, y1.size() * 4, cudaMemcpyDeviceToHost), "down 1");
@@ -53,8 +53,8 @@ int main() {
                 ck(cudaMalloc(&i1, (size_t) T * K * 4), "i1"); ck(cudaMalloc(&in_, (size_t) T * K * 4), "in");
                 ck(cudaMalloc(&w1, (size_t) T * K * 4), "w1"); ck(cudaMalloc(&wn, (size_t) T * K * 4), "wn");
                 for (int t = 0; t < T; ++t)
-                    strata::kernels::router_top10(dy1 + (size_t) t * E, 1, E, K, i1 + t * K, w1 + t * K, nullptr);
-                strata::kernels::router_top10(dy1, T, E, K, in_, wn, nullptr);
+                    guild::kernels::router_top10(dy1 + (size_t) t * E, 1, E, K, i1 + t * K, w1 + t * K, nullptr);
+                guild::kernels::router_top10(dy1, T, E, K, in_, wn, nullptr);
                 ck(cudaDeviceSynchronize(), "sync top");
                 std::vector<int> a((size_t) T * K), b((size_t) T * K);
                 std::vector<float> fa((size_t) T * K), fb((size_t) T * K);

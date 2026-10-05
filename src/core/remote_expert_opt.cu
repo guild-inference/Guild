@@ -1,17 +1,17 @@
-#include "strata/core/remote_expert_opt.hpp"
-#include "strata/core/remote_experts.hpp"
-#include "strata/core/on_device.hpp"
-#include "strata/kernels/cpu/expert_layout.hpp"
-#include "strata/kernels/elementwise.hpp"
-#include "strata/kernels/verify_kernels.hpp"
+#include "guild/core/remote_expert_opt.hpp"
+#include "guild/core/remote_experts.hpp"
+#include "guild/core/on_device.hpp"
+#include "guild/kernels/cpu/expert_layout.hpp"
+#include "guild/kernels/elementwise.hpp"
+#include "guild/kernels/verify_kernels.hpp"
 
 #include <algorithm>
 #include <cstring>
 
-namespace strata::core {
+namespace guild::core {
 namespace {
-constexpr int64_t H = strata::kernels::cpu::H;
-constexpr int K = 10, MAXT = strata::kernels::cpu::MAXT, CAP = MAXT * K;
+constexpr int64_t H = guild::kernels::cpu::H;
+constexpr int K = 10, MAXT = guild::kernels::cpu::MAXT, CAP = MAXT * K;
 struct ReduceMeta { int32_t row[CAP]; float weight[CAP]; };
 
 bool check(cudaError_t status, std::string& err) {
@@ -121,10 +121,10 @@ void RemoteExpertOpt::combine(float* dst, float* scratch, int token_begin, int t
     const float* sum = m_sum_ + token_begin * H;
     if (skip) {
         // An all-primary device-planned group bypasses the host: ignore its stale sum.
-        strata::kernels::copy_or_zero_from_mapped(scratch, sum, tokens * H, skip, ring, stream);
+        guild::kernels::copy_or_zero_from_mapped(scratch, sum, tokens * H, skip, ring, stream);
         sum = scratch;
     }
-    strata::kernels::add_inplace(dst, sum, tokens * H, stream);
+    guild::kernels::add_inplace(dst, sum, tokens * H, stream);
 }
 
 bool RemoteExpertOpt::owns(int64_t layer, int32_t expert) const {
@@ -137,7 +137,7 @@ bool RemoteExpertOpt::adapt(const std::vector<float>& usage, const std::vector<i
                      const std::vector<std::pair<int32_t, int32_t>>& pending, int max_swaps,
                      ExpertSource& source) {
     if (max_swaps <= 0) return true;
-    const auto& lay = strata::kernels::cpu::expert_layout();
+    const auto& lay = guild::kernels::cpu::expert_layout();
     std::vector<uint8_t> resident(primary.size(), 0);
     for (size_t i = 0; i < primary.size(); ++i) resident[i] = primary[i] >= 0;
     for (const auto& [i, slot] : pending) resident[(size_t) i] = 1;
@@ -191,4 +191,4 @@ bool RemoteExpertOpt::adapt(const std::vector<float>& usage, const std::vector<i
     }
     return true;
 }
-} // namespace strata::core
+} // namespace guild::core

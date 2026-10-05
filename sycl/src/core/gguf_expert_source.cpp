@@ -1,6 +1,6 @@
 // src/core/gguf_expert_source.cpp - see the header. Plain C++, no device code.
-#include "strata/core/gguf_expert_source.hpp"
-#include "strata/kernels/cpu/expert_layout.hpp"
+#include "guild/core/gguf_expert_source.hpp"
+#include "guild/kernels/cpu/expert_layout.hpp"
 
 #include <cstring>
 #include <fcntl.h>
@@ -10,7 +10,7 @@
 #include <thread>
 #include <atomic>
 
-namespace strata::core {
+namespace guild::core {
 
 namespace {
 constexpr size_t kRing = 512;   // blobs alive at once: the prompt path holds a layer's worth of streamed experts
@@ -28,7 +28,7 @@ void GgufExpertSource::close() {
 
 bool GgufExpertSource::open(const std::string& shard1, int64_t n_layers, int64_t n_expert, std::string& err) {
     close();
-    const auto& lay = strata::kernels::cpu::expert_layout();
+    const auto& lay = guild::kernels::cpu::expert_layout();
     if (!lay.native || lay.gguf_off.size() < (size_t) (3 * n_layers)) {
         err = "--stream-experts needs a native (IQ) pack whose native_experts.txt carries the GGUF tensor offsets";
         return false;
@@ -60,7 +60,7 @@ bool GgufExpertSource::open(const std::string& shard1, int64_t n_layers, int64_t
 int GgufExpertSource::fd_of(int64_t layer, int role, std::string& err) {
     const size_t i = (size_t) (3 * layer + role);
     if (layer_fd_[i] >= 0) return fds_[(size_t) layer_fd_[i]];
-    const auto& lay = strata::kernels::cpu::expert_layout();
+    const auto& lay = guild::kernels::cpu::expert_layout();
     std::string name = shard_;
     if (lay.gguf_file.size() > i && !lay.gguf_file[i].empty()) name = dir_ + lay.gguf_file[i];
     for (size_t k = 0; k < names_.size(); ++k)
@@ -79,7 +79,7 @@ const uint8_t* GgufExpertSource::blob(int64_t layer, int64_t expert) {
         const int64_t o = mirror_off_[(size_t) (layer * n_expert_ + expert)];
         if (o >= 0) return mirror_ + o;
     }
-    const auto& lay = strata::kernels::cpu::expert_layout();
+    const auto& lay = guild::kernels::cpu::expert_layout();
     const auto& fm = lay.fmt[(size_t) layer];
     const uint64_t blob = lay.bytes[(size_t) layer];
     // the arena loader's gather, for one expert: [gate | up | down] from the three tensors
@@ -114,7 +114,7 @@ const uint8_t* GgufExpertSource::blob(int64_t layer, int64_t expert) {
 
 int64_t GgufExpertSource::mirror(const std::vector<std::pair<int64_t, int64_t>>& pairs, uint64_t cap, int threads,
                                  std::string& err) {
-    const auto& lay = strata::kernels::cpu::expert_layout();
+    const auto& lay = guild::kernels::cpu::expert_layout();
     std::vector<std::pair<int64_t, int64_t>> take;
     std::vector<uint64_t> offs;
     uint64_t total = 0;
@@ -183,7 +183,7 @@ const uint8_t* GgufExpertSource::device_alias(int64_t layer, int64_t expert) con
 
 bool GgufExpertSource::read_into(int64_t layer, int64_t expert, uint8_t* dst, size_t bytes) const {
     if (layer < 0 || layer >= n_layers_ || expert < 0 || expert >= n_expert_ || dst == nullptr) return false;
-    const auto& lay = strata::kernels::cpu::expert_layout();
+    const auto& lay = guild::kernels::cpu::expert_layout();
     const auto& fm = lay.fmt[(size_t) layer];
     const uint64_t blob = lay.bytes[(size_t) layer];
     if (bytes < blob) return false;
@@ -202,4 +202,4 @@ bool GgufExpertSource::read_into(int64_t layer, int64_t expert, uint8_t* dst, si
     return true;
 }
 
-}  // namespace strata::core
+}  // namespace guild::core

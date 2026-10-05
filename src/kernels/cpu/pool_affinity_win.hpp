@@ -10,7 +10,7 @@
 #include <cstddef>
 #include <vector>
 
-namespace strata::kernels::cpu::detail {
+namespace guild::kernels::cpu::detail {
 
 // Hard affinity is only for pool-owned threads, which terminate with the pool. A caller's implicit
 // all-group affinity cannot be restored from PreviousGroupAffinity, so the host uses CPU Sets below.
@@ -20,7 +20,7 @@ inline bool set_thread_group_affinity(int core, int worker) {
     target.Group = (WORD) (core / 64);
     target.Mask = KAFFINITY(1) << (core & 63);
     if (SetThreadGroupAffinity(GetCurrentThread(), &target, nullptr)) return true;
-    std::fprintf(stderr, "strata cpu pool: SetThreadGroupAffinity for worker %d (group %u, mask 0x%llx) failed: %lu; previous affinity kept\n",
+    std::fprintf(stderr, "guild cpu pool: SetThreadGroupAffinity for worker %d (group %u, mask 0x%llx) failed: %lu; previous affinity kept\n",
                  worker, (unsigned) target.Group, (unsigned long long) target.Mask, (unsigned long) GetLastError());
     return false;
 }
@@ -60,5 +60,5 @@ inline bool cpu_set_for_core(int core, ULONG& id) {
     return false;
 }
 
-}  // namespace strata::kernels::cpu::detail
+}  // namespace guild::kernels::cpu::detail
 #endif

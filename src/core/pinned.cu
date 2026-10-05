@@ -1,6 +1,6 @@
 // src/core/pinned.cu - P2.S1: the pinned host arena and the parallel expert load.
-#include "strata/core/pinned.hpp"
-#include "strata/platform/memory.hpp"
+#include "guild/core/pinned.hpp"
+#include "guild/platform/memory.hpp"
 
 #include <cuda_runtime.h>
 
@@ -16,9 +16,9 @@
 // Loader fix: `fseek`/`ftell` are 32-bit on Windows by default (and the pack is 42.9 GB), and the 64-bit
 // spelling is not the same on the two platforms the engine builds for.
 #ifdef _WIN32
-#define STRATA_FSEEK64(f, o) _fseeki64((f), (long long) (o), SEEK_SET)
+#define GUILD_FSEEK64(f, o) _fseeki64((f), (long long) (o), SEEK_SET)
 #else
-#define STRATA_FSEEK64(f, o) fseeko((f), (off_t) (o), SEEK_SET)
+#define GUILD_FSEEK64(f, o) fseeko((f), (off_t) (o), SEEK_SET)
 #endif
 
 #ifdef _WIN32
@@ -34,12 +34,12 @@
 #endif
 #endif
 
-namespace strata::core {
+namespace guild::core {
 
 namespace {
 
 constexpr uint64_t kSharedArenaHeaderBytes = 4096;
-constexpr char kSharedArenaMagic[16] = "STRATA-ARENA-V1";
+constexpr char kSharedArenaMagic[16] = "GUILD-ARENA-V1";
 
 struct SharedArenaHeader {
     char magic[16];
@@ -84,8 +84,8 @@ void* reserve(uint64_t bytes, PageBacking& got, std::string& note, const std::st
     // MEM_LARGE_PAGES needs SeLockMemoryPrivilege; a normal account does not have it and VirtualAlloc then
     // fails with ERROR_PRIVILEGE_NOT_HELD.  That is the EXPECTED outcome on a desktop, not an error.
     SIZE_T large = GetLargePageMinimum();
-    // A/B switch: STRATA_NO_LARGEPAGES=1 skips the large-page attempt, same run, same boot.
-    if (large > 0 && std::getenv("STRATA_NO_LARGEPAGES") == nullptr) {
+    // A/B switch: GUILD_NO_LARGEPAGES=1 skips the large-page attempt, same run, same boot.
+    if (large > 0 && std::getenv("GUILD_NO_LARGEPAGES") == nullptr) {
         // MEM_LARGE_PAGES requires the allocation size to be an exact multiple of the large page size -
         // anything else is ERROR_INVALID_PARAMETER (87), which reads like a privilege problem but is not.
         // Round up: the slack is under 2 MB and the tail stays unused.
@@ -102,8 +102,8 @@ void* reserve(uint64_t bytes, PageBacking& got, std::string& note, const std::st
         note = "large pages refused for " + std::to_string((unsigned long long) lbytes) + " B (GetLargePageMinimum=" +
                std::to_string((unsigned long long) large) + ", VirtualAlloc error " +
                std::to_string((unsigned long long) GetLastError()) + "); using 4 KB pages";
-    } else if (std::getenv("STRATA_NO_LARGEPAGES") != nullptr) {
-        note = "large pages skipped (STRATA_NO_LARGEPAGES); using 4 KB pages";
+    } else if (std::getenv("GUILD_NO_LARGEPAGES") != nullptr) {
+        note = "large pages skipped (GUILD_NO_LARGEPAGES); using 4 KB pages";
     } else {
         note = "this system has no large-page minimum; using 4 KB pages";
     }
@@ -199,10 +199,10 @@ void* reserve(uint64_t bytes, PageBacking& got, std::string& note, const std::st
         return (uint8_t*) map + kSharedArenaHeaderBytes;
     }
 
-    // STRATA_NO_LARGEPAGES=1 is the same-run A/B switch the Windows branch documents; honor it
+    // GUILD_NO_LARGEPAGES=1 is the same-run A/B switch the Windows branch documents; honor it
     // here too, so the large-page path can be compared without changing the pool or rebooting.
-    if (std::getenv("STRATA_NO_LARGEPAGES") != nullptr) {
-        note = "large pages skipped (STRATA_NO_LARGEPAGES); using 4 KB pages";
+    if (std::getenv("GUILD_NO_LARGEPAGES") != nullptr) {
+        note = "large pages skipped (GUILD_NO_LARGEPAGES); using 4 KB pages";
     } else {
         void* p = mmap(nullptr, bytes, PROT_READ | PROT_WRITE,
                        MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB | MAP_HUGE_2MB, -1, 0);
@@ -238,7 +238,7 @@ void* reserve(uint64_t bytes, PageBacking& got, std::string& note, const std::st
     const uintptr_t end = aligned + bytes, raw_end = start + padded;
     if (raw_end > end) munmap((void*) end, raw_end - end);
     void* p = (void*) aligned;
-    if (std::getenv("STRATA_NO_LARGEPAGES") == nullptr && madvise(p, bytes, MADV_HUGEPAGE) == 0) {
+    if (std::getenv("GUILD_NO_LARGEPAGES") == nullptr && madvise(p, bytes, MADV_HUGEPAGE) == 0) {
         const std::string four_k = "; using 4 KB pages";
         if (note.size() >= four_k.size() && note.compare(note.size() - four_k.size(), four_k.size(), four_k) == 0)
             note.resize(note.size() - four_k.size());
@@ -274,7 +274,7 @@ bool clear_error() { (void) cudaGetLastError(); return true; }
 }  // namespace
 
 int arena_pin_cap_gib() {
-    const char* e = std::getenv("STRATA_ARENA_PIN_GIB");
+    const char* e = std::getenv("GUILD_ARENA_PIN_GIB");
     if (e == nullptr || *e == '\0') return -1;
     if (std::string(e) == "auto") return -2;   // #243: the Windows shared-memory budget sets the sliced pin's cap
     const int v = std::atoi(e);
@@ -296,7 +296,7 @@ bool sliced_pin_limit(uint64_t& limit, std::string& why) {
     uint64_t budget = 0, usage = 0;
     std::string err = "no CUDA device properties";
     if (cudaGetDevice(&dev) == cudaSuccess && cudaGetDeviceProperties(&p, dev) == cudaSuccess &&
-        strata::platform::gpu_shared_memory_budget(p.luid, budget, usage, err)) {
+        guild::platform::gpu_shared_memory_budget(p.luid, budget, usage, err)) {
         limit = budget > usage + 4 * GiB ? budget - usage - 4 * GiB : 0;
         std::snprintf(buf, sizeof buf, "the GPU's shared-memory budget %.1f GiB - %.1f GiB in use - 4 GiB",
                       (double) budget / GiB, (double) usage / GiB);
@@ -304,7 +304,7 @@ bool sliced_pin_limit(uint64_t& limit, std::string& why) {
         return true;
     }
     (void) cudaGetLastError();
-    const uint64_t ram = strata::platform::total_physical_memory();
+    const uint64_t ram = guild::platform::total_physical_memory();
     if (ram == 0) return false;
     limit = ram / 2 > 8 * GiB ? ram / 2 - 8 * GiB : 0;
     std::snprintf(buf, sizeof buf, "%s: RAM/2 - 8 GiB of %.1f GiB", err.c_str(), (double) ram / GiB);
@@ -341,13 +341,13 @@ PinnedArena::PinnedArena(uint64_t bytes, const std::vector<uint64_t>& bounds,
     // Register with CUDA BEFORE any page is touched: cudaHostRegister pins what is resident now, and a region
     // that has already been faulted in page by page is far more expensive to register and may fail outright.
     if (base) {
-        // #243: STRATA_ARENA_PIN_GIB=N caps the registration from the start where the caller set no cap
+        // #243: GUILD_ARENA_PIN_GIB=N caps the registration from the start where the caller set no cap
         const int env_gib = arena_pin_cap_gib();
         uint64_t cap = max_pinned_bytes;
         std::string cap_why = "by the engine (multi-GPU under WDDM, or remote experts)";
         if (cap == 0 && env_gib > 0) {
             cap = (uint64_t) env_gib << 30;
-            cap_why = "by STRATA_ARENA_PIN_GIB";
+            cap_why = "by GUILD_ARENA_PIN_GIB";
         }
         const bool capped = cap > 0 && cap < bytes && bounds.size() >= 2;
         const cudaError_t e = capped ? cudaSuccess :
@@ -363,7 +363,7 @@ PinnedArena::PinnedArena(uint64_t bytes, const std::vector<uint64_t>& bounds,
             uint64_t limit = cap;
             std::string limit_why;
 #ifdef _WIN32
-            // #243 (opt-in, STRATA_ARENA_PIN_GIB=auto): not up to the driver's refusal but below the shared-memory
+            // #243 (opt-in, GUILD_ARENA_PIN_GIB=auto): not up to the driver's refusal but below the shared-memory
             // budget, for a PC where the full sliced pin leaves WDDM refusing later allocations.  Not the default: a
             // 64 GB PC pins 30 GiB past that budget without trouble, and capping it at 26 cost ~20% prompt speed.
             if (!capped && env_gib == -2) limited = sliced_pin_limit(limit, limit_why);
@@ -384,14 +384,14 @@ PinnedArena::PinnedArena(uint64_t bytes, const std::vector<uint64_t>& bounds,
             note = (capped ? "cudaHostRegister limited to " + std::to_string(cap >> 30) + " GiB " + cap_why + "; " :
                              "cudaHostRegister of the whole arena FAILED (" + std::string(cudaGetErrorString(e)) + "); " +
                              (limited ? "slices capped at " + std::string(gib) + " GiB (" + limit_why +
-                                        "; STRATA_ARENA_PIN_GIB=auto; N sets a cap; #243); " : std::string())) +
+                                        "; GUILD_ARENA_PIN_GIB=auto; N sets a cap; #243); " : std::string())) +
                    std::to_string(registered_slices) + " slices pinned (" + std::to_string(registered_bytes >> 30) +
                    " GiB); " + note;
             if (registered_bytes < bytes) {
-                const char* env = std::getenv("STRATA_ARENA_LOCK");
+                const char* env = std::getenv("GUILD_ARENA_LOCK");
                 if (env == nullptr || std::string(env) != "0") {
-                    const strata::platform::LockResult lr =
-                        strata::platform::lock_resident((uint8_t*) base + registered_bytes, bytes - registered_bytes);
+                    const guild::platform::LockResult lr =
+                        guild::platform::lock_resident((uint8_t*) base + registered_bytes, bytes - registered_bytes);
                     locked_bytes = lr.locked_bytes;
                     note = lr.note + "; " + note;
                 }
@@ -413,14 +413,14 @@ PinnedArena::PinnedArena(uint64_t bytes, const std::vector<uint64_t>& bounds,
             (void) cudaGetLastError();
             // Plan v0.3 P0.1: keep it RESIDENT instead. Unpinned, Windows trims the arena under memory pressure
             // and the CPU pool's rate then depends on the OS; locking it through the working set needs no
-            // special privilege. STRATA_ARENA_LOCK=0 is the A/B arm.
-            const char* env = std::getenv("STRATA_ARENA_LOCK");
+            // special privilege. GUILD_ARENA_LOCK=0 is the A/B arm.
+            const char* env = std::getenv("GUILD_ARENA_LOCK");
             if (env == nullptr || std::string(env) != "0") {
-                const strata::platform::LockResult lr = strata::platform::lock_resident(base, bytes);
+                const guild::platform::LockResult lr = guild::platform::lock_resident(base, bytes);
                 locked_bytes = lr.locked_bytes;
                 note = lr.note + "; " + note;
             } else {
-                note = "arena lock disabled (STRATA_ARENA_LOCK=0); " + note;
+                note = "arena lock disabled (GUILD_ARENA_LOCK=0); " + note;
             }
         }
     }
@@ -428,7 +428,7 @@ PinnedArena::PinnedArena(uint64_t bytes, const std::vector<uint64_t>& bounds,
 
 PinnedArena::~PinnedArena() {
     if (base) {
-        if (locked_bytes) strata::platform::unlock_resident((uint8_t*) base + (slice_bytes ? registered_bytes : 0), locked_bytes);
+        if (locked_bytes) guild::platform::unlock_resident((uint8_t*) base + (slice_bytes ? registered_bytes : 0), locked_bytes);
         if (slice_bytes) {
             for (uint64_t off : slice_starts) cudaHostUnregister((uint8_t*) base + off);
         } else {
@@ -522,9 +522,9 @@ LoadStats load_experts_direct(const std::string& path, uint8_t* dst, const std::
 
 bool experts_unbuffered(const std::vector<std::string>& files, uint64_t arena_bytes, std::string& why,
                         bool cache_counts, uint64_t read_bytes) {
-    const char* env = std::getenv("STRATA_UNBUFFERED_LOAD");
+    const char* env = std::getenv("GUILD_UNBUFFERED_LOAD");
     if (env != nullptr && env[0] != '\0') {
-        why = std::string("STRATA_UNBUFFERED_LOAD=") + env;
+        why = std::string("GUILD_UNBUFFERED_LOAD=") + env;
         return env[0] != '0';
     }
 #ifdef _WIN32
@@ -570,7 +570,7 @@ bool experts_unbuffered(const std::vector<std::string>& files, uint64_t arena_by
     const uint64_t avail = ms.ullAvailPhys;
     // what the cache could keep beside the arena (~4 GiB for everything else)
     const uint64_t need = read_bytes == kAllFileBytes ? total_bytes : read_bytes;
-    const bool keepable = strata::platform::file_cache_keeps(avail, arena_bytes, need);
+    const bool keepable = guild::platform::file_cache_keeps(avail, arena_bytes, need);
     char msg[256];
     if (read_bytes == kAllFileBytes)
         std::snprintf(msg, sizeof msg, "%d of %d probe reads from the file cache; %.1f GiB available, %.1f GiB of files",
@@ -636,7 +636,7 @@ LoadStats load_experts_ranges(const std::string& path, uint8_t* dst, const std::
             uint64_t pos = 0;
             uint64_t h = 1469598103934665603ull;
             // 64-bit seek: the pack is 42.9 GB, so the 32-bit `fseek` would wrap past 4 GiB
-            if (STRATA_FSEEK64(f, off) != 0) {
+            if (GUILD_FSEEK64(f, off) != 0) {
                 std::lock_guard<std::mutex> g(err_mu);
                 err = "seek to " + std::to_string(off) + " B failed in layer " + std::to_string(L);
                 return;
@@ -722,4 +722,4 @@ StreamStats stream_bandwidth(const uint8_t* src, uint64_t bytes, uint64_t chunk,
     return st;
 }
 
-}  // namespace strata::core
+}  // namespace guild::core

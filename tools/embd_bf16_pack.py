@@ -57,9 +57,9 @@ def main():
         sys.exit("%s: data size does not match its shape" % name)
     print("%s: %d x %d BF16, %.2f GB" % (name, vocab, dim, n / 1e9), flush=True)
 
-    kvs = [kv_string("general.architecture", "strata-embd"),
+    kvs = [kv_string("general.architecture", "guild-embd"),
            kv_string("general.name", "token embedding, BF16 as shipped"),
-           kv_string("strata.embd.source", model.name)]
+           kv_string("guild.embd.source", model.name)]
     head = b"GGUF" + struct.pack("<IQQ", 3, 1, len(kvs)) + b"".join(kvs)
     head += gguf_string("token_embd.weight") + struct.pack("<I", 2) + struct.pack("<QQ", dim, vocab)
     head += struct.pack("<I", GGML_TYPE_BF16) + struct.pack("<Q", 0)

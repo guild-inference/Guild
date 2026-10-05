@@ -1,13 +1,13 @@
-// src/kernels/cuda/kv_q8.cu - see include/strata/kernels/kv_q8.hpp.
-#include "strata/kernels/kv_q8.hpp"
-#include "strata/kernels/f16_bits.hpp"
+// src/kernels/cuda/kv_q8.cu - see include/guild/kernels/kv_q8.hpp.
+#include "guild/kernels/kv_q8.hpp"
+#include "guild/kernels/f16_bits.hpp"
 
 #include <cuda_runtime.h>
 
 #include <cstdio>
 #include <cstdlib>
 
-namespace strata::kernels {
+namespace guild::kernels {
 namespace {
 
 void check(const char* what) {
@@ -124,4 +124,4 @@ void kv_gather_q8_step(const int8_t* k_q, const int8_t* v_q, const uint16_t* k_s
     check("kv_gather_q8 launch");
 }
 
-}  // namespace strata::kernels
+}  // namespace guild::kernels

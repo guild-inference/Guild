@@ -1,4 +1,4 @@
-// src/core/overlap_main.cpp - `strata-overlap`: does streaming an expert overlap with computing on it?
+// src/core/overlap_main.cpp - `guild-overlap`: does streaming an expert overlap with computing on it?
 //
 // THE ARCHITECTURE'S CENTRAL PREMISE.  Only (1 - h) of a token's expert weights are in VRAM, so the rest must
 // cross the bus while the GPU is working.  If the copy and the compute do not overlap, the per-token cost is
@@ -12,8 +12,8 @@
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
-#include "strata/core/pinned.hpp"
-#include "strata/kernels/s_gemv.hpp"
+#include "guild/core/pinned.hpp"
+#include "guild/kernels/s_gemv.hpp"
 
 #include <chrono>
 #include <cstdio>
@@ -49,7 +49,7 @@ int main(int argc, char** argv) {
         else if (a == "--experts") experts = std::atoi(val());
         else if (a == "--tpr") threads_per_row = std::atoi(val());
         else {
-            std::fprintf(stderr, "usage: strata-overlap --file experts.bin [--experts N] [--tpr N]\n");
+            std::fprintf(stderr, "usage: guild-overlap --file experts.bin [--experts N] [--tpr N]\n");
             return 2;
         }
     }
@@ -63,7 +63,7 @@ int main(int argc, char** argv) {
     std::printf("per role: %lld x %lld S2 weights, %.1f KB of planes\n", n_in, n_out, role_bytes / 1024.0);
 
     // host side: `experts` blobs read into a pinned arena, and the S2 planes the GEMV will read
-    strata::core::PinnedArena arena((uint64_t) experts * role_codes);
+    guild::core::PinnedArena arena((uint64_t) experts * role_codes);
     if (!arena.valid()) { std::fprintf(stderr, "arena allocation failed\n"); return 1; }
     {
         std::ifstream f(path, std::ios::binary);
@@ -129,7 +129,7 @@ int main(int argc, char** argv) {
     check(DPCT_CHECK_ERROR(s_comp =
                                dpct::get_current_device().create_queue(true)),
           "stream compute");
-    const strata::kernels::SForm form{2, -1, 64, strata::kernels::Codebook::Affine, false};
+    const guild::kernels::SForm form{2, -1, 64, guild::kernels::Codebook::Affine, false};
 
     // ---- SERIAL: the same operations on the SAME stream, so the GPU runs them one after another ----
     //
@@ -151,7 +151,7 @@ int main(int argc, char** argv) {
                   d_codes[0], arena.data() + (uint64_t)i * role_codes,
                   role_codes).wait()),
               "serial copy");
-        strata::kernels::s_gemv_split_async(
+        guild::kernels::s_gemv_split_async(
             d_x, d_codes[0], d_scales, nullptr, d_y, n_in, n_out, form,
             threads_per_row,
             (void *)(dpct::queue_ptr)&dpct::get_in_order_queue());
@@ -209,7 +209,7 @@ int main(int argc, char** argv) {
         check(DPCT_CHECK_ERROR(s_comp->ext_oneapi_submit_barrier({*ev[cur]})),
               "wait");
         // a hand-written launch so it goes on s_comp; `s_gemv` synchronises on the default stream
-        strata::kernels::s_gemv_split_async(d_x, d_codes[cur], d_scales, nullptr, d_y, n_in, n_out, form,
+        guild::kernels::s_gemv_split_async(d_x, d_codes[cur], d_scales, nullptr, d_y, n_in, n_out, form,
                                             threads_per_row, (void*) s_comp);
     }
     check(DPCT_CHECK_ERROR(s_comp->wait()), "final sync");

@@ -1,7 +1,7 @@
 @echo off
-rem Strata's HIP (AMD) engine for Windows, and the ready-made zip setup.py downloads (strata-windows-x64-hip.zip).
+rem Guild's HIP (AMD) engine for Windows, and the ready-made zip setup.py downloads (guild-windows-x64-hip.zip).
 rem
-rem   tools\hip\build_windows.bat              build strata.exe + strata-device.exe and package dist\strata-windows-x64-hip.zip
+rem   tools\hip\build_windows.bat              build guild-generate.exe + guild-device.exe and package dist\guild-windows-x64-hip.zip
 rem   tools\hip\build_windows.bat tests        also build the HIP unit tests (ctest in build-hip-win; they need an AMD GPU)
 rem
 rem Needs: Visual Studio 2022 (or 2019) Build Tools with the C++ workload (the linker, the CRT and the Windows SDK),
@@ -11,15 +11,15 @@ rem mix cl.exe with Clang for HIP, so ROCm's clang compiles the host code too (t
 rem headers and linker from vcvars); cmake/hip_backend.cmake force-includes the CUDA->HIP shim.
 rem
 rem Settings (environment variables, all optional):
-rem   STRATA_HIP_ARCHS     gfx1100;gfx1101;gfx1102;gfx1200;gfx1201;gfx1030 (the cards setup supports, + gfx1102)
-rem   STRATA_ROCM_VERSION  10.2.0a20260930        STRATA_ROCM_INDEX  https://nightly.repo.amd.com/rocm/whl-next/
+rem   GUILD_HIP_ARCHS     gfx1100;gfx1101;gfx1102;gfx1200;gfx1201;gfx1030 (the cards setup supports, + gfx1102)
+rem   GUILD_ROCM_VERSION  10.2.0a20260930        GUILD_ROCM_INDEX  https://nightly.repo.amd.com/rocm/whl-next/
 rem   ROCM_VENV            <repo>\.rocm-win       BUILD_DIR          <repo>\build-hip-win     DIST_DIR  <repo>\dist
-rem   STRATA_GGML_DIR      a llama.cpp checkout at the pinned commit (default: CMake fetches it)
+rem   GUILD_GGML_DIR      a llama.cpp checkout at the pinned commit (default: CMake fetches it)
 setlocal EnableDelayedExpansion
 for %%I in ("%~dp0..\..") do set "SRC=%%~fI"
-if not defined STRATA_HIP_ARCHS set "STRATA_HIP_ARCHS=gfx1100;gfx1101;gfx1102;gfx1200;gfx1201;gfx1030"
-if not defined STRATA_ROCM_VERSION set "STRATA_ROCM_VERSION=10.2.0a20260930"
-if not defined STRATA_ROCM_INDEX set "STRATA_ROCM_INDEX=https://nightly.repo.amd.com/rocm/whl-next/"
+if not defined GUILD_HIP_ARCHS set "GUILD_HIP_ARCHS=gfx1100;gfx1101;gfx1102;gfx1200;gfx1201;gfx1030"
+if not defined GUILD_ROCM_VERSION set "GUILD_ROCM_VERSION=10.2.0a20260930"
+if not defined GUILD_ROCM_INDEX set "GUILD_ROCM_INDEX=https://nightly.repo.amd.com/rocm/whl-next/"
 if not defined ROCM_VENV set "ROCM_VENV=%SRC%\.rocm-win"
 if not defined BUILD_DIR set "BUILD_DIR=%SRC%\build-hip-win"
 if not defined DIST_DIR set "DIST_DIR=%SRC%\dist"
@@ -33,14 +33,14 @@ if not defined PY python -c "import sys" >nul 2>nul && set "PY=python"
 if not defined PY (echo Python 3.10+ is needed & exit /b 1)
 if not exist "%ROCM_VENV%\Scripts\python.exe" %PY% -m venv "%ROCM_VENV%" || exit /b 1
 set "EXTRAS=libraries,devel"
-for %%A in (%STRATA_HIP_ARCHS:;= %) do set "EXTRAS=!EXTRAS!,device-%%A"
-set "STAMP=%ROCM_VENV%\strata-rocm.txt"
-set "WANT=%STRATA_ROCM_VERSION% %EXTRAS%"
+for %%A in (%GUILD_HIP_ARCHS:;= %) do set "EXTRAS=!EXTRAS!,device-%%A"
+set "STAMP=%ROCM_VENV%\guild-rocm.txt"
+set "WANT=%GUILD_ROCM_VERSION% %EXTRAS%"
 set "HAVE="
 if exist "%STAMP%" set /p HAVE=<"%STAMP%"
 if not "!HAVE!"=="!WANT!" (
-  echo Installing ROCm %STRATA_ROCM_VERSION% [%EXTRAS%] into %ROCM_VENV% ...
-  "%ROCM_VENV%\Scripts\python.exe" -m pip install --disable-pip-version-check --index-url "%STRATA_ROCM_INDEX%" "rocm[%EXTRAS%]==%STRATA_ROCM_VERSION%" || exit /b 1
+  echo Installing ROCm %GUILD_ROCM_VERSION% [%EXTRAS%] into %ROCM_VENV% ...
+  "%ROCM_VENV%\Scripts\python.exe" -m pip install --disable-pip-version-check --index-url "%GUILD_ROCM_INDEX%" "rocm[%EXTRAS%]==%GUILD_ROCM_VERSION%" || exit /b 1
   "%ROCM_VENV%\Scripts\rocm-sdk.exe" init || exit /b 1
   >"%STAMP%" echo !WANT!
 )
@@ -60,13 +60,13 @@ set "HIP_PATH=%ROCM%"
 set "ROCM_PATH=%ROCM%"
 set "PATH=%ROCM%\bin;%ROCM%\lib\llvm\bin;%PATH%"
 
-rem ---- 3. configure + build (STRATA_PORTABLE: the CPU kernels for an AVX2 baseline, as in the NVIDIA zip)
+rem ---- 3. configure + build (GUILD_PORTABLE: the CPU kernels for an AVX2 baseline, as in the NVIDIA zip)
 set "GGML="
-if defined STRATA_GGML_DIR set "GGML=-DSTRATA_GGML_DIR=%STRATA_GGML_DIR:\=/%"
+if defined GUILD_GGML_DIR set "GGML=-DGUILD_GGML_DIR=%GUILD_GGML_DIR:\=/%"
 if not exist "%BUILD_DIR%\build.ninja" (
   cmake -G Ninja -S "%SRC%" -B "%BUILD_DIR%" -DCMAKE_BUILD_TYPE=Release ^
-    -DSTRATA_ENABLE_HIP=ON -DSTRATA_ENABLE_CUDA=OFF -DSTRATA_BUILD_TESTS=%TESTS% -DSTRATA_PREFILL_MMQ=ON ^
-    -DSTRATA_NATIVE_EXPERTS=ON -DSTRATA_PORTABLE=ON "-DCMAKE_HIP_ARCHITECTURES=%STRATA_HIP_ARCHS%" ^
+    -DGUILD_ENABLE_HIP=ON -DGUILD_ENABLE_CUDA=OFF -DGUILD_BUILD_TESTS=%TESTS% -DGUILD_PREFILL_MMQ=ON ^
+    -DGUILD_NATIVE_EXPERTS=ON -DGUILD_PORTABLE=ON "-DCMAKE_HIP_ARCHITECTURES=%GUILD_HIP_ARCHS%" ^
     "-DCMAKE_C_COMPILER=%ROCM_F%/lib/llvm/bin/clang.exe" "-DCMAKE_CXX_COMPILER=%ROCM_F%/lib/llvm/bin/clang++.exe" ^
     "-DCMAKE_HIP_COMPILER=%ROCM_F%/lib/llvm/bin/clang++.exe" "-DCMAKE_HIP_COMPILER_ROCM_ROOT=%ROCM_F%" ^
     "-DCMAKE_PREFIX_PATH=%ROCM_F%" "-DCMAKE_HIP_FLAGS=--rocm-path=%ROCM_F% --rocm-device-lib-path=%BITCODE%" ^
@@ -75,12 +75,12 @@ if not exist "%BUILD_DIR%\build.ninja" (
 if "%TESTS%"=="ON" (
   cmake --build "%BUILD_DIR%" || exit /b 1
 ) else (
-  cmake --build "%BUILD_DIR%" --target strata strata-device || exit /b 1
+  cmake --build "%BUILD_DIR%" --target guild-generate guild-device || exit /b 1
 )
 
 rem ---- 4. the zip: the two programs, the ROCm DLLs they load (+ rocBLAS/hipBLASLt kernels for these archs), licenses
 "%ROCM_VENV%\Scripts\python.exe" "%SRC%\tools\hip\package_windows.py" --build "%BUILD_DIR%" --rocm "%ROCM%" ^
-  --archs "%STRATA_HIP_ARCHS%" --rocm-version "%STRATA_ROCM_VERSION%" --out "%DIST_DIR%" || exit /b 1
+  --archs "%GUILD_HIP_ARCHS%" --rocm-version "%GUILD_ROCM_VERSION%" --out "%DIST_DIR%" || exit /b 1
 echo.
-echo Done: %DIST_DIR%\strata-windows-x64-hip.zip
+echo Done: %DIST_DIR%\guild-windows-x64-hip.zip
 endlocal

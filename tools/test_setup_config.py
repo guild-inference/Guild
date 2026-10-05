@@ -47,16 +47,16 @@ class CarryOver(unittest.TestCase):
         code, out, first, _ = self.run_setup("--context", "65536")
         self.assertEqual(code, 0, out)
         old = {**first, **USER, "args": first["args"] + ["--hand-option", "7"]}
-        code, out, cfg, _ = self.run_setup("--context", "131072", configs=[("strata-q2_0.json", old)])
+        code, out, cfg, _ = self.run_setup("--context", "131072", configs=[("guild-q2_0.json", old)])
         self.assertEqual(code, 0, out)
         for k, v in USER.items():
             self.assertEqual(cfg[k], v, k)
         a = cfg["args"]
         self.assertEqual(a[a.index("--max-context") + 1], "131072")       # the new choice is used
         self.assertNotIn("--hand-option", a)                               # setup chooses the engine options...
-        self.assertIn("kept from your earlier strata-q2_0.json: sampling, mcp_servers, mcp, cors_origins, "
+        self.assertIn("kept from your earlier guild-q2_0.json: sampling, mcp_servers, mcp, cors_origins, "
                       "reasoning_effort", out)
-        self.assertIn("kept as strata-q2_0.json.bak", out)
+        self.assertIn("kept as guild-q2_0.json.bak", out)
         self.assertIn("--hand-option", out)                                # ...and says which ones it did not keep
 
     def test_a_first_install_is_unchanged(self):
@@ -69,7 +69,7 @@ class CarryOver(unittest.TestCase):
     def test_setup_keys_are_rewritten(self):
         code, out, first, _ = self.run_setup()
         old = {**first, "model_name": "renamed", "port": 9999, "draft_vocab": "en", "host": "0.0.0.0"}
-        code, out, cfg, _ = self.run_setup(configs=[("strata-q2_0.json", old)])
+        code, out, cfg, _ = self.run_setup(configs=[("guild-q2_0.json", old)])
         self.assertEqual(code, 0, out)
         self.assertEqual(cfg["model_name"], first["model_name"])
         self.assertEqual(cfg["port"], first["port"])
@@ -79,11 +79,11 @@ class CarryOver(unittest.TestCase):
 
     def test_write_setup_config(self):
         with tempfile.TemporaryDirectory() as d:
-            p = Path(d) / "strata-x.json"
+            p = Path(d) / "guild-x.json"
             mm = Path(d) / "mmproj-Q8_0.gguf"
             mm.write_bytes(b"")
             old = {"exe": "e", "args": ["--kv", "int8", "--threads", "8"], "sampling": {"temperature": 0.7},
-                   "env": {"STRATA_RESIDENT_PIN": "0", "MY_VAR": "1"},
+                   "env": {"GUILD_RESIDENT_PIN": "0", "MY_VAR": "1"},
                    "vision": {"exe": "v", "mmproj": str(mm), "gpu": False, "max_tokens": 300, "min_tokens": 64}}
             p.write_text(json.dumps(old), encoding="utf-8")
             new = {"exe": "e2", "args": ["--kv", "int8"],
@@ -95,24 +95,24 @@ class CarryOver(unittest.TestCase):
             self.assertEqual(got["vision"]["mmproj"], str(mm))            # a Q8_0 mmproj of the user's own (#625)
             self.assertEqual(got["vision"]["min_tokens"], 64)
             self.assertEqual(got["exe"], "e2")
-            self.assertEqual(json.loads((Path(d) / "strata-x.json.bak").read_text(encoding="utf-8")), old)
+            self.assertEqual(json.loads((Path(d) / "guild-x.json.bak").read_text(encoding="utf-8")), old)
             self.assertIn("--threads", out)
             # the same again: nothing changes, so no new copy is made
-            (Path(d) / "strata-x.json.bak").unlink()
+            (Path(d) / "guild-x.json.bak").unlink()
             again = {"exe": "e2", "args": ["--kv", "int8"],
                      "vision": {"exe": "v2", "mmproj": str(Path(d) / "mmproj-BF16.gguf"), "gpu": False,
                                 "max_tokens": 300}}
             quiet(setup.write_setup_config, p, again)
-            self.assertFalse((Path(d) / "strata-x.json.bak").exists())
+            self.assertFalse((Path(d) / "guild-x.json.bak").exists())
             self.assertEqual(json.loads(p.read_text(encoding="utf-8")), got)
 
     def test_an_unreadable_earlier_config_is_replaced_with_a_copy(self):
         with tempfile.TemporaryDirectory() as d:
-            p = Path(d) / "strata-x.json"
+            p = Path(d) / "guild-x.json"
             p.write_text("{cut off", encoding="utf-8")
             quiet(setup.write_setup_config, p, {"exe": "e", "args": []})
             self.assertEqual(json.loads(p.read_text(encoding="utf-8")), {"exe": "e", "args": []})
-            self.assertEqual((Path(d) / "strata-x.json.bak").read_text(encoding="utf-8"), "{cut off")
+            self.assertEqual((Path(d) / "guild-x.json.bak").read_text(encoding="utf-8"), "{cut off")
 
     def test_a_missing_mmproj_is_not_carried(self):
         old = {"vision": {"mmproj": "/nowhere/mmproj-Q8_0.gguf", "gpu": True}}
@@ -122,14 +122,14 @@ class CarryOver(unittest.TestCase):
 
     def test_a_copy_set_up_like_the_last_one_keeps_them_too(self):
         with tempfile.TemporaryDirectory() as d:
-            src = Path(d) / "other" / "strata-x.json"
+            src = Path(d) / "other" / "guild-x.json"
             src.parent.mkdir()
             src.write_text(json.dumps({"exe": "old", "mcp_servers": {"a": {"command": "x"}}}), encoding="utf-8")
-            p = Path(d) / "strata-x.json"
+            p = Path(d) / "guild-x.json"
             quiet(setup.write_setup_config, p, {"exe": "new"}, src)
             self.assertEqual(json.loads(p.read_text(encoding="utf-8")),
                              {"exe": "new", "mcp_servers": {"a": {"command": "x"}}})
-            self.assertFalse((Path(d) / "strata-x.json.bak").exists())   # nothing here was replaced
+            self.assertFalse((Path(d) / "guild-x.json.bak").exists())   # nothing here was replaced
 
 
 class NoBrowser(unittest.TestCase):
@@ -150,24 +150,24 @@ class NoBrowser(unittest.TestCase):
         code, out, cfg, _ = self.run_setup()
         self.assertNotIn("open_browser", cfg)                             # not given: the config as before
         # setup run again without the flag keeps the choice (#629); --browser undoes it
-        code, out, cfg, _ = self.run_setup(configs=[("strata-q2_0.json", {"open_browser": False})])
+        code, out, cfg, _ = self.run_setup(configs=[("guild-q2_0.json", {"open_browser": False})])
         self.assertIs(cfg["open_browser"], False)
-        code, out, cfg, _ = self.run_setup("--browser", configs=[("strata-q2_0.json", {"open_browser": False})])
+        code, out, cfg, _ = self.run_setup("--browser", configs=[("guild-q2_0.json", {"open_browser": False})])
         self.assertIs(cfg["open_browser"], True)
 
     def test_run_script(self):
         with tempfile.TemporaryDirectory() as d, unittest.mock.patch.object(setup, "ROOT", Path(d)):
             text = lambda p: p.read_text(encoding="utf-8")   # noqa: E731
-            self.assertIn('"--open"', text(setup.write_run_script("Q2_0", Path(d) / "strata-q2_0.json", 8080)))
-            script = setup.write_run_script("Q2_0", Path(d) / "strata-q2_0.json", 8080, False)
+            self.assertIn('"--open"', text(setup.write_run_script("Q2_0", Path(d) / "guild-q2_0.json", 8080)))
+            script = setup.write_run_script("Q2_0", Path(d) / "guild-q2_0.json", 8080, False)
             self.assertNotIn("--open", text(script))
             self.assertIn('"--port" "8080"', text(script))
 
     def start_cmd(self, cfg, keep=None):
         with tempfile.TemporaryDirectory() as d:
-            exe = Path(d) / "strata.exe"
+            exe = Path(d) / "guild-generate.exe"
             exe.write_bytes(b"")
-            p = Path(d) / "strata-q2_0.json"
+            p = Path(d) / "guild-q2_0.json"
             p.write_text(json.dumps({"exe": str(exe), "args": ["--kv", "int8"], "gpu": 0, "gpus_asked": True, **cfg}))
             call = unittest.mock.Mock(return_value=0)
             with unittest.mock.patch.object(setup, "gpus", lambda: self.found), \
@@ -221,7 +221,7 @@ class VisionTokens(unittest.TestCase):
 
     def test_kept_when_setup_runs_again(self):
         code, out, first, _ = self.run_setup("--vision", "cpu", "--vision-tokens", "768")
-        old = [("strata-q2_0.json", first)]
+        old = [("guild-q2_0.json", first)]
         code, out, cfg, _ = self.run_setup("--vision", "cpu", "--context", "65536", configs=old)
         self.assertEqual(cfg["vision"]["max_tokens"], 768)
         code, out, cfg, _ = self.run_setup("--vision", "cpu", "--vision-tokens", "300", configs=old)

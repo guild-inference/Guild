@@ -2,17 +2,17 @@
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
-#include "strata/sycl_queue.hpp"
-#include "strata/core/session.hpp"
-#include "strata/kernels/mrope.hpp"
-#include "strata/core/progress.hpp"
+#include "guild/sycl_queue.hpp"
+#include "guild/core/session.hpp"
+#include "guild/kernels/mrope.hpp"
+#include "guild/core/progress.hpp"
 
-#include "strata/kernels/qsa.hpp"
-#include "strata/kernels/elementwise.hpp"
-#include "strata/kernels/quantize_act.hpp"
-#include "strata/kernels/s2_expert_grouped.hpp"
-#include "strata/kernels/cpu/pool.hpp"
-#include "strata/kernels/ngram.hpp"
+#include "guild/kernels/qsa.hpp"
+#include "guild/kernels/elementwise.hpp"
+#include "guild/kernels/quantize_act.hpp"
+#include "guild/kernels/s2_expert_grouped.hpp"
+#include "guild/kernels/cpu/pool.hpp"
+#include "guild/kernels/ngram.hpp"
 
 #include <atomic>
 #include <chrono>
@@ -25,12 +25,12 @@
 // spin is just less polite to the pipeline.
 #if defined(_MSC_VER) || defined(__x86_64__) || defined(__i386__)
 #include <immintrin.h>
-#define STRATA_SPIN_PAUSE() _mm_pause()
+#define GUILD_SPIN_PAUSE() _mm_pause()
 #else
-#define STRATA_SPIN_PAUSE() ((void) 0)
+#define GUILD_SPIN_PAUSE() ((void) 0)
 #endif
 
-namespace strata::core {
+namespace guild::core {
 namespace {
 
 constexpr uint64_t SESSION_STATE_ALIGN = 256;
@@ -50,7 +50,7 @@ uint64_t gdn_state_floats(const ModelGeometry& g) {
 /// `NG_HIST` rows of `hc_dim` floats: the PLE conv's history, which is the ONLY PLE state that lives in the
 /// session arena.  The table and the weights are model-level and the caller owns them.
 static uint64_t ple_hist_bytes() {
-    return (uint64_t) strata::kernels::NG_HIST * strata::kernels::NG_HC_DIM * sizeof(float);
+    return (uint64_t) guild::kernels::NG_HIST * guild::kernels::NG_HC_DIM * sizeof(float);
 }
 
 uint64_t session_bytes(const ModelGeometry& g, int64_t max_cells, int64_t k, int64_t layer_lo, int64_t layer_hi) {
@@ -133,13 +133,13 @@ uint64_t session_init(const ModelGeometry& g, int64_t max_cells, int64_t k, void
 void session_release(SessionState& s) {
     for (int64_t j = 0; s.qsa_states != nullptr && j < s.qsa_alloc; ++j)
         if (s.qsa_states[j].owns_rope) {
-            strata::kernels::rope_table_release(s.qsa_states[j].cos_tab);
+            guild::kernels::rope_table_release(s.qsa_states[j].cos_tab);
             s.qsa_states[j].owns_rope = false;
         }
 }
 
 void session_zero(SessionState& s, const ModelGeometry& g, const float* R_init, void* stream) {
-    dpct::queue_ptr cs = strata::q_of(stream);
+    dpct::queue_ptr cs = guild::q_of(stream);
     // the residual: `hc` copies of the one vector a caller hands in.  A real sequence's first token is the
     // embedding broadcast to every stream, which is the reference's own initial condition.
     if (R_init != nullptr) {
@@ -183,7 +183,7 @@ void gdn_point_at(const ModelGeometry& g, int64_t layer, SessionState& s) {
 /// The per-token staging every QSA layer's captured H2D reads FROM.  Must run before each replay: the graphs
 /// captured the SOURCE POINTER, not the value, and that is exactly why the buffers are pinned and fixed.
 void stage_token(const ModelGeometry& g, int64_t pos, int32_t pos_base, SessionState& s) {
-    strata::kernels::QsaShapes sh = strata::kernels::qsa_real_shapes();
+    guild::kernels::QsaShapes sh = guild::kernels::qsa_real_shapes();
     sh.n_head = g.n_head;
     sh.n_head_kv = g.n_head_kv;
     sh.head_dim = g.head_dim;
@@ -327,7 +327,7 @@ bool session_replay(const ModelGeometry &g, int64_t pos, int32_t pos_base,
                     SessionState &s, SessionGraphs &gr, void *stream,
                     std::string &err) try {
     if (!gr.captured || gr.n != g.n_layers) { err = "session_replay: not captured"; return false; }
-    dpct::queue_ptr cs = strata::q_of(stream);
+    dpct::queue_ptr cs = guild::q_of(stream);
     stage_token(g, pos, pos_base, s);
     for (int64_t l = 0; l < g.n_layers; ++l) {
         const dpct::err0 e =
@@ -365,7 +365,7 @@ bool session_replay_full(const ModelGeometry &g, int64_t pos, int32_t pos_base,
         err = "session_replay_full: not captured with post graphs";
         return false;
     }
-    dpct::queue_ptr cs = strata::q_of(stream);
+    dpct::queue_ptr cs = guild::q_of(stream);
     stage_token(g, pos, pos_base, s);
     for (int64_t l = 0; l < g.n_layers; ++l) {
         // `pre[l]` then `post[l]`, in the order `session_loop` uses.  The two are ordered on one stream, and
@@ -422,7 +422,7 @@ bool session_replay_stages_per_layer(const ModelGeometry& g, int64_t pos, int32_
         err = "session_replay_stages: not captured with the split";
         return false;
     }
-    dpct::queue_ptr cs = strata::q_of(stream);
+    dpct::queue_ptr cs = guild::q_of(stream);
     stage_token(g, pos, pos_base, s);
 
     // Four events PER LAYER rather than four reused ones: reusing them would need a synchronisation after
@@ -509,7 +509,7 @@ bool session_replay_stage_sweep(const ModelGeometry &g, int64_t pos,
         return false;
     }
     if (k < 1 || k > 5) { err = "session_replay_stage_sweep: k must be 1..5"; return false; }
-    dpct::queue_ptr cs = strata::q_of(stream);
+    dpct::queue_ptr cs = guild::q_of(stream);
     stage_token(g, pos, pos_base, s);
 
     dpct::event_ptr a, b;
@@ -574,7 +574,7 @@ bool session_replay_stage_prefixes(const ModelGeometry &g, int64_t pos,
         err = "session_replay_stage_prefixes: not captured with the split";
         return false;
     }
-    dpct::queue_ptr cs = strata::q_of(stream);
+    dpct::queue_ptr cs = guild::q_of(stream);
     stage_token(g, pos, pos_base, s);
     const int64_t n = g.n_layers;
     const size_t r_floats = (size_t) g.hc * (size_t) g.n_embd;
@@ -781,9 +781,9 @@ bool SessionLoopScratch::init(size_t parts_bytes_in, std::string &err) try {
     // core or its SMT sibling.  The symptom is not an error: it is a CPU path at 26.9 GB/s where the same pool
     // runs at 36.32.  It was being done and undone on EVERY token, which is a syscall pair on the critical path
     // for a property that wants to hold for the whole session.
-    const std::vector<int> cores = strata::kernels::cpu::physical_cores(false);
+    const std::vector<int> cores = guild::kernels::cpu::physical_cores(false);
     if (!cores.empty()) {
-        pinned_core = strata::kernels::cpu::pin_current_thread(cores[0]);
+        pinned_core = guild::kernels::cpu::pin_current_thread(cores[0]);
         pinned = true;
     }
     return true;
@@ -798,7 +798,7 @@ void SessionLoopScratch::free() {
     // Restores the caller's affinity on every path, including teardown: a library that silently leaves its
     // caller's thread nailed to one core is worse than one that never pinned at all.
     if (pinned) {
-        strata::kernels::cpu::restore_thread_affinity(pinned_core);
+        guild::kernels::cpu::restore_thread_affinity(pinned_core);
         pinned = false;
         pinned_core = -1;
     }
@@ -817,7 +817,7 @@ bool session_loop(const ModelGeometry &g, int64_t pos, int32_t pos_base,
     if (gr.parts_dev == nullptr) { err = "session_loop: the graphs were captured without a parts buffer"; return false; }
     if (s.db == nullptr) { err = "session_loop: no doorbell; the loop has nothing to poll"; return false; }
 
-    dpct::queue_ptr cs = strata::q_of(stream);
+    dpct::queue_ptr cs = guild::q_of(stream);
     const int64_t k = s.k;
     const size_t parts_bytes = (size_t) k * g.n_embd * 4;
     ++gr.calls_total;
@@ -982,7 +982,7 @@ bool session_loop(const ModelGeometry &g, int64_t pos, int32_t pos_base,
                 return false;
             }
             if (rang) break;                             // rung, and the graph is still running: the overlap
-            STRATA_SPIN_PAUSE();
+            GUILD_SPIN_PAUSE();
         }
         if (mid_graph) ++gr.rings_mid_graph;
         // the window, from just before the launch to the instant the ring was seen
@@ -1137,7 +1137,7 @@ bool session_token(const WeightTable &tables, const ModelGeometry &g,
                    int64_t pos, int32_t pos_base, SessionState &s,
                    const float *parts, void *stream, bool sync_every_layer,
                    std::string &err) try {
-    dpct::queue_ptr cs = strata::q_of(stream);
+    dpct::queue_ptr cs = guild::q_of(stream);
     int64_t qsa_index = 0;
     int64_t gdn_index = 0;
 
@@ -1197,9 +1197,9 @@ catch (sycl::exception const &exc) {
   std::exit(1);
 }
 
-}  // namespace strata::core
+}  // namespace guild::core
 
-namespace strata::core {
+namespace guild::core {
 
 bool session_capture_token(const WeightTable &tables, const ModelGeometry &g,
                            SessionState &s, float *parts_dev,
@@ -1245,18 +1245,18 @@ bool session_capture_token(const WeightTable &tables, const ModelGeometry &g,
         if (!ok) { err = "session_capture_token: pre layer " + std::to_string(l) + ": " + err; break; }
         if (hits != nullptr) {
             // After the ring (and the shared expert): the GPU's experts run while the CPU computes the misses.
-            strata::kernels::moe_hit_select(s.moe.ids, hits->d_res + l * hits->n_expert, (int) s.k,
+            guild::kernels::moe_hit_select(s.moe.ids, hits->d_res + l * hits->n_expert, (int) s.k,
                                             (int) hits->n_expert, hits->d_slot, hits->d_dst, hits->d_count, (void*) cs);
-            strata::kernels::quantize_q8_0_scaled(s.block.mixed, hits->x_q8, hits->x_scale, g.n_embd, (void*) cs);
-            strata::kernels::moe_hit_grouped_s2_dev(hits->cache_base, hits->d_slot, hits->d_dst, hits->d_count, s.k,
+            guild::kernels::quantize_q8_0_scaled(s.block.mixed, hits->x_q8, hits->x_scale, g.n_embd, (void*) cs);
+            guild::kernels::moe_hit_grouped_s2_dev(hits->cache_base, hits->d_slot, hits->d_dst, hits->d_count, s.k,
                                                     hits->blob, hits->x_q8, hits->scratch, hits->hit_out, (void*) cs,
                                                     hits->x_scale);
         }
-        strata::kernels::doorbell_wait(s.db->d_flag, s.db->d_seq, (void*) cs);
+        guild::kernels::doorbell_wait(s.db->d_flag, s.db->d_seq, (void*) cs);
         // A kernel, not a memcpy node: a copy-engine node splits the WDDM submission (measured 67 flushes/token).
-        strata::kernels::copy_from_mapped(parts_dev, y_dev, (int64_t) (parts_bytes / sizeof(float)), (void*) cs);
+        guild::kernels::copy_from_mapped(parts_dev, y_dev, (int64_t) (parts_bytes / sizeof(float)), (void*) cs);
         if (hits != nullptr)
-            strata::kernels::moe_hit_add(parts_dev, hits->hit_out, hits->d_dst, hits->d_count, s.k, g.n_embd, (void*) cs);
+            guild::kernels::moe_hit_add(parts_dev, hits->hit_out, hits->d_dst, hits->d_count, s.k, g.n_embd, (void*) cs);
         ok = block_layer_post(tables, g, l, s.k, s.moe, s.block, parts_dev, (void*) cs, err);
         if (!ok) { err = "session_capture_token: post layer " + std::to_string(l) + ": " + err; break; }
         if (qsa) ++qsa_index;
@@ -1322,7 +1322,7 @@ bool session_run_token(const ModelGeometry &g, int64_t pos, int32_t pos_base,
                        float *y_miss_host, void *stream, std::string &err) try {
     if (!tg.captured) { err = "session_run_token: not captured"; return false; }
     if (y_miss_host != tg.y_src) { err = "session_run_token: the staging buffer is not the captured one"; return false; }
-    dpct::queue_ptr cs = strata::q_of(stream);
+    dpct::queue_ptr cs = guild::q_of(stream);
     ++tg.calls;
     stage_token(g, pos, pos_base, s);
     doorbell_reset(*s.db);
@@ -1347,7 +1347,7 @@ bool session_run_token(const ModelGeometry &g, int64_t pos, int32_t pos_base,
     (void)DPCT_CHECK_ERROR(
         (cs->ext_oneapi_empty())); // one flush, so WDDM submits the graph now
     static const int flush_us = [] {
-        const char* e = std::getenv("STRATA_TG_FLUSH_US");
+        const char* e = std::getenv("GUILD_TG_FLUSH_US");
         return e ? std::atoi(e) : 2000;   // 24 Sep: 0 flushes run as fast as 5 us ones; this only notices faults
     }();
     volatile uint32_t* const seq = s.db->h_seq;
@@ -1360,7 +1360,7 @@ bool session_run_token(const ModelGeometry &g, int64_t pos, int32_t pos_base,
         uint32_t spins = 0;
         progress_at("token: waiting for the GPU to reach layer", l);
         while (*seq < want) {
-            STRATA_SPIN_PAUSE();
+            GUILD_SPIN_PAUSE();
             if ((++spins & 1023u) != 0) continue;
             const auto now = Clock::now();
             if (now - last_flush > std::chrono::microseconds(flush_us)) {
@@ -1433,4 +1433,4 @@ void token_graph_free(TokenGraph& tg) {
     tg = TokenGraph{};
 }
 
-}  // namespace strata::core
+}  // namespace guild::core

@@ -2,15 +2,15 @@
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
-#include "strata/sycl_queue.hpp"
-#include "strata/kernels/bf16_gemv.hpp"
+#include "guild/sycl_queue.hpp"
+#include "guild/kernels/bf16_gemv.hpp"
 
-#include "strata/kernels/bf16_bits.hpp"
+#include "guild/kernels/bf16_bits.hpp"
 
 #include <cstdio>
 #include <cstdlib>
 
-namespace strata::kernels {
+namespace guild::kernels {
 namespace {
 
 constexpr int THREADS = 256;
@@ -142,7 +142,7 @@ void bf16_gemv(const uint16_t* x, const uint16_t* w, float* y, int64_t n_in, int
             auto exp_props = sycl::ext::oneapi::experimental::properties{
                 sycl::ext::oneapi::experimental::use_root_sync};
 
-            strata::q_of(stream)
+            guild::q_of(stream)
                 ->parallel_for<
                     dpct_kernel_name<class bf16_gemv_warp_kernel_1fb910>>(
                     sycl::nd_range<3>(sycl::range(1, 1, grid) *
@@ -165,7 +165,7 @@ void bf16_gemv(const uint16_t* x, const uint16_t* w, float* y, int64_t n_in, int
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
+        guild::q_of(stream)
             ->parallel_for<
                 dpct_kernel_name<class bf16_gemv_naive_kernel_7678d1>>(
                 sycl::nd_range<3>(sycl::range(1, 1, grid) *
@@ -191,7 +191,7 @@ void bf16_gemv_split(const uint16_t* x, const uint16_t* w, float* y, int64_t n_i
             auto exp_props = sycl::ext::oneapi::experimental::properties{
                 sycl::ext::oneapi::experimental::use_root_sync};
 
-            strata::q_of(stream)
+            guild::q_of(stream)
                 ->parallel_for<
                     dpct_kernel_name<class bf16_gemv_warp_kernel_1f3015>>(
                     sycl::nd_range<3>(sycl::range(1, 1, grid) *
@@ -221,7 +221,7 @@ void bf16_gemv_split(const uint16_t* x, const uint16_t* w, float* y, int64_t n_i
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
+        guild::q_of(stream)
             ->submit([&](sycl::handler &cgh) {
                 /*
                 DPCT1083: The size of local memory in the migrated code may
@@ -248,4 +248,4 @@ void bf16_gemv_split(const uint16_t* x, const uint16_t* w, float* y, int64_t n_i
     finish(stream, "bf16_gemv_split");
 }
 
-}  // namespace strata::kernels
+}  // namespace guild::kernels

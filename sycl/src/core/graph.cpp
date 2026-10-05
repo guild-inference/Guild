@@ -1,8 +1,8 @@
 // src/core/graph.cpp - P2.S5: the GraphRegistry implementation.
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
-#include "strata/sycl_queue.hpp"
-#include "strata/core/graph.hpp"
+#include "guild/sycl_queue.hpp"
+#include "guild/core/graph.hpp"
 
 #include <immintrin.h>
 
@@ -10,7 +10,7 @@
 #include <cstdio>
 #include <chrono>
 
-namespace strata::core {
+namespace guild::core {
 namespace {
 
 /// Fills `err` from the CUDA runtime, naming the call that failed.  A bare "invalid argument" with no call
@@ -56,7 +56,7 @@ void CapturedGraph::reset() {
 bool CapturedGraph::begin(void *stream, std::string &err) try {
     if (graph_ || exec_) { err = "begin: this CapturedGraph is already recorded"; return false; }
     const dpct::err0 e = DPCT_CHECK_ERROR(
-        dpct::experimental::begin_recording(strata::q_of(stream)));
+        dpct::experimental::begin_recording(guild::q_of(stream)));
     /*
     DPCT1001: The statement could not be removed.
     */
@@ -74,7 +74,7 @@ catch (sycl::exception const &exc) {
 
 bool CapturedGraph::end(void *stream, std::string &err) try {
     dpct::err0 e = DPCT_CHECK_ERROR(
-        dpct::experimental::end_recording(strata::q_of(stream), &graph_));
+        dpct::experimental::end_recording(guild::q_of(stream), &graph_));
     /*
     DPCT1001: The statement could not be removed.
     */
@@ -132,7 +132,7 @@ catch (sycl::exception const &exc) {
 bool CapturedGraph::launch(void *stream, std::string &err) const try {
     if (!exec_) { err = "launch: not recorded"; return false; }
     dpct::err0 e =
-        DPCT_CHECK_ERROR(strata::q_of(stream)->ext_oneapi_graph(*exec_));
+        DPCT_CHECK_ERROR(guild::q_of(stream)->ext_oneapi_graph(*exec_));
     /*
     DPCT1001: The statement could not be removed.
     */
@@ -151,7 +151,7 @@ bool CapturedGraph::launch(void *stream, std::string &err) const try {
     may need to rewrite the program logic consuming the error code.
     */
     done__ct1 = std::chrono::steady_clock::now();
-    e = DPCT_CHECK_ERROR(*done_ = strata::q_of(stream)
+    e = DPCT_CHECK_ERROR(*done_ = guild::q_of(stream)
                                       ->ext_oneapi_submit_barrier());
     /*
     DPCT1001: The statement could not be removed.
@@ -217,7 +217,7 @@ bool GraphRegistry::record(LayerType type, int n_tokens, const std::function<voi
         /*
         DPCT1001: The statement could not be removed.
         */
-        dpct::experimental::end_recording(strata::q_of(stream_), &junk);
+        dpct::experimental::end_recording(guild::q_of(stream_), &junk);
         if (junk) delete (junk);
         return fail(err, "the capture body left a CUDA error", body_err);
     }
@@ -246,4 +246,4 @@ bool GraphRegistry::launch(LayerType type, int n_tokens, int timeout_ms, std::st
     return true;
 }
 
-}  // namespace strata::core
+}  // namespace guild::core

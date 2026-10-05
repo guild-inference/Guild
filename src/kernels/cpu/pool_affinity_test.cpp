@@ -1,4 +1,4 @@
-#include "strata/kernels/cpu/pool.hpp"
+#include "guild/kernels/cpu/pool.hpp"
 #include "pool_affinity_win.hpp"
 
 #include <algorithm>
@@ -6,7 +6,7 @@
 #include <thread>
 #include <vector>
 
-namespace cpu = strata::kernels::cpu;
+namespace cpu = guild::kernels::cpu;
 
 static bool check(bool ok, const char* message) {
     if (!ok) std::fprintf(stderr, "Windows affinity test: %s (error %lu)\n", message, (unsigned long) GetLastError());

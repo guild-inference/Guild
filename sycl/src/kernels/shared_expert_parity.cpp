@@ -17,11 +17,11 @@
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
-#include "strata/kernels/bf16_bits.hpp"
-#include "strata/kernels/f16_bits.hpp"
-#include "strata/kernels/quantize_act.hpp"
-#include "strata/kernels/s_gemv.hpp"
-#include "strata/kernels/shared_expert.hpp"
+#include "guild/kernels/bf16_bits.hpp"
+#include "guild/kernels/f16_bits.hpp"
+#include "guild/kernels/quantize_act.hpp"
+#include "guild/kernels/s_gemv.hpp"
+#include "guild/kernels/shared_expert.hpp"
 
 #include <cmath>
 #include <stdexcept>
@@ -42,8 +42,8 @@ void check(dpct::err0 e, const char *what) {
 // an O(1) fixture, which is exactly what this file had.  Using the shared, oracle-validated pair means the
 // test and the kernel cannot disagree about the conversion itself.
 // using-declarations rather than renames at the call sites, so the body below is untouched by the swap.
-using strata::kernels::f16_from_f32;
-using strata::kernels::f32_from_f16;
+using guild::kernels::f16_from_f32;
+using guild::kernels::f32_from_f16;
 inline uint16_t f32_to_f16(float f) { return f16_from_f32(f); }
 inline float f16_to_f32(uint16_t h) { return f32_from_f16(h); }
 
@@ -67,7 +67,7 @@ double q8_0_host(const std::vector<uint8_t>& x, long long i) {
     uint16_t db;
     std::memcpy(&db, blk, 2);
     const int8_t q = ((const int8_t*) (blk + 2))[i % 32];
-    return (double) strata::kernels::f32_from_f16(db) * (double) q;
+    return (double) guild::kernels::f32_from_f16(db) * (double) q;
 }
 
 float s2_weight(const std::vector<uint8_t>& codes, const std::vector<float>& scales, long long row,                long long n_in, long long i) {
@@ -131,8 +131,8 @@ int main(int argc, char** argv) {
     // in the gate and be blamed on the kernel.
     std::vector<uint16_t> hx_bf16((size_t) n_embd), hginp_bf16((size_t) n_embd);
     for (long long i = 0; i < n_embd; ++i) {
-        hx_bf16[(size_t) i] = strata::kernels::bf16_from_f32(fx[(size_t) i]);
-        hginp_bf16[(size_t) i] = strata::kernels::bf16_from_f32(ginp[(size_t) i]);
+        hx_bf16[(size_t) i] = guild::kernels::bf16_from_f32(fx[(size_t) i]);
+        hginp_bf16[(size_t) i] = guild::kernels::bf16_from_f32(ginp[(size_t) i]);
     }
 
     // ---- host reference, exactly as ref/moe.py writes it
@@ -178,7 +178,7 @@ int main(int argc, char** argv) {
         }
         double dot = 0;
         for (long long i = 0; i < n_embd; ++i)
-            dot += (double) strata::kernels::f32_from_bf16(hx_bf16[(size_t) i]) * (double) strata::kernels::f32_from_bf16(hginp_bf16[(size_t) i]);
+            dot += (double) guild::kernels::f32_from_bf16(hx_bf16[(size_t) i]) * (double) guild::kernels::f32_from_bf16(hginp_bf16[(size_t) i]);
         const double sg = 1.0 / (1.0 + std::exp(-dot));
         for (long long o = 0; o < n_embd; ++o) {
             out[(size_t) o] = elementwise_gate ? (float) ((double) out[(size_t) o] * sg)
@@ -318,7 +318,7 @@ int main(int argc, char** argv) {
             d_ginpb, hginp_bf16.data(), hginp_bf16.size() * sizeof(uint16_t)).wait()),
         "c ginpb");
 
-    const strata::kernels::SForm f{2, -1, 64, strata::kernels::Codebook::Affine, false, /*act_kind=*/0};
+    const guild::kernels::SForm f{2, -1, 64, guild::kernels::Codebook::Affine, false, /*act_kind=*/0};
     // **THE ACTIVATION IS Q8_0, NOT FP16, AND THE FIXTURE HAS TO MATCH THE CONTRACT.**  The kernel used to take
     // an fp16 activation for all three projections, which was simply the wrong `vec_dot_type` - and the
     // reference here computed with the fp16 values, so the two agreed on a number the reference model would not
@@ -343,7 +343,7 @@ int main(int argc, char** argv) {
         check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(
                   d_xf, fx.data(), (size_t)n_embd * 4).wait()),
               "cxf");
-        strata::kernels::quantize_q8_0(d_xf, d_x0, n_embd, nullptr);
+        guild::kernels::quantize_q8_0(d_xf, d_x0, n_embd, nullptr);
         check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
                                    .memcpy(hx0.data(), d_x0, hx0.size())
                                    .wait()),
@@ -357,10 +357,10 @@ int main(int argc, char** argv) {
     float* d_scratch = nullptr;
     check(
         DPCT_CHECK_ERROR(d_scratch = (float *)sycl::malloc_device(
-                             strata::kernels::shared_expert_scratch_bytes(n_ff),
+                             guild::kernels::shared_expert_scratch_bytes(n_ff),
                              dpct::get_in_order_queue())),
         "m scratch");
-    strata::kernels::shared_expert(d_x_used, nullptr, d_xb, f, d_gc, d_gs, nullptr, f, d_uc, d_us, nullptr, f,
+    guild::kernels::shared_expert(d_x_used, nullptr, d_xb, f, d_gc, d_gs, nullptr, f, d_uc, d_us, nullptr, f,
                                    d_dc, d_ds, nullptr, d_ginpb, d_scratch, d_out, n_embd, n_ff, tpr, nullptr);
     std::vector<float> got((size_t) n_embd);
     check(DPCT_CHECK_ERROR(
@@ -455,7 +455,7 @@ int main(int argc, char** argv) {
     // Isolate the BF16 scalar gate: keep the quantized expert inputs fixed and vary only its F32/BF16
     // activation. A zero scalar weight first exposes half the ungated output without duplicating the GEMVs.
     {
-        using namespace strata::kernels;
+        using namespace guild::kernels;
         std::vector<uint16_t> zeros((size_t) n_embd, 0), basis(zeros);
         basis[0] = bf16_from_f32(1.0f);
         std::vector<float> witness((size_t) n_embd, 0.0f);
@@ -694,7 +694,7 @@ int main(int argc, char** argv) {
         check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(
                   d_s, shared.data(), shared.size() * 4).wait()),
               "mc cs");
-        strata::kernels::moe_combine(d_p, d_w, d_s, d_y, n_embd2, k2, nullptr);
+        guild::kernels::moe_combine(d_p, d_w, d_s, d_y, n_embd2, k2, nullptr);
         std::vector<float> got((size_t) n_embd2);
         check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
                                    .memcpy(got.data(), d_y, got.size() * 4)
@@ -717,7 +717,7 @@ int main(int argc, char** argv) {
         if (!(rel_k <= 1e-6)) { std::printf("    *** over 1e-6 ***\n"); ++bad; }
 
         // a null `shared` must mean "no shared expert", not "add nothing but leave it undefined"
-        strata::kernels::moe_combine(d_p, d_w, nullptr, d_y, n_embd2, k2, nullptr);
+        guild::kernels::moe_combine(d_p, d_w, nullptr, d_y, n_embd2, k2, nullptr);
         check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
                                    .memcpy(got.data(), d_y, got.size() * 4)
                                    .wait()),

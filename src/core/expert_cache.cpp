@@ -1,14 +1,14 @@
 // src/core/expert_cache.cpp - R4's slot storage and residency table.  Read the header first.
-#include "strata/core/expert_cache.hpp"
+#include "guild/core/expert_cache.hpp"
 
 // #533's segmented cache uses CUDA's virtual memory management (cuMem*): not on HIP, neither the RDNA backend nor
-// the gfx906 compat build (PR #638), which compiles this file as HIP without STRATA_USE_HIP
-#if defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906)
-#define STRATA_EC_NO_VMM 1
+// the gfx906 compat build (PR #638), which compiles this file as HIP without GUILD_USE_HIP
+#if defined(GUILD_USE_HIP) || defined(GUILD_HIP_GFX906)
+#define GUILD_EC_NO_VMM 1
 #endif
 
 #include <cuda_runtime.h>
-#if !defined(STRATA_EC_NO_VMM)
+#if !defined(GUILD_EC_NO_VMM)
 #include <cuda.h>   // #533: the virtual memory management types (the functions come through the runtime's entry points)
 #endif
 
@@ -18,7 +18,7 @@
 #include <utility>
 #include <cstring>
 
-namespace strata::core {
+namespace guild::core {
 
 bool read_expert_profile(const std::string& path, int64_t n_layers, int64_t n_expert,
                          std::vector<std::pair<int32_t, int32_t>>& ranked, int64_t& slots, std::string& err) {
@@ -154,7 +154,7 @@ ExpertCache::~ExpertCache() { close(); }
 // ---- #533: the segmented arena (--vram-elastic).  The driver API's virtual memory functions, looked up through the
 // runtime (no link against the driver library): one address range for the whole arena, backed by physical segments,
 // and the tail's segments unmapped / mapped again later.  Nothing here runs unless a segment size was set.
-#if !defined(STRATA_EC_NO_VMM)
+#if !defined(GUILD_EC_NO_VMM)
 namespace {
 struct Vmm {
     CUresult (CUDAAPI* device_get)(CUdevice*, int) = nullptr;
@@ -233,7 +233,7 @@ bool map_segment(const Vmm& v, int dev, CUdeviceptr va, size_t bytes, unsigned l
 #endif
 
 bool ExpertCache::open_segmented(uint64_t want, std::string& err) {
-#if defined(STRATA_EC_NO_VMM)
+#if defined(GUILD_EC_NO_VMM)
     (void) want;
     err = "ExpertCache: --vram-elastic (a segmented expert cache) is CUDA-only for now";
     return false;
@@ -286,7 +286,7 @@ bool ExpertCache::open_segmented(uint64_t want, std::string& err) {
 }
 
 void ExpertCache::release_segmented() {
-#if !defined(STRATA_EC_NO_VMM)
+#if !defined(GUILD_EC_NO_VMM)
     const Vmm& v = vmm();
     if (base_ != nullptr) cudaDeviceSynchronize();
     const CUdeviceptr va = reinterpret_cast<CUdeviceptr>(base_);
@@ -324,7 +324,7 @@ bool ExpertCache::shrink(int64_t keep_bytes, std::string& err) {
         err = "the expert cache is not segmented (the engine needs --vram-elastic)";
         return false;
     }
-#if defined(STRATA_EC_NO_VMM)
+#if defined(GUILD_EC_NO_VMM)
     (void) keep_bytes;
     return false;
 #else
@@ -358,7 +358,7 @@ bool ExpertCache::grow(int64_t want_bytes, std::string& err) {
         err = "the expert cache is not segmented (the engine needs --vram-elastic)";
         return false;
     }
-#if defined(STRATA_EC_NO_VMM)
+#if defined(GUILD_EC_NO_VMM)
     (void) want_bytes;
     return false;
 #else
@@ -384,7 +384,7 @@ bool ExpertCache::grow(int64_t want_bytes, std::string& err) {
 #endif
 }
 
-#if defined(STRATA_USE_HIP)
+#if defined(GUILD_USE_HIP)
 bool ExpertCache::ensure_blocking_staging(std::size_t bytes, std::string& err) {
     if (bytes <= blocking_staging_bytes_) return true;
     void* next = nullptr;
@@ -459,7 +459,7 @@ bool ExpertCache::open(int64_t n_slots, int64_t n_layers, int64_t n_expert, int6
     n_layers_ = n_layers;
     n_expert_ = n_expert;
     blob_ = blob_bytes;
-#if defined(STRATA_USE_HIP)
+#if defined(GUILD_USE_HIP)
     if (!ensure_blocking_staging((std::size_t) blob_, err)) {
         close();
         return false;
@@ -495,7 +495,7 @@ bool ExpertCache::open_sized(const std::vector<int64_t>& slot_bytes, int64_t n_l
     live_slots_ = slots_;
     blob_ = mx;
     off_ = std::move(off);
-#if defined(STRATA_USE_HIP)
+#if defined(GUILD_USE_HIP)
     if (!ensure_blocking_staging((std::size_t) blob_, err)) {
         close();
         return false;
@@ -513,7 +513,7 @@ bool ExpertCache::open_sized(const std::vector<int64_t>& slot_bytes, int64_t n_l
 }
 
 void ExpertCache::close() {
-#if defined(STRATA_USE_HIP)
+#if defined(GUILD_USE_HIP)
     if (blocking_staging_) (void) cudaFreeHost(blocking_staging_);
     blocking_staging_ = nullptr;
     blocking_staging_bytes_ = 0;
@@ -618,7 +618,7 @@ bool ExpertCache::fill_slot_blocking(int32_t slot, const uint8_t* host_blob, std
         err = "ExpertCache::fill_slot_blocking: the host blob is null";
         return false;
     }
-#if defined(STRATA_USE_HIP)
+#if defined(GUILD_USE_HIP)
     // Bound HIP's pageable-source staging to one expert instead of repeatedly
     // registering regions of the mmap. The blocking copy completes before reuse.
     if (!blocking_staging_ || n > blocking_staging_bytes_) {
@@ -693,4 +693,4 @@ bool ExpertCache::verify_slot(int32_t slot, const uint8_t* host_blob, std::strin
     return true;
 }
 
-}  // namespace strata::core
+}  // namespace guild::core

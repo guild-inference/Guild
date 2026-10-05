@@ -13,9 +13,9 @@
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
-#include "strata/kernels/f16_bits.hpp"
-#include "strata/kernels/quantize_act.hpp"
-#include "strata/kernels/s_gemv.hpp"
+#include "guild/kernels/f16_bits.hpp"
+#include "guild/kernels/quantize_act.hpp"
+#include "guild/kernels/s_gemv.hpp"
 
 #include <cmath>
 #include <cstdio>
@@ -26,8 +26,8 @@
 
 namespace {
 
-using strata::kernels::SForm;
-using strata::kernels::Codebook;
+using guild::kernels::SForm;
+using guild::kernels::Codebook;
 
 void check(dpct::err0 e, const char *what) {
 }
@@ -158,8 +158,8 @@ int ragged_rows(const Case& cs, long long n_out) {
     check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(
               d_offs, offs.data(), offs.size() * 4).wait()),
           "rco");
-    strata::kernels::quantize_q8_K(d_xf, d_xk, n_in, nullptr);
-    strata::kernels::quantize_q8_0(d_xf, d_x0, n_in, nullptr);
+    guild::kernels::quantize_q8_K(d_xf, d_xk, n_in, nullptr);
+    guild::kernels::quantize_q8_0(d_xf, d_x0, n_in, nullptr);
     check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
                                .memcpy(xk.data(), d_xk, xk.size())
                                .wait()),
@@ -183,7 +183,7 @@ int ragged_rows(const Case& cs, long long n_out) {
                     const uint8_t* blk = x0.data() + (size_t) (i / 32) * 34;
                     uint16_t dbits;
                     std::memcpy(&dbits, blk, 2);
-                    a = (double) strata::kernels::f32_from_f16(dbits) * (double) ((const int8_t*) (blk + 2))[i % 32];
+                    a = (double) guild::kernels::f32_from_f16(dbits) * (double) ((const int8_t*) (blk + 2))[i % 32];
                 }
                 const double wa = weight_at(codes, scales, offs, f, n_in, o, i) * a;
                 acc += wa;
@@ -204,10 +204,10 @@ int ragged_rows(const Case& cs, long long n_out) {
                   d_y, sentinel.data(), sentinel.size() * 4).wait()),
               "rsent");
         if (kind == 0)
-            strata::kernels::s_gemv_q8k_split(d_xk, d_codes, d_scales, cs.has_offset ? d_offs : nullptr, d_y, n_in,
+            guild::kernels::s_gemv_q8k_split(d_xk, d_codes, d_scales, cs.has_offset ? d_offs : nullptr, d_y, n_in,
                                               n_out, f, nullptr);
         else
-            strata::kernels::s_gemv_q8_0_split(d_x0, d_codes, d_scales, cs.has_offset ? d_offs : nullptr, d_y, n_in,
+            guild::kernels::s_gemv_q8_0_split(d_x0, d_codes, d_scales, cs.has_offset ? d_offs : nullptr, d_y, n_in,
                                                n_out, f, nullptr);
         check(DPCT_CHECK_ERROR(
                   dpct::get_current_device().queues_wait_and_throw()),
@@ -305,7 +305,7 @@ int main(int argc, char** argv) {
         check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(
                   d_xf, xf.data(), (size_t)n_in * 4).wait()),
               "cxf");
-        strata::kernels::quantize_q8_K(d_xf, d_xq, n_in, nullptr);
+        guild::kernels::quantize_q8_K(d_xf, d_xq, n_in, nullptr);
         check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
                                    .memcpy(xq8k.data(), d_xq, xq8k.size())
                                    .wait()),
@@ -367,13 +367,13 @@ int main(int argc, char** argv) {
               "co");
 
         std::vector<float> naive((size_t) n_out), warp((size_t) n_out);
-        strata::kernels::s_gemv_q8k(d_xq, d_codes, d_scales, cs.has_offset ? d_offs : nullptr, d_y, n_in, n_out,
+        guild::kernels::s_gemv_q8k(d_xq, d_codes, d_scales, cs.has_offset ? d_offs : nullptr, d_y, n_in, n_out,
                                     f, nullptr);
         check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
                                    .memcpy(naive.data(), d_y, (size_t)n_out * 4)
                                    .wait()),
               "cy1");
-        strata::kernels::s_gemv_q8k_split(d_xq, d_codes, d_scales, cs.has_offset ? d_offs : nullptr, d_y, n_in,
+        guild::kernels::s_gemv_q8k_split(d_xq, d_codes, d_scales, cs.has_offset ? d_offs : nullptr, d_y, n_in,
                                           n_out, f, nullptr);
         check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
                                    .memcpy(warp.data(), d_y, (size_t)n_out * 4)
@@ -401,7 +401,7 @@ int main(int argc, char** argv) {
             check(DPCT_CHECK_ERROR(d_x0 = (uint8_t *)sycl::malloc_device(
                                        xq0.size(), dpct::get_in_order_queue())),
                   "x0");
-            strata::kernels::quantize_q8_0(d_xf, d_x0, n_in, nullptr);
+            guild::kernels::quantize_q8_0(d_xf, d_x0, n_in, nullptr);
             check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
                                        .memcpy(xq0.data(), d_x0, xq0.size())
                                        .wait()),
@@ -415,13 +415,13 @@ int main(int argc, char** argv) {
                     const uint8_t* blk = xq0.data() + (size_t) (i / 32) * 34;
                     uint16_t dbits;
                     std::memcpy(&dbits, blk, 2);
-                    const double d = (double) strata::kernels::f32_from_f16(dbits);
+                    const double d = (double) guild::kernels::f32_from_f16(dbits);
                     const int8_t q = ((const int8_t*) (blk + 2))[i % 32];
                     acc += weight_at(codes, scales, offs, f, n_in, o, i) * d * (double) q;
                 }
                 want0[(size_t) o] = (float) acc;
             }
-            strata::kernels::s_gemv_q8_0_split(d_x0, d_codes, d_scales, cs.has_offset ? d_offs : nullptr, d_y,
+            guild::kernels::s_gemv_q8_0_split(d_x0, d_codes, d_scales, cs.has_offset ? d_offs : nullptr, d_y,
                                                n_in, n_out, f, nullptr);
             std::vector<float> got0((size_t) n_out);
             check(DPCT_CHECK_ERROR(
@@ -447,7 +447,7 @@ int main(int argc, char** argv) {
         // ---- 3. THE Q8_K vs FP16 GAP, on a K-quant weight - the case the contract decision needs
         {
             std::vector<uint16_t> x16((size_t) n_in);
-            for (long long i = 0; i < n_in; ++i) x16[(size_t) i] = strata::kernels::f16_from_f32(xf[(size_t) i]);
+            for (long long i = 0; i < n_in; ++i) x16[(size_t) i] = guild::kernels::f16_from_f32(xf[(size_t) i]);
             uint16_t* d_x16 = nullptr;
             check(DPCT_CHECK_ERROR(
                       d_x16 = (uint16_t *)sycl::malloc_device(
@@ -463,7 +463,7 @@ int main(int argc, char** argv) {
                       d_x16, x16.data(), (size_t)n_in * 2).wait()),
                   "cx16");
             std::vector<float> fp16out((size_t) n_out);
-            strata::kernels::s_gemv(d_x16, d_codes, d_scales, cs.has_offset ? d_offs : nullptr, d_y, n_in, n_out,
+            guild::kernels::s_gemv(d_x16, d_codes, d_scales, cs.has_offset ? d_offs : nullptr, d_y, n_in, n_out,
                                     f);
             check(DPCT_CHECK_ERROR(
                       (dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())

@@ -1,18 +1,18 @@
 // src/kernels/cuda/gdn.cu - P2.S2: the gated delta-net's non-projection parts.
 //
-// See include/strata/kernels/gdn.hpp for the state layout (S, h_v, S) and for why the recurrence needs no
+// See include/guild/kernels/gdn.hpp for the state layout (S, h_v, S) and for why the recurrence needs no
 // barrier at all: every line of it touches only one (j, h) column, so one thread owns a column end to end.
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
-#include "strata/sycl_queue.hpp"
-#include "strata/kernels/gdn.hpp"
+#include "guild/sycl_queue.hpp"
+#include "guild/kernels/gdn.hpp"
 
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 
-namespace strata::kernels {
+namespace guild::kernels {
 namespace {
 
 constexpr int JTHREADS = 32;   ///< threads along j, the state's fast axis
@@ -232,7 +232,7 @@ void gdn_step(float *state, const float *q, const float *k, const float *v,
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
+        guild::q_of(stream)
             ->parallel_for<dpct_kernel_name<class gdn_step_kernel_34b62e>>(
                 sycl::nd_range<3>(grid * sycl::range(1, 1, JTHREADS),
                                   sycl::range(1, 1, JTHREADS)),
@@ -261,7 +261,7 @@ void gdn_conv_step(float *conv_state, const float *x, const float *kW,
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
+        guild::q_of(stream)
             ->parallel_for<dpct_kernel_name<class gdn_conv_kernel_b12e73>>(
                 sycl::nd_range<3>(sycl::range(1, 1, blocks) *
                                       sycl::range(1, 1, 256),
@@ -293,10 +293,10 @@ void gdn_l2_norm(float *x, int64_t rows, int64_t cols, float eps,
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
         dpct::has_capability_or_fail(
-            strata::q_of(stream)->get_device(),
+            guild::q_of(stream)->get_device(),
             {sycl::aspect::fp64});
 
-        strata::q_of(stream)
+        guild::q_of(stream)
             ->parallel_for<dpct_kernel_name<class gdn_l2_kernel_fcfb3d>>(
                 sycl::nd_range<3>(sycl::range(1, 1, (unsigned)rows) *
                                       sycl::range(1, 1, 32),
@@ -344,7 +344,7 @@ void gdn_beta_gate(float *beta, int64_t h_v, void *stream) try {
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
+        guild::q_of(stream)
             ->parallel_for<dpct_kernel_name<class gdn_beta_gate_kernel_e2ab3e>>(
                 sycl::nd_range<3>(
                     sycl::range(1, 1, (unsigned)((n + 127) / 128)) *
@@ -373,10 +373,10 @@ void gdn_out_norm(const float *o, const float *z, const float *ssm_norm,
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
         dpct::has_capability_or_fail(
-            strata::q_of(stream)->get_device(),
+            guild::q_of(stream)->get_device(),
             {sycl::aspect::fp64});
 
-        strata::q_of(stream)
+        guild::q_of(stream)
             ->parallel_for<dpct_kernel_name<class gdn_out_norm_kernel_9883e0>>(
                 sycl::nd_range<3>(sycl::range(1, 1, (unsigned)h_v) *
                                       sycl::range(1, 1, 32),
@@ -398,4 +398,4 @@ catch (sycl::exception const &exc) {
   std::exit(1);
 }
 
-}  // namespace strata::kernels
+}  // namespace guild::kernels

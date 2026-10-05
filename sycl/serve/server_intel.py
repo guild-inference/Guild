@@ -1,6 +1,6 @@
 """serve/server.py for an Intel Arc: the same server, with the Intel pieces added from outside.
 
-    python sycl/serve/server_intel.py --engine strata --config strata-<model>.json --port 8080 [...]
+    python sycl/serve/server_intel.py --engine guild --config guild-<model>.json --port 8080 [...]
 
 Every argument is serve/server.py's.  Nothing in serve/ is edited (the SYCL port keeps out of the shared files so
 upstream merges stay clean); this wrapper adds, at run time:
@@ -133,9 +133,9 @@ def install_switcher(argv):
 
 def install_logprobs():
     """`LP` lines next to their tokens, the request's `logprobs` to the engine, OpenAI's `logprobs` in the reply."""
-    Eng = S.StrataEngine
+    Eng = S.GuildEngine
 
-    def _pump(self):   # serve/server.py's StrataEngine._pump, plus: an LP line goes beside its token, not in the queue
+    def _pump(self):   # serve/server.py's GuildEngine._pump, plus: an LP line goes beside its token, not in the queue
         proc, lines = self.proc, self.lines
         lp = self.__dict__.setdefault("lp_lines", collections.deque())
         last_t = None

@@ -1,10 +1,10 @@
-#include "strata/core/conversation_cache.hpp"
+#include "guild/core/conversation_cache.hpp"
 
 #include <cstdio>
 #include <cstdlib>
 #include <vector>
 
-using namespace strata::core;
+using namespace guild::core;
 
 namespace {
 int checks = 0;

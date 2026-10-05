@@ -8,13 +8,13 @@ measured on (a Ryzen 5 7600 + RTX 5070 on PCIe 5):
                   per extra window row (more experts per window), so it wants a higher floor.
   --pool-workers  the CPU threads that compute experts.  Every physical core is not always best: on hybrid CPUs the
                   efficiency cores can make the whole window wait for them.
-The first two are measured through one engine (per-request `strata_tune` keys); the worker count needs a restart
+The first two are measured through one engine (per-request `guild_tune` keys); the worker count needs a restart
 per value.  Decode speed only: the prompt path streams every expert whatever these settings say.
 
 A setting is kept only when it beats the default by more than MIN_GAIN in an interleaved re-measurement - the
 adaptive expert tier and the OS make single measurements noisy by a few percent.
 
-    python tools/calibrate.py strata-q2_0.json        # measure and print; setup.py --calibrate also saves it
+    python tools/calibrate.py guild-q2_0.json        # measure and print; setup.py --calibrate also saves it
 """
 from __future__ import annotations
 
@@ -90,7 +90,7 @@ class Session:
         for ids in self.ids_list:
             sampling = {"temperature": 0}
             if tune:
-                sampling["strata_tune"] = tune
+                sampling["guild_tune"] = tune
             n = sum(1 for t in self.engine.generate(ids, MAX_NEW, sampling, threading.Event()) if t is not None)
             ms = (self.engine.last or {}).get("decode_ms") or 0.0
             if n > 8 and ms > 0:
@@ -104,13 +104,13 @@ class Session:
 
 def run(cfg: dict, say=print, start_engine=None) -> dict:
     """Measure on the engine `cfg` describes; returns {"settings": {flag: value}, "report": {...}}.
-    `start_engine(args)` returns a started engine (serve.server.StrataEngine or a stand-in in tests)."""
+    `start_engine(args)` returns a started engine (serve.server.GuildEngine or a stand-in in tests)."""
     if start_engine is None:
-        from serve.server import StrataEngine, child_env
+        from serve.server import GuildEngine, child_env
 
         def start_engine(args):
-            return StrataEngine(cfg["exe"], args, cwd=cfg.get("cwd"), log=cfg.get("log"), env=child_env(cfg))
-    import strata_tokenizer as ST
+            return GuildEngine(cfg["exe"], args, cwd=cfg.get("cwd"), log=cfg.get("log"), env=child_env(cfg))
+    import guild_tokenizer as ST
     tpath = Path(cfg["tokenizer"])
     vocab = json.loads((tpath / "vocab.json").read_text(encoding="utf-8"))
     toks = [None] * len(vocab)
@@ -133,7 +133,7 @@ def engine_args(cfg: dict) -> list[str]:
 
 def engine_error(log: str | None, since: int = 0) -> str | None:
     """#447: the engine's own reason for a failed start - the last line of its log written after byte `since` that is
-    its own ("strata ..." or "ERR ..."), else the last line there; None without a log or a new line."""
+    its own ("guild ..." or "ERR ..."), else the last line there; None without a log or a new line."""
     if not log:
         return None
     try:
@@ -142,7 +142,7 @@ def engine_error(log: str | None, since: int = 0) -> str | None:
             lines = [x.strip() for x in f.read()[-16384:].decode("utf-8", "replace").splitlines() if x.strip()]
     except OSError:
         return None
-    return next((x for x in reversed(lines) if x.startswith(("strata", "ERR"))), lines[-1] if lines else None)
+    return next((x for x in reversed(lines) if x.startswith(("guild", "ERR"))), lines[-1] if lines else None)
 
 
 def measure(base_args: list[str], ids_list, start_engine, say=print) -> dict:
@@ -243,6 +243,6 @@ def apply(args: list[str], settings: dict) -> list[str]:
 
 if __name__ == "__main__":
     if len(sys.argv) != 2:
-        sys.exit("usage: calibrate.py <strata-*.json>")
+        sys.exit("usage: calibrate.py <guild-*.json>")
     res = run(json.loads(Path(sys.argv[1]).read_text(encoding="utf-8-sig")))
     print(json.dumps(res, indent=1))

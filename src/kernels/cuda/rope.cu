@@ -25,8 +25,8 @@
 // `freq_scale`; YaRN blends extrapolation and interpolation along the pairs (ggml's `rope_yarn`) and folds
 // the mscale magnitude correction into the same cos/sin values.  All of it float64, in the reference's
 // order, so `rope_parity` can hold every variant to a bit-exact float64 transcription of the same spec.
-#include "strata/kernels/rope.hpp"
-#include "strata/kernels/mrope.hpp"
+#include "guild/kernels/rope.hpp"
+#include "guild/kernels/mrope.hpp"
 
 #include <cuda_runtime.h>
 
@@ -34,7 +34,7 @@
 #include <cstdio>
 #include <cstdlib>
 
-namespace strata::kernels {
+namespace guild::kernels {
 
 namespace {
 // The process's rope config (rope_scaling.hpp).  One writer - the engine's startup thread, before
@@ -133,4 +133,4 @@ void rope_neox_apply(const float* x, float* out, int64_t rows, int head_dim, int
     if (stream == nullptr) cudaDeviceSynchronize();
 }
 
-}  // namespace strata::kernels
+}  // namespace guild::kernels

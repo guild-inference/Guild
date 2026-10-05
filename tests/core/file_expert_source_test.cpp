@@ -1,10 +1,10 @@
-#include "strata/core/expert_source.hpp"
-#include "strata/core/expert_cache.hpp"
-#include "strata/kernels/cpu/expert.hpp"
-#include "strata/kernels/cpu/expert_layout.hpp"
+#include "guild/core/expert_source.hpp"
+#include "guild/core/expert_cache.hpp"
+#include "guild/kernels/cpu/expert.hpp"
+#include "guild/kernels/cpu/expert_layout.hpp"
 
-#if defined(STRATA_NATIVE_EXPERTS)
-#include "strata/kernels/cpu/native_expert.hpp"
+#if defined(GUILD_NATIVE_EXPERTS)
+#include "guild/kernels/cpu/native_expert.hpp"
 #include "ggml.h"
 #endif
 
@@ -35,7 +35,7 @@ struct TempDirectory {
 
     TempDirectory() {
         const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
-        path = fs::temp_directory_path() / ("strata-file-source-test-" + std::to_string(stamp));
+        path = fs::temp_directory_path() / ("guild-file-source-test-" + std::to_string(stamp));
         fs::create_directories(path);
     }
 
@@ -66,7 +66,7 @@ void create_pack(const fs::path& dir, uint64_t bytes, const std::vector<std::pai
     }
 }
 
-void check_file_size_rejection(strata::core::FileExpertSource& source, const fs::path& dir, int64_t layers,
+void check_file_size_rejection(guild::core::FileExpertSource& source, const fs::path& dir, int64_t layers,
                                int64_t experts, uint64_t expected_bytes) {
     std::string err;
     source.close();
@@ -81,8 +81,8 @@ void check_file_size_rejection(strata::core::FileExpertSource& source, const fs:
 }
 
 void test_canonical_layout() {
-    using namespace strata::core;
-    using namespace strata::kernels::cpu;
+    using namespace guild::core;
+    using namespace guild::kernels::cpu;
     constexpr int64_t layers = 2;
     constexpr int64_t experts = 3;
     const uint64_t layer_bytes = (uint64_t) experts * BLOB;
@@ -123,8 +123,8 @@ void test_canonical_layout() {
 }
 
 void test_zero_gpu_ram_tier() {
-    using namespace strata::core;
-    using namespace strata::kernels::cpu;
+    using namespace guild::core;
+    using namespace guild::kernels::cpu;
     constexpr int64_t layers = 2, experts = 3;
     const uint64_t total = layers * experts * (uint64_t) BLOB;
     TempDirectory dir;
@@ -160,10 +160,10 @@ void test_zero_gpu_ram_tier() {
     }
 }
 
-#if defined(STRATA_NATIVE_EXPERTS)
+#if defined(GUILD_NATIVE_EXPERTS)
 void test_native_variable_layout() {
-    using namespace strata::core;
-    using namespace strata::kernels::cpu;
+    using namespace guild::core;
+    using namespace guild::kernels::cpu;
     constexpr int64_t layers = 2;
     constexpr int64_t experts = 3;
     constexpr int64_t embedding = 2560;
@@ -225,7 +225,7 @@ void test_native_variable_layout() {
 #endif
 
 void test_complement_plan() {
-    using namespace strata::core::detail;
+    using namespace guild::core::detail;
     std::vector<uint64_t> offsets;
     uint64_t bytes = 0;
     std::string error;
@@ -247,7 +247,7 @@ void test_complement_plan() {
 }
 
 void test_resident_lend_region() {
-    using namespace strata::core::detail;
+    using namespace guild::core::detail;
     // four slots (sizes 5, 3, 3, 5); the experts no slot holds take 10 bytes
     const std::vector<uint64_t> slots{5, 3, 3, 5};
     require(choose_resident_keep_from(slots, 10, 9, 1) == -1, "a base larger than the budget was accepted");
@@ -262,8 +262,8 @@ void test_resident_lend_region() {
 }
 
 void test_resident_exchange() {
-    using namespace strata::core;
-    using namespace strata::core::detail;
+    using namespace guild::core;
+    using namespace guild::core::detail;
     // 2 layers x 3 experts; the GPU holds (0,1) and (1,2): the compact copy holds the other four
     std::vector<uint64_t> offsets;
     uint64_t bytes = 0;
@@ -293,7 +293,7 @@ void test_resident_exchange() {
 }
 
 void test_cgroup_memory_budget() {
-    using namespace strata::core::detail;
+    using namespace guild::core::detail;
     constexpr uint64_t GiB = 1ull << 30;
     uint64_t bytes = 0;
 
@@ -330,7 +330,7 @@ void test_cgroup_memory_budget() {
 // #633: the host RAM probe with fake /proc and cgroup trees: v2 (a limit, "max", a missing or malformed limit), v1
 // (a limit, unlimited), and no cgroup line at all.  Elsewhere than Linux it reads the machine's RAM.
 void test_host_memory() {
-    using namespace strata::core::detail;
+    using namespace guild::core::detail;
     constexpr uint64_t GiB = 1ull << 30;
     HostMemory m;
 #if defined(__linux__)
@@ -388,7 +388,7 @@ int main() {
         test_host_memory();
         test_canonical_layout();
         test_zero_gpu_ram_tier();
-#if defined(STRATA_NATIVE_EXPERTS)
+#if defined(GUILD_NATIVE_EXPERTS)
         test_native_variable_layout();
 #endif
         std::cout << "file_expert_source_test: PASS\n";

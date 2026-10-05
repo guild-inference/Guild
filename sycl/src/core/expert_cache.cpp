@@ -4,10 +4,10 @@
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
-#include "strata/sycl_queue.hpp"
-#include "strata/core/expert_cache.hpp"
+#include "guild/sycl_queue.hpp"
+#include "guild/core/expert_cache.hpp"
 
-#if !defined(STRATA_USE_HIP)
+#if !defined(GUILD_USE_HIP)
    // #533: the virtual memory management types (the functions come through the
    // runtime's entry points)
 #endif
@@ -18,7 +18,7 @@
 #include <utility>
 #include <cstring>
 
-namespace strata::core {
+namespace guild::core {
 
 bool read_expert_profile(const std::string& path, int64_t n_layers, int64_t n_expert,
                          std::vector<std::pair<int32_t, int32_t>>& ranked, int64_t& slots, std::string& err) {
@@ -448,7 +448,7 @@ bool ExpertCache::grow(int64_t want_bytes, std::string& err) {
 #endif
 }
 
-#if defined(STRATA_USE_HIP)
+#if defined(GUILD_USE_HIP)
 bool ExpertCache::ensure_blocking_staging(std::size_t bytes, std::string& err) {
     if (bytes <= blocking_staging_bytes_) return true;
     void* next = nullptr;
@@ -544,7 +544,7 @@ bool ExpertCache::open(int64_t n_slots, int64_t n_layers, int64_t n_expert,
     n_layers_ = n_layers;
     n_expert_ = n_expert;
     blob_ = blob_bytes;
-#if defined(STRATA_USE_HIP)
+#if defined(GUILD_USE_HIP)
     if (!ensure_blocking_staging((std::size_t) blob_, err)) {
         close();
         return false;
@@ -585,7 +585,7 @@ bool ExpertCache::open_sized(const std::vector<int64_t>& slot_bytes, int64_t n_l
     live_slots_ = slots_;
     blob_ = mx;
     off_ = std::move(off);
-#if defined(STRATA_USE_HIP)
+#if defined(GUILD_USE_HIP)
     if (!ensure_blocking_staging((std::size_t) blob_, err)) {
         close();
         return false;
@@ -603,7 +603,7 @@ bool ExpertCache::open_sized(const std::vector<int64_t>& slot_bytes, int64_t n_l
 }
 
 void ExpertCache::close() {
-#if defined(STRATA_USE_HIP)
+#if defined(GUILD_USE_HIP)
     if (blocking_staging_) (void) cudaFreeHost(blocking_staging_);
     blocking_staging_ = nullptr;
     blocking_staging_bytes_ = 0;
@@ -695,7 +695,7 @@ bool ExpertCache::fill_slot(int32_t slot, const uint8_t *host_blob,
     ensure synchronization behavior.
     */
     const dpct::err0 e =
-        DPCT_CHECK_ERROR(strata::q_of(stream)->memcpy(dst, host_blob, n));
+        DPCT_CHECK_ERROR(guild::q_of(stream)->memcpy(dst, host_blob, n));
     /*
     DPCT1000: Error handling if-stmt was detected but could not be
     rewritten.
@@ -734,7 +734,7 @@ bool ExpertCache::fill_slot_blocking(int32_t slot, const uint8_t *host_blob,
         err = "ExpertCache::fill_slot_blocking: the host blob is null";
         return false;
     }
-#if defined(STRATA_USE_HIP)
+#if defined(GUILD_USE_HIP)
     // Bound HIP's pageable-source staging to one expert instead of repeatedly
     // registering regions of the mmap. The blocking copy completes before reuse.
     if (!blocking_staging_ || n > blocking_staging_bytes_) {
@@ -898,4 +898,4 @@ catch (sycl::exception const &exc) {
   std::exit(1);
 }
 
-}  // namespace strata::core
+}  // namespace guild::core

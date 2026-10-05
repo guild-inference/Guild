@@ -1,18 +1,18 @@
-// src/kernels/cuda/kv_stream.cu - see include/strata/kernels/kv_stream.hpp.
+// src/kernels/cuda/kv_stream.cu - see include/guild/kernels/kv_stream.hpp.
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
-#include "strata/sycl_queue.hpp"
-#include "strata/kernels/kv_stream.hpp"
-#include "strata/kernels/kv_q4.hpp"
-#include "strata/kernels/kv_q8.hpp"
+#include "guild/sycl_queue.hpp"
+#include "guild/kernels/kv_stream.hpp"
+#include "guild/kernels/kv_q4.hpp"
+#include "guild/kernels/kv_q8.hpp"
 
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cmath>
 
-namespace strata::kernels {
+namespace guild::kernels {
 namespace {
 
 void check(const char* what) {
@@ -310,7 +310,7 @@ void kv_stream_reset(const KvStreamMap& m, void* stream) {
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
+        guild::q_of(stream)
             ->parallel_for<dpct_kernel_name<class reset_kernel_f02a82>>(
                 sycl::nd_range<3>(sycl::range(1, 1, 128) *
                                       sycl::range(1, 1, 256),
@@ -347,7 +347,7 @@ void kv_stream_resolve(const KvStreamMap& m, const QsaAttnPools& slots, const Kv
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
+        guild::q_of(stream)
             ->parallel_for<dpct_kernel_name<class resolve_kernel_148a81>>(
                 sycl::nd_range<3>(sycl::range(1, 1, RT), sycl::range(1, 1, RT)),
                 exp_props,
@@ -362,7 +362,7 @@ void kv_stream_resolve(const KvStreamMap& m, const QsaAttnPools& slots, const Kv
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
+        guild::q_of(stream)
             ->submit([&](sycl::handler &cgh) {
                 auto runs_of_slots_host_fmt_s_ct1 =
                     runs_of(slots, host, fmt, s);
@@ -384,7 +384,7 @@ void kv_ring_table(int32_t* page_table, int64_t n_blocks, int64_t n_slots, void*
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
+        guild::q_of(stream)
             ->parallel_for<dpct_kernel_name<class ring_kernel_f9df1d>>(
                 sycl::nd_range<3>(sycl::range(1, 1, 64) *
                                       sycl::range(1, 1, 256),
@@ -409,7 +409,7 @@ void kv_ring_restore(const QsaAttnPools &slots, const KvHostPools &host,
             type of operand memory, so you may need to call wait() on event
             return by memcpy API to ensure synchronization behavior.
             */
-            if (DPCT_CHECK_ERROR(strata::q_of(stream)->memcpy(
+            if (DPCT_CHECK_ERROR(guild::q_of(stream)->memcpy(
                     r.dst[a] + sl * r.len[a], r.src[a] + b * r.len[a],
                     (size_t)(run * r.len[a]))) != 0)
                 check("ring restore");
@@ -434,7 +434,7 @@ void kv_stage_from_host(const QsaAttnPools &stage, const KvHostPools &host,
         operand memory, so you may need to call wait() on event return by memcpy
         API to ensure synchronization behavior.
         */
-        if (DPCT_CHECK_ERROR(strata::q_of(stream)->memcpy(
+        if (DPCT_CHECK_ERROR(guild::q_of(stream)->memcpy(
                 r.dst[a], r.src[a], (size_t)(n_blocks * r.len[a]))) != 0)
             check("stage");
 }
@@ -456,7 +456,7 @@ void kv_unstage_to_host(const QsaAttnPools &stage, const KvHostPools &host,
         operand memory, so you may need to call wait() on event return by memcpy
         API to ensure synchronization behavior.
         */
-        if (DPCT_CHECK_ERROR(strata::q_of(stream)->memcpy(
+        if (DPCT_CHECK_ERROR(guild::q_of(stream)->memcpy(
                 (void *)(r.src[a] + b0 * r.len[a]), r.dst[a] + b0 * r.len[a],
                 (size_t)((b1 - b0) * r.len[a]))) != 0)
             check("unstage");
@@ -487,4 +487,4 @@ catch (sycl::exception const &exc) {
   std::exit(1);
 }
 
-}  // namespace strata::kernels
+}  // namespace guild::kernels

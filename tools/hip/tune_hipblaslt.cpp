@@ -1,7 +1,7 @@
 #include <hip/hip_runtime.h>
 #include <hip/hip_fp16.h>
 #include <hip/hip_bfloat16.h>
-#include "../../include/strata/kernels/bf16_bits.hpp"
+#include "../../include/guild/kernels/bf16_bits.hpp"
 #include <hip/hip_version.h>
 #include <hipblas/hipblas.h>
 #include <hipblaslt/hipblaslt.h>
@@ -100,7 +100,7 @@ std::string config_hex(const hipblasLtMatmulAlgo_t &algo) {
     return o.str();
 }
 uint16_t input_bits(float x, bool bf16) {
-    if (bf16) return strata::kernels::bf16_from_f32(x);
+    if (bf16) return guild::kernels::bf16_from_f32(x);
     const __half half = __float2half_rn(x);
     uint16_t bits = 0;
     std::memcpy(&bits, &half, sizeof(bits));
@@ -394,7 +394,7 @@ void tuning_file(const std::string &path,const std::string &arch,int version,con
     std::ofstream f(path);
     if(!f){std::fprintf(stderr,"cannot write tuning output: %s\n",path.c_str());std::exit(2);}
     f<<"# solution IDs are scoped to this hipBLASLt version and device architecture\n";
-    f<<"STRATA_HIPBLASLT_TUNING_V1 "<<arch<<" "<<version<<"\n";
+    f<<"GUILD_HIPBLASLT_TUNING_V1 "<<arch<<" "<<version<<"\n";
     for(const auto &b:rows)f<<dtype(b.s.bf16)<<" "<<b.s.n<<" "<<b.s.k<<" "<<b.s.ldy<<" "<<b.s.t<<" "<<b.solution_id<<"\n";
 }
 } // namespace

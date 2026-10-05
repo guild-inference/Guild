@@ -2,8 +2,8 @@
 //
 // The body is the validated kernel, moved rather than rewritten: it carries the P0.T2 parity result
 // (rel 1.461e-06 against the ggml formula) and the three performance findings recorded in
-// include/strata/kernels/cpu/expert.hpp.  Read that header first; it says why each piece is shaped this way.
-#include "strata/kernels/cpu/expert.hpp"
+// include/guild/kernels/cpu/expert.hpp.  Read that header first; it says why each piece is shaped this way.
+#include "guild/kernels/cpu/expert.hpp"
 
 #include <immintrin.h>
 #if defined(_MSC_VER)
@@ -18,7 +18,7 @@
 #include <cstdlib>
 #include <cstring>
 
-namespace strata::kernels::cpu {
+namespace guild::kernels::cpu {
 namespace {
 
 std::atomic<bool> oracle_q8_0{false};
@@ -150,7 +150,7 @@ inline float hsum_ps(__m256 v) {
 // products built for eight blocks at a time; the weight-independent correction is one FMA per eight blocks.
 // The sum order differs from the 256-bit kernel (last-bit differences); the verify window and plain decode both
 // use this kernel, so speculative decode still reproduces plain decode exactly.
-static const bool kZmm = std::getenv("STRATA_CPU_YMM") == nullptr;
+static const bool kZmm = std::getenv("GUILD_CPU_YMM") == nullptr;
 
 inline __m512i unpack64_q2_0(const uint8_t* codes) {
     const __m128i packed = _mm_loadu_si128((const __m128i*) codes);          // 8 u16 = 64 codes
@@ -376,7 +376,7 @@ void cpu_require_expert_support() {
     const CpuFeatures f = cpu_features();
     if (f.usable()) return;
     std::fprintf(stderr,
-                 "strata: this CPU cannot run the expert kernel: %s.\n"
+                 "guild: this CPU cannot run the expert kernel: %s.\n"
                  "        The engine needs AVX512-VNNI and AVX512-VBMI (Intel Ice Lake / AMD Zen 4 or newer).\n"
                  "        The scalar fallback exists for tests only and is far too slow to decode with.\n",
                  f.reason());
@@ -680,4 +680,4 @@ void s2_expert_scalar(const uint8_t* blob, const float* x_in, float* out, bool q
     }
 }
 
-}  // namespace strata::kernels::cpu
+}  // namespace guild::kernels::cpu

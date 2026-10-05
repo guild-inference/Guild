@@ -1,5 +1,5 @@
-#include "strata/core/conversation_snapshot.hpp"
-#include "strata/kernels/kv_q4.hpp"
+#include "guild/core/conversation_snapshot.hpp"
+#include "guild/kernels/kv_q4.hpp"
 #include <cuda_runtime.h>
 
 #include <array>
@@ -8,8 +8,8 @@
 #include <limits>
 #include <vector>
 
-using namespace strata::core;
-using namespace strata::kernels;
+using namespace guild::core;
+using namespace guild::kernels;
 
 namespace {
 int checks = 0;
@@ -301,7 +301,7 @@ int main() {
             auto bad=a; bad.head_dim++;
             check(!conversation_kv_restore(bad,f.state,f.g,upto,index,err),"reject incompatible geometry");
             if (fmt==kKvInt8) {
-                // #293: INT8 K/V saved through the Hadamard rotation (STRATA_KV_ROT=1) never restores into a state
+                // #293: INT8 K/V saved through the Hadamard rotation (GUILD_KV_ROT=1) never restores into a state
                 // without it, nor the reverse
                 f.state.kv_rot=true;
                 ConversationKv rotated;

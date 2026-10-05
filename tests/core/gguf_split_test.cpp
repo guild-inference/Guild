@@ -1,5 +1,5 @@
-// tests/core/gguf_split_test.cpp - a split model's shards (strata::gguf_split_paths) and their joint view
-// (strata::GgufModel), on synthetic GGUFs: no model, no GPU.
+// tests/core/gguf_split_test.cpp - a split model's shards (guild::gguf_split_paths) and their joint view
+// (guild::GgufModel), on synthetic GGUFs: no model, no GPU.
 //
 // The layout is Unsloth's UD-Q4_K_XL in miniature: shard 1 holds the metadata and no tensor, shards 2-4 the
 // tensors, and layer 11's down sits in shard 2 while its gate and up are in shard 3.  Then the ways a real
@@ -7,7 +7,7 @@
 // shards, a directory that does not add up to split.tensors.count, a truncated shard, and shard 1 opened alone.
 #include "gguf_fixture.hpp"
 
-#include "strata/artifact/gguf_split.hpp"
+#include "guild/artifact/gguf_split.hpp"
 
 #include <chrono>
 #include <cstdio>
@@ -28,7 +28,7 @@ struct TempDir {
     fs::path path;
     TempDir() {
         path = fs::temp_directory_path() /
-               ("strata-gguf-split-test-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+               ("guild-gguf-split-test-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
         fs::create_directories(path);
     }
     ~TempDir() {
@@ -71,7 +71,7 @@ auto same = [](int, std::vector<fixture::Kv>&, std::vector<Tensor>&, uint64_t&) 
 
 std::string error_of(const std::vector<std::string>& paths) {
     try {
-        strata::GgufModel m(paths);
+        guild::GgufModel m(paths);
     } catch (const std::exception& e) {
         return e.what();
     }
@@ -83,14 +83,14 @@ std::string error_of(const std::vector<std::string>& paths) {
 // check on the metadata shard, and where the tensors the engine reads by name live.
 int real_model(const std::string& any) {
     try {
-        const strata::GgufModel m = strata::GgufModel::open(any);
+        const guild::GgufModel m = guild::GgufModel::open(any);
         size_t tensors = 0;
         for (size_t i = 0; i < m.size(); ++i) {
             std::printf("  shard %zu: %s, %zu tensors, data at %llu\n", i + 1, m.shard(i).path().c_str(),
                         m.shard(i).tensors().size(), (unsigned long long) m.shard(i).data_start());
             tensors += m.shard(i).tensors().size();
         }
-        const std::string arch = strata::check_architecture(m.meta());
+        const std::string arch = guild::check_architecture(m.meta());
         std::printf("  %zu tensors; architecture check on the metadata shard: %s\n", tensors,
                     arch.empty() ? "ok" : arch.c_str());
         int bad = arch.empty() ? 0 : 1;
@@ -98,12 +98,12 @@ int real_model(const std::string& any) {
                                  "blk.1.ple_key.weight", "blk.11.ffn_gate_exps.weight", "blk.11.ffn_up_exps.weight",
                                  "blk.11.ffn_down_exps.weight"}) {
             size_t s = 0;
-            const strata::TensorInfo* t = m.find(name, &s);
+            const guild::TensorInfo* t = m.find(name, &s);
             if (!t) { std::printf("  %-30s absent\n", name); continue; }
             const bool ok = m.in_bounds(*t, s);
             bad += !ok;
             std::printf("  %-30s shard %zu, %s, %llu B, %s\n", name, s + 1, t->type_name(),
-                        (unsigned long long) strata::tensor_payload_bytes(*t), ok ? "in bounds" : "OUT OF BOUNDS");
+                        (unsigned long long) guild::tensor_payload_bytes(*t), ok ? "in bounds" : "OUT OF BOUNDS");
         }
         return bad ? 1 : 0;
     } catch (const std::exception& e) {
@@ -120,27 +120,27 @@ int main(int argc, char** argv) {
         const auto paths = write_model(d.path, same);
         // any shard names the family; the list is in split order, metadata shard first
         std::vector<std::string> got;
-        try { got = strata::gguf_split_paths(paths[2]); } catch (...) {}
+        try { got = guild::gguf_split_paths(paths[2]); } catch (...) {}
         check(got == paths, "gguf_split_paths from shard 3: the 4 shards in order");
-        try { got = strata::gguf_split_paths(paths[0]); } catch (...) { got.clear(); }
+        try { got = guild::gguf_split_paths(paths[0]); } catch (...) { got.clear(); }
         check(got == paths, "gguf_split_paths from shard 1: the same 4 shards");
-        check(strata::gguf_split_paths((d.path / "plain.gguf").string()).size() == 1,
+        check(guild::gguf_split_paths((d.path / "plain.gguf").string()).size() == 1,
               "a name without -NNNNN-of-MMMMM is a model of one file");
         std::string err;
         try {
-            const strata::GgufModel m(paths);
+            const guild::GgufModel m(paths);
             size_t s_out = 9, s_gate = 9, s_down = 9, s_up = 9;
-            const strata::TensorInfo* out = m.find("output.weight", &s_out);
-            const strata::TensorInfo* gate = m.find("blk.11.ffn_gate_exps.weight", &s_gate);
-            const strata::TensorInfo* up = m.find("blk.11.ffn_up_exps.weight", &s_up);
-            const strata::TensorInfo* down = m.find("blk.11.ffn_down_exps.weight", &s_down);
+            const guild::TensorInfo* out = m.find("output.weight", &s_out);
+            const guild::TensorInfo* gate = m.find("blk.11.ffn_gate_exps.weight", &s_gate);
+            const guild::TensorInfo* up = m.find("blk.11.ffn_up_exps.weight", &s_up);
+            const guild::TensorInfo* down = m.find("blk.11.ffn_down_exps.weight", &s_down);
             check(m.size() == 4 && m.meta().get("general.architecture") && m.meta().tensors().empty(),
                   "shard 1: the metadata, no tensor");
             check(out && s_out == 1 && m.in_bounds(*out, s_out), "output.weight found in shard 2, in bounds");
             check(gate && up && down && s_gate == 2 && s_up == 2 && s_down == 1,
                   "layer 11 per role: gate/up in shard 3, down in shard 2");
             check(m.find("blk.99.ffn_gate_exps.weight") == nullptr, "an absent tensor is nullptr");
-            check(strata::check_architecture(m.meta()).find("block_count") != std::string::npos,
+            check(guild::check_architecture(m.meta()).find("block_count") != std::string::npos,
                   "the architecture guard reads the metadata shard (and wants its keys)");
         } catch (const std::exception& e) {
             err = e.what();
@@ -152,7 +152,7 @@ int main(int argc, char** argv) {
         const auto paths = write_model(d.path, same);
         fs::remove(paths[3]);
         std::string err;
-        try { strata::gguf_split_paths(paths[0]); } catch (const std::exception& e) { err = e.what(); }
+        try { guild::gguf_split_paths(paths[0]); } catch (const std::exception& e) { err = e.what(); }
         check(err.find("missing model shard") != std::string::npos && err.find(shard_name(4, 4)) != std::string::npos,
               "a missing shard is an error that names it");
     }
@@ -206,10 +206,10 @@ int main(int argc, char** argv) {
         });
         bool truncated = false, first_ok = false;
         try {
-            const strata::GgufModel m(paths);
+            const guild::GgufModel m(paths);
             size_t s = 0;
-            const strata::TensorInfo* q = m.find("blk.12.attn_q.weight", &s);
-            const strata::TensorInfo* g = m.find("blk.11.ffn_gate_exps.weight");
+            const guild::TensorInfo* q = m.find("blk.12.attn_q.weight", &s);
+            const guild::TensorInfo* g = m.find("blk.11.ffn_gate_exps.weight");
             truncated = q && !m.in_bounds(*q, s);
             first_ok = g && m.in_bounds(*g, 2);
         } catch (...) {}

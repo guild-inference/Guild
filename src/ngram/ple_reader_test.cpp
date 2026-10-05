@@ -6,9 +6,9 @@
 //
 // Every row the synthetic table holds encodes its own index, so a wrong offset, a straddle mishandled or a
 // dedup slot mixed up shows as a mismatch rather than as plausible data.
-#include "strata/kernels/ngram.hpp"
-#include "strata/ngram/ple_reader.hpp"
-#include "strata/platform/direct_file.hpp"
+#include "guild/kernels/ngram.hpp"
+#include "guild/ngram/ple_reader.hpp"
+#include "guild/platform/direct_file.hpp"
 
 #include <chrono>
 #include <cstdio>
@@ -22,9 +22,9 @@
 #include <thread>
 #include <vector>
 
-namespace ng = strata::ngram;
-namespace k = strata::kernels;
-using strata::platform::now_us;
+namespace ng = guild::ngram;
+namespace k = guild::kernels;
+using guild::platform::now_us;
 
 namespace {
 

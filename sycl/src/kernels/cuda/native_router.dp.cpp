@@ -23,15 +23,15 @@
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
-#include "strata/sycl_queue.hpp"
-#include "strata/kernels/native_router.hpp"
+#include "guild/sycl_queue.hpp"
+#include "guild/kernels/native_router.hpp"
 #include <atomic>
 #include <cfloat>
 #include <cstddef>
 #include <cstdint>
 #include <stdexcept>
 
-namespace strata::kernels {
+namespace guild::kernels {
 namespace {
 std::atomic<bool> enabled{false};
 __dpct_inline__ float warp_sum(float value) {
@@ -160,7 +160,7 @@ void native_router_top10(const float* logits, int32_t* ids, float* weights, void
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        ((sycl::queue *)(strata::q_of(stream)))
+        ((sycl::queue *)(guild::q_of(stream)))
             ->parallel_for<dpct_kernel_name<class route_60b296>>(
                 sycl::nd_range<3>(sycl::range(1, 8, 32), sycl::range(1, 8, 32)),
                 exp_props,
@@ -198,7 +198,7 @@ void native_router_top10_multi(const float* logits, int32_t* ids, float* weights
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        ((sycl::queue *)(strata::q_of(stream)))
+        ((sycl::queue *)(guild::q_of(stream)))
             ->parallel_for<dpct_kernel_name<class route_64c24f>>(
                 sycl::nd_range<3>(sycl::range(1, 1, (unsigned)n_tok) *
                                       sycl::range(1, 8, 32),
@@ -236,7 +236,7 @@ void native_router_top10_multi_ne(const float* logits, int32_t* ids, float* weig
     if (!stream || n_tok < 1 || n_expert != 256 || !valid(logits, (size_t) n_tok * 256 * 4) || !valid(ids, (size_t) n_tok * 10 * 4) ||
         !valid(weights, (size_t) n_tok * 10 * 4))
         throw std::invalid_argument("native router (multi, 256): a stream, 256 experts and aligned [n,256]/[n,10] buffers");
-    ((sycl::queue *)(strata::q_of(stream)))
+    ((sycl::queue *)(guild::q_of(stream)))
         ->parallel_for<dpct_kernel_name<class route_256_multi>>(
             sycl::nd_range<3>(sycl::range(1, 1, (unsigned) n_tok) * sycl::range(1, 8, 32), sycl::range(1, 8, 32)),
             [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(32)]] { route<256>(logits, ids, weights); });

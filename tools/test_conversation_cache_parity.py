@@ -65,7 +65,7 @@ class ParityGate(unittest.TestCase):
             verify_results(data, 100, 4)
 
     def test_dry_run_does_not_read_config_or_start_engine(self):
-        with tempfile.TemporaryDirectory(prefix='strata-parity-dry-') as directory:
+        with tempfile.TemporaryDirectory(prefix='guild-parity-dry-') as directory:
             output = Path(directory) / 'not-created'
             result = subprocess.run([sys.executable, str(Path(__file__).with_name('conversation_cache_parity.py')),
                                      '--config', str(Path(directory) / 'missing.json'),

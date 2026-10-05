@@ -11,7 +11,7 @@
 //   3. every NaN input gives a quiet NaN of the same sign.
 //
 // And the round trip over all 65,536 bf16 patterns: a non-NaN bf16 survives f32 and back unchanged.
-#include "strata/kernels/bf16_bits.hpp"
+#include "guild/kernels/bf16_bits.hpp"
 
 #include <cstdint>
 #include <cstdio>
@@ -43,7 +43,7 @@ int main() {
         const uint32_t u = (uint32_t) k;
         float f;
         std::memcpy(&f, &u, 4);
-        const uint16_t got = strata::kernels::bf16_from_f32(f);
+        const uint16_t got = guild::kernels::bf16_from_f32(f);
         if (got != ggml_bf16(u)) {
             ++vs_ggml;
             if (!have_bad) { first_bad = u; have_bad = true; }
@@ -67,8 +67,8 @@ int main() {
 
     unsigned long long trip_bad = 0;
     for (uint32_t h = 0; h <= 0xFFFFu; ++h) {
-        const float f = strata::kernels::f32_from_bf16((uint16_t) h);
-        const uint16_t back = strata::kernels::bf16_from_f32(f);
+        const float f = guild::kernels::f32_from_bf16((uint16_t) h);
+        const uint16_t back = guild::kernels::bf16_from_f32(f);
         const bool nan = is_nan_bits(h << 16);
         if (back != (nan ? (uint16_t) (h | 64u) : (uint16_t) h)) ++trip_bad;
     }

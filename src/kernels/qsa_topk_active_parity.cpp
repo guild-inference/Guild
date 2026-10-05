@@ -1,7 +1,7 @@
 // Capacity 262144, live prefill up to the register boundary, and the legacy fallbacks.
 // Compare selected IDs only: unused output padding is not part of the API contract.
-#include "strata/kernels/qsa.hpp"
-#include "strata/kernels/qsa_select.hpp"
+#include "guild/kernels/qsa.hpp"
+#include "guild/kernels/qsa_select.hpp"
 #include <cuda_runtime.h>
 #include <algorithm>
 #include <cstdio>
@@ -9,7 +9,7 @@
 #include <random>
 #include <vector>
 
-namespace k = strata::kernels;
+namespace k = guild::kernels;
 namespace {
 void ck(cudaError_t e) {
     if (e != cudaSuccess) {
@@ -79,9 +79,9 @@ int main() {
     }
     // the active-bound dispatch is Turing's in the engine; forced here so every CUDA card checks it
 #if defined(_WIN32)
-    _putenv_s("STRATA_TOPK_ACTIVE_ANY", "1");
+    _putenv_s("GUILD_TOPK_ACTIVE_ANY", "1");
 #else
-    setenv("STRATA_TOPK_ACTIVE_ANY", "1", 1);
+    setenv("GUILD_TOPK_ACTIVE_ANY", "1", 1);
 #endif
     const Case cases[] = {
         {1111, 256, 0}, {8192, 256, 0}, {32768, 256, 0}, {131072, 256, 0},

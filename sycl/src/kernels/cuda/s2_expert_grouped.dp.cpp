@@ -16,13 +16,13 @@
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
-#include "strata/sycl_math.hpp"
-#include "strata/sycl_queue.hpp"
-#include "strata/kernels/s2_expert_grouped.hpp"
-#include "strata/kernels/dp4a.hpp"
+#include "guild/sycl_math.hpp"
+#include "guild/sycl_queue.hpp"
+#include "guild/kernels/s2_expert_grouped.hpp"
+#include "guild/kernels/dp4a.hpp"
 
-#include "strata/kernels/quantize_act.hpp"
-#include "strata/kernels/verify_kernels.hpp"
+#include "guild/kernels/quantize_act.hpp"
+#include "guild/kernels/verify_kernels.hpp"
 
 #include <atomic>
 #include <cstdint>
@@ -30,10 +30,10 @@
 #include <cstdlib>
 #include <cstring>
 
-namespace strata::kernels {
+namespace guild::kernels {
 namespace {
 
-// THE BLOB'S OWN GEOMETRY, from `include/strata/kernels/cpu/expert.hpp`.  Restated as literals because that
+// THE BLOB'S OWN GEOMETRY, from `include/guild/kernels/cpu/expert.hpp`.  Restated as literals because that
 // header is the CPU path's and this file must not silently follow it if the two ever disagree: the sizes below
 // are what the CPU kernel's indexing computes, and `moe_hit_parity` compares the two end to end.
 constexpr int H = 2560;
@@ -97,8 +97,8 @@ row_dot_s2_q8(const uint8_t *__restrict__ codes,
             // it rather than reasoning about which cast happens to work.
             int xw;
             memcpy(&xw, xq + 4 * j, 4);
-            s = strata::dp4a(cw, xw, s);
-            hx = strata::dp4a(ones, xw, hx);
+            s = guild::dp4a(cw, xw, s);
+            hx = guild::dp4a(ones, xw, hx);
         }
         // One weight scale per 64 elements, so per TWO 32-element chunks.
         const float dw = f16_at(scales + (size_t) (c >> 1) * 2);
@@ -227,7 +227,7 @@ down_kernel(const uint8_t *__restrict__ blob_base,
     if (lane == 0) out[(size_t) dst_index[h] * H + r] = s;
 }
 
-// ---- THE SAME INTEGERS FROM FEWER INSTRUCTIONS.  `STRATA_OLD_GROUPED=1` keeps the kernels above.
+// ---- THE SAME INTEGERS FROM FEWER INSTRUCTIONS.  `GUILD_OLD_GROUPED=1` keeps the kernels above.
 //
 // **INSIDE A CHUNK, WHICH CODE MEETS WHICH ACTIVATION IN A `dp4a` WORD IS FREE.**  `s = sum_e code_e * x_e` and
 // `hx = sum_e x_e` are exact integer sums (|s| <= 32 * 3 * 128), so any grouping of the 32 products into words
@@ -296,7 +296,7 @@ __dpct_inline__ int load_x_chunk(const uint8_t *__restrict__ xb, int X[8]) {
         // natural word j: x[4j .. 4j+3]; a 64-bit shift (sh is 0, 8, 16 or 24) rather than __funnelshift_r, so the same
         // source needs no CUDA-only intrinsic.
         n[j] = (unsigned) ((((unsigned long long) v[j + 1] << 32) | v[j]) >> sh);
-        hx = strata::dp4a(0x01010101, (int) n[j], hx);
+        hx = guild::dp4a(0x01010101, (int) n[j], hx);
     }
 #pragma unroll
     for (int h = 0; h < 2; ++h) {
@@ -324,7 +324,7 @@ __dpct_inline__ int load_x_chunk(const uint8_t *__restrict__ xb, int X[8]) {
 __dpct_inline__ int chunk_s(const int m[8], const int X[8]) {
     int s = 0;
 #pragma unroll
-    for (int j = 0; j < 8; ++j) s = strata::dp4a(m[j], X[j], s);
+    for (int j = 0; j < 8; ++j) s = guild::dp4a(m[j], X[j], s);
     return s;
 }
 
@@ -463,7 +463,7 @@ __dpct_inline__ int dot4(const uint8_t *codes, const int8_t *q) {
                           (((c >> 4) & 3u) << 16) | (((c >> 6) & 3u) << 24));
     int xw;
     memcpy(&xw, q, sizeof xw);
-    return strata::dp4a(cw, xw, 0);
+    return guild::dp4a(cw, xw, 0);
 }
 
 __dpct_inline__ float row_dot_cpu_order(const uint8_t *codes,
@@ -677,7 +677,7 @@ void check(const char* who, void* stream) {
     (void) stream;
 }
 
-// The previous kernels stay selectable for A/B - `STRATA_OLD_GROUPED=1` in the environment, or
+// The previous kernels stay selectable for A/B - `GUILD_OLD_GROUPED=1` in the environment, or
 // `moe_grouped_select_old` (the parity test runs both in one process).  The environment is read once, on first use;
 // the choice is made at each launch, so a captured graph keeps the kernels it was captured with.
 std::atomic<int> g_select_old{-1};
@@ -688,20 +688,20 @@ bool old_kernels() {
     const int s = g_select_old.load(std::memory_order_relaxed);
     if (s >= 0) return s != 0;
     static const bool env = [] {
-        const char* e = std::getenv("STRATA_OLD_GROUPED");
+        const char* e = std::getenv("GUILD_OLD_GROUPED");
         return e != nullptr && e[0] == '1';
     }();
     return env;
 }
 
-// `STRATA_GROUPED_PAIR_MIN_HITS=N`: the per-hit path keeps the previous one-warp-per-row kernels below N hits of
+// `GUILD_GROUPED_PAIR_MIN_HITS=N`: the per-hit path keeps the previous one-warp-per-row kernels below N hits of
 // capacity.  The new per-hit kernels launch half the warps (two rows each), so one hit's gate/up is 80 blocks - fewer
 // than an RTX 5090's SMs - and whether that costs time at one to three hits is what `--bench` measures.  Bitwise
 // the same either way; default 0 (always the new kernels).  Ignored while `moe_grouped_select_old` forces a choice.
 long long pair_min_hits() {
     if (g_select_old.load(std::memory_order_relaxed) >= 0) return 0;
     static const long long n = [] {
-        const char* e = std::getenv("STRATA_GROUPED_PAIR_MIN_HITS");
+        const char* e = std::getenv("GUILD_GROUPED_PAIR_MIN_HITS");
         return e != nullptr ? std::atoll(e) : 0LL;
     }();
     return n;
@@ -840,7 +840,7 @@ void moe_hit_grouped_s2(const uint8_t* blob_base, const int32_t* slot_index, con
                         int64_t n_hits, int64_t blob_bytes, const uint8_t* x_q8_0, void* scratch, float* out,
                         void* stream, const float* x_scales) {
     if (n_hits <= 0) return;
-    dpct::queue_ptr cs = strata::q_of(stream);
+    dpct::queue_ptr cs = guild::q_of(stream);
     const bool fast = new_hit(blob_base, blob_bytes, x_q8_0, scratch, n_hits);
 
     const uint64_t gu_bytes = ((uint64_t) n_hits * (uint64_t) (2 * FF) * 4 + 15) & ~15ull;
@@ -985,7 +985,7 @@ void moe_hit_select(const int32_t* ids, const int32_t* res_row, int k, int n_exp
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
+        guild::q_of(stream)
             ->parallel_for<dpct_kernel_name<class hit_select_kernel_f87f42>>(
                 sycl::nd_range<3>(sycl::range(1, 1, 32), sycl::range(1, 1, 32)),
                 exp_props,
@@ -1002,7 +1002,7 @@ void moe_hit_grouped_s2_dev(const uint8_t* blob_base, const int32_t* slot_index,
                             const int32_t* d_count, int64_t cap, int64_t blob_bytes, const uint8_t* x_q8_0,
                             void* scratch, float* out, void* stream, const float* x_scales) {
     if (cap <= 0) return;
-    dpct::queue_ptr cs = strata::q_of(stream);
+    dpct::queue_ptr cs = guild::q_of(stream);
     const bool fast = new_hit(blob_base, blob_bytes, x_q8_0, scratch, cap);
     const uint64_t gu_bytes = ((uint64_t) cap * (uint64_t) (2 * FF) * 4 + 15) & ~15ull;
     const uint64_t q8_bytes = ((uint64_t) cap * (uint64_t) (FF / 32) * 34 + 15) & ~15ull;
@@ -1048,7 +1048,7 @@ void moe_hit_select_multi(const int32_t* ids, const int32_t* res_row, int n, int
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
+        guild::q_of(stream)
             ->parallel_for<
                 dpct_kernel_name<class hit_select_multi_kernel_4749ea>>(
                 sycl::nd_range<3>(sycl::range(1, 1, 128),
@@ -1067,7 +1067,7 @@ void moe_hit_grouped_s2_multi(const uint8_t* blob_base, const int32_t* slot_inde
                               const int32_t* d_count, int64_t cap, int64_t blob_bytes, const uint8_t* x_q8_0,
                               const float* x_scales, int k_per_token, void* scratch, float* out, void* stream) {
     if (cap <= 0) return;
-    dpct::queue_ptr cs = strata::q_of(stream);
+    dpct::queue_ptr cs = guild::q_of(stream);
     const bool fast = new_hit(blob_base, blob_bytes, x_q8_0, scratch, cap);
     const uint64_t gu_bytes = ((uint64_t) cap * (uint64_t) (2 * FF) * 4 + 15) & ~15ull;
     const uint64_t q8_bytes = ((uint64_t) cap * (uint64_t) (FF / 32) * 34 + 15) & ~15ull;
@@ -1131,8 +1131,8 @@ __dpct_inline__ float chunk_dot(sycl::uint2 cb, const int *xw, float dw,
         const unsigned cbyte = cbytes[j];
         const int cw = (int) ((cbyte & 3u) | (((cbyte >> 2) & 3u) << 8) | (((cbyte >> 4) & 3u) << 16) |
                               (((cbyte >> 6) & 3u) << 24));
-        s = strata::dp4a(cw, xw[j], s);
-        hx = strata::dp4a(ones, xw[j], hx);
+        s = guild::dp4a(cw, xw[j], s);
+        hx = guild::dp4a(ones, xw[j], hx);
     }
     return dw * dx * (float) (s - hx);
 }
@@ -1514,7 +1514,7 @@ void moe_group_resident(const int32_t* ids, int n, int k_per_tok, const uint8_t*
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
+        guild::q_of(stream)
             ->parallel_for<
                 dpct_kernel_name<class group_resident_kernel_5c38b8>>(
                 sycl::nd_range<3>(sycl::range(1, 1, 128),
@@ -1532,7 +1532,7 @@ void moe_grouped_s2(const unsigned long long* grp_ptr, const int32_t* grp_start,
                     const int32_t* ent_dst, const int32_t* ent_tok, int64_t cap_groups, int64_t cap_entries,
                     const uint8_t* x_q8_0, const float* x_scales, void* scratch, float* out, void* stream) {
     if (cap_groups <= 0 || cap_entries <= 0) return;
-    dpct::queue_ptr cs = strata::q_of(stream);
+    dpct::queue_ptr cs = guild::q_of(stream);
     const uint64_t gu_bytes = ((uint64_t) cap_entries * (uint64_t) (2 * FF) * 4 + 15) & ~15ull;
     const uint64_t q8_bytes = ((uint64_t) cap_entries * (uint64_t) (FF / 32) * 34 + 15) & ~15ull;
     float* gate_up = (float*) scratch;
@@ -1642,7 +1642,7 @@ void moe_hit_add(float* parts, const float* hit_out, const int32_t* dst, const i
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
+        guild::q_of(stream)
             ->parallel_for<dpct_kernel_name<class add_hits_kernel_50cbcb>>(
                 sycl::nd_range<3>(grid * sycl::range(1, 1, 256),
                                   sycl::range(1, 1, 256)),
@@ -1665,7 +1665,7 @@ void moe_hit_grouped_s2_cpu_order(const uint8_t *blob_base,
         std::fprintf(stderr, "moe_hit_grouped_s2_cpu_order requires fp32 activation scales\n");
         std::exit(1);
     }
-    dpct::queue_ptr cs = strata::q_of(stream);
+    dpct::queue_ptr cs = guild::q_of(stream);
     const uint64_t gu_bytes = ((uint64_t) n_hits * 2 * FF * 4 + 15) & ~15ull;
     const uint64_t q8_bytes = ((uint64_t) n_hits * (FF / 32) * 34 + 15) & ~15ull;
     const uint64_t scale_bytes = ((uint64_t) n_hits * (FF / 32) * 4 + 15) & ~15ull;
@@ -1798,4 +1798,4 @@ catch (sycl::exception const &exc) {
   std::exit(1);
 }
 
-}  // namespace strata::kernels
+}  // namespace guild::kernels

@@ -1,8 +1,8 @@
-// src/kernels/fused_gr_bench.cpp - fused_gr_read_multi: the AMD fast kernels (STRATA_GR_FAST) against the old
+// src/kernels/fused_gr_bench.cpp - fused_gr_read_multi: the AMD fast kernels (GUILD_GR_FAST) against the old
 // ones, bit for bit on every output (lo, rs, inject, mixed, the in-place R), and each one's time.
 //
 //     build/fused_gr_bench [iters] [T min] [T max]
-#include "strata/kernels/fused_gr.hpp"
+#include "guild/kernels/fused_gr.hpp"
 
 #include <cuda_runtime.h>
 
@@ -14,7 +14,7 @@
 #include <random>
 #include <vector>
 
-namespace K = strata::kernels;
+namespace K = guild::kernels;
 
 static uint16_t bf16(float x) {
     uint32_t u;

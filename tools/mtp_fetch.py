@@ -27,10 +27,10 @@ import urllib.error
 import urllib.request
 
 # #214: a fixed commit of the checkpoint (its `sha` from https://huggingface.co/api/models/Qwen/Qwen3.8-Flash-Next
-# on 2026-09-30), so every install reads the same tensors; STRATA_MTP_REVISION overrides it (e.g. main).  When the
+# on 2026-09-30), so every install reads the same tensors; GUILD_MTP_REVISION overrides it (e.g. main).  When the
 # repository no longer has it, the current files are read instead, with a message (resolve_repo).
 PINNED_REVISION = "de4b8e4d43b917e7706784d8bb445c9af86a3540"
-REVISION = os.environ.get("STRATA_MTP_REVISION") or PINNED_REVISION
+REVISION = os.environ.get("GUILD_MTP_REVISION") or PINNED_REVISION
 # #495: HF_ENDPOINT (a mirror, e.g. https://hf-mirror.com) serves the same revision; the SHA256 checks below still apply
 HF_ENDPOINT = (os.environ.get("HF_ENDPOINT") or "").strip().rstrip("/") or "https://huggingface.co"
 REPO = HF_ENDPOINT + "/Qwen/Qwen3.8-Flash-Next/resolve/%s/" % REVISION
@@ -110,7 +110,7 @@ SHA256 = {
 def get(url, start=None, end=None, retries=4):
     for attempt in range(retries):
         try:
-            req = urllib.request.Request(url, headers={"User-Agent": "strata-mtp-fetch"})
+            req = urllib.request.Request(url, headers={"User-Agent": "guild-mtp-fetch"})
             if start is not None:
                 req.add_header("Range", "bytes=%d-%d" % (start, end))
             with urllib.request.urlopen(req, timeout=120) as r:
@@ -155,7 +155,7 @@ def resolve_repo():
     global REPO
     try:
         req = urllib.request.Request(REPO + "model.safetensors.index.json", method="HEAD",
-                                     headers={"User-Agent": "strata-mtp-fetch"})
+                                     headers={"User-Agent": "guild-mtp-fetch"})
         urllib.request.urlopen(req, timeout=120).close()
     except urllib.error.HTTPError as e:
         if e.code == 404 and "/resolve/main/" not in REPO:
@@ -258,7 +258,7 @@ def fetch(out, only):
 
 def verify(out):
     """#327: the fetched tensors against SHA256 -> the names that are missing or wrong.  [] when they are right, or
-    when there is nothing to check (no tensors/, or STRATA_MTP_REVISION names another revision).  A tensor's verdict
+    when there is nothing to check (no tensors/, or GUILD_MTP_REVISION names another revision).  A tensor's verdict
     is kept in tensors/verified.json by size and mtime, so a later run hashes only what changed."""
     tdir = os.path.join(out, "tensors")
     if not pinned() or not os.path.isdir(tdir):

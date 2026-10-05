@@ -1,5 +1,5 @@
-// src/ngram/ple_reader.cpp - see include/strata/ngram/ple_reader.hpp.
-#include "strata/ngram/ple_reader.hpp"
+// src/ngram/ple_reader.cpp - see include/guild/ngram/ple_reader.hpp.
+#include "guild/ngram/ple_reader.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -11,7 +11,7 @@
 #include <thread>
 #include <unordered_map>
 
-namespace strata::ngram {
+namespace guild::ngram {
 
 using platform::Completion;
 using platform::DirectFile;
@@ -544,4 +544,4 @@ void PleReader::reset_stats() {
 uint64_t PleReader::cache_capacity() const { return impl_->cache.sets * WAYS; }
 uint64_t PleReader::cache_size() const { return impl_->cache.used; }
 
-}  // namespace strata::ngram
+}  // namespace guild::ngram

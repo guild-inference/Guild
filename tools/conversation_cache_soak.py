@@ -13,7 +13,7 @@ import threading
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT), str(ROOT / 'tools')]
 from conversation_cache_parity import STATE_KEYS, engine_args, load_tokenizer, require, state_hashes
-from serve.server import StrataEngine, child_env
+from serve.server import GuildEngine, child_env
 from serve.frontend import ChatTemplate
 
 
@@ -105,12 +105,12 @@ def main():
     other = prompt('Unrelated worker conversation. Reply with HELLO and nothing else.')
     args.output.mkdir(mode=0o700, parents=False, exist_ok=False)
     env = child_env(cfg)
-    env['STRATA_STATE_HASH'] = '1'
+    env['GUILD_STATE_HASH'] = '1'
     results = {'requested_cycles': args.cycles, 'engine_info': {}, 'contexts': [], 'cycles': []}
     heads, continuations = [], []
     for label, budget in [('baseline', 0), ('candidate', args.cache_mib)]:
         log = args.output / f'{label}.log'
-        engine = StrataEngine(str(args.engine.resolve()), engine_args(cfg, budget, 1),
+        engine = GuildEngine(str(args.engine.resolve()), engine_args(cfg, budget, 1),
                               cwd=cfg.get('cwd'), log=str(log), env=env)
         results['engine_info'][label] = dict(engine.info)
         hash_count = 0

@@ -1,10 +1,10 @@
-// Q5_1 shared-expert projection: Strata CUDA dequantization vs ggml.
+// Q5_1 shared-expert projection: Guild CUDA dequantization vs ggml.
 #define NOMINMAX
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
-#include "strata/artifact/gguf_reader.hpp"
-#include "strata/kernels/dequant_bf16.hpp"
+#include "guild/artifact/gguf_reader.hpp"
+#include "guild/kernels/dequant_bf16.hpp"
 #include "ggml.h"
 
 #include <algorithm>
@@ -19,7 +19,7 @@ int main(int argc, char **argv) try {
         std::fprintf(stderr, "usage: q5_projection_parity <shard1.gguf>\n");
         return 2;
     }
-    strata::GgufFile gguf(argv[1]);
+    guild::GgufFile gguf(argv[1]);
     const auto* t = gguf.find("blk.0.ffn_down_shexp.weight");
     if (!t || t->type != 7 || t->shape.size() != 2) {
         std::fprintf(stderr, "expected blk.0.ffn_down_shexp.weight Q5_1\n");
@@ -48,8 +48,8 @@ int main(int argc, char **argv) try {
     synchronization behavior.
     */
     (dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(dweight, source, weight_bytes).wait();
-    strata::kernels::dequant_f32(7, dweight, 0, rows, cols, (float*) dfloat, nullptr);
-    strata::kernels::dequant_bf16(7, dweight, 0, rows, cols, (uint16_t*) dbf16, nullptr);
+    guild::kernels::dequant_f32(7, dweight, 0, rows, cols, (float*) dfloat, nullptr);
+    guild::kernels::dequant_bf16(7, dweight, 0, rows, cols, (uint16_t*) dbf16, nullptr);
     std::vector<float> got(elements), ref(elements);
     std::vector<uint16_t> got_bf16(elements);
     (dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())

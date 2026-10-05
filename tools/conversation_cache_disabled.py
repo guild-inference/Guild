@@ -17,7 +17,7 @@ sys.path[:0] = [str(ROOT), str(ROOT / 'tools')]
 from conversation_cache_parity import load_tokenizer, require
 from conversation_cache_soak import answer_text
 from serve.frontend import ChatTemplate
-from serve.server import StrataEngine, child_env
+from serve.server import GuildEngine, child_env
 
 NAMES = ('short', 'A', 'A-live', 'A-checkpoint', 'B', 'A-return', 'B-return', 'A-return-again')
 # (not 'version': the gate also compares a new release with the previous one, where only the version differs)
@@ -127,19 +127,19 @@ def main():
                     'Reply with only that code.<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n')
     args = common_args(cfg, a.spec)
     env = child_env(cfg)
-    env.pop('STRATA_SNAPSHOT_VERIFY', None)
-    env['STRATA_STATE_HASH'] = '1'
-    env['STRATA_MTP_BATCH'] = '1'
+    env.pop('GUILD_SNAPSHOT_VERIFY', None)
+    env['GUILD_STATE_HASH'] = '1'
+    env['GUILD_MTP_BATCH'] = '1'
     a.output.mkdir(mode=0o700, parents=False, exist_ok=False)
     results = {'config': cfg, 'paragraphs': a.paragraphs, 'spec': a.spec, 'arms': [], 'requests': [],
                'compared_state_fields': STATE_KEYS,
-               'environment': {k: v for k, v in env.items() if k.startswith('STRATA_')}}
+               'environment': {k: v for k, v in env.items() if k.startswith('GUILD_')}}
     for index, exe in enumerate([a.upstream, *a.candidate]):
         name = 'upstream' if index == 0 else f'candidate-{index}'
         log = a.output / f'{name}.log'
         print(f'START {name}: {exe}', flush=True)
         started = time.monotonic()
-        engine = StrataEngine(str(exe.resolve()), args, cwd=cfg.get('cwd'), log=str(log), env=env)
+        engine = GuildEngine(str(exe.resolve()), args, cwd=cfg.get('cwd'), log=str(log), env=env)
         arm = {'name': name, 'exe': str(exe.resolve()), 'args': args, 'info': dict(engine.info),
                'startup_seconds': time.monotonic() - started, 'records': []}
         with exe.open('rb') as source:

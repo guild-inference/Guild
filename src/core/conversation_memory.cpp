@@ -1,4 +1,4 @@
-#include "strata/core/conversation_memory.hpp"
+#include "guild/core/conversation_memory.hpp"
 
 #include <charconv>
 #include <fstream>
@@ -13,7 +13,7 @@
 #include <windows.h>
 #endif
 
-namespace strata::core {
+namespace guild::core {
 
 std::optional<uint64_t> conversation_mem_available(std::istream& meminfo) {
     std::optional<uint64_t> result;
@@ -48,4 +48,4 @@ std::optional<uint64_t> conversation_available_memory() {
 #endif
 }
 
-} // namespace strata::core
+} // namespace guild::core

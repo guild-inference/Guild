@@ -4,8 +4,8 @@
 // Usage: qsa_select_bench [context=131072] [queries=256] [reps=10] [capacity_cells]
 // capacity_cells (the engine's --max-context): the score buffers and the top-k dispatch follow the CAPACITY
 // (max_blocks = capacity / 4 + 2), the work follows the context. Default: capacity = context (max_blocks = ctx / 4 + 1).
-#include "strata/kernels/qsa.hpp"
-#include "strata/kernels/qsa_select.hpp"
+#include "guild/kernels/qsa.hpp"
+#include "guild/kernels/qsa_select.hpp"
 
 #include <cuda_runtime.h>
 
@@ -16,7 +16,7 @@
 #include <random>
 #include <vector>
 
-namespace k = strata::kernels;
+namespace k = guild::kernels;
 
 namespace {
 void ck(cudaError_t e, const char* w) {

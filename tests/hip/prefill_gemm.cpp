@@ -2,7 +2,7 @@
 #include <hip/hip_runtime.h>
 #include <hip/hip_bfloat16.h>
 #include <hip/hip_fp16.h>
-#include "strata/prefill/gemm.hpp"
+#include "guild/prefill/gemm.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -20,7 +20,7 @@ struct Buffer {
     ~Buffer() { if (p) (void) hipFree(p); }
 };
 
-bool run(strata::prefill::Gemm& gemm, hipStream_t stream, bool bf16,
+bool run(guild::prefill::Gemm& gemm, hipStream_t stream, bool bf16,
          int t, int n, int k, int ldy, float beta) {
     std::mt19937 rng(51012 + t + n);
     std::uniform_real_distribution<float> dist(-0.25f, 0.25f);
@@ -80,7 +80,7 @@ int main() {
     CHECK(hipStreamCreateWithFlags(&stream,hipStreamNonBlocking));
     bool ok=true;
     {
-        strata::prefill::Gemm gemm;
+        guild::prefill::Gemm gemm;
         std::string error;
         if (!gemm.init(stream,0,error)) { std::fprintf(stderr,"%s\n",error.c_str()); return 2; }
         ok=run(gemm,stream,true,16,96,2560,96,0) && ok;

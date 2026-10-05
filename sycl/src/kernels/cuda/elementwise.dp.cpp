@@ -2,19 +2,19 @@
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
-#include "strata/sycl_queue.hpp"
-#include "strata/sycl_doorbell.hpp"
-#include "strata/kernels/elementwise.hpp"
-#include "strata/kernels/dp4a.hpp"
+#include "guild/sycl_queue.hpp"
+#include "guild/sycl_doorbell.hpp"
+#include "guild/kernels/elementwise.hpp"
+#include "guild/kernels/dp4a.hpp"
 
-#include "strata/kernels/bf16_bits.hpp"
-#include "strata/kernels/f16_bits.hpp"
+#include "guild/kernels/bf16_bits.hpp"
+#include "guild/kernels/f16_bits.hpp"
 
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 
-namespace strata::kernels {
+namespace guild::kernels {
 namespace {
 
 constexpr int THREADS = 256;
@@ -210,7 +210,7 @@ void embedding_gather(const uint8_t* codes, const float* scales, const float* of
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
+        guild::q_of(stream)
             ->parallel_for<
                 dpct_kernel_name<class embedding_gather_kernel_40b387>>(
                 sycl::nd_range<3>(sycl::range(1, 1, grid_for(n)) *
@@ -233,7 +233,7 @@ void gdn_gate(const float* alpha, const float* dt, const float* ssm_a, float* ga
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
+        guild::q_of(stream)
             ->parallel_for<dpct_kernel_name<class gdn_gate_kernel_de22c0>>(
                 sycl::nd_range<3>(sycl::range(1, 1, grid_for(n)) *
                                       sycl::range(1, 1, THREADS),
@@ -252,7 +252,7 @@ void scale_inplace(float* x, int64_t n, float s, void* stream) {
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
+        guild::q_of(stream)
             ->parallel_for<dpct_kernel_name<class scale_kernel_501571>>(
                 sycl::nd_range<3>(sycl::range(1, 1, grid_for(n)) *
                                       sycl::range(1, 1, THREADS),
@@ -271,7 +271,7 @@ void add_inplace(float* dst, const float* src, int64_t n, void* stream) {
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
+        guild::q_of(stream)
             ->parallel_for<dpct_kernel_name<class add_kernel_95886e>>(
                 sycl::nd_range<3>(sycl::range(1, 1, grid_for(n)) *
                                       sycl::range(1, 1, THREADS),
@@ -290,7 +290,7 @@ void f32_to_f16_bulk(const float* x, uint16_t* y, int64_t n, void* stream) {
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
+        guild::q_of(stream)
             ->parallel_for<dpct_kernel_name<class to_f16_kernel_ba0968>>(
                 sycl::nd_range<3>(sycl::range(1, 1, grid_for(n)) *
                                       sycl::range(1, 1, THREADS),
@@ -309,7 +309,7 @@ void f32_to_bf16_bulk(const float* x, uint16_t* y, int64_t n, void* stream) {
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
+        guild::q_of(stream)
             ->parallel_for<dpct_kernel_name<class to_bf16_kernel_7b22d1>>(
                 sycl::nd_range<3>(sycl::range(1, 1, grid_for(n)) *
                                       sycl::range(1, 1, THREADS),
@@ -328,10 +328,10 @@ void silu_inplace(float* x, int64_t n, void* stream) {
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
         dpct::has_capability_or_fail(
-            strata::q_of(stream)->get_device(),
+            guild::q_of(stream)->get_device(),
             {sycl::aspect::fp64});
 
-        strata::q_of(stream)
+        guild::q_of(stream)
             ->parallel_for<dpct_kernel_name<class silu_kernel_4d1386>>(
                 sycl::nd_range<3>(sycl::range(1, 1, grid_for(n)) *
                                       sycl::range(1, 1, THREADS),
@@ -374,13 +374,13 @@ __dpct_inline__ void doorbell_ring_kernel(uint32_t *seq) {
     are needed.
     */
     sycl::atomic_fence(sycl::memory_order::acq_rel, sycl::memory_scope::system);
-    strata::sys_store(seq, strata::sys_load(seq) + 1u);
+    guild::sys_store(seq, guild::sys_load(seq) + 1u);
 }
 
 __dpct_inline__ void doorbell_wait_kernel(const volatile uint32_t *flag,
                                           const volatile uint32_t *seq) {
-    const uint32_t want = strata::sys_load(seq);
-    for (uint32_t spin = 0; spin < strata::kSpinMax && strata::sys_load(flag) != want; ++spin) strata_spin_pause();
+    const uint32_t want = guild::sys_load(seq);
+    for (uint32_t spin = 0; spin < guild::kSpinMax && guild::sys_load(flag) != want; ++spin) guild_spin_pause();
     /*
     DPCT1078: Consider replacing memory_order::acq_rel with
     memory_order::seq_cst for correctness if strong memory order restrictions
@@ -395,7 +395,7 @@ void doorbell_wait(const uint32_t* d_flag, const uint32_t* d_seq, void* stream) 
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
+        guild::q_of(stream)
             ->parallel_for<dpct_kernel_name<class doorbell_wait_kernel_47b360>>(
                 sycl::nd_range<3>(sycl::range(1, 1, 1), sycl::range(1, 1, 1)),
                 exp_props, [=](sycl::nd_item<3> item_ct1) {
@@ -489,7 +489,7 @@ void scatter_rows_f32(const float* src, float* dst, const int32_t* rows, int64_t
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
+        guild::q_of(stream)
             ->submit([&](sycl::handler &cgh) {
                 auto width_ct3 = width / 4;
 
@@ -517,7 +517,7 @@ void copy_rows_from_mapped(float* dst, const float* src, int64_t rows, int64_t w
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
+        guild::q_of(stream)
             ->submit([&](sycl::handler &cgh) {
                 auto width_ct2 = width / 4;
 
@@ -547,7 +547,7 @@ void copy_from_mapped(float* dst, const float* src, int64_t n, void* stream) {
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
+        guild::q_of(stream)
             ->parallel_for<
                 dpct_kernel_name<class copy_from_mapped_kernel_82951a>>(
                 sycl::nd_range<3>(sycl::range(1, 1, blocks) *
@@ -596,11 +596,11 @@ __dpct_inline__ void doorbell_publish_kernel(const float *__restrict__ x,
         */
         sycl::atomic_fence(sycl::memory_order::acq_rel,
                            sycl::memory_scope::system);
-        strata::sys_store(seq, strata::sys_load(seq) + 1u);
+        guild::sys_store(seq, guild::sys_load(seq) + 1u);
     }
 }
 
-// #649 (HIP, STRATA_DOORBELL_STORE=1): the same publish, but the ring is STORED (the step's own number, known at
+// #649 (HIP, GUILD_DOORBELL_STORE=1): the same publish, but the ring is STORED (the step's own number, known at
 // capture) instead of read-modify-written over PCIe - one store, no read of host memory from the GPU.
 __dpct_inline__ void doorbell_publish_value_kernel(
     const float *__restrict__ x, const int32_t *__restrict__ ids,
@@ -653,7 +653,7 @@ void doorbell_publish_value(const float* x, const int32_t* ids, const float* wei
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
+        guild::q_of(stream)
             ->parallel_for<
                 dpct_kernel_name<class doorbell_publish_value_kernel_9bdb22>>(
                 sycl::nd_range<3>(sycl::range(1, 1, 1024),
@@ -678,7 +678,7 @@ void doorbell_publish(const float* x, const int32_t* ids, const float* weights, 
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
+        guild::q_of(stream)
             ->parallel_for<
                 dpct_kernel_name<class doorbell_publish_kernel_8b5bad>>(
                 sycl::nd_range<3>(sycl::range(1, 1, 1024),
@@ -706,7 +706,7 @@ void copy_i32_from_mapped(int32_t* dst, const int32_t* src, int64_t n, void* str
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
+        guild::q_of(stream)
             ->parallel_for<
                 dpct_kernel_name<class copy_i32_from_mapped_kernel_a44acc>>(
                 sycl::nd_range<3>(sycl::range(1, 1, 128),
@@ -725,7 +725,7 @@ void doorbell_ring(uint32_t* d_seq, void* stream) {
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
+        guild::q_of(stream)
             ->parallel_for<dpct_kernel_name<class doorbell_ring_kernel_b862a4>>(
                 sycl::nd_range<3>(sycl::range(1, 1, 1), sycl::range(1, 1, 1)),
                 exp_props, [=](sycl::nd_item<3> item_ct1) {
@@ -746,7 +746,7 @@ void rms_norm_weighted(float* x, const float* w, int64_t rows, int64_t cols, flo
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
+        guild::q_of(stream)
             ->parallel_for<
                 dpct_kernel_name<class rms_norm_weighted_kernel_b603f5>>(
                 sycl::nd_range<3>(sycl::range(1, 1, grid) *
@@ -762,4 +762,4 @@ void rms_norm_weighted(float* x, const float* w, int64_t rows, int64_t cols, flo
     sync_if_needed(stream, "rms_norm_weighted");
 }
 
-}  // namespace strata::kernels
+}  // namespace guild::kernels

@@ -1,6 +1,6 @@
 // sycl/src/kernels/mmvq_sg_bench.cpp - SYCL port: the decode mmvq kernels on the Coder's dense shapes and types.
-//   mmvq_sg_bench   (run with STRATA_MMVQ_SG=16 and =32; prints us per call and a checksum of the outputs)
-#include "strata/kernels/native_mmvq.hpp"
+//   mmvq_sg_bench   (run with GUILD_MMVQ_SG=16 and =32; prints us per call and a checksum of the outputs)
+#include "guild/kernels/native_mmvq.hpp"
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
 #include <chrono>
@@ -31,8 +31,8 @@ int main() {
                 void* xq = sycl::malloc_device((size_t) nc * (n_in / 32) * 36, *s);
                 float* y = sycl::malloc_device<float>((size_t) nc * n_out, *s);
                 s->memcpy(x, hx.data(), hx.size() * 4).wait();
-                strata::kernels::native_quantize_q8_1(x, xq, n_in, nc, s);
-                auto run = [&] { strata::kernels::native_mmvq(t.type, w, xq, y, n_in, n_out, nc, s); };
+                guild::kernels::native_quantize_q8_1(x, xq, n_in, nc, s);
+                auto run = [&] { guild::kernels::native_mmvq(t.type, w, xq, y, n_in, n_out, nc, s); };
                 const auto w0 = std::chrono::steady_clock::now();
                 while (std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - w0).count() < 150) {
                     for (int i = 0; i < 20; ++i) run();

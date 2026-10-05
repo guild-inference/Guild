@@ -26,7 +26,7 @@ def cpuinfo(flags: str):
 
 class FloorTest(unittest.TestCase):
     def setUp(self):
-        self.env = mock.patch.dict(os.environ, {"STRATA_ISA_FLOOR": ""})
+        self.env = mock.patch.dict(os.environ, {"GUILD_ISA_FLOOR": ""})
         self.env.start()
 
     def tearDown(self):
@@ -52,9 +52,9 @@ class FloorTest(unittest.TestCase):
 
     def test_env_asks_for_a_floor_build_on_any_cpu(self):
         for v in ("avx", "none", "AVX"):
-            with mock.patch.dict(os.environ, {"STRATA_ISA_FLOOR": v}):
+            with mock.patch.dict(os.environ, {"GUILD_ISA_FLOOR": v}):
                 self.assertEqual(setup.cpu_floor(True), v.lower())
-        with mock.patch.dict(os.environ, {"STRATA_ISA_FLOOR": "bogus"}):
+        with mock.patch.dict(os.environ, {"GUILD_ISA_FLOOR": "bogus"}):
             self.assertEqual(setup.cpu_floor(True), "")
 
     @unittest.skipUnless(os.name == "nt", "the CPUID stub runs on Windows")
@@ -69,9 +69,9 @@ class DefsTest(unittest.TestCase):
             cache = b / "CMakeCache.txt"
             self.assertEqual(setup.isa_floor_defs("", b, {}), [])            # the normal build: nothing added
             cache.write_text("x")
-            self.assertEqual(setup.isa_floor_defs("avx", b, {"isa_floor": "avx"}), ["-DSTRATA_ISA_FLOOR=avx"])
+            self.assertEqual(setup.isa_floor_defs("avx", b, {"isa_floor": "avx"}), ["-DGUILD_ISA_FLOOR=avx"])
             self.assertTrue(cache.exists())                                  # same floor: the folder is kept
-            self.assertEqual(setup.isa_floor_defs("none", b, {"isa_floor": "avx"}), ["-DSTRATA_ISA_FLOOR=none"])
+            self.assertEqual(setup.isa_floor_defs("none", b, {"isa_floor": "avx"}), ["-DGUILD_ISA_FLOOR=none"])
             self.assertFalse(cache.exists())                                 # another floor: configured afresh
             cache.write_text("x")
             self.assertEqual(setup.isa_floor_defs("", b, {"isa_floor": "none"}), [])
@@ -83,8 +83,8 @@ class DefsTest(unittest.TestCase):
 
 class McpTest(unittest.TestCase):
     def test_no_avx2_is_a_note_not_a_refusal(self):
-        import strata_mcp as M
-        s = M.Strata(ROOT)
+        import guild_mcp as M
+        s = M.Guild(ROOT)
         gpu = [{"index": 0, "name": "x", "vram_gb": 24.0, "usable": True, "vendor": "nvidia"}]
         r = s.recommend({"ram_gb": 64, "gpus": gpu, "cpu": {"avx2": False}})
         self.assertIsNotNone(r["model"])

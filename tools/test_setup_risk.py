@@ -122,9 +122,9 @@ class Context(unittest.TestCase):
         self.assertNotIn("Kept as you chose: it may be slower", out)
 
     def test_the_earlier_install_keeps_its_context(self):
-        """An update (a new copy of Strata) set up like the earlier install keeps its 256K instead of capping it."""
+        """An update (a new copy of Guild) set up like the earlier install keeps its 256K instead of capping it."""
         with tempfile.TemporaryDirectory() as d:
-            prev = Path(d) / "strata-iq3_s.json"
+            prev = Path(d) / "guild-iq3_s.json"
             prev.write_text(json.dumps({"args": ["--max-context", "262144", "--kv", "int8"], "port": 8080}))
             started = mock.Mock(return_value=0)
             code, out, cfg, _ = install(self.RAM64, self.GPU32, [], extra=[
@@ -137,8 +137,8 @@ class Context(unittest.TestCase):
 
 
 class BrokenEarlierConfig(unittest.TestCase):
-    """#459: a new copy of Strata set up like an earlier install skips an earlier config that does not parse (an
-    empty strata-*.json crashed START-HERE with JSONDecodeError) and goes on as a fresh install; configs are written
+    """#459: a new copy of Guild set up like an earlier install skips an earlier config that does not parse (an
+    empty guild-*.json crashed START-HERE with JSONDecodeError) and goes on as a fresh install; configs are written
     whole (a temporary file moved over the old one)."""
     RAM64, GPU32 = PROFILES["64GB-1x32GB"]
 
@@ -154,29 +154,29 @@ class BrokenEarlierConfig(unittest.TestCase):
     def test_an_empty_config_is_skipped(self):
         for text, why in (("", "the file is empty"), ("{\"args\": [", "not valid JSON"), ("[1]", "not a JSON object")):
             with self.subTest(text=text):
-                code, out, cfg, _ = self.setup_with([("strata-iq3_s.json", text)])
+                code, out, cfg, _ = self.setup_with([("guild-iq3_s.json", text)])
                 self.assertEqual(code, 0, out)
                 self.assertIn("skipped the earlier config ", out)
-                self.assertIn(f"strata-iq3_s.json ({why}): setting this copy up without it", out)
+                self.assertIn(f"guild-iq3_s.json ({why}): setting this copy up without it", out)
                 self.assertNotIn("Found your earlier install", out)
                 self.assertIsNotNone(cfg)                                # the fresh install's config
 
     def test_the_newest_readable_config_is_used(self):
         good = json.dumps({"args": ["--max-context", "262144", "--kv", "int8"], "port": 8080})
-        code, out, cfg, _ = self.setup_with([("strata-iq3_s.json", good), ("strata-q2_0.json", "")])
+        code, out, cfg, _ = self.setup_with([("guild-iq3_s.json", good), ("guild-q2_0.json", "")])
         self.assertEqual(code, 0, out)
-        self.assertIn("strata-q2_0.json (the file is empty)", out)
+        self.assertIn("guild-q2_0.json (the file is empty)", out)
         self.assertIn("Found your earlier install", out)
         self.assertIn("(iq3_s)", out)
         self.assertEqual(arg(cfg, "--max-context"), "262144")
 
     def test_write_config_leaves_no_partial_file(self):
         with tempfile.TemporaryDirectory() as d:
-            p = Path(d) / "strata-iq3_s.json"
+            p = Path(d) / "guild-iq3_s.json"
             p.write_text("old", encoding="utf-8")
             setup.write_config(p, {"args": ["--kv", "int8"]})
             self.assertEqual(p.read_text(encoding="utf-8"), json.dumps({"args": ["--kv", "int8"]}, indent=1))
-            self.assertEqual([f.name for f in Path(d).iterdir()], ["strata-iq3_s.json"])   # no .tmp left
+            self.assertEqual([f.name for f in Path(d).iterdir()], ["guild-iq3_s.json"])   # no .tmp left
             with mock.patch.object(Path, "write_text", side_effect=OSError(28, "No space left on device")):
                 with self.assertRaises(OSError):
                     setup.write_config(p, {"args": []})
@@ -261,7 +261,7 @@ class StartOnSeveralGpus(unittest.TestCase):
     def offer(self, args, stdin):
         found = PROFILES["32GB-2x24GB"][1]
         with tempfile.TemporaryDirectory() as d:
-            p = Path(d) / "strata-q2_0.json"
+            p = Path(d) / "guild-q2_0.json"
             cfg = {"args": list(args)}
             with mock.patch.object(setup, "gpus", lambda: found), \
                     mock.patch.object(setup, "engine_runs_on", lambda g: True):
@@ -283,9 +283,9 @@ class StartOnSeveralGpus(unittest.TestCase):
     def test_start_with_gpus(self):
         found = PROFILES["32GB-2x24GB"][1]
         with tempfile.TemporaryDirectory() as d:
-            exe = Path(d) / "strata.exe"
+            exe = Path(d) / "guild-generate.exe"
             exe.write_bytes(b"")
-            p = Path(d) / "strata-q2_0.json"
+            p = Path(d) / "guild-q2_0.json"
             p.write_text(json.dumps({"exe": str(exe), "args": ["--resident-experts"], "gpu": 0, "gpus_asked": True}))
             call = mock.Mock(return_value=0)
             with mock.patch.object(setup, "gpus", lambda: found), \
@@ -351,7 +351,7 @@ class SplitShortCard(unittest.TestCase):
 
     def test_offer_together_defaults_to_one(self):
         with tempfile.TemporaryDirectory() as d:
-            p = Path(d) / "strata-q2_0.json"
+            p = Path(d) / "guild-q2_0.json"
             with mock.patch.object(setup, "gpus", lambda: self.FOUND), \
                     mock.patch.object(setup, "engine_runs_on", lambda g: True):
                 code, out, asked = run(setup.offer_together, p, {"args": ["--mmap-experts"]}, True)

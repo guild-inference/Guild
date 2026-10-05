@@ -1,9 +1,9 @@
 // src/kernels/cuda/elementwise.cu - P2.S5's glue kernels.  See the header for why each exists.
-#include "strata/kernels/elementwise.hpp"
-#include "strata/kernels/dp4a.hpp"
+#include "guild/kernels/elementwise.hpp"
+#include "guild/kernels/dp4a.hpp"
 
-#include "strata/kernels/bf16_bits.hpp"
-#include "strata/kernels/f16_bits.hpp"
+#include "guild/kernels/bf16_bits.hpp"
+#include "guild/kernels/f16_bits.hpp"
 
 #include <cuda_runtime.h>
 
@@ -11,7 +11,7 @@
 #include <cstdio>
 #include <cstdlib>
 
-namespace strata::kernels {
+namespace guild::kernels {
 namespace {
 
 constexpr int THREADS = 256;
@@ -213,7 +213,7 @@ __global__ void doorbell_ring_kernel(uint32_t* seq) {
 
 __global__ void doorbell_wait_kernel(const volatile uint32_t* flag, const volatile uint32_t* seq) {
     const uint32_t want = *seq;
-    while (*flag != want) strata_spin_pause();
+    while (*flag != want) guild_spin_pause();
     __threadfence_system();
 }
 
@@ -326,7 +326,7 @@ __global__ void doorbell_publish_res_kernel(const float* __restrict__ x, const i
     }
 }
 
-// #649 (HIP, STRATA_DOORBELL_STORE=1): the same publish, but the ring is STORED (the step's own number, known at
+// #649 (HIP, GUILD_DOORBELL_STORE=1): the same publish, but the ring is STORED (the step's own number, known at
 // capture) instead of read-modify-written over PCIe - one store, no read of host memory from the GPU.
 __global__ void doorbell_publish_value_kernel(const float* __restrict__ x, const int32_t* __restrict__ ids,
                                               const float* __restrict__ w, int n, int k, float* x_out, int32_t* ids_out,
@@ -394,4 +394,4 @@ void rms_norm_weighted(float* x, const float* w, int64_t rows, int64_t cols, flo
     sync_if_needed(stream, "rms_norm_weighted");
 }
 
-}  // namespace strata::kernels
+}  // namespace guild::kernels

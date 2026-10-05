@@ -54,14 +54,14 @@
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
-#include "strata/sycl_queue.hpp"
-#include "strata/kernels/router_top10.hpp"
+#include "guild/sycl_queue.hpp"
+#include "guild/kernels/router_top10.hpp"
 
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 
-namespace strata::kernels {
+namespace guild::kernels {
 namespace {
 
 constexpr int RT_MAX_THREADS = 512;
@@ -327,7 +327,7 @@ runtimes. You may need to adjust the code.
 //     lowest index on ties is unique, so the butterfly finds the same expert as the block reduction did;
 //   * the renormalisation sums the ten weights in rank order from registers and divides them in parallel.
 // Same expressions, same operands: the ids and weights are bitwise those of router_top10_kernel (hip_router_fast
-// checks it on 65,536 rows with ties, near-ties, NaN rows and the forced serial path). STRATA_HIP_ROUTER_OLD=1: the
+// checks it on 65,536 rows with ties, near-ties, NaN rows and the forced serial path). GUILD_HIP_ROUTER_OLD=1: the
 // kernel above.
 template <bool FORCE_SERIAL>
 __global__ void router_top10_fast_kernel(const float* __restrict__ logits, int n_tokens, int n_expert, int k,
@@ -473,7 +473,7 @@ void router_top10(const float *logits, int n_tokens, int n_expert, int k,
                   int *ids, float *weights, void *stream) try {
 #if defined(__HIPCC__)
     {
-        static const bool old = std::getenv("STRATA_HIP_ROUTER_OLD") != nullptr;
+        static const bool old = std::getenv("GUILD_HIP_ROUTER_OLD") != nullptr;
         if (!old && n_tokens > 0 && n_expert > 64 && n_expert <= 512 && k > 0 && k <= 32) {
             launch_generic(logits, n_tokens, n_expert, k, ids, weights, stream, 1);
             const cudaError_t e = cudaGetLastError();
@@ -524,10 +524,10 @@ void router_top10(const float *logits, int n_tokens, int n_expert, int k,
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
         dpct::has_capability_or_fail(
-            strata::q_of(stream)->get_device(),
+            guild::q_of(stream)->get_device(),
             {sycl::aspect::fp64});
 
-        strata::q_of(stream)
+        guild::q_of(stream)
             ->submit([&](sycl::handler &cgh) {
                 sycl::local_accessor<uint8_t, 1> dpct_local_acc_ct1(
                     sycl::range(smem), cgh);
@@ -566,4 +566,4 @@ catch (sycl::exception const &exc) {
   std::exit(1);
 }
 
-}  // namespace strata::kernels
+}  // namespace guild::kernels

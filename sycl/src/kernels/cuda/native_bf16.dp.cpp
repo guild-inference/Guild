@@ -1,16 +1,16 @@
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
-#include "strata/sycl_queue.hpp"
-#include "strata/kernels/bf16_gemv.hpp"
-#include "strata/kernels/bf16_bits.hpp"
+#include "guild/sycl_queue.hpp"
+#include "guild/kernels/bf16_gemv.hpp"
+#include "guild/kernels/bf16_bits.hpp"
 
 #include <limits>
 #include <stdexcept>
 #include <string>
 #include <cmath>
 
-namespace strata::kernels {
+namespace guild::kernels {
 namespace {
 
 // The FP32-activation MMVF implementation below is adapted from llama.cpp
@@ -185,8 +185,8 @@ void bf16_gemv_fp32_mmvf_multi(const float* x, int64_t ldx, const uint16_t* w, f
     if (n_tok < 1 || n_tok > 8 || n_in <= 0 || (n_in & 1) != 0 || n_out <= 0 || (ldx & 1) != 0 || x == nullptr ||
         w == nullptr || y == nullptr || (reinterpret_cast<uintptr_t>(x) & 7u) != 0)
         throw std::invalid_argument("bf16_gemv_fp32_mmvf_multi: 1..8 rows, even n_in/ldx, aligned pointers");
-    const dpct::queue_ptr st = strata::q_of(stream);
-#define STRATA_MMVF_M(N)                                                       \
+    const dpct::queue_ptr st = guild::q_of(stream);
+#define GUILD_MMVF_M(N)                                                       \
     case N:                                                                    \
         if (n_tok <= 4) {                                                      \
             auto exp_props = sycl::ext::oneapi::experimental::properties{      \
@@ -244,10 +244,10 @@ void bf16_gemv_fp32_mmvf_multi(const float* x, int64_t ldx, const uint16_t* w, f
             });                                                                \
         } break
     switch (mmvf_block_size(n_in)) {
-        STRATA_MMVF_M(32); STRATA_MMVF_M(64); STRATA_MMVF_M(96); STRATA_MMVF_M(128);
-        STRATA_MMVF_M(160); STRATA_MMVF_M(192); STRATA_MMVF_M(224); STRATA_MMVF_M(256);
+        GUILD_MMVF_M(32); GUILD_MMVF_M(64); GUILD_MMVF_M(96); GUILD_MMVF_M(128);
+        GUILD_MMVF_M(160); GUILD_MMVF_M(192); GUILD_MMVF_M(224); GUILD_MMVF_M(256);
     }
-#undef STRATA_MMVF_M
+#undef GUILD_MMVF_M
     /*
     DPCT1010: SYCL uses exceptions to report errors and does not use the
     error codes. The cudaGetLastError function call was replaced with 0. You
@@ -282,8 +282,8 @@ void bf16_gemv_fp32_mmvf(const float* x, const uint16_t* w, float* y,
         (reinterpret_cast<uintptr_t>(w) & 3u) != 0 ||
         (reinterpret_cast<uintptr_t>(y) & 3u) != 0)
         throw std::invalid_argument("bf16_gemv_fp32_mmvf: null or misaligned pointer");
-    const dpct::queue_ptr st = strata::q_of(stream);
-#define STRATA_MMVF_CASE(N)                                                    \
+    const dpct::queue_ptr st = guild::q_of(stream);
+#define GUILD_MMVF_CASE(N)                                                    \
     case N: {                                                                  \
         auto exp_props = sycl::ext::oneapi::experimental::properties{          \
             sycl::ext::oneapi::experimental::use_root_sync};                   \
@@ -308,16 +308,16 @@ void bf16_gemv_fp32_mmvf(const float* x, const uint16_t* w, float* y,
         });                                                                    \
     } break
     switch (mmvf_block_size(n_in)) {
-        STRATA_MMVF_CASE(32);
-        STRATA_MMVF_CASE(64);
-        STRATA_MMVF_CASE(96);
-        STRATA_MMVF_CASE(128);
-        STRATA_MMVF_CASE(160);
-        STRATA_MMVF_CASE(192);
-        STRATA_MMVF_CASE(224);
-        STRATA_MMVF_CASE(256);
+        GUILD_MMVF_CASE(32);
+        GUILD_MMVF_CASE(64);
+        GUILD_MMVF_CASE(96);
+        GUILD_MMVF_CASE(128);
+        GUILD_MMVF_CASE(160);
+        GUILD_MMVF_CASE(192);
+        GUILD_MMVF_CASE(224);
+        GUILD_MMVF_CASE(256);
     }
-#undef STRATA_MMVF_CASE
+#undef GUILD_MMVF_CASE
     /*
     DPCT1010: SYCL uses exceptions to report errors and does not use the
     error codes. The cudaGetLastError function call was replaced with 0. You
@@ -342,4 +342,4 @@ void bf16_gemv_fp32_mmvf(const float* x, const uint16_t* w, float* y,
 }
 
 
-}  // namespace strata::kernels
+}  // namespace guild::kernels

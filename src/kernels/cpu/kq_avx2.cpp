@@ -1,7 +1,7 @@
 // src/kernels/cpu/kq_avx2.cpp - Unsloth UD-Q4_K_XL's expert rows (Q4_K gate/up, Q5_1 and Q8_0 down) for several
 // tokens at once, BIT-EXACT against ggml-cpu's own dot products.
 //
-// ggml-cpu is built for AVX2 here (STRATA_PORTABLE: GGML_AVX2=ON, GGML_AVX512=OFF), so its vec_dot for these formats
+// ggml-cpu is built for AVX2 here (GUILD_PORTABLE: GGML_AVX2=ON, GGML_AVX512=OFF), so its vec_dot for these formats
 // is the __AVX2__ branch of ggml-cpu/arch/x86/quants.c: ggml_vec_dot_q4_K_q8_K, ggml_vec_dot_q5_1_q8_1,
 // ggml_vec_dot_q8_0_q8_0.  The functions below are those branches with the loop over tokens moved inside the loop
 // over blocks: everything that depends only on the weights (the 4-bit unpacking, the 6-bit scales and mins, the
@@ -11,7 +11,7 @@
 // the group size therefore never changes an answer.
 //
 // The gain is the weight-side work and the weight bytes, read once per verify window instead of once per token.
-#include "strata/kernels/cpu/kq_avx2.hpp"
+#include "guild/kernels/cpu/kq_avx2.hpp"
 
 #define GGML_COMMON_DECL_CPP
 #define GGML_COMMON_IMPL_CPP
@@ -22,7 +22,7 @@
 #include <cmath>
 #include <cstring>
 
-namespace strata::kernels::cpu {
+namespace guild::kernels::cpu {
 namespace {
 
 constexpr int MAXT = 8;   // the verify window's tokens per group (kVerifyMaxT)
@@ -262,4 +262,4 @@ void kq256_rows(int type, const uint8_t* w, size_t row_bytes, int n, const void*
     }
 }
 
-}  // namespace strata::kernels::cpu
+}  // namespace guild::kernels::cpu

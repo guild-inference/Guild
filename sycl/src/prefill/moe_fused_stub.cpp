@@ -1,13 +1,13 @@
 // src/prefill/moe_fused_stub.cpp (SYCL port) - upstream's fused int8 prompt kernels (moe_fused.cu, moe_fused_iq.cu, #136)
 // belong to its MMQ library, which this build does not have (the prompt path's MMQ plan is empty here, so prefill.cpp
 // never takes the fused branch). These are the "not built" answers, so the prompt path links and keeps its own path.
-#include "strata/prefill/moe_fused.hpp"
-#include "strata/prefill/moe_fused_iq.hpp"
+#include "guild/prefill/moe_fused.hpp"
+#include "guild/prefill/moe_fused_iq.hpp"
 
 #include <cstdio>
 #include <cstdlib>
 
-namespace strata::prefill::fused {
+namespace guild::prefill::fused {
 
 namespace {
 [[noreturn]] void unreachable(const char* what) {
@@ -34,4 +34,4 @@ void experts_native(const Batch&, const NativeGeom&, int, int64_t, const void*, 
     unreachable("fused::experts_native");
 }
 
-}  // namespace strata::prefill::fused
+}  // namespace guild::prefill::fused

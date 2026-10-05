@@ -20,7 +20,7 @@
     sel.replaceChildren(...keys.map((k) => {
       const o = document.createElement("option");
       o.value = k;
-      o.textContent = sw.choices[k].replace(/ \(Strata SYCL engine\)$/, "");
+      o.textContent = sw.choices[k].replace(/ \(Guild SYCL engine\)$/, "");
       o.selected = k === (sw.starting || sw.mode);
       return o;
     }));

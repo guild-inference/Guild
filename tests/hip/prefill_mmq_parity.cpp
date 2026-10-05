@@ -1,9 +1,9 @@
-// Standalone diagnostic harness for strata-prefill's optional MMQ path.
+// Standalone diagnostic harness for guild-prefill's optional MMQ path.
 // Keep this artifact outside the project source until it is reviewed and wired into a HIP test target.
 // It compares GGML's MMQ result (with its intended q8_1 activation rounding) to a CPU FP32 product using
 // GGML's own dequantizer for the exact same weight blocks. The tolerances screen layout/stride/bounds errors;
 // they do not assert bitwise or FP16 parity.
-#include "strata/prefill/moe_mmq.hpp"
+#include "guild/prefill/moe_mmq.hpp"
 #include "ggml.h"
 #include <hip/hip_runtime.h>
 
@@ -19,12 +19,12 @@
 #include <vector>
 
 namespace {
-using strata::prefill::mmq::Context;
-using strata::prefill::mmq::Product;
-using strata::prefill::mmq::matrix_bytes;
-using strata::prefill::mmq::q8_bytes;
-using strata::prefill::mmq::quantize;
-using strata::prefill::mmq::supported;
+using guild::prefill::mmq::Context;
+using guild::prefill::mmq::Product;
+using guild::prefill::mmq::matrix_bytes;
+using guild::prefill::mmq::q8_bytes;
+using guild::prefill::mmq::quantize;
+using guild::prefill::mmq::supported;
 
 void hip_check(hipError_t e, const char * what) {
     if (e != hipSuccess) throw std::runtime_error(std::string(what) + ": " + hipGetErrorString(e));

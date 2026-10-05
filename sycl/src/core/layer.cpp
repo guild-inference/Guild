@@ -3,37 +3,37 @@
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
-#include "strata/sycl_queue.hpp"
-#include "strata/core/layer.hpp"
-#include "strata/core/native_head.hpp"
-#include "strata/kernels/bf16_bits.hpp"
-#include "strata/kernels/bf16_gemv.hpp"
-#include "strata/kernels/elementwise.hpp"
-#include "strata/kernels/gdn.hpp"
-#include "strata/kernels/qsa.hpp"
-#include "strata/kernels/kv_q4.hpp"
-#include "strata/kernels/kv_q8.hpp"
-#include "strata/kernels/quantize_act.hpp"
-#include "strata/kernels/rope.hpp"
-#include "strata/kernels/router_top10.hpp"
-#include "strata/kernels/s2_gemv_q8.hpp"
-#include "strata/kernels/s_gemv.hpp"
-#include "strata/kernels/shared_expert.hpp"
-#include "strata/kernels/native_mmvq.hpp"
-#include "strata/kernels/native_moe.hpp"
-#include "strata/kernels/native_gdn.hpp"
-#include "strata/kernels/native_gdn_preprocess.hpp"
-#include "strata/kernels/native_router.hpp"
-#include "strata/kernels/native_qsa.hpp"
-#include "strata/kernels/native_qsa_indexer.hpp"
-#include "strata/kernels/mrope.hpp"
-#include "strata/kernels/native_rope.hpp"
-#include "strata/kernels/native_flash_attn.hpp"
-#include "strata/kernels/fused_gr.hpp"
-#include "strata/kernels/cvec.hpp"
-#include "strata/kernels/qsa_decode_attn.hpp"
-#include "strata/kernels/fused_gdn.hpp"
-#include "strata/kernels/qsa_select.hpp"
+#include "guild/sycl_queue.hpp"
+#include "guild/core/layer.hpp"
+#include "guild/core/native_head.hpp"
+#include "guild/kernels/bf16_bits.hpp"
+#include "guild/kernels/bf16_gemv.hpp"
+#include "guild/kernels/elementwise.hpp"
+#include "guild/kernels/gdn.hpp"
+#include "guild/kernels/qsa.hpp"
+#include "guild/kernels/kv_q4.hpp"
+#include "guild/kernels/kv_q8.hpp"
+#include "guild/kernels/quantize_act.hpp"
+#include "guild/kernels/rope.hpp"
+#include "guild/kernels/router_top10.hpp"
+#include "guild/kernels/s2_gemv_q8.hpp"
+#include "guild/kernels/s_gemv.hpp"
+#include "guild/kernels/shared_expert.hpp"
+#include "guild/kernels/native_mmvq.hpp"
+#include "guild/kernels/native_moe.hpp"
+#include "guild/kernels/native_gdn.hpp"
+#include "guild/kernels/native_gdn_preprocess.hpp"
+#include "guild/kernels/native_router.hpp"
+#include "guild/kernels/native_qsa.hpp"
+#include "guild/kernels/native_qsa_indexer.hpp"
+#include "guild/kernels/mrope.hpp"
+#include "guild/kernels/native_rope.hpp"
+#include "guild/kernels/native_flash_attn.hpp"
+#include "guild/kernels/fused_gr.hpp"
+#include "guild/kernels/cvec.hpp"
+#include "guild/kernels/qsa_decode_attn.hpp"
+#include "guild/kernels/fused_gdn.hpp"
+#include "guild/kernels/qsa_select.hpp"
 #include <algorithm>
 #include <cstdlib>
 #include <exception>
@@ -41,7 +41,7 @@
 #include <cstdio>
 #include <cstring>
 #include <vector>
-namespace strata::core {
+namespace guild::core {
 namespace { bool g_shared_early = true; bool g_fused_gr = false; bool g_fast_attn = true; bool g_publish_kernel = true; bool g_fused_gdn = true; bool g_fast_select = true; }
 namespace {constexpr int Q8K_BYTES_PER_BLOCK = 292;
 constexpr int Q8K_ELEMS_PER_BLOCK = 256;
@@ -53,7 +53,7 @@ uint64_t q8k_bytes(int64_t n) { return (uint64_t) (n / Q8K_ELEMS_PER_BLOCK) * Q8
 /// `s_gemv_q8k` takes the canonical-form attributes; a `WeightRef` carries them, and a tensor that is NOT
 /// quantized has none.  Returns false and names the tensor rather than building a form out of zeroes - which
 /// would decode every code as `0 + bias` and produce a perfectly finite wrong answer.
-bool sform_of(const WeightRef& r, strata::kernels::SForm& f, const std::string& name, std::string& err) {    if (!r.quantized()) {        err = name + " is not a quantized tensor, so it has no S-form";        return false;    }    f.code_bits = r.code_bits;    f.code_bias = r.code_bias;    f.group_elems = r.group_elems;    f.codebook = r.codebook_iq4nl ? strata::kernels::Codebook::Iq4Nl : strata::kernels::Codebook::Affine;    f.has_offset = r.has_offset;    f.act_kind = r.act_kind;
+bool sform_of(const WeightRef& r, guild::kernels::SForm& f, const std::string& name, std::string& err) {    if (!r.quantized()) {        err = name + " is not a quantized tensor, so it has no S-form";        return false;    }    f.code_bits = r.code_bits;    f.code_bias = r.code_bias;    f.group_elems = r.group_elems;    f.codebook = r.codebook_iq4nl ? guild::kernels::Codebook::Iq4Nl : guild::kernels::Codebook::Affine;    f.has_offset = r.has_offset;    f.act_kind = r.act_kind;
 // carried, not derived - see the note on `SForm::act_kind`
 return true;}
 /// The three canonical planes of a quantized tensor, located INSIDE the loaded region.
@@ -96,7 +96,7 @@ bool native_flash_attn_short = false;
 
 void project_bf16(const float* x, const uint16_t* x_bf16, const uint16_t* weights, float* out,
                   int64_t n_in, int64_t n_out, bool split, void* stream) {
-    using namespace strata::kernels;
+    using namespace guild::kernels;
     if (native_bf16_projections) bf16_gemv_fp32_mmvf(x, weights, out, n_in, n_out, stream);
     else if (split) bf16_gemv_split(x_bf16, weights, out, n_in, n_out, TPR, stream);
     else bf16_gemv(x_bf16, weights, out, n_in, n_out, stream);
@@ -140,8 +140,8 @@ void project_bf16(const float* x, const uint16_t* x_bf16, const uint16_t* weight
 //
 // `x80` and `xq8k` are the two quantized images of the SAME activation; a caller produces both once and this
 /// picks.  Producing only the one it thinks it needs is how the assumption gets baked in again.
-bool gemv_quantized(const WeightRef& w, const Planes& p, const strata::kernels::SForm& f, const uint8_t* x80, const uint8_t* xq8k,                    float* y, int64_t n_in, int64_t n_out, const std::string& name, void* stream,                    std::string& err, const float* x_f32 = nullptr, bool x_q8_1_ready = false) {
-    using namespace strata::kernels;
+bool gemv_quantized(const WeightRef& w, const Planes& p, const guild::kernels::SForm& f, const uint8_t* x80, const uint8_t* xq8k,                    float* y, int64_t n_in, int64_t n_out, const std::string& name, void* stream,                    std::string& err, const float* x_f32 = nullptr, bool x_q8_1_ready = false) {
+    using namespace guild::kernels;
     if (w.native_data) {
         if (!x_f32 || !w.native_q8_1 || !stream || n_in != w.ne0 || n_out != w.ne1) {
             err = name + ": native projection requires matching FP32 input and session scratch";
@@ -224,8 +224,8 @@ void gdn_buffers_zero_state(const GdnBuffers &b, const ModelGeometry &g,
                         g.ssm_state_size * sizeof(float);
     const uint64_t cs = (uint64_t)g.ssm_conv_channels * (g.ssm_d_conv - 1) *
                         sizeof(float);
-    strata::q_of(stream)-> memset(b.state, 0, st);
-    strata::q_of(stream)->memset(b.conv_state, 0, cs);
+    guild::q_of(stream)-> memset(b.state, 0, st);
+    guild::q_of(stream)->memset(b.conv_state, 0, cs);
 }
 // Forward-declared because `gdn_layer` and `qsa_layer` are both defined above the timer's own definition, and
 // the sub-stage marks live inside them.
@@ -241,7 +241,7 @@ const float *conv_kernel = (const float *)w_conv->data;
     const float *ssm_norm = (const float *)w_norm->data;
     const float *dt = (const float *)w_dt->data;
     const float *ssm_a = (const float *)w_a->data;
-    strata::kernels::SForm f_qkv, f_gate, f_out;
+    guild::kernels::SForm f_qkv, f_gate, f_out;
     if (!sform_of(*w_qkv, f_qkv, v.name("attn_qkv.weight"), err)) return false;
     if (!sform_of(*w_gate, f_gate, v.name("attn_gate.weight"),
                   err)) return false;
@@ -252,8 +252,8 @@ const float *conv_kernel = (const float *)w_conv->data;
     if (!plane_ptrs(*w_gate, v.name("attn_gate.weight"), p_gate,
                     err)) return false;
     if (!plane_ptrs(*w_out, v.name("ssm_out.weight"), p_out, err)) return false;
-    using namespace strata::kernels;
-    dpct::queue_ptr st = strata::q_of(stream);
+    using namespace guild::kernels;
+    dpct::queue_ptr st = guild::q_of(stream);
 // ---- 1. the activation, in EVERY format a weight on this layer might ask for.  BOTH quantized images are
 //         produced, because which one is wanted is a property of the TENSOR and the pack mixes them by
 //         layer - producing only the "right" one is how the per-role assumption gets baked back in.
@@ -377,18 +377,18 @@ uint64_t moe_buffers_bytes(const ModelGeometry& g, int64_t k) {    const uint64_
 // weights
 (uint64_t) g.n_embd * 4,
 // shared
-strata::kernels::shared_expert_scratch_bytes(g.n_ff),
+guild::kernels::shared_expert_scratch_bytes(g.n_ff),
 // the shared expert's own scratch
 (uint64_t) (g.n_embd / 32) * 34,
 // x_q8_0
 q8k_bytes(g.n_embd),
 // x_q8k
 };    uint64_t total = 0;    for (uint64_t v : parts) total += (v + 15) & ~(uint64_t) 15;    return total;}
-uint64_t moe_buffers_init(const ModelGeometry& g, int64_t k, void* base, MoEBuffers& b) {    const uint64_t parts[] = {        (uint64_t) g.n_embd * 2, (uint64_t) g.n_embd * 2, (uint64_t) g.n_expert * 4,        (uint64_t) k * 4, (uint64_t) k * 4, (uint64_t) g.n_embd * 4,        strata::kernels::shared_expert_scratch_bytes(g.n_ff),        (uint64_t) (g.n_embd / 32) * 34, q8k_bytes(g.n_embd),    };    uint8_t* p = (uint8_t*) base;    void* ptr[9];    uint64_t total = 0;    for (int i = 0; i < 9; ++i) {        ptr[i] = p;        const uint64_t al = (parts[i] + 15) & ~(uint64_t) 15;        p += al;        total += al;    }    b.x_bf16 = (uint16_t*) ptr[0];    b.x_f16 = (uint16_t*) ptr[1];    b.logits = (float*) ptr[2];    b.ids = (int*) ptr[3];    b.weights = (float*) ptr[4];    b.shared = (float*) ptr[5];    b.sh_scratch = (float*) ptr[6];    b.x_q8_0 = (uint8_t*) ptr[7];    b.x_q8k = (uint8_t*) ptr[8];    return total;}
+uint64_t moe_buffers_init(const ModelGeometry& g, int64_t k, void* base, MoEBuffers& b) {    const uint64_t parts[] = {        (uint64_t) g.n_embd * 2, (uint64_t) g.n_embd * 2, (uint64_t) g.n_expert * 4,        (uint64_t) k * 4, (uint64_t) k * 4, (uint64_t) g.n_embd * 4,        guild::kernels::shared_expert_scratch_bytes(g.n_ff),        (uint64_t) (g.n_embd / 32) * 34, q8k_bytes(g.n_embd),    };    uint8_t* p = (uint8_t*) base;    void* ptr[9];    uint64_t total = 0;    for (int i = 0; i < 9; ++i) {        ptr[i] = p;        const uint64_t al = (parts[i] + 15) & ~(uint64_t) 15;        p += al;        total += al;    }    b.x_bf16 = (uint16_t*) ptr[0];    b.x_f16 = (uint16_t*) ptr[1];    b.logits = (float*) ptr[2];    b.ids = (int*) ptr[3];    b.weights = (float*) ptr[4];    b.shared = (float*) ptr[5];    b.sh_scratch = (float*) ptr[6];    b.x_q8_0 = (uint8_t*) ptr[7];    b.x_q8k = (uint8_t*) ptr[8];    return total;}
 bool moe_route(const WeightTable &tables, const ModelGeometry &g, int64_t layer,
                int64_t k, const MoEBuffers &b, const float *x, void *stream,
                std::string &err, const Doorbell *db) try {
-    using namespace strata::kernels; const LayerView v(tables, layer);
+    using namespace guild::kernels; const LayerView v(tables, layer);
     const WeightRef *w_router = v.get("ffn_gate_inp.weight");
     if (w_router == nullptr) {
         err = v.name("ffn_gate_inp.weight") + " is missing"; return false;
@@ -419,7 +419,7 @@ if (native_router_enabled() && (g.n_expert == 512 || g.n_expert == 256) && k == 
 //      captured into `G[l]` like anything else - a kernel writing mapped pinned memory, which round 209
 //      measured the host seeing 0.050 ms into a 39.8 ms graph.
 if (db != nullptr && g_publish_kernel) {
-    strata::kernels::doorbell_publish(x, b.ids, b.weights, g.n_embd, k, db->d_x_f, db->d_ids, db->d_weights, db->d_seq,
+    guild::kernels::doorbell_publish(x, b.ids, b.weights, g.n_embd, k, db->d_x_f, db->d_ids, db->d_weights, db->d_seq,
                                       stream);
 /*
 DPCT1124: cudaMemcpyAsync is migrated to asynchronous memcpy API. While the
@@ -428,11 +428,11 @@ you may need to call wait() on event return by memcpy API to ensure
 synchronization behavior.
 */
 } else if (db != nullptr) {
-    if (DPCT_CHECK_ERROR(strata::q_of(stream)->memcpy(
+    if (DPCT_CHECK_ERROR(guild::q_of(stream)->memcpy(
             db->d_x_f, x, (size_t)g.n_embd * 4)) != 0 ||
-        DPCT_CHECK_ERROR(strata::q_of(stream)->memcpy(db->d_ids, b.ids,
+        DPCT_CHECK_ERROR(guild::q_of(stream)->memcpy(db->d_ids, b.ids,
                                                          (size_t)k * 4)) != 0 ||
-        DPCT_CHECK_ERROR(strata::q_of(stream)->memcpy(
+        DPCT_CHECK_ERROR(guild::q_of(stream)->memcpy(
             db->d_weights, b.weights, (size_t)k * 4)) != 0) {
         err = "moe_route: the doorbell handoff copy failed"; return false;
     }
@@ -442,13 +442,13 @@ synchronization behavior.
 // not exist.  The sequence value is read from the HOST copy and incremented, which is what makes the
 // write idempotent across replays of the same graph - a captured literal would ring the same number
 // forever and the host would never see a change.
-strata::kernels::doorbell_ring(db->d_seq, stream);    }    return true;}
+guild::kernels::doorbell_ring(db->d_seq, stream);    }    return true;}
 catch (sycl::exception const &exc) {
   std::cerr << exc.what() << "Exception caught at file:" << __FILE__
             << ", line:" << __LINE__ << std::endl;
   std::exit(1);
 }
-bool moe_shared(const WeightTable& tables, const ModelGeometry& g, int64_t layer, const MoEBuffers& b,                const float* x, void* stream, std::string& err) {    using namespace strata::kernels;    const LayerView v(tables, layer);    const WeightRef* w_ginp = v.get("ffn_gate_inp_shexp.weight");    const WeightRef* w_sgate = v.get("ffn_gate_shexp.weight");    const WeightRef* w_sup = v.get("ffn_up_shexp.weight");    const WeightRef* w_sdown = v.get("ffn_down_shexp.weight");    const char* missing = !w_ginp ? "ffn_gate_inp_shexp.weight" : !w_sgate ? "ffn_gate_shexp.weight"                          : !w_sup ? "ffn_up_shexp.weight" : !w_sdown ? "ffn_down_shexp.weight" : nullptr;    if (missing) { err = v.name(missing) + " is missing"; return false; }
+bool moe_shared(const WeightTable& tables, const ModelGeometry& g, int64_t layer, const MoEBuffers& b,                const float* x, void* stream, std::string& err) {    using namespace guild::kernels;    const LayerView v(tables, layer);    const WeightRef* w_ginp = v.get("ffn_gate_inp_shexp.weight");    const WeightRef* w_sgate = v.get("ffn_gate_shexp.weight");    const WeightRef* w_sup = v.get("ffn_up_shexp.weight");    const WeightRef* w_sdown = v.get("ffn_down_shexp.weight");    const char* missing = !w_ginp ? "ffn_gate_inp_shexp.weight" : !w_sgate ? "ffn_gate_shexp.weight"                          : !w_sup ? "ffn_up_shexp.weight" : !w_sdown ? "ffn_down_shexp.weight" : nullptr;    if (missing) { err = v.name(missing) + " is missing"; return false; }
 // ---- the shared expert.  Its three weights are quantized, so they need their planes.
 SForm f_gate, f_up, f_down;    if (!sform_of(*w_sgate, f_gate, v.name("ffn_gate_shexp.weight"), err)) return false;    if (!sform_of(*w_sup, f_up, v.name("ffn_up_shexp.weight"), err)) return false;    if (!sform_of(*w_sdown, f_down, v.name("ffn_down_shexp.weight"), err)) return false;    Planes p_gate, p_up, p_down;    if (!plane_ptrs(*w_sgate, v.name("ffn_gate_shexp.weight"), p_gate, err)) return false;    if (!plane_ptrs(*w_sup, v.name("ffn_up_shexp.weight"), p_up, err)) return false;    if (!plane_ptrs(*w_sdown, v.name("ffn_down_shexp.weight"), p_down, err)) return false;
 // `ffn_gate_inp_shexp` is a 1-D BF16 vector, so THE ARENA HOLDS 2 BYTES PER ELEMENT, not 4 - the loader
@@ -485,7 +485,7 @@ f32_to_bf16_bulk(x, b.x_bf16, g.n_embd, stream);
 }
 bool moe_combine_parts(const ModelGeometry& g, int64_t layer, int64_t k, const MoEBuffers& b, const float* parts,
                        float* out, void* stream, std::string& err) {
-    using namespace strata::kernels;
+    using namespace guild::kernels;
     if (k < 1 || k > 64) { err = "moe_finish: k must be 1..64"; return false; }
     // ---- the combination: sum of w[i] * parts[i], plus the shared output ADDED PLAIN.
 //
@@ -510,10 +510,10 @@ bool layer_verify_compatible(std::string& why) {
     // Plan v0.3 P6: the verify window reproduces exactly this configuration's per-token arithmetic.
     if (!native_bf16_projections) why = "the native BF16 projections are off";
     else if (!g_fused_gr) why = "the fused hyper-connection read is off";
-    else if (!g_fused_gdn || !strata::kernels::native_gdn_enabled()) why = "the fused native GDN kernels are off";
+    else if (!g_fused_gdn || !guild::kernels::native_gdn_enabled()) why = "the fused native GDN kernels are off";
     else if (!g_fast_attn || native_flash_attn_short) why = "the split-K decode attention is off";
     else if (!g_fast_select) why = "the block top-k selection is off";
-    else if (!strata::kernels::native_qsa_indexer_enabled()) why = "the native QSA indexer is off";
+    else if (!guild::kernels::native_qsa_indexer_enabled()) why = "the native QSA indexer is off";
     else return true;
     return false;
 }
@@ -532,10 +532,10 @@ bool moe_layer(const WeightTable& tables, const ModelGeometry& g, int64_t layer,
 // loop uses the halves separately.
 if (!moe_route(tables, g, layer, k, b, x, stream, err, db)) return false;    return moe_finish(tables, g, layer, k, b, x, parts, out, stream, err);}
 // ================================ the QSA mixer ================================
-namespace {using strata::kernels::QsaIndexerBuffers;using strata::kernels::QsaShapes;
+namespace {using guild::kernels::QsaIndexerBuffers;using guild::kernels::QsaShapes;
 /// The geometry the QSA kernels want, from the one place that defines it.  `ModelGeometry` carries the widths
 /// the LAYOUT needs; `QsaShapes` adds `n_rot`, `idx_block` and `idx_top_k`, which are kernel contracts.
-QsaShapes qsa_shapes(const ModelGeometry& g) {    QsaShapes s = strata::kernels::qsa_real_shapes();    s.n_head = g.n_head;    s.n_head_kv = g.n_head_kv;    s.head_dim = g.head_dim;    s.idx_n_head = g.idx_q_heads;    s.idx_dim = g.idx_key_dim;    return s;}
+QsaShapes qsa_shapes(const ModelGeometry& g) {    QsaShapes s = guild::kernels::qsa_real_shapes();    s.n_head = g.n_head;    s.n_head_kv = g.n_head_kv;    s.head_dim = g.head_dim;    s.idx_n_head = g.idx_q_heads;    s.idx_dim = g.idx_key_dim;    return s;}
 uint64_t align_up16(uint64_t n) { return (n + 15) & ~15ull; }
 /// One cursor over an arena, so every region is 16-byte aligned without a list of hand-added offsets.
 struct Cursor {    uint8_t* p;    uint64_t used = 0;    template <typename T>    T* take(uint64_t count) {        T* r = (T*) (p + used);        used = align_up16(used + count * sizeof(T));        return r;    }    uint8_t* take_bytes(uint64_t n) {        uint8_t* r = p + used;        used = align_up16(used + n);        return r;    }};
@@ -559,9 +559,9 @@ KvPlan kv_plan(const QsaShapes& s, int64_t max_cells, int64_t ring_cells) {
     p.slots = p.pages;
     p.pooled_rows = max_cells / s.idx_block + 2;
     if (g_kv_resident <= 0 || ring_cells < 0) return p;   // ring_cells < 0: always fully resident
-    // A/B only: STRATA_KV_RING_OFF keeps the drafter fully resident, STRATA_KV_MAIN_OFF the main layers
-    static const bool ring_off = std::getenv("STRATA_KV_RING_OFF") != nullptr;
-    static const bool main_off = std::getenv("STRATA_KV_MAIN_OFF") != nullptr;
+    // A/B only: GUILD_KV_RING_OFF keeps the drafter fully resident, GUILD_KV_MAIN_OFF the main layers
+    static const bool ring_off = std::getenv("GUILD_KV_RING_OFF") != nullptr;
+    static const bool main_off = std::getenv("GUILD_KV_MAIN_OFF") != nullptr;
     if (ring_cells > 0 ? ring_off : main_off) return p;
     if (ring_cells > 0) {
         const int64_t r = (ring_cells + s.page_size - 1) / s.page_size;
@@ -575,11 +575,11 @@ KvPlan kv_plan(const QsaShapes& s, int64_t max_cells, int64_t ring_cells) {
 uint64_t kv_pool_bytes(const QsaShapes& s, int64_t pages, bool hybrid, bool int8) {
     if (hybrid) {   // K8V4: the INT8 K half (codes + scales) plus the Q4_0 V half (kv_q4.hpp's rotation)
         const uint64_t rows = (uint64_t) pages * s.page_size * s.n_head_kv;
-        return rows * (uint64_t) s.head_dim + rows * (uint64_t) (s.head_dim / strata::kernels::KV_Q8_GROUP) * 2 +
-               rows * strata::kernels::kv_q4_bytes_per_head((int) s.head_dim) + 64;
+        return rows * (uint64_t) s.head_dim + rows * (uint64_t) (s.head_dim / guild::kernels::KV_Q8_GROUP) * 2 +
+               rows * guild::kernels::kv_q4_bytes_per_head((int) s.head_dim) + 64;
     }
-    if (g_kv_q4) return (uint64_t) pages * s.page_size * strata::kernels::kv_q4_bytes_per_cell(s) + 64;
-    return int8 ? (uint64_t) pages * s.page_size * strata::kernels::kv_q8_bytes_per_cell(s) + 64
+    if (g_kv_q4) return (uint64_t) pages * s.page_size * guild::kernels::kv_q4_bytes_per_cell(s) + 64;
+    return int8 ? (uint64_t) pages * s.page_size * guild::kernels::kv_q8_bytes_per_cell(s) + 64
                 : (uint64_t) pages * s.n_head_kv * s.page_size * s.head_dim * 2 * 2;
 }
 }  // namespace
@@ -596,13 +596,13 @@ uint64_t qsa_state_bytes(const ModelGeometry& g, int64_t max_cells, bool with_ro
     n += kv_pool_bytes(s, p.slots, g_kv_hybrid && ring_cells <= 0,
                        g_kv_int8 || g_kv_hybrid) + 4 * 16;   // K/V pools (the VRAM slots)
     n += (uint64_t) p.pages * 4;                                               // page_table
-    if (p.mode == 1) n += strata::kernels::kv_stream_map_bytes(p.slots) + 6 * 16;   // the residency map
+    if (p.mode == 1) n += guild::kernels::kv_stream_map_bytes(p.slots) + 6 * 16;   // the residency map
     n += (uint64_t) (s.idx_block - 1) * s.idx_dim * 4;                         // tail
     n += (uint64_t) s.idx_dim * 4;                                             // dead
     n += (uint64_t) p.pooled_rows * s.idx_dim * 4;                             // pooled
     n += 16;                                                                   // block_pos
     if (with_rope) n += (uint64_t) max_cells * (s.n_rot / 2) * 4 * 2;          // cos + sin tables
-    n += strata::kernels::qsa_step_bytes() + 16;                               // counts and aligned attention status
+    n += guild::kernels::qsa_step_bytes() + 16;                               // counts and aligned attention status
     n += (uint64_t) s.n_head * 4;                                              // pos_dev
     return align_up16(n) + 256;
 }
@@ -620,7 +620,7 @@ uint64_t qsa_state_init(const ModelGeometry &g, int64_t max_cells, void *base,
     // mtp.cpp). Streamed mode is refused outright; generate.cpp validates it too, this is the backstop.
     if (g_kv_hybrid && ring_cells <= 0) {
         if (p.mode == 1) {
-            std::fprintf(stderr, "strata: hybrid K8V4 KV does not support --kv-resident streaming\n");
+            std::fprintf(stderr, "guild: hybrid K8V4 KV does not support --kv-resident streaming\n");
             return 0;
         }
         st.kv_hybrid = true;
@@ -631,10 +631,10 @@ uint64_t qsa_state_init(const ModelGeometry &g, int64_t max_cells, void *base,
     st.kv_mode = p.mode;
     st.n_slots = p.slots;
     const uint64_t rows = (uint64_t) p.slots * s.n_head_kv * s.page_size;   // VRAM rows: the slots
-    const uint64_t q4_row = strata::kernels::kv_q4_bytes_per_head((int) s.head_dim);
+    const uint64_t q4_row = guild::kernels::kv_q4_bytes_per_head((int) s.head_dim);
     if (st.kv_hybrid) {
         st.k_q = c.take<int8_t>(rows * s.head_dim);
-        st.k_scale = c.take<uint16_t>(rows * (s.head_dim / strata::kernels::KV_Q8_GROUP));
+        st.k_scale = c.take<uint16_t>(rows * (s.head_dim / guild::kernels::KV_Q8_GROUP));
         st.v_q4 = c.take<uint8_t>(rows * q4_row);
     } else if (st.kv_q4) {
         st.k_q4 = c.take<uint8_t>(rows * q4_row);
@@ -642,8 +642,8 @@ uint64_t qsa_state_init(const ModelGeometry &g, int64_t max_cells, void *base,
     } else if (st.kv_int8) {   // st, not the global: the drafter's ring is INT8 under --kv k8v4 too
         st.k_q = c.take<int8_t>(rows * s.head_dim);
         st.v_q = c.take<int8_t>(rows * s.head_dim);
-        st.k_scale = c.take<uint16_t>(rows * (s.head_dim / strata::kernels::KV_Q8_GROUP));
-        st.v_scale = c.take<uint16_t>(rows * (s.head_dim / strata::kernels::KV_Q8_GROUP));
+        st.k_scale = c.take<uint16_t>(rows * (s.head_dim / guild::kernels::KV_Q8_GROUP));
+        st.v_scale = c.take<uint16_t>(rows * (s.head_dim / guild::kernels::KV_Q8_GROUP));
     } else {
         st.k_pool = c.take<uint16_t>(rows * s.head_dim);
         st.v_pool = c.take<uint16_t>(rows * s.head_dim);
@@ -651,7 +651,7 @@ uint64_t qsa_state_init(const ModelGeometry &g, int64_t max_cells, void *base,
     st.page_table = c.take<int32_t>((uint64_t) pages);
     st.n_pages = pages;
     st.max_cells = max_cells;
-    st.map = strata::kernels::KvStreamMap{};
+    st.map = guild::kernels::KvStreamMap{};
     st.map.page_table = st.page_table;
     st.map.n_blocks = pages;
     st.map.n_slots = p.slots;
@@ -661,7 +661,7 @@ uint64_t qsa_state_init(const ModelGeometry &g, int64_t max_cells, void *base,
         st.map.slot_ref = c.take<int32_t>((uint64_t) p.slots);
         st.map.miss_block = c.take<int32_t>((uint64_t) p.slots);
         st.map.miss_slot = c.take<int32_t>((uint64_t) p.slots);
-        st.map.ctl = c.take<int32_t>((uint64_t) strata::kernels::kKvCtlInts);
+        st.map.ctl = c.take<int32_t>((uint64_t) guild::kernels::kKvCtlInts);
     }
     st.idx_tail = c.take<float>((uint64_t) (s.idx_block - 1) * s.idx_dim);
     st.idx_dead = c.take<float>((uint64_t) s.idx_dim);
@@ -675,13 +675,13 @@ uint64_t qsa_state_init(const ModelGeometry &g, int64_t max_cells, void *base,
         st.cos_tab = c.take<float>((uint64_t) max_cells * (s.n_rot / 2));
         st.sin_tab = c.take<float>((uint64_t) max_cells * (s.n_rot / 2));
     }
-    st.step = c.take<int32_t>((uint64_t) strata::kernels::kStepCount);
+    st.step = c.take<int32_t>((uint64_t) guild::kernels::kStepCount);
     st.attention_status = c.take<int32_t>(1);
     st.pos_dev = c.take<int32_t>((uint64_t) s.n_head);
     // the pinned staging the uploads copy FROM - see the note on `host_step` in the header
     if (DPCT_CHECK_ERROR(
             st.host_step = (int32_t *)sycl::malloc_host(
-                strata::kernels::qsa_step_bytes() + sizeof(int32_t),
+                guild::kernels::qsa_step_bytes() + sizeof(int32_t),
                 dpct::get_in_order_queue())) != 0 ||
         /*
         DPCT1048: The original value cudaHostAllocMapped is not meaningful in
@@ -698,12 +698,12 @@ uint64_t qsa_state_init(const ModelGeometry &g, int64_t max_cells, void *base,
                 (size_t)s.n_head * 4, dpct::get_in_order_queue())) != 0) {
         return 0;   // the caller sees a zero byte count; a half-built state is worse than none
     }
-    st.host_step[strata::kernels::kStepCount] = 0;
+    st.host_step[guild::kernels::kStepCount] = 0;
     // KV streaming: the authoritative K/V of every cell, pinned and device-mapped, in the identity layout
-    st.host = strata::kernels::KvHostPools{};
+    st.host = guild::kernels::KvHostPools{};
     if (p.mode != 0) {
         const uint64_t hrows = (uint64_t) pages * s.n_head_kv * s.page_size;
-        const uint64_t bytes = (uint64_t) pages * strata::kernels::kv_block_bytes(s, qsa_kv_format(st)) + 4 * 256;
+        const uint64_t bytes = (uint64_t) pages * guild::kernels::kv_block_bytes(s, qsa_kv_format(st)) + 4 * 256;
         uint8_t* h = nullptr;
         uint8_t* d = nullptr;
         /*
@@ -720,7 +720,7 @@ uint64_t qsa_state_init(const ModelGeometry &g, int64_t max_cells, void *base,
                                  bytes, dpct::get_in_order_queue())) != 0 ||
             DPCT_CHECK_ERROR(*(void **)&d = (uint8_t *)h) != 0) {
             // under WSL the NVIDIA driver pins only ~1 GiB in all, which is less than 128K of 8-bit KV needs
-            if (p.mode == 1) std::fprintf(stderr, "strata: KV streaming: cannot pin %.2f GiB of RAM for a layer's KV copy "
+            if (p.mode == 1) std::fprintf(stderr, "guild: KV streaming: cannot pin %.2f GiB of RAM for a layer's KV copy "
                                  "(%.2f GiB pinned so far) - lower the context, or run without --kv-resident (under "
                                  "WSL the driver pins only about 1 GiB in all)\n", (double) bytes / 1073741824.0,
                                  (double) g_kv_host_bytes / 1073741824.0);
@@ -734,8 +734,8 @@ uint64_t qsa_state_init(const ModelGeometry &g, int64_t max_cells, void *base,
         } else if (st.kv_int8) {
             st.host.k_q = hc.take<int8_t>(hrows * s.head_dim);
             st.host.v_q = hc.take<int8_t>(hrows * s.head_dim);
-            st.host.k_scale = hc.take<uint16_t>(hrows * (s.head_dim / strata::kernels::KV_Q8_GROUP));
-            st.host.v_scale = hc.take<uint16_t>(hrows * (s.head_dim / strata::kernels::KV_Q8_GROUP));
+            st.host.k_scale = hc.take<uint16_t>(hrows * (s.head_dim / guild::kernels::KV_Q8_GROUP));
+            st.host.v_scale = hc.take<uint16_t>(hrows * (s.head_dim / guild::kernels::KV_Q8_GROUP));
         } else {
             st.host.k_pool = hc.take<uint16_t>(hrows * s.head_dim);
             st.host.v_pool = hc.take<uint16_t>(hrows * s.head_dim);
@@ -747,7 +747,7 @@ uint64_t qsa_state_init(const ModelGeometry &g, int64_t max_cells, void *base,
     // The process's rope scaling (none by default) is INSIDE the table - the rotation kernels cannot tell.
     if (share_rope == nullptr) {
         std::vector<float> hc((size_t) max_cells * (s.n_rot / 2)), hs((size_t) max_cells * (s.n_rot / 2));
-        strata::kernels::build_rope_table((int) s.n_rot, strata::kernels::rope_scaling(), (int) max_cells,
+        guild::kernels::build_rope_table((int) s.n_rot, guild::kernels::rope_scaling(), (int) max_cells,
                                           hc.data(), hs.data());
         dpct::get_in_order_queue()
             .memcpy(st.cos_tab, hc.data(), hc.size() * 4)
@@ -756,8 +756,8 @@ uint64_t qsa_state_init(const ModelGeometry &g, int64_t max_cells, void *base,
             .memcpy(st.sin_tab, hs.data(), hs.size() * 4)
             .wait();
         st.owns_rope = true;
-        if (s.n_rot == 64)   // the native and prompt-path rope kernels read it (mrope.hpp, STRATA_ROPE_TABLE=1)
-            strata::kernels::rope_table_set(st.cos_tab, st.sin_tab, (int) max_cells, strata::kernels::rope_scaling());
+        if (s.n_rot == 64)   // the native and prompt-path rope kernels read it (mrope.hpp, GUILD_ROPE_TABLE=1)
+            guild::kernels::rope_table_set(st.cos_tab, st.sin_tab, (int) max_cells, guild::kernels::rope_scaling());
     }
     // the page table starts as the IDENTITY, which is the simplest legal mapping and what a caller that does
     // not page at all wants; a streamed state starts with nothing resident, a ring at `block % n_slots`.
@@ -768,9 +768,9 @@ uint64_t qsa_state_init(const ModelGeometry &g, int64_t max_cells, void *base,
             .memcpy(st.page_table, tab.data(), tab.size() * 4)
             .wait();
     } else if (p.mode == 1) {
-        strata::kernels::kv_stream_reset(st.map, nullptr);
+        guild::kernels::kv_stream_reset(st.map, nullptr);
     } else {
-        strata::kernels::kv_ring_table(st.page_table, pages, p.slots, nullptr);
+        guild::kernels::kv_ring_table(st.page_table, pages, p.slots, nullptr);
     }
     dpct::get_current_device().queues_wait_and_throw();
     return c.used;
@@ -783,29 +783,29 @@ catch (sycl::exception const &exc) {
 
 void qsa_state_zero(const QsaState& st, const ModelGeometry& g, void* stream) {
     const QsaShapes s = qsa_shapes(g);
-    dpct::queue_ptr cs = strata::q_of(stream);
+    dpct::queue_ptr cs = guild::q_of(stream);
     const size_t rows = (size_t) st.n_slots * s.n_head_kv * s.page_size;
     if (st.kv_hybrid) {
         cs->memset(st.k_q, 0, rows * s.head_dim);
         cs->memset(st.k_scale, 0,
-                   rows * (s.head_dim / strata::kernels::KV_Q8_GROUP) * 2);
+                   rows * (s.head_dim / guild::kernels::KV_Q8_GROUP) * 2);
         cs->memset(st.v_q4, 0,
                    rows *
-                       strata::kernels::kv_q4_bytes_per_head((int)s.head_dim));
+                       guild::kernels::kv_q4_bytes_per_head((int)s.head_dim));
     } else if (st.kv_q4) {
         cs->memset(st.k_q4, 0,
                    rows *
-                       strata::kernels::kv_q4_bytes_per_head((int)s.head_dim));
+                       guild::kernels::kv_q4_bytes_per_head((int)s.head_dim));
         cs->memset(st.v_q4, 0,
                    rows *
-                       strata::kernels::kv_q4_bytes_per_head((int)s.head_dim));
+                       guild::kernels::kv_q4_bytes_per_head((int)s.head_dim));
     } else if (st.kv_int8) {
         cs->memset(st.k_q, 0, rows * s.head_dim);
         cs->memset(st.v_q, 0, rows * s.head_dim);
         cs->memset(st.k_scale, 0,
-                   rows * (s.head_dim / strata::kernels::KV_Q8_GROUP) * 2);
+                   rows * (s.head_dim / guild::kernels::KV_Q8_GROUP) * 2);
         cs->memset(st.v_scale, 0,
-                   rows * (s.head_dim / strata::kernels::KV_Q8_GROUP) * 2);
+                   rows * (s.head_dim / guild::kernels::KV_Q8_GROUP) * 2);
     } else {
         cs->memset(st.k_pool, 0, rows * s.head_dim * 2);
         cs->memset(st.v_pool, 0, rows * s.head_dim * 2);
@@ -813,14 +813,14 @@ void qsa_state_zero(const QsaState& st, const ModelGeometry& g, void* stream) {
     // A streamed state starts over with nothing resident. Its host copy is not cleared (GBs over PCIe per new
     // conversation): no reader names a cell before this sequence has written it, and a block copied in whole
     // carries the unwritten cells past the end, which nothing reads.
-    if (st.kv_mode == 1) strata::kernels::kv_stream_reset(st.map, stream);
+    if (st.kv_mode == 1) guild::kernels::kv_stream_reset(st.map, stream);
     cs->memset(st.idx_tail, 0, (size_t)(s.idx_block - 1) * s.idx_dim * 4);
     cs->memset(st.idx_dead, 0, (size_t)s.idx_dim * 4);
     cs->memset(st.idx_pooled, 0, (size_t)st.idx_pooled_rows * s.idx_dim * 4);
 }
 
-strata::kernels::QsaAttnPools qsa_attn_pools(const QsaState& st) {
-    strata::kernels::QsaAttnPools pools;
+guild::kernels::QsaAttnPools qsa_attn_pools(const QsaState& st) {
+    guild::kernels::QsaAttnPools pools;
     pools.page_table = st.page_table;
     if (st.kv_hybrid) { pools.k_q = st.k_q; pools.k_scale = st.k_scale; pools.v_q4 = st.v_q4; }
     else if (st.kv_q4) { pools.k_q4 = st.k_q4; pools.v_q4 = st.v_q4; }
@@ -832,11 +832,11 @@ strata::kernels::QsaAttnPools qsa_attn_pools(const QsaState& st) {
 void qsa_kv_resolve(const QsaState& st, const ModelGeometry& g, const int32_t* ids, const int32_t* steps, int64_t n_q,
                     int64_t cap, void* stream) {
     if (st.kv_mode != 1) return;
-    strata::kernels::kv_stream_resolve(st.map, qsa_attn_pools(st), st.host, qsa_kv_format(st), ids, steps, n_q, cap,
+    guild::kernels::kv_stream_resolve(st.map, qsa_attn_pools(st), st.host, qsa_kv_format(st), ids, steps, n_q, cap,
                                        qsa_shapes(g), stream);
 }
 
-uint64_t qsa_buffers_bytes(const ModelGeometry& g, int64_t max_cells) {    const QsaShapes s = qsa_shapes(g);    const int64_t cap = strata::kernels::qsa_selection_width(strata::kernels::kTopkMaxCells, s);    uint64_t n = 0;    n += (uint64_t) q8k_bytes(g.n_embd);    n += (uint64_t) (g.n_embd / 32) * 34;
+uint64_t qsa_buffers_bytes(const ModelGeometry& g, int64_t max_cells) {    const QsaShapes s = qsa_shapes(g);    const int64_t cap = guild::kernels::qsa_selection_width(guild::kernels::kTopkMaxCells, s);    uint64_t n = 0;    n += (uint64_t) q8k_bytes(g.n_embd);    n += (uint64_t) (g.n_embd / 32) * 34;
 // block_q8_0
 n += (uint64_t) g.n_embd * 2;    n += (uint64_t) g.n_head * 2 * g.head_dim * 4;    n += (uint64_t) g.n_head * g.head_dim * 4;    n += (uint64_t) g.n_head_kv * g.head_dim * 4 * 2;    n += (uint64_t) g.idx_key_dim * 4;    n += (uint64_t) g.idx_q_heads * g.idx_key_dim * 4;    n += (uint64_t) max_cells * 4;    n += (uint64_t) cap * 4;    n += (uint64_t) cap * g.n_head_kv * g.head_dim * 2 * 2;    n += (uint64_t) g.n_head * g.head_dim * 4;
 // attn
@@ -846,10 +846,10 @@ n += (uint64_t) g.n_head * g.head_dim * 4;
 // attn32
 n += (uint64_t) q8k_bytes(g.n_head * g.head_dim);
 // attn_q8k
-n += strata::kernels::qsa_decode_attn_scratch_floats(cap, s) * 4 + 16;
+n += guild::kernels::qsa_decode_attn_scratch_floats(cap, s) * 4 + 16;
 // attn_scratch
 return align_up16(n) + 256;}
-uint64_t qsa_buffers_init(const ModelGeometry& g, int64_t max_cells, void* base, QsaBuffers& b) {    const QsaShapes s = qsa_shapes(g);    const int64_t cap = strata::kernels::qsa_selection_width(strata::kernels::kTopkMaxCells, s);    Cursor c{(uint8_t*) base};    b.x_q8k = c.take_bytes(q8k_bytes(g.n_embd));    b.x_q8_0 = c.take_bytes((uint64_t) (g.n_embd / 32) * 34);    b.x_bf16 = c.take<uint16_t>((uint64_t) g.n_embd);    b.q_full = c.take<float>((uint64_t) g.n_head * 2 * g.head_dim);    b.qcur = c.take<float>((uint64_t) g.n_head * g.head_dim);    b.kcur = c.take<float>((uint64_t) g.n_head_kv * g.head_dim);    b.vcur = c.take<float>((uint64_t) g.n_head_kv * g.head_dim);    b.idx_raw = c.take<float>((uint64_t) g.idx_key_dim);    b.q_idx = c.take<float>((uint64_t) g.idx_q_heads * g.idx_key_dim);    b.cell_scores = c.take<float>((uint64_t) max_cells);    b.ids = c.take<int32_t>((uint64_t) cap);    b.k_scratch = c.take<uint16_t>((uint64_t) cap * g.n_head_kv * g.head_dim);    b.v_scratch = c.take<uint16_t>((uint64_t) cap * g.n_head_kv * g.head_dim);    b.attn = c.take<float>((uint64_t) g.n_head * g.head_dim);    b.attn16 = c.take<uint16_t>((uint64_t) g.n_head * g.head_dim);    b.attn32 = c.take<float>((uint64_t) g.n_head * g.head_dim);    b.attn_q8k = c.take_bytes(q8k_bytes(g.n_head * g.head_dim));    b.attn_scratch = c.take<float>(strata::kernels::qsa_decode_attn_scratch_floats(cap, s));    return c.used;}
+uint64_t qsa_buffers_init(const ModelGeometry& g, int64_t max_cells, void* base, QsaBuffers& b) {    const QsaShapes s = qsa_shapes(g);    const int64_t cap = guild::kernels::qsa_selection_width(guild::kernels::kTopkMaxCells, s);    Cursor c{(uint8_t*) base};    b.x_q8k = c.take_bytes(q8k_bytes(g.n_embd));    b.x_q8_0 = c.take_bytes((uint64_t) (g.n_embd / 32) * 34);    b.x_bf16 = c.take<uint16_t>((uint64_t) g.n_embd);    b.q_full = c.take<float>((uint64_t) g.n_head * 2 * g.head_dim);    b.qcur = c.take<float>((uint64_t) g.n_head * g.head_dim);    b.kcur = c.take<float>((uint64_t) g.n_head_kv * g.head_dim);    b.vcur = c.take<float>((uint64_t) g.n_head_kv * g.head_dim);    b.idx_raw = c.take<float>((uint64_t) g.idx_key_dim);    b.q_idx = c.take<float>((uint64_t) g.idx_q_heads * g.idx_key_dim);    b.cell_scores = c.take<float>((uint64_t) max_cells);    b.ids = c.take<int32_t>((uint64_t) cap);    b.k_scratch = c.take<uint16_t>((uint64_t) cap * g.n_head_kv * g.head_dim);    b.v_scratch = c.take<uint16_t>((uint64_t) cap * g.n_head_kv * g.head_dim);    b.attn = c.take<float>((uint64_t) g.n_head * g.head_dim);    b.attn16 = c.take<uint16_t>((uint64_t) g.n_head * g.head_dim);    b.attn32 = c.take<float>((uint64_t) g.n_head * g.head_dim);    b.attn_q8k = c.take_bytes(q8k_bytes(g.n_head * g.head_dim));    b.attn_scratch = c.take<float>(guild::kernels::qsa_decode_attn_scratch_floats(cap, s));    return c.used;}
 // ================================ PER-STAGE TIMING, DEBUG ONLY ================================
 //
 // **THE ENGINE SPENDS 1.047 ms PER LAYER WITH THE EXPERTS OFF, AND EVERY COST MODEL IN `bench/` PREDICTS LESS
@@ -909,12 +909,12 @@ void stage_mark_end(int64_t layer, int slot, void* stream) { st_end(layer, slot,
 
 static void st_begin(int64_t layer, int slot, void* stream) {
     if (g_st.on && layer < 64)
-        dpct::sync_barrier(g_st.a[layer][slot], strata::q_of(stream));
+        dpct::sync_barrier(g_st.a[layer][slot], guild::q_of(stream));
 }
 
 static void st_end(int64_t layer, int slot, void* stream) {
     if (g_st.on && layer < 64)
-        dpct::sync_barrier(g_st.b[layer][slot], strata::q_of(stream));
+        dpct::sync_barrier(g_st.b[layer][slot], guild::q_of(stream));
 }
 
 void stage_timing_report(int64_t n_layers) try {
@@ -979,7 +979,7 @@ catch (sycl::exception const &exc) {
 // needs nothing from the layer it is called for beyond its index.
 static void dump_slot(float* dump, const ModelGeometry& g, int64_t layer, const float* src, uint64_t off,
                       uint64_t n, void* stream);
-bool qsa_layer(const WeightTable& tables, const ModelGeometry& g, int64_t layer, int64_t pos, int32_t pos_base,               const QsaState& st, const QsaBuffers& b, const float* x, float* out, void* stream,               std::string& err, float* dump) {    using namespace strata::kernels;    const QsaShapes s = qsa_shapes(g);    const LayerView v(tables, layer);    const int64_t n_kv = pos + 1;    /* P7 audit: RoPE reads cos/sin row pos_base + pos, and the table holds max_cells rows. */    if ((int64_t) pos_base + pos >= st.max_cells || pos_base < 0) {        err = "qsa_layer: position " + std::to_string((long long) pos_base + pos) + " is outside the RoPE table (" + std::to_string((long long) st.max_cells) + " rows)";        return false;    }    const int64_t n_bid = n_kv / s.idx_block;    const int64_t width = qsa_selection_width(n_kv, s);    const int64_t cap = qsa_selection_width(kTopkMaxCells, s);
+bool qsa_layer(const WeightTable& tables, const ModelGeometry& g, int64_t layer, int64_t pos, int32_t pos_base,               const QsaState& st, const QsaBuffers& b, const float* x, float* out, void* stream,               std::string& err, float* dump) {    using namespace guild::kernels;    const QsaShapes s = qsa_shapes(g);    const LayerView v(tables, layer);    const int64_t n_kv = pos + 1;    /* P7 audit: RoPE reads cos/sin row pos_base + pos, and the table holds max_cells rows. */    if ((int64_t) pos_base + pos >= st.max_cells || pos_base < 0) {        err = "qsa_layer: position " + std::to_string((long long) pos_base + pos) + " is outside the RoPE table (" + std::to_string((long long) st.max_cells) + " rows)";        return false;    }    const int64_t n_bid = n_kv / s.idx_block;    const int64_t width = qsa_selection_width(n_kv, s);    const int64_t cap = qsa_selection_width(kTopkMaxCells, s);
 const auto normalize_rotate = [&](float* data, const WeightRef* norm, int rows, int cols) {
     try {
         if (native_qsa_enabled()) native_qsa_rms_norm_weighted(data, (const float*) norm->data, data, cols, rows, RMS_EPS, stream);
@@ -1018,8 +1018,8 @@ if (!w_attnk->native_data || !w_attnv->native_data || !w_attnq->native_data) {
             DPCT_CHECK_ERROR(*(void **)&m_step = (int32_t *)st.host_step) ==
                 0 &&
             DPCT_CHECK_ERROR(*(void **)&m_pos = (int32_t *)st.host_pos) == 0) {
-            strata::kernels::copy_i32_from_mapped(st.step, m_step, strata::kernels::kStepCount, stream);
-            strata::kernels::copy_i32_from_mapped(st.pos_dev, m_pos, g.n_head, stream);
+            guild::kernels::copy_i32_from_mapped(st.step, m_step, guild::kernels::kStepCount, stream);
+            guild::kernels::copy_i32_from_mapped(st.pos_dev, m_pos, g.n_head, stream);
         } else
         /*
         DPCT1124: cudaMemcpyAsync is migrated to asynchronous memcpy API.
@@ -1027,7 +1027,7 @@ if (!w_attnk->native_data || !w_attnv->native_data || !w_attnq->native_data) {
         operand memory, so you may need to call wait() on event return by memcpy
         API to ensure synchronization behavior.
         */
-        if (DPCT_CHECK_ERROR(strata::q_of(stream)->memcpy(st.step, st.host_step, qsa_step_bytes())) != 0 ||            DPCT_CHECK_ERROR(strata::q_of(stream)->memcpy(st.pos_dev, st.host_pos, (size_t) g.n_head * 4)) != 0) {            err = "qsa_layer: the step-state upload failed";            return false;        }    }
+        if (DPCT_CHECK_ERROR(guild::q_of(stream)->memcpy(st.step, st.host_step, qsa_step_bytes())) != 0 ||            DPCT_CHECK_ERROR(guild::q_of(stream)->memcpy(st.pos_dev, st.host_pos, (size_t) g.n_head * 4)) != 0) {            err = "qsa_layer: the step-state upload failed";            return false;        }    }
 // ---- 3. the indexer's RAW key: appended before any norm, pooled later once per block
 project_bf16(x, b.x_bf16, (const uint16_t*) w_idxk->data, b.idx_raw, g.n_embd, g.idx_key_dim, false, stream);
 // ---- 4. K and V, in Q8_K, then norm and rotate K only
@@ -1044,16 +1044,16 @@ if (st.kv_hybrid) {
     // K8V4: only V is rotated (kv_q4.hpp's H); the scores pair unrotated q with unrotated INT8 K, and the
     // output - a mix of rotated values - is rotated back after attention. Each append/gather call folds the
     // unused half's lanes onto the used pool (a bit-identical duplicate write), so no kernel variants exist.
-    strata::kernels::fwht256_inplace_cuda(b.vcur, g.n_head_kv, stream);
+    guild::kernels::fwht256_inplace_cuda(b.vcur, g.n_head_kv, stream);
     kv_append_q8_step(st.k_q, st.k_q, st.k_scale, st.k_scale, st.page_table, st.step, b.kcur, b.kcur, s, stream, nullptr);   // mode 0: no host mirror
-    strata::kernels::kv_append_q4_step(st.v_q4, st.v_q4, st.page_table, st.step, b.vcur, b.vcur, s, stream, nullptr);
+    guild::kernels::kv_append_q4_step(st.v_q4, st.v_q4, st.page_table, st.step, b.vcur, b.vcur, s, stream, nullptr);
 } else {
-if (st.kv_rot) {   // rotated K and V (kv_q4.hpp): Q4_0, and INT8 with STRATA_KV_ROT=1
-    strata::kernels::fwht256_inplace_cuda(b.kcur, g.n_head_kv, stream);
-    strata::kernels::fwht256_inplace_cuda(b.vcur, g.n_head_kv, stream);
+if (st.kv_rot) {   // rotated K and V (kv_q4.hpp): Q4_0, and INT8 with GUILD_KV_ROT=1
+    guild::kernels::fwht256_inplace_cuda(b.kcur, g.n_head_kv, stream);
+    guild::kernels::fwht256_inplace_cuda(b.vcur, g.n_head_kv, stream);
 }
 if (st.kv_q4) {
-    strata::kernels::kv_append_q4_step(st.k_q4, st.v_q4, st.page_table, st.step, b.kcur, b.vcur, s, stream, &st.host);
+    guild::kernels::kv_append_q4_step(st.k_q4, st.v_q4, st.page_table, st.step, b.kcur, b.vcur, s, stream, &st.host);
 } else if (st.kv_int8) kv_append_q8_step(st.k_q, st.v_q, st.k_scale, st.v_scale, st.page_table, st.step, b.kcur, b.vcur, s, stream, &st.host);    else kv_append_step(st.k_pool, st.v_pool, st.page_table, st.step, b.kcur, b.vcur, s, stream, &st.host); } /* not K8V4 */    {        const uint64_t nvk = (uint64_t) g.n_head_kv * g.head_dim;        const uint64_t base = (uint64_t) 2 * g.n_embd + 2 * g.hc + (uint64_t) g.n_head * g.head_dim + 2 * nvk + 8;        if (!st.kv_int8 && !st.kv_hybrid) dump_slot(dump, g, layer, (const float*) st.k_pool, base, nvk / 2, stream);        if (!st.kv_int8 && !st.kv_hybrid) dump_slot(dump, g, layer, (const float*) st.v_pool, base + nvk / 2, nvk / 2, stream);        dump_slot(dump, g, layer, b.vcur, base + nvk, nvk, stream);        dump_slot(dump, g, layer, b.kcur, base + 2 * nvk, nvk, stream);    }    {        const QsaIndexerBuffers ib{st.idx_tail, st.idx_dead, st.idx_pooled, st.idx_block_pos};        if (native_qsa_indexer_enabled()) {
     try {
         native_qsa_indexer_append(b.idx_raw, st.step + kStepPos, pos_base,
@@ -1080,7 +1080,7 @@ synchronization behavior.
 if (DPCT_CHECK_ERROR(dpct::async_dpct_memcpy(
         b.qcur, (size_t)g.head_dim * 4, b.q_full, (size_t)g.head_dim * 2 * 4,
         (size_t)g.head_dim * 4, (size_t)g.n_head, dpct::device_to_device,
-        *strata::q_of(stream))) != 0) {
+        *guild::q_of(stream))) != 0) {
     err = "qsa_layer: the q/gate split failed"; return false;
 } if (!normalize_rotate(b.qcur, w_qn, (int)g.n_head,
                         (int)g.head_dim)) return false;
@@ -1100,18 +1100,18 @@ int64_t max_blocks = (st.max_cells / s.idx_block) + 2;
     }
     // KV streaming: every block the selection names is made resident before anything reads it
     qsa_kv_resolve(st, g, b.ids, st.step, 1, cap, stream);
-    if (st.kv_rot) strata::kernels::fwht256_inplace_cuda(b.qcur, g.n_head, stream);   // <Hq, Hk> = <q, k>
+    if (st.kv_rot) guild::kernels::fwht256_inplace_cuda(b.qcur, g.n_head, stream);   // <Hq, Hk> = <q, k>
     if (g_fast_attn && !native_flash_attn_short && dump == nullptr) {
-        const strata::kernels::QsaAttnPools pools = qsa_attn_pools(st);
-        strata::kernels::qsa_decode_attn_step(b.qcur, pools, b.ids, st.step, cap, s, b.attn_scratch, b.attn, stream);
+        const guild::kernels::QsaAttnPools pools = qsa_attn_pools(st);
+        guild::kernels::qsa_decode_attn_step(b.qcur, pools, b.ids, st.step, cap, s, b.attn_scratch, b.attn, stream);
     } else {
     if (st.kv_hybrid) {
         kv_gather_q8_step(st.k_q, st.k_q, st.k_scale, st.k_scale, st.page_table, b.ids, st.step, cap, s,
                           b.k_scratch, b.k_scratch, stream);
-        strata::kernels::kv_gather_q4_step(st.v_q4, st.v_q4, st.page_table, b.ids, st.step, cap, s,
+        guild::kernels::kv_gather_q4_step(st.v_q4, st.v_q4, st.page_table, b.ids, st.step, cap, s,
                                            b.v_scratch, b.v_scratch, stream);
     }
-    else if (st.kv_q4) strata::kernels::kv_gather_q4_step(st.k_q4, st.v_q4, st.page_table, b.ids, st.step, cap, s, b.k_scratch, b.v_scratch, stream);
+    else if (st.kv_q4) guild::kernels::kv_gather_q4_step(st.k_q4, st.v_q4, st.page_table, b.ids, st.step, cap, s, b.k_scratch, b.v_scratch, stream);
     else if (st.kv_int8) kv_gather_q8_step(st.k_q, st.v_q, st.k_scale, st.v_scale, st.page_table, b.ids, st.step, cap, s,                                 b.k_scratch, b.v_scratch, stream);    else kv_gather_step(st.k_pool, st.v_pool, st.page_table, b.ids, st.step, cap, s, b.k_scratch, b.v_scratch,                   stream);    if (native_flash_attn_short) {
     if (st.max_cells < 1 || st.max_cells > 256 || !st.attention_status || !st.host_step) {
         err = v.name("native_flash_attn") + ": short adapter requires context <=256 and persistent status storage";
@@ -1127,14 +1127,14 @@ int64_t max_blocks = (st.max_cells / s.idx_block) + 2;
     memory, so you may need to call wait() on event return by memcpy API to
     ensure synchronization behavior.
     */
-    if (DPCT_CHECK_ERROR(strata::q_of(stream)->memcpy(
+    if (DPCT_CHECK_ERROR(guild::q_of(stream)->memcpy(
             st.host_step + kStepCount, st.attention_status, sizeof(int32_t))) !=
         0) {
         err = v.name("native_flash_attn") + ": status readback failed"; return false;
     }
 } else qsa_attend_step(b.qcur, b.k_scratch, b.v_scratch, st.step, cap, s, b.attn, nullptr, stream);
     }
-    if (st.kv_rot || st.kv_hybrid) strata::kernels::fwht256_inplace_cuda(b.attn, g.n_head, stream);   // the output back: H is self-inverse
+    if (st.kv_rot || st.kv_hybrid) guild::kernels::fwht256_inplace_cuda(b.attn, g.n_head, stream);   // the output back: H is self-inverse
     dump_slot(dump, g, layer, b.attn, (uint64_t) 2 * g.n_embd + 2 * g.hc,                            (uint64_t) g.n_head * g.head_dim, stream);    {        const uint64_t vs = (uint64_t) 2 * g.n_embd + 2 * g.hc + (uint64_t) g.n_head * g.head_dim +                            (uint64_t) 2 * g.n_head_kv * g.head_dim;        dump_slot(dump, g, layer, (const float*) b.v_scratch, vs,                            (uint64_t) g.n_head_kv * g.head_dim / 2, stream);        dump_slot(dump, g, layer, (const float*) b.ids, vs + (uint64_t) g.n_head_kv * g.head_dim / 2, 4, stream);        dump_slot(dump, g, layer, (const float*) st.step,                            vs + (uint64_t) g.n_head_kv * g.head_dim / 2 + 4, 4, stream);    }
 // ---- 9. Gate the attention output before its projection. Native CUDA keeps F32
 // sigmoid/multiply arithmetic and uses Q8_1 for the native quantized projection.
@@ -1233,7 +1233,7 @@ bool embed_row(const WeightTable& tables, const ModelGeometry& g, int64_t token,
     const auto* offsets = w->has_offset ? reinterpret_cast<const float*>(codes + w->codes_bytes + w->scales_bytes)
                                        : nullptr;
     const uint64_t group_offset = (uint64_t) token * row_groups;
-    strata::kernels::embedding_gather(codes + (uint64_t) token * row_codes, scales + group_offset,
+    guild::kernels::embedding_gather(codes + (uint64_t) token * row_codes, scales + group_offset,
                                        offsets ? offsets + group_offset : nullptr, w->ne0,
                                        w->code_bits, w->code_bias, w->group_elems, out_dev, stream);
     return true;
@@ -1252,8 +1252,8 @@ bool lm_head_mix(const WeightTable& tables, const ModelGeometry& g, const BlockB
         err = "lm_head: the output_hc_* weights have the wrong engine forms";
         return false;
     }
-    const strata::kernels::GrShapes gs{g.n_embd, g.hc, g.hc_lr};
-    strata::kernels::gr_read(bb.R, (const float*) wn->data, (const uint16_t*) wd->data,
+    const guild::kernels::GrShapes gs{g.n_embd, g.hc, g.hc_lr};
+    guild::kernels::gr_read(bb.R, (const float*) wn->data, (const uint16_t*) wd->data,
                             (const uint16_t*) wu->data, nullptr, RMS_EPS, gs, bb.gr,
                             bb.mixed, bb.inject, stream);
     return true;
@@ -1263,7 +1263,7 @@ bool lm_head(const WeightTable& tables, const ModelGeometry& g, const BlockBuffe
              float* logits, void* stream, std::string& err) {
     const WeightRef* wo = tables.find("output.weight");
     if (!wo) { err = "output.weight is missing"; return false; }
-    strata::kernels::SForm form;
+    guild::kernels::SForm form;
     Planes planes;
     if (!sform_of(*wo, form, "output.weight", err) ||
         !plane_ptrs(*wo, "output.weight", planes, err)) return false;
@@ -1272,12 +1272,12 @@ bool lm_head(const WeightTable& tables, const ModelGeometry& g, const BlockBuffe
         return false;
     }
     if (!lm_head_mix(tables, g, bb, stream, err)) return false;
-    strata::kernels::quantize_q8_K(bb.mixed, bb.head_q8k, g.n_embd, stream);
+    guild::kernels::quantize_q8_K(bb.mixed, bb.head_q8k, g.n_embd, stream);
     return gemv_quantized(*wo, planes, form, bb.head_q8k, bb.head_q8k, logits,
                           g.n_embd, wo->ne1, "output.weight", stream, err);
 }
 // ================================ ONE WHOLE BLOCK ================================
-uint64_t block_buffers_bytes(const ModelGeometry& g) {    const strata::kernels::GrShapes s{g.n_embd, g.hc, g.hc_lr};    uint64_t n = 0;    n += (uint64_t) g.hc * g.n_embd * 4;
+uint64_t block_buffers_bytes(const ModelGeometry& g) {    const guild::kernels::GrShapes s{g.n_embd, g.hc, g.hc_lr};    uint64_t n = 0;    n += (uint64_t) g.hc * g.n_embd * 4;
 // R
 n += (uint64_t) g.n_embd * 4;
 // mixed
@@ -1289,8 +1289,8 @@ n += (uint64_t) g.hc * 4 * 2 + 32;
 // inject2, gr_rs
 n += q8k_bytes(g.n_embd);
 // head_q8k
-n += strata::kernels::gr_workspace_bytes(s);    return align_up16(n) + 256;}
-uint64_t block_buffers_init(const ModelGeometry& g, void* base, BlockBuffers& b) {    const strata::kernels::GrShapes s{g.n_embd, g.hc, g.hc_lr};    Cursor c{(uint8_t*) base};    b.R = c.take<float>((uint64_t) g.hc * g.n_embd);    b.mixed = c.take<float>((uint64_t) g.n_embd);    b.block_out = c.take<float>((uint64_t) g.n_embd);    b.inject = c.take<float>((uint64_t) g.hc);    b.inject2 = c.take<float>((uint64_t) g.hc);    b.gr_rs = c.take<float>((uint64_t) g.hc);    b.head_q8k = c.take_bytes(q8k_bytes(g.n_embd));    uint8_t* grw = c.take_bytes(strata::kernels::gr_workspace_bytes(s));    strata::kernels::gr_workspace_init(s, grw, b.gr);    return c.used;}
+n += guild::kernels::gr_workspace_bytes(s);    return align_up16(n) + 256;}
+uint64_t block_buffers_init(const ModelGeometry& g, void* base, BlockBuffers& b) {    const guild::kernels::GrShapes s{g.n_embd, g.hc, g.hc_lr};    Cursor c{(uint8_t*) base};    b.R = c.take<float>((uint64_t) g.hc * g.n_embd);    b.mixed = c.take<float>((uint64_t) g.n_embd);    b.block_out = c.take<float>((uint64_t) g.n_embd);    b.inject = c.take<float>((uint64_t) g.hc);    b.inject2 = c.take<float>((uint64_t) g.hc);    b.gr_rs = c.take<float>((uint64_t) g.hc);    b.head_q8k = c.take_bytes(q8k_bytes(g.n_embd));    uint8_t* grw = c.take_bytes(guild::kernels::gr_workspace_bytes(s));    guild::kernels::gr_workspace_init(s, grw, b.gr);    return c.used;}
 // ---- THE HALF-LEVEL C1 ORACLE.  `dump` is a HOST buffer of `2 * n_embd + 2 * hc + n_head * head_dim` floats
 // per layer; this enqueues one slice of it as a device-to-host copy.  **IT RUNS INSIDE THE CAPTURE**, which is
 // the point: the copy becomes a node of that layer's graph and replays with it, so the layer functions stay one
@@ -1319,7 +1319,7 @@ static void dump_slot(float* dump, const ModelGeometry& g, int64_t layer, const 
     memory, so you may need to call wait() on event return by memcpy API to
     ensure synchronization behavior.
     */
-    strata::q_of(stream)->memcpy(dump + (size_t)layer * dump_stride_floats(g) + off, src,
+    guild::q_of(stream)->memcpy(dump + (size_t)layer * dump_stride_floats(g) + off, src,
                        n * sizeof(float));
 }
 static void dump_half(const BlockBuffers& bb, const ModelGeometry& g, int64_t layer, const float* src,
@@ -1351,26 +1351,26 @@ bool block_layer_pre(const WeightTable &tables, const ModelGeometry &g,
     // So the driver calls `ple_stage_token` once per token, BEFORE the graphs, and what is captured here is only
     // the device half: `ple_block` reading `emb_dev`, and the history shift.
     const bool fused = g_fused_gr && stage_prefix == 0 && half == 0 &&
-                       strata::kernels::fused_gr_supported(g.n_embd, g.hc, g.hc_lr);
+                       guild::kernels::fused_gr_supported(g.n_embd, g.hc, g.hc_lr);
     // layer-1's FFN write has not been applied to R yet - unless a control vector follows it, which needs R
-    bool pending_ffn = fused && layer > 0 && !strata::kernels::cvec().covers(layer - 1);
+    bool pending_ffn = fused && layer > 0 && !guild::kernels::cvec().covers(layer - 1);
     if (ple != nullptr && ple->ready() && layer == 1 && (half == 0 || half == 1)) {
         if (pending_ffn) {
-            const strata::kernels::GrShapes gs0{g.n_embd, g.hc, g.hc_lr};
+            const guild::kernels::GrShapes gs0{g.n_embd, g.hc, g.hc_lr};
             gr_write(bb.R, bb.block_out, bb.inject2, gs0, bb.R, stream);
             pending_ffn = false;
         }
-        const int64_t hcd = strata::kernels::NG_HC_DIM;
-        strata::kernels::PleOut po;
+        const int64_t hcd = guild::kernels::NG_HC_DIM;
+        guild::kernels::PleOut po;
         // Exports must not alias the block's internal workspace. The previous diagnostic views used a
         // different layout inside that workspace: exporting gated values overwrote normalized values
         // before the latter were copied to history. Allocate only the one export the recurrence needs.
-        po.normalized = (float*) ((uint8_t*) ple->scratch + strata::kernels::ple_block_scratch_bytes());
+        po.normalized = (float*) ((uint8_t*) ple->scratch + guild::kernels::ple_block_scratch_bytes());
         // `result` IS THE RESIDUAL, in place: the block computes `hidden[i] + gated[i] + conv[i]` elementwise,
         // so reading and writing `R` at the same index is well-defined.
         po.result = bb.R;
         try {
-            strata::kernels::ple_block(ple->emb_dev, bb.R, ple->hist, ple->w, po, ple->scratch, stream);
+            guild::kernels::ple_block(ple->emb_dev, bb.R, ple->hist, ple->w, po, ple->scratch, stream);
         } catch (const std::exception& error) {
             err = std::string("block_layer_pre PLE: ") + error.what();
             return false;
@@ -1384,7 +1384,7 @@ bool block_layer_pre(const WeightTable &tables, const ModelGeometry &g,
         // from `ggml_reshape_3d(state, d_conv-1, conv_channels, n_seqs)`), so a row shift is a STRIDED copy of
         // NG_HIST-1 elements per channel and an append is a strided copy of one - not a flat memmove, which
         // would be the natural reading and would scramble the channels.
-        strata::kernels::ple_history_advance(ple->hist, po.normalized, stream);
+        guild::kernels::ple_history_advance(ple->hist, po.normalized, stream);
         /*
         DPCT1010: SYCL uses exceptions to report errors and does not use the
         error codes. The cudaPeekAtLastError function call was replaced with 0.
@@ -1395,7 +1395,7 @@ bool block_layer_pre(const WeightTable &tables, const ModelGeometry &g,
             return false;
         }
     }
-    const bool qsa = is_qsa_layer(g, layer);    const LayerView v(tables, layer);    const strata::kernels::GrShapes gs{g.n_embd, g.hc, g.hc_lr};
+    const bool qsa = is_qsa_layer(g, layer);    const LayerView v(tables, layer);    const guild::kernels::GrShapes gs{g.n_embd, g.hc, g.hc_lr};
 // ---- the two halves' GR tensors.  Both halves have the same four names with a different prefix, and the
 // prefix is the ONLY thing that distinguishes them - so it is built rather than written twice.
 const char* pre[2] = {"hc_attn_", "hc_ffn_"};    const WeightRef* w_norm[2];    const WeightRef* w_down[2];    const WeightRef* w_up[2];    const WeightRef* w_inject[2];    for (int h = 0; h < 2; ++h) {        const std::string a = std::string(pre[h]) + "norm.weight";        const std::string d = std::string(pre[h]) + "down.weight";        const std::string u = std::string(pre[h]) + "up.weight";        const std::string i = std::string(pre[h]) + "inject.weight";        w_norm[h] = v.get(a.c_str());        w_down[h] = v.get(d.c_str());        w_up[h] = v.get(u.c_str());        w_inject[h] = v.get(i.c_str());        if (!w_norm[h] || !w_down[h] || !w_up[h] || !w_inject[h]) {            err = v.name((std::string(pre[h]) + "{norm,down,up,inject}.weight").c_str()) + " is missing";            return false;        }
@@ -1415,12 +1415,12 @@ float* R = bb.R;
     if (run0) {
 st_begin(layer, 0, stream);
     if (fused) {
-        strata::kernels::FusedGrArgs fa;
+        guild::kernels::FusedGrArgs fa;
         fa.R = R; fa.R_out = R; fa.apply = pending_ffn; fa.bo_prev = bb.block_out; fa.inj_prev = bb.inject2;
         fa.w_norm = (const float*) w_norm[0]->data; fa.w_down = (const uint16_t*) w_down[0]->data;
         fa.w_up = (const uint16_t*) w_up[0]->data; fa.w_inject = (const uint16_t*) w_inject[0]->data;
         fa.eps = RMS_EPS; fa.lo = bb.gr.lo; fa.rs = bb.gr_rs; fa.inject_out = bb.inject; fa.mixed = bb.mixed;
-        strata::kernels::fused_gr_read(fa, stream);
+        guild::kernels::fused_gr_read(fa, stream);
     } else {
     gr_read(R, (const float*) w_norm[0]->data, (const uint16_t*) w_down[0]->data,            (const uint16_t*) w_up[0]->data, (const uint16_t*) w_inject[0]->data, RMS_EPS, gs, bb.gr, bb.mixed,            bb.inject, stream);
     }
@@ -1438,12 +1438,12 @@ st_begin(layer, 0, stream);
     if (run3) {
 st_begin(layer, 3, stream);
     if (fused) {
-        strata::kernels::FusedGrArgs fa;
+        guild::kernels::FusedGrArgs fa;
         fa.R = R; fa.R_out = R; fa.apply = true; fa.bo_prev = bb.block_out; fa.inj_prev = bb.inject;
         fa.w_norm = (const float*) w_norm[1]->data; fa.w_down = (const uint16_t*) w_down[1]->data;
         fa.w_up = (const uint16_t*) w_up[1]->data; fa.w_inject = (const uint16_t*) w_inject[1]->data;
         fa.eps = RMS_EPS; fa.lo = bb.gr.lo; fa.rs = bb.gr_rs; fa.inject_out = bb.inject2; fa.mixed = bb.mixed;
-        strata::kernels::fused_gr_read(fa, stream);
+        guild::kernels::fused_gr_read(fa, stream);
     } else {
     gr_read(R, (const float*) w_norm[1]->data, (const uint16_t*) w_down[1]->data,            (const uint16_t*) w_up[1]->data, (const uint16_t*) w_inject[1]->data, RMS_EPS, gs, bb.gr, bb.mixed,            bb.inject, stream);
     }
@@ -1464,8 +1464,8 @@ catch (sycl::exception const &exc) {
 }
 bool ple_issue_token(const PleRun& p, std::string& err) {
     if (!p.ready()) { err = "ple_issue_token: the PLE run is not ready"; return false; }
-    uint32_t rows[strata::kernels::PLE_N_HEADS];
-    strata::kernels::ngram_rows(p.token, p.prev, 1, p.consts, rows);
+    uint32_t rows[guild::kernels::PLE_N_HEADS];
+    guild::kernels::ngram_rows(p.token, p.prev, 1, p.consts, rows);
     if (!p.table->issue(rows)) { err = "ple_issue_token: the previous token's rows were never collected"; return false; }
     return true;
 }
@@ -1479,9 +1479,9 @@ bool ple_finish_token(const PleRun &p, void *stream, std::string &err) try {
     memory, so you may need to call wait() on event return by memcpy API to
     ensure synchronization behavior.
     */
-    if (DPCT_CHECK_ERROR(strata::q_of(stream)->memcpy(
+    if (DPCT_CHECK_ERROR(guild::q_of(stream)->memcpy(
             p.emb_dev, p.emb_host,
-            (size_t)strata::kernels::NG_N_EMBD * sizeof(float))) != 0) {
+            (size_t)guild::kernels::NG_N_EMBD * sizeof(float))) != 0) {
         err = "ple_finish_token: the row upload failed";
         return false;
     }
@@ -1500,27 +1500,27 @@ bool ple_stage_token(const PleRun& p, void* stream, std::string& err) {
 
 uint64_t ple_run_scratch_bytes() {
     // Internal workspace followed by a disjoint normalized export used for the next history row.
-    return strata::kernels::ple_block_scratch_bytes() + strata::kernels::NG_HC_DIM * sizeof(float);
+    return guild::kernels::ple_block_scratch_bytes() + guild::kernels::NG_HC_DIM * sizeof(float);
 }
 
-bool block_layer_post(const WeightTable& tables, const ModelGeometry& g, int64_t layer, int64_t k,                      const MoEBuffers& mb, const BlockBuffers& bb, const float* parts, void* stream,                      std::string& err) {    const strata::kernels::GrShapes gs{g.n_embd, g.hc, g.hc_lr};
+bool block_layer_post(const WeightTable& tables, const ModelGeometry& g, int64_t layer, int64_t k,                      const MoEBuffers& mb, const BlockBuffers& bb, const float* parts, void* stream,                      std::string& err) {    const guild::kernels::GrShapes gs{g.n_embd, g.hc, g.hc_lr};
 // `bb.mixed` and `bb.inject` are what `block_layer_pre` left, and NOTHING between the two calls may touch
 // them - that is what makes `post[l]` safe to launch after the host has run the pool.
 st_begin(layer, 5, stream);
     if (g_shared_early ? !moe_combine_parts(g, layer, k, mb, parts, bb.block_out, stream, err)
                        : !moe_finish(tables, g, layer, k, mb, bb.mixed, parts, bb.block_out, stream, err)) return false;
     st_end(layer, 5, stream);    dump_half(bb, g, layer, bb.block_out, (uint64_t) g.n_embd, g.n_embd, stream);    dump_half(bb, g, layer, bb.inject, (uint64_t) 2 * g.n_embd + g.hc, g.hc, stream);    st_begin(layer, 6, stream);
-    const bool steer = strata::kernels::cvec().covers(layer);   // --control-vector-scaled: after this write
+    const bool steer = guild::kernels::cvec().covers(layer);   // --control-vector-scaled: after this write
     try {
-        if (!(g_fused_gr && strata::kernels::fused_gr_supported(g.n_embd, g.hc, g.hc_lr))) {
+        if (!(g_fused_gr && guild::kernels::fused_gr_supported(g.n_embd, g.hc, g.hc_lr))) {
             gr_write(bb.R, bb.block_out, bb.inject, gs, bb.R, stream);
-            if (steer) strata::kernels::cvec_apply(bb.R, layer, 1, g.hc * g.n_embd, nullptr, 0, nullptr, 0, false, stream);
+            if (steer) guild::kernels::cvec_apply(bb.R, layer, 1, g.hc * g.n_embd, nullptr, 0, nullptr, 0, false, stream);
         } else if (layer == g.n_layers - 1) {
             gr_write(bb.R, bb.block_out, bb.inject2, gs, bb.R, stream);   // materialise R for the head
-            if (steer) strata::kernels::cvec_apply(bb.R, layer, 1, g.hc * g.n_embd, nullptr, 0, nullptr, 0, false, stream);
+            if (steer) guild::kernels::cvec_apply(bb.R, layer, 1, g.hc * g.n_embd, nullptr, 0, nullptr, 0, false, stream);
         } else if (steer) {
             // the write the next layer's fused read would have folded, then the vector
-            strata::kernels::cvec_apply(bb.R, layer, 1, g.hc * g.n_embd, bb.block_out, g.n_embd, bb.inject2, g.hc,
+            guild::kernels::cvec_apply(bb.R, layer, 1, g.hc * g.n_embd, bb.block_out, g.n_embd, bb.inject2, g.hc,
                                         true, stream);
         }
     } catch (const std::exception& e) {
@@ -1533,4 +1533,4 @@ bool block_layer(const WeightTable& tables, const ModelGeometry& g, int64_t laye
 // which holds for `session_token`, where the caller supplies them, and does NOT hold for a host loop that
 // has only just seen the router.  That is why the captured path calls the halves separately.
 if (!block_layer_pre(tables, g, layer, pos, pos_base, gb, qst, qb, mb, k, bb, stream, err, db, ple))        return false;    return block_layer_post(tables, g, layer, k, mb, bb, parts, stream, err);}}
-// namespace strata::core
+// namespace guild::core

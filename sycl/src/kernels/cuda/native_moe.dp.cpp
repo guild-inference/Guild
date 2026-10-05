@@ -23,8 +23,8 @@
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
-#include "strata/sycl_queue.hpp"
-#include "strata/kernels/native_moe.hpp"
+#include "guild/sycl_queue.hpp"
+#include "guild/kernels/native_moe.hpp"
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -32,7 +32,7 @@
 #include <stdexcept>
 #include <cmath>
 
-namespace strata::kernels {
+namespace guild::kernels {
 namespace {
 std::atomic<bool> enabled{false};
 __dpct_inline__ void combine(const float *__restrict__ parts,
@@ -83,7 +83,7 @@ void native_moe_combine(const float* parts, const float* weights, const float* s
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        ((sycl::queue *)(strata::q_of(stream)))
+        ((sycl::queue *)(guild::q_of(stream)))
             ->parallel_for<dpct_kernel_name<class combine_d6d46b>>(
                 sycl::nd_range<3>(
                     sycl::range(1, 1, unsigned((n_embd + 255) / 256)) *
@@ -122,7 +122,7 @@ void native_moe_combine_multi(const float* parts, const float* weights, const fl
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        ((sycl::queue *)(strata::q_of(stream)))
+        ((sycl::queue *)(guild::q_of(stream)))
             ->parallel_for<dpct_kernel_name<class combine_eee9de>>(
                 sycl::nd_range<3>(sycl::range(1, (unsigned)n_tok,
                                               unsigned((n_embd + 255) / 256)) *

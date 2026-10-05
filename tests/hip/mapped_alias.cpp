@@ -17,7 +17,7 @@
 // D2D copy is not attempted (it may fault rather than report); the kernel read is, since that is
 // what the engine relies on.
 
-#include "strata/kernels/elementwise.hpp"
+#include "guild/kernels/elementwise.hpp"
 
 #include <hip/hip_runtime.h>
 
@@ -38,7 +38,7 @@ bool kernel_reads(const float* alias, const std::vector<float>& want) {
     const int64_t n = (int64_t) want.size();
     float* out = nullptr;
     if (hipMalloc(reinterpret_cast<void**>(&out), want.size() * sizeof(float)) != hipSuccess) return false;
-    strata::kernels::copy_from_mapped(out, alias, n, nullptr);
+    guild::kernels::copy_from_mapped(out, alias, n, nullptr);
     std::vector<float> got(want.size(), -1.0f);
     const bool ran = hipDeviceSynchronize() == hipSuccess &&
                      hipMemcpy(got.data(), out, want.size() * sizeof(float), hipMemcpyDeviceToHost) == hipSuccess;

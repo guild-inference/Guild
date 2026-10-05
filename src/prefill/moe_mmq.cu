@@ -1,7 +1,7 @@
-// src/prefill/moe_mmq.cu - see include/strata/prefill/moe_mmq.hpp.  llama.cpp's MMQ (ggml-cuda, MIT) is compiled
+// src/prefill/moe_mmq.cu - see include/guild/prefill/moe_mmq.hpp.  llama.cpp's MMQ (ggml-cuda, MIT) is compiled
 // from the pinned llama.cpp checkout the build already takes ggml from; src/prefill/ggml_cuda_host.cu supplies the
 // few host symbols of ggml-cuda.cu it references.
-#include "strata/prefill/moe_mmq.hpp"
+#include "guild/prefill/moe_mmq.hpp"
 
 #include "common.cuh"
 #include "mmq.cuh"
@@ -10,7 +10,7 @@
 #include <cstdio>
 #include <cstdlib>
 
-namespace strata::prefill::mmq {
+namespace guild::prefill::mmq {
 namespace {
 
 void ck(cudaError_t e, const char* what) {
@@ -53,10 +53,10 @@ __global__ void copy1_kernel(const uint8_t* __restrict__ a, int64_t na, const ui
     else if (i < na + nb + nc) c_dst[i - na - nb] = c[i - na - nb];
 }
 
-// Strata blob: gate/up codes [1280][640 B], down codes [2560][160 B], gate/up scales [1280][40] f16, down scales
+// Guild blob: gate/up codes [1280][640 B], down codes [2560][160 B], gate/up scales [1280][40] f16, down scales
 // [2560][10] f16 (the layout of prefill/kernels.cu's blob_dequant_kernel).  A GGUF Q2_0 block is {f16 d; 16 code
 // bytes} with the same 2-bit codes in the same order, so a block is a scale and a 16-byte run of codes.
-__global__ void strata_q2_kernel(const uint8_t* __restrict__ blob, uint16_t* __restrict__ gu, uint16_t* __restrict__ dn) {
+__global__ void guild_q2_kernel(const uint8_t* __restrict__ blob, uint16_t* __restrict__ gu, uint16_t* __restrict__ dn) {
     constexpr size_t O_D_CODES = (size_t) 1280 * 640, O_GU_SC = O_D_CODES + (size_t) 2560 * 160,
                      O_D_SC = O_GU_SC + (size_t) 1280 * 40 * 2;
     const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;   // one GGUF block
@@ -108,13 +108,13 @@ bool built() { return true; }
 bool supported(int t) {
     switch ((ggml_type) t) {
         case GGML_TYPE_Q2_0:
-#ifdef STRATA_ORCA_Q4KS_MMQ
-        case GGML_TYPE_Q5_0:   // #296 (Q4_K and Q5_1: STRATA_MMQ_KQUANTS)
+#ifdef GUILD_ORCA_Q4KS_MMQ
+        case GGML_TYPE_Q5_0:   // #296 (Q4_K and Q5_1: GUILD_MMQ_KQUANTS)
 #endif
         case GGML_TYPE_IQ2_XXS: case GGML_TYPE_IQ2_XS: case GGML_TYPE_IQ2_S:
         case GGML_TYPE_IQ3_XXS: case GGML_TYPE_IQ3_S: case GGML_TYPE_IQ4_NL: case GGML_TYPE_IQ4_XS:
         case GGML_TYPE_Q8_0:   // the draft layer's dense matrices (E-9)
-#ifdef STRATA_MMQ_KQUANTS
+#ifdef GUILD_MMQ_KQUANTS
         case GGML_TYPE_Q4_K: case GGML_TYPE_Q5_K: case GGML_TYPE_Q5_1:   // Unsloth's UD-Q4_K_XL experts (CUDA)
 #endif
             return true;
@@ -141,7 +141,7 @@ bool fits(int t, int64_t w_rows) {
             static bool said[GGML_TYPE_COUNT] = {};
             if (t >= 0 && t < GGML_TYPE_COUNT && !said[t]) {
                 said[t] = true;
-                std::fprintf(stderr, "strata: prompt kernels: llama.cpp's MMQ has no tile for %s (%lld rows) on GPU %d "
+                std::fprintf(stderr, "guild: prompt kernels: llama.cpp's MMQ has no tile for %s (%lld rows) on GPU %d "
                                      "(cc %d, %zu bytes of shared memory per block): that product takes the non-MMQ path "
                                      "(#420)\n", ggml_type_name((ggml_type) t), (long long) w_rows, id, cc, smpbo);
             }
@@ -185,7 +185,7 @@ void Context::run(const Product& p, void* stream) {
     auto& ctx = *(ggml_backend_cuda_context*) ctx_;
     const cudaStream_t s = (cudaStream_t) stream;
     switch (t) {
-#ifdef STRATA_ORCA_Q4KS_MMQ
+#ifdef GUILD_ORCA_Q4KS_MMQ
         case GGML_TYPE_Q5_0: mul_mat_q_case<GGML_TYPE_Q5_0>(ctx, a, s); break;
 #endif
         case GGML_TYPE_Q2_0: mul_mat_q_case<GGML_TYPE_Q2_0>(ctx, a, s); break;
@@ -197,7 +197,7 @@ void Context::run(const Product& p, void* stream) {
         case GGML_TYPE_IQ4_NL: mul_mat_q_case<GGML_TYPE_IQ4_NL>(ctx, a, s); break;
         case GGML_TYPE_IQ4_XS: mul_mat_q_case<GGML_TYPE_IQ4_XS>(ctx, a, s); break;
         case GGML_TYPE_Q8_0: mul_mat_q_case<GGML_TYPE_Q8_0>(ctx, a, s); break;
-#ifdef STRATA_MMQ_KQUANTS
+#ifdef GUILD_MMQ_KQUANTS
         case GGML_TYPE_Q4_K: mul_mat_q_case<GGML_TYPE_Q4_K>(ctx, a, s); break;
         case GGML_TYPE_Q5_K: mul_mat_q_case<GGML_TYPE_Q5_K>(ctx, a, s); break;
         case GGML_TYPE_Q5_1: mul_mat_q_case<GGML_TYPE_Q5_1>(ctx, a, s); break;
@@ -245,10 +245,10 @@ bool gather_native_group(const GatherGroup& g, size_t up_off, size_t gu_half_byt
     return true;
 }
 
-void gather_strata_q2(const uint8_t* blob, void* gu_dst, void* d_dst, void* stream) {
-    strata_q2_kernel<<<blocks(1280LL * 40 + 2560LL * 10), 256, 0, (cudaStream_t) stream>>>(blob, (uint16_t*) gu_dst,
+void gather_guild_q2(const uint8_t* blob, void* gu_dst, void* d_dst, void* stream) {
+    guild_q2_kernel<<<blocks(1280LL * 40 + 2560LL * 10), 256, 0, (cudaStream_t) stream>>>(blob, (uint16_t*) gu_dst,
                                                                                          (uint16_t*) d_dst);
-    ck(cudaGetLastError(), "gather_strata_q2");
+    ck(cudaGetLastError(), "gather_guild_q2");
 }
 
 void swiglu(const float* gu, float* h, int64_t rows, int64_t n_ff, bool interleaved, void* stream) {
@@ -263,4 +263,4 @@ void iota(int32_t* dst, int64_t n, void* stream) {
     ck(cudaGetLastError(), "iota");
 }
 
-}  // namespace strata::prefill::mmq
+}  // namespace guild::prefill::mmq

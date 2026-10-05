@@ -1,6 +1,6 @@
 // src/prefill/ggml_cuda_host.cu - prompt-speed plan step 2b: the host-side symbols of llama.cpp's ggml-cuda that its MMQ
-// and quantize code reference, for the MMQ kernels compiled into strata_mmq without the rest of ggml-cuda.cu.
-#include "strata/core/emulate.hpp"
+// and quantize code reference, for the MMQ kernels compiled into guild_mmq without the rest of ggml-cuda.cu.
+#include "guild/core/emulate.hpp"
 #include "common.cuh"
 
 #include <cstdio>
@@ -10,7 +10,7 @@
 #include <vector>
 
 [[noreturn]] void ggml_cuda_error(const char * stmt, const char * func, const char * file, int line, const char * msg) {
-    std::fprintf(stderr, "ggml-cuda (strata mmq): %s: %s\n  in %s at %s:%d\n", msg, stmt, func, file, line);
+    std::fprintf(stderr, "ggml-cuda (guild mmq): %s: %s\n  in %s at %s:%d\n", msg, stmt, func, file, line);
     std::abort();
 }
 
@@ -93,9 +93,9 @@ const ggml_cuda_device_info & ggml_cuda_info() {
                 CUDA_CHECK(cudaDeviceGetAttribute(&v, a, id));
                 return v;
             };
-            d.cc = 100 * strata::cc_major_of(attr(cudaDevAttrComputeCapabilityMajor)) +
-                   10 * strata::cc_minor_of(attr(cudaDevAttrComputeCapabilityMinor));   // STRATA_EMULATE_CC
-            d.smpbo = strata::smem_optin_of(attr(cudaDevAttrMaxSharedMemoryPerBlockOptin));
+            d.cc = 100 * guild::cc_major_of(attr(cudaDevAttrComputeCapabilityMajor)) +
+                   10 * guild::cc_minor_of(attr(cudaDevAttrComputeCapabilityMinor));   // GUILD_EMULATE_CC
+            d.smpbo = guild::smem_optin_of(attr(cudaDevAttrMaxSharedMemoryPerBlockOptin));
             d.integrated = attr(cudaDevAttrIntegrated) != 0;
             d.supports_cooperative_launch = attr(cudaDevAttrCooperativeLaunch) != 0;
             d.nsm = attr(cudaDevAttrMultiProcessorCount);

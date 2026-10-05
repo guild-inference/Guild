@@ -1,11 +1,11 @@
 // src/core/peer_experts.cpp (SYCL port) - upstream's --peer-device tier (a second GPU as an expert-cache tier, 0.1.36+)
 // is CUDA-only for now: this build answers "no peer". open() refuses with a message, so --peer-device fails clearly,
 // and every other entry point is the state a run without --peer-device has. Upstream's file: src/core/peer_experts.cpp.
-#include "strata/core/peer_experts.hpp"
+#include "guild/core/peer_experts.hpp"
 
 #include <atomic>
 
-namespace strata::core {
+namespace guild::core {
 
 namespace {
 std::atomic<bool> g_portable{false};
@@ -38,4 +38,4 @@ bool PeerExperts::finish(float*, std::string& err) {
 bool PeerExperts::adapt(const float*, const int32_t*, int, std::string&) { return true; }
 void PeerExperts::apply_pending(bool) {}
 
-}  // namespace strata::core
+}  // namespace guild::core

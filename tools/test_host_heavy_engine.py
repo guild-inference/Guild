@@ -1,6 +1,6 @@
 """Opt-in real-model integration: zero GPU experts, RAM budget, resident/host-only greedy parity.
 
-python tools/test_host_heavy_engine.py --config strata-MODEL.json --engine build/strata --output /tmp/strata-test
+python tools/test_host_heavy_engine.py --config guild-MODEL.json --engine build/guild-generate --output /tmp/guild-test
 Requires an installed model, a GPU and enough RAM for all its experts. Does not edit the config or download files.
 """
 import argparse
@@ -46,7 +46,7 @@ def run(engine, original, output, name, context, host_only, optional_mtp=False, 
             "Count from one to ten, spelling each number in English.")
     prompt = tok.encode(f"<|im_start|>user\n{text}<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n",
                         parse_special=True)
-    env = dict(os.environ, STRATA_STATE_HASH="1")
+    env = dict(os.environ, GUILD_STATE_HASH="1")
     with log_path.open("w") as log, protocol.open("w") as stdout:
         process = subprocess.Popen([str(engine), *args], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                    stderr=log, text=True, bufsize=1, env=env)

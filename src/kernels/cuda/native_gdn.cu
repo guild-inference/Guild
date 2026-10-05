@@ -1,6 +1,6 @@
 // Arithmetic adapted from gated_delta_net.cu at pinned llama.cpp
 // 3cf03257f219afbe7334045ff7c6a06ac68c627d. Only state addressing differs:
-// each warp owns one Strata (head,column) and retains its four rows in registers.
+// each warp owns one Guild (head,column) and retains its four rows in registers.
 // Compile with --use_fast_math to match the pinned CUDA implementation.
 //
 // MIT License
@@ -23,7 +23,7 @@
 // LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
-#include "strata/kernels/native_gdn.hpp"
+#include "guild/kernels/native_gdn.hpp"
 #include <cuda_runtime.h>
 #include <atomic>
 #include <cmath>
@@ -31,7 +31,7 @@
 #include <cstdint>
 #include <stdexcept>
 
-namespace strata::kernels {
+namespace guild::kernels {
 namespace {
 std::atomic<bool> enabled{false};
 constexpr int S = 128;
@@ -119,4 +119,4 @@ void native_gdn_step(float* state, const float* q, const float* k, const float* 
     const auto error = cudaGetLastError();
     if (error != cudaSuccess) throw std::runtime_error(cudaGetErrorString(error));
 }
-} // namespace strata::kernels
+} // namespace guild::kernels

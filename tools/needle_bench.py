@@ -1,4 +1,4 @@
-"""tools/needle_bench.py - needle-in-a-haystack recall through a running Strata server.
+"""tools/needle_bench.py - needle-in-a-haystack recall through a running Guild server.
 
 A long text is built from files in this repository (its docs and source code, and the llama.cpp docs setup downloads
 into third_party/), a code word is hidden in it at a chosen depth, and the model is asked for it through the normal
@@ -52,7 +52,7 @@ def haystack(n_chars: int) -> str:
 
 
 def ask(url: str, key: str, prompt: str, timeout: float) -> tuple[str, int, float]:
-    body = {"model": "strata", "max_tokens": 40, "temperature": 0,
+    body = {"model": "guild", "max_tokens": 40, "temperature": 0,
             "chat_template_kwargs": {"enable_thinking": False},
             "messages": [{"role": "user", "content": prompt}]}
     headers = {"Content-Type": "application/json"}

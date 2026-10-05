@@ -1,6 +1,6 @@
 // sycl/src/kernels/q6k_align_bench.cpp - SYCL port: does Q6_K's 210-byte (2-byte aligned) block stride cost the wide
 // mmvq kernel its bandwidth? Same weights at stride 210 and repacked at 224 (16-byte aligned); outputs must match.
-#include "strata/kernels/native_mmvq.hpp"
+#include "guild/kernels/native_mmvq.hpp"
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
 #include <chrono>
@@ -28,7 +28,7 @@ int main() {
             void* xq = sycl::malloc_device((size_t) nc * (n_in / 32) * 36, *s);
             float* y = sycl::malloc_device<float>((size_t) nc * n_out, *s);
             s->memcpy(x, hx.data(), hx.size() * 4).wait();
-            strata::kernels::native_quantize_q8_1(x, xq, n_in, nc, s);
+            guild::kernels::native_quantize_q8_1(x, xq, n_in, nc, s);
             auto time = [&](const std::function<void()>& run, std::vector<float>& out) {
                 const auto w0 = std::chrono::steady_clock::now();
                 while (std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - w0).count() < 150) {
@@ -44,8 +44,8 @@ int main() {
                 return std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t0).count() / it;
             };
             std::vector<float> y0, y1;
-            const double a = time([&] { strata::kernels::native_q6_k_mmvq(w, xq, y, n_in, n_out, nc, s); }, y0);
-            const double b = time([&] { strata::kernels::native_q6_k_mmvq_stride224(wp, xq, y, n_in, n_out, nc, s); }, y1);
+            const double a = time([&] { guild::kernels::native_q6_k_mmvq(w, xq, y, n_in, n_out, nc, s); }, y0);
+            const double b = time([&] { guild::kernels::native_q6_k_mmvq_stride224(wp, xq, y, n_in, n_out, nc, s); }, y1);
             double num = 0, den = 0;
             for (size_t i = 0; i < y0.size(); ++i) { num += std::fabs((double) y0[i] - y1[i]); den += std::fabs((double) y0[i]); }
             const double gb = nb * 210.0 / 1e3;

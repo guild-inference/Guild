@@ -72,7 +72,7 @@ class Sha256(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.f = Path(self.tmp.name) / "x-00002-of-00004.gguf"
-        self.f.write_bytes(b"strata" * 1000)
+        self.f.write_bytes(b"guild!" * 1000)
         self.sha = hashlib.sha256(self.f.read_bytes()).hexdigest()
 
     def tearDown(self):
@@ -111,10 +111,10 @@ class Sha256(unittest.TestCase):
 class Config(unittest.TestCase):
     def test_choices_from_config(self):
         with tempfile.TemporaryDirectory() as t:
-            for name, family, model in (("strata-unsloth-ud-q4_k_xl.json", "unsloth", M),
-                                        ("strata-swift-iq3_xxs.json", "swift", "IQ3_XXS"),
-                                        ("strata-iq3_s.json", "qwen", "IQ3_S"),
-                                        ("strata-coder-iq1_m.json", "coder", "IQ1_M")):
+            for name, family, model in (("guild-unsloth-ud-q4_k_xl.json", "unsloth", M),
+                                        ("guild-swift-iq3_xxs.json", "swift", "IQ3_XXS"),
+                                        ("guild-iq3_s.json", "qwen", "IQ3_S"),
+                                        ("guild-coder-iq1_m.json", "coder", "IQ1_M")):
                 p = Path(t) / name
                 p.write_text(json.dumps({"args": ["--max-context", "8192"]}))
                 ch = setup.choices_from_config(p)
@@ -203,7 +203,7 @@ class Base(unittest.TestCase):
             for p in patches:
                 st.enter_context(p)
             code, out = quiet(setup.main)
-        cfg = self.t / f"strata-unsloth-{m.lower()}.json"
+        cfg = self.t / f"guild-unsloth-{m.lower()}.json"
         return code, out, (json.loads(cfg.read_text()) if cfg.exists() else None)
 
 class Main(Base):
@@ -434,7 +434,7 @@ class IQ4XS(Base):
         self.assertEqual(cfg["tokenizer"], str(pack / "tokenizer"))
         self.assertNotIn("vision", cfg)                                        # images: asked, off by default
         with tempfile.TemporaryDirectory() as t:                               # a start reads the choice back
-            p = Path(t) / "strata-unsloth-ud-iq4_xs.json"
+            p = Path(t) / "guild-unsloth-ud-iq4_xs.json"
             p.write_text(json.dumps(cfg))
             ch = setup.choices_from_config(p)
             self.assertEqual((ch["family"], ch["model"]), ("unsloth", X))
@@ -526,9 +526,9 @@ class LayerSplit(unittest.TestCase):
     def start(self, ram, gpu=(0, 1), offered=None):
         from test_setup_risk import run
         with tempfile.TemporaryDirectory() as d:
-            exe = Path(d) / "strata.exe"
+            exe = Path(d) / "guild-generate.exe"
             exe.write_bytes(b"")
-            p = Path(d) / "strata-unsloth-ud-q4_k_xl.json"
+            p = Path(d) / "guild-unsloth-ud-q4_k_xl.json"
             before = {"exe": str(exe), "args": ["--pack", "p", "--resident-budget-gib", "40", "--kv", "int8"],
                       "gpu": 0, "gpus_asked": offered is None}
             p.write_text(json.dumps(before))

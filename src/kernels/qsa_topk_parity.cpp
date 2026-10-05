@@ -9,8 +9,8 @@
 //
 // Usage: qsa_topk_parity --selftest
 //        qsa_topk_parity CONTEXT [QUERIES=256] [REPS=10] [CAPACITY=CONTEXT] [COUNT=1]   (COUNT=0: no block count)
-#include "strata/kernels/qsa.hpp"
-#include "strata/kernels/qsa_select.hpp"
+#include "guild/kernels/qsa.hpp"
+#include "guild/kernels/qsa_select.hpp"
 
 #include <cuda_runtime.h>
 
@@ -22,7 +22,7 @@
 #include <random>
 #include <vector>
 
-namespace k = strata::kernels;
+namespace k = guild::kernels;
 
 namespace {
 void ck(cudaError_t e, const char* w) {

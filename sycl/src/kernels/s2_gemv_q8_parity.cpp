@@ -12,9 +12,9 @@
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
-#include "strata/kernels/quantize_act.hpp"
-#include "strata/kernels/s_gemv.hpp"
-#include "strata/kernels/s2_gemv_q8.hpp"
+#include "guild/kernels/quantize_act.hpp"
+#include "guild/kernels/s_gemv.hpp"
+#include "guild/kernels/s2_gemv_q8.hpp"
 
 #include <cmath>
 #include <cstdio>
@@ -101,7 +101,7 @@ int main(int argc, char** argv) {
               d_scales, scales.data(), scales.size() * sizeof(float)).wait()),
           "c scales");
 
-    strata::kernels::quantize_q8_0(d_x, d_act, n_in, nullptr);
+    guild::kernels::quantize_q8_0(d_x, d_act, n_in, nullptr);
 
     // ---- host reference: quantize the activation with the project's own rule, then dot
     std::vector<uint8_t> h_act((size_t) (n_in / 32) * 34);
@@ -136,7 +136,7 @@ int main(int argc, char** argv) {
         }
         ref[(size_t) o] = acc;
     }
-    strata::kernels::s2_gemv_q8(d_act, d_codes, d_scales, d_y_q8, n_in, n_out, tpr, nullptr);
+    guild::kernels::s2_gemv_q8(d_act, d_codes, d_scales, d_y_q8, n_in, n_out, tpr, nullptr);
     std::vector<float> got((size_t) n_out);
     check(DPCT_CHECK_ERROR(
               (dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
@@ -206,8 +206,8 @@ int main(int argc, char** argv) {
     check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(
               d_hx, hx.data(), hx.size() * sizeof(uint16_t)).wait()),
           "c hx");
-    strata::kernels::SForm form{2, -1, 64, strata::kernels::Codebook::Affine, false};
-    strata::kernels::s_gemv_split(d_hx, d_codes, d_scales, nullptr, d_y_fp16, n_in, n_out, form, tpr);
+    guild::kernels::SForm form{2, -1, 64, guild::kernels::Codebook::Affine, false};
+    guild::kernels::s_gemv_split(d_hx, d_codes, d_scales, nullptr, d_y_fp16, n_in, n_out, form, tpr);
     std::vector<float> y16((size_t) n_out);
     check(DPCT_CHECK_ERROR(
               (dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())

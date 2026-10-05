@@ -34,12 +34,12 @@ td.log
 /mtp/
 /run-*.bat
 /run-*.sh
-/strata-*.json
-/strata-*.log
-/build-strata.bat
-/build-strata-cuda12.bat
+/guild-*.json
+/guild-*.log
+/build-guild.bat
+/build-guild-cuda12.bat
 /build-cuda12/
-/.strata-mcp/
+/.guild-mcp/
 
 # image encoder (setup.py --vision): build output and the generated build script
 build-vision*/
@@ -56,3 +56,9 @@ build-vision-cuda12.bat
 
 /.ccache/
 /.rocm-win/
+
+# Legacy local Strata files copied with the working tree stay local.
+/strata-*.json
+/strata-*.log
+/build-strata*.bat
+/.strata-mcp/

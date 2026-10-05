@@ -1,18 +1,18 @@
-// src/kernels/cuda/qsa_decode_attn.cu - see include/strata/kernels/qsa_decode_attn.hpp.
+// src/kernels/cuda/qsa_decode_attn.cu - see include/guild/kernels/qsa_decode_attn.hpp.
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
-#include "strata/sycl_queue.hpp"
-#include "strata/kernels/qsa_decode_attn.hpp"
-#include "strata/kernels/kv_q8.hpp"
-#include "strata/kernels/kv_q4.hpp"
+#include "guild/sycl_queue.hpp"
+#include "guild/kernels/qsa_decode_attn.hpp"
+#include "guild/kernels/kv_q8.hpp"
+#include "guild/kernels/kv_q4.hpp"
 
 #include <cfloat>
 #include <cstdio>
 #include <cstdlib>
 #include <cmath>
 
-namespace strata::kernels {
+namespace guild::kernels {
 namespace {
 
 constexpr int HD = 256;          // head_dim
@@ -317,7 +317,7 @@ void qsa_decode_attn_batch(const float* q, const QsaAttnPools& pools, const int3
     const float scale = 1.0f / sqrtf((float) HD);
     const dpct::dim3 grid((unsigned)n_chunks, (unsigned)s.n_head_kv,
                           (unsigned)n_q);
-    dpct::queue_ptr st = strata::q_of(stream);
+    dpct::queue_ptr st = guild::q_of(stream);
     if (kv_mode == 3)
     {
         auto exp_props = sycl::ext::oneapi::experimental::properties{
@@ -430,7 +430,7 @@ void qsa_decode_attn_step(const float* q, const QsaAttnPools& pools, const int32
     float* part_l = part_m + (size_t) n_chunks * s.n_head;
     const float scale = 1.0f / sqrtf((float) HD);
     const dpct::dim3 grid((unsigned)n_chunks, (unsigned)s.n_head_kv);
-    dpct::queue_ptr st = strata::q_of(stream);
+    dpct::queue_ptr st = guild::q_of(stream);
     if (kv_mode == 3)
     {
         auto exp_props = sycl::ext::oneapi::experimental::properties{
@@ -515,4 +515,4 @@ void qsa_decode_attn_step(const float* q, const QsaAttnPools& pools, const int32
     const dpct::err0 e = 0;
 }
 
-}  // namespace strata::kernels
+}  // namespace guild::kernels

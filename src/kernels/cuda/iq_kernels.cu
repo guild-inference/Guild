@@ -1,12 +1,12 @@
-// src/kernels/cuda/iq_kernels.cu - see include/strata/kernels/iq_kernels.hpp.
+// src/kernels/cuda/iq_kernels.cu - see include/guild/kernels/iq_kernels.hpp.
 //
 // The dot products (vec_dot_*_q8_1), the dequantizers and the q8_1 quantizer are transcribed from llama.cpp
 // (ggml/src/ggml-cuda/vecdotq.cuh, dequantize.cuh, quantize.cu at the commit in third_party/ggml/VERSION.txt;
 // MIT license, third_party/ggml/LICENSE).  The block structs and codebook grids come from its ggml-common.h,
 // included unchanged.
-#include "strata/kernels/iq_kernels.hpp"
-#include "strata/kernels/dp4a.hpp"
-#include "strata/kernels/q8_1_finite.hpp"
+#include "guild/kernels/iq_kernels.hpp"
+#include "guild/kernels/dp4a.hpp"
+#include "guild/kernels/q8_1_finite.hpp"
 
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
@@ -19,7 +19,7 @@
 #include <cstdlib>
 #include <type_traits>
 
-namespace strata::kernels {
+namespace guild::kernels {
 namespace {
 
 void check(const char* what) {
@@ -41,7 +41,7 @@ __device__ __forceinline__ uint32_t unpack_ksigns(const uint8_t v) {
     return s * 0x01010101;
 }
 __device__ __forceinline__ int2 get_int_from_table_16(const int& q4, const int8_t* table) {
-#if defined(STRATA_HIP_GFX906)
+#if defined(GUILD_HIP_GFX906)
     // AMD: llama.cpp's HIP lookup (vecdotq.cuh) - v_perm_b32 takes 3-bit byte indices, so the low and high halves
     // of the table are looked up and the index MSB picks between them: 4 perms per 8 values.
     const uint32_t* v32 = reinterpret_cast<const uint32_t*>(table);
@@ -66,7 +66,7 @@ __device__ __forceinline__ int2 get_int_from_table_16(const int& q4, const int8_
     return make_int2(__byte_perm(tmp[0], tmp[1], 0x6420), __byte_perm(tmp[0], tmp[1], 0x7531));
 #endif
 }
-#define ggml_cuda_dp4a(a, b, c) STRATA_DP4A((a), (b), (c))
+#define ggml_cuda_dp4a(a, b, c) GUILD_DP4A((a), (b), (c))
 
 // ---------------------------------------------------------------- the dot products (vecdotq.cuh)
 __device__ __forceinline__ float vec_dot_q2_0_q8_1(const void* __restrict__ vbq, const block_q8_1* __restrict__ bq8_1,
@@ -522,9 +522,9 @@ template<> struct Fmt<8> { static constexpr int qk = 32, ipb = QI8_0 / VDR_Q8_0,
 
 // The formats of each role, one list each so a type cannot be in one switch and missing from another.  Every
 // entry is a kernel template for each CUDA architecture of the build, hence two lists rather than one.
-#define STRATA_GU_FMTS(X) X(16) X(17) X(18) X(21) X(22) X(23) X(29) X(42) X(12) X(13) X(6) X(8)
-#define STRATA_D_FMTS(X) X(20) X(23) X(42) X(7) X(6) X(8)
-#define STRATA_MMVQ_FMTS(X) X(16) X(17) X(18) X(20) X(21) X(22) X(23) X(29) X(42) X(12) X(13) X(7) X(6) X(8)
+#define GUILD_GU_FMTS(X) X(16) X(17) X(18) X(21) X(22) X(23) X(29) X(42) X(12) X(13) X(6) X(8)
+#define GUILD_D_FMTS(X) X(20) X(23) X(42) X(7) X(6) X(8)
+#define GUILD_MMVQ_FMTS(X) X(16) X(17) X(18) X(20) X(21) X(22) X(23) X(29) X(42) X(12) X(13) X(7) X(6) X(8)
 
 __device__ __forceinline__ float warp_sum(float v) {
 #pragma unroll
@@ -566,7 +566,7 @@ __global__ void __launch_bounds__(128) mmvq_kernel(const uint8_t* __restrict__ w
 // scale as a float) and `apply` (the activation loads, the dp4a chain in the same order, the same integer scale
 // step and the same float expression).  `apply(load(...))` does the dot's integer and float operations in the same
 // order on the same values, so a column of the kernels below is BITWISE equal to the same column of mmvq_kernel /
-// native_gu_kernel / native_down_kernel (iq_multi_parity checks it; STRATA_OLD_IQ_MMVQ=1 keeps the old kernels).
+// native_gu_kernel / native_down_kernel (iq_multi_parity checks it; GUILD_OLD_IQ_MMVQ=1 keeps the old kernels).
 template<int TY> struct Split;
 // Formats with a Split below take the decode-once kernels; the others (Q4_K, Q5_K, Q5_1, Q8_0: UD-Q4_K_XL) the
 // per-entry ones, which call Fmt<TY>::dot per column exactly as before #242 (the launchers test kSplit at compile
@@ -1685,17 +1685,17 @@ bool is_iq(int t) {
 // values per block of the types the grouped expert kernels take (0 = none)
 int gu_qk(int t) {
     switch (t) {
-#define STRATA_QK(T) case T: return Fmt<T>::qk;
-        STRATA_GU_FMTS(STRATA_QK)
-#undef STRATA_QK
+#define GUILD_QK(T) case T: return Fmt<T>::qk;
+        GUILD_GU_FMTS(GUILD_QK)
+#undef GUILD_QK
         default: return 0;
     }
 }
 int d_qk(int t) {
     switch (t) {
-#define STRATA_QK(T) case T: return Fmt<T>::qk;
-        STRATA_D_FMTS(STRATA_QK)
-#undef STRATA_QK
+#define GUILD_QK(T) case T: return Fmt<T>::qk;
+        GUILD_D_FMTS(GUILD_QK)
+#undef GUILD_QK
         default: return 0;
     }
 }
@@ -1704,18 +1704,18 @@ bool env_on(const char* name) {
     const char* v = std::getenv(name);
     return v != nullptr && v[0] != '\0' && v[0] != '0';
 }
-// STRATA_OLD_IQ_MMVQ=1 keeps the per-column kernels (bitwise equal to the new ones; kept for A/B timing)
-bool g_old_kernels = env_on("STRATA_OLD_IQ_MMVQ");
-// STRATA_IQ_STAGE_GRID=0 disables staging 64-bit i-quant codebook tables into shared memory
+// GUILD_OLD_IQ_MMVQ=1 keeps the per-column kernels (bitwise equal to the new ones; kept for A/B timing)
+bool g_old_kernels = env_on("GUILD_OLD_IQ_MMVQ");
+// GUILD_IQ_STAGE_GRID=0 disables staging 64-bit i-quant codebook tables into shared memory
 bool g_stage_grid = [] {
-    const char* v = std::getenv("STRATA_IQ_STAGE_GRID");
+    const char* v = std::getenv("GUILD_IQ_STAGE_GRID");
     return v == nullptr || v[0] == '\0' || v[0] != '0';
 }();
 // The single-matrix mmvq (128-thread blocks, one per 4 rows) pays the 2-8 KB staging per block: on the RTX 5070 its
 // IQ2_XS / IQ2_S / IQ1_M calls were 10-20% slower staged at 3-8 columns (iq_multi_parity --bench), while the grouped
-// expert kernels gain.  So mmvq stages only with STRATA_IQ_STAGE_GRID_MMVQ=1 (bitwise the same either way).
+// expert kernels gain.  So mmvq stages only with GUILD_IQ_STAGE_GRID_MMVQ=1 (bitwise the same either way).
 bool g_stage_grid_mmvq = g_stage_grid && [] {
-    const char* v = std::getenv("STRATA_IQ_STAGE_GRID_MMVQ");
+    const char* v = std::getenv("GUILD_IQ_STAGE_GRID_MMVQ");
     return v != nullptr && v[0] == '1';
 }();
 
@@ -1812,9 +1812,9 @@ void iq_mmvq(int t, const void* w, const void* x_q8_1, float* y, int n_in, int n
     const auto* W = (const uint8_t*) w;
     const auto* X = (const block_q8_1*) x_q8_1;
     switch (t) {
-#define STRATA_MMVQ(T) case T: launch_mmvq<T>(W, rb, X, y, n_in, n_out, ncols, s); break;
-        STRATA_MMVQ_FMTS(STRATA_MMVQ)
-#undef STRATA_MMVQ
+#define GUILD_MMVQ(T) case T: launch_mmvq<T>(W, rb, X, y, n_in, n_out, ncols, s); break;
+        GUILD_MMVQ_FMTS(GUILD_MMVQ)
+#undef GUILD_MMVQ
         default: std::fprintf(stderr, "iq_mmvq: type %d is not supported\n", t); std::exit(1);
     }
     check("iq_mmvq");
@@ -1886,8 +1886,8 @@ size_t native_expert_scratch_bytes(int64_t cap, int64_t n_ff) {
 }
 
 
-#if defined(STRATA_HIP_GFX906)
-// ---- AMD layouts for the grouped native experts (STRATA_EXP_MODE; 0 = the CUDA one above).
+#if defined(GUILD_HIP_GFX906)
+// ---- AMD layouts for the grouped native experts (GUILD_EXP_MODE; 0 = the CUDA one above).
 // 1 (W64): a row per 64-lane wavefront - 4x the wavefronts, ~1-2 calls per lane, a 64-lane butterfly.
 // 2 (R2):  a 32-lane logical warp computes TWO rows in one loop - two independent load chains in flight.
 // Either way a (row, entry) sum does not depend on the window size.
@@ -2057,7 +2057,7 @@ template<> struct GridOf<18> { using T = uint32_t; static constexpr int N = 256;
 template<> struct GridOf<21> { using T = uint32_t; static constexpr int N = 512; __device__ static const T* src() { return iq3s_grid; } };
 template<> struct GridOf<23> { using T = uint32_t; static constexpr int N = 1; __device__ static const T* src() { return iq3s_grid; } };   // IQ4_XS: no grid
 
-// SG = 1 (mode 6): the signs without byte-SIMD ops, which gfx906 lacks (strata_vcmpne4 / strata_vsub4 unpack to
+// SG = 1 (mode 6): the signs without byte-SIMD ops, which gfx906 lacks (guild_vcmpne4 / guild_vsub4 unpack to
 // ~12 word ops each).  m = the sign nibble as 0x00/0xff bytes; (g ^ m) is g or -g-1 per byte, so
 // dp4a(g ^ m, u) - dp4a(m, u) = sum(s g u) exactly - the same integers, the same floats.
 __device__ __forceinline__ int nib_mask(uint32_t n) {
@@ -2422,16 +2422,16 @@ __global__ void __launch_bounds__(256) native_gu_fused_kernel(const unsigned lon
     }
 }
 
-int g_exp_mode = -1;   // native_expert_set_mode (the bench); -1 = STRATA_EXP_MODE, default 7
+int g_exp_mode = -1;   // native_expert_set_mode (the bench); -1 = GUILD_EXP_MODE, default 7
 int exp_mode() {
-    static const int m = [] { const char* v = std::getenv("STRATA_EXP_MODE"); return v ? std::atoi(v) : 7; }();
+    static const int m = [] { const char* v = std::getenv("GUILD_EXP_MODE"); return v ? std::atoi(v) : 7; }();
     return g_exp_mode >= 0 ? g_exp_mode : m;
 }
 #endif
 int g_exp_phase = 0;   // the bench: 0 all, 1 gate/up + swiglu + quantize only, 2 down only
 
 void native_expert_set_mode(int mode, int phase) {
-#if defined(STRATA_HIP_GFX906)
+#if defined(GUILD_HIP_GFX906)
     g_exp_mode = mode;
 #else
     (void) mode;
@@ -2440,7 +2440,7 @@ void native_expert_set_mode(int mode, int phase) {
 }
 
 namespace {
-bool g_grouped_v1 = env_on("STRATA_GROUPED_V1");
+bool g_grouped_v1 = env_on("GUILD_GROUPED_V1");
 }  // namespace
 
 void native_grouped_set_v1(bool v1) { g_grouped_v1 = v1; }
@@ -2461,10 +2461,10 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
     const bool v1 = g_grouped_v1;
     const int64_t gy = (v1 || grid_groups <= 0 || grid_groups > cap_groups) ? cap_groups : grid_groups;
     const dim3 ggu((unsigned) ((2 * L.n_ff + GU_ROWS - 1) / GU_ROWS), (unsigned) gy);
-#if defined(STRATA_HIP_GFX906)
+#if defined(GUILD_HIP_GFX906)
     const int em0 = exp_mode();
 #endif
-#if defined(STRATA_HIP_GFX906)
+#if defined(GUILD_HIP_GFX906)
     const bool fused_gu = em0 == 8 && (L.gu_type == 18 || L.gu_type == 21 || L.gu_type == 22 || L.gu_type == 23) &&
                           L.n_ff % 32 == 0;
     if (fused_gu && g_exp_phase != 2) {
@@ -2482,7 +2482,7 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
 #else
     if (g_exp_phase != 2) {
 #endif
-#if defined(STRATA_HIP_GFX906)
+#if defined(GUILD_HIP_GFX906)
     const bool lds_gu = (em0 == 5 || em0 == 6 || em0 == 7 || em0 == 8) && (L.gu_type == 18 || L.gu_type == 21 || L.gu_type == 22 || L.gu_type == 23);
     if (lds_gu) {
         const dim3 gl((unsigned) ((2 * L.n_ff + LDS_RB - 1) / LDS_RB), (unsigned) cap_groups);
@@ -2496,7 +2496,7 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
     } else {
     const int em = exp_mode() >= 5 ? 2 : exp_mode();
     const dim3 ggu_amd((unsigned) ((2 * L.n_ff + (em == 1 ? 3 : em == 4 ? 31 : 15)) / (em == 1 ? 4 : em == 4 ? 32 : 16)), (unsigned) cap_groups);
-#define STRATA_GU_AMD(T) \
+#define GUILD_GU_AMD(T) \
     case T: if (em == 1) native_gu_amd_kernel<T, 1><<<ggu_amd, 256, 0, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, gate, up); \
             else if (em == 4) native_gu_amd_kernel<T, 4><<<ggu_amd, 256, 0, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, gate, up); \
             else native_gu_amd_kernel<T, 2><<<ggu_amd, 256, 0, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, gate, up); break;
@@ -2505,27 +2505,27 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
                         L.gu_type == 23 || L.gu_type == 29 || L.gu_type == 42;
     if ((em == 1 || em == 2 || em == 4) && amd_gu) {
         switch (L.gu_type) {
-            STRATA_GU_AMD(16) STRATA_GU_AMD(17) STRATA_GU_AMD(18) STRATA_GU_AMD(21) STRATA_GU_AMD(22) STRATA_GU_AMD(23)
-            STRATA_GU_AMD(29) STRATA_GU_AMD(42)
+            GUILD_GU_AMD(16) GUILD_GU_AMD(17) GUILD_GU_AMD(18) GUILD_GU_AMD(21) GUILD_GU_AMD(22) GUILD_GU_AMD(23)
+            GUILD_GU_AMD(29) GUILD_GU_AMD(42)
         }
     } else
-#undef STRATA_GU_AMD
+#undef GUILD_GU_AMD
 #endif
     switch (L.gu_type) {
-#define STRATA_GU(T) case T: launch_gu<T>(ggu, s, grp_ptr, grp_start, n_groups, ent_tok, X, L, gate, up); break;
-        STRATA_GU_FMTS(STRATA_GU)
-#undef STRATA_GU
+#define GUILD_GU(T) case T: launch_gu<T>(ggu, s, grp_ptr, grp_start, n_groups, ent_tok, X, L, gate, up); break;
+        GUILD_GU_FMTS(GUILD_GU)
+#undef GUILD_GU
         default: std::fprintf(stderr, "native_expert_grouped: gate/up type %d\n", L.gu_type); std::exit(1);
     }
-#if defined(STRATA_HIP_GFX906)
+#if defined(GUILD_HIP_GFX906)
     }
 #endif
     check("native_expert_grouped/gu");
     const long long nh = (long long) cap_entries * L.n_ff;
-#if defined(STRATA_HIP_GFX906)
+#if defined(GUILD_HIP_GFX906)
     // gfx906: the separate SwiGLU and q8_1 passes stay the default (the A/B baseline); the RDNA one-pass
-    // kernel (bitwise the same) with STRATA_HIP_SWIGLU_FUSED=1
-    static const bool sw_fused = env_on("STRATA_HIP_SWIGLU_FUSED");
+    // kernel (bitwise the same) with GUILD_HIP_SWIGLU_FUSED=1
+    static const bool sw_fused = env_on("GUILD_HIP_SWIGLU_FUSED");
     const bool sw_v1 = v1 || !sw_fused;
 #else
     const bool sw_v1 = v1;
@@ -2542,7 +2542,7 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
     if (g_exp_phase == 1) return;
     const int d_rows = (!g_old_kernels && L.n_ff == 640) ? (L.d_type == 20 ? 32 : (L.d_type == 42 ? 16 : 8)) : 8;
     const dim3 gd((unsigned) ((L.n_embd + d_rows - 1) / d_rows), (unsigned) gy);
-#if defined(STRATA_HIP_GFX906)
+#if defined(GUILD_HIP_GFX906)
     if ((em0 == 7 || em0 == 8) && (L.d_type == 20 || L.d_type == 42)) {
         const dim3 gl((unsigned) ((L.n_embd + LDS_RB - 1) / LDS_RB), (unsigned) cap_groups);
         const size_t sh = (size_t) LDS_NT * (size_t) (L.n_ff / 32) * sizeof(block_q8_1);
@@ -2553,7 +2553,7 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
     }
     const int em = exp_mode() >= 5 ? 2 : exp_mode();
     const dim3 gd_amd((unsigned) ((L.n_embd + (em == 1 ? 3 : em == 4 ? 31 : 15)) / (em == 1 ? 4 : em == 4 ? 32 : 16)), (unsigned) cap_groups);
-#define STRATA_D_AMD(T) \
+#define GUILD_D_AMD(T) \
     case T: if (em == 1) native_down_amd_kernel<T, 1><<<gd_amd, 256, 0, s>>>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out); \
             else if (em == 4) native_down_amd_kernel<T, 4><<<gd_amd, 256, 0, s>>>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out); \
             else native_down_amd_kernel<T, 2><<<gd_amd, 256, 0, s>>>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out); break;
@@ -2561,18 +2561,18 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
     // CUDA layout below
     if ((em == 1 || em == 2 || em == 4) && (L.d_type == 20 || L.d_type == 23 || L.d_type == 42)) {
         switch (L.d_type) {
-            STRATA_D_AMD(20) STRATA_D_AMD(23) STRATA_D_AMD(42)
+            GUILD_D_AMD(20) GUILD_D_AMD(23) GUILD_D_AMD(42)
         }
     } else
-#undef STRATA_D_AMD
+#undef GUILD_D_AMD
 #endif
     switch (L.d_type) {
-#define STRATA_DOWN(T) case T: launch_down<T>(gd, s, grp_ptr, grp_start, n_groups, ent_dst, hq, L, out); break;
-        STRATA_D_FMTS(STRATA_DOWN)
-#undef STRATA_DOWN
+#define GUILD_DOWN(T) case T: launch_down<T>(gd, s, grp_ptr, grp_start, n_groups, ent_dst, hq, L, out); break;
+        GUILD_D_FMTS(GUILD_DOWN)
+#undef GUILD_DOWN
         default: std::fprintf(stderr, "native_expert_grouped: down type %d\n", L.d_type); std::exit(1);
     }
     check("native_expert_grouped/down");
 }
 
-}  // namespace strata::kernels
+}  // namespace guild::kernels

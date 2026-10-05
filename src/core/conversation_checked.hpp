@@ -5,7 +5,7 @@
 #include <initializer_list>
 #include <limits>
 
-namespace strata::core::conversation_detail {
+namespace guild::core::conversation_detail {
 inline bool add(size_t& total, size_t n) {
     if (n > std::numeric_limits<size_t>::max() - total) return false;
     total += n;
@@ -21,4 +21,4 @@ inline bool product(size_t& out, std::initializer_list<uint64_t> factors) {
     out = value;
     return true;
 }
-} // namespace strata::core::conversation_detail
+} // namespace guild::core::conversation_detail

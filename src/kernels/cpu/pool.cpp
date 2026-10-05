@@ -1,7 +1,7 @@
 // src/kernels/cpu/pool.cpp - P2.S3: the CPU expert pool.  Read pool.hpp first; it explains the protocol.
-#include "strata/kernels/cpu/pool.hpp"
-#include "strata/core/progress.hpp"
-#include "strata/kernels/cpu/expert_layout.hpp"
+#include "guild/kernels/cpu/pool.hpp"
+#include "guild/core/progress.hpp"
+#include "guild/kernels/cpu/expert_layout.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -21,7 +21,7 @@
 #include "pool_affinity_linux.hpp"
 #endif
 
-namespace strata::kernels::cpu {
+namespace guild::kernels::cpu {
 
 namespace {
 constexpr uint64_t pack_head(uint32_t epoch, uint32_t n, uint32_t i) {
@@ -286,7 +286,7 @@ bool pin_this_thread(int core, [[maybe_unused]] int worker = -1) {
 #else
     const int error = detail::pin_thread_to_cpu(core);
     if (error != 0)
-        std::fprintf(stderr, "strata cpu pool: affinity for worker %d (CPU %d) failed: %d; previous affinity kept\n",
+        std::fprintf(stderr, "guild cpu pool: affinity for worker %d (CPU %d) failed: %d; previous affinity kept\n",
                      worker, core, error);
     return error == 0;
 #endif
@@ -301,7 +301,7 @@ ThreadAffinity pin_current_thread(int core) {
     ULONG target = 0;
     if (!detail::get_thread_cpu_sets(previous.cpu_sets) || !detail::cpu_set_for_core(core, target) ||
         !SetThreadSelectedCpuSets(GetCurrentThread(), &target, 1)) {
-        std::fprintf(stderr, "strata cpu pool: host CPU Set selection for processor %d failed: %lu; previous placement kept\n",
+        std::fprintf(stderr, "guild cpu pool: host CPU Set selection for processor %d failed: %lu; previous placement kept\n",
                      core, (unsigned long) GetLastError());
         return {};
     }
@@ -312,7 +312,7 @@ ThreadAffinity pin_current_thread(int core) {
     int error = detail::get_thread_affinity(previous.mask);
     if (error == 0) error = detail::pin_thread_to_cpu(core);
     if (error != 0) {
-        std::fprintf(stderr, "strata cpu pool: host affinity for CPU %d failed: %d; previous affinity kept\n", core, error);
+        std::fprintf(stderr, "guild cpu pool: host affinity for CPU %d failed: %d; previous affinity kept\n", core, error);
         return {};
     }
     previous.valid = true;
@@ -327,12 +327,12 @@ void restore_thread_affinity(const ThreadAffinity& previous) {
     // turning the caller's implicit Windows 11 affinity into an explicit single-group hard mask.
     if (!SetThreadSelectedCpuSets(GetCurrentThread(), previous.cpu_sets.empty() ? nullptr : previous.cpu_sets.data(),
                                  (ULONG) previous.cpu_sets.size()))
-        std::fprintf(stderr, "strata cpu pool: host CPU Set restoration failed: %lu\n",
+        std::fprintf(stderr, "guild cpu pool: host CPU Set restoration failed: %lu\n",
                      (unsigned long) GetLastError());
 #else
     const int error = detail::set_thread_affinity(previous.mask);
     if (error != 0)
-        std::fprintf(stderr, "strata cpu pool: host affinity restoration failed: %d\n", error);
+        std::fprintf(stderr, "guild cpu pool: host affinity restoration failed: %d\n", error);
 #endif
 }
 
@@ -370,7 +370,7 @@ void ExpertPool::diag(std::FILE* f) const {
 
 ExpertPool::ExpertPool(int n_workers, bool pin, bool host_works, PoolAffinity affinity)
     : host_works_(host_works), affinity_(affinity), topo_(detect_cpu_topology(true, affinity)) {
-    if (const char* e = std::getenv("STRATA_POOL_SPIN_US"))   // a test knob; see kSpinBeforeSleep
+    if (const char* e = std::getenv("GUILD_POOL_SPIN_US"))   // a test knob; see kSpinBeforeSleep
         spin_before_sleep_ = std::chrono::microseconds((std::max)(0, std::atoi(e)));
     if (n_workers > 0) {
         n_ = n_workers;
@@ -385,7 +385,7 @@ ExpertPool::ExpertPool(int n_workers, bool pin, bool host_works, PoolAffinity af
     for (int i = 0; i < n_; ++i) wstate_[(size_t) i].store(kParked);
     hstate_ms_.store(now_ms());
     g_diag_pool.store(this);
-    strata::core::diag_pool_fn().store(&diag_active_pool);
+    guild::core::diag_pool_fn().store(&diag_active_pool);
     split_.resize((size_t) kMaxSplit);
     split_multi_.resize((size_t) kMaxSplitMulti);
     threads_.reserve((size_t) n_);
@@ -483,7 +483,7 @@ int ExpertPool::claim(uint32_t epoch) {
 
 uint32_t ExpertPool::begin_batch(int n) {
     if (n < 0 || n > 0xffff) {
-        std::fprintf(stderr, "strata: expert pool batch of %d jobs is out of range\n", n);
+        std::fprintf(stderr, "guild: expert pool batch of %d jobs is out of range\n", n);
         std::abort();
     }
     // Every job of the previous batch has completed (`wait_done`), and a claim of it can no longer succeed, so
@@ -506,10 +506,10 @@ void ExpertPool::wait_parked(const char* what) {
         const auto now = std::chrono::steady_clock::now();
         if (spins == 1024u) t0 = now;
         else if (now - t0 > kStall) {
-            std::fprintf(stderr, "strata: the CPU expert pool stalled %s (%u of %d workers parked) - stopping the engine "
+            std::fprintf(stderr, "guild: the CPU expert pool stalled %s (%u of %d workers parked) - stopping the engine "
                                  "so the server can start it again (issue #29)\n",
                          what, parked_.load(), n_);
-            strata::core::release_gpu_waits(stderr);   // #267: the GPU may be spinning on this layer's flag
+            guild::core::release_gpu_waits(stderr);   // #267: the GPU may be spinning on this layer's flag
             std::fflush(stderr);
             std::abort();
         }
@@ -529,10 +529,10 @@ void ExpertPool::wait_done(int n) {
         const auto now = std::chrono::steady_clock::now();
         if (spins == 1024u || d != seen) { t0 = now; seen = d; }     // progress restarts the clock
         else if (now - t0 > kStall) {
-            std::fprintf(stderr, "strata: the CPU expert pool stalled: %u of %d jobs done, %u of %d workers parked - "
+            std::fprintf(stderr, "guild: the CPU expert pool stalled: %u of %d jobs done, %u of %d workers parked - "
                                  "stopping the engine so the server can start it again (issue #29)\n",
                          d, n, parked_.load(), n_);
-            strata::core::release_gpu_waits(stderr);   // #267
+            guild::core::release_gpu_waits(stderr);   // #267
             std::fflush(stderr);
             std::abort();
         }
@@ -776,4 +776,4 @@ void ExpertPool::run(ExpertJob* jobs, int n) {
     ms_repark_ += std::chrono::duration<double, std::milli>(t_d - t_c).count();
 }
 
-}  // namespace strata::kernels::cpu
+}  // namespace guild::kernels::cpu

@@ -10,9 +10,9 @@
 //   3. **THE Q8_K-vs-FP16 GAP IS MEASURED**, because that is the number the whole activation-contract
 //      decision rests on and it has only ever been measured on Q2_0 weights (0.6175%) and on BF16 ones
 //      (0.141-0.156%).  A K-quant weight is a third case and it is the one the dense projections use.
-#include "strata/kernels/f16_bits.hpp"
-#include "strata/kernels/quantize_act.hpp"
-#include "strata/kernels/s_gemv.hpp"
+#include "guild/kernels/f16_bits.hpp"
+#include "guild/kernels/quantize_act.hpp"
+#include "guild/kernels/s_gemv.hpp"
 
 #include <cuda_runtime.h>
 
@@ -25,8 +25,8 @@
 
 namespace {
 
-using strata::kernels::SForm;
-using strata::kernels::Codebook;
+using guild::kernels::SForm;
+using guild::kernels::Codebook;
 
 void check(cudaError_t e, const char* what) {
     if (e != cudaSuccess) {
@@ -114,8 +114,8 @@ int ragged_rows(const Case& cs, long long n_out) {
     check(cudaMemcpy(d_codes, codes.data(), codes.size(), cudaMemcpyHostToDevice), "rcc");
     check(cudaMemcpy(d_scales, scales.data(), scales.size() * 4, cudaMemcpyHostToDevice), "rcs");
     check(cudaMemcpy(d_offs, offs.data(), offs.size() * 4, cudaMemcpyHostToDevice), "rco");
-    strata::kernels::quantize_q8_K(d_xf, d_xk, n_in, nullptr);
-    strata::kernels::quantize_q8_0(d_xf, d_x0, n_in, nullptr);
+    guild::kernels::quantize_q8_K(d_xf, d_xk, n_in, nullptr);
+    guild::kernels::quantize_q8_0(d_xf, d_x0, n_in, nullptr);
     check(cudaMemcpy(xk.data(), d_xk, xk.size(), cudaMemcpyDeviceToHost), "rcxk");
     check(cudaMemcpy(x0.data(), d_x0, x0.size(), cudaMemcpyDeviceToHost), "rcx0");
 
@@ -133,7 +133,7 @@ int ragged_rows(const Case& cs, long long n_out) {
                     const uint8_t* blk = x0.data() + (size_t) (i / 32) * 34;
                     uint16_t dbits;
                     std::memcpy(&dbits, blk, 2);
-                    a = (double) strata::kernels::f32_from_f16(dbits) * (double) ((const int8_t*) (blk + 2))[i % 32];
+                    a = (double) guild::kernels::f32_from_f16(dbits) * (double) ((const int8_t*) (blk + 2))[i % 32];
                 }
                 const double wa = weight_at(codes, scales, offs, f, n_in, o, i) * a;
                 acc += wa;
@@ -146,10 +146,10 @@ int ragged_rows(const Case& cs, long long n_out) {
         std::vector<uint32_t> sentinel((size_t) (n_out + guard), 0x7FC0DEADu);
         check(cudaMemcpy(d_y, sentinel.data(), sentinel.size() * 4, cudaMemcpyHostToDevice), "rsent");
         if (kind == 0)
-            strata::kernels::s_gemv_q8k_split(d_xk, d_codes, d_scales, cs.has_offset ? d_offs : nullptr, d_y, n_in,
+            guild::kernels::s_gemv_q8k_split(d_xk, d_codes, d_scales, cs.has_offset ? d_offs : nullptr, d_y, n_in,
                                               n_out, f, nullptr);
         else
-            strata::kernels::s_gemv_q8_0_split(d_x0, d_codes, d_scales, cs.has_offset ? d_offs : nullptr, d_y, n_in,
+            guild::kernels::s_gemv_q8_0_split(d_x0, d_codes, d_scales, cs.has_offset ? d_offs : nullptr, d_y, n_in,
                                                n_out, f, nullptr);
         check(cudaDeviceSynchronize(), "ragged split");
         std::vector<uint32_t> got_bits(sentinel.size());
@@ -223,7 +223,7 @@ int main(int argc, char** argv) {
         check(cudaMalloc(&d_xf, (size_t) n_in * 4), "xf");
         check(cudaMalloc(&d_xq, xq8k.size()), "xq");
         check(cudaMemcpy(d_xf, xf.data(), (size_t) n_in * 4, cudaMemcpyHostToDevice), "cxf");
-        strata::kernels::quantize_q8_K(d_xf, d_xq, n_in, nullptr);
+        guild::kernels::quantize_q8_K(d_xf, d_xq, n_in, nullptr);
         check(cudaMemcpy(xq8k.data(), d_xq, xq8k.size(), cudaMemcpyDeviceToHost), "cxq");
 
         // ---- host reference in double, over the same bytes
@@ -247,10 +247,10 @@ int main(int argc, char** argv) {
         check(cudaMemcpy(d_offs, offs.data(), offs.size() * 4, cudaMemcpyHostToDevice), "co");
 
         std::vector<float> naive((size_t) n_out), warp((size_t) n_out);
-        strata::kernels::s_gemv_q8k(d_xq, d_codes, d_scales, cs.has_offset ? d_offs : nullptr, d_y, n_in, n_out,
+        guild::kernels::s_gemv_q8k(d_xq, d_codes, d_scales, cs.has_offset ? d_offs : nullptr, d_y, n_in, n_out,
                                     f, nullptr);
         check(cudaMemcpy(naive.data(), d_y, (size_t) n_out * 4, cudaMemcpyDeviceToHost), "cy1");
-        strata::kernels::s_gemv_q8k_split(d_xq, d_codes, d_scales, cs.has_offset ? d_offs : nullptr, d_y, n_in,
+        guild::kernels::s_gemv_q8k_split(d_xq, d_codes, d_scales, cs.has_offset ? d_offs : nullptr, d_y, n_in,
                                           n_out, f, nullptr);
         check(cudaMemcpy(warp.data(), d_y, (size_t) n_out * 4, cudaMemcpyDeviceToHost), "cy2");
 
@@ -273,7 +273,7 @@ int main(int argc, char** argv) {
             std::vector<uint8_t> xq0((size_t) (n_in / 32) * 34);
             uint8_t* d_x0 = nullptr;
             check(cudaMalloc(&d_x0, xq0.size()), "x0");
-            strata::kernels::quantize_q8_0(d_xf, d_x0, n_in, nullptr);
+            guild::kernels::quantize_q8_0(d_xf, d_x0, n_in, nullptr);
             check(cudaMemcpy(xq0.data(), d_x0, xq0.size(), cudaMemcpyDeviceToHost), "cx0");
 
             // the host reference over the SAME Q8_0 bytes, with the same weight decode
@@ -284,13 +284,13 @@ int main(int argc, char** argv) {
                     const uint8_t* blk = xq0.data() + (size_t) (i / 32) * 34;
                     uint16_t dbits;
                     std::memcpy(&dbits, blk, 2);
-                    const double d = (double) strata::kernels::f32_from_f16(dbits);
+                    const double d = (double) guild::kernels::f32_from_f16(dbits);
                     const int8_t q = ((const int8_t*) (blk + 2))[i % 32];
                     acc += weight_at(codes, scales, offs, f, n_in, o, i) * d * (double) q;
                 }
                 want0[(size_t) o] = (float) acc;
             }
-            strata::kernels::s_gemv_q8_0_split(d_x0, d_codes, d_scales, cs.has_offset ? d_offs : nullptr, d_y,
+            guild::kernels::s_gemv_q8_0_split(d_x0, d_codes, d_scales, cs.has_offset ? d_offs : nullptr, d_y,
                                                n_in, n_out, f, nullptr);
             std::vector<float> got0((size_t) n_out);
             check(cudaMemcpy(got0.data(), d_y, (size_t) n_out * 4, cudaMemcpyDeviceToHost), "cy0");
@@ -310,12 +310,12 @@ int main(int argc, char** argv) {
         // ---- 3. THE Q8_K vs FP16 GAP, on a K-quant weight - the case the contract decision needs
         {
             std::vector<uint16_t> x16((size_t) n_in);
-            for (long long i = 0; i < n_in; ++i) x16[(size_t) i] = strata::kernels::f16_from_f32(xf[(size_t) i]);
+            for (long long i = 0; i < n_in; ++i) x16[(size_t) i] = guild::kernels::f16_from_f32(xf[(size_t) i]);
             uint16_t* d_x16 = nullptr;
             check(cudaMalloc(&d_x16, (size_t) n_in * 2), "x16");
             check(cudaMemcpy(d_x16, x16.data(), (size_t) n_in * 2, cudaMemcpyHostToDevice), "cx16");
             std::vector<float> fp16out((size_t) n_out);
-            strata::kernels::s_gemv(d_x16, d_codes, d_scales, cs.has_offset ? d_offs : nullptr, d_y, n_in, n_out,
+            guild::kernels::s_gemv(d_x16, d_codes, d_scales, cs.has_offset ? d_offs : nullptr, d_y, n_in, n_out,
                                     f);
             check(cudaMemcpy(fp16out.data(), d_y, (size_t) n_out * 4, cudaMemcpyDeviceToHost), "cy3");
             double dd = 0;

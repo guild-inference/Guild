@@ -57,7 +57,7 @@ class HttpSmoke(unittest.TestCase):
         client.request.assert_not_called()
 
     def test_dry_run_does_not_connect_or_create_output(self):
-        with tempfile.TemporaryDirectory(prefix='strata-http-dry-') as directory:
+        with tempfile.TemporaryDirectory(prefix='guild-http-dry-') as directory:
             output = Path(directory) / 'not-created.json'
             result = subprocess.run([sys.executable, str(Path(__file__).with_name('conversation_cache_http_smoke.py')),
                                      '--url', 'invalid://not-a-server', '--output', str(output)],

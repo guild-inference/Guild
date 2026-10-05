@@ -3,12 +3,12 @@
 //
 //     build/native_expert_bench <shard1.gguf> <layer[,layer...]> <groups> <tokens per group> <ref mode> <mode> [iters]
 //
-// Modes are STRATA_EXP_MODE values.  A group is one expert (distinct blobs, ~2 MB each, so G >= 8 does not fit
+// Modes are GUILD_EXP_MODE values.  A group is one expert (distinct blobs, ~2 MB each, so G >= 8 does not fit
 // in L2); its entries read distinct tokens of an 8-token window.  The output must be bitwise equal to the
 // reference mode's: the verify window's text depends on it.
-#include "strata/artifact/gguf_reader.hpp"
-#include "strata/kernels/cpu/native_expert.hpp"
-#include "strata/kernels/iq_kernels.hpp"
+#include "guild/artifact/gguf_reader.hpp"
+#include "guild/kernels/cpu/native_expert.hpp"
+#include "guild/kernels/iq_kernels.hpp"
 
 #include "ggml.h"
 
@@ -23,8 +23,8 @@
 #include <string>
 #include <vector>
 
-namespace cpu = strata::kernels::cpu;
-namespace K = strata::kernels;
+namespace cpu = guild::kernels::cpu;
+namespace K = guild::kernels;
 
 int main(int argc, char** argv) {
     setvbuf(stdout, nullptr, _IONBF, 0);
@@ -32,7 +32,7 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "usage: native_expert_bench <shard1.gguf> <layer[,layer]> <groups> <tokens> <ref mode> <mode> [iters]\n");
         return 2;
     }
-    strata::GgufFile gguf(argv[1]);
+    guild::GgufFile gguf(argv[1]);
     std::vector<int> layers;
     {
         std::stringstream ss(argv[2]);
@@ -51,7 +51,7 @@ int main(int argc, char** argv) {
     cudaEventCreate(&e0);
     cudaEventCreate(&e1);
     for (int l : layers) {
-        const strata::TensorInfo* t[3] = {};
+        const guild::TensorInfo* t[3] = {};
         const char* roles[3] = {"gate", "up", "down"};
         for (const auto& ti : gguf.tensors())
             for (int r = 0; r < 3; ++r)

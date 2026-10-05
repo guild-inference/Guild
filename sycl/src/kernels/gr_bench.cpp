@@ -1,6 +1,6 @@
 // sycl/src/kernels/gr_bench.cpp - SYCL port: time fused_gr_read_multi (norm + down + up) for 1-6 tokens on random
 // weights at the Coder's shapes; prints a checksum of every output so two builds/switches can be compared bitwise.
-#include "strata/kernels/fused_gr.hpp"
+#include "guild/kernels/fused_gr.hpp"
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
 #include <chrono>
@@ -8,7 +8,7 @@
 #include <cstring>
 #include <vector>
 int main() {
-    using namespace strata::kernels;
+    using namespace guild::kernels;
     sycl::queue* s = &dpct::get_in_order_queue();
     constexpr int N = 2560, HC = 4, D = N * HC, LR = 320, TM = kFusedGrMaxT;
     auto bf16 = [](float f) { uint32_t u; std::memcpy(&u, &f, 4); return (uint16_t) (u >> 16); };

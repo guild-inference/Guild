@@ -21,8 +21,8 @@
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
-#include "strata/sycl_queue.hpp"
-#include "strata/kernels/native_flash_attn.hpp"
+#include "guild/sycl_queue.hpp"
+#include "guild/kernels/native_flash_attn.hpp"
 #include <cfloat>
 #include <cstddef>
 #include <cstdint>
@@ -31,7 +31,7 @@
 #include <string>
 #include <cmath>
 
-namespace strata::kernels {
+namespace guild::kernels {
 namespace {
 template <int Width> __dpct_inline__ float warp_sum(float x) {
 #pragma unroll
@@ -340,11 +340,11 @@ void native_flash_attn_short_step(const float* q, const uint16_t* k, const uint1
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
         dpct::has_capability_or_fail(
-            ((sycl::queue *)(strata::q_of(stream)))
+            ((sycl::queue *)(guild::q_of(stream)))
                 ->get_device(),
             {sycl::aspect::fp16});
 
-        ((sycl::queue *)(strata::q_of(stream)))
+        ((sycl::queue *)(guild::q_of(stream)))
             ->parallel_for<dpct_kernel_name<class attend_9d5505>>(
                 sycl::nd_range<3>(sycl::range(1, 1, 24) * sycl::range(1, 4, 32),
                                   sycl::range(1, 4, 32)),
@@ -379,4 +379,4 @@ void native_flash_attn_short_step(const float* q, const uint16_t* k, const uint1
         throw std::runtime_error(std::string("native FlashAttention launch: ") +
                                  dpct::get_error_string_dummy(result));
 }
-} // namespace strata::kernels
+} // namespace guild::kernels

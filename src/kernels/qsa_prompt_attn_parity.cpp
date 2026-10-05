@@ -7,12 +7,12 @@
 //   1. against FP64, the new kernel's error is no larger than a small multiple of the old kernel's (both FP32 math);
 //   2. the new and old outputs agree to a relative 1e-4 of the output scale;
 // then times both over a prompt chunk (the old one in batches of 32, as prefill.cpp calls it).
-// HIP builds (S6): the same checks for the RDNA4 matrix-core kernel (STRATA_HIP_WMMA), skipped (77) off gfx12.
+// HIP builds (S6): the same checks for the RDNA4 matrix-core kernel (GUILD_HIP_WMMA), skipped (77) off gfx12.
 // Usage: qsa_prompt_attn_parity [context=32768] [queries=2048] [reps=5]
-#include "strata/kernels/qsa.hpp"
-#include "strata/kernels/qsa_decode_attn.hpp"
-#include "strata/kernels/qsa_prompt_attn.hpp"
-#include "strata/kernels/kv_q4.hpp"
+#include "guild/kernels/qsa.hpp"
+#include "guild/kernels/qsa_decode_attn.hpp"
+#include "guild/kernels/qsa_prompt_attn.hpp"
+#include "guild/kernels/kv_q4.hpp"
 
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
@@ -25,7 +25,7 @@
 #include <random>
 #include <vector>
 
-namespace k = strata::kernels;
+namespace k = guild::kernels;
 
 namespace {
 void ck(cudaError_t e, const char* w) {
@@ -41,7 +41,7 @@ float h2f(uint16_t b) { __half h; *reinterpret_cast<uint16_t*>(&h) = b; return _
 uint16_t f2h(float f) { __half h = __float2half(f); return *reinterpret_cast<uint16_t*>(&h); }
 
 int run(int fmt, int64_t ctx, int64_t nq, int reps) {   // fmt 1 int8, 0 fp16, 2 q4_0
-#if !defined(__HIPCC__) && !defined(STRATA_USE_HIP)
+#if !defined(__HIPCC__) && !defined(GUILD_USE_HIP)
     if (fmt == 2) {   // mode 4 (Q4_0 KV) runs on sm_80 and newer only: below that the dispatcher keeps the old kernel
         int dev = 0, major = 0;
         ck(cudaGetDevice(&dev), "device");
@@ -251,9 +251,9 @@ int main(int argc, char** argv) {
             return 77;
         }
 #if defined(_WIN32)
-        _putenv_s("STRATA_HIP_WMMA", "1");
+        _putenv_s("GUILD_HIP_WMMA", "1");
 #else
-        setenv("STRATA_HIP_WMMA", "1", 1);
+        setenv("GUILD_HIP_WMMA", "1", 1);
 #endif
     }
 #endif

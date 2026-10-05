@@ -10,8 +10,8 @@
 // Synthetic files at small dimensions; needs a CUDA device for the arena (exits 77 without one).
 #include "gguf_fixture.hpp"
 
-#include "strata/core/native_dense.hpp"
-#include "strata/core/weights.hpp"
+#include "guild/core/native_dense.hpp"
+#include "guild/core/weights.hpp"
 
 #include <cuda_runtime.h>
 
@@ -24,8 +24,8 @@
 #include <vector>
 
 namespace fs = std::filesystem;
-using strata::core::NativeDense;
-using strata::core::WeightTable;
+using guild::core::NativeDense;
+using guild::core::WeightTable;
 
 namespace {
 int g_fail = 0;
@@ -38,7 +38,7 @@ struct TempDir {
     fs::path path;
     TempDir() {
         path = fs::temp_directory_path() /
-               ("strata-ple-key-test-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+               ("guild-ple-key-test-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
         fs::create_directories(path);
     }
     ~TempDir() {

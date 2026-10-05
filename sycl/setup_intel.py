@@ -9,8 +9,8 @@ setup.py's, unchanged.  What is replaced:
 
   - the GPU check: the Intel Arc is offered through setup's AMD path (the one that compiles locally and has no
     images), named and sized from sysfs;
-  - the engine step: the SYCL build (build-sycl-aot/strata, run in the strata-sycl-dev image by
-    sycl/serve/strata-sycl.sh; docs/INTEL.md) instead of a CUDA/HIP build;
+  - the engine step: the SYCL build (build-sycl-aot/guild, run in the guild-sycl-dev image by
+    sycl/serve/guild-sycl.sh; docs/INTEL.md) instead of a CUDA/HIP build;
   - the RAM rule: the CUDA engine keeps every expert in RAM, the SYCL port streams them from the GGUF into VRAM
     (--stream-experts), so RAM only bounds the KV streaming;
   - the config: the container's paths, the SYCL flags, backend "sycl"; the run script starts
@@ -34,10 +34,10 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 import setup as S  # noqa: E402
 
-SYCL_WRAPPER = ROOT / "sycl" / "serve" / "strata-sycl.sh"
-SYCL_IMAGE = "strata-sycl-dev"
+SYCL_WRAPPER = ROOT / "sycl" / "serve" / "guild-sycl.sh"
+SYCL_IMAGE = "guild-sycl-dev"
 SERVER = ROOT / "sycl" / "serve" / "server_intel.py"
-MOUNT = Path(os.environ.get("STRATA_SYCL_ROOT") or ROOT.parent)   # what strata-sycl.sh mounts at /work
+MOUNT = Path(os.environ.get("GUILD_SYCL_ROOT") or ROOT.parent)   # what guild-sycl.sh mounts at /work
 
 # Battlemage / Alchemist PCI device ids -> (name, VRAM GB). lspci's database lags new cards (an Arc Pro B70 reads
 # "Intel Corporation Device [8086:e223]"), so the sysfs id is the reliable signal and the name table is ours.
@@ -82,7 +82,7 @@ def sycl_engine():
     """The SYCL build: (binary, why-not)."""
     if S.WIN:
         return None, "the SYCL port runs on Linux only"
-    exe = next((b for b in (ROOT / "build-sycl-aot" / "strata", ROOT / "build-sycl" / "strata") if b.exists()), None)
+    exe = next((b for b in (ROOT / "build-sycl-aot" / "guild", ROOT / "build-sycl" / "guild") if b.exists()), None)
     if exe is None:
         return None, "it is not built (sycl/tools/build.sh; docs/INTEL.md)"
     if not shutil.which("docker"):
@@ -93,7 +93,7 @@ def sycl_engine():
 
 
 def sycl_path(path) -> str:
-    """A host path as the engine's container sees it: the folder above the Strata checkout (or STRATA_SYCL_ROOT) is
+    """A host path as the engine's container sees it: the folder above the Guild checkout (or GUILD_SYCL_ROOT) is
     mounted at /work."""
     p, root = Path(path).resolve(), MOUNT.resolve()
     try:
@@ -146,10 +146,10 @@ def to_sycl(cfg: dict, exe: Path, ram: float, keep: dict) -> dict:
     out = {k: v for k, v in cfg.items() if k not in ("lib_dirs", "env", "vision", "gpus")}
     out.update({"backend": "sycl", "exe": str(SYCL_WRAPPER), "args": args, "sycl_root": str(MOUNT)})
     env = {}
-    if exe != ROOT / "build-sycl-aot" / "strata":
-        env["STRATA_SYCL_BIN"] = str(exe.relative_to(ROOT))
+    if exe != ROOT / "build-sycl-aot" / "guild":
+        env["GUILD_SYCL_BIN"] = str(exe.relative_to(ROOT))
     if MOUNT.resolve() != ROOT.parent.resolve():
-        env["STRATA_SYCL_ROOT"] = str(MOUNT)
+        env["GUILD_SYCL_ROOT"] = str(MOUNT)
     if env:
         out["env"] = env
     out.update(keep)
@@ -162,7 +162,7 @@ def install(argv) -> None:
         S.fail("no Intel Arc found (an xe or i915 card in /sys/class/drm)", "on an NVIDIA or AMD card, run ./setup.sh")
     exe, why = sycl_engine()
     if exe is None:
-        S.fail(f"Strata's SYCL engine cannot be used: {why}", "docs/INTEL.md: build it, then run this again")
+        S.fail(f"Guild's SYCL engine cannot be used: {why}", "docs/INTEL.md: build it, then run this again")
     for name in ("gpus", "amd_gpus", "amd_problem", "hip_vision", "build_engine_hip", "hipblaslt_table", "ram_gb",
                  "write_run_script", "start", "say", "main"):
         if not callable(getattr(S, name, None)):
@@ -170,13 +170,13 @@ def install(argv) -> None:
 
     real_ram = S.ram_gb()
     keep = {}                                           # hand-set keys setup does not write: kept across a rerun
-    for p in ROOT.glob("strata-*.json"):
+    for p in ROOT.glob("guild-*.json"):
         try:
             c = json.loads(p.read_text(encoding="utf-8-sig"))
             keep[p.name] = {k: c[k] for k in ("model_switcher", "sampling") if k in c}
         except (OSError, ValueError):
             pass
-    stub = Path(tempfile.mkdtemp(prefix="strata-sycl-"))  # setup reads the engine's BUILD.json; the SYCL build has none
+    stub = Path(tempfile.mkdtemp(prefix="guild-sycl-"))  # setup reads the engine's BUILD.json; the SYCL build has none
     atexit.register(shutil.rmtree, stub, True)
     (stub / "BUILD.json").write_text(json.dumps({"version": sycl_version(), "source": "local", "lib_dirs": []}))
 
@@ -223,7 +223,7 @@ def install(argv) -> None:
         cfg = json.loads(Path(cfg_path).read_text(encoding="utf-8-sig"))
         if cfg.get("backend") != "sycl":
             return start(cfg_path, *a, **k)
-        script = ROOT / f"run-{Path(cfg_path).stem[len('strata-'):]}.sh"
+        script = ROOT / f"run-{Path(cfg_path).stem[len('guild-'):]}.sh"
         S.say(f"\nstarting {script.name} ...")
         os.execv("/bin/sh", ["/bin/sh", str(script)])
     S.start = start_sycl

@@ -1,6 +1,6 @@
 // src/kernels/cuda/gr.cu - P2.S2: the gated residual / hyper-connection, `gr_read` and `gr_write`.
 //
-// See include/strata/kernels/gr.hpp for the semantics, for why the weights are bf16, and for the history of
+// See include/guild/kernels/gr.hpp for the semantics, for why the weights are bf16, and for the history of
 // this kernel's 134x-off-the-floor first version.  The short form: it was launched `<<<1, 256>>>` so that
 // `xn`/`xq` fit in shared memory, which used ONE of 48 SMs and cost 262 ms/token.
 //
@@ -24,12 +24,12 @@
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
-#include "strata/sycl_queue.hpp"
-#include "strata/kernels/gr.hpp"
-#include "strata/kernels/bf16_bits.hpp"
-#include "strata/kernels/bf16_gemv.hpp"
-#include "strata/kernels/native_gr_norm.hpp"
-#include "strata/kernels/native_gr_postops.hpp"
+#include "guild/sycl_queue.hpp"
+#include "guild/kernels/gr.hpp"
+#include "guild/kernels/bf16_bits.hpp"
+#include "guild/kernels/bf16_gemv.hpp"
+#include "guild/kernels/native_gr_norm.hpp"
+#include "guild/kernels/native_gr_postops.hpp"
 
 #include <cmath>
 #include <cstdio>
@@ -37,7 +37,7 @@
 #include <cstring>
 #include <stdexcept>
 
-namespace strata::kernels {
+namespace guild::kernels {
 namespace {
 
 constexpr int THREADS = 256;
@@ -45,7 +45,7 @@ constexpr int WARPS = THREADS / 32;
 bool fp32_activations = false;
 bool native_mmvf = false;
 
-/// The bf16 conversions live in `strata/kernels/bf16_bits.hpp`, and this file used to carry its own copies.
+/// The bf16 conversions live in `guild/kernels/bf16_bits.hpp`, and this file used to carry its own copies.
 /// Two files with a private copy of a conversion whose failure mode is silent wrong bits is one too many -
 /// and the reason the shared header exists is that `bf16` and `fp16` are NOT two spellings of one idea, so a
 /// routine written for one and reused for the other is wrong in a way that still produces numbers.
@@ -482,7 +482,7 @@ void gr_read(const float *R, const float *w_norm, const uint16_t *w_down,
     }
     const int n_embd = (int) s.n_embd, hc = (int) s.hc, hc_lr = (int) s.hc_lr;
     const int hc_dim = (int) (s.hc * s.n_embd);
-    dpct::queue_ptr st = strata::q_of(stream);
+    dpct::queue_ptr st = guild::q_of(stream);
 
     // One setting selects every projection in this call. Captured graphs retain these kernel variants.
     const bool use_native = native_mmvf;
@@ -696,7 +696,7 @@ void gr_write(const float *R, const float *block_out, const float *inject,
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
+        guild::q_of(stream)
             ->submit([&](sycl::handler &cgh) {
                 /*
                 DPCT1083: The size of local memory in the migrated code may
@@ -732,4 +732,4 @@ catch (sycl::exception const &exc) {
   std::exit(1);
 }
 
-}  // namespace strata::kernels
+}  // namespace guild::kernels

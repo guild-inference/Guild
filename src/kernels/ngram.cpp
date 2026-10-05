@@ -1,11 +1,11 @@
 // src/kernels/ngram.cpp - P2.S4: the PLE n-gram hash and the IQ4_NL table read.
 //
-// See include/strata/kernels/ngram.hpp for the semantics, the rival readings, and the note on MADV_RANDOM.
-#include "strata/kernels/ngram.hpp"
-#include "strata/artifact/gguf_reader.hpp"
-#include "strata/artifact/dequant.hpp"
-#include "strata/kernels/f16_bits.hpp"
-#include "strata/ngram/ple_reader.hpp"
+// See include/guild/kernels/ngram.hpp for the semantics, the rival readings, and the note on MADV_RANDOM.
+#include "guild/kernels/ngram.hpp"
+#include "guild/artifact/gguf_reader.hpp"
+#include "guild/artifact/dequant.hpp"
+#include "guild/kernels/f16_bits.hpp"
+#include "guild/ngram/ple_reader.hpp"
 
 #include <cerrno>
 #include <cmath>
@@ -24,7 +24,7 @@
 #include <windows.h>
 #endif
 
-namespace strata::kernels {
+namespace guild::kernels {
 
 namespace {
 /// The A/B arm.  Host-token-path only, so it needs no atomics; see the note on `ple_prefetch_enable`.
@@ -144,15 +144,15 @@ struct PleTable::Impl {
     // Direct mode (plan v0.3 P2): the mapping above is released after the header parse and every row comes
     // from an unbuffered SSD read into `raw`.
     PleIo mode = PleIo::Mmap;
-    strata::ngram::PleReader reader;
-    strata::ngram::PleReader::Ticket ticket;
+    guild::ngram::PleReader reader;
+    guild::ngram::PleReader::Ticket ticket;
     bool pending = false;
     bool locked = false;
     uint32_t rows[PLE_N_HEADS] = {};
     uint8_t raw[PLE_N_HEADS * PLE_ROW_BYTES_MAX] = {};
     static constexpr size_t kMaxPrefetch = 16;
     size_t n_prefetch = 0;
-    strata::ngram::PleReader::Ticket prefetch_tickets[kMaxPrefetch] = {};
+    guild::ngram::PleReader::Ticket prefetch_tickets[kMaxPrefetch] = {};
     uint32_t prefetch_keys[kMaxPrefetch][PLE_N_HEADS] = {};
     uint8_t prefetch_raw[kMaxPrefetch][PLE_N_HEADS * PLE_ROW_BYTES_MAX] = {};
     bool fp8 = false;                 // F8_E4M3 rows (tools/ple_fp8_pack.py); else IQ4_NL
@@ -161,7 +161,7 @@ struct PleTable::Impl {
     void decode(const uint8_t* row, float* out160) const {
         if (fp8) fp8_e4m3_dequant_row(row, scale, out160);
         else if (q5_0)
-            for (int b = 0; b < PLE_HEAD_DIM / 32; ++b) strata::dequantize_q5_0(row + (size_t) b * 22, out160 + b * 32);
+            for (int b = 0; b < PLE_HEAD_DIM / 32; ++b) guild::dequantize_q5_0(row + (size_t) b * 22, out160 + b * 32);
         else iq4nl_dequant_row(row, out160);
     }
 };
@@ -194,15 +194,19 @@ bool PleTable::open(const std::string& gguf_path, std::string& err, const PleIoO
         return false;
     }
     // IQ4_NL (ISTA-DASLab's shard 2, the original's own GGUF), Q5_0 (#296: OrcaRouter's GGUF), or the FP8 table as
-    // shipped: I8 bytes marked strata.ple.format = f8_e4m3 with strata.ple.scale (tools/ple_fp8_pack.py)
+    // shipped: I8 bytes marked guild.ple.format = f8_e4m3 with guild.ple.scale (tools/ple_fp8_pack.py)
     impl_->fp8 = false;
     impl_->q5_0 = std::strcmp(t->type_name(), "Q5_0") == 0;
     impl_->rb = impl_->q5_0 ? (PLE_HEAD_DIM / 32) * 22 : PLE_ROW_BYTES;
     if (std::strcmp(t->type_name(), "I8") == 0) {
-        const MetaValue* f = impl_->file->get("strata.ple.format");
-        const MetaValue* s = impl_->file->get("strata.ple.scale");
+        const MetaValue* f = impl_->file->get("guild.ple.format");
+        const MetaValue* s = impl_->file->get("guild.ple.scale");
+        if (!f && !s) { // MIT-derived Strata PLE packs already in circulation
+            f = impl_->file->get("strata.ple.format");
+            s = impl_->file->get("strata.ple.scale");
+        }
         if (f == nullptr || f->s != "f8_e4m3" || s == nullptr || !(s->num() > 0.0)) {
-            err = "per_layer_token_embd.weight is I8 without strata.ple.format = f8_e4m3 and a positive strata.ple.scale";
+            err = "per_layer_token_embd.weight is I8 without guild.ple.format = f8_e4m3 and a positive guild.ple.scale";
             close();
             return false;
         }
@@ -268,7 +272,7 @@ bool PleTable::open(const std::string& gguf_path, std::string& err, const PleIoO
         if (mlock((const void*) a0, a1 - a0) == 0) {
             impl_->locked = true;
         } else {
-            std::fprintf(stderr, "strata: PLE table mlock failed (%s; raise `ulimit -l`): touching its pages instead\n",
+            std::fprintf(stderr, "guild: PLE table mlock failed (%s; raise `ulimit -l`): touching its pages instead\n",
                          std::strerror(errno));
             volatile uint8_t sink = 0;
             for (uintptr_t p = a0; p < a1; p += page) sink = sink + *(const volatile uint8_t*) p;
@@ -444,7 +448,7 @@ void PleTable::set_injected_delay_us(double us) { impl_->reader.set_injected_del
 
 std::string PleTable::io_report() const {
     if (impl_->mode != PleIo::Direct || !impl_->reader.is_open()) return {};
-    const strata::ngram::ReaderStats s = impl_->reader.snapshot();
+    const guild::ngram::ReaderStats s = impl_->reader.snapshot();
     char buf[400];
     int n = std::snprintf(buf, sizeof buf,
                   "ple io: %llu rows, %.1f%% row-cache hits, %llu SSD reads (%.1f MB), read p50 %.0f us p99 %.0f us, "
@@ -503,4 +507,4 @@ void PleTable::gather(const uint32_t* rows16, float* out2560) const {
     for (int h = 0; h < PLE_N_HEADS; ++h) read_row(rows16[h], out2560 + (size_t) h * PLE_HEAD_DIM);
 }
 
-}  // namespace strata::kernels
+}  // namespace guild::kernels

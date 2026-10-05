@@ -24,8 +24,8 @@
 // Check 5 holds the TWO PATHS together: the table path's float64 host trig and the native path's float32
 // fast-math device trig must answer to the same `RopeScaling`, yarn and none alike, so one cache never
 // mixes two rotations.
-#include "strata/kernels/rope.hpp"
-#include "strata/kernels/native_rope.hpp"
+#include "guild/kernels/rope.hpp"
+#include "guild/kernels/native_rope.hpp"
 
 #include <cuda_runtime.h>
 
@@ -65,7 +65,7 @@ int main(int argc, char** argv) {
 
     // ---- 1. the table against the float64 reference
     std::vector<float> hcos((size_t) max_pos * half), hsin((size_t) max_pos * half);
-    strata::kernels::build_rope_table(n_rot, theta, max_pos, hcos.data(), hsin.data());
+    guild::kernels::build_rope_table(n_rot, theta, max_pos, hcos.data(), hsin.data());
     long long table_bad = 0;
     double table_worst = 0.0;
     for (int p = 0; p < max_pos; ++p) {
@@ -116,7 +116,7 @@ int main(int argc, char** argv) {
     check(cudaMemcpy(d_cos, hcos.data(), hcos.size() * sizeof(float), cudaMemcpyHostToDevice), "copy cos");
     check(cudaMemcpy(d_sin, hsin.data(), hsin.size() * sizeof(float), cudaMemcpyHostToDevice), "copy sin");
     check(cudaMemcpy(d_pos, pos.data(), pos.size() * sizeof(int), cudaMemcpyHostToDevice), "copy pos");
-    strata::kernels::rope_neox_apply(d_x, d_out, rows, head_dim, n_rot, d_cos, d_sin, d_pos, nullptr);
+    guild::kernels::rope_neox_apply(d_x, d_out, rows, head_dim, n_rot, d_cos, d_sin, d_pos, nullptr);
     std::vector<float> got(ref.size());
     check(cudaMemcpy(got.data(), d_out, got.size() * sizeof(float), cudaMemcpyDeviceToHost), "back");
 
@@ -163,7 +163,7 @@ int main(int argc, char** argv) {
         // the check would report the correct kernel as wrong.  The first version made exactly that mistake.
         int p7 = 7;
         check(cudaMemcpy(d_pos, &p7, sizeof(int), cudaMemcpyHostToDevice), "copy p7");
-        strata::kernels::rope_neox_apply(d_x, d_out, 1, head_dim, n_rot, d_cos, d_sin, d_pos, nullptr);
+        guild::kernels::rope_neox_apply(d_x, d_out, 1, head_dim, n_rot, d_cos, d_sin, d_pos, nullptr);
         check(cudaMemcpy(o.data(), d_out, o.size() * sizeof(float), cudaMemcpyDeviceToHost), "back e");
         int moved[4] = {0, 0, 0, 0};       // dims 0, 1, half, half+1
         const float* chk[4] = {&e[0], &e[1], &e[half], &e[half + 1]};
@@ -183,9 +183,9 @@ int main(int argc, char** argv) {
     {
         // 4a. type None IS the five-argument builder above - bit for bit.
         std::vector<float> nc((size_t) max_pos * half), ns((size_t) max_pos * half);
-        strata::kernels::RopeScaling none;
+        guild::kernels::RopeScaling none;
         none.freq_base = theta;
-        strata::kernels::build_rope_table(n_rot, none, max_pos, nc.data(), ns.data());
+        guild::kernels::build_rope_table(n_rot, none, max_pos, nc.data(), ns.data());
         const long long none_bad =
             (long long) (std::memcmp(nc.data(), hcos.data(), nc.size() * 4) != 0) +
             (long long) (std::memcmp(ns.data(), hsin.data(), ns.size() * 4) != 0);
@@ -194,12 +194,12 @@ int main(int argc, char** argv) {
 
         // 4b. LINEAR, factor 4: `ang = p * inv / 4` in float64.  The factor is a power of two on purpose -
         // dividing by it is exact, so no multiplication-order rounding can sneak between spec and builder.
-        strata::kernels::RopeScaling lin;
-        lin.type = strata::kernels::RopeScalingType::Linear;
+        guild::kernels::RopeScaling lin;
+        lin.type = guild::kernels::RopeScalingType::Linear;
         lin.freq_base = theta;
         lin.factor = 4.0;
         std::vector<float> lc((size_t) max_pos * half), ls((size_t) max_pos * half);
-        strata::kernels::build_rope_table(n_rot, lin, max_pos, lc.data(), ls.data());
+        guild::kernels::build_rope_table(n_rot, lin, max_pos, lc.data(), ls.data());
         long long lin_bad = 0;
         for (int p = 0; p < max_pos; ++p) {
             for (int i = 0; i < half; ++i) {
@@ -217,7 +217,7 @@ int main(int argc, char** argv) {
         // 4c. THE INTERPOLATION CLAIM ITSELF: linear(4) at position p is `none` at p/4 - the same table row,
         // bit for bit, at every position divisible by the factor.
         std::vector<float> wc((size_t) 4 * max_pos * half), ws((size_t) 4 * max_pos * half);
-        strata::kernels::build_rope_table(n_rot, lin, 4 * max_pos, wc.data(), ws.data());
+        guild::kernels::build_rope_table(n_rot, lin, 4 * max_pos, wc.data(), ws.data());
         long long equiv_bad = 0;
         for (int p = 0; p < 4 * max_pos; p += 4) {
             for (int i = 0; i < half; ++i) {
@@ -233,13 +233,13 @@ int main(int argc, char** argv) {
         // The ramp helper is shared with the builder (the rope_neox_pair convention: one definition, not two
         // transcriptions of it); the interpolation mix and the mscale formula are written here from the ggml
         // source lines, which is the spec being tested.
-        strata::kernels::RopeScaling yarn;
-        yarn.type = strata::kernels::RopeScalingType::YaRN;
+        guild::kernels::RopeScaling yarn;
+        yarn.type = guild::kernels::RopeScalingType::YaRN;
         yarn.freq_base = theta;
         yarn.factor = 4.0;
         yarn.ext_factor = 1.0;
         std::vector<float> yc((size_t) max_pos * half), ys((size_t) max_pos * half);
-        strata::kernels::build_rope_table(n_rot, yarn, max_pos, yc.data(), ys.data());
+        guild::kernels::build_rope_table(n_rot, yarn, max_pos, yc.data(), ys.data());
         const double fs = yarn.freq_scale();          // 0.25
         const double ms = yarn.mscale();              // attn_factor * (1 + 0.1*ln(4))
         double cd[2];
@@ -250,7 +250,7 @@ int main(int argc, char** argv) {
                 const double inv = std::pow(theta, -2.0 * (double) i / (double) n_rot);
                 const double extrap = (double) p * inv;
                 const double interp = fs * extrap;
-                const double ramp = (double) strata::kernels::rope_yarn_ramp((float) cd[0], (float) cd[1], i) *
+                const double ramp = (double) guild::kernels::rope_yarn_ramp((float) cd[0], (float) cd[1], i) *
                                     yarn.ext_factor;
                 const double ang = interp * (1.0 - ramp) + extrap * ramp;
                 const float rc = (float) (std::cos(ang) * ms), rs = (float) (std::sin(ang) * ms);
@@ -298,12 +298,12 @@ int main(int argc, char** argv) {
         // 4f. THE OBSERVABILITY assertion: the fixtures must SEE scaling.  If the builder ignored its config,
         // linear(2) would equal `none` everywhere and 4b-4e would be green on a broken builder.
         {
-            strata::kernels::RopeScaling lin2;
-            lin2.type = strata::kernels::RopeScalingType::Linear;
+            guild::kernels::RopeScaling lin2;
+            lin2.type = guild::kernels::RopeScalingType::Linear;
             lin2.freq_base = theta;
             lin2.factor = 2.0;
             std::vector<float> l2c((size_t) 101 * half), l2s((size_t) 101 * half);
-            strata::kernels::build_rope_table(n_rot, lin2, 101, l2c.data(), l2s.data());
+            guild::kernels::build_rope_table(n_rot, lin2, 101, l2c.data(), l2s.data());
             const float c_none = (float) std::cos(100.0);      // pair 0, position 100, unscaled: ang = 100
             const float c_lin = l2c[(size_t) 100 * half];      // pair 0, position 100, linear(2): ang = 50
             const bool sees = std::fabs((double) c_none - (double) c_lin) > 1e-3;
@@ -321,14 +321,14 @@ int main(int argc, char** argv) {
             for (int d = 0; d < head_dim; ++d) orow[d] = xr[d];
             for (int i = 0; i < half; ++i) {
                 float c = yc[(size_t) pos[(size_t) r] * half + i], s = ys[(size_t) pos[(size_t) r] * half + i];
-                strata::kernels::rope_neox_pair(xr[i], xr[half + i], c, s, orow[i], orow[half + i]);
+                guild::kernels::rope_neox_pair(xr[i], xr[half + i], c, s, orow[i], orow[half + i]);
             }
         }
         check(cudaMemcpy(d_x, x.data(), x.size() * sizeof(float), cudaMemcpyHostToDevice), "copy x");
         check(cudaMemcpy(d_cos, yc.data(), yc.size() * sizeof(float), cudaMemcpyHostToDevice), "copy ycos");
         check(cudaMemcpy(d_sin, ys.data(), ys.size() * sizeof(float), cudaMemcpyHostToDevice), "copy ysin");
         check(cudaMemcpy(d_pos, pos.data(), pos.size() * sizeof(int), cudaMemcpyHostToDevice), "copy pos");
-        strata::kernels::rope_neox_apply(d_x, d_out, rows, head_dim, n_rot, d_cos, d_sin, d_pos, nullptr);
+        guild::kernels::rope_neox_apply(d_x, d_out, rows, head_dim, n_rot, d_cos, d_sin, d_pos, nullptr);
         std::vector<float> got2(ref2.size());
         check(cudaMemcpy(got2.data(), d_out, got2.size() * sizeof(float), cudaMemcpyDeviceToHost), "back");
         long long rot2_bad = 0;
@@ -353,12 +353,12 @@ int main(int argc, char** argv) {
     // engine's default is the table path precisely because float64 host trig has no such floor.)
     {
         const int npos = 2048;
-        strata::kernels::RopeScaling yarn;
-        yarn.type = strata::kernels::RopeScalingType::YaRN;
+        guild::kernels::RopeScaling yarn;
+        yarn.type = guild::kernels::RopeScalingType::YaRN;
         yarn.factor = 2.0;
         yarn.ext_factor = 1.0;
         std::vector<float> sc((size_t) npos * half), ss((size_t) npos * half);
-        strata::kernels::build_rope_table(n_rot, yarn, npos, sc.data(), ss.data());
+        guild::kernels::build_rope_table(n_rot, yarn, npos, sc.data(), ss.data());
         std::mt19937 rng2(23);
         std::normal_distribution<float> gauss2(0.0f, 1.0f);
         const int nrows = 24 * 16;             // 16 positions spread over the table's range
@@ -382,8 +382,8 @@ int main(int argc, char** argv) {
         // The native path demands an explicit stream - a null one is refused by validation, not defaulted.
         cudaStream_t cs5 = nullptr;
         check(cudaStreamCreate(&cs5), "stream5");
-        strata::kernels::rope_neox_apply(d_x2, d_t2, nrows, head_dim, n_rot, d_c2, d_s2, d_p2, nullptr);
-        strata::kernels::native_rope_apply(d_x2, d_n2, nrows, head_dim, n_rot, yarn, d_p2, cs5);
+        guild::kernels::rope_neox_apply(d_x2, d_t2, nrows, head_dim, n_rot, d_c2, d_s2, d_p2, nullptr);
+        guild::kernels::native_rope_apply(d_x2, d_n2, nrows, head_dim, n_rot, yarn, d_p2, cs5);
         check(cudaStreamSynchronize(cs5), "sync5");
         std::vector<float> got_t(x2.size()), got_n(x2.size());
         check(cudaMemcpy(got_t.data(), d_t2, got_t.size() * sizeof(float), cudaMemcpyDeviceToHost), "back t2");
@@ -407,15 +407,15 @@ int main(int argc, char** argv) {
 
         // and the None config: the native path against the UNSCALED table - the identity this feature must
         // not disturb.
-        strata::kernels::RopeScaling none5;               // all defaults: type None, freq_scale 1, mscale 1
-        strata::kernels::native_rope_apply(d_x2, d_n2, nrows, head_dim, n_rot, none5, d_p2, cs5);
+        guild::kernels::RopeScaling none5;               // all defaults: type None, freq_scale 1, mscale 1
+        guild::kernels::native_rope_apply(d_x2, d_n2, nrows, head_dim, n_rot, none5, d_p2, cs5);
         check(cudaStreamSynchronize(cs5), "sync5b");
         check(cudaMemcpy(got_n.data(), d_n2, got_n.size() * sizeof(float), cudaMemcpyDeviceToHost), "back n2b");
         std::vector<float> nc5((size_t) npos * half), ns5((size_t) npos * half);
-        strata::kernels::build_rope_table(n_rot, none5, npos, nc5.data(), ns5.data());
+        guild::kernels::build_rope_table(n_rot, none5, npos, nc5.data(), ns5.data());
         check(cudaMemcpy(d_c2, nc5.data(), nc5.size() * sizeof(float), cudaMemcpyHostToDevice), "copy c2b");
         check(cudaMemcpy(d_s2, ns5.data(), ns5.size() * sizeof(float), cudaMemcpyHostToDevice), "copy s2b");
-        strata::kernels::rope_neox_apply(d_x2, d_t2, nrows, head_dim, n_rot, d_c2, d_s2, d_p2, nullptr);
+        guild::kernels::rope_neox_apply(d_x2, d_t2, nrows, head_dim, n_rot, d_c2, d_s2, d_p2, nullptr);
         check(cudaMemcpy(got_t.data(), d_t2, got_t.size() * sizeof(float), cudaMemcpyDeviceToHost), "back t2b");
         long long none_bad5 = 0;
         double worst5 = 0.0;

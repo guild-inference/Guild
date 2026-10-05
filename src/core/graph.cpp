@@ -1,12 +1,12 @@
 // src/core/graph.cpp - P2.S5: the GraphRegistry implementation.
-#include "strata/core/graph.hpp"
+#include "guild/core/graph.hpp"
 
 #include <immintrin.h>
 
 #include <chrono>
 #include <cstdio>
 
-namespace strata::core {
+namespace guild::core {
 namespace {
 
 /// Fills `err` from the CUDA runtime, naming the call that failed.  A bare "invalid argument" with no call
@@ -143,4 +143,4 @@ bool GraphRegistry::launch(LayerType type, int n_tokens, int timeout_ms, std::st
     return true;
 }
 
-}  // namespace strata::core
+}  // namespace guild::core

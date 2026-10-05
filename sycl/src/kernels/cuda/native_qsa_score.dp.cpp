@@ -21,14 +21,14 @@
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
-#include "strata/sycl_queue.hpp"
-#include "strata/kernels/native_qsa_score.hpp"
+#include "guild/sycl_queue.hpp"
+#include "guild/kernels/native_qsa_score.hpp"
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <stdexcept>
 
-namespace strata::kernels {
+namespace guild::kernels {
 namespace {
 std::atomic<bool> enabled{false};
 constexpr int D=128, HEADS=4, R=4, ROWS=32, WARPS=2, STRIDE=36, COMBINE=68;
@@ -93,7 +93,7 @@ __dpct_inline__ void score_kernel(const float *__restrict__ pooled,
     if(row0>full)return;
     const int lane = item_ct1.get_local_id(2), warp = item_ct1.get_local_id(1);
 #if 1   // SYCL: the scalar path (the PTX one above is not ported yet)
-    // Turing (STRATA_EXPERIMENTAL_SM75, a layer-split stage): no tf32 mma.  The same scores with FP32 FMAs, one row
+    // Turing (GUILD_EXPERIMENTAL_SM75, a layer-split stage): no tf32 mma.  The same scores with FP32 FMAs, one row
     // per thread of the first warp - rounded differently from the tensor-core path (FP32 instead of TF32 inputs).
     if(warp!=0)return;
     const int row=row0+lane;
@@ -290,7 +290,7 @@ void native_qsa_score(const float* pooled,const float* query,const float* bias,
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        ((sycl::queue *)(strata::q_of(stream)))
+        ((sycl::queue *)(guild::q_of(stream)))
             ->parallel_for<dpct_kernel_name<class score_kernel_59cd1b>>(
                 sycl::nd_range<3>(
                     sycl::range(1, 1,
@@ -326,4 +326,4 @@ void native_qsa_score(const float* pooled,const float* query,const float* bias,
     if (error !=
         0) throw std::runtime_error(dpct::get_error_string_dummy(error));
 }
-} // namespace strata::kernels
+} // namespace guild::kernels

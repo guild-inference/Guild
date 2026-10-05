@@ -11,12 +11,12 @@
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
-#include "strata/kernels/f16_bits.hpp"
-#include "strata/kernels/kv_q4.hpp"
-#include "strata/kernels/kv_q8.hpp"
-#include "strata/kernels/qsa.hpp"
-#include "strata/kernels/qsa_decode_attn.hpp"
-#include "strata/kernels/qsa_prompt_attn.hpp"
+#include "guild/kernels/f16_bits.hpp"
+#include "guild/kernels/kv_q4.hpp"
+#include "guild/kernels/kv_q8.hpp"
+#include "guild/kernels/qsa.hpp"
+#include "guild/kernels/qsa_decode_attn.hpp"
+#include "guild/kernels/qsa_prompt_attn.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -26,7 +26,7 @@
 #include <random>
 #include <vector>
 
-namespace k = strata::kernels;
+namespace k = guild::kernels;
 
 namespace {
 int g_fail = 0;
@@ -86,8 +86,8 @@ void quantize_block_q4_0_host(const float* x, k::block_q4_0& blk) {
 int main() {
     // SYCL port: qsa_prompt_attn's tensor-core (mma.sync PTX) kernel is not ported; on SYCL the prompt attention this
     // test's last step checks exists as the XMX kernel (opt-in in the engine, where the FP32 fallback is faster).
-    // Test the kernel the port has, unless the caller chose (STRATA_PROMPT_ATTN_XMX=0 shows the refusal).
-    setenv("STRATA_PROMPT_ATTN_XMX", "1", 0);
+    // Test the kernel the port has, unless the caller chose (GUILD_PROMPT_ATTN_XMX=0 shows the refusal).
+    setenv("GUILD_PROMPT_ATTN_XMX", "1", 0);
     std::printf("=== Running kv_hybrid_parity test ===\n");
     k::QsaShapes s = k::qsa_real_shapes();
     s.page_size = 64;
@@ -444,7 +444,7 @@ int main() {
         float* d_at4 = dalloc<float>((size_t) QH * D);
         const bool took = k::qsa_prompt_attn_batch(d_q, pools, d_ids, d_step, cells, s, d_at4, 1, nullptr);
         if (!took) {
-#if defined(STRATA_USE_HIP)
+#if defined(GUILD_USE_HIP)
             // AMD: the tensor-core prompt path is CUDA-only, so it refuses every pool and the old kernel runs
             std::printf("[5/5] qsa_prompt_attn mode 3: PASS (refused on HIP - the old kernel runs)\n");
 #else

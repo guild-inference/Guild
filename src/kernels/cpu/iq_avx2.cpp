@@ -10,7 +10,7 @@
 // order of the float additions differs.
 //
 // Formats: IQ2_XXS (16), IQ2_XS (17), IQ3_XXS (18), IQ3_S (21), IQ2_S (22), IQ4_XS (23).  IQ1_M stays on ggml-cpu.
-#include "strata/kernels/cpu/iq_avx2.hpp"
+#include "guild/kernels/cpu/iq_avx2.hpp"
 
 #define GGML_COMMON_DECL_CPP
 #define GGML_COMMON_IMPL_CPP
@@ -22,7 +22,7 @@
 #include <cstdlib>
 #include <cstring>
 
-namespace strata::kernels::cpu {
+namespace guild::kernels::cpu {
 namespace {
 
 inline float h2f(uint16_t h) { return _mm_cvtss_f32(_mm_cvtph_ps(_mm_cvtsi32_si128((int) h))); }
@@ -59,7 +59,7 @@ inline __m256i sc32(int s) { return _mm256_set1_epi16(s); }
 //
 // Computed at COMPILE time (constexpr), so this file has no static constructor at all.  This TU is compiled
 // for AVX2, and a runtime constructor here runs before main() on every CPU: MSVC turned its variable shift
-// into BMI2 `shlx` (#391, demetree: strata.exe exited 0xC000001D before printing anything on a Sandy Bridge
+// into BMI2 `shlx` (#391, demetree: guild.exe exited 0xC000001D before printing anything on a Sandy Bridge
 // Xeon) and GCC vectorised the loop into AVX2 (`vpbroadcastb`, found on an AVX-only Xeon E5 by the
 // Strata_Dirigo fork).  ksigns_iq2xs[i] is i's 7 bits plus an even-parity bit 7 (ggml-common.h); a const
 // array is not usable in a constant expression, so the byte is derived the same way here, and
@@ -91,12 +91,12 @@ inline float hsum8(__m256 v) {
 
 // E-2 (iq_avx512.cpp) on the AVX-2 path: the pool streams the expert rows from DRAM at ~25 GB/s (4 KB pages
 // when large pages are refused), so ask for the bytes a few blocks before the decode needs them - 2048 B is
-// two gate/up rows ahead, a row is ~1 KB.  Same switch as the AVX-512 kernels: STRATA_IQ_PREFETCH is the
+// two gate/up rows ahead, a row is ~1 KB.  Same switch as the AVX-512 kernels: GUILD_IQ_PREFETCH is the
 // distance in bytes, 0 = off, default 2048.  Measured on a Zen 3 5700X3D (no AVX-512) on IQ3_S decode: -4% on
 // the gate/up phase, +1.0 GB/s over the rows, -1.3% ms/round end to end.  The non-temporal hint measured
 // worse than T0 at the same distance, so this keeps T0.
 const int prefetch_ahead = [] {
-    const char* v = std::getenv("STRATA_IQ_PREFETCH");
+    const char* v = std::getenv("GUILD_IQ_PREFETCH");
     return v ? std::atoi(v) : 2048;
 }();
 
@@ -106,10 +106,10 @@ inline void rows_ahead(const uint8_t* p) {
     _mm_prefetch((const char*) p + 64, _MM_HINT_T0);
 }
 
-// E-2 on the AVX-2 path (the AVX-512 kernels' STRATA_IQ_GATHER): the IQ3 grids by one AVX2 gather instead of eight
+// E-2 on the AVX-2 path (the AVX-512 kernels' GUILD_IQ_GATHER): the IQ3 grids by one AVX2 gather instead of eight
 // scalar loads assembled with set_epi32.  AVX2 gather is a different instruction with worse throughput on some cores
 // (opt-in, as on AVX-512); on the i7-12850HX it measures ~1.3x on the two 32-bit-grid formats, bit-exact.
-static const bool gather = [] { const char* v = std::getenv("STRATA_IQ256_GATHER"); return v != nullptr && std::atoi(v) != 0; }();
+static const bool gather = [] { const char* v = std::getenv("GUILD_IQ256_GATHER"); return v != nullptr && std::atoi(v) != 0; }();
 
 // ---- per format: one 32-value half (values 64*j + 32*half .. +31) -> grid magnitudes, sign vector, scales
 template <int TY> struct Fmt32;
@@ -490,4 +490,4 @@ void iq4nl256_down_rows(const uint8_t* w, size_t row_bytes, int n, const void* c
     }
 }
 
-}  // namespace strata::kernels::cpu
+}  // namespace guild::kernels::cpu

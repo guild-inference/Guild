@@ -4,7 +4,7 @@
 // in the data section, and the tensors' payloads, each filled with a pattern the test can recognise.
 #pragma once
 
-#include "strata/artifact/gguf_reader.hpp"
+#include "guild/artifact/gguf_reader.hpp"
 
 #include <cstdint>
 #include <cstring>
@@ -71,10 +71,10 @@ inline Written write(const std::filesystem::path& path, const std::vector<Kv>& k
     std::vector<uint64_t> bytes;
     uint64_t at = 0;
     for (const auto& t : ts) {
-        strata::TensorInfo info;
+        guild::TensorInfo info;
         info.shape = t.shape;
         info.type = t.type;
-        const uint64_t n = strata::tensor_payload_bytes(info);
+        const uint64_t n = guild::tensor_payload_bytes(info);
         if (n == 0) throw std::runtime_error("fixture: " + t.name + " has no whole-block byte count");
         puts(t.name);
         put32((uint32_t) t.shape.size());

@@ -14,9 +14,9 @@
 //
 // Random bytes are valid codes for every format here (all grid indices are in range); only the fp16 block scales
 // are set, small enough that the grouped path's SwiGLU output keeps a finite fp16 q8_1 scale.
-#include "strata/kernels/f16_bits.hpp"
-#include "strata/kernels/iq_kernels.hpp"
-#include "strata/kernels/native_mmvq.hpp"
+#include "guild/kernels/f16_bits.hpp"
+#include "guild/kernels/iq_kernels.hpp"
+#include "guild/kernels/native_mmvq.hpp"
 
 #include <cuda_runtime.h>
 
@@ -30,7 +30,7 @@
 #include <string>
 #include <vector>
 
-namespace k = strata::kernels;
+namespace k = guild::kernels;
 
 namespace {
 

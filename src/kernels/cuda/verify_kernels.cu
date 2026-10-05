@@ -1,16 +1,16 @@
-// src/kernels/cuda/verify_kernels.cu - see include/strata/kernels/verify_kernels.hpp.
+// src/kernels/cuda/verify_kernels.cu - see include/guild/kernels/verify_kernels.hpp.
 //
 // The per-token arithmetic of every kernel here is transcribed from its single-token original (fused_gdn.cu,
 // elementwise.cu) with the same operation order, so a verify window reproduces plain decode bit for bit.
-#include "strata/kernels/verify_kernels.hpp"
-#include "strata/kernels/dp4a.hpp"
+#include "guild/kernels/verify_kernels.hpp"
+#include "guild/kernels/dp4a.hpp"
 
 #include <cuda_runtime.h>
 
 #include <cstdio>
 #include <cstdlib>
 
-namespace strata::kernels {
+namespace guild::kernels {
 namespace {
 
 constexpr int S = 128;          // GDN state size
@@ -479,7 +479,7 @@ void gdn_step_norm_multi(float* state, const float* h, int conv_channels, const 
         std::exit(1);
     }
     static const bool commit_split = [] {
-        const char* e = std::getenv("STRATA_GDN_COMMIT_SPLIT");
+        const char* e = std::getenv("GUILD_GDN_COMMIT_SPLIT");
         return !e || e[0] != '0';
     }();
     if (commit_split && n_keep != nullptr && t_out_begin >= n_tok) {
@@ -494,7 +494,7 @@ void gdn_step_norm_multi(float* state, const float* h, int conv_channels, const 
 
 namespace {
 __global__ void wait_flag_ge_kernel(const volatile uint32_t* flag, uint32_t value) {
-    while (*flag < value) strata_spin_pause();
+    while (*flag < value) guild_spin_pause();
     __threadfence_system();
 }
 }  // namespace
@@ -594,7 +594,7 @@ __global__ void __launch_bounds__(kResidentPlanMax) resident_plan_kernel(const i
 }
 __global__ void wait_flag_ge_or_kernel(const volatile uint32_t* flag, uint32_t value, const volatile uint32_t* skip) {
     if (*skip == value) return;
-    while (*flag < value) strata_spin_pause();
+    while (*flag < value) guild_spin_pause();
     __threadfence_system();
 }
 __global__ void copy_i32_unless_kernel(int32_t* __restrict__ dst, const volatile int32_t* src, int n,
@@ -666,7 +666,7 @@ void copy_indexed(float* dst, const float* src, int64_t stride, const int32_t* i
 // a GPU timestamp (ns, %globaltimer) into buf[i] - the verify window's stage profiler
 namespace { __global__ void gpu_stamp_kernel(unsigned long long* buf, int i) {
     unsigned long long t;
-#if defined(STRATA_HIP_GFX906)
+#if defined(GUILD_HIP_GFX906)
     t = wall_clock64() * 40ull;   // gfx906: the wall clock runs at 25 MHz (hipDeviceAttributeWallClockRate) -> ns
 #elif defined(__HIPCC__)
     t = wall_clock64() * 10ull;   // gfx10.3 / gfx11 / gfx12: a constant 100 MHz counter, in ns
@@ -679,4 +679,4 @@ void gpu_stamp(unsigned long long* buf, int i, void* stream) {
     gpu_stamp_kernel<<<1, 1, 0, (cudaStream_t) stream>>>(buf, i);
 }
 
-}  // namespace strata::kernels
+}  // namespace guild::kernels

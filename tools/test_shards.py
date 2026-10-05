@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 sys.path.insert(0, str(ROOT))
 import setup as S  # noqa: E402
-import strata_pack  # noqa: E402
+import guild_pack  # noqa: E402
 
 
 class Stop(Exception):
@@ -97,7 +97,7 @@ class PackVerifyHash(unittest.TestCase):
         (self.dir / "manifest.json").write_text(json.dumps({"tensors": {}, "source": source}), encoding="utf-8")
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
-            rc = strata_pack.verify(self.gguf, self.dir, limit, 0)
+            rc = guild_pack.verify(self.gguf, self.dir, limit, 0)
         return rc, out.getvalue()
 
     def test_matching_hash_passes(self):

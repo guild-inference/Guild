@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Package the Windows HIP engine as the ready-made zip setup.py downloads (strata-windows-x64-hip.zip).
+"""Package the Windows HIP engine as the ready-made zip setup.py downloads (guild-windows-x64-hip.zip).
 
     python tools/hip/package_windows.py --build build-hip-win --rocm <rocm-sdk path --root> \\
         --archs "gfx1100;gfx1201" --rocm-version 10.2.0a20260930 --out dist
 
 tools/hip/build_windows.bat runs it after the build.  The zip holds:
 
-    strata.exe, strata-device.exe, BUILD.json      (backend "hip", the archs, the ROCm and hipBLASLt versions)
+    guild-generate.exe, guild-device.exe, BUILD.json      (backend "hip", the archs, the ROCm and hipBLASLt versions)
     amdhip64_7.dll, amd_comgr.dll                 the HIP runtime beside the exes too (#468 #461: before System32)
     rocm/bin/*.dll                                 the ROCm DLLs the two programs load (their import tables, followed
                                                    through the ROCm DLLs, + amd_comgr.dll, which the HIP runtime loads
@@ -32,13 +32,13 @@ import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-ASSET = "strata-windows-x64-hip.zip"
-PROGRAMS = ("strata.exe", "strata-device.exe")
+ASSET = "guild-windows-x64-hip.zip"
+PROGRAMS = ("guild-generate.exe", "guild-device.exe")
 DYNAMIC = ("amd_comgr.dll",)                     # LoadLibrary'd by amdhip64_7.dll: not in any import table
 CRT = ("msvcp140.dll", "msvcp140_1.dll", "msvcp140_2.dll", "vcruntime140.dll", "vcruntime140_1.dll")
-KPACKS = ("blas_lib",)       # rocblas.dll's own device code; rocSOLVER's (27 MB per arch) is never launched by Strata
+KPACKS = ("blas_lib",)       # rocblas.dll's own device code; rocSOLVER's (27 MB per arch) is never launched by Guild
 LICENSES = ("rocblas", "rocsolver", "hipblas", "hipblas-common", "hipblaslt", "amd_comgr", "rocm-core")
-NOTICE = """Strata's Windows HIP engine ships these AMD ROCm components unmodified, from AMD's TheRock Python wheels
+NOTICE = """Guild's Windows HIP engine ships these AMD ROCm components unmodified, from AMD's TheRock Python wheels
 (ROCm {rocm}, https://nightly.repo.amd.com/rocm/whl-next/, built from https://github.com/ROCm/TheRock):
 
 {dlls}
@@ -76,7 +76,7 @@ def main() -> int:
     archs = [x for x in re.split(r"[;, ]+", a.archs) if x]
     rbin = a.rocm / "bin"
     objdump = a.rocm / "lib" / "llvm" / "bin" / "llvm-objdump.exe"
-    stage = a.out / "strata-windows-x64-hip"
+    stage = a.out / "guild-windows-x64-hip"
     shutil.rmtree(stage, ignore_errors=True)
     (stage / "rocm" / "bin").mkdir(parents=True)
 
@@ -142,7 +142,7 @@ def main() -> int:
     (lic / "NOTICE.txt").write_text(NOTICE.format(rocm=a.rocm_version, dlls="\n".join("  " + d for d in shipped)),
                                     encoding="utf-8")
 
-    version = re.search(r"project\(strata VERSION ([\d.]+)", (ROOT / "CMakeLists.txt").read_text()).group(1)
+    version = re.search(r"project\(guild VERSION ([\d.]+)", (ROOT / "CMakeLists.txt").read_text()).group(1)
     hl = (a.rocm / "include" / "hipblaslt" / "hipblaslt-version.h").read_text()
     hlv = [int(re.search(rf"#define\s+HIPBLASLT_VERSION_{k}\s+(\d+)", hl).group(1)) for k in ("MAJOR", "MINOR", "PATCH")]
     meta = {"source": "prebuilt", "backend": "hip", "platform": "windows-x64", "version": version, "archs": archs,

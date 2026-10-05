@@ -1,5 +1,5 @@
-// src/platform/memory.cpp - see include/strata/platform/memory.hpp.
-#include "strata/platform/memory.hpp"
+// src/platform/memory.cpp - see include/guild/platform/memory.hpp.
+#include "guild/platform/memory.hpp"
 
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
@@ -12,7 +12,7 @@
 #include <unistd.h>
 #endif
 
-namespace strata::platform {
+namespace guild::platform {
 
 #if defined(_WIN32)
 LockResult lock_resident(void* p, uint64_t bytes) {
@@ -135,4 +135,4 @@ uint64_t total_physical_memory() {
 }
 #endif
 
-}  // namespace strata::platform
+}  // namespace guild::platform

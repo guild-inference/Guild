@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Matched fresh/follow-up prefill probe against an otherwise idle local Strata server.
+"""Matched fresh/follow-up prefill probe against an otherwise idle local Guild server.
 
 Does not start/stop services. Use a dedicated server and its engine log, restart
 between build/configuration arms, and keep model/template/settings identical.
@@ -32,8 +32,8 @@ def main():
                     temperature=0, top_k=1, top_p=1, min_p=0, seed=42,
                     reasoning_effort='none')
         headers = {'Content-Type': 'application/json'}
-        if os.environ.get('STRATA_API_KEY'):
-            headers['Authorization'] = 'Bearer ' + os.environ['STRATA_API_KEY']
+        if os.environ.get('GUILD_API_KEY'):
+            headers['Authorization'] = 'Bearer ' + os.environ['GUILD_API_KEY']
         req = urllib.request.Request(args.url.rstrip('/') + '/v1/chat/completions',
                                      data=json.dumps(body).encode(), headers=headers)
         start = time.monotonic()

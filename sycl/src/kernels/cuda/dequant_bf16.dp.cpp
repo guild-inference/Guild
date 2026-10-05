@@ -1,18 +1,18 @@
-// src/kernels/cuda/dequant_bf16.cu - see include/strata/kernels/dequant_bf16.hpp.
+// src/kernels/cuda/dequant_bf16.cu - see include/guild/kernels/dequant_bf16.hpp.
 //
 // Arithmetic transcribed from ggml/src/ggml-quants.c at the pinned llama.cpp (MIT License, Copyright (c) 2023-2026
 // The ggml authors): dequantize_row_q2_0/q4_0/q5_0/q8_0/q3_K/q4_K/q5_K/q6_K/iq4_nl/iq4_xs.
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
-#include "strata/sycl_queue.hpp"
-#include "strata/kernels/dequant_bf16.hpp"
-#include "strata/kernels/iq_kernels.hpp"
+#include "guild/sycl_queue.hpp"
+#include "guild/kernels/dequant_bf16.hpp"
+#include "guild/kernels/iq_kernels.hpp"
 
 #include <cstdio>
 #include <cstdlib>
 
-namespace strata::kernels {
+namespace guild::kernels {
 namespace {
 
 __dpct_inline__ float h2f(const uint8_t *p) {
@@ -227,8 +227,8 @@ void launch(int type, const void* blocks, int64_t row0, int64_t rows, int64_t co
     const int64_t row_bytes = cols / be * bb, gpr = cols / 32, total = rows * gpr;
     const unsigned grid = (unsigned) ((total + 255) / 256);
     const uint8_t* p = (const uint8_t*) blocks;
-    dpct::queue_ptr st = strata::q_of(stream);
-#define STRATA_DQ(TY)                                                          \
+    dpct::queue_ptr st = guild::q_of(stream);
+#define GUILD_DQ(TY)                                                          \
     {                                                                          \
         auto exp_props = sycl::ext::oneapi::experimental::properties{          \
             sycl::ext::oneapi::experimental::use_root_sync};                   \
@@ -253,19 +253,19 @@ void launch(int type, const void* blocks, int64_t row0, int64_t rows, int64_t co
         });                                                                    \
     } break
     switch (type) {
-    case 2: STRATA_DQ(2);
-    case 6: STRATA_DQ(6);
-    case 7: STRATA_DQ(7);
-    case 8: STRATA_DQ(8);
-    case 11: STRATA_DQ(11);
-    case 12: STRATA_DQ(12);
-    case 13: STRATA_DQ(13);
-    case 14: STRATA_DQ(14);
-    case 20: STRATA_DQ(20);
-    case 23: STRATA_DQ(23);
-    case 42: STRATA_DQ(42);
+    case 2: GUILD_DQ(2);
+    case 6: GUILD_DQ(6);
+    case 7: GUILD_DQ(7);
+    case 8: GUILD_DQ(8);
+    case 11: GUILD_DQ(11);
+    case 12: GUILD_DQ(12);
+    case 13: GUILD_DQ(13);
+    case 14: GUILD_DQ(14);
+    case 20: GUILD_DQ(20);
+    case 23: GUILD_DQ(23);
+    case 42: GUILD_DQ(42);
     }
-#undef STRATA_DQ
+#undef GUILD_DQ
     /*
     DPCT1010: SYCL uses exceptions to report errors and does not use the
     error codes. The cudaGetLastError function call was replaced with 0. You
@@ -315,4 +315,4 @@ void dequant_f32(int ggml_type, const void* blocks, int64_t row0, int64_t rows, 
     launch<float>(ggml_type, blocks, row0, rows, cols, out, stream);
 }
 
-}  // namespace strata::kernels
+}  // namespace guild::kernels

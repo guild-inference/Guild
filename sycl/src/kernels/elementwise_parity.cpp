@@ -15,9 +15,9 @@
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
-#include "strata/kernels/dequant_bf16.hpp"
-#include "strata/kernels/elementwise.hpp"
-#include "strata/kernels/f16_bits.hpp"
+#include "guild/kernels/dequant_bf16.hpp"
+#include "guild/kernels/elementwise.hpp"
+#include "guild/kernels/f16_bits.hpp"
 
 #include <cmath>
 #include <cstdio>
@@ -135,7 +135,7 @@ int main(int argc, char** argv) {
         check(DPCT_CHECK_ERROR(
                   (dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(d_sa, a.data(), n * 4).wait()),
               "cs");
-        strata::kernels::gdn_gate(d_a, d_dt, d_sa, d_g, 1, H_V, nullptr);
+        guild::kernels::gdn_gate(d_a, d_dt, d_sa, d_g, 1, H_V, nullptr);
         std::vector<float> got((size_t) n);
         check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
                                    .memcpy(got.data(), d_g, n * 4)
@@ -214,7 +214,7 @@ int main(int argc, char** argv) {
         check(DPCT_CHECK_ERROR(
                   (dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(d_x, x.data(), n * 4).wait()),
               "csx");
-        strata::kernels::silu_inplace(d_x, n, nullptr);
+        guild::kernels::silu_inplace(d_x, n, nullptr);
         std::vector<float> got((size_t) n);
         check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
                                    .memcpy(got.data(), d_x, n * 4)
@@ -251,7 +251,7 @@ int main(int argc, char** argv) {
         check(DPCT_CHECK_ERROR(
                   (dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(d_x, x.data(), n * 4).wait()),
               "cex");
-        strata::kernels::scale_inplace(d_x, n, s, nullptr);
+        guild::kernels::scale_inplace(d_x, n, s, nullptr);
         std::vector<float> got((size_t) n);
         check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
                                    .memcpy(got.data(), d_x, n * 4)
@@ -262,7 +262,7 @@ int main(int argc, char** argv) {
         std::printf("  %-44s %d of %d differ\n", "scale_inplace is exact", diff, n);
         if (diff) ++bad;
 
-        strata::kernels::f32_to_f16_bulk(d_x, d_h, n, nullptr);
+        guild::kernels::f32_to_f16_bulk(d_x, d_h, n, nullptr);
         std::vector<uint16_t> h((size_t) n);
         check(
             DPCT_CHECK_ERROR(
@@ -270,7 +270,7 @@ int main(int argc, char** argv) {
             "ceh");
         int hbad = 0;
         for (int i = 0; i < n; ++i)
-            if (h[(size_t) i] != strata::kernels::f16_from_f32(got[(size_t) i])) ++hbad;
+            if (h[(size_t) i] != guild::kernels::f16_from_f32(got[(size_t) i])) ++hbad;
         std::printf("  %-44s %d of %d differ\n", "f32_to_f16_bulk uses the shared conversion", hbad, n);
         if (hbad) ++bad;
         sycl::free(d_x, dpct::get_in_order_queue());
@@ -356,7 +356,7 @@ int main(int argc, char** argv) {
         check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(d_w, w.data(),
                                                                  w.size() * 4).wait()),
               "c rmsw");
-        strata::kernels::rms_norm_weighted(d_x, d_w, rows, cols, eps, nullptr);
+        guild::kernels::rms_norm_weighted(d_x, d_w, rows, cols, eps, nullptr);
         std::vector<float> got((size_t) (rows * cols));
         check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
                                    .memcpy(got.data(), d_x, got.size() * 4)
@@ -395,7 +395,7 @@ int main(int argc, char** argv) {
         check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(d_x, x.data(),
                                                                  x.size() * 4).wait()),
               "c rmsx2");
-        strata::kernels::rms_norm_weighted(d_x, nullptr, rows, cols, eps, nullptr);
+        guild::kernels::rms_norm_weighted(d_x, nullptr, rows, cols, eps, nullptr);
         check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
                                    .memcpy(got.data(), d_x, got.size() * 4)
                                    .wait()),
@@ -522,7 +522,7 @@ int main(int argc, char** argv) {
                                       out, got.data(),
                                       got.size() * sizeof(float))),
                                   "embedding output guards");
-                            strata::kernels::embedding_gather(dc + (size_t) row * row_bytes,
+                            guild::kernels::embedding_gather(dc + (size_t) row * row_bytes,
                                 ds + (size_t) row * row_groups,
                                 with_offset ? dof + (size_t) row * row_groups : nullptr,
                                 n, bits, bias, group, out + 1, stream);
@@ -555,11 +555,11 @@ int main(int argc, char** argv) {
                                           dpct::experimental::begin_recording(
                                               stream)),
                                       "embedding capture");
-                                strata::kernels::embedding_gather(dc + (size_t) row * row_bytes,
+                                guild::kernels::embedding_gather(dc + (size_t) row * row_bytes,
                                     ds + (size_t) row * row_groups,
                                     with_offset ? dof + (size_t) row * row_groups : nullptr,
                                     n, bits, bias, group, out + 1, stream);
-                                strata::kernels::scale_inplace(out + 1, n, 2.0f, stream);
+                                guild::kernels::scale_inplace(out + 1, n, 2.0f, stream);
                                 check(DPCT_CHECK_ERROR(
                                           dpct::experimental::end_recording(
                                               stream, &graph)),
@@ -649,7 +649,7 @@ int main(int argc, char** argv) {
         check(DPCT_CHECK_ERROR(
                   (dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(dx, bits.data(), n * 4).wait()),
               "bf16 cx");
-        strata::kernels::f32_to_bf16_bulk(dx, dy, (int64_t) n, nullptr);
+        guild::kernels::f32_to_bf16_bulk(dx, dy, (int64_t) n, nullptr);
         std::vector<uint16_t> got(n);
         check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
                                    .memcpy(got.data(), dy, n * 2)
@@ -684,7 +684,7 @@ int main(int argc, char** argv) {
         check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(db, blk.data(),
                                                                  blk.size()).wait()),
               "q8 cblk");
-        strata::kernels::dequant_bf16(8, db, 0, 2, 32, dq, nullptr);
+        guild::kernels::dequant_bf16(8, db, 0, 2, 32, dq, nullptr);
         check(DPCT_CHECK_ERROR(
                   dpct::get_current_device().queues_wait_and_throw()),
               "dequant_bf16");

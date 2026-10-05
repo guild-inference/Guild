@@ -2,12 +2,12 @@
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
-#include "strata/core/device.hpp"
+#include "guild/core/device.hpp"
 
 #include <cstdio>
 #include <cstring>
 
-namespace strata::core {
+namespace guild::core {
 
 namespace {
 
@@ -41,9 +41,9 @@ __dpct_inline__ void poison_kernel(float *p, uint64_t n_floats) {
     if (i < n_floats) p[i] = sycl::bit_cast<float>(0x7fc00000);
 }
 
-#if defined(STRATA_USE_HIP)
-#if !defined(STRATA_HIP_ARCHS)
-#error "STRATA_HIP_ARCHS (the compiled HIP architectures) is set by cmake/hip_backend.cmake"
+#if defined(GUILD_USE_HIP)
+#if !defined(GUILD_HIP_ARCHS)
+#error "GUILD_HIP_ARCHS (the compiled HIP architectures) is set by cmake/hip_backend.cmake"
 #endif
 // "gfx1201:sramecc-:xnack-" -> "gfx1201"
 std::string base_arch(const char* gcn_arch_name) {
@@ -54,7 +54,7 @@ std::string base_arch(const char* gcn_arch_name) {
 }
 
 bool compiled_for(const std::string& arch) {
-    const std::string list = STRATA_HIP_ARCHS;
+    const std::string list = GUILD_HIP_ARCHS;
     size_t a = 0;
     while (a <= list.size()) {
         size_t b = list.find(',', a);
@@ -69,12 +69,12 @@ std::string arch_problem(const cudaDeviceProp& p, int ordinal) {
     const std::string arch = base_arch(p.gcnArchName);
     const std::string card = "GPU " + std::to_string(ordinal) + " (" + p.name + ", " + arch + ")";
     if (!compiled_for(arch)) {
-        return card + " is not an architecture this Strata engine was compiled for (" + STRATA_HIP_ARCHS +
+        return card + " is not an architecture this Guild engine was compiled for (" + GUILD_HIP_ARCHS +
                "); compile it for this card (./setup.sh --backend hip, or -DCMAKE_HIP_ARCHITECTURES=" + arch +
                ", docs/AMD_HIP.md) or choose another GPU with HIP_VISIBLE_DEVICES";
     }
     if (p.warpSize != 32) {
-        return card + " runs wave" + std::to_string(p.warpSize) + "; Strata's HIP kernels need wave32";
+        return card + " runs wave" + std::to_string(p.warpSize) + "; Guild's HIP kernels need wave32";
     }
     return "";
 }
@@ -83,8 +83,8 @@ std::string arch_problem(const cudaDeviceProp& p, int ordinal) {
 }  // namespace
 
 const char* compiled_gpu_archs() {
-#if defined(STRATA_USE_HIP)
-    return STRATA_HIP_ARCHS;
+#if defined(GUILD_USE_HIP)
+    return GUILD_HIP_ARCHS;
 #else
     return "";
 #endif
@@ -119,7 +119,7 @@ bool device_summary(int ordinal, std::string &name, std::string &detail) try {
         return false;
     }
     char buf[160];
-#if defined(STRATA_USE_HIP)
+#if defined(GUILD_USE_HIP)
     std::snprintf(buf, sizeof(buf), "arch %s, %.1f GiB, wave%d", base_arch(p.gcnArchName).c_str(),
                   (double) p.totalGlobalMem / (1024.0 * 1024 * 1024), p.warpSize);
 #else
@@ -141,10 +141,10 @@ catch (sycl::exception const &exc) {
   std::exit(1);
 }
 
-}  // namespace strata::core
+}  // namespace guild::core
 
-#if defined(STRATA_USE_HIP) && defined(_WIN32)
-// The free VRAM figure on Windows HIP (include/strata/hip_compat/cuda_runtime.h maps cudaMemGetInfo here).
+#if defined(GUILD_USE_HIP) && defined(_WIN32)
+// The free VRAM figure on Windows HIP (include/guild/hip_compat/cuda_runtime.h maps cudaMemGetInfo here).
 //
 // hipMemGetInfo (ROCclr's PAL backend, Device::globalFreeMemory) is the card's size minus this process's own
 // allocations: it asks Windows for this process's usage only, never for what the desktop and other programs hold.
@@ -169,7 +169,7 @@ catch (sycl::exception const &exc) {
 #include <cstdlib>
 #include <mutex>
 
-namespace strata::hip_compat {
+namespace guild::hip_compat {
 namespace {
 IDXGIAdapter3* budget_adapter(int device) {
     constexpr int kMaxDevices = 16;
@@ -203,7 +203,7 @@ IDXGIAdapter3* budget_adapter(int device) {
 hipError_t mem_get_info(size_t* free_bytes, size_t* total_bytes) {
     const hipError_t e = hipMemGetInfo(free_bytes, total_bytes);
     static const bool off = [] {
-        const char* v = std::getenv("STRATA_WDDM_BUDGET");
+        const char* v = std::getenv("GUILD_WDDM_BUDGET");
         return v != nullptr && std::atoi(v) == 0;
     }();
     if (e != hipSuccess || off || free_bytes == nullptr || total_bytes == nullptr) return e;
@@ -220,20 +220,20 @@ hipError_t mem_get_info(size_t* free_bytes, size_t* total_bytes) {
     const size_t withheld = *total_bytes - (size_t) local.Budget;   // the desktop's and other programs' share
     static std::atomic<bool> said{false};
     if (!said.exchange(true)) {
-        std::fprintf(stderr, "strata: Windows budgets %llu of this card's %llu MiB for this process; free VRAM is "
-                             "counted within that (STRATA_WDDM_BUDGET=0: off)\n",
+        std::fprintf(stderr, "guild: Windows budgets %llu of this card's %llu MiB for this process; free VRAM is "
+                             "counted within that (GUILD_WDDM_BUDGET=0: off)\n",
                      (unsigned long long) (local.Budget >> 20), (unsigned long long) (*total_bytes >> 20));
     }
     *free_bytes = *free_bytes > withheld ? *free_bytes - withheld : 0;
     return e;
 }
-}  // namespace strata::hip_compat
+}  // namespace guild::hip_compat
 #endif
 
-namespace strata::core {
+namespace guild::core {
 
 std::string gpu_arch_problem(int ordinal) {
-#if defined(STRATA_USE_HIP)
+#if defined(GUILD_USE_HIP)
     int count = 0;
     if (cudaGetDeviceCount(&count) != cudaSuccess || ordinal < 0 || ordinal >= count) {
         cudaGetLastError();
@@ -252,8 +252,8 @@ std::string gpu_arch_problem(int ordinal) {
 }
 
 std::string device_code_error() try {
-#if defined(STRATA_USE_HIP)
-    return "";   // gpu_arch_problem() checks the HIP architectures against STRATA_HIP_ARCHS, before this point
+#if defined(GUILD_USE_HIP)
+    return "";   // gpu_arch_problem() checks the HIP architectures against GUILD_HIP_ARCHS, before this point
 #else
     // every .cu of the engine is compiled for the same CMAKE_CUDA_ARCHITECTURES, so this kernel stands for all
     dpct::kernel_function_info a{};
@@ -282,10 +282,10 @@ DeviceInfo device_info(int ordinal) {
     int count = 0;
     check(DPCT_CHECK_ERROR(count = dpct::device_count()), "cudaGetDeviceCount");
     if (count == 0) {
-#if defined(STRATA_USE_HIP)
-        throw CudaError(std::string("no HIP device is present; this engine was compiled for ") + STRATA_HIP_ARCHS, -1);
+#if defined(GUILD_USE_HIP)
+        throw CudaError(std::string("no HIP device is present; this engine was compiled for ") + GUILD_HIP_ARCHS, -1);
 #else
-        throw CudaError("no CUDA device is present; Strata needs an NVIDIA GPU (RTX 20 series or newer)", -1);
+        throw CudaError("no CUDA device is present; Guild needs an NVIDIA GPU (RTX 20 series or newer)", -1);
 #endif
     }
     if (ordinal < 0 || ordinal >= count) {
@@ -349,13 +349,13 @@ DeviceInfo device_info(int ordinal) {
     // supported arch is enforced by CMake; RUNNING on an older card is caught here, because a binary can be carried
     // to a machine with an older card and would otherwise silently take whatever path the driver chose.  The HIP
     // backend checks the card against the architectures the binary was compiled for (and wave32).
-#if defined(STRATA_USE_HIP)
+#if defined(GUILD_USE_HIP)
     d.arch = base_arch(p.gcnArchName);
     if (const std::string why = arch_problem(p, ordinal); !why.empty()) throw CudaError(why, -1);
 #else
-    // #236: the experimental build (-DSTRATA_EXPERIMENTAL_SM60=ON: Pascal sm_60, Volta sm_70) runs on the cards it
+    // #236: the experimental build (-DGUILD_EXPERIMENTAL_SM60=ON: Pascal sm_60, Volta sm_70) runs on the cards it
     // was built for - refusing them below 7.5 there made the flag useless; the release engine keeps 7.5
-#if defined(STRATA_EXPERIMENTAL_SM60)
+#if defined(GUILD_EXPERIMENTAL_SM60)
     constexpr int kMinCc = 60;
     const char* const kNeed = "6.0 or newer (this is the experimental Pascal / Volta build)";
 #else
@@ -364,7 +364,7 @@ DeviceInfo device_info(int ordinal) {
 #endif
     if (d.cc_major * 10 + d.cc_minor < kMinCc) {
         throw CudaError("device " + d.name + " reports compute capability " + std::to_string(d.cc_major) +
-                            "." + std::to_string(d.cc_minor) + "; Strata needs compute capability " + kNeed,
+                            "." + std::to_string(d.cc_minor) + "; Guild needs compute capability " + kNeed,
                         -1);
     }
 #endif
@@ -451,4 +451,4 @@ void* DeviceArena::alloc(uint64_t bytes, uint64_t align) {
     return (char*) base_ + start;
 }
 
-}  // namespace strata::core
+}  // namespace guild::core

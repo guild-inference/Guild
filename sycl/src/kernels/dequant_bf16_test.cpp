@@ -1,5 +1,5 @@
 // src/kernels/dequant_bf16_test.cpp - plan v0.3 P5: the device dequantizers against the artifact's validated CPU
-// dequantizers (`strata/artifact/dequant.hpp`), on one real tensor of every type the model uses.
+// dequantizers (`guild/artifact/dequant.hpp`), on one real tensor of every type the model uses.
 //
 //     dequant_bf16_test SHARD1.gguf [SHARD2.gguf]
 //
@@ -8,9 +8,9 @@
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
-#include "strata/artifact/dequant.hpp"
-#include "strata/artifact/gguf_reader.hpp"
-#include "strata/kernels/dequant_bf16.hpp"
+#include "guild/artifact/dequant.hpp"
+#include "guild/artifact/gguf_reader.hpp"
+#include "guild/kernels/dequant_bf16.hpp"
 
 #include <cmath>
 #include <cstdio>
@@ -22,7 +22,7 @@
 namespace {
 
 bool cpu_block(int type, const uint8_t* b, float* out) {
-    using namespace strata;
+    using namespace guild;
     switch (type) {
     case 2: dequantize_q4_0(b, out); return true;
     case 6: dequantize_q5_0(b, out); return true;
@@ -55,12 +55,12 @@ int main(int argc, char** argv) {
     std::map<int, bool> done;
     int fails = 0, checked = 0;
     for (int a = 1; a < argc; ++a) {
-        strata::GgufFile gguf(argv[a]);
+        guild::GgufFile gguf(argv[a]);
         for (const auto& t : gguf.tensors()) {
             const int type = (int) t.type;
-            if (done.count(type) || !strata::kernels::dequant_bf16_supported(type) || t.shape.size() != 2) continue;
+            if (done.count(type) || !guild::kernels::dequant_bf16_supported(type) || t.shape.size() != 2) continue;
             int be = 0, bb = 0;
-            if (!strata::block_geometry(t.type, be, bb)) continue;
+            if (!guild::block_geometry(t.type, be, bb)) continue;
             const int64_t cols = (int64_t) t.shape[0];
             const int64_t rows = (std::min<int64_t>)(4, (int64_t) t.shape[1]);
             const int64_t row_bytes = cols / be * bb;
@@ -77,8 +77,8 @@ int main(int argc, char** argv) {
             dpct::get_in_order_queue()
                 .memcpy(d_blocks, host, (size_t)(rows * row_bytes))
                 .wait();
-            strata::kernels::dequant_f32(type, d_blocks, 0, rows, cols, d_f, nullptr);
-            strata::kernels::dequant_bf16(type, d_blocks, 0, rows, cols, d_h, nullptr);
+            guild::kernels::dequant_f32(type, d_blocks, 0, rows, cols, d_f, nullptr);
+            guild::kernels::dequant_bf16(type, d_blocks, 0, rows, cols, d_h, nullptr);
             std::vector<float> gf((size_t) (rows * cols));
             std::vector<uint16_t> gh((size_t) (rows * cols));
             dpct::get_in_order_queue().memcpy(gf.data(), d_f, gf.size() * 4).wait();

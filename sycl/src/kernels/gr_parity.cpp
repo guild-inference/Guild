@@ -22,8 +22,8 @@
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
-#include "strata/kernels/gr.hpp"
-#include "strata/kernels/fused_gr.hpp"
+#include "guild/kernels/gr.hpp"
+#include "guild/kernels/fused_gr.hpp"
 
 #include <cmath>
 #include <cstdio>
@@ -156,16 +156,16 @@ const char* activation_mode_name(int mode) {
     return mode == 2 ? "native pinned GR" : (mode == 1 ? "FP32" : "BF16");
 }
 void select_activation_mode(int mode) {
-    strata::kernels::gr_set_native_mmvf(mode == 2);
+    guild::kernels::gr_set_native_mmvf(mode == 2);
     // In mode 2 the precision-only switch is deliberately false: native MMVF must imply FP32 by itself.
-    strata::kernels::gr_set_fp32_activations(mode == 1);
+    guild::kernels::gr_set_fp32_activations(mode == 1);
 }
 
 // A diagonal GR fixture makes activation precision observable without summation-order ambiguity.
 // Two-wide matrices satisfy native MMVF's pair ABI, while each nonzero dot has only one nonzero product.
 // At R=1 and eps=0, xn=gamma exactly; any rounding in xn or lo comes from the selected activation contract.
 int scalar_activation_contract() {
-    using namespace strata::kernels;
+    using namespace guild::kernels;
     const GrShapes sh{2, 1, 2};
     float *d_R = nullptr, *d_norm = nullptr, *d_mixed = nullptr, *d_inject = nullptr;
     uint16_t* d_weights = nullptr;
@@ -352,7 +352,7 @@ int scalar_activation_contract() {
 
 int fused_multi_lds_parity(const float* d_norm, const uint16_t* d_down, const uint16_t* d_up,
                            const uint16_t* d_inject, float eps) {
-    using namespace strata::kernels;
+    using namespace guild::kernels;
     constexpr int N = 2560, HC = 4, LR = 320, D = N * HC, T = kFusedGrMaxT;
     std::mt19937 rng(0x6f8a);
     std::normal_distribution<float> normal(0.0f, 0.3f);
@@ -481,9 +481,9 @@ int fused_multi_lds_parity(const float* d_norm, const uint16_t* d_down, const ui
       std::exit(1);
     }
     };
-    // the split read (STRATA_GR_V3=1) sums in another order than the single-token kernel: equal within float
+    // the split read (GUILD_GR_V3=1) sums in another order than the single-token kernel: equal within float
     // rounding, not to the bit, so it is compared with a relative tolerance; the default kernels bit for bit
-    static const bool v3 = [] { const char* v = std::getenv("STRATA_GR_V3"); return v != nullptr && std::atoi(v) != 0; }();
+    static const bool v3 = [] { const char* v = std::getenv("GUILD_GR_V3"); return v != nullptr && std::atoi(v) != 0; }();
     auto close = [](const std::vector<float>& x, const std::vector<float>& y) {
         double worst = 0.0, mag = 1e-30;
         for (size_t i = 0; i < x.size(); ++i) {
@@ -738,16 +738,16 @@ int main(int argc, char** argv) {
               d_inj, q_inject.data(), q_inject.size() * sizeof(uint16_t)).wait()),
           "c inj");
 
-    const strata::kernels::GrShapes sh{n_embd, hc, hc_lr};
+    const guild::kernels::GrShapes sh{n_embd, hc, hc_lr};
     // DEVICE memory: the workspace is written by the kernel.
     void* d_ws_raw = nullptr;
     check(DPCT_CHECK_ERROR(d_ws_raw = (void *)sycl::malloc_device(
-                               strata::kernels::gr_workspace_bytes(sh),
+                               guild::kernels::gr_workspace_bytes(sh),
                                dpct::get_in_order_queue())),
           "m ws");
-    strata::kernels::GrWorkspace ws;
-    strata::kernels::gr_workspace_init(sh, d_ws_raw, ws);
-    strata::kernels::gr_read(d_R, d_norm, d_down, d_up, d_inj, eps, sh, ws, d_mixed, d_inject, nullptr);
+    guild::kernels::GrWorkspace ws;
+    guild::kernels::gr_workspace_init(sh, d_ws_raw, ws);
+    guild::kernels::gr_read(d_R, d_norm, d_down, d_up, d_inj, eps, sh, ws, d_mixed, d_inject, nullptr);
     std::vector<float> got_mixed((size_t) n_embd), got_inject((size_t) hc);
     check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
                                .memcpy(got_mixed.data(), d_mixed,
@@ -821,8 +821,8 @@ int main(int argc, char** argv) {
         fp32.round_activation = false;
         std::vector<float> wm, wi, gm((size_t) n_embd), gi((size_t) hc);
         reference(R, w_norm, w_down, w_up, w_inject, eps, n_embd, hc, hc_lr, fp32, wm, wi);
-        strata::kernels::gr_set_fp32_activations(true);
-        strata::kernels::gr_read(d_R, d_norm, d_down, d_up, d_inj, eps, sh, ws, d_mixed, d_inject, nullptr);
+        guild::kernels::gr_set_fp32_activations(true);
+        guild::kernels::gr_read(d_R, d_norm, d_down, d_up, d_inj, eps, sh, ws, d_mixed, d_inject, nullptr);
         check(DPCT_CHECK_ERROR(
                   (dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
                       .memcpy(gm.data(), d_mixed, gm.size() * sizeof(float))
@@ -833,13 +833,13 @@ int main(int argc, char** argv) {
                       .memcpy(gi.data(), d_inject, gi.size() * sizeof(float))
                       .wait()),
               "FP32 inject");
-        strata::kernels::gr_set_fp32_activations(false);
+        guild::kernels::gr_set_fp32_activations(false);
         const double rm = rel_diff(wm, gm), ri = rel_diff(wi, gi);
         const bool ok = rm <= 1e-4 && ri <= 1e-4;
         std::printf("  FP32 activations vs reference: %s (mixed %.3e, inject %.3e)\n",
                     ok ? "pass" : "FAIL", rm, ri);
         if (!ok) ++bad;
-        strata::kernels::gr_read(d_R, d_norm, d_down, d_up, d_inj, eps, sh, ws, d_mixed, d_inject, nullptr);
+        guild::kernels::gr_read(d_R, d_norm, d_down, d_up, d_inj, eps, sh, ws, d_mixed, d_inject, nullptr);
         check(DPCT_CHECK_ERROR(
                   (dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
                       .memcpy(gm.data(), d_mixed, gm.size() * sizeof(float))
@@ -899,7 +899,7 @@ int main(int argc, char** argv) {
             DPCT_CHECK_ERROR(d_bad = sycl::malloc_device<float>(
                                  bad_mixed.size(), dpct::get_in_order_queue())),
             "m bad");
-        strata::kernels::gr_read(d_R, d_norm, d_down_bad, d_up_bad, d_inj, eps, sh, ws, d_bad, d_inject,
+        guild::kernels::gr_read(d_R, d_norm, d_down_bad, d_up_bad, d_inj, eps, sh, ws, d_bad, d_inject,
                                  nullptr);
         check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
                                    .memcpy(bad_mixed.data(), d_bad,
@@ -922,7 +922,7 @@ int main(int argc, char** argv) {
                                .memcpy(d_inject, &sentinel, sizeof(float))
                                .wait()),
           "c sentinel");
-    strata::kernels::gr_read(d_R, d_norm, d_down, d_up, nullptr, eps, sh, ws, d_mixed, d_inject, nullptr);
+    guild::kernels::gr_read(d_R, d_norm, d_down, d_up, nullptr, eps, sh, ws, d_mixed, d_inject, nullptr);
     float after = 0.0f;
     check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
                                .memcpy(&after, d_inject, sizeof(float))
@@ -977,7 +977,7 @@ int main(int argc, char** argv) {
               d_zi, zero_inj.data(), zero_inj.size() * sizeof(float)).wait()),
           "c zi");
 
-    strata::kernels::gr_write(d_Rw, d_bo, d_zi, sh, d_outw, nullptr);
+    guild::kernels::gr_write(d_Rw, d_bo, d_zi, sh, d_outw, nullptr);
     std::vector<float> got_write((size_t) hc_dim);
     check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
                                .memcpy(got_write.data(), d_outw,
@@ -1033,7 +1033,7 @@ int main(int argc, char** argv) {
     check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(
               d_zi, inj.data(), inj.size() * sizeof(float)).wait()),
           "c inj2");
-    strata::kernels::gr_write(d_Rw, d_bo, d_zi, sh, d_outw, nullptr);
+    guild::kernels::gr_write(d_Rw, d_bo, d_zi, sh, d_outw, nullptr);
     check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
                                .memcpy(got_write.data(), d_outw,
                                        got_write.size() * sizeof(float))
@@ -1151,17 +1151,17 @@ int main(int argc, char** argv) {
                   dJ, qi.data(), qi.size() * 2).wait()),
               "crJ");
 
-        const strata::kernels::GrShapes rsh{rn, rhc, rlr};
+        const guild::kernels::GrShapes rsh{rn, rhc, rlr};
         void* rws_raw = nullptr;
         check(DPCT_CHECK_ERROR(rws_raw = (void *)sycl::malloc_device(
-                                   strata::kernels::gr_workspace_bytes(rsh),
+                                   guild::kernels::gr_workspace_bytes(rsh),
                                    dpct::get_in_order_queue())),
               "m rws");
-        strata::kernels::GrWorkspace rws;
-        strata::kernels::gr_workspace_init(rsh, rws_raw, rws);
+        guild::kernels::GrWorkspace rws;
+        guild::kernels::gr_workspace_init(rsh, rws_raw, rws);
         for (int mode = 0; mode < 3; ++mode) {
             select_activation_mode(mode);
-            strata::kernels::gr_read(dR, dN, dD, dU, dJ, eps, rsh, rws, dM, dI, nullptr);
+            guild::kernels::gr_read(dR, dN, dD, dU, dJ, eps, rsh, rws, dM, dI, nullptr);
             std::vector<float> gm((size_t) rn), gi((size_t) rhc);
             check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
                                        .memcpy(gm.data(), dM, gm.size() * 4)

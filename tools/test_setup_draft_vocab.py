@@ -22,7 +22,7 @@ class SavedChoice(unittest.TestCase):
     def test_a_config_keeps_its_choice(self):
         with tempfile.TemporaryDirectory() as d:
             for choice in setup.DRAFT_VOCABS:
-                p = Path(d) / "strata-x.json"
+                p = Path(d) / "guild-x.json"
                 p.write_text(json.dumps({"args": [], "draft_vocab": choice}), encoding="utf-8")
                 self.assertEqual(setup.saved_draft_vocab(p), choice)
 
@@ -30,7 +30,7 @@ class SavedChoice(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             self.assertIsNone(setup.saved_draft_vocab(Path(d) / "missing.json"))
             for text in ("{}", "[1]", "not json", json.dumps({"draft_vocab": "klingon"})):
-                p = Path(d) / "strata-y.json"
+                p = Path(d) / "guild-y.json"
                 p.write_text(text, encoding="utf-8")
                 self.assertIsNone(setup.saved_draft_vocab(p), text)
 

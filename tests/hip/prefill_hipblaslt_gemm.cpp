@@ -1,8 +1,8 @@
-// Opt-in HIP smoke test for the calibrated hipBLASLt prefill route; it needs STRATA_HIPBLASLT_TUNING (SKIP otherwise).
+// Opt-in HIP smoke test for the calibrated hipBLASLt prefill route; it needs GUILD_HIPBLASLT_TUNING (SKIP otherwise).
 // It checks that the table loads for this device and hipBLASLt version, that the two rows it uses exist (bf16
 // N=48 K=2560 ldy=96 and f16 N=512 K=2560 ldy=512, T bucket 4096), and that Gemm's output matches hipBLASEx on those
 // two rows. It does NOT check the other rows, and it does not check that hipBLASLt ran the table's solution: an id
-// the library rejects falls back to hipBLASEx and the test still passes. Set STRATA_HIPBLASLT_VERBOSE=1 to read the
+// the library rejects falls back to hipBLASEx and the test still passes. Set GUILD_HIPBLASLT_VERBOSE=1 to read the
 // "hipBLASLt summary launches=... fallbacks=..." line.
 #include <cuda_runtime.h>
 #include <hip/hip_bfloat16.h>
@@ -10,8 +10,8 @@
 #include <hipblas/hipblas.h>
 #include <hipblaslt/hipblaslt.h>
 
-#include "strata/kernels/bf16_bits.hpp"
-#include "strata/prefill/gemm.hpp"
+#include "guild/kernels/bf16_bits.hpp"
+#include "guild/prefill/gemm.hpp"
 #include "hipblaslt_tuning.hpp"
 
 #include <algorithm>
@@ -48,14 +48,14 @@ struct DeviceBuffer {
 };
 
 uint16_t encode(float value, bool bf16) {
-    if (bf16) return strata::kernels::bf16_from_f32(value);
+    if (bf16) return guild::kernels::bf16_from_f32(value);
     const __half half = __float2half_rn(value);
     uint16_t bits = 0;
     std::memcpy(&bits, &half, sizeof(bits));
     return bits;
 }
 
-bool run_case(strata::prefill::Gemm& gemm, hipblasHandle_t blas, hipStream_t stream, bool bf16, int t, int n,
+bool run_case(guild::prefill::Gemm& gemm, hipblasHandle_t blas, hipStream_t stream, bool bf16, int t, int n,
               int k, int ldy, int output_offset, float beta, uint32_t seed) {
     std::mt19937 rng(seed);
     std::uniform_real_distribution<float> dist(-0.25f, 0.25f);
@@ -135,9 +135,9 @@ bool run_case(strata::prefill::Gemm& gemm, hipblasHandle_t blas, hipStream_t str
 }
 
 int main() {
-    const char* tuning_path = std::getenv("STRATA_HIPBLASLT_TUNING");
+    const char* tuning_path = std::getenv("GUILD_HIPBLASLT_TUNING");
     if (!tuning_path || !*tuning_path) {
-        std::fprintf(stderr, "SKIP: set STRATA_HIPBLASLT_TUNING to a tuning table for this GPU and hipBLASLt version\n");
+        std::fprintf(stderr, "SKIP: set GUILD_HIPBLASLT_TUNING to a tuning table for this GPU and hipBLASLt version\n");
         return 77;
     }
 
@@ -154,14 +154,14 @@ int main() {
     HIPBLAS_CHECK(hipblasLtGetVersion(lt, &version));
     HIPBLAS_CHECK(hipblasLtDestroy(lt));
 
-    strata::prefill::hipblaslt::TuningTable table;
+    guild::prefill::hipblaslt::TuningTable table;
     std::string error;
     if (!table.load(tuning_path, arch, version, error)) {
         std::fprintf(stderr, "tuning table rejected: %s\n", error.c_str());
         return 1;
     }
-    if (!table.closest(strata::prefill::hipblaslt::InputType::bf16, 48, 2560, 96, 4096) ||
-        !table.closest(strata::prefill::hipblaslt::InputType::f16, 512, 2560, 512, 4096)) {
+    if (!table.closest(guild::prefill::hipblaslt::InputType::bf16, 48, 2560, 96, 4096) ||
+        !table.closest(guild::prefill::hipblaslt::InputType::f16, 512, 2560, 512, 4096)) {
         std::fprintf(stderr, "tuning table lacks the rows this smoke test uses (bf16 N=48 K=2560 ldy=96, f16 N=512 K=2560 ldy=512)\n");
         return 1;
     }
@@ -171,7 +171,7 @@ int main() {
     bool ok = true;
     {
         std::string init_error;
-        strata::prefill::Gemm gemm;
+        guild::prefill::Gemm gemm;
         if (!gemm.init((void*) stream, 0, init_error)) {
             std::fprintf(stderr, "Gemm init failed: %s\n", init_error.c_str());
             HIP_CHECK(hipStreamDestroy(stream));
@@ -191,7 +191,7 @@ int main() {
     }
     HIP_CHECK(hipStreamDestroy(stream));
     std::printf("smoke test: 4 cases on 2 of the table's %zu rows; %s\n", table.rows().size(),
-                ok ? "outputs match hipBLASEx (solution ids are not verified; see STRATA_HIPBLASLT_VERBOSE)"
+                ok ? "outputs match hipBLASEx (solution ids are not verified; see GUILD_HIPBLASLT_VERBOSE)"
                    : "FAILED");
     return ok ? 0 : 1;
 }

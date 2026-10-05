@@ -49,11 +49,11 @@
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
-#include "strata/kernels/qsa.hpp"
-#include "strata/kernels/native_qsa_indexer.hpp"
+#include "guild/kernels/qsa.hpp"
+#include "guild/kernels/native_qsa_indexer.hpp"
 
-#include "strata/kernels/f16_bits.hpp"
-#include "strata/kernels/rope.hpp"
+#include "guild/kernels/f16_bits.hpp"
+#include "guild/kernels/rope.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -67,8 +67,8 @@
 
 namespace {
 
-using strata::kernels::f16_from_f32;
-using strata::kernels::f32_from_f16;
+using guild::kernels::f16_from_f32;
+using guild::kernels::f32_from_f16;
 
 void check(dpct::err0 e, const char *what) {
 }
@@ -395,12 +395,12 @@ int main(int argc, char** argv) {
         }
     }
 
-    const strata::kernels::QsaShapes S = strata::kernels::qsa_real_shapes();
+    const guild::kernels::QsaShapes S = guild::kernels::qsa_real_shapes();
     const int64_t NH = S.n_head, NKV = S.n_head_kv, HD = S.head_dim, IDXN = S.idx_n_head, IDXD = S.idx_dim,
                   R = S.idx_block, TOPK = S.idx_top_k;
-    const int64_t MAXC = strata::kernels::kTopkMaxCells;
-    const float EPS = strata::kernels::qsa_rms_eps();
-    const double THETA = strata::kernels::qsa_freq_base();
+    const int64_t MAXC = guild::kernels::kTopkMaxCells;
+    const float EPS = guild::kernels::qsa_rms_eps();
+    const double THETA = guild::kernels::qsa_freq_base();
     std::mt19937 rng(20260916u);
     std::normal_distribution<double> gauss(0.0, 1.0);
     auto rnd = [&](double s) { return (float) (gauss(rng) * s); };
@@ -477,14 +477,14 @@ int main(int argc, char** argv) {
         // so the kernel indexed a 1100-page table as if it had 3 pages and ran off the pool - which is what an
         // illegal memory access reported.  A test that feeds one geometry and expects another is measuring
         // itself; the fix is to build the shapes per case.
-        strata::kernels::QsaShapes Sc = S;
+        guild::kernels::QsaShapes Sc = S;
         Sc.page_size = c.page_size;
         const size_t pool_n = (size_t) c.n_pages * NKV * c.page_size * HD;
         Dev<uint16_t> dk(pool_n), dv(pool_n);
         Dev<int32_t> dtab;
         dtab.put(c.table);
         for (int64_t t = 0; t < TCELLS; ++t)
-            strata::kernels::kv_append(dk.p, dv.p, dtab.p, t, dkcur_all.p + (size_t) t * NKV * HD,
+            guild::kernels::kv_append(dk.p, dv.p, dtab.p, t, dkcur_all.p + (size_t) t * NKV * HD,
                                        dvcur_all.p + (size_t) t * NKV * HD, Sc, nullptr);
         const std::vector<uint16_t> hk = dk.get(pool_n), hv = dv.get(pool_n);
 
@@ -529,7 +529,7 @@ int main(int argc, char** argv) {
         dids.put(ids);
         const size_t scr_n = ids.size() * NKV * HD;
         Dev<uint16_t> dks(scr_n), dvs(scr_n);
-        strata::kernels::kv_gather(dk.p, dv.p, dtab.p, dids.p, (int64_t) ids.size(), Sc, dks.p, dvs.p, nullptr);
+        guild::kernels::kv_gather(dk.p, dv.p, dtab.p, dids.p, (int64_t) ids.size(), Sc, dks.p, dvs.p, nullptr);
         const std::vector<uint16_t> gk = dks.get(scr_n), gv = dvs.get(scr_n);
         int gm = 0;
         for (size_t j = 0; j < ids.size(); ++j)
@@ -568,7 +568,7 @@ int main(int argc, char** argv) {
     std::vector<float> w_kn((size_t) IDXD);
     for (auto& x : w_kn) x = 1.0f + 0.1f * rnd(1.0);
     std::vector<float> cos_tab((size_t) (2000 * S.n_rot / 2)), sin_tab(cos_tab.size());
-    strata::kernels::build_rope_table((int) S.n_rot, THETA, 2000, cos_tab.data(), sin_tab.data());
+    guild::kernels::build_rope_table((int) S.n_rot, THETA, 2000, cos_tab.data(), sin_tab.data());
     Dev<float> dw_kn, dcos, dsin;
     dw_kn.put(w_kn);
     dcos.put(cos_tab);
@@ -582,7 +582,7 @@ int main(int argc, char** argv) {
     // `cudaMemcpy` per cell here; the layer keeps this buffer and updates it per token.
     Dev<int32_t> dpos(1);
     {
-        strata::kernels::QsaIndexerBuffers bufs{dtail.p, ddead.p, dpooled.p, dblockpos.p};
+        guild::kernels::QsaIndexerBuffers bufs{dtail.p, ddead.p, dpooled.p, dblockpos.p};
         Dev<float> draw((size_t) IDXD);
         for (int64_t t = 0; t < NT; ++t) {      // one cell at a time: the tail is a ring and the spare row MOVES
             check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
@@ -596,7 +596,7 @@ int main(int argc, char** argv) {
                 DPCT_CHECK_ERROR(
                     (dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(dpos.p, &tpos, 4).wait()),
                 "pos");
-            strata::kernels::indexer_key_append(draw.p, dpos.p, POS_BASE, dw_kn.p, EPS, bufs, S, dcos.p, dsin.p,
+            guild::kernels::indexer_key_append(draw.p, dpos.p, POS_BASE, dw_kn.p, EPS, bufs, S, dcos.p, dsin.p,
                                                 nullptr);
         }
         const std::vector<float> got = dpooled.get(pooled_n), got_dead = ddead.get((size_t) IDXD);
@@ -728,7 +728,7 @@ int main(int argc, char** argv) {
         dqi.put(q_idx);
         dbias.put(bias);
         dsc.alloc((size_t) n_kv);
-        strata::kernels::qsa_index(dp.p, n_bid, dqi.p, dbias.p, S, n_kv, dsc.p, nullptr);
+        guild::kernels::qsa_index(dp.p, n_bid, dqi.p, dbias.p, S, n_kv, dsc.p, nullptr);
         const std::vector<float> got = dsc.get((size_t) n_kv);
         const std::vector<double> want =
             ref_indexer_scores(p64, n_bid, q_idx64, IDXN, IDXD, bias, n_kv, Alt{});
@@ -780,9 +780,9 @@ int main(int argc, char** argv) {
     {
         const int64_t max_n = 20480;
         const int64_t max_blocks = max_n / R + 1;
-        const int64_t cap = strata::kernels::qsa_selection_width(max_n, S);
+        const int64_t cap = guild::kernels::qsa_selection_width(max_n, S);
         Dev<float> pooled, query, scores((size_t) max_n);
-        Dev<int32_t> ids((size_t) cap), step(strata::kernels::kStepCount);
+        Dev<int32_t> ids((size_t) cap), step(guild::kernels::kStepCount);
         pooled.put(std::vector<float>((size_t) max_blocks * IDXD, 0.0f));
         query.put(std::vector<float>((size_t) IDXN * IDXD, 0.0f));
 
@@ -794,8 +794,8 @@ int main(int argc, char** argv) {
               "tail stream");
         check(DPCT_CHECK_ERROR(dpct::experimental::begin_recording(stream)),
               "tail capture begin");
-        strata::kernels::qsa_index_step(pooled.p, query.p, nullptr, S, step.p, max_blocks, scores.p, stream);
-        strata::kernels::topk_512_step(scores.p, S, cap, step.p, ids.p, stream);
+        guild::kernels::qsa_index_step(pooled.p, query.p, nullptr, S, step.p, max_blocks, scores.p, stream);
+        guild::kernels::topk_512_step(scores.p, S, cap, step.p, ids.p, stream);
         check(
             DPCT_CHECK_ERROR(dpct::experimental::end_recording(stream, &graph)),
             "tail capture end");
@@ -810,18 +810,18 @@ int main(int argc, char** argv) {
             2052, 2053, 2054, 2055, 2056, 2057, 2058, 2059, 2060,
             4095, 4096, 4097, 8191, 8192, 8193, 20477, 20478, 20479, 20480};
         for (const int64_t n : counts) {
-            const int64_t width = strata::kernels::qsa_selection_width(n, S);
+            const int64_t width = guild::kernels::qsa_selection_width(n, S);
             const int64_t tail = n % R;
             std::vector<int32_t> want;
             for (int64_t j = 0; j < width - tail; ++j) want.push_back((int32_t) j);
             for (int64_t j = n - tail; j < n; ++j) want.push_back((int32_t) j);
 
-            strata::kernels::qsa_index(pooled.p, n / R, query.p, nullptr, S, n, scores.p, nullptr);
-            strata::kernels::topk_512(scores.p, n, S, cap, ids.p, nullptr);
+            guild::kernels::qsa_index(pooled.p, n / R, query.p, nullptr, S, n, scores.p, nullptr);
+            guild::kernels::topk_512(scores.p, n, S, cap, ids.p, nullptr);
             require("tail static n=" + std::to_string(n), ids.get((size_t) width) == want);
 
-            std::vector<int32_t> values(strata::kernels::kStepCount);
-            strata::kernels::qsa_step_fill(values.data(), n - 1, S);
+            std::vector<int32_t> values(guild::kernels::kStepCount);
+            guild::kernels::qsa_step_fill(values.data(), n - 1, S);
             step.put(values);
             check(DPCT_CHECK_ERROR(stream->ext_oneapi_graph(*exec)),
                   "tail replay");
@@ -844,7 +844,7 @@ int main(int argc, char** argv) {
 
     // ================= 4. topk_512, against an independent sort =================
     {
-        const int64_t CAP = strata::kernels::qsa_selection_width(MAXC, S);
+        const int64_t CAP = guild::kernels::qsa_selection_width(MAXC, S);
         Dev<float> dsc;
         Dev<int32_t> dids;
         dsc.alloc((size_t) MAXC);
@@ -853,8 +853,8 @@ int main(int argc, char** argv) {
 
         auto one = [&](const std::string& name, int64_t n_kv) {
             dsc.put(std::vector<float>(sc.begin(), sc.begin() + n_kv));
-            strata::kernels::topk_512(dsc.p, n_kv, S, CAP, dids.p, nullptr);
-            const int64_t width = strata::kernels::qsa_selection_width(n_kv, S);
+            guild::kernels::topk_512(dsc.p, n_kv, S, CAP, dids.p, nullptr);
+            const int64_t width = guild::kernels::qsa_selection_width(n_kv, S);
             const std::vector<int32_t> g = dids.get((size_t) width);
             const std::vector<int32_t> want = ref_select(as_d(std::vector<float>(sc.begin(), sc.begin() + n_kv)),
                                                          n_kv, TOPK, false);
@@ -953,9 +953,9 @@ int main(int argc, char** argv) {
         for (int64_t j = 0; j < N - 1; ++j) no_loud[(size_t) j] = (int32_t) j;
 
         // the scratch is written directly here (no pool), so this section is about the attention alone
-        strata::kernels::qsa_attend(dq.p, dks.p, dvs.p, N, S, dattn.p, dwt.p, nullptr);
+        guild::kernels::qsa_attend(dq.p, dks.p, dvs.p, N, S, dattn.p, dwt.p, nullptr);
         const std::vector<double> out_all = as_d(dattn.get((size_t) NH * HD));
-        strata::kernels::qsa_attend(dq.p, dks.p, dvs.p, N - 1, S, dattn.p, nullptr, nullptr);
+        guild::kernels::qsa_attend(dq.p, dks.p, dvs.p, N - 1, S, dattn.p, nullptr, nullptr);
         const std::vector<double> out_sel = as_d(dattn.get((size_t) NH * HD));
         const std::vector<double> wts = as_d(dwt.get((size_t) NH * N));
 
@@ -1004,7 +1004,7 @@ int main(int argc, char** argv) {
     int64_t width = 0;
     {
         const int64_t T = 2100;                      // > 2051, so `width` really truncates
-        width = strata::kernels::qsa_selection_width(T, S);
+        width = guild::kernels::qsa_selection_width(T, S);
         std::vector<float> pk((size_t) T * NKV * HD), pv((size_t) T * NKV * HD), praw((size_t) T * IDXD);
         std::vector<std::vector<double>> k16((size_t) T), v16((size_t) T);
         RefCache pc;
@@ -1037,7 +1037,7 @@ int main(int argc, char** argv) {
         }
         const int64_t p_nbid = T / R;                // 525 complete blocks; the spare key sits at row 525
         const int64_t page_size = 64, n_pages = (T + page_size - 1) / page_size;
-        strata::kernels::QsaShapes Sp = S;           // the granule lives in the shapes: see section 1
+        guild::kernels::QsaShapes Sp = S;           // the granule lives in the shapes: see section 1
         Sp.page_size = page_size;
         std::vector<int32_t> table((size_t) n_pages);
         for (int64_t i = 0; i < n_pages; ++i) table[(size_t) i] = (int32_t) (n_pages - 1 - i);   // REVERSED
@@ -1049,7 +1049,7 @@ int main(int argc, char** argv) {
         dpv_all.put(pv);
         Dev<uint16_t> dpk((size_t) n_pages * NKV * page_size * HD), dpv((size_t) n_pages * NKV * page_size * HD);
         for (int64_t t = 0; t < T; ++t)
-            strata::kernels::kv_append(dpk.p, dpv.p, dtab.p, t, dpk_all.p + (size_t) t * NKV * HD,
+            guild::kernels::kv_append(dpk.p, dpv.p, dtab.p, t, dpk_all.p + (size_t) t * NKV * HD,
                                        dpv_all.p + (size_t) t * NKV * HD, Sp, nullptr);
 
         const size_t ppooled_n = (size_t) (p_nbid + 1) * IDXD;
@@ -1057,7 +1057,7 @@ int main(int argc, char** argv) {
         Dev<int32_t> dblockpos2(1);
         Dev<int32_t> dpos2(1);
         Dev<float> draw((size_t) IDXD);
-        strata::kernels::QsaIndexerBuffers bufs{dptail.p, dpdead.p, dpp.p, dblockpos2.p};
+        guild::kernels::QsaIndexerBuffers bufs{dptail.p, dpdead.p, dpp.p, dblockpos2.p};
         for (int64_t t = 0; t < T; ++t) {
             check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
                                        .memcpy(draw.p, &praw[(size_t)t * IDXD],
@@ -1069,16 +1069,16 @@ int main(int argc, char** argv) {
                                        .memcpy(dpos2.p, &tpos, 4)
                                        .wait()),
                   "pos2");
-            strata::kernels::indexer_key_append(draw.p, dpos2.p, 0, dw_kn.p, EPS, bufs, S, dcos.p, dsin.p,
+            guild::kernels::indexer_key_append(draw.p, dpos2.p, 0, dw_kn.p, EPS, bufs, S, dcos.p, dsin.p,
                                                 nullptr);
         }
         Dev<float> dqidx, dsc;
         dqidx.put(q_idx);
         dsc.alloc((size_t) T);
-        strata::kernels::qsa_index(dpp.p, p_nbid, dqidx.p, nullptr, S, T, dsc.p, nullptr);
+        guild::kernels::qsa_index(dpp.p, p_nbid, dqidx.p, nullptr, S, T, dsc.p, nullptr);
 
         Dev<int32_t> dsel((size_t) T);
-        strata::kernels::topk_512(dsc.p, T, S, T, dsel.p, nullptr);
+        guild::kernels::topk_512(dsc.p, T, S, T, dsel.p, nullptr);
         const std::vector<int32_t> sel_sparse = dsel.get((size_t) width);
         const std::vector<float> pool32 = dpp.get(ppooled_n);
         const std::vector<double> pool64 = as_d(pool32);
@@ -1125,10 +1125,10 @@ int main(int argc, char** argv) {
         dsel2.put(sel);
         const int64_t nsel = (int64_t) sel.size();
         Dev<uint16_t> dks((size_t) nsel * NKV * HD), dvs((size_t) nsel * NKV * HD);
-        strata::kernels::kv_gather(dpk.p, dpv.p, dtab.p, dsel2.p, nsel, Sp, dks.p, dvs.p, nullptr);
+        guild::kernels::kv_gather(dpk.p, dpv.p, dtab.p, dsel2.p, nsel, Sp, dks.p, dvs.p, nullptr);
         Dev<float> dqq, dattn((size_t) NH * HD), dwt((size_t) NH * nsel);
         dqq.put(q);
-        strata::kernels::qsa_attend(dqq.p, dks.p, dvs.p, nsel, S, dattn.p, dwt.p, nullptr);
+        guild::kernels::qsa_attend(dqq.p, dks.p, dvs.p, nsel, S, dattn.p, dwt.p, nullptr);
         const std::vector<double> attn = as_d(dattn.get((size_t) NH * HD));
         const std::vector<double> wts = as_d(dwt.get((size_t) NH * nsel));
 
@@ -1176,7 +1176,7 @@ int main(int argc, char** argv) {
         dqf.put(q_full);
         dattnf.put(as_f(attn));
         Dev<uint16_t> dgate((size_t) NH * HD);
-        strata::kernels::qsa_gate_apply(dattnf.p, dqf.p, S, dgate.p, nullptr);
+        guild::kernels::qsa_gate_apply(dattnf.p, dqf.p, S, dgate.p, nullptr);
         const std::vector<uint16_t> gate16 = dgate.get((size_t) NH * HD);
         const std::vector<double> qf64 = as_d(q_full);
         const std::vector<double> gwant = ref_gate(attn, qf64, NH, HD, Alt{});
@@ -1219,10 +1219,10 @@ int main(int argc, char** argv) {
                 Dev<int32_t> did;
                 did.put(ids);
                 Dev<uint16_t> dk2((size_t) ids.size() * NKV * HD), dv2((size_t) ids.size() * NKV * HD);
-                strata::kernels::kv_gather(dpk.p, dpv.p, dtab.p, did.p, (int64_t) ids.size(), Sp, dk2.p, dv2.p,
+                guild::kernels::kv_gather(dpk.p, dpv.p, dtab.p, did.p, (int64_t) ids.size(), Sp, dk2.p, dv2.p,
                                            nullptr);
                 Dev<float> da((size_t) NH * HD);
-                strata::kernels::qsa_attend(dqq.p, dk2.p, dv2.p, (int64_t) ids.size(), S, da.p, nullptr, nullptr);
+                guild::kernels::qsa_attend(dqq.p, dk2.p, dv2.p, (int64_t) ids.size(), S, da.p, nullptr, nullptr);
                 return as_d(da.get((size_t) NH * HD));
             };
             const std::vector<double> dense_attn = attend_ids(dense_all);
@@ -1241,7 +1241,7 @@ int main(int argc, char** argv) {
         Dev<float> dq((size_t) NH * HD), dattn((size_t) NH * HD);
         dq.put(std::vector<float>((size_t) NH * HD, 1.0f));
         dattn.put(std::vector<float>((size_t) NH * HD, 7.0f));
-        strata::kernels::qsa_attend(dq.p, nullptr, nullptr, 0, S, dattn.p, nullptr, nullptr);
+        guild::kernels::qsa_attend(dq.p, nullptr, nullptr, 0, S, dattn.p, nullptr, nullptr);
         const std::vector<float> got = dattn.get((size_t) NH * HD);
         bool allz = true;
         for (float x : got) if (x != 0.0f) allz = false;
@@ -1253,7 +1253,7 @@ int main(int argc, char** argv) {
         const int64_t T = MAXC;                      // 32,768 cells = 32K of context
         const int64_t nbid = T / R;
         const int64_t ps = S.page_size, n_pages = (T + ps - 1) / ps;
-        const int64_t w = strata::kernels::qsa_selection_width(T, S);
+        const int64_t w = guild::kernels::qsa_selection_width(T, S);
         std::printf("\n  --bench at n_kv = %lld, page_size %lld, selection width %lld\n", (long long) T,
                     (long long) ps, (long long) w);
         std::vector<int32_t> table((size_t) n_pages);
@@ -1267,7 +1267,7 @@ int main(int argc, char** argv) {
         Dev<float> dkz, dvz;
         dkz.put(kz);
         dvz.put(vz);
-        strata::kernels::kv_append(dpk.p, dpv.p, dtab.p, 0, dkz.p, dvz.p, S, nullptr);
+        guild::kernels::kv_append(dpk.p, dpv.p, dtab.p, 0, dkz.p, dvz.p, S, nullptr);
 
         const size_t ppooled_n = (size_t) (nbid + 1) * IDXD;
         Dev<float> dpp((size_t) ppooled_n), dsc((size_t) T);
@@ -1315,21 +1315,21 @@ int main(int argc, char** argv) {
         };
         const int reps = 20;
         timeit("qsa_index  (8193 pooled rows x 4 heads)", reps,
-               [&] { strata::kernels::qsa_index(dpp.p, nbid, dqidx.p, nullptr, S, T, dsc.p, nullptr); });
+               [&] { guild::kernels::qsa_index(dpp.p, nbid, dqidx.p, nullptr, S, T, dsc.p, nullptr); });
         timeit("topk_512   (32768 cells)", reps,
-               [&] { strata::kernels::topk_512(dsc.p, T, S, w, dsel.p, nullptr); });
-        strata::kernels::topk_512(dsc.p, T, S, w, dsel.p, nullptr);
+               [&] { guild::kernels::topk_512(dsc.p, T, S, w, dsel.p, nullptr); });
+        guild::kernels::topk_512(dsc.p, T, S, w, dsel.p, nullptr);
         timeit("kv_gather  (2051 ids through the page table)", reps,
-               [&] { strata::kernels::kv_gather(dpk.p, dpv.p, dtab.p, dsel.p, w, S, dks.p, dvs.p, nullptr); });
+               [&] { guild::kernels::kv_gather(dpk.p, dpv.p, dtab.p, dsel.p, w, S, dks.p, dvs.p, nullptr); });
         timeit("qsa_attend (2051 selected, 24 heads)", reps,
-               [&] { strata::kernels::qsa_attend(dq.p, dks.p, dvs.p, w, S, dattn.p, dwt.p, nullptr); });
+               [&] { guild::kernels::qsa_attend(dq.p, dks.p, dvs.p, w, S, dattn.p, dwt.p, nullptr); });
         timeit("kv_append  (one cell, 2 heads x 256)", 200,
-               [&] { strata::kernels::kv_append(dpk.p, dpv.p, dtab.p, 0, dkz.p, dvz.p, S, nullptr); });
+               [&] { guild::kernels::kv_append(dpk.p, dpv.p, dtab.p, 0, dkz.p, dvz.p, S, nullptr); });
         timeit("ONE QSA LAYER (index+topk+gather+attend)", reps, [&] {
-            strata::kernels::qsa_index(dpp.p, nbid, dqidx.p, nullptr, S, T, dsc.p, nullptr);
-            strata::kernels::topk_512(dsc.p, T, S, w, dsel.p, nullptr);
-            strata::kernels::kv_gather(dpk.p, dpv.p, dtab.p, dsel.p, w, S, dks.p, dvs.p, nullptr);
-            strata::kernels::qsa_attend(dq.p, dks.p, dvs.p, w, S, dattn.p, dwt.p, nullptr);
+            guild::kernels::qsa_index(dpp.p, nbid, dqidx.p, nullptr, S, T, dsc.p, nullptr);
+            guild::kernels::topk_512(dsc.p, T, S, w, dsel.p, nullptr);
+            guild::kernels::kv_gather(dpk.p, dpv.p, dtab.p, dsel.p, w, S, dks.p, dvs.p, nullptr);
+            guild::kernels::qsa_attend(dq.p, dks.p, dvs.p, w, S, dattn.p, dwt.p, nullptr);
         });
     }
 
@@ -1359,7 +1359,7 @@ int main(int argc, char** argv) {
         Dev<float> pooled2((size_t) (nb2 + 2) * IDXD2), dead2(IDXD2), tail2((size_t) (R2 - 1) * IDXD2);
         Dev<int32_t> bpos2(1), pos2(1);
         Dev<float> raw2d(IDXD2);
-        strata::kernels::QsaIndexerBuffers bufs2{tail2.p, dead2.p, pooled2.p, bpos2.p};
+        guild::kernels::QsaIndexerBuffers bufs2{tail2.p, dead2.p, pooled2.p, bpos2.p};
 
         // capture ONE call, on its own stream
         dpct::queue_ptr cs = &dpct::get_in_order_queue();
@@ -1368,7 +1368,7 @@ int main(int argc, char** argv) {
               "cs");
         check(DPCT_CHECK_ERROR(dpct::experimental::begin_recording(cs)),
               "begincap");
-        strata::kernels::indexer_key_append(raw2d.p, pos2.p, POS_BASE, dw_kn.p, EPS, bufs2, S, dcos.p, dsin.p,
+        guild::kernels::indexer_key_append(raw2d.p, pos2.p, POS_BASE, dw_kn.p, EPS, bufs2, S, dcos.p, dsin.p,
                                             (void*) cs);
         dpct::experimental::command_graph_ptr g2 = nullptr;
         check(DPCT_CHECK_ERROR(dpct::experimental::end_recording(cs, &g2)),
@@ -1469,7 +1469,7 @@ int main(int argc, char** argv) {
         const int64_t NB = 8;                          // exactly two complete blocks of r=4
         const int32_t BASE = 100;                      // positions 100..107, not cell indices 0..7
         const int64_t MC = 1024;                       // the capacity both sides validate against
-        using RST = strata::kernels::RopeScalingType;
+        using RST = guild::kernels::RopeScalingType;
         struct Variant { const char* name; RST type; double factor; double ext; };
         const Variant variants[] = {{"none", RST::None, 1.0, 0.0},
                                     {"linear 2", RST::Linear, 2.0, 0.0},
@@ -1484,7 +1484,7 @@ int main(int argc, char** argv) {
               "cs");
         std::vector<float> none_pooled;
         for (const Variant& var : variants) {
-            strata::kernels::RopeScaling sc;
+            guild::kernels::RopeScaling sc;
             sc.type = var.type;
             sc.factor = var.factor;
             sc.ext_factor = var.ext;
@@ -1510,8 +1510,8 @@ int main(int argc, char** argv) {
                       "zero");
             Dev<float> draw((size_t) IDXD), drawAll;
             drawAll.put(raws);
-            strata::kernels::QsaIndexerBuffers bufsA{tailA.p, deadA.p, pooledA.p, bposA.p};
-            strata::kernels::QsaIndexerBuffers bufsB{tailB.p, deadB.p, pooledB.p, bposB.p};
+            guild::kernels::QsaIndexerBuffers bufsA{tailA.p, deadA.p, pooledA.p, bposA.p};
+            guild::kernels::QsaIndexerBuffers bufsB{tailB.p, deadB.p, pooledB.p, bposB.p};
             for (int64_t t = 0; t < NB; ++t) {         // the sequential side: one cell, its device position
                 check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
                                            .memcpy(draw.p,
@@ -1524,13 +1524,13 @@ int main(int argc, char** argv) {
                                            .memcpy(dpos.p, &tp, 4)
                                            .wait()),
                       "pos");
-                strata::kernels::native_qsa_indexer_append(draw.p, dpos.p, BASE, dw_kn.p, EPS, bufsA, S, MC, sc, cs);
+                guild::kernels::native_qsa_indexer_append(draw.p, dpos.p, BASE, dw_kn.p, EPS, bufsA, S, MC, sc, cs);
                 // SYCL port: cudaMemcpy on the legacy stream waited for this append before the next copy refilled
                 // `draw`; a default-queue copy does not wait for work on `cs`, so without this the next cell's raw
                 // keys could overwrite this one before the kernel reads them
                 check(DPCT_CHECK_ERROR(cs->wait()), "append");
             }
-            strata::kernels::native_qsa_indexer_append_batch(drawAll.p, NB, 0, BASE, dw_kn.p, EPS, bufsB, S, MC, sc, cs);
+            guild::kernels::native_qsa_indexer_append_batch(drawAll.p, NB, 0, BASE, dw_kn.p, EPS, bufsB, S, MC, sc, cs);
             check(DPCT_CHECK_ERROR(cs->wait()), "sync");
             const std::vector<float> pa = pooledA.get(prows), pb = pooledB.get(prows);
             const std::vector<float> da = deadA.get((size_t) IDXD), db = deadB.get((size_t) IDXD);
@@ -1569,7 +1569,7 @@ int main(int argc, char** argv) {
     // under YaRN the factor is observable (row 0 is not 1).
     {
         std::printf("\n-- the spare key (position 0) under rope scaling: table indexer vs native indexer\n");
-        using RST = strata::kernels::RopeScalingType;
+        using RST = guild::kernels::RopeScalingType;
         struct Variant { const char* name; RST type; double factor; double ext; };
         const Variant variants[] = {{"none", RST::None, 1.0, 0.0},
                                     {"linear 2", RST::Linear, 2.0, 0.0},
@@ -1590,7 +1590,7 @@ int main(int argc, char** argv) {
               "cs");
         const size_t prows = (size_t) (MC / R + 1) * IDXD, trows = (size_t) (R - 1) * IDXD;
         // one cell at position 0 through either kernel; returns (dead, pooled[0])
-        auto spare = [&](bool native, const strata::kernels::RopeScaling &sc,
+        auto spare = [&](bool native, const guild::kernels::RopeScaling &sc,
                          std::vector<float> &dead,
                          std::vector<float> &pooled0) {
             try {
@@ -1611,16 +1611,16 @@ int main(int argc, char** argv) {
             check(DPCT_CHECK_ERROR(
                       (dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memset(bpos.p, 0, 4).wait()),
                   "zero");
-            strata::kernels::QsaIndexerBuffers bufs{tail.p, dd.p, pooled.p, bpos.p};
+            guild::kernels::QsaIndexerBuffers bufs{tail.p, dd.p, pooled.p, bpos.p};
             if (native) {
-                strata::kernels::native_qsa_indexer_append(draw0.p, dpos0.p, 0, dw_kn.p, EPS, bufs, S, MC, sc, cs);
+                guild::kernels::native_qsa_indexer_append(draw0.p, dpos0.p, 0, dw_kn.p, EPS, bufs, S, MC, sc, cs);
             } else {
                 std::vector<float> tc((size_t) (MC * HALF)), ts(tc.size());
-                strata::kernels::build_rope_table((int) NROT, sc, (int) MC, tc.data(), ts.data());
+                guild::kernels::build_rope_table((int) NROT, sc, (int) MC, tc.data(), ts.data());
                 Dev<float> dc, dsn;
                 dc.put(tc);
                 dsn.put(ts);
-                strata::kernels::indexer_key_append(draw0.p, dpos0.p, 0, dw_kn.p, EPS, bufs, S, dc.p, dsn.p, cs);
+                guild::kernels::indexer_key_append(draw0.p, dpos0.p, 0, dw_kn.p, EPS, bufs, S, dc.p, dsn.p, cs);
             }
             check(DPCT_CHECK_ERROR(cs->wait()), "sync");
             dead = dd.get((size_t) IDXD);
@@ -1635,12 +1635,12 @@ int main(int argc, char** argv) {
         };
         std::vector<float> t_none, t_none_p, n_none, n_none_p;
         for (const Variant& var : variants) {
-            strata::kernels::RopeScaling sc;
+            guild::kernels::RopeScaling sc;
             sc.type = var.type;
             sc.factor = var.factor;
             sc.ext_factor = var.ext;
             std::vector<float> row0c((size_t) (MC * HALF)), row0s(row0c.size());
-            strata::kernels::build_rope_table((int) NROT, sc, (int) MC, row0c.data(), row0s.data());
+            guild::kernels::build_rope_table((int) NROT, sc, (int) MC, row0c.data(), row0s.data());
             std::vector<float> td, tp, nd, np;
             spare(false, sc, td, tp);
             spare(true, sc, nd, np);

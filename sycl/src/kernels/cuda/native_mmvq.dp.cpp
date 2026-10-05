@@ -26,12 +26,12 @@
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
-#include "strata/sycl_math.hpp"
-#include "strata/sycl_queue.hpp"
-#include "strata/kernels/native_mmvq.hpp"
-#include "strata/kernels/dp4a.hpp"
-#include "strata/kernels/q8_1_finite.hpp"
-#include "strata/kernels/iq_kernels.hpp"
+#include "guild/sycl_math.hpp"
+#include "guild/sycl_queue.hpp"
+#include "guild/kernels/native_mmvq.hpp"
+#include "guild/kernels/dp4a.hpp"
+#include "guild/kernels/q8_1_finite.hpp"
+#include "guild/kernels/iq_kernels.hpp"
 
 #include <cstdint>
 #include <cstdlib>
@@ -41,11 +41,11 @@
 #include <string>
 #include <cmath>
 
-namespace strata::kernels {
+namespace guild::kernels {
 namespace {
 
-#ifndef STRATA_MMVQ_UNROLL
-#define STRATA_MMVQ_UNROLL 2
+#ifndef GUILD_MMVQ_UNROLL
+#define GUILD_MMVQ_UNROLL 2
 #endif
 constexpr int QK = 256;
 constexpr int Q8K = 32;
@@ -152,11 +152,11 @@ template <int SG> __dpct_inline__ float sg_sum(float x) {   // SYCL port: warp_s
     return x;
 }
 // SYCL port: the decode mmvq kernels as Xe2-native SIMD16 sub-groups (twice the registers per lane, same 128
-// threads per group) or as the CUDA-shaped 32-lane warp (default). STRATA_MMVQ_SG: 16 = all SIMD16, 1 = IQ4_XS
+// threads per group) or as the CUDA-shaped 32-lane warp (default). GUILD_MMVQ_SG: 16 = all SIMD16, 1 = IQ4_XS
 // only, 2 = short outputs (n_out <= 1024) only, 3 = both. mmvq_sg_bench alone: SIMD16 wins on IQ4_XS (up to
 // 1.45x) and short outputs (up to 1.3x), loses 10-25% on the large K-quant projections.
 inline int mmvq_sg() {
-    static const int v = std::getenv("STRATA_MMVQ_SG") ? std::atoi(std::getenv("STRATA_MMVQ_SG")) : 32;
+    static const int v = std::getenv("GUILD_MMVQ_SG") ? std::atoi(std::getenv("GUILD_MMVQ_SG")) : 32;
     return v;
 }
 inline bool mmvq_sg16(bool iq4xs, int n_out) {
@@ -213,8 +213,8 @@ q5_q8_dot_impl(const int *__restrict__ vl, const int *__restrict__ vh,
         const int vh1i = ((vh[1] >> i) << 4) & 0x10101010;
         const int v0i = vl0i | vh0i;
         const int v1i = vl1i | vh1i;
-        const int dot1 = STRATA_DP4A(v0i, u[2 * i], STRATA_DP4A(v1i, u[2 * i + 1], 0));
-        const int dot2 = STRATA_DP4A(0x01010101, u[2 * i], STRATA_DP4A(0x01010101, u[2 * i + 1], 0));
+        const int dot1 = GUILD_DP4A(v0i, u[2 * i], GUILD_DP4A(v1i, u[2 * i + 1], 0));
+        const int dot2 = GUILD_DP4A(0x01010101, u[2 * i], GUILD_DP4A(0x01010101, u[2 * i + 1], 0));
         sumf_d += d8[i] * (dot1 * sc[i]);
         sumf_m += d8[i] * (dot2 * m[i]);
     }
@@ -342,8 +342,8 @@ __dpct_inline__ float q2_q8_dot(const Q20Block *__restrict__ w,
         const int qo = dpct::byte_level_permute(0x020100ff, 0x020100ff, q >> 2);
         const int qx = dpct::byte_level_permute(qe, qo, 0x5140);
         const int qy = dpct::byte_level_permute(qe, qo, 0x7362);
-        sumi = STRATA_DP4A(u, qx, sumi);
-        sumi = STRATA_DP4A(v, qy, sumi);
+        sumi = GUILD_DP4A(u, qx, sumi);
+        sumi = GUILD_DP4A(v, qy, sumi);
     }
     const float d8 = chunk->ds[0];
     return d2 * d8 * sumi;
@@ -430,7 +430,7 @@ __dpct_inline__ float q3_q8_dot_impl(int vl, int vh, const int *__restrict__ u,
         const int vih = ((vh >> i) << 2) & 0x04040404;
         const int vi =
             dpct::vectorized_binary<sycl::char4>(vil, vih, dpct::sub_sat());
-        sumf += d8[i] * (STRATA_DP4A(vi, u[i], 0) * sc);
+        sumf += d8[i] * (GUILD_DP4A(vi, u[i], 0) * sc);
     }
     return d3 * sumf;
 }
@@ -541,8 +541,8 @@ __dpct_inline__ float iq4_xs_q8_dot(const IQ4XSBlock *__restrict__ w,
         const sycl::int2 v = iq4_table_lookup(aux_q4, iq4nl_values);
         const int u0 = reinterpret_cast<const int*>(x[iqs / 4].qs)[j];
         const int u1 = reinterpret_cast<const int*>(x[iqs / 4].qs)[j + 4];
-        sumi = STRATA_DP4A(v.x(), u0, sumi);
-        sumi = STRATA_DP4A(v.y(), u1, sumi);
+        sumi = GUILD_DP4A(v.x(), u0, sumi);
+        sumi = GUILD_DP4A(v.y(), u1, sumi);
     }
     const int ls = ((w->scales_l[iqs / 8] >> (iqs & 0x04)) & 0x0f) |
                    (((w->scales_h >> (iqs / 2)) & 0x03) << 4);
@@ -616,8 +616,8 @@ q4_q8_dot_impl(const int *__restrict__ v, const int *__restrict__ u,
     for (int i = 0; i < 2; ++i) {
         const int v0i = (v[0] >> (4 * i)) & 0x0f0f0f0f;
         const int v1i = (v[1] >> (4 * i)) & 0x0f0f0f0f;
-        const int dot1 = STRATA_DP4A(v1i, u[2 * i + 1], STRATA_DP4A(v0i, u[2 * i], 0));
-        const int dot2 = STRATA_DP4A(0x01010101, u[2 * i + 1], STRATA_DP4A(0x01010101, u[2 * i], 0));
+        const int dot1 = GUILD_DP4A(v1i, u[2 * i + 1], GUILD_DP4A(v0i, u[2 * i], 0));
+        const int dot2 = GUILD_DP4A(0x01010101, u[2 * i + 1], GUILD_DP4A(0x01010101, u[2 * i], 0));
         sumf_d += d8[i] * (dot1 * sc[i]);
         sumf_m += d8[i] * (dot2 * m[i]);
     }
@@ -729,7 +729,7 @@ __dpct_inline__ float q6_q8_dot_impl(int vl, int vh, const int *__restrict__ u,
         const int vih = ((vh >> (4 * i)) << 4) & 0x30303030;
         const int vi = dpct::vectorized_binary<sycl::char4>(
             vil | vih, 0x20202020, dpct::sub_sat());
-        sumf += d8[i] * (STRATA_DP4A(vi, u[i], 0) * sc);
+        sumf += d8[i] * (GUILD_DP4A(vi, u[i], 0) * sc);
     }
     return d * sumf;
 }
@@ -815,8 +815,8 @@ __dpct_inline__ float small_q8_dot(const Q40Block *__restrict__ w,
         const int v = load_int_b2(w->qs, iqs + i);
         const int vi0 = (v >> 0) & 0x0f0f0f0f;
         const int vi1 = (v >> 4) & 0x0f0f0f0f;
-        sumi = STRATA_DP4A(vi0, reinterpret_cast<const int*>(x->qs)[iqs + i], sumi);
-        sumi = STRATA_DP4A(vi1, reinterpret_cast<const int*>(x->qs)[iqs + i + 4], sumi);
+        sumi = GUILD_DP4A(vi0, reinterpret_cast<const int*>(x->qs)[iqs + i], sumi);
+        sumi = GUILD_DP4A(vi1, reinterpret_cast<const int*>(x->qs)[iqs + i + 4], sumi);
     }
     const sycl::float2 ds =
         (x->ds).template convert<float, sycl::rounding_mode::automatic>();
@@ -837,13 +837,13 @@ __dpct_inline__ float small_q8_dot(const Q50Block *__restrict__ w,
         vi0 |= (vh << 11) & 0x00001000;
         vi0 |= (vh << 18) & 0x00100000;
         vi0 |= (vh << 25) & 0x10000000;
-        sumi = STRATA_DP4A(vi0, reinterpret_cast<const int*>(x->qs)[iqs + i], sumi);
+        sumi = GUILD_DP4A(vi0, reinterpret_cast<const int*>(x->qs)[iqs + i], sumi);
         int vi1 = (vl >> 4) & 0x0f0f0f0f;
         vi1 |= (vh >> 12) & 0x00000010;
         vi1 |= (vh >> 5) & 0x00001000;
         vi1 |= (vh << 2) & 0x00100000;
         vi1 |= (vh << 9) & 0x10000000;
-        sumi = STRATA_DP4A(vi1, reinterpret_cast<const int*>(x->qs)[iqs + i + 4], sumi);
+        sumi = GUILD_DP4A(vi1, reinterpret_cast<const int*>(x->qs)[iqs + i + 4], sumi);
     }
     const sycl::float2 ds =
         (x->ds).template convert<float, sycl::rounding_mode::automatic>();
@@ -859,7 +859,7 @@ __dpct_inline__ float small_q8_dot(const Q80Block *__restrict__ w,
     for (int i = 0; i < 2; ++i) {
         const int v = load_int_b2(w->qs, iqs + i);
         const int u = reinterpret_cast<const int*>(x->qs)[iqs + i];
-        sumi = STRATA_DP4A(v, u, sumi);
+        sumi = GUILD_DP4A(v, u, sumi);
     }
     const float d0 = w->d;
     const float d1 = x->ds[0];
@@ -875,8 +875,8 @@ __dpct_inline__ float small_q8_dot(const IQ4NLBlock *__restrict__ w,
     for (int i = 0; i < 2; ++i) {
         const sycl::int2 v =
             iq4_table_lookup(load_int_b2(w->qs, iqs + i), iq4nl_values);
-        sumi = STRATA_DP4A(v.x(), q8[i], sumi);
-        sumi = STRATA_DP4A(v.y(), q8[i + 4], sumi);
+        sumi = GUILD_DP4A(v.x(), q8[i], sumi);
+        sumi = GUILD_DP4A(v.y(), q8[i + 4], sumi);
     }
     const float d = sycl::vec<sycl::half, 1>(w->d)
                         .convert<float, sycl::rounding_mode::automatic>()[0] *
@@ -1059,8 +1059,8 @@ struct Q20Traits {
         int sumi = 0;
 #pragma unroll
         for (int j = 0; j < 4; ++j) {
-            sumi = STRATA_DP4A(q8[j * 2], r.qx[j], sumi);
-            sumi = STRATA_DP4A(q8[j * 2 + 1], r.qy[j], sumi);
+            sumi = GUILD_DP4A(q8[j * 2], r.qx[j], sumi);
+            sumi = GUILD_DP4A(q8[j * 2 + 1], r.qy[j], sumi);
         }
         const float d8 = chunk->ds[0];
         return r.d2 * d8 * sumi;
@@ -1121,7 +1121,7 @@ struct Q6KTraits {
 #pragma unroll
         for (int i = 0; i < 2; ++i) {
             const int u = reinterpret_cast<const int*>(x[r.bq8_offset + 2 * i].qs)[iqs % 8];
-            sumf += x[r.bq8_offset + 2 * i].ds[0] * r.dsc[i] * (float) strata::dp4a(r.vi[i], u, 0);
+            sumf += x[r.bq8_offset + 2 * i].ds[0] * r.dsc[i] * (float) guild::dp4a(r.vi[i], u, 0);
         }
         return sumf;
     }
@@ -1139,8 +1139,8 @@ struct Q6KTraits {
         return a;
     }
     static float dot(const W& r, const A& a) {
-        return a.ds[0] * r.dsc[0] * (float) strata::dp4a(r.vi[0], a.u[0], 0) +
-               a.ds[1] * r.dsc[1] * (float) strata::dp4a(r.vi[1], a.u[1], 0);
+        return a.ds[0] * r.dsc[0] * (float) guild::dp4a(r.vi[0], a.u[0], 0) +
+               a.ds[1] * r.dsc[1] * (float) guild::dp4a(r.vi[1], a.u[1], 0);
     }
 };
 struct IQ4XSTraits {
@@ -1165,8 +1165,8 @@ struct IQ4XSTraits {
         for (int j = 0; j < 4; ++j) {
             const int u0 = reinterpret_cast<const int*>(x[iqs / 4].qs)[j];
             const int u1 = reinterpret_cast<const int*>(x[iqs / 4].qs)[j + 4];
-            sumi = STRATA_DP4A(r.v[j].x(), u0, sumi);
-            sumi = STRATA_DP4A(r.v[j].y(), u1, sumi);
+            sumi = GUILD_DP4A(r.v[j].x(), u0, sumi);
+            sumi = GUILD_DP4A(r.v[j].y(), u1, sumi);
         }
         sumi *= r.ls - 32;
         const float d = r.dw * x[iqs / 4].ds[0];
@@ -1215,7 +1215,7 @@ native_mmvq_multi_kernel(const typename F::Block *__restrict__ w,
     const int blocks_per_row = n_in / F::DIV;
     const int x_stride = n_in / Q8K;                   // Q8_1 blocks per activation column
     float tmp[NCOLS][ROWS] = {};
-#pragma unroll STRATA_MMVQ_UNROLL   // SYCL port: several 256-blocks' loads in flight per warp (bytes in flight, not ALU)
+#pragma unroll GUILD_MMVQ_UNROLL   // SYCL port: several 256-blocks' loads in flight per warp (bytes in flight, not ALU)
     for (int kbx = tid / F::T; kbx < blocks_per_row; kbx += BPI) {
         const int kby = kbx * F::KBY;
         const int kqs = F::kqs(tid);
@@ -1345,8 +1345,8 @@ __dpct_inline__ sycl::int4 load16_a2(const void* p) {
     for (int i = 0; i < 4; ++i) o[i] = half ? (w[i] >> 16) | (w[i + 1] << 16) : w[i];
     return sycl::int4((int) o[0], (int) o[1], (int) o[2], (int) o[3]);
 }
-inline bool q6k_a2() {   // STRATA_MMVQ_A2=0 turns the aligned-load path off
-    static const bool v = std::getenv("STRATA_MMVQ_A2") == nullptr || std::atoi(std::getenv("STRATA_MMVQ_A2")) != 0;
+inline bool q6k_a2() {   // GUILD_MMVQ_A2=0 turns the aligned-load path off
+    static const bool v = std::getenv("GUILD_MMVQ_A2") == nullptr || std::atoi(std::getenv("GUILD_MMVQ_A2")) != 0;
     return v;
 }
 
@@ -1413,10 +1413,10 @@ void native_mmvq_q6k_wide_kernel(const Q6KBlock* __restrict__ w, const Q81Block*
 #pragma unroll
             for (int j = 0; j < NCOLS; ++j) {
                 int s0 = 0, s1 = 0;
-                s0 = strata::dp4a(vi0[0], u0[j].x(), s0); s0 = strata::dp4a(vi0[1], u0[j].y(), s0);
-                s0 = strata::dp4a(vi0[2], u0[j].z(), s0); s0 = strata::dp4a(vi0[3], u0[j].w(), s0);
-                s1 = strata::dp4a(vi1[0], u1[j].x(), s1); s1 = strata::dp4a(vi1[1], u1[j].y(), s1);
-                s1 = strata::dp4a(vi1[2], u1[j].z(), s1); s1 = strata::dp4a(vi1[3], u1[j].w(), s1);
+                s0 = guild::dp4a(vi0[0], u0[j].x(), s0); s0 = guild::dp4a(vi0[1], u0[j].y(), s0);
+                s0 = guild::dp4a(vi0[2], u0[j].z(), s0); s0 = guild::dp4a(vi0[3], u0[j].w(), s0);
+                s1 = guild::dp4a(vi1[0], u1[j].x(), s1); s1 = guild::dp4a(vi1[1], u1[j].y(), s1);
+                s1 = guild::dp4a(vi1[2], u1[j].z(), s1); s1 = guild::dp4a(vi1[3], u1[j].w(), s1);
                 acc[r][j] += ds0[j] * dsc0[r] * (float) s0 + ds1[j] * dsc1[r] * (float) s1;
             }
         }
@@ -1483,10 +1483,10 @@ void native_mmvq_q6k_pf_kernel(const Q6KBlock* __restrict__ w, const Q81Block* _
                 const sycl::int4 a0 = reinterpret_cast<const sycl::int4*>(xb[0].qs)[u_int4];
                 const sycl::int4 a1 = reinterpret_cast<const sycl::int4*>(xb[2].qs)[u_int4];
                 int s0 = 0, s1 = 0;
-                s0 = strata::dp4a(vi0[0], a0.x(), s0); s0 = strata::dp4a(vi0[1], a0.y(), s0);
-                s0 = strata::dp4a(vi0[2], a0.z(), s0); s0 = strata::dp4a(vi0[3], a0.w(), s0);
-                s1 = strata::dp4a(vi1[0], a1.x(), s1); s1 = strata::dp4a(vi1[1], a1.y(), s1);
-                s1 = strata::dp4a(vi1[2], a1.z(), s1); s1 = strata::dp4a(vi1[3], a1.w(), s1);
+                s0 = guild::dp4a(vi0[0], a0.x(), s0); s0 = guild::dp4a(vi0[1], a0.y(), s0);
+                s0 = guild::dp4a(vi0[2], a0.z(), s0); s0 = guild::dp4a(vi0[3], a0.w(), s0);
+                s1 = guild::dp4a(vi1[0], a1.x(), s1); s1 = guild::dp4a(vi1[1], a1.y(), s1);
+                s1 = guild::dp4a(vi1[2], a1.z(), s1); s1 = guild::dp4a(vi1[3], a1.w(), s1);
                 acc[j] += (float) xb[0].ds[0] * dsc0[u] * (float) s0 + (float) xb[2].ds[0] * dsc1[u] * (float) s1;
             }
         }
@@ -1500,12 +1500,12 @@ void native_mmvq_q6k_pf_kernel(const Q6KBlock* __restrict__ w, const Q81Block* _
         if (lane == 0) y[std::size_t(j) * n_out + row] = v;
     }
 }
-inline int q6k_pf() {   // STRATA_MMVQ_PF: weight-load steps issued ahead in the wide Q6_K kernel (0 = off)
-    static const int v = std::getenv("STRATA_MMVQ_PF") ? std::atoi(std::getenv("STRATA_MMVQ_PF")) : 0;
+inline int q6k_pf() {   // GUILD_MMVQ_PF: weight-load steps issued ahead in the wide Q6_K kernel (0 = off)
+    static const int v = std::getenv("GUILD_MMVQ_PF") ? std::atoi(std::getenv("GUILD_MMVQ_PF")) : 0;
     return v;
 }
 inline int q6k_wide_rpw() {
-    static const int v = std::getenv("STRATA_MMVQ_WIDE_RPW") ? std::atoi(std::getenv("STRATA_MMVQ_WIDE_RPW")) : 1;
+    static const int v = std::getenv("GUILD_MMVQ_WIDE_RPW") ? std::atoi(std::getenv("GUILD_MMVQ_WIDE_RPW")) : 1;
     return v;
 }
 template <int NCOLS>
@@ -1516,13 +1516,13 @@ void launch_q6k_wide(const void* weights, const void* x_q8_1, float* y, int n_in
     if (const int pf = q6k_pf(); pf > 0) {
         const unsigned blocks = unsigned((std::size_t(n_out) + WARPS - 1) / WARPS);
         const sycl::range<3> t(1, WARPS, WARP);
-#define STRATA_Q6PF(UU) if (pf == UU) { \
+#define GUILD_Q6PF(UU) if (pf == UU) { \
             s->parallel_for<dpct_kernel_name<class native_mmvq_q6k_pf, dpct_kernel_scalar<NCOLS>, dpct_kernel_scalar<UU>>>( \
                 sycl::nd_range<3>(sycl::range(1, 1, blocks) * t, t), \
                 [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] { native_mmvq_q6k_pf_kernel<NCOLS, UU>(w, x, y, n_in, n_out); }); \
             return; }
-        STRATA_Q6PF(2) STRATA_Q6PF(3) STRATA_Q6PF(4) STRATA_Q6PF(6)
-#undef STRATA_Q6PF
+        GUILD_Q6PF(2) GUILD_Q6PF(3) GUILD_Q6PF(4) GUILD_Q6PF(6)
+#undef GUILD_Q6PF
     }
     if (rpw == 1 && q6k_a2()) {
         const unsigned blocks = unsigned((std::size_t(n_out) + WARPS - 1) / WARPS);
@@ -1541,14 +1541,14 @@ void launch_q6k_wide(const void* weights, const void* x_q8_1, float* y, int n_in
             [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(16)]] { native_mmvq_q6k_wide_kernel<NCOLS, 1, 16>(w, x, y, n_in, n_out); });
         return;
     }
-#define STRATA_Q6W(RP) if (rpw == RP) { \
+#define GUILD_Q6W(RP) if (rpw == RP) { \
         const unsigned blocks = unsigned((std::size_t(n_out) + WARPS * RP - 1) / (WARPS * RP)); \
         s->parallel_for<dpct_kernel_name<class native_mmvq_q6k_wide, dpct_kernel_scalar<NCOLS>, dpct_kernel_scalar<RP>>>( \
             sycl::nd_range<3>(sycl::range(1, 1, blocks) * sycl::range(1, WARPS, WARP), sycl::range(1, WARPS, WARP)), \
             [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] { native_mmvq_q6k_wide_kernel<NCOLS, RP>(w, x, y, n_in, n_out); }); \
         return; }
-    STRATA_Q6W(1) STRATA_Q6W(2) STRATA_Q6W(4)
-#undef STRATA_Q6W
+    GUILD_Q6W(1) GUILD_Q6W(2) GUILD_Q6W(4)
+#undef GUILD_Q6W
     const unsigned blocks = unsigned((std::size_t(n_out) + WARPS - 1) / WARPS);
     s->parallel_for<dpct_kernel_name<class native_mmvq_q6k_wide1, dpct_kernel_scalar<NCOLS>>>(
         sycl::nd_range<3>(sycl::range(1, 1, blocks) * sycl::range(1, WARPS, WARP), sycl::range(1, WARPS, WARP)),
@@ -1566,8 +1566,8 @@ __dpct_inline__ sycl::int4 ld_q8_16(const Q81Block* b, int half) {   // Q8_1 qs 
     return sycl::int4(q[0], q[1], q[2], q[3]);
 }
 __dpct_inline__ int dp4a4(const sycl::int4 a, const sycl::int4 b, int acc) {
-    acc = strata::dp4a(a.x(), b.x(), acc); acc = strata::dp4a(a.y(), b.y(), acc);
-    acc = strata::dp4a(a.z(), b.z(), acc); return strata::dp4a(a.w(), b.w(), acc);
+    acc = guild::dp4a(a.x(), b.x(), acc); acc = guild::dp4a(a.y(), b.y(), acc);
+    acc = guild::dp4a(a.z(), b.z(), acc); return guild::dp4a(a.w(), b.w(), acc);
 }
 __dpct_inline__ void k4_scale_min(const uint8_t* sc, int j, float& s, float& m) {   // ggml get_scale_min_k4
     if (j < 4) { s = (float) (sc[j] & 63); m = (float) (sc[j + 4] & 63); }
@@ -1681,14 +1681,14 @@ void launch_wide(const void* weights, const void* x_q8_1, float* y, int n_in, in
         sycl::nd_range<3>(sycl::range(1, 1, blocks) * sycl::range(1, WARPS, WARP), sycl::range(1, WARPS, WARP)),
         [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] { native_mmvq_wide_kernel<F, NCOLS>(w, x, y, n_in, n_out); });
 }
-inline bool wide_k() {   // STRATA_MMVQ_WIDE_K=0: Q4_K/Q5_K/IQ4_XS through the multi kernel (the old path)
-    static const bool v = std::getenv("STRATA_MMVQ_WIDE_K") == nullptr || std::atoi(std::getenv("STRATA_MMVQ_WIDE_K")) != 0;
+inline bool wide_k() {   // GUILD_MMVQ_WIDE_K=0: Q4_K/Q5_K/IQ4_XS through the multi kernel (the old path)
+    static const bool v = std::getenv("GUILD_MMVQ_WIDE_K") == nullptr || std::atoi(std::getenv("GUILD_MMVQ_WIDE_K")) != 0;
     return v;
 }
 template <typename F>
 bool try_wide(const void* weights, const void* x_q8_1, float* y, int n_in, int n_out, int ncols, void* stream) {
     if (!wide_k() || ncols < 1 || ncols > 8 || n_in % QK != 0) return false;
-    const auto s = strata::q_of(stream);
+    const auto s = guild::q_of(stream);
     switch (ncols) {
         case 1: launch_wide<F, 1>(weights, x_q8_1, y, n_in, n_out, s); return true;
         case 2: launch_wide<F, 2>(weights, x_q8_1, y, n_in, n_out, s); return true;
@@ -1770,14 +1770,14 @@ void launch_wide32(const void* weights, const void* x_q8_1, float* y, int n_in, 
         sycl::nd_range<3>(sycl::range(1, 1, blocks) * sycl::range(1, WARPS, WARP), sycl::range(1, WARPS, WARP)),
         [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] { native_mmvq_wide32_kernel<F, NCOLS>(w, x, y, n_in, n_out); });
 }
-inline bool wide_32() {   // STRATA_MMVQ_WIDE_32=0: Q8_0/IQ4_NL through the small/multi kernels (the old path)
-    static const bool v = std::getenv("STRATA_MMVQ_WIDE_32") == nullptr || std::atoi(std::getenv("STRATA_MMVQ_WIDE_32")) != 0;
+inline bool wide_32() {   // GUILD_MMVQ_WIDE_32=0: Q8_0/IQ4_NL through the small/multi kernels (the old path)
+    static const bool v = std::getenv("GUILD_MMVQ_WIDE_32") == nullptr || std::atoi(std::getenv("GUILD_MMVQ_WIDE_32")) != 0;
     return v;
 }
 template <typename F>
 bool try_wide32(const void* weights, const void* x_q8_1, float* y, int n_in, int n_out, int ncols, void* stream) {
     if (!wide_32() || ncols < 1 || ncols > 8 || n_in % 32 != 0) return false;
-    const auto s = strata::q_of(stream);
+    const auto s = guild::q_of(stream);
     switch (ncols) {
         case 1: launch_wide32<F, 1>(weights, x_q8_1, y, n_in, n_out, s); return true;
         case 2: launch_wide32<F, 2>(weights, x_q8_1, y, n_in, n_out, s); return true;
@@ -1800,7 +1800,7 @@ void launch_q6k_wide224(const void* weights, const void* x_q8_1, float* y, int n
         sycl::nd_range<3>(sycl::range(1, 1, blocks) * sycl::range(1, WARPS, WARP), sycl::range(1, WARPS, WARP)),
         [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] { native_mmvq_q6k_wide_kernel<NCOLS, 1, WARP, 224>(w, x, y, n_in, n_out); });
 }
-bool g_q6k_wide = std::getenv("STRATA_MMVQ_WIDE") == nullptr || std::atoi(std::getenv("STRATA_MMVQ_WIDE")) != 0;
+bool g_q6k_wide = std::getenv("GUILD_MMVQ_WIDE") == nullptr || std::atoi(std::getenv("GUILD_MMVQ_WIDE")) != 0;
 
 template <typename F, int NCOLS, int RPW>
 void launch_rowwarp(const void* weights, const void* x_q8_1, float* y, int n_in, int n_out, dpct::queue_ptr s) {
@@ -1811,8 +1811,8 @@ void launch_rowwarp(const void* weights, const void* x_q8_1, float* y, int n_in,
         sycl::nd_range<3>(sycl::range(1, 1, blocks) * sycl::range(1, WARPS, WARP), sycl::range(1, WARPS, WARP)),
         [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] { native_mmvq_rowwarp_kernel<F, NCOLS, RPW>(w, x, y, n_in, n_out); });
 }
-inline int rowwarp_rpw() {   // STRATA_MMVQ_RPW: 0 = the shared kernel, 1/2/4 = rows per warp (bench knob)
-    static const int v = std::getenv("STRATA_MMVQ_RPW") ? std::atoi(std::getenv("STRATA_MMVQ_RPW")) : 0;   // default: the shared kernel (measured equal at warm clocks)
+inline int rowwarp_rpw() {   // GUILD_MMVQ_RPW: 0 = the shared kernel, 1/2/4 = rows per warp (bench knob)
+    static const int v = std::getenv("GUILD_MMVQ_RPW") ? std::atoi(std::getenv("GUILD_MMVQ_RPW")) : 0;   // default: the shared kernel (measured equal at warm clocks)
     return v;
 }
 
@@ -1921,7 +1921,7 @@ void launch_multi_n(const void *weights, const void *x_q8_1, float *y, int n_in,
 template<typename F>
 void launch_multi(const void* weights, const void* x_q8_1, float* y, int n_in, int n_out, int ncols,
                   void* stream) {
-    const auto s = strata::q_of(stream);
+    const auto s = guild::q_of(stream);
     switch (ncols) {
         case 2: launch_multi_n<F, 2>(weights, x_q8_1, y, n_in, n_out, s); break;
         case 3: launch_multi_n<F, 3>(weights, x_q8_1, y, n_in, n_out, s); break;
@@ -1989,7 +1989,7 @@ void small_mmvq(const void* weights, const void* x_q8_1, float* y,
     }
     const auto* w = static_cast<const Weight*>(weights);
     const auto* x = static_cast<const Q81Block*>(x_q8_1);
-    const auto s = strata::q_of(stream);
+    const auto s = guild::q_of(stream);
     const dpct::dim3 threads(WARP, WARPS);
     if (n_in / 32 < 2 * WARPS * WARP / Qi) {
         const unsigned blocks = unsigned((std::size_t(n_out) + WARPS - 1) / WARPS);
@@ -2070,7 +2070,7 @@ void native_mmvq_set_multi_exact(bool exact) { g_multi_exact = exact; }
 void native_mmvq_set_q6k_wide(bool on) { g_q6k_wide = on; }
 void native_q6_k_mmvq_stride224(const void* weights, const void* x_q8_1, float* y, int n_in, int n_out, int ncols,
                                 void* stream) {
-    const auto s = strata::q_of(stream);
+    const auto s = guild::q_of(stream);
     switch (ncols) {
         case 1: launch_q6k_wide224<1>(weights, x_q8_1, y, n_in, n_out, s); return;
         case 2: launch_q6k_wide224<2>(weights, x_q8_1, y, n_in, n_out, s); return;
@@ -2099,7 +2099,7 @@ void native_quantize_q8_1(const float* x, void* x_q8_1, int n_in, int ncols, voi
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        ((sycl::queue *)(strata::q_of(stream)))
+        ((sycl::queue *)(guild::q_of(stream)))
             ->parallel_for<
                 dpct_kernel_name<class native_quantize_q8_1_kernel_b480d2>>(
                 sycl::nd_range<3>(sycl::range(1, 1, blocks) *
@@ -2131,7 +2131,7 @@ void native_q5_k_mmvq(const void* weights, const void* x_q8_1, float* y,
     }
     const auto* w = static_cast<const Q5KBlock*>(weights);
     const auto* x = static_cast<const Q81Block*>(x_q8_1);
-    const auto s = strata::q_of(stream);
+    const auto s = guild::q_of(stream);
     const dpct::dim3 threads(WARP, WARPS);
     if (n_in / QK < VDR * WARPS * WARP / QI) {
         const unsigned blocks = unsigned((std::size_t(n_out) + WARPS - 1) / WARPS);
@@ -2206,7 +2206,7 @@ void native_q2_0_mmvq(const void* weights, const void* x_q8_1, float* y,
     }
     const auto* w = static_cast<const Q20Block*>(weights);
     const auto* x = static_cast<const Q81Block*>(x_q8_1);
-    const auto s = strata::q_of(stream);
+    const auto s = guild::q_of(stream);
     const dpct::dim3 threads(WARP, WARPS);
     if (n_in / 64 < WARPS * WARP / 2) {
         const unsigned blocks = unsigned((std::size_t(n_out) + WARPS - 1) / WARPS);
@@ -2278,7 +2278,7 @@ void native_q3_k_mmvq(const void* weights, const void* x_q8_1, float* y,
     }
     const auto* w = static_cast<const Q3KBlock*>(weights);
     const auto* x = static_cast<const Q81Block*>(x_q8_1);
-    const auto s = strata::q_of(stream);
+    const auto s = guild::q_of(stream);
     const dpct::dim3 threads(WARP, WARPS);
     if (n_in / 256 < WARPS * WARP / 16) {
         const unsigned blocks = unsigned((std::size_t(n_out) + WARPS - 1) / WARPS);
@@ -2351,7 +2351,7 @@ void native_iq4_xs_mmvq(const void* weights, const void* x_q8_1, float* y,
     }
     const auto* w = static_cast<const IQ4XSBlock*>(weights);
     const auto* x = static_cast<const Q81Block*>(x_q8_1);
-    const auto s = strata::q_of(stream);
+    const auto s = guild::q_of(stream);
     const dpct::dim3 threads(WARP, WARPS);
     if (n_in / 256 < 4 * WARPS * WARP / 32) {
         const unsigned blocks = unsigned((std::size_t(n_out) + WARPS - 1) / WARPS);
@@ -2441,7 +2441,7 @@ void native_q4_k_mmvq(const void* weights, const void* x_q8_1, float* y,
     }
     const auto* w = static_cast<const Q4KBlock*>(weights);
     const auto* x = static_cast<const Q81Block*>(x_q8_1);
-    const auto s = strata::q_of(stream);
+    const auto s = guild::q_of(stream);
     const dpct::dim3 threads(WARP, WARPS);
     if (n_in / 256 < WARPS * WARP / 16) {
         const unsigned blocks = unsigned((std::size_t(n_out) + WARPS - 1) / WARPS);
@@ -2505,11 +2505,11 @@ void native_q6_k_mmvq(const void* weights, const void* x_q8_1, float* y,
     // SYCL port: 16-byte-load kernel for the decode shapes (ncols <= 4)
     // With the aligned loads (load16_a2) the wide kernel wins on every Q6_K shape and window width: 2.6-3.4x the
     // misaligned-load kernels in q6k_align_bench, decode 44.9 -> 54 tok/s on the Coder, output tokens identical.
-    // Without them (STRATA_MMVQ_A2=0) it won only on n_out >= 4096 at 1-4 columns, the old gate.
-    static const int wide_min = std::getenv("STRATA_MMVQ_WIDE_MIN") ? std::atoi(std::getenv("STRATA_MMVQ_WIDE_MIN")) : q6k_a2() ? 0 : 4096;
-    static const int wide_maxc = std::getenv("STRATA_MMVQ_WIDE_MAXC") ? std::atoi(std::getenv("STRATA_MMVQ_WIDE_MAXC")) : q6k_a2() ? 8 : 4;
+    // Without them (GUILD_MMVQ_A2=0) it won only on n_out >= 4096 at 1-4 columns, the old gate.
+    static const int wide_min = std::getenv("GUILD_MMVQ_WIDE_MIN") ? std::atoi(std::getenv("GUILD_MMVQ_WIDE_MIN")) : q6k_a2() ? 0 : 4096;
+    static const int wide_maxc = std::getenv("GUILD_MMVQ_WIDE_MAXC") ? std::atoi(std::getenv("GUILD_MMVQ_WIDE_MAXC")) : q6k_a2() ? 8 : 4;
     if (g_q6k_wide && ncols >= 1 && ncols <= wide_maxc && n_in % 256 == 0 && n_out >= wide_min) {
-        const auto s = strata::q_of(stream);
+        const auto s = guild::q_of(stream);
         switch (ncols) {
             case 1: launch_q6k_wide<1>(weights, x_q8_1, y, n_in, n_out, s); return;
             case 2: launch_q6k_wide<2>(weights, x_q8_1, y, n_in, n_out, s); return;
@@ -2523,12 +2523,12 @@ void native_q6_k_mmvq(const void* weights, const void* x_q8_1, float* y,
     }
     // SYCL port: the row-blocked kernel for the decode shapes (ncols <= 4)
     if (ncols >= 1 && ncols <= 4 && rowwarp_rpw() > 0 && n_in % 256 == 0) {
-        dpct::queue_ptr s = strata::q_of(stream);
+        dpct::queue_ptr s = guild::q_of(stream);
         const int rpw = rowwarp_rpw();
-#define STRATA_RW(NC, RP) if (ncols == NC && rpw == RP) { launch_rowwarp<Q6KTraits, NC, RP>(weights, x_q8_1, y, n_in, n_out, s); return; }
-        STRATA_RW(1, 1) STRATA_RW(1, 2) STRATA_RW(1, 4) STRATA_RW(2, 1) STRATA_RW(2, 2) STRATA_RW(2, 4)
-        STRATA_RW(3, 1) STRATA_RW(3, 2) STRATA_RW(3, 4) STRATA_RW(4, 1) STRATA_RW(4, 2) STRATA_RW(4, 4)
-#undef STRATA_RW
+#define GUILD_RW(NC, RP) if (ncols == NC && rpw == RP) { launch_rowwarp<Q6KTraits, NC, RP>(weights, x_q8_1, y, n_in, n_out, s); return; }
+        GUILD_RW(1, 1) GUILD_RW(1, 2) GUILD_RW(1, 4) GUILD_RW(2, 1) GUILD_RW(2, 2) GUILD_RW(2, 4)
+        GUILD_RW(3, 1) GUILD_RW(3, 2) GUILD_RW(3, 4) GUILD_RW(4, 1) GUILD_RW(4, 2) GUILD_RW(4, 4)
+#undef GUILD_RW
     }
 
     validate_shape(n_in, ncols, 256);
@@ -2544,7 +2544,7 @@ void native_q6_k_mmvq(const void* weights, const void* x_q8_1, float* y,
     }
     const auto* w = static_cast<const Q6KBlock*>(weights);
     const auto* x = static_cast<const Q81Block*>(x_q8_1);
-    const auto s = strata::q_of(stream);
+    const auto s = guild::q_of(stream);
     const dpct::dim3 threads(WARP, WARPS);
     if (n_in / 256 < WARPS * WARP / 32) {
         const unsigned blocks = unsigned((std::size_t(n_out) + WARPS - 1) / WARPS);
@@ -2697,4 +2697,4 @@ void native_mmvq(int ggml_type, const void* weights, const void* x_q8_1, float* 
     }
 }
 
-} // namespace strata::kernels
+} // namespace guild::kernels

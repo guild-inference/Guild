@@ -1,6 +1,6 @@
 // src/kernels/cuda/ple.cu - P2.S4: the PLE block's GPU half.
 //
-// See include/strata/kernels/ple.hpp for the structure and for the `normalized`-is-the-conv-input finding.
+// See include/guild/kernels/ple.hpp for the structure and for the `normalized`-is-the-conv-input finding.
 //
 // The legacy arithmetic below follows the captured CPU ggml graph
 // (`bench/micro/ple_in.bin` / `ple_out.bin`, produced by `ple_layer_xcheck.cpp`):
@@ -16,15 +16,15 @@
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
-#include "strata/sycl_queue.hpp"
-#include "strata/kernels/ple.hpp"
-#include "strata/kernels/bf16_gemv.hpp"
-#include "strata/kernels/f16_bits.hpp"
-#include "strata/kernels/ngram.hpp"
-#include "strata/kernels/quantize_act.hpp"
-#include "strata/kernels/s2_gemv_q8.hpp"
-#include "strata/kernels/native_mmvq.hpp"
-#include "strata/kernels/native_ple_postops.hpp"
+#include "guild/sycl_queue.hpp"
+#include "guild/kernels/ple.hpp"
+#include "guild/kernels/bf16_gemv.hpp"
+#include "guild/kernels/f16_bits.hpp"
+#include "guild/kernels/ngram.hpp"
+#include "guild/kernels/quantize_act.hpp"
+#include "guild/kernels/s2_gemv_q8.hpp"
+#include "guild/kernels/native_mmvq.hpp"
+#include "guild/kernels/native_ple_postops.hpp"
 
 #include <cmath>
 #include <cstdio>
@@ -32,7 +32,7 @@
 #include <stdexcept>
 #include <string>
 
-namespace strata::kernels {
+namespace guild::kernels {
 namespace {
 
 constexpr int THREADS = 256;
@@ -294,7 +294,7 @@ void ple_history_advance(float* hist, const float* normalized, void* stream) {
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
+        guild::q_of(stream)
             ->parallel_for<
                 dpct_kernel_name<class history_advance_kernel_204159>>(
                 sycl::nd_range<3>(
@@ -344,7 +344,7 @@ void ple_block(const float* emb, const float* hidden, const float* hist_rows, co
     const int n_embd = NG_N_EMBD, hc = NG_HC, hc_dim = NG_HC_DIM;
     static_assert(NG_N_EMBD == 2560 && NG_HC_DIM == 10240, "native PLE key geometry changed");
     const size_t float_bytes = (size_t) (5 * hc_dim + n_embd + hc) * sizeof(float);
-    dpct::queue_ptr st = strata::q_of(stream);
+    dpct::queue_ptr st = guild::q_of(stream);
 
     // One allocation for every intermediate.
     //
@@ -673,4 +673,4 @@ void ple_block(const float* emb, const float* hidden, const float* hist_rows, co
     // itself, and the engine's caller does not want that at all.
 }
 
-}  // namespace strata::kernels
+}  // namespace guild::kernels

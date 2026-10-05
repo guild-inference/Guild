@@ -1,4 +1,4 @@
-// src/kernels/cuda/iq_kernels.cu - see include/strata/kernels/iq_kernels.hpp.
+// src/kernels/cuda/iq_kernels.cu - see include/guild/kernels/iq_kernels.hpp.
 //
 // The dot products (vec_dot_*_q8_1), the dequantizers and the q8_1 quantizer are transcribed from llama.cpp
 // (ggml/src/ggml-cuda/vecdotq.cuh, dequantize.cuh, quantize.cu at the commit in third_party/ggml/VERSION.txt;
@@ -7,11 +7,11 @@
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
-#include "strata/sycl_math.hpp"
-#include "strata/sycl_queue.hpp"
-#include "strata/kernels/iq_kernels.hpp"
-#include "strata/kernels/dp4a.hpp"
-#include "strata/kernels/q8_1_finite.hpp"
+#include "guild/sycl_math.hpp"
+#include "guild/sycl_queue.hpp"
+#include "guild/kernels/iq_kernels.hpp"
+#include "guild/kernels/dp4a.hpp"
+#include "guild/kernels/q8_1_finite.hpp"
 
 #define GGML_COMMON_DECL_SYCL
 #define GGML_COMMON_IMPL_SYCL
@@ -23,7 +23,7 @@
 #include <cstdio>
 #include <cstdlib>
 
-namespace strata::kernels {
+namespace guild::kernels {
 namespace {
 
 void check(const char* what) {
@@ -73,7 +73,7 @@ __dpct_inline__ sycl::int2 get_int_from_table_16(const int &q4,
     return sycl::int2(dpct::byte_level_permute(tmp[0], tmp[1], 0x6420),
                       dpct::byte_level_permute(tmp[0], tmp[1], 0x7531));
 }
-#define ggml_cuda_dp4a(a, b, c) strata::dp4a((a), (b), (c))   // SYCL port: the one dp4a (strata/sycl_math.hpp)
+#define ggml_cuda_dp4a(a, b, c) guild::dp4a((a), (b), (c))   // SYCL port: the one dp4a (guild/sycl_math.hpp)
 
 // ---------------------------------------------------------------- the dot products (vecdotq.cuh)
 __dpct_inline__ float vec_dot_q2_0_q8_1(const void *__restrict__ vbq,
@@ -105,10 +105,10 @@ __dpct_inline__ float vec_dot_q2_0_q8_1(const void *__restrict__ vbq,
 //   swar_ne4(x): 0xFF in every byte of x that is non-zero (the sign masks: at most one bit per byte)
 //   swar_sub4(a, s) with s from swar_ne4: per byte a - s, i.e. a + 1 where the sign byte is set (two's complement
 //   of the grid value after the xor: the same bits as __vsub4(a, s) for s in {0x00, 0xFF})
-#ifndef STRATA_SWAR
-#define STRATA_SWAR 1   // 1: the SWAR forms; 0: dpct's per-byte loops (A/B 2026-09-30: both correct)
+#ifndef GUILD_SWAR
+#define GUILD_SWAR 1   // 1: the SWAR forms; 0: dpct's per-byte loops (A/B 2026-09-30: both correct)
 #endif
-#if STRATA_SWAR
+#if GUILD_SWAR
 __dpct_inline__ int swar_ne4(unsigned x) {
     x = (x | (x >> 4)) & 0x0F0F0F0Fu;
     x = (x | (x >> 2)) & 0x03030303u;
@@ -363,14 +363,14 @@ __dpct_inline__ int load4_a2(const uint8_t* p) {   // 4 bytes at a 2-byte-aligne
     if (!(a & 2)) return (int) w0;
     return (int) ((w0 >> 16) | (q[1] << 16));   // the second word holds needed bytes: page-safe
 }
-// SYCL port: the gate/up kernels can stage their format's codebook grid in local memory (STRATA_GRID_SLM=1, compile
+// SYCL port: the gate/up kernels can stage their format's codebook grid in local memory (GUILD_GRID_SLM=1, compile
 // time). Measured slower and off: copying the grid into each of ~1,200 work-groups per call costs more than the
 // lookups save (IQ2_S 52.5 -> 62.7 us, IQ3_S 60.8 -> 70.0, IQ3_XXS 60.3 -> 62.1 per call; unitrace 2026-10-01).
-#ifndef STRATA_GRID_SLM
-#define STRATA_GRID_SLM 0
+#ifndef GUILD_GRID_SLM
+#define GUILD_GRID_SLM 0
 #endif
-#ifndef STRATA_IQ4NL_FAST
-#define STRATA_IQ4NL_FAST 1   // compile-time: -DSTRATA_IQ4NL_FAST=0 for ggml's table/16-bit-load path
+#ifndef GUILD_IQ4NL_FAST
+#define GUILD_IQ4NL_FAST 1   // compile-time: -DGUILD_IQ4NL_FAST=0 for ggml's table/16-bit-load path
 #endif
 
 __dpct_inline__ float vec_dot_iq4_nl_q8_1(const void *__restrict__ vbq,
@@ -379,12 +379,12 @@ __dpct_inline__ float vec_dot_iq4_nl_q8_1(const void *__restrict__ vbq,
     const block_iq4_nl* bq4 = (const block_iq4_nl*) vbq + kbx;
     const int* q8 = (const int*) bq8_1->qs + iqs;
     int sumi = 0;
-#if STRATA_IQ4NL_FAST
+#if GUILD_IQ4NL_FAST
     const sycl::int2 qq = load8_a2(bq4->qs + 4 * iqs);
 #endif
 #pragma unroll
     for (int l = 0; l < 2; ++l) {
-#if STRATA_IQ4NL_FAST
+#if GUILD_IQ4NL_FAST
         const sycl::int2 v = iq4nl_pair(l ? qq.y() : qq.x());
 #else
         const int aux_q4 = get_int_b2(bq4->qs, iqs + l);
@@ -655,9 +655,9 @@ template<> struct Fmt<8> { static constexpr int qk = 32, ipb = QI8_0 / VDR_Q8_0,
 
 // The formats of each role, one list each so a type cannot be in one switch and missing from another.  Every
 // entry is a kernel template for each CUDA architecture of the build, hence two lists rather than one.
-#define STRATA_GU_FMTS(X) X(16) X(17) X(18) X(21) X(22) X(23) X(29) X(42) X(12) X(13) X(6) X(8)
-#define STRATA_D_FMTS(X) X(20) X(23) X(42) X(7) X(6) X(8)
-#define STRATA_MMVQ_FMTS(X) X(16) X(17) X(18) X(20) X(21) X(22) X(23) X(29) X(42) X(12) X(13) X(7) X(6) X(8)
+#define GUILD_GU_FMTS(X) X(16) X(17) X(18) X(21) X(22) X(23) X(29) X(42) X(12) X(13) X(6) X(8)
+#define GUILD_D_FMTS(X) X(20) X(23) X(42) X(7) X(6) X(8)
+#define GUILD_MMVQ_FMTS(X) X(16) X(17) X(18) X(20) X(21) X(22) X(23) X(29) X(42) X(12) X(13) X(7) X(6) X(8)
 
 __dpct_inline__ float warp_sum(float v) {
 #pragma unroll
@@ -675,11 +675,11 @@ __dpct_inline__ float warp_sum(float v) {
 
 // SYCL port: lanes per row for the grouped expert kernels. A 2560-wide row is 80 (block, part) calls; over 32
 // lanes that is 2.5 calls each and a 5-step reduction - the work per sub-group is too small for the fixed cost.
-// STRATA_EXPERT_LANES (compile time) lanes share a row; 256 / that many rows per work-group.
-#ifndef STRATA_EXPERT_LANES
-#define STRATA_EXPERT_LANES 8
+// GUILD_EXPERT_LANES (compile time) lanes share a row; 256 / that many rows per work-group.
+#ifndef GUILD_EXPERT_LANES
+#define GUILD_EXPERT_LANES 8
 #endif
-constexpr int kExpertLanes = STRATA_EXPERT_LANES;
+constexpr int kExpertLanes = GUILD_EXPERT_LANES;
 constexpr int kExpertRows = 256 / kExpertLanes;
 template <int LANES>
 __dpct_inline__ float lanes_sum(float v) {
@@ -742,7 +742,7 @@ mmvq_kernel(const uint8_t *__restrict__ w, size_t row_bytes,
 // scale as a float) and `apply` (the activation loads, the dp4a chain in the same order, the same integer scale
 // step and the same float expression).  `apply(load(...))` does the dot's integer and float operations in the same
 // order on the same values, so a column of the kernels below is BITWISE equal to the same column of mmvq_kernel /
-// native_gu_kernel / native_down_kernel (iq_multi_parity checks it; STRATA_OLD_IQ_MMVQ=1 keeps the old kernels).
+// native_gu_kernel / native_down_kernel (iq_multi_parity checks it; GUILD_OLD_IQ_MMVQ=1 keeps the old kernels).
 template<int TY> struct Split;
 // Formats with a Split below take the decode-once kernels; the others (Q4_K, Q5_K, Q5_1, Q8_0: UD-Q4_K_XL) the
 // per-entry ones, which call Fmt<TY>::dot per column exactly as before #242 (the launchers test kSplit at compile
@@ -1143,7 +1143,7 @@ template <> struct Multi<18> {   // iq3_xxs
     static constexpr bool has = true; static constexpr int NW = 8;
     __dpct_inline__ static void prep(const void* vbq, int kbx, int iqs, MultiW& m, const void* grid = nullptr) {
         const block_iq3_xxs* bq3 = (const block_iq3_xxs*) vbq + kbx;
-#if STRATA_IQ4NL_FAST
+#if GUILD_IQ4NL_FAST
         const sycl::int2 q3_packed = load8_a2(bq3->qs + 4 * iqs);
         const uint32_t aux32 = (uint32_t) load4_a2(bq3->qs + 4 * (QK_K / 16 + iqs / 2));
 #else
@@ -1180,7 +1180,7 @@ template <> struct Multi<22> {   // iq2_s
     static constexpr bool has = true; static constexpr int NW = 8;
     __dpct_inline__ static void prep(const void* vbq, int kbx, int iqs, MultiW& m, const void* grid = nullptr) {
         const block_iq2_s* bq2 = (const block_iq2_s*) vbq + kbx;
-#if STRATA_IQ4NL_FAST
+#if GUILD_IQ4NL_FAST
         const int qs_packed = load4_a2(bq2->qs + 4 * (iqs / 2));
         const int signs_packed_32 = load4_a2(bq2->qs + 4 * (QK_K / 32 + iqs / 2));
 #else
@@ -1218,7 +1218,7 @@ template <> struct Multi<21> {   // iq3_s
     static constexpr bool has = true; static constexpr int NW = 8;
     __dpct_inline__ static void prep(const void* vbq, int kbx, int iqs, MultiW& m, const void* grid = nullptr) {
         const block_iq3_s* bq3 = (const block_iq3_s*) vbq + kbx;
-#if STRATA_IQ4NL_FAST
+#if GUILD_IQ4NL_FAST
         const sycl::int2 qs_packed = load8_a2(bq3->qs + 4 * iqs);
         const int signs_packed_32 = load4_a2(bq3->signs + 4 * (iqs / 2));
 #else
@@ -1255,12 +1255,12 @@ template <> struct Multi<20> {   // iq4_nl (down)
     static constexpr bool has = true; static constexpr int NW = 4;
     __dpct_inline__ static void prep(const void* vbq, int kbx, int iqs, MultiW& m, const void* = nullptr) {
         const block_iq4_nl* bq4 = (const block_iq4_nl*) vbq + kbx;
-#if STRATA_IQ4NL_FAST
+#if GUILD_IQ4NL_FAST
         const sycl::int2 qq = load8_a2(bq4->qs + 4 * iqs);
 #endif
 #pragma unroll
         for (int l = 0; l < 2; ++l) {
-#if STRATA_IQ4NL_FAST
+#if GUILD_IQ4NL_FAST
             const sycl::int2 v = iq4nl_pair(l ? qq.y() : qq.x());
 #else
             const int aux_q4 = get_int_b2(bq4->qs, iqs + l);
@@ -1378,7 +1378,7 @@ __dpct_inline__ void native_gu_kernel(
     const int ng = *n_groups;
     if ((int) item_ct1.get_group(1) >= ng) return;
     const void* grid = nullptr;
-#if STRATA_GRID_SLM
+#if GUILD_GRID_SLM
     if constexpr (TG == 18 || TG == 21 || TG == 22) {
         using GT = std::conditional_t<TG == 22, uint64_t, uint32_t>;
         constexpr int GN = TG == 22 ? 1024 : TG == 21 ? 512 : 256;
@@ -1991,17 +1991,17 @@ bool is_iq(int t) {
 // values per block of the types the grouped expert kernels take (0 = none)
 int gu_qk(int t) {
     switch (t) {
-#define STRATA_QK(T) case T: return Fmt<T>::qk;
-        STRATA_GU_FMTS(STRATA_QK)
-#undef STRATA_QK
+#define GUILD_QK(T) case T: return Fmt<T>::qk;
+        GUILD_GU_FMTS(GUILD_QK)
+#undef GUILD_QK
         default: return 0;
     }
 }
 int d_qk(int t) {
     switch (t) {
-#define STRATA_QK(T) case T: return Fmt<T>::qk;
-        STRATA_D_FMTS(STRATA_QK)
-#undef STRATA_QK
+#define GUILD_QK(T) case T: return Fmt<T>::qk;
+        GUILD_D_FMTS(GUILD_QK)
+#undef GUILD_QK
         default: return 0;
     }
 }
@@ -2010,13 +2010,13 @@ bool env_on(const char* name) {
     const char* v = std::getenv(name);
     return v != nullptr && v[0] != '\0' && v[0] != '0';
 }
-// STRATA_OLD_IQ_MMVQ=1 keeps the per-column kernels (bitwise equal to the new ones; kept for A/B timing)
-bool g_old_kernels = env_on("STRATA_OLD_IQ_MMVQ");
+// GUILD_OLD_IQ_MMVQ=1 keeps the per-column kernels (bitwise equal to the new ones; kept for A/B timing)
+bool g_old_kernels = env_on("GUILD_OLD_IQ_MMVQ");
 // SYCL port (0.1.31 merge): upstream sends the split formats (the i-quants) to native_gu/down_multi_kernel, one warp
 // per row, 8 rows a group. On the B70 the port's grouped kernels (8 lanes a row, 32 rows a group, the multi-entry
 // dots with aligned loads and the IQ4 codebook in registers) are the measured ones, so they stay the default for
-// every format; STRATA_EXPERT_SPLIT=1 takes upstream's multi kernels, launched with their own grid (GU_ROWS rows).
-bool g_split_multi = env_on("STRATA_EXPERT_SPLIT");
+// every format; GUILD_EXPERT_SPLIT=1 takes upstream's multi kernels, launched with their own grid (GU_ROWS rows).
+bool g_split_multi = env_on("GUILD_EXPERT_SPLIT");
 
 template <int TY>
 void launch_mmvq(const uint8_t *W, size_t rb, const block_q8_1 *X, float *y,
@@ -2158,16 +2158,16 @@ void launch_mmvq(const uint8_t *W, size_t rb, const block_q8_1 *X, float *y,
     } // 8 at a time past 8
 }
 
-// SYCL port: lanes per row of the port's grouped expert kernels at run time (STRATA_GU_LANES / STRATA_DOWN_LANES:
-// 4, 8, 16 or 32; default STRATA_EXPERT_LANES), 256 / lanes rows per work-group. Gate/up rows are 80 dot calls
+// SYCL port: lanes per row of the port's grouped expert kernels at run time (GUILD_GU_LANES / GUILD_DOWN_LANES:
+// 4, 8, 16 or 32; default GUILD_EXPERT_LANES), 256 / lanes rows per work-group. Gate/up rows are 80 dot calls
 // (2560 wide), the IQ4_NL down rows 40 (640 wide), so the best split can differ by role.
 inline int lanes_env(const char* name) {
     const char* v = std::getenv(name);
     const int n = v ? std::atoi(v) : kExpertLanes;
     return n == 4 || n == 8 || n == 16 || n == 32 ? n : kExpertLanes;
 }
-inline int gu_lanes() { static const int v = lanes_env("STRATA_GU_LANES"); return v; }
-inline int down_lanes() { static const int v = lanes_env("STRATA_DOWN_LANES"); return v; }
+inline int gu_lanes() { static const int v = lanes_env("GUILD_GU_LANES"); return v; }
+inline int down_lanes() { static const int v = lanes_env("GUILD_DOWN_LANES"); return v; }
 template <int TG, int LN>
 void launch_gu_port(unsigned groups, dpct::queue_ptr s, const unsigned long long *grp_ptr, const int32_t *grp_start,
                     const int32_t *n_groups, const int32_t *ent_tok, const block_q8_1 *X,
@@ -2321,7 +2321,7 @@ void quantize_q8_1_rows(const float* x, int64_t n_rows, int64_t n_cols, void* y,
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
+        guild::q_of(stream)
             ->parallel_for<dpct_kernel_name<class quantize_q8_1_kernel_9d62b4>>(
                 sycl::nd_range<3>(
                     sycl::range(1, 1, (unsigned)((n + 255) / 256)) *
@@ -2338,13 +2338,13 @@ void quantize_q8_1_rows(const float* x, int64_t n_rows, int64_t n_cols, void* y,
 
 void iq_mmvq(int t, const void* w, const void* x_q8_1, float* y, int n_in, int n_out, int ncols, void* stream) {
     const size_t rb = iq_row_bytes(t, n_in);
-    dpct::queue_ptr s = strata::q_of(stream);
+    dpct::queue_ptr s = guild::q_of(stream);
     const auto* W = (const uint8_t*) w;
     const auto* X = (const block_q8_1*) x_q8_1;
     switch (t) {
-#define STRATA_MMVQ(T) case T: launch_mmvq<T>(W, rb, X, y, n_in, n_out, ncols, s); break;
-        STRATA_MMVQ_FMTS(STRATA_MMVQ)
-#undef STRATA_MMVQ
+#define GUILD_MMVQ(T) case T: launch_mmvq<T>(W, rb, X, y, n_in, n_out, ncols, s); break;
+        GUILD_MMVQ_FMTS(GUILD_MMVQ)
+#undef GUILD_MMVQ
         default: std::fprintf(stderr, "iq_mmvq: type %d is not supported\n", t); std::exit(1);
     }
     check("iq_mmvq");
@@ -2357,10 +2357,10 @@ void iq_dequant_f16(int t, const void* src, int64_t n, uint16_t* dst, void* stre
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
         dpct::has_capability_or_fail(
-            strata::q_of(stream)->get_device(),
+            guild::q_of(stream)->get_device(),
             {sycl::aspect::fp16});
 
-        strata::q_of(stream)
+        guild::q_of(stream)
             ->submit([&](sycl::handler &cgh) {
 
                 cgh.parallel_for<dpct_kernel_name<
@@ -2399,10 +2399,10 @@ void iq_embed_rows(int t, const void* table, size_t row_bytes, const int32_t* to
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
         dpct::has_capability_or_fail(
-            strata::q_of(stream)->get_device(),
+            guild::q_of(stream)->get_device(),
             {sycl::aspect::fp16});
 
-        strata::q_of(stream)
+        guild::q_of(stream)
             ->submit([&](sycl::handler &cgh) {
 
                 cgh.parallel_for<
@@ -2428,10 +2428,10 @@ void iq_dequant_f32(int t, const void* src, int64_t n, float* dst, void* stream)
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
         dpct::has_capability_or_fail(
-            strata::q_of(stream)->get_device(),
+            guild::q_of(stream)->get_device(),
             {sycl::aspect::fp16});
 
-        strata::q_of(stream)
+        guild::q_of(stream)
             ->submit([&](sycl::handler &cgh) {
 
                 cgh.parallel_for<
@@ -2457,10 +2457,10 @@ void iq_dequant_gu_f16(int t, const void* gate, const void* up, int64_t n_ff, in
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
         dpct::has_capability_or_fail(
-            strata::q_of(stream)->get_device(),
+            guild::q_of(stream)->get_device(),
             {sycl::aspect::fp16});
 
-        strata::q_of(stream)
+        guild::q_of(stream)
             ->submit([&](sycl::handler &cgh) {
 
                 cgh.parallel_for<
@@ -2504,7 +2504,7 @@ size_t native_expert_scratch_bytes(int64_t cap, int64_t n_ff) {
 }
 
 namespace {
-bool g_grouped_v1 = env_on("STRATA_GROUPED_V1");
+bool g_grouped_v1 = env_on("GUILD_GROUPED_V1");
 }  // namespace
 
 void native_grouped_set_v1(bool v1) { g_grouped_v1 = v1; }
@@ -2515,7 +2515,7 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
                            int64_t grid_groups) {
     if (cap_groups <= 0 || cap_entries <= 0) return;
     if (L.n_ff % 32 != 0) { std::fprintf(stderr, "native_expert_grouped: n_ff %lld\n", (long long) L.n_ff); std::exit(1); }
-    dpct::queue_ptr s = strata::q_of(stream);
+    dpct::queue_ptr s = guild::q_of(stream);
     const size_t f = (size_t) cap_entries * (size_t) L.n_ff * sizeof(float), fa = (f + 255) & ~(size_t) 255;
     float* gate = (float*) scratch;
     float* up = (float*) ((uint8_t*) scratch + fa);
@@ -2529,9 +2529,9 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
     const dpct::dim3 ggu((unsigned)((2 * L.n_ff + kExpertRows - 1) / kExpertRows),
                          (unsigned)gy);
     switch (L.gu_type) {
-#define STRATA_GU(T) case T: launch_gu<T>(ggu, s, grp_ptr, grp_start, n_groups, ent_tok, X, L, gate, up); break;
-        STRATA_GU_FMTS(STRATA_GU)
-#undef STRATA_GU
+#define GUILD_GU(T) case T: launch_gu<T>(ggu, s, grp_ptr, grp_start, n_groups, ent_tok, X, L, gate, up); break;
+        GUILD_GU_FMTS(GUILD_GU)
+#undef GUILD_GU
         default: std::fprintf(stderr, "native_expert_grouped: gate/up type %d\n", L.gu_type); std::exit(1);
     }
     check("native_expert_grouped/gu");
@@ -2585,9 +2585,9 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
     check("native_expert_grouped/swiglu");
     const dpct::dim3 gd((unsigned)((L.n_embd + kExpertRows - 1) / kExpertRows), (unsigned)gy);
     switch (L.d_type) {
-#define STRATA_DOWN(T) case T: launch_down<T>(gd, s, grp_ptr, grp_start, n_groups, ent_dst, hq, L, out); break;
-        STRATA_D_FMTS(STRATA_DOWN)
-#undef STRATA_DOWN
+#define GUILD_DOWN(T) case T: launch_down<T>(gd, s, grp_ptr, grp_start, n_groups, ent_dst, hq, L, out); break;
+        GUILD_D_FMTS(GUILD_DOWN)
+#undef GUILD_DOWN
         default: std::fprintf(stderr, "native_expert_grouped: down type %d\n", L.d_type); std::exit(1);
     }
     check("native_expert_grouped/down");
@@ -2730,7 +2730,7 @@ bool xmx_gemm_iq(int ty, const void* gate, const void* up, int64_t K, int n_out,
     const size_t bytes = stage_halves * 2 /*stage*/ + stage_halves * 2 /*packed*/ + (size_t) xmx::NSG * 16 * (16 + xmx::APAD) * 2 +
                          (size_t) xmx::NSG * 256 * 4;
     if (bytes > 96 * 1024) return false;
-    dpct::queue_ptr q = strata::q_of(stream);
+    dpct::queue_ptr q = guild::q_of(stream);
     xmx::Src src{(const uint8_t*) gate, (const uint8_t*) up, ty, by_block ? K / 256 : 0};
     const int groups = n_out / xmx::NT;
     q->submit([&](sycl::handler& cgh) {
@@ -2749,4 +2749,4 @@ bool xmx_gemm_iq(int ty, const void* gate, const void* up, int64_t K, int n_out,
     });
     return true;
 }
-}  // namespace strata::kernels
+}  // namespace guild::kernels

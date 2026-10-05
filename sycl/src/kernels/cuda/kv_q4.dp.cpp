@@ -1,17 +1,17 @@
-// src/kernels/cuda/kv_q4.cu - see include/strata/kernels/kv_q4.hpp. Q4_0 KV with Walsh-Hadamard rotation
+// src/kernels/cuda/kv_q4.cu - see include/guild/kernels/kv_q4.hpp. Q4_0 KV with Walsh-Hadamard rotation
 // (from PR #21 by code-martin; KV-streaming integration and the deterministic group maximum added on merge).
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
-#include "strata/sycl_queue.hpp"
-#include "strata/kernels/kv_q4.hpp"
-#include "strata/kernels/f16_bits.hpp"
-#include "strata/kernels/kv_stream.hpp"
+#include "guild/sycl_queue.hpp"
+#include "guild/kernels/kv_q4.hpp"
+#include "guild/kernels/f16_bits.hpp"
+#include "guild/kernels/kv_stream.hpp"
 
 #include <cstdio>
 #include <cstdlib>
 
-namespace strata::kernels {
+namespace guild::kernels {
 namespace {
 
 void check(const char* what) {
@@ -247,7 +247,7 @@ void fwht256_cuda(const float* src, float* dst, int64_t n_rows, void* stream) {
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
+        guild::q_of(stream)
             ->submit([&](sycl::handler &cgh) {
                 auto ct3 = 1.0f / 16.0f;
 
@@ -275,7 +275,7 @@ void kv_append_q4_step(uint8_t* k_q4, uint8_t* v_q4, const int32_t* page_table, 
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
+        guild::q_of(stream)
             ->submit([&](sycl::handler &cgh) {
                 KvHostPools host_host_KvHostPools_ct9 =
                     host ? *host : KvHostPools{};
@@ -303,7 +303,7 @@ void kv_append_q4(uint8_t* k_q4, uint8_t* v_q4, const int32_t* page_table, int64
     need_256(s, "kv_append_q4");
     const dpct::dim3 grid((unsigned)T, (unsigned)s.n_head_kv,
                           (unsigned)(s.head_dim / QK4_0));
-    dpct::queue_ptr cs = strata::q_of(stream);
+    dpct::queue_ptr cs = guild::q_of(stream);
     const KvHostPools h = host ? *host : KvHostPools{}, st = stage ? *stage : KvHostPools{};
     for (int is_v = 0; is_v < 2; ++is_v)
     {
@@ -336,7 +336,7 @@ void kv_gather_q4_step(const uint8_t* k_q4, const uint8_t* v_q4, const int32_t* 
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
+        guild::q_of(stream)
             ->parallel_for<dpct_kernel_name<class kv_gather_q4_kernel_300c16>>(
                 sycl::nd_range<3>(sycl::range(1, 1, num_blocks) *
                                       sycl::range(1, rows_per_block, 32),
@@ -350,4 +350,4 @@ void kv_gather_q4_step(const uint8_t* k_q4, const uint8_t* v_q4, const int32_t* 
     check("kv_gather_q4 launch");
 }
 
-}  // namespace strata::kernels
+}  // namespace guild::kernels

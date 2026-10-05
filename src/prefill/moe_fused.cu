@@ -1,5 +1,5 @@
-// src/prefill/moe_fused.cu - see include/strata/prefill/moe_fused.hpp (#136: the Q2_0 pack's prompt experts on
-// Strata's own int8 tensor-core kernels, with the grouping on the GPU).
+// src/prefill/moe_fused.cu - see include/guild/prefill/moe_fused.hpp (#136: the Q2_0 pack's prompt experts on
+// Guild's own int8 tensor-core kernels, with the grouping on the GPU).
 //
 // The arithmetic.  A Q2_0 block is 64 weights w = d_w * (q - 1), q in 0..3, four codes per byte, weight j of a block
 // in byte j / 4 at bits 2 * (j % 4).  An activation block of 32 values is x = d_x * a with a = round(x / d_x) in
@@ -17,7 +17,7 @@
 // bytes - (word >> 2t) & 0x03030303 holds weights t, t+4, t+8, t+12 of a 16-weight word.  So the kernels use that order
 // for the k of a half-block: mma k index 16h + 4t + j stands for weight (and activation) 16h + t + 4j.  The
 // activations are stored in it (perm32), and a lane's two B registers (h = 0 and 1) are adjacent: one 8-byte load.
-#include "strata/prefill/moe_fused.hpp"
+#include "guild/prefill/moe_fused.hpp"
 
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
@@ -27,7 +27,7 @@
 #include <cstdlib>
 #include <mutex>
 
-namespace strata::prefill::fused {
+namespace guild::prefill::fused {
 namespace {
 
 void ck(cudaError_t e, const char* what) {
@@ -40,7 +40,7 @@ void ck(cudaError_t e, const char* what) {
 constexpr int AB = 80;                  // activation bytes per 64 values: 64 codes, then {d0, c0, d1, c1}
 constexpr int MAGIC = 0x4B400000;       // the bits of 1.5 * 2^23
 constexpr float MAGICF = 12582912.0f;
-// The Strata Q2_0 blob (moe_mmq.cu strata_q2_kernel, kernels.cu blob_dequant_kernel): gate/up codes [1280][640 B]
+// The Guild Q2_0 blob (moe_mmq.cu guild_q2_kernel, kernels.cu blob_dequant_kernel): gate/up codes [1280][640 B]
 // (rows interleaved: gate of feature f at row 2f, its up at 2f + 1), down codes [2560][160 B], gate/up scales
 // [1280][40] fp16, down scales [2560][10] fp16.
 constexpr size_t O_GU_CODES = 0, O_D_CODES = (size_t) 1280 * 640, O_GU_SC = O_D_CODES + (size_t) 2560 * 160,
@@ -364,7 +364,7 @@ const DevInfo& dev_info() {
     DevInfo& d = g_dev[dev & 31];
     if (d.done) return d;
     d.done = true;
-#if defined(STRATA_HIP_GFX906)
+#if defined(GUILD_HIP_GFX906)
     // gfx906 reports compute capability 9.0 through HIP, but the mma.sync bodies above are CUDA sm_80+ only and
     // empty in a hipcc build: never available here (the prompt path keeps its own expert GEMMs)
     return d;
@@ -399,18 +399,18 @@ const DevInfo& dev_info() {
 bool built() { return true; }
 bool available() { return dev_info().cc >= 80; }
 // 0.1.36: on by default for the Q2_0 pack (+13-23% prompts on an RTX 5070; teacher-forced against the FP16 path as
-// close as MMQ at 8K and closer at 32K: phaseA-tests s18-tf); STRATA_PF_FUSED=0 keeps MMQ.  The native packs' kernels
-// (moe_fused_iq) stay opt-in: STRATA_PF_FUSED=1 (requested()).
+// close as MMQ at 8K and closer at 32K: phaseA-tests s18-tf); GUILD_PF_FUSED=0 keeps MMQ.  The native packs' kernels
+// (moe_fused_iq) stay opt-in: GUILD_PF_FUSED=1 (requested()).
 bool enabled() {
     static const bool env = [] {
-        const char* v = std::getenv("STRATA_PF_FUSED");
+        const char* v = std::getenv("GUILD_PF_FUSED");
         return v == nullptr || v[0] != '0';
     }();
     return env && available();
 }
 bool requested() {
     static const bool env = [] {
-        const char* v = std::getenv("STRATA_PF_FUSED");
+        const char* v = std::getenv("GUILD_PF_FUSED");
         return v != nullptr && v[0] == '1';
     }();
     return env && available();
@@ -462,4 +462,4 @@ void experts(const Batch& b, int n_expert, int64_t n, const void* scratch, const
     ck(cudaGetLastError(), "experts");
 }
 
-}  // namespace strata::prefill::fused
+}  // namespace guild::prefill::fused

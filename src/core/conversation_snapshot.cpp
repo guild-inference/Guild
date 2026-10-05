@@ -1,5 +1,5 @@
-#include "strata/core/conversation_snapshot.hpp"
-#include "strata/kernels/kv_q4.hpp"
+#include "guild/core/conversation_snapshot.hpp"
+#include "guild/kernels/kv_q4.hpp"
 #include "conversation_checked.hpp"
 #include <cuda_runtime.h>
 
@@ -7,7 +7,7 @@
 #include <cstring>
 #include <limits>
 
-namespace strata::core {
+namespace guild::core {
 namespace {
 struct Layout {
     int format;
@@ -16,7 +16,7 @@ struct Layout {
 };
 
 bool valid_extent(const QsaState& st, int64_t upto, std::string& error) {
-    const int64_t page = strata::kernels::qsa_real_shapes().page_size;
+    const int64_t page = guild::kernels::qsa_real_shapes().page_size;
     if (upto < 0 || upto > st.max_cells || upto > std::numeric_limits<int64_t>::max() - (page - 1)) {
         error = "conversation snapshot: invalid K/V extent";
         return false;
@@ -30,7 +30,7 @@ bool layout(const QsaState& st, const ModelGeometry& g, int64_t upto, bool index
         error = "conversation snapshot: hybrid K8V4 requires an identity layout and distinct format flags";
         return false;
     }
-    const auto s = strata::kernels::qsa_real_shapes();
+    const auto s = guild::kernels::qsa_real_shapes();
     const bool int8_keys = st.kv_int8 || st.kv_hybrid;
     if (g.n_head_kv <= 0 || g.head_dim <= 0 || g.head_dim > INT32_MAX || g.idx_key_dim <= 0 ||
         (st.kv_q4 && g.head_dim % 32) || (int8_keys && !st.kv_q4 && g.head_dim % 64)) {
@@ -38,13 +38,13 @@ bool layout(const QsaState& st, const ModelGeometry& g, int64_t upto, bool index
         return false;
     }
     const int64_t cells = ((upto + s.page_size - 1) / s.page_size) * s.page_size;
-    const size_t per = st.kv_q4 ? (size_t) strata::kernels::kv_q4_bytes_per_head((int) g.head_dim)
+    const size_t per = st.kv_q4 ? (size_t) guild::kernels::kv_q4_bytes_per_head((int) g.head_dim)
                               : (size_t) g.head_dim * (int8_keys ? 1 : 2);
     // Include the moving spare row, not only completed blocks. The checkpoint
     // restore reconstructs that row when rewinding to an earlier prefix.
     const int64_t pooled = index && upto > 0 ? upto / s.idx_block + 1 : 0;
     // Format 3 identifies snapshot K8V4 only; never pass it to the block movers.  Rotated INT8 K/V (#293,
-    // STRATA_KV_ROT=1) is another format too (+16): its bytes mean nothing to a state that does not rotate, so a
+    // GUILD_KV_ROT=1) is another format too (+16): its bytes mean nothing to a state that does not rotate, so a
     // snapshot or prompt checkpoint taken with the rotation never restores into one without it, nor the reverse.
     // (Q4_0 is always rotated: nothing to tell apart; without the rotation the format is the one it always was.)
     const int rotated = st.kv_rot && !st.kv_q4 && !st.kv_hybrid ? 16 : 0;
@@ -61,7 +61,7 @@ bool layout(const QsaState& st, const ModelGeometry& g, int64_t upto, bool index
     l.value_scales = l.scales;
     if (st.kv_hybrid) {
         if (!product(l.value_data, {(uint64_t) cells, (uint64_t) g.n_head_kv,
-                                   (uint64_t) strata::kernels::kv_q4_bytes_per_head((int) g.head_dim)})) {
+                                   (uint64_t) guild::kernels::kv_q4_bytes_per_head((int) g.head_dim)})) {
             error = "conversation snapshot: hybrid V byte count overflow";
             return false;
         }
@@ -164,7 +164,7 @@ bool conversation_kv_save(ConversationKv& image, const QsaState& st, const Model
     for (size_t i = 0; i < dst.size(); ++i) {
         // Recopy the partial page and the indexer's moving spare row. Completed
         // pages/rows strictly before the first rewritten token remain identical.
-        const size_t keep = i == 4 ? (index ? size_t(unchanged_tokens / strata::kernels::qsa_real_shapes().idx_block) * g.idx_key_dim * 4 : 0)
+        const size_t keep = i == 4 ? (index ? size_t(unchanged_tokens / guild::kernels::qsa_real_shapes().idx_block) * g.idx_key_dim * 4 : 0)
                                   : l.cells ? (sizes[i] / size_t(l.cells)) * size_t(whole_cells) : 0;
         if (keep > dst[i]->size()) { error = "conversation snapshot: missing reusable prefix"; return false; }
         dst[i]->resize(sizes[i]);
@@ -208,12 +208,12 @@ bool conversation_kv_restore(const ConversationKv& image, const QsaState& st, co
             })) return false;
     // VRAM slots still contain the outgoing conversation. Resolve must refill
     // them from the restored authoritative pools before any attention reads.
-    if (st.kv_mode == 1 || st.kv_mode == 3) strata::kernels::kv_stream_reset(st.map, nullptr);
+    if (st.kv_mode == 1 || st.kv_mode == 3) guild::kernels::kv_stream_reset(st.map, nullptr);
     if (st.kv_mode == 2 && upto > 0) {
-        auto shapes = strata::kernels::qsa_real_shapes();
+        auto shapes = guild::kernels::qsa_real_shapes();
         shapes.n_head_kv = g.n_head_kv; shapes.head_dim = g.head_dim;
         const int64_t end = (upto + shapes.page_size - 1) / shapes.page_size;
-        strata::kernels::kv_ring_restore(qsa_attn_pools(st), st.host, qsa_kv_format(st),
+        guild::kernels::kv_ring_restore(qsa_attn_pools(st), st.host, qsa_kv_format(st),
                                         std::max<int64_t>(0, end - st.n_slots), end, st.n_slots, shapes, nullptr);
     }
     const auto status = cudaGetLastError();
@@ -265,4 +265,4 @@ bool conversation_kv_verify(const ConversationKv& image, const QsaState& st, con
     return true;
 }
 
-} // namespace strata::core
+} // namespace guild::core

@@ -7,13 +7,13 @@
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
-#include "strata/sycl_queue.hpp"
-#include "strata/kernels/s_gemv.hpp"
+#include "guild/sycl_queue.hpp"
+#include "guild/kernels/s_gemv.hpp"
 
 #include <cstdio>
 #include <cstdlib>
 
-namespace strata::kernels {
+namespace guild::kernels {
 namespace {
 
 // `kvalues_iq4nl`: the non-linear codebook, verbatim from ggml-common.h / ggml-quants.c.
@@ -772,7 +772,7 @@ void s_gemv_split_async(const uint16_t* x, const uint8_t* codes, const float* sc
                         float* y, int64_t n_in, int64_t n_out, const SForm& form, int threads_per_row,
                         void* stream) {
     s_gemv_split_impl(x, codes, scales, offset, y, n_in, n_out, form,
-                      threads_per_row, strata::q_of(stream), false);
+                      threads_per_row, guild::q_of(stream), false);
 }
 
 // ---- the Q8_K entry points -----------------------------------------------------------------------------
@@ -827,7 +827,7 @@ void s_gemv_q8k(const uint8_t* x_q8k, const uint8_t* codes, const float* scales,
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
+        guild::q_of(stream)
             ->parallel_for<dpct_kernel_name<class s_gemv_q8k_kernel_9b1637,
                                             dpct_kernel_scalar<4>>>(
                 sycl::nd_range<3>(sycl::range(1, 1, blocks) *
@@ -843,7 +843,7 @@ void s_gemv_q8k(const uint8_t* x_q8k, const uint8_t* codes, const float* scales,
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
+        guild::q_of(stream)
             ->parallel_for<dpct_kernel_name<class s_gemv_q8k_kernel_adeed5,
                                             dpct_kernel_scalar<8>>>(
                 sycl::nd_range<3>(sycl::range(1, 1, blocks) *
@@ -894,7 +894,7 @@ void s_gemv_q8k_split(const uint8_t* x_q8k, const uint8_t* codes, const float* s
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
+        guild::q_of(stream)
             ->parallel_for<dpct_kernel_name<class s_gemv_q8_split_kernel_19ad26,
                                             dpct_kernel_scalar<4>,
                                             dpct_kernel_scalar<true>>>(
@@ -913,7 +913,7 @@ void s_gemv_q8k_split(const uint8_t* x_q8k, const uint8_t* codes, const float* s
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
+        guild::q_of(stream)
             ->parallel_for<dpct_kernel_name<class s_gemv_q8_split_kernel_4da4f5,
                                             dpct_kernel_scalar<8>,
                                             dpct_kernel_scalar<true>>>(
@@ -971,7 +971,7 @@ void s_gemv_q8_0_split(const uint8_t* x_q8_0, const uint8_t* codes, const float*
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
+        guild::q_of(stream)
             ->parallel_for<dpct_kernel_name<class s_gemv_q8_split_kernel_147ee4,
                                             dpct_kernel_scalar<4>,
                                             dpct_kernel_scalar<false>>>(
@@ -990,7 +990,7 @@ void s_gemv_q8_0_split(const uint8_t* x_q8_0, const uint8_t* codes, const float*
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
+        guild::q_of(stream)
             ->parallel_for<dpct_kernel_name<class s_gemv_q8_split_kernel_bac5c0,
                                             dpct_kernel_scalar<8>,
                                             dpct_kernel_scalar<false>>>(
@@ -1012,4 +1012,4 @@ void s_gemv_q8_0_split(const uint8_t* x_q8_0, const uint8_t* codes, const float*
     finish("s_gemv_q8_0_split", stream);
 }
 
-}  // namespace strata::kernels
+}  // namespace guild::kernels

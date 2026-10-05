@@ -1,4 +1,4 @@
-// src/kernels/cuda/qsa.cu - P2.S2: the QSA cache, indexer and attention (see include/strata/kernels/qsa.hpp).
+// src/kernels/cuda/qsa.cu - P2.S2: the QSA cache, indexer and attention (see include/guild/kernels/qsa.hpp).
 //
 // The header documents the layouts and the scope; this file documents the four decisions that are about the
 // KERNEL rather than about the interface.
@@ -40,13 +40,13 @@
 //    Every comparison still passed at any sane tolerance, the spare key landing 0.4 f32 ulp away; only a
 //    BIT-EXACT assertion plus a full-precision probe of the intermediate found it.  That is the strongest
 //    argument in this file for keeping both.
-#include "strata/core/emulate.hpp"
-#include "strata/kernels/qsa.hpp"
+#include "guild/core/emulate.hpp"
+#include "guild/kernels/qsa.hpp"
 
-#include "strata/kernels/f16_bits.hpp"
-#include "strata/kernels/kv_stream.hpp"
-#include "strata/kernels/rope.hpp"
-#include "strata/kernels/mrope.hpp"
+#include "guild/kernels/f16_bits.hpp"
+#include "guild/kernels/kv_stream.hpp"
+#include "guild/kernels/rope.hpp"
+#include "guild/kernels/mrope.hpp"
 
 #include <cuda_runtime.h>
 
@@ -56,7 +56,7 @@
 #include <cstdlib>
 #include <cstring>
 
-namespace strata::kernels {
+namespace guild::kernels {
 namespace {
 
 constexpr int THREADS = 128;
@@ -674,7 +674,7 @@ void qsa_attend_step(const float* q, const uint16_t* k_scratch, const uint16_t* 
         int dev = 0, max_shared = 0;
         cudaGetDevice(&dev);
         cudaDeviceGetAttribute(&max_shared, cudaDevAttrMaxSharedMemoryPerBlockOptin, dev);
-        max_shared = strata::smem_optin_of(max_shared);
+        max_shared = guild::smem_optin_of(max_shared);
         if ((int) smem > max_shared) {
             std::fprintf(stderr, "qsa: qsa_attend: max_ids %lld needs %zu B of shared, over the %d B limit\n",
                          (long long) max_ids, smem, max_shared);
@@ -818,4 +818,4 @@ void qsa_gate_apply(const float* attn, const float* q_full, const QsaShapes& s, 
     if (stream == nullptr) check_sync("qsa_gate_apply");
 }
 
-}  // namespace strata::kernels
+}  // namespace guild::kernels

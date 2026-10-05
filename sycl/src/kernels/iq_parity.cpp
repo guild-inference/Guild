@@ -15,8 +15,8 @@
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
-#include "strata/kernels/iq_kernels.hpp"
-#include "strata/kernels/native_mmvq.hpp"
+#include "guild/kernels/iq_kernels.hpp"
+#include "guild/kernels/native_mmvq.hpp"
 
 #include <cmath>
 #include <cstdio>
@@ -67,8 +67,8 @@ int main(int argc, char** argv) {
         */
         (dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(dw, raw.data(), raw.size()).wait();
         double dq_err = 0.0;
-        if (strata::kernels::iq_supported(type) && ((size_t) rows * cols) % 256 == 0) {
-            strata::kernels::iq_dequant_f32(type, dw, (int64_t) rows * cols, dq, s);
+        if (guild::kernels::iq_supported(type) && ((size_t) rows * cols) % 256 == 0) {
+            guild::kernels::iq_dequant_f32(type, dw, (int64_t) rows * cols, dq, s);
             std::vector<float> got(ref.size());
             (dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
                 .memcpy(got.data(), dq, got.size() * 4)
@@ -100,24 +100,24 @@ int main(int argc, char** argv) {
         to ensure synchronization behavior.
         */
         (dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(dx, x.data(), x.size() * 4).wait();
-        strata::kernels::quantize_q8_1_rows(dx, MC, cols, xq, s);
+        guild::kernels::quantize_q8_1_rows(dx, MC, cols, xq, s);
         std::vector<float> y((size_t) MC * rows), yn(y.size());
         int multi_bad = 0;
         try {
             for (int c = 0; c < MC; ++c)
-                strata::kernels::native_mmvq(type, dw, (const uint8_t*) xq + (size_t) c * cols / 32 * 36,
+                guild::kernels::native_mmvq(type, dw, (const uint8_t*) xq + (size_t) c * cols / 32 * 36,
                                              dy + (size_t) c * rows, cols, rows, 1, s);
             s->wait();
             (dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
                 .memcpy(y.data(), dy, y.size() * 4)
                 .wait();
             for (int nc = 2; nc <= MC; ++nc) {
-                strata::kernels::native_mmvq(type, dw, xq, dy, cols, rows, nc, s);
+                guild::kernels::native_mmvq(type, dw, xq, dy, cols, rows, nc, s);
                 s->wait();
                 (dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
                     .memcpy(yn.data(), dy, yn.size() * 4)
                     .wait();
-                if (strata::kernels::native_mmvq_multi_exact() &&
+                if (guild::kernels::native_mmvq_multi_exact() &&
                     std::memcmp(yn.data(), y.data(), (size_t) nc * rows * 4) != 0) {
                     std::printf("%-8s mmvq ncols %d: not bitwise equal to the one-column calls\n", nm, nc);
                     ++multi_bad;

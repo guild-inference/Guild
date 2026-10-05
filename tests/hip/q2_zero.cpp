@@ -1,6 +1,6 @@
 // Q2_0 dequant must preserve signed zero when a negative scale meets code 1.
 // This caught HIP 5.7/gfx1012 folding the half product to positive zero.
-#include "strata/kernels/iq_kernels.hpp"
+#include "guild/kernels/iq_kernels.hpp"
 #include <hip/hip_runtime.h>
 #include <hip/hip_fp16.h>
 #include <cstdint>
@@ -34,7 +34,7 @@ int main() {
     CHECK(hipMalloc(&weights, input.size() * sizeof(Block)));
     CHECK(hipMalloc(reinterpret_cast<void**>(&output), values * sizeof(uint16_t)));
     CHECK(hipMemcpy(weights, input.data(), input.size() * sizeof(Block), hipMemcpyHostToDevice));
-    strata::kernels::iq_dequant_f16(42, weights, values, output, nullptr);
+    guild::kernels::iq_dequant_f16(42, weights, values, output, nullptr);
     CHECK(hipDeviceSynchronize());
     CHECK(hipMemcpy(got.data(), output, values * sizeof(uint16_t), hipMemcpyDeviceToHost));
     int failures = 0;

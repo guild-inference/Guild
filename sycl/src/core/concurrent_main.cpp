@@ -16,8 +16,8 @@
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
-#include "strata/core/pinned.hpp"
-#include "strata/kernels/s_gemv.hpp"
+#include "guild/core/pinned.hpp"
+#include "guild/kernels/s_gemv.hpp"
 
 #include <atomic>
 #include <chrono>
@@ -65,7 +65,7 @@ int main(int argc, char** argv) {
         else if (a == "--cpu-threads") cpu_threads = std::atoi(val());
         else if (a == "--gpu-roles") gpu_roles = std::atoi(val());
         else {
-            std::fprintf(stderr, "usage: strata-concurrent --file experts.bin [--experts N] "
+            std::fprintf(stderr, "usage: guild-concurrent --file experts.bin [--experts N] "
                                  "[--cpu-threads N] [--gpu-roles N]\n");
             return 2;
         }
@@ -76,7 +76,7 @@ int main(int argc, char** argv) {
     const uint64_t role_codes = (uint64_t) n_out * n_in / 4;
     const uint64_t plane_bytes = role_codes;      // the CPU loop reads the same planes
 
-    strata::core::PinnedArena arena((uint64_t) experts * role_codes);
+    guild::core::PinnedArena arena((uint64_t) experts * role_codes);
     if (!arena.valid()) { std::fprintf(stderr, "arena allocation failed\n"); return 1; }
     {
         std::ifstream f(path, std::ios::binary);
@@ -135,7 +135,7 @@ int main(int argc, char** argv) {
     check(DPCT_CHECK_ERROR(s_comp =
                                dpct::get_current_device().create_queue(true)),
           "stream compute");
-    const strata::kernels::SForm form{2, -1, 64, strata::kernels::Codebook::Affine, false};
+    const guild::kernels::SForm form{2, -1, 64, guild::kernels::Codebook::Affine, false};
 
     // The CPU loop: read the whole arena, Nthreads ways, and sum bytes so nothing is elided.
     auto cpu_work = [&](std::atomic<bool>& stop, std::atomic<uint64_t>& bytes) {
@@ -200,7 +200,7 @@ int main(int argc, char** argv) {
             check(
                 DPCT_CHECK_ERROR(s_comp->ext_oneapi_submit_barrier({*ev[cur]})),
                 "wait");
-            strata::kernels::s_gemv_split_async(d_x, buf[cur], d_scales, nullptr, d_y, n_in, n_out, form, 32,
+            guild::kernels::s_gemv_split_async(d_x, buf[cur], d_scales, nullptr, d_y, n_in, n_out, form, 32,
                                                 (void*) s_comp);
         }
         check(DPCT_CHECK_ERROR(s_comp->wait()), "sync comp");

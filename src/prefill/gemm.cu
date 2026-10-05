@@ -1,6 +1,6 @@
-// src/prefill/gemm.cu - see include/strata/prefill/gemm.hpp.
-#include "strata/prefill/gemm.hpp"
-#include "strata/kernels/dequant_bf16.hpp"
+// src/prefill/gemm.cu - see include/guild/prefill/gemm.hpp.
+#include "guild/prefill/gemm.hpp"
+#include "guild/kernels/dequant_bf16.hpp"
 
 #include <cublas_v2.h>
 #include <cuda_fp16.h>
@@ -9,8 +9,8 @@
 #include <algorithm>
 #include <atomic>
 
-#if defined(__HIPCC__) && defined(STRATA_HIPBLASLT_AVAILABLE)
-// The HIP compatibility shim maps CUDA shuffle spellings to Strata helpers.
+#if defined(__HIPCC__) && defined(GUILD_HIPBLASLT_AVAILABLE)
+// The HIP compatibility shim maps CUDA shuffle spellings to Guild helpers.
 // hipBLASLt's public headers declare native HIP shuffle functions, so keep
 // those declarations from being macro-expanded in this translation unit.
 #undef __shfl_xor_sync
@@ -26,7 +26,7 @@
 #include <cstring>
 #include <memory>
 
-#if defined(__HIPCC__) && defined(STRATA_HIPBLASLT_AVAILABLE)
+#if defined(__HIPCC__) && defined(GUILD_HIPBLASLT_AVAILABLE)
 #include "hipblaslt_tuning.hpp"
 #include <hip/hip_runtime_api.h>
 #include <hipblaslt/hipblaslt.h>
@@ -36,7 +36,7 @@
 #include <tuple>
 #endif
 
-namespace strata::prefill {
+namespace guild::prefill {
 namespace {
 
 void ck(cublasStatus_t s, const char* what) {
@@ -58,9 +58,9 @@ void absorb_hipblas_sticky(const char* what) {
     std::fprintf(stderr, "prefill gemm: %s left %s\n", what, hipGetErrorString(sticky));
     std::exit(1);
 }
-#define STRATA_ABSORB_HIPBLAS_STICKY(what) absorb_hipblas_sticky(what)
+#define GUILD_ABSORB_HIPBLAS_STICKY(what) absorb_hipblas_sticky(what)
 #else
-#define STRATA_ABSORB_HIPBLAS_STICKY(what) ((void) 0)
+#define GUILD_ABSORB_HIPBLAS_STICKY(what) ((void) 0)
 #endif
 
 // A setup call whose failure the engine survives (the handle keeps its defaults), as before #240 - but said.
@@ -68,9 +68,9 @@ void note(cublasStatus_t s, const char* what) {
     if (s != CUBLAS_STATUS_SUCCESS) std::fprintf(stderr, "prefill gemm: %s: cuBLAS status %d (continuing)\n", what, (int) s);
 }
 
-#if defined(__HIPCC__) && defined(STRATA_HIPBLASLT_AVAILABLE)
+#if defined(__HIPCC__) && defined(GUILD_HIPBLASLT_AVAILABLE)
 struct HipLtCallKey {
-    strata::prefill::hipblaslt::InputType type;
+    guild::prefill::hipblaslt::InputType type;
     int t;
     int n;
     int k;
@@ -93,20 +93,20 @@ struct HipLtState {
     hipblasLtHandle_t handle = nullptr;
     void* workspace = nullptr;
     size_t workspace_bytes = 0;
-    strata::prefill::hipblaslt::TuningTable table;
+    guild::prefill::hipblaslt::TuningTable table;
     std::map<HipLtCallKey, HipLtCachedAlgo> cache;
     uint64_t lt_launches = 0;
     uint64_t fallbacks = 0;
-    std::set<std::tuple<strata::prefill::hipblaslt::InputType, int, int, int, int>> fallback_shapes;
+    std::set<std::tuple<guild::prefill::hipblaslt::InputType, int, int, int, int>> fallback_shapes;
 
     ~HipLtState() {
-        if (std::getenv("STRATA_HIPBLASLT_VERBOSE")) {
+        if (std::getenv("GUILD_HIPBLASLT_VERBOSE")) {
             std::fprintf(stderr, "prefill gemm: hipBLASLt summary launches=%llu fallbacks=%llu unique_fallback_shapes=%zu\n",
                          (unsigned long long) lt_launches, (unsigned long long) fallbacks, fallback_shapes.size());
             for (const auto& shape : fallback_shapes) {
                 const auto type = std::get<0>(shape);
                 std::fprintf(stderr, "prefill gemm: fallback shape dtype=%s T=%d N=%d K=%d ldy=%d\n",
-                             type == strata::prefill::hipblaslt::InputType::bf16 ? "bf16" : "f16",
+                             type == guild::prefill::hipblaslt::InputType::bf16 ? "bf16" : "f16",
                              std::get<1>(shape), std::get<2>(shape), std::get<3>(shape), std::get<4>(shape));
             }
         }
@@ -145,7 +145,7 @@ struct HipLtDescriptors {
 };
 
 std::unique_ptr<HipLtState> create_hipblaslt_state(void* workspace, size_t workspace_bytes) {
-    const char* path = std::getenv("STRATA_HIPBLASLT_TUNING");
+    const char* path = std::getenv("GUILD_HIPBLASLT_TUNING");
     if (!path || !*path) return nullptr;
 
     auto state = std::make_unique<HipLtState>();
@@ -181,7 +181,7 @@ std::unique_ptr<HipLtState> create_hipblaslt_state(void* workspace, size_t works
     return state;
 }
 
-HipLtCachedAlgo resolve_hipblaslt_algo(HipLtState& state, strata::prefill::hipblaslt::InputType type, int t,
+HipLtCachedAlgo resolve_hipblaslt_algo(HipLtState& state, guild::prefill::hipblaslt::InputType type, int t,
                                        int n, int k, int ldy, float beta) {
     uint32_t beta_bits = 0;
     static_assert(sizeof(beta_bits) == sizeof(beta));
@@ -191,18 +191,18 @@ HipLtCachedAlgo resolve_hipblaslt_algo(HipLtState& state, strata::prefill::hipbl
     if (cached != state.cache.end()) return cached->second;
 
     HipLtCachedAlgo resolved;
-    const bool verbose = std::getenv("STRATA_HIPBLASLT_VERBOSE") != nullptr;
+    const bool verbose = std::getenv("GUILD_HIPBLASLT_VERBOSE") != nullptr;
     const auto* row = state.table.closest(type, n, k, ldy, t);
     if (!row) {
         if (verbose) {
             std::fprintf(stderr, "prefill gemm: Lt fallback; no calibration for dtype=%s T=%d N=%d K=%d ldy=%d\n",
-                         type == strata::prefill::hipblaslt::InputType::bf16 ? "bf16" : "f16", t, n, k, ldy);
+                         type == guild::prefill::hipblaslt::InputType::bf16 ? "bf16" : "f16", t, n, k, ldy);
         }
         return state.cache.emplace(key, resolved).first->second;
     }
 
     HipLtDescriptors desc;
-    const hipDataType input_type = type == strata::prefill::hipblaslt::InputType::bf16 ? HIP_R_16BF : HIP_R_16F;
+    const hipDataType input_type = type == guild::prefill::hipblaslt::InputType::bf16 ? HIP_R_16BF : HIP_R_16F;
     if (!desc.init(input_type, t, n, k, ldy)) {
         return state.cache.emplace(key, resolved).first->second;
     }
@@ -237,13 +237,13 @@ HipLtCachedAlgo resolve_hipblaslt_algo(HipLtState& state, strata::prefill::hipbl
     if (verbose) {
         std::fprintf(stderr,
                      "prefill gemm: Lt solution=%d dtype=%s T=%d N=%d K=%d ldy=%d beta=%.9g workspace=%zu\n",
-                     row->solution_id, type == strata::prefill::hipblaslt::InputType::bf16 ? "bf16" : "f16", t, n,
+                     row->solution_id, type == guild::prefill::hipblaslt::InputType::bf16 ? "bf16" : "f16", t, n,
                      k, ldy, beta, required_workspace);
     }
     return state.cache.emplace(key, resolved).first->second;
 }
 
-bool try_hipblaslt(void* opaque_state, strata::prefill::hipblaslt::InputType type, const uint16_t* x,
+bool try_hipblaslt(void* opaque_state, guild::prefill::hipblaslt::InputType type, const uint16_t* x,
                    const uint16_t* w, float* y, int64_t t, int64_t n, int64_t k, int64_t ldy, float beta,
                    void* stream) {
     auto* state = static_cast<HipLtState*>(opaque_state);
@@ -260,7 +260,7 @@ bool try_hipblaslt(void* opaque_state, strata::prefill::hipblaslt::InputType typ
     if (resolved.workspace_bytes > state->workspace_bytes) {
         ++state->fallbacks;
         state->fallback_shapes.emplace(type, (int) t, (int) n, (int) k, (int) ldy);
-        if (std::getenv("STRATA_HIPBLASLT_VERBOSE")) {
+        if (std::getenv("GUILD_HIPBLASLT_VERBOSE")) {
             std::fprintf(stderr, "prefill gemm: Lt fallback; solution needs %zu workspace bytes, have %zu\n",
                          resolved.workspace_bytes, state->workspace_bytes);
         }
@@ -268,7 +268,7 @@ bool try_hipblaslt(void* opaque_state, strata::prefill::hipblaslt::InputType typ
     }
 
     HipLtDescriptors desc;
-    const hipDataType input_type = type == strata::prefill::hipblaslt::InputType::bf16 ? HIP_R_16BF : HIP_R_16F;
+    const hipDataType input_type = type == guild::prefill::hipblaslt::InputType::bf16 ? HIP_R_16BF : HIP_R_16F;
     if (!desc.init(input_type, (int) t, (int) n, (int) k, (int) ldy)) return false;
     const float alpha = 1.0f;
     const hipblasStatus_t status = hipblasLtMatmul(state->handle, desc.op, &alpha, w, desc.a, x, desc.b, &beta, y,
@@ -298,7 +298,7 @@ bool try_hipblaslt(void* opaque_state, strata::prefill::hipblaslt::InputType typ
 }  // namespace
 
 Gemm::~Gemm() {
-#if defined(__HIPCC__) && defined(STRATA_HIPBLASLT_AVAILABLE)
+#if defined(__HIPCC__) && defined(GUILD_HIPBLASLT_AVAILABLE)
     delete static_cast<HipLtState*>(hipblaslt_state_);
 #endif
     if (handle_) cublasDestroy((cublasHandle_t) handle_);
@@ -326,7 +326,7 @@ bool Gemm::init_external(void* stream, uint16_t* scratch, int64_t scratch_elems,
     note(cublasSetMathMode(h, CUBLAS_DEFAULT_MATH), "cublasSetMathMode");
     scratch_ = scratch;
     scratch_elems_ = scratch_elems;
-#if defined(__HIPCC__) && defined(STRATA_HIPBLASLT_AVAILABLE)
+#if defined(__HIPCC__) && defined(GUILD_HIPBLASLT_AVAILABLE)
     hipblaslt_state_ = create_hipblaslt_state(workspace_, ws_bytes).release();
 #endif
     return true;
@@ -337,7 +337,7 @@ void Gemm::rebind(uint16_t* scratch, int64_t scratch_elems, void* workspace, siz
     scratch_elems_ = scratch_elems;
     workspace_ = workspace;
     cublasSetWorkspace((cublasHandle_t) handle_, workspace_, ws_bytes);
-#if defined(__HIPCC__) && defined(STRATA_HIPBLASLT_AVAILABLE)
+#if defined(__HIPCC__) && defined(GUILD_HIPBLASLT_AVAILABLE)
     if (hipblaslt_state_) {
         auto* state = static_cast<HipLtState*>(hipblaslt_state_);
         state->workspace = workspace_;
@@ -364,7 +364,7 @@ bool Gemm::init(void* stream, int64_t scratch_elems, std::string& err) {
     }
     note(cublasSetWorkspace(h, workspace_, ws), "cublasSetWorkspace");
     note(cublasSetMathMode(h, CUBLAS_DEFAULT_MATH), "cublasSetMathMode");
-#if defined(__HIPCC__) && defined(STRATA_HIPBLASLT_AVAILABLE)
+#if defined(__HIPCC__) && defined(GUILD_HIPBLASLT_AVAILABLE)
     hipblaslt_state_ = create_hipblaslt_state(workspace_, ws).release();
 #endif
     if (scratch_elems > 0) {
@@ -386,10 +386,10 @@ bool Gemm::init(void* stream, int64_t scratch_elems, std::string& err) {
 // activations sit there.  With the FP16 path, the weight is converted once per call and the activations in row
 // slices, into the instance's own buffers, and the product runs as the FP16 GEMM (fp32 accumulate) on the tensor
 // cores.  Finite values beyond FP16's range are clamped to +-65504 (#540) instead of becoming Inf.  A beta = 1
-// product (STRATA_PREFILL_BF16X2's remainder, ~2^-9 of the original, deep in FP16's subnormal band) keeps cuBLAS.
-//   Default: on for compute capability 7.0 - 7.4 (Volta: only the experimental STRATA_EXPERIMENTAL_SM60 build runs
+// product (GUILD_PREFILL_BF16X2's remainder, ~2^-9 of the original, deep in FP16's subnormal band) keeps cuBLAS.
+//   Default: on for compute capability 7.0 - 7.4 (Volta: only the experimental GUILD_EXPERIMENTAL_SM60 build runs
 //   there), OFF for 7.5 (RTX 20 in the ready-made engine: the sums round differently, so it is opt-in until it has
-//   been gated).  STRATA_BF16_TC=1 / =0 turns it on / off on any 7.x card (=2, a test mode: on any card).
+//   been gated).  GUILD_BF16_TC=1 / =0 turns it on / off on any 7.x card (=2, a test mode: on any card).
 // Pascal (6.x) has no tensor cores and cuBLAS has no BF16 GEMM for it (#395, measured NOT_SUPPORTED on a P40): both
 // operands are widened to fp32 by an exact shift and the product is cublasSgemm with the same fp32 accumulator.
 namespace {
@@ -406,7 +406,7 @@ void bf16_to_f16(const uint16_t* in, uint16_t* out, int64_t n, cudaStream_t st) 
     if (n <= 0) return;
     bf16_to_f16_kernel<<<(unsigned) ((n + 255) / 256), 256, 0, st>>>(in, reinterpret_cast<__half*>(out), n);
 }
-#if defined(STRATA_EXPERIMENTAL_SM60)   // Pascal runs only the experimental build
+#if defined(GUILD_EXPERIMENTAL_SM60)   // Pascal runs only the experimental build
 __global__ void bf16_to_f32_kernel(const uint16_t* __restrict__ in, float* __restrict__ out, int64_t n) {
     const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
     if (i < n) out[i] = __uint_as_float((uint32_t) in[i] << 16);
@@ -438,7 +438,7 @@ int current_cc() {
 // 0: cuBLAS's BF16 GEMM, 1: through FP16 (tensor cores), 2: through FP32 (Pascal)
 int bf16_path() {
     static const int forced = [] {
-        const char* v = std::getenv("STRATA_BF16_TC");
+        const char* v = std::getenv("GUILD_BF16_TC");
         return v != nullptr && v[0] != '\0' ? std::atoi(v) : -1;
     }();
     const int cc = current_cc();
@@ -466,10 +466,10 @@ void Gemm::bf16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64
     if (T <= 0 || N <= 0) return;
     if (ldy <= 0) ldy = N;
     const float alpha = 1.0f;
-#if defined(__HIPCC__) && defined(STRATA_HIPBLASLT_AVAILABLE)
-    if (try_hipblaslt(hipblaslt_state_, strata::prefill::hipblaslt::InputType::bf16, X, W, Y, T, N, K, ldy,
+#if defined(__HIPCC__) && defined(GUILD_HIPBLASLT_AVAILABLE)
+    if (try_hipblaslt(hipblaslt_state_, guild::prefill::hipblaslt::InputType::bf16, X, W, Y, T, N, K, ldy,
                       beta, stream_)) {
-        STRATA_ABSORB_HIPBLAS_STICKY("hipBLASLt bf16");
+        GUILD_ABSORB_HIPBLAS_STICKY("hipBLASLt bf16");
         return;
     }
 #endif
@@ -487,7 +487,7 @@ void Gemm::bf16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64
             return;
         }
     }
-#if defined(STRATA_EXPERIMENTAL_SM60)
+#if defined(GUILD_EXPERIMENTAL_SM60)
     else if (path == 2) {
         // Pascal: fp32 copies (2 elements of the 2-byte buffers each).  Every tile is a disjoint block of Y, so each
         // gets the caller's beta.
@@ -513,7 +513,7 @@ void Gemm::bf16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64
                     CUDA_R_16BF, (int) K, X, CUDA_R_16BF, (int) K, &beta, Y, CUDA_R_32F, (int) ldy,
                     CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT),
        "cublasGemmEx");
-    STRATA_ABSORB_HIPBLAS_STICKY("cublasGemmEx");
+    GUILD_ABSORB_HIPBLAS_STICKY("cublasGemmEx");
 }
 
 void Gemm::f16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64_t N, int64_t K, int64_t ldy,
@@ -521,10 +521,10 @@ void Gemm::f16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64_
     if (T <= 0 || N <= 0) return;
     if (ldy <= 0) ldy = N;
     const float alpha = 1.0f;
-#if defined(__HIPCC__) && defined(STRATA_HIPBLASLT_AVAILABLE)
-    if (try_hipblaslt(hipblaslt_state_, strata::prefill::hipblaslt::InputType::f16, X, W, Y, T, N, K, ldy,
+#if defined(__HIPCC__) && defined(GUILD_HIPBLASLT_AVAILABLE)
+    if (try_hipblaslt(hipblaslt_state_, guild::prefill::hipblaslt::InputType::f16, X, W, Y, T, N, K, ldy,
                       beta, stream_)) {
-        STRATA_ABSORB_HIPBLAS_STICKY("hipBLASLt f16");
+        GUILD_ABSORB_HIPBLAS_STICKY("hipBLASLt f16");
         return;
     }
 #endif
@@ -532,7 +532,7 @@ void Gemm::f16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64_
                     CUDA_R_16F, (int) K, X, CUDA_R_16F, (int) K, &beta, Y, CUDA_R_32F, (int) ldy,
                     CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT),
        "cublasGemmEx f16");
-    STRATA_ABSORB_HIPBLAS_STICKY("cublasGemmEx f16");
+    GUILD_ABSORB_HIPBLAS_STICKY("cublasGemmEx f16");
 }
 
 void Gemm::native(const uint16_t* X, int ggml_type, const void* W_blocks, float* Y, int64_t T, int64_t N, int64_t K,
@@ -544,13 +544,13 @@ void Gemm::native(const uint16_t* X, int ggml_type, const void* W_blocks, float*
         if (ldy <= 0) ldy = N;
         for (int64_t r0 = 0; r0 < N; r0 += rows) {
             const int64_t n = (N - r0 < rows) ? N - r0 : rows;
-            strata::kernels::dequant_f16(ggml_type, W_blocks, r0, n, K, scratch_, stream_);
+            guild::kernels::dequant_f16(ggml_type, W_blocks, r0, n, K, scratch_, stream_);
             f16(X, scratch_, Y + r0, T, n, K, ldy, beta);
         }
         return;
     }
-    strata::kernels::dequant_f16(ggml_type, W_blocks, 0, N, K, scratch_, stream_);
+    guild::kernels::dequant_f16(ggml_type, W_blocks, 0, N, K, scratch_, stream_);
     f16(X, scratch_, Y, T, N, K, ldy, beta);
 }
 
-}  // namespace strata::prefill
+}  // namespace guild::prefill

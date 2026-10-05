@@ -52,10 +52,10 @@ class Choice(unittest.TestCase):
         with mock.patch.object(setup, "ROOT", Path("/s")):
             self.assertEqual(setup.engine_dir(), Path("/s/engine"))
             self.assertEqual(setup.engine_dir(12), Path("/s/engine-cuda12"))
-        self.assertEqual(setup.config_toolkit({"exe": "/s/engine/strata.exe"}), 13)
-        self.assertEqual(setup.config_toolkit({"exe": "/s/engine-cuda12/strata.exe"}), 12)
+        self.assertEqual(setup.config_toolkit({"exe": "/s/engine/guild-generate.exe"}), 13)
+        self.assertEqual(setup.config_toolkit({"exe": "/s/engine-cuda12/guild-generate.exe"}), 12)
         self.assertEqual(setup.config_toolkit({"exe": "x", "cuda": 12}), 12)
-        self.assertEqual(setup.engine_defs([86], 12), ["-DSTRATA_EXPERIMENTAL_SM60=ON"])
+        self.assertEqual(setup.engine_defs([86], 12), ["-DGUILD_EXPERIMENTAL_SM60=ON"])
         self.assertEqual(setup.engine_defs([86]), [])
 
 
@@ -63,7 +63,7 @@ class OptIn(unittest.TestCase):
     """Pascal / Volta cards are used only when chosen; a PC with a newer card keeps recommending the newer one."""
 
     def setUp(self):
-        self.env = mock.patch.dict(os.environ, {"STRATA_EXPERIMENTAL_SM60": ""})
+        self.env = mock.patch.dict(os.environ, {"GUILD_EXPERIMENTAL_SM60": ""})
         self.env.start()
 
     def tearDown(self):
@@ -80,8 +80,8 @@ class OptIn(unittest.TestCase):
         self.assertIn("only kind", setup.old_gpus_opt_in([V100]))
         self.assertIsNone(setup.old_gpus_opt_in([V100], other=True))            # an AMD card it can use instead
         self.assertIsNone(setup.old_gpus_opt_in([card(0, "GTX 980", 4.0, "52")]))
-        with mock.patch.dict(os.environ, {"STRATA_EXPERIMENTAL_SM60": "1"}):
-            self.assertEqual(setup.old_gpus_opt_in([rtx, v100]), "STRATA_EXPERIMENTAL_SM60=1")
+        with mock.patch.dict(os.environ, {"GUILD_EXPERIMENTAL_SM60": "1"}):
+            self.assertEqual(setup.old_gpus_opt_in([rtx, v100]), "GUILD_EXPERIMENTAL_SM60=1")
 
     def test_named(self):
         self.assertEqual(setup.named_gpus(None, "0,2"), [0, 2])
@@ -121,12 +121,12 @@ class Libraries(unittest.TestCase):
 
     def test_wheels_pinned_to_12(self):
         self.assertTrue(all("-cu12==12." in w for w in setup.CUDA12_WHEELS))
-        self.assertEqual(setup.CUDA12_ASSET, "strata-windows-x64-cuda12.zip" if setup.WIN else
-                         "strata-linux-x64-cuda12.zip")
+        self.assertEqual(setup.CUDA12_ASSET, "guild-windows-x64-cuda12.zip" if setup.WIN else
+                         "guild-linux-x64-cuda12.zip")
 
 
 class BuildTools(unittest.TestCase):
-    """The compile path: a CUDA 12 engine looks for a 12.x toolkit (STRATA_NVCC picks one), sm_120 needs 12.8+."""
+    """The compile path: a CUDA 12 engine looks for a 12.x toolkit (GUILD_NVCC picks one), sm_120 needs 12.8+."""
 
     def tools(self, gpu, nvcc):
         seen = []
@@ -175,7 +175,7 @@ class Install(unittest.TestCase):
         extra = [mock.patch.object(setup, "get_prebuilt", fake_prebuilt(calls)),
                  mock.patch.object(setup, "pip_cuda_libs", lambda tk=13: libs.append(tk)),
                  mock.patch.object(setup, "OLD_GPUS", None),
-                 mock.patch.dict(os.environ, {"STRATA_EXPERIMENTAL_SM60": "", "STRATA_CUDA": "", **(env or {})})]
+                 mock.patch.dict(os.environ, {"GUILD_EXPERIMENTAL_SM60": "", "GUILD_CUDA": "", **(env or {})})]
         code, out, cfg, asked = install(ram, found, argv, extra=extra)
         return code, out, cfg, calls, libs
 
@@ -217,7 +217,7 @@ class Install(unittest.TestCase):
 
     def test_cuda12_asked_for_on_a_newer_card(self):
         ram, found = PROFILES["128GB-1x24GB"]
-        for argv, env in ((["--cuda", "12"], None), ([], {"STRATA_CUDA": "12"})):
+        for argv, env in ((["--cuda", "12"], None), ([], {"GUILD_CUDA": "12"})):
             with self.subTest(argv=argv, env=env):
                 code, out, cfg, calls, _ = self.run_setup(ram, found, argv_for("qwen", "IQ3_XXS") + argv, env)
                 self.assertEqual(code, 0, out[-3000:])
@@ -247,7 +247,7 @@ class Start(unittest.TestCase):
     def test_an_old_card_added_moves_the_model(self):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
-            cfg_path = root / "strata-iq3_xxs.json"
+            cfg_path = root / "guild-iq3_xxs.json"
             cfg = {"exe": str(root / "engine" / setup.EXE), "args": [], "lib_dirs": ["<cu13>"]}
             calls = []
             with mock.patch.object(setup, "ROOT", root), \

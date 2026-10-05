@@ -24,20 +24,20 @@
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
-#include "strata/sycl_queue.hpp"
-#include "strata/kernels/quantize_act.hpp"
-#include "strata/kernels/f16_bits.hpp"
+#include "guild/sycl_queue.hpp"
+#include "guild/kernels/quantize_act.hpp"
+#include "guild/kernels/f16_bits.hpp"
 
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 
-namespace strata::kernels {
+namespace guild::kernels {
 namespace {
 
 constexpr int QK8_0 = 32;
 
-// THE fp16 CONVERSION LIVES IN `strata/kernels/f16_bits.hpp`, and this file used to carry its own copy.
+// THE fp16 CONVERSION LIVES IN `guild/kernels/f16_bits.hpp`, and this file used to carry its own copy.
 //
 // Round 198 found the private copy wrong in a way no fixture here could see: it tested `if (exp >= 31)` to
 // detect an out-of-range exponent, which conflates an f32 INF/NAN (raw exponent 255) with a FINITE value too
@@ -271,10 +271,10 @@ void quantize_q8_0(const float* x, uint8_t* blocks, int64_t n, void* stream) {
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
         dpct::has_capability_or_fail(
-            strata::q_of(stream)->get_device(),
+            guild::q_of(stream)->get_device(),
             {sycl::aspect::fp64});
 
-        strata::q_of(stream)
+        guild::q_of(stream)
             ->parallel_for<dpct_kernel_name<class quantize_q8_0_kernel_5451b9>>(
                 sycl::nd_range<3>(sycl::range(1, 1, grid) *
                                       sycl::range(1, 1, threads),
@@ -313,7 +313,7 @@ void quantize_q8_0_scaled(const float* x, uint8_t* blocks, float* scales, int64_
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
+        guild::q_of(stream)
             ->parallel_for<
                 dpct_kernel_name<class quantize_q8_0_scaled_kernel_caf6f4>>(
                 sycl::nd_range<3>(sycl::range(1, 1, grid) *
@@ -342,7 +342,7 @@ void dequant_q8_0(const uint8_t* blocks, float* x, int64_t n, void* stream) {
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
+        guild::q_of(stream)
             ->parallel_for<dpct_kernel_name<class dequant_q8_0_kernel_154e61>>(
                 sycl::nd_range<3>(sycl::range(1, 1, grid) *
                                       sycl::range(1, 1, threads),
@@ -374,7 +374,7 @@ void quantize_q8_K(const float* x, uint8_t* blocks, int64_t n, void* stream) {
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
+        guild::q_of(stream)
             ->parallel_for<dpct_kernel_name<class quantize_q8_K_kernel_7aadb2>>(
                 sycl::nd_range<3>(sycl::range(1, 1, grid) *
                                       sycl::range(1, 1, threads),
@@ -402,7 +402,7 @@ void dequant_q8_K(const uint8_t* blocks, float* x, int64_t n, void* stream) {
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
+        guild::q_of(stream)
             ->parallel_for<dpct_kernel_name<class dequant_q8_K_kernel_e03426>>(
                 sycl::nd_range<3>(sycl::range(1, 1, grid) *
                                       sycl::range(1, 1, threads),
@@ -421,4 +421,4 @@ void dequant_q8_K(const uint8_t* blocks, float* x, int64_t n, void* stream) {
     if (stream == nullptr) dpct::get_current_device().queues_wait_and_throw();
 }
 
-}  // namespace strata::kernels
+}  // namespace guild::kernels

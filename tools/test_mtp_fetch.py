@@ -169,7 +169,7 @@ class Ranges(FetchCase):
             self.assertEqual(M.verify(str(self.out)), [])
         with mock.patch.object(M, "REPO", "https://huggingface.co/Qwen/Qwen3.8-Flash-Next/resolve/main/"):
             (self.out / "tensors" / "mtp.a.bin").write_bytes(b"x")
-            self.assertEqual(M.verify(str(self.out)), [])          # STRATA_MTP_REVISION: other hashes
+            self.assertEqual(M.verify(str(self.out)), [])          # GUILD_MTP_REVISION: other hashes
         self.assertEqual(M.verify(str(self.out)), ["mtp.a"])
         self.assertEqual(M.verify(str(self.out / "nothing")), [])
 

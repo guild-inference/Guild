@@ -13,9 +13,9 @@
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
-#include "strata/kernels/bf16_bits.hpp"
-#include "strata/kernels/bf16_gemv.hpp"
-#include "strata/kernels/f16_bits.hpp"
+#include "guild/kernels/bf16_bits.hpp"
+#include "guild/kernels/bf16_gemv.hpp"
+#include "guild/kernels/f16_bits.hpp"
 
 #include <cmath>
 #include <cstdio>
@@ -26,8 +26,8 @@
 
 namespace {
 
-using strata::kernels::bf16_from_f32;
-using strata::kernels::f32_from_bf16;
+using guild::kernels::bf16_from_f32;
+using guild::kernels::f32_from_bf16;
 
 void check(dpct::err0 e, const char *what) {
 }
@@ -122,17 +122,17 @@ int main(int argc, char** argv) {
               "cw");
 
         std::vector<float> naive((size_t) s.n_out), warp((size_t) s.n_out), split((size_t) s.n_out);
-        strata::kernels::bf16_gemv(d_x, d_w, d_y, s.n_in, s.n_out, nullptr);
+        guild::kernels::bf16_gemv(d_x, d_w, d_y, s.n_in, s.n_out, nullptr);
         check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
                                    .memcpy(naive.data(), d_y, naive.size() * 4)
                                    .wait()),
               "cy1");
-        strata::kernels::bf16_gemv_split(d_x, d_w, d_y, s.n_in, s.n_out, 32, nullptr);
+        guild::kernels::bf16_gemv_split(d_x, d_w, d_y, s.n_in, s.n_out, 32, nullptr);
         check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
                                    .memcpy(warp.data(), d_y, warp.size() * 4)
                                    .wait()),
               "cy2");
-        strata::kernels::bf16_gemv_split(d_x, d_w, d_y, s.n_in, s.n_out, 256, nullptr);
+        guild::kernels::bf16_gemv_split(d_x, d_w, d_y, s.n_in, s.n_out, 256, nullptr);
         check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
                                    .memcpy(split.data(), d_y, split.size() * 4)
                                    .wait()),
@@ -151,8 +151,8 @@ int main(int argc, char** argv) {
             std::vector<float> fp16_as_f32((size_t) s.n_in);
             std::vector<uint16_t> x16((size_t) s.n_in);
             for (size_t i = 0; i < fx.size(); ++i) {
-                x16[i] = strata::kernels::f16_from_f32(fx[i]);
-                fp16_as_f32[i] = strata::kernels::f32_from_f16(x16[i]);
+                x16[i] = guild::kernels::f16_from_f32(fx[i]);
+                fp16_as_f32[i] = guild::kernels::f32_from_f16(x16[i]);
             }
             // Round the fp16 value to bf16 - i.e. give the kernel a bf16 activation whose VALUES came through
             // fp16.  That is the whole difference between the two contracts at this call site.
@@ -167,7 +167,7 @@ int main(int argc, char** argv) {
                       d_x, x.data(), x.size() * 2).wait()),
                   "cx2");
             std::vector<float> rival((size_t) s.n_out);
-            strata::kernels::bf16_gemv(d_x, d_w, d_y, s.n_in, s.n_out, nullptr);
+            guild::kernels::bf16_gemv(d_x, d_w, d_y, s.n_in, s.n_out, nullptr);
             check(DPCT_CHECK_ERROR(
                       (dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
                           .memcpy(rival.data(), d_y, rival.size() * 4)

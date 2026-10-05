@@ -1,4 +1,4 @@
-// src/core/coupled_draft_test.cpp - coupled draft sampling's host-side arithmetic (include/strata/core/coupled_draft.hpp).
+// src/core/coupled_draft_test.cpp - coupled draft sampling's host-side arithmetic (include/guild/core/coupled_draft.hpp).
 //
 // No GPU.  A simulated decode - windows of random size, random accepted counts, the serve loop's first window of one
 // token and the CLI's `draft_first` - checks that
@@ -8,13 +8,13 @@
 //   3. the penalty window each draft sees in the device ring (the staged base, then the chain's earlier drafts) is
 //      token for token the history row `penalty_rows` gives the verify row that checks it;
 //   4. the penalty window length matches the target's (serve caps the history at 4,096).
-#include "strata/core/coupled_draft.hpp"
+#include "guild/core/coupled_draft.hpp"
 
 #include <cstdio>
 #include <random>
 #include <vector>
 
-using namespace strata::core;
+using namespace guild::core;
 
 namespace {
 int g_fail = 0;
@@ -59,7 +59,7 @@ void check_history(std::mt19937& rng, int cap, int h, int n_consumed, int n_draf
     window.insert(window.end(), drafts.begin(), drafts.end());
     const int T = (int) window.size();
     std::vector<int32_t> rows((size_t) T * (size_t) h);
-    strata::kernels::penalty_rows(consumed.data(), (int64_t) consumed.size(), window.data(), T, h, rows.data());
+    guild::kernels::penalty_rows(consumed.data(), (int64_t) consumed.size(), window.data(), T, h, rows.data());
     for (int j = 0; j < n_drafts; ++j) {
         const int s = coupled_hist_start(cap, j, h);
         check(s >= 0 && s + h <= cap + n_drafts, "the window lies inside the ring", s, cap + n_drafts);

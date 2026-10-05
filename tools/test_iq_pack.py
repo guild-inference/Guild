@@ -390,7 +390,7 @@ class SplitArtifactTests(unittest.TestCase):
             self.assertEqual(rc, 0, log)
             text = (root / "pack" / "native_experts.txt").read_text()
             head, line0, line1 = text.splitlines()
-            self.assertTrue(head.startswith("# strata native experts v4:"), head)
+            self.assertTrue(head.startswith("# guild native experts v4:"), head)
             self.assertIn("(n_expert 4,", head)
             s2, s3 = paths[1].name, paths[2].name
             self.assertEqual(line0.split()[8:], [s2])
@@ -420,7 +420,7 @@ class SplitArtifactTests(unittest.TestCase):
             rc, log = run_pack(paths[0], root / "pack")
             self.assertEqual(rc, 0, log)
             head, line0, line1 = (root / "pack" / "native_experts.txt").read_text().splitlines()
-            self.assertTrue(head.startswith("# strata native experts v3: layer gu_type d_type offset blob_bytes "
+            self.assertTrue(head.startswith("# guild native experts v3: layer gu_type d_type offset blob_bytes "
                                             "gate_off up_off down_off [shard] (n_expert 4, total "), head)
             self.assertEqual(line1.split()[8:], [paths[2].name])
 

@@ -11,9 +11,9 @@ import threading
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT), str(ROOT / 'tools')]
-from serve.server import StrataEngine, child_env
+from serve.server import GuildEngine, child_env
 from serve.frontend import ChatTemplate
-import strata_tokenizer as ST
+import guild_tokenizer as ST
 
 # pooled: the completed indexer rows (the 0.1.29 extent); pooled_full: those plus the spare row
 STATE_KEYS = ('L', 'gdn', 'ple', 'tail', 'dead', 'pooled', 'pooled_full', 'kv', 'ple_prev')
@@ -186,13 +186,13 @@ def main():
                     '<|im_start|>assistant\n<think>\n\n</think>\n\n')
     a.output.mkdir(mode=0o700, parents=False, exist_ok=False)
     env = child_env(cfg)
-    env['STRATA_STATE_HASH'] = '1'
+    env['GUILD_STATE_HASH'] = '1'
     results = {'engine_info': {}}
     for label, budget in [('baseline', 0), ('candidate', a.cache_mib)]:
         log = a.output / f'{label}.log'
         args = engine_args(cfg, budget, a.spec)
         args += ['--conversation-cache-min-free-mib', str(a.min_free_mib)]
-        engine = StrataEngine(str(a.engine.resolve()), args, cwd=cfg.get('cwd'), log=str(log), env=env)
+        engine = GuildEngine(str(a.engine.resolve()), args, cwd=cfg.get('cwd'), log=str(log), env=env)
         results['engine_info'][label] = dict(engine.info)
         records = []
         def generate(ids, count, name):

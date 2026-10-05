@@ -8,8 +8,8 @@
 // hang into a failure instead of a frozen test.
 //
 //   pool_stress [seconds]        (default 20)
-#include "strata/kernels/cpu/pool.hpp"
-#include "strata/kernels/cpu/expert.hpp"
+#include "guild/kernels/cpu/pool.hpp"
+#include "guild/kernels/cpu/expert.hpp"
 
 #include <atomic>
 #include <chrono>
@@ -20,7 +20,7 @@
 #include <thread>
 #include <vector>
 
-namespace cpu = strata::kernels::cpu;
+namespace cpu = guild::kernels::cpu;
 
 int main(int argc, char** argv) {
     const double seconds = argc > 1 ? std::atof(argv[1]) : 20.0;

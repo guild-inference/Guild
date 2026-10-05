@@ -7,7 +7,7 @@ Qwen3.8-Flash-Next's checkpoint stores the table as 128 shards `...ngram_embeddi
 it from ISTA-DASLab's GGUF as IQ4_NL (90 B/row), which is 8% off these values per row; this keeps them bit for bit.
 
 The output is a one-tensor GGUF: `per_layer_token_embd.weight`, ne = [160, 320001536], type I8 holding the FP8 bytes
-(GGUF has no FP8 type), with `strata.ple.format` = "f8_e4m3" and `strata.ple.scale` (F32). The bytes are copied
+(GGUF has no FP8 type), with `guild.ple.format` = "f8_e4m3" and `guild.ple.scale` (F32). The bytes are copied
 straight out of the safetensors files in shard order - nothing is decoded or rounded - so memory stays flat.
 """
 import argparse
@@ -85,11 +85,11 @@ def main():
         rows += t["shape"][0]
     print("%d shards, %d rows x %d, scale %.9g, %.2f GB" % (len(parts), rows, dim, scale, rows * dim / 1e9), flush=True)
 
-    kvs = [kv_string("general.architecture", "strata-ple"),
+    kvs = [kv_string("general.architecture", "guild-ple"),
            kv_string("general.name", "PLE n-gram table, FP8 E4M3 as shipped"),
-           kv_string("strata.ple.format", "f8_e4m3"),
-           kv_f32("strata.ple.scale", scale),
-           kv_string("strata.ple.source", model.name)]
+           kv_string("guild.ple.format", "f8_e4m3"),
+           kv_f32("guild.ple.scale", scale),
+           kv_string("guild.ple.source", model.name)]
     head = b"GGUF" + struct.pack("<IQQ", 3, 1, len(kvs)) + b"".join(kvs)
     head += gguf_string("per_layer_token_embd.weight") + struct.pack("<I", 2) + struct.pack("<QQ", dim, rows)
     head += struct.pack("<I", GGML_TYPE_I8) + struct.pack("<Q", 0)

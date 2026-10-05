@@ -12,7 +12,7 @@
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
-#include "strata/kernels/router_top10.hpp"
+#include "guild/kernels/router_top10.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -87,7 +87,7 @@ int run_case(const char* name, const std::vector<float>& logits, int n_tokens, i
     check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(
               d_l, logits.data(), logits.size() * sizeof(float)).wait()),
           "copy");
-    strata::kernels::router_top10(d_l, n_tokens, n_expert, k, d_ids, d_w, nullptr);
+    guild::kernels::router_top10(d_l, n_tokens, n_expert, k, d_ids, d_w, nullptr);
     check(DPCT_CHECK_ERROR(
               (dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
                   .memcpy(h_ids.data(), d_ids, h_ids.size() * sizeof(int))

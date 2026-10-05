@@ -16,7 +16,7 @@ sys.path[:0] = [str(ROOT), str(ROOT / 'tools')]
 from conversation_cache_parity import STATE_KEYS, engine_args, load_tokenizer, require, state_hashes
 from gguf_reader import GGUFFile
 from gguf_writer import GGUFWriter
-from serve.server import StrataEngine, child_env
+from serve.server import GuildEngine, child_env
 from serve.frontend import ChatTemplate
 import numpy as np
 
@@ -97,7 +97,7 @@ def main():
     args.output.mkdir(mode=0o700, parents=False, exist_ok=False)
     fixtures(args.output, width)
     env = child_env(cfg)
-    env['STRATA_STATE_HASH'] = '1'
+    env['GUILD_STATE_HASH'] = '1'
     results = {'engine_info': {}}
     for label, budget in [('baseline', 0), ('candidate', 8192)]:
         log = args.output / (label + '.log')
@@ -106,7 +106,7 @@ def main():
             command += ['--vision']
         else:
             command += ['--control-vector', str(args.output / 'control.gguf'), '--cvec-mode', args.scenario]
-        engine = StrataEngine(str(args.engine.resolve()), command, cwd=cfg.get('cwd'), log=str(log), env=env)
+        engine = GuildEngine(str(args.engine.resolve()), command, cwd=cfg.get('cwd'), log=str(log), env=env)
         records = []
         results['engine_info'][label] = dict(engine.info)
         def generate(name, ids, image=None, steering=True):

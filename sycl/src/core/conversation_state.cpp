@@ -1,14 +1,14 @@
 // sycl/src/core/conversation_state.cpp - SYCL port of src/core/conversation_state.cpp (two CUDA calls, by hand).
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
-#include "strata/core/conversation_snapshot.hpp"
+#include "guild/core/conversation_snapshot.hpp"
 #include "conversation_checked.hpp"
 
 #include <algorithm>
 #include <array>
 #include <limits>
 
-namespace strata::core {
+namespace guild::core {
 namespace {
 using conversation_detail::add;
 using conversation_detail::product;
@@ -70,7 +70,7 @@ bool checkpoint_targets(const SessionState& ss, const ModelGeometry& g, size_t t
         (owned_qsa(ss) && !ss.qsa_states)) return fail(error, "invalid session running-state targets");
     for (size_t j = 0; j < owned_qsa(ss); ++j) {
         const auto& st = owned(ss, j);
-        const auto block = strata::kernels::qsa_real_shapes().idx_block;
+        const auto block = guild::kernels::qsa_real_shapes().idx_block;
         size_t pooled_bytes = 0;
         if (!st.idx_tail || !st.idx_dead || !st.idx_block_pos || !st.idx_pooled ||
             st.max_cells < 0 || tokens > (uint64_t) st.max_cells ||
@@ -124,8 +124,8 @@ bool conversation_state_sizes(const ModelGeometry& g, ConversationStateSizes& z,
         !product(convolution, {(uint64_t) g.ssm_conv_channels, (uint64_t) (g.ssm_d_conv - 1)}) ||
         !add(recurrence, convolution) ||
         !product(z.gdn, {(uint64_t) g.n_gdn_layers(), recurrence, sizeof(float)}) ||
-        !product(z.ple, {strata::kernels::NG_HIST, strata::kernels::NG_HC_DIM, sizeof(float)}) ||
-        !product(z.tail, {(uint64_t) (strata::kernels::qsa_real_shapes().idx_block - 1),
+        !product(z.ple, {guild::kernels::NG_HIST, guild::kernels::NG_HC_DIM, sizeof(float)}) ||
+        !product(z.tail, {(uint64_t) (guild::kernels::qsa_real_shapes().idx_block - 1),
                           (uint64_t) g.idx_key_dim, sizeof(float)}) ||
         !product(z.dead, {(uint64_t) g.idx_key_dim, sizeof(float)}))
         return fail(error, "running-state byte count overflow");
@@ -193,7 +193,7 @@ bool conversation_checkpoint_restore(const ConversationCheckpoint& c, SessionSta
             !copy(st.idx_dead, c.dead.data() + j * z.dead, z.dead, error) ||
             !copy(st.idx_block_pos, c.block_pos.data() + j * z.block_pos, z.block_pos, error)) return false;
         if (!c.ids.empty()) {
-            const size_t row = c.ids.size() / strata::kernels::qsa_real_shapes().idx_block;
+            const size_t row = c.ids.size() / guild::kernels::qsa_real_shapes().idx_block;
             if (!copy(st.idx_pooled + row * g.idx_key_dim, c.dead.data() + j * z.dead, z.dead, error)) return false;
         }
     }
@@ -313,4 +313,4 @@ ConversationRestore conversation_snapshot_restore(const SavedConversation& image
         !conversation_checkpoint_restore(image.live, ss, g, error)) return ConversationRestore::transfer_failed;
     return ConversationRestore::restored;
 }
-} // namespace strata::core
+} // namespace guild::core

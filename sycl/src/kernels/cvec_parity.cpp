@@ -1,4 +1,4 @@
-// src/kernels/cvec_parity.cpp - the control vector kernel (strata/kernels/cvec.hpp) against a host reference.
+// src/kernels/cvec_parity.cpp - the control vector kernel (guild/kernels/cvec.hpp) against a host reference.
 //   1. project: h - s (h.v) v per stream and token, against double precision; the steered component is gone.
 //   2. add: h + d.
 //   3. switched off: R unchanged without a pending write; with one, R is BITWISE the write the fused read folds
@@ -8,8 +8,8 @@
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
-#include "strata/kernels/cvec.hpp"
-#include "strata/kernels/fused_gr.hpp"
+#include "guild/kernels/cvec.hpp"
+#include "guild/kernels/fused_gr.hpp"
 
 #include <cmath>
 #include <cstdio>
@@ -18,7 +18,7 @@
 #include <random>
 #include <vector>
 
-namespace k = strata::kernels;
+namespace k = guild::kernels;
 
 namespace {
 

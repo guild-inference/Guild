@@ -23,8 +23,8 @@
 // the projection.  Bitwise equality with the previous kernels is the contract; on top of it a double-precision
 // host reference of every up row and every down row checks that the fixture computes an expert at all - two
 // kernels agreeing on garbage would otherwise pass.
-#include "strata/kernels/f16_bits.hpp"
-#include "strata/kernels/s2_expert_grouped.hpp"
+#include "guild/kernels/f16_bits.hpp"
+#include "guild/kernels/s2_expert_grouped.hpp"
 
 #include <cuda_runtime.h>
 
@@ -40,7 +40,7 @@
 #include <string>
 #include <vector>
 
-namespace k = strata::kernels;
+namespace k = guild::kernels;
 
 namespace {
 // The blob geometry, `cpu/expert.hpp`'s (restated as in the kernel).
@@ -578,7 +578,7 @@ void bench() {
     };
 
     // per-hit path, decode: 9 hits of 10 (5090-like residency), 5 of 10, and the low-residency 1-3 hits, where the
-    // new kernels' grid (80 gate/up blocks per hit) is below one block per SM - see `STRATA_GROUPED_PAIR_MIN_HITS`
+    // new kernels' grid (80 gate/up blocks per hit) is below one block per SM - see `GUILD_GROUPED_PAIR_MIN_HITS`
     for (const int n_hits : {9, 5, 3, 2, 1}) {
         std::vector<int32_t> slots((size_t) SETS * n_hits), dst(K);
         for (auto& v : slots) v = (int32_t) (rng() % nb);

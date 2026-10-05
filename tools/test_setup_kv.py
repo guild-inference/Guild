@@ -58,7 +58,7 @@ class KvFormats(unittest.TestCase):
         self.assertIn("7.0 GB", out)
         # Scripts delegate to the config: they must point to the same file and not inject a replacement --kv.
         with tempfile.TemporaryDirectory() as tmp, mock.patch.object(setup, "ROOT", Path(tmp)):
-            path = Path(tmp) / "strata-q2_0.json"
+            path = Path(tmp) / "guild-q2_0.json"
             path.write_text(json.dumps(cfg))
             script = setup.write_run_script("q2_0", path, 8080, False)
             self.assertIn(str(path), script.read_text())

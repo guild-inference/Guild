@@ -13,7 +13,7 @@ prompt again and is reported as not restored. Dry-run by default; --run needs th
 Measured on the RTX 5070 (0.1.38, #528): Q2_0 37K tokens --kv-resident 16384, IQ3_XXS 50-75K tokens
 --kv-resident 32768 (switch, same and pair modes): restored turns decode at the live turns' speed, same tokens.
 
-  python tools/conversation_restore_speed.py --config cfg.json --engine build-release/strata.exe \
+  python tools/conversation_restore_speed.py --config cfg.json --engine build-release/guild-generate.exe \
       --output out-dir --tokens 40000 --set=--max-context=65536 --set=--kv-resident=16384 --run
 """
 import argparse
@@ -104,7 +104,7 @@ def main():
         print('Dry run: baseline (live turns) vs candidate (every turn after the first restored from a parked '
               'snapshot); greedy, fixed residency. Use --run with the GPU free.')
         return
-    from serve.server import StrataEngine, child_env
+    from serve.server import GuildEngine, child_env
     from serve.frontend import ChatTemplate
     from conversation_cache_parity import load_tokenizer
     cfg = json.loads(a.config.read_text(encoding='utf-8'))
@@ -139,7 +139,7 @@ def main():
         sides = [s for s in sides if s[0] == a.only]
     for label, budget in sides:
         args = base_args + ['--conversation-cache-mib', str(budget), '--conversation-cache-slots', '4']
-        engine = StrataEngine(str(a.engine.resolve()), args, cwd=cfg.get('cwd'), log=str(a.output / f'{label}.log'),
+        engine = GuildEngine(str(a.engine.resolve()), args, cwd=cfg.get('cwd'), log=str(a.output / f'{label}.log'),
                               env=env)
         records = []
 

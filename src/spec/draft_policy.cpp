@@ -1,9 +1,9 @@
-// src/spec/draft_policy.cpp - see include/strata/spec/draft_policy.hpp.
-#include "strata/spec/draft_policy.hpp"
+// src/spec/draft_policy.cpp - see include/guild/spec/draft_policy.hpp.
+#include "guild/spec/draft_policy.hpp"
 
 #include <algorithm>
 
-namespace strata::spec {
+namespace guild::spec {
 namespace {
 
 // The shape of a round's cost by window size, relative to one token, used only for sizes not measured yet (the
@@ -98,4 +98,4 @@ void DraftPolicy::observe(bool lookup, int t, int accepted, int match, double ro
     }
 }
 
-}  // namespace strata::spec
+}  // namespace guild::spec

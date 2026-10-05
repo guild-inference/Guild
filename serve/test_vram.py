@@ -10,7 +10,7 @@ from pathlib import Path
 from unittest import mock
 
 from serve.frontend import ChatTemplate
-from serve.server import ByteTokenizer, EngineDied, Service, StrataEngine, engine_args, serve
+from serve.server import ByteTokenizer, EngineDied, Service, GuildEngine, engine_args, serve
 from serve.test_lifecycle import ResidentEngine
 
 
@@ -34,7 +34,7 @@ class VramEngine(ResidentEngine):
 
 class EngineCommand(unittest.TestCase):
     def engine(self, replies):
-        e = StrataEngine("missing-executable", [], lazy=True)
+        e = GuildEngine("missing-executable", [], lazy=True)
         e.proc = mock.Mock()
         e.proc.poll.return_value = None
         e.proc.stdin = io.StringIO()
@@ -45,7 +45,7 @@ class EngineCommand(unittest.TestCase):
         return e
 
     def test_the_line_and_the_answer(self):
-        e = self.engine(["strata serve: something else\n",
+        e = self.engine(["guild serve: something else\n",
                          "VRAM reserve_mib=6000 expert_slots=1200 expert_slots_full=3700 expert_cache_mib=1536 "
                          "expert_cache_full_mib=4900 vram_free_mib=6100 prompt_chunk=2048\n"])
         out = e.vram(6000)

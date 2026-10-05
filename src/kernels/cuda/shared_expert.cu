@@ -18,14 +18,14 @@
 // The legacy canonical projections use their explicit Q8_0/Q8_K activation images. The optional native
 // BF16 path affects only the scalar gate: it reads the original F32 input and uses pinned CUDA MMVF plus
 // an FP32 sigmoid. Native projection overrides independently select CUDA Q8_1 MMVQ and FP32 SwiGLU.
-#include "strata/kernels/shared_expert.hpp"
-#include "strata/kernels/bf16_gemv.hpp"
-#include "strata/kernels/bf16_bits.hpp"
-#include "strata/kernels/f16_bits.hpp"
-#include "strata/kernels/quantize_act.hpp"
-#include "strata/kernels/s2_gemv_q8.hpp"
-#include "strata/kernels/s_gemv.hpp"
-#include "strata/kernels/native_mmvq.hpp"
+#include "guild/kernels/shared_expert.hpp"
+#include "guild/kernels/bf16_gemv.hpp"
+#include "guild/kernels/bf16_bits.hpp"
+#include "guild/kernels/f16_bits.hpp"
+#include "guild/kernels/quantize_act.hpp"
+#include "guild/kernels/s2_gemv_q8.hpp"
+#include "guild/kernels/s_gemv.hpp"
+#include "guild/kernels/native_mmvq.hpp"
 
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
@@ -38,7 +38,7 @@
 #include <cstring>
 #include <stdexcept>
 
-namespace strata::kernels {
+namespace guild::kernels {
 namespace {
 
 constexpr int THREADS = 128;
@@ -178,7 +178,7 @@ __global__ void sigmoid_scale_rows_kernel(float* __restrict__ out, const float* 
 
 bool fused_swiglu_q81_enabled() {
     static const bool on = [] {
-        const char* v = std::getenv("STRATA_FUSED_SWIGLU_Q81");
+        const char* v = std::getenv("GUILD_FUSED_SWIGLU_Q81");
         return v == nullptr || std::atoi(v) != 0;
     }();
     return on;
@@ -206,7 +206,7 @@ void shared_expert_multi(int n_tok, const float* x, const uint16_t* x_bf16, cons
         native_quantize_q8_1(gate, nw.q8_1, (int) n_ff, n_tok, stream);
     }
     native_mmvq(nw.down_type, nw.down_data, nw.q8_1, out, (int) n_ff, (int) n_embd, n_tok, stream);
-    static const bool batch = [] { const char* v = std::getenv("STRATA_DEC_BATCH"); return v == nullptr || std::atoi(v) != 0; }();
+    static const bool batch = [] { const char* v = std::getenv("GUILD_DEC_BATCH"); return v == nullptr || std::atoi(v) != 0; }();
     if (native_bf16 && batch && n_tok > 1) {   // one gemv for all rows (outputs identical), fused sigmoid+scale
         bf16_gemv_fp32_mmvf_multi(x, n_embd, gate_inp_bf16, g, 1, n_embd, 1, n_tok, stream);
         sigmoid_scale_rows_kernel<<<dim3((unsigned) ((n_embd + THREADS - 1) / THREADS), (unsigned) n_tok), THREADS, 0, cs>>>(
@@ -381,4 +381,4 @@ void moe_combine(const float* parts, const float* weights, const float* shared, 
     }
 }
 
-}  // namespace strata::kernels
+}  // namespace guild::kernels

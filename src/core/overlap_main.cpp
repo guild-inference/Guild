@@ -1,4 +1,4 @@
-// src/core/overlap_main.cpp - `strata-overlap`: does streaming an expert overlap with computing on it?
+// src/core/overlap_main.cpp - `guild-overlap`: does streaming an expert overlap with computing on it?
 //
 // THE ARCHITECTURE'S CENTRAL PREMISE.  Only (1 - h) of a token's expert weights are in VRAM, so the rest must
 // cross the bus while the GPU is working.  If the copy and the compute do not overlap, the per-token cost is
@@ -9,8 +9,8 @@
 //
 // Measured against a SERIAL baseline in the same process, because the interesting quantity is the ratio and
 // not the absolute figure - and L6 established that absolute figures on this machine move by 20%.
-#include "strata/core/pinned.hpp"
-#include "strata/kernels/s_gemv.hpp"
+#include "guild/core/pinned.hpp"
+#include "guild/kernels/s_gemv.hpp"
 
 #include <cuda_runtime.h>
 
@@ -52,7 +52,7 @@ int main(int argc, char** argv) {
         else if (a == "--experts") experts = std::atoi(val());
         else if (a == "--tpr") threads_per_row = std::atoi(val());
         else {
-            std::fprintf(stderr, "usage: strata-overlap --file experts.bin [--experts N] [--tpr N]\n");
+            std::fprintf(stderr, "usage: guild-overlap --file experts.bin [--experts N] [--tpr N]\n");
             return 2;
         }
     }
@@ -66,7 +66,7 @@ int main(int argc, char** argv) {
     std::printf("per role: %lld x %lld S2 weights, %.1f KB of planes\n", n_in, n_out, role_bytes / 1024.0);
 
     // host side: `experts` blobs read into a pinned arena, and the S2 planes the GEMV will read
-    strata::core::PinnedArena arena((uint64_t) experts * role_codes);
+    guild::core::PinnedArena arena((uint64_t) experts * role_codes);
     if (!arena.valid()) { std::fprintf(stderr, "arena allocation failed\n"); return 1; }
     {
         std::ifstream f(path, std::ios::binary);
@@ -100,7 +100,7 @@ int main(int argc, char** argv) {
     cudaStream_t s_copy{}, s_comp{};
     check(cudaStreamCreate(&s_copy), "stream copy");
     check(cudaStreamCreate(&s_comp), "stream compute");
-    const strata::kernels::SForm form{2, -1, 64, strata::kernels::Codebook::Affine, false};
+    const guild::kernels::SForm form{2, -1, 64, guild::kernels::Codebook::Affine, false};
 
     // ---- SERIAL: the same operations on the SAME stream, so the GPU runs them one after another ----
     //
@@ -115,7 +115,7 @@ int main(int argc, char** argv) {
         check(cudaMemcpyAsync(d_codes[0], arena.data() + (uint64_t) i * role_codes, role_codes,
                               cudaMemcpyHostToDevice, 0),
               "serial copy");
-        strata::kernels::s_gemv_split_async(d_x, d_codes[0], d_scales, nullptr, d_y, n_in, n_out, form,
+        guild::kernels::s_gemv_split_async(d_x, d_codes[0], d_scales, nullptr, d_y, n_in, n_out, form,
                                             threads_per_row, (void*) (cudaStream_t) 0);
     }
     check(cudaStreamSynchronize(0), "serial final sync");
@@ -139,7 +139,7 @@ int main(int argc, char** argv) {
         // the compute stream must not start row i until its codes have landed
         check(cudaStreamWaitEvent(s_comp, ev[cur], 0), "wait");
         // a hand-written launch so it goes on s_comp; `s_gemv` synchronises on the default stream
-        strata::kernels::s_gemv_split_async(d_x, d_codes[cur], d_scales, nullptr, d_y, n_in, n_out, form,
+        guild::kernels::s_gemv_split_async(d_x, d_codes[cur], d_scales, nullptr, d_y, n_in, n_out, form,
                                             threads_per_row, (void*) s_comp);
     }
     check(cudaStreamSynchronize(s_comp), "final sync");

@@ -180,11 +180,11 @@ class Engine(unittest.TestCase):
 
     def test_bases(self):
         self.assertEqual(setup.prebuilt_bases(setup.PREBUILT_URL),
-                         ["https://github.com/Niko1221/Strata/releases/download/v0.1.31/", setup.PREBUILT_URL])
+                         ["https://github.com/arfjdms1/Guild/releases/download/v0.1.31/", setup.PREBUILT_URL])
         self.assertEqual(setup.prebuilt_bases("https://mirror.example/x"), ["https://mirror.example/x/"])
 
     def test_the_checkout_s_release_first(self):
-        tag = "https://github.com/Niko1221/Strata/releases/download/v0.1.31/"
+        tag = "https://github.com/arfjdms1/Guild/releases/download/v0.1.31/"
         eng, out, heads, got = self.run_get([tag, setup.PREBUILT_URL])
         self.assertEqual(eng, self.root / "engine")
         self.assertEqual(got, [tag + setup.PREBUILT_ASSET])
@@ -245,12 +245,12 @@ class Requirements(unittest.TestCase):
         ran = []
         with tempfile.TemporaryDirectory() as d:
             if stamp is not None:
-                (Path(d) / ".strata-pip.json").write_text(json.dumps(stamp))
+                (Path(d) / ".guild-pip.json").write_text(json.dumps(stamp))
             with mock.patch.object(setup.sys, "prefix", d), \
                     mock.patch.object(setup, "run", lambda cmd, **kw: ran.append(cmd)), \
                     mock.patch.object(setup, "_installed", lambda name: name in installed):
                 quiet(setup.pip_install, packages, "the packages")
-            after = json.loads((Path(d) / ".strata-pip.json").read_text()) if ran else stamp
+            after = json.loads((Path(d) / ".guild-pip.json").read_text()) if ran else stamp
         return [c for cmd in ran for c in cmd if "==" in c or c in setup.PY_PACKAGES], after
 
     def test_fresh_install_gets_every_pin(self):

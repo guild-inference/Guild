@@ -1,19 +1,19 @@
-// src/kernels/cuda/qsa_select.cu - see include/strata/kernels/qsa_select.hpp.
+// src/kernels/cuda/qsa_select.cu - see include/guild/kernels/qsa_select.hpp.
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
-#include "strata/sycl_queue.hpp"
-#include "strata/core/emulate.hpp"
+#include "guild/sycl_queue.hpp"
+#include "guild/core/emulate.hpp"
 #include <cstdlib>
 #include <cstring>
-#include "strata/kernels/qsa_select.hpp"
+#include "guild/kernels/qsa_select.hpp"
 
 #include <cfloat>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 
-namespace strata::kernels {
+namespace guild::kernels {
 namespace {
 
 constexpr int IDX_DIM = 128, IDX_HEADS = 4, R = 4;
@@ -268,14 +268,14 @@ constexpr int TC_KS = IDX_DIM + 4;               // key row stride
 
 // TF32 conversion and MMA need sm_80: below it they compile to a trap and qsa_block_scores_tc refuses the device
 #if defined(__HIPCC__)          // AMD: no mma.sync / cp.async; the host keeps the warp kernel (below)
-#define STRATA_SEL_SM80 0
+#define GUILD_SEL_SM80 0
 #elif 0   // SYCL: inline PTX (mma/ldmatrix/cp.async) - the XMX port is pending; see tools/fixups.py
-#define STRATA_SEL_SM80 1
+#define GUILD_SEL_SM80 1
 #else
-#define STRATA_SEL_SM80 0
+#define GUILD_SEL_SM80 0
 #endif
 __dpct_inline__ uint32_t tf32_hi(float x) {
-#if STRATA_SEL_SM80
+#if GUILD_SEL_SM80
     uint32_t r;
     /*
     DPCT1053: Migration of device assembly code is not supported.
@@ -287,7 +287,7 @@ __dpct_inline__ uint32_t tf32_hi(float x) {
 #endif
 }
 __dpct_inline__ void mma_tf32(float *c, const uint32_t *a, const uint32_t *b) {
-#if !STRATA_SEL_SM80
+#if !GUILD_SEL_SM80
     /* unreachable on SYCL: the launcher refuses this device */
 #else
     /*
@@ -433,9 +433,9 @@ __dpct_inline__ void block_scores_tc_kernel(
 //   32-byte slice of the key row from global (the 16 query tiles of a launch re-read them from L2); the queries are
 //   split once per CTA into LDS.
 #if defined(__gfx1200__) || defined(__gfx1201__)
-#define STRATA_SEL_GFX12 1
+#define GUILD_SEL_GFX12 1
 #else
-#define STRATA_SEL_GFX12 0
+#define GUILD_SEL_GFX12 0
 #endif
 typedef short sel_s8 __attribute__((ext_vector_type(8)));
 typedef float sel_f8 __attribute__((ext_vector_type(8)));
@@ -445,7 +445,7 @@ constexpr int WITER = 4;                   // key tiles per warp (the CTA covers
 constexpr int WQS = IDX_DIM + 8;           // bf16 elements per LDS row: 272 bytes, conflict-free 16-byte reads
 
 __device__ __forceinline__ sel_f8 wmma_bf16(const sel_s8& a, const sel_s8& b, const sel_f8& c) {
-#if STRATA_SEL_GFX12
+#if GUILD_SEL_GFX12
     return __builtin_amdgcn_wmma_f32_16x16x16_bf16_w32_gfx12(a, b, c);
 #else
     /* unreachable on SYCL: the launcher refuses this device */
@@ -460,7 +460,7 @@ __device__ __forceinline__ void split3(float x, uint32_t& hi, uint32_t& mid, uin
     lo = sycl::bit_cast<uint32_t>(r1 - __uint_as_float(mid)) & 0xffff0000u;   // exact: at most 8 significant bits left
 }
 __device__ __forceinline__ uint32_t pack_bf16x2(uint32_t a, uint32_t b) {   // low half = a's bf16, high half = b's
-#if STRATA_SEL_GFX12
+#if GUILD_SEL_GFX12
     return __builtin_amdgcn_perm(b, a, 0x07060302u);
 #else
     return (a >> 16) | (b & 0xffff0000u);
@@ -955,12 +955,12 @@ constexpr int CL_N = 8;        // CTAs per query (the portable cluster size)
 constexpr int CL_T = 1024;     // threads per CTA
 constexpr int CL_MAXQ = 16;    // larger calls (prefill sub-batches) fill the GPU with one CTA per query already
 #if defined(DPCT_COMPATIBILITY_TEMP) && DPCT_COMPATIBILITY_TEMP >= 900
-#define STRATA_SEL_CLUSTER 1
+#define GUILD_SEL_CLUSTER 1
 #else
-#define STRATA_SEL_CLUSTER 0   // an older target's code is a trap; qsa_block_topk_cluster never launches it there
+#define GUILD_SEL_CLUSTER 0   // an older target's code is a trap; qsa_block_topk_cluster never launches it there
 #endif
 
-#if STRATA_SEL_CLUSTER
+#if GUILD_SEL_CLUSTER
 __dpct_inline__ void cl_arrive_relaxed() {
     /*
     DPCT1053: Migration of device assembly code is not supported.
@@ -1068,7 +1068,7 @@ void block_topk_cluster_kernel(const float *__restrict__ scores,
                                const int32_t *__restrict__ steps,
                                int64_t max_blocks, int64_t cap,
                                int32_t *__restrict__ ids, uint8_t *dpct_local) {
-#if STRATA_SEL_CLUSTER
+#if GUILD_SEL_CLUSTER
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
     auto keys = (uint32_t *)dpct_local; // this CTA's blocks' keys
     auto &hin =
@@ -1291,13 +1291,13 @@ void qsa_block_scores(const float* pooled, const float* dead, const float* q_idx
         std::exit(1);
     }
     // a block past a query's n_bid returns at once: the grid need only reach the batch's largest n_bid (C-1)
-    static const bool multi = [] { const char* v = std::getenv("STRATA_SCORES_MULTI"); return v == nullptr || std::atoi(v) != 0; }();
+    static const bool multi = [] { const char* v = std::getenv("GUILD_SCORES_MULTI"); return v == nullptr || std::atoi(v) != 0; }();
     if (multi && nq <= MQ && active_blocks <= 0) {   // no active count: decode (captured or not) and prefill's pooled16
         {
             auto exp_props = sycl::ext::oneapi::experimental::properties{
                 sycl::ext::oneapi::experimental::use_root_sync};
 
-            strata::q_of(stream)
+            guild::q_of(stream)
                 ->parallel_for<
                     dpct_kernel_name<class block_scores_multi_kernel_dea7d4>>(
                     sycl::nd_range<3>(sycl::range(1, 1, 256) *
@@ -1332,7 +1332,7 @@ void qsa_block_scores(const float* pooled, const float* dead, const float* q_idx
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
+        guild::q_of(stream)
             ->parallel_for<dpct_kernel_name<class block_scores_kernel_925c9d>>(
                 sycl::nd_range<3>(grid * sycl::range(1, 1, SCORE_WARPS * 32),
                                   sycl::range(1, 1, SCORE_WARPS * 32)),
@@ -1363,10 +1363,10 @@ bool qsa_block_scores_tc(const float *pooled, const float *dead,
     if (nq <= 0) return true;
     if (s.idx_dim != IDX_DIM || s.idx_n_head != IDX_HEADS || s.idx_block != R || nq > 65535 * TC_QT) return false;
 #if defined(__HIPCC__)
-    // AMD: the gfx12 (RDNA4) WMMA scorer, opt-in (STRATA_SELECT_WMMA=1): it selects slightly differently from the warp
+    // AMD: the gfx12 (RDNA4) WMMA scorer, opt-in (GUILD_SELECT_WMMA=1): it selects slightly differently from the warp
     // kernel (254/256 queries the same), so the default keeps the warp kernel; every other target keeps it too (false)
     static const bool wmma_on = [] {
-        const char* v = std::getenv("STRATA_SELECT_WMMA");
+        const char* v = std::getenv("GUILD_SELECT_WMMA");
         return v != nullptr && v[0] != '\0' && v[0] != '0';
     }();
     if (!wmma_on || !sel_gfx12_device()) return false;
@@ -1402,9 +1402,9 @@ bool qsa_block_scores_tc(const float *pooled, const float *dead,
                 */
                 return false;
             }
-            // STRATA_QSA_WARP=1|select (an A/B arm): the pre-sm_80 kernels on any card, as RTX 20 runs them
-            const char* w = std::getenv("STRATA_QSA_WARP");
-            cc_major[dev] = w && (!std::strcmp(w, "1") || !std::strcmp(w, "select")) ? 7 : strata::cc_major_of(major);
+            // GUILD_QSA_WARP=1|select (an A/B arm): the pre-sm_80 kernels on any card, as RTX 20 runs them
+            const char* w = std::getenv("GUILD_QSA_WARP");
+            cc_major[dev] = w && (!std::strcmp(w, "1") || !std::strcmp(w, "select")) ? 7 : guild::cc_major_of(major);
         }
         (void) cc_major[dev];
         return false;   // SYCL: the tensor-core kernel is not ported yet; the caller takes the older kernel
@@ -1440,7 +1440,7 @@ bool qsa_block_scores_tc(const float *pooled, const float *dead,
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
+        guild::q_of(stream)
             ->submit([&](sycl::handler &cgh) {
                 sycl::local_accessor<uint8_t, 1> dpct_local_acc_ct1(
                     sycl::range(bytes), cgh);
@@ -1462,7 +1462,7 @@ bool qsa_block_scores_tc(const float *pooled, const float *dead,
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
+        guild::q_of(stream)
             ->parallel_for<
                 dpct_kernel_name<class block_scores_tail_kernel_70dfaa>>(
                 sycl::nd_range<3>(sycl::range(1, 1, (unsigned)nq) *
@@ -1507,7 +1507,7 @@ void qsa_block_topk_ref(const float* scores, const int32_t* steps, int64_t nq, i
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
+        guild::q_of(stream)
             ->parallel_for<dpct_kernel_name<class block_topk_kernel_213104>>(
                 sycl::nd_range<3>(sycl::range(1, 1, (unsigned)nq) *
                                       sycl::range(1, 1, TOPK_T),
@@ -1570,7 +1570,7 @@ bool qsa_block_topk_cluster(const float *scores, const int32_t *steps,
     if (s.idx_block != R || cap < qsa_selection_width(kTopkMaxCells, s) || nq > 65535 || max_blocks <= 0) return false;
     const size_t smem = (size_t) ((max_blocks + CL_N - 1) / CL_N) * sizeof(uint32_t);
     // Per device (a layer split runs on several): 1 the cluster kernel runs here, 2 it does not. It needs sm_90+ (the
-    // card's, or STRATA_EMULATE_CC's) AND code built for it: a build with only older code JIT-compiles their PTX, whose
+    // card's, or GUILD_EMULATE_CC's) AND code built for it: a build with only older code JIT-compiles their PTX, whose
     // copy of this kernel is a trap - the function's PTX version says which. `opt`: the dynamic shared memory opted in.
     static int ok[64] = {};
     static size_t opt[64] = {};
@@ -1589,7 +1589,7 @@ bool qsa_block_topk_cluster(const float *scores, const int32_t *steps,
         const bool code =
             DPCT_CHECK_ERROR(
                 major = dpct::get_device(dev).get_major_version()) == 0 &&
-            strata::cc_major_of(major) >= 9 &&
+            guild::cc_major_of(major) >= 9 &&
             DPCT_CHECK_ERROR(dpct::get_kernel_function_info(
                 &fa, (const void *)block_topk_cluster_kernel)) == 0 &&
             fa.ptxVersion >= 90 && fa.binaryVersion >= 90;
@@ -1643,7 +1643,7 @@ bool qsa_block_topk_cluster(const float *scores, const int32_t *steps,
     cfg.gridDim = dpct::dim3(CL_N, (unsigned)nq, 1);
     cfg.blockDim = dpct::dim3(CL_T, 1, 1);
     cfg.dynamicSmemBytes = smem;
-    cfg.stream = strata::q_of(stream);
+    cfg.stream = guild::q_of(stream);
     cfg.attrs = at;
     cfg.numAttrs = 1;
     const dpct::err0 e = cudaLaunchKernelEx(
@@ -1665,15 +1665,15 @@ catch (sycl::exception const &exc) {
 
 void qsa_block_topk(const float* scores, const int32_t* steps, int64_t nq, int64_t max_blocks, int64_t cap,
                     const QsaShapes& s, int32_t* ids, void* stream, int64_t active_blocks) {
-    // keys in registers when every query's blocks fit (contexts up to ~135K cells); the same ids. STRATA_TOPK_OLD=1:
+    // keys in registers when every query's blocks fit (contexts up to ~135K cells); the same ids. GUILD_TOPK_OLD=1:
     // the kernel that reads them from memory on every pass
-    static const bool old = std::getenv("STRATA_TOPK_OLD") != nullptr;
+    static const bool old = std::getenv("GUILD_TOPK_OLD") != nullptr;
     if (nq <= 0) return;
 #if !defined(__HIPCC__)
     // sm_90+: a cluster of CL_N CTAs per query for the calls of a few queries (decode windows); the same ids.
-    // STRATA_QSA_CLUSTER=0: the one-CTA kernels below
+    // GUILD_QSA_CLUSTER=0: the one-CTA kernels below
     static const bool cluster = [] {
-        const char* v = std::getenv("STRATA_QSA_CLUSTER");
+        const char* v = std::getenv("GUILD_QSA_CLUSTER");
         return !v || std::atoi(v) != 0;
     }();
     if (cluster && !old && nq <= CL_MAXQ && qsa_block_topk_cluster(scores, steps, nq, max_blocks, cap, s, ids, stream))
@@ -1688,10 +1688,10 @@ void qsa_block_topk(const float* scores, const int32_t* steps, int64_t nq, int64
     // TK_T * TK_PER registers. Use the prefill bound on sm_75, keeping max_blocks as the score-row stride.
     // Other CUDA devices keep 0.1.32's capacity rule: #337 was measured on RDNA4, and RTX 5070 64K prompts were
     // 1-3% slower. Decode/captured graphs omit the bound and never query the device here.
-    static const bool capacity_guard = std::getenv("STRATA_TOPK_CAPACITY_GUARD") != nullptr;
-    // STRATA_TOPK_ACTIVE_ANY=1 (tests): the Turing dispatch on any CUDA card, so qsa_topk_active_parity checks it
+    static const bool capacity_guard = std::getenv("GUILD_TOPK_CAPACITY_GUARD") != nullptr;
+    // GUILD_TOPK_ACTIVE_ANY=1 (tests): the Turing dispatch on any CUDA card, so qsa_topk_active_parity checks it
     // on whatever card runs the tests (the kernels are the same on every architecture)
-    static const bool any_card = [] { const char* v = std::getenv("STRATA_TOPK_ACTIVE_ANY"); return v && v[0] == '1'; }();
+    static const bool any_card = [] { const char* v = std::getenv("GUILD_TOPK_ACTIVE_ANY"); return v && v[0] == '1'; }();
     const bool counted = !capacity_guard && active_blocks > 0 && active_blocks <= max_blocks &&
                          (any_card || topk_active_turing_device());
 #endif
@@ -1721,7 +1721,7 @@ void qsa_block_topk(const float* scores, const int32_t* steps, int64_t nq, int64
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
+        guild::q_of(stream)
             ->parallel_for<dpct_kernel_name<class block_topk_reg_kernel_652097,
                                             dpct_kernel_scalar<TK_PER>>>(
                 sycl::nd_range<3>(sycl::range(1, 1, (unsigned)nq) *
@@ -1743,7 +1743,7 @@ void qsa_block_topk(const float* scores, const int32_t* steps, int64_t nq, int64
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
+        guild::q_of(stream)
             ->parallel_for<dpct_kernel_name<class block_topk_reg_kernel_652098,
                                             dpct_kernel_scalar<TK_PER_MAX>>>(
                 sycl::nd_range<3>(sycl::range(1, 1, (unsigned)nq) *
@@ -1769,4 +1769,4 @@ void qsa_block_topk(const float* scores, const int32_t* steps, int64_t nq, int64
     */
 }
 
-}  // namespace strata::kernels
+}  // namespace guild::kernels

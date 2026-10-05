@@ -13,10 +13,10 @@
 //      truncated file, a role named in the wrong file, a type or a shape the pack does not say, a missing file.
 #include "gguf_fixture.hpp"
 
-#include "strata/core/expert_source.hpp"
-#include "strata/core/pinned.hpp"
-#include "strata/kernels/cpu/expert_layout.hpp"
-#include "strata/kernels/cpu/native_expert.hpp"
+#include "guild/core/expert_source.hpp"
+#include "guild/core/pinned.hpp"
+#include "guild/kernels/cpu/expert_layout.hpp"
+#include "guild/kernels/cpu/native_expert.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -29,7 +29,7 @@
 #include <vector>
 
 namespace fs = std::filesystem;
-using strata::kernels::cpu::ExpertLayout;
+using guild::kernels::cpu::ExpertLayout;
 
 namespace {
 int g_fail = 0;
@@ -42,7 +42,7 @@ struct TempDir {
     fs::path path;
     TempDir() {
         path = fs::temp_directory_path() /
-               ("strata-expert-layout-test-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+               ("guild-expert-layout-test-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
         fs::create_directories(path);
     }
     ~TempDir() {
@@ -55,7 +55,7 @@ void write_text(const fs::path& p, const std::string& s) { std::ofstream(p, std:
 
 bool load(const fs::path& dir, int64_t n_layers, int64_t n_expert, std::string& err) {
     err.clear();
-    return strata::kernels::cpu::expert_layout_load(dir.string(), n_layers, n_expert, err);
+    return guild::kernels::cpu::expert_layout_load(dir.string(), n_layers, n_expert, err);
 }
 
 // ---- 1. the real packs' files
@@ -67,7 +67,7 @@ void real_packs(const fs::path& data) {
         const bool ok = load(d.path, 48, 512, err);
         check(ok, std::string(pack) + ": loads" + (ok ? "" : ": " + err));
         if (!ok) continue;
-        const ExpertLayout& L = strata::kernels::cpu::expert_layout();
+        const ExpertLayout& L = guild::kernels::cpu::expert_layout();
         // the pre-v4 reader's rules, applied to the same text
         std::ifstream in(d.path / "native_experts.txt");
         std::string line;
@@ -107,7 +107,7 @@ void real_packs(const fs::path& data) {
 
 // ---- 2. the v4 column and the refusals
 std::string manifest(int version, const std::string& col1, int64_t blob, int n_expert = 2) {
-    std::string s = "# strata native experts v" + std::to_string(version) +
+    std::string s = "# guild native experts v" + std::to_string(version) +
                     ": layer gu_type d_type offset blob_bytes gate_off up_off down_off [shard | gate,up,down] "
                     "(n_expert " + std::to_string(n_expert) + ", total " + std::to_string(2 * blob * n_expert) + ")\n";
     s += "0 12 7 0 " + std::to_string(blob) + " 100 200 300\n";
@@ -117,9 +117,9 @@ std::string manifest(int version, const std::string& col1, int64_t blob, int n_e
 }
 
 void columns() {
-    strata::kernels::cpu::NativeFmt f;
+    guild::kernels::cpu::NativeFmt f;
     std::string err;
-    if (!strata::kernels::cpu::native_fmt(12, 7, 2560, 640, f, err)) {
+    if (!guild::kernels::cpu::native_fmt(12, 7, 2560, 640, f, err)) {
         check(false, "Q4_K/Q5_1 native format: " + err);
         return;
     }
@@ -127,7 +127,7 @@ void columns() {
     TempDir d;
     write_text(d.path / "native_experts.txt", manifest(4, "B.gguf,B.gguf,", blob));
     bool ok = load(d.path, 2, 512, err);
-    const ExpertLayout& L = strata::kernels::cpu::expert_layout();
+    const ExpertLayout& L = guild::kernels::cpu::expert_layout();
     check(ok && L.version == 4 && L.gguf_file.size() == 6 && L.gguf_file[0].empty() && L.gguf_file[2].empty() &&
               L.gguf_file[3] == "B.gguf" && L.gguf_file[4] == "B.gguf" && L.gguf_file[5].empty() &&
               L.gguf_off[5] == 600,
@@ -152,10 +152,10 @@ void arena() {
     using fixture::Tensor;
     constexpr int64_t H = 2560, FF = 640, NE = 2;
     const uint32_t Q4_K = 12, Q5_1 = 7, Q5_K = 13, Q8_0 = 8, Q3_K = 11, IQ3_S = 21;
-    strata::kernels::cpu::NativeFmt f0, f1;
+    guild::kernels::cpu::NativeFmt f0, f1;
     std::string err;
-    if (!strata::kernels::cpu::native_fmt(Q4_K, Q5_1, H, FF, f0, err) ||
-        !strata::kernels::cpu::native_fmt(Q5_K, Q8_0, H, FF, f1, err)) {
+    if (!guild::kernels::cpu::native_fmt(Q4_K, Q5_1, H, FF, f0, err) ||
+        !guild::kernels::cpu::native_fmt(Q5_K, Q8_0, H, FF, f1, err)) {
         check(false, "Q4_K/Q5_1 and Q5_K/Q8_0 native formats: " + err);
         return;
     }
@@ -173,7 +173,7 @@ void arena() {
     auto at = [](const fixture::Written& w, size_t i) { return std::to_string(w.data_start + w.offsets[i]); };
     const uint64_t total = (f0.bytes + f1.bytes) * NE;
     auto text = [&](const std::string& down1, const std::string& col1) {
-        return "# strata native experts v4: layer gu_type d_type offset blob_bytes gate_off up_off down_off "
+        return "# guild native experts v4: layer gu_type d_type offset blob_bytes gate_off up_off down_off "
                "[shard | gate,up,down] (n_expert 2, total " + std::to_string(total) + ")\n" +
                "0 12 7 0 " + std::to_string(f0.bytes) + " " + at(wa, 0) + " " + at(wa, 1) + " " + at(wa, 2) + "\n" +
                "1 13 8 " + std::to_string(f0.bytes * NE) + " " + std::to_string(f1.bytes) + " " + at(wb, 0) + " " +
@@ -185,11 +185,11 @@ void arena() {
     bool ok = load(pack, 2, 512, err);
     check(ok, "the v4 manifest of the split layer loads" + (ok ? "" : ": " + err));
     if (!ok) return;
-    const ExpertLayout& L = strata::kernels::cpu::expert_layout();
-    ok = strata::core::check_experts_gguf(A.string(), L, err);
+    const ExpertLayout& L = guild::kernels::cpu::expert_layout();
+    ok = guild::core::check_experts_gguf(A.string(), L, err);
     check(ok, "check_experts_gguf: every span is its tensor" + (ok ? "" : ": " + err));
     std::vector<uint8_t> dst((size_t) L.total, 0xEE);
-    const strata::core::LoadStats st = strata::core::load_experts_gguf(A.string(), dst.data(), L, 3);
+    const guild::core::LoadStats st = guild::core::load_experts_gguf(A.string(), dst.data(), L, 3);
     check(st.ok && st.bytes == L.total && L.total == total, "load_experts_gguf reads the whole arena (" +
                                                                  std::to_string(L.total) + " B)");
     // every byte: expert e's slice of role r comes from byte e * per[r] of that role's tensor
@@ -209,7 +209,7 @@ void arena() {
     check(exact, "every blob is [gate | up | down] of its expert, layer 1 from both files");
 
     {   // CS-T: the same blobs from FileExpertSource reading the shards in place (no experts.bin in the pack)
-        strata::core::FileExpertSource fs;
+        guild::core::FileExpertSource fs;
         fs.set_gguf(A.string());
         std::string e1;
         const bool opened = fs.open(pack.string(), 2, NE, e1);
@@ -265,7 +265,7 @@ void arena() {
             std::ofstream eb(pack / "experts.bin", std::ios::binary);
             eb.write((const char*) dst.data(), (std::streamsize) dst.size());
         }
-        strata::core::FileExpertSource fb;
+        guild::core::FileExpertSource fb;
         fb.set_gguf(A.string());
         std::string e2;
         const bool ob = fb.open(pack.string(), 2, NE, e2);
@@ -279,8 +279,8 @@ void arena() {
 
     auto refused = [&](const std::string& what, const std::string& needle) {
         std::string e2;
-        const bool bad = load(pack, 2, 512, e2) && !strata::core::check_experts_gguf(A.string(),
-                                                                                    strata::kernels::cpu::expert_layout(), e2);
+        const bool bad = load(pack, 2, 512, e2) && !guild::core::check_experts_gguf(A.string(),
+                                                                                    guild::kernels::cpu::expert_layout(), e2);
         check(bad && e2.find(needle) != std::string::npos, what + " (\"..." + needle + "...\")");
     };
     const std::string both = B.filename().string() + "," + B.filename().string() + ",";
@@ -303,25 +303,25 @@ void arena() {
     const auto wc = fixture::write(C, {}, {{"blk.0.ffn_gate_exps.weight", {H, FF, NE}, IQ3_S, 31},
                                            {"blk.0.ffn_up_exps.weight", {H, FF, NE}, Q3_K, 32},
                                            {"blk.0.ffn_down_exps.weight", {FF, H, NE + 1}, Q5_1, 33}});
-    strata::kernels::cpu::NativeFmt f2;
-    if (!strata::kernels::cpu::native_fmt(Q3_K, Q5_1, H, FF, f2, err)) {
+    guild::kernels::cpu::NativeFmt f2;
+    if (!guild::kernels::cpu::native_fmt(Q3_K, Q5_1, H, FF, f2, err)) {
         check(false, "Q3_K/Q5_1 native format: " + err);
         return;
     }
     fs::create_directories(d2.path / "pack");
     write_text(d2.path / "pack" / "native_experts.txt",
-               "# strata native experts v3: (n_expert 2, total " + std::to_string(f2.bytes * NE) + ")\n0 11 7 0 " +
+               "# guild native experts v3: (n_expert 2, total " + std::to_string(f2.bytes * NE) + ")\n0 11 7 0 " +
                    std::to_string(f2.bytes) + " " + std::to_string(wc.data_start + wc.offsets[0]) + " " +
                    std::to_string(wc.data_start + wc.offsets[1]) + " " + std::to_string(wc.data_start + wc.offsets[2]) + "\n");
-    ok = load(d2.path / "pack", 1, 512, err) && !strata::core::check_experts_gguf(C.string(),
-                                                                                  strata::kernels::cpu::expert_layout(), err);
+    ok = load(d2.path / "pack", 1, 512, err) && !guild::core::check_experts_gguf(C.string(),
+                                                                                  guild::kernels::cpu::expert_layout(), err);
     check(ok && err.find("is IQ3_S") != std::string::npos, "a gate of another type than the pack's is refused");
     // the same bytes with the pack's types, but a down tensor of three experts where the pack says two
     fixture::write(C, {}, {{"blk.0.ffn_gate_exps.weight", {H, FF, NE}, Q3_K, 31},
                            {"blk.0.ffn_up_exps.weight", {H, FF, NE}, Q3_K, 32},
                            {"blk.0.ffn_down_exps.weight", {FF, H, NE + 1}, Q5_1, 33}});
-    ok = load(d2.path / "pack", 1, 512, err) && !strata::core::check_experts_gguf(C.string(),
-                                                                                  strata::kernels::cpu::expert_layout(), err);
+    ok = load(d2.path / "pack", 1, 512, err) && !guild::core::check_experts_gguf(C.string(),
+                                                                                  guild::kernels::cpu::expert_layout(), err);
     check(ok && err.find("is not [640, 2560, 2]") != std::string::npos, "a down tensor of another shape is refused");
 }
 }  // namespace
@@ -332,8 +332,8 @@ int main(int argc, char** argv) {
     if (argc == 4 && std::string(argv[1]) == "--real") {
         std::string err;
         if (!load(argv[2], 48, 512, err)) { std::printf("layout refused: %s\n", err.c_str()); return 1; }
-        const ExpertLayout& L = strata::kernels::cpu::expert_layout();
-        const bool ok = strata::core::check_experts_gguf(argv[3], L, err);
+        const ExpertLayout& L = guild::kernels::cpu::expert_layout();
+        const bool ok = guild::core::check_experts_gguf(argv[3], L, err);
         size_t split = 0;
         for (int64_t l = 0; l < L.n_layers && !L.gguf_file.empty(); ++l)
             split += L.gguf_file[(size_t) (3 * l)] != L.gguf_file[(size_t) (3 * l + 2)];

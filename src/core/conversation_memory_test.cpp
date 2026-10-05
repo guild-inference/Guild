@@ -1,4 +1,4 @@
-#include "strata/core/conversation_memory.hpp"
+#include "guild/core/conversation_memory.hpp"
 
 #include <cstdio>
 #include <cstdlib>
@@ -12,7 +12,7 @@
 #include <windows.h>
 #endif
 
-using namespace strata::core;
+using namespace guild::core;
 namespace {
 int checks = 0;
 void check(bool ok, const char* label) {

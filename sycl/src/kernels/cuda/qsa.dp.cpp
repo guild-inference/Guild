@@ -1,4 +1,4 @@
-// src/kernels/cuda/qsa.cu - P2.S2: the QSA cache, indexer and attention (see include/strata/kernels/qsa.hpp).
+// src/kernels/cuda/qsa.cu - P2.S2: the QSA cache, indexer and attention (see include/guild/kernels/qsa.hpp).
 //
 // The header documents the layouts and the scope; this file documents the four decisions that are about the
 // KERNEL rather than about the interface.
@@ -43,14 +43,14 @@
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
-#include "strata/sycl_queue.hpp"
-#include "strata/core/emulate.hpp"
-#include "strata/kernels/qsa.hpp"
+#include "guild/sycl_queue.hpp"
+#include "guild/core/emulate.hpp"
+#include "guild/kernels/qsa.hpp"
 
-#include "strata/kernels/f16_bits.hpp"
-#include "strata/kernels/kv_stream.hpp"
-#include "strata/kernels/rope.hpp"
-#include "strata/kernels/mrope.hpp"
+#include "guild/kernels/f16_bits.hpp"
+#include "guild/kernels/kv_stream.hpp"
+#include "guild/kernels/rope.hpp"
+#include "guild/kernels/mrope.hpp"
 
 #include <cfloat>
 #include <cmath>
@@ -58,7 +58,7 @@
 #include <cstdlib>
 #include <cstring>
 
-namespace strata::kernels {
+namespace guild::kernels {
 namespace {
 
 constexpr int THREADS = 128;
@@ -872,7 +872,7 @@ void kv_append_step(uint16_t* k_pool, uint16_t* v_pool, const int32_t* page_tabl
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
+        guild::q_of(stream)
             ->submit([&](sycl::handler &cgh) {
                 KvHostPools host_host_KvHostPools_ct9 =
                     host ? *host : KvHostPools{};
@@ -911,10 +911,10 @@ void qsa_index_step(const float* pooled, const float* q_idx, const float* bias, 
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
         dpct::has_capability_or_fail(
-            strata::q_of(stream)->get_device(),
+            guild::q_of(stream)->get_device(),
             {sycl::aspect::fp64});
 
-        strata::q_of(stream)
+        guild::q_of(stream)
             ->parallel_for<dpct_kernel_name<class qsa_index_kernel_bb65cd>>(
                 sycl::nd_range<3>(sycl::range(1, 1, (unsigned)max_blocks) *
                                       sycl::range(1, 1, threads),
@@ -949,7 +949,7 @@ void topk_512_step(const float* cell_scores, const QsaShapes& s, int64_t cap, co
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
+        guild::q_of(stream)
             ->parallel_for<dpct_kernel_name<class topk_kernel_97d5c9>>(
                 sycl::nd_range<3>(sycl::range(1, 1, TOPK_THREADS),
                                   sycl::range(1, 1, TOPK_THREADS)),
@@ -974,7 +974,7 @@ void kv_gather_step(const uint16_t* k_pool, const uint16_t* v_pool, const int32_
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
+        guild::q_of(stream)
             ->parallel_for<dpct_kernel_name<class kv_gather_kernel_3473e7>>(
                 sycl::nd_range<3>(sycl::range(1, 1, grid_for(total, 256)) *
                                       sycl::range(1, 1, 256),
@@ -1020,7 +1020,7 @@ void qsa_attend_step(const float *q, const uint16_t *k_scratch,
         the code.
         */
         max_shared = dpct::get_device(dev).get_local_mem_size();
-        max_shared = strata::smem_optin_of(max_shared);
+        max_shared = guild::smem_optin_of(max_shared);
         if ((int) smem > max_shared) {
             std::fprintf(stderr, "qsa: qsa_attend: max_ids %lld needs %zu B of shared, over the %d B limit\n",
                          (long long) max_ids, smem, max_shared);
@@ -1044,7 +1044,7 @@ void qsa_attend_step(const float *q, const uint16_t *k_scratch,
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
+        guild::q_of(stream)
             ->submit([&](sycl::handler &cgh) {
                 sycl::local_accessor<uint8_t, 1> dpct_local_acc_ct1(
                     sycl::range(smem), cgh);
@@ -1127,10 +1127,10 @@ void indexer_key_append(const float* raw, const int32_t* pos_dev, int32_t pos_ba
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
         dpct::has_capability_or_fail(
-            strata::q_of(stream)->get_device(),
+            guild::q_of(stream)->get_device(),
             {sycl::aspect::fp64});
 
-        strata::q_of(stream)
+        guild::q_of(stream)
             ->submit([&](sycl::handler &cgh) {
                 sycl::local_accessor<uint8_t, 1> dpct_local_acc_ct1(
                     sycl::range(smem), cgh);
@@ -1231,10 +1231,10 @@ void qsa_gate_apply_f32(const float* attn, const float* q_full, const QsaShapes&
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
         dpct::has_capability_or_fail(
-            strata::q_of(stream)->get_device(),
+            guild::q_of(stream)->get_device(),
             {sycl::aspect::fp64});
 
-        strata::q_of(stream)
+        guild::q_of(stream)
             ->parallel_for<
                 dpct_kernel_name<class qsa_gate_apply_f32_kernel_7cff4f>>(
                 sycl::nd_range<3>(sycl::range(1, 1, grid_for(n, 256)) *
@@ -1256,10 +1256,10 @@ void qsa_gate_apply(const float* attn, const float* q_full, const QsaShapes& s, 
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
         dpct::has_capability_or_fail(
-            strata::q_of(stream)->get_device(),
+            guild::q_of(stream)->get_device(),
             {sycl::aspect::fp64});
 
-        strata::q_of(stream)
+        guild::q_of(stream)
             ->parallel_for<
                 dpct_kernel_name<class qsa_gate_apply_kernel_650dec>>(
                 sycl::nd_range<3>(sycl::range(1, 1, grid_for(n, 256)) *
@@ -1274,4 +1274,4 @@ void qsa_gate_apply(const float* attn, const float* q_full, const QsaShapes& s, 
     if (stream == nullptr) check_sync("qsa_gate_apply");
 }
 
-}  // namespace strata::kernels
+}  // namespace guild::kernels

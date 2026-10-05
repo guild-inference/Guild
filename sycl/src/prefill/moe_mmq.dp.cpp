@@ -1,11 +1,11 @@
-// src/prefill/moe_mmq.cu - see include/strata/prefill/moe_mmq.hpp.  llama.cpp's MMQ (ggml-cuda, MIT) is compiled
+// src/prefill/moe_mmq.cu - see include/guild/prefill/moe_mmq.hpp.  llama.cpp's MMQ (ggml-cuda, MIT) is compiled
 // from the pinned llama.cpp checkout the build already takes ggml from; src/prefill/ggml_cuda_host.cu supplies the
 // few host symbols of ggml-cuda.cu it references.
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
-#include "strata/sycl_queue.hpp"
-#include "strata/prefill/moe_mmq.hpp"
+#include "guild/sycl_queue.hpp"
+#include "guild/prefill/moe_mmq.hpp"
 
 #include "common.cuh"
 #include "mmq.cuh"
@@ -14,7 +14,7 @@
 #include <cstdio>
 #include <cstdlib>
 
-namespace strata::prefill::mmq {
+namespace guild::prefill::mmq {
 namespace {
 
 void ck(dpct::err0 e, const char *what) {
@@ -51,16 +51,16 @@ __dpct_inline__ void copy1_kernel(const uint8_t *__restrict__ a, int64_t na,
     else if (i < na + nb + nc) c_dst[i - na - nb] = c[i - na - nb];
 }
 
-// Strata blob: gate/up codes [1280][640 B], down codes [2560][160 B], gate/up scales [1280][40] f16, down scales
+// Guild blob: gate/up codes [1280][640 B], down codes [2560][160 B], gate/up scales [1280][40] f16, down scales
 // [2560][10] f16 (the layout of prefill/kernels.cu's blob_dequant_kernel).  A GGUF Q2_0 block is {f16 d; 16 code
 // bytes} with the same 2-bit codes in the same order, so a block is a scale and a 16-byte run of codes.
 /*
 DPCT1110: The total declared local variable size in device function
-strata_q2_kernel exceeds 128 bytes and may cause high register pressure. Consult
+guild_q2_kernel exceeds 128 bytes and may cause high register pressure. Consult
 with your hardware vendor to find the total register size available and adjust
 the code, or use smaller sub-group size to avoid high register pressure.
 */
-__dpct_inline__ void strata_q2_kernel(const uint8_t *__restrict__ blob,
+__dpct_inline__ void guild_q2_kernel(const uint8_t *__restrict__ blob,
                                       uint16_t *__restrict__ gu,
                                       uint16_t *__restrict__ dn) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
@@ -169,7 +169,7 @@ void Context::run(const Product& p, void* stream) {
                         1, 1, 0, 0, 0,
                         p.max_rows, p.max_rows};
     auto& ctx = *(ggml_backend_cuda_context*) ctx_;
-    const dpct::queue_ptr s = strata::q_of(stream);
+    const dpct::queue_ptr s = guild::q_of(stream);
     switch (t) {
         case GGML_TYPE_Q2_0: mul_mat_q_case<GGML_TYPE_Q2_0>(ctx, a, s); break;
         case GGML_TYPE_IQ2_XXS: mul_mat_q_case<GGML_TYPE_IQ2_XXS>(ctx, a, s); break;
@@ -193,7 +193,7 @@ void Context::run(const Product& p, void* stream) {
 
 void gather_native(const void* gate, const void* up, size_t gu_half_bytes, const void* down, size_t d_bytes,
                    void* gu_dst, void* d_dst, void* stream) {
-    const dpct::queue_ptr s = strata::q_of(stream);
+    const dpct::queue_ptr s = guild::q_of(stream);
     const bool a16 = ((uintptr_t) gate | (uintptr_t) up | (uintptr_t) down | (uintptr_t) gu_dst | (uintptr_t) d_dst |
                       gu_half_bytes | d_bytes) % 16 == 0;
     if (a16) {
@@ -238,19 +238,19 @@ void gather_native(const void* gate, const void* up, size_t gu_half_bytes, const
     ck(0, "gather_native");
 }
 
-void gather_strata_q2(const uint8_t* blob, void* gu_dst, void* d_dst, void* stream) {
+void gather_guild_q2(const uint8_t* blob, void* gu_dst, void* d_dst, void* stream) {
     {
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
-            ->parallel_for<dpct_kernel_name<class strata_q2_kernel_793a65>>(
+        guild::q_of(stream)
+            ->parallel_for<dpct_kernel_name<class guild_q2_kernel_793a65>>(
                 sycl::nd_range<3>(
                     sycl::range(1, 1, blocks(1280LL * 40 + 2560LL * 10)) *
                         sycl::range(1, 1, 256),
                     sycl::range(1, 1, 256)),
                 exp_props, [=](sycl::nd_item<3> item_ct1) {
-                    strata_q2_kernel(blob, (uint16_t *)gu_dst,
+                    guild_q2_kernel(blob, (uint16_t *)gu_dst,
                                      (uint16_t *)d_dst);
                 });
     }
@@ -259,7 +259,7 @@ void gather_strata_q2(const uint8_t* blob, void* gu_dst, void* d_dst, void* stre
     error codes. The cudaGetLastError function call was replaced with 0. You
     need to rewrite this code.
     */
-    ck(0, "gather_strata_q2");
+    ck(0, "gather_guild_q2");
 }
 
 void swiglu(const float* gu, float* h, int64_t rows, int64_t n_ff, bool interleaved, void* stream) {
@@ -268,7 +268,7 @@ void swiglu(const float* gu, float* h, int64_t rows, int64_t n_ff, bool interlea
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
+        guild::q_of(stream)
             ->parallel_for<dpct_kernel_name<class swiglu_kernel_3f7a6f>>(
                 sycl::nd_range<3>(sycl::range(1, 1, blocks(rows * n_ff)) *
                                       sycl::range(1, 1, 256),
@@ -291,7 +291,7 @@ void iota(int32_t* dst, int64_t n, void* stream) {
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
 
-        strata::q_of(stream)
+        guild::q_of(stream)
             ->parallel_for<dpct_kernel_name<class iota_kernel_9245a0>>(
                 sycl::nd_range<3>(sycl::range(1, 1, blocks(n)) *
                                       sycl::range(1, 1, 256),
@@ -308,4 +308,4 @@ void iota(int32_t* dst, int64_t n, void* stream) {
     ck(0, "iota");
 }
 
-}  // namespace strata::prefill::mmq
+}  // namespace guild::prefill::mmq

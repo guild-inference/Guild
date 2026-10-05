@@ -23,10 +23,10 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
-#include "strata/kernels/native_mmvq.hpp"
-#include "strata/kernels/dp4a.hpp"
-#include "strata/kernels/q8_1_finite.hpp"
-#include "strata/kernels/iq_kernels.hpp"
+#include "guild/kernels/native_mmvq.hpp"
+#include "guild/kernels/dp4a.hpp"
+#include "guild/kernels/q8_1_finite.hpp"
+#include "guild/kernels/iq_kernels.hpp"
 
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
@@ -37,7 +37,7 @@
 #include <stdexcept>
 #include <string>
 
-namespace strata::kernels {
+namespace guild::kernels {
 namespace {
 
 constexpr int QK = 256;
@@ -184,8 +184,8 @@ __device__ __forceinline__ float q5_q8_dot_impl(
         const int vh1i = ((vh[1] >> i) << 4) & 0x10101010;
         const int v0i = vl0i | vh0i;
         const int v1i = vl1i | vh1i;
-        const int dot1 = STRATA_DP4A(v0i, u[2 * i], STRATA_DP4A(v1i, u[2 * i + 1], 0));
-        const int dot2 = STRATA_DP4A(0x01010101, u[2 * i], STRATA_DP4A(0x01010101, u[2 * i + 1], 0));
+        const int dot1 = GUILD_DP4A(v0i, u[2 * i], GUILD_DP4A(v1i, u[2 * i + 1], 0));
+        const int dot2 = GUILD_DP4A(0x01010101, u[2 * i], GUILD_DP4A(0x01010101, u[2 * i + 1], 0));
         sumf_d += d8[i] * (dot1 * sc[i]);
         sumf_m += d8[i] * (dot2 * m[i]);
     }
@@ -293,8 +293,8 @@ __device__ __forceinline__ float q2_q8_dot(const Q20Block* __restrict__ w,
         const int qo = __byte_perm(0x020100ff, 0x020100ff, q >> 2);
         const int qx = __byte_perm(qe, qo, 0x5140);
         const int qy = __byte_perm(qe, qo, 0x7362);
-        sumi = STRATA_DP4A(u, qx, sumi);
-        sumi = STRATA_DP4A(v, qy, sumi);
+        sumi = GUILD_DP4A(u, qx, sumi);
+        sumi = GUILD_DP4A(v, qy, sumi);
     }
     const float d8 = __low2float(chunk->ds);
     return d2 * d8 * sumi;
@@ -367,7 +367,7 @@ __device__ __forceinline__ float q3_q8_dot_impl(int vl, int vh, const int* __res
         const int vil = (vl >> (2 * i)) & 0x03030303;
         const int vih = ((vh >> i) << 2) & 0x04040404;
         const int vi = __vsubss4(vil, vih);
-        sumf += d8[i] * (STRATA_DP4A(vi, u[i], 0) * sc);
+        sumf += d8[i] * (GUILD_DP4A(vi, u[i], 0) * sc);
     }
     return d3 * sumf;
 }
@@ -435,7 +435,7 @@ __device__ __align__(4) int8_t iq4nl_values[16] = {
 };
 
 __device__ __forceinline__ int2 iq4_table_lookup(int q4) {
-#if defined(STRATA_HIP_GFX906)
+#if defined(GUILD_HIP_GFX906)
     // AMD: llama.cpp's HIP lookup (see iq_kernels.cu get_int_from_table_16): 4 v_perm_b32 per 8 values
     const uint32_t* v32 = reinterpret_cast<const uint32_t*>(iq4nl_values);
     const uint32_t q_even = (uint32_t) q4, q_odd = (uint32_t) q4 >> 4;
@@ -472,8 +472,8 @@ __device__ __forceinline__ float iq4_xs_q8_dot(const IQ4XSBlock* __restrict__ w,
         const int2 v = iq4_table_lookup(aux_q4);
         const int u0 = reinterpret_cast<const int*>(x[iqs / 4].qs)[j];
         const int u1 = reinterpret_cast<const int*>(x[iqs / 4].qs)[j + 4];
-        sumi = STRATA_DP4A(v.x, u0, sumi);
-        sumi = STRATA_DP4A(v.y, u1, sumi);
+        sumi = GUILD_DP4A(v.x, u0, sumi);
+        sumi = GUILD_DP4A(v.y, u1, sumi);
     }
     const int ls = ((w->scales_l[iqs / 8] >> (iqs & 0x04)) & 0x0f) |
                    (((w->scales_h >> (iqs / 2)) & 0x03) << 4);
@@ -532,8 +532,8 @@ __device__ __forceinline__ float q4_q8_dot_impl(
     for (int i = 0; i < 2; ++i) {
         const int v0i = (v[0] >> (4 * i)) & 0x0f0f0f0f;
         const int v1i = (v[1] >> (4 * i)) & 0x0f0f0f0f;
-        const int dot1 = STRATA_DP4A(v1i, u[2 * i + 1], STRATA_DP4A(v0i, u[2 * i], 0));
-        const int dot2 = STRATA_DP4A(0x01010101, u[2 * i + 1], STRATA_DP4A(0x01010101, u[2 * i], 0));
+        const int dot1 = GUILD_DP4A(v1i, u[2 * i + 1], GUILD_DP4A(v0i, u[2 * i], 0));
+        const int dot2 = GUILD_DP4A(0x01010101, u[2 * i + 1], GUILD_DP4A(0x01010101, u[2 * i], 0));
         sumf_d += d8[i] * (dot1 * sc[i]);
         sumf_m += d8[i] * (dot2 * m[i]);
     }
@@ -630,7 +630,7 @@ __device__ __forceinline__ float q6_q8_dot_impl(int vl, int vh, const int* __res
         const int vil = (vl >> (4 * i)) & 0x0f0f0f0f;
         const int vih = ((vh >> (4 * i)) << 4) & 0x30303030;
         const int vi = __vsubss4(vil | vih, 0x20202020);
-        sumf += d8[i] * (STRATA_DP4A(vi, u[i], 0) * sc);
+        sumf += d8[i] * (GUILD_DP4A(vi, u[i], 0) * sc);
     }
     return d * sumf;
 }
@@ -702,8 +702,8 @@ __device__ __forceinline__ float small_q8_dot(const Q40Block* __restrict__ w,
         const int v = load_int_b2(w->qs, iqs + i);
         const int vi0 = (v >> 0) & 0x0f0f0f0f;
         const int vi1 = (v >> 4) & 0x0f0f0f0f;
-        sumi = STRATA_DP4A(vi0, reinterpret_cast<const int*>(x->qs)[iqs + i], sumi);
-        sumi = STRATA_DP4A(vi1, reinterpret_cast<const int*>(x->qs)[iqs + i + 4], sumi);
+        sumi = GUILD_DP4A(vi0, reinterpret_cast<const int*>(x->qs)[iqs + i], sumi);
+        sumi = GUILD_DP4A(vi1, reinterpret_cast<const int*>(x->qs)[iqs + i + 4], sumi);
     }
     const float2 ds = __half22float2(x->ds);
     const float d = w->d;
@@ -722,13 +722,13 @@ __device__ __forceinline__ float small_q8_dot(const Q50Block* __restrict__ w,
         vi0 |= (vh << 11) & 0x00001000;
         vi0 |= (vh << 18) & 0x00100000;
         vi0 |= (vh << 25) & 0x10000000;
-        sumi = STRATA_DP4A(vi0, reinterpret_cast<const int*>(x->qs)[iqs + i], sumi);
+        sumi = GUILD_DP4A(vi0, reinterpret_cast<const int*>(x->qs)[iqs + i], sumi);
         int vi1 = (vl >> 4) & 0x0f0f0f0f;
         vi1 |= (vh >> 12) & 0x00000010;
         vi1 |= (vh >> 5) & 0x00001000;
         vi1 |= (vh << 2) & 0x00100000;
         vi1 |= (vh << 9) & 0x10000000;
-        sumi = STRATA_DP4A(vi1, reinterpret_cast<const int*>(x->qs)[iqs + i + 4], sumi);
+        sumi = GUILD_DP4A(vi1, reinterpret_cast<const int*>(x->qs)[iqs + i + 4], sumi);
     }
     const float2 ds = __half22float2(x->ds);
     const float d = w->d;
@@ -742,7 +742,7 @@ __device__ __forceinline__ float small_q8_dot(const Q80Block* __restrict__ w,
     for (int i = 0; i < 2; ++i) {
         const int v = load_int_b2(w->qs, iqs + i);
         const int u = reinterpret_cast<const int*>(x->qs)[iqs + i];
-        sumi = STRATA_DP4A(v, u, sumi);
+        sumi = GUILD_DP4A(v, u, sumi);
     }
     const float d0 = w->d;
     const float d1 = __low2float(x->ds);
@@ -756,8 +756,8 @@ __device__ __forceinline__ float small_q8_dot(const IQ4NLBlock* __restrict__ w,
 #pragma unroll
     for (int i = 0; i < 2; ++i) {
         const int2 v = iq4_table_lookup(load_int_b2(w->qs, iqs + i));
-        sumi = STRATA_DP4A(v.x, q8[i], sumi);
-        sumi = STRATA_DP4A(v.y, q8[i + 4], sumi);
+        sumi = GUILD_DP4A(v.x, q8[i], sumi);
+        sumi = GUILD_DP4A(v.y, q8[i + 4], sumi);
     }
     const float d = __half2float(w->d) * __low2float(x->ds);
     return d * sumi;
@@ -921,8 +921,8 @@ struct Q20Traits {
         int sumi = 0;
 #pragma unroll
         for (int j = 0; j < 4; ++j) {
-            sumi = STRATA_DP4A(q8[j * 2], r.qx[j], sumi);
-            sumi = STRATA_DP4A(q8[j * 2 + 1], r.qy[j], sumi);
+            sumi = GUILD_DP4A(q8[j * 2], r.qx[j], sumi);
+            sumi = GUILD_DP4A(q8[j * 2 + 1], r.qy[j], sumi);
         }
         const float d8 = __low2float(chunk->ds);
         return r.d2 * d8 * sumi;
@@ -1000,8 +1000,8 @@ struct IQ4XSTraits {
         for (int j = 0; j < 4; ++j) {
             const int u0 = reinterpret_cast<const int*>(x[iqs / 4].qs)[j];
             const int u1 = reinterpret_cast<const int*>(x[iqs / 4].qs)[j + 4];
-            sumi = STRATA_DP4A(r.v[j].x, u0, sumi);
-            sumi = STRATA_DP4A(r.v[j].y, u1, sumi);
+            sumi = GUILD_DP4A(r.v[j].x, u0, sumi);
+            sumi = GUILD_DP4A(r.v[j].y, u1, sumi);
         }
         sumi *= r.ls - 32;
         const float d = r.dw * __low2float(x[iqs / 4].ds);
@@ -1130,13 +1130,13 @@ void launch_check() {
 }
 
 
-#if defined(STRATA_HIP_GFX906)
+#if defined(GUILD_HIP_GFX906)
 // ---- AMD (wave64) layout: one wavefront per R rows, four wavefronts per block, the row's blocks strided over the
 // 64 lanes exactly as the CUDA kernels stride them over a block (kbx = lane / T, stride 64 / T), and a 64-lane
 // butterfly instead of the LDS partials and __syncthreads of the one-block-per-row layout: on gfx906 a block per
 // 2 KB row spent most of its time being launched and joined.  The SAME kernel serves every column count 1..8, so a
-// column's sums do not depend on how many columns (verify tokens) ride along.  STRATA_MMVQ_WAVE=0: the CUDA layout.
-bool g_wave_off = std::getenv("STRATA_MMVQ_WAVE") && std::string(std::getenv("STRATA_MMVQ_WAVE")) == "0";
+// column's sums do not depend on how many columns (verify tokens) ride along.  GUILD_MMVQ_WAVE=0: the CUDA layout.
+bool g_wave_off = std::getenv("GUILD_MMVQ_WAVE") && std::string(std::getenv("GUILD_MMVQ_WAVE")) == "0";
 template<typename F, int NCOLS, int R>
 __launch_bounds__(256)
 __global__ void native_mmvq_wave_kernel(const typename F::Block* __restrict__ w, const Q81Block* __restrict__ x,
@@ -1194,10 +1194,10 @@ void wave_launch(const void* weights, const void* x_q8_1, float* y, int n_in, in
         default: throw std::invalid_argument("native MMVQ (wave) requires 1 <= ncols <= 8");
     }
 }
-#define STRATA_WAVE_MMVQ(...) \
+#define GUILD_WAVE_MMVQ(...) \
     if (!g_wave_off) { wave_launch<__VA_ARGS__>(weights, x_q8_1, y, n_in, n_out, ncols, stream); launch_check(); return; }
 #else
-#define STRATA_WAVE_MMVQ(...)
+#define GUILD_WAVE_MMVQ(...)
 #endif
 
 template<typename Weight, int Qi>
@@ -1209,7 +1209,7 @@ void small_mmvq(const void* weights, const void* x_q8_1, float* y,
     validate_pointer(x_q8_1);
     validate_pointer(y);
     validate_stream(stream);
-    STRATA_WAVE_MMVQ(SmallTraits<Weight, Qi>)
+    GUILD_WAVE_MMVQ(SmallTraits<Weight, Qi>)
     if (ncols > 1) {
         launch_multi<SmallTraits<Weight, Qi>>(weights, x_q8_1, y, n_in, n_out, ncols, stream);
         launch_check();
@@ -1289,7 +1289,7 @@ void native_q5_k_mmvq(const void* weights, const void* x_q8_1, float* y,
     validate_pointer(x_q8_1);
     validate_pointer(y);
     validate_stream(stream);
-    STRATA_WAVE_MMVQ(Q5KTraits)
+    GUILD_WAVE_MMVQ(Q5KTraits)
     if (ncols > 1) {
         launch_multi<Q5KTraits>(weights, x_q8_1, y, n_in, n_out, ncols, stream);
         launch_check();
@@ -1330,7 +1330,7 @@ void native_q2_0_mmvq(const void* weights, const void* x_q8_1, float* y,
     validate_pointer(x_q8_1);
     validate_pointer(y);
     validate_stream(stream);
-    STRATA_WAVE_MMVQ(Q20Traits)
+    GUILD_WAVE_MMVQ(Q20Traits)
     if (ncols > 1) {
         launch_multi<Q20Traits>(weights, x_q8_1, y, n_in, n_out, ncols, stream);
         launch_check();
@@ -1370,7 +1370,7 @@ void native_q3_k_mmvq(const void* weights, const void* x_q8_1, float* y,
     validate_pointer(x_q8_1);
     validate_pointer(y);
     validate_stream(stream);
-    STRATA_WAVE_MMVQ(Q3KTraits)
+    GUILD_WAVE_MMVQ(Q3KTraits)
     if (ncols > 1) {
         launch_multi<Q3KTraits>(weights, x_q8_1, y, n_in, n_out, ncols, stream);
         launch_check();
@@ -1410,7 +1410,7 @@ void native_iq4_xs_mmvq(const void* weights, const void* x_q8_1, float* y,
     validate_pointer(x_q8_1);
     validate_pointer(y);
     validate_stream(stream);
-    STRATA_WAVE_MMVQ(IQ4XSTraits)
+    GUILD_WAVE_MMVQ(IQ4XSTraits)
     if (ncols > 1) {
         launch_multi<IQ4XSTraits>(weights, x_q8_1, y, n_in, n_out, ncols, stream);
         launch_check();
@@ -1450,7 +1450,7 @@ void native_q4_k_mmvq(const void* weights, const void* x_q8_1, float* y,
     validate_pointer(x_q8_1);
     validate_pointer(y);
     validate_stream(stream);
-    STRATA_WAVE_MMVQ(Q4KTraits)
+    GUILD_WAVE_MMVQ(Q4KTraits)
     if (ncols > 1) {
         launch_multi<Q4KTraits>(weights, x_q8_1, y, n_in, n_out, ncols, stream);
         launch_check();
@@ -1490,7 +1490,7 @@ void native_q6_k_mmvq(const void* weights, const void* x_q8_1, float* y,
     validate_pointer(x_q8_1);
     validate_pointer(y);
     validate_stream(stream);
-    STRATA_WAVE_MMVQ(Q6KTraits)
+    GUILD_WAVE_MMVQ(Q6KTraits)
     if (ncols > 1) {
         launch_multi<Q6KTraits>(weights, x_q8_1, y, n_in, n_out, ncols, stream);
         launch_check();
@@ -1616,4 +1616,4 @@ void native_mmvq(int ggml_type, const void* weights, const void* x_q8_1, float* 
     }
 }
 
-} // namespace strata::kernels
+} // namespace guild::kernels
