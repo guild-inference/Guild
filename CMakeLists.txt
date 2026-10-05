@@ -241,6 +241,16 @@ target_link_libraries(guild_plan INTERFACE guild_warnings)
 add_executable(guild-plan src/plan/plan_main.cpp)
 target_link_libraries(guild-plan PRIVATE guild_plan)
 
+# ---- guild_model (ModelDescriptor & Archetypes) -----------------------------
+add_library(guild_model STATIC src/model/model_descriptor.cpp src/model/archetype.cpp)
+target_include_directories(guild_model PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(guild_model PUBLIC guild_artifact guild_warnings)
+if(GUILD_BUILD_TESTS)
+  add_executable(model_descriptor_test tests/core/model_descriptor_test.cpp)
+  target_link_libraries(model_descriptor_test PRIVATE guild_model)
+  add_test(NAME model_descriptor_test COMMAND model_descriptor_test)
+endif()
+
 # ---- guild_core (GPU runtime) ---------------------------------------------
 # Only built when a GPU backend is on, so the Phase 1 targets keep working without a toolkit.
 if(GUILD_ENABLE_CUDA OR GUILD_ENABLE_HIP)
@@ -417,7 +427,7 @@ if(GUILD_ENABLE_CUDA OR GUILD_ENABLE_HIP)
     src/core/expert_cache.cpp src/core/native_head.cpp src/core/native_dense.cpp src/core/verify.cpp src/core/mtp.cpp
     src/core/conversation_snapshot.cpp src/core/conversation_state.cpp src/core/conversation_memory.cpp src/core/peer_experts.cpp)
   target_include_directories(guild_engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
-  target_link_libraries(guild_engine PUBLIC guild_core guild_kernels guild_kernels_cpu ${_guild_gpu_runtime_target})
+  target_link_libraries(guild_engine PUBLIC guild_core guild_model guild_kernels guild_kernels_cpu ${_guild_gpu_runtime_target})
   enable_testing()
   add_executable(kv_host_only_test tests/core/kv_host_only_test.cpp)
   target_link_libraries(kv_host_only_test PRIVATE guild_engine)
