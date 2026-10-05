@@ -53,6 +53,7 @@
 #include "guild/prefill/prefill.hpp"
 #include "guild/core/native_dense.hpp"
 #include "guild/program/logits_selection.hpp"
+#include "guild/model/archetype.hpp"
 #include "guild/program/conv_cache.hpp"
 #include "guild/spec/draft_policy.hpp"
 #include "guild/spec/suffix_drafter.hpp"
@@ -2092,13 +2093,24 @@ int main(int argc, char** argv) {
             // is the authority on its own MoE shape - everything else in the geometry is unchanged
             try {
                 guild::GgufFile model_gguf(o.native_shards.front());   // the metadata shard
-                if (const guild::MetaValue* v = model_gguf.get("qwen4exp.expert_count")) g.n_expert = (int64_t) v->u;
-                if (const guild::MetaValue* v = model_gguf.get("qwen4exp.expert_used_count")) K = (int64_t) v->u;
-                if (const guild::MetaValue* v = model_gguf.get("qwen4exp.rope.freq_base")) gguf_rope_base = v->num();
-                if (const guild::MetaValue* v = model_gguf.get("qwen4exp.rope.scaling.type")) gguf_rope_type = v->s;
-                if (const guild::MetaValue* v = model_gguf.get("qwen4exp.rope.scaling.factor")) gguf_rope_factor = v->num();
-                if (const guild::MetaValue* v = model_gguf.get("qwen4exp.rope.scaling.original_context_length"))
-                    gguf_rope_orig_ctx = v->num();
+                guild::model::ModelDescriptor desc;
+                std::string err;
+                if (guild::model::ArchetypeRegistry::instance().describe_gguf(model_gguf, desc, err)) {
+                    g.apply_descriptor(desc);
+                    if (desc.moe.k_active_experts > 0) K = desc.moe.k_active_experts;
+                    if (!desc.rope.type.empty()) gguf_rope_type = desc.rope.type;
+                    if (desc.rope.freq_base > 0) gguf_rope_base = desc.rope.freq_base;
+                    if (desc.rope.factor > 0) gguf_rope_factor = desc.rope.factor;
+                    if (desc.rope.orig_ctx > 0) gguf_rope_orig_ctx = desc.rope.orig_ctx;
+                } else {
+                    if (const guild::MetaValue* v = model_gguf.get("qwen4exp.expert_count")) g.n_expert = (int64_t) v->u;
+                    if (const guild::MetaValue* v = model_gguf.get("qwen4exp.expert_used_count")) K = (int64_t) v->u;
+                    if (const guild::MetaValue* v = model_gguf.get("qwen4exp.rope.freq_base")) gguf_rope_base = v->num();
+                    if (const guild::MetaValue* v = model_gguf.get("qwen4exp.rope.scaling.type")) gguf_rope_type = v->s;
+                    if (const guild::MetaValue* v = model_gguf.get("qwen4exp.rope.scaling.factor")) gguf_rope_factor = v->num();
+                    if (const guild::MetaValue* v = model_gguf.get("qwen4exp.rope.scaling.original_context_length"))
+                        gguf_rope_orig_ctx = v->num();
+                }
             } catch (const std::exception& e) {
                 std::fprintf(stderr, "guild generate: reading the model's expert shape from %s: %s\n",
                              o.native_preset.c_str(), e.what());

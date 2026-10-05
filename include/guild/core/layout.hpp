@@ -16,20 +16,16 @@
 #pragma once
 
 #include "guild/core/weights.hpp"
+#include "guild/model/model_descriptor.hpp"
 
 #include <cstdint>
 #include <string>
 
 namespace guild::core {
 
-/// The model's geometry, taken from `docs/semantics.md` and the artifact's own metadata.  Every field here
-/// is a number a kernel depends on, so a change is a change to a kernel contract and not a tuning knob.
-struct ModelGeometry {
-    int64_t n_embd = 2560;
-    int64_t n_layers = 48;
-    int64_t qsa_interval = 4;      ///< every 4th layer is full attention: layers 3, 7, ... 47
-
-    // GDN (36 layers)
+/// Architecture-specific parameters for the qwen4exp hybrid GDN+QSA MoE architecture.
+struct Qwen4ExpGeometry {
+    // GDN recurrence parameters (36 layers)
     int64_t ssm_state_size = 128;
     int64_t ssm_k_heads = 16;
     int64_t ssm_v_heads = 48;
@@ -37,30 +33,79 @@ struct ModelGeometry {
     int64_t ssm_conv_channels = 10240;   ///< 2*128*16 + 128*48
     int64_t ssm_value_dim = 6144;        ///< 128 * 48
 
-    // QSA (12 layers)
-    int64_t n_head = 24;
-    int64_t n_head_kv = 2;
-    int64_t head_dim = 256;
+    // QSA indexer heads (12 layers)
     int64_t idx_q_heads = 4;
     int64_t idx_key_dim = 128;
 
-    // gated residual, on every layer
+    // Gated residual, on every layer
     int64_t hc = 4;
     int64_t hc_lr = 320;
+};
 
-    // MoE, on every layer
+/// The model's geometry. Generic MoE and attention parameters are kept at the top level,
+/// while architecture-specific fast paths (such as Qwen4Exp's GDN and gated residual)
+/// are grouped in dedicated archetype structures.
+struct ModelGeometry {
+    int64_t n_embd = 2560;
+    int64_t n_layers = 48;
+    int64_t qsa_interval = 4;      ///< attention interval: layers 3, 7, ... 47 for interval 4
+
+    int64_t n_head = 24;
+    int64_t n_head_kv = 2;
+    int64_t head_dim = 256;
+
     int64_t n_expert = 512;
     int64_t n_ff = 640;
 
+    // Archetype-specific geometry
+    Qwen4ExpGeometry qwen4exp;
+
+    // Direct accessors preserved for kernel compatibility
+    int64_t ssm_state_size = 128;
+    int64_t ssm_k_heads = 16;
+    int64_t ssm_v_heads = 48;
+    int64_t ssm_d_conv = 4;
+    int64_t ssm_conv_channels = 10240;
+    int64_t ssm_value_dim = 6144;
+    int64_t idx_q_heads = 4;
+    int64_t idx_key_dim = 128;
+    int64_t hc = 4;
+    int64_t hc_lr = 320;
+
+    void sync_qwen4exp() {
+        ssm_state_size = qwen4exp.ssm_state_size;
+        ssm_k_heads = qwen4exp.ssm_k_heads;
+        ssm_v_heads = qwen4exp.ssm_v_heads;
+        ssm_d_conv = qwen4exp.ssm_d_conv;
+        ssm_conv_channels = qwen4exp.ssm_conv_channels;
+        ssm_value_dim = qwen4exp.ssm_value_dim;
+        idx_q_heads = qwen4exp.idx_q_heads;
+        idx_key_dim = qwen4exp.idx_key_dim;
+        hc = qwen4exp.hc;
+        hc_lr = qwen4exp.hc_lr;
+    }
+
+    void apply_descriptor(const model::ModelDescriptor& desc) {
+        if (desc.attn.n_embd > 0) n_embd = desc.attn.n_embd;
+        if (desc.attn.n_layers > 0) n_layers = desc.attn.n_layers;
+        if (desc.attn.full_attn_interval > 0) qsa_interval = desc.attn.full_attn_interval;
+        if (desc.attn.n_heads > 0) n_head = desc.attn.n_heads;
+        if (desc.attn.n_kv_heads > 0) n_head_kv = desc.attn.n_kv_heads;
+        if (desc.attn.head_dim > 0) head_dim = desc.attn.head_dim;
+        if (desc.moe.n_routed_experts > 0) n_expert = desc.moe.n_routed_experts;
+        if (desc.moe.expert_dim_ff > 0) n_ff = desc.moe.expert_dim_ff;
+        sync_qwen4exp();
+    }
+
     int64_t hc_dim() const { return hc * n_embd; }
     /// `layer % qsa_interval == qsa_interval - 1` is full attention.  Derived, not a second list.
-    int64_t n_qsa_layers() const { return n_layers / qsa_interval; }
+    int64_t n_qsa_layers() const { return qsa_interval > 0 ? n_layers / qsa_interval : n_layers; }
     int64_t n_gdn_layers() const { return n_layers - n_qsa_layers(); }
 };
 
-/// True for the full-attention layers.  `docs/semantics.md` gives this twice over - `full_attention_interval
-/// = 4` and an explicit `attention.compress_ratios` array - and this is the first of the two.
+/// True for the full-attention layers.
 inline bool is_qsa_layer(const ModelGeometry& g, int64_t layer) {
+    if (g.qsa_interval <= 1) return true;
     return layer % g.qsa_interval == g.qsa_interval - 1;
 }
 
