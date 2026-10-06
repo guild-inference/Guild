@@ -8,6 +8,10 @@
 
 namespace guild::server {
 
+constexpr size_t MAX_HEADER_SIZE = 65536;       // 64 KiB
+constexpr size_t MAX_HEADERS_COUNT = 100;       // Max headers
+constexpr size_t MAX_BODY_SIZE = 33554432;      // 32 MiB
+
 struct HttpRequest {
     std::string method;
     std::string path;
@@ -28,14 +32,20 @@ struct HttpRequest {
     size_t content_length() const {
         std::string cl = get_header("content-length");
         if (cl.empty()) return 0;
+        for (char c : cl) {
+            if (!std::isdigit(static_cast<unsigned char>(c))) return 0;
+        }
         try {
-            return static_cast<size_t>(std::stoul(cl));
+            unsigned long len = std::stoul(cl);
+            if (len > MAX_BODY_SIZE) return 0;
+            return static_cast<size_t>(len);
         } catch (...) {
             return 0;
         }
     }
 
     static bool parse_headers(const std::string& raw_header_text, HttpRequest& req) {
+        if (raw_header_text.size() > MAX_HEADER_SIZE) return false;
         size_t pos = 0;
         size_t line_end = raw_header_text.find("\r\n", pos);
         if (line_end == std::string::npos) return false;
@@ -93,6 +103,7 @@ struct HttpRequest {
                 std::transform(key.begin(), key.end(), key.begin(),
                                [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
                 req.headers[key] = val;
+                if (req.headers.size() > MAX_HEADERS_COUNT) return false;
             }
         }
 

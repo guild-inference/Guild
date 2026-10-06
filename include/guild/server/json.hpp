@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <iomanip>
 #include <map>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <utility>
@@ -210,6 +211,52 @@ public:
         return "null";
     }
 
+    std::string dump_pretty(int indent_step = 2, int current_indent = 0) const {
+        std::string pad(current_indent, ' ');
+        switch (type) {
+            case JsonType::Null: return "null";
+            case JsonType::Bool: return bool_val ? "true" : "false";
+            case JsonType::Number: {
+                if (std::floor(num_val) == num_val && !std::isinf(num_val) && !std::isnan(num_val)) {
+                    return std::to_string(static_cast<int64_t>(num_val));
+                }
+                std::ostringstream ss;
+                ss << num_val;
+                return ss.str();
+            }
+            case JsonType::String:
+                return "\"" + escape_string(str_val) + "\"";
+            case JsonType::Array: {
+                if (arr_val.empty()) return "[]";
+                std::string res = "[\n";
+                std::string inner_pad(current_indent + indent_step, ' ');
+                for (size_t i = 0; i < arr_val.size(); ++i) {
+                    if (i > 0) res += ",\n";
+                    res += inner_pad + arr_val[i].dump_pretty(indent_step, current_indent + indent_step);
+                }
+                res += "\n" + pad + "]";
+                return res;
+            }
+            case JsonType::Object: {
+                if (obj_val.empty()) return "{}";
+                std::string res = "{\n";
+                std::string inner_pad(current_indent + indent_step, ' ');
+                for (size_t i = 0; i < obj_val.size(); ++i) {
+                    if (i > 0) res += ",\n";
+                    res += inner_pad + "\"" + escape_string(obj_val[i].first) + "\": " +
+                           obj_val[i].second.dump_pretty(indent_step, current_indent + indent_step);
+                }
+                res += "\n" + pad + "}";
+                return res;
+            }
+        }
+        return "null";
+    }
+
+    std::string serialize_pretty() const {
+        return dump_pretty();
+    }
+
     // Parsing
     static bool parse(const std::string& input, JsonValue& out, std::string& err) {
         size_t idx = 0;
@@ -227,6 +274,14 @@ public:
             return false;
         }
         return true;
+    }
+
+    static std::optional<JsonValue> parse(const std::string& input, std::string& err) {
+        JsonValue val;
+        if (parse(input, val, err)) {
+            return val;
+        }
+        return std::nullopt;
     }
 
 private:

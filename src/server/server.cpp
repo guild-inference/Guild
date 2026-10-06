@@ -179,9 +179,16 @@ void Server::listener_loop() {
 
                 {
                     std::lock_guard<std::mutex> lock(queue_mutex_);
-                    client_queue_.push_back(client_fd);
+                    if (client_queue_.size() < 64) {
+                        client_queue_.push_back(client_fd);
+                        queue_cv_.notify_one();
+                    } else {
+                        // Queue full: reject immediately
+                        const char busy_msg[] = "HTTP/1.1 503 Service Unavailable\r\nRetry-After: 1\r\nContent-Length: 0\r\n\r\n";
+                        send(client_fd, busy_msg, sizeof(busy_msg) - 1, MSG_NOSIGNAL);
+                        close(client_fd);
+                    }
                 }
-                queue_cv_.notify_one();
             }
         }
     }
@@ -237,6 +244,10 @@ void Server::handle_client(int client_fd) {
     }
 
     size_t content_len = req.content_length();
+    if (content_len > MAX_BODY_SIZE) {
+        send_response(client_fd, HttpResponse::json(413, OpenAiFormatter::format_error("Payload too large", "invalid_request_error", "", "payload_too_large")));
+        return;
+    }
     req.body = raw_buffer.substr(header_end + 4);
 
     while (req.body.size() < content_len) {
