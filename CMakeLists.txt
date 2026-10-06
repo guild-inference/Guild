@@ -971,6 +971,23 @@ add_library(guild_memory STATIC
 target_include_directories(guild_memory PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(guild_memory PUBLIC guild_model guild_cli guild_warnings)
 
+# ---- guild_runtime (Reusable In-Process Inference Runtime) ----------------
+if(GUILD_ENABLE_CUDA OR GUILD_ENABLE_HIP)
+  add_library(guild_runtime STATIC
+    src/runtime/model.cpp
+    src/runtime/session.cpp
+    src/runtime/tokenizer.cpp)
+  target_include_directories(guild_runtime PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include PRIVATE ${_guild_gpu_include_directories})
+  target_link_libraries(guild_runtime PUBLIC guild_engine guild_prefill guild_spec guild_memory guild_model guild_artifact ${_guild_gpu_runtime_target})
+else()
+  add_library(guild_runtime STATIC
+    src/runtime/model_stub.cpp
+    src/runtime/session_stub.cpp
+    src/runtime/tokenizer.cpp)
+  target_include_directories(guild_runtime PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  target_link_libraries(guild_runtime PUBLIC guild_model guild_memory guild_warnings)
+endif()
+
 # ---- guild_server (Native HTTP & OpenAI serving layer) --------------------
 add_library(guild_server STATIC
   src/server/server.cpp
@@ -978,7 +995,7 @@ add_library(guild_server STATIC
   src/server/telemetry.cpp
   src/server/engine.cpp)
 target_include_directories(guild_server PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
-target_link_libraries(guild_server PUBLIC guild_memory guild_cli guild_warnings Threads::Threads)
+target_link_libraries(guild_server PUBLIC guild_runtime guild_memory guild_cli guild_warnings Threads::Threads)
 
 # ---- guild_models (Native Model Manifest, Registry, Store, & Downloader) --
 find_package(CURL REQUIRED)
@@ -992,7 +1009,7 @@ target_include_directories(guild_models PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/inclu
 target_link_libraries(guild_models PUBLIC guild_model guild_memory guild_cli guild_warnings CURL::libcurl Threads::Threads)
 
 add_executable(guild src/cli/guild_main.cpp)
-target_link_libraries(guild PRIVATE guild_cli guild_model guild_memory guild_server guild_models guild_artifact guild_warnings)
+target_link_libraries(guild PRIVATE guild_runtime guild_cli guild_model guild_memory guild_server guild_models guild_artifact guild_warnings)
 
 if(GUILD_BUILD_TESTS)
   add_executable(guild_cli_test tests/cli/guild_cli_test.cpp)
