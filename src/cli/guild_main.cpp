@@ -3,6 +3,10 @@
 #include "guild/memory/planner.hpp"
 #include "guild/model/archetype.hpp"
 #include "guild/model/model_descriptor.hpp"
+#include "guild/models/manifest.hpp"
+#include "guild/models/store.hpp"
+#include "guild/models/registry.hpp"
+#include "guild/models/downloader.hpp"
 #include "guild/server/engine.hpp"
 #include "guild/server/server.hpp"
 
@@ -73,7 +77,12 @@ void print_usage() {
               << "  guild [command] [options]\n\n"
               << bold() << "Available Commands:" << reset() << "\n"
               << "  " << cyan() << "run" << reset() << " <model>       Run a model and start interactive conversation\n"
-              << "  " << cyan() << "serve" << reset() << "             Start OpenAI-compatible HTTP inference server\n"
+              << "  " << cyan() << "pull" << reset() << " <model>      Download and install a model into local store\n"
+              << "  " << cyan() << "list" << reset() << "              List locally installed models in Guild store\n"
+              << "  " << cyan() << "show" << reset() << " <model>      Show model manifest, geometry, and execution plan\n"
+              << "  " << cyan() << "rm" << reset() << " <model>        Safely remove a model and its unreferenced blobs\n"
+              << "  " << cyan() << "import" << reset() << " <path>     Import existing model directory/files into store without copying\n"
+              << "  " << cyan() << "serve" << reset() << " [model]     Start OpenAI-compatible HTTP inference server\n"
               << "  " << cyan() << "inspect" << reset() << " <model>   Inspect model GGUF architecture, metadata, and MoE layout\n"
               << "                      [--plan] [--json] to compute native execution memory plan\n"
               << "  " << cyan() << "bench" << reset() << " <model>     Run performance benchmark suite on target model\n"
@@ -200,6 +209,7 @@ int cmd_serve(int argc, char** argv) {
     int port = 11434;
     std::string host = "127.0.0.1";
     std::string model = "Qwen3.8-Flash-Next";
+    std::string data_dir;
     bool verbose = false;
     bool quiet = false;
     bool json_mode = false;
@@ -263,8 +273,8 @@ int cmd_serve(int argc, char** argv) {
         exe_path = "engine-cuda12/strata";
     }
 
-    std::string pack_dir = "/mnt/models-ssd/Strata-data/packs/unsloth-ud-iq4_xs";
     std::string native_model = "/mnt/models-ssd/Strata-data/models/unsloth-UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf";
+    std::string pack_dir = "/mnt/models-ssd/Strata-data/packs/unsloth-ud-iq4_xs";
     std::string profile_bin = "/home/ubuntu/Guild/data/expert-profile.bin";
     if (!std::filesystem::exists(profile_bin)) {
         profile_bin = "/home/ubuntu/Strata/data/expert-profile.bin";
@@ -388,6 +398,387 @@ int cmd_serve(int argc, char** argv) {
 }
 
 
+int cmd_pull(int argc, char** argv) {
+    using namespace guild::cli::ansi;
+    std::string model_name;
+    std::string data_dir;
+    bool force = false;
+    bool json_mode = false;
+
+    for (int i = 2; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg == "--force") force = true;
+        else if (arg == "--json") json_mode = true;
+        else if (arg == "--data-dir" && i + 1 < argc) data_dir = argv[++i];
+        else if (arg[0] != '-' && model_name.empty()) model_name = arg;
+        else if (arg == "-h" || arg == "--help") {
+            std::cout << "Usage: guild pull <model> [options]\n"
+                      << "  --force          Re-download and overwrite existing files\n"
+                      << "  --json           Emit machine-readable JSON progress\n"
+                      << "  --data-dir PATH  Custom data directory for Guild model store\n";
+            return 0;
+        }
+    }
+
+    if (model_name.empty()) {
+        std::cerr << "guild pull: missing model name. Usage: guild pull <model>\n";
+        return 1;
+    }
+
+    guild::models::StoreOptions s_opts;
+    s_opts.custom_data_dir = data_dir;
+    guild::models::ModelStore store(s_opts);
+    store.init();
+
+    auto manifest_opt = guild::models::ModelRegistry::instance().resolve(model_name, store);
+    if (!manifest_opt.has_value()) {
+        manifest_opt = guild::models::ModelRegistry::instance().find_builtin(model_name);
+    }
+    if (!manifest_opt.has_value()) {
+        std::cerr << "guild pull: unknown model '" << model_name << "'. Available models:\n";
+        for (const auto& b : guild::models::ModelRegistry::instance().list_available()) {
+            std::cerr << "  " << b.name << "\n";
+        }
+        return 1;
+    }
+
+    const auto& manifest = *manifest_opt;
+
+    // Check if already installed & verified
+    std::string verify_err;
+    if (!force && store.has_manifest(manifest.name) && store.verify_model(manifest, false, verify_err)) {
+        if (json_mode) {
+            std::cout << "{\"status\":\"completed\",\"model\":\"" << manifest.name << "\"}" << std::endl;
+        } else {
+            std::cout << manifest.name << " is already downloaded and verified.\n";
+        }
+        return 0;
+    }
+
+    if (!json_mode) {
+        std::cout << "pulling " << manifest.name << "\n\n";
+    }
+
+    guild::models::Downloader downloader;
+    guild::models::DownloadOptions d_opts;
+    d_opts.force = force;
+    d_opts.json_progress = json_mode;
+
+    bool is_interactive = guild::cli::is_tty();
+    auto last_render = std::chrono::steady_clock::now();
+
+    d_opts.progress_cb = [&](const guild::models::DownloadProgress& p) -> bool {
+        if (json_mode) {
+            std::cout << "{\"status\":\"downloading\",\"file\":\"" << p.current_file_name
+                      << "\",\"file_index\":" << p.current_file_index
+                      << ",\"total_files\":" << p.total_files
+                      << ",\"file_downloaded\":" << p.file_downloaded_bytes
+                      << ",\"file_total\":" << p.file_total_bytes
+                      << ",\"total_downloaded\":" << p.total_downloaded_bytes
+                      << ",\"total_expected\":" << p.total_expected_bytes
+                      << ",\"speed\":" << p.speed_bytes_sec << "}" << std::endl;
+            return true;
+        }
+
+        auto now = std::chrono::steady_clock::now();
+        double delta = std::chrono::duration<double>(now - last_render).count();
+        if (delta >= 0.1 || p.file_downloaded_bytes == p.file_total_bytes) {
+            last_render = now;
+            std::string speed_str = guild::models::Downloader::format_speed(p.speed_bytes_sec);
+            std::string file_cur = guild::models::Downloader::format_bytes(p.file_downloaded_bytes);
+            std::string file_tot = guild::models::Downloader::format_bytes(p.file_total_bytes);
+
+            if (is_interactive) {
+                std::cout << "\r" << std::left << std::setw(16) << p.current_file_name.substr(0, 15)
+                          << " " << std::right << std::setw(16) << (file_cur + " / " + file_tot)
+                          << "   " << std::setw(11) << speed_str
+                          << "   (" << std::fixed << std::setprecision(1) << p.percentage << "%)"
+                          << std::flush;
+            } else {
+                std::cout << p.current_file_name << ": " << file_cur << " / " << file_tot
+                          << " (" << speed_str << ")\n" << std::flush;
+            }
+        }
+        return true;
+    };
+
+    std::string err_msg;
+    bool success = downloader.download_model(manifest, store, d_opts, err_msg);
+    if (!success) {
+        if (!json_mode) std::cout << "\n";
+        std::cerr << "guild pull failed: " << err_msg << "\n";
+        return 1;
+    }
+
+    if (!json_mode) {
+        std::cout << "\n\n"
+                  << "downloaded      " << guild::models::Downloader::format_bytes(manifest.expected_size_bytes)
+                  << " / " << guild::models::Downloader::format_bytes(manifest.expected_size_bytes) << "\n"
+                  << "disk free       " << guild::models::Downloader::format_bytes(guild::models::Downloader::get_available_disk_space(store.models_dir())) << "\n";
+    }
+
+    return 0;
+}
+
+int cmd_list(int argc, char** argv) {
+    using namespace guild::cli::ansi;
+    std::string data_dir;
+    bool json_mode = false;
+
+    for (int i = 2; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg == "--json") json_mode = true;
+        else if (arg == "--data-dir" && i + 1 < argc) data_dir = argv[++i];
+        else if (arg == "-h" || arg == "--help") {
+            std::cout << "Usage: guild list [--json] [--data-dir PATH]\n";
+            return 0;
+        }
+    }
+
+    guild::models::StoreOptions s_opts;
+    s_opts.custom_data_dir = data_dir;
+    guild::models::ModelStore store(s_opts);
+    store.init();
+
+    auto manifests = store.list_manifests();
+
+    if (json_mode) {
+        std::cout << "[\n";
+        for (size_t i = 0; i < manifests.size(); ++i) {
+            const auto& m = manifests[i];
+            std::cout << "  {\n"
+                      << "    \"name\": \"" << m.name << "\",\n"
+                      << "    \"architecture\": \"" << m.architecture << "\",\n"
+                      << "    \"quantization\": \"" << m.quantization << "\",\n"
+                      << "    \"size_bytes\": " << m.total_size_bytes() << "\n"
+                      << "  }" << (i + 1 < manifests.size() ? "," : "") << "\n";
+        }
+        std::cout << "]\n";
+        return 0;
+    }
+
+    if (manifests.empty()) {
+        std::cout << "No models installed. Run 'guild pull <model>' to download one.\n"
+                  << "Available built-in models:\n";
+        for (const auto& b : guild::models::ModelRegistry::instance().list_available()) {
+            std::cout << "  " << b.name << " (" << b.quantization << ", ~"
+                      << guild::models::Downloader::format_bytes(b.expected_size_bytes) << ")\n";
+        }
+        return 0;
+    }
+
+    std::cout << bold() << std::left
+              << std::setw(25) << "NAME"
+              << std::setw(14) << "ARCH"
+              << std::setw(14) << "QUANT"
+              << "SIZE" << reset() << "\n";
+
+    for (const auto& m : manifests) {
+        std::cout << std::left
+                  << std::setw(25) << m.name
+                  << std::setw(14) << m.architecture
+                  << std::setw(14) << m.quantization
+                  << guild::models::Downloader::format_bytes(m.total_size_bytes()) << "\n";
+    }
+    return 0;
+}
+
+int cmd_show(int argc, char** argv) {
+    using namespace guild::cli::ansi;
+    std::string model_name;
+    std::string data_dir;
+    bool show_plan = false;
+    bool json_mode = false;
+
+    for (int i = 2; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg == "--plan") show_plan = true;
+        else if (arg == "--json") json_mode = true;
+        else if (arg == "--data-dir" && i + 1 < argc) data_dir = argv[++i];
+        else if (arg[0] != '-' && model_name.empty()) model_name = arg;
+        else if (arg == "-h" || arg == "--help") {
+            std::cout << "Usage: guild show <model> [--plan] [--json] [--data-dir PATH]\n";
+            return 0;
+        }
+    }
+
+    if (model_name.empty()) {
+        std::cerr << "Usage: guild show <model> [--plan] [--json]\n";
+        return 1;
+    }
+
+    guild::models::StoreOptions s_opts;
+    s_opts.custom_data_dir = data_dir;
+    guild::models::ModelStore store(s_opts);
+    store.init();
+
+    auto m_opt = guild::models::ModelRegistry::instance().resolve(model_name, store);
+    if (!m_opt.has_value()) {
+        std::cerr << "guild show: model '" << model_name << "' not found.\n";
+        return 1;
+    }
+
+    const auto& m = *m_opt;
+    auto desc = m.to_descriptor();
+
+    if (show_plan) {
+        const auto hw = guild::cli::detect_hardware();
+        guild::memory::PlannerOptions popts;
+        popts.context_length = desc.attn.context_length;
+        auto plan = guild::memory::MemoryPlanner::plan(desc, hw, popts);
+
+        if (json_mode) {
+            std::cout << plan.to_json_string() << "\n";
+        } else {
+            std::cout << plan.to_human_string() << "\n";
+        }
+        return 0;
+    }
+
+    if (json_mode) {
+        std::cout << m.to_json() << "\n";
+        return 0;
+    }
+
+    std::cout << bold() << "Model Information" << reset() << "\n"
+              << "────────────────────────────────────────\n"
+              << "Name          " << bold() << m.name << reset() << "\n"
+              << "Architecture  " << cyan() << m.architecture << reset() << "\n"
+              << "Quantization  " << m.quantization << "\n"
+              << "Source        " << m.source << "\n"
+              << "Total Size    " << guild::models::Downloader::format_bytes(m.total_size_bytes()) << "\n"
+              << "Context       " << m.context_length << " tokens\n";
+
+    if (m.n_routed_experts > 0) {
+        std::cout << "\n" << bold() << "Mixture-of-Experts" << reset() << "\n"
+                  << "Routed Experts " << m.n_routed_experts << " (" << m.k_active_experts << " active per token)\n"
+                  << "Total Experts  " << (m.n_routed_experts * m.n_layers) << "\n"
+                  << "Routed Size    ~" << std::fixed << std::setprecision(2)
+                  << (desc.moe.expert_blob_bytes * m.n_routed_experts * m.n_layers / (1024.0 * 1024.0 * 1024.0)) << " GiB\n";
+    }
+
+    std::cout << "\n" << bold() << "Files" << reset() << "\n";
+    for (const auto& f : m.files) {
+        std::cout << "  " << std::left << std::setw(36) << f.name
+                  << "  " << std::right << std::setw(10) << guild::models::Downloader::format_bytes(f.size_bytes)
+                  << "  [" << f.role << "]\n";
+        if (!f.local_path.empty()) {
+            std::cout << "    path: " << f.local_path << "\n";
+        }
+    }
+    std::cout << "────────────────────────────────────────\n";
+    return 0;
+}
+
+int cmd_rm(int argc, char** argv) {
+    std::string model_name;
+    std::string data_dir;
+
+    for (int i = 2; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg == "--data-dir" && i + 1 < argc) data_dir = argv[++i];
+        else if (arg[0] != '-' && model_name.empty()) model_name = arg;
+        else if (arg == "-h" || arg == "--help") {
+            std::cout << "Usage: guild rm <model> [--data-dir PATH]\n";
+            return 0;
+        }
+    }
+
+    if (model_name.empty()) {
+        std::cerr << "Usage: guild rm <model>\n";
+        return 1;
+    }
+
+    guild::models::StoreOptions s_opts;
+    s_opts.custom_data_dir = data_dir;
+    guild::models::ModelStore store(s_opts);
+    store.init();
+
+    auto m = store.get_manifest(model_name);
+    if (!m.has_value()) {
+        std::cerr << "guild rm: model '" << model_name << "' is not installed.\n";
+        return 1;
+    }
+
+    uint64_t freed_bytes = m->total_size_bytes();
+    if (!store.remove_model(model_name)) {
+        std::cerr << "guild rm: failed to remove model '" << model_name << "'.\n";
+        return 1;
+    }
+
+    std::cout << "Removed model '" << model_name << "' (freed "
+              << guild::models::Downloader::format_bytes(freed_bytes) << ").\n";
+    return 0;
+}
+
+int cmd_import(int argc, char** argv) {
+    namespace fs = std::filesystem;
+    std::string path;
+    std::string name;
+    std::string data_dir;
+    bool copy_mode = false;
+
+    for (int i = 2; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg == "--name" && i + 1 < argc) name = argv[++i];
+        else if (arg == "--data-dir" && i + 1 < argc) data_dir = argv[++i];
+        else if (arg == "--copy") copy_mode = true;
+        else if (arg[0] != '-' && path.empty()) path = arg;
+        else if (arg == "-h" || arg == "--help") {
+            std::cout << "Usage: guild import <path> [--name <name>] [--copy] [--data-dir PATH]\n"
+                      << "  <path>         Directory or GGUF file to import\n"
+                      << "  --name <name>  Model name to assign\n"
+                      << "  --copy         Copy files instead of symlinking (default: symlink)\n";
+            return 0;
+        }
+    }
+
+    if (path.empty()) {
+        std::cerr << "Usage: guild import <path> [--name <name>]\n";
+        return 1;
+    }
+
+    guild::models::StoreOptions s_opts;
+    s_opts.custom_data_dir = data_dir;
+    guild::models::ModelStore store(s_opts);
+    store.init();
+
+    std::optional<guild::models::ModelManifest> base_manifest;
+    if (!name.empty()) {
+        base_manifest = guild::models::ModelRegistry::instance().find_builtin(name);
+    }
+    if (!base_manifest.has_value()) {
+        for (const auto& b : guild::models::ModelRegistry::instance().list_available()) {
+            if (path.find("unsloth") != std::string::npos || path.find("UD-IQ4_XS") != std::string::npos || path.find("Qwen") != std::string::npos) {
+                base_manifest = b;
+                break;
+            }
+        }
+    }
+    if (!base_manifest.has_value()) {
+        guild::models::ModelManifest m;
+        m.name = name.empty() ? fs::path(path).filename().string() : name;
+        m.architecture = "unknown";
+        m.quantization = "unknown";
+        base_manifest = m;
+    }
+
+    if (!name.empty()) {
+        base_manifest->name = name;
+    }
+
+    std::string err_msg;
+    bool ok = store.import_model_directory(*base_manifest, path, !copy_mode, err_msg);
+    if (!ok) {
+        std::cerr << "guild import failed: " << err_msg << "\n";
+        return 1;
+    }
+
+    std::cout << "Successfully imported '" << base_manifest->name << "' into Guild store ("
+              << (!copy_mode ? "zero-copy linked" : "copied") << ").\n";
+    return 0;
+}
+
 int cmd_ps() {
     using namespace guild::cli::ansi;
     const auto hw = guild::cli::detect_hardware();
@@ -433,6 +824,21 @@ int main(int argc, char** argv) {
     }
     if (cmd == "-v" || cmd == "--version" || cmd == "version") {
         return cmd_version();
+    }
+    if (cmd == "pull") {
+        return cmd_pull(argc, argv);
+    }
+    if (cmd == "list" || cmd == "ls") {
+        return cmd_list(argc, argv);
+    }
+    if (cmd == "show") {
+        return cmd_show(argc, argv);
+    }
+    if (cmd == "rm") {
+        return cmd_rm(argc, argv);
+    }
+    if (cmd == "import") {
+        return cmd_import(argc, argv);
     }
     if (cmd == "inspect") {
         return cmd_inspect(argc, argv);
