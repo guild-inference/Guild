@@ -25,7 +25,7 @@ This document inventories every Python component in the repository into four cat
 - `serve/winjob.py` → Replace with native OS process management.
 - `serve/mcp.py` → Replace with native C++ MCP server handler.
 - Memory budget calculation in `setup.py` (`compute_budget`, `choose_model`) → Replaced by native C++ `guild::memory::MemoryPlanner` (`include/guild/memory/`, `src/memory/`).
-- Model downloading in `setup.py` → Replace with native curl/libcurl download engine in `guild pull` / `guild run`.
+- Model downloading and store management in `setup.py` → Replaced by native C++ `ModelRegistry`, `ModelStore`, and `Downloader` (`include/guild/models/`, `src/models/`) via `guild pull`, `guild import`, `guild list`, `guild show`, `guild rm`.
 
 ### DELETE (Obsolete / Redundant once Native CLI Lands)
 - `START-HERE.bat` / `setup.sh` (Python wrappers) → Obsolete once native `guild` single-binary installer is shipped.
@@ -54,7 +54,7 @@ This document inventories every Python component in the repository into four cat
         │
 5. HTTP/OpenAI-compatible server -> C++ [DONE: native HTTP / SSE server in guild serve]
         │
-6. Downloader/install logic -> C++
+6. Downloader/install logic -> C++    [DONE: native libcurl downloader & model store in guild pull / guild run]
         │
 7. Remove Python runtime dependencies
 ```

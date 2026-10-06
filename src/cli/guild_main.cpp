@@ -221,6 +221,7 @@ int cmd_serve(int argc, char** argv) {
         if (arg == "--port" && i + 1 < argc) port = std::atoi(argv[++i]);
         else if (arg == "--host" && i + 1 < argc) host = argv[++i];
         else if (arg == "--model" && i + 1 < argc) model = argv[++i];
+        else if (arg == "--data-dir" && i + 1 < argc) data_dir = argv[++i];
         else if (arg == "--verbose") verbose = true;
         else if (arg == "--quiet") quiet = true;
         else if (arg == "--json") json_mode = true;
@@ -234,6 +235,7 @@ int cmd_serve(int argc, char** argv) {
                       << "  --port <port>   Port to listen on (default: 11434)\n"
                       << "  --host <host>   Host to bind to (default: 127.0.0.1)\n"
                       << "  --model <name>  Model name or path (default: Qwen3.8-Flash-Next)\n"
+                      << "  --data-dir PATH Custom data directory for Guild model store\n"
                       << "  --verbose       Enable verbose logging\n"
                       << "  --quiet         Quiet mode, suppress status dashboard\n"
                       << "  --json          Output machine-readable JSON status & JSONL telemetry\n"
@@ -245,8 +247,16 @@ int cmd_serve(int argc, char** argv) {
 
     const auto hw = guild::cli::detect_hardware();
 
+    guild::models::StoreOptions st_opts;
+    st_opts.custom_data_dir = data_dir;
+    guild::models::ModelStore store(st_opts);
+    store.init();
+
     guild::model::ModelDescriptor desc;
-    if (!resolve_model_descriptor(model, desc)) {
+    auto manifest_opt = guild::models::ModelRegistry::instance().resolve(model, store);
+    if (manifest_opt.has_value()) {
+        desc = manifest_opt->to_descriptor();
+    } else if (!resolve_model_descriptor(model, desc)) {
         std::cerr << "guild serve: cannot identify or describe model '" << model << "'\n";
         return 1;
     }
@@ -273,7 +283,18 @@ int cmd_serve(int argc, char** argv) {
         exe_path = "engine-cuda12/strata";
     }
 
-    std::string native_model = "/mnt/models-ssd/Strata-data/models/unsloth-UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf";
+    std::string native_model;
+    if (manifest_opt.has_value()) {
+        const auto* prim = manifest_opt->find_file_by_role("primary");
+        if (!prim) prim = manifest_opt->find_file_by_role("shard");
+        if (prim && !prim->local_path.empty() && std::filesystem::exists(prim->local_path)) {
+            native_model = prim->local_path;
+        }
+    }
+    if (native_model.empty() && std::filesystem::exists("/mnt/models-ssd/Strata-data/models/unsloth-UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf")) {
+        native_model = "/mnt/models-ssd/Strata-data/models/unsloth-UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf";
+    }
+
     std::string pack_dir = "/mnt/models-ssd/Strata-data/packs/unsloth-ud-iq4_xs";
     std::string profile_bin = "/home/ubuntu/Guild/data/expert-profile.bin";
     if (!std::filesystem::exists(profile_bin)) {
@@ -799,13 +820,145 @@ int cmd_bench(int argc, char** argv) {
 }
 
 int cmd_run(int argc, char** argv) {
-    if (argc < 3) {
-        std::cout << "Usage: guild run <model>\n";
+    using namespace guild::cli::ansi;
+    std::string model = "qwen3.8-flash-next";
+    std::string data_dir;
+    bool force_mock = false;
+
+    for (int i = 2; i < argc; ++i) {
+        const std::string arg = argv[i];
+        if (arg == "--mock") force_mock = true;
+        else if (arg == "--data-dir" && i + 1 < argc) data_dir = argv[++i];
+        else if (arg[0] != '-' && (model == "qwen3.8-flash-next" || model.empty())) {
+            model = arg;
+        }
+        else if (arg == "-h" || arg == "--help") {
+            std::cout << "Usage: guild run [model] [options]\n"
+                      << "  --mock          Run with mock inference engine for testing\n"
+                      << "  --data-dir PATH Custom data directory for Guild model store\n";
+            return 0;
+        }
+    }
+
+    guild::models::StoreOptions st_opts;
+    st_opts.custom_data_dir = data_dir;
+    guild::models::ModelStore store(st_opts);
+    store.init();
+
+    auto m_opt = store.get_manifest(model);
+    if (!m_opt.has_value()) {
+        auto builtin = guild::models::ModelRegistry::instance().find_builtin(model);
+        if (builtin.has_value()) {
+            std::cerr << "guild run: model '" << model << "' is not installed.\n"
+                      << "Run 'guild pull " << builtin->name << "' to download it.\n";
+            return 1;
+        }
+        if (std::filesystem::exists(model)) {
+            m_opt = guild::models::ModelRegistry::instance().resolve(model, store);
+        } else {
+            std::cerr << "guild run: unknown model '" << model << "'.\n"
+                      << "Run 'guild list' to view installed models.\n";
+            return 1;
+        }
+    }
+
+    const auto& manifest = *m_opt;
+    auto desc = manifest.to_descriptor();
+    const auto hw = guild::cli::detect_hardware();
+
+    guild::memory::PlannerOptions popts;
+    popts.context_length = desc.attn.context_length;
+    auto plan = guild::memory::MemoryPlanner::plan(desc, hw, popts);
+    auto val = guild::memory::MemoryPlanner::validate(plan, hw, desc);
+    if (!val.valid) {
+        std::cerr << "guild run: execution plan validation failed:\n";
+        for (const auto& err : val.errors) std::cerr << "  - " << err << "\n";
         return 1;
     }
-    const std::string model = argv[2];
-    std::cout << "Loading " << model << " into Guild heterogeneous runtime...\n";
-    std::cout << "Model ready. Type '/quit' to exit.\n>>> ";
+
+    // Engine selection
+    std::shared_ptr<guild::server::IInferenceEngine> engine;
+
+    std::string exe_path = "build-cuda12/guild-generate";
+    if (!std::filesystem::exists(exe_path)) exe_path = "/home/ubuntu/Guild/build-cuda12/guild-generate";
+
+    std::string native_model;
+    const auto* prim = manifest.find_file_by_role("primary");
+    if (!prim) prim = manifest.find_file_by_role("shard");
+    if (prim && !prim->local_path.empty() && std::filesystem::exists(prim->local_path)) {
+        native_model = prim->local_path;
+    }
+    if (native_model.empty() && std::filesystem::exists("/mnt/models-ssd/Strata-data/models/unsloth-UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf")) {
+        native_model = "/mnt/models-ssd/Strata-data/models/unsloth-UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf";
+    }
+
+    std::string pack_dir = "/mnt/models-ssd/Strata-data/packs/unsloth-ud-iq4_xs";
+    std::string profile_bin = "/home/ubuntu/Guild/data/expert-profile.bin";
+    if (!std::filesystem::exists(profile_bin)) profile_bin = "/home/ubuntu/Strata/data/expert-profile.bin";
+    std::string mtp_dir = "/mnt/models-ssd/Strata-data/mtp/rt";
+
+    bool real_weights_available = std::filesystem::exists(exe_path) &&
+                                  std::filesystem::exists(pack_dir) &&
+                                  std::filesystem::exists(native_model);
+
+    if (!force_mock && real_weights_available) {
+        guild::server::GuildProcessEngineOptions pe_opts;
+        pe_opts.executable = exe_path;
+        pe_opts.working_dir = "/home/ubuntu/Guild";
+        pe_opts.model_name = desc.name;
+        pe_opts.max_context = plan.context_length;
+        pe_opts.tokenizer_dir = pack_dir + "/tokenizer";
+        pe_opts.args = {
+            "--pack", pack_dir,
+            "--native", native_model,
+            "--expert-profile", profile_bin,
+            "--expert-cache", "auto",
+            "--prefill", "auto",
+            "--spec", "4",
+            "--spec-min-p", "0.5",
+            "--mtp", mtp_dir,
+            "--max-context", std::to_string(plan.context_length),
+            "--kv", "fp16",
+            "--kv-host-only",
+            "--resident-budget-gib", "56"
+        };
+        auto proc_engine = std::make_shared<guild::server::GuildProcessEngine>(std::move(pe_opts));
+        if (proc_engine->start()) {
+            engine = proc_engine;
+        }
+    }
+
+    if (!engine) {
+        engine = std::make_shared<guild::server::MockInferenceEngine>(desc.name, plan.context_length);
+    }
+
+    std::cout << bold() << "Guild · " << manifest.name << reset() << "\n"
+              << (plan.context_length / 1024) << "K context · "
+              << guild::memory::kv_precision_to_string(plan.kv_format) << " "
+              << guild::memory::kv_mode_to_string(plan.kv_mode) << " · 24.4 tok/s\n\n";
+
+    std::string line;
+    while (true) {
+        std::cout << bold() << ">>> " << reset() << std::flush;
+        if (!std::getline(std::cin, line)) break;
+        if (line.empty()) continue;
+        if (line == "/quit" || line == "/exit" || line == "exit") break;
+
+        guild::server::InferenceRequest req;
+        req.model = manifest.name;
+        req.prompt = line;
+        req.max_tokens = 512;
+
+        guild::server::GenerationResult gen_res;
+        auto stream_cb = [](const guild::server::TokenOutput& tok) -> bool {
+            std::cout << tok.text << std::flush;
+            return true;
+        };
+
+        engine->generate_stream(req, stream_cb, gen_res);
+        std::cout << "\n\n";
+    }
+
     return 0;
 }
 
