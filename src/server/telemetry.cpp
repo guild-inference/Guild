@@ -20,6 +20,8 @@ void Telemetry::record_request_finish(const RequestMetrics& m) {
     ram_expert_hits_ += m.ram_expert_hits;
     file_expert_reads_ += m.file_expert_reads;
     gpu_cache_hits_ += m.gpu_cache_hits;
+    drafts_accepted_ += m.drafts_accepted;
+    drafts_offered_ += m.drafts_offered;
     context_usage_ = m.context_tokens;
 
     std::lock_guard<std::mutex> lock(stats_mutex_);
@@ -38,6 +40,8 @@ TelemetrySnapshot Telemetry::snapshot() const {
     s.ram_expert_hits = ram_expert_hits_.load();
     s.file_expert_reads = file_expert_reads_.load();
     s.gpu_cache_hits = gpu_cache_hits_.load();
+    s.drafts_accepted = drafts_accepted_.load();
+    s.drafts_offered = drafts_offered_.load();
     s.context_usage = context_usage_.load();
 
     std::lock_guard<std::mutex> lock(stats_mutex_);
@@ -136,6 +140,8 @@ std::string Telemetry::format_jsonl(const RequestMetrics& m) {
        << ",\"ram_expert_hits\":" << m.ram_expert_hits
        << ",\"file_expert_reads\":" << m.file_expert_reads
        << ",\"gpu_cache_hits\":" << m.gpu_cache_hits
+       << ",\"drafts_accepted\":" << m.drafts_accepted
+       << ",\"drafts_offered\":" << m.drafts_offered
        << ",\"context_tokens\":" << m.context_tokens
        << ",\"stream\":" << (m.streamed ? "true" : "false")
        << ",\"outcome\":\"" << json::JsonValue::escape_string(m.outcome) << "\"}";

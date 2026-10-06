@@ -458,6 +458,9 @@ void Server::process_chat_completions(int client_fd, const HttpRequest& req) {
         m.decode_tok_s = gen_res.decode_tok_s;
         m.ram_expert_hits = gen_res.ram_blobs;
         m.file_expert_reads = gen_res.file_blobs;
+        m.gpu_cache_hits = gen_res.gpu_cache_hits;
+        m.drafts_accepted = gen_res.drafts_accepted;
+        m.drafts_offered = gen_res.drafts_offered;
         m.context_tokens = gen_res.prompt_tokens + gen_res.completion_tokens;
         m.streamed = true;
         m.outcome = client_alive ? "ok" : "disconnected";
@@ -491,6 +494,9 @@ void Server::process_chat_completions(int client_fd, const HttpRequest& req) {
         m.decode_tok_s = gen_res.decode_tok_s;
         m.ram_expert_hits = gen_res.ram_blobs;
         m.file_expert_reads = gen_res.file_blobs;
+        m.gpu_cache_hits = gen_res.gpu_cache_hits;
+        m.drafts_accepted = gen_res.drafts_accepted;
+        m.drafts_offered = gen_res.drafts_offered;
         m.context_tokens = gen_res.prompt_tokens + gen_res.completion_tokens;
         m.streamed = false;
         m.outcome = "ok";
@@ -615,6 +621,9 @@ void Server::process_completions(int client_fd, const HttpRequest& req) {
         m.decode_tok_s = gen_res.decode_tok_s;
         m.ram_expert_hits = gen_res.ram_blobs;
         m.file_expert_reads = gen_res.file_blobs;
+        m.gpu_cache_hits = gen_res.gpu_cache_hits;
+        m.drafts_accepted = gen_res.drafts_accepted;
+        m.drafts_offered = gen_res.drafts_offered;
         m.context_tokens = gen_res.prompt_tokens + gen_res.completion_tokens;
         m.streamed = true;
         m.outcome = client_alive ? "ok" : "disconnected";
@@ -648,6 +657,9 @@ void Server::process_completions(int client_fd, const HttpRequest& req) {
         m.decode_tok_s = gen_res.decode_tok_s;
         m.ram_expert_hits = gen_res.ram_blobs;
         m.file_expert_reads = gen_res.file_blobs;
+        m.gpu_cache_hits = gen_res.gpu_cache_hits;
+        m.drafts_accepted = gen_res.drafts_accepted;
+        m.drafts_offered = gen_res.drafts_offered;
         m.context_tokens = gen_res.prompt_tokens + gen_res.completion_tokens;
         m.streamed = false;
         m.outcome = "ok";

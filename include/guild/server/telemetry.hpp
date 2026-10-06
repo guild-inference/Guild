@@ -22,6 +22,8 @@ struct RequestMetrics {
     int64_t ram_expert_hits = 0;
     int64_t file_expert_reads = 0;
     int64_t gpu_cache_hits = 0;
+    int drafts_accepted = 0;
+    int drafts_offered = 0;
     int64_t context_tokens = 0;
     bool streamed = false;
     std::string outcome = "ok"; // "ok", "disconnected", "error"
@@ -39,6 +41,8 @@ struct TelemetrySnapshot {
     int64_t ram_expert_hits = 0;
     int64_t file_expert_reads = 0;
     int64_t gpu_cache_hits = 0;
+    int64_t drafts_accepted = 0;
+    int64_t drafts_offered = 0;
     int64_t context_usage = 0;
 };
 
@@ -63,6 +67,8 @@ private:
     std::atomic<int64_t> ram_expert_hits_{0};
     std::atomic<int64_t> file_expert_reads_{0};
     std::atomic<int64_t> gpu_cache_hits_{0};
+    std::atomic<int64_t> drafts_accepted_{0};
+    std::atomic<int64_t> drafts_offered_{0};
     std::atomic<int64_t> context_usage_{0};
 
     mutable std::mutex stats_mutex_;
