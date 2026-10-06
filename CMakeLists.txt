@@ -980,8 +980,19 @@ add_library(guild_server STATIC
 target_include_directories(guild_server PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(guild_server PUBLIC guild_memory guild_cli guild_warnings Threads::Threads)
 
+# ---- guild_models (Native Model Manifest, Registry, Store, & Downloader) --
+find_package(CURL REQUIRED)
+add_library(guild_models STATIC
+  src/models/sha256.cpp
+  src/models/manifest.cpp
+  src/models/store.cpp
+  src/models/registry.cpp
+  src/models/downloader.cpp)
+target_include_directories(guild_models PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(guild_models PUBLIC guild_model guild_memory guild_cli guild_warnings CURL::libcurl Threads::Threads)
+
 add_executable(guild src/cli/guild_main.cpp)
-target_link_libraries(guild PRIVATE guild_cli guild_model guild_memory guild_server guild_artifact guild_warnings)
+target_link_libraries(guild PRIVATE guild_cli guild_model guild_memory guild_server guild_models guild_artifact guild_warnings)
 
 if(GUILD_BUILD_TESTS)
   add_executable(guild_cli_test tests/cli/guild_cli_test.cpp)
@@ -995,6 +1006,10 @@ if(GUILD_BUILD_TESTS)
   add_executable(server_test tests/server/server_test.cpp)
   target_link_libraries(server_test PRIVATE guild_server)
   add_test(NAME server_test COMMAND server_test)
+
+  add_executable(models_test tests/models/models_test.cpp)
+  target_link_libraries(models_test PRIVATE guild_models guild_server)
+  add_test(NAME models_test COMMAND models_test)
 endif()
 
 # ---- plan v0.3 P6: the i-quant models' CPU experts (IQ2_XS / IQ3_XXS files) ----
