@@ -8,6 +8,7 @@
 #include "guild/models/registry.hpp"
 #include "guild/models/downloader.hpp"
 #include "guild/server/engine.hpp"
+#include "guild/server/native_engine.hpp"
 #include "guild/server/server.hpp"
 
 #include <atomic>
@@ -307,37 +308,59 @@ int cmd_serve(int argc, char** argv) {
                                   std::filesystem::exists(native_model);
 
     if (!force_mock && real_weights_available) {
-        guild::server::GuildProcessEngineOptions pe_opts;
-        pe_opts.executable = exe_path;
-        pe_opts.working_dir = "/home/ubuntu/Guild";
-        pe_opts.model_name = desc.name;
-        pe_opts.max_context = plan.context_length;
-        pe_opts.tokenizer_dir = pack_dir + "/tokenizer";
+        guild::server::NativeInferenceEngineOptions n_opts;
+        n_opts.model_name = desc.name;
+        n_opts.desc = desc;
+        n_opts.plan = plan;
+        n_opts.paths.primary_model_path = native_model;
+        n_opts.paths.pack_dir = pack_dir;
+        n_opts.paths.expert_profile_path = profile_bin;
+        n_opts.paths.mtp_dir = mtp_dir;
+        n_opts.paths.tokenizer_dir = pack_dir + "/tokenizer";
 
-        pe_opts.args = {
-            "--pack", pack_dir,
-            "--native", native_model,
-            "--expert-profile", profile_bin,
-            "--expert-cache", "auto",
-            "--prefill", "auto",
-            "--spec", "4",
-            "--spec-min-p", "0.5",
-            "--mtp", mtp_dir,
-            "--max-context", std::to_string(plan.context_length),
-            "--kv", "fp16",
-            "--kv-host-only",
-            "--resident-budget-gib", "56"
-        };
-
-        if (verbose) {
-            std::cout << "[server] Starting resident engine: " << exe_path << " ...\n";
-        }
-        auto proc_engine = std::make_shared<guild::server::GuildProcessEngine>(std::move(pe_opts));
-        if (proc_engine->start()) {
-            engine = proc_engine;
+        auto native_engine = std::make_shared<guild::server::NativeInferenceEngine>(std::move(n_opts));
+        std::string n_err;
+        if (native_engine->init(n_err)) {
+            if (verbose) {
+                std::cout << "[server] Instantiated native in-process inference engine\n";
+            }
+            engine = native_engine;
         } else {
             if (verbose) {
-                std::cout << "[server] Process engine startup skipped, falling back to mock\n";
+                std::cout << "[server] Native engine init failed: " << n_err << ", trying process engine...\n";
+            }
+            guild::server::GuildProcessEngineOptions pe_opts;
+            pe_opts.executable = exe_path;
+            pe_opts.working_dir = "/home/ubuntu/Guild";
+            pe_opts.model_name = desc.name;
+            pe_opts.max_context = plan.context_length;
+            pe_opts.tokenizer_dir = pack_dir + "/tokenizer";
+
+            pe_opts.args = {
+                "--pack", pack_dir,
+                "--native", native_model,
+                "--expert-profile", profile_bin,
+                "--expert-cache", "auto",
+                "--prefill", "auto",
+                "--spec", "4",
+                "--spec-min-p", "0.5",
+                "--mtp", mtp_dir,
+                "--max-context", std::to_string(plan.context_length),
+                "--kv", "fp16",
+                "--kv-host-only",
+                "--resident-budget-gib", "56"
+            };
+
+            if (verbose) {
+                std::cout << "[server] Starting resident process engine: " << exe_path << " ...\n";
+            }
+            auto proc_engine = std::make_shared<guild::server::GuildProcessEngine>(std::move(pe_opts));
+            if (proc_engine->start()) {
+                engine = proc_engine;
+            } else {
+                if (verbose) {
+                    std::cout << "[server] Process engine startup skipped, falling back to mock\n";
+                }
             }
         }
     }
@@ -902,29 +925,45 @@ int cmd_run(int argc, char** argv) {
                                   std::filesystem::exists(native_model);
 
     if (!force_mock && real_weights_available) {
-        guild::server::GuildProcessEngineOptions pe_opts;
-        pe_opts.executable = exe_path;
-        pe_opts.working_dir = "/home/ubuntu/Guild";
-        pe_opts.model_name = desc.name;
-        pe_opts.max_context = plan.context_length;
-        pe_opts.tokenizer_dir = pack_dir + "/tokenizer";
-        pe_opts.args = {
-            "--pack", pack_dir,
-            "--native", native_model,
-            "--expert-profile", profile_bin,
-            "--expert-cache", "auto",
-            "--prefill", "auto",
-            "--spec", "4",
-            "--spec-min-p", "0.5",
-            "--mtp", mtp_dir,
-            "--max-context", std::to_string(plan.context_length),
-            "--kv", "fp16",
-            "--kv-host-only",
-            "--resident-budget-gib", "56"
-        };
-        auto proc_engine = std::make_shared<guild::server::GuildProcessEngine>(std::move(pe_opts));
-        if (proc_engine->start()) {
-            engine = proc_engine;
+        guild::server::NativeInferenceEngineOptions n_opts;
+        n_opts.model_name = desc.name;
+        n_opts.desc = desc;
+        n_opts.plan = plan;
+        n_opts.paths.primary_model_path = native_model;
+        n_opts.paths.pack_dir = pack_dir;
+        n_opts.paths.expert_profile_path = profile_bin;
+        n_opts.paths.mtp_dir = mtp_dir;
+        n_opts.paths.tokenizer_dir = pack_dir + "/tokenizer";
+
+        auto native_engine = std::make_shared<guild::server::NativeInferenceEngine>(std::move(n_opts));
+        std::string n_err;
+        if (native_engine->init(n_err)) {
+            engine = native_engine;
+        } else {
+            guild::server::GuildProcessEngineOptions pe_opts;
+            pe_opts.executable = exe_path;
+            pe_opts.working_dir = "/home/ubuntu/Guild";
+            pe_opts.model_name = desc.name;
+            pe_opts.max_context = plan.context_length;
+            pe_opts.tokenizer_dir = pack_dir + "/tokenizer";
+            pe_opts.args = {
+                "--pack", pack_dir,
+                "--native", native_model,
+                "--expert-profile", profile_bin,
+                "--expert-cache", "auto",
+                "--prefill", "auto",
+                "--spec", "4",
+                "--spec-min-p", "0.5",
+                "--mtp", mtp_dir,
+                "--max-context", std::to_string(plan.context_length),
+                "--kv", "fp16",
+                "--kv-host-only",
+                "--resident-budget-gib", "56"
+            };
+            auto proc_engine = std::make_shared<guild::server::GuildProcessEngine>(std::move(pe_opts));
+            if (proc_engine->start()) {
+                engine = proc_engine;
+            }
         }
     }
 

@@ -995,7 +995,8 @@ add_library(guild_server STATIC
   src/server/server.cpp
   src/server/openai.cpp
   src/server/telemetry.cpp
-  src/server/engine.cpp)
+  src/server/engine.cpp
+  src/server/native_engine.cpp)
 target_include_directories(guild_server PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(guild_server PUBLIC guild_runtime guild_memory guild_cli guild_warnings Threads::Threads)
 
