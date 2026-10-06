@@ -505,10 +505,6 @@ if(GUILD_ENABLE_CUDA OR GUILD_ENABLE_HIP)
     target_link_libraries(tune_hipblaslt PRIVATE hip::host roc::hipblas roc::hipblaslt)
   endif()
 
-  add_executable(guild-generate src/program/generate.cpp)
-  target_include_directories(guild-generate PRIVATE ${_guild_gpu_include_directories})
-  target_link_libraries(guild-generate PRIVATE guild_engine guild_prefill guild_spec ${_guild_gpu_runtime_target})
-
   if(GUILD_ENABLE_HIP)
     enable_testing()
     set(_guild_hip_tests)
@@ -986,6 +982,12 @@ else()
     src/runtime/tokenizer.cpp)
   target_include_directories(guild_runtime PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
   target_link_libraries(guild_runtime PUBLIC guild_model guild_memory guild_warnings)
+endif()
+
+if(GUILD_ENABLE_CUDA OR GUILD_ENABLE_HIP)
+  add_executable(guild-generate src/program/generate.cpp)
+  target_include_directories(guild-generate PRIVATE ${_guild_gpu_include_directories})
+  target_link_libraries(guild-generate PRIVATE guild_runtime guild_cli guild_model guild_memory guild_artifact guild_warnings)
 endif()
 
 # ---- guild_server (Native HTTP & OpenAI serving layer) --------------------
