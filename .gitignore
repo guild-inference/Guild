@@ -62,3 +62,4 @@ build-vision-cuda12.bat
 /strata-*.log
 /build-strata*.bat
 /.strata-mcp/
+/scratch/

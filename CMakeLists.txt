@@ -1034,6 +1034,12 @@ if(GUILD_BUILD_TESTS)
   add_executable(parity_test tests/server/parity_test.cpp)
   target_link_libraries(parity_test PRIVATE guild_server guild_runtime guild_models guild_memory guild_model guild_cli)
   add_test(NAME parity_test COMMAND parity_test)
+
+  add_executable(ornith_step_test tests/server/ornith_step_test.cpp)
+  target_link_libraries(ornith_step_test PRIVATE guild_server guild_runtime guild_models guild_memory guild_model guild_cli)
+
+  add_executable(ornith_bench tests/server/ornith_bench.cpp)
+  target_link_libraries(ornith_bench PRIVATE guild_server guild_runtime guild_models guild_memory guild_model guild_cli)
 endif()
 
 # ---- plan v0.3 P6: the i-quant models' CPU experts (IQ2_XS / IQ3_XXS files) ----
