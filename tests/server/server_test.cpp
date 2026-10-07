@@ -4,19 +4,48 @@
 #include "guild/server/server.hpp"
 
 #include <arpa/inet.h>
-#include <cassert>
+#include "../check.hpp"
 #include <chrono>
 #include <csignal>
 #include <cstring>
 #include <iostream>
 #include <netinet/in.h>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <unistd.h>
 #include <vector>
 
 namespace {
+
+class FailingEngine final : public guild::server::MockInferenceEngine {
+public:
+    enum Mode { ReturnFalse, Throw, FalseSuccess };
+    FailingEngine(Mode mode, bool partial) : mode_(mode), partial_(partial) {}
+    bool generate(const guild::server::InferenceRequest&, guild::server::GenerationResult& r) override {
+        return fail(r);
+    }
+    bool generate_stream(const guild::server::InferenceRequest&, guild::server::StreamCallback cb,
+                         guild::server::GenerationResult& r) override {
+        if (partial_ && cb) cb({123, "checked prefix", false});
+        return fail(r);
+    }
+private:
+    bool fail(guild::server::GenerationResult& r) {
+        if (mode_ == Throw) throw std::runtime_error("injected inference failure");
+        r.text = "must not become a completion";
+        r.completion_tokens = 1;
+        r.error_message = "injected inference failure";
+        if (mode_ == FalseSuccess) {
+            r.finish_reason = "error";
+            return true;
+        }
+        return false;
+    }
+    Mode mode_;
+    bool partial_;
+};
 
 struct HttpResponseData {
     int status_code = 0;
@@ -111,11 +140,11 @@ int main() {
 
     auto server = std::make_unique<guild::server::Server>(mock_engine, opts);
     bool started = server->start();
-    assert(started && "Server failed to start on ephemeral port");
+    CHECK(started && "Server failed to start on ephemeral port");
     (void) started;
 
     int port = server->bound_port();
-    assert(port > 0 && "Bound port must be > 0");
+    CHECK(port > 0 && "Bound port must be > 0");
     std::cout << "[server_test] Server listening on ephemeral port " << port << "\n";
 
     // ------------------------------------------------------------------------
@@ -124,15 +153,15 @@ int main() {
     {
         std::cout << "[server_test] Test 1: GET /health\n";
         auto resp = send_http_request(port, "GET", "/health");
-        assert(resp.status_code == 200);
+        CHECK(resp.status_code == 200);
 
         guild::server::json::JsonValue root;
         std::string err;
-        assert(guild::server::json::JsonValue::parse(resp.body, root, err));
-        assert(root.is_object());
-        assert(root["status"].as_string() == "ok");
-        assert(root["model"].as_string() == "Qwen3.8-Flash-Next");
-        assert(root["max_context"].as_int() == 262144);
+        CHECK(guild::server::json::JsonValue::parse(resp.body, root, err));
+        CHECK(root.is_object());
+        CHECK(root["status"].as_string() == "ok");
+        CHECK(root["model"].as_string() == "Qwen3.8-Flash-Next");
+        CHECK(root["max_context"].as_int() == 262144);
         std::cout << "  -> PASSED (status: 200, status=ok)\n";
     }
 
@@ -142,16 +171,16 @@ int main() {
     {
         std::cout << "[server_test] Test 2: GET /v1/models\n";
         auto resp = send_http_request(port, "GET", "/v1/models");
-        assert(resp.status_code == 200);
+        CHECK(resp.status_code == 200);
 
         guild::server::json::JsonValue root;
         std::string err;
-        assert(guild::server::json::JsonValue::parse(resp.body, root, err));
-        assert(root.is_object());
-        assert(root["object"].as_string() == "list");
-        assert(root["data"].is_array());
-        assert(root["data"].size() >= 1);
-        assert(root["data"][0]["id"].as_string() == "Qwen3.8-Flash-Next");
+        CHECK(guild::server::json::JsonValue::parse(resp.body, root, err));
+        CHECK(root.is_object());
+        CHECK(root["object"].as_string() == "list");
+        CHECK(root["data"].is_array());
+        CHECK(root["data"].size() >= 1);
+        CHECK(root["data"][0]["id"].as_string() == "Qwen3.8-Flash-Next");
         std::cout << "  -> PASSED (status: 200, model found)\n";
     }
 
@@ -162,20 +191,20 @@ int main() {
         std::cout << "[server_test] Test 3: POST /v1/chat/completions non-stream\n";
         std::string req_json = "{\"model\":\"Qwen3.8-Flash-Next\",\"messages\":[{\"role\":\"user\",\"content\":\"Hi\"}],\"temperature\":0.7,\"stream\":false}";
         auto resp = send_http_request(port, "POST", "/v1/chat/completions", req_json, {{"Content-Type", "application/json"}});
-        assert(resp.status_code == 200);
+        CHECK(resp.status_code == 200);
 
         guild::server::json::JsonValue root;
         std::string err;
-        assert(guild::server::json::JsonValue::parse(resp.body, root, err));
-        assert(root.is_object());
-        assert(root["object"].as_string() == "chat.completion");
-        assert(root["choices"].is_array());
-        assert(root["choices"].size() >= 1);
-        assert(root["choices"][0]["message"]["role"].as_string() == "assistant");
-        assert(!root["choices"][0]["message"]["content"].as_string().empty());
-        assert(root["choices"][0]["finish_reason"].as_string() == "stop");
-        assert(root["usage"]["prompt_tokens"].as_int() > 0);
-        assert(root["usage"]["completion_tokens"].as_int() > 0);
+        CHECK(guild::server::json::JsonValue::parse(resp.body, root, err));
+        CHECK(root.is_object());
+        CHECK(root["object"].as_string() == "chat.completion");
+        CHECK(root["choices"].is_array());
+        CHECK(root["choices"].size() >= 1);
+        CHECK(root["choices"][0]["message"]["role"].as_string() == "assistant");
+        CHECK(!root["choices"][0]["message"]["content"].as_string().empty());
+        CHECK(root["choices"][0]["finish_reason"].as_string() == "stop");
+        CHECK(root["usage"]["prompt_tokens"].as_int() > 0);
+        CHECK(root["usage"]["completion_tokens"].as_int() > 0);
         std::cout << "  -> PASSED (status: 200, valid choices, usage reported)\n";
     }
 
@@ -186,10 +215,10 @@ int main() {
         std::cout << "[server_test] Test 4: POST /v1/chat/completions streaming SSE\n";
         std::string req_json = "{\"model\":\"Qwen3.8-Flash-Next\",\"messages\":[{\"role\":\"user\",\"content\":\"Tell me a joke\"}],\"stream\":true}";
         auto resp = send_http_request(port, "POST", "/v1/chat/completions", req_json, {{"Content-Type", "application/json"}});
-        assert(resp.status_code == 200);
-        assert(resp.body.find("data: ") != std::string::npos);
-        assert(resp.body.find("chat.completion.chunk") != std::string::npos);
-        assert(resp.body.find("data: [DONE]") != std::string::npos);
+        CHECK(resp.status_code == 200);
+        CHECK(resp.body.find("data: ") != std::string::npos);
+        CHECK(resp.body.find("chat.completion.chunk") != std::string::npos);
+        CHECK(resp.body.find("data: [DONE]") != std::string::npos);
         std::cout << "  -> PASSED (status: 200, received SSE chunks and [DONE])\n";
     }
 
@@ -200,15 +229,15 @@ int main() {
         std::cout << "[server_test] Test 5: Malformed JSON returns 400\n";
         std::string req_json = "{\"model\": \"invalid json ... missing brace";
         auto resp = send_http_request(port, "POST", "/v1/chat/completions", req_json, {{"Content-Type", "application/json"}});
-        assert(resp.status_code == 400);
+        CHECK(resp.status_code == 400);
 
         guild::server::json::JsonValue root;
         std::string err;
-        assert(guild::server::json::JsonValue::parse(resp.body, root, err));
-        assert(root.is_object());
-        assert(root["error"].is_object());
-        assert(root["error"]["type"].as_string() == "invalid_request_error");
-        assert(root["error"]["code"].as_string() == "parse_error");
+        CHECK(guild::server::json::JsonValue::parse(resp.body, root, err));
+        CHECK(root.is_object());
+        CHECK(root["error"].is_object());
+        CHECK(root["error"]["type"].as_string() == "invalid_request_error");
+        CHECK(root["error"]["code"].as_string() == "parse_error");
         std::cout << "  -> PASSED (status: 400, structured parse_error)\n";
     }
 
@@ -219,16 +248,16 @@ int main() {
         std::cout << "[server_test] Test 6: Unsupported parameters return structured 400\n";
         std::string req_json = "{\"model\":\"Qwen3.8-Flash-Next\",\"messages\":[{\"role\":\"user\",\"content\":\"Hi\"}],\"unknown_experimental_feature\":true}";
         auto resp = send_http_request(port, "POST", "/v1/chat/completions", req_json, {{"Content-Type", "application/json"}});
-        assert(resp.status_code == 400);
+        CHECK(resp.status_code == 400);
 
         guild::server::json::JsonValue root;
         std::string err;
-        assert(guild::server::json::JsonValue::parse(resp.body, root, err));
-        assert(root.is_object());
-        assert(root["error"].is_object());
-        assert(root["error"]["type"].as_string() == "invalid_request_error");
-        assert(root["error"]["code"].as_string() == "unsupported_parameter");
-        assert(root["error"]["param"].as_string() == "unknown_experimental_feature");
+        CHECK(guild::server::json::JsonValue::parse(resp.body, root, err));
+        CHECK(root.is_object());
+        CHECK(root["error"].is_object());
+        CHECK(root["error"]["type"].as_string() == "invalid_request_error");
+        CHECK(root["error"]["code"].as_string() == "unsupported_parameter");
+        CHECK(root["error"]["param"].as_string() == "unknown_experimental_feature");
         std::cout << "  -> PASSED (status: 400, unsupported_parameter reported)\n";
     }
 
@@ -254,7 +283,7 @@ int main() {
         }
 
         for (int i = 0; i < num_clients; ++i) {
-            assert(status_codes[i] == 200);
+            CHECK(status_codes[i] == 200);
         }
         std::cout << "  -> PASSED (6 concurrent requests succeeded with 200)\n";
     }
@@ -268,14 +297,14 @@ int main() {
         mock_engine->set_delay_ms(10);
 
         int sock = socket(AF_INET, SOCK_STREAM, 0);
-        assert(sock >= 0);
+        CHECK(sock >= 0);
 
         sockaddr_in addr{};
         addr.sin_family = AF_INET;
         addr.sin_port = htons(static_cast<uint16_t>(port));
         inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
 
-        assert(connect(sock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0);
+        CHECK(connect(sock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0);
 
         std::string req = "POST /v1/chat/completions HTTP/1.1\r\n"
                           "Host: 127.0.0.1:" + std::to_string(port) + "\r\n"
@@ -301,7 +330,7 @@ int main() {
 
         // Verify server is alive and functioning normally
         auto health_resp = send_http_request(port, "GET", "/health");
-        assert(health_resp.status_code == 200);
+        CHECK(health_resp.status_code == 200);
         std::cout << "  -> PASSED (client disconnect handled cleanly, server healthy)\n";
     }
 
@@ -310,13 +339,13 @@ int main() {
     // ------------------------------------------------------------------------
     {
         std::cout << "[server_test] Test 9: Clean stop shutdown\n";
-        assert(server->is_running());
+        CHECK(server->is_running());
         server->stop();
-        assert(!server->is_running());
+        CHECK(!server->is_running());
 
         // Connect attempt should fail
         auto resp = send_http_request(port, "GET", "/health");
-        assert(resp.status_code == 0 && "Connection should fail after server.stop()");
+        CHECK(resp.status_code == 0 && "Connection should fail after server.stop()");
         std::cout << "  -> PASSED (server stopped cleanly, socket closed)\n";
     }
 
@@ -328,7 +357,7 @@ int main() {
 
         // Bind a dummy socket
         int blocker_fd = socket(AF_INET, SOCK_STREAM, 0);
-        assert(blocker_fd >= 0);
+        CHECK(blocker_fd >= 0);
         int opt = 1;
         setsockopt(blocker_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
 
@@ -336,8 +365,8 @@ int main() {
         addr.sin_family = AF_INET;
         addr.sin_port = 0; // ephemeral
         inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
-        assert(bind(blocker_fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0);
-        assert(listen(blocker_fd, 1) == 0);
+        CHECK(bind(blocker_fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0);
+        CHECK(listen(blocker_fd, 1) == 0);
 
         socklen_t len = sizeof(addr);
         getsockname(blocker_fd, reinterpret_cast<sockaddr*>(&addr), &len);
@@ -350,14 +379,49 @@ int main() {
 
         guild::server::Server conflict_server(mock_engine, bad_opts);
         bool started_conflict = conflict_server.start();
-        assert(!started_conflict && "Server.start() must return false when port is occupied");
+        CHECK(!started_conflict && "Server.start() must return false when port is occupied");
         (void) started_conflict;
-        assert(!conflict_server.is_running());
+        CHECK(!conflict_server.is_running());
 
         close(blocker_fd);
         std::cout << "  -> PASSED (port conflict detected and refused without crashing)\n";
     }
 
-    std::cout << "\n[server_test] ALL 10 TESTS PASSED SUCCESSFULLY!\n";
+    // Both endpoint families must handle false returns, exceptions, and an
+    // inconsistent engine reporting true with finish_reason=error.
+    for (auto mode : {FailingEngine::ReturnFalse, FailingEngine::Throw, FailingEngine::FalseSuccess}) {
+        for (bool partial : {false, true}) {
+            auto failing = std::make_shared<FailingEngine>(mode, partial);
+            guild::server::Server failing_server(failing, opts);
+            CHECK(failing_server.start());
+            for (bool chat : {false, true}) {
+                for (bool stream : {false, true}) {
+                    const std::string path = chat ? "/v1/chat/completions" : "/v1/completions";
+                    const std::string body = std::string(chat ? "{\"messages\":[{\"role\":\"user\",\"content\":\"Hi\"}],"
+                                                             : "{\"prompt\":\"Hi\",") +
+                                             "\"stream\":" + (stream ? "true}" : "false}");
+                    auto resp = send_http_request(failing_server.bound_port(), "POST", path, body);
+                    CHECK(resp.status_code == (stream && partial ? 200 : 500));
+                    CHECK(resp.body.find("injected inference failure") != std::string::npos);
+                    CHECK(resp.body.find("inference_failed") != std::string::npos);
+                    CHECK(resp.body.find("data: [DONE]") == std::string::npos);
+                    CHECK(resp.body.find("\"finish_reason\":\"stop\"") == std::string::npos);
+                    CHECK(resp.body.find("must not become a completion") == std::string::npos);
+                    if (!stream || !partial) {
+                        guild::server::json::JsonValue root;
+                        std::string err;
+                        CHECK(guild::server::json::JsonValue::parse(resp.body, root, err));
+                        CHECK(root["error"]["code"].as_string() == "inference_failed");
+                        CHECK(!root.contains("choices"));
+                    }
+                }
+            }
+            CHECK(failing_server.telemetry().snapshot().active_requests == 0);
+            CHECK(failing_server.telemetry().snapshot().completed_requests == 4);
+            failing_server.stop();
+        }
+    }
+
+    std::cout << "\n[server_test] lifecycle, success and failure checks PASSED (Release-active)\n";
     return 0;
 }

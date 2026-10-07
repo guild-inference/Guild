@@ -6,6 +6,7 @@
 #include <chrono>
 #include <csignal>
 #include <cstring>
+#include <exception>
 #include <iostream>
 #include <netinet/in.h>
 #include <poll.h>
@@ -32,6 +33,20 @@ bool send_all(int fd, const char* data, size_t len) {
 bool send_response(int fd, const HttpResponse& res) {
     std::string raw = res.serialize();
     return send_all(fd, raw.data(), raw.size());
+}
+
+bool generate_checked(IInferenceEngine& engine, const InferenceRequest& req,
+                      StreamCallback callback, GenerationResult& result) {
+    try {
+        const bool ok = callback ? engine.generate_stream(req, std::move(callback), result)
+                                 : engine.generate(req, result);
+        if (!ok || result.finish_reason == "error") return result.fail(result.error_message);
+        return true;
+    } catch (const std::exception& e) {
+        return result.fail(std::string("Inference failed: ") + e.what());
+    } catch (...) {
+        return result.fail("Inference failed with an unknown exception");
+    }
 }
 
 } // namespace
@@ -390,36 +405,21 @@ void Server::process_chat_completions(int client_fd, const HttpRequest& req) {
             "Connection: keep-alive\r\n"
             "Access-Control-Allow-Origin: *\r\n\r\n";
 
-        if (!send_all(client_fd, sse_header, sizeof(sse_header) - 1)) {
-            RequestMetrics m;
-            m.method = req.method;
-            m.path = req.path;
-            m.status_code = 200;
-            m.streamed = true;
-            m.outcome = "disconnected";
-            telemetry_.record_request_finish(m);
-            log_request(m);
-            return;
-        }
-
-        // Send initial chunk with role
+        // Delay success headers until inference has produced a checked token. An
+        // initialization/prefill failure must still be an HTTP error response.
+        bool stream_started = false;
+        bool client_alive = true;
         std::string first_chunk = "data: " + OpenAiFormatter::format_chat_chunk(
             inf_req.request_id, inf_req.model, created, "assistant", "", "") + "\n\n";
-
-        if (!send_all(client_fd, first_chunk.data(), first_chunk.size())) {
-            RequestMetrics m;
-            m.method = req.method;
-            m.path = req.path;
-            m.status_code = 200;
-            m.streamed = true;
-            m.outcome = "disconnected";
-            telemetry_.record_request_finish(m);
-            log_request(m);
-            return;
-        }
-
-        bool client_alive = true;
+        auto start_stream = [&]() {
+            if (stream_started) return client_alive;
+            stream_started = true;
+            client_alive = send_all(client_fd, sse_header, sizeof(sse_header) - 1) &&
+                           send_all(client_fd, first_chunk.data(), first_chunk.size());
+            return client_alive;
+        };
         auto stream_cb = [&](const TokenOutput& tok) -> bool {
+            if (!start_stream()) return false;
             std::string chunk_data = "data: " + OpenAiFormatter::format_chat_chunk(
                 inf_req.request_id, inf_req.model, created, "", tok.text, "") + "\n\n";
             if (!send_all(client_fd, chunk_data.data(), chunk_data.size())) {
@@ -430,22 +430,31 @@ void Server::process_chat_completions(int client_fd, const HttpRequest& req) {
         };
 
         GenerationResult gen_res;
-        bool ok = engine_->generate_stream(inf_req, stream_cb, gen_res);
+        bool ok = generate_checked(*engine_, inf_req, stream_cb, gen_res);
 
         if (client_alive && ok) {
+            start_stream();
             std::string final_chunk = "data: " + OpenAiFormatter::format_chat_chunk(
                 inf_req.request_id, inf_req.model, created, "", "", gen_res.finish_reason) + "\n\n";
             send_all(client_fd, final_chunk.data(), final_chunk.size());
 
             const char done_msg[] = "data: [DONE]\n\n";
             send_all(client_fd, done_msg, sizeof(done_msg) - 1);
+        } else if (client_alive) {
+            const std::string error = OpenAiFormatter::format_error(
+                gen_res.error_message, "server_error", "", "inference_failed");
+            if (!stream_started) send_response(client_fd, HttpResponse::json(500, error));
+            else {
+                const std::string event = "data: " + error + "\n\n";
+                send_all(client_fd, event.data(), event.size());
+            }
         }
 
         auto end_time = std::chrono::steady_clock::now();
         RequestMetrics m;
         m.method = req.method;
         m.path = req.path;
-        m.status_code = 200;
+        m.status_code = !ok && !stream_started ? 500 : 200;
         m.duration_s = std::chrono::duration<double>(end_time - start_time).count();
         if (m.duration_s < 0.01 && gen_res.decode_ms > 0.0) {
             m.duration_s = (gen_res.prompt_ms + gen_res.decode_ms) / 1000.0;
@@ -463,25 +472,26 @@ void Server::process_chat_completions(int client_fd, const HttpRequest& req) {
         m.drafts_offered = gen_res.drafts_offered;
         m.context_tokens = gen_res.prompt_tokens + gen_res.completion_tokens;
         m.streamed = true;
-        m.outcome = client_alive ? "ok" : "disconnected";
+        m.outcome = !client_alive ? "disconnected" : ok ? "ok" : "error";
 
         telemetry_.record_request_finish(m);
         log_request(m);
     } else {
         GenerationResult gen_res;
-        engine_->generate(inf_req, gen_res);
+        const bool ok = generate_checked(*engine_, inf_req, nullptr, gen_res);
 
-        std::string json_res = OpenAiFormatter::format_chat_completion(
+        std::string json_res = ok ? OpenAiFormatter::format_chat_completion(
             inf_req.request_id, inf_req.model, created, gen_res.text,
-            gen_res.finish_reason, gen_res.prompt_tokens, gen_res.completion_tokens);
+            gen_res.finish_reason, gen_res.prompt_tokens, gen_res.completion_tokens)
+            : OpenAiFormatter::format_error(gen_res.error_message, "server_error", "", "inference_failed");
 
-        send_response(client_fd, HttpResponse::json(200, json_res));
+        send_response(client_fd, HttpResponse::json(ok ? 200 : 500, json_res));
 
         auto end_time = std::chrono::steady_clock::now();
         RequestMetrics m;
         m.method = req.method;
         m.path = req.path;
-        m.status_code = 200;
+        m.status_code = ok ? 200 : 500;
         m.duration_s = std::chrono::duration<double>(end_time - start_time).count();
         if (m.duration_s < 0.01 && gen_res.decode_ms > 0.0) {
             m.duration_s = (gen_res.prompt_ms + gen_res.decode_ms) / 1000.0;
@@ -499,7 +509,7 @@ void Server::process_chat_completions(int client_fd, const HttpRequest& req) {
         m.drafts_offered = gen_res.drafts_offered;
         m.context_tokens = gen_res.prompt_tokens + gen_res.completion_tokens;
         m.streamed = false;
-        m.outcome = "ok";
+        m.outcome = ok ? "ok" : "error";
 
         telemetry_.record_request_finish(m);
         log_request(m);
@@ -569,20 +579,16 @@ void Server::process_completions(int client_fd, const HttpRequest& req) {
             "Connection: keep-alive\r\n"
             "Access-Control-Allow-Origin: *\r\n\r\n";
 
-        if (!send_all(client_fd, sse_header, sizeof(sse_header) - 1)) {
-            RequestMetrics m;
-            m.method = req.method;
-            m.path = req.path;
-            m.status_code = 200;
-            m.streamed = true;
-            m.outcome = "disconnected";
-            telemetry_.record_request_finish(m);
-            log_request(m);
-            return;
-        }
-
+        bool stream_started = false;
         bool client_alive = true;
+        auto start_stream = [&]() {
+            if (stream_started) return client_alive;
+            stream_started = true;
+            client_alive = send_all(client_fd, sse_header, sizeof(sse_header) - 1);
+            return client_alive;
+        };
         auto stream_cb = [&](const TokenOutput& tok) -> bool {
+            if (!start_stream()) return false;
             std::string chunk_data = "data: " + OpenAiFormatter::format_completion_chunk(
                 inf_req.request_id, inf_req.model, created, tok.text, "") + "\n\n";
             if (!send_all(client_fd, chunk_data.data(), chunk_data.size())) {
@@ -593,22 +599,31 @@ void Server::process_completions(int client_fd, const HttpRequest& req) {
         };
 
         GenerationResult gen_res;
-        bool ok = engine_->generate_stream(inf_req, stream_cb, gen_res);
+        bool ok = generate_checked(*engine_, inf_req, stream_cb, gen_res);
 
         if (client_alive && ok) {
+            start_stream();
             std::string final_chunk = "data: " + OpenAiFormatter::format_completion_chunk(
                 inf_req.request_id, inf_req.model, created, "", gen_res.finish_reason) + "\n\n";
             send_all(client_fd, final_chunk.data(), final_chunk.size());
 
             const char done_msg[] = "data: [DONE]\n\n";
             send_all(client_fd, done_msg, sizeof(done_msg) - 1);
+        } else if (client_alive) {
+            const std::string error = OpenAiFormatter::format_error(
+                gen_res.error_message, "server_error", "", "inference_failed");
+            if (!stream_started) send_response(client_fd, HttpResponse::json(500, error));
+            else {
+                const std::string event = "data: " + error + "\n\n";
+                send_all(client_fd, event.data(), event.size());
+            }
         }
 
         auto end_time = std::chrono::steady_clock::now();
         RequestMetrics m;
         m.method = req.method;
         m.path = req.path;
-        m.status_code = 200;
+        m.status_code = !ok && !stream_started ? 500 : 200;
         m.duration_s = std::chrono::duration<double>(end_time - start_time).count();
         if (m.duration_s < 0.01 && gen_res.decode_ms > 0.0) {
             m.duration_s = (gen_res.prompt_ms + gen_res.decode_ms) / 1000.0;
@@ -626,25 +641,26 @@ void Server::process_completions(int client_fd, const HttpRequest& req) {
         m.drafts_offered = gen_res.drafts_offered;
         m.context_tokens = gen_res.prompt_tokens + gen_res.completion_tokens;
         m.streamed = true;
-        m.outcome = client_alive ? "ok" : "disconnected";
+        m.outcome = !client_alive ? "disconnected" : ok ? "ok" : "error";
 
         telemetry_.record_request_finish(m);
         log_request(m);
     } else {
         GenerationResult gen_res;
-        engine_->generate(inf_req, gen_res);
+        const bool ok = generate_checked(*engine_, inf_req, nullptr, gen_res);
 
-        std::string json_res = OpenAiFormatter::format_completion(
+        std::string json_res = ok ? OpenAiFormatter::format_completion(
             inf_req.request_id, inf_req.model, created, gen_res.text,
-            gen_res.finish_reason, gen_res.prompt_tokens, gen_res.completion_tokens);
+            gen_res.finish_reason, gen_res.prompt_tokens, gen_res.completion_tokens)
+            : OpenAiFormatter::format_error(gen_res.error_message, "server_error", "", "inference_failed");
 
-        send_response(client_fd, HttpResponse::json(200, json_res));
+        send_response(client_fd, HttpResponse::json(ok ? 200 : 500, json_res));
 
         auto end_time = std::chrono::steady_clock::now();
         RequestMetrics m;
         m.method = req.method;
         m.path = req.path;
-        m.status_code = 200;
+        m.status_code = ok ? 200 : 500;
         m.duration_s = std::chrono::duration<double>(end_time - start_time).count();
         if (m.duration_s < 0.01 && gen_res.decode_ms > 0.0) {
             m.duration_s = (gen_res.prompt_ms + gen_res.decode_ms) / 1000.0;
@@ -662,7 +678,7 @@ void Server::process_completions(int client_fd, const HttpRequest& req) {
         m.drafts_offered = gen_res.drafts_offered;
         m.context_tokens = gen_res.prompt_tokens + gen_res.completion_tokens;
         m.streamed = false;
-        m.outcome = "ok";
+        m.outcome = ok ? "ok" : "error";
 
         telemetry_.record_request_finish(m);
         log_request(m);

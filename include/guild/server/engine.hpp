@@ -40,7 +40,8 @@ struct GenerationResult {
     double decode_ms = 0.0;
     double prompt_tok_s = 0.0;
     double decode_tok_s = 0.0;
-    std::string finish_reason = "stop"; // "stop", "length", "cancel"
+    std::string finish_reason = "stop"; // "stop", "length", "cancel", "error"
+    std::string error_message;
     int drafts_accepted = 0;
     int drafts_offered = 0;
     int reused_tokens = 0;
@@ -48,6 +49,15 @@ struct GenerationResult {
     int64_t file_blobs = 0;
     double file_mb = 0.0;
     int64_t gpu_cache_hits = 0;
+
+    bool fail(const std::string& message) {
+        text.clear();
+        tokens.clear();
+        completion_tokens = 0;
+        finish_reason = "error";
+        error_message = message.empty() ? "Inference failed" : message;
+        return false;
+    }
 };
 
 using StreamCallback = std::function<bool(const TokenOutput& token)>;

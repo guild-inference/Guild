@@ -1,4 +1,5 @@
 #include "guild/server/native_engine.hpp"
+#include <exception>
 
 namespace guild::server {
 
@@ -9,7 +10,9 @@ NativeInferenceEngine::~NativeInferenceEngine() {
     stop();
 }
 
-bool NativeInferenceEngine::init(std::string& error_msg) {
+bool NativeInferenceEngine::init(std::string& error_msg) try {
+    ready_ = false;
+    error_msg.clear();
     model_ = guild::runtime::GuildModel::load(options_.paths, options_.desc, options_.plan, error_msg);
     if (!model_) {
         ready_ = false;
@@ -25,6 +28,9 @@ bool NativeInferenceEngine::init(std::string& error_msg) {
 
     ready_ = true;
     return true;
+} catch (const std::exception& e) {
+    error_msg = std::string("Native engine initialization failed: ") + e.what();
+    return false;
 }
 
 void NativeInferenceEngine::stop() {
@@ -38,10 +44,11 @@ bool NativeInferenceEngine::generate(const InferenceRequest& req, GenerationResu
 }
 
 bool NativeInferenceEngine::generate_stream(const InferenceRequest& req,
-                                           StreamCallback on_token,
-                                           GenerationResult& result) {
+                                            StreamCallback on_token,
+                                            GenerationResult& result) {
+    result = GenerationResult{};
     if (!is_ready()) {
-        return false;
+        return result.fail("Native inference engine is not ready");
     }
 
     result.text.clear();
@@ -81,7 +88,12 @@ bool NativeInferenceEngine::generate_stream(const InferenceRequest& req,
 
     guild::runtime::RuntimeTelemetry telem;
     std::string gen_err;
-    bool ok = session_->generate(g_req, token_cb, telem, gen_err, prefill_cb);
+    bool ok = false;
+    try {
+        ok = session_->generate(g_req, token_cb, telem, gen_err, prefill_cb);
+    } catch (const std::exception& e) {
+        gen_err = std::string("Native generation failed: ") + e.what();
+    }
 
     result.prompt_tokens = telem.prompt_tokens;
     result.completion_tokens = telem.completion_tokens;
@@ -96,7 +108,8 @@ bool NativeInferenceEngine::generate_stream(const InferenceRequest& req,
     result.file_blobs = telem.file_expert_reads;
     result.gpu_cache_hits = telem.gpu_cache_hits;
 
-    return ok;
+    if (!ok || telem.finish_reason == "error") return result.fail(gen_err);
+    return true;
 }
 
 } // namespace guild::server

@@ -32,8 +32,7 @@ bool MockInferenceEngine::generate(const InferenceRequest& req, GenerationResult
 bool MockInferenceEngine::generate_stream(const InferenceRequest& req,
                                          StreamCallback on_token,
                                          GenerationResult& result) {
-    result.text.clear();
-    result.tokens.clear();
+    result = GenerationResult{};
     result.prompt_tokens = req.prompt_tokens.empty()
                                ? static_cast<int>(req.prompt.size() / 4 + 1)
                                : static_cast<int>(req.prompt_tokens.size());
@@ -59,7 +58,6 @@ bool MockInferenceEngine::generate_stream(const InferenceRequest& req,
 
     auto start_decode = std::chrono::steady_clock::now();
     int token_id_counter = 1000;
-    bool client_aborted = false;
 
     for (size_t i = 0; i < words.size(); ++i) {
         if (req.max_tokens > 0 && static_cast<int>(result.tokens.size()) >= req.max_tokens) {
@@ -78,8 +76,7 @@ bool MockInferenceEngine::generate_stream(const InferenceRequest& req,
         result.text += tok.text;
         result.tokens.push_back(tok);
 
-        if (!on_token(tok)) {
-            client_aborted = true;
+        if (on_token && !on_token(tok)) {
             result.finish_reason = "cancel";
             break;
         }
@@ -118,7 +115,7 @@ bool MockInferenceEngine::generate_stream(const InferenceRequest& req,
     result.drafts_accepted = 4;
     result.drafts_offered = 5;
 
-    return !client_aborted;
+    return true;
 }
 
 // ============================================================================
@@ -329,10 +326,11 @@ bool GuildProcessEngine::generate(const InferenceRequest& req, GenerationResult&
 }
 
 bool GuildProcessEngine::generate_stream(const InferenceRequest& req,
-                                         StreamCallback on_token,
-                                         GenerationResult& result) {
+                                          StreamCallback on_token,
+                                          GenerationResult& result) {
+    result = GenerationResult{};
     if (!ready_ || in_pipe_[1] < 0 || out_pipe_[0] < 0) {
-        return false;
+        return result.fail("Process inference engine is not ready");
     }
 
     result.text.clear();
@@ -367,13 +365,14 @@ bool GuildProcessEngine::generate_stream(const InferenceRequest& req,
 
     std::string cmd_str = cmd.str();
     if (write(in_pipe_[1], cmd_str.data(), cmd_str.size()) != static_cast<ssize_t>(cmd_str.size())) {
-        return false;
+        return result.fail("Failed to send generation request to process engine");
     }
 
     // Read responses
     std::string line;
     char ch;
     bool client_aborted = false;
+    bool completed = false;
 
     while (read(out_pipe_[0], &ch, 1) == 1) {
         if (ch == '\n') {
@@ -385,7 +384,7 @@ bool GuildProcessEngine::generate_stream(const InferenceRequest& req,
                 result.text += tok.text;
                 result.tokens.push_back(tok);
 
-                if (!on_token(tok)) {
+                if (!client_aborted && on_token && !on_token(tok)) {
                     client_aborted = true;
                     if (can_stop_) {
                         const char stop_cmd[] = "STOP\n";
@@ -408,7 +407,10 @@ bool GuildProcessEngine::generate_stream(const InferenceRequest& req,
                 std::string tag, finish;
                 int gen, ptok;
                 double pms, dms;
-                iss >> tag >> gen >> ptok >> pms >> dms >> finish;
+                if (!(iss >> tag >> gen >> ptok >> pms >> dms >> finish) || gen < 0 || ptok < 0 ||
+                    (finish != "stop" && finish != "length" && finish != "cancel")) {
+                    return result.fail("Malformed DONE response from process engine");
+                }
                 result.completion_tokens = gen;
                 result.prompt_tokens = ptok;
                 result.prompt_ms = pms;
@@ -417,9 +419,10 @@ bool GuildProcessEngine::generate_stream(const InferenceRequest& req,
                 if (dms > 0.0) {
                     result.decode_tok_s = gen / (dms / 1000.0);
                 }
+                completed = true;
                 break;
             } else if (line.rfind("ERR", 0) == 0) {
-                return false;
+                return result.fail(line.size() > 4 ? line.substr(4) : "Process inference failed");
             }
             line.clear();
         } else {
@@ -427,7 +430,11 @@ bool GuildProcessEngine::generate_stream(const InferenceRequest& req,
         }
     }
 
-    return !client_aborted;
+    if (!completed) {
+        ready_ = false;
+        return result.fail("Process engine exited before DONE");
+    }
+    return true; // Client cancellation is a completed request, not an inference failure.
 }
 
 } // namespace guild::server
