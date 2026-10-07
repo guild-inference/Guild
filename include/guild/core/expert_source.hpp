@@ -239,6 +239,7 @@ struct ExpertDispatch {
     RemoteExperts* remote[3] = {}; ///< optional CUDA1..3 tiers for otherwise CPU-served rows
     int remote_count = 0;
     int64_t n_expert = guild::kernels::cpu::NE;
+    int64_t n_embd = guild::kernels::cpu::H;
 
     /// Counters, for the driver to report rather than for control flow.
     int64_t layers = 0;

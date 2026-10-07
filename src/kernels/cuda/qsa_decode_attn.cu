@@ -14,7 +14,6 @@ namespace guild::kernels {
 namespace {
 
 constexpr int HD = 256;          // head_dim
-constexpr int G = 12;            // query heads per KV head (24 / 2)
 constexpr int CHUNK = 64;        // cells per block
 constexpr int THREADS = 256;
 constexpr int WARPS = THREADS / 32;
@@ -80,7 +79,7 @@ __device__ __forceinline__ void load8(const QsaAttnPools& p, bool value, long lo
     } else load8_q4(p, value, row, d0, out);
 }
 
-template <int KV_MODE>
+template <int G, int KV_MODE>
 __global__ void __launch_bounds__(THREADS) attn_chunk_kernel(const float* __restrict__ q, QsaAttnPools p,
                                                              const int32_t* __restrict__ ids,
                                                              const int32_t* __restrict__ step, int n_kv_heads,
@@ -244,6 +243,7 @@ __global__ void __launch_bounds__(THREADS) attn_chunk_kernel_pre75(const float* 
                                                              int page_size, float scale, float* __restrict__ part_acc,
                                                              float* __restrict__ part_m, float* __restrict__ part_l,
                                                              int n_chunks, int cap = 0, long long scratch_stride = 0) {
+    constexpr int G = 12;
     // batched form: query blockIdx.z, with its own q row, selection, step and scratch
     q += (size_t) blockIdx.z * (size_t) (n_kv_heads * G) * HD;
     ids += (size_t) blockIdx.z * (size_t) cap;
@@ -392,6 +392,7 @@ __global__ void __launch_bounds__(THREADS) attn_chunk_kernel_pre75(const float* 
 }
 #endif  // GUILD_EXPERIMENTAL_SM60
 
+template <int G>
 __global__ void __launch_bounds__(HD) attn_merge_kernel(const float* __restrict__ part_acc,
                                                         const float* __restrict__ part_m,
                                                         const float* __restrict__ part_l, int n_chunks,
@@ -440,19 +441,94 @@ bool pre75_attn() {
     }
     return cc[dev] < 75;
 }
-#define GUILD_ATTN_CHUNK(M) (pre75_attn() ? attn_chunk_kernel_pre75<M> : attn_chunk_kernel<M>)
-#else
-#define GUILD_ATTN_CHUNK(M) attn_chunk_kernel<M>
 #endif
+
+#if defined(GUILD_EXPERIMENTAL_SM60)
+template <int G, int M>
+void launch_attn_chunk_batch(const dim3& grid, cudaStream_t st,
+                             const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps,
+                             int n_kv_heads, int page_size, float scale, float* part_acc, float* part_m, float* part_l,
+                             int n_chunks, int cap, long long stride) {
+    if constexpr (G == 12) {
+        if (pre75_attn()) {
+            attn_chunk_kernel_pre75<M><<<grid, THREADS, 0, st>>>(q, pools, ids, steps, n_kv_heads, page_size, scale, part_acc, part_m, part_l, n_chunks, cap, stride);
+            return;
+        }
+    }
+    attn_chunk_kernel<G, M><<<grid, THREADS, 0, st>>>(q, pools, ids, steps, n_kv_heads, page_size, scale, part_acc, part_m, part_l, n_chunks, cap, stride);
+}
+template <int G, int M>
+void launch_attn_chunk_step(const dim3& grid, cudaStream_t st,
+                            const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* step,
+                            int n_kv_heads, int page_size, float scale, float* part_acc, float* part_m, float* part_l,
+                            int n_chunks) {
+    if constexpr (G == 12) {
+        if (pre75_attn()) {
+            attn_chunk_kernel_pre75<M><<<grid, THREADS, 0, st>>>(q, pools, ids, step, n_kv_heads, page_size, scale, part_acc, part_m, part_l, n_chunks, 0, 0);
+            return;
+        }
+    }
+    attn_chunk_kernel<G, M><<<grid, THREADS, 0, st>>>(q, pools, ids, step, n_kv_heads, page_size, scale, part_acc, part_m, part_l, n_chunks, 0, 0);
+}
+#else
+template <int G, int M>
+void launch_attn_chunk_batch(const dim3& grid, cudaStream_t st,
+                             const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps,
+                             int n_kv_heads, int page_size, float scale, float* part_acc, float* part_m, float* part_l,
+                             int n_chunks, int cap, long long stride) {
+    attn_chunk_kernel<G, M><<<grid, THREADS, 0, st>>>(q, pools, ids, steps, n_kv_heads, page_size, scale, part_acc, part_m, part_l, n_chunks, cap, stride);
+}
+template <int G, int M>
+void launch_attn_chunk_step(const dim3& grid, cudaStream_t st,
+                            const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* step,
+                            int n_kv_heads, int page_size, float scale, float* part_acc, float* part_m, float* part_l,
+                            int n_chunks) {
+    attn_chunk_kernel<G, M><<<grid, THREADS, 0, st>>>(q, pools, ids, step, n_kv_heads, page_size, scale, part_acc, part_m, part_l, n_chunks, 0, 0);
+}
+#endif
+
+template <int G>
+void dispatch_attn_chunk_batch(int kv_mode, const dim3& grid, cudaStream_t st,
+                               const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps,
+                               int n_kv_heads, int page_size, float scale, float* part_acc, float* part_m, float* part_l,
+                               int n_chunks, int cap, long long stride) {
+    if (kv_mode == 3)
+        launch_attn_chunk_batch<G, 3>(grid, st, q, pools, ids, steps, n_kv_heads, page_size, scale, part_acc, part_m, part_l, n_chunks, cap, stride);
+    else if (kv_mode == 2)
+        launch_attn_chunk_batch<G, 2>(grid, st, q, pools, ids, steps, n_kv_heads, page_size, scale, part_acc, part_m, part_l, n_chunks, cap, stride);
+    else if (kv_mode == 1)
+        launch_attn_chunk_batch<G, 1>(grid, st, q, pools, ids, steps, n_kv_heads, page_size, scale, part_acc, part_m, part_l, n_chunks, cap, stride);
+    else
+        launch_attn_chunk_batch<G, 0>(grid, st, q, pools, ids, steps, n_kv_heads, page_size, scale, part_acc, part_m, part_l, n_chunks, cap, stride);
+}
+
+template <int G>
+void dispatch_attn_chunk_step(int kv_mode, const dim3& grid, cudaStream_t st,
+                              const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* step,
+                              int n_kv_heads, int page_size, float scale, float* part_acc, float* part_m, float* part_l,
+                              int n_chunks) {
+    if (kv_mode == 3)
+        launch_attn_chunk_step<G, 3>(grid, st, q, pools, ids, step, n_kv_heads, page_size, scale, part_acc, part_m, part_l, n_chunks);
+    else if (kv_mode == 2)
+        launch_attn_chunk_step<G, 2>(grid, st, q, pools, ids, step, n_kv_heads, page_size, scale, part_acc, part_m, part_l, n_chunks);
+    else if (kv_mode == 1)
+        launch_attn_chunk_step<G, 1>(grid, st, q, pools, ids, step, n_kv_heads, page_size, scale, part_acc, part_m, part_l, n_chunks);
+    else
+        launch_attn_chunk_step<G, 0>(grid, st, q, pools, ids, step, n_kv_heads, page_size, scale, part_acc, part_m, part_l, n_chunks);
+}
 
 }  // namespace
 
 void qsa_decode_attn_batch(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps,
                            int64_t cap, const QsaShapes& s, float* scratch, float* attn, int64_t n_q, void* stream) {
     if (n_q <= 0) return;
-    if (s.head_dim != HD || s.n_head != (int64_t) G * s.n_head_kv || cap <= 0 || !scratch || !ids || !steps ||
+    const int G_val = (int) (s.n_head / s.n_head_kv);
+    if (s.head_dim != HD || s.n_head != (int64_t) G_val * s.n_head_kv || cap <= 0 || !scratch || !ids || !steps ||
         !pools.page_table || n_q > 65535) {
-        std::fprintf(stderr, "qsa_decode_attn_batch: unsupported geometry or missing buffers\n");
+        std::fprintf(stderr, "qsa_decode_attn_batch: unsupported geometry or missing buffers: "
+                             "head_dim=%lld HD=%d n_head=%lld G_val=%d n_head_kv=%lld cap=%lld scratch=%p ids=%p steps=%p pt=%p n_q=%lld\n",
+                     (long long) s.head_dim, HD, (long long) s.n_head, G_val, (long long) s.n_head_kv,
+                     (long long) cap, (void*) scratch, (void*) ids, (void*) steps, (void*) pools.page_table, (long long) n_q);
         std::exit(1);
     }
     const int kv_mode = pools.k_q4 != nullptr ? 2 : (pools.k_q != nullptr && pools.v_q4 != nullptr ? 3
@@ -466,20 +542,23 @@ void qsa_decode_attn_batch(const float* q, const QsaAttnPools& pools, const int3
     const float scale = 1.0f / sqrtf((float) HD);
     const dim3 grid((unsigned) n_chunks, (unsigned) s.n_head_kv, (unsigned) n_q);
     cudaStream_t st = (cudaStream_t) stream;
-    if (kv_mode == 3)
-        GUILD_ATTN_CHUNK(3)<<<grid, THREADS, 0, st>>>(q, pools, ids, steps, (int) s.n_head_kv, (int) s.page_size,
-                                                        scale, part_acc, part_m, part_l, n_chunks, (int) cap, stride);
-    else if (kv_mode == 2)
-        GUILD_ATTN_CHUNK(2)<<<grid, THREADS, 0, st>>>(q, pools, ids, steps, (int) s.n_head_kv, (int) s.page_size,
-                                                        scale, part_acc, part_m, part_l, n_chunks, (int) cap, stride);
-    else if (kv_mode == 1)
-        GUILD_ATTN_CHUNK(1)<<<grid, THREADS, 0, st>>>(q, pools, ids, steps, (int) s.n_head_kv, (int) s.page_size,
-                                                        scale, part_acc, part_m, part_l, n_chunks, (int) cap, stride);
-    else
-        GUILD_ATTN_CHUNK(0)<<<grid, THREADS, 0, st>>>(q, pools, ids, steps, (int) s.n_head_kv, (int) s.page_size,
-                                                        scale, part_acc, part_m, part_l, n_chunks, (int) cap, stride);
-    attn_merge_kernel<<<dim3((unsigned) s.n_head, (unsigned) n_q), HD, 0, st>>>(part_acc, part_m, part_l, n_chunks,
-                                                                                  attn, stride);
+#define DISPATCH_BATCH(GV) \
+    case GV: \
+        dispatch_attn_chunk_batch<GV>(kv_mode, grid, st, q, pools, ids, steps, (int) s.n_head_kv, (int) s.page_size, scale, part_acc, part_m, part_l, n_chunks, (int) cap, stride); \
+        attn_merge_kernel<GV><<<dim3((unsigned) s.n_head, (unsigned) n_q), HD, 0, st>>>(part_acc, part_m, part_l, n_chunks, attn, stride); \
+        break;
+
+    switch (G_val) {
+        DISPATCH_BATCH(8)
+        DISPATCH_BATCH(12)
+        DISPATCH_BATCH(4)
+        DISPATCH_BATCH(1)
+        DISPATCH_BATCH(16)
+        default:
+            std::fprintf(stderr, "qsa_decode_attn_batch: unsupported G ratio %d\n", G_val);
+            std::exit(1);
+    }
+#undef DISPATCH_BATCH
     const cudaError_t e = cudaGetLastError();
     if (e != cudaSuccess) {
         std::fprintf(stderr, "qsa_decode_attn_batch: %s\n", cudaGetErrorString(e));
@@ -494,7 +573,8 @@ uint64_t qsa_decode_attn_scratch_floats(int64_t cap, const QsaShapes& s) {
 
 void qsa_decode_attn_step(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* step,
                           int64_t cap, const QsaShapes& s, float* scratch, float* attn, void* stream) {
-    if (s.head_dim != HD || s.n_head != (int64_t) G * s.n_head_kv || cap <= 0 || !scratch || !ids || !step ||
+    const int G_val = (int) (s.n_head / s.n_head_kv);
+    if (s.head_dim != HD || s.n_head != (int64_t) G_val * s.n_head_kv || cap <= 0 || !scratch || !ids || !step ||
         !pools.page_table) {
         std::fprintf(stderr, "qsa_decode_attn: unsupported geometry or missing buffers\n");
         std::exit(1);
@@ -514,19 +594,23 @@ void qsa_decode_attn_step(const float* q, const QsaAttnPools& pools, const int32
     const float scale = 1.0f / sqrtf((float) HD);
     const dim3 grid((unsigned) n_chunks, (unsigned) s.n_head_kv);
     cudaStream_t st = (cudaStream_t) stream;
-    if (kv_mode == 3)
-        GUILD_ATTN_CHUNK(3)<<<grid, THREADS, 0, st>>>(q, pools, ids, step, (int) s.n_head_kv, (int) s.page_size,
-                                                        scale, part_acc, part_m, part_l, n_chunks, 0, 0);
-    else if (kv_mode == 2)
-        GUILD_ATTN_CHUNK(2)<<<grid, THREADS, 0, st>>>(q, pools, ids, step, (int) s.n_head_kv, (int) s.page_size,
-                                                        scale, part_acc, part_m, part_l, n_chunks, 0, 0);
-    else if (kv_mode == 1)
-        GUILD_ATTN_CHUNK(1)<<<grid, THREADS, 0, st>>>(q, pools, ids, step, (int) s.n_head_kv, (int) s.page_size,
-                                                        scale, part_acc, part_m, part_l, n_chunks, 0, 0);
-    else
-        GUILD_ATTN_CHUNK(0)<<<grid, THREADS, 0, st>>>(q, pools, ids, step, (int) s.n_head_kv, (int) s.page_size,
-                                                        scale, part_acc, part_m, part_l, n_chunks, 0, 0);
-    attn_merge_kernel<<<(unsigned) s.n_head, HD, 0, st>>>(part_acc, part_m, part_l, n_chunks, attn);
+#define DISPATCH_STEP(GV) \
+    case GV: \
+        dispatch_attn_chunk_step<GV>(kv_mode, grid, st, q, pools, ids, step, (int) s.n_head_kv, (int) s.page_size, scale, part_acc, part_m, part_l, n_chunks); \
+        attn_merge_kernel<GV><<<(unsigned) s.n_head, HD, 0, st>>>(part_acc, part_m, part_l, n_chunks, attn); \
+        break;
+
+    switch (G_val) {
+        DISPATCH_STEP(8)
+        DISPATCH_STEP(12)
+        DISPATCH_STEP(4)
+        DISPATCH_STEP(1)
+        DISPATCH_STEP(16)
+        default:
+            std::fprintf(stderr, "qsa_decode_attn: unsupported G ratio %d\n", G_val);
+            std::exit(1);
+    }
+#undef DISPATCH_STEP
     const cudaError_t e = cudaGetLastError();
     if (e != cudaSuccess) {
         std::fprintf(stderr, "qsa_decode_attn: %s\n", cudaGetErrorString(e));

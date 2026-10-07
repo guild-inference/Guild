@@ -88,8 +88,7 @@ void check_sync(const char* what) {
 /// Geometry validation.  A silently wrong `head_dim % 4` would corrupt the gather's uint2 copy and a silently
 /// wrong `n_head % n_head_kv` would produce a plausible attention with the wrong key, so both are refused.
 void validate(const QsaShapes& s, const char* who) {
-    if (s.n_head <= 0 || s.n_head_kv <= 0 || s.head_dim <= 0 || s.idx_dim <= 0 || s.idx_n_head <= 0 ||
-        s.idx_block < 2 || s.page_size < 1) {
+    if (s.n_head <= 0 || s.n_head_kv <= 0 || s.head_dim <= 0 || s.page_size < 1) {
         std::fprintf(stderr, "qsa: %s: geometry is not set up\n", who);
         std::exit(1);
     }
@@ -103,14 +102,31 @@ void validate(const QsaShapes& s, const char* who) {
                      (long long) s.head_dim);
         std::exit(1);
     }
-    if (s.n_rot <= 0 || s.n_rot % 2 != 0 || s.n_rot > s.head_dim || s.n_rot > s.idx_dim) {
-        std::fprintf(stderr, "qsa: %s: n_rot %lld must be even and <= head_dim %lld and idx_dim %lld\n", who,
-                     (long long) s.n_rot, (long long) s.head_dim, (long long) s.idx_dim);
+    if (s.n_rot <= 0 || s.n_rot % 2 != 0 || s.n_rot > s.head_dim) {
+        std::fprintf(stderr, "qsa: %s: n_rot %lld must be even and <= head_dim %lld\n", who,
+                     (long long) s.n_rot, (long long) s.head_dim);
         std::exit(1);
     }
-    if (s.idx_n_head > 32) {
-        std::fprintf(stderr, "qsa: %s: idx_n_head %lld > 32 (one warp per indexer head)\n", who,
-                     (long long) s.idx_n_head);
+    const bool is_indexer_op = (std::strcmp(who, "indexer_key_append") == 0 ||
+                                std::strcmp(who, "qsa_index") == 0 ||
+                                std::strcmp(who, "topk_512") == 0);
+    if (s.idx_n_head > 0) {
+        if (s.idx_dim <= 0 || s.idx_block < 2) {
+            std::fprintf(stderr, "qsa: %s: geometry is not set up\n", who);
+            std::exit(1);
+        }
+        if (s.n_rot > s.idx_dim) {
+            std::fprintf(stderr, "qsa: %s: n_rot %lld must be <= idx_dim %lld\n", who,
+                         (long long) s.n_rot, (long long) s.idx_dim);
+            std::exit(1);
+        }
+        if (s.idx_n_head > 32) {
+            std::fprintf(stderr, "qsa: %s: idx_n_head %lld > 32 (one warp per indexer head)\n", who,
+                         (long long) s.idx_n_head);
+            std::exit(1);
+        }
+    } else if (is_indexer_op) {
+        std::fprintf(stderr, "qsa: %s: indexer geometry is not set up\n", who);
         std::exit(1);
     }
 }
