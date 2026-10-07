@@ -82,9 +82,14 @@ struct GuildModel::Impl {
     int32_t* d_res = nullptr;
     std::unique_ptr<kernels::cpu::ExpertPool> pool;
     kernels::PleTable ple_table;
-    core::MtpDrafter mtp;
-    core::Verifier ver;
+    std::unique_ptr<core::MtpDrafter> mtp;
+    std::unique_ptr<core::Verifier> ver;
     Drive drive;
+
+    // Primary session state & prefill engine
+    core::SessionState ss;
+    void* sbuf = nullptr;
+    std::unique_ptr<prefill::Prefill> prefill;
 
     void* arena = nullptr;
     float* window_R = nullptr;
@@ -93,12 +98,21 @@ struct GuildModel::Impl {
     std::mutex generation_mutex;
 
     ~Impl() {
-        if (d_res) cudaFree(d_res);
-        if (arena) cudaFree(arena);
-        if (d_mrope) cudaFree(d_mrope);
-        if (window_R) cudaFree(window_R);
+        if (prefill) prefill.reset();
+        if (ver) ver.reset();
+        if (mtp) mtp.reset();
+        if (pool) pool.reset();
+        if (sbuf) { cudaFree(sbuf); sbuf = nullptr; }
+        if (d_res) { cudaFree(d_res); d_res = nullptr; }
+        if (arena) { cudaFree(arena); arena = nullptr; }
+        if (d_mrope) { cudaFree(d_mrope); d_mrope = nullptr; }
+        if (window_R) { cudaFree(window_R); window_R = nullptr; }
         core::doorbell_free(db);
-        if (main_stream) cudaStreamDestroy(main_stream);
+        if (main_stream) {
+            cudaStreamSynchronize(main_stream);
+            cudaStreamDestroy(main_stream);
+            main_stream = nullptr;
+        }
     }
 };
 

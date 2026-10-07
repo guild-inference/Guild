@@ -4,6 +4,8 @@
 #if defined(GUILD_ENABLE_CUDA) || defined(GUILD_ENABLE_HIP)
 
 #include "model_impl.hpp"
+#include "guild/artifact/gguf_reader.hpp"
+#include "guild/kernels/iq_kernels.hpp"
 
 #include <cuda_runtime.h>
 
@@ -82,25 +84,6 @@ std::unique_ptr<GuildModel> GuildModel::load(
     core::qsa_set_kv_resident(impl->config.kv_resident);
     core::layer_set_shared_early(true);
 
-    // Kernel settings (fast paths)
-    core::layer_set_fast_attn(true);
-    core::layer_set_publish_kernel(true);
-    core::layer_set_fused_gdn(true);
-    core::layer_set_fast_select(true);
-    core::layer_set_fused_gr(true);
-    kernels::gr_set_fp32_activations(false);
-    kernels::gr_set_native_mmvf(true);
-    core::layer_set_native_bf16(false);
-    kernels::ple_set_native_bf16(false);
-    kernels::shared_expert_set_native_bf16(false);
-    kernels::native_moe_combine_set_enabled(false);
-    kernels::native_gdn_set_enabled(false);
-    kernels::native_router_set_enabled(false);
-    kernels::native_qsa_set_enabled(false);
-    kernels::native_qsa_indexer_set_enabled(false);
-    kernels::native_rope_set_enabled(false);
-    kernels::ple_set_native_postops(false);
-
     // CPU expert pool
     impl->pool = std::make_unique<kernels::cpu::ExpertPool>(impl->config.pool_workers, true, true, kernels::cpu::PoolAffinity::All);
 
@@ -130,6 +113,41 @@ std::unique_ptr<GuildModel> GuildModel::load(
         shards = paths.additional_shards;
     }
 
+    // Expert layout from pack directory
+    if (!guild::kernels::cpu::expert_layout_load(paths.pack_dir, impl->g.n_layers, impl->g.n_expert, error_msg)) {
+        return nullptr;
+    }
+    const bool native_pack = guild::kernels::cpu::expert_layout().native;
+    if (native_pack) {
+        const auto& lay = guild::kernels::cpu::expert_layout();
+        for (int64_t l = 0; l < static_cast<int64_t>(lay.fmt.size()); ++l) {
+            const auto& f = lay.fmt[static_cast<size_t>(l)];
+            if (!guild::kernels::native_expert_supported(f.gu_type, f.d_type, f.n_embd, f.n_ff)) {
+                error_msg = "layer " + std::to_string(l) + "'s experts are not supported by native GPU kernels";
+                return nullptr;
+            }
+        }
+    }
+
+    // Kernel settings (fast paths)
+    core::layer_set_fast_attn(true);
+    core::layer_set_publish_kernel(true);
+    core::layer_set_fused_gdn(true);
+    core::layer_set_fast_select(true);
+    core::layer_set_fused_gr(true);
+    kernels::gr_set_fp32_activations(false);
+    kernels::gr_set_native_mmvf(true);
+    core::layer_set_native_bf16(native_pack || !shards.empty());
+    kernels::ple_set_native_bf16(native_pack || !shards.empty());
+    kernels::shared_expert_set_native_bf16(native_pack || !shards.empty());
+    kernels::native_moe_combine_set_enabled(native_pack || !shards.empty());
+    kernels::native_gdn_set_enabled(native_pack || !shards.empty());
+    kernels::native_router_set_enabled(native_pack || !shards.empty());
+    kernels::native_qsa_set_enabled(native_pack || !shards.empty());
+    kernels::native_qsa_indexer_set_enabled(native_pack || !shards.empty());
+    kernels::native_rope_set_enabled(native_pack || !shards.empty());
+    kernels::ple_set_native_postops(native_pack || !shards.empty());
+
     // Native token embeddings
     if (!shards.empty()) {
         if (!impl->native_embed.load(shards, impl->g.n_embd, 248320, error_msg)) {
@@ -140,11 +158,27 @@ std::unique_ptr<GuildModel> GuildModel::load(
 
     // Load weight table from pack directory
     std::set<std::string> skip;
-    skip.insert("output.weight");
-    skip.insert("token_embd.weight");
+    if (!shards.empty()) {
+        if (!guild::core::NativeDense::served_names(shards, true, skip, error_msg)) {
+            return nullptr;
+        }
+        skip.insert("output.weight");
+        if (!native_pack) {
+            skip.erase("blk.1.ple_key.weight");
+        }
+        if (native_pack && !guild::core::NativeDense::keep_unquantized_ple_key(paths.pack_dir, skip, error_msg)) {
+            return nullptr;
+        }
+        if (native_pack) {
+            skip.insert("token_embd.weight");
+        }
+    } else {
+        skip.insert("output.weight");
+        skip.insert("token_embd.weight");
+    }
 
     uint64_t pool_bytes = 0;
-    if (!core::WeightTable::pool_bytes(paths.pack_dir, pool_bytes, error_msg, &skip)) {
+    if (!core::WeightTable::pool_bytes(paths.pack_dir, pool_bytes, error_msg, skip.empty() ? nullptr : &skip)) {
         return nullptr;
     }
 
@@ -153,15 +187,23 @@ std::unique_ptr<GuildModel> GuildModel::load(
         return nullptr;
     }
 
-    if (!impl->wt.load(paths.pack_dir, impl->arena, pool_bytes, error_msg, &skip)) {
+    if (!impl->wt.load(paths.pack_dir, impl->arena, pool_bytes, error_msg, skip.empty() ? nullptr : &skip)) {
         return nullptr;
     }
 
     // Load native dense projections if available
     if (!shards.empty()) {
-        if (!impl->native_dense.load(shards, impl->wt, error_msg, false)) {
-            // Non-fatal, continue with pack weights
+        if (!impl->native_dense.load(shards, impl->wt, error_msg, true)) {
             error_msg.clear();
+        }
+    }
+
+    // Load native head if available
+    const guild::core::WeightRef* wo = impl->wt.find("output.weight");
+    int64_t n_vocab = wo ? wo->ne1 : 248320;
+    if (!shards.empty()) {
+        if (!impl->native_head.load(shards, impl->g.n_embd, n_vocab, error_msg)) {
+            return nullptr;
         }
     }
 
@@ -195,7 +237,7 @@ std::unique_ptr<GuildModel> GuildModel::load(
         cudaMemGetInfo(&free_b, &total_b);
         const int64_t blob = static_cast<int64_t>(kernels::cpu::expert_layout().max_blob);
         int64_t reserve = (static_cast<int64_t>(impl->config.vram_reserve_mib) << 20) + (100LL << 20);
-        slots = std::max<int64_t>(0, (static_cast<int64_t>(free_b) - reserve) / blob);
+        slots = blob > 0 ? std::max<int64_t>(0, (static_cast<int64_t>(free_b) - reserve) / blob) : 0;
         if (!profile.empty()) slots = std::min<int64_t>(slots, static_cast<int64_t>(profile.size()));
     }
     impl->config.expert_cache_slots = static_cast<int>(slots);
@@ -243,22 +285,22 @@ std::unique_ptr<GuildModel> GuildModel::load(
         }
     }
 
-    // Setup dummy session state to initialize Verifier & MTP
-    core::SessionState ss_temp;
-    void* sbuf_temp = nullptr;
+    // Session state initialization
     const uint64_t sbytes = core::session_bytes(impl->g, impl->config.max_context, impl->K);
-    if (cudaMalloc(&sbuf_temp, sbytes) != cudaSuccess ||
-        core::session_init(impl->g, impl->config.max_context, impl->K, sbuf_temp, ss_temp, 0, -1) == 0) {
-        error_msg = "failed to allocate initialization session buffer";
+    if (cudaMalloc(&impl->sbuf, sbytes) != cudaSuccess ||
+        core::session_init(impl->g, impl->config.max_context, impl->K, impl->sbuf, impl->ss, 0, -1) == 0) {
+        error_msg = "failed to allocate session buffer (" + std::to_string(sbytes >> 20) + " MiB)";
         return nullptr;
     }
+    core::session_zero(impl->ss, impl->g, nullptr, impl->main_stream);
+    cudaStreamSynchronize(impl->main_stream);
 
     // MTP Drafter
     bool use_mtp = !paths.mtp_dir.empty() && std::filesystem::exists(paths.mtp_dir);
     if (use_mtp) {
-        if (!impl->mtp.load(paths.mtp_dir, impl->g, ss_temp, impl->config.spec, error_msg)) {
+        impl->mtp = std::make_unique<core::MtpDrafter>();
+        if (!impl->mtp->load(paths.mtp_dir, impl->g, impl->ss, impl->config.spec, error_msg)) {
             error_msg = "failed to load MTP draft layer: " + error_msg;
-            cudaFree(sbuf_temp);
             return nullptr;
         }
     }
@@ -271,27 +313,48 @@ std::unique_ptr<GuildModel> GuildModel::load(
     vh.n_slots = slots;
     vh.blob = static_cast<int64_t>(kernels::cpu::expert_layout().max_blob);
 
-    if (!impl->ver.init(impl->wt, impl->g, ss_temp, vh, nullptr, impl->config.spec, error_msg)) {
+    impl->ver = std::make_unique<core::Verifier>();
+    if (!impl->ver->init(impl->wt, impl->g, impl->ss, vh,
+                        impl->native_head.loaded() ? &impl->native_head : nullptr,
+                        impl->config.spec, error_msg)) {
         error_msg = "Verifier::init failed: " + error_msg;
-        cudaFree(sbuf_temp);
         return nullptr;
     }
 
     if (use_mtp) {
-        if (!impl->mtp.bind(impl->wt, nullptr, impl->ver.final_R_all(), error_msg)) {
+        if (!impl->mtp->bind(impl->wt,
+                            impl->native_head.loaded() ? &impl->native_head : nullptr,
+                            impl->ver->final_R_all(), error_msg)) {
             error_msg = "MTP bind failed: " + error_msg;
-            cudaFree(sbuf_temp);
             return nullptr;
         }
     }
 
-    cudaFree(sbuf_temp);
+    // Prefill initialization
+    impl->prefill = std::make_unique<prefill::Prefill>();
+    std::string pf_err;
+    if (!impl->prefill->init(impl->wt, impl->g, impl->ss, impl->srcp,
+                            impl->xcache.slots() > 0 ? &impl->xcache : nullptr,
+                            impl->host_res.empty() ? nullptr : impl->host_res.data(),
+                            impl->config.prefill_chunk, impl->main_stream, pf_err)) {
+        error_msg = "Prefill::init failed: " + pf_err;
+        return nullptr;
+    }
 
     // Setup Drive dispatch
     impl->drive.d.pool = impl->pool.get();
     impl->drive.d.src = impl->srcp;
+    impl->drive.d.n_expert = impl->g.n_expert;
+    impl->drive.d.jobs.resize(static_cast<size_t>(impl->K));
+    impl->drive.d.split_rows = true;
     impl->drive.d.cache = slots > 0 ? &impl->xcache : nullptr;
+    impl->drive.d.cache_base = slots > 0 ? static_cast<const uint8_t*>(impl->xcache.device_slot(0)) : nullptr;
+    impl->drive.d.cache_blob = static_cast<int64_t>(kernels::cpu::expert_layout().max_blob);
+    impl->drive.d.cache_slot_off = slots > 0 ? impl->xcache.slot_offsets() : nullptr;
     impl->drive.d.host_res = impl->host_res.data();
+    impl->ver->set_pcie_mode(2);
+    impl->drive.d.plan = impl->ver->plan_sink();
+    impl->drive.d.pcie_num = static_cast<int>((native_pack ? 0.55 : 0.2) * 256.0 + 0.5);
 
     // Load tokenizer
     if (!paths.tokenizer_dir.empty() && std::filesystem::exists(paths.tokenizer_dir)) {

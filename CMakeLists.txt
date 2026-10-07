@@ -1030,6 +1030,10 @@ if(GUILD_BUILD_TESTS)
   add_executable(models_test tests/models/models_test.cpp)
   target_link_libraries(models_test PRIVATE guild_models guild_server)
   add_test(NAME models_test COMMAND models_test)
+
+  add_executable(parity_test tests/server/parity_test.cpp)
+  target_link_libraries(parity_test PRIVATE guild_server guild_runtime guild_models guild_memory guild_model guild_cli)
+  add_test(NAME parity_test COMMAND parity_test)
 endif()
 
 # ---- plan v0.3 P6: the i-quant models' CPU experts (IQ2_XS / IQ3_XXS files) ----
