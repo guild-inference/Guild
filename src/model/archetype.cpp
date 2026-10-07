@@ -102,26 +102,31 @@ public:
         if (gguf.get("qwen2moe.expert_count") != nullptr || get_arch_tag(gguf) == "qwen2moe") p = "qwen2moe";
         out.arch_name = p;
         out.file_path = gguf.path();
-        out.name = get_meta_string(gguf, "general.name", "Qwen3.5-MoE");
+        out.name = get_meta_string(gguf, "general.name", "Ornith-1.5-35B");
 
         out.attn.n_embd = get_meta_i64(gguf, p + ".embedding_length", 2048);
-        out.attn.n_layers = get_meta_i64(gguf, p + ".block_count", 28);
+        int64_t n_all = get_meta_i64(gguf, p + ".block_count", 40);
+        int64_t nextn = get_meta_i64(gguf, p + ".nextn_predict_layers", 0);
+        out.attn.n_layers = n_all - nextn;
         out.attn.n_heads = get_meta_i64(gguf, p + ".attention.head_count", 16);
-        out.attn.n_kv_heads = get_meta_i64(gguf, p + ".attention.head_count_kv", 4);
-        out.attn.head_dim = get_meta_i64(gguf, p + ".attention.key_length", 128);
-        out.attn.context_length = get_meta_i64(gguf, p + ".context_length", 32768);
-        out.attn.vocab_size = get_meta_i64(gguf, p + ".vocab_size", 151936);
+        out.attn.n_kv_heads = get_meta_i64(gguf, p + ".attention.head_count_kv", 2);
+        out.attn.head_dim = get_meta_i64(gguf, p + ".attention.key_length", 256);
+        out.attn.context_length = get_meta_i64(gguf, p + ".context_length", 262144);
+        out.attn.vocab_size = get_meta_i64(gguf, p + ".vocab_size", 248320);
 
-        out.attn.pattern = AttentionPattern::Standard;
-        out.attn.full_attn_interval = 1;
+        out.attn.full_attn_interval = get_meta_i64(gguf, p + ".full_attention_interval", 4);
+        out.attn.pattern = (out.attn.full_attn_interval > 1) ? AttentionPattern::HybridGDN : AttentionPattern::Standard;
 
-        out.moe.n_routed_experts = get_meta_i64(gguf, p + ".expert_count", 64);
+        out.moe.n_routed_experts = get_meta_i64(gguf, p + ".expert_count", 256);
         out.moe.k_active_experts = get_meta_i64(gguf, p + ".expert_used_count", 8);
-        out.moe.expert_dim_ff = get_meta_i64(gguf, p + ".feed_forward_length", 1408);
-        out.moe.n_shared_experts = get_meta_i64(gguf, p + ".expert_shared_count", 0);
+        out.moe.expert_dim_ff = get_meta_i64(gguf, p + ".expert_feed_forward_length",
+                                            get_meta_i64(gguf, p + ".feed_forward_length", 512));
+        out.moe.shared_dim_ff = get_meta_i64(gguf, p + ".expert_shared_feed_forward_length", 512);
+        out.moe.n_shared_experts = (out.moe.shared_dim_ff > 0 || gguf.get(p + ".expert_shared_count") != nullptr) ? 1 : 0;
+        out.moe.expert_blob_bytes = 1907936;
 
         out.rope.type = get_meta_string(gguf, p + ".rope.scaling.type", "none");
-        out.rope.freq_base = get_meta_double(gguf, p + ".rope.freq_base", 1000000.0);
+        out.rope.freq_base = get_meta_double(gguf, p + ".rope.freq_base", 10000000.0);
         out.rope.factor = get_meta_double(gguf, p + ".rope.scaling.factor", 1.0);
         return true;
     }

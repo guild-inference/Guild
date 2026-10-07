@@ -88,26 +88,37 @@ void ModelRegistry::init_builtins() {
         m.architecture = "qwen35moe";
         m.quantization = "Q4_K_M";
         m.source = "ukisai/Ornith-1.5-35B-GGUF";
-        m.description = "Ornith 1.5 35B MoE (~4-bit Q4_K_M, 64x8 experts)";
-        m.context_length = 32768;
+        m.description = "Ornith 1.5 35B MoE (Q4_K_M, 256 routed experts, 8 active)";
+        m.context_length = 262144;
 
-        m.n_layers = 32;
+        m.n_layers = 40;
         m.n_embd = 2048;
         m.n_heads = 16;
         m.n_kv_heads = 2;
-        m.head_dim = 128;
-        m.vocab_size = 151936;
-        m.n_routed_experts = 64;
+        m.head_dim = 256;
+        m.vocab_size = 248320;
+        m.n_routed_experts = 256;
         m.k_active_experts = 8;
         m.expert_dim_ff = 512;
-        m.full_attn_interval = 1;
+        m.full_attn_interval = 4;
+        m.n_shared_experts = 1;
+        m.shared_dim_ff = 512;
+        m.expert_blob_bytes = 1907936;
 
         ModelFile s1;
         s1.name = "Ornith-1.5-35B-Q4_K_M.gguf";
         s1.size_bytes = 21713463040;
         s1.role = "primary";
         s1.url = "https://huggingface.co/ukisai/Ornith-1.5-35B-GGUF/resolve/main/Ornith-1.5-35B-Q4_K_M.gguf";
+        if (std::filesystem::exists("/home/ubuntu/models/ornith-1.5-35b/Ornith-1.5-35B-Q4_K_M.gguf")) {
+            s1.local_path = "/home/ubuntu/models/ornith-1.5-35b/Ornith-1.5-35B-Q4_K_M.gguf";
+        }
         m.files.push_back(s1);
+
+        if (std::filesystem::exists("/mnt/models-ssd/Strata-data/packs/ornith-1.5-35b")) {
+            m.metadata["pack_dir"] = "/mnt/models-ssd/Strata-data/packs/ornith-1.5-35b";
+            m.metadata["tokenizer_dir"] = "/mnt/models-ssd/Strata-data/packs/ornith-1.5-35b/tokenizer";
+        }
 
         m.expected_size_bytes = m.total_size_bytes();
         builtins_.push_back(std::move(m));

@@ -581,24 +581,40 @@ struct Qwen4ExpGuard {
 inline std::string check_architecture(const GgufFile& g, const Qwen4ExpGuard& want = {}) {
     const MetaValue* arch = g.get("general.architecture");
     if (!arch) return "missing general.architecture";
-    if (arch->s != "qwen4exp") return "architecture is '" + arch->s + "', this engine requires 'qwen4exp'";
-    struct Req {
-        const char* key;
-        uint64_t want;
-    };
-    const Req reqs[] = {
-        {"qwen4exp.block_count", want.block_count},
-        {"qwen4exp.embedding_length", want.hidden},
-        {"qwen4exp.expert_count", want.experts},
-        {"qwen4exp.expert_used_count", want.experts_used},
-        {"qwen4exp.attention.head_count", want.head_count},
-        {"qwen4exp.attention.head_count_kv", want.head_count_kv},
-    };
-    for (const auto& r : reqs) {
-        const MetaValue* v = g.get(r.key);
-        if (!v) return std::string("missing ") + r.key;
-        if (r.want && v->u != r.want)
-            return std::string(r.key) + " = " + std::to_string(v->u) + ", expected " + std::to_string(r.want);
+    if (arch->s != "qwen4exp" && arch->s != "qwen35moe")
+        return "architecture is '" + arch->s + "', this engine supports 'qwen4exp' and 'qwen35moe'";
+
+    if (arch->s == "qwen4exp") {
+        struct Req {
+            const char* key;
+            uint64_t want;
+        };
+        const Req reqs[] = {
+            {"qwen4exp.block_count", want.block_count},
+            {"qwen4exp.embedding_length", want.hidden},
+            {"qwen4exp.expert_count", want.experts},
+            {"qwen4exp.expert_used_count", want.experts_used},
+            {"qwen4exp.attention.head_count", want.head_count},
+            {"qwen4exp.attention.head_count_kv", want.head_count_kv},
+        };
+        for (const auto& r : reqs) {
+            const MetaValue* v = g.get(r.key);
+            if (!v) return std::string("missing ") + r.key;
+            if (r.want && v->u != r.want)
+                return std::string(r.key) + " = " + std::to_string(v->u) + ", expected " + std::to_string(r.want);
+        }
+    } else if (arch->s == "qwen35moe") {
+        const char* reqs[] = {
+            "qwen35moe.block_count",
+            "qwen35moe.embedding_length",
+            "qwen35moe.expert_count",
+            "qwen35moe.expert_used_count",
+            "qwen35moe.attention.head_count",
+            "qwen35moe.attention.head_count_kv"
+        };
+        for (const char* k : reqs) {
+            if (!g.get(k)) return std::string("missing ") + k;
+        }
     }
     return {}; // empty == ok
 }
