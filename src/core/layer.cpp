@@ -321,7 +321,7 @@ if (!gemv_quantized(*w_gate, p_gate, f_gate, b.x_q8_0, b.x_q8k, b.z, g.n_embd, g
                     w_qkv->native_data != nullptr && w_gate->native_data != nullptr)) return false;
 try {
     if (fused_gdn) fused_gdn_step_norm(b.state, b.h, b.h + qk, b.h + 2 * qk, b.gate, b.beta, b.z, ssm_norm, RMS_EPS, b.y,
-                                       (int) g.ssm_k_heads, (int) g.ssm_v_heads, stream);
+                                       (int) g.ssm_k_heads, (int) g.ssm_v_heads, stream, g.gdn_gate_silu);
     else if (native_gdn_enabled()) native_gdn_out_norm(b.o, b.z, ssm_norm, b.y, g.ssm_v_heads, g.ssm_state_size, RMS_EPS, stream);
     else gdn_out_norm(b.o, b.z, ssm_norm, b.y, g.ssm_v_heads, g.ssm_state_size, RMS_EPS, stream);
 } catch (const std::exception& error) { err = v.name("gdn_out_norm") + ": " + error.what(); return false; }
@@ -474,14 +474,14 @@ bool moe_finish(const WeightTable& tables, const ModelGeometry& g, int64_t layer
     if (!moe_shared(tables, g, layer, b, x, stream, err)) return false;
     return moe_combine_parts(g, layer, k, b, parts, out, stream, err);
 }
-bool layer_verify_compatible(std::string& why) {
+bool layer_verify_compatible(std::string& why, const ModelGeometry* g) {
     // Plan v0.3 P6: the verify window reproduces exactly this configuration's per-token arithmetic.
     if (!native_bf16_projections) why = "the native BF16 projections are off";
-    else if (!g_fused_gr) why = "the fused hyper-connection read is off";
-    else if (!g_fused_gdn || !guild::kernels::native_gdn_enabled()) why = "the fused native GDN kernels are off";
-    else if (!g_fast_attn || native_flash_attn_short) why = "the split-K decode attention is off";
-    else if (!g_fast_select) why = "the block top-k selection is off";
-    else if (!guild::kernels::native_qsa_indexer_enabled()) why = "the native QSA indexer is off";
+    else if ((!g || g->hc > 1) && !g_fused_gr) why = "the fused hyper-connection read is off";
+    else if ((!g || g->n_gdn_layers() > 0) && (!g_fused_gdn || !guild::kernels::native_gdn_enabled())) why = "the fused native GDN kernels are off";
+    else if ((!g || g->n_qsa_layers() > 0) && (!g_fast_attn || native_flash_attn_short)) why = "the split-K decode attention is off";
+    else if ((!g || g->idx_q_heads > 0) && !g_fast_select) why = "the block top-k selection is off";
+    else if ((!g || g->idx_q_heads > 0) && !guild::kernels::native_qsa_indexer_enabled()) why = "the native QSA indexer is off";
     else return true;
     return false;
 }
@@ -814,7 +814,35 @@ n += (uint64_t) q8k_bytes(g.n_head * g.head_dim);
 n += guild::kernels::qsa_decode_attn_scratch_floats(cap, s) * 4 + 16;
 // attn_scratch
 return align_up16(n) + 256;}
-uint64_t qsa_buffers_init(const ModelGeometry& g, int64_t max_cells, void* base, QsaBuffers& b) {    const QsaShapes s = qsa_shapes(g);    const int64_t cap = guild::kernels::qsa_selection_width(guild::kernels::kTopkMaxCells, s);    Cursor c{(uint8_t*) base};    b.x_q8k = c.take_bytes(q8k_bytes(g.n_embd));    b.x_q8_0 = c.take_bytes((uint64_t) (g.n_embd / 32) * 34);    b.x_bf16 = c.take<uint16_t>((uint64_t) g.n_embd);    b.q_full = c.take<float>((uint64_t) g.n_head * 2 * g.head_dim);    b.qcur = c.take<float>((uint64_t) g.n_head * g.head_dim);    b.kcur = c.take<float>((uint64_t) g.n_head_kv * g.head_dim);    b.vcur = c.take<float>((uint64_t) g.n_head_kv * g.head_dim);    b.idx_raw = c.take<float>((uint64_t) g.idx_key_dim);    b.q_idx = c.take<float>((uint64_t) g.idx_q_heads * g.idx_key_dim);    b.cell_scores = c.take<float>((uint64_t) max_cells);    b.ids = c.take<int32_t>((uint64_t) cap);    b.k_scratch = c.take<uint16_t>((uint64_t) cap * g.n_head_kv * g.head_dim);    b.v_scratch = c.take<uint16_t>((uint64_t) cap * g.n_head_kv * g.head_dim);    b.attn = c.take<float>((uint64_t) g.n_head * g.head_dim);    b.attn16 = c.take<uint16_t>((uint64_t) g.n_head * g.head_dim);    b.attn32 = c.take<float>((uint64_t) g.n_head * g.head_dim);    b.attn_q8k = c.take_bytes(q8k_bytes(g.n_head * g.head_dim));    b.attn_scratch = c.take<float>(guild::kernels::qsa_decode_attn_scratch_floats(cap, s));    return c.used;}
+uint64_t qsa_buffers_init(const ModelGeometry& g, int64_t max_cells, void* base, QsaBuffers& b) {
+    const QsaShapes s = qsa_shapes(g);
+    const int64_t cap = guild::kernels::qsa_selection_width(guild::kernels::kTopkMaxCells, s);
+    Cursor c{(uint8_t*) base};
+    b.x_q8k = c.take_bytes(q8k_bytes(g.n_embd));
+    b.x_q8_0 = c.take_bytes((uint64_t) (g.n_embd / 32) * 34);
+    b.x_bf16 = c.take<uint16_t>((uint64_t) g.n_embd);
+    b.q_full = c.take<float>((uint64_t) g.n_head * 2 * g.head_dim);
+    b.qcur = c.take<float>((uint64_t) g.n_head * g.head_dim);
+    b.kcur = c.take<float>((uint64_t) g.n_head_kv * g.head_dim);
+    b.vcur = c.take<float>((uint64_t) g.n_head_kv * g.head_dim);
+    b.idx_raw = c.take<float>((uint64_t) g.idx_key_dim);
+    b.q_idx = c.take<float>((uint64_t) g.idx_q_heads * g.idx_key_dim);
+    b.cell_scores = c.take<float>((uint64_t) max_cells);
+    b.ids = c.take<int32_t>((uint64_t) cap);
+    b.k_scratch = c.take<uint16_t>((uint64_t) cap * g.n_head_kv * g.head_dim);
+    b.v_scratch = c.take<uint16_t>((uint64_t) cap * g.n_head_kv * g.head_dim);
+    b.attn = c.take<float>((uint64_t) g.n_head * g.head_dim);
+    b.attn16 = c.take<uint16_t>((uint64_t) g.n_head * g.head_dim);
+    b.attn32 = c.take<float>((uint64_t) g.n_head * g.head_dim);
+    b.attn_q8k = c.take_bytes(q8k_bytes(g.n_head * g.head_dim));
+    b.attn_scratch = c.take<float>(guild::kernels::qsa_decode_attn_scratch_floats(cap, s));
+    if (g.idx_q_heads == 0 && cap > 0) {
+        std::vector<int32_t> ident(cap);
+        for (int64_t i = 0; i < cap; ++i) ident[i] = (int32_t) i;
+        cudaMemcpy(b.ids, ident.data(), (size_t) cap * sizeof(int32_t), cudaMemcpyHostToDevice);
+    }
+    return c.used;
+}
 // ================================ PER-STAGE TIMING, DEBUG ONLY ================================
 //
 // **THE ENGINE SPENDS 1.047 ms PER LAYER WITH THE EXPERTS OFF, AND EVERY COST MODEL IN `bench/` PREDICTS LESS
@@ -931,10 +959,38 @@ const auto normalize_rotate = [&](float* data, const WeightRef* norm, int rows, 
 };
 // ---- resolve every tensor by name, and REFUSE rather than reading a null.  `check_layer` has already
 // asserted the shapes at load time; a missing name here is a wiring mistake.
-struct Req { const char* suf; };    const WeightRef* w_idxk = v.get("indexer.k_proj.weight");    const WeightRef* w_attnq = v.get("attn_q.weight");    const WeightRef* w_attnk = v.get("attn_k.weight");    const WeightRef* w_attnv = v.get("attn_v.weight");    const WeightRef* w_attno = v.get("attn_output.weight");    const WeightRef* w_idxq = v.get("indexer.q_proj.weight");    const WeightRef* w_qn = v.get("attn_q_norm.weight");    const WeightRef* w_kn = v.get("attn_k_norm.weight");    const WeightRef* w_iqn = v.get("indexer.q_norm.weight");    const WeightRef* w_ikn = v.get("indexer.k_norm.weight");    const char* missing = !w_idxk ? "indexer.k_proj.weight" : !w_attnq ? "attn_q.weight"                          : !w_attnk ? "attn_k.weight" : !w_attnv ? "attn_v.weight"                          : !w_attno ? "attn_output.weight" : !w_idxq ? "indexer.q_proj.weight"                          : !w_qn ? "attn_q_norm.weight" : !w_kn ? "attn_k_norm.weight"                          : !w_iqn ? "indexer.q_norm.weight" : !w_ikn ? "indexer.k_norm.weight" : nullptr;    if (missing) { err = v.name(missing) + " is missing"; return false; }    if (pos < 0 || pos >= st.max_cells) {        err = "qsa_layer: pos " + std::to_string(pos) + " is outside the state's 0.." +              std::to_string(st.max_cells - 1);        return false;    }
-// THE TWO BF16 PROJECTIONS: the arena holds them re-rounded to 2 B/elem, which is what `bf16_gemv` wants.
-// Reading one as f32 would walk 2x its length inside the arena without faulting.
-if (w_idxk->kind != WeightKind::Bf16InF32 || w_idxq->kind != WeightKind::Bf16InF32) {        err = v.name("indexer.*_proj.weight") + " must be engine form 1 (bf16); they are " +              std::to_string((int) w_idxk->kind) + " and " + std::to_string((int) w_idxq->kind);        return false;    }
+struct Req { const char* suf; };
+    const WeightRef* w_idxk = g.idx_q_heads > 0 ? v.get("indexer.k_proj.weight") : nullptr;
+    const WeightRef* w_attnq = v.get("attn_q.weight");
+    const WeightRef* w_attnk = v.get("attn_k.weight");
+    const WeightRef* w_attnv = v.get("attn_v.weight");
+    const WeightRef* w_attno = v.get("attn_output.weight");
+    const WeightRef* w_idxq = g.idx_q_heads > 0 ? v.get("indexer.q_proj.weight") : nullptr;
+    const WeightRef* w_qn = v.get("attn_q_norm.weight");
+    const WeightRef* w_kn = v.get("attn_k_norm.weight");
+    const WeightRef* w_iqn = g.idx_q_heads > 0 ? v.get("indexer.q_norm.weight") : nullptr;
+    const WeightRef* w_ikn = g.idx_q_heads > 0 ? v.get("indexer.k_norm.weight") : nullptr;
+    const char* missing = !w_attnq ? "attn_q.weight"
+                        : !w_attnk ? "attn_k.weight"
+                        : !w_attnv ? "attn_v.weight"
+                        : !w_attno ? "attn_output.weight"
+                        : !w_qn ? "attn_q_norm.weight"
+                        : !w_kn ? "attn_k_norm.weight"
+                        : (g.idx_q_heads > 0 && !w_idxk) ? "indexer.k_proj.weight"
+                        : (g.idx_q_heads > 0 && !w_idxq) ? "indexer.q_proj.weight"
+                        : (g.idx_q_heads > 0 && !w_iqn) ? "indexer.q_norm.weight"
+                        : (g.idx_q_heads > 0 && !w_ikn) ? "indexer.k_norm.weight" : nullptr;
+    if (missing) { err = v.name(missing) + " is missing"; return false; }
+    if (pos < 0 || pos >= st.max_cells) {
+        err = "qsa_layer: pos " + std::to_string(pos) + " is outside the state's 0.." +
+              std::to_string(st.max_cells - 1);
+        return false;
+    }
+    if (g.idx_q_heads > 0 && (w_idxk->kind != WeightKind::Bf16InF32 || w_idxq->kind != WeightKind::Bf16InF32)) {
+        err = v.name("indexer.*_proj.weight") + " must be engine form 1 (bf16); they are " +
+              std::to_string((int) w_idxk->kind) + " and " + std::to_string((int) w_idxq->kind);
+        return false;
+    }
 // ---- 1. the three activation formats, once each
 if (!w_attnk->native_data || !w_attnv->native_data || !w_attnq->native_data) {
         quantize_q8_K(x, b.x_q8k, g.n_embd, stream);
@@ -958,7 +1014,9 @@ if (!w_attnk->native_data || !w_attnv->native_data || !w_attnq->native_data) {
         } else
         if (cudaMemcpyAsync(st.step, st.host_step, qsa_step_bytes(), cudaMemcpyHostToDevice,                            (cudaStream_t) stream) != cudaSuccess ||            cudaMemcpyAsync(st.pos_dev, st.host_pos, (size_t) g.n_head * 4, cudaMemcpyHostToDevice,                            (cudaStream_t) stream) != cudaSuccess) {            err = "qsa_layer: the step-state upload failed";            return false;        }    }
 // ---- 3. the indexer's RAW key: appended before any norm, pooled later once per block
-project_bf16(x, b.x_bf16, (const uint16_t*) w_idxk->data, b.idx_raw, g.n_embd, g.idx_key_dim, false, stream);
+if (g.idx_q_heads > 0) {
+    project_bf16(x, b.x_bf16, (const uint16_t*) w_idxk->data, b.idx_raw, g.n_embd, g.idx_key_dim, false, stream);
+}
 // ---- 4. K and V, in Q8_K, then norm and rotate K only
 SForm f_k, f_v, f_o, f_q;    if (!sform_of(*w_attnk, f_k, v.name("attn_k.weight"), err)) return false;    if (!sform_of(*w_attnv, f_v, v.name("attn_v.weight"), err)) return false;    if (!sform_of(*w_attno, f_o, v.name("attn_output.weight"), err)) return false;    if (!sform_of(*w_attnq, f_q, v.name("attn_q.weight"), err)) return false;    Planes p_k, p_v, p_o, p_q;    if (!plane_ptrs(*w_attnk, v.name("attn_k.weight"), p_k, err)) return false;    if (!plane_ptrs(*w_attnv, v.name("attn_v.weight"), p_v, err)) return false;    if (!plane_ptrs(*w_attno, v.name("attn_output.weight"), p_o, err)) return false;    if (!plane_ptrs(*w_attnq, v.name("attn_q.weight"), p_q, err)) return false;
 // k and v, with the activation THIS layer's tensors ask for.  Both are K-quants in every QSA layer of this
@@ -983,13 +1041,16 @@ if (st.kv_rot) {   // rotated K and V (kv_q4.hpp): Q4_0, and INT8 with GUILD_KV_
 }
 if (st.kv_q4) {
     guild::kernels::kv_append_q4_step(st.k_q4, st.v_q4, st.page_table, st.step, b.kcur, b.vcur, s, stream, &st.host);
-} else if (st.kv_int8) kv_append_q8_step(st.k_q, st.v_q, st.k_scale, st.v_scale, st.page_table, st.step, b.kcur, b.vcur, s, stream, &st.host);    else kv_append_step(st.k_pool, st.v_pool, st.page_table, st.step, b.kcur, b.vcur, s, stream, &st.host); } /* not K8V4 */    {        const uint64_t nvk = (uint64_t) g.n_head_kv * g.head_dim;        const uint64_t base = (uint64_t) 2 * g.n_embd + 2 * g.hc + (uint64_t) g.n_head * g.head_dim + 2 * nvk + 8;        if (!st.kv_int8 && !st.kv_hybrid) dump_slot(dump, g, layer, (const float*) st.k_pool, base, nvk / 2, stream);        if (!st.kv_int8 && !st.kv_hybrid) dump_slot(dump, g, layer, (const float*) st.v_pool, base + nvk / 2, nvk / 2, stream);        dump_slot(dump, g, layer, b.vcur, base + nvk, nvk, stream);        dump_slot(dump, g, layer, b.kcur, base + 2 * nvk, nvk, stream);    }    {        const QsaIndexerBuffers ib{st.idx_tail, st.idx_dead, st.idx_pooled, st.idx_block_pos};        if (native_qsa_indexer_enabled()) {
-    try {
-        native_qsa_indexer_append(b.idx_raw, st.step + kStepPos, pos_base,
-            (const float*) w_ikn->data, RMS_EPS, ib, s, st.max_cells, rope_scaling(), stream);
-    } catch (const std::exception& error) { err = v.name("native_indexer") + ": " + error.what(); return false; }
-} else indexer_key_append(b.idx_raw, st.pos_dev, pos_base, (const float*) w_ikn->data, RMS_EPS, ib, s,
-                          st.cos_tab, st.sin_tab, stream);    }
+} else if (st.kv_int8) kv_append_q8_step(st.k_q, st.v_q, st.k_scale, st.v_scale, st.page_table, st.step, b.kcur, b.vcur, s, stream, &st.host);    else kv_append_step(st.k_pool, st.v_pool, st.page_table, st.step, b.kcur, b.vcur, s, stream, &st.host); } /* not K8V4 */    {        const uint64_t nvk = (uint64_t) g.n_head_kv * g.head_dim;        const uint64_t base = (uint64_t) 2 * g.n_embd + 2 * g.hc + (uint64_t) g.n_head * g.head_dim + 2 * nvk + 8;        if (!st.kv_int8 && !st.kv_hybrid) dump_slot(dump, g, layer, (const float*) st.k_pool, base, nvk / 2, stream);        if (!st.kv_int8 && !st.kv_hybrid) dump_slot(dump, g, layer, (const float*) st.v_pool, base + nvk / 2, nvk / 2, stream);        dump_slot(dump, g, layer, b.vcur, base + nvk, nvk, stream);        dump_slot(dump, g, layer, b.kcur, base + 2 * nvk, nvk, stream);    }    if (g.idx_q_heads > 0) {
+        const QsaIndexerBuffers ib{st.idx_tail, st.idx_dead, st.idx_pooled, st.idx_block_pos};
+        if (native_qsa_indexer_enabled()) {
+            try {
+                native_qsa_indexer_append(b.idx_raw, st.step + kStepPos, pos_base,
+                    (const float*) w_ikn->data, RMS_EPS, ib, s, st.max_cells, rope_scaling(), stream);
+            } catch (const std::exception& error) { err = v.name("native_indexer") + ": " + error.what(); return false; }
+        } else indexer_key_append(b.idx_raw, st.pos_dev, pos_base, (const float*) w_ikn->data, RMS_EPS, ib, s,
+                                  st.cos_tab, st.sin_tab, stream);
+    }
 // ---- 6. the query projection, and the HALF-SPLIT into q and gate.
 //
 // **`attn_q` IS *NOT* ALWAYS Q2_0.**  It is Q2_0 on TWO of the twelve QSA layers, Q3_K on six and IQ4_XS on
@@ -1002,21 +1063,26 @@ if (!gemv_quantized(*w_attnq, p_q, f_q, b.x_q8_0, b.x_q8k, b.q_full, g.n_embd, g
 // case A) and needs no kernel.
 if (cudaMemcpy2DAsync(b.qcur, (size_t) g.head_dim * 4, b.q_full, (size_t) g.head_dim * 2 * 4,                          (size_t) g.head_dim * 4, (size_t) g.n_head, cudaMemcpyDeviceToDevice,                          (cudaStream_t) stream) != cudaSuccess) {        err = "qsa_layer: the q/gate split failed";        return false;    }    if (!normalize_rotate(b.qcur, w_qn, (int) g.n_head, (int) g.head_dim)) return false;
 // ---- 7. the indexer's query: BF16, then norm and rotate
-project_bf16(x, b.x_bf16, (const uint16_t*) w_idxq->data, b.q_idx, g.n_embd, g.idx_q_heads * g.idx_key_dim, false, stream);
-if (!normalize_rotate(b.q_idx, w_iqn, (int) g.idx_q_heads, (int) g.idx_key_dim)) return false;
+if (g.idx_q_heads > 0) {
+    project_bf16(x, b.x_bf16, (const uint16_t*) w_idxq->data, b.q_idx, g.n_embd, g.idx_q_heads * g.idx_key_dim, false, stream);
+    if (!normalize_rotate(b.q_idx, w_iqn, (int) g.idx_q_heads, (int) g.idx_key_dim)) return false;
+}
 // ---- 8. score, select, gather, attend.  `max_blocks` and `cap` are CAPACITIES from the state, not this
 // token's counts: a grid or a shared-memory size that follows the sequence length is baked into a captured
-// graph, and the kernels guard for the surplus.    const
-int64_t max_blocks = (st.max_cells / s.idx_block) + 2;
+// graph, and the kernels guard for the surplus.
+const int64_t max_blocks = (st.max_cells / s.idx_block) + 2;
+if (g.idx_q_heads > 0) {
     if (g_fast_select) {
         // Plan v0.3 P7: block-level FP32 scores and a radix selection over blocks (qsa_select.hpp).
         qsa_block_scores(st.idx_pooled, st.idx_dead, b.q_idx, st.step, 1, max_blocks, s, b.cell_scores, stream);
         qsa_block_topk(b.cell_scores, st.step, 1, max_blocks, cap, s, b.ids, stream);
     } else {
-    qsa_index_step(st.idx_pooled, b.q_idx, nullptr, s, st.step, max_blocks, b.cell_scores, stream);    topk_512_step(b.cell_scores, s, cap, st.step, b.ids, stream);
+        qsa_index_step(st.idx_pooled, b.q_idx, nullptr, s, st.step, max_blocks, b.cell_scores, stream);
+        topk_512_step(b.cell_scores, s, cap, st.step, b.ids, stream);
     }
-    // KV streaming: every block the selection names is made resident before anything reads it
-    qsa_kv_resolve(st, g, b.ids, st.step, 1, cap, stream);
+}
+// KV streaming: every block the selection names is made resident before anything reads it
+qsa_kv_resolve(st, g, b.ids, st.step, 1, cap, stream);
     if (st.kv_rot) guild::kernels::fwht256_inplace_cuda(b.qcur, g.n_head, stream);   // <Hq, Hk> = <q, k>
     if (g_fast_attn && !native_flash_attn_short && dump == nullptr) {
         const guild::kernels::QsaAttnPools pools = qsa_attn_pools(st);
@@ -1130,6 +1196,25 @@ bool embed_row(const WeightTable& tables, const ModelGeometry& g, int64_t token,
 }
 bool lm_head_mix(const WeightTable& tables, const ModelGeometry& g, const BlockBuffers& bb,
                  void* stream, std::string& err) {
+    if (g.hc == 1) {
+        const WeightRef* wn = tables.find("output_norm.weight");
+        if (!wn) {
+            err = "lm_head: output_norm.weight is missing";
+            return false;
+        }
+        if (guild::kernels::native_qsa_enabled()) {
+            guild::kernels::native_qsa_rms_norm_weighted(bb.R, (const float*) wn->data, bb.mixed, g.n_embd, 1, RMS_EPS, stream);
+        } else {
+            if (bb.mixed != bb.R) {
+                if (cudaMemcpyAsync(bb.mixed, bb.R, (size_t) g.n_embd * 4, cudaMemcpyDeviceToDevice, (cudaStream_t) stream) != cudaSuccess) {
+                    err = "lm_head: residual copy failed";
+                    return false;
+                }
+            }
+            guild::kernels::rms_norm_weighted(bb.mixed, (const float*) wn->data, 1, (int) g.n_embd, RMS_EPS, stream);
+        }
+        return true;
+    }
     const WeightRef* wn = tables.find("output_hc_norm.weight");
     const WeightRef* wd = tables.find("output_hc_down.weight");
     const WeightRef* wu = tables.find("output_hc_up.weight");
@@ -1271,10 +1356,43 @@ bool block_layer_pre(const WeightTable& tables, const ModelGeometry& g, int64_t 
     const bool qsa = is_qsa_layer(g, layer);    const LayerView v(tables, layer);    const guild::kernels::GrShapes gs{g.n_embd, g.hc, g.hc_lr};
 // ---- the two halves' GR tensors.  Both halves have the same four names with a different prefix, and the
 // prefix is the ONLY thing that distinguishes them - so it is built rather than written twice.
-const char* pre[2] = {"hc_attn_", "hc_ffn_"};    const WeightRef* w_norm[2];    const WeightRef* w_down[2];    const WeightRef* w_up[2];    const WeightRef* w_inject[2];    for (int h = 0; h < 2; ++h) {        const std::string a = std::string(pre[h]) + "norm.weight";        const std::string d = std::string(pre[h]) + "down.weight";        const std::string u = std::string(pre[h]) + "up.weight";        const std::string i = std::string(pre[h]) + "inject.weight";        w_norm[h] = v.get(a.c_str());        w_down[h] = v.get(d.c_str());        w_up[h] = v.get(u.c_str());        w_inject[h] = v.get(i.c_str());        if (!w_norm[h] || !w_down[h] || !w_up[h] || !w_inject[h]) {            err = v.name((std::string(pre[h]) + "{norm,down,up,inject}.weight").c_str()) + " is missing";            return false;        }
-// The GR weights are BF16 and the arena holds them re-rounded to 2 B/elem.  `gr_read` wants exactly
-// that; handing it f32 bytes would walk 2x the tensor inside the arena without faulting.
-if (w_down[h]->kind != WeightKind::Bf16InF32 || w_up[h]->kind != WeightKind::Bf16InF32 ||            w_inject[h]->kind != WeightKind::Bf16InF32 || w_norm[h]->kind != WeightKind::F32) {            err = v.name(pre[h]) + "has the wrong engine forms (norm must be F32, the other three bf16)";            return false;        }    }
+const char* pre[2] = {"hc_attn_", "hc_ffn_"};
+    const WeightRef* w_norm[2] = {nullptr, nullptr};
+    const WeightRef* w_down[2] = {nullptr, nullptr};
+    const WeightRef* w_up[2] = {nullptr, nullptr};
+    const WeightRef* w_inject[2] = {nullptr, nullptr};
+    if (g.hc > 1) {
+        for (int h = 0; h < 2; ++h) {
+            const std::string a = std::string(pre[h]) + "norm.weight";
+            const std::string d = std::string(pre[h]) + "down.weight";
+            const std::string u = std::string(pre[h]) + "up.weight";
+            const std::string i = std::string(pre[h]) + "inject.weight";
+            w_norm[h] = v.get(a.c_str());
+            w_down[h] = v.get(d.c_str());
+            w_up[h] = v.get(u.c_str());
+            w_inject[h] = v.get(i.c_str());
+            if (!w_norm[h] || !w_down[h] || !w_up[h] || !w_inject[h]) {
+                err = v.name((std::string(pre[h]) + "{norm,down,up,inject}.weight").c_str()) + " is missing";
+                return false;
+            }
+            if (w_down[h]->kind != WeightKind::Bf16InF32 || w_up[h]->kind != WeightKind::Bf16InF32 ||
+                w_inject[h]->kind != WeightKind::Bf16InF32 || w_norm[h]->kind != WeightKind::F32) {
+                err = v.name(pre[h]) + "has the wrong engine forms (norm must be F32, the other three bf16)";
+                return false;
+            }
+        }
+    } else {
+        w_norm[0] = v.get("attn_norm.weight");
+        w_norm[1] = v.get("post_attention_norm.weight");
+        if (!w_norm[0] || !w_norm[1]) {
+            err = v.name("{attn_norm,post_attention_norm}.weight") + " is missing";
+            return false;
+        }
+        if (w_norm[0]->kind != WeightKind::F32 || w_norm[1]->kind != WeightKind::F32) {
+            err = v.name("attn_norm/post_attention_norm.weight") + " has the wrong engine form (must be F32)";
+            return false;
+        }
+    }
 // ---- half 1: the mixer
 float* R = bb.R;
     // R0.11: WHICH STAGES TO RUN.  `stage_prefix == 0` means "as `half` says", so every caller that predates
@@ -1286,22 +1404,46 @@ float* R = bb.R;
     const bool run4 = stage_prefix > 0 ? (stage_prefix >= 5) : (half == 0 || half == 2);        // R0.9: this is the MIXER half, and `half == 2` skips it entirely.  A `half` of 1 or 0 runs it,
     // and 0 is what every caller before this used.
     if (run0) {
-st_begin(layer, 0, stream);
-    if (fused) {
-        guild::kernels::FusedGrArgs fa;
-        fa.R = R; fa.R_out = R; fa.apply = pending_ffn; fa.bo_prev = bb.block_out; fa.inj_prev = bb.inject2;
-        fa.w_norm = (const float*) w_norm[0]->data; fa.w_down = (const uint16_t*) w_down[0]->data;
-        fa.w_up = (const uint16_t*) w_up[0]->data; fa.w_inject = (const uint16_t*) w_inject[0]->data;
-        fa.eps = RMS_EPS; fa.lo = bb.gr.lo; fa.rs = bb.gr_rs; fa.inject_out = bb.inject; fa.mixed = bb.mixed;
-        guild::kernels::fused_gr_read(fa, stream);
-    } else {
-    gr_read(R, (const float*) w_norm[0]->data, (const uint16_t*) w_down[0]->data,            (const uint16_t*) w_up[0]->data, (const uint16_t*) w_inject[0]->data, RMS_EPS, gs, bb.gr, bb.mixed,            bb.inject, stream);
+        st_begin(layer, 0, stream);
+        if (g.hc > 1) {
+            if (fused) {
+                guild::kernels::FusedGrArgs fa;
+                fa.R = R; fa.R_out = R; fa.apply = pending_ffn; fa.bo_prev = bb.block_out; fa.inj_prev = bb.inject2;
+                fa.w_norm = (const float*) w_norm[0]->data; fa.w_down = (const uint16_t*) w_down[0]->data;
+                fa.w_up = (const uint16_t*) w_up[0]->data; fa.w_inject = (const uint16_t*) w_inject[0]->data;
+                fa.eps = RMS_EPS; fa.lo = bb.gr.lo; fa.rs = bb.gr_rs; fa.inject_out = bb.inject; fa.mixed = bb.mixed;
+                guild::kernels::fused_gr_read(fa, stream);
+            } else {
+                gr_read(R, (const float*) w_norm[0]->data, (const uint16_t*) w_down[0]->data,
+                        (const uint16_t*) w_up[0]->data, (const uint16_t*) w_inject[0]->data, RMS_EPS, gs, bb.gr, bb.mixed,
+                        bb.inject, stream);
+            }
+        } else {
+            if (pending_ffn) {
+                guild::kernels::add_inplace(R, bb.block_out, g.n_embd, stream);
+            }
+            if (guild::kernels::native_qsa_enabled()) {
+                guild::kernels::native_qsa_rms_norm_weighted(R, (const float*) w_norm[0]->data, bb.mixed, g.n_embd, 1, RMS_EPS, stream);
+            } else {
+                if (bb.mixed != R) {
+                    cudaMemcpyAsync(bb.mixed, R, (size_t) g.n_embd * 4, cudaMemcpyDeviceToDevice, (cudaStream_t) stream);
+                }
+                guild::kernels::rms_norm_weighted(bb.mixed, (const float*) w_norm[0]->data, 1, (int) g.n_embd, RMS_EPS, stream);
+            }
+        }
+        st_end(layer, 0, stream);
+        dump_half(bb, g, layer, bb.inject, 2 * g.n_embd, g.hc, stream);
     }
-    st_end(layer, 0, stream);    dump_half(bb, g, layer, bb.inject, 2 * g.n_embd, g.hc, stream);        }
     if (run1) {
     st_begin(layer, 1, stream);    if (qsa) {        if (!qsa_layer(tables, g, layer, pos, pos_base, qst, qb, bb.mixed, bb.block_out, stream, err,                            bb.dump))            return false;    } else {        if (!gdn_layer(tables, g, layer, gb, bb.mixed, bb.block_out, stream, err)) return false;    }    st_end(layer, 1, stream);    dump_half(bb, g, layer, bb.block_out, 0, g.n_embd, stream);        }
     if (run2) {
-    st_begin(layer, 2, stream);    if (!fused) gr_write(R, bb.block_out, bb.inject, gs, R, stream);    st_end(layer, 2, stream);
+        st_begin(layer, 2, stream);
+        if (g.hc > 1) {
+            if (!fused) gr_write(R, bb.block_out, bb.inject, gs, R, stream);
+        } else {
+            guild::kernels::add_inplace(R, bb.block_out, g.n_embd, stream);
+        }
+        st_end(layer, 2, stream);
 // ---- half 2, UP TO AND INCLUDING THE ROUTER.  `gr_read` leaves the normed activation in `bb.mixed` and
 // the per-stream injection in `bb.inject`, and BOTH must survive until `block_layer_post` runs - which is
 // the contract the two functions have with each other and with the host loop's ordering.
@@ -1309,18 +1451,32 @@ st_begin(layer, 0, stream);
     // R0.9: the FFN front and the ROUTER.  It reads `bb.mixed`/`bb.inject`, which the mixer left -
     // the same contract `block_layer_post` has, and the reason the two are only meaningful in order.
     if (run3) {
-st_begin(layer, 3, stream);
-    if (fused) {
-        guild::kernels::FusedGrArgs fa;
-        fa.R = R; fa.R_out = R; fa.apply = true; fa.bo_prev = bb.block_out; fa.inj_prev = bb.inject;
-        fa.w_norm = (const float*) w_norm[1]->data; fa.w_down = (const uint16_t*) w_down[1]->data;
-        fa.w_up = (const uint16_t*) w_up[1]->data; fa.w_inject = (const uint16_t*) w_inject[1]->data;
-        fa.eps = RMS_EPS; fa.lo = bb.gr.lo; fa.rs = bb.gr_rs; fa.inject_out = bb.inject2; fa.mixed = bb.mixed;
-        guild::kernels::fused_gr_read(fa, stream);
-    } else {
-    gr_read(R, (const float*) w_norm[1]->data, (const uint16_t*) w_down[1]->data,            (const uint16_t*) w_up[1]->data, (const uint16_t*) w_inject[1]->data, RMS_EPS, gs, bb.gr, bb.mixed,            bb.inject, stream);
+        st_begin(layer, 3, stream);
+        if (g.hc > 1) {
+            if (fused) {
+                guild::kernels::FusedGrArgs fa;
+                fa.R = R; fa.R_out = R; fa.apply = true; fa.bo_prev = bb.block_out; fa.inj_prev = bb.inject;
+                fa.w_norm = (const float*) w_norm[1]->data; fa.w_down = (const uint16_t*) w_down[1]->data;
+                fa.w_up = (const uint16_t*) w_up[1]->data; fa.w_inject = (const uint16_t*) w_inject[1]->data;
+                fa.eps = RMS_EPS; fa.lo = bb.gr.lo; fa.rs = bb.gr_rs; fa.inject_out = bb.inject2; fa.mixed = bb.mixed;
+                guild::kernels::fused_gr_read(fa, stream);
+            } else {
+                gr_read(R, (const float*) w_norm[1]->data, (const uint16_t*) w_down[1]->data,
+                        (const uint16_t*) w_up[1]->data, (const uint16_t*) w_inject[1]->data, RMS_EPS, gs, bb.gr, bb.mixed,
+                        bb.inject, stream);
+            }
+        } else {
+            if (guild::kernels::native_qsa_enabled()) {
+                guild::kernels::native_qsa_rms_norm_weighted(R, (const float*) w_norm[1]->data, bb.mixed, g.n_embd, 1, RMS_EPS, stream);
+            } else {
+                if (bb.mixed != R) {
+                    cudaMemcpyAsync(bb.mixed, R, (size_t) g.n_embd * 4, cudaMemcpyDeviceToDevice, (cudaStream_t) stream);
+                }
+                guild::kernels::rms_norm_weighted(bb.mixed, (const float*) w_norm[1]->data, 1, (int) g.n_embd, RMS_EPS, stream);
+            }
+        }
+        st_end(layer, 3, stream);
     }
-    st_end(layer, 3, stream);        }
     if (run4) {
     st_begin(layer, 4, stream);    {        const bool ok = moe_route(tables, g, layer, k, mb, bb.mixed, stream, err, db);        st_end(layer, 4, stream);        if (!ok) return false;    }
     // Plan v0.3 P3: after the ring, so the GPU computes the shared expert while the host runs the pool.
@@ -1368,7 +1524,9 @@ st_begin(layer, 5, stream);
     st_end(layer, 5, stream);    dump_half(bb, g, layer, bb.block_out, (uint64_t) g.n_embd, g.n_embd, stream);    dump_half(bb, g, layer, bb.inject, (uint64_t) 2 * g.n_embd + g.hc, g.hc, stream);    st_begin(layer, 6, stream);
     const bool steer = guild::kernels::cvec().covers(layer);   // --control-vector-scaled: after this write
     try {
-        if (!(g_fused_gr && guild::kernels::fused_gr_supported(g.n_embd, g.hc, g.hc_lr))) {
+        if (g.hc == 1) {
+            guild::kernels::add_inplace(bb.R, bb.block_out, g.n_embd, stream);
+        } else if (!(g_fused_gr && guild::kernels::fused_gr_supported(g.n_embd, g.hc, g.hc_lr))) {
             gr_write(bb.R, bb.block_out, bb.inject, gs, bb.R, stream);
             if (steer) guild::kernels::cvec_apply(bb.R, layer, 1, g.hc * g.n_embd, nullptr, 0, nullptr, 0, false, stream);
         } else if (layer == g.n_layers - 1) {

@@ -327,12 +327,13 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
         return false;
     }
     std::string why;
-    if (!layer_verify_compatible(why)) {
+    if (!layer_verify_compatible(why, &g)) {
         err = "verify: " + why + " (the verify window reproduces the default native decode path)";
         return false;
     }
-    if (!guild::kernels::fused_gr_supported(g.n_embd, g.hc, g.hc_lr) || ss.k != 10 || g.ssm_state_size != 128 ||
-        g.ssm_d_conv != 4) {
+    if ((g.hc > 1 && !guild::kernels::fused_gr_supported(g.n_embd, g.hc, g.hc_lr)) ||
+        (ss.k < 1 || ss.k > 16) ||
+        (g.n_gdn_layers() > 0 && (g.ssm_state_size != 128 || g.ssm_d_conv != 4))) {
         err = "verify: geometry differs from the artifact's";
         return false;
     }
@@ -434,6 +435,13 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
         sh_up_ = b.take<float>(T * (uint64_t) g.n_ff); sh_g_ = b.take<float>(T + 4);
         head_logits_ = b.take<float>(T * (uint64_t) n_vocab_);
         hist_snap_ = b.take<float>(T * HS);
+        dbg_l0_attn_norm_ = b.take<float>(N);
+        dbg_l0_z_ = b.take<float>(ZV);
+        dbg_l0_bo_ = b.take<float>(N);
+        dbg_l0_R_ = b.take<float>(N);
+        dbg_l0_post_norm_ = b.take<float>(N);
+        dbg_l0_logits_ = b.take<float>(g.n_expert);
+        dbg_l0_shared_ = b.take<float>(N);
     };
     Bump count;
     carve(count);
@@ -468,6 +476,15 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
     Bump real;
     real.base = (uint8_t*) arena_;
     carve(real);
+    if (g.idx_q_heads == 0 && cap_ > 0) {
+        std::vector<int32_t> id((size_t) (T * (uint64_t) cap_));
+        for (uint64_t t = 0; t < T; ++t) {
+            for (int64_t i = 0; i < cap_; ++i) {
+                id[(size_t) (t * (uint64_t) cap_ + (uint64_t) i)] = (int32_t) i;
+            }
+        }
+        cudaMemcpy(sel_, id.data(), id.size() * sizeof(int32_t), cudaMemcpyHostToDevice);
+    }
     sink_.staging = (unsigned long long) staging_;
     sink_.staging_cap = kStagingBlobs;
     (void) TS;
@@ -587,7 +604,11 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         copy_from_mapped(inj2_, hin + (size_t) T * (HC + 1) * N, (int64_t) T * HC, cs);
     } else if (const NativeEmbed* ne = native_embed()) {       // plan v0.3 P6: the GGUF-form table
         ne->gather_dev(tok_, T, emb_, cs);
-        broadcast_streams(emb_, R_, N, (int) HC, T, cs);
+        if (HC > 1) broadcast_streams(emb_, R_, N, (int) HC, T, cs);
+        else if (cudaMemcpyAsync(R_, emb_, (size_t) T * N * 4, cudaMemcpyDeviceToDevice, cs) != cudaSuccess) {
+            err = "verify: embedding copy failed";
+            return false;
+        }
     } else {
         const WeightRef* w = wt.find("token_embd.weight");
         if (w == nullptr || w->codebook_iq4nl || (w->code_bits != 2 && w->code_bits != 4 && w->code_bits != 8)) {
@@ -601,7 +622,11 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         const uint64_t row_groups = (uint64_t) (w->ne0 / w->group_elems);
         embedding_gather_dev(codes, scales, offsets, tok_, T, w->ne0, w->code_bits, w->code_bias, w->group_elems,
                              row_codes, row_groups, emb_, cs);
-        broadcast_streams(emb_, R_, N, (int) HC, T, cs);
+        if (HC > 1) broadcast_streams(emb_, R_, N, (int) HC, T, cs);
+        else if (cudaMemcpyAsync(R_, emb_, (size_t) T * N * 4, cudaMemcpyDeviceToDevice, cs) != cudaSuccess) {
+            err = "verify: embedding copy failed";
+            return false;
+        }
     }
 
     // per-layer state indices (GDN and QSA layers are numbered separately)
@@ -620,13 +645,19 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         stamp(l, 0, grp);
         const LayerView v(wt, l);
         const char* pfx[2] = {"hc_attn_", "hc_ffn_"};
-        const WeightRef *wn[2], *wd[2], *wu[2], *wi[2];
-        for (int h = 0; h < 2; ++h) {
-            wn[h] = need(v, (std::string(pfx[h]) + "norm.weight").c_str(), err);
-            wd[h] = need(v, (std::string(pfx[h]) + "down.weight").c_str(), err);
-            wu[h] = need(v, (std::string(pfx[h]) + "up.weight").c_str(), err);
-            wi[h] = need(v, (std::string(pfx[h]) + "inject.weight").c_str(), err);
-            if (!wn[h] || !wd[h] || !wu[h] || !wi[h]) return false;
+        const WeightRef *wn[2] = {nullptr, nullptr}, *wd[2] = {nullptr, nullptr}, *wu[2] = {nullptr, nullptr}, *wi[2] = {nullptr, nullptr};
+        if (g.hc > 1) {
+            for (int h = 0; h < 2; ++h) {
+                wn[h] = need(v, (std::string(pfx[h]) + "norm.weight").c_str(), err);
+                wd[h] = need(v, (std::string(pfx[h]) + "down.weight").c_str(), err);
+                wu[h] = need(v, (std::string(pfx[h]) + "up.weight").c_str(), err);
+                wi[h] = need(v, (std::string(pfx[h]) + "inject.weight").c_str(), err);
+                if (!wn[h] || !wd[h] || !wu[h] || !wi[h]) return false;
+            }
+        } else {
+            wn[0] = need(v, "attn_norm.weight", err);
+            wn[1] = need(v, "post_attention_norm.weight", err);
+            if (!wn[0] || !wn[1]) return false;
         }
         // the previous layer's FFN write, folded into this layer's first read (a control vector after it has
         // already applied it)
@@ -678,20 +709,39 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             pending = false;
         }
         auto gr_read_group = [&](int half, bool apply, float* inj_prev, float* inj_out) {
-            FusedGrArgs fa[kFusedGrMaxT];
-            for (int t = tb; t < te; ++t) {
-                FusedGrArgs& a = fa[t - tb];
-                a.R = Rt(t); a.R_out = Rt(t); a.apply = apply;
-                a.bo_prev = bo_ + t * N; a.inj_prev = inj_prev + t * HC;
-                a.w_norm = (const float*) wn[half]->data; a.w_down = (const uint16_t*) wd[half]->data;
-                a.w_up = (const uint16_t*) wu[half]->data; a.w_inject = (const uint16_t*) wi[half]->data;
-                a.eps = EPS; a.lo = lo_ + t * g.hc_lr; a.rs = rs_ + t * HC;
-                a.inject_out = inj_out + t * HC; a.mixed = mixed_ + t * N;
+            if (g.hc > 1) {
+                FusedGrArgs fa[kFusedGrMaxT];
+                for (int t = tb; t < te; ++t) {
+                    FusedGrArgs& a = fa[t - tb];
+                    a.R = Rt(t); a.R_out = Rt(t); a.apply = apply;
+                    a.bo_prev = bo_ + t * N; a.inj_prev = inj_prev + t * HC;
+                    a.w_norm = (const float*) wn[half]->data; a.w_down = (const uint16_t*) wd[half]->data;
+                    a.w_up = (const uint16_t*) wu[half]->data; a.w_inject = (const uint16_t*) wi[half]->data;
+                    a.eps = EPS; a.lo = lo_ + t * g.hc_lr; a.rs = rs_ + t * HC;
+                    a.inject_out = inj_out + t * HC; a.mixed = mixed_ + t * N;
+                }
+                fused_gr_read_multi(fa, n, xn_ + (size_t) tb * HC * N, cs, (prof_on_ && grp == 0) ? prof_ : nullptr,
+                                    (int) (l * kProfPer + (half == 0 ? 27 : 30)));
+            } else {
+                for (int t = tb; t < te; ++t) {
+                    if (apply) {
+                        guild::kernels::add_inplace(Rt(t), bo_ + t * N, N, cs);
+                    }
+                    if (native_qsa_enabled()) {
+                        native_qsa_rms_norm_weighted(Rt(t), (const float*) wn[half]->data, mixed_ + t * N, N, 1, EPS, cs);
+                    } else {
+                        if (mixed_ + t * N != Rt(t)) {
+                            cudaMemcpyAsync(mixed_ + t * N, Rt(t), (size_t) N * 4, cudaMemcpyDeviceToDevice, cs);
+                        }
+                        rms_norm_weighted(mixed_ + t * N, (const float*) wn[half]->data, 1, (int) N, EPS, cs);
+                    }
+                }
             }
-            fused_gr_read_multi(fa, n, xn_ + (size_t) tb * HC * N, cs, (prof_on_ && grp == 0) ? prof_ : nullptr,
-                                (int) (l * kProfPer + (half == 0 ? 27 : 30)));
         };
         gr_read_group(0, pending, inj2_, inj_);
+        if (l == 0 && grp == 0 && dbg_l0_attn_norm_) {
+            cudaMemcpyAsync(dbg_l0_attn_norm_, mixed_ + tb * N, (size_t) N * sizeof(float), cudaMemcpyDeviceToDevice, cs);
+        }
         stamp(l, 1, grp);
         float* xm = mixed_ + tb * N;
         try {
@@ -732,6 +782,9 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                              n, cs);
                 stamp(l, 4, grp);
                 native_mmvq(wg->native_type, wg->native_data, xq_, z_ + (size_t) tb * ZV, (int) N, (int) ZV, n, cs);
+                if (l == 0 && grp == 0 && dbg_l0_z_) {
+                    cudaMemcpyAsync(dbg_l0_z_, z_ + (size_t) tb * ZV, (size_t) ZV * sizeof(float), cudaMemcpyDeviceToDevice, cs);
+                }
                 stamp(l, 5, grp);
                 // the recurrence from the untouched state over tokens [0, te); outputs only for this group's
                 if (batch_rec_) {   // each row's recurrence from its own slot's state, one token
@@ -740,24 +793,36 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                         float* stx = sx.gdn_state + (size_t) (gi - sx.gdn_ord0) * gdn_floats;
                         gdn_step_norm_multi(stx, hb + (size_t) t * C, (int) C, gate + (size_t) t * HV, beta + (size_t) t * HV,
                                             z_ + (size_t) t * ZV, (const float*) wnm->data, EPS, y_ + (size_t) t * ZV,
-                                            (int) HK, (int) HV, 1, nullptr, cs, 0);
+                                            (int) HK, (int) HV, 1, nullptr, cs, 0, g.gdn_gate_silu);
                     }
                 } else
                 gdn_step_norm_multi(state, hb, (int) C, gate, beta, z_, (const float*) wnm->data, EPS, y_, (int) HK,
-                                    (int) HV, te, nullptr, cs, tb);
+                                    (int) HV, te, nullptr, cs, tb, g.gdn_gate_silu);
                 stamp(l, 6, grp);
                 native_quantize_q8_1(y_ + (size_t) tb * ZV, xq_, (int) ZV, n, cs);
                 native_mmvq(wout->native_type, wout->native_data, xq_, bo_ + tb * N, (int) ZV, (int) N, n, cs);
+                if (l == 0 && grp == 0 && dbg_l0_bo_) {
+                    cudaMemcpyAsync(dbg_l0_bo_, bo_ + tb * N, (size_t) N * sizeof(float), cudaMemcpyDeviceToDevice, cs);
+                }
             } else {
                 // ======================= QSA =======================
                 const int64_t qi = qsa_idx[(size_t) l];
                 const QsaState& st = ss.qsa_states[qi];
-                const WeightRef *wik = need(v, "indexer.k_proj.weight", err), *wq = need(v, "attn_q.weight", err),
-                                *wk = need(v, "attn_k.weight", err), *wv = need(v, "attn_v.weight", err),
-                                *wo = need(v, "attn_output.weight", err), *wiq = need(v, "indexer.q_proj.weight", err),
-                                *wqn = need(v, "attn_q_norm.weight", err), *wkn = need(v, "attn_k_norm.weight", err),
-                                *wiqn = need(v, "indexer.q_norm.weight", err), *wikn = need(v, "indexer.k_norm.weight", err);
-                if (!wik || !wq || !wk || !wv || !wo || !wiq || !wqn || !wkn || !wiqn || !wikn) return false;
+                const WeightRef *wik = nullptr, *wiq = nullptr, *wiqn = nullptr, *wikn = nullptr;
+                if (g.idx_q_heads > 0) {
+                    wik = need(v, "indexer.k_proj.weight", err);
+                    wiq = need(v, "indexer.q_proj.weight", err);
+                    wiqn = need(v, "indexer.q_norm.weight", err);
+                    wikn = need(v, "indexer.k_norm.weight", err);
+                    if (!wik || !wiq || !wiqn || !wikn) return false;
+                }
+                const WeightRef *wq = need(v, "attn_q.weight", err),
+                                *wk = need(v, "attn_k.weight", err),
+                                *wv = need(v, "attn_v.weight", err),
+                                *wo = need(v, "attn_output.weight", err),
+                                *wqn = need(v, "attn_q_norm.weight", err),
+                                *wkn = need(v, "attn_k_norm.weight", err);
+                if (!wq || !wk || !wv || !wo || !wqn || !wkn) return false;
                 if (!native_of(wq, v.name("attn_q.weight"), err) || !native_of(wk, v.name("attn_k.weight"), err) ||
                     !native_of(wv, v.name("attn_v.weight"), err) || !native_of(wo, v.name("attn_output.weight"), err))
                     return false;
@@ -772,9 +837,11 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 // window's rows each - row-wise identical arithmetic (GUILD_DEC_BATCH=0: token by token)
                 const bool qb = dec_batch && n > 1 && native_qsa_enabled() && native_rope_enabled() && !st.kv_q4;
                 native_quantize_q8_1(xm, xq_, (int) N, n, cs);
-                if (qb) bf16_gemv_fp32_mmvf_multi(mixed_ + tb * N, N, (const uint16_t*) wik->data, idx_raw + tb * ID, ID, N, ID, n, cs);
-                else for (int t = tb; t < te; ++t)
-                    bf16_gemv_fp32_mmvf(mixed_ + t * N, (const uint16_t*) wik->data, idx_raw + t * ID, (int) N, (int) ID, cs);
+                if (g.idx_q_heads > 0) {
+                    if (qb) bf16_gemv_fp32_mmvf_multi(mixed_ + tb * N, N, (const uint16_t*) wik->data, idx_raw + tb * ID, ID, N, ID, n, cs);
+                    else for (int t = tb; t < te; ++t)
+                        bf16_gemv_fp32_mmvf(mixed_ + t * N, (const uint16_t*) wik->data, idx_raw + t * ID, (int) N, (int) ID, cs);
+                }
                 stamp(l, 7, grp);
                 native_mmvq(wk->native_type, wk->native_data, xq_, kcur_ + tb * NKV * HD, (int) N, (int) (NKV * HD), n, cs);
                 native_mmvq(wv->native_type, wv->native_data, xq_, vcur_ + tb * NKV * HD, (int) N, (int) (NKV * HD), n, cs);
@@ -787,12 +854,14 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                     fwht256_inplace_cuda(vcur_ + tb * NKV * HD, (int64_t) n * NKV, cs);
                 }
                 stamp(l, 8, grp);
-                if (batch_rec_) {   // every slot's indexer tail, restored by its commit
-                    for (int t = tb; t < te; ++t)
-                        copy_from_mapped(tail_snap_b_ + ((size_t) brow_[t] * nQall + qi) * TS, slot_ss(t).qsa_states[qi].idx_tail,
-                                         TS, cs);
-                } else
-                if (grp == 0) copy_from_mapped(tail_snap_ + (size_t) qi * TS, st.idx_tail, TS, cs);
+                if (g.idx_q_heads > 0) {
+                    if (batch_rec_) {   // every slot's indexer tail, restored by its commit
+                        for (int t = tb; t < te; ++t)
+                            copy_from_mapped(tail_snap_b_ + ((size_t) brow_[t] * nQall + qi) * TS, slot_ss(t).qsa_states[qi].idx_tail,
+                                             TS, cs);
+                    } else
+                    if (grp == 0) copy_from_mapped(tail_snap_ + (size_t) qi * TS, st.idx_tail, TS, cs);
+                }
                 for (int t = tb; t < te; ++t) {
                     const QsaState& st = slot_ss(t).qsa_states[qi];   // the row's own K/V (ss's outside a batch)
                     const int32_t* step_t = step_ + t * kStepCount;
@@ -811,12 +880,14 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                         kv_append_step(st.k_pool, st.v_pool, st.page_table, step_t, kcur_ + t * NKV * HD,
                                        vcur_ + t * NKV * HD, s, cs, &st.host);
                 }
-                for (int t = tb; t < te; ++t) {
-                    const QsaState& sx = slot_ss(t).qsa_states[qi];
-                    const QsaIndexerBuffers ib{sx.idx_tail, sx.idx_dead, sx.idx_pooled, sx.idx_block_pos};
-                    native_qsa_indexer_append(idx_raw + t * ID, step_ + t * kStepCount + kStepPos, 0,
-                                              (const float*) wikn->data, EPS, ib, s, sx.max_cells,
-                                              rope_scaling(), cs);
+                if (g.idx_q_heads > 0) {
+                    for (int t = tb; t < te; ++t) {
+                        const QsaState& sx = slot_ss(t).qsa_states[qi];
+                        const QsaIndexerBuffers ib{sx.idx_tail, sx.idx_dead, sx.idx_pooled, sx.idx_block_pos};
+                        native_qsa_indexer_append(idx_raw + t * ID, step_ + t * kStepCount + kStepPos, 0,
+                                                  (const float*) wikn->data, EPS, ib, s, sx.max_cells,
+                                                  rope_scaling(), cs);
+                    }
                 }
                 stamp(l, 9, grp);
                 native_mmvq(wq->native_type, wq->native_data, xq_, qfull_ + tb * NH * 2 * HD, (int) N, (int) (NH * 2 * HD),
@@ -829,9 +900,11 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                     }
                     norm_rope(qcur_ + tb * NH * HD, wqn, (int) (n * NH), (int) HD, pos_ + tb * NH);
                     if (st.kv_rot) fwht256_inplace_cuda(qcur_ + tb * NH * HD, (int64_t) n * NH, cs);   // <Hq, Hk> = <q, k>
-                    bf16_gemv_fp32_mmvf_multi(mixed_ + tb * N, N, (const uint16_t*) wiq->data, qidx_ + tb * IQ * ID, IQ * ID,
-                                              N, IQ * ID, n, cs);
-                    norm_rope(qidx_ + tb * IQ * ID, wiqn, (int) (n * IQ), (int) ID, pos_i + tb * IQ);
+                    if (g.idx_q_heads > 0) {
+                        bf16_gemv_fp32_mmvf_multi(mixed_ + tb * N, N, (const uint16_t*) wiq->data, qidx_ + tb * IQ * ID, IQ * ID,
+                                                  N, IQ * ID, n, cs);
+                        norm_rope(qidx_ + tb * IQ * ID, wiqn, (int) (n * IQ), (int) ID, pos_i + tb * IQ);
+                    }
                 } else {
                 for (int t = tb; t < te; ++t) {
                     float* qc = qcur_ + t * NH * HD;
@@ -843,20 +916,24 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                     norm_rope(qc, wqn, (int) NH, (int) HD, pos_ + t * NH);
                     if (st.kv_rot) fwht256_inplace_cuda(qc, NH, cs);   // <Hq, Hk> = <q, k>
                 }
-                for (int t = tb; t < te; ++t) {
-                    float* qx = qidx_ + t * IQ * ID;
-                    bf16_gemv_fp32_mmvf(mixed_ + t * N, (const uint16_t*) wiq->data, qx, (int) N, (int) (IQ * ID), cs);
-                    norm_rope(qx, wiqn, (int) IQ, (int) ID, pos_ + t * NH);
+                if (g.idx_q_heads > 0) {
+                    for (int t = tb; t < te; ++t) {
+                        float* qx = qidx_ + t * IQ * ID;
+                        bf16_gemv_fp32_mmvf(mixed_ + t * N, (const uint16_t*) wiq->data, qx, (int) N, (int) (IQ * ID), cs);
+                        norm_rope(qx, wiqn, (int) IQ, (int) ID, pos_ + t * NH);
+                    }
                 }
                 }
                 stamp(l, 10, grp);
                 if (batch_rec_) {   // each row selects and attends over its own slot's K/V
                     for (int t = tb; t < te; ++t) {
                         const QsaState& sx = slot_ss(t).qsa_states[qi];
-                        qsa_block_scores(sx.idx_pooled, sx.idx_dead, qidx_ + t * IQ * ID, step_ + t * kStepCount, 1,
-                                         max_blocks_, s, scores_ + (size_t) t * max_blocks_, cs);
-                        qsa_block_topk(scores_ + (size_t) t * max_blocks_, step_ + t * kStepCount, 1, max_blocks_, cap_, s,
-                                       sel_ + (size_t) t * cap_, cs);
+                        if (g.idx_q_heads > 0) {
+                            qsa_block_scores(sx.idx_pooled, sx.idx_dead, qidx_ + t * IQ * ID, step_ + t * kStepCount, 1,
+                                             max_blocks_, s, scores_ + (size_t) t * max_blocks_, cs);
+                            qsa_block_topk(scores_ + (size_t) t * max_blocks_, step_ + t * kStepCount, 1, max_blocks_, cap_, s,
+                                           sel_ + (size_t) t * cap_, cs);
+                        }
                         qsa_kv_resolve(sx, *g_, sel_ + (size_t) t * cap_, step_ + t * kStepCount, 1, cap_, cs);
                         const QsaAttnPools px = qsa_attn_pools(sx);
                         qsa_decode_attn_batch(qcur_ + t * NH * HD, px, sel_ + (size_t) t * cap_, step_ + t * kStepCount,
@@ -864,17 +941,19 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                                               attn_ + t * NH * HD, 1, cs);
                     }
                 } else {
-                qsa_block_scores(st.idx_pooled, st.idx_dead, qidx_ + tb * IQ * ID, step_ + tb * kStepCount, n, max_blocks_,
-                                 s, scores_ + (size_t) tb * max_blocks_, cs);
-                qsa_block_topk(scores_ + (size_t) tb * max_blocks_, step_ + tb * kStepCount, n, max_blocks_, cap_, s,
-                               sel_ + (size_t) tb * cap_, cs);
-                stamp(l, 11, grp);
-                // KV streaming: the n selections' blocks resident (device-side, inside the graph)
-                qsa_kv_resolve(st, *g_, sel_ + (size_t) tb * cap_, step_ + tb * kStepCount, n, cap_, cs);
-                stamp(l, 12, grp);
-                const QsaAttnPools pools = qsa_attn_pools(st);
-                qsa_decode_attn_batch(qcur_ + tb * NH * HD, pools, sel_ + (size_t) tb * cap_, step_ + tb * kStepCount, cap_,
-                                      s, attn_scratch_ + (size_t) tb * attn_scratch_floats_, attn_ + tb * NH * HD, n, cs);
+                    if (g.idx_q_heads > 0) {
+                        qsa_block_scores(st.idx_pooled, st.idx_dead, qidx_ + tb * IQ * ID, step_ + tb * kStepCount, n, max_blocks_,
+                                         s, scores_ + (size_t) tb * max_blocks_, cs);
+                        qsa_block_topk(scores_ + (size_t) tb * max_blocks_, step_ + tb * kStepCount, n, max_blocks_, cap_, s,
+                                       sel_ + (size_t) tb * cap_, cs);
+                    }
+                    stamp(l, 11, grp);
+                    // KV streaming: the n selections' blocks resident (device-side, inside the graph)
+                    qsa_kv_resolve(st, *g_, sel_ + (size_t) tb * cap_, step_ + tb * kStepCount, n, cap_, cs);
+                    stamp(l, 12, grp);
+                    const QsaAttnPools pools = qsa_attn_pools(st);
+                    qsa_decode_attn_batch(qcur_ + tb * NH * HD, pools, sel_ + (size_t) tb * cap_, step_ + tb * kStepCount, cap_,
+                                          s, attn_scratch_ + (size_t) tb * attn_scratch_floats_, attn_ + tb * NH * HD, n, cs);
                 }
                 stamp(l, 13, grp);
                 if (st.kv_rot || st.kv_hybrid) fwht256_inplace_cuda(attn_ + tb * NH * HD, (int64_t) n * NH, cs);   // back: H^-1 = H
@@ -898,6 +977,10 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         }
         stamp(l, 16, grp);
         gr_read_group(1, true, inj_, inj2_);
+        if (l == 0 && grp == 0 && dbg_l0_R_) {
+            cudaMemcpyAsync(dbg_l0_R_, Rt(0), (size_t) N * sizeof(float), cudaMemcpyDeviceToDevice, cs);
+            cudaMemcpyAsync(dbg_l0_post_norm_, mixed_ + tb * N, (size_t) N * sizeof(float), cudaMemcpyDeviceToDevice, cs);
+        }
         static const bool sh_stream_env = [] {
             const char* e = std::getenv("GUILD_SH_STREAM");
             return !e || e[0] != '0';
@@ -931,6 +1014,9 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             MoEBuffers mb = ss.moe;
             mb.logits = logits_ + t * NE; mb.ids = ids_ + t * K; mb.weights = w_ + t * K;
             if (!moe_route(wt, g, l, K, mb, mixed_ + t * N, cs, err, nullptr)) return false;
+        }
+        if (l == 0 && grp == 0 && dbg_l0_logits_) {
+            cudaMemcpyAsync(dbg_l0_logits_, logits_, (size_t) g.n_expert * sizeof(float), cudaMemcpyDeviceToDevice, cs);
         }
         if (all_resident_) {
             resident_plan(ids_ + tb * K, n * (int) K, (int) K, hits_.d_res + l * g.n_expert, (int) g.n_expert,
@@ -981,6 +1067,9 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 err = std::string("verify shared expert: ") + e.what();
                 return false;
             }
+            if (l == 0 && grp == 0 && dbg_l0_shared_) {
+                cudaMemcpyAsync(dbg_l0_shared_, shared_ + tb * N, (size_t) N * sizeof(float), cudaMemcpyDeviceToDevice, sh_stream);
+            }
             if (sh_fork) cudaEventRecord(ev_join_, sh_cs_);
         }
         if (guild::kernels::cpu::expert_layout().native)
@@ -1020,6 +1109,9 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             if (lay.native) {
                 // the layer's GGUF formats (i-quant gate/up, Q2_0 / IQ4_NL down)
                 const auto& f = lay.fmt[(size_t) l];
+                if (!guild::kernels::native_expert_supported(f.gu_type, f.d_type, f.n_embd, f.n_ff)) {
+                    return;
+                }
                 const NativeExpertLayout L = native_expert_layout(f.gu_type, f.d_type, f.n_embd, f.n_ff);
                 native_expert_grouped(L, gp, gs, gn, p_dst, p_tok, cap, cap,
                                       nat_xq_ + (size_t) tb * (N / 32) * 36, hit_scratch_, dst_buf, cs, gy);
@@ -1091,8 +1183,12 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         stamp(l, 24, grp);
         if (l == g.n_layers - 1) {
             if (!fuse_head_gr) {
-                for (int t = tb; t < te; ++t) gr_write(Rt(t), bo_ + t * N, inj2_ + t * HC, gs, Rt(t), cs);
-                if (cvec().covers(l)) cvec_apply(Rt(tb), l, n, HC * N, nullptr, 0, nullptr, 0, false, cs);
+                if (g.hc > 1) {
+                    for (int t = tb; t < te; ++t) gr_write(Rt(t), bo_ + t * N, inj2_ + t * HC, gs, Rt(t), cs);
+                    if (cvec().covers(l)) cvec_apply(Rt(tb), l, n, HC * N, nullptr, 0, nullptr, 0, false, cs);
+                } else {
+                    for (int t = tb; t < te; ++t) guild::kernels::add_inplace(Rt(t), bo_ + t * N, N, cs);
+                }
             }
         } else if (cvec().covers(l)) {
             cvec_apply(Rt(tb), l, n, HC * N, bo_ + tb * N, N, inj2_ + tb * HC, HC, true, cs);
@@ -1118,35 +1214,50 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
     // ---- the head, T columns, and the argmax of each
     stamp(g.n_layers, 0, 0);
     {
-        const WeightRef *hn = wt.find("output_hc_norm.weight"), *hd = wt.find("output_hc_down.weight"),
-                        *hu = wt.find("output_hc_up.weight");
-        if (!hn || !hd || !hu) { err = "verify: an output_hc_* weight is missing"; return false; }
-        if (fuse_head_gr) {
-            FusedGrArgs fa[kFusedGrMaxT];
-            for (int t = 0; t < T; ++t) {
-                FusedGrArgs& a = fa[t];
-                a.R = Rt(t); a.R_out = Rt(t); a.apply = true;
-                a.bo_prev = bo_ + t * N; a.inj_prev = inj2_ + t * HC;
-                a.w_norm = (const float*) hn->data;
-                a.w_down = (const uint16_t*) hd->data;
-                a.w_up = (const uint16_t*) hu->data;
-                a.w_inject = nullptr;
-                a.eps = EPS;
-                a.lo = lo_ + t * g.hc_lr;
-                a.rs = rs_ + t * HC;
-                a.inject_out = head_inj_;
-                a.mixed = head_mixed_ + t * N;
+        if (g.hc > 1) {
+            const WeightRef *hn = wt.find("output_hc_norm.weight"), *hd = wt.find("output_hc_down.weight"),
+                            *hu = wt.find("output_hc_up.weight");
+            if (!hn || !hd || !hu) { err = "verify: an output_hc_* weight is missing"; return false; }
+            if (fuse_head_gr) {
+                FusedGrArgs fa[kFusedGrMaxT];
+                for (int t = 0; t < T; ++t) {
+                    FusedGrArgs& a = fa[t];
+                    a.R = Rt(t); a.R_out = Rt(t); a.apply = true;
+                    a.bo_prev = bo_ + t * N; a.inj_prev = inj2_ + t * HC;
+                    a.w_norm = (const float*) hn->data;
+                    a.w_down = (const uint16_t*) hd->data;
+                    a.w_up = (const uint16_t*) hu->data;
+                    a.w_inject = nullptr;
+                    a.eps = EPS;
+                    a.lo = lo_ + t * g.hc_lr;
+                    a.rs = rs_ + t * HC;
+                    a.inject_out = head_inj_;
+                    a.mixed = head_mixed_ + t * N;
+                }
+                fused_gr_read_multi(fa, T, xn_, cs);
+            } else {
+                for (int t = 0; t < T; ++t) {
+                    BlockBuffers bb = ss.block;
+                    bb.R = Rt(t);
+                    bb.mixed = head_mixed_ + t * N;
+                    if (head_ != nullptr && head_->loaded()) {
+                        if (!lm_head_mix(wt, g, bb, cs, err)) return false;
+                    } else if (!lm_head(wt, g, bb, head_logits_ + (size_t) t * n_vocab_, cs, err)) {
+                        return false;
+                    }
+                }
             }
-            fused_gr_read_multi(fa, T, xn_, cs);
         } else {
+            const WeightRef* hn = wt.find("output_norm.weight");
+            if (!hn) { err = "verify: output_norm.weight is missing"; return false; }
             for (int t = 0; t < T; ++t) {
-                BlockBuffers bb = ss.block;
-                bb.R = Rt(t);
-                bb.mixed = head_mixed_ + t * N;
-                if (head_ != nullptr && head_->loaded()) {
-                    if (!lm_head_mix(wt, g, bb, cs, err)) return false;
-                } else if (!lm_head(wt, g, bb, head_logits_ + (size_t) t * n_vocab_, cs, err)) {
-                    return false;
+                if (native_qsa_enabled()) {
+                    native_qsa_rms_norm_weighted(Rt(t), (const float*) hn->data, head_mixed_ + t * N, N, 1, EPS, cs);
+                } else {
+                    if (head_mixed_ + t * N != Rt(t)) {
+                        cudaMemcpyAsync(head_mixed_ + t * N, Rt(t), (size_t) N * 4, cudaMemcpyDeviceToDevice, cs);
+                    }
+                    rms_norm_weighted(head_mixed_ + t * N, (const float*) hn->data, 1, (int) N, EPS, cs);
                 }
             }
         }
@@ -1291,18 +1402,20 @@ bool Verifier::capture_commit(std::string& err) {
                 gdn_conv_commit(conv, qkv, (int) C, commit_, cs_);
                 gdn_step_norm_multi(state, h_L_ + (size_t) gdn_index * MT * C, (int) C, gate_L_ + (size_t) gdn_index * MT * HV,
                                     beta_L_ + (size_t) gdn_index * MT * HV, z_, (const float*) wnm->data, EPS, y_dummy_,
-                                    (int) g.ssm_k_heads, (int) HV, (int) MT, commit_, cs_, (int) MT);
+                                    (int) g.ssm_k_heads, (int) HV, (int) MT, commit_, cs_, (int) MT, g.gdn_gate_silu);
                 ++gdn_index;
             } else {
-                const QsaState& st = ss.qsa_states[qsa_index];
-                const WeightRef* wikn = need(v, "indexer.k_norm.weight", err);
-                if (!wikn) { ok = false; break; }
-                copy_from_mapped(st.idx_tail, tail_snap_ + (size_t) qsa_index * TS, TS, cs_);
-                const QsaIndexerBuffers ib{st.idx_tail, st.idx_dead, st.idx_pooled, st.idx_block_pos};
-                for (int64_t t = 0; t < MT; ++t)
-                    native_qsa_indexer_append(idx_raw_L_ + (size_t) (qsa_index * MT + t) * ID, commit_ + 2 + t, 0,
-                                              (const float*) wikn->data, EPS, ib, s, st.max_cells,
-                                              rope_scaling(), cs_);
+                if (g.idx_q_heads > 0) {
+                    const QsaState& st = ss.qsa_states[qsa_index];
+                    const WeightRef* wikn = need(v, "indexer.k_norm.weight", err);
+                    if (!wikn) { ok = false; break; }
+                    copy_from_mapped(st.idx_tail, tail_snap_ + (size_t) qsa_index * TS, TS, cs_);
+                    const QsaIndexerBuffers ib{st.idx_tail, st.idx_dead, st.idx_pooled, st.idx_block_pos};
+                    for (int64_t t = 0; t < MT; ++t)
+                        native_qsa_indexer_append(idx_raw_L_ + (size_t) (qsa_index * MT + t) * ID, commit_ + 2 + t, 0,
+                                                  (const float*) wikn->data, EPS, ib, s, st.max_cells,
+                                                  rope_scaling(), cs_);
+                }
                 ++qsa_index;
             }
         }
@@ -1844,18 +1957,20 @@ bool Verifier::capture_commit_batch(const int* rows, int S, int hbase, std::stri
                                         gate_L_ + (size_t) gdn_index * MT * HV + (size_t) t * HV,
                                         beta_L_ + (size_t) gdn_index * MT * HV + (size_t) t * HV, z_ + (size_t) t * ZV,
                                         (const float*) wnm->data, EPS, y_dummy_ + (size_t) t * ZV, (int) g.ssm_k_heads,
-                                        (int) HV, 1, keep, cs_);
+                                        (int) HV, 1, keep, cs_, 0, g.gdn_gate_silu);
                 }
                 ++gdn_index;
             } else {
-                const WeightRef* wikn = need(v, "indexer.k_norm.weight", err);
-                if (!wikn) { ok = false; break; }
-                for (int t = 0; t < S; ++t) {
-                    const QsaState& st = slots_[(size_t) rows[t]]->qsa_states[qsa_index];
-                    copy_from_mapped(st.idx_tail, tail_snap_b_ + ((size_t) rows[t] * nQ + qsa_index) * TS, TS, cs_);
-                    const QsaIndexerBuffers ib{st.idx_tail, st.idx_dead, st.idx_pooled, st.idx_block_pos};
-                    native_qsa_indexer_append(idx_raw_L_ + (size_t) (qsa_index * MT + t) * ID, commitb_ + (size_t) rows[t] * CB + 2,
-                                              0, (const float*) wikn->data, EPS, ib, s, st.max_cells, rope_scaling(), cs_);
+                if (g.idx_q_heads > 0) {
+                    const WeightRef* wikn = need(v, "indexer.k_norm.weight", err);
+                    if (!wikn) { ok = false; break; }
+                    for (int t = 0; t < S; ++t) {
+                        const QsaState& st = slots_[(size_t) rows[t]]->qsa_states[qsa_index];
+                        copy_from_mapped(st.idx_tail, tail_snap_b_ + ((size_t) rows[t] * nQ + qsa_index) * TS, TS, cs_);
+                        const QsaIndexerBuffers ib{st.idx_tail, st.idx_dead, st.idx_pooled, st.idx_block_pos};
+                        native_qsa_indexer_append(idx_raw_L_ + (size_t) (qsa_index * MT + t) * ID, commitb_ + (size_t) rows[t] * CB + 2,
+                                                  0, (const float*) wikn->data, EPS, ib, s, st.max_cells, rope_scaling(), cs_);
+                    }
                 }
                 ++qsa_index;
             }
@@ -2151,6 +2266,33 @@ bool Verifier::copy_logits(int t, float* host) const {
     if (head_logits_ == nullptr || host == nullptr || t < 0 || n_vocab_ <= 0) return false;
     return cudaMemcpy(host, head_logits_ + (size_t) t * (size_t) n_vocab_, (size_t) n_vocab_ * sizeof(float),
                       cudaMemcpyDeviceToHost) == cudaSuccess;
+}
+
+void Verifier::debug_dump_layer0() const {
+    auto dump_buf = [](const char* name, const float* dev, int64_t n) {
+        if (!dev || n <= 0) return;
+        std::vector<float> h(n);
+        if (cudaMemcpy(h.data(), dev, n * sizeof(float), cudaMemcpyDeviceToHost) != cudaSuccess) return;
+        float norm = 0.0f;
+        for (float v : h) norm += v * v;
+        norm = std::sqrt(norm);
+        std::printf("[GUILD EVAL] %s (F32 ne=%lld norm=%g) first 4: ", name, (long long) n, norm);
+        for (int i = 0; i < 4 && i < n; ++i) std::printf("%g ", h[i]);
+        std::printf("\n");
+    };
+
+    dump_buf("model.input_embed", emb_, g_->n_embd);
+    dump_buf("attn_norm-0", dbg_l0_attn_norm_ ? dbg_l0_attn_norm_ : mixed_, g_->n_embd);
+    dump_buf("linear_attn_qkv_mixed-0", qkv_L_, g_->ssm_conv_channels);
+    dump_buf("conv_output_raw-0", h_L_, g_->ssm_conv_channels);
+    dump_buf("gate-0", gate_L_, g_->ssm_v_heads);
+    dump_buf("beta-0", beta_L_, g_->ssm_v_heads);
+    dump_buf("z-0", dbg_l0_z_ ? dbg_l0_z_ : z_, g_->ssm_value_dim);
+    dump_buf("linear_attn_out-0", dbg_l0_bo_ ? dbg_l0_bo_ : bo_, g_->n_embd);
+    dump_buf("attn_residual-0", dbg_l0_R_ ? dbg_l0_R_ : R_, g_->n_embd);
+    dump_buf("attn_post_norm-0", dbg_l0_post_norm_ ? dbg_l0_post_norm_ : mixed_, g_->n_embd);
+    dump_buf("shared_expert-0", dbg_l0_shared_ ? dbg_l0_shared_ : shared_, g_->n_embd);
+    dump_buf("router_logits-0", dbg_l0_logits_ ? dbg_l0_logits_ : logits_, g_->n_expert);
 }
 
 }  // namespace guild::core

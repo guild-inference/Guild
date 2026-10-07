@@ -84,6 +84,7 @@ public:
     bool run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool, void* user, int32_t* out, std::string& err);
     /// Diagnostics: row `t` of the last window's head logits (n_vocab floats) to the host. Valid after run().
     bool copy_logits(int t, float* host) const;
+    void debug_dump_layer0() const;
     int64_t vocab() const { return next_ ? next_->vocab() : n_vocab_; }
     /// The sampling the verify window's head applies (temperature / top_p / top_k / seed).  Set per
     /// request; greedy by default.  The sampling itself runs OUTSIDE the captured graph - its
@@ -359,6 +360,13 @@ private:
     float *sh_gate_ = nullptr, *sh_up_ = nullptr, *sh_g_ = nullptr;
     float* hist_snap_ = nullptr;                              // T * NG_HIST * NG_HC_DIM
     int64_t cap_ = 0, max_blocks_ = 0, attn_scratch_floats_ = 0;
+    float* dbg_l0_attn_norm_ = nullptr;
+    float* dbg_l0_z_ = nullptr;
+    float* dbg_l0_bo_ = nullptr;
+    float* dbg_l0_R_ = nullptr;
+    float* dbg_l0_post_norm_ = nullptr;
+    float* dbg_l0_logits_ = nullptr;
+    float* dbg_l0_shared_ = nullptr;
 };
 
 }  // namespace guild::core

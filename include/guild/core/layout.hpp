@@ -72,6 +72,8 @@ struct ModelGeometry {
     int64_t hc = 4;
     int64_t hc_lr = 320;
 
+    bool gdn_gate_silu = false;
+
     void sync_qwen4exp() {
         ssm_state_size = qwen4exp.ssm_state_size;
         ssm_k_heads = qwen4exp.ssm_k_heads;
@@ -83,6 +85,7 @@ struct ModelGeometry {
         idx_key_dim = qwen4exp.idx_key_dim;
         hc = qwen4exp.hc;
         hc_lr = qwen4exp.hc_lr;
+        gdn_gate_silu = false;
     }
 
     void apply_descriptor(const model::ModelDescriptor& desc) {
@@ -94,19 +97,44 @@ struct ModelGeometry {
         if (desc.attn.head_dim > 0) head_dim = desc.attn.head_dim;
         if (desc.moe.n_routed_experts > 0) n_expert = desc.moe.n_routed_experts;
         if (desc.moe.expert_dim_ff > 0) n_ff = desc.moe.expert_dim_ff;
-        sync_qwen4exp();
+        if (desc.archetype == model::ModelArchetype::Qwen35MoE ||
+            desc.arch_name == "qwen35moe" || desc.arch_name == "qwen2moe") {
+            ssm_state_size = 128;
+            ssm_k_heads = 16;
+            ssm_v_heads = 32;
+            ssm_d_conv = 4;
+            ssm_conv_channels = 8192;
+            ssm_value_dim = 4096;
+            idx_q_heads = 0;
+            idx_key_dim = 0;
+            hc = 1;
+            hc_lr = 0;
+            gdn_gate_silu = true;
+        } else {
+            sync_qwen4exp();
+        }
     }
 
     int64_t hc_dim() const { return hc * n_embd; }
-    /// `layer % qsa_interval == qsa_interval - 1` is full attention.  Derived, not a second list.
-    int64_t n_qsa_layers() const { return qsa_interval > 0 ? n_layers / qsa_interval : n_layers; }
+    /// Derived layer counts based on is_qsa_layer
+    int64_t n_qsa_layers() const;
     int64_t n_gdn_layers() const { return n_layers - n_qsa_layers(); }
 };
 
 /// True for the full-attention layers.
 inline bool is_qsa_layer(const ModelGeometry& g, int64_t layer) {
     if (g.qsa_interval <= 1) return true;
-    return layer % g.qsa_interval == g.qsa_interval - 1;
+    if (layer % g.qsa_interval == g.qsa_interval - 1) return true;
+    return false;
+}
+
+inline int64_t ModelGeometry::n_qsa_layers() const {
+    if (qsa_interval <= 1) return n_layers;
+    int64_t count = 0;
+    for (int64_t l = 0; l < n_layers; ++l) {
+        if (is_qsa_layer(*this, l)) count++;
+    }
+    return count;
 }
 
 /// One layer's tensors, resolved by NAME.  `get("attn_qkv.weight")` looks up `blk.<layer>.attn_qkv.weight`

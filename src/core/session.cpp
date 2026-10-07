@@ -54,11 +54,18 @@ static uint64_t ple_hist_bytes() {
 uint64_t session_bytes(const ModelGeometry& g, int64_t max_cells, int64_t k, int64_t layer_lo, int64_t layer_hi) {
     if (layer_hi < 0 || layer_hi > g.n_layers) layer_hi = g.n_layers;
     if (layer_lo < 0) layer_lo = 0;
-    // QSA layers are `l % interval == interval-1`, so exactly `bound / interval` of them live below `bound`
-    const int64_t I = std::max<int64_t>(g.qsa_interval, 1);
-    const int64_t q_lo = layer_lo / I, q_hi = layer_hi / I;
+    int64_t q_lo = 0;
+    for (int64_t l = 0; l < layer_lo; ++l) if (is_qsa_layer(g, l)) q_lo++;
+    int64_t q_hi = 0;
+    for (int64_t l = 0; l < layer_hi; ++l) if (is_qsa_layer(g, l)) q_hi++;
     const int64_t q_n = std::max<int64_t>(q_hi - q_lo, g.n_qsa_layers() > 0 ? 1 : 0);
-    const int64_t gdn_n = std::max<int64_t>((layer_hi - layer_lo) - std::max<int64_t>(q_hi - q_lo, 0), 0);
+
+    int64_t gdn_lo = 0;
+    for (int64_t l = 0; l < layer_lo; ++l) if (!is_qsa_layer(g, l)) gdn_lo++;
+    int64_t gdn_hi = 0;
+    for (int64_t l = 0; l < layer_hi; ++l) if (!is_qsa_layer(g, l)) gdn_hi++;
+    const int64_t gdn_n = gdn_hi - gdn_lo;
+
     uint64_t n = 0;
     n += gdn_buffers_bytes(g);
     n += (uint64_t) gdn_n * gdn_state_floats(g) * 4;
@@ -88,12 +95,22 @@ uint64_t session_init(const ModelGeometry& g, int64_t max_cells, int64_t k, void
     s.k = k;
     s.layer_lo = layer_lo;
     s.layer_hi = layer_hi;
-    const int64_t I = std::max<int64_t>(g.qsa_interval, 1);
-    const int64_t q_n_range = layer_hi / I - layer_lo / I;
-    s.qsa_ord0 = layer_lo / I;
+    int64_t q_lo = 0;
+    for (int64_t l = 0; l < layer_lo; ++l) if (is_qsa_layer(g, l)) q_lo++;
+    int64_t q_hi = 0;
+    for (int64_t l = 0; l < layer_hi; ++l) if (is_qsa_layer(g, l)) q_hi++;
+    const int64_t q_n_range = q_hi - q_lo;
+
+    int64_t gdn_lo = 0;
+    for (int64_t l = 0; l < layer_lo; ++l) if (!is_qsa_layer(g, l)) gdn_lo++;
+    int64_t gdn_hi = 0;
+    for (int64_t l = 0; l < layer_hi; ++l) if (!is_qsa_layer(g, l)) gdn_hi++;
+    const int64_t gdn_n_range = gdn_hi - gdn_lo;
+
+    s.qsa_ord0 = q_lo;
     s.qsa_alloc = std::max<int64_t>(q_n_range, g.n_qsa_layers() > 0 ? 1 : 0);
-    s.gdn_ord0 = layer_lo - layer_lo / I;
-    s.gdn_alloc = std::max<int64_t>((layer_hi - layer_lo) - q_n_range, 0);
+    s.gdn_ord0 = gdn_lo;
+    s.gdn_alloc = gdn_n_range;
 
     gdn_buffers_init(g, take(gdn_buffers_bytes(g)), s.gdn);
     s.gdn_state = (float*) take((uint64_t) s.gdn_alloc * gdn_state_floats(g) * 4);

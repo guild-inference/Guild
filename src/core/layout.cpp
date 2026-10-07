@@ -2,6 +2,7 @@
 #include "guild/core/layout.hpp"
 
 #include <cstdio>
+#include <vector>
 
 namespace guild::core {
 namespace {
@@ -47,37 +48,42 @@ bool check_one(const WeightTable& t, const ModelGeometry& g, int64_t layer, std:
     const bool qsa = is_qsa_layer(g, layer);
 
     // ---- the 2-D tensor set, per layer family
-    const Want2 want2[] = {
-        // gated residual, EVERY layer - `gr_read` takes w_down (hc_lr, hc_dim) and w_up (hc_lr, hc_dim)
-        // after its own transpose, so the pack's orientation is [hc_dim, hc_lr] and [hc_lr, hc_dim].
-        {"hc_attn_down.weight", g.hc_dim(), g.hc_lr, false, false},
-        {"hc_attn_up.weight", g.hc_lr, g.hc_dim(), false, false},
-        {"hc_attn_inject.weight", g.hc_dim(), g.hc, false, false},
-        {"hc_ffn_down.weight", g.hc_dim(), g.hc_lr, false, false},
-        {"hc_ffn_up.weight", g.hc_lr, g.hc_dim(), false, false},
-        {"hc_ffn_inject.weight", g.hc_dim(), g.hc, false, false},
-        // MoE, EVERY layer
-        {"ffn_gate_inp.weight", g.n_embd, g.n_expert, false, false},
-        {"ffn_gate_shexp.weight", g.n_embd, g.n_ff, false, false},
-        {"ffn_up_shexp.weight", g.n_embd, g.n_ff, false, false},
-        {"ffn_down_shexp.weight", g.n_ff, g.n_embd, false, false},
-        // GDN only
-        {"attn_qkv.weight", g.n_embd, g.ssm_conv_channels, false, true},
-        {"attn_gate.weight", g.n_embd, g.ssm_value_dim, false, true},
-        {"ssm_out.weight", g.ssm_value_dim, g.n_embd, false, true},
-        {"ssm_conv1d.weight", g.ssm_d_conv, g.ssm_conv_channels, false, true},
-        {"ssm_alpha.weight", g.n_embd, g.ssm_v_heads, false, true},
-        {"ssm_beta.weight", g.n_embd, g.ssm_v_heads, false, true},
-        // QSA only
-        {"attn_q.weight", g.n_embd, 2 * g.n_head * g.head_dim, true, false},
-        {"attn_k.weight", g.n_embd, g.n_head_kv * g.head_dim, true, false},
-        {"attn_v.weight", g.n_embd, g.n_head_kv * g.head_dim, true, false},
-        {"attn_output.weight", g.n_head * g.head_dim, g.n_embd, true, false},
-        // THE INDEXER.  `q_proj` is the QUERY count and `k_proj` is the KEY width, and they are different
-        // numbers - conflating them is what made the planner's indexer term 4x too big in round 194.
-        {"indexer.q_proj.weight", g.n_embd, g.idx_q_heads * g.idx_key_dim, true, false},
-        {"indexer.k_proj.weight", g.n_embd, g.idx_key_dim, true, false},
-    };
+    std::vector<Want2> want2;
+    if (g.hc > 1) {
+        // gated residual, EVERY layer
+        want2.push_back({"hc_attn_down.weight", g.hc_dim(), g.hc_lr, false, false});
+        want2.push_back({"hc_attn_up.weight", g.hc_lr, g.hc_dim(), false, false});
+        want2.push_back({"hc_attn_inject.weight", g.hc_dim(), g.hc, false, false});
+        want2.push_back({"hc_ffn_down.weight", g.hc_dim(), g.hc_lr, false, false});
+        want2.push_back({"hc_ffn_up.weight", g.hc_lr, g.hc_dim(), false, false});
+        want2.push_back({"hc_ffn_inject.weight", g.hc_dim(), g.hc, false, false});
+    }
+
+    // MoE, EVERY layer
+    want2.push_back({"ffn_gate_inp.weight", g.n_embd, g.n_expert, false, false});
+    want2.push_back({"ffn_gate_shexp.weight", g.n_embd, g.n_ff, false, false});
+    want2.push_back({"ffn_up_shexp.weight", g.n_embd, g.n_ff, false, false});
+    want2.push_back({"ffn_down_shexp.weight", g.n_ff, g.n_embd, false, false});
+
+    // GDN only
+    want2.push_back({"attn_qkv.weight", g.n_embd, g.ssm_conv_channels, false, true});
+    want2.push_back({"attn_gate.weight", g.n_embd, g.ssm_value_dim, false, true});
+    want2.push_back({"ssm_out.weight", g.ssm_value_dim, g.n_embd, false, true});
+    want2.push_back({"ssm_conv1d.weight", g.ssm_d_conv, g.ssm_conv_channels, false, true});
+    want2.push_back({"ssm_alpha.weight", g.n_embd, g.ssm_v_heads, false, true});
+    want2.push_back({"ssm_beta.weight", g.n_embd, g.ssm_v_heads, false, true});
+
+    // QSA only
+    want2.push_back({"attn_q.weight", g.n_embd, 2 * g.n_head * g.head_dim, true, false});
+    want2.push_back({"attn_k.weight", g.n_embd, g.n_head_kv * g.head_dim, true, false});
+    want2.push_back({"attn_v.weight", g.n_embd, g.n_head_kv * g.head_dim, true, false});
+    want2.push_back({"attn_output.weight", g.n_head * g.head_dim, g.n_embd, true, false});
+
+    if (g.idx_q_heads > 0) {
+        want2.push_back({"indexer.q_proj.weight", g.n_embd, g.idx_q_heads * g.idx_key_dim, true, false});
+        want2.push_back({"indexer.k_proj.weight", g.n_embd, g.idx_key_dim, true, false});
+    }
+
     for (const Want2& w : want2) {
         if (w.qsa_only && !qsa) continue;
         if (w.gdn_only && qsa) continue;
@@ -90,21 +96,27 @@ bool check_one(const WeightTable& t, const ModelGeometry& g, int64_t layer, std:
         if (r->ne1 != w.ne1) return fail(err, v, w.suffix, "ne1", r->ne1, w.ne1);
     }
 
-    // ---- the 1-D set.  EVERY ONE OF THESE IS `F32` EXCEPT the shared expert's scalar gate, which is BF16 -
-    // and that single exception is the one a reader would not guess, so it is written down rather than
-    // inferred from the tensor count.
-    const Want1 want1[] = {
-        {"hc_attn_norm.weight", g.hc_dim(), WeightKind::F32, false, false},
-        {"hc_ffn_norm.weight", g.hc_dim(), WeightKind::F32, false, false},
-        {"ffn_gate_inp_shexp.weight", g.n_embd, WeightKind::Bf16InF32, false, false},
-        {"ssm_a", g.ssm_v_heads, WeightKind::F32, false, true},
-        {"ssm_dt.bias", g.ssm_v_heads, WeightKind::F32, false, true},
-        {"ssm_norm.weight", g.ssm_state_size, WeightKind::F32, false, true},
-        {"attn_q_norm.weight", g.head_dim, WeightKind::F32, true, false},
-        {"attn_k_norm.weight", g.head_dim, WeightKind::F32, true, false},
-        {"indexer.q_norm.weight", g.idx_key_dim, WeightKind::F32, true, false},
-        {"indexer.k_norm.weight", g.idx_key_dim, WeightKind::F32, true, false},
-    };
+    std::vector<Want1> want1;
+    if (g.hc > 1) {
+        want1.push_back({"hc_attn_norm.weight", g.hc_dim(), WeightKind::F32, false, false});
+        want1.push_back({"hc_ffn_norm.weight", g.hc_dim(), WeightKind::F32, false, false});
+    } else {
+        want1.push_back({"attn_norm.weight", g.n_embd, WeightKind::F32, false, false});
+        want1.push_back({"post_attention_norm.weight", g.n_embd, WeightKind::F32, false, false});
+    }
+
+    want1.push_back({"ffn_gate_inp_shexp.weight", g.n_embd, WeightKind::Bf16InF32, false, false});
+    want1.push_back({"ssm_a", g.ssm_v_heads, WeightKind::F32, false, true});
+    want1.push_back({"ssm_dt.bias", g.ssm_v_heads, WeightKind::F32, false, true});
+    want1.push_back({"ssm_norm.weight", g.ssm_state_size, WeightKind::F32, false, true});
+    want1.push_back({"attn_q_norm.weight", g.head_dim, WeightKind::F32, true, false});
+    want1.push_back({"attn_k_norm.weight", g.head_dim, WeightKind::F32, true, false});
+
+    if (g.idx_q_heads > 0) {
+        want1.push_back({"indexer.q_norm.weight", g.idx_key_dim, WeightKind::F32, true, false});
+        want1.push_back({"indexer.k_norm.weight", g.idx_key_dim, WeightKind::F32, true, false});
+    }
+
     for (const Want1& w : want1) {
         if (w.qsa_only && !qsa) continue;
         if (w.gdn_only && qsa) continue;
