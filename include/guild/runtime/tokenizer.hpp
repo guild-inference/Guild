@@ -37,6 +37,8 @@ private:
     std::vector<std::string> vocab_tokens_;
     std::unordered_map<std::string, int32_t> token_to_id_;
     std::vector<uint8_t> unicode_to_byte_;
+    std::vector<std::string> byte_to_unicode_;
+    std::unordered_map<std::string, int32_t> special_tokens_;
 
     void init_byte_encoder();
 };

@@ -114,11 +114,12 @@ std::unique_ptr<GuildModel> GuildModel::load(
     }
 
     // Expert layout from pack directory
-    if (!guild::kernels::cpu::expert_layout_load(paths.pack_dir, impl->g.n_layers, impl->g.n_expert, error_msg)) {
+    if (!guild::kernels::cpu::expert_layout_load(paths.pack_dir, impl->g.n_layers, impl->g.n_expert, error_msg,
+                                                 impl->g.n_embd, impl->g.n_ff)) {
         return nullptr;
     }
     const bool native_pack = guild::kernels::cpu::expert_layout().native;
-    if (native_pack) {
+    if (native_pack && plan.routed_experts_in_gpu > 0) {
         const auto& lay = guild::kernels::cpu::expert_layout();
         for (int64_t l = 0; l < static_cast<int64_t>(lay.fmt.size()); ++l) {
             const auto& f = lay.fmt[static_cast<size_t>(l)];
@@ -337,14 +338,15 @@ std::unique_ptr<GuildModel> GuildModel::load(
                             impl->xcache.slots() > 0 ? &impl->xcache : nullptr,
                             impl->host_res.empty() ? nullptr : impl->host_res.data(),
                             impl->config.prefill_chunk, impl->main_stream, pf_err)) {
-        error_msg = "Prefill::init failed: " + pf_err;
-        return nullptr;
+        // Prefill engine is optimized for Qwen4Exp; architectures with different geometry fall back to Verifier ingestion
+        impl->prefill.reset();
     }
 
     // Setup Drive dispatch
     impl->drive.d.pool = impl->pool.get();
     impl->drive.d.src = impl->srcp;
     impl->drive.d.n_expert = impl->g.n_expert;
+    impl->drive.d.n_embd = impl->g.n_embd;
     impl->drive.d.jobs.resize(static_cast<size_t>(impl->K));
     impl->drive.d.split_rows = true;
     impl->drive.d.cache = slots > 0 ? &impl->xcache : nullptr;
@@ -352,14 +354,39 @@ std::unique_ptr<GuildModel> GuildModel::load(
     impl->drive.d.cache_blob = static_cast<int64_t>(kernels::cpu::expert_layout().max_blob);
     impl->drive.d.cache_slot_off = slots > 0 ? impl->xcache.slot_offsets() : nullptr;
     impl->drive.d.host_res = impl->host_res.data();
-    impl->ver->set_pcie_mode(2);
-    impl->drive.d.plan = impl->ver->plan_sink();
-    impl->drive.d.pcie_num = static_cast<int>((native_pack ? 0.55 : 0.2) * 256.0 + 0.5);
+    bool native_gpu_supported = true;
+    if (native_pack) {
+        const auto& lay = kernels::cpu::expert_layout();
+        for (size_t l = 0; l < lay.fmt.size(); ++l) {
+            const auto& f = lay.fmt[l];
+            if (!guild::kernels::native_expert_supported(f.gu_type, f.d_type, f.n_embd, f.n_ff)) {
+                native_gpu_supported = false;
+                break;
+            }
+        }
+    }
+
+    if (plan.routed_experts_in_gpu > 0 && native_gpu_supported) {
+        impl->ver->set_pcie_mode(2);
+        impl->drive.d.plan = impl->ver->plan_sink();
+        impl->drive.d.pcie_num = static_cast<int>((native_pack ? 0.55 : 0.2) * static_cast<double>(impl->g.n_expert) + 0.5);
+    } else {
+        impl->ver->set_pcie_mode(0);
+        impl->drive.d.plan = impl->ver->plan_sink();
+        impl->drive.d.pcie_num = 0;
+    }
 
     // Load tokenizer
     if (!paths.tokenizer_dir.empty() && std::filesystem::exists(paths.tokenizer_dir)) {
         std::string tok_err;
-        model->tokenizer_.load(paths.tokenizer_dir, tok_err);
+        if (model->tokenizer_.load(paths.tokenizer_dir, tok_err)) {
+            const auto& eids = model->tokenizer_.eos_token_ids();
+            if (!eids.empty()) {
+                impl->config.eos_token_ids.clear();
+                for (int32_t id : eids) impl->config.eos_token_ids.push_back(id);
+                model->config_.eos_token_ids = impl->config.eos_token_ids;
+            }
+        }
     }
 
     model->ready_ = true;

@@ -36,10 +36,21 @@ void Tokenizer::init_byte_encoder() {
     }
 
     unicode_to_byte_.assign(512, 0);
+    byte_to_unicode_.assign(256, "");
     for (size_t i = 0; i < bs.size(); ++i) {
-        if (cs[i] < static_cast<int>(unicode_to_byte_.size())) {
-            unicode_to_byte_[cs[i]] = static_cast<uint8_t>(bs[i]);
+        uint8_t b = static_cast<uint8_t>(bs[i]);
+        uint32_t c = static_cast<uint32_t>(cs[i]);
+        if (c < static_cast<uint32_t>(unicode_to_byte_.size())) {
+            unicode_to_byte_[c] = b;
         }
+        std::string s;
+        if (c < 128) {
+            s.push_back(static_cast<char>(c));
+        } else if (c < 2048) {
+            s.push_back(static_cast<char>(0xC0 | (c >> 6)));
+            s.push_back(static_cast<char>(0x80 | (c & 0x3F)));
+        }
+        byte_to_unicode_[b] = s;
     }
 }
 
@@ -76,12 +87,19 @@ bool Tokenizer::load(const std::string& tokenizer_dir, std::string& err_msg) {
             }
             vocab_tokens_[id] = kv.first;
             token_to_id_[kv.first] = static_cast<int32_t>(id);
+            if (kv.first.rfind("<|", 0) == 0 && kv.first.find("|>") != std::string::npos) {
+                special_tokens_[kv.first] = static_cast<int32_t>(id);
+            } else if (kv.first == "<think>" || kv.first == "</think>") {
+                special_tokens_[kv.first] = static_cast<int32_t>(id);
+            }
         }
     }
 
+    eos_token_ids_.clear();
     auto it_im_end = token_to_id_.find("<|im_end|>");
     if (it_im_end != token_to_id_.end()) {
         eos_token_id_ = it_im_end->second;
+        eos_token_ids_.push_back(it_im_end->second);
     }
     auto it_endoftext = token_to_id_.find("<|endoftext|>");
     if (it_endoftext != token_to_id_.end()) {
@@ -142,7 +160,6 @@ std::vector<int32_t> Tokenizer::tokenize(const std::string& text) const {
     if (text.empty()) return ids;
 
     if (!loaded_) {
-        // Fallback ASCII byte tokens
         ids.reserve(text.size());
         for (unsigned char c : text) {
             ids.push_back(static_cast<int32_t>(c));
@@ -150,32 +167,72 @@ std::vector<int32_t> Tokenizer::tokenize(const std::string& text) const {
         return ids;
     }
 
-    // Longest prefix match / greedy BPE approximation on token vocabulary
-    size_t pos = 0;
-    while (pos < text.size()) {
-        // Check for special tokens or longest matching vocabulary piece
-        bool matched = false;
-        size_t max_len = std::min(text.size() - pos, size_t(64));
-        for (size_t len = max_len; len > 0; --len) {
-            std::string sub = text.substr(pos, len);
-            auto it = token_to_id_.find(sub);
-            if (it != token_to_id_.end()) {
-                ids.push_back(it->second);
-                pos += len;
-                matched = true;
-                break;
+    auto tokenize_span = [&](const std::string& span) {
+        if (span.empty()) return;
+        // Map raw bytes to byte-level BPE unicode characters
+        std::string mapped;
+        mapped.reserve(span.size() * 2);
+        for (unsigned char b : span) {
+            if (b < byte_to_unicode_.size()) {
+                mapped += byte_to_unicode_[b];
+            } else {
+                mapped += static_cast<char>(b);
             }
         }
-        if (!matched) {
-            // Encode single byte or fallback
-            std::string single(1, text[pos]);
-            auto it = token_to_id_.find(single);
-            if (it != token_to_id_.end()) {
-                ids.push_back(it->second);
-            } else {
-                ids.push_back(static_cast<unsigned char>(text[pos]));
+
+        size_t pos = 0;
+        while (pos < mapped.size()) {
+            bool matched = false;
+            size_t max_len = std::min(mapped.size() - pos, size_t(128));
+            for (size_t len = max_len; len > 0; --len) {
+                std::string sub = mapped.substr(pos, len);
+                auto it = token_to_id_.find(sub);
+                if (it != token_to_id_.end()) {
+                    ids.push_back(it->second);
+                    pos += len;
+                    matched = true;
+                    break;
+                }
             }
-            pos++;
+            if (!matched) {
+                // Advance by 1 UTF-8 character
+                unsigned char c = static_cast<unsigned char>(mapped[pos]);
+                size_t step = 1;
+                if ((c & 0xE0) == 0xC0) step = 2;
+                else if ((c & 0xF0) == 0xE0) step = 3;
+                else if ((c & 0xF8) == 0xF0) step = 4;
+                pos += std::min(step, mapped.size() - pos);
+            }
+        }
+    };
+
+    // Find special tokens in text
+    size_t pos = 0;
+    while (pos < text.size()) {
+        size_t next_spec = std::string::npos;
+        size_t spec_len = 0;
+        int32_t spec_id = -1;
+
+        for (const auto& sp : special_tokens_) {
+            size_t f = text.find(sp.first, pos);
+            if (f != std::string::npos) {
+                if (next_spec == std::string::npos || f < next_spec || (f == next_spec && sp.first.size() > spec_len)) {
+                    next_spec = f;
+                    spec_len = sp.first.size();
+                    spec_id = sp.second;
+                }
+            }
+        }
+
+        if (next_spec != std::string::npos) {
+            if (next_spec > pos) {
+                tokenize_span(text.substr(pos, next_spec - pos));
+            }
+            ids.push_back(spec_id);
+            pos = next_spec + spec_len;
+        } else {
+            tokenize_span(text.substr(pos));
+            break;
         }
     }
 

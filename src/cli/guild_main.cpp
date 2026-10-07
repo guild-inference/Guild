@@ -303,8 +303,28 @@ int cmd_serve(int argc, char** argv) {
     }
     std::string mtp_dir = "/mnt/models-ssd/Strata-data/mtp/rt";
 
-    bool real_weights_available = std::filesystem::exists(exe_path) &&
-                                  std::filesystem::exists(pack_dir) &&
+    if (manifest_opt.has_value()) {
+        if (manifest_opt->metadata.count("pack_dir")) {
+            pack_dir = manifest_opt->metadata.at("pack_dir");
+        }
+        if (manifest_opt->metadata.count("expert_profile")) {
+            profile_bin = manifest_opt->metadata.at("expert_profile");
+        } else if (desc.archetype != guild::model::ModelArchetype::Qwen4Exp) {
+            profile_bin = "";
+        }
+        if (manifest_opt->metadata.count("mtp_dir")) {
+            mtp_dir = manifest_opt->metadata.at("mtp_dir");
+        } else if (desc.archetype != guild::model::ModelArchetype::Qwen4Exp) {
+            mtp_dir = "";
+        }
+    }
+
+    std::string tokenizer_dir = pack_dir + "/tokenizer";
+    if (manifest_opt.has_value() && manifest_opt->metadata.count("tokenizer_dir")) {
+        tokenizer_dir = manifest_opt->metadata.at("tokenizer_dir");
+    }
+
+    bool real_weights_available = std::filesystem::exists(pack_dir) &&
                                   std::filesystem::exists(native_model);
 
     if (!force_mock && real_weights_available) {
@@ -316,7 +336,7 @@ int cmd_serve(int argc, char** argv) {
         n_opts.paths.pack_dir = pack_dir;
         n_opts.paths.expert_profile_path = profile_bin;
         n_opts.paths.mtp_dir = mtp_dir;
-        n_opts.paths.tokenizer_dir = pack_dir + "/tokenizer";
+        n_opts.paths.tokenizer_dir = tokenizer_dir;
 
         auto native_engine = std::make_shared<guild::server::NativeInferenceEngine>(std::move(n_opts));
         std::string n_err;
@@ -334,7 +354,7 @@ int cmd_serve(int argc, char** argv) {
             pe_opts.working_dir = "/home/ubuntu/Guild";
             pe_opts.model_name = desc.name;
             pe_opts.max_context = plan.context_length;
-            pe_opts.tokenizer_dir = pack_dir + "/tokenizer";
+            pe_opts.tokenizer_dir = tokenizer_dir;
 
             pe_opts.args = {
                 "--pack", pack_dir,
@@ -872,11 +892,21 @@ int cmd_run(int argc, char** argv) {
     if (!m_opt.has_value()) {
         auto builtin = guild::models::ModelRegistry::instance().find_builtin(model);
         if (builtin.has_value()) {
-            std::cerr << "guild run: model '" << model << "' is not installed.\n"
-                      << "Run 'guild pull " << builtin->name << "' to download it.\n";
-            return 1;
-        }
-        if (std::filesystem::exists(model)) {
+            bool has_local = false;
+            for (const auto& f : builtin->files) {
+                if (!f.local_path.empty() && std::filesystem::exists(f.local_path)) {
+                    has_local = true;
+                    break;
+                }
+            }
+            if (has_local) {
+                m_opt = builtin;
+            } else {
+                std::cerr << "guild run: model '" << model << "' is not installed.\n"
+                          << "Run 'guild pull " << builtin->name << "' to download it.\n";
+                return 1;
+            }
+        } else if (std::filesystem::exists(model)) {
             m_opt = guild::models::ModelRegistry::instance().resolve(model, store);
         } else {
             std::cerr << "guild run: unknown model '" << model << "'.\n"
@@ -920,8 +950,26 @@ int cmd_run(int argc, char** argv) {
     if (!std::filesystem::exists(profile_bin)) profile_bin = "/home/ubuntu/Strata/data/expert-profile.bin";
     std::string mtp_dir = "/mnt/models-ssd/Strata-data/mtp/rt";
 
-    bool real_weights_available = std::filesystem::exists(exe_path) &&
-                                  std::filesystem::exists(pack_dir) &&
+    if (manifest.metadata.count("pack_dir")) {
+        pack_dir = manifest.metadata.at("pack_dir");
+    }
+    if (manifest.metadata.count("expert_profile")) {
+        profile_bin = manifest.metadata.at("expert_profile");
+    } else if (desc.archetype != guild::model::ModelArchetype::Qwen4Exp) {
+        profile_bin = "";
+    }
+    if (manifest.metadata.count("mtp_dir")) {
+        mtp_dir = manifest.metadata.at("mtp_dir");
+    } else if (desc.archetype != guild::model::ModelArchetype::Qwen4Exp) {
+        mtp_dir = "";
+    }
+
+    std::string tokenizer_dir = pack_dir + "/tokenizer";
+    if (manifest.metadata.count("tokenizer_dir")) {
+        tokenizer_dir = manifest.metadata.at("tokenizer_dir");
+    }
+
+    bool real_weights_available = std::filesystem::exists(pack_dir) &&
                                   std::filesystem::exists(native_model);
 
     if (!force_mock && real_weights_available) {
@@ -933,7 +981,7 @@ int cmd_run(int argc, char** argv) {
         n_opts.paths.pack_dir = pack_dir;
         n_opts.paths.expert_profile_path = profile_bin;
         n_opts.paths.mtp_dir = mtp_dir;
-        n_opts.paths.tokenizer_dir = pack_dir + "/tokenizer";
+        n_opts.paths.tokenizer_dir = tokenizer_dir;
 
         auto native_engine = std::make_shared<guild::server::NativeInferenceEngine>(std::move(n_opts));
         std::string n_err;
@@ -945,7 +993,7 @@ int cmd_run(int argc, char** argv) {
             pe_opts.working_dir = "/home/ubuntu/Guild";
             pe_opts.model_name = desc.name;
             pe_opts.max_context = plan.context_length;
-            pe_opts.tokenizer_dir = pack_dir + "/tokenizer";
+            pe_opts.tokenizer_dir = tokenizer_dir;
             pe_opts.args = {
                 "--pack", pack_dir,
                 "--native", native_model,
@@ -985,11 +1033,16 @@ int cmd_run(int argc, char** argv) {
 
         guild::server::InferenceRequest req;
         req.model = manifest.name;
-        req.prompt = line;
+        if (line.rfind("<|im_start|>", 0) == std::string::npos) {
+            req.prompt = "<|im_start|>user\n" + line + "<|im_end|>\n<|im_start|>assistant\n";
+        } else {
+            req.prompt = line;
+        }
         req.max_tokens = 512;
 
         guild::server::GenerationResult gen_res;
         auto stream_cb = [](const guild::server::TokenOutput& tok) -> bool {
+            if (tok.text == "<|im_end|>" || tok.text == "<|endoftext|>") return false;
             std::cout << tok.text << std::flush;
             return true;
         };

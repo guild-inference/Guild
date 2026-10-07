@@ -91,32 +91,55 @@ bool GuildSession::generate(
     auto t_req_start = Clock::now();
     auto t_prefill_start = Clock::now();
 
-    m_impl->prefill->should_stop = [this, &req] {
-        return impl_->cancelled.load() || (req.cancel_flag && req.cancel_flag->load());
-    };
-
     bool use_mtp = !model_->paths().mtp_dir.empty();
-    if (use_mtp) {
-        m_impl->prefill->on_chunk = [this, m_impl, &ids](const float* R_rows, int64_t T, int64_t p0, std::string& e) -> bool {
-            std::vector<int32_t> next_tokens(static_cast<size_t>(T));
-            for (int64_t i = 0; i < T; ++i) {
-                if (p0 + i + 1 < static_cast<int64_t>(ids.size())) {
-                    next_tokens[static_cast<size_t>(i)] = static_cast<int32_t>(ids[static_cast<size_t>(p0 + i + 1)]);
+    if (m_impl->prefill) {
+        m_impl->prefill->should_stop = [this, &req] {
+            return impl_->cancelled.load() || (req.cancel_flag && req.cancel_flag->load());
+        };
+
+        if (use_mtp) {
+            m_impl->prefill->on_chunk = [this, m_impl, &ids](const float* R_rows, int64_t T, int64_t p0, std::string& e) -> bool {
+                std::vector<int32_t> next_tokens(static_cast<size_t>(T));
+                for (int64_t i = 0; i < T; ++i) {
+                    if (p0 + i + 1 < static_cast<int64_t>(ids.size())) {
+                        next_tokens[static_cast<size_t>(i)] = static_cast<int32_t>(ids[static_cast<size_t>(p0 + i + 1)]);
+                    }
+                }
+                if (m_impl->prefill->draft_kv(*m_impl->mtp, R_rows, next_tokens.data(), T, p0, e)) return true;
+                return e.empty() && m_impl->mtp->prefill(R_rows, next_tokens.data(), T, p0, e);
+            };
+        }
+
+        // Prefill prompt tokens [0, n_prompt - 1)
+        if (n_prompt > 1) {
+            if (!m_impl->prefill->run(ids.data(), n_prompt - 1, 0, error_msg)) {
+                if (impl_->cancelled.load() || (req.cancel_flag && req.cancel_flag->load())) {
+                    telemetry.finish_reason = "cancel";
+                    return true;
+                }
+                return false;
+            }
+        }
+    } else {
+        // Architecture-independent prompt ingestion via Verifier
+        if (n_prompt > 1) {
+            std::vector<int32_t> sink_out(1);
+            for (int64_t pos = 0; pos < n_prompt - 1; ++pos) {
+                if (impl_->cancelled.load() || (req.cancel_flag && req.cancel_flag->load())) {
+                    telemetry.finish_reason = "cancel";
+                    return true;
+                }
+                int32_t prompt_tok = static_cast<int32_t>(ids[static_cast<size_t>(pos)]);
+                m_impl->drive.d.layers = 0;
+                m_impl->drive.d.experts = 0;
+                m_impl->drive.d.failed = false;
+                if (!m_impl->ver->run(1, &prompt_tok, pos, drive_pool_multi, &m_impl->drive, sink_out.data(), error_msg)) {
+                    return false;
+                }
+                if (!m_impl->ver->commit(1, error_msg)) {
+                    return false;
                 }
             }
-            if (m_impl->prefill->draft_kv(*m_impl->mtp, R_rows, next_tokens.data(), T, p0, e)) return true;
-            return e.empty() && m_impl->mtp->prefill(R_rows, next_tokens.data(), T, p0, e);
-        };
-    }
-
-    // Prefill prompt tokens [0, n_prompt - 1)
-    if (n_prompt > 1) {
-        if (!m_impl->prefill->run(ids.data(), n_prompt - 1, 0, error_msg)) {
-            if (impl_->cancelled.load() || (req.cancel_flag && req.cancel_flag->load())) {
-                telemetry.finish_reason = "cancel";
-                return true;
-            }
-            return false;
         }
     }
 
