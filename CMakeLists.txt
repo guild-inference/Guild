@@ -973,6 +973,7 @@ if(GUILD_ENABLE_CUDA OR GUILD_ENABLE_HIP)
     src/runtime/model.cpp
     src/runtime/ple.cpp
     src/runtime/session.cpp
+    src/runtime/chat_template.cpp
     src/runtime/tokenizer.cpp)
   target_include_directories(guild_runtime PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include PRIVATE ${_guild_gpu_include_directories})
   target_link_libraries(guild_runtime PUBLIC guild_engine guild_prefill guild_spec guild_memory guild_model guild_artifact ${_guild_gpu_runtime_target})
@@ -980,6 +981,7 @@ else()
   add_library(guild_runtime STATIC
     src/runtime/model_stub.cpp
     src/runtime/session_stub.cpp
+    src/runtime/chat_template.cpp
     src/runtime/tokenizer.cpp)
   target_include_directories(guild_runtime PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
   target_link_libraries(guild_runtime PUBLIC guild_model guild_memory guild_warnings)
@@ -1041,6 +1043,14 @@ if(GUILD_BUILD_TESTS)
   add_executable(parity_test tests/server/parity_test.cpp)
   target_link_libraries(parity_test PRIVATE guild_server guild_runtime guild_models guild_memory guild_model guild_cli)
   add_test(NAME parity_test COMMAND parity_test)
+
+  add_executable(tokenizer_parity_test tests/core/tokenizer_parity_test.cpp)
+  target_link_libraries(tokenizer_parity_test PRIVATE guild_runtime guild_server guild_cli)
+  add_test(NAME tokenizer_parity_test COMMAND tokenizer_parity_test
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/tokenizer_golden.json
+    /mnt/models-ssd/Strata-data/packs/unsloth-ud-iq4_xs/tokenizer
+    /mnt/models-ssd/Strata-data/packs/ornith-1.5-35b/tokenizer)
+  set_tests_properties(tokenizer_parity_test PROPERTIES TIMEOUT 60)
 
   add_executable(finite_output_test tests/core/finite_output_test.cpp)
   target_include_directories(finite_output_test PRIVATE include)
