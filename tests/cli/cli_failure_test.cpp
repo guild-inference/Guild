@@ -6,6 +6,7 @@
 #include <csignal>
 #include <filesystem>
 #include <fcntl.h>
+#include <fstream>
 #include <poll.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -63,7 +64,7 @@ ChildResult run(const std::string& exe, std::vector<std::string> args, bool stop
 }
 
 int main(int argc, char** argv) {
-    CHECK(argc == 2);
+    CHECK(argc == 2 || argc == 3);
     namespace fs = std::filesystem;
     const fs::path root = fs::temp_directory_path() / ("guild-cli-failure-" + std::to_string(getpid()));
     guild::models::ModelStore store({root.string()});
@@ -85,6 +86,20 @@ int main(int argc, char** argv) {
                                           "--quiet", "--port", "0"}, command == "serve");
         CHECK(explicit_mock.status == 0);
         CHECK(explicit_mock.output.find("explicit --mock") != std::string::npos);
+    }
+    if (argc == 3) {
+        for (const std::string tokens : {"1,bad", "1suffix", "2147483648", "-1", ""}) {
+            const auto result = run(argv[2], {"--tokens", tokens});
+            CHECK(result.status == 2);
+            CHECK(result.output.find("invalid prompt token") != std::string::npos);
+            CHECK(result.output.find("model load") == std::string::npos);
+        }
+        const auto absent = run(argv[2], {"--tokens-file", (root / "absent.ids").string()});
+        CHECK(absent.status == 2 && absent.output.find("cannot open token file") != std::string::npos);
+        const fs::path malformed = root / "malformed.ids";
+        { std::ofstream file(malformed); file << "1,2broken\n"; }
+        const auto bad_file = run(argv[2], {"--tokens-file", malformed.string()});
+        CHECK(bad_file.status == 2 && bad_file.output.find("invalid prompt token file") != std::string::npos);
     }
     fs::remove_all(root);
     std::puts("cli_failure_test: missing assets cannot start mock inference implicitly");

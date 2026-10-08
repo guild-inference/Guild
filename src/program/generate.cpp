@@ -53,18 +53,22 @@ void usage() {
 
 bool parse_token_list(const std::string& str, std::vector<int32_t>& tokens) {
     tokens.clear();
-    std::istringstream iss(str);
+    std::string text = str;
+    std::replace(text.begin(), text.end(), ',', ' ');
+    std::istringstream iss(text);
     std::string item;
-    while (std::getline(iss, item, ',')) {
-        if (!item.empty()) {
-            try {
-                tokens.push_back(static_cast<int32_t>(std::stoll(item)));
-            } catch (...) {
-                return false;
-            }
+    while (iss >> item) {
+        try {
+            size_t used = 0;
+            const int64_t id = std::stoll(item, &used);
+            if (used != item.size() || id < 0 || id > INT32_MAX) { tokens.clear(); return false; }
+            tokens.push_back(static_cast<int32_t>(id));
+        } catch (...) {
+            tokens.clear();
+            return false;
         }
     }
-    return true;
+    return !tokens.empty();
 }
 
 guild::model::ModelDescriptor make_default_descriptor(const std::string& path) {
@@ -93,7 +97,7 @@ guild::model::ModelDescriptor make_default_descriptor(const std::string& path) {
 
 } // namespace
 
-int main(int argc, char** argv) {
+int main(int argc, char** argv) try {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
 
     if (std::getenv("CUDA_MODULE_LOADING") == nullptr) {
@@ -172,13 +176,21 @@ int main(int argc, char** argv) {
         } else if (a == "--prompt") {
             prompt = next("--prompt");
         } else if (a == "--tokens") {
-            parse_token_list(next("--tokens"), prompt_tokens);
+            if (!parse_token_list(next("--tokens"), prompt_tokens)) {
+                std::fprintf(stderr, "guild-generate: invalid prompt token list\n");
+                return 2;
+            }
         } else if (a == "--tokens-file") {
             std::string tpath = next("--tokens-file");
             std::ifstream tf(tpath);
-            if (tf.is_open()) {
-                std::string content((std::istreambuf_iterator<char>(tf)), std::istreambuf_iterator<char>());
-                parse_token_list(content, prompt_tokens);
+            if (!tf.is_open()) {
+                std::fprintf(stderr, "guild-generate: cannot open token file\n");
+                return 2;
+            }
+            std::string content((std::istreambuf_iterator<char>(tf)), std::istreambuf_iterator<char>());
+            if (!parse_token_list(content, prompt_tokens)) {
+                std::fprintf(stderr, "guild-generate: invalid prompt token file\n");
+                return 2;
             }
         } else if (a == "--max-new") {
             max_new = std::stoi(next("--max-new"));
@@ -309,7 +321,10 @@ int main(int argc, char** argv) {
                 req.seed = req_seed;
 
                 if (!tok_str.empty()) {
-                    parse_token_list(tok_str, req.prompt_tokens);
+                    if (!parse_token_list(tok_str, req.prompt_tokens)) {
+                        std::cout << "ERR invalid prompt token list\n" << std::flush;
+                        continue;
+                    }
                 }
 
                 RuntimeTelemetry telem;
@@ -368,4 +383,7 @@ int main(int argc, char** argv) {
                  telem.completion_tokens, telem.decode_ms, telem.decode_tok_s,
                  telem.prompt_tokens, telem.prompt_ms, telem.prompt_tok_s);
     return 0;
+} catch (const std::exception& e) {
+    std::fprintf(stderr, "guild-generate: %s\n", e.what());
+    return 2;
 }
