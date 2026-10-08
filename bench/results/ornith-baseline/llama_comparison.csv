@@ -1,0 +1,11 @@
+backend,threads,ngl,pp512_tok_s,tg_tok_s,vram_used_mib,status
+llama.cpp_CPU,16,0,122.86,10.36,0,Success
+llama.cpp_CPU,32,0,121.38,9.61,0,Success (thread contention)
+llama.cpp_CPU,64,0,119.36,6.21,0,Success (hyperthread degradation)
+llama.cpp_GPU_partial,16,1,123.84,10.70,1280,Success (1 layer offload)
+llama.cpp_GPU_partial,16,8,139.69,12.08,3840,Success (8 layers offload)
+llama.cpp_GPU_partial,16,16,165.15,12.31,6920,Success (16 layers offload, VRAM near full)
+llama.cpp_GPU_full,16,40,0.0,0.0,9691,CUDA OOM (failed to allocate 19.9 GiB VRAM)
+Guild_native,31,GPU_assisted,39.48,37.86,1710,Success (default NUMA)
+Guild_native_interleaved,31,GPU_assisted,46.05,44.17,1710,Success (numactl --interleave)
+Guild_native_socket0,16,GPU_assisted,43.75,42.07,1710,Success (socket 0 local)

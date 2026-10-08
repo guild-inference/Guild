@@ -125,7 +125,11 @@ std::unique_ptr<GuildModel> GuildModel::load(
     core::layer_set_shared_early(true);
 
     // CPU expert pool
-    impl->pool = std::make_unique<kernels::cpu::ExpertPool>(impl->config.pool_workers, true, true, kernels::cpu::PoolAffinity::All);
+    int n_workers = impl->config.pool_workers;
+    if (const char* ew = std::getenv("GUILD_POOL_WORKERS")) {
+        try { n_workers = std::stoi(ew); } catch (...) {}
+    }
+    impl->pool = std::make_unique<kernels::cpu::ExpertPool>(n_workers, true, true, kernels::cpu::PoolAffinity::All);
 
     // CUDA stream
     if (cudaStreamCreateWithFlags(&impl->main_stream, cudaStreamNonBlocking) != cudaSuccess) {
