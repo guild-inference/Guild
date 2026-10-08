@@ -63,6 +63,7 @@ public:
         out.attn.vocab_size = get_meta_i64(gguf, "qwen4exp.vocab_size", 151936);
 
         out.attn.pattern = AttentionPattern::HybridGDN;
+        out.attn.mechanism = AttentionMechanism::IndexedSparse;
         out.attn.full_attn_interval = 4; // Every 4th layer is QSA full attention
 
         // MoE geometry
@@ -116,6 +117,7 @@ public:
 
         out.attn.full_attn_interval = get_meta_i64(gguf, p + ".full_attention_interval", 4);
         out.attn.pattern = (out.attn.full_attn_interval > 1) ? AttentionPattern::HybridGDN : AttentionPattern::Standard;
+        out.attn.mechanism = AttentionMechanism::DenseCausal;
 
         out.moe.n_routed_experts = get_meta_i64(gguf, p + ".expert_count", 256);
         out.moe.k_active_experts = get_meta_i64(gguf, p + ".expert_used_count", 8);

@@ -24,6 +24,11 @@ enum class AttentionPattern {
     HybridState    // Generic attention + state / recurrence (e.g. GLM)
 };
 
+enum class AttentionMechanism {
+    DenseCausal = 0,   // Full causal attention over entire sequence (e.g. Ornith, LLaMA)
+    IndexedSparse = 1  // Sparse top-k indexed attention (e.g. Qwen4Exp QSA with indexer)
+};
+
 const char* attention_pattern_to_string(AttentionPattern pattern);
 
 struct MoEGeometry {
@@ -49,6 +54,7 @@ struct AttentionGeometry {
     int64_t vocab_size = 0;         // Vocabulary size (e.g. 151936)
 
     AttentionPattern pattern = AttentionPattern::Standard;
+    AttentionMechanism mechanism = AttentionMechanism::DenseCausal;
     int64_t full_attn_interval = 1; // e.g. 4 for Qwen3.8 (every 4th layer is full attention)
 
     // Derived layer counts

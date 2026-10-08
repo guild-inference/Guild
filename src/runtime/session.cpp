@@ -111,11 +111,6 @@ bool GuildSession::generate(
             return false;
         }
     }
-    if (m_impl->g.idx_q_heads == 0 &&
-        n_prompt + req.max_new_tokens > kernels::qsa_selection_width(kernels::kTopkMaxCells, kernels::qsa_real_shapes())) {
-        error_msg = "dense attention beyond the current selection capacity is not validated; request refused";
-        return false;
-    }
 
     // Reset KV state for fresh generation
     if (!m_impl->ver->wait_commit(error_msg)) return runtime_failure();

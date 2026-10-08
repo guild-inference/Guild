@@ -59,6 +59,14 @@ struct ModelGeometry {
 
     // Archetype-specific geometry
     Qwen4ExpGeometry qwen4exp;
+    model::AttentionMechanism attn_mechanism = model::AttentionMechanism::DenseCausal;
+
+    bool is_dense_attention() const {
+        return attn_mechanism == model::AttentionMechanism::DenseCausal || idx_q_heads == 0;
+    }
+    bool is_indexed_attention() const {
+        return attn_mechanism == model::AttentionMechanism::IndexedSparse && idx_q_heads > 0;
+    }
 
     // Direct accessors preserved for kernel compatibility
     int64_t ssm_state_size = 128;
@@ -97,8 +105,9 @@ struct ModelGeometry {
         if (desc.attn.head_dim > 0) head_dim = desc.attn.head_dim;
         if (desc.moe.n_routed_experts > 0) n_expert = desc.moe.n_routed_experts;
         if (desc.moe.expert_dim_ff > 0) n_ff = desc.moe.expert_dim_ff;
+        attn_mechanism = desc.attn.mechanism;
         if (desc.archetype == model::ModelArchetype::Qwen35MoE ||
-            desc.arch_name == "qwen35moe" || desc.arch_name == "qwen2moe") {
+            desc.arch_name == "qwen35moe" || desc.arch_name == "qwen2moe" || desc.arch_name == "ornith") {
             ssm_state_size = 128;
             ssm_k_heads = 16;
             ssm_v_heads = 32;
@@ -110,6 +119,10 @@ struct ModelGeometry {
             hc = 1;
             hc_lr = 0;
             gdn_gate_silu = true;
+            attn_mechanism = model::AttentionMechanism::DenseCausal;
+        } else if (desc.archetype == model::ModelArchetype::Qwen4Exp) {
+            sync_qwen4exp();
+            attn_mechanism = model::AttentionMechanism::IndexedSparse;
         } else {
             sync_qwen4exp();
         }

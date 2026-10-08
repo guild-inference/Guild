@@ -192,6 +192,11 @@ guild::model::ModelDescriptor ModelManifest::to_descriptor() const {
     } else {
         desc.attn.pattern = guild::model::AttentionPattern::Standard;
     }
+    if (desc.archetype == guild::model::ModelArchetype::Qwen4Exp) {
+        desc.attn.mechanism = guild::model::AttentionMechanism::IndexedSparse;
+    } else {
+        desc.attn.mechanism = guild::model::AttentionMechanism::DenseCausal;
+    }
 
     desc.moe.n_routed_experts = n_routed_experts;
     desc.moe.k_active_experts = k_active_experts;

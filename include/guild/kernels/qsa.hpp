@@ -131,6 +131,7 @@ inline double qsa_freq_base() { return 1e7; }
 /// own bound is 2,051, and `ref/qsa.py` L292-294 records the disagreement.  Below the bound the selection is
 /// the IDENTITY, which `topk_512` is required to reproduce exactly rather than approximately.
 inline int64_t qsa_selection_width(int64_t n_kv, const QsaShapes& s) {
+    if (s.idx_n_head == 0) return n_kv;
     const int64_t w = s.idx_top_k + s.idx_block - 1;
     return n_kv < w ? n_kv : w;
 }

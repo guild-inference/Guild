@@ -349,8 +349,10 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
     n_vocab_ = wo->ne1;
 
     const guild::kernels::QsaShapes s = shapes_of(g);
-    cap_ = guild::kernels::qsa_selection_width(guild::kernels::kTopkMaxCells, s);
-    max_blocks_ = ss.qsa_states[ss.qsa_primary()].max_cells / s.idx_block + 2;
+    const int64_t max_cells = ss.qsa_states[ss.qsa_primary()].max_cells;
+    cap_ = g.is_dense_attention() ? std::min<int64_t>(max_cells, guild::kernels::kTopkMaxCells)
+                                  : guild::kernels::qsa_selection_width(guild::kernels::kTopkMaxCells, s);
+    max_blocks_ = max_cells / s.idx_block + 2;
     attn_scratch_floats_ = (int64_t) guild::kernels::qsa_decode_attn_scratch_floats(cap_, s);
 
     const uint64_t T = (uint64_t) max_t, N = (uint64_t) g.n_embd, HC = (uint64_t) g.hc, K = (uint64_t) ss.k;

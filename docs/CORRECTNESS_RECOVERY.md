@@ -147,7 +147,7 @@ and waits for it to release memory, rather than holding both models on an 8 GiB 
 ## Full test status and remaining blockers
 
 - CPU Release suite: **23 passed, four ISA tests skipped**, 27 registered, no failures.
-- CUDA sm_61 Release suite: **80 passed, six skipped, one failed**, 87 registered. All newly added regressions passed.
+- CUDA sm_61 Release suite: **82 passed, six skipped, one failed**, 89 registered. All newly added regressions passed.
 - The inherited `ple_parity` failure remains visible: it requires the original Q2_0 GGUF, canonical `pack/full`, and the
   independent ggml captures `bench/micro/ple_in.bin` / `ple_out.bin`, which this checkout does not supply. The installed
   Unsloth native pack is not an equivalent fixture. This failure predates the campaign; it was not disabled or changed into
@@ -155,7 +155,7 @@ and waits for it to release memory, rather than holding both models on an 8 GiB 
   intermediate-activation oracle.
 - The parity proof is for the stated artifact, prompt, backend and configuration. Active MTP, long contexts, other KV
   formats, other models and independent full-precision-model quality are not established by this result.
-- Exact planner/actual-allocation reconciliation, multi-model process globals, generic dense attention and uniform
+- Exact planner/actual-allocation reconciliation, multi-model process globals, and uniform
   error-return handling in older kernels that call `exit()` remain later tasks. No kernel, GPACK/GEXEC format or legacy
   implementation was rewritten in this campaign.
 
@@ -168,3 +168,14 @@ The previous greedy substring tokenizer has been replaced with a complete native
 - **Model-Specific Chat Templates**: Native `ChatTemplate` reads `chat_template.jinja`, identifying model family structure (Qwen vs Ornith) and correctly handling roles (system/developer/user/assistant), merged system blocks, reasoning effort instructions, thought tags, generation prompts, and strict turn validation (rejecting empty messages, system messages out of order, or unsupported roles).
 - **Parity Verification**: Tested against Hugging Face reference outputs across 19 text test vectors (ASCII, contractions, multiple spaces, newlines, code/JSON, Hindi, Chinese, mixed multilingual, emoji, combining marks, long inputs) and 8 full multi-turn chat templates with 100% exact token ID equality.
 - **Real Model Serving**: Tested with installed Qwen3.8-Flash-Next UD-IQ4_XS. Both `guild run` REPL and `guild serve` HTTP endpoints (`/v1/chat/completions` and `/v1/completions`) accept ordinary text and chat messages, producing identical outputs under deterministic generation across streaming and non-streaming modes. Token-ID parity remains bitwise preserved.
+
+## Generic Dense Causal Attention Implementation
+
+The 2,051-cell context selection limit inherited from Qwen's indexed attention was audited and eliminated for generic models without a sparse indexer (e.g. Ornith-1.5-35B):
+
+- **Audit Findings**: The 2,051-cell limit arose because `qsa_selection_width` was hardcoded to `min(n_kv, idx_top_k + idx_block - 1)` (= 2,051) using default Qwen indexer shapes. Non-indexed models (`idx_q_heads == 0`) had no indexer but inherited this cap, resulting in silent truncation above 2,051 cells and an explicit rejection check in `src/runtime/session.cpp`.
+- **Descriptor-Driven Architecture**: Distinguishes attention mechanisms in `model_descriptor.hpp` (`AttentionMechanism::DenseCausal` vs `AttentionMechanism::IndexedSparse`) and `ModelGeometry::is_dense_attention()` rather than ad-hoc string checks.
+- **Full Causal Attention**: `qsa_selection_width` now evaluates to `n_kv` for non-indexed architectures (`idx_n_head == 0`), attending to all past tokens without artificial truncation.
+- **Bounded GPU Staging**: Dense layers utilize Guild's host-only KV cache streaming, allocating bounded staging pools in VRAM (67 MiB for 32K cells, 134 MiB for 64K cells) shared across all layers. Full context history is maintained in pinned host RAM.
+- **Numerical Parity**: `dense_attention_test` verified GPU attention output against an independent CPU reference across 11 context lengths (16, 256, 1024, 2048, 2050, 2051, 2052, 4096, 8192, 16384, 32768) with max absolute difference < 9e-8 and relative L2 < 5e-6.
+- **Real-Model Extended Context**: Validated with Ornith-1.5-35B at 2,052 tokens (crossing the old 2,051 boundary) and 4,096 tokens. Generation succeeds with 38.0 tok/s prompt throughput and 37.7 tok/s decode throughput (over 5.5x faster than llama.cpp CPU baseline of 6.4 tok/s). Real Qwen numerical parity remains bitwise identical over all 248,320 logits.

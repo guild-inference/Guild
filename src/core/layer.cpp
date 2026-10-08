@@ -522,11 +522,24 @@ struct KvPlan {
     int mode = 0;
     int64_t pages = 0, slots = 0, pooled_rows = 0;
 };
-int64_t staging_slots(const QsaShapes& s) {
+int64_t staging_slots(const QsaShapes& s, bool is_dense = false, int64_t max_cells = 0) {
+    if (is_dense) {
+        const int64_t cap = max_cells > 0 ? std::min<int64_t>(max_cells, guild::kernels::kTopkMaxCells)
+                                          : guild::kernels::kTopkMaxCells;
+        return std::max<int64_t>(1024, (cap + s.page_size - 1) / s.page_size + 2);
+    }
     const int64_t cap = guild::kernels::qsa_selection_width(guild::kernels::kTopkMaxCells, s);
     return std::max<int64_t>(1024, guild::kernels::kVerifyMaxT * (cap / s.page_size + 2));
 }
-KvPlan kv_plan(const QsaShapes& s, int64_t max_cells, int64_t ring_cells) {
+
+inline int64_t qsa_effective_cap(const ModelGeometry& g, const QsaShapes& s, int64_t max_cells) {
+    if (g.is_dense_attention()) {
+        return std::min<int64_t>(max_cells, guild::kernels::kTopkMaxCells);
+    }
+    return guild::kernels::qsa_selection_width(guild::kernels::kTopkMaxCells, s);
+}
+
+KvPlan kv_plan(const QsaShapes& s, int64_t max_cells, int64_t ring_cells, bool is_dense = false) {
     KvPlan p;
     p.pages = (max_cells + s.page_size - 1) / s.page_size;
     p.slots = p.pages;
@@ -544,7 +557,7 @@ KvPlan kv_plan(const QsaShapes& s, int64_t max_cells, int64_t ring_cells) {
         // the main layers; its size depends only on selection width and the largest legal verify window. The
         // clock resolver requires at least its 1,024-thread block's worth of slots, even for a short context.
         p.mode = 3;
-        p.slots = staging_slots(s);
+        p.slots = staging_slots(s, is_dense, max_cells);
     } else {
         const int64_t r = (std::max(g_kv_resident, qsa_kv_resident_min()) + s.page_size - 1) / s.page_size;
         if (r < p.pages) { p.mode = 1; p.slots = r; }
@@ -587,7 +600,7 @@ void qsa_state_release_host(QsaState& st) {
 
 uint64_t qsa_state_bytes(const ModelGeometry& g, int64_t max_cells, bool with_rope, int64_t ring_cells) {
     const QsaShapes s = qsa_shapes(g);
-    const KvPlan p = kv_plan(s, max_cells, ring_cells);
+    const KvPlan p = kv_plan(s, max_cells, ring_cells, g.is_dense_attention());
     uint64_t n = 0;
     if (p.mode != 3 || with_rope)
         n += kv_pool_bytes(s, p.slots, g_kv_hybrid && ring_cells <= 0,
@@ -607,7 +620,7 @@ uint64_t qsa_state_bytes(const ModelGeometry& g, int64_t max_cells, bool with_ro
 uint64_t qsa_state_init(const ModelGeometry& g, int64_t max_cells, void* base, QsaState& st,
                         const QsaState* share_rope, int64_t ring_cells) {
     const QsaShapes s = qsa_shapes(g);
-    const KvPlan p = kv_plan(s, max_cells, ring_cells);
+    const KvPlan p = kv_plan(s, max_cells, ring_cells, g.is_dense_attention());
     const int64_t pages = p.pages;
     Cursor c{(uint8_t*) base};
     st.kv_int8 = g_kv_int8 && !g_kv_q4;
@@ -801,7 +814,7 @@ void qsa_kv_resolve(const QsaState& st, const ModelGeometry& g, const int32_t* i
                                        qsa_shapes(g), stream);
 }
 
-uint64_t qsa_buffers_bytes(const ModelGeometry& g, int64_t max_cells) {    const QsaShapes s = qsa_shapes(g);    const int64_t cap = guild::kernels::qsa_selection_width(guild::kernels::kTopkMaxCells, s);    uint64_t n = 0;    n += (uint64_t) q8k_bytes(g.n_embd);    n += (uint64_t) (g.n_embd / 32) * 34;
+uint64_t qsa_buffers_bytes(const ModelGeometry& g, int64_t max_cells) {    const QsaShapes s = qsa_shapes(g);    const int64_t cap = qsa_effective_cap(g, s, max_cells);    uint64_t n = 0;    n += (uint64_t) q8k_bytes(g.n_embd);    n += (uint64_t) (g.n_embd / 32) * 34;
 // block_q8_0
 n += (uint64_t) g.n_embd * 2;    n += (uint64_t) g.n_head * 2 * g.head_dim * 4;    n += (uint64_t) g.n_head * g.head_dim * 4;    n += (uint64_t) g.n_head_kv * g.head_dim * 4 * 2;    n += (uint64_t) g.idx_key_dim * 4;    n += (uint64_t) g.idx_q_heads * g.idx_key_dim * 4;    n += (uint64_t) max_cells * 4;    n += (uint64_t) cap * 4;    n += (uint64_t) cap * g.n_head_kv * g.head_dim * 2 * 2;    n += (uint64_t) g.n_head * g.head_dim * 4;
 // attn
@@ -816,7 +829,7 @@ n += guild::kernels::qsa_decode_attn_scratch_floats(cap, s) * 4 + 16;
 return align_up16(n) + 256;}
 uint64_t qsa_buffers_init(const ModelGeometry& g, int64_t max_cells, void* base, QsaBuffers& b) {
     const QsaShapes s = qsa_shapes(g);
-    const int64_t cap = guild::kernels::qsa_selection_width(guild::kernels::kTopkMaxCells, s);
+    const int64_t cap = qsa_effective_cap(g, s, max_cells);
     Cursor c{(uint8_t*) base};
     b.x_q8k = c.take_bytes(q8k_bytes(g.n_embd));
     b.x_q8_0 = c.take_bytes((uint64_t) (g.n_embd / 32) * 34);
@@ -944,7 +957,7 @@ void stage_timing_report(int64_t n_layers) {
 // needs nothing from the layer it is called for beyond its index.
 static void dump_slot(float* dump, const ModelGeometry& g, int64_t layer, const float* src, uint64_t off,
                       uint64_t n, void* stream);
-bool qsa_layer(const WeightTable& tables, const ModelGeometry& g, int64_t layer, int64_t pos, int32_t pos_base,               const QsaState& st, const QsaBuffers& b, const float* x, float* out, void* stream,               std::string& err, float* dump) {    using namespace guild::kernels;    const QsaShapes s = qsa_shapes(g);    const LayerView v(tables, layer);    const int64_t n_kv = pos + 1;    /* P7 audit: RoPE reads cos/sin row pos_base + pos, and the table holds max_cells rows. */    if ((int64_t) pos_base + pos >= st.max_cells || pos_base < 0) {        err = "qsa_layer: position " + std::to_string((long long) pos_base + pos) + " is outside the RoPE table (" + std::to_string((long long) st.max_cells) + " rows)";        return false;    }    const int64_t n_bid = n_kv / s.idx_block;    const int64_t width = qsa_selection_width(n_kv, s);    const int64_t cap = qsa_selection_width(kTopkMaxCells, s);
+bool qsa_layer(const WeightTable& tables, const ModelGeometry& g, int64_t layer, int64_t pos, int32_t pos_base,               const QsaState& st, const QsaBuffers& b, const float* x, float* out, void* stream,               std::string& err, float* dump) {    using namespace guild::kernels;    const QsaShapes s = qsa_shapes(g);    const LayerView v(tables, layer);    const int64_t n_kv = pos + 1;    /* P7 audit: RoPE reads cos/sin row pos_base + pos, and the table holds max_cells rows. */    if ((int64_t) pos_base + pos >= st.max_cells || pos_base < 0) {        err = "qsa_layer: position " + std::to_string((long long) pos_base + pos) + " is outside the RoPE table (" + std::to_string((long long) st.max_cells) + " rows)";        return false;    }    const int64_t n_bid = n_kv / s.idx_block;    const int64_t width = qsa_selection_width(n_kv, s);    const int64_t cap = qsa_effective_cap(g, s, st.max_cells);
 const auto normalize_rotate = [&](float* data, const WeightRef* norm, int rows, int cols) {
     try {
         if (native_qsa_enabled()) native_qsa_rms_norm_weighted(data, (const float*) norm->data, data, cols, rows, RMS_EPS, stream);
