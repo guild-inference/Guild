@@ -37,10 +37,8 @@ Validated on Ubuntu 24.04, dual Xeon Gold 6130, GTX 1070: CPU Release build and
 `ctest --test-dir build-guild -R '^(server_test|cli_failure_test)$' --output-on-failure` passed. The same tests passed in
 CUDA Release (`CMAKE_CUDA_ARCHITECTURES=61`, `GUILD_EXPERIMENTAL_SM60=ON`).
 
-## Remaining work in this campaign
-
-Runtime failure latching, finite-output checks, release-active runtime tests, PLE reconnection, and actual Qwen parity are
-tracked separately. Passing HTTP tests with an explicitly constructed test double does not prove model inference.
+Passing HTTP tests with an explicitly constructed test double does not prove model inference; the real-model checks below
+are separate gates.
 
 ## Runtime failure and release-build recovery
 
@@ -69,5 +67,96 @@ release regressions passed. `runtime_inference_failure_test` loads a small synth
 missing expert blobs and NaN output-head scales produce no tokens, cannot commit, invalidate readiness, and release pinned KV.
 `runtime_dispatch_test` exercises real native CPU expert rows, source failure latching, and nonfinite outputs on this non-VNNI CPU.
 
-Still to validate: Qwen PLE integration and actual supplied-token parity. The wider planner, multi-model globals, tokenizer,
-and Ornith long-context issues need later campaigns; successful synthetic tests do not establish full-model quality.
+## Required Qwen PLE reconnection
+
+`src/runtime/ple.cpp` reconnects the setup from `028e3e6^:src/program/generate.cpp`:
+
+- Resolve the shard holding `per_layer_token_embd.weight`, or the supplied PLE path.
+- Require the module for Qwen4Exp, validate its declared layer, hash constants, EOS cut, n-gram/head counts, convolution
+  geometry, tensor shapes and engine forms. Unsupported contracts fail explicitly.
+- Bind the existing BF16/native/canonical key projection, value projection, normalization weights and F16 convolution.
+- Own host embedding staging, device embedding and scratch for the entire captured-graph lifetime.
+- Connect the session token window and normalized convolution history before verifier/prefill capture.
+- Refuse production generation if the required binding is subsequently disconnected. No public ablation fallback is provided.
+
+`ple_binding_failure_test` covers mandatory-table/metadata failures. The real-model test also checks table reads, finite
+nonzero history, the committed token window, reload/reset behavior, and a separately captured ablation as a negative control.
+The synthetic CUDA test verifies nonzero encoded expert bytes are filled and checked before GPU residency is published.
+
+## Real Qwen result and reproduction
+
+Measured on Ubuntu 24.04, 2 x Xeon Gold 6130 (32 physical cores, no VNNI/VBMI), 376 GiB reported RAM, GTX 1070 8 GiB,
+NVIDIA driver 580.173.02, CUDA 12 compiler, Release `-DNDEBUG`, sm_61 experimental build. No speed tuning was done.
+
+Artifact: existing `Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf` and its matching native pack. Both engines read the
+same installed shards and pack. The frozen 20 input IDs are in `tests/data/qwen_recovery_ids.txt`; they encode:
+
+```text
+<|im_start|>user
+What is 2 + 2?<|im_end|>
+<|im_start|>assistant
+<think>
+
+</think>
+
+```
+
+Reference: preserved pre-extraction Strata engine 0.1.39 (`engine-cuda12/strata`), SHA-256
+`d24277e73c13dce297e659110d216679676a999ffb6335c2371ec866af4ee90b`.
+Input-file SHA-256: `c2e35a5dc29e5dd3484af49746818ce536622b1a27631da445cbf55c7597fba9`.
+
+Configuration: 2048-cell context, FP16 host-only KV, 512-token batched prefill, two-row verifier capacity, MTP off, zero GPU
+expert slots, all routed experts in resident RAM, greedy sampling. `GUILD_IQ_MT_MIN=1` / `STRATA_IQ_MT_MIN=1` pin CPU
+arithmetic across window sizes; the campaign was also repeated with **the shipped default dispatch rule, `IQ_MT_MIN=2`**.
+The reference server uses `--short-read 0 --prompt-cache 0 --suffix-draft 0 --pcie-frac 0`.
+
+Results:
+
+- **248,320 first-token logits bitwise identical in both CPU dispatch modes**: maximum absolute error 0, relative L2 error 0. The test's numerical
+  gate is independently declared as max absolute error <= 1e-5 and relative L2 <= 1e-6; bitwise identity is reported separately.
+- **Eight greedy output IDs identical**, including two fresh candidate requests:
+  `17,478,220,17,283,220,19,248046` = `2 + 2 = 4<|im_end|>`.
+- PLE history was finite and nonzero and the token-window commit matched the supplied IDs.
+- Comparing identical per-token paths with/without PLE changed logits by a maximum of **4.11010027** (`IQ_MT_MIN=1`)
+  and **4.51094866** (default rule 2). A new verifier was
+  captured for the ablation because changing a pointer does not remove an operation from an existing graph.
+- Disconnecting PLE through the production session returned an error, emitted zero tokens and invalidated readiness.
+
+Capture the reference first-token logits (raw F32 vocabulary row) with the existing reference engine:
+
+```bash
+STRATA_DUMP_FIRST_LOGITS=/tmp/opencode/guild-correctness/qwen-reference-fp16.bin \
+STRATA_IQ_MT_MIN=1 engine-cuda12/strata \
+  --pack "$PACK" --native "$MODEL" --expert-profile data/expert-profile.bin --expert-cache off \
+  --tokens-file tests/data/qwen_recovery_ids.txt --max-new 1 --max-context 2048 \
+  --spec 2 --prefill 512 --kv fp16 --kv-host-only --resident-budget-gib 56 --suffix-draft 0 --pcie-frac 0
+
+GUILD_IQ_MT_MIN=1 build-cuda12/qwen_runtime_parity_test "$MODEL" "$PACK" tests/data/qwen_recovery_ids.txt \
+  /tmp/opencode/guild-correctness/qwen-reference-fp16.bin engine-cuda12/strata data/expert-profile.bin \
+  /tmp/opencode/guild-correctness/qwen-parity
+```
+
+For the default-dispatch repetition, use `STRATA_IQ_MT_MIN=2`, capture to `qwen-reference-default.bin`, and invoke the same
+test with `GUILD_IQ_MT_MIN=2` and that reference file. Its report is in `/tmp/opencode/guild-correctness/qwen-parity-default`.
+
+`MODEL` is the existing first shard above; `PACK` is its matching directory. The output directory contains the candidate
+logit row, per-token PLE/ablated diagnostic rows and `parity.txt`. A full-model CTest registration is opt-in through the five
+`GUILD_QWEN_PARITY_*` CMake paths; it never downloads assets. The test starts the reference process before candidate loading
+and waits for it to release memory, rather than holding both models on an 8 GiB GPU.
+
+## Full test status and remaining blockers
+
+- CPU Release suite: **22 passed, four ISA tests skipped**, 26 registered, no failures.
+- CUDA sm_61 Release suite: **79 passed, six skipped, one failed**, 86 registered. All newly added regressions passed.
+- The inherited `ple_parity` failure remains visible: it requires the original Q2_0 GGUF, canonical `pack/full`, and the
+  independent ggml captures `bench/micro/ple_in.bin` / `ple_out.bin`, which this checkout does not supply. The installed
+  Unsloth native pack is not an equivalent fixture. This failure predates the campaign; it was not disabled or changed into
+  a pass. The new real-Qwen parity gate validates execution against the preserved working engine but does not recreate that
+  intermediate-activation oracle.
+- The parity proof is for the stated artifact, prompt, backend and configuration. Active MTP, long contexts, other KV
+  formats, other models and independent full-precision-model quality are not established by this result.
+- Native text BPE/chat templates remain unvalidated and text-only generation is refused. Full native text serving is
+  therefore blocked; supplied token-ID execution is available.
+- Exact planner/actual-allocation reconciliation, multi-model process globals, generic dense attention and uniform
+  error-return handling in older kernels that call `exit()` remain later tasks. No kernel, GPACK/GEXEC format or legacy
+  implementation was rewritten in this campaign.

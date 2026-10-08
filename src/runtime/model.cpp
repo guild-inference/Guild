@@ -336,6 +336,8 @@ std::unique_ptr<GuildModel> GuildModel::load(
         return nullptr;
     }
 
+    if (!bind_required_ple(*impl, shards, error_msg)) return nullptr;
+
     // MTP Drafter
     bool use_mtp = !paths.mtp_dir.empty() && plan.mtp_spec_tokens > 0;
     if (use_mtp) {

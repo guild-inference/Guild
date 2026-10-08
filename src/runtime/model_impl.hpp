@@ -98,6 +98,10 @@ struct GuildModel::Impl {
     int32_t* d_res = nullptr;
     std::unique_ptr<kernels::cpu::ExpertPool> pool;
     kernels::PleTable ple_table;
+    bool ple_required = false;
+    std::vector<float> ple_emb_host;
+    float* ple_emb_dev = nullptr;
+    void* ple_scratch = nullptr;
     std::unique_ptr<core::MtpDrafter> mtp;
     std::unique_ptr<core::Verifier> ver;
     Drive drive;
@@ -119,6 +123,8 @@ struct GuildModel::Impl {
         if (mtp) mtp.reset();
         if (pool) pool.reset();
         if (main_stream) cudaStreamSynchronize(main_stream);
+        if (ple_emb_dev) cudaFree(ple_emb_dev);
+        if (ple_scratch) cudaFree(ple_scratch);
         core::session_release(ss);
         for (int64_t j = 0; ss.qsa_states && j < ss.qsa_alloc; ++j) {
             core::qsa_state_release_host(ss.qsa_states[ss.qsa_ord0 + j]);
@@ -139,6 +145,8 @@ struct GuildModel::Impl {
         }
     }
 };
+
+bool bind_required_ple(GuildModel::Impl& model, const std::vector<std::string>& shards, std::string& err);
 
 } // namespace guild::runtime
 

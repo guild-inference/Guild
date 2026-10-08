@@ -971,6 +971,7 @@ target_link_libraries(guild_memory PUBLIC guild_model guild_cli guild_warnings)
 if(GUILD_ENABLE_CUDA OR GUILD_ENABLE_HIP)
   add_library(guild_runtime STATIC
     src/runtime/model.cpp
+    src/runtime/ple.cpp
     src/runtime/session.cpp
     src/runtime/tokenizer.cpp)
   target_include_directories(guild_runtime PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include PRIVATE ${_guild_gpu_include_directories})
@@ -1061,6 +1062,26 @@ if(GUILD_BUILD_TESTS)
     target_link_libraries(runtime_inference_failure_test PRIVATE guild_server guild_runtime guild_cli)
     add_test(NAME runtime_inference_failure_test COMMAND runtime_inference_failure_test)
     set_tests_properties(runtime_inference_failure_test PROPERTIES TIMEOUT 90 SKIP_RETURN_CODE 77)
+    add_executable(ple_binding_failure_test tests/core/ple_binding_failure_test.cpp)
+    target_include_directories(ple_binding_failure_test PRIVATE ${_guild_gpu_include_directories})
+    target_link_libraries(ple_binding_failure_test PRIVATE guild_runtime guild_cli)
+    add_test(NAME ple_binding_failure_test COMMAND ple_binding_failure_test)
+    add_executable(qwen_runtime_parity_test tests/core/qwen_runtime_parity_test.cpp)
+    target_include_directories(qwen_runtime_parity_test PRIVATE ${_guild_gpu_include_directories})
+    target_link_libraries(qwen_runtime_parity_test PRIVATE guild_runtime guild_server guild_models guild_cli)
+    set(GUILD_QWEN_PARITY_MODEL "" CACHE FILEPATH "Existing Qwen GGUF for opt-in real-model parity")
+    set(GUILD_QWEN_PARITY_PACK "" CACHE PATH "Matching existing Qwen pack")
+    set(GUILD_QWEN_PARITY_LOGITS "" CACHE FILEPATH "First-token logits captured from the working reference engine")
+    set(GUILD_QWEN_PARITY_ENGINE "" CACHE FILEPATH "Working pre-extraction reference executable")
+    set(GUILD_QWEN_PARITY_PROFILE "" CACHE FILEPATH "Matching STRP expert profile")
+    if(GUILD_QWEN_PARITY_MODEL AND GUILD_QWEN_PARITY_PACK AND GUILD_QWEN_PARITY_LOGITS AND
+       GUILD_QWEN_PARITY_ENGINE AND GUILD_QWEN_PARITY_PROFILE)
+      add_test(NAME qwen_runtime_parity COMMAND qwen_runtime_parity_test
+        ${GUILD_QWEN_PARITY_MODEL} ${GUILD_QWEN_PARITY_PACK}
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/qwen_recovery_ids.txt ${GUILD_QWEN_PARITY_LOGITS}
+        ${GUILD_QWEN_PARITY_ENGINE} ${GUILD_QWEN_PARITY_PROFILE} ${CMAKE_CURRENT_BINARY_DIR}/qwen-parity)
+      set_tests_properties(qwen_runtime_parity PROPERTIES TIMEOUT 600 RUN_SERIAL TRUE ENVIRONMENT "GUILD_IQ_MT_MIN=1")
+    endif()
   endif()
 
   if(GUILD_ENABLE_CUDA OR GUILD_ENABLE_HIP)

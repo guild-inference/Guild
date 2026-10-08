@@ -21,6 +21,31 @@ int main() {
     opts.plan.mtp_spec_tokens = 2;
     opts.plan.kv_mode = guild::memory::KvMode::HostOnly;
     const uint64_t pinned_before = guild::core::qsa_kv_host_bytes();
+    {
+        auto cached_opts = opts;
+        cached_opts.paths.expert_profile_path = (root / "profile.bin").string();
+        cached_opts.plan.routed_experts_in_gpu = 4;
+        const std::vector<std::pair<int32_t, int32_t>> ranking = {{0, 0}, {1, 0}, {2, 0}, {3, 0},
+                                                                {0, 1}, {1, 1}, {2, 1}, {3, 1}};
+        std::string err;
+        CHECK(guild::core::write_expert_profile(cached_opts.paths.expert_profile_path, 4, 2, ranking, err));
+        guild::server::NativeInferenceEngine cached(cached_opts);
+        CHECK(cached.init(err));
+        auto* m = cached.model()->impl();
+        CHECK(m->xcache.resident() == 4 && m->xcache.fills() == 4);
+        for (int l = 0; l < 4; ++l) {
+            const int32_t slot = m->xcache.slot_of(l, 0);
+            CHECK(slot >= 0 && m->host_res[size_t(l * 2)] == slot);
+            CHECK(m->xcache.verify_slot(slot, m->src.blob(l, 0), err,
+                                       int64_t(guild::kernels::cpu::expert_layout().blob_bytes(l))));
+        }
+        guild::server::InferenceRequest req;
+        req.prompt_tokens = {1};
+        req.max_tokens = 2;
+        guild::server::GenerationResult result;
+        CHECK(cached.generate(req, result));
+        CHECK(result.completion_tokens == 2 && result.gpu_cache_hits > 0);
+    }
     for (bool nonfinite : {false, true}) {
         guild::server::NativeInferenceEngine engine(opts);
         std::string err;

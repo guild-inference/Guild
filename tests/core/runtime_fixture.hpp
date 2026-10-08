@@ -61,6 +61,7 @@ inline guild::runtime::ModelPaths runtime_pack(const std::filesystem::path& root
         const auto* info = gguf.find(t.name);
         const uint64_t bytes = guild::tensor_payload_bytes(*info);
         std::vector<uint8_t> data(size_t(bytes), 0);
+        if (t.shape.size() == 3) data[2] = 1; // nonzero encoded bytes with zero scales; still zero weights
         if (t.type == 0 && t.name.find("norm.weight") != std::string::npos) {
             const float one = 1;
             for (size_t j = 0; j < data.size(); j += 4) std::memcpy(data.data() + j, &one, 4);

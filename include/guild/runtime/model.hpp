@@ -28,7 +28,8 @@ public:
     GuildModel(const GuildModel&) = delete;
     GuildModel& operator=(const GuildModel&) = delete;
 
-    // Creates an isolated inference session with its own KV cache and conversation state
+    // Creates a generation handle. Handles share model-owned execution state;
+    // generation is serialized and each request starts a fresh sequence.
     std::unique_ptr<GuildSession> create_session(int64_t max_context = 0);
 
     const model::ModelDescriptor& descriptor() const { return desc_; }

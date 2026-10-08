@@ -69,6 +69,10 @@ bool GuildSession::generate(
         return false;
     }
     auto runtime_failure = [&]() { model_->ready_.store(false); return false; };
+    if (m_impl->ple_required && !m_impl->ss.ple.ready()) {
+        error_msg = "required PLE operation is no longer connected; reload the model";
+        return runtime_failure();
+    }
 
     impl_->cancelled.store(false);
 
