@@ -1,5 +1,6 @@
 #include "guild/server/engine.hpp"
 #include "guild/server/json.hpp"
+#include "guild/runtime/tokenizer.hpp"
 
 #include <chrono>
 #include <cstdio>
@@ -24,6 +25,17 @@ MockInferenceEngine::MockInferenceEngine(const std::string& model,
                                          int64_t max_ctx,
                                          const std::string& script)
     : model_(model), max_context_(max_ctx), script_(script) {}
+
+bool MockInferenceEngine::encode(const std::string& text, std::vector<int32_t>& tokens, std::string& err) {
+    err.clear();
+    tokens.clear();
+    if (text.empty()) return true;
+    size_t count = text.size() / 4 + 1;
+    for (size_t i = 0; i < count; ++i) {
+        tokens.push_back(static_cast<int32_t>(1000 + i));
+    }
+    return true;
+}
 
 bool MockInferenceEngine::generate(const InferenceRequest& req, GenerationResult& result) {
     return generate_stream(req, [](const TokenOutput&) { return true; }, result);
@@ -131,99 +143,41 @@ GuildProcessEngine::~GuildProcessEngine() {
 
 bool GuildProcessEngine::load_tokenizer() {
     if (options_.tokenizer_dir.empty()) return false;
-    std::string vocab_path = options_.tokenizer_dir + "/vocab.json";
-    std::ifstream f(vocab_path);
-    if (!f.is_open()) return false;
-
-    std::string content((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
-    json::JsonValue root;
+    tokenizer_ = std::make_unique<runtime::Tokenizer>();
     std::string err;
-    if (!json::JsonValue::parse(content, root, err) || !root.is_object()) {
+    if (!tokenizer_->load(options_.tokenizer_dir, err)) {
+        tokenizer_.reset();
         return false;
     }
-
-    vocab_tokens_.resize(root.obj_val.size() + 1024);
-    for (const auto& kv : root.obj_val) {
-        int64_t id = kv.second.as_int(-1);
-        if (id >= 0) {
-            if (static_cast<size_t>(id) >= vocab_tokens_.size()) {
-                vocab_tokens_.resize(id + 1024);
-            }
-            vocab_tokens_[id] = kv.first;
-        }
-    }
-
-    // Build byte mapping
-    std::vector<int> bs;
-    for (int b = 0x21; b <= 0x7E; ++b) bs.push_back(b);
-    for (int b = 0xA1; b <= 0xAC; ++b) bs.push_back(b);
-    for (int b = 0xAE; b <= 0xFF; ++b) bs.push_back(b);
-    std::vector<int> cs = bs;
-    int n = 0;
-    for (int b = 0; b < 256; ++b) {
-        bool found = false;
-        for (int x : bs) { if (x == b) { found = true; break; } }
-        if (!found) {
-            bs.push_back(b);
-            cs.push_back(256 + n);
-            n++;
-        }
-    }
-
-    unicode_to_byte_.assign(512, 0);
-    for (size_t i = 0; i < bs.size(); ++i) {
-        if (cs[i] < static_cast<int>(unicode_to_byte_.size())) {
-            unicode_to_byte_[cs[i]] = static_cast<uint8_t>(bs[i]);
-        }
-    }
-
     return true;
 }
 
 std::string GuildProcessEngine::decode_token(int32_t token_id) const {
-    if (token_id < 0 || static_cast<size_t>(token_id) >= vocab_tokens_.size()) {
-        return "";
-    }
-    const std::string& s = vocab_tokens_[token_id];
-    if (s.empty()) return "";
-
-    // Fast path: if token is simple ASCII
-    bool all_ascii = true;
-    for (unsigned char c : s) {
-        if (c >= 0x80) { all_ascii = false; break; }
-    }
-    if (all_ascii) return s;
-
-    // Convert BPE unicode chars back to raw bytes
-    std::string out;
-    size_t i = 0;
-    while (i < s.size()) {
-        unsigned char c = s[i++];
-        uint32_t codepoint = c;
-        if ((c & 0xE0) == 0xC0 && i < s.size()) {
-            codepoint = ((c & 0x1F) << 6) | (s[i++] & 0x3F);
-        } else if ((c & 0xF0) == 0xE0 && i + 1 < s.size()) {
-            codepoint = ((c & 0x0F) << 12) | ((s[i] & 0x3F) << 6) | (s[i + 1] & 0x3F);
-            i += 2;
-        }
-
-        if (codepoint < unicode_to_byte_.size() && unicode_to_byte_[codepoint] != 0) {
-            out += static_cast<char>(unicode_to_byte_[codepoint]);
-        } else {
-            out += static_cast<char>(c);
-        }
-    }
-    return out;
+    if (!tokenizer_) return "";
+    return tokenizer_->decode(token_id, true);
 }
 
-std::vector<int32_t> GuildProcessEngine::simple_tokenize(const std::string& text) const {
-    // Basic fallback: token IDs mapping if exact match, or single chars
-    std::vector<int32_t> ids;
-    ids.reserve(text.size());
-    for (unsigned char c : text) {
-        ids.push_back(static_cast<int32_t>(c));
+bool GuildProcessEngine::encode(const std::string& text, std::vector<int32_t>& tokens, std::string& err) {
+    if (!tokenizer_) {
+        err = "Process engine has no loaded tokenizer";
+        return false;
     }
-    return ids;
+    return tokenizer_->encode(text, tokens, true, err);
+}
+
+bool GuildProcessEngine::decode(const std::vector<int32_t>& tokens, std::string& text) const {
+    if (!tokenizer_) return false;
+    text = tokenizer_->decode(tokens, true);
+    return true;
+}
+
+const runtime::ChatTemplate* GuildProcessEngine::chat_template() const {
+    if (!tokenizer_) return nullptr;
+    return &tokenizer_->chat_template();
+}
+
+const runtime::Tokenizer* GuildProcessEngine::tokenizer() const {
+    return tokenizer_.get();
 }
 
 bool GuildProcessEngine::start() {
@@ -339,7 +293,10 @@ bool GuildProcessEngine::generate_stream(const InferenceRequest& req,
 
     std::vector<int32_t> ids = req.prompt_tokens;
     if (ids.empty() && !req.prompt.empty()) {
-        ids = simple_tokenize(req.prompt);
+        std::string err;
+        if (!encode(req.prompt, ids, err)) {
+            return result.fail("Process engine tokenization failed: " + err);
+        }
     }
     result.prompt_tokens = static_cast<int>(ids.size());
 

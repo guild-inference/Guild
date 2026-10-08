@@ -112,4 +112,30 @@ bool NativeInferenceEngine::generate_stream(const InferenceRequest& req,
     return true;
 }
 
+bool NativeInferenceEngine::encode(const std::string& text, std::vector<int32_t>& tokens, std::string& err) {
+    if (!model_ || !model_->tokenizer().is_loaded()) {
+        err = "Native inference engine has no loaded tokenizer";
+        return false;
+    }
+    return model_->tokenizer().encode(text, tokens, true, err);
+}
+
+bool NativeInferenceEngine::decode(const std::vector<int32_t>& tokens, std::string& text) const {
+    if (!model_ || !model_->tokenizer().is_loaded()) {
+        return false;
+    }
+    text = model_->tokenizer().decode(tokens, true);
+    return true;
+}
+
+const guild::runtime::ChatTemplate* NativeInferenceEngine::chat_template() const {
+    if (!model_ || !model_->tokenizer().is_loaded()) return nullptr;
+    return &model_->tokenizer().chat_template();
+}
+
+const guild::runtime::Tokenizer* NativeInferenceEngine::tokenizer() const {
+    if (!model_ || !model_->tokenizer().is_loaded()) return nullptr;
+    return &model_->tokenizer();
+}
+
 } // namespace guild::server

@@ -36,6 +36,11 @@ public:
                          GenerationResult& result) override;
     void stop() override;
 
+    bool encode(const std::string& text, std::vector<int32_t>& tokens, std::string& err) override;
+    bool decode(const std::vector<int32_t>& tokens, std::string& text) const override;
+    const runtime::ChatTemplate* chat_template() const override;
+    const runtime::Tokenizer* tokenizer() const override;
+
     guild::runtime::GuildModel* model() { return model_.get(); }
     const guild::runtime::GuildModel* model() const { return model_.get(); }
     guild::runtime::GuildSession* session() { return session_.get(); }

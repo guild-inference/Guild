@@ -10,6 +10,7 @@
 #include "guild/server/engine.hpp"
 #include "guild/server/native_engine.hpp"
 #include "guild/server/server.hpp"
+#include "guild/runtime/chat_template.hpp"
 
 #include <atomic>
 #include <csignal>
@@ -978,10 +979,23 @@ int cmd_run(int argc, char** argv) {
 
         guild::server::InferenceRequest req;
         req.model = manifest.name;
-        if (line.rfind("<|im_start|>", 0) == std::string::npos) {
+        if (const auto* tpl = engine->chat_template(); tpl && tpl->is_loaded()) {
+            std::vector<guild::runtime::ChatMessage> msgs = {{"user", line}};
+            std::string tpl_err;
+            if (!tpl->render(msgs, true, req.prompt, tpl_err)) {
+                std::cerr << "guild run: template rendering failed: " << tpl_err << "\n";
+                return 1;
+            }
+        } else if (line.rfind("<|im_start|>", 0) == std::string::npos) {
             req.prompt = "<|im_start|>user\n" + line + "<|im_end|>\n<|im_start|>assistant\n";
         } else {
             req.prompt = line;
+        }
+
+        std::string enc_err;
+        if (!engine->encode(req.prompt, req.prompt_tokens, enc_err)) {
+            std::cerr << "guild run: tokenization failed: " << enc_err << "\n";
+            return 1;
         }
         req.max_tokens = 512;
 

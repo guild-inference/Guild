@@ -81,8 +81,11 @@ bool GuildSession::generate(
     if (!req.prompt_tokens.empty()) {
         ids.assign(req.prompt_tokens.begin(), req.prompt_tokens.end());
     } else if (!req.prompt.empty()) {
-        error_msg = "native text encoding is not BPE-validated; supply prompt_tokens";
-        return false;
+        std::vector<int32_t> enc_ids;
+        if (!model_->tokenizer().encode(req.prompt, enc_ids, true, error_msg)) {
+            return false;
+        }
+        ids.assign(enc_ids.begin(), enc_ids.end());
     }
 
     if (ids.empty()) {
@@ -225,6 +228,7 @@ bool GuildSession::generate(
     m_impl->ver->set_sampling(sp_params);
 
     std::string text_accum;
+    auto decoder = model_->tokenizer().create_incremental_decoder(true);
 
     while (produced_n < req.max_new_tokens && !eos) {
         if (impl_->cancelled.load() || (req.cancel_flag && req.cancel_flag->load())) {
@@ -271,7 +275,7 @@ bool GuildSession::generate(
         // Emit accepted tokens
         for (int i = 0; i <= a && produced_n < req.max_new_tokens && !eos; ++i) {
             int32_t tid = outv[static_cast<size_t>(i)];
-            std::string tok_str = model_->tokenizer().decode(tid);
+            std::string tok_str = decoder->add(tid);
             text_accum += tok_str;
 
             // Check EOS
@@ -310,6 +314,11 @@ bool GuildSession::generate(
 
         p += (a + 1);
         x = outv[static_cast<size_t>(a)];
+    }
+
+    std::string flushed = decoder->flush();
+    if (!flushed.empty() && on_token && !client_aborted) {
+        on_token(TokenEvent{0, flushed, false});
     }
 
     auto t_decode_end = Clock::now();

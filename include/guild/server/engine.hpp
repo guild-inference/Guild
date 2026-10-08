@@ -6,6 +6,11 @@
 #include <string>
 #include <vector>
 
+namespace guild::runtime {
+class Tokenizer;
+class ChatTemplate;
+}
+
 namespace guild::server {
 
 struct SamplingParams {
@@ -74,6 +79,16 @@ public:
                                  StreamCallback on_token,
                                  GenerationResult& result) = 0;
     virtual void stop() = 0;
+
+    virtual bool encode(const std::string& /*text*/, std::vector<int32_t>& /*tokens*/, std::string& err) {
+        err = "Engine does not support text encoding";
+        return false;
+    }
+    virtual bool decode(const std::vector<int32_t>& /*tokens*/, std::string& /*text*/) const {
+        return false;
+    }
+    virtual const runtime::ChatTemplate* chat_template() const { return nullptr; }
+    virtual const runtime::Tokenizer* tokenizer() const { return nullptr; }
 };
 
 class MockInferenceEngine : public IInferenceEngine {
@@ -91,6 +106,8 @@ public:
                          StreamCallback on_token,
                          GenerationResult& result) override;
     void stop() override {}
+
+    bool encode(const std::string& text, std::vector<int32_t>& tokens, std::string& err) override;
 
     void set_script(const std::string& s) { script_ = s; }
     void set_delay_ms(int ms) { delay_ms_ = ms; }
@@ -127,6 +144,11 @@ public:
                          GenerationResult& result) override;
     void stop() override;
 
+    bool encode(const std::string& text, std::vector<int32_t>& tokens, std::string& err) override;
+    bool decode(const std::vector<int32_t>& tokens, std::string& text) const override;
+    const runtime::ChatTemplate* chat_template() const override;
+    const runtime::Tokenizer* tokenizer() const override;
+
 private:
     GuildProcessEngineOptions options_;
     int in_pipe_[2]{-1, -1};
@@ -136,13 +158,10 @@ private:
     int64_t actual_max_context_ = 0;
     bool can_stop_ = false;
 
-    // Tokenizer vocabulary for decoding tokens back to UTF-8
-    std::vector<std::string> vocab_tokens_;
-    std::vector<uint8_t> unicode_to_byte_;
+    std::unique_ptr<runtime::Tokenizer> tokenizer_;
 
     bool load_tokenizer();
     std::string decode_token(int32_t token_id) const;
-    std::vector<int32_t> simple_tokenize(const std::string& text) const;
 };
 
 } // namespace guild::server

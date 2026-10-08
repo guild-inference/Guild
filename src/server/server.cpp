@@ -1,5 +1,6 @@
 #include "guild/server/server.hpp"
 #include "guild/server/openai.hpp"
+#include "guild/runtime/chat_template.hpp"
 
 #include <arpa/inet.h>
 #include <cerrno>
@@ -386,7 +387,44 @@ void Server::process_chat_completions(int client_fd, const HttpRequest& req) {
     InferenceRequest inf_req;
     inf_req.request_id = OpenAiFormatter::generate_id();
     inf_req.model = chat_req.model.empty() ? engine_->model_name() : chat_req.model;
-    inf_req.prompt = OpenAiFormatter::render_chatml(chat_req.messages);
+
+    if (const auto* tpl = engine_->chat_template(); tpl && tpl->is_loaded()) {
+        std::vector<runtime::ChatMessage> msgs;
+        msgs.reserve(chat_req.messages.size());
+        for (const auto& m_item : chat_req.messages) {
+            msgs.push_back({m_item.role, m_item.content});
+        }
+        std::string tpl_err;
+        if (!tpl->render(msgs, true, inf_req.prompt, tpl_err)) {
+            RequestMetrics m;
+            m.method = req.method;
+            m.path = req.path;
+            m.status_code = 400;
+            m.outcome = "error";
+            m.duration_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - start_time).count();
+            send_response(client_fd, HttpResponse::json(400, OpenAiFormatter::format_error(tpl_err, "invalid_request_error", "messages", "template_error")));
+            telemetry_.record_request_finish(m);
+            log_request(m);
+            return;
+        }
+    } else {
+        inf_req.prompt = OpenAiFormatter::render_chatml(chat_req.messages);
+    }
+
+    std::string enc_err;
+    if (!engine_->encode(inf_req.prompt, inf_req.prompt_tokens, enc_err)) {
+        RequestMetrics m;
+        m.method = req.method;
+        m.path = req.path;
+        m.status_code = 400;
+        m.outcome = "error";
+        m.duration_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - start_time).count();
+        send_response(client_fd, HttpResponse::json(400, OpenAiFormatter::format_error(enc_err, "invalid_request_error", "prompt", "tokenization_failed")));
+        telemetry_.record_request_finish(m);
+        log_request(m);
+        return;
+    }
+
     if (chat_req.max_tokens.has_value()) {
         inf_req.max_tokens = chat_req.max_tokens.value();
     }
@@ -562,6 +600,21 @@ void Server::process_completions(int client_fd, const HttpRequest& req) {
     inf_req.request_id = OpenAiFormatter::generate_id("cmpl-");
     inf_req.model = comp_req.model.empty() ? engine_->model_name() : comp_req.model;
     inf_req.prompt = comp_req.prompt;
+
+    std::string enc_err;
+    if (!engine_->encode(inf_req.prompt, inf_req.prompt_tokens, enc_err)) {
+        RequestMetrics m;
+        m.method = req.method;
+        m.path = req.path;
+        m.status_code = 400;
+        m.outcome = "error";
+        m.duration_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - start_time).count();
+        send_response(client_fd, HttpResponse::json(400, OpenAiFormatter::format_error(enc_err, "invalid_request_error", "prompt", "tokenization_failed")));
+        telemetry_.record_request_finish(m);
+        log_request(m);
+        return;
+    }
+
     if (comp_req.max_tokens.has_value()) {
         inf_req.max_tokens = comp_req.max_tokens.value();
     }

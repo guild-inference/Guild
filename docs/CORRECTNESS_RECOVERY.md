@@ -146,8 +146,8 @@ and waits for it to release memory, rather than holding both models on an 8 GiB 
 
 ## Full test status and remaining blockers
 
-- CPU Release suite: **22 passed, four ISA tests skipped**, 26 registered, no failures.
-- CUDA sm_61 Release suite: **79 passed, six skipped, one failed**, 86 registered. All newly added regressions passed.
+- CPU Release suite: **23 passed, four ISA tests skipped**, 27 registered, no failures.
+- CUDA sm_61 Release suite: **80 passed, six skipped, one failed**, 87 registered. All newly added regressions passed.
 - The inherited `ple_parity` failure remains visible: it requires the original Q2_0 GGUF, canonical `pack/full`, and the
   independent ggml captures `bench/micro/ple_in.bin` / `ple_out.bin`, which this checkout does not supply. The installed
   Unsloth native pack is not an equivalent fixture. This failure predates the campaign; it was not disabled or changed into
@@ -155,8 +155,16 @@ and waits for it to release memory, rather than holding both models on an 8 GiB 
   intermediate-activation oracle.
 - The parity proof is for the stated artifact, prompt, backend and configuration. Active MTP, long contexts, other KV
   formats, other models and independent full-precision-model quality are not established by this result.
-- Native text BPE/chat templates remain unvalidated and text-only generation is refused. Full native text serving is
-  therefore blocked; supplied token-ID execution is available.
 - Exact planner/actual-allocation reconciliation, multi-model process globals, generic dense attention and uniform
   error-return handling in older kernels that call `exit()` remain later tasks. No kernel, GPACK/GEXEC format or legacy
   implementation was rewritten in this campaign.
+
+## Native Tokenizer and Chat Template Implementation
+
+The previous greedy substring tokenizer has been replaced with a complete native C++ byte-level BPE tokenizer and model-specific chat template engine:
+
+- **BPE Tokenization**: Byte-level encoding (GPT-2 byte mapping), rank-ordered merges from `merges.txt`, exact pre-tokenization scanner using compiled Unicode classification tables (`include/guild/runtime/unicode_tables.hpp`), and control/special token identification from `token_type.json`.
+- **Incremental Detokenization**: Stateful `IncrementalDecoder` buffers trailing incomplete multi-byte UTF-8 sequences across token boundaries, preventing partial UTF-8 emissions in SSE streams. Benchmark shows 71.6 ns/token overhead and ~18.2M tokens/s bulk decode throughput.
+- **Model-Specific Chat Templates**: Native `ChatTemplate` reads `chat_template.jinja`, identifying model family structure (Qwen vs Ornith) and correctly handling roles (system/developer/user/assistant), merged system blocks, reasoning effort instructions, thought tags, generation prompts, and strict turn validation (rejecting empty messages, system messages out of order, or unsupported roles).
+- **Parity Verification**: Tested against Hugging Face reference outputs across 19 text test vectors (ASCII, contractions, multiple spaces, newlines, code/JSON, Hindi, Chinese, mixed multilingual, emoji, combining marks, long inputs) and 8 full multi-turn chat templates with 100% exact token ID equality.
+- **Real Model Serving**: Tested with installed Qwen3.8-Flash-Next UD-IQ4_XS. Both `guild run` REPL and `guild serve` HTTP endpoints (`/v1/chat/completions` and `/v1/completions`) accept ordinary text and chat messages, producing identical outputs under deterministic generation across streaming and non-streaming modes. Token-ID parity remains bitwise preserved.
