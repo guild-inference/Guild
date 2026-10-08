@@ -19,7 +19,8 @@ bool GuildSession::generate(
 ) {
     (void) req;
     (void) on_token;
-    (void) telemetry;
+    telemetry = RuntimeTelemetry{};
+    telemetry.finish_reason = "error";
     (void) on_prefill;
     error_msg = "Guild GPU runtime is disabled in CPU-only build";
     return false;

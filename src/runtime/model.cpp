@@ -5,7 +5,9 @@
 
 #include "model_impl.hpp"
 #include "guild/artifact/gguf_reader.hpp"
+#include "guild/model/archetype.hpp"
 #include "guild/kernels/iq_kernels.hpp"
+#include "guild/kernels/verify_kernels.hpp"
 
 #include <cuda_runtime.h>
 
@@ -25,10 +27,41 @@ GuildModel::~GuildModel() = default;
 
 std::unique_ptr<GuildModel> GuildModel::load(
     const ModelPaths& paths,
-    const model::ModelDescriptor& desc,
+    const model::ModelDescriptor& requested_desc,
     const memory::ExecutionPlan& plan,
     std::string& error_msg
-) {
+) try {
+    error_msg.clear();
+    if (paths.pack_dir.empty() || !std::filesystem::is_regular_file(std::filesystem::path(paths.pack_dir) / "index.txt")) {
+        error_msg = "model load: missing pack index.txt: " + paths.pack_dir;
+        return nullptr;
+    }
+    if (paths.primary_model_path.empty()) {
+        error_msg = "model load: primary GGUF path is required";
+        return nullptr;
+    }
+    // A missing shard is a load failure, not a reason to continue with a partial model.
+    std::vector<std::string> shards = guild::gguf_split_paths(paths.primary_model_path);
+    if (shards.size() == 1) shards.insert(shards.end(), paths.additional_shards.begin(), paths.additional_shards.end());
+    model::ModelDescriptor desc = requested_desc;
+    {
+        const guild::GgufModel artifact(shards);
+        error_msg = guild::check_architecture(artifact.meta());
+        if (!error_msg.empty() || !model::ArchetypeRegistry::instance().describe_gguf(artifact.meta(), desc, error_msg)) return nullptr;
+        const auto* embedding = artifact.find("token_embd.weight");
+        const auto* head = artifact.find("output.weight");
+        if (!embedding || !head || embedding->shape.size() != 2 || head->shape.size() != 2 ||
+            embedding->shape != head->shape || embedding->shape[0] != uint64_t(desc.attn.n_embd)) {
+            error_msg = "model load: incompatible embedding/output tensor dimensions";
+            return nullptr;
+        }
+        desc.attn.vocab_size = int64_t(embedding->shape[1]);
+    }
+    if (plan.context_length <= 0 || plan.context_length > desc.attn.context_length ||
+        plan.mtp_spec_tokens < 0 || plan.mtp_spec_tokens > kernels::kVerifyMaxT) {
+        error_msg = "model load: invalid context or verification capacity";
+        return nullptr;
+    }
     if (std::getenv("CUDA_MODULE_LOADING") == nullptr) {
 #if defined(_WIN32)
         _putenv_s("CUDA_MODULE_LOADING", "EAGER");
@@ -79,7 +112,14 @@ std::unique_ptr<GuildModel> GuildModel::load(
     kernels::rope_scaling_set(rope_cfg);
 
     // KV configuration
-    core::qsa_set_kv_int8(impl->config.kv_format == "int8");
+    core::qsa_set_kv_int8(plan.kv_format == memory::KvPrecision::INT8);
+    core::qsa_set_kv_q4(plan.kv_format == memory::KvPrecision::Q4_0);
+    core::qsa_set_kv_hybrid(plan.kv_format == memory::KvPrecision::K8V4);
+    if (plan.kv_mode == memory::KvMode::Streaming ||
+        (plan.kv_format == memory::KvPrecision::K8V4 && impl->config.kv_host_only)) {
+        error_msg = "model load: requested KV mode is not supported by this runtime configuration";
+        return nullptr;
+    }
     core::qsa_set_kv_host_only(impl->config.kv_host_only);
     core::qsa_set_kv_resident(impl->config.kv_resident);
     core::layer_set_shared_early(true);
@@ -99,26 +139,17 @@ std::unique_ptr<GuildModel> GuildModel::load(
         return nullptr;
     }
 
-    // Determine model shards
-    std::vector<std::string> shards;
-    if (!paths.primary_model_path.empty()) {
-        try {
-            shards = guild::gguf_split_paths(paths.primary_model_path);
-        } catch (...) {
-            shards.push_back(paths.primary_model_path);
-            shards.insert(shards.end(), paths.additional_shards.begin(), paths.additional_shards.end());
-        }
-    }
-    if (shards.empty() && !paths.additional_shards.empty()) {
-        shards = paths.additional_shards;
-    }
-
     // Expert layout from pack directory
     if (!guild::kernels::cpu::expert_layout_load(paths.pack_dir, impl->g.n_layers, impl->g.n_expert, error_msg,
                                                  impl->g.n_embd, impl->g.n_ff)) {
         return nullptr;
     }
     const bool native_pack = guild::kernels::cpu::expert_layout().native;
+    if ((!native_pack && !kernels::cpu::cpu_avx512_ok()) ||
+        impl->g.n_ff > kernels::cpu::FF || impl->g.n_embd > kernels::cpu::H) {
+        error_msg = "model load: expert geometry or CPU ISA exceeds this pool's supported capacities";
+        return nullptr;
+    }
     if (native_pack && plan.routed_experts_in_gpu > 0) {
         const auto& lay = guild::kernels::cpu::expert_layout();
         for (int64_t l = 0; l < static_cast<int64_t>(lay.fmt.size()); ++l) {
@@ -151,7 +182,7 @@ std::unique_ptr<GuildModel> GuildModel::load(
 
     // Native token embeddings
     if (!shards.empty()) {
-        if (!impl->native_embed.load(shards, impl->g.n_embd, 248320, error_msg)) {
+        if (!impl->native_embed.load(shards, impl->g.n_embd, desc.attn.vocab_size, error_msg)) {
             return nullptr;
         }
         core::set_native_embed(&impl->native_embed);
@@ -195,13 +226,14 @@ std::unique_ptr<GuildModel> GuildModel::load(
     // Load native dense projections if available
     if (!shards.empty()) {
         if (!impl->native_dense.load(shards, impl->wt, error_msg, true)) {
-            error_msg.clear();
+            return nullptr;
         }
     }
+    if (!core::check_all(impl->wt, impl->g, error_msg)) return nullptr;
 
     // Load native head if available
     const guild::core::WeightRef* wo = impl->wt.find("output.weight");
-    int64_t n_vocab = wo ? wo->ne1 : 248320;
+    int64_t n_vocab = wo ? wo->ne1 : desc.attn.vocab_size;
     if (!shards.empty()) {
         if (!impl->native_head.load(shards, impl->g.n_embd, n_vocab, error_msg)) {
             return nullptr;
@@ -219,15 +251,10 @@ std::unique_ptr<GuildModel> GuildModel::load(
 
     // Load expert profile if provided
     std::vector<std::pair<int32_t, int32_t>> profile;
-    if (!paths.expert_profile_path.empty() && std::filesystem::exists(paths.expert_profile_path)) {
-        std::ifstream pf(paths.expert_profile_path, std::ios::binary);
-        if (pf.is_open()) {
-            int32_t count = 0;
-            if (pf.read(reinterpret_cast<char*>(&count), sizeof(count)) && count > 0) {
-                profile.resize(count);
-                pf.read(reinterpret_cast<char*>(profile.data()), count * sizeof(std::pair<int32_t, int32_t>));
-            }
-        }
+    if (!paths.expert_profile_path.empty()) {
+        int64_t profile_slots = 0;
+        if (!core::read_expert_profile(paths.expert_profile_path, impl->g.n_layers, impl->g.n_expert,
+                                       profile, profile_slots, error_msg)) return nullptr;
     }
 
     // Expert cache in VRAM
@@ -244,6 +271,10 @@ std::unique_ptr<GuildModel> GuildModel::load(
     impl->config.expert_cache_slots = static_cast<int>(slots);
 
     if (slots > 0) {
+        if (profile.empty()) {
+            error_msg = "model load: GPU expert slots require a validated expert profile";
+            return nullptr;
+        }
         std::string cerr;
         if (!impl->xcache.open(slots, impl->g.n_layers, impl->g.n_expert,
                                static_cast<int64_t>(kernels::cpu::expert_layout().max_blob), cerr)) {
@@ -261,9 +292,15 @@ std::unique_ptr<GuildModel> GuildModel::load(
         for (int64_t i = 0; i < fill; ++i) {
             int32_t l = profile[i].first;
             int32_t e = profile[i].second;
-            if (l >= 0 && l < impl->g.n_layers && e >= 0 && e < impl->g.n_expert) {
-                impl->host_res[static_cast<size_t>(l * impl->g.n_expert + e)] = static_cast<int32_t>(i);
+            const int32_t slot = impl->xcache.admit(l, e);
+            const uint8_t* blob = impl->src.blob(l, e);
+            const int64_t bytes = int64_t(kernels::cpu::expert_layout().blob_bytes(l));
+            if (slot < 0 || !blob || !impl->xcache.fill_slot_blocking(slot, blob, error_msg, bytes) ||
+                !impl->xcache.verify_slot(slot, blob, error_msg, bytes)) {
+                if (error_msg.empty()) error_msg = "model load: GPU expert slot could not be filled and verified";
+                return nullptr;
             }
+            impl->host_res[size_t(l * impl->g.n_expert + e)] = slot;
         }
     }
 
@@ -280,9 +317,9 @@ std::unique_ptr<GuildModel> GuildModel::load(
                                             profile.empty() ? nullptr : &profile)) {
             // soft fallback: try budget what fits
             error_msg.clear();
-            impl->src.pin_cache_complement(impl->xcache, error_msg, true, {}, -1, 4ull << 30,
-                                           core::FileExpertSource::kResidentWhatFits,
-                                           profile.empty() ? nullptr : &profile);
+            if (!impl->src.pin_cache_complement(impl->xcache, error_msg, true, {}, -1, 4ull << 30,
+                                            core::FileExpertSource::kResidentWhatFits,
+                                            profile.empty() ? nullptr : &profile)) return nullptr;
         }
     }
 
@@ -294,10 +331,13 @@ std::unique_ptr<GuildModel> GuildModel::load(
         return nullptr;
     }
     core::session_zero(impl->ss, impl->g, nullptr, impl->main_stream);
-    cudaStreamSynchronize(impl->main_stream);
+    if (cudaStreamSynchronize(impl->main_stream) != cudaSuccess) {
+        error_msg = "model load: session state initialization failed";
+        return nullptr;
+    }
 
     // MTP Drafter
-    bool use_mtp = !paths.mtp_dir.empty() && std::filesystem::exists(paths.mtp_dir);
+    bool use_mtp = !paths.mtp_dir.empty() && plan.mtp_spec_tokens > 0;
     if (use_mtp) {
         impl->mtp = std::make_unique<core::MtpDrafter>();
         if (!impl->mtp->load(paths.mtp_dir, impl->g, impl->ss, impl->config.spec, error_msg)) {
@@ -377,9 +417,12 @@ std::unique_ptr<GuildModel> GuildModel::load(
     }
 
     // Load tokenizer
-    if (!paths.tokenizer_dir.empty() && std::filesystem::exists(paths.tokenizer_dir)) {
+    if (!paths.tokenizer_dir.empty()) {
         std::string tok_err;
-        if (model->tokenizer_.load(paths.tokenizer_dir, tok_err)) {
+        if (!model->tokenizer_.load(paths.tokenizer_dir, tok_err)) {
+            error_msg = "model load: tokenizer: " + tok_err;
+            return nullptr;
+        } else {
             const auto& eids = model->tokenizer_.eos_token_ids();
             if (!eids.empty()) {
                 impl->config.eos_token_ids.clear();
@@ -391,11 +434,15 @@ std::unique_ptr<GuildModel> GuildModel::load(
 
     model->ready_ = true;
     return model;
+} catch (const std::exception& e) {
+    error_msg = std::string("model load: ") + e.what();
+    return nullptr;
 }
 
 std::unique_ptr<GuildSession> GuildModel::create_session(int64_t max_context) {
     if (!ready_) return nullptr;
     int64_t ctx = max_context > 0 ? max_context : config_.max_context;
+    if (ctx > config_.max_context) return nullptr;
     return std::make_unique<GuildSession>(this, ctx);
 }
 

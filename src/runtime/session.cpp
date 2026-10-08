@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <iostream>
 #include <mutex>
 #include <vector>
@@ -34,6 +35,8 @@ GuildSession::~GuildSession() = default;
 void GuildSession::reset() {
     if (!impl_ || !model_) return;
     auto* m_impl = model_->impl();
+    std::lock_guard<std::mutex> lock(m_impl->generation_mutex);
+    if (!model_->is_ready()) return;
     core::session_zero(m_impl->ss, m_impl->g, nullptr, m_impl->main_stream);
     cudaStreamSynchronize(m_impl->main_stream);
 }
@@ -50,7 +53,10 @@ bool GuildSession::generate(
     RuntimeTelemetry& telemetry,
     std::string& error_msg,
     PrefillProgressCallback on_prefill
-) {
+) try {
+    telemetry = RuntimeTelemetry{};
+    telemetry.finish_reason = "error";
+    error_msg.clear();
     if (!model_ || !impl_) {
         error_msg = "session uninitialized";
         return false;
@@ -58,6 +64,11 @@ bool GuildSession::generate(
 
     auto* m_impl = model_->impl();
     std::lock_guard<std::mutex> lock(m_impl->generation_mutex);
+    if (!model_->is_ready()) {
+        error_msg = "model is not ready or an earlier inference failed; reload the model";
+        return false;
+    }
+    auto runtime_failure = [&]() { model_->ready_.store(false); return false; };
 
     impl_->cancelled.store(false);
 
@@ -66,8 +77,8 @@ bool GuildSession::generate(
     if (!req.prompt_tokens.empty()) {
         ids.assign(req.prompt_tokens.begin(), req.prompt_tokens.end());
     } else if (!req.prompt.empty()) {
-        auto toks = model_->tokenizer().tokenize(req.prompt);
-        ids.assign(toks.begin(), toks.end());
+        error_msg = "native text encoding is not BPE-validated; supply prompt_tokens";
+        return false;
     }
 
     if (ids.empty()) {
@@ -76,22 +87,45 @@ bool GuildSession::generate(
     }
 
     const int64_t n_prompt = static_cast<int64_t>(ids.size());
-    if (n_prompt + req.max_new_tokens > impl_->max_context) {
+    if (req.max_new_tokens <= 0 || !std::isfinite(req.temperature) || req.temperature < 0 ||
+        !std::isfinite(req.top_p) || req.top_p <= 0 || req.top_p > 1 || req.top_k < 0) {
+        error_msg = "invalid generation length or sampling parameters";
+        return false;
+    }
+    if (req.max_new_tokens > impl_->max_context || n_prompt > impl_->max_context - req.max_new_tokens) {
         error_msg = "prompt (" + std::to_string(n_prompt) + ") + max_tokens (" +
                     std::to_string(req.max_new_tokens) + ") exceeds max context (" +
                     std::to_string(impl_->max_context) + ")";
         return false;
     }
+    for (int64_t id : ids) {
+        if (id < 0 || id >= m_impl->ver->vocab()) {
+            error_msg = "prompt token id " + std::to_string(id) + " is outside the model vocabulary";
+            return false;
+        }
+    }
+    if (m_impl->g.idx_q_heads == 0 &&
+        n_prompt + req.max_new_tokens > kernels::qsa_selection_width(kernels::kTopkMaxCells, kernels::qsa_real_shapes())) {
+        error_msg = "dense attention beyond the current selection capacity is not validated; request refused";
+        return false;
+    }
 
     // Reset KV state for fresh generation
+    if (!m_impl->ver->wait_commit(error_msg)) return runtime_failure();
+    if (m_impl->mtp && !m_impl->mtp->idle(error_msg)) return runtime_failure();
     core::session_zero(m_impl->ss, m_impl->g, nullptr, m_impl->main_stream);
-    cudaStreamSynchronize(m_impl->main_stream);
+    if (m_impl->mtp) core::qsa_state_zero(m_impl->mtp->kv_state(), m_impl->g, m_impl->main_stream);
+    if (cudaStreamSynchronize(m_impl->main_stream) != cudaSuccess) {
+        error_msg = "failed to reset inference state";
+        return runtime_failure();
+    }
 
     // Reset prefill stats
     auto t_req_start = Clock::now();
     auto t_prefill_start = Clock::now();
 
-    bool use_mtp = !model_->paths().mtp_dir.empty();
+    bool use_mtp = m_impl->mtp != nullptr;
+    if (use_mtp) m_impl->mtp->set_prompt_len(n_prompt);
     if (m_impl->prefill) {
         m_impl->prefill->should_stop = [this, &req] {
             return impl_->cancelled.load() || (req.cancel_flag && req.cancel_flag->load());
@@ -113,11 +147,11 @@ bool GuildSession::generate(
         // Prefill prompt tokens [0, n_prompt - 1)
         if (n_prompt > 1) {
             if (!m_impl->prefill->run(ids.data(), n_prompt - 1, 0, error_msg)) {
-                if (impl_->cancelled.load() || (req.cancel_flag && req.cancel_flag->load())) {
+                if (error_msg == "cancelled") {
                     telemetry.finish_reason = "cancel";
                     return true;
                 }
-                return false;
+                return runtime_failure();
             }
         }
     } else {
@@ -132,12 +166,15 @@ bool GuildSession::generate(
                 int32_t prompt_tok = static_cast<int32_t>(ids[static_cast<size_t>(pos)]);
                 m_impl->drive.d.layers = 0;
                 m_impl->drive.d.experts = 0;
-                m_impl->drive.d.failed = false;
                 if (!m_impl->ver->run(1, &prompt_tok, pos, drive_pool_multi, &m_impl->drive, sink_out.data(), error_msg)) {
-                    return false;
+                    return runtime_failure();
                 }
                 if (!m_impl->ver->commit(1, error_msg)) {
-                    return false;
+                    return runtime_failure();
+                }
+                if (use_mtp) {
+                    const int32_t next = int32_t(ids[size_t(pos + 1)]);
+                    if (!m_impl->mtp->prefill(m_impl->ver->final_R_all(), &next, 1, pos, error_msg)) return runtime_failure();
                 }
             }
         }
@@ -196,7 +233,9 @@ bool GuildSession::generate(
             T = 1;
             while (T < S && dprob[static_cast<size_t>(T - 1)] >= model_->config().spec_min_p) ++T;
         }
-        if (first_window) T = 1;
+        // There are no valid draft IDs before the first round or without a drafter.
+        if (first_window || !use_mtp) T = 1;
+        T = std::min(T, req.max_new_tokens - produced_n);
 
         if (p + T > impl_->max_context) {
             telemetry.finish_reason = "length";
@@ -210,17 +249,15 @@ bool GuildSession::generate(
 
         m_impl->drive.d.layers = 0;
         m_impl->drive.d.experts = 0;
-        m_impl->drive.d.failed = false;
-
         if (!m_impl->ver->run(T, window.data(), p, drive_pool_multi, &m_impl->drive, outv.data(), error_msg)) {
-            return false;
+            return runtime_failure();
         }
 
         int a = 0;
         while (a < T - 1 && window[static_cast<size_t>(a + 1)] == outv[static_cast<size_t>(a)]) ++a;
 
         if (!m_impl->ver->commit(a + 1, error_msg)) {
-            return false;
+            return runtime_failure();
         }
 
         telemetry.drafts_offered += (T - 1);
@@ -261,8 +298,10 @@ bool GuildSession::generate(
         if (client_aborted || eos) break;
 
         // MTP Draft for next round
-        if (use_mtp) {
-            m_impl->mtp->draft(T, outv.data(), p, a, drafts.data(), error_msg, dprob.data(), model_->config().spec_min_p);
+        if (use_mtp && produced_n < req.max_new_tokens) {
+            if (!m_impl->mtp->draft(T, outv.data(), p, a, drafts.data(), error_msg, dprob.data(), model_->config().spec_min_p)) {
+                return runtime_failure();
+            }
         }
 
         p += (a + 1);
@@ -293,6 +332,16 @@ bool GuildSession::generate(
     }
 
     return true;
+} catch (const std::exception& e) {
+    telemetry.finish_reason = "error";
+    error_msg = std::string("inference failed: ") + e.what();
+    if (model_) model_->ready_.store(false);
+    return false;
+} catch (...) {
+    telemetry.finish_reason = "error";
+    error_msg = "inference failed with an unknown exception";
+    if (model_) model_->ready_.store(false);
+    return false;
 }
 
 } // namespace guild::runtime

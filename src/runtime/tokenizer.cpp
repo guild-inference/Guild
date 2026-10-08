@@ -160,10 +160,8 @@ std::vector<int32_t> Tokenizer::tokenize(const std::string& text) const {
     if (text.empty()) return ids;
 
     if (!loaded_) {
-        ids.reserve(text.size());
-        for (unsigned char c : text) {
-            ids.push_back(static_cast<int32_t>(c));
-        }
+        // Raw byte values are not model token IDs. Missing assets cannot be
+        // turned into a plausible but unrelated prompt.
         return ids;
     }
 

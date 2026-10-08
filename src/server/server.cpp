@@ -35,6 +35,15 @@ bool send_response(int fd, const HttpResponse& res) {
     return send_all(fd, raw.data(), raw.size());
 }
 
+std::string sse_data(const std::string& payload) {
+    std::string event = "data: ";
+    for (char c : payload) {
+        event += c;
+        if (c == '\n') event += "data: ";
+    }
+    return event + "\n\n";
+}
+
 bool generate_checked(IInferenceEngine& engine, const InferenceRequest& req,
                       StreamCallback callback, GenerationResult& result) {
     try {
@@ -445,7 +454,7 @@ void Server::process_chat_completions(int client_fd, const HttpRequest& req) {
                 gen_res.error_message, "server_error", "", "inference_failed");
             if (!stream_started) send_response(client_fd, HttpResponse::json(500, error));
             else {
-                const std::string event = "data: " + error + "\n\n";
+                const std::string event = sse_data(error);
                 send_all(client_fd, event.data(), event.size());
             }
         }
@@ -614,7 +623,7 @@ void Server::process_completions(int client_fd, const HttpRequest& req) {
                 gen_res.error_message, "server_error", "", "inference_failed");
             if (!stream_started) send_response(client_fd, HttpResponse::json(500, error));
             else {
-                const std::string event = "data: " + error + "\n\n";
+                const std::string event = sse_data(error);
                 send_all(client_fd, event.data(), event.size());
             }
         }

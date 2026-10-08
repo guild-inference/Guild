@@ -1,5 +1,6 @@
 // src/core/verify.cpp - see include/guild/core/verify.hpp.
 #include "guild/core/verify.hpp"
+#include "guild/core/validation.hpp"
 #include "guild/core/remote_expert_opt.hpp"
 #if defined(_WIN32)
 #include <intrin.h>
@@ -1499,9 +1500,13 @@ void Verifier::collect_profile() {
 }
 
 bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool, void* user, int32_t* out,
-                   std::string& err) {
+                   std::string& err) try {
     using namespace guild::kernels;
     const OnDevice on_device(device_);
+    if (!g_ || !ss_ || !wt_ || !tokens || !out || pos0 < 0) {
+        err = "verify: uninitialized verifier or invalid input";
+        return false;
+    }
     last_batch_ = false;
     if (T < 1 || T > max_t_) { err = "verify: window size out of range"; return false; }
     if (released_.load()) { err = "verify: an earlier window never finished on the GPU (#267); restart the engine"; return false; }
@@ -1532,6 +1537,13 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
     const cudaError_t le = cudaGraphLaunch(exec_[T], cs_);
     trace_ev("LAUNCHED", -1, -1, (int64_t) le);
     if (le != cudaSuccess) { err = std::string("verify: launch: ") + cudaGetErrorString(le); return false; }
+    // Every failed return/exception after launch must release the device's waits.
+    // Otherwise destruction can hang with the GPU waiting for a failed CPU layer.
+    struct DrainOnFailure {
+        Verifier& verifier;
+        bool finished = false;
+        ~DrainOnFailure() { if (!finished) verifier.release_gpu_waits(5000); }
+    } drain{*this};
     (void) cudaStreamQuery(cs_);
     VDBG("launched\n");
     volatile uint32_t* const seq = h_seq_;
@@ -1643,6 +1655,7 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
     const cudaError_t se = cudaStreamSynchronize(cs_);
     trace_ev("SYNCED", -1, -1, (int64_t) se);
     if (se != cudaSuccess) { err = std::string("verify: ") + cudaGetErrorString(se); return false; }
+    drain.finished = true;
     commit_pending_ = false;
     progress_at("verify window: waiting for the expert copies", (int64_t) T);
     if (copy_used_) {
@@ -1657,6 +1670,15 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
     if (le_ < g.n_layers) {   // a layer split's earlier stage: the hand-off is written (synced above)
         ++windows;
         return next_ == nullptr || next_->run(T, tokens, pos0, pool, next_user_, out, err);
+    }
+    std::vector<float> checked_logits(size_t(T) * size_t(n_vocab_));
+    const cudaError_t logits_status = cudaMemcpy(checked_logits.data(), head_logits_, checked_logits.size() * sizeof(float),
+                                                 cudaMemcpyDeviceToHost);
+    if (logits_status != cudaSuccess ||
+        !validate_finite(checked_logits.data(), checked_logits.size(), "verify logits at position " + std::to_string(pos0), err)) {
+        if (logits_status != cudaSuccess) err = std::string("verify: logits readback: ") + cudaGetErrorString(logits_status);
+        released_.store(true);
+        return false;
     }
     const bool sampled = !sampling_.greedy && sampling_.temperature > 0.0f;
     if (head_sampling_ && (sampled || hist_d_ != nullptr)) {
@@ -1690,6 +1712,12 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
     progress_at("decode");
     progress_beat();
     return true;
+} catch (const std::exception& e) {
+    err = std::string("verify: ") + e.what();
+    return false;
+} catch (...) {
+    err = "verify: unknown inference exception";
+    return false;
 }
 
 void Verifier::set_plan_slot(int grp) {
@@ -1808,6 +1836,7 @@ namespace { bool g_commit_async = false; }
 void Verifier::set_commit_async(bool on) { g_commit_async = on && std::getenv("GUILD_COMMIT_SYNC") == nullptr; }
 
 bool Verifier::commit(int n_keep, std::string& err) {
+    if (released_.load()) { err = "verify: cannot commit a failed window; reload the model"; return false; }
     const OnDevice on_device(device_);
     if (n_keep < 1 || n_keep > last_t_) { err = "verify: commit count out of range"; return false; }
     const Clock::time_point t0 = Clock::now();

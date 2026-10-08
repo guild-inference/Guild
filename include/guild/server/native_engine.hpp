@@ -28,7 +28,7 @@ public:
 
     std::string model_name() const override { return options_.model_name; }
     int64_t max_context() const override { return options_.plan.context_length; }
-    bool is_ready() const override { return ready_ && model_ != nullptr && session_ != nullptr; }
+    bool is_ready() const override { return ready_ && model_ != nullptr && model_->is_ready() && session_ != nullptr; }
 
     bool generate(const InferenceRequest& req, GenerationResult& result) override;
     bool generate_stream(const InferenceRequest& req,

@@ -45,13 +45,14 @@ public:
     const Impl* impl() const { return impl_.get(); }
 
 private:
+    friend class GuildSession;
     GuildModel();
     model::ModelDescriptor desc_;
     memory::ExecutionPlan plan_;
     ModelPaths paths_;
     RuntimeConfig config_;
     Tokenizer tokenizer_;
-    bool ready_ = false;
+    std::atomic<bool> ready_{false};
     std::unique_ptr<Impl> impl_;
 };
 

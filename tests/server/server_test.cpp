@@ -413,6 +413,20 @@ int main() {
                         CHECK(guild::server::json::JsonValue::parse(resp.body, root, err));
                         CHECK(root["error"]["code"].as_string() == "inference_failed");
                         CHECK(!root.contains("choices"));
+                    } else {
+                        // SSE joins all data: lines of one event with newlines.
+                        const size_t begin = resp.body.find("data: {\n");
+                        CHECK(begin != std::string::npos);
+                        std::istringstream lines(resp.body.substr(begin));
+                        std::string line, payload;
+                        while (std::getline(lines, line) && !line.empty()) {
+                            CHECK(line.rfind("data: ", 0) == 0);
+                            payload += line.substr(6) + '\n';
+                        }
+                        guild::server::json::JsonValue root;
+                        std::string err;
+                        CHECK(guild::server::json::JsonValue::parse(payload, root, err));
+                        CHECK(root["error"]["code"].as_string() == "inference_failed");
                     }
                 }
             }

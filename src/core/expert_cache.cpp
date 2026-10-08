@@ -49,9 +49,9 @@ bool read_expert_profile(const std::string& path, int64_t n_layers, int64_t n_ex
         err = buf;
         return false;
     }
-    if (n_ranked > want) {
+    if (version != 1 || uint64_t(want) > uint64_t(nl) * ne || n_ranked > want) {
         std::fclose(f);
-        err = "read_expert_profile: the header claims more ranked pairs than slots";
+        err = "read_expert_profile: unsupported version or invalid ranked/slot counts";
         return false;
     }
     ranked.assign(n_ranked, {0, 0});
@@ -74,7 +74,6 @@ bool read_expert_profile(const std::string& path, int64_t n_layers, int64_t n_ex
         ranked[(size_t) i] = {l, e};
     }
     slots = (int64_t) want;
-    (void) version;   // a future format bumps it; the layout check above is what protects this reader today
     return true;
 }
 

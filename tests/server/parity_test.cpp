@@ -7,7 +7,7 @@
 #include "guild/memory/planner.hpp"
 #include "guild/cli/hardware.hpp"
 
-#include <cassert>
+#include "../check.hpp"
 #include <iostream>
 #include <string>
 #include <vector>
@@ -27,10 +27,10 @@ int main() {
         req.max_tokens = 50;
 
         guild::server::GenerationResult res1;
-        assert(mock.generate(req, res1));
-        assert(!res1.text.empty());
-        assert(res1.completion_tokens > 0);
-        assert(res1.finish_reason == "stop");
+        CHECK(mock.generate(req, res1));
+        CHECK(!res1.text.empty());
+        CHECK(res1.completion_tokens > 0);
+        CHECK(res1.finish_reason == "stop");
 
         guild::server::GenerationResult res2;
         std::string streamed_text;
@@ -39,10 +39,10 @@ int main() {
             return true;
         };
         bool s_ok = mock.generate_stream(req, stream_cb, res2);
-        assert(s_ok);
+        CHECK(s_ok);
         (void) s_ok;
-        assert(streamed_text == res1.text);
-        assert(res2.completion_tokens == res1.completion_tokens);
+        CHECK(streamed_text == res1.text);
+        CHECK(res2.completion_tokens == res1.completion_tokens);
         std::cout << "  -> PASSED\n";
     }
 
@@ -56,38 +56,38 @@ int main() {
         opts.plan.context_length = 262144;
 
         guild::server::NativeInferenceEngine native(opts);
-        assert(native.model_name() == "Qwen3.8-Flash-Next");
-        assert(native.max_context() == 262144);
+        CHECK(native.model_name() == "Qwen3.8-Flash-Next");
+        CHECK(native.max_context() == 262144);
 
         // Before init, is_ready() must be false
-        assert(!native.is_ready());
+        CHECK(!native.is_ready());
 
         std::string err;
         bool inited = native.init(err);
         // On CPU-only builds or without real weights files, init returns false cleanly
-        if (!inited) {
-            assert(!err.empty());
-            assert(!native.is_ready());
-            guild::server::InferenceRequest req;
-            req.prompt = "Test";
-            guild::server::GenerationResult res;
-            assert(!native.generate(req, res));
-        } else {
-            assert(native.is_ready());
-        }
+        CHECK(!inited);
+        CHECK(!err.empty());
+        CHECK(!native.is_ready());
+        guild::server::InferenceRequest req;
+        req.prompt = "Test";
+        guild::server::GenerationResult res;
+        res.text = "stale successful result";
+        CHECK(!native.generate(req, res));
+        CHECK(res.finish_reason == "error" && !res.error_message.empty());
+        CHECK(res.text.empty() && res.completion_tokens == 0);
         std::cout << "  -> PASSED\n";
     }
 
-    // 3. Test Tokenizer BPE encoding and decoding parity
+    // 3. Missing tokenizer assets must not synthesize raw byte token IDs.
     {
-        std::cout << "  Test 3: Native Tokenizer encode/decode parity\n";
+        std::cout << "  Test 3: Unloaded tokenizer rejects encoding\n";
         guild::runtime::Tokenizer tok;
-        // Even uninitialized, Tokenizer provides fallback encode/decode
         std::string sample = "Hello, world!";
         std::vector<int32_t> ids = tok.tokenize(sample);
-        assert(!ids.empty());
-        std::string decoded = tok.decode(ids);
-        assert(decoded == sample);
+        CHECK(ids.empty());
+        std::string err;
+        CHECK(!tok.load("/nonexistent-guild-tokenizer", err));
+        CHECK(!err.empty() && !tok.is_loaded());
         std::cout << "  -> PASSED\n";
     }
 
@@ -118,22 +118,22 @@ int main() {
         telem.record_request_finish(m1);
 
         auto snap = telem.snapshot();
-        assert(snap.active_requests == 0);
-        assert(snap.completed_requests == 1);
-        assert(snap.prompt_tokens_processed == 32);
-        assert(snap.generated_tokens_produced == 12);
-        assert(snap.ram_expert_hits == 120);
-        assert(snap.file_expert_reads == 0);
-        assert(snap.gpu_cache_hits == 10);
-        assert(snap.drafts_accepted == 9);
-        assert(snap.drafts_offered == 12);
-        assert(snap.context_usage == 44);
+        CHECK(snap.active_requests == 0);
+        CHECK(snap.completed_requests == 1);
+        CHECK(snap.prompt_tokens_processed == 32);
+        CHECK(snap.generated_tokens_produced == 12);
+        CHECK(snap.ram_expert_hits == 120);
+        CHECK(snap.file_expert_reads == 0);
+        CHECK(snap.gpu_cache_hits == 10);
+        CHECK(snap.drafts_accepted == 9);
+        CHECK(snap.drafts_offered == 12);
+        CHECK(snap.context_usage == 44);
         (void) snap;
 
         std::string jsonl = guild::server::Telemetry::format_jsonl(m1);
-        assert(jsonl.find("\"ram_expert_hits\":120") != std::string::npos);
-        assert(jsonl.find("\"drafts_accepted\":9") != std::string::npos);
-        assert(jsonl.find("\"decode_tok_s\":24.4") != std::string::npos);
+        CHECK(jsonl.find("\"ram_expert_hits\":120") != std::string::npos);
+        CHECK(jsonl.find("\"drafts_accepted\":9") != std::string::npos);
+        CHECK(jsonl.find("\"decode_tok_s\":24.4") != std::string::npos);
         std::cout << "  -> PASSED\n";
     }
 
@@ -143,15 +143,15 @@ int main() {
         guild::server::MockInferenceEngine mock("Qwen3.8-Flash-Next", 262144, "Response 1");
         guild::server::InferenceRequest req1{"req-1", "Qwen3.8-Flash-Next", "P1", {}, 10, {}};
         guild::server::GenerationResult res1;
-        assert(mock.generate(req1, res1));
+        CHECK(mock.generate(req1, res1));
 
         mock.set_script("Response 2");
         guild::server::InferenceRequest req2{"req-2", "Qwen3.8-Flash-Next", "P2", {}, 10, {}};
         guild::server::GenerationResult res2;
-        assert(mock.generate(req2, res2));
+        CHECK(mock.generate(req2, res2));
 
-        assert(res1.text != res2.text);
-        assert(res2.text.find("Response 2") != std::string::npos);
+        CHECK(res1.text != res2.text);
+        CHECK(res2.text.find("Response 2") != std::string::npos);
         std::cout << "  -> PASSED\n";
     }
 

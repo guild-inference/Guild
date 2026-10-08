@@ -18,6 +18,7 @@
 #include "guild/core/session.hpp"
 #include "guild/core/verify.hpp"
 #include "guild/core/weights.hpp"
+#include "guild/core/validation.hpp"
 #include "guild/kernels/cpu/expert_layout.hpp"
 #include "guild/kernels/cpu/pool.hpp"
 #include "guild/kernels/mrope.hpp"
@@ -38,6 +39,7 @@
 #include <chrono>
 #include <memory>
 #include <mutex>
+#include <stdexcept>
 #include <vector>
 
 namespace guild::runtime {
@@ -54,9 +56,23 @@ struct Drive {
 inline void drive_pool_multi(void* user, const float* x_f, const int32_t* ids, int64_t n_tok, int64_t k, float* out,
                              int64_t layer) {
     Drive* t = static_cast<Drive*>(user);
+    std::string error;
+    if (!core::validate_finite(x_f, size_t(n_tok * t->d.n_embd), "expert input", error)) {
+        t->d.failed = true;
+        throw std::runtime_error(error);
+    }
     t->d.layers = layer;
     const Clock::time_point a = Clock::now();
     guild::core::expert_pool_dispatch_multi(t->d, x_f, ids, n_tok, k, out);
+    if (t->d.failed) {
+        throw std::runtime_error(std::string(t->d.fail ? t->d.fail : "expert dispatch failed") +
+                                 " (layer " + std::to_string(t->d.fail_layer) +
+                                 ", expert " + std::to_string(t->d.fail_expert) + ")");
+    }
+    if (!core::validate_finite(out, size_t(n_tok * k * t->d.n_embd), "expert output", error)) {
+        t->d.failed = true;
+        throw std::runtime_error(error);
+    }
     t->cpu_ms += std::chrono::duration<double, std::milli>(Clock::now() - a).count();
     ++t->calls;
 }
@@ -102,6 +118,14 @@ struct GuildModel::Impl {
         if (ver) ver.reset();
         if (mtp) mtp.reset();
         if (pool) pool.reset();
+        if (main_stream) cudaStreamSynchronize(main_stream);
+        core::session_release(ss);
+        for (int64_t j = 0; ss.qsa_states && j < ss.qsa_alloc; ++j) {
+            core::qsa_state_release_host(ss.qsa_states[ss.qsa_ord0 + j]);
+        }
+        delete[] ss.qsa_states;
+        ss.qsa_states = nullptr;
+        if (core::native_embed() == &native_embed) core::set_native_embed(nullptr);
         if (sbuf) { cudaFree(sbuf); sbuf = nullptr; }
         if (d_res) { cudaFree(d_res); d_res = nullptr; }
         if (arena) { cudaFree(arena); arena = nullptr; }
