@@ -14,6 +14,11 @@ offers the same steps as tools.
 
 ## Working on the code
 
+- Modular runtime, Kernel ABI v1, `.gkmetadata` / `.gkernel` packages, and model architecture runners:
+  [docs/architecture/MODULAR_RUNTIME.md](docs/architecture/MODULAR_RUNTIME.md),
+  [docs/architecture/KERNEL_ABI.md](docs/architecture/KERNEL_ABI.md),
+  [docs/architecture/GKERNEL_FORMAT.md](docs/architecture/GKERNEL_FORMAT.md), and
+  [docs/architecture/MODEL_RUNNERS.md](docs/architecture/MODEL_RUNNERS.md).
 - How the engine works, every measured number, the API and all settings: [docs/DETAILS.md](docs/DETAILS.md) and
   the [paper](docs/paper/Guild-Paper.pdf).
 - AMD (HIP) build and validation: [docs/AMD_HIP.md](docs/AMD_HIP.md); multi-GPU: [docs/MULTI_GPU.md](docs/MULTI_GPU.md).
