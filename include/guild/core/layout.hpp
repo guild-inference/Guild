@@ -59,7 +59,7 @@ struct ModelGeometry {
 
     // Archetype-specific geometry
     Qwen4ExpGeometry qwen4exp;
-    model::AttentionMechanism attn_mechanism = model::AttentionMechanism::DenseCausal;
+    model::AttentionMechanism attn_mechanism = model::AttentionMechanism::IndexedSparse;
 
     bool is_dense_attention() const {
         return attn_mechanism == model::AttentionMechanism::DenseCausal || idx_q_heads == 0;

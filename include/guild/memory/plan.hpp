@@ -81,12 +81,19 @@ struct ExecutionPlan {
 
     int64_t routed_experts_in_ram = 0;
     uint64_t routed_experts_ram_bytes = 0;
+    uint64_t expert_ram_budget_bytes = 0; ///< backing budget independent of the deferred GPU cache estimate
 
     int64_t routed_experts_in_gpu = 0;
     uint64_t routed_experts_gpu_bytes = 0;
+    bool expert_cache_auto = false; ///< finalize after weights, KV, verifier, draft and prompt allocations
 
     int64_t routed_experts_on_file = 0;
     uint64_t routed_experts_file_bytes = 0;
+
+    // Fraction of missed experts computed on the GPU from pinned RAM, independent of cache slots.
+    double pcie_expert_fraction = -1.0; ///< -1 auto (measure supported native formats), 0 off, 0..1 explicit.
+    int pool_workers = 0;
+    float spec_min_p = 0.5f;
 
     // Memory footprint components
     uint64_t pinned_host_bytes = 0;
@@ -100,6 +107,7 @@ struct ExecutionPlan {
     uint64_t prompt_scratch_bytes = 0;
     uint64_t safety_reserve_bytes = 0;
     int64_t prefill_chunk = 512;
+    int64_t prefill_batch = 0; ///< Generic layer-wise prompt rows: 0 auto, 1..512 override.
 
     // Warnings and degradations
     std::vector<std::string> warnings;

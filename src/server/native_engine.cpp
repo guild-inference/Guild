@@ -107,6 +107,7 @@ bool NativeInferenceEngine::generate_stream(const InferenceRequest& req,
     result.ram_blobs = telem.ram_expert_hits;
     result.file_blobs = telem.file_expert_reads;
     result.gpu_cache_hits = telem.gpu_cache_hits;
+    result.file_mb = double(telem.file_read_bytes) / 1e6;
 
     if (!ok || telem.finish_reason == "error") return result.fail(gen_err);
     return true;

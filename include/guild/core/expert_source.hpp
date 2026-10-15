@@ -352,6 +352,7 @@ struct ExpertDispatch {
     /// each layer's distinct missed experts (the last ones in routing order) are read by the GPU over PCIe.
     GpuPlanSink* plan = nullptr;
     int pcie_num = 0;
+    std::vector<int> pcie_layer_numerators; ///< optional format/geometry-calibrated fraction for each layer
     int64_t pcie_experts = 0;      ///< distinct experts the GPU read over PCIe in verify windows
     /// #588: routed (token, expert) entries the GPU computed from outside its cache in verify windows: read over PCIe
     /// (--pcie-frac, kind 1) or on another GPU (kind 2).  In neither cache_hits nor cache_refused.

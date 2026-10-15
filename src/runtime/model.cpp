@@ -12,6 +12,9 @@
 #include <cuda_runtime.h>
 
 #include <chrono>
+#include <algorithm>
+#include <cmath>
+#include <cstring>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -62,6 +65,12 @@ std::unique_ptr<GuildModel> GuildModel::load(
         error_msg = "model load: invalid context or verification capacity";
         return nullptr;
     }
+    if (!std::isfinite(plan.pcie_expert_fraction) ||
+        (plan.pcie_expert_fraction < 0 && plan.pcie_expert_fraction != -1) || plan.pcie_expert_fraction > 1 ||
+        !std::isfinite(plan.spec_min_p) || plan.spec_min_p < 0 || plan.spec_min_p > 1 || plan.pool_workers < 0) {
+        error_msg = "model load: invalid expert performance configuration";
+        return nullptr;
+    }
     if (std::getenv("CUDA_MODULE_LOADING") == nullptr) {
 #if defined(_WIN32)
         _putenv_s("CUDA_MODULE_LOADING", "EAGER");
@@ -82,13 +91,13 @@ std::unique_ptr<GuildModel> GuildModel::load(
     impl->config.kv_format = memory::kv_precision_to_string(plan.kv_format);
     impl->config.kv_host_only = (plan.kv_mode == memory::KvMode::HostOnly);
     impl->config.kv_resident = 0;
-    impl->config.resident_budget_gib = plan.routed_expert_total_bytes >> 30;
-    if (impl->config.resident_budget_gib < 56) impl->config.resident_budget_gib = 56;
-    impl->config.spec = plan.mtp_spec_tokens > 0 ? plan.mtp_spec_tokens : 4;
-    impl->config.spec_min_p = 0.5f;
+    impl->config.spec = std::max(2, plan.mtp_spec_tokens);
+    impl->config.spec_min_p = plan.spec_min_p;
+    impl->config.pool_workers = plan.pool_workers;
     impl->config.expert_cache_slots = plan.routed_experts_in_gpu;
     impl->config.prefill_chunk = plan.prefill_chunk > 0 ? plan.prefill_chunk : 512;
     impl->config.vram_reserve_mib = 512;
+    impl->config.pcie_expert_fraction = plan.pcie_expert_fraction;
 
     model->desc_ = desc;
     model->plan_ = plan;
@@ -130,6 +139,7 @@ std::unique_ptr<GuildModel> GuildModel::load(
         try { n_workers = std::stoi(ew); } catch (...) {}
     }
     impl->pool = std::make_unique<kernels::cpu::ExpertPool>(n_workers, true, true, kernels::cpu::PoolAffinity::All);
+    impl->config.pool_workers = impl->pool->workers();
 
     // CUDA stream
     if (cudaStreamCreateWithFlags(&impl->main_stream, cudaStreamNonBlocking) != cudaSuccess) {
@@ -149,20 +159,15 @@ std::unique_ptr<GuildModel> GuildModel::load(
         return nullptr;
     }
     const bool native_pack = guild::kernels::cpu::expert_layout().native;
+    const auto& layout = kernels::cpu::expert_layout();
+    const uint64_t ram_budget = plan.expert_ram_budget_bytes ? std::min(plan.expert_ram_budget_bytes, layout.total)
+                                : plan.routed_expert_total_bytes ? plan.routed_experts_ram_bytes : layout.total;
+    impl->config.resident_budget_gib = (ram_budget >> 30) + ((ram_budget & ((1ull << 30) - 1)) != 0);
+    model->config_ = impl->config;
     if ((!native_pack && !kernels::cpu::cpu_avx512_ok()) ||
         impl->g.n_ff > kernels::cpu::FF || impl->g.n_embd > kernels::cpu::H) {
         error_msg = "model load: expert geometry or CPU ISA exceeds this pool's supported capacities";
         return nullptr;
-    }
-    if (native_pack && plan.routed_experts_in_gpu > 0) {
-        const auto& lay = guild::kernels::cpu::expert_layout();
-        for (int64_t l = 0; l < static_cast<int64_t>(lay.fmt.size()); ++l) {
-            const auto& f = lay.fmt[static_cast<size_t>(l)];
-            if (!guild::kernels::native_expert_supported(f.gu_type, f.d_type, f.n_embd, f.n_ff)) {
-                error_msg = "layer " + std::to_string(l) + "'s experts are not supported by native GPU kernels";
-                return nullptr;
-            }
-        }
     }
 
     // Kernel settings (fast paths)
@@ -252,6 +257,12 @@ std::unique_ptr<GuildModel> GuildModel::load(
         return nullptr;
     }
     impl->srcp = &impl->src;
+    if (!calibrate_experts(layout, impl->src, *impl->pool, 0, impl->main_stream,
+                           impl->expert_performance, error_msg)) return nullptr;
+    if (!native_pack) {
+        const bool supported = impl->g.n_embd == kernels::cpu::H && impl->g.n_ff == kernels::cpu::FF;
+        impl->expert_performance.gpu_layers.assign(size_t(impl->g.n_layers), supported);
+    }
 
     // Load expert profile if provided
     std::vector<std::pair<int32_t, int32_t>> profile;
@@ -261,52 +272,49 @@ std::unique_ptr<GuildModel> GuildModel::load(
                                        profile, profile_slots, error_msg)) return nullptr;
     }
 
-    // Expert cache in VRAM
-    int64_t slots = impl->config.expert_cache_slots;
-    if (slots < 0) {
-        // Auto sizing from free VRAM
-        size_t free_b = 0, total_b = 0;
-        cudaMemGetInfo(&free_b, &total_b);
-        const int64_t blob = static_cast<int64_t>(kernels::cpu::expert_layout().max_blob);
-        int64_t reserve = (static_cast<int64_t>(impl->config.vram_reserve_mib) << 20) + (100LL << 20);
-        slots = blob > 0 ? std::max<int64_t>(0, (static_cast<int64_t>(free_b) - reserve) / blob) : 0;
-        if (!profile.empty()) slots = std::min<int64_t>(slots, static_cast<int64_t>(profile.size()));
-    }
-    impl->config.expert_cache_slots = static_cast<int>(slots);
-
-    if (slots > 0) {
-        if (profile.empty()) {
-            error_msg = "model load: GPU expert slots require a validated expert profile";
-            return nullptr;
-        }
-        std::string cerr;
-        if (!impl->xcache.open(slots, impl->g.n_layers, impl->g.n_expert,
-                               static_cast<int64_t>(kernels::cpu::expert_layout().max_blob), cerr)) {
-            error_msg = "failed to open expert cache: " + cerr;
-            return nullptr;
-        }
-    }
-
-    // Expert residency table
+    // Explicit cache counts are exact. Automatic caches wait for all fixed allocations.
+    const bool auto_cache = plan.expert_cache_auto || impl->config.expert_cache_slots < 0;
+    int64_t slots = auto_cache ? 0 : impl->config.expert_cache_slots;
     const size_t total_experts = static_cast<size_t>(impl->g.n_layers * impl->g.n_expert);
     impl->host_res.assign(total_experts, core::kNotResident);
-
-    if (slots > 0 && !profile.empty()) {
-        int64_t fill = std::min<int64_t>(slots, static_cast<int64_t>(profile.size()));
-        for (int64_t i = 0; i < fill; ++i) {
-            int32_t l = profile[i].first;
-            int32_t e = profile[i].second;
-            const int32_t slot = impl->xcache.admit(l, e);
-            const uint8_t* blob = impl->src.blob(l, e);
-            const int64_t bytes = int64_t(kernels::cpu::expert_layout().blob_bytes(l));
+    bool cache_allocation_failed = false;
+    auto fill_cache = [&](const CacheSizing& sizing) {
+        cache_allocation_failed = false;
+        if (!impl->xcache.open_sized(sizing.slot_bytes, impl->g.n_layers, impl->g.n_expert, error_msg)) {
+            cache_allocation_failed = true;
+            return false;
+        }
+        std::fill(impl->host_res.begin(), impl->host_res.end(), core::kNotResident);
+        std::vector<uint8_t> staging;
+        for (const auto& pair : sizing.pairs) {
+            const auto l = pair.first, e = pair.second;
+            const auto slot = impl->xcache.admit(l, e);
+            const auto bytes = int64_t(layout.blob_bytes(l));
+            const uint8_t* blob = nullptr;
+            if (impl->src.transient(l, e)) {
+                // Cache population must not retain thousands of file-tier staging blobs.
+                staging.resize(size_t(bytes));
+                if (!impl->src.copy_blob(l, e, staging.data())) { error_msg = "cache source copy failed"; return false; }
+                blob = staging.data();
+            } else blob = impl->src.blob(l, e);
             if (slot < 0 || !blob || !impl->xcache.fill_slot_blocking(slot, blob, error_msg, bytes) ||
                 !impl->xcache.verify_slot(slot, blob, error_msg, bytes)) {
                 if (error_msg.empty()) error_msg = "model load: GPU expert slot could not be filled and verified";
-                return nullptr;
+                return false;
             }
             impl->host_res[size_t(l * impl->g.n_expert + e)] = slot;
         }
+        return true;
+    };
+    if (slots > 0) {
+        const auto sizing = size_expert_cache(layout, profile, impl->expert_performance.gpu_layers, UINT64_MAX, slots);
+        if (int64_t(sizing.pairs.size()) != slots) {
+            error_msg = "model load: requested cache exceeds validated, GPU-capable profile pairs";
+            return nullptr;
+        }
+        if (!fill_cache(sizing)) return nullptr;
     }
+    impl->config.expert_cache_slots = int(slots);
 
     if (cudaMalloc(&impl->d_res, total_experts * sizeof(int32_t)) != cudaSuccess ||
         cudaMemcpy(impl->d_res, impl->host_res.data(), total_experts * sizeof(int32_t), cudaMemcpyHostToDevice) != cudaSuccess) {
@@ -316,15 +324,11 @@ std::unique_ptr<GuildModel> GuildModel::load(
 
     // Pin RAM expert complement (all remaining experts resident in RAM)
     if (impl->config.resident_budget_gib > 0) {
-        uint64_t budget = static_cast<uint64_t>(impl->config.resident_budget_gib) << 30;
+        const uint64_t budget = ram_budget;
+        // The source already clamps to available memory and falls back from pinning.
+        // Retrying with an unbounded budget would discard the requested backing cap.
         if (!impl->src.pin_cache_complement(impl->xcache, error_msg, true, {}, -1, 4ull << 30, budget,
-                                            profile.empty() ? nullptr : &profile)) {
-            // soft fallback: try budget what fits
-            error_msg.clear();
-            if (!impl->src.pin_cache_complement(impl->xcache, error_msg, true, {}, -1, 4ull << 30,
-                                            core::FileExpertSource::kResidentWhatFits,
                                             profile.empty() ? nullptr : &profile)) return nullptr;
-        }
     }
 
     // Session state initialization
@@ -353,11 +357,14 @@ std::unique_ptr<GuildModel> GuildModel::load(
     }
 
     // Verifier
+    // Single-device commits and the MTP draft have independent state and streams.
+    // The old driver overlapped them; preserve its GUILD_COMMIT_SYNC A/B switch.
     core::VerifyHits vh;
     vh.d_res = impl->d_res;
     vh.h_res = impl->host_res.data();
     vh.cache_base = slots > 0 ? static_cast<const uint8_t*>(impl->xcache.device_slot(0)) : nullptr;
     vh.n_slots = slots;
+    vh.slot_off = slots > 0 ? impl->xcache.slot_offsets() : nullptr;
     vh.blob = static_cast<int64_t>(kernels::cpu::expert_layout().max_blob);
 
     impl->ver = std::make_unique<core::Verifier>();
@@ -367,6 +374,7 @@ std::unique_ptr<GuildModel> GuildModel::load(
         error_msg = "Verifier::init failed: " + error_msg;
         return nullptr;
     }
+    impl->ver->set_async_commit(true);
 
     if (use_mtp) {
         if (!impl->mtp->bind(impl->wt,
@@ -388,6 +396,80 @@ std::unique_ptr<GuildModel> GuildModel::load(
         impl->prefill.reset();
     }
 
+    if (!impl->prefill && impl->g.is_dense_attention()) {
+        int64_t batch = plan.prefill_batch;
+        if (const char* value = std::getenv("GUILD_PREFILL_BATCH")) {
+            size_t used = 0;
+            batch = std::stoll(value, &used);
+            if (used != std::strlen(value) || batch < 1 || batch > 512) {
+                error_msg = "GUILD_PREFILL_BATCH must be an integer in 1..512";
+                return nullptr;
+            }
+        }
+        if (impl->g.hc == 1 && impl->g.ssm_state_size == 128 && impl->g.ssm_d_conv == 4 &&
+            impl->g.head_dim == 256 && kernels::cpu::expert_layout().native &&
+            plan.kv_format == memory::KvPrecision::FP16) {
+            impl->batched_prefill = std::make_unique<BatchedPrefill>();
+            if (!impl->batched_prefill->init(impl->wt, impl->g, impl->ss, *impl->srcp, *impl->pool,
+                impl->main_stream, error_msg, batch, impl->xcache.valid() ? &impl->xcache : nullptr)) return nullptr;
+            impl->config.prefill_chunk = impl->batched_prefill->batch_size();
+            model->config_.prefill_chunk = impl->config.prefill_chunk;
+        } else if (batch > 0) {
+            error_msg = "requested batched prefill is unsupported for this execution geometry";
+            return nullptr;
+        }
+    }
+
+    auto finalize_cache = [&]() -> bool {
+        if (!auto_cache) return true;
+        size_t free = 0, total = 0;
+        if (cudaMemGetInfo(&free, &total) != cudaSuccess) { error_msg = "cache free-memory query failed"; return false; }
+        const uint64_t reserve = plan.safety_reserve_bytes ? plan.safety_reserve_bytes : (512ull << 20);
+        uint64_t budget = free > reserve ? free - reserve : 0;
+        std::vector<std::pair<int32_t, int32_t>> cache_ranking = profile;
+        if (cache_ranking.empty()) {
+            uint64_t all_bytes = 0;
+            for (int64_t l = 0; l < layout.n_layers; ++l)
+                if (impl->expert_performance.gpu_layers[size_t(l)])
+                    all_bytes += ((layout.blob_bytes(l) + 255) & ~uint64_t(255)) * uint64_t(layout.n_expert);
+            // No guessed partial cache without a profile. A complete capable tier needs no ranking.
+            if (all_bytes <= budget)
+                for (int32_t e = 0; e < layout.n_expert; ++e)
+                    for (int32_t l = 0; l < layout.n_layers; ++l)
+                        if (impl->expert_performance.gpu_layers[size_t(l)]) cache_ranking.emplace_back(l, e);
+        }
+        for (int attempt = 0; attempt < 8 && budget; ++attempt) {
+            const auto sizing = size_expert_cache(layout, cache_ranking, impl->expert_performance.gpu_layers,
+                                                   budget, int64_t(cache_ranking.size()));
+            if (sizing.pairs.empty()) break;
+            if (!fill_cache(sizing)) {
+                if (!cache_allocation_failed) return false;
+                const auto status = cudaGetLastError();
+                if (status != cudaSuccess && status != cudaErrorMemoryAllocation) return false;
+                impl->xcache.close(); error_msg.clear(); budget = budget / 4 * 3;
+                std::fill(impl->host_res.begin(), impl->host_res.end(), core::kNotResident);
+                continue;
+            }
+            slots = impl->xcache.slots();
+            if (cudaMemGetInfo(&free, &total) != cudaSuccess) { error_msg = "cache memory query failed"; return false; }
+            if (free >= reserve) break;
+            impl->xcache.close(); slots = 0;
+            std::fill(impl->host_res.begin(), impl->host_res.end(), core::kNotResident);
+            budget = budget / 4 * 3;
+        }
+        impl->config.expert_cache_slots = int(slots);
+        if (cudaMemcpy(impl->d_res, impl->host_res.data(), total_experts * sizeof(int32_t), cudaMemcpyHostToDevice) != cudaSuccess) {
+            error_msg = "cache residency upload failed"; return false;
+        }
+        vh.n_slots = slots;
+        vh.cache_base = slots ? impl->xcache.device_slot(0) : nullptr;
+        vh.slot_off = slots ? impl->xcache.slot_offsets() : nullptr;
+        if (slots && (!impl->ver->reset_graphs(error_msg) || !impl->ver->configure_expert_cache(vh, error_msg))) return false;
+        if (impl->prefill) impl->prefill->set_expert_cache(slots ? &impl->xcache : nullptr, impl->host_res.data());
+        if (impl->batched_prefill) impl->batched_prefill->set_expert_cache(slots ? &impl->xcache : nullptr);
+        return true;
+    };
+
     // Setup Drive dispatch
     impl->drive.d.pool = impl->pool.get();
     impl->drive.d.src = impl->srcp;
@@ -400,27 +482,50 @@ std::unique_ptr<GuildModel> GuildModel::load(
     impl->drive.d.cache_blob = static_cast<int64_t>(kernels::cpu::expert_layout().max_blob);
     impl->drive.d.cache_slot_off = slots > 0 ? impl->xcache.slot_offsets() : nullptr;
     impl->drive.d.host_res = impl->host_res.data();
-    bool native_gpu_supported = true;
-    if (native_pack) {
-        const auto& lay = kernels::cpu::expert_layout();
-        for (size_t l = 0; l < lay.fmt.size(); ++l) {
-            const auto& f = lay.fmt[l];
-            if (!guild::kernels::native_expert_supported(f.gu_type, f.d_type, f.n_embd, f.n_ff)) {
-                native_gpu_supported = false;
-                break;
-            }
+    if (!calibrate_experts(layout, impl->src, *impl->pool, plan.pcie_expert_fraction,
+                           impl->main_stream, impl->expert_performance, error_msg)) return nullptr;
+    if (!native_pack && impl->g.n_embd == kernels::cpu::H && impl->g.n_ff == kernels::cpu::FF) {
+        impl->expert_performance.gpu_layers.assign(size_t(impl->g.n_layers), 1);
+        const double fraction = plan.pcie_expert_fraction < 0 ? 0.2 : plan.pcie_expert_fraction;
+        impl->expert_performance.pcie_numerators.assign(size_t(impl->g.n_layers), int(fraction * 256 + 0.5));
+    }
+    impl->drive.d.plan = impl->ver->plan_sink();
+    impl->drive.d.pcie_layer_numerators = impl->expert_performance.pcie_numerators;
+    const bool any_offload = std::any_of(impl->drive.d.pcie_layer_numerators.begin(),
+                                        impl->drive.d.pcie_layer_numerators.end(), [](int value) { return value > 0; });
+    impl->ver->set_pcie_mode(any_offload ? 2 : 0);
+    if (plan.pcie_expert_fraction < 0 && any_offload &&
+        !tune_expert_split(*impl->ver, impl->ss, impl->g, impl->drive.d, drive_pool_multi,
+                            &impl->drive, impl->config.spec, impl->main_stream, impl->expert_performance, error_msg)) return nullptr;
+    if (auto_cache) {
+        // Capture every verifier size before the free-memory query, so automatic
+        // cache sizing includes graph residency rather than only tensor arenas.
+        std::vector<int32_t> input(size_t(impl->config.spec), 0), output(input.size());
+        for (int rows = 1; rows <= impl->config.spec; ++rows) {
+            core::session_zero(impl->ss, impl->g, nullptr, impl->main_stream);
+            if (cudaStreamSynchronize(impl->main_stream) != cudaSuccess ||
+                !impl->ver->run(rows, input.data(), 0, drive_pool_multi, &impl->drive, output.data(), error_msg)) return nullptr;
         }
+        core::session_zero(impl->ss, impl->g, nullptr, impl->main_stream);
+        if (cudaStreamSynchronize(impl->main_stream) != cudaSuccess || !finalize_cache()) return nullptr;
+        impl->drive.d.cache = slots ? &impl->xcache : nullptr;
+        impl->drive.d.cache_base = slots ? impl->xcache.device_slot(0) : nullptr;
+        impl->drive.d.cache_slot_off = slots ? impl->xcache.slot_offsets() : nullptr;
     }
-
-    if (plan.routed_experts_in_gpu > 0 && native_gpu_supported) {
-        impl->ver->set_pcie_mode(2);
-        impl->drive.d.plan = impl->ver->plan_sink();
-        impl->drive.d.pcie_num = static_cast<int>((native_pack ? 0.55 : 0.2) * static_cast<double>(impl->g.n_expert) + 0.5);
-    } else {
-        impl->ver->set_pcie_mode(0);
-        impl->drive.d.plan = impl->ver->plan_sink();
-        impl->drive.d.pcie_num = 0;
-    }
+    const auto& numerators = impl->drive.d.pcie_layer_numerators;
+    impl->drive.d.pcie_num = numerators.empty() ? 0 : *std::max_element(numerators.begin(), numerators.end());
+    impl->config.pcie_layer_numerators = numerators;
+    std::fprintf(stderr, "guild performance: %d measured formats, CPU %.3f ms, GPU %.3f ms, copy %.3f ms; "
+                         "PCIe up to %d/256, GPU cache %lld slots (%lld bytes)\n",
+                 impl->expert_performance.measured_formats, impl->expert_performance.cpu_ms,
+                 impl->expert_performance.gpu_ms, impl->expert_performance.copy_ms, impl->drive.d.pcie_num,
+                 static_cast<long long>(slots), static_cast<long long>(impl->xcache.bytes()));
+    std::fprintf(stderr, "guild performance: CPU workers %d + host %d; verifier capacity %d; "
+                         "MTP %s; min draft probability %.3f; RAM expert backing %llu bytes\n",
+                 impl->pool->workers(), int(impl->pool->host_works()), impl->config.spec,
+                 use_mtp ? "on" : "off", double(impl->config.spec_min_p),
+                 static_cast<unsigned long long>(impl->src.resident_bytes()));
+    model->config_ = impl->config;
 
     // Load tokenizer
     if (!paths.tokenizer_dir.empty()) {

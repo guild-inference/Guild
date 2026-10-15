@@ -286,7 +286,7 @@ int64_t qsa_kv_resident();
 /// with RoPE (with_rope/share_rope); the MTP layer keeps its existing small ring.
 void qsa_set_kv_host_only(bool enabled);
 bool qsa_kv_host_only();
-int64_t qsa_kv_staging_cells(const ModelGeometry& g);
+int64_t qsa_kv_staging_cells(const ModelGeometry& g, int64_t max_cells = 0);
 /// The fewest resident cells a streamed layer may have: one verify window's selections (8 queries x 2,051 cells
 /// in whole blocks) must fit at once, with room to spare.
 int64_t qsa_kv_resident_min();

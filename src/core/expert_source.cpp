@@ -2054,8 +2054,10 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
                     !(d.peer != nullptr && d.peer->has(d.layers, e))) ++nmiss;
             }
         }
-        const bool pcie_ok = d.pcie_num > 0 && d.src->pcie_layer(d.layers);
-        const int m = pcie_ok ? (nmiss * d.pcie_num) >> 8 : 0;
+        const int numerator = size_t(d.layers) < d.pcie_layer_numerators.size()
+                                ? d.pcie_layer_numerators[size_t(d.layers)] : d.pcie_num;
+        const bool pcie_ok = numerator > 0 && d.src->pcie_layer(d.layers);
+        const int m = pcie_ok ? (nmiss * numerator) >> 8 : 0;
         int miss_rank = 0, groups = 0, entries = 0, fetches = 0;
         GpuPlanSink& P = *d.plan;
         const uint8_t* dma_src[64];

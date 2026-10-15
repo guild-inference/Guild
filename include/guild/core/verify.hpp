@@ -79,6 +79,11 @@ public:
     bool init(const WeightTable& wt, const ModelGeometry& g, SessionState& ss, const VerifyHits& hits,
               const NativeHead* head, int max_t, std::string& err);
 
+    /// Attach a cache after fixed allocations, before any graph has been captured.
+    bool configure_expert_cache(const VerifyHits& hits, std::string& err);
+    /// Idle-only graph reset; arena addresses (including the MTP's residual binding) remain stable.
+    bool reset_graphs(std::string& err);
+
     /// One window: `tokens[0..T)` at positions pos0.., the pool served per layer; `out[t]` = argmax after token t.
     /// The PLE rows are gathered here from `ss.ple_prev` and the tokens.  Captures the T-token graph on first use.
     bool run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool, void* user, int32_t* out, std::string& err);
@@ -86,6 +91,8 @@ public:
     bool copy_logits(int t, float* host) const;
     void debug_dump_layer0() const;
     int64_t vocab() const { return next_ ? next_->vocab() : n_vocab_; }
+    int64_t attention_capacity() const { return cap_; }
+    bool all_experts_resident() const { return all_resident_; }
     /// The sampling the verify window's head applies (temperature / top_p / top_k / seed).  Set per
     /// request; greedy by default.  The sampling itself runs OUTSIDE the captured graph - its
     /// parameters would otherwise be baked forever - so this can change between requests freely.
@@ -177,6 +184,9 @@ public:
     /// the session from another stream or the host afterwards (a new request, a checkpoint, a snapshot, the prompt
     /// path, the end of a run) calls wait_commit() first.  GUILD_COMMIT_SYNC=1 keeps the wait.
     static void set_commit_async(bool on);
+    /// Per-instance setting for reusable runtimes; the static setting is a legacy default.
+    void set_async_commit(bool on);
+    bool async_commit_enabled() const { return async_commit_; }
     /// Waits for the last commit graph when commit() did not (an event recorded after it, not the whole device);
     /// false with `err` when it failed.  Free when nothing is pending.
     bool wait_commit(std::string& err);
@@ -208,6 +218,8 @@ public:
     /// the pool never plans a PCIe share (--pcie-frac 0): the window skips that path.  Before the first run.
 
     double ms_wait = 0, ms_pool = 0, ms_host = 0, ms_commit = 0;
+    double ms_logit_validation = 0;
+    uint64_t logits_readback_bytes = 0;
     int64_t windows = 0;
     /// GUILD_VERIFY_PROFILE=1 - GPU stage times of the windows since the last call (ms per
     /// window), as one line; empty when off.
@@ -317,6 +329,13 @@ private:
     uint32_t* h_flagB_ = nullptr; uint32_t* m_flagB_ = nullptr;  // the PCIe share's DMA copies have landed
     cudaEvent_t commit_done_ = nullptr;   // recorded after an async commit (set_commit_async); see wait_commit
     bool commit_pending_ = false;
+    bool async_commit_ = false;
+    bool device_logit_validation_ = true;
+    unsigned long long* finite_status_ = nullptr;
+    unsigned long long* h_finite_status_ = nullptr;
+    unsigned long long* m_finite_status_ = nullptr;
+    std::vector<float> validation_logits_;
+    bool validate_logits(int rows, int64_t position, std::string& err);
     cudaStream_t copy_ = nullptr;                                 // the copy engine's stream (DMA of missed experts)
     struct FlagSet { uint32_t* flag; uint32_t value; };
     FlagSet flag_sets_[2 * 64 * 2] = {};                          // host-function arguments, one per (layer, group)

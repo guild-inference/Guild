@@ -31,6 +31,8 @@ struct RuntimeConfig {
     int64_t prefill_chunk = 512;
     int pool_workers = 0;
     int vram_reserve_mib = 512;
+    double pcie_expert_fraction = 0.0;
+    std::vector<int> pcie_layer_numerators;
     std::vector<int64_t> eos_token_ids = {151643, 151645, 151644}; // Qwen default EOS/im_end
 };
 
@@ -77,6 +79,9 @@ struct RuntimeTelemetry {
     int64_t ram_expert_hits = 0;
     int64_t file_expert_reads = 0;
     int64_t gpu_cache_hits = 0;
+    int64_t gpu_cache_lookups = 0;
+    int64_t offload_entries = 0;
+    uint64_t file_read_bytes = 0;
     uint64_t kv_usage_bytes = 0;
     int64_t current_context_length = 0;
     int64_t prefill_chunk = 0;

@@ -19,6 +19,9 @@ struct PlannerOptions {
     std::optional<int64_t> gpu_cache_slots;
     std::optional<int64_t> prefill_chunk;
     std::optional<int> spec_tokens;
+    std::optional<double> pcie_expert_fraction;
+    int pool_workers = 0;
+    float spec_min_p = 0.5f;
     bool enable_mtp = true;
 };
 

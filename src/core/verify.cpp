@@ -56,6 +56,7 @@ namespace guild::core {
 namespace {
 
 constexpr float EPS = 1e-6f;
+bool g_commit_async = false;
 using Clock = std::chrono::steady_clock;
 double ms_since(Clock::time_point t) { return std::chrono::duration<double, std::milli>(Clock::now() - t).count(); }
 const bool g_dbg = std::getenv("GUILD_VERIFY_DEBUG") != nullptr;
@@ -292,9 +293,11 @@ Verifier::~Verifier() {
     if (commit_done_) cudaEventDestroy(commit_done_);
     if (ev_fork_) cudaEventDestroy(ev_fork_);
     if (ev_join_) cudaEventDestroy(ev_join_);
+    if (skip_) cudaFree(skip_);
+    if (slot_off_d_) cudaFree(slot_off_d_);
     if (arena_) cudaFree(arena_);
     void* hosts[] = {h_tok_, h_step_, h_pos_, h_commit_, h_ple_, h_out_, h_x_, h_ids_, h_w_, h_seq_, h_flag_, h_ymiss_,
-                     h_flagA_, h_plan_, h_flagB_};
+                     h_flagA_, h_plan_, h_flagB_, h_finite_status_};
     for (void* h : hosts)
         if (h) cudaFreeHost(h);
 }
@@ -316,6 +319,8 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
     hits_ = hits;
     head_ = head;
     max_t_ = max_t;
+    async_commit_ = g_commit_async && !env_on("GUILD_COMMIT_SYNC");
+    device_logit_validation_ = !env_on("GUILD_LOGITS_VALIDATION_HOST");
     sampling_.greedy = true;      // a fresh verifier samples greedily until set_sampling says otherwise
     sampling_.temperature = 0.0f;
     if (max_t < 2 || max_t > guild::kernels::kVerifyMaxT || max_t > guild::kernels::cpu::MAXT) {
@@ -370,7 +375,8 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
               mapped(T * (NH + NKV + IQ) * 4, (void**) &h_pos_, (void**) &m_pos_) &&
               mapped((2 + T) * 4 + 16, (void**) &h_commit_, (void**) &m_commit_) &&
               mapped(T * N * 4, (void**) &h_ple_, (void**) &m_ple_) &&
-              mapped(T * 4 + 16, (void**) &h_out_, (void**) &m_out_) &&
+               mapped(T * 4 + 16, (void**) &h_out_, (void**) &m_out_) &&
+               mapped(sizeof(*h_finite_status_), (void**) &h_finite_status_, (void**) &m_finite_status_) &&
               mapped(T * N * 4, (void**) &h_x_, (void**) &m_x_) &&
               mapped(T * K * 4, (void**) &h_ids_, (void**) &m_ids_) &&
               mapped(T * K * 4, (void**) &h_w_, (void**) &m_w_) &&
@@ -437,6 +443,7 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
         sh_bf16_ = b.take<uint16_t>(T * N); sh_gate_ = b.take<float>(T * (uint64_t) g.n_ff);
         sh_up_ = b.take<float>(T * (uint64_t) g.n_ff); sh_g_ = b.take<float>(T + 4);
         head_logits_ = b.take<float>(T * (uint64_t) n_vocab_);
+        finite_status_ = b.take<unsigned long long>(1);
         hist_snap_ = b.take<float>(T * HS);
         dbg_l0_attn_norm_ = b.take<float>(N);
         dbg_l0_z_ = b.take<float>(ZV);
@@ -506,6 +513,28 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
         err = "verify: event create failed";
         return false;
     }
+    if (!configure_expert_cache(hits, err)) return false;
+    if (!device_logit_validation_) validation_logits_.resize(size_t(max_t_) * size_t(n_vocab_));
+    std::fprintf(stderr, "guild verify: window up to %d tokens, %.1f MiB of device buffers%s\n", max_t,
+                 (double) count.used / 1048576.0,
+                 all_resident_ ? " (100% VRAM resident: zero-doorbell graph)" : "");
+    return true;
+}
+
+bool Verifier::configure_expert_cache(const VerifyHits& hits, std::string& err) {
+    if (!g_ || last_t_ || b_running_ ||
+        std::any_of(std::begin(exec_), std::end(exec_), [](auto graph) { return graph != nullptr; })) {
+        err = "verify: expert cache must be configured before graph capture";
+        return false;
+    }
+    if (!hits.d_res || hits.blob <= 0 || hits.n_slots < 0 || (hits.n_slots && !hits.cache_base)) {
+        err = "verify: invalid expert cache binding";
+        return false;
+    }
+    const auto& g = *g_;
+    hits_ = hits;
+    if (skip_) { cudaFree(skip_); skip_ = nullptr; }
+    if (slot_off_d_) { cudaFree(slot_off_d_); slot_off_d_ = nullptr; }
     // Check whether 100% of experts across [lb_, le_) are resident in this stage's VRAM cache.
     // When true, every layer plans on device and writes directly into parts_ without any CPU doorbells,
     // wait_flag_ge spins, PCIe empty launches, or moe_hit_add copies.
@@ -542,9 +571,6 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
         }
         if (!ok2) { cudaGetLastError(); all_resident_ = false; device_plan_ = false; }
     }
-    std::fprintf(stderr, "guild verify: window up to %d tokens, %.1f MiB of device buffers%s\n", max_t,
-                 (double) count.used / 1048576.0,
-                 all_resident_ ? " (100% VRAM resident: zero-doorbell graph)" : "");
     return true;
 }
 
@@ -1273,6 +1299,14 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 return false;
             }
         }
+        if (device_logit_validation_) {
+            finite_first_bad(head_logits_, uint64_t(T) * uint64_t(n_vocab_), finite_status_, cs);
+            if (cudaMemcpyAsync(h_finite_status_, finite_status_, sizeof(*h_finite_status_),
+                                cudaMemcpyDeviceToHost, cs) != cudaSuccess) {
+                err = "verify: finite status readback capture failed";
+                return false;
+            }
+        }
         // Greedy, the default, is recorded here as before (no extra launch or sync per window). A request that
         // samples or penalizes is sampled again host-side after the replay (run()) with its own parameters and a
         // fresh draw counter: a captured sampler would bake them in and replay the same draws forever.
@@ -1673,15 +1707,7 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
         ++windows;
         return next_ == nullptr || next_->run(T, tokens, pos0, pool, next_user_, out, err);
     }
-    std::vector<float> checked_logits(size_t(T) * size_t(n_vocab_));
-    const cudaError_t logits_status = cudaMemcpy(checked_logits.data(), head_logits_, checked_logits.size() * sizeof(float),
-                                                 cudaMemcpyDeviceToHost);
-    if (logits_status != cudaSuccess ||
-        !validate_finite(checked_logits.data(), checked_logits.size(), "verify logits at position " + std::to_string(pos0), err)) {
-        if (logits_status != cudaSuccess) err = std::string("verify: logits readback: ") + cudaGetErrorString(logits_status);
-        released_.store(true);
-        return false;
-    }
+    if (!validate_logits(T, pos0, err)) return false;
     const bool sampled = !sampling_.greedy && sampling_.temperature > 0.0f;
     if (head_sampling_ && (sampled || hist_d_ != nullptr)) {
         SamplerParams sp = sampling_;
@@ -1834,8 +1860,50 @@ bool Verifier::window_logprobs(const int32_t* targets, int T, int64_t pos0, int3
     return true;
 }
 
-namespace { bool g_commit_async = false; }
 void Verifier::set_commit_async(bool on) { g_commit_async = on && std::getenv("GUILD_COMMIT_SYNC") == nullptr; }
+void Verifier::set_async_commit(bool on) { async_commit_ = on && !env_on("GUILD_COMMIT_SYNC"); }
+
+bool Verifier::validate_logits(int rows, int64_t position, std::string& err) {
+    const auto start = Clock::now();
+    bool ok = true;
+    if (device_logit_validation_) {
+        logits_readback_bytes += sizeof(*h_finite_status_);
+        const auto bad = *static_cast<volatile unsigned long long*>(h_finite_status_);
+        if (bad != ~0ull) {
+            err = "verify logits at position " + std::to_string(position) +
+                  ": nonfinite value at element " + std::to_string(bad);
+            ok = false;
+        }
+    } else {
+        const size_t count = size_t(rows) * size_t(n_vocab_);
+        logits_readback_bytes += count * sizeof(float);
+        const auto status = cudaMemcpy(validation_logits_.data(), head_logits_, count * sizeof(float), cudaMemcpyDeviceToHost);
+        ok = status == cudaSuccess && validate_finite(validation_logits_.data(), count,
+                "verify logits at position " + std::to_string(position), err);
+        if (status != cudaSuccess) err = "verify: logits readback: " + std::string(cudaGetErrorString(status));
+    }
+    ms_logit_validation += ms_since(start);
+    if (!ok) released_.store(true);
+    return ok;
+}
+
+bool Verifier::reset_graphs(std::string& err) {
+    const OnDevice on_device(device_);
+    if (b_running_) { err = "verify: graph reset while a batch is running"; return false; }
+    if (!wait_commit(err)) return false;
+    if (cudaStreamSynchronize(cs_) != cudaSuccess || cudaStreamSynchronize(sh_cs_) != cudaSuccess ||
+        cudaStreamSynchronize(copy_) != cudaSuccess) {
+        err = "verify: graph reset synchronization failed";
+        return false;
+    }
+    for (auto& graph : exec_) { if (graph) cudaGraphExecDestroy(graph); graph = nullptr; }
+    if (commit_exec_) { cudaGraphExecDestroy(commit_exec_); commit_exec_ = nullptr; }
+    for (auto& pair : exec_bm_) if (pair.second) cudaGraphExecDestroy(pair.second);
+    for (auto& pair : commit_bm_) if (pair.second) cudaGraphExecDestroy(pair.second);
+    exec_bm_.clear(); commit_bm_.clear();
+    last_t_ = 0; staged_ = false; last_batch_ = false;
+    return true;
+}
 
 bool Verifier::commit(int n_keep, std::string& err) {
     if (released_.load()) { err = "verify: cannot commit a failed window; reload the model"; return false; }
@@ -1851,7 +1919,7 @@ bool Verifier::commit(int n_keep, std::string& err) {
     // set_commit_async: no wait here - the next window runs on the same stream after it, and the drafter (its own
     // stream) reads only this window's final rows and its own K/V. h_commit_ is next written after the next window's
     // results are read, i.e. after this graph has run.  Everything else waits on commit_done_ (wait_commit).
-    if (!g_commit_async || next_ != nullptr) {
+    if (!async_commit_ || next_ != nullptr) {
         const cudaError_t se = cudaStreamSynchronize(cs_);
         if (se != cudaSuccess) { err = std::string("verify: commit: ") + cudaGetErrorString(se); return false; }
     } else {
@@ -2164,6 +2232,7 @@ bool Verifier::run_slot_rows(const int* rows, int S, const int32_t* tokens, cons
     if (prof_on_) collect_profile();
     ++windows;
     if (le_ < g.n_layers) return next_ == nullptr || next_->run_slot_rows(rows, S, tokens, pos, pool, next_user_, out, err);
+    if (!validate_logits(S, pos[0], err)) return false;
     if (!sample_rows(S, err)) return false;
     for (int t = 0; t < S; ++t) out[t] = ((volatile int32_t*) h_out_)[t];
     progress_at("decode");
@@ -2283,6 +2352,7 @@ int Verifier::batch_poll(PoolMultiFn pool, void* user, std::string& err) {
     if (qc == cudaErrorNotReady) return 0;
     if (prof_on_) collect_profile();
     if (last_stage()) {
+        if (!validate_logits(S, last_pos_b_[0], err)) { b_running_ = false; return -1; }
         if (!sample_rows(S, err)) { b_running_ = false; return -1; }
         for (int t = 0; t < S; ++t) b_out_[t] = ((volatile int32_t*) h_out_)[t];
     }

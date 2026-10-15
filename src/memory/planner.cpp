@@ -92,10 +92,15 @@ std::string ExecutionPlan::to_json_string() const {
         << "  \"total_routed_experts\": " << total_routed_experts << ",\n"
         << "  \"routed_experts_in_ram\": " << routed_experts_in_ram << ",\n"
         << "  \"routed_experts_ram_bytes\": " << routed_experts_ram_bytes << ",\n"
+        << "  \"expert_ram_budget_bytes\": " << expert_ram_budget_bytes << ",\n"
         << "  \"routed_experts_in_gpu\": " << routed_experts_in_gpu << ",\n"
         << "  \"routed_experts_gpu_bytes\": " << routed_experts_gpu_bytes << ",\n"
+        << "  \"expert_cache_auto\": " << (expert_cache_auto ? "true" : "false") << ",\n"
         << "  \"routed_experts_on_file\": " << routed_experts_on_file << ",\n"
         << "  \"routed_experts_file_bytes\": " << routed_experts_file_bytes << ",\n"
+        << "  \"pcie_expert_fraction\": " << pcie_expert_fraction << ",\n"
+        << "  \"pool_workers\": " << pool_workers << ",\n"
+        << "  \"spec_min_p\": " << spec_min_p << ",\n"
         << "  \"pinned_host_bytes\": " << pinned_host_bytes << ",\n"
         << "  \"dense_gpu_bytes\": " << dense_gpu_bytes << ",\n"
         << "  \"mtp_bytes\": " << mtp_bytes << ",\n"
@@ -240,8 +245,8 @@ ExecutionPlan MemoryPlanner::plan(
 
     // Size GPU expert cache only from genuinely free VRAM
     uint64_t free_vram_for_cache = free_vram;
-    if (hw.gpu_vram_bytes <= 8589934592ULL && !options.gpu_cache_slots.has_value()) {
-        // On 8 GB cards preserve remaining VRAM for allocator headroom
+    if (!options.gpu_cache_slots.has_value()) {
+        // All automatic caches are finalized against live free memory, after fixed allocations.
         free_vram_for_cache = 0;
     }
 
@@ -272,10 +277,15 @@ ExecutionPlan MemoryPlanner::plan(
     p.total_routed_experts = expert_dist.total_experts;
     p.routed_experts_in_ram = expert_dist.ram_resident_slots;
     p.routed_experts_ram_bytes = expert_dist.ram_resident_bytes;
+    p.expert_ram_budget_bytes = explicit_ram_bytes.value_or(available_ram);
     p.routed_experts_in_gpu = expert_dist.gpu_cache_slots;
     p.routed_experts_gpu_bytes = expert_dist.gpu_cache_bytes;
+    p.expert_cache_auto = !options.gpu_cache_slots.has_value();
     p.routed_experts_on_file = expert_dist.file_slots;
     p.routed_experts_file_bytes = expert_dist.file_bytes;
+    p.pcie_expert_fraction = options.pcie_expert_fraction.value_or(-1.0);
+    p.pool_workers = options.pool_workers;
+    p.spec_min_p = options.spec_min_p;
 
     p.pinned_host_bytes = kv_b.pinned_host_bytes;
     p.dense_gpu_bytes = dense_gpu_bytes;

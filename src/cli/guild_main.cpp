@@ -25,6 +25,13 @@
 
 namespace {
 
+bool parse_prefill_batch(const char* value,int64_t& batch) {
+    try {
+        size_t used=0;batch=std::stoll(value,&used);
+        return used==std::strlen(value) && batch>=0 && batch<=512;
+    } catch (...) { return false; }
+}
+
 bool resolve_model_descriptor(const std::string& path_or_name, guild::model::ModelDescriptor& desc) {
     bool described = false;
     try {
@@ -218,6 +225,8 @@ int cmd_serve(int argc, char** argv) {
     bool no_tui = false;
     bool force_mock = false;
 
+    int64_t prefill_batch = 0;
+
     for (int i = 2; i < argc; ++i) {
         const std::string arg = argv[i];
         if (arg == "--port" && i + 1 < argc) port = std::atoi(argv[++i]);
@@ -229,6 +238,12 @@ int cmd_serve(int argc, char** argv) {
         else if (arg == "--json") json_mode = true;
         else if (arg == "--no-tui") no_tui = true;
         else if (arg == "--mock") force_mock = true;
+        else if (arg == "--prefill-batch") {
+            if (i+1>=argc || !parse_prefill_batch(argv[++i],prefill_batch)) {
+                std::cerr<<"--prefill-batch requires 0(auto) or an integer in 1..512\n";
+                return 2;
+            }
+        }
         else if (arg[0] != '-' && model == "Qwen3.8-Flash-Next") {
             model = arg;
         }
@@ -243,6 +258,7 @@ int cmd_serve(int argc, char** argv) {
                       << "  --json          Output machine-readable JSON status & JSONL telemetry\n"
                       << "  --no-tui        Disable ANSI terminal dashboard, emit sequential logs\n"
                       << "  --mock          Run with mock inference engine for testing\n";
+            std::cout << "  --prefill-batch N Generic prompt batch (0 auto, 1..512)\n";
             return 0;
         }
     }
@@ -267,6 +283,7 @@ int cmd_serve(int argc, char** argv) {
     guild::memory::PlannerOptions planner_opts;
     planner_opts.context_length = desc.attn.context_length;
     auto plan = guild::memory::MemoryPlanner::plan(desc, hw, planner_opts);
+    plan.prefill_batch = prefill_batch;
     auto val = guild::memory::MemoryPlanner::validate(plan, hw, desc);
     if (!force_mock && !val.valid) {
         std::cerr << "guild serve: memory plan validation failed: "
@@ -832,10 +849,17 @@ int cmd_run(int argc, char** argv) {
     std::string model = "qwen3.8-flash-next";
     std::string data_dir;
     bool force_mock = false;
+    int64_t prefill_batch = 0;
 
     for (int i = 2; i < argc; ++i) {
         const std::string arg = argv[i];
         if (arg == "--mock") force_mock = true;
+        else if (arg == "--prefill-batch") {
+            if (i+1>=argc || !parse_prefill_batch(argv[++i],prefill_batch)) {
+                std::cerr<<"--prefill-batch requires 0(auto) or an integer in 1..512\n";
+                return 2;
+            }
+        }
         else if (arg == "--data-dir" && i + 1 < argc) data_dir = argv[++i];
         else if (arg[0] != '-' && (model == "qwen3.8-flash-next" || model.empty())) {
             model = arg;
@@ -844,6 +868,7 @@ int cmd_run(int argc, char** argv) {
             std::cout << "Usage: guild run [model] [options]\n"
                       << "  --mock          Run with mock inference engine for testing\n"
                       << "  --data-dir PATH Custom data directory for Guild model store\n";
+            std::cout << "  --prefill-batch N Generic prompt batch (0 auto, 1..512)\n";
             return 0;
         }
     }
@@ -887,6 +912,7 @@ int cmd_run(int argc, char** argv) {
     guild::memory::PlannerOptions popts;
     popts.context_length = desc.attn.context_length;
     auto plan = guild::memory::MemoryPlanner::plan(desc, hw, popts);
+    plan.prefill_batch = prefill_batch;
     auto val = guild::memory::MemoryPlanner::validate(plan, hw, desc);
     if (!force_mock && !val.valid) {
         std::cerr << "guild run: execution plan validation failed:\n";

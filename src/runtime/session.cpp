@@ -8,6 +8,8 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <iostream>
 #include <mutex>
 #include <vector>
@@ -37,8 +39,14 @@ void GuildSession::reset() {
     auto* m_impl = model_->impl();
     std::lock_guard<std::mutex> lock(m_impl->generation_mutex);
     if (!model_->is_ready()) return;
+    std::string error;
+    if (!m_impl->ver->wait_commit(error) || (m_impl->mtp && !m_impl->mtp->idle(error))) {
+        model_->ready_.store(false);
+        return;
+    }
     core::session_zero(m_impl->ss, m_impl->g, nullptr, m_impl->main_stream);
-    cudaStreamSynchronize(m_impl->main_stream);
+    if (m_impl->mtp) core::qsa_state_zero(m_impl->mtp->kv_state(), m_impl->g, m_impl->main_stream);
+    if (cudaStreamSynchronize(m_impl->main_stream) != cudaSuccess) model_->ready_.store(false);
 }
 
 void GuildSession::cancel() {
@@ -112,6 +120,12 @@ bool GuildSession::generate(
         }
     }
 
+    if (m_impl->g.is_dense_attention() &&
+        n_prompt + req.max_new_tokens > m_impl->ver->attention_capacity()) {
+        error_msg = "dense attention request exceeds the allocated single-tile history capacity; multi-tile execution is unavailable";
+        return false;
+    }
+
     // Reset KV state for fresh generation
     if (!m_impl->ver->wait_commit(error_msg)) return runtime_failure();
     if (m_impl->mtp && !m_impl->mtp->idle(error_msg)) return runtime_failure();
@@ -156,8 +170,21 @@ bool GuildSession::generate(
                 return runtime_failure();
             }
         }
+    } else if (m_impl->batched_prefill && std::getenv("GUILD_PREFILL_SEQUENTIAL") == nullptr) {
+        m_impl->batched_prefill->should_stop = [this, &req] {
+            return impl_->cancelled.load() || (req.cancel_flag && req.cancel_flag->load());
+        };
+        if (n_prompt > 1) {
+            if (!m_impl->batched_prefill->run(ids.data(), n_prompt - 1, 0, error_msg)) {
+                if (error_msg == "cancelled") {
+                    telemetry.finish_reason = "cancel";
+                    return true;
+                }
+                return runtime_failure();
+            }
+        }
     } else {
-        // Architecture-independent prompt ingestion via Verifier
+        // Architecture-independent prompt ingestion via Verifier (sequential fallback)
         if (n_prompt > 1) {
             std::vector<int32_t> sink_out(1);
             for (int64_t pos = 0; pos < n_prompt - 1; ++pos) {
@@ -185,8 +212,8 @@ bool GuildSession::generate(
     auto t_prefill_end = Clock::now();
     telemetry.prompt_ms = std::chrono::duration<double, std::milli>(t_prefill_end - t_prefill_start).count();
     telemetry.prompt_tokens = static_cast<int>(n_prompt);
-    telemetry.prompt_tok_s = (n_prompt > 0 && telemetry.prompt_ms > 0)
-                                 ? (n_prompt / (telemetry.prompt_ms / 1000.0))
+    telemetry.prompt_tok_s = (n_prompt > 1 && telemetry.prompt_ms > 0)
+                                 ? ((n_prompt - 1) / (telemetry.prompt_ms / 1000.0))
                                  : 0.0;
 
     if (on_prefill) {
@@ -200,6 +227,21 @@ bool GuildSession::generate(
 
     // Speculative decode loop starting from last prompt token
     auto t_decode_start = Clock::now();
+    const bool decode_timing = std::getenv("GUILD_DECODE_TIMING") != nullptr;
+    const int64_t windows_before = m_impl->ver->windows;
+    const int64_t pcie_before = m_impl->drive.d.pcie_experts;
+    const double commit_before = m_impl->ver->ms_commit;
+    const double pool_before = m_impl->drive.cpu_ms;
+    const double validation_before = m_impl->drive.validation_ms;
+    const double draft_before = use_mtp ? m_impl->mtp->ms_draft : 0;
+    const auto logits_bytes_before = m_impl->ver->logits_readback_bytes;
+    const double logits_validation_before = m_impl->ver->ms_logit_validation;
+    const auto cache_hits_before = m_impl->drive.d.cache_hits;
+    const auto cache_lookups_before = m_impl->drive.d.cache_hits + m_impl->drive.d.cache_refused;
+    const auto ram_before = m_impl->src.ram_reads(), files_before = m_impl->src.file_reads();
+    const auto file_bytes_before = m_impl->src.file_blob_bytes();
+    const auto offload_before = m_impl->drive.d.offload_entries;
+    int64_t verified_entries = 0;
     int32_t x = static_cast<int32_t>(ids.back());
     int64_t p = n_prompt - 1;
 
@@ -220,7 +262,9 @@ bool GuildSession::generate(
     sp_params.top_p = req.top_p;
     sp_params.top_k = req.top_k;
     sp_params.seed = req.seed;
+    sp_params.greedy = req.temperature <= 0;
     m_impl->ver->set_sampling(sp_params);
+    if (use_mtp) m_impl->mtp->set_draft_sampling(sp_params);
 
     std::string text_accum;
     auto decoder = model_->tokenizer().create_incremental_decoder(true);
@@ -232,7 +276,7 @@ bool GuildSession::generate(
         }
 
         int T = S;
-        if (req.temperature == 0.0f && req.top_p >= 1.0f && model_->config().spec_min_p > 0.0f) {
+        if (use_mtp && model_->config().spec_min_p > 0.0f) {
             T = 1;
             while (T < S && dprob[static_cast<size_t>(T - 1)] >= model_->config().spec_min_p) ++T;
         }
@@ -255,6 +299,7 @@ bool GuildSession::generate(
         if (!m_impl->ver->run(T, window.data(), p, drive_pool_multi, &m_impl->drive, outv.data(), error_msg)) {
             return runtime_failure();
         }
+        verified_entries += int64_t(T) * m_impl->K * m_impl->g.n_layers;
 
         int a = 0;
         while (a < T - 1 && window[static_cast<size_t>(a + 1)] == outv[static_cast<size_t>(a)]) ++a;
@@ -311,6 +356,8 @@ bool GuildSession::generate(
         x = outv[static_cast<size_t>(a)];
     }
 
+    // A successful request must leave completed state before reset, another session, or teardown.
+    if (!m_impl->ver->wait_commit(error_msg)) return runtime_failure();
     std::string flushed = decoder->flush();
     if (!flushed.empty() && on_token && !client_aborted) {
         on_token(TokenEvent{0, flushed, false});
@@ -323,11 +370,31 @@ bool GuildSession::generate(
                                  ? (produced_n / (telemetry.decode_ms / 1000.0))
                                  : 0.0;
     telemetry.current_context_length = p;
-    telemetry.prefill_chunk = model_->config().prefill_chunk;
-    telemetry.ram_expert_hits = m_impl->src.ram_reads();
-    telemetry.file_expert_reads = m_impl->src.file_reads();
-    telemetry.gpu_cache_hits = m_impl->drive.d.cache_hits;
+    telemetry.prefill_chunk = m_impl->batched_prefill ? m_impl->batched_prefill->batch_size() : model_->config().prefill_chunk;
+    telemetry.ram_expert_hits = m_impl->src.ram_reads() - ram_before;
+    telemetry.file_expert_reads = m_impl->src.file_reads() - files_before;
+    telemetry.file_read_bytes = m_impl->src.file_blob_bytes() - file_bytes_before;
+    telemetry.gpu_cache_hits = m_impl->ver->all_experts_resident() ? verified_entries : m_impl->drive.d.cache_hits - cache_hits_before;
+    telemetry.gpu_cache_lookups = m_impl->ver->all_experts_resident() ? verified_entries
+        : m_impl->drive.d.cache_hits + m_impl->drive.d.cache_refused - cache_lookups_before;
+    telemetry.offload_entries = m_impl->drive.d.offload_entries - offload_before;
     telemetry.request_latency_s = std::chrono::duration<double>(t_decode_end - t_req_start).count();
+    if (decode_timing) {
+        const int64_t windows = m_impl->ver->windows - windows_before;
+        const double denominator = std::max<int64_t>(1, windows);
+        std::fprintf(stderr, "guild decode timing: %lld windows, %.2f tokens/window, %.2f ms/window; "
+                             "commit %.3f, CPU dispatch %.2f (finite checks %.2f), draft %.2f ms/window; "
+                             "PCIe %lld experts, drafts %d/%d; logit validation %.3f ms/window, %llu bytes read\n",
+                     static_cast<long long>(windows), produced_n / denominator, telemetry.decode_ms / denominator,
+                     (m_impl->ver->ms_commit - commit_before) / denominator,
+                     (m_impl->drive.cpu_ms - pool_before) / denominator,
+                     (m_impl->drive.validation_ms - validation_before) / denominator,
+                     (use_mtp ? m_impl->mtp->ms_draft - draft_before : 0) / denominator,
+                     static_cast<long long>(m_impl->drive.d.pcie_experts - pcie_before),
+                     telemetry.drafts_accepted, telemetry.drafts_offered,
+                     (m_impl->ver->ms_logit_validation - logits_validation_before) / denominator,
+                     static_cast<unsigned long long>(m_impl->ver->logits_readback_bytes - logits_bytes_before));
+    }
 
     if (client_aborted) {
         telemetry.finish_reason = "cancel";

@@ -580,9 +580,9 @@ void qsa_set_kv_resident(int64_t cells) { g_kv_resident = cells > 0 ? cells : 0;
 int64_t qsa_kv_resident() { return g_kv_resident; }
 void qsa_set_kv_host_only(bool enabled) { g_kv_host_only = enabled; }
 bool qsa_kv_host_only() { return g_kv_host_only; }
-int64_t qsa_kv_staging_cells(const ModelGeometry& g) {
+int64_t qsa_kv_staging_cells(const ModelGeometry& g, int64_t max_cells) {
     const auto s = qsa_shapes(g);
-    return staging_slots(s) * s.page_size;
+    return staging_slots(s, g.is_dense_attention(), max_cells) * s.page_size;
 }
 int64_t qsa_kv_resident_min() { return 20480; }
 uint64_t qsa_kv_host_bytes() { return g_kv_host_bytes; }

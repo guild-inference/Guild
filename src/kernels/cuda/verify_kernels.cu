@@ -9,9 +9,30 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <stdexcept>
 
 namespace guild::kernels {
 namespace {
+
+__global__ void finite_first_bad_kernel(const float* values, unsigned long long count,
+                                       unsigned long long* first_bad) {
+    unsigned long long bad = ~0ull;
+    for (unsigned long long i = (unsigned long long) blockIdx.x * blockDim.x + threadIdx.x;
+         i < count; i += (unsigned long long) gridDim.x * blockDim.x) {
+        if ((__float_as_uint(values[i]) & 0x7f800000u) == 0x7f800000u) bad = i < bad ? i : bad;
+    }
+    __shared__ unsigned long long minima[256];
+    minima[threadIdx.x] = bad;
+    __syncthreads();
+    for (unsigned stride = 128; stride; stride >>= 1) {
+        if (threadIdx.x < stride) {
+            const auto other = minima[threadIdx.x + stride];
+            minima[threadIdx.x] = other < minima[threadIdx.x] ? other : minima[threadIdx.x];
+        }
+        __syncthreads();
+    }
+    if (threadIdx.x == 0 && minima[0] != ~0ull) atomicMin(first_bad, minima[0]);
+}
 
 constexpr int S = 128;          // GDN state size
 constexpr int RG = 4;
@@ -362,6 +383,18 @@ __global__ void dense_steps_kernel(const int32_t* __restrict__ cells, int n, int
 
 }  // namespace
 
+void finite_first_bad(const float* values, uint64_t count, unsigned long long* first_bad, void* stream) {
+    auto cs = static_cast<cudaStream_t>(stream);
+    if (cudaMemsetAsync(first_bad, 0xff, sizeof(*first_bad), cs) != cudaSuccess)
+        throw std::runtime_error("finite validation status initialization failed");
+    if (!count) return;
+    const unsigned blocks = unsigned(count / 256 + (count % 256 != 0) < 256
+                                      ? count / 256 + (count % 256 != 0) : 256);
+    finite_first_bad_kernel<<<blocks, 256, 0, cs>>>(values, count, first_bad);
+    const auto status = cudaGetLastError();
+    if (status != cudaSuccess) throw std::runtime_error(cudaGetErrorString(status));
+}
+
 void fetch_blobs(const unsigned long long* src, const int32_t* n, uint8_t* dst, int64_t blob_bytes, int cap, void* stream) {
     if (cap <= 0) return;
     if (blob_bytes % 16 != 0) { std::fprintf(stderr, "fetch_blobs: blob size must be a multiple of 16\n"); std::exit(1); }
@@ -436,6 +469,27 @@ void window_ids(int32_t* steps, int n, int window, int32_t* ids, int64_t ids_str
 void dense_steps(const int32_t* cells, int n, int32_t* steps, void* stream) {
     dense_steps_kernel<<<1, 64, 0, (cudaStream_t) stream>>>(cells, n, steps);
     check("dense_steps");
+}
+
+void gdn_prefill_conv(const float* history, const float* qkv, const float* conv_w, float* h,
+                      int channels, int qk_heads, float eps, int n_tok, void* stream) {
+    if (!history || !qkv || !conv_w || !h || !stream || channels % S || n_tok < 1 || n_tok > 512)
+        throw std::invalid_argument("GDN prefill: invalid convolution buffers or batch");
+    gdn_conv_l2_multi_kernel<<<dim3(unsigned(channels / S), unsigned(n_tok)), S, 0,
+        static_cast<cudaStream_t>(stream)>>>(history, qkv, conv_w, h, channels, qk_heads, eps, 0);
+    check("gdn_prefill_conv");
+}
+
+void gdn_prefill_recurrence(float* state, const float* h, int channels, const float* gate,
+                            const float* beta, const float* z, const float* gamma, float eps,
+                            float* y, int h_k, int h_v, int n_tok, const int32_t* keep,
+                            bool gate_silu, void* stream) {
+    if (!state || !h || !gate || !beta || !z || !gamma || !y || !keep || !stream ||
+        h_k < 1 || h_v % h_k || n_tok < 1 || n_tok > 512)
+        throw std::invalid_argument("GDN prefill: invalid recurrence buffers or batch");
+    gdn_step_norm_multi_kernel<<<unsigned(h_v), dim3(S, RG), 0, static_cast<cudaStream_t>(stream)>>>(
+        state, h, channels, gate, beta, z, gamma, eps, y, h_k, h_v, n_tok, keep, 0, gate_silu);
+    check("gdn_prefill_recurrence");
 }
 
 void gdn_conv_l2_multi(const float* history, const float* qkv, const float* conv_w, float* h, int channels,

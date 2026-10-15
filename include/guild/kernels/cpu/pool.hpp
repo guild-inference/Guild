@@ -167,7 +167,10 @@ public:
     /// read once for all of its tokens.
     void run_split_multi(ExpertJobMulti* jobs, int n);
     /// Plan v0.3 P6: the same for a native pack's layer (ggml-cpu arithmetic, `nact` activations).
-    void run_split_multi_native(const NativeFmt& f, ExpertJobMulti* jobs, int n);
+    // Prompt-only parallel_quant partitions independent expert intermediates.
+    // Per-token quantizer and reductions are unchanged. Decode defaults to its
+    // existing two-phase schedule; prompt uses a third barrier for larger groups.
+    void run_split_multi_native(const NativeFmt& f, ExpertJobMulti* jobs, int n, bool parallel_quant = false);
     static constexpr int kMaxSplitMulti = 96;
     /// run_split_multi's phases, accumulated ms: gate/up rows, the intermediate quantization, down rows.
     double ms_multi_gu = 0, ms_multi_q = 0, ms_multi_down = 0;

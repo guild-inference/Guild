@@ -558,6 +558,12 @@ void ExpertPool::drain(int id, ExpertScratch& scratch, uint32_t epoch) {
             const int e = (int) i / parts_b_, part = (int) i % parts_b_;
             const int r0 = H * part / parts_b_, r1 = H * (part + 1) / parts_b_;
             s2_expert_down_rows(jobs_[e].blob, split_[(size_t) e].a2, jobs_[e].out, r0, r1);
+        } else if (mode_ == 7) {
+            // One independent expert intermediate per task, no cross-task writes.
+            auto& sb=split_multi_[i];
+            for (int t=0;t<mjobs_[i].nt;++t)
+                if (q2_native_kernels(nfmt_->d_type)) act_quant_any(sb.ff[t],int(nfmt_->n_ff),sb.a2[t]);
+                else native_quant_h(*nfmt_,sb.ff[t],sb.hq[t]);
         } else if (mode_ >= 5) {
             // plan v0.3 P6: native layers, 5 = gate/up rows, 6 = down rows
             const int per = mode_ == 5 ? (int) nfmt_->n_ff : (int) nfmt_->n_embd;
@@ -686,7 +692,7 @@ void ExpertPool::run_split_multi(ExpertJobMulti* jobs, int n) {
     ms_drain_ += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
 }
 
-void ExpertPool::run_split_multi_native(const NativeFmt& f, ExpertJobMulti* jobs, int n) {
+void ExpertPool::run_split_multi_native(const NativeFmt& f, ExpertJobMulti* jobs, int n, bool parallel_quant) {
     if (n <= 0) return;
     const auto t0 = std::chrono::steady_clock::now();
     // more distinct experts than buffers: run them in batches
@@ -700,7 +706,8 @@ void ExpertPool::run_split_multi_native(const NativeFmt& f, ExpertJobMulti* jobs
         const auto a = std::chrono::steady_clock::now();
         run_phase(5, mtasks_);
         const auto b = std::chrono::steady_clock::now();
-        for (int e = 0; e < nb; ++e)
+        if (parallel_quant && nb >= 32) run_phase(7,nb);
+        else for (int e = 0; e < nb; ++e)
             for (int t = 0; t < mjobs_[e].nt; ++t)
                 if (q2_native_kernels(f.d_type)) act_quant_any(split_multi_[(size_t) e].ff[t], (int) f.n_ff, split_multi_[(size_t) e].a2[t]);
                 else native_quant_h(f, split_multi_[(size_t) e].ff[t], split_multi_[(size_t) e].hq[t]);

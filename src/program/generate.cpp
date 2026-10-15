@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -35,6 +36,7 @@ void usage() {
               << "  --kv-host-only             Host-only KV cache with bounded GPU staging\n"
               << "  --resident-budget-gib <n>  RAM expert residency budget in GiB\n"
               << "  --expert-cache <auto|n>    GPU expert cache slots\n"
+              << "  --pcie-frac <f>            Fraction of missed experts offloaded from RAM (0..1; default auto)\n"
               << "  --prefill <auto|n>         Prefill chunk size\n"
               << "  --spec <n>                 Speculative draft length (default 4)\n"
               << "  --spec-min-p <p>           Speculative min probability (default 0.5)\n"
@@ -118,6 +120,7 @@ int main(int argc, char** argv) try {
     bool kv_host_only = false;
     int resident_budget_gib = 0;
     std::string expert_cache = "auto";
+    double pcie_fraction = -1.0;
     std::string prefill = "auto";
     int spec = 4;
     float spec_min_p = 0.5f;
@@ -165,6 +168,14 @@ int main(int argc, char** argv) try {
             resident_budget_gib = std::stoi(next("--resident-budget-gib"));
         } else if (a == "--expert-cache") {
             expert_cache = next("--expert-cache");
+        } else if (a == "--pcie-frac") {
+            const std::string value = next("--pcie-frac");
+            size_t used = 0;
+            pcie_fraction = std::stod(value, &used);
+            if (used != value.size() || !std::isfinite(pcie_fraction) || pcie_fraction < 0 || pcie_fraction > 1) {
+                std::fprintf(stderr, "--pcie-frac requires a finite number in 0..1\n");
+                return 2;
+            }
         } else if (a == "--prefill") {
             prefill = next("--prefill");
         } else if (a == "--spec") {
@@ -247,12 +258,20 @@ int main(int argc, char** argv) try {
         popts.resident_budget_gib = resident_budget_gib;
     }
     if (expert_cache != "auto") {
-        try { popts.gpu_cache_slots = std::stoi(expert_cache); } catch (...) {}
+        if (expert_cache == "off") popts.gpu_cache_slots = 0;
+        else { try { popts.gpu_cache_slots = std::stoi(expert_cache); } catch (...) {} }
     }
+    if (pcie_fraction >= 0) popts.pcie_expert_fraction = pcie_fraction;
     if (prefill != "auto") {
         try { popts.prefill_chunk = std::stoi(prefill); } catch (...) {}
     }
     popts.spec_tokens = spec;
+    if (!std::isfinite(spec_min_p) || spec_min_p < 0 || spec_min_p > 1 || pool_workers < 0) {
+        std::fprintf(stderr, "--spec-min-p requires 0..1 and --pool-workers requires a nonnegative count\n");
+        return 2;
+    }
+    popts.spec_min_p = spec_min_p;
+    popts.pool_workers = pool_workers;
 
     auto plan = guild::memory::MemoryPlanner::plan(desc, hw, popts);
 
@@ -263,9 +282,6 @@ int main(int argc, char** argv) try {
     paths.expert_profile_path = profile_path;
     paths.mtp_dir = mtp_dir;
     paths.tokenizer_dir = tokenizer_dir;
-
-    (void) spec_min_p;
-    (void) pool_workers;
 
     std::string err_msg;
     auto model = GuildModel::load(paths, desc, plan, err_msg);
@@ -343,7 +359,12 @@ int main(int argc, char** argv) try {
                     std::cout << "ERR " << gen_err << "\n" << std::flush;
                 } else {
                     std::cout << "DONE " << telem.completion_tokens << " " << telem.prompt_tokens << " "
-                              << telem.prompt_ms << " " << telem.decode_ms << " " << telem.finish_reason << "\n"
+                              << telem.prompt_ms << " " << telem.decode_ms << " " << telem.finish_reason << " "
+                              << telem.drafts_accepted << " " << telem.drafts_offered << " 0 "
+                              << telem.gpu_cache_hits << " " << telem.gpu_cache_lookups << " "
+                              << telem.ram_expert_hits << " " << telem.file_expert_reads << " "
+                              << double(telem.file_read_bytes) / 1e6 << " " << telem.prompt_tokens << " "
+                              << telem.offload_entries << "\n"
                               << std::flush;
                 }
             }
