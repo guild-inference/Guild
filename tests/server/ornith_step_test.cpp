@@ -105,6 +105,9 @@ int main() {
         std::cout << ev.text << std::flush;
         return true;
     }, q_telem, q_err);
+    if (!q_ok) {
+        std::cerr << "\nGeneration failed: " << q_err << "\n";
+    }
     CHECK(q_ok);
     std::cout << "\n\nMulti-token success: " << q_ok << ", prompt_ms=" << q_telem.prompt_ms
               << ", decode_tok_s=" << q_telem.decode_tok_s

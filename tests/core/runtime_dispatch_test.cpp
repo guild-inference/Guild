@@ -56,6 +56,27 @@ int main() {
     CHECK(!drive.d.failed);
     CHECK(std::all_of(out.begin(), out.end(), [](float v) { return v == 0; }));
 
+    // One expert is GPU-owned and leaves its mapped host row untouched. A stale
+    // NaN in that row must not reject the healthy CPU result in the other row.
+    {
+        const int32_t mixed_residency[2] = {0, -1};
+        const int32_t mixed_ids[2] = {0, 1};
+        int32_t counts[4] = {}, start[3] = {}, dst[2] = {}, tokens[2] = {}, start2[3] = {};
+        unsigned long long ptr[2] = {}, ptr2[2] = {};
+        core::GpuPlanSink plan;
+        plan.counts = counts; plan.start = start; plan.dst = dst; plan.tok = tokens;
+        plan.start2 = start2; plan.ptr = ptr; plan.ptr2 = ptr2; plan.cap = 2;
+        runtime::Drive mixed;
+        mixed.d.src = &source; mixed.d.pool = &pool; mixed.d.n_expert = 2;
+        mixed.d.host_res = mixed_residency; mixed.d.plan = &plan;
+        mixed.d.cache_base = source.weights.data(); mixed.d.cache_blob = int64_t(fmt.bytes);
+        std::vector<float> mixed_out(5120, std::numeric_limits<float>::quiet_NaN());
+        runtime::drive_pool_multi(&mixed, x.data(), mixed_ids, 1, 2, mixed_out.data(), 0);
+        CHECK(!mixed.d.failed && counts[1] == 1 && dst[0] == 0);
+        CHECK(std::isnan(mixed_out[0]));
+        CHECK(std::all_of(mixed_out.begin() + 2560, mixed_out.end(), [](float v) { return v == 0; }));
+    }
+
     auto rejects = [&](const std::string& message) {
         bool rejected = false;
         try { runtime::drive_pool_multi(&drive, x.data(), &id, 1, 1, out.data(), 0); }

@@ -10,7 +10,7 @@ namespace fixture {
 
 // Small, zero-weight hybrid model to exercise the real verifier/CPU handshake.
 // Uses the existing non-HC geometry; it is not an Ornith quality fixture.
-inline guild::runtime::ModelPaths runtime_pack(const std::filesystem::path& root) {
+inline guild::runtime::ModelPaths runtime_pack(const std::filesystem::path& root, int expert_type = 8) {
     constexpr uint64_t N = 256, FF = 256, V = 16;
     std::vector<Tensor> tensors = {{"token_embd.weight", {N, V}, 8}, {"output.weight", {N, V}, 8},
                                   {"output_norm.weight", {N}, 0}};
@@ -24,7 +24,7 @@ inline guild::runtime::ModelPaths runtime_pack(const std::filesystem::path& root
         tensor(p + "ffn_gate_inp_shexp.weight", {N}, 30);
         for (auto role : {"gate", "up", "down"}) {
             tensor(p + "ffn_" + role + "_shexp.weight", {N, FF}, 8);
-            tensor(p + "ffn_" + role + "_exps.weight", {N, FF, 2}, 8);
+            tensor(p + "ffn_" + role + "_exps.weight", {N, FF, 2}, uint32_t(expert_type));
         }
         if (l != 3) {
             tensor(p + "attn_qkv.weight", {N, 8192}, 8);
@@ -85,9 +85,9 @@ inline guild::runtime::ModelPaths runtime_pack(const std::filesystem::path& root
     dense.close();
     guild::kernels::cpu::NativeFmt fmt;
     std::string err;
-    if (!guild::kernels::cpu::native_fmt(8, 8, N, FF, fmt, err)) throw std::runtime_error(err);
+    if (!guild::kernels::cpu::native_fmt(expert_type, expert_type, N, FF, fmt, err)) throw std::runtime_error(err);
     for (int l = 0; l < 4; ++l) {
-        experts << l << " 8 8 " << expert_off << ' ' << fmt.bytes;
+        experts << l << ' ' << expert_type << ' ' << expert_type << ' ' << expert_off << ' ' << fmt.bytes;
         for (auto role : {"gate", "up", "down"}) {
             const auto* t = gguf.find("blk." + std::to_string(l) + ".ffn_" + role + "_exps.weight");
             experts << ' ' << gguf.data_start() + t->offset;

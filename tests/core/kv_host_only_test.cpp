@@ -166,6 +166,21 @@ void run(int fmt) {
     std::printf("kv_host_only_test: format %d, 262144 cells, %.3f MiB shared staging: bitwise parity (1..8 rows, layers, graphs)\n",
                 fmt, double(staged) / 1048576.0);
 }
+
+void dense_bounds() {
+    c::ModelGeometry g;
+    g.idx_q_heads = 0; g.idx_key_dim = 0;
+    g.attn_mechanism = guild::model::AttentionMechanism::DenseCausal;
+    c::qsa_set_kv_int8(false); c::qsa_set_kv_q4(false); c::qsa_set_kv_host_only(true);
+    const auto shape = k::qsa_real_shapes();
+    for (int64_t context : {int64_t(64), int64_t(4096), int64_t(262144)}) {
+        State state(g, context);
+        require(state.s.n_slots * shape.page_size == c::qsa_kv_staging_cells(g, context),
+                "dense staging report differs from allocated pool");
+        require(state.s.n_slots * shape.page_size <= k::kTopkMaxCells + 2 * shape.page_size,
+                "dense staging grew beyond the validated tile bound");
+    }
+}
 }  // namespace
 
 int main() {
@@ -174,6 +189,7 @@ int main() {
     try {
         const uint64_t pinned_before = c::qsa_kv_host_bytes();
         run(k::kKvF16); run(k::kKvInt8); run(k::kKvQ4);
+        dense_bounds();
         require(c::qsa_kv_host_bytes() == pinned_before, "host KV allocations were not released");
     } catch (const std::exception& e) {
         std::fprintf(stderr, "kv_host_only_test: FAIL: %s\n", e.what()); return 1;

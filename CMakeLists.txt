@@ -973,7 +973,9 @@ if(GUILD_ENABLE_CUDA OR GUILD_ENABLE_HIP)
     src/runtime/model.cpp
     src/runtime/ple.cpp
     src/runtime/session.cpp
+    src/runtime/performance.cpp
     src/runtime/chat_template.cpp
+    src/runtime/batched_prefill.cpp
     src/runtime/tokenizer.cpp)
   target_include_directories(guild_runtime PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include PRIVATE ${_guild_gpu_include_directories})
   target_link_libraries(guild_runtime PUBLIC guild_engine guild_prefill guild_spec guild_memory guild_model guild_artifact ${_guild_gpu_runtime_target})
@@ -1004,6 +1006,12 @@ target_include_directories(guild_server PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/inclu
 target_link_libraries(guild_server PUBLIC guild_runtime guild_memory guild_cli guild_warnings Threads::Threads)
 
 # ---- guild_models (Native Model Manifest, Registry, Store, & Downloader) --
+set(GUILD_LLAMA_REFERENCE_DIR "" CACHE PATH "Optional independent llama.cpp checkout with build/bin/libllama.so")
+if(GUILD_LLAMA_REFERENCE_DIR)
+  add_executable(llama_prefill_reference tools/llama_prefill_reference.cpp)
+  target_include_directories(llama_prefill_reference PRIVATE ${GUILD_LLAMA_REFERENCE_DIR}/include ${GUILD_LLAMA_REFERENCE_DIR}/ggml/include)
+  target_link_libraries(llama_prefill_reference PRIVATE ${GUILD_LLAMA_REFERENCE_DIR}/build/bin/libllama.so)
+endif()
 find_package(CURL REQUIRED)
 add_library(guild_models STATIC
   src/models/sha256.cpp
@@ -1062,7 +1070,16 @@ if(GUILD_BUILD_TESTS)
     set_tests_properties(runtime_load_failure_test PROPERTIES TIMEOUT 30)
   endif()
   if(GUILD_ENABLE_CUDA AND UNIX)
+    add_executable(device_finite_test tests/core/device_finite_test.cpp)
+    target_include_directories(device_finite_test PRIVATE ${_guild_gpu_include_directories})
+    target_link_libraries(device_finite_test PRIVATE guild_kernels)
+    add_test(NAME device_finite_test COMMAND device_finite_test)
+    set_tests_properties(device_finite_test PROPERTIES TIMEOUT 60 SKIP_RETURN_CODE 77)
     add_executable(runtime_dispatch_test tests/core/runtime_dispatch_test.cpp)
+    add_executable(runtime_performance_test tests/core/runtime_performance_test.cpp)
+    target_include_directories(runtime_performance_test PRIVATE ${_guild_gpu_include_directories})
+    target_link_libraries(runtime_performance_test PRIVATE guild_runtime)
+    add_test(NAME runtime_performance_test COMMAND runtime_performance_test)
     target_include_directories(runtime_dispatch_test PRIVATE ${_guild_gpu_include_directories})
     target_link_libraries(runtime_dispatch_test PRIVATE guild_runtime guild_cli)
     add_test(NAME runtime_dispatch_test COMMAND runtime_dispatch_test)
@@ -1072,6 +1089,11 @@ if(GUILD_BUILD_TESTS)
     target_link_libraries(runtime_inference_failure_test PRIVATE guild_server guild_runtime guild_cli)
     add_test(NAME runtime_inference_failure_test COMMAND runtime_inference_failure_test)
     set_tests_properties(runtime_inference_failure_test PROPERTIES TIMEOUT 90 SKIP_RETURN_CODE 77)
+    add_executable(prefill_failure_test tests/core/prefill_failure_test.cpp)
+    target_include_directories(prefill_failure_test PRIVATE ${_guild_gpu_include_directories})
+    target_link_libraries(prefill_failure_test PRIVATE guild_server guild_runtime guild_cli)
+    add_test(NAME prefill_failure_test COMMAND prefill_failure_test)
+    set_tests_properties(prefill_failure_test PROPERTIES TIMEOUT 90)
     add_executable(ple_binding_failure_test tests/core/ple_binding_failure_test.cpp)
     target_include_directories(ple_binding_failure_test PRIVATE ${_guild_gpu_include_directories})
     target_link_libraries(ple_binding_failure_test PRIVATE guild_runtime guild_cli)
@@ -1110,6 +1132,16 @@ if(GUILD_BUILD_TESTS)
 
     add_executable(ornith_bench tests/server/ornith_bench.cpp)
     target_link_libraries(ornith_bench PRIVATE guild_server guild_runtime guild_models guild_memory guild_model guild_cli)
+    add_executable(ornith_prefill_test tests/core/ornith_prefill_test.cpp)
+    target_link_libraries(ornith_prefill_test PRIVATE guild_runtime guild_server guild_models guild_cli)
+    add_executable(ornith_prefill_bench tests/server/ornith_prefill_bench.cpp)
+    target_link_libraries(ornith_prefill_bench PRIVATE guild_runtime guild_server guild_models guild_cli)
+    set(GUILD_ORNITH_MODEL "" CACHE FILEPATH "Installed Ornith GGUF for real-model prefill validation")
+    set(GUILD_ORNITH_PACK "" CACHE PATH "Matching installed Ornith native pack")
+    if(GUILD_ORNITH_MODEL AND GUILD_ORNITH_PACK)
+      add_test(NAME ornith_prefill_test COMMAND ornith_prefill_test ${GUILD_ORNITH_MODEL} ${GUILD_ORNITH_PACK})
+      set_tests_properties(ornith_prefill_test PROPERTIES TIMEOUT 600 RUN_SERIAL TRUE)
+    endif()
   endif()
 endif()
 

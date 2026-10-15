@@ -87,6 +87,7 @@ int main(int argc, char** argv) {
     opts.plan.mtp_spec_tokens = 2;
     opts.plan.kv_mode = memory::KvMode::HostOnly;
     opts.plan.prefill_chunk = 512;
+    opts.plan.pcie_expert_fraction = 0; // reference explicitly uses CPU-only experts
     server::NativeInferenceEngine candidate(opts);
     std::string err;
     if (!candidate.init(err)) { std::cerr << err << '\n'; return 1; }
@@ -142,6 +143,7 @@ int main(int argc, char** argv) {
         CHECK(m->ver->run(1, &ids[p], int64_t(p), runtime::drive_pool_multi, &m->drive, &control_pick, err));
         CHECK(m->ver->commit(1, err));
     }
+    CHECK(m->ver->wait_commit(err));
     std::vector<float> sequential_ple(got.size());
     CHECK(m->ver->copy_logits(0, sequential_ple.data()));
     write_logits(out_dir / "diagnostic-sequential-ple-logits.bin", sequential_ple);
@@ -165,6 +167,7 @@ int main(int argc, char** argv) {
             CHECK(ablated.run(1, &ids[p], int64_t(p), runtime::drive_pool_multi, &m->drive, &pick, err));
             CHECK(ablated.commit(1, err));
         }
+        CHECK(ablated.wait_commit(err));
         std::vector<float> no_ple(got.size());
         CHECK(ablated.copy_logits(0, no_ple.data()));
         write_logits(out_dir / "diagnostic-no-ple-logits.bin", no_ple);

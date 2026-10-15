@@ -149,13 +149,12 @@ int main() {
         CHECK(plan.persistent_gpu_kv_bytes == 6442450944ULL);
         CHECK(plan.kv_staging_bytes == 0);
         CHECK(plan.prefill_chunk == 2048);
-        CHECK(plan.routed_experts_in_gpu > 0); // Holds expert cache on 80 GiB card
+        CHECK(plan.expert_cache_auto && plan.routed_experts_in_gpu == 0); // finalized after actual allocations
 
         PlanValidation val = MemoryPlanner::validate(plan, hw, desc);
         CHECK(val.ok());
 
-        std::cout << "[Test 4 Passed] 80 GiB GPU chose resident KV and allocated "
-                  << plan.routed_experts_in_gpu << " GPU expert cache slots\n";
+        std::cout << "[Test 4 Passed] 80 GiB GPU chose resident KV and deferred cache sizing to actual free memory\n";
     }
 
     // =========================================================================
