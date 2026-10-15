@@ -32,6 +32,8 @@
 #include "guild/kernels/native_router.hpp"
 #include "guild/kernels/native_qsa.hpp"
 #include "guild/kernels/native_qsa_indexer.hpp"
+#include "guild/kernels/registry.hpp"
+#include "guild/model/runner.hpp"
 #include "guild/prefill/prefill.hpp"
 #include "guild/runtime/batched_prefill.hpp"
 #include "guild/runtime/performance.hpp"
@@ -107,6 +109,10 @@ struct GuildModel::Impl {
     memory::ExecutionPlan plan;
     RuntimeConfig config;
     ExpertPerformance expert_performance;
+    const model::IModelRunner* runner = nullptr;
+    model::RunnerExecutionPlan runner_exec;
+    model::SessionRunnerLease runner_lease;
+    kernels::SessionKernelLease kernel_lease;
     core::ModelGeometry g;
     int64_t K = 10;
 

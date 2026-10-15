@@ -7,6 +7,7 @@
 #include "guild/runtime/batched_prefill.hpp"
 #include "guild/core/native_head.hpp"
 #include "guild/core/validation.hpp"
+#include "guild/kernels/registry.hpp"
 #include "guild/kernels/native_mmvq.hpp"
 #include "guild/kernels/native_qsa.hpp"
 #include "guild/kernels/native_rope.hpp"
@@ -37,17 +38,17 @@ constexpr float kEps = 1e-6f;
 using Clock = std::chrono::steady_clock;
 double ms(Clock::time_point a) { return std::chrono::duration<double,std::milli>(Clock::now()-a).count(); }
 void ck(cudaError_t e) { if (e != cudaSuccess) throw std::runtime_error(cudaGetErrorString(e)); }
-void quant(const float* x, void* dst, int width, int rows, void* stream) {
+void quant(const ResolvedPrefillKernels& fns, const float* x, void* dst, int width, int rows, void* stream) {
     for (int t=0; t<rows; t+=kProjectionRows) {
         const int n=std::min(kProjectionRows, rows-t);
-        native_quantize_q8_1(x+size_t(t)*width, static_cast<uint8_t*>(dst)+size_t(t)*width/32*36, width,n,stream);
+        fns.quantize_q8_1(x+size_t(t)*width, static_cast<uint8_t*>(dst)+size_t(t)*width/32*36, width,n,stream);
     }
 }
-void project(const core::WeightRef& w, const void* x, float* y, int rows, void* stream) {
+void project(const ResolvedPrefillKernels& fns, const core::WeightRef& w, const void* x, float* y, int rows, void* stream) {
     if (!w.native_data) throw std::runtime_error("batched prefill: missing native projection");
     for (int t=0; t<rows; t+=kProjectionRows)
-        native_mmvq(w.native_type,w.native_data,static_cast<const uint8_t*>(x)+size_t(t)*w.ne0/32*36,
-                    y+size_t(t)*w.ne1,int(w.ne0),int(w.ne1),std::min(kProjectionRows,rows-t),stream);
+        fns.mmvq(w.native_type,w.native_data,static_cast<const uint8_t*>(x)+size_t(t)*w.ne0/32*36,
+                 y+size_t(t)*w.ne1,int(w.ne0),int(w.ne1),std::min(kProjectionRows,rows-t),stream);
 }
 const core::WeightRef& need(const core::LayerView& v,const char* key) {
     const auto* w=v.get(key);
@@ -84,6 +85,7 @@ struct BatchedPrefill::Impl {
     std::vector<std::vector<int>> entries;
     std::vector<std::vector<uint8_t>> file_storage;
     std::vector<kernels::cpu::ExpertJobMulti> jobs;
+    kernels::ResolvedPrefillKernels fns{};
     bool profiling=false;
     cudaEvent_t events[5]={};
     ~Impl() {
@@ -99,7 +101,7 @@ struct BatchedPrefill::Impl {
         if (!host) allocated+=n*sizeof(T);
     }
     void norm(const float* in,const core::WeightRef& w,float* out,int cols,int rows) {
-        native_qsa_rms_norm_weighted(in,static_cast<const float*>(w.data),out,cols,rows,kEps,cs);
+        fns.rms_norm_weighted(in,static_cast<const float*>(w.data),out,cols,rows,kEps,cs);
     }
     void finite(const float* p,size_t n,const char* label) {
         validation.resize(n);
@@ -133,6 +135,9 @@ bool BatchedPrefill::init(const core::WeightTable& wt,const core::ModelGeometry&
     if (!native_qsa_enabled() || !native_rope_enabled() || !native_moe_combine_enabled() ||
         !shared_expert_native_bf16_enabled() || !kernels::cpu::expert_layout().native)
         throw std::invalid_argument("batched prefill requires the validated native arithmetic contract");
+    if (!kernels::KernelRegistry::instance().resolve_prefill_kernels(
+            kernels::query_host_device_capabilities(), m.fns, err))
+        throw std::runtime_error(err);
     m.g=&g; m.ss=&ss; m.src=&src; m.pool=&pool; m.cache=cache; m.cs=static_cast<cudaStream_t>(stream);
     m.profiling=std::getenv("GUILD_PREFILL_PROFILE")!=nullptr;
     if (m.profiling) for (auto& event:m.events) ck(cudaEventCreate(&event));
@@ -224,13 +229,13 @@ bool BatchedPrefill::run(const int64_t* tokens,int64_t n,int64_t pos0,std::strin
             a=Clock::now();
             m.stamp(0);
             m.norm(m.R,need(lv,"attn_norm.weight"),m.mixed,N,T);
-            quant(m.mixed,m.xq,N,T,cs);
+            quant(m.fns,m.mixed,m.xq,N,T,cs);
             if (!core::is_qsa_layer(g,l)) {
-                project(need(lv,"attn_qkv.weight"),m.xq,m.qkv,T,cs);
-                project(need(lv,"attn_gate.weight"),m.xq,m.z,T,cs);
+                project(m.fns,need(lv,"attn_qkv.weight"),m.xq,m.qkv,T,cs);
+                project(m.fns,need(lv,"attn_gate.weight"),m.xq,m.z,T,cs);
                 m.stamp(1);
                 auto* state=ss.gdn_state+size_t(gi-ss.gdn_ord0)*gdn_floats; auto* conv=state+state_floats;
-                gdn_prefill_conv(conv,m.qkv,static_cast<const float*>(need(lv,"ssm_conv1d.weight").data),m.h,C,2*HK,kEps,T,cs);
+                m.fns.gdn_conv(conv,m.qkv,static_cast<const float*>(need(lv,"ssm_conv1d.weight").data),m.h,C,2*HK,kEps,T,cs);
                 for (int t=0;t<T;t+=kProjectionRows) {
                     const int count=std::min(kProjectionRows,T-t);
                     gdn_ab_multi(m.mixed+size_t(t)*N,static_cast<const uint16_t*>(need(lv,"ssm_alpha.weight").data),
@@ -238,15 +243,15 @@ bool BatchedPrefill::run(const int64_t* tokens,int64_t n,int64_t pos0,std::strin
                         static_cast<const float*>(need(lv,"ssm_dt.bias").data),static_cast<const float*>(need(lv,"ssm_a").data),
                         m.gate+size_t(t)*HV,m.beta+size_t(t)*HV,N,HV,count,cs);
                 }
-                gdn_prefill_recurrence(state,m.h,C,m.gate,m.beta,m.z,static_cast<const float*>(need(lv,"ssm_norm.weight").data),
+                m.fns.gdn_recurrence(state,m.h,C,m.gate,m.beta,m.z,static_cast<const float*>(need(lv,"ssm_norm.weight").data),
                     kEps,m.y,HK,HV,T,m.keep,g.gdn_gate_silu,cs);
                 gdn_conv_commit(conv,m.qkv,C,m.keep,cs);
                 m.stamp(2);
-                quant(m.y,m.xq,V,T,cs); project(need(lv,"ssm_out.weight"),m.xq,m.bo,T,cs); ++gi;
+                quant(m.fns,m.y,m.xq,V,T,cs); project(m.fns,need(lv,"ssm_out.weight"),m.xq,m.bo,T,cs); ++gi;
             } else {
-                project(need(lv,"attn_q.weight"),m.xq,m.qfull,T,cs);
-                project(need(lv,"attn_k.weight"),m.xq,m.k,T,cs);
-                project(need(lv,"attn_v.weight"),m.xq,m.v,T,cs);
+                project(m.fns,need(lv,"attn_q.weight"),m.xq,m.qfull,T,cs);
+                project(m.fns,need(lv,"attn_k.weight"),m.xq,m.k,T,cs);
+                project(m.fns,need(lv,"attn_v.weight"),m.xq,m.v,T,cs);
                 m.stamp(1);
                 const auto& st=ss.qsa_states[qi];
                 // Append current chunk first; each query's width enforces its own causal boundary.
@@ -255,8 +260,8 @@ bool BatchedPrefill::run(const int64_t* tokens,int64_t n,int64_t pos0,std::strin
                     ck(cudaMemcpy2DAsync(qt,HD*4,m.qfull+size_t(t)*NH*2*HD,HD*8,HD*4,NH,cudaMemcpyDeviceToDevice,cs));
                     m.norm(qt,need(lv,"attn_q_norm.weight"),qt,HD,NH); m.norm(kt,need(lv,"attn_k_norm.weight"),kt,HD,NK);
                     const int32_t* p=m.positions+size_t(t)*m.pos_stride;
-                    native_rope_apply(qt,qt,NH,HD,int(s.n_rot),rope_scaling(),p,cs);
-                    native_rope_apply(kt,kt,NK,HD,int(s.n_rot),rope_scaling(),p+NH,cs);
+                    m.fns.rope_apply(qt,qt,NH,HD,int(s.n_rot),rope_scaling(),p,cs);
+                    m.fns.rope_apply(kt,kt,NK,HD,int(s.n_rot),rope_scaling(),p+NH,cs);
                     kv_append_step(st.k_pool,st.v_pool,st.page_table,m.steps+t*kStepCount,kt,m.v+size_t(t)*NK*HD,s,cs,&st.host);
                 }
                 for (int t=0;t<T;t+=kAttentionQueries) {
@@ -267,7 +272,7 @@ bool BatchedPrefill::run(const int64_t* tokens,int64_t n,int64_t pos0,std::strin
                 }
                 native_qsa_gate_apply(m.attn,m.qfull,m.attn,T*NH,HD,cs);
                 m.stamp(2);
-                quant(m.attn,m.xq,NH*HD,T,cs);project(need(lv,"attn_output.weight"),m.xq,m.bo,T,cs);++qi;
+                quant(m.fns,m.attn,m.xq,NH*HD,T,cs);project(m.fns,need(lv,"attn_output.weight"),m.xq,m.bo,T,cs);++qi;
             }
             add_inplace(m.R,m.bo,size_t(T)*N,cs);
             m.stamp(3);
@@ -322,11 +327,11 @@ bool BatchedPrefill::run(const int64_t* tokens,int64_t n,int64_t pos0,std::strin
                         // Native cached matrices keep their original quantization; no whole expert dequantization.
                         for (int j=0;j<nt;++j) ck(cudaMemcpyAsync(m.gx+size_t(j)*N,m.mixed+size_t(list[b+j]/K)*N,
                             N*4,cudaMemcpyDeviceToDevice,cs));
-                        quant(m.gx,m.gq,N,nt,cs);
-                        native_mmvq(fmt.gu_type,blob,m.gq,m.gg,N,F,nt,cs);
-                        native_mmvq(fmt.gu_type,blob+fmt.up_off,m.gq,m.gu,N,F,nt,cs);
+                        quant(m.fns,m.gx,m.gq,N,nt,cs);
+                        m.fns.mmvq(fmt.gu_type,blob,m.gq,m.gg,N,F,nt,cs);
+                        m.fns.mmvq(fmt.gu_type,blob+fmt.up_off,m.gq,m.gu,N,F,nt,cs);
                         native_swiglu_quantize_q8_1(m.gg,m.gu,m.gq,F,nt,cs);
-                        native_mmvq(fmt.d_type,blob+fmt.down_off,m.gq,m.go,F,N,nt,cs);
+                        m.fns.mmvq(fmt.d_type,blob+fmt.down_off,m.gq,m.go,F,N,nt,cs);
                         for (int j=0;j<nt;++j) ck(cudaMemcpyAsync(m.parts+size_t(list[b+j])*N,m.go+size_t(j)*N,
                             N*4,cudaMemcpyDeviceToDevice,cs));
                         ++stats_.gpu_groups;

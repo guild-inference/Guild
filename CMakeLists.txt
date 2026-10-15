@@ -242,7 +242,7 @@ add_executable(guild-plan src/plan/plan_main.cpp)
 target_link_libraries(guild-plan PRIVATE guild_plan)
 
 # ---- guild_model (ModelDescriptor & Archetypes) -----------------------------
-add_library(guild_model STATIC src/model/model_descriptor.cpp src/model/archetype.cpp)
+add_library(guild_model STATIC src/model/model_descriptor.cpp src/model/archetype.cpp src/models/sha256.cpp)
 target_include_directories(guild_model PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(guild_model PUBLIC guild_artifact guild_warnings)
 if(GUILD_BUILD_TESTS)
@@ -970,6 +970,9 @@ target_link_libraries(guild_memory PUBLIC guild_model guild_cli guild_warnings)
 # ---- guild_runtime (Reusable In-Process Inference Runtime) ----------------
 if(GUILD_ENABLE_CUDA OR GUILD_ENABLE_HIP)
   add_library(guild_runtime STATIC
+    src/abi/gkernel_package.cpp
+    src/kernels/registry.cpp
+    src/model/runner.cpp
     src/runtime/model.cpp
     src/runtime/ple.cpp
     src/runtime/session.cpp
@@ -981,6 +984,9 @@ if(GUILD_ENABLE_CUDA OR GUILD_ENABLE_HIP)
   target_link_libraries(guild_runtime PUBLIC guild_engine guild_prefill guild_spec guild_memory guild_model guild_artifact ${_guild_gpu_runtime_target})
 else()
   add_library(guild_runtime STATIC
+    src/abi/gkernel_package.cpp
+    src/kernels/registry.cpp
+    src/model/runner.cpp
     src/runtime/model_stub.cpp
     src/runtime/session_stub.cpp
     src/runtime/chat_template.cpp
@@ -1014,7 +1020,6 @@ if(GUILD_LLAMA_REFERENCE_DIR)
 endif()
 find_package(CURL REQUIRED)
 add_library(guild_models STATIC
-  src/models/sha256.cpp
   src/models/manifest.cpp
   src/models/store.cpp
   src/models/registry.cpp
@@ -1063,6 +1068,10 @@ if(GUILD_BUILD_TESTS)
   add_executable(finite_output_test tests/core/finite_output_test.cpp)
   target_include_directories(finite_output_test PRIVATE include)
   add_test(NAME finite_output_test COMMAND finite_output_test)
+  add_executable(modular_abi_test tests/core/modular_abi_test.cpp)
+  target_link_libraries(modular_abi_test PRIVATE guild_runtime guild_model guild_memory guild_cli)
+  add_test(NAME modular_abi_test COMMAND modular_abi_test)
+  set_tests_properties(modular_abi_test PROPERTIES TIMEOUT 60)
   if(UNIX)
     add_executable(runtime_load_failure_test tests/core/runtime_load_failure_test.cpp)
     target_link_libraries(runtime_load_failure_test PRIVATE guild_server guild_artifact)

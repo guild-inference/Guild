@@ -11,9 +11,11 @@ bool bind_required_ple(GuildModel::Impl& m, const std::vector<std::string>& shar
     {
         const guild::GgufModel artifact(shards);
         size_t shard = 0;
-        const auto* table = artifact.find("per_layer_token_embd.weight", &shard);
-        const bool required = table != nullptr || m.wt.find("blk.1.ple_key.weight") != nullptr ||
-                              m.desc.archetype == model::ModelArchetype::Qwen4Exp;
+        const std::string ple_table_name = m.runner ? m.runner->tensor_map().ple_table_tensor : "per_layer_token_embd.weight";
+        const std::string ple_key_name = m.runner ? m.runner->tensor_map().ple_key_tensor : "blk.1.ple_key.weight";
+        const auto* table = artifact.find(ple_table_name, &shard);
+        const bool required = table != nullptr || m.wt.find(ple_key_name) != nullptr ||
+                              (m.runner ? m.runner_exec.requires_ple : m.desc.archetype == model::ModelArchetype::Qwen4Exp);
         m.ple_required = required;
         if (!required) return true;
         if (!table && table_path.empty()) {

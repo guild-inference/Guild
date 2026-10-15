@@ -47,18 +47,13 @@ std::unique_ptr<GuildModel> GuildModel::load(
     std::vector<std::string> shards = guild::gguf_split_paths(paths.primary_model_path);
     if (shards.size() == 1) shards.insert(shards.end(), paths.additional_shards.begin(), paths.additional_shards.end());
     model::ModelDescriptor desc = requested_desc;
+    const model::IModelRunner* runner = nullptr;
     {
         const guild::GgufModel artifact(shards);
-        error_msg = guild::check_architecture(artifact.meta());
-        if (!error_msg.empty() || !model::ArchetypeRegistry::instance().describe_gguf(artifact.meta(), desc, error_msg)) return nullptr;
-        const auto* embedding = artifact.find("token_embd.weight");
-        const auto* head = artifact.find("output.weight");
-        if (!embedding || !head || embedding->shape.size() != 2 || head->shape.size() != 2 ||
-            embedding->shape != head->shape || embedding->shape[0] != uint64_t(desc.attn.n_embd)) {
-            error_msg = "model load: incompatible embedding/output tensor dimensions";
+        if (model::ModelRunnerRegistry::instance().resolve_for_gguf(artifact.meta(), &runner, error_msg) != GUILD_STATUS_OK ||
+            !runner || !runner->validate_and_describe(artifact, desc, error_msg)) {
             return nullptr;
         }
-        desc.attn.vocab_size = int64_t(embedding->shape[1]);
     }
     if (plan.context_length <= 0 || plan.context_length > desc.attn.context_length ||
         plan.mtp_spec_tokens < 0 || plan.mtp_spec_tokens > kernels::kVerifyMaxT) {
@@ -85,6 +80,9 @@ std::unique_ptr<GuildModel> GuildModel::load(
     impl->paths = paths;
     impl->desc = desc;
     impl->plan = plan;
+    impl->runner = runner;
+    impl->runner_lease = model::SessionRunnerLease(&model::ModelRunnerRegistry::instance());
+    impl->kernel_lease = kernels::SessionKernelLease(&kernels::KernelRegistry::instance());
 
     // Apply execution plan to runtime config
     impl->config.max_context = plan.context_length;
@@ -104,10 +102,15 @@ std::unique_ptr<GuildModel> GuildModel::load(
     model->paths_ = paths;
     model->config_ = impl->config;
 
-    // Geometry
-    impl->g.apply_descriptor(desc);
-    if (desc.moe.k_active_experts > 0) {
-        impl->K = desc.moe.k_active_experts;
+    // Geometry & Runner Capability Validation
+    if (!runner->configure_geometry(desc, impl->g, impl->K, error_msg)) {
+        return nullptr;
+    }
+    const auto host_caps = kernels::query_host_device_capabilities();
+    if (model::ModelRunnerRegistry::instance().validate_runner_requirements(
+            *runner, desc, impl->g, plan, kernels::KernelRegistry::instance(),
+            host_caps, impl->runner_exec, error_msg) != GUILD_STATUS_OK) {
+        return nullptr;
     }
 
     // RoPE scaling
@@ -203,19 +206,12 @@ std::unique_ptr<GuildModel> GuildModel::load(
         if (!guild::core::NativeDense::served_names(shards, true, skip, error_msg)) {
             return nullptr;
         }
-        skip.insert("output.weight");
-        if (!native_pack) {
-            skip.erase("blk.1.ple_key.weight");
-        }
         if (native_pack && !guild::core::NativeDense::keep_unquantized_ple_key(paths.pack_dir, skip, error_msg)) {
             return nullptr;
         }
-        if (native_pack) {
-            skip.insert("token_embd.weight");
-        }
-    } else {
-        skip.insert("output.weight");
-        skip.insert("token_embd.weight");
+    }
+    if (!runner->configure_weight_skip_set(native_pack, !shards.empty(), paths.pack_dir, skip, error_msg)) {
+        return nullptr;
     }
 
     uint64_t pool_bytes = 0;

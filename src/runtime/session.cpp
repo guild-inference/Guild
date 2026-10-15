@@ -21,6 +21,8 @@ struct GuildSession::Impl {
     int64_t max_context = 262144;
     std::unique_ptr<spec::SuffixDrafter> sfx;
     std::unique_ptr<spec::DraftPolicy> policy;
+    model::SessionRunnerLease runner_lease;
+    kernels::SessionKernelLease kernel_lease;
     std::atomic<bool> cancelled{false};
 };
 
@@ -30,6 +32,8 @@ GuildSession::GuildSession(GuildModel* model, int64_t max_context)
     impl_->max_context = max_context > 0 ? max_context : model->config().max_context;
     impl_->sfx = std::make_unique<spec::SuffixDrafter>(3, 64, (size_t) impl_->max_context + 4096);
     impl_->policy = std::make_unique<spec::DraftPolicy>(model->config().spec);
+    impl_->runner_lease = model::SessionRunnerLease(&model::ModelRunnerRegistry::instance());
+    impl_->kernel_lease = kernels::SessionKernelLease(&kernels::KernelRegistry::instance());
 }
 
 GuildSession::~GuildSession() = default;
