@@ -1,0 +1,74 @@
+[
+  {
+    "command": [
+      "/home/ubuntu/Guild/build-cuda12/ornith_prefill_test",
+      "/home/ubuntu/models/ornith-1.5-35b/Ornith-1.5-35B-Q4_K_M.gguf",
+      "/mnt/models-ssd/Strata-data/packs/ornith-1.5-35b",
+      "2050"
+    ],
+    "prompt_tokens": 2050,
+    "exit_code": 0,
+    "elapsed_seconds": 93.49739875493106,
+    "log": "bench/results/ornith-prefill/parity-2050.log"
+  },
+  {
+    "command": [
+      "/home/ubuntu/Guild/build-cuda12/ornith_prefill_test",
+      "/home/ubuntu/models/ornith-1.5-35b/Ornith-1.5-35B-Q4_K_M.gguf",
+      "/mnt/models-ssd/Strata-data/packs/ornith-1.5-35b",
+      "2051"
+    ],
+    "prompt_tokens": 2051,
+    "exit_code": 0,
+    "elapsed_seconds": 93.80494074290618,
+    "log": "bench/results/ornith-prefill/parity-2051.log"
+  },
+  {
+    "command": [
+      "/home/ubuntu/Guild/build-cuda12/ornith_prefill_test",
+      "/home/ubuntu/models/ornith-1.5-35b/Ornith-1.5-35B-Q4_K_M.gguf",
+      "/mnt/models-ssd/Strata-data/packs/ornith-1.5-35b",
+      "2052"
+    ],
+    "prompt_tokens": 2052,
+    "exit_code": 0,
+    "elapsed_seconds": 93.64546243404038,
+    "log": "bench/results/ornith-prefill/parity-2052.log"
+  },
+  {
+    "command": [
+      "/home/ubuntu/Guild/build-cuda12/ornith_prefill_test",
+      "/home/ubuntu/models/ornith-1.5-35b/Ornith-1.5-35B-Q4_K_M.gguf",
+      "/mnt/models-ssd/Strata-data/packs/ornith-1.5-35b",
+      "4096"
+    ],
+    "prompt_tokens": 4096,
+    "exit_code": 0,
+    "elapsed_seconds": 179.0565900640795,
+    "log": "bench/results/ornith-prefill/parity-4096.log"
+  },
+  {
+    "command": [
+      "/home/ubuntu/Guild/build-cuda12/ornith_prefill_test",
+      "/home/ubuntu/models/ornith-1.5-35b/Ornith-1.5-35B-Q4_K_M.gguf",
+      "/mnt/models-ssd/Strata-data/packs/ornith-1.5-35b",
+      "8192"
+    ],
+    "prompt_tokens": 8192,
+    "exit_code": 0,
+    "elapsed_seconds": 381.6684828210855,
+    "log": "bench/results/ornith-prefill/parity-8192.log"
+  },
+  {
+    "command": [
+      "/home/ubuntu/Guild/build-cuda12/ornith_prefill_test",
+      "/home/ubuntu/models/ornith-1.5-35b/Ornith-1.5-35B-Q4_K_M.gguf",
+      "/mnt/models-ssd/Strata-data/packs/ornith-1.5-35b",
+      "16384"
+    ],
+    "prompt_tokens": 16384,
+    "exit_code": 0,
+    "elapsed_seconds": 898.2624176359968,
+    "log": "bench/results/ornith-prefill/parity-16384.log"
+  }
+]
