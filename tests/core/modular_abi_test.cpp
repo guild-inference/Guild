@@ -12,6 +12,7 @@
 #include <fstream>
 #include <iostream>
 #include <limits>
+#include <memory>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -70,6 +71,80 @@ guild_status_t bad_abi_plugin_entry(uint32_t, guild_plugin_descriptor_v1_t* out_
     out_desc->init = &test_plugin_init;
     return GUILD_STATUS_OK;
 }
+
+// Synthetic CPU descriptors exercise prefill binding without a GPU or kernel launches.
+// Allocate exactly the old seven-pointer payload so an ASan run catches any larger read.
+static_assert(sizeof(kernels::PrefillKernelTableV1) ==
+              7 * sizeof(decltype(kernels::PrefillKernelTableV1::quantize_q8_1)),
+              "the legacy prefill payload must remain seven function pointers");
+
+constexpr guild_op_kind_t kPrefillTestOps[] = {
+    GUILD_OP_QUANTIZE_ACT, GUILD_OP_QUANTIZED_GEMM, GUILD_OP_RMS_NORM,
+    GUILD_OP_GDN_CONV_L2, GUILD_OP_GDN_AB_PROJ, GUILD_OP_GDN_RECURRENCE_STEP,
+    GUILD_OP_GDN_OUT_NORM, GUILD_OP_ROPE_APPLY, GUILD_OP_KV_APPEND,
+    GUILD_OP_ATTENTION_DECODE, GUILD_OP_MOE_ROUTER_TOPK, GUILD_OP_SHARED_EXPERT,
+    GUILD_OP_BATCHED_EXPERT_EXEC, GUILD_OP_MOE_COMBINE, GUILD_OP_FINITE_CHECK
+};
+
+const char* prefill_test_id(guild_op_kind_t op) {
+    // Also satisfy the explicitly frozen serial policy when it is set in the environment.
+    return op == GUILD_OP_GDN_AB_PROJ ? "gpu.gdn.ab_proj_prefill_serial" : kernels::op_kind_to_string(op);
+}
+
+struct PrefillTestRegistry {
+    std::unique_ptr<kernels::PrefillKernelTableV1> legacy = std::make_unique<kernels::PrefillKernelTableV1>();
+    kernels::PrefillKernelExtensionV1 extension;
+    guild_device_capabilities_v1_t caps{};
+    kernels::KernelRegistry reg;
+
+    PrefillTestRegistry() {
+        legacy->quantize_q8_1 = +[](const float*, void*, int, int, void*) {};
+        legacy->mmvq = +[](int, const void*, const void*, float*, int, int, int, void*) {};
+        legacy->rms_norm_weighted = +[](const float*, const float*, float*, int, int, float, void*) {};
+        legacy->gdn_conv = +[](const float*, const float*, const float*, float*, int, int, float, int, void*) {};
+        legacy->gdn_recurrence = +[](float*, const float*, int, const float*, const float*, const float*,
+                                    const float*, float, float*, int, int, int, const int32_t*, bool, void*) {};
+        legacy->gdn_out_norm = +[](const float*, const float*, const float*, float*, int64_t, int64_t, float, void*) {};
+        legacy->rope_apply = +[](const float*, float*, int, int, int, const kernels::RopeScaling&, const int*, void*) {};
+        extension.gdn_ab = +[](const float*, const uint16_t*, const uint16_t*, const float*, const float*,
+                               float*, float*, int, int, int, void*) {};
+        extension.router_projection = +[](const float*, const uint16_t*, float*, int64_t, int64_t, int, void*) {};
+        caps.struct_size = sizeof(caps);
+        caps.abi_version = GUILD_KERNEL_ABI_VERSION_V1;
+        caps.available_backends = GUILD_BACKEND_CPU;
+        caps.available_ram_bytes = 1ull << 30;
+        std::string err;
+        for (auto op : kPrefillTestOps) CHECK(reg.register_op(descriptor(op), err) == GUILD_STATUS_OK);
+    }
+
+    guild_kernel_op_desc_v1_t descriptor(guild_op_kind_t op) const {
+        guild_kernel_op_desc_v1_t desc{};
+        desc.struct_size = sizeof(desc);
+        desc.abi_version = GUILD_KERNEL_ABI_VERSION_V1;
+        desc.op_kind = op;
+        desc.op_name = kernels::op_kind_to_string(op);
+        desc.impl_id = prefill_test_id(op);
+        desc.package_id = desc.impl_id;
+        desc.impl_version = GUILD_KERNEL_ABI_VERSION_V1;
+        desc.backend = GUILD_BACKEND_CPU;
+        desc.numerical_flags = GUILD_NUM_BITWISE_DETERMINISTIC;
+        desc.max_batch_rows = op == GUILD_OP_ATTENTION_DECODE ? 8 : 512;
+        desc.direct_fn_table = legacy.get();
+        if (op == GUILD_OP_GDN_AB_PROJ || op == GUILD_OP_MOE_ROUTER_TOPK) desc.next_ext = &extension;
+        desc.priority = 100;
+        return desc;
+    }
+
+    void replace(guild_op_kind_t op, const void* table, const void* next_ext, int64_t rows = 512) {
+        std::string err;
+        CHECK(reg.unregister_package(prefill_test_id(op), err) == GUILD_STATUS_OK);
+        auto desc = descriptor(op);
+        desc.direct_fn_table = table;
+        desc.next_ext = next_ext;
+        desc.max_batch_rows = rows;
+        CHECK(reg.register_op(desc, err) == GUILD_STATUS_OK);
+    }
+};
 
 } // namespace
 
@@ -324,6 +399,151 @@ int main() {
         }
         // Plugin shutdown callback executed on registry destruction
         CHECK(g_plugin_shutdown_calls == 1);
+    }
+
+    // Legacy descriptors can still override individual entries with an exact seven-pointer
+    // allocation and no extension. Projection-only descriptors can supply just next_ext.
+    // Later unrelated descriptors must preserve every independently selected pointer.
+    {
+        PrefillTestRegistry f;
+        kernels::ResolvedPrefillKernels resolved;
+        CHECK(f.reg.resolve_prefill_kernels(f.caps, resolved, err) && resolved.all_bound());
+
+        auto legacy = std::make_unique<kernels::PrefillKernelTableV1>();
+        legacy->rms_norm_weighted = +[](const float*, const float*, float*, int, int, float, void*) {};
+        auto norm_desc = f.descriptor(GUILD_OP_RMS_NORM);
+        norm_desc.impl_id = "test.prefill.norm_override";
+        norm_desc.direct_fn_table = legacy.get();
+        norm_desc.next_ext = nullptr;
+        norm_desc.priority = 10000;
+        CHECK(f.reg.register_op(norm_desc, err) == GUILD_STATUS_OK);
+
+        kernels::PrefillKernelExtensionV1 gdn_extension;
+        gdn_extension.gdn_ab = +[](const float*, const uint16_t*, const uint16_t*, const float*, const float*,
+                                   float*, float*, int, int, int, void*) {};
+        // Keep the serial implementation ID so this test also works with the frozen A/B policy.
+        f.replace(GUILD_OP_GDN_AB_PROJ, nullptr, &gdn_extension);
+        kernels::PrefillKernelExtensionV1 router_extension;
+        router_extension.router_projection = +[](const float*, const uint16_t*, float*, int64_t, int64_t, int, void*) {};
+        auto router_desc = f.descriptor(GUILD_OP_MOE_ROUTER_TOPK);
+        router_desc.impl_id = "test.prefill.router_override";
+        router_desc.direct_fn_table = nullptr;
+        router_desc.next_ext = &router_extension;
+        router_desc.priority = 10000;
+        CHECK(f.reg.register_op(router_desc, err) == GUILD_STATUS_OK);
+
+        // An operation checked only for availability can have its own small fast-path
+        // payload; it must never be reinterpreted as a legacy prefill table.
+        const uint32_t attention_payload = 0;
+        auto attention_desc = f.descriptor(GUILD_OP_ATTENTION_DECODE);
+        attention_desc.impl_id = "test.prefill.attention_payload";
+        attention_desc.priority = 10000;
+        attention_desc.direct_fn_table = &attention_payload;
+        CHECK(f.reg.register_op(attention_desc, err) == GUILD_STATUS_OK);
+
+        // Fused GR remains an eight-row decode operation, outside the prefill requirements.
+        auto gr_desc = f.descriptor(GUILD_OP_GATED_RESIDUAL);
+        gr_desc.max_batch_rows = 8;
+        gr_desc.direct_fn_table = nullptr;
+        CHECK(f.reg.register_op(gr_desc, err) == GUILD_STATUS_OK);
+        CHECK(f.reg.resolve_prefill_kernels(f.caps, resolved, err) && resolved.all_bound());
+        CHECK(resolved.quantize_q8_1 == f.legacy->quantize_q8_1);
+        CHECK(resolved.mmvq == f.legacy->mmvq);
+        CHECK(resolved.rms_norm_weighted == legacy->rms_norm_weighted);
+        CHECK(resolved.gdn_ab == gdn_extension.gdn_ab);
+        CHECK(resolved.router_projection == router_extension.router_projection);
+    }
+
+    // An old binary plugin's table does not contain projection pointers. Null next_ext
+    // must produce an explicit compatibility error, never a read beyond those seven slots.
+    for (auto op : {GUILD_OP_GDN_AB_PROJ, GUILD_OP_MOE_ROUTER_TOPK}) {
+        PrefillTestRegistry f;
+        f.replace(op, f.legacy.get(), nullptr);
+        kernels::ResolvedPrefillKernels resolved;
+        CHECK(!f.reg.resolve_prefill_kernels(f.caps, resolved, err));
+        CHECK(err.find(prefill_test_id(op)) != std::string::npos);
+        CHECK(err.find("incompatible prefill extension: missing next_ext") != std::string::npos);
+        CHECK(!resolved.all_bound());
+        if (op == GUILD_OP_GDN_AB_PROJ) CHECK(!resolved.gdn_ab);
+        else CHECK(!resolved.router_projection);
+    }
+
+    // Reject malformed extensions before reading any projection pointers. Several cases
+    // intentionally allocate only the advertised header/prefix, rather than a full table.
+    for (auto op : {GUILD_OP_GDN_AB_PROJ, GUILD_OP_MOE_ROUTER_TOPK}) {
+        PrefillTestRegistry f;
+        kernels::ResolvedPrefillKernels resolved;
+        const auto rejects = [&](const void* extension, const char* reason) {
+            f.replace(op, f.legacy.get(), extension);
+            CHECK(!f.reg.resolve_prefill_kernels(f.caps, resolved, err));
+            CHECK(err.find(prefill_test_id(op)) != std::string::npos);
+            CHECK(err.find("incompatible prefill extension") != std::string::npos);
+            CHECK(err.find(reason) != std::string::npos);
+            CHECK(!resolved.all_bound());
+        };
+        for (uint32_t size_only : {0u, uint32_t(sizeof(uint32_t))})
+            rejects(&size_only, "smaller than the extension header");
+        kernels::PrefillKernelExtensionHeader header;
+        rejects(&header, "smaller than the v1 projection payload");
+        struct TruncatedProjection {
+            kernels::PrefillKernelExtensionHeader header;
+            decltype(kernels::PrefillKernelExtensionV1::gdn_ab) gdn_ab;
+        } truncated{{sizeof(TruncatedProjection), kernels::kPrefillKernelExtensionTag,
+                     kernels::kPrefillKernelExtensionVersion}, f.extension.gdn_ab};
+        rejects(&truncated, "smaller than the v1 projection payload");
+
+        header.struct_size = sizeof(kernels::PrefillKernelExtensionV1);
+        header.tag ^= 1u;
+        rejects(&header, "unknown extension tag");
+        header.tag = kernels::kPrefillKernelExtensionTag;
+        for (uint32_t version : {0u, kernels::kPrefillKernelExtensionVersion + 1}) {
+            header.version = version;
+            rejects(&header, "unsupported extension version");
+        }
+        auto missing_entry = f.extension;
+        if (op == GUILD_OP_GDN_AB_PROJ) missing_entry.gdn_ab = nullptr;
+        else missing_entry.router_projection = nullptr;
+        rejects(&missing_entry, op == GUILD_OP_GDN_AB_PROJ ? "missing gdn_ab" : "missing router_projection");
+
+        // Extra trailing data is allowed for the recognized v1 prefix.
+        struct ExtendedProjection {
+            kernels::PrefillKernelExtensionV1 v1;
+            uint64_t extra = 0;
+        } extended{f.extension};
+        extended.v1.header.struct_size = sizeof(extended);
+        f.replace(op, f.legacy.get(), &extended);
+        CHECK(f.reg.resolve_prefill_kernels(f.caps, resolved, err) && resolved.all_bound());
+    }
+
+    // A high-priority decode-width router must not displace the full-prefill implementation.
+    {
+        PrefillTestRegistry f;
+        kernels::PrefillKernelExtensionV1 limited_extension;
+        limited_extension.router_projection = +[](const float*, const uint16_t*, float*, int64_t, int64_t, int, void*) {};
+        for (int rows : {1, 8, 511}) {
+            auto desc = f.descriptor(GUILD_OP_MOE_ROUTER_TOPK);
+            const std::string id = "test.prefill.limited_router_" + std::to_string(rows);
+            desc.impl_id = id.c_str();
+            desc.priority = 10000;
+            desc.max_batch_rows = rows;
+            desc.direct_fn_table = nullptr;
+            desc.next_ext = &limited_extension;
+            CHECK(f.reg.register_op(desc, err) == GUILD_STATUS_OK);
+        }
+        kernels::ResolvedPrefillKernels resolved;
+        CHECK(f.reg.resolve_prefill_kernels(f.caps, resolved, err) && resolved.all_bound());
+        CHECK(resolved.router_projection == f.extension.router_projection);
+    }
+
+    // Check every required operation's selection boundary: eight attention queries and
+    // 512 input tokens for the rest, including head-expanded RMS/RoPE and shared experts.
+    for (auto op : kPrefillTestOps) {
+        PrefillTestRegistry f;
+        const int64_t required = op == GUILD_OP_ATTENTION_DECODE ? 8 : 512;
+        f.replace(op, f.legacy.get(), f.descriptor(op).next_ext, required - 1);
+        kernels::ResolvedPrefillKernels resolved;
+        CHECK(!f.reg.resolve_prefill_kernels(f.caps, resolved, err));
+        CHECK(err.find("capability/shape/dtype constraints") != std::string::npos);
     }
 
     // -------------------------------------------------------------------------

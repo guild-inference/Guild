@@ -88,12 +88,19 @@ __global__ void gdn_conv_commit_kernel(float* __restrict__ hist, const float* __
     hist[c * 3 + 2] = seq[2];
 }
 
-template <int MAX_T = kVerifyMaxT>
+template <int MAX_T = kVerifyMaxT, bool Tiled = false>
 __global__ void __launch_bounds__(64) gdn_ab_multi_kernel(const float* __restrict__ x, const uint16_t* __restrict__ wa,
                                                           const uint16_t* __restrict__ wb,
                                                           const float* __restrict__ dt,
                                                           const float* __restrict__ ssm_a, float* __restrict__ gate,
                                                           float* __restrict__ beta, int n, int h_v, int T) {
+    if constexpr (Tiled) {
+        const int first = int(blockIdx.y) * MAX_T;
+        x += size_t(first) * n;
+        gate += size_t(first) * h_v;
+        beta += size_t(first) * h_v;
+        T = min(MAX_T, T - first);
+    }
     const int row = blockIdx.x * 2 + (threadIdx.x >> 5), lane = threadIdx.x & 31;
     if (row >= 2 * h_v) return;
     const bool is_beta = row >= h_v;
@@ -524,6 +531,19 @@ void gdn_ab_multi(const float* x, const uint16_t* w_alpha, const uint16_t* w_bet
             x, w_alpha, w_beta, dt, ssm_a, gate, beta, n_embd, h_v, n_tok);
     }
     check("gdn_ab_multi");
+}
+
+void gdn_ab_prefill(const float* x, const uint16_t* w_alpha, const uint16_t* w_beta, const float* dt, const float* ssm_a,
+                    float* gate, float* beta, int n_embd, int h_v, int n_tok, void* stream) {
+    if (n_embd <= 0 || n_embd % 8 || h_v <= 0 || n_tok < 1 || n_tok > 512)
+        throw std::invalid_argument("gdn_ab_prefill: invalid projection shape");
+    if (n_tok <= kVerifyMaxT) {
+        gdn_ab_multi(x, w_alpha, w_beta, dt, ssm_a, gate, beta, n_embd, h_v, n_tok, stream);
+        return;
+    }
+    gdn_ab_multi_kernel<kVerifyMaxT, true><<<dim3(unsigned(h_v), unsigned((n_tok + kVerifyMaxT - 1) / kVerifyMaxT)), 64, 0, (cudaStream_t) stream>>>(
+        x, w_alpha, w_beta, dt, ssm_a, gate, beta, n_embd, h_v, n_tok);
+    check("gdn_ab_prefill");
 }
 
 void gdn_step_norm_multi(float* state, const float* h, int conv_channels, const float* gate, const float* beta,

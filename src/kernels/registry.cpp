@@ -11,12 +11,14 @@
 #include "guild/kernels/native_gdn.hpp"
 #include "guild/kernels/native_gdn_preprocess.hpp"
 #include "guild/kernels/verify_kernels.hpp"
+#include "guild/kernels/bf16_gemv.hpp"
 #include <cuda_runtime.h>
 #endif
 
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <cstdlib>
 
 namespace guild::kernels {
 namespace {
@@ -58,8 +60,43 @@ guild_status_t execute_cpu_finite_check(
     return GUILD_STATUS_OK;
 }
 
+bool read_prefill_extension(const guild_kernel_op_desc_v1_t& desc,
+                            PrefillKernelExtensionV1& extension, std::string& err) {
+    const auto incompatible = [&](const char* reason) {
+        err = std::string("prefill kernel '") + desc.impl_id + "' (" + op_kind_to_string(desc.op_kind) +
+              "): incompatible prefill extension: " + reason;
+        return false;
+    };
+    if (!desc.next_ext) return incompatible("missing next_ext projection payload");
+    uint32_t size = 0;
+    std::memcpy(&size, desc.next_ext, sizeof(size));
+    if (size < sizeof(PrefillKernelExtensionHeader))
+        return incompatible("struct_size is smaller than the extension header");
+    PrefillKernelExtensionHeader header;
+    std::memcpy(&header, desc.next_ext, sizeof(header));
+    if (header.tag != kPrefillKernelExtensionTag)
+        return incompatible("unknown extension tag");
+    if (header.version != kPrefillKernelExtensionVersion)
+        return incompatible("unsupported extension version");
+    if (size < sizeof(PrefillKernelExtensionV1))
+        return incompatible("struct_size is smaller than the v1 projection payload");
+    // Only the validated v1 prefix is read, even if a future payload has extra bytes.
+    std::memcpy(&extension, desc.next_ext, sizeof(extension));
+    if (desc.op_kind == GUILD_OP_GDN_AB_PROJ && !extension.gdn_ab)
+        return incompatible("missing gdn_ab entry point");
+    if (desc.op_kind == GUILD_OP_MOE_ROUTER_TOPK && !extension.router_projection)
+        return incompatible("missing router_projection entry point");
+    return true;
+}
+
 #if defined(GUILD_ENABLE_CUDA) || defined(GUILD_ENABLE_HIP)
-const ResolvedPrefillKernels kBuiltinPrefillKernels{
+void gdn_ab_prefill_serial(const float* x, const uint16_t* wa, const uint16_t* wb, const float* dt, const float* a,
+                            float* gate, float* beta, int n, int heads, int rows, void* stream) {
+    for (int t=0;t<rows;t+=kVerifyMaxT)
+        gdn_ab_multi(x+size_t(t)*n,wa,wb,dt,a,gate+size_t(t)*heads,beta+size_t(t)*heads,
+                     n,heads,std::min(kVerifyMaxT,rows-t),stream);
+}
+const PrefillKernelTableV1 kBuiltinPrefillKernels{
     &native_quantize_q8_1,
     &native_mmvq,
     &native_qsa_rms_norm_weighted,
@@ -68,6 +105,17 @@ const ResolvedPrefillKernels kBuiltinPrefillKernels{
     &native_gdn_out_norm,
     &native_rope_apply
 };
+const PrefillKernelExtensionV1 kBuiltinPrefillExtension = [] {
+    PrefillKernelExtensionV1 extension;
+    extension.gdn_ab = &gdn_ab_prefill_serial;
+    extension.router_projection = &bf16_gemv_fp32_mmvf_cols;
+    return extension;
+}();
+const PrefillKernelExtensionV1 kTiledPrefillExtension = [] {
+    auto extension = kBuiltinPrefillExtension;
+    extension.gdn_ab = &gdn_ab_prefill;
+    return extension;
+}();
 #endif
 
 } // namespace
@@ -591,6 +639,7 @@ bool KernelRegistry::resolve_prefill_kernels(const guild_device_capabilities_v1_
         GUILD_OP_QUANTIZED_GEMM,
         GUILD_OP_RMS_NORM,
         GUILD_OP_GDN_CONV_L2,
+        GUILD_OP_GDN_AB_PROJ,
         GUILD_OP_GDN_RECURRENCE_STEP,
         GUILD_OP_GDN_OUT_NORM,
         GUILD_OP_ROPE_APPLY,
@@ -606,17 +655,44 @@ bool KernelRegistry::resolve_prefill_kernels(const guild_device_capabilities_v1_
         KernelSelectionQuery q;
         q.op_kind = op;
         q.required_numerical_flags = GUILD_NUM_BITWISE_DETERMINISTIC;
+        // Descriptor batch rows count input tokens, including for head-expanded RMS/RoPE.
+        // Attention is submitted in at most eight-query microbatches; the other
+        // requirements must cover a full 512-token prefill chunk.
+        q.batch_rows = op == GUILD_OP_ATTENTION_DECODE ? 8 : 512;
+        if (op == GUILD_OP_GDN_AB_PROJ) {
+            if (const char* value=std::getenv("GUILD_PREFILL_BATCH_PROJECTIONS"); value && std::atoi(value)==0)
+                q.frozen_impl_id="gpu.gdn.ab_proj_prefill_serial";
+        }
         const guild_kernel_op_desc_v1_t* d = nullptr;
         if (select(q, caps, &d, err) != GUILD_STATUS_OK || !d) return false;
-        if (d->direct_fn_table) {
-            out_table = *static_cast<const ResolvedPrefillKernels*>(d->direct_fn_table);
+        if (op == GUILD_OP_GDN_AB_PROJ || op == GUILD_OP_MOE_ROUTER_TOPK) {
+            PrefillKernelExtensionV1 extension;
+            if (!read_prefill_extension(*d, extension, err)) return false;
+            if (op == GUILD_OP_GDN_AB_PROJ) out_table.gdn_ab = extension.gdn_ab;
+            else out_table.router_projection = extension.router_projection;
+            continue;
+        }
+        const auto bind_legacy = [&](auto member) {
+            if (!d->direct_fn_table) return;
+            // Old binary plugins expose exactly seven pointers. Copy only that frozen
+            // payload, without aliasing it as the larger runtime convenience table.
+            PrefillKernelTableV1 legacy;
+            std::memcpy(&legacy, d->direct_fn_table, sizeof(legacy));
+            out_table.*member = legacy.*member;
+        };
+        // Bind only the selected entry. Unrelated requirements must neither overwrite
+        // earlier choices nor interpret their operation-specific direct_fn_table payloads.
+        switch (op) {
+        case GUILD_OP_QUANTIZE_ACT: bind_legacy(&PrefillKernelTableV1::quantize_q8_1); break;
+        case GUILD_OP_QUANTIZED_GEMM: bind_legacy(&PrefillKernelTableV1::mmvq); break;
+        case GUILD_OP_RMS_NORM: bind_legacy(&PrefillKernelTableV1::rms_norm_weighted); break;
+        case GUILD_OP_GDN_CONV_L2: bind_legacy(&PrefillKernelTableV1::gdn_conv); break;
+        case GUILD_OP_GDN_RECURRENCE_STEP: bind_legacy(&PrefillKernelTableV1::gdn_recurrence); break;
+        case GUILD_OP_GDN_OUT_NORM: bind_legacy(&PrefillKernelTableV1::gdn_out_norm); break;
+        case GUILD_OP_ROPE_APPLY: bind_legacy(&PrefillKernelTableV1::rope_apply); break;
+        default: break;
         }
     }
-#if defined(GUILD_ENABLE_CUDA) || defined(GUILD_ENABLE_HIP)
-    if (!out_table.all_bound()) {
-        out_table = kBuiltinPrefillKernels;
-    }
-#endif
     if (!out_table.all_bound()) {
         err = "prefill kernel resolution did not bind all required device entry points";
         return false;
@@ -702,6 +778,8 @@ void KernelRegistry::register_builtin_kernels() {
         d.input_dtype = in_dt;
         d.output_dtype = out_dt;
         d.direct_fn_table = &kBuiltinPrefillKernels;
+        if (kind == GUILD_OP_GDN_AB_PROJ || kind == GUILD_OP_MOE_ROUTER_TOPK)
+            d.next_ext = &kBuiltinPrefillExtension;
         register_op(d, ignore_err);
     };
 
@@ -725,6 +803,14 @@ void KernelRegistry::register_builtin_kernels() {
     register_gpu(GUILD_OP_ATTENTION_PREFILL, "gpu.attention.qsa_prompt_flash", 512, GUILD_DTYPE_ANY, GUILD_DTYPE_F32, GUILD_DTYPE_F32);
     register_gpu(GUILD_OP_GDN_CONV_L2, "gpu.gdn.prefill_conv_l2", 512, GUILD_DTYPE_F32, GUILD_DTYPE_F32, GUILD_DTYPE_F32);
     register_gpu(GUILD_OP_GDN_AB_PROJ, "gpu.gdn.ab_proj", 8, GUILD_DTYPE_BF16, GUILD_DTYPE_F32, GUILD_DTYPE_F32);
+    register_gpu(GUILD_OP_GDN_AB_PROJ, "gpu.gdn.ab_proj_prefill_serial", 512, GUILD_DTYPE_BF16, GUILD_DTYPE_F32, GUILD_DTYPE_F32);
+    {
+        auto d=make_base(GUILD_OP_GDN_AB_PROJ,"gpu.gdn.ab_proj_prefill_tiled",gpu_pkg,gpu_backend,210);
+        d.min_sm_version=60;d.max_batch_rows=512;d.weight_dtype=GUILD_DTYPE_BF16;
+        d.input_dtype=GUILD_DTYPE_F32;d.direct_fn_table=&kBuiltinPrefillKernels;
+        d.next_ext=&kTiledPrefillExtension;
+        register_op(d,ignore_err);
+    }
     register_gpu(GUILD_OP_GDN_RECURRENCE_STEP, "gpu.gdn.prefill_recurrence", 512, GUILD_DTYPE_F32, GUILD_DTYPE_F32, GUILD_DTYPE_F32);
     register_gpu(GUILD_OP_GDN_OUT_NORM, "gpu.gdn.out_norm_native", 512, GUILD_DTYPE_F32, GUILD_DTYPE_F32, GUILD_DTYPE_F32);
     register_gpu(GUILD_OP_PLE_COMPUTE, "gpu.ple.native_postops", 8, GUILD_DTYPE_ANY, GUILD_DTYPE_F32, GUILD_DTYPE_F32);

@@ -130,6 +130,14 @@ bool GuildSession::generate(
         return false;
     }
 
+    struct RequestAffinity {
+        kernels::cpu::ThreadAffinity previous;
+        ~RequestAffinity() { kernels::cpu::restore_thread_affinity(previous); }
+    } affinity;
+    const char* host_affinity=std::getenv("GUILD_HOST_AFFINITY");
+    if (!host_affinity || std::atoi(host_affinity)!=0)
+        affinity.previous=kernels::cpu::pin_current_thread_if_allowed(m_impl->pool->host_core());
+
     // Reset KV state for fresh generation
     if (!m_impl->ver->wait_commit(error_msg)) return runtime_failure();
     if (m_impl->mtp && !m_impl->mtp->idle(error_msg)) return runtime_failure();

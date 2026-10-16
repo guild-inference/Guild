@@ -250,6 +250,21 @@ static bool failed_pin_preserves_affinity() {
     return helper_unchanged && !invalid.valid && public_unchanged;
 }
 
+static bool request_pin_respects_restricted_mask(const std::vector<int>& allowed) {
+    if (allowed.size()<2) return true;
+    const int reserved=allowed.front(), request_cpu=allowed.back();
+    if (!set_affinity({request_cpu})) return false;
+    // Model load may reserve a CPU that a later request thread cannot use.
+    const auto skipped=cpu::pin_current_thread_if_allowed(reserved);
+    const bool kept=!skipped.valid && expect_affinity({request_cpu},"request pin must not widen caller mask");
+    cpu::restore_thread_affinity(skipped);
+    if (!set_affinity(allowed)) return false;
+    const auto pinned=cpu::pin_current_thread_if_allowed(reserved);
+    const bool selected=pinned.valid && expect_affinity({reserved},"eligible request pin");
+    cpu::restore_thread_affinity(pinned);
+    return kept && selected && expect_affinity(allowed,"request pin restores caller mask");
+}
+
 int main(int argc, char** argv) {
     bool require_high = false;
     for (int i = 1; i < argc; ++i) {
@@ -272,6 +287,7 @@ int main(int argc, char** argv) {
     if (ok) ok = round_trip_high_cpu(allowed, require_high);
     if (ok) ok = negative_cpu_is_noop();
     if (ok) ok = failed_pin_preserves_affinity();
+    if (ok) ok = request_pin_respects_restricted_mask(allowed);
     const bool restored = original.restore() && expect_affinity(allowed, "final original affinity cleanup");
     if (!ok || !restored) return 1;
 

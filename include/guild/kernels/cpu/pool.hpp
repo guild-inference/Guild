@@ -121,6 +121,9 @@ struct ThreadAffinity {
 /// Selects one encoded processor for the caller; Windows CPU Sets respect existing hard-affinity limits.
 /// Restore on the same calling thread. Pool-owned workers use hard group affinity instead.
 ThreadAffinity pin_current_thread(int core);
+/// Request-level pinning: retain explicit caller restrictions when the reserved
+/// host processor is outside the current thread's eligibility mask.
+ThreadAffinity pin_current_thread_if_allowed(int core);
 void restore_thread_affinity(const ThreadAffinity& previous);
 
 class ExpertPool {
@@ -148,6 +151,7 @@ public:
     ExpertPool& operator=(const ExpertPool&) = delete;
 
     int workers() const { return n_; }
+    int host_core() const { return topo_.host_core; }
     /// Whether the host thread also drains.  Reported at startup, because "the engine adapts to the machine it
     /// is on" is only true if the engine says which adaptation it took.
     bool host_works() const { return host_works_; }
@@ -227,6 +231,11 @@ private:
     void wait_done(int n);
     /// Bump `epoch_`, and wake the workers that went to sleep.  Every publish goes through here.
     void publish();
+    void report_profile(std::chrono::steady_clock::time_point start, const NativeFmt& f,
+                        ExpertJobMulti* jobs, int n, bool whole);
+    struct alignas(64) ProfileTimes { double gu = 0, quant = 0, down = 0; };
+    std::vector<ProfileTimes> profile_times_;
+    std::FILE* profile_file_ = nullptr;
 
     int n_ = 0;
     bool host_works_ = true;

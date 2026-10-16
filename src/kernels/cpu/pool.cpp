@@ -10,6 +10,8 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <ctime>
+#include <stdexcept>
 
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
@@ -26,6 +28,23 @@ namespace guild::kernels::cpu {
 namespace {
 constexpr uint64_t pack_head(uint32_t epoch, uint32_t n, uint32_t i) {
     return ((uint64_t) epoch << 32) | ((uint64_t) n << 16) | (uint64_t) i;
+}
+double thread_cpu_ms() {
+#if defined(__linux__)
+    timespec value{};
+    clock_gettime(CLOCK_THREAD_CPUTIME_ID, &value);
+    return double(value.tv_sec) * 1000.0 + double(value.tv_nsec) / 1e6;
+#elif defined(_WIN32)
+    FILETIME created{}, exited{}, kernel{}, user{};
+    if (!GetThreadTimes(GetCurrentThread(), &created, &exited, &kernel, &user))
+        throw std::runtime_error("cannot read thread CPU time");
+    ULARGE_INTEGER k{}, u{};
+    k.LowPart=kernel.dwLowDateTime;k.HighPart=kernel.dwHighDateTime;
+    u.LowPart=user.dwLowDateTime;u.HighPart=user.dwHighDateTime;
+    return double(k.QuadPart + u.QuadPart) / 10000.0; // 100 ns units
+#else
+    return double(std::clock()) * 1000.0 / CLOCKS_PER_SEC;
+#endif
 }
 }  // namespace
 
@@ -320,6 +339,25 @@ ThreadAffinity pin_current_thread(int core) {
 #endif
 }
 
+ThreadAffinity pin_current_thread_if_allowed(int core) {
+    if (core < 0) return {};
+#if defined(_WIN32)
+    GROUP_AFFINITY group{};
+    if (!GetThreadGroupAffinity(GetCurrentThread(), &group) ||
+        unsigned(core / 64) != group.Group || !(group.Mask & (KAFFINITY(1) << (core % 64)))) return {};
+    std::vector<unsigned long> selected;
+    ULONG target=0;
+    if (!detail::get_thread_cpu_sets(selected) || !detail::cpu_set_for_core(core,target)) return {};
+    if (!selected.empty() && std::find(selected.begin(),selected.end(),target)==selected.end()) return {};
+#else
+    std::vector<unsigned long> mask;
+    std::vector<int> allowed;
+    if (detail::get_thread_affinity(mask,&allowed)!=0 ||
+        std::find(allowed.begin(),allowed.end(),core)==allowed.end()) return {};
+#endif
+    return pin_current_thread(core);
+}
+
 void restore_thread_affinity(const ThreadAffinity& previous) {
     if (!previous.valid) return;
 #if defined(_WIN32)
@@ -380,6 +418,12 @@ ExpertPool::ExpertPool(int n_workers, bool pin, bool host_works, PoolAffinity af
         n_ = (int) topo_.worker_cores.size();
     }
     if (n_ < 1) n_ = 1;
+    if (const char* path = std::getenv("GUILD_CPU_PROFILE")) {
+        profile_file_ = std::fopen(path, "w");
+        if (!profile_file_) throw std::runtime_error("cannot open GUILD_CPU_PROFILE");
+        profile_times_.resize(size_t(n_) + 1);
+        std::fputs("start_ns,end_ns,gu_type,down_type,jobs,entries,whole,gu_thread_cpu_ms,quant_thread_cpu_ms,down_thread_cpu_ms\n", profile_file_);
+    }
     scratch_.resize((size_t) n_);
     wstate_.reset(new std::atomic<int32_t>[(size_t) n_]);
     for (int i = 0; i < n_; ++i) wstate_[(size_t) i].store(kParked);
@@ -405,6 +449,7 @@ ExpertPool::~ExpertPool() {
     // Bump the epoch so a PARKED worker notices the stop flag rather than sleeping through it.
     publish();
     for (auto& t : threads_) t.join();
+    if (profile_file_) std::fclose(profile_file_);
 }
 
 void ExpertPool::publish() {
@@ -547,6 +592,7 @@ void ExpertPool::drain(int id, ExpertScratch& scratch, uint32_t epoch) {
         const uint32_t i = (uint32_t) ci;
         if (id >= 0) wstate_[(size_t) id].store(ci, std::memory_order_relaxed);
         else { hstate_.store(ci, std::memory_order_relaxed); hstate_ms_.store(now_ms(), std::memory_order_relaxed); }
+        const double profile_start = profile_file_ ? thread_cpu_ms() : 0;
         if (mode_ == 0) {
             const ExpertJob& j = jobs_[i];
             s2_expert_vnni_q(j.blob, *j.act, j.out, scratch);
@@ -590,6 +636,7 @@ void ExpertPool::drain(int id, ExpertScratch& scratch, uint32_t epoch) {
             alignas(64) thread_local ActQ a2_buf[kMaxMultiExt];
             alignas(64) thread_local uint8_t hq_buf[kMaxMultiExt][kNativeHBytes];
             const bool time_phases = (id < 0);
+            double cpu_a = 0, cpu_b = 0;
             std::chrono::steady_clock::time_point t_a, t_b, t_c, t_d;
             if (time_phases) t_a = std::chrono::steady_clock::now();
             if (q2_native_kernels(nfmt_->gu_type)) {
@@ -612,6 +659,7 @@ void ExpertPool::drain(int id, ExpertScratch& scratch, uint32_t epoch) {
                 native_gu_rows(*nfmt_, mj.blob, nact, nt, ff, 0, (int) nfmt_->n_ff);
             }
             if (time_phases) t_b = std::chrono::steady_clock::now();
+            if (profile_file_) cpu_a = thread_cpu_ms();
             if (q2_native_kernels(nfmt_->d_type)) {
                 const ActQ* a2[kMaxMultiExt];
                 for (int t = 0; t < nt; ++t) {
@@ -619,6 +667,7 @@ void ExpertPool::drain(int id, ExpertScratch& scratch, uint32_t epoch) {
                     a2[t] = &a2_buf[t];
                 }
                 if (time_phases) t_c = std::chrono::steady_clock::now();
+                if (profile_file_) cpu_b = thread_cpu_ms();
                 for (int t0 = 0; t0 < nt; t0 += MAXT) {
                     const int m = (std::min)(MAXT, nt - t0);
                     q2_rows_any(mj.blob + nfmt_->down_off, nfmt_->d_row, (int) (nfmt_->n_ff / 64), a2 + t0,
@@ -631,6 +680,7 @@ void ExpertPool::drain(int id, ExpertScratch& scratch, uint32_t epoch) {
                     hq[t] = hq_buf[t];
                 }
                 if (time_phases) t_c = std::chrono::steady_clock::now();
+                if (profile_file_) cpu_b = thread_cpu_ms();
                 native_down_rows(*nfmt_, mj.blob, hq, nt, out, 0, (int) nfmt_->n_embd);
             }
             if (time_phases) {
@@ -638,6 +688,12 @@ void ExpertPool::drain(int id, ExpertScratch& scratch, uint32_t epoch) {
                 host_gu_ms_ += std::chrono::duration<double, std::milli>(t_b - t_a).count();
                 host_q_ms_ += std::chrono::duration<double, std::milli>(t_c - t_b).count();
                 host_down_ms_ += std::chrono::duration<double, std::milli>(t_d - t_c).count();
+            }
+            if (profile_file_) {
+                auto& p = profile_times_[size_t(id + 1)];
+                p.gu += cpu_a - profile_start;
+                p.quant += cpu_b - cpu_a;
+                p.down += thread_cpu_ms() - cpu_b;
             }
         } else if (mode_ == 7) {
             // One independent expert intermediate per task, no cross-task writes.
@@ -701,6 +757,13 @@ void ExpertPool::drain(int id, ExpertScratch& scratch, uint32_t epoch) {
                 }
                 r += r1 - r0;
             }
+        }
+        if (profile_file_ && mode_ != 8) {
+            auto& p = profile_times_[size_t(id + 1)];
+            const double value = thread_cpu_ms() - profile_start;
+            if (mode_ == 5) p.gu += value;
+            else if (mode_ == 6) p.down += value;
+            else if (mode_ == 7 || mode_ == 9) p.quant += value;
         }
         done_.fetch_add(1, std::memory_order_release);
     }
@@ -804,6 +867,7 @@ bool ExpertPool::combine_multi_native(const float* parts, const float* weights, 
 void ExpertPool::run_split_multi_native(const NativeFmt& f, ExpertJobMulti* jobs, int n, bool parallel_quant) {
     if (n <= 0) return;
     const auto t0 = std::chrono::steady_clock::now();
+    if (profile_file_) std::fill(profile_times_.begin(), profile_times_.end(), ProfileTimes{});
     const int threads = n_ + (host_works_ ? 1 : 0);
     static const bool whole_expert = [] {
         const char* v = std::getenv("GUILD_POOL_WHOLE_EXPERT");
@@ -831,6 +895,7 @@ void ExpertPool::run_split_multi_native(const NativeFmt& f, ExpertJobMulti* jobs
         multi_bytes += (int64_t) n * (int64_t) f.bytes;
         mode_ = 0;
         ms_drain_ += std::chrono::duration<double, std::milli>(d - t0).count();
+        if (profile_file_) report_profile(t0, f, jobs, n, true);
         return;
     }
     // more distinct experts than buffers: run them in batches
@@ -845,10 +910,14 @@ void ExpertPool::run_split_multi_native(const NativeFmt& f, ExpertJobMulti* jobs
         run_phase(5, mtasks_);
         const auto b = std::chrono::steady_clock::now();
         if (parallel_quant && nb >= 32) run_phase(7,nb);
-        else for (int e = 0; e < nb; ++e)
-            for (int t = 0; t < mjobs_[e].nt; ++t)
-                if (q2_native_kernels(f.d_type)) act_quant_any(split_multi_[(size_t) e].ff[t], (int) f.n_ff, split_multi_[(size_t) e].a2[t]);
-                else native_quant_h(f, split_multi_[(size_t) e].ff[t], split_multi_[(size_t) e].hq[t]);
+        else {
+            const double cpu_start = profile_file_ ? thread_cpu_ms() : 0;
+            for (int e = 0; e < nb; ++e)
+                for (int t = 0; t < mjobs_[e].nt; ++t)
+                    if (q2_native_kernels(f.d_type)) act_quant_any(split_multi_[(size_t) e].ff[t], (int) f.n_ff, split_multi_[(size_t) e].a2[t]);
+                    else native_quant_h(f, split_multi_[(size_t) e].ff[t], split_multi_[(size_t) e].hq[t]);
+            if (profile_file_) profile_times_[0].quant += thread_cpu_ms() - cpu_start;
+        }
         const auto c = std::chrono::steady_clock::now();
         mrows_ = (int64_t) nb * f.n_embd;
         run_phase(6, mtasks_);
@@ -860,6 +929,21 @@ void ExpertPool::run_split_multi_native(const NativeFmt& f, ExpertJobMulti* jobs
     multi_bytes += (int64_t) n * (int64_t) f.bytes;
     mode_ = 0;
     ms_drain_ += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    if (profile_file_) report_profile(t0, f, jobs, n, false);
+}
+
+void ExpertPool::report_profile(std::chrono::steady_clock::time_point start, const NativeFmt& f,
+                                ExpertJobMulti* jobs, int n, bool whole) {
+    ProfileTimes sum;
+    for (const auto& p : profile_times_) { sum.gu += p.gu; sum.quant += p.quant; sum.down += p.down; }
+    int entries = 0;
+    for (int i = 0; i < n; ++i) entries += jobs[i].nt;
+    const auto end = std::chrono::steady_clock::now();
+    std::fprintf(profile_file_, "%lld,%lld,%d,%d,%d,%d,%d,%.9f,%.9f,%.9f\n",
+        (long long) std::chrono::duration_cast<std::chrono::nanoseconds>(start.time_since_epoch()).count(),
+        (long long) std::chrono::duration_cast<std::chrono::nanoseconds>(end.time_since_epoch()).count(),
+        f.gu_type, f.d_type, n, entries, int(whole), sum.gu, sum.quant, sum.down);
+    std::fflush(profile_file_);
 }
 
 void ExpertPool::run(ExpertJob* jobs, int n) {

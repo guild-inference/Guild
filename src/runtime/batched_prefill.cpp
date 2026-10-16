@@ -85,11 +85,13 @@ struct BatchedPrefill::Impl {
     kernels::ResolvedPrefillKernels fns{};
     bool profiling=false;
     cudaEvent_t events[5]={};
+    std::FILE* profile_file=nullptr;
     ~Impl() {
         if (cs) cudaStreamSynchronize(cs);
         for (auto e: events) if (e) cudaEventDestroy(e);
         for (auto p: device) cudaFree(p);
         for (auto p: pinned) cudaFreeHost(p);
+        if (profile_file) std::fclose(profile_file);
     }
     template<class T> void alloc(T*& p,size_t n,bool host=false) {
         void* raw=nullptr;
@@ -137,6 +139,12 @@ bool BatchedPrefill::init(const core::WeightTable& wt,const core::ModelGeometry&
         throw std::runtime_error(err);
     m.g=&g; m.ss=&ss; m.src=&src; m.pool=&pool; m.cache=cache; m.cs=static_cast<cudaStream_t>(stream);
     m.profiling=std::getenv("GUILD_PREFILL_PROFILE")!=nullptr;
+    if (const char* path=std::getenv("GUILD_PREFILL_PROFILE_CSV")) {
+        m.profile_file=std::fopen(path,"w");
+        if (!m.profile_file) throw std::runtime_error("cannot open GUILD_PREFILL_PROFILE_CSV");
+        m.profiling=true;
+        std::fputs("prompt_tokens,chunk_pos,layer,rows,gpu_dense_interval_ms,gpu_mixer_interval_ms,cpu_expert_wall_ms,cpu_combine_wall_ms,cpu_group_wall_ms,host_wait_ms,d2h_activation_bytes,h2d_activation_bytes\n",m.profile_file);
+    }
     if (m.profiling) for (auto& event:m.events) ck(cudaEventCreate(&event));
     for (int64_t l=0;l<g.n_layers;++l) {
         const core::LayerView lv(wt,l);
@@ -234,13 +242,10 @@ bool BatchedPrefill::run(const int64_t* tokens,int64_t n,int64_t pos0,std::strin
                 m.stamp(1);
                 auto* state=ss.gdn_state+size_t(gi-ss.gdn_ord0)*gdn_floats; auto* conv=state+state_floats;
                 m.fns.gdn_conv(conv,m.qkv,static_cast<const float*>(need(lv,"ssm_conv1d.weight").data),m.h,C,2*HK,kEps,T,cs);
-                for (int t=0;t<T;t+=kProjectionRows) {
-                    const int count=std::min(kProjectionRows,T-t);
-                    gdn_ab_multi(m.mixed+size_t(t)*N,static_cast<const uint16_t*>(need(lv,"ssm_alpha.weight").data),
+                m.fns.gdn_ab(m.mixed,static_cast<const uint16_t*>(need(lv,"ssm_alpha.weight").data),
                         static_cast<const uint16_t*>(need(lv,"ssm_beta.weight").data),
                         static_cast<const float*>(need(lv,"ssm_dt.bias").data),static_cast<const float*>(need(lv,"ssm_a").data),
-                        m.gate+size_t(t)*HV,m.beta+size_t(t)*HV,N,HV,count,cs);
-                }
+                        m.gate,m.beta,N,HV,T,cs);
                 m.fns.gdn_recurrence(state,m.h,C,m.gate,m.beta,m.z,static_cast<const float*>(need(lv,"ssm_norm.weight").data),
                     kEps,m.y,HK,HV,T,m.keep,g.gdn_gate_silu,cs);
                 gdn_conv_commit(conv,m.qkv,C,m.keep,cs);
@@ -278,7 +283,7 @@ bool BatchedPrefill::run(const int64_t* tokens,int64_t n,int64_t pos0,std::strin
             stats_.ms_mixer+=ms(a); // host submission + waits below; not a GPU-duration estimate
             a=Clock::now();
             m.norm(m.R,need(lv,"post_attention_norm.weight"),m.mixed,N,T);
-            bf16_gemv_fp32_mmvf_cols(m.mixed,static_cast<const uint16_t*>(need(lv,"ffn_gate_inp.weight").data),m.logits,N,NE,T,cs);
+            m.fns.router_projection(m.mixed,static_cast<const uint16_t*>(need(lv,"ffn_gate_inp.weight").data),m.logits,N,NE,T,cs);
             router_top10(m.logits,T,NE,K,m.ids,m.weights,cs);
             ck(cudaMemcpyAsync(m.hact,m.mixed,size_t(T)*N*4,cudaMemcpyDeviceToHost,cs));
             ck(cudaMemcpyAsync(m.hids,m.ids,size_t(T)*K*4,cudaMemcpyDeviceToHost,cs));
@@ -286,10 +291,12 @@ bool BatchedPrefill::run(const int64_t* tokens,int64_t n,int64_t pos0,std::strin
             m.stamp(4);
             const auto wait_start=Clock::now();
             ck(cudaStreamSynchronize(cs));
-            stats_.host_wait_ms+=ms(wait_start);
-            stats_.gpu_dense_ms+=m.elapsed(0,1)+m.elapsed(2,3)+m.elapsed(3,4);
-            if (core::is_qsa_layer(g,l)) stats_.gpu_attention_ms+=m.elapsed(1,2);
-            else stats_.gpu_gdn_ms+=m.elapsed(1,2);
+            const double wait_ms=ms(wait_start);
+            stats_.host_wait_ms+=wait_ms;
+            const double dense_ms=m.elapsed(0,1)+m.elapsed(2,3)+m.elapsed(3,4), mixer_ms=m.elapsed(1,2);
+            stats_.gpu_dense_ms+=dense_ms;
+            if (core::is_qsa_layer(g,l)) stats_.gpu_attention_ms+=mixer_ms;
+            else stats_.gpu_gdn_ms+=mixer_ms;
             std::string e;
             if (!core::validate_finite(m.hact,size_t(T)*N,"prefill expert input",e) ||
                 !core::validate_finite(m.hweights,size_t(T)*K,"prefill routing weights",e)) throw std::runtime_error(e);
@@ -368,8 +375,13 @@ bool BatchedPrefill::run(const int64_t* tokens,int64_t n,int64_t pos0,std::strin
                              [](const kernels::cpu::ExpertJobMulti& a, const kernels::cpu::ExpertJobMulti& b) {
                                  return a.nt > b.nt;
                              });
-            stats_.cpu_group_ms+=ms(group_start);
+            const double group_ms=ms(group_start);
+            stats_.cpu_group_ms+=group_ms;
+            const auto expert_start=m.profile_file?Clock::now():Clock::time_point{};
             m.pool->run_split_multi_native(fmt,m.jobs.data(),int(m.jobs.size()),true);
+            const double expert_ms=m.profile_file?ms(expert_start):0;
+            const auto combine_start=m.profile_file?Clock::now():Clock::time_point{};
+            uint64_t h2d_bytes=0;
             // CPU row writes never overlap resident GPU rows. Preserve rank order, not expert-ID sum order.
             if (!m.cache || !m.cache->valid()) {
                 if (!m.pool->combine_multi_native(m.hparts,m.hweights,m.hact,T,K,N)) {
@@ -377,12 +389,14 @@ bool BatchedPrefill::run(const int64_t* tokens,int64_t n,int64_t pos0,std::strin
                     throw std::runtime_error("prefill expert output: nonfinite value");
                 }
                 ck(cudaMemcpyAsync(m.bo,m.hact,size_t(T)*N*4,cudaMemcpyHostToDevice,cs));
+                h2d_bytes=uint64_t(T)*N*4;
                 add_inplace(m.bo,m.shared,size_t(T)*N,cs);
                 add_inplace(m.R,m.bo,size_t(T)*N,cs);
             } else {
                 for (int i=0;i<T*K;++i) if (m.cache->slot_of(l,m.hids[i])<0) {
                     if (!core::validate_finite(m.hparts+size_t(i)*N,N,"prefill expert output",e)) throw std::runtime_error(e);
                     ck(cudaMemcpyAsync(m.parts+size_t(i)*N,m.hparts+size_t(i)*N,N*4,cudaMemcpyHostToDevice,cs));
+                    h2d_bytes+=uint64_t(N)*4;
                 }
                 native_moe_combine_multi(m.parts,m.weights,m.shared,m.bo,N,K,T,cs);
                 add_inplace(m.R,m.bo,size_t(T)*N,cs);
@@ -392,8 +406,16 @@ bool BatchedPrefill::run(const int64_t* tokens,int64_t n,int64_t pos0,std::strin
                 ck(cudaStreamSynchronize(cs));
                 on_layer(p0,l,T,m.R,m.ids,m.weights);
             }
-            stats_.activation_bytes+=uint64_t(T)*(N+K*N+2*K)*4;
+            stats_.activation_bytes+=uint64_t(T)*(N+2*K)*4+h2d_bytes;
             stats_.ms_moe+=ms(a);
+            if (m.profile_file) {
+                const double combine_ms=ms(combine_start);
+                std::fprintf(m.profile_file,"%lld,%lld,%lld,%d,%.9f,%.9f,%.9f,%.9f,%.9f,%.9f,%llu,%llu\n",
+                    (long long)n,(long long)p0,(long long)l,T,dense_ms,mixer_ms,expert_ms,combine_ms,group_ms,wait_ms,
+                    (unsigned long long)(uint64_t(T)*(N+2*K)*4),
+                    (unsigned long long)h2d_bytes);
+                std::fflush(m.profile_file);
+            }
         }
         m.finite(m.R,size_t(T)*N,"prefill residual");
         ++stats_.chunks_processed;

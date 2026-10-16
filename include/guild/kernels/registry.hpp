@@ -53,9 +53,10 @@ struct KernelSelectionQuery {
     uint32_t frozen_impl_version = 0;
 };
 
-/// Direct function-pointer table resolved once during BatchedPrefill::init()
-/// so layer-wise prefill incurs zero virtual-dispatch or registry overhead in inner loops.
-struct ResolvedPrefillKernels {
+/// Frozen seven-pointer payload for guild_kernel_op_desc_v1_t::direct_fn_table.
+/// Keep this layout unchanged so plugins built against the original table remain readable.
+/// New entry points belong in the tagged next_ext payload below, never after these pointers.
+struct PrefillKernelTableV1 {
     void (*quantize_q8_1)(const float* x, void* vx, int K, int ncols, void* stream) = nullptr;
     void (*mmvq)(int type, const void* w, const void* x, float* y, int ncols_x, int nrows_x, int ncols_y, void* stream) = nullptr;
     void (*rms_norm_weighted)(const float* x, const float* w, float* y, int ncols, int nrows, float eps, void* stream) = nullptr;
@@ -69,10 +70,40 @@ struct ResolvedPrefillKernels {
                          float* destination, int64_t heads, int64_t cols,
                          float epsilon, void* stream) = nullptr;
     void (*rope_apply)(const float* x, float* out, int rows, int head_dim,
-                       int n_rot, const RopeScaling& scaling, const int* positions, void* stream) = nullptr;
+                         int n_rot, const RopeScaling& scaling, const int* positions, void* stream) = nullptr;
+};
+
+inline constexpr uint32_t kPrefillKernelExtensionTag = 0x50464b45u; // "PFKE"
+inline constexpr uint32_t kPrefillKernelExtensionVersion = 1;
+
+/// A next_ext payload starts with this header. Read struct_size before the other fields.
+struct PrefillKernelExtensionHeader {
+    uint32_t struct_size = sizeof(PrefillKernelExtensionHeader);
+    uint32_t tag = kPrefillKernelExtensionTag;
+    uint32_t version = kPrefillKernelExtensionVersion;
+};
+
+/// Optional guild_kernel_op_desc_v1_t::next_ext payload for prefill projections.
+/// GDN A/B and router descriptors require this extension; legacy operations do not.
+/// Validate header size, tag, version and full payload size before reading either pointer.
+/// Both payloads are borrowed and must outlive the registry's active session leases.
+struct PrefillKernelExtensionV1 {
+    PrefillKernelExtensionHeader header{sizeof(PrefillKernelExtensionV1),
+                                        kPrefillKernelExtensionTag, kPrefillKernelExtensionVersion};
+    void (*gdn_ab)(const float* x, const uint16_t* wa, const uint16_t* wb, const float* dt, const float* a,
+                    float* gate, float* beta, int n, int heads, int rows, void* stream) = nullptr;
+    void (*router_projection)(const float* x, const uint16_t* w, float* y,
+                               int64_t n, int64_t outputs, int rows, void* stream) = nullptr;
+};
+
+/// Runtime-only convenience table resolved once during BatchedPrefill::init().
+/// This is not the descriptor payload: direct_fn_table exposes only PrefillKernelTableV1.
+struct ResolvedPrefillKernels : PrefillKernelTableV1 {
+    decltype(PrefillKernelExtensionV1::gdn_ab) gdn_ab = nullptr;
+    decltype(PrefillKernelExtensionV1::router_projection) router_projection = nullptr;
     bool all_bound() const {
         return quantize_q8_1 && mmvq && rms_norm_weighted && gdn_conv &&
-               gdn_recurrence && gdn_out_norm && rope_apply;
+                gdn_recurrence && gdn_out_norm && rope_apply && gdn_ab && router_projection;
     }
 };
 

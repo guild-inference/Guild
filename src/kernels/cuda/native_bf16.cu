@@ -73,9 +73,15 @@ __global__ void bf16_f32_mmvf_kernel(const float* __restrict__ x, const uint16_t
 // the same kernel for up to 8 activation rows - the weight row is read ONCE and every
 // token keeps its own accumulator with exactly the single-row kernel's order (pairs, two ordered FMAs, the same warp
 // and block reductions), so each output is bit-identical to a bf16_f32_mmvf_kernel launch of its own.
-template <int BLOCK_SIZE, int NT>
+template <int BLOCK_SIZE, int NT, bool Tiled = false>
 __global__ void bf16_f32_mmvf_multi_kernel(const float* __restrict__ x, int64_t ldx, const uint16_t* __restrict__ w,
                                           float* __restrict__ y, int64_t ldy, int n_in, int n_tok) {
+    if constexpr (Tiled) {
+        const int first = int(blockIdx.y) * NT;
+        x += size_t(first) * ldx;
+        y += size_t(first) * ldy;
+        n_tok = min(NT, n_tok - first);
+    }
     const int t = threadIdx.x;
     const uint16_t* row = w + (size_t) blockIdx.x * n_in;
     const uint32_t* weights2 = reinterpret_cast<const uint32_t*>(row);
@@ -185,7 +191,28 @@ void bf16_gemv_fp32_mmvf(const float* x, const uint16_t* w, float* y,
 
 
 void bf16_gemv_fp32_mmvf_cols(const float* x, const uint16_t* w, float* y, int64_t n_in, int64_t n_out, int ncols,
-                              void* stream) {
+                               void* stream) {
+    static const bool tiled = [] {
+        const char* v = std::getenv("GUILD_PREFILL_BATCH_PROJECTIONS");
+        return !v || std::atoi(v) != 0;
+    }();
+    if (ncols > 8 && tiled) {
+        if (ncols > 512 || n_in <= 0 || n_in > std::numeric_limits<int>::max() || (n_in & 1) ||
+            n_out <= 0 || n_out > std::numeric_limits<int>::max() || !x || !w || !y ||
+            (reinterpret_cast<uintptr_t>(x) & 7u) != 0)
+            throw std::invalid_argument("bf16_gemv_fp32_mmvf_cols: invalid batched projection");
+        const dim3 grid(unsigned(n_out), unsigned((ncols + 7) / 8));
+#define GUILD_MMVF_TILE(N) case N: \
+        bf16_f32_mmvf_multi_kernel<N, 8, true><<<grid, N, 0, (cudaStream_t) stream>>>(x, n_in, w, y, n_out, int(n_in), ncols); break
+        switch (mmvf_block_size(n_in)) {
+            GUILD_MMVF_TILE(32); GUILD_MMVF_TILE(64); GUILD_MMVF_TILE(96); GUILD_MMVF_TILE(128);
+            GUILD_MMVF_TILE(160); GUILD_MMVF_TILE(192); GUILD_MMVF_TILE(224); GUILD_MMVF_TILE(256);
+        }
+#undef GUILD_MMVF_TILE
+        const auto status = cudaGetLastError();
+        if (status != cudaSuccess) throw std::runtime_error(cudaGetErrorString(status));
+        return;
+    }
     // columns contiguous: the existing multi-row kernel (weight read once, each output bitwise its one-row call),
     // up to 8 rows per launch
     for (int c0 = 0; c0 < ncols; c0 += 8) {

@@ -45,6 +45,9 @@
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <unistd.h>
+#if defined(__linux__)
+#include <linux/mempolicy.h>
+#endif
 #endif
 
 // a 64-bit seek (as in pinned.cu): the 32-bit `fseek` wraps past 4 GiB, and the spelling differs per platform
@@ -1546,22 +1549,29 @@ bool FileExpertSource::pin_cache_complement(
             const long pg_sz = sysconf(_SC_PAGESIZE);
             const size_t align_sz = pg_sz > 0 ? (size_t) pg_sz : 4096u;
             if (posix_memalign(&arena, align_sz, (size_t) bytes) != 0) arena = nullptr;
-#if defined(__linux__) && defined(SYS_mbind)
+#if defined(__linux__) && defined(SYS_mbind) && defined(SYS_get_mempolicy)
             if (arena != nullptr) {
-                unsigned long nodemask = 0;
-                int n_nodes = 0;
-                for (int nd = 0; nd < 64; ++nd) {
-                    std::ifstream nf("/sys/devices/system/node/node" + std::to_string(nd) + "/cpulist");
-                    int cpu = -1;
-                    if (nf >> cpu && cpu >= 0) {
-                        nodemask |= (1ul << nd);
-                        n_nodes = nd + 1;
-                    } else break;
-                }
-                if (n_nodes >= 2) {
+                // Respect numactl/containers rather than overriding a caller's bind policy.
+                // Default-policy multi-socket machines interleave this arena only; single-node
+                // machines retain first-touch. No global policy changes or weight replicas.
+                const char* setting = std::getenv("GUILD_EXPERT_NUMA");
+                const bool process = setting && std::strcmp(setting, "process") == 0;
+                const bool force = setting && std::strcmp(setting, "interleave") == 0;
+                int mode = -1;
+                unsigned long nodemask[64] = {};
+                const unsigned long maxnode = sizeof(nodemask) * 8;
+                const bool known = syscall(SYS_get_mempolicy, &mode, nullptr, 0ul, nullptr, 0ul) == 0;
+                int nodes = 0;
+                if (syscall(SYS_get_mempolicy, nullptr, nodemask, maxnode, nullptr, MPOL_F_MEMS_ALLOWED) == 0)
+                    for (auto word : nodemask) nodes += __builtin_popcountl(word);
+                if (!process && known && (force || mode == MPOL_DEFAULT) && nodes > 1) {
                     const size_t aligned_bytes = ((size_t) bytes + align_sz - 1) & ~(align_sz - 1);
-                    (void) syscall(SYS_mbind, arena, (unsigned long) aligned_bytes, 3 /* MPOL_INTERLEAVE */,
-                                   &nodemask, (unsigned long) (sizeof(nodemask) * 8), 0u);
+                    const long result = syscall(SYS_mbind, arena, (unsigned long) aligned_bytes, MPOL_INTERLEAVE,
+                                                nodemask, maxnode, 0u);
+                    std::fprintf(stderr, "FileExpertSource: resident NUMA interleave across %d allowed nodes: %s\n",
+                                 nodes, result == 0 ? "applied" : "unavailable; process policy retained");
+                } else {
+                    std::fprintf(stderr, "FileExpertSource: resident NUMA process policy retained (mode %d, %d allowed nodes)\n", mode, nodes);
                 }
             }
 #endif
