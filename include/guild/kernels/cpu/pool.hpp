@@ -151,6 +151,9 @@ public:
     ExpertPool& operator=(const ExpertPool&) = delete;
 
     int workers() const { return n_; }
+    // Called while workers are parked, before this model publishes its first job.
+    void bind_native_kernels(const guild_cpu_expert_ext_v1_t& table) { native_table_ = table; }
+    void quantize_native(const NativeFmt& f,const float* x,void* out) { native_table_.quant_act(&f,x,out); }
     int host_core() const { return topo_.host_core; }
     /// Whether the host thread also drains.  Reported at startup, because "the engine adapts to the machine it
     /// is on" is only true if the engine says which adaptation it took.
@@ -219,6 +222,17 @@ public:
     static constexpr std::chrono::seconds kStall{60};
 
 private:
+    guild_cpu_expert_ext_v1_t native_table_ = {
+        sizeof(guild_cpu_expert_ext_v1_t), GUILD_CPU_EXPERT_TAG_V1, 1,
+        +[](const NativeFmt* f,const float* x,void* out) { cpu::native_quant_act(*f,x,out); },
+        +[](const NativeFmt* f,const float* x,void* out) { cpu::native_quant_h(*f,x,out); },
+        +[](const NativeFmt* f,const uint8_t* b,const void* const* x,int n,float* const* y,int a,int z) { cpu::native_gu_rows(*f,b,x,n,y,a,z); },
+        +[](const NativeFmt* f,const uint8_t* b,const void* const* x,int n,float* const* y,int a,int z) { cpu::native_down_rows(*f,b,x,n,y,a,z); }
+    };
+    void native_quant_act(const NativeFmt& f,const float* x,void* out) { native_table_.quant_act(&f,x,out); }
+    void native_quant_h(const NativeFmt& f,const float* x,void* out) { native_table_.quant_h(&f,x,out); }
+    void native_gu_rows(const NativeFmt& f,const uint8_t* b,const void* const* x,int n,float* const* y,int a,int z) { native_table_.gate_up(&f,b,x,n,y,a,z); }
+    void native_down_rows(const NativeFmt& f,const uint8_t* b,const void* const* x,int n,float* const* y,int a,int z) { native_table_.down(&f,b,x,n,y,a,z); }
     void worker(int id);
     void drain(int id, ExpertScratch& scratch, uint32_t epoch);
     void run_phase(int mode, int n_tasks);

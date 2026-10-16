@@ -90,6 +90,8 @@ endif()
 option(GUILD_BUILD_TESTS "Build the test suite" ${_guild_tests_default})
 option(GUILD_BUILD_CONVERSATION_TESTS "Build standalone conversation cache tests" OFF)
 option(GUILD_WERROR "Treat compiler warnings as errors" OFF)
+option(GUILD_BUILTIN_QWEN_RUNNERS "Register the validated built-in Qwen fallback runners" ON)
+option(GUILD_BUILTIN_NATIVE_CPU "Compile the validated native CPU arithmetic fallback" ON)
 
 if(GUILD_BUILD_CONVERSATION_TESTS)
   enable_testing()
@@ -936,6 +938,9 @@ endif()
 add_library(guild_kernels_cpu STATIC src/kernels/cpu/expert.cpp src/kernels/cpu/features.cpp src/kernels/cpu/pool.cpp
             src/kernels/cpu/expert_layout.cpp src/kernels/cpu/q2_avx2.cpp)
 target_include_directories(guild_kernels_cpu PUBLIC include)
+if(NOT GUILD_BUILTIN_NATIVE_CPU)
+  target_compile_definitions(guild_kernels_cpu PRIVATE GUILD_NO_BUILTIN_NATIVE_CPU=1)
+endif()
 # Plan v0.3 P6: only the kernel files get the AVX-512 / AVX2 flags; the pool and the probe run on any x86-64,
 # and the engine picks the kernels at run time (cpu_avx512_ok).
 if(MSVC)
@@ -980,9 +985,11 @@ configure_package_config_file(
   INSTALL_DESTINATION lib/cmake/GuildKernelSDK)
 write_basic_package_version_file(
   ${CMAKE_CURRENT_BINARY_DIR}/GuildKernelSDKConfigVersion.cmake
-  VERSION ${PROJECT_VERSION}
+  VERSION 1.1.0
   COMPATIBILITY SameMajorVersion)
 install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/include/guild/abi/kernel_abi.h
+              ${CMAKE_CURRENT_SOURCE_DIR}/include/guild/abi/runner_abi.h
+              ${CMAKE_CURRENT_SOURCE_DIR}/include/guild/abi/cpu_expert_abi.h
         DESTINATION include/guild/abi)
 install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/schemas/gkmetadata.v1.schema.json
         DESTINATION share/guild/schemas)
@@ -1018,6 +1025,13 @@ else()
     src/runtime/tokenizer.cpp)
   target_include_directories(guild_runtime PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
   target_link_libraries(guild_runtime PUBLIC guild_model guild_memory guild_warnings ${CMAKE_DL_LIBS})
+endif()
+
+if(NOT GUILD_BUILTIN_QWEN_RUNNERS)
+  target_compile_definitions(guild_runtime PRIVATE GUILD_NO_BUILTIN_QWEN_RUNNERS=1)
+endif()
+if(NOT GUILD_BUILTIN_NATIVE_CPU)
+  target_compile_definitions(guild_runtime PRIVATE GUILD_NO_BUILTIN_NATIVE_CPU=1)
 endif()
 
 if(GUILD_ENABLE_CUDA OR GUILD_ENABLE_HIP)
@@ -1196,6 +1210,8 @@ if(GUILD_BUILD_TESTS)
 
   if(GUILD_ENABLE_CUDA OR GUILD_ENABLE_HIP)
     add_executable(ornith_step_test tests/server/ornith_step_test.cpp)
+    add_executable(external_runner_parity_test tests/core/external_runner_parity_test.cpp)
+    target_link_libraries(external_runner_parity_test PRIVATE guild_runtime guild_models guild_cli)
     target_link_libraries(ornith_step_test PRIVATE guild_server guild_runtime guild_models guild_memory guild_model guild_cli)
     add_executable(ornith_gkernel_plugin_test tests/core/ornith_gkernel_plugin_test.cpp)
     target_link_libraries(ornith_gkernel_plugin_test PRIVATE guild_server guild_runtime guild_models guild_memory guild_model guild_cli ${CMAKE_DL_LIBS})

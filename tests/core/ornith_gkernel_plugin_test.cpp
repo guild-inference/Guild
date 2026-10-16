@@ -2,6 +2,7 @@
 // End-to-End Real-Model Verification of External .gkernel Dynamic Plugin Execution,
 // Numerical Bitwise Parity, Active-Session Lease Protection, and Fallback on Ornith-1.5-35B.
 #include "../check.hpp"
+#include "../signing_fixture.hpp"
 #include "guild/abi/gkernel_package.hpp"
 #include "guild/cli/hardware.hpp"
 #include "guild/kernels/registry.hpp"
@@ -42,6 +43,7 @@ int main() {
 
     std::string err;
     CHECK(abi::GKernelPackageManager::instance().init(err));
+    abi::trust_test_signing_key(abi::GKernelPackageManager::instance().security_policy());
 
     models::StoreOptions st_opts;
     models::ModelStore store(st_opts);

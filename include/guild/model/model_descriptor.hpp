@@ -3,6 +3,8 @@
 #include <cstdint>
 #include <string>
 #include <vector>
+#include <optional>
+#include "guild/abi/runner_abi.h"
 
 namespace guild::model {
 
@@ -87,6 +89,10 @@ struct ModelDescriptor {
     AttentionGeometry attn;
     MoEGeometry moe;
     RoPEConfig rope;
+
+    // Model-specific values provided by an external runner, copied at load time.
+    // No plugin-owned objects or C++ layouts cross the ABI boundary.
+    std::optional<guild_runner_model_v1_t> runner_model;
 
     // Sizing and memory estimation
     uint64_t estimate_routed_weights_bytes(int bytes_per_elem_weight = 2) const;

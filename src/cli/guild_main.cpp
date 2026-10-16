@@ -1089,6 +1089,7 @@ int cmd_kernel(int argc, char** argv) {
     std::string data_dir;
     std::string key_id;
     std::string seed_hex;
+    std::string seed_file;
     std::string pubkey_hex;
     std::string publisher_id;
     std::string bundle_out;
@@ -1101,6 +1102,7 @@ int cmd_kernel(int argc, char** argv) {
         if (arg == "--data-dir" && i + 1 < argc) data_dir = argv[++i];
         else if (arg == "--key-id" && i + 1 < argc) key_id = argv[++i];
         else if (arg == "--seed" && i + 1 < argc) seed_hex = argv[++i];
+        else if (arg == "--seed-file" && i + 1 < argc) seed_file = argv[++i];
         else if (arg == "--pubkey" && i + 1 < argc) pubkey_hex = argv[++i];
         else if (arg == "--publisher" && i + 1 < argc) publisher_id = argv[++i];
         else if (arg == "--bundle" && i + 1 < argc) bundle_out = argv[++i];
@@ -1115,6 +1117,14 @@ int cmd_kernel(int argc, char** argv) {
         }
     }
 
+    if (!seed_file.empty()) {
+        if (!seed_hex.empty()) { std::cerr << "choose --seed or --seed-file\n"; return 1; }
+        std::ifstream in(seed_file);
+        if (!(in >> seed_hex) || seed_hex.size()!=64) {
+            std::cerr << "invalid signing seed file\n";
+            return 1;
+        }
+    }
     if (sub == "keygen") {
         guild::abi::crypto::Ed25519KeyPair kp;
         if (!seed_hex.empty()) {

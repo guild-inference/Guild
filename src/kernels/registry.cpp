@@ -2,6 +2,8 @@
 #include "guild/kernels/registry.hpp"
 #include "guild/artifact/gguf_reader.hpp"
 #include "guild/core/validation.hpp"
+#include "guild/abi/runner_abi.h"
+#include "guild/abi/cpu_expert_abi.h"
 
 #if defined(GUILD_ENABLE_CUDA) || defined(GUILD_ENABLE_HIP)
 #include "guild/kernels/native_mmvq.hpp"
@@ -387,6 +389,21 @@ guild_status_t KernelRegistry::register_op(const guild_kernel_op_desc_v1_t& desc
         }
     }
     // Deep-copy prefill extension payload respecting exact validated prefix bounds.
+    if (desc.next_ext && desc.op_kind == GUILD_OP_BATCHED_EXPERT_EXEC) {
+        uint32_t prefix[3]={};
+        std::memcpy(prefix,desc.next_ext,sizeof(uint32_t));
+        if (prefix[0] < sizeof(guild_cpu_expert_ext_v1_t)) {
+            err="truncated CPU expert extension"; return GUILD_STATUS_ERR_ABI_MISMATCH;
+        }
+        guild_cpu_expert_ext_v1_t ext{};
+        std::memcpy(&ext,desc.next_ext,sizeof(ext));
+        if (ext.tag!=GUILD_CPU_EXPERT_TAG_V1 || ext.version!=1 || !ext.quant_act || !ext.quant_h || !ext.gate_up || !ext.down) {
+            err="invalid CPU expert extension"; return GUILD_STATUS_ERR_ABI_MISMATCH;
+        }
+        stored->owned_ext_bytes.resize(sizeof(ext));
+        std::memcpy(stored->owned_ext_bytes.data(),&ext,sizeof(ext));
+        stored->desc.next_ext=stored->owned_ext_bytes.data();
+    }
     if (desc.next_ext != nullptr &&
         (desc.op_kind == GUILD_OP_GDN_AB_PROJ || desc.op_kind == GUILD_OP_MOE_ROUTER_TOPK)) {
         uint32_t ext_size = 0;
@@ -491,6 +508,7 @@ guild_status_t KernelRegistry::register_plugin_transactional(
         std::vector<std::vector<guild_op_kind_t>> staged_runner_ops;
         std::vector<std::vector<std::string>> staged_runner_pkg_deps;
         std::vector<std::vector<const char*>> staged_runner_pkg_dep_ptrs;
+        std::vector<std::unique_ptr<guild_runner_model_ext_v1_t>> staged_runner_extensions;
     } staging;
     staging.self = this;
     staging.package_id = pkg_id;
@@ -555,6 +573,17 @@ guild_status_t KernelRegistry::register_plugin_transactional(
             ctx->staged_direct_tables.push_back(nullptr);
         }
         std::vector<uint8_t> ext_copy;
+        if (d->next_ext && d->op_kind == GUILD_OP_BATCHED_EXPERT_EXEC) {
+            uint32_t size=0;
+            std::memcpy(&size,d->next_ext,sizeof(size));
+            if(size < sizeof(guild_cpu_expert_ext_v1_t)) return GUILD_STATUS_ERR_ABI_MISMATCH;
+            guild_cpu_expert_ext_v1_t ext{};
+            std::memcpy(&ext,d->next_ext,sizeof(ext));
+            if(ext.tag!=GUILD_CPU_EXPERT_TAG_V1 || ext.version!=1 || !ext.quant_act || !ext.quant_h || !ext.gate_up || !ext.down)
+                return GUILD_STATUS_ERR_ABI_MISMATCH;
+            ext_copy.resize(sizeof(ext));
+            std::memcpy(ext_copy.data(),&ext,sizeof(ext));
+        }
         if (d->next_ext != nullptr &&
             (d->op_kind == GUILD_OP_GDN_AB_PROJ || d->op_kind == GUILD_OP_MOE_ROUTER_TOPK)) {
             uint32_t ext_size = 0;
@@ -617,6 +646,23 @@ guild_status_t KernelRegistry::register_plugin_transactional(
         }
         ctx->staged_runner_pkg_deps.push_back(std::move(pdeps));
         ctx->staged_runner_pkg_dep_ptrs.emplace_back();
+        std::unique_ptr<guild_runner_model_ext_v1_t> ext;
+        if (r->next_ext) {
+            uint32_t size=0;
+            std::memcpy(&size, r->next_ext, sizeof(size));
+            if (size < sizeof(guild_runner_model_ext_v1_t)) {
+                fill_err(e, GUILD_STATUS_ERR_ABI_MISMATCH, "plugin", "truncated runner model extension");
+                return GUILD_STATUS_ERR_ABI_MISMATCH;
+            }
+            ext=std::make_unique<guild_runner_model_ext_v1_t>();
+            std::memcpy(ext.get(), r->next_ext, sizeof(*ext));
+            if (ext->tag != GUILD_RUNNER_MODEL_TAG_V1 || ext->version != GUILD_RUNNER_MODEL_VERSION_V1 ||
+                !ext->recognize || !ext->describe) {
+                fill_err(e, GUILD_STATUS_ERR_ABI_MISMATCH, "plugin", "invalid runner model extension");
+                return GUILD_STATUS_ERR_ABI_MISMATCH;
+            }
+        }
+        ctx->staged_runner_extensions.push_back(std::move(ext));
         ctx->staged_runners.push_back(*r);
         return GUILD_STATUS_OK;
     };
@@ -678,6 +724,7 @@ guild_status_t KernelRegistry::register_plugin_transactional(
         for (const auto& s : staging.staged_runner_pkg_deps[i]) staging.staged_runner_pkg_dep_ptrs[i].push_back(s.c_str());
         rdesc.required_package_deps = staging.staged_runner_pkg_dep_ptrs[i].empty() ? nullptr : staging.staged_runner_pkg_dep_ptrs[i].data();
         rdesc.n_required_package_deps = staging.staged_runner_pkg_dep_ptrs[i].size();
+        rdesc.next_ext = staging.staged_runner_extensions[i].get();
 
         const guild_status_t rst = runner_commit_fn(rdesc, err);
         if (rst != GUILD_STATUS_OK) {

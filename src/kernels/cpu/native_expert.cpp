@@ -14,6 +14,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <mutex>
+#include <stdexcept>
 
 namespace guild::kernels::cpu {
 namespace {
@@ -68,6 +69,12 @@ bool native_fmt(int gu_type, int d_type, int64_t n_embd, int64_t n_ff, NativeFmt
     return true;
 }
 
+#if defined(GUILD_NO_BUILTIN_NATIVE_CPU)
+void native_quant_act(const NativeFmt&, const float*, void*) { throw std::runtime_error("native CPU fallback disabled: install a CPU .gkernel"); }
+void native_quant_h(const NativeFmt&, const float*, void*) { throw std::runtime_error("native CPU fallback disabled: install a CPU .gkernel"); }
+void native_gu_rows(const NativeFmt&, const uint8_t*, const void* const*, int, float* const*, int, int) { throw std::runtime_error("native CPU fallback disabled: install a CPU .gkernel"); }
+void native_down_rows(const NativeFmt&, const uint8_t*, const void* const*, int, float* const*, int, int) { throw std::runtime_error("native CPU fallback disabled: install a CPU .gkernel"); }
+#else
 void native_quant_act(const NativeFmt& f, const float* x, void* dst) {
     traits(f.gu_act)->from_float(x, dst, f.n_embd);
 }
@@ -174,4 +181,5 @@ void native_down_rows(const NativeFmt& f, const uint8_t* blob, const void* const
     }
 }
 
+#endif
 }  // namespace guild::kernels::cpu

@@ -5,6 +5,8 @@
 #include <algorithm>
 #include <cctype>
 #include <cstring>
+#include <cmath>
+#include <cstdio>
 
 namespace guild::model {
 namespace {
@@ -12,6 +14,85 @@ namespace {
 std::string to_lower_str(std::string s) {
     std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     return s;
+}
+
+guild_model_reader_v1_t model_reader(const GgufModel& model) {
+    guild_model_reader_v1_t reader{};
+    reader.struct_size = sizeof(reader);
+    reader.user = const_cast<GgufModel*>(&model);
+    reader.get_i64 = [](void* u, const char* key, int64_t* out) -> guild_status_t {
+        if (!key || !out) return GUILD_STATUS_ERR_INVALID_ARGUMENT;
+        const auto* v = static_cast<GgufModel*>(u)->meta().get(key);
+        if (!v || !v->is_num()) return GUILD_STATUS_ERR_INVALID_ARGUMENT;
+        *out = static_cast<int64_t>(v->num());
+        return GUILD_STATUS_OK;
+    };
+    reader.get_f64 = [](void* u, const char* key, double* out) -> guild_status_t {
+        if (!key || !out) return GUILD_STATUS_ERR_INVALID_ARGUMENT;
+        const auto* v = static_cast<GgufModel*>(u)->meta().get(key);
+        if (!v || !v->is_num()) return GUILD_STATUS_ERR_INVALID_ARGUMENT;
+        *out = v->num();
+        return GUILD_STATUS_OK;
+    };
+    reader.get_string = [](void* u, const char* key, char* out, size_t n) -> guild_status_t {
+        if (!key || !out || !n) return GUILD_STATUS_ERR_INVALID_ARGUMENT;
+        const auto* v = static_cast<GgufModel*>(u)->meta().get(key);
+        if (!v || v->type != MetaType::STRING || v->s.size() >= n) return GUILD_STATUS_ERR_INVALID_ARGUMENT;
+        std::memcpy(out, v->s.c_str(), v->s.size()+1);
+        return GUILD_STATUS_OK;
+    };
+    reader.get_tensor = [](void* u, const char* key, guild_tensor_desc_t* out) -> guild_status_t {
+        if (!key || !out || out->struct_size < sizeof(*out)) return GUILD_STATUS_ERR_INVALID_ARGUMENT;
+        const auto* t = static_cast<GgufModel*>(u)->find(key);
+        if (!t || t->shape.empty() || t->shape.size() > GUILD_MAX_TENSOR_DIMS) return GUILD_STATUS_ERR_INVALID_TENSOR;
+        *out = {};
+        out->struct_size = sizeof(*out);
+        out->dtype = t->type;
+        out->n_dims = int32_t(t->shape.size());
+        for (size_t i=0; i<t->shape.size(); ++i) out->dims[i] = int64_t(t->shape[i]);
+        return GUILD_STATUS_OK;
+    };
+    return reader;
+}
+
+bool import_runner_model(const guild_runner_model_v1_t& m, ModelDescriptor& d, std::string& err) {
+    const auto terminated = [](const auto& s) { return std::memchr(s, 0, sizeof(s)) != nullptr; };
+    if (m.struct_size < sizeof(m) || m.version != GUILD_RUNNER_MODEL_VERSION_V1 ||
+        !terminated(m.arch_id) || !terminated(m.name) || !terminated(m.embedding_tensor) ||
+        !terminated(m.output_tensor) || !terminated(m.output_norm_tensor) ||
+        !terminated(m.ple_table_tensor) || !terminated(m.ple_key_tensor) || !terminated(m.layer_prefix) ||
+        m.n_embd <= 0 || m.n_embd > 1048576 || m.n_layers <= 0 || m.n_layers > 4096 ||
+        m.n_heads <= 0 || m.n_heads > 4096 || m.n_kv_heads <= 0 ||
+        m.n_heads % m.n_kv_heads || m.head_dim <= 0 || m.context_length <= 0 ||
+        m.vocab_size <= 0 || m.full_attention_interval <= 0 || m.n_experts <= 0 ||
+        m.active_experts <= 0 || m.active_experts > m.n_experts || m.expert_ff <= 0 ||
+        m.residual_streams <= 0 || m.residual_streams > 64 ||
+        m.ssm_state_size < 0 || m.ssm_state_size > 4096 || m.ssm_v_heads < 0 || m.ssm_v_heads > 4096 ||
+        m.prefill_strategy > GUILD_RUNNER_PREFILL_LAYER_BATCHED ||
+        !std::isfinite(m.rope_base) || m.rope_base <= 0 || !std::isfinite(m.rope_factor) || m.rope_factor <= 0) {
+        err = "external runner: invalid model description or unsupported topology version";
+        return false;
+    }
+    if (std::strcmp(m.embedding_tensor,"token_embd.weight") || std::strcmp(m.output_tensor,"output.weight") ||
+        std::strcmp(m.output_norm_tensor,"output_norm.weight") || std::strcmp(m.layer_prefix,"blk.")) {
+        err="external runner: this execution contract requires canonical tensor role names";
+        return false;
+    }
+    d.runner_model = m;
+    d.arch_name = m.arch_id;
+    d.name = m.name;
+    d.archetype = ModelArchetype::Unknown;
+    d.attn.n_embd=m.n_embd; d.attn.n_layers=m.n_layers;
+    d.attn.n_heads=m.n_heads; d.attn.n_kv_heads=m.n_kv_heads; d.attn.head_dim=m.head_dim;
+    d.attn.context_length=m.context_length; d.attn.vocab_size=m.vocab_size;
+    d.attn.full_attn_interval=m.full_attention_interval;
+    d.attn.pattern=m.full_attention_interval>1 ? AttentionPattern::HybridGDN : AttentionPattern::Standard;
+    d.attn.mechanism=m.indexed_attention ? AttentionMechanism::IndexedSparse : AttentionMechanism::DenseCausal;
+    d.moe.n_routed_experts=m.n_experts; d.moe.k_active_experts=m.active_experts;
+    d.moe.expert_dim_ff=m.expert_ff; d.moe.shared_dim_ff=m.shared_ff; d.moe.n_shared_experts=m.shared_experts;
+    d.rope.freq_base=m.rope_base; d.rope.factor=m.rope_factor; d.rope.orig_ctx=m.rope_original_context;
+    d.rope.type=m.rope_kind==1 ? "linear" : m.rope_kind==2 ? "yarn" : "none";
+    return true;
 }
 
 bool validate_embedding_and_head(const GgufModel& artifact,
@@ -359,6 +440,16 @@ public:
           core_caps_(desc.required_core_caps),
           session_alloc_(desc.session_alloc),
           session_free_(desc.session_free) {
+        if (desc.next_ext) {
+            uint32_t size=0;
+            std::memcpy(&size, desc.next_ext, sizeof(size));
+            if (size >= sizeof(guild_runner_model_ext_v1_t)) {
+                guild_runner_model_ext_v1_t candidate{};
+                std::memcpy(&candidate, desc.next_ext, sizeof(candidate));
+                if (candidate.tag == GUILD_RUNNER_MODEL_TAG_V1 && candidate.version == GUILD_RUNNER_MODEL_VERSION_V1)
+                    extension_ = candidate;
+            }
+        }
         if (desc.required_op_kinds && desc.n_required_op_kinds > 0) {
             required_ops_.assign(desc.required_op_kinds, desc.required_op_kinds + desc.n_required_op_kinds);
         }
@@ -374,6 +465,7 @@ public:
     const char* package_id() const override { return package_id_.c_str(); }
     const char* arch_id() const override { return arch_id_.c_str(); }
     uint32_t runner_version() const override { return version_; }
+    int32_t priority() const override { return extension_ ? extension_->priority : 0; }
     ModelArchetype archetype() const override { return archetype_from_string(arch_id_); }
 
     bool matches_arch_name(const std::string& name) const override {
@@ -392,6 +484,23 @@ public:
     bool validate_and_describe(const GgufModel& artifact,
                                ModelDescriptor& out_desc,
                                std::string& err) const override {
+        if (extension_) {
+            auto reader = model_reader(artifact);
+            uint32_t recognized=0;
+            guild_error_info_t error{};
+            guild_runner_model_v1_t m{};
+            m.struct_size=sizeof(m); m.version=GUILD_RUNNER_MODEL_VERSION_V1;
+            if (extension_->recognize(&reader, &recognized) != GUILD_STATUS_OK || !recognized ||
+                extension_->describe(&reader, &m, &error) != GUILD_STATUS_OK) {
+                err = error.message[0] ? error.message : "external runner rejected GGUF";
+                return false;
+            }
+            if (!import_runner_model(m, out_desc, err)) return false;
+            out_desc.file_path=artifact.meta().path();
+            RunnerTensorMap map;
+            map.embedding_tensor=m.embedding_tensor; map.output_tensor=m.output_tensor;
+            return validate_embedding_and_head(artifact, map, out_desc, err);
+        }
         if (!ArchetypeRegistry::instance().describe_gguf(artifact.meta(), out_desc, err)) {
             out_desc.arch_name = arch_id_;
             out_desc.archetype = archetype();
@@ -403,6 +512,22 @@ public:
                             core::ModelGeometry& out_geom,
                             int64_t& out_k_active,
                             std::string& err) const override {
+        if (extension_) {
+            if (!desc.runner_model) { err="external runner model description missing"; return false; }
+            const auto& m=*desc.runner_model;
+            out_geom.n_embd=m.n_embd; out_geom.n_layers=m.n_layers; out_geom.qsa_interval=m.full_attention_interval;
+            out_geom.n_head=m.n_heads; out_geom.n_head_kv=m.n_kv_heads; out_geom.head_dim=m.head_dim;
+            out_geom.n_expert=m.n_experts; out_geom.n_ff=m.expert_ff;
+            out_geom.ssm_state_size=m.ssm_state_size; out_geom.ssm_k_heads=m.ssm_k_heads;
+            out_geom.ssm_v_heads=m.ssm_v_heads; out_geom.ssm_d_conv=m.ssm_d_conv;
+            out_geom.ssm_conv_channels=m.ssm_conv_channels; out_geom.ssm_value_dim=m.ssm_value_dim;
+            out_geom.idx_q_heads=m.index_heads; out_geom.idx_key_dim=m.index_dim;
+            out_geom.hc=m.residual_streams; out_geom.hc_lr=m.residual_rank;
+            out_geom.gdn_gate_silu=m.gdn_gate_silu != 0;
+            out_geom.attn_mechanism=desc.attn.mechanism;
+            out_k_active=m.active_experts;
+            return true;
+        }
         if (desc.attn.n_embd <= 0 || desc.attn.n_layers <= 0) {
             err = "ABI runner: invalid model descriptor dimensions";
             return false;
@@ -424,9 +549,9 @@ public:
         return true;
     }
 
-    bool build_execution_plan(const ModelDescriptor& /*desc*/,
+    bool build_execution_plan(const ModelDescriptor& desc,
                               const core::ModelGeometry& /*geom*/,
-                              const memory::ExecutionPlan& /*mem_plan*/,
+                              const memory::ExecutionPlan& mem_plan,
                               RunnerExecutionPlan& out_exec,
                               std::string& err) const override {
         out_exec = {};
@@ -435,6 +560,14 @@ public:
         out_exec.prefill_strategy = PrefillStrategy::SequentialVerifier;
         out_exec.required_core_caps = core_caps_;
         out_exec.required_ops = required_ops_;
+        if (extension_ && desc.runner_model) {
+            const auto& m=*desc.runner_model;
+            out_exec.prefill_strategy=static_cast<PrefillStrategy>(m.prefill_strategy);
+            if (mem_plan.kv_format != memory::KvPrecision::FP16 && out_exec.prefill_strategy==PrefillStrategy::LayerWiseBatched)
+                out_exec.prefill_strategy=PrefillStrategy::SequentialVerifier;
+            out_exec.requires_ple=m.requires_ple != 0;
+            out_exec.supports_mtp=m.supports_mtp != 0;
+        }
         err.clear();
         return true;
     }
@@ -443,6 +576,12 @@ public:
                             size_t count,
                             const std::string& label,
                             std::string& err) const override {
+        if (extension_ && extension_->validate_numerical) {
+            guild_error_info_t error{};
+            const auto status=extension_->validate_numerical(values, count, &error);
+            if (status != GUILD_STATUS_OK) err=error.message;
+            return status==GUILD_STATUS_OK;
+        }
         return core::validate_finite(values, count, label, err);
     }
 
@@ -461,6 +600,7 @@ public:
         d.n_required_package_deps = pkg_dep_ptrs_.size();
         d.session_alloc = session_alloc_;
         d.session_free = session_free_;
+        d.next_ext = extension_ ? &*extension_ : nullptr;
         return d;
     }
 
@@ -476,6 +616,7 @@ private:
     guild_runner_session_alloc_fn session_alloc_ = nullptr;
     guild_runner_session_free_fn session_free_ = nullptr;
     RunnerTensorMap tmap_{};
+    std::optional<guild_runner_model_ext_v1_t> extension_;
 };
 
 } // namespace
@@ -491,9 +632,11 @@ ModelRunnerRegistry& ModelRunnerRegistry::instance() {
 }
 
 void ModelRunnerRegistry::register_builtin_runners() {
+#if !defined(GUILD_NO_BUILTIN_QWEN_RUNNERS)
     std::string ignore_err;
     register_runner(std::make_unique<Qwen4ExpRunner>(), ignore_err);
     register_runner(std::make_unique<Qwen35MoERunner>(), ignore_err);
+#endif
 }
 
 guild_status_t ModelRunnerRegistry::register_runner(std::unique_ptr<IModelRunner> runner, std::string& err) {
@@ -509,12 +652,16 @@ guild_status_t ModelRunnerRegistry::register_runner(std::unique_ptr<IModelRunner
             err = std::string("duplicate runner registration for runner_id: ") + runner->runner_id();
             return GUILD_STATUS_ERR_DUPLICATE_REGISTRATION;
         }
-        if (to_lower_str(existing->arch_id()) == to_lower_str(runner->arch_id())) {
+        if (to_lower_str(existing->arch_id()) == to_lower_str(runner->arch_id()) &&
+            existing->priority() == runner->priority()) {
             err = std::string("duplicate runner registration for architecture: ") + runner->arch_id();
             return GUILD_STATUS_ERR_DUPLICATE_REGISTRATION;
         }
     }
     runners_.push_back(std::move(runner));
+    std::stable_sort(runners_.begin(), runners_.end(), [](const auto& a, const auto& b) {
+        return a->priority() > b->priority();
+    });
     err.clear();
     return GUILD_STATUS_OK;
 }
@@ -538,6 +685,21 @@ guild_status_t ModelRunnerRegistry::register_abi_runner(const guild_runner_desc_
             desc.required_op_kinds[i] >= GUILD_OP_COUNT) {
             err = "runner ABI descriptor declares invalid required operation kind";
             return GUILD_STATUS_ERR_INVALID_ARGUMENT;
+        }
+    }
+    if (desc.next_ext) {
+        uint32_t size=0;
+        std::memcpy(&size, desc.next_ext, sizeof(size));
+        if (size < sizeof(guild_runner_model_ext_v1_t)) {
+            err="runner model extension is truncated";
+            return GUILD_STATUS_ERR_ABI_MISMATCH;
+        }
+        guild_runner_model_ext_v1_t ext{};
+        std::memcpy(&ext, desc.next_ext, sizeof(ext));
+        if (ext.tag != GUILD_RUNNER_MODEL_TAG_V1 || ext.version != GUILD_RUNNER_MODEL_VERSION_V1 ||
+            !ext.recognize || !ext.describe) {
+            err="unsupported runner model extension or missing callbacks";
+            return GUILD_STATUS_ERR_ABI_MISMATCH;
         }
     }
     return register_runner(std::make_unique<AbiModelRunnerAdapter>(desc), err);

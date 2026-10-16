@@ -10,6 +10,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include "guild/abi/cpu_expert_abi.h"
 
 namespace guild::kernels::cpu {
 
@@ -19,15 +20,7 @@ inline constexpr size_t kNativeActBytes = 4096;
 inline constexpr size_t kNativeHBytes = 1024;
 
 /// One layer's native expert geometry.
-struct NativeFmt {
-    int gu_type = -1, d_type = -1;      ///< ggml types of gate/up and of down
-    int gu_act = -1, d_act = -1;        ///< their vec_dot_type (the activation formats)
-    int64_t n_embd = 0, n_ff = 0;
-    size_t gu_row = 0, d_row = 0;       ///< bytes per weight row
-    size_t up_off = 0, down_off = 0;    ///< inside the blob
-    size_t bytes = 0;                   ///< the whole blob
-    size_t act_bytes = 0, h_bytes = 0;  ///< quantized activation sizes (n_embd of gu_act, n_ff of d_act)
-};
+using NativeFmt = guild_cpu_expert_format_v1_t;
 
 /// Whether this build has the ggml-cpu path.
 bool native_experts_available() noexcept;

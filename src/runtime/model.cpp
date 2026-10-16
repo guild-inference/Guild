@@ -49,7 +49,10 @@ std::unique_ptr<GuildModel> GuildModel::load(
     if (shards.size() == 1) shards.insert(shards.end(), paths.additional_shards.begin(), paths.additional_shards.end());
     {
         std::string pkg_err;
-        abi::GKernelPackageManager::instance().load_enabled_packages(pkg_err);
+        if (abi::GKernelPackageManager::instance().load_enabled_packages(pkg_err) != GUILD_STATUS_OK) {
+            error_msg = "model load: enabled kernel package failed: " + pkg_err;
+            return nullptr;
+        }
     }
     model::ModelDescriptor desc = requested_desc;
     const model::IModelRunner* runner = nullptr;
@@ -156,8 +159,31 @@ std::unique_ptr<GuildModel> GuildModel::load(
         return nullptr;
     }
     impl->kernel_lease = kernels::SessionKernelLease(&kernels::KernelRegistry::instance(),
-                                                     impl->runner_exec.resolved_package_ids,
-                                                     impl->main_stream);
+                                                      impl->runner_exec.resolved_package_ids,
+                                                      impl->main_stream);
+    {
+        kernels::KernelSelectionQuery query;
+        query.op_kind=GUILD_OP_BATCHED_EXPERT_EXEC; query.allowed_backends=GUILD_BACKEND_CPU;
+        const guild_kernel_op_desc_v1_t* selected=nullptr;
+        if (kernels::KernelRegistry::instance().select(query,host_caps,&selected,error_msg) != GUILD_STATUS_OK)
+            return nullptr;
+        if (selected->next_ext) {
+            guild_cpu_expert_ext_v1_t table{};
+            std::memcpy(&table,selected->next_ext,sizeof(table));
+            if (table.struct_size<sizeof(table) || table.tag!=GUILD_CPU_EXPERT_TAG_V1 || table.version!=1) {
+                error_msg="model load: invalid CPU expert contract"; return nullptr;
+            }
+            impl->kernel_lease.add_package(selected->package_id);
+            impl->pool->bind_native_kernels(table);
+            impl->native_cpu_package=selected->package_id;
+        }
+#if defined(GUILD_NO_BUILTIN_NATIVE_CPU)
+        if (impl->native_cpu_package.empty()) {
+            error_msg="model load: native CPU fallback disabled; install a compatible CPU .gkernel";
+            return nullptr;
+        }
+#endif
+    }
 
     // Doorbell
     if (core::doorbell_init(impl->g, impl->K, impl->db) == 0) {

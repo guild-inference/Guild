@@ -25,11 +25,6 @@ namespace guild::abi {
 /// Official Guild release publisher & key constants used for default trust store and SDK signing.
 inline constexpr const char* kOfficialGuildPublisherId = "org.illatio.guild";
 inline constexpr const char* kOfficialGuildReleaseKeyId = "illatio-release-2026-01";
-inline constexpr const char* kOfficialGuildDevSeedHex =
-    "4755494c445f4f4646494349414c5f4445565f534545445f323032365f563031";
-
-/// Return the 64-character hex Ed25519 public key corresponding to kOfficialGuildDevSeedHex.
-std::string official_guild_public_key_hex();
 
 struct PackageDependency {
     std::string package_id;
@@ -176,8 +171,6 @@ struct PackageSecurityPolicy {
         trusted_publishers[publisher_id].insert(key_id);
         if (!public_key_hex.empty()) {
             trusted_public_keys[{publisher_id, key_id}] = public_key_hex;
-        } else if (publisher_id == kOfficialGuildPublisherId && key_id == kOfficialGuildReleaseKeyId) {
-            trusted_public_keys[{publisher_id, key_id}] = official_guild_public_key_hex();
         }
     }
     void revoke_key(const std::string& key_id) { revoked_key_ids.insert(key_id); }
@@ -308,6 +301,8 @@ private:
     kernels::KernelRegistry* kernel_reg_ = nullptr;
     model::ModelRunnerRegistry* runner_reg_ = nullptr;
     PackageSecurityPolicy policy_;
+    bool initialized_ = false;
+    std::string initialization_error_;
     mutable std::mutex mutex_;
     std::map<std::string, InstalledPackageRecord> packages_;
 };

@@ -1,5 +1,6 @@
 // tests/core/modular_abi_test.cpp - Modular Runner, Kernel Registry, ABI v1 & .gkmetadata Security Tests
 #include "../check.hpp"
+#include "../signing_fixture.hpp"
 #include "guild/abi/gkernel_package.hpp"
 #include "guild/abi/kernel_abi.h"
 #include "guild/kernels/registry.hpp"
@@ -156,6 +157,18 @@ struct PrefillTestRegistry {
 
 int main() {
     std::string err;
+    {
+        const auto policy=abi::PackageSecurityPolicy::default_builtin_policy();
+        CHECK(policy.require_signature && policy.verify_artifact_hashes && !policy.allow_unsigned_dev);
+        CHECK(policy.trusted_public_keys.empty());
+        const auto root=fs::temp_directory_path()/"guild_corrupt_policy_test";
+        fs::remove_all(root);fs::create_directories(root);
+        { std::ofstream f(root/"trust_store.json");f<<"{broken"; }
+        abi::GKernelPackageManager manager(root.string());
+        CHECK(!manager.init(err));
+        CHECK(manager.load_enabled_packages(err)==GUILD_STATUS_ERR_SECURITY_VIOLATION);
+        fs::remove_all(root);
+    }
 
     // -------------------------------------------------------------------------
     // 1. ABI Version Negotiation & Bit-Packing
@@ -659,7 +672,7 @@ int main() {
         CHECK(abi::validate_gkernel_package(meta, policy, host_caps, temp_dir.string(), err) == GUILD_STATUS_ERR_SECURITY_VIOLATION);
 
         // Trust publisher key, but fake 'aaaa...' signature must still be rejected by real Ed25519 verification!
-        policy.trust_publisher_key("org.illatio.guild", "illatio-release-2026-01");
+        abi::trust_test_signing_key(policy);
         CHECK(abi::validate_gkernel_package(meta, policy, host_caps, temp_dir.string(), err) == GUILD_STATUS_ERR_SECURITY_VIOLATION);
 
         // Now sign with the real Ed25519 private seed -> passes cryptographic signature + on-disk SHA-256 verification
@@ -1003,6 +1016,7 @@ int main() {
         iso_rreg.register_builtin_runners();
         abi::GKernelPackageManager mgr((pkg_work / "store").string(), &iso_kreg, &iso_rreg);
         CHECK(mgr.init(err));
+        abi::trust_test_signing_key(mgr.security_policy());
 
         // 7a. Transactional rollback test: if .gkmetadata declares an extra op that the plugin does not register,
         // installation must fail AND roll back all partial registrations from the plugin!
@@ -1136,6 +1150,8 @@ int main() {
             return std::system(cmd.c_str());
         };
         CHECK(run_cli("keygen --seed " + std::string(abi::kOfficialGuildDevSeedHex) + " --json") == 0);
+        CHECK(run_cli("trust-key --publisher org.illatio.guild --key-id illatio-release-2026-01 --pubkey " +
+                      abi::official_guild_public_key_hex() + " --data-dir " + cli_data_dir.string()) == 0);
         CHECK(run_cli("install " + pkg_v10_bundle.string() + " --data-dir " + cli_data_dir.string() + " --json") == 0);
         CHECK(run_cli("list --data-dir " + cli_data_dir.string() + " --json") == 0);
         CHECK(run_cli("inspect ext.guild-kernels-ornith-prefill --data-dir " + cli_data_dir.string() + " --json") == 0);

@@ -2209,7 +2209,7 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
             if (native && guild::kernels::cpu::q2_native_kernels(lay.fmt[(size_t) d.layers].gu_type))   // a native Q2_0 pack: the Q2_0 kernels' activations
                 act_quant_any(x_f + (size_t) t * embd, (int) embd, d.act_multi[(size_t) t]);
             else if (native)
-                native_quant_act(lay.fmt[(size_t) d.layers], x_f + (size_t) t * embd, d.nact_multi.data() + (size_t) t * kNativeActBytes);
+                d.pool->quantize_native(lay.fmt[(size_t) d.layers], x_f + (size_t) t * embd, d.nact_multi.data() + (size_t) t * kNativeActBytes);
             else
                 act_quant_q8_1(x_f + (size_t) t * embd, (int) embd, d.act_multi[(size_t) t]);
         }

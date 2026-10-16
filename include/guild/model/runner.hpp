@@ -72,6 +72,7 @@ public:
     virtual const char* package_id() const = 0;
     virtual const char* arch_id() const = 0;
     virtual uint32_t runner_version() const = 0;
+    virtual int32_t priority() const { return 0; }
     virtual ModelArchetype archetype() const = 0;
 
     /// Returns true if this runner supports the given architecture string or alias.

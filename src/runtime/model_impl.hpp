@@ -111,6 +111,7 @@ struct GuildModel::Impl {
     ExpertPerformance expert_performance;
     const model::IModelRunner* runner = nullptr;
     model::RunnerExecutionPlan runner_exec;
+    std::string native_cpu_package;
     model::SessionRunnerLease runner_lease;
     kernels::SessionKernelLease kernel_lease;
     core::ModelGeometry g;

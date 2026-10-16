@@ -260,12 +260,6 @@ JsonValue build_unsigned_json_object(const GKernelMetadata& m) {
 
 } // namespace
 
-std::string official_guild_public_key_hex() {
-    crypto::Ed25519KeyPair kp;
-    if (!crypto::ed25519_keypair_from_seed_hex(kOfficialGuildDevSeedHex, kp)) return "";
-    return kp.public_key_hex;
-}
-
 guild_status_t GKernelMetadata::parse_json(const std::string& json_text,
                                            GKernelMetadata& out_meta,
                                            std::string& err) {
@@ -581,7 +575,8 @@ PackageSecurityPolicy PackageSecurityPolicy::default_builtin_policy() {
     pol.require_signature = true;
     pol.allow_unsigned_dev = false;
     pol.verify_artifact_hashes = true;
-    pol.trust_publisher_key(kOfficialGuildPublisherId, kOfficialGuildReleaseKeyId, official_guild_public_key_hex());
+    // No private release identity is embedded in Core. Trust public keys supplied
+    // by the operator/distribution; published development seeds cannot authenticate releases.
     return pol;
 }
 
@@ -1361,6 +1356,8 @@ GKernelPackageManager& GKernelPackageManager::instance() {
 
 bool GKernelPackageManager::init(std::string& err) {
     std::lock_guard<std::mutex> lock(mutex_);
+    initialized_ = false;
+    initialization_error_ = "package store initialization did not finish";
     std::error_code ec;
     fs::create_directories(fs::path(root_dir_) / "packages", ec);
     fs::create_directories(fs::path(root_dir_) / "staging", ec);
@@ -1370,15 +1367,25 @@ bool GKernelPackageManager::init(std::string& err) {
     }
     const fs::path trust_path = fs::path(root_dir_) / "trust_store.json";
     if (fs::is_regular_file(trust_path, ec)) {
-        policy_.load_from_file(trust_path.string(), err);
+        if (!policy_.load_from_file(trust_path.string(), err)) {
+            initialization_error_ = err;
+            return false;
+        }
     } else {
         policy_ = PackageSecurityPolicy::default_builtin_policy();
-        policy_.save_to_file(trust_path.string(), err);
+        if (!policy_.save_to_file(trust_path.string(), err)) {
+            initialization_error_ = err;
+            return false;
+        }
     }
     const fs::path reg_path = fs::path(root_dir_) / "registry.json";
     if (fs::is_regular_file(reg_path, ec)) {
-        return load_registry_unlocked(err);
+        initialized_ = load_registry_unlocked(err);
+        initialization_error_ = err;
+        return initialized_;
     }
+    initialized_ = true;
+    initialization_error_.clear();
     err.clear();
     return true;
 }
@@ -1696,6 +1703,10 @@ guild_status_t GKernelPackageManager::load_installed_package(const std::string& 
 
 guild_status_t GKernelPackageManager::load_enabled_packages(std::string& err) {
     std::lock_guard<std::mutex> lock(mutex_);
+    if (!initialized_) {
+        err = initialization_error_;
+        return GUILD_STATUS_ERR_SECURITY_VIOLATION;
+    }
     std::vector<GKernelMetadata> enabled_metas;
     for (const auto& [id, rec] : packages_) {
         if (rec.enabled) enabled_metas.push_back(rec.metadata);
