@@ -967,9 +967,33 @@ add_library(guild_memory STATIC
 target_include_directories(guild_memory PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(guild_memory PUBLIC guild_model guild_cli guild_warnings)
 
+# ---- guild_kernel_sdk (Public C99/C++17 ABI v1 SDK for External .gkernel Plugins) ----
+add_library(guild_kernel_sdk INTERFACE)
+add_library(Guild::KernelSDK ALIAS guild_kernel_sdk)
+target_include_directories(guild_kernel_sdk INTERFACE
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>)
+include(CMakePackageConfigHelpers)
+configure_package_config_file(
+  ${CMAKE_CURRENT_SOURCE_DIR}/cmake/GuildKernelSDKConfig.cmake.in
+  ${CMAKE_CURRENT_BINARY_DIR}/GuildKernelSDKConfig.cmake
+  INSTALL_DESTINATION lib/cmake/GuildKernelSDK)
+write_basic_package_version_file(
+  ${CMAKE_CURRENT_BINARY_DIR}/GuildKernelSDKConfigVersion.cmake
+  VERSION ${PROJECT_VERSION}
+  COMPATIBILITY SameMajorVersion)
+install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/include/guild/abi/kernel_abi.h
+        DESTINATION include/guild/abi)
+install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/schemas/gkmetadata.v1.schema.json
+        DESTINATION share/guild/schemas)
+install(FILES ${CMAKE_CURRENT_BINARY_DIR}/GuildKernelSDKConfig.cmake
+              ${CMAKE_CURRENT_BINARY_DIR}/GuildKernelSDKConfigVersion.cmake
+        DESTINATION lib/cmake/GuildKernelSDK)
+
 # ---- guild_runtime (Reusable In-Process Inference Runtime) ----------------
 if(GUILD_ENABLE_CUDA OR GUILD_ENABLE_HIP)
   add_library(guild_runtime STATIC
+    src/abi/ed25519.cpp
     src/abi/gkernel_package.cpp
     src/kernels/registry.cpp
     src/model/runner.cpp
@@ -981,9 +1005,10 @@ if(GUILD_ENABLE_CUDA OR GUILD_ENABLE_HIP)
     src/runtime/batched_prefill.cpp
     src/runtime/tokenizer.cpp)
   target_include_directories(guild_runtime PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include PRIVATE ${_guild_gpu_include_directories})
-  target_link_libraries(guild_runtime PUBLIC guild_engine guild_prefill guild_spec guild_memory guild_model guild_artifact ${_guild_gpu_runtime_target})
+  target_link_libraries(guild_runtime PUBLIC guild_engine guild_prefill guild_spec guild_memory guild_model guild_artifact ${_guild_gpu_runtime_target} ${CMAKE_DL_LIBS})
 else()
   add_library(guild_runtime STATIC
+    src/abi/ed25519.cpp
     src/abi/gkernel_package.cpp
     src/kernels/registry.cpp
     src/model/runner.cpp
@@ -992,7 +1017,7 @@ else()
     src/runtime/chat_template.cpp
     src/runtime/tokenizer.cpp)
   target_include_directories(guild_runtime PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
-  target_link_libraries(guild_runtime PUBLIC guild_model guild_memory guild_warnings)
+  target_link_libraries(guild_runtime PUBLIC guild_model guild_memory guild_warnings ${CMAKE_DL_LIBS})
 endif()
 
 if(GUILD_ENABLE_CUDA OR GUILD_ENABLE_HIP)
@@ -1069,10 +1094,48 @@ if(GUILD_BUILD_TESTS)
   add_executable(finite_output_test tests/core/finite_output_test.cpp)
   target_include_directories(finite_output_test PRIVATE include)
   add_test(NAME finite_output_test COMMAND finite_output_test)
+
+  # External .gkernel plugins built strictly against the public Guild::KernelSDK interface target
+  add_library(guild_ext_runner_smoke SHARED plugins/runner_smoke_ext/runner_smoke_plugin.cpp)
+  target_link_libraries(guild_ext_runner_smoke PRIVATE Guild::KernelSDK guild_warnings)
+
+  if(GUILD_ENABLE_CUDA)
+    add_library(guild_ext_ornith_prefill SHARED plugins/ornith_prefill_ext/ornith_prefill_plugin.cu)
+    set_target_properties(guild_ext_ornith_prefill PROPERTIES CUDA_RUNTIME_LIBRARY Shared)
+    target_compile_definitions(guild_ext_ornith_prefill PRIVATE GUILD_ENABLE_CUDA=1)
+    target_compile_options(guild_ext_ornith_prefill PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--use_fast_math>)
+    target_link_libraries(guild_ext_ornith_prefill PRIVATE Guild::KernelSDK ${_guild_gpu_runtime_target})
+
+    add_library(guild_ext_ornith_prefill_v11 SHARED plugins/ornith_prefill_ext/ornith_prefill_plugin.cu)
+    set_target_properties(guild_ext_ornith_prefill_v11 PROPERTIES CUDA_RUNTIME_LIBRARY Shared)
+    target_compile_definitions(guild_ext_ornith_prefill_v11 PRIVATE
+      GUILD_ENABLE_CUDA=1
+      GUILD_EXT_PLUGIN_VERSION_STR="1.1.0"
+      GUILD_EXT_PLUGIN_VERSION_MINOR=1)
+    target_compile_options(guild_ext_ornith_prefill_v11 PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--use_fast_math>)
+    target_link_libraries(guild_ext_ornith_prefill_v11 PRIVATE Guild::KernelSDK ${_guild_gpu_runtime_target})
+  else()
+    set_source_files_properties(plugins/ornith_prefill_ext/ornith_prefill_plugin.cu PROPERTIES LANGUAGE CXX)
+    add_library(guild_ext_ornith_prefill SHARED plugins/ornith_prefill_ext/ornith_prefill_plugin.cu)
+    target_link_libraries(guild_ext_ornith_prefill PRIVATE Guild::KernelSDK guild_warnings)
+
+    add_library(guild_ext_ornith_prefill_v11 SHARED plugins/ornith_prefill_ext/ornith_prefill_plugin.cu)
+    target_compile_definitions(guild_ext_ornith_prefill_v11 PRIVATE
+      GUILD_EXT_PLUGIN_VERSION_STR="1.1.0"
+      GUILD_EXT_PLUGIN_VERSION_MINOR=1)
+    target_link_libraries(guild_ext_ornith_prefill_v11 PRIVATE Guild::KernelSDK guild_warnings)
+  endif()
+
   add_executable(modular_abi_test tests/core/modular_abi_test.cpp)
-  target_link_libraries(modular_abi_test PRIVATE guild_runtime guild_model guild_memory guild_cli)
+  target_link_libraries(modular_abi_test PRIVATE guild_runtime guild_model guild_memory guild_cli ${CMAKE_DL_LIBS})
+  target_compile_definitions(modular_abi_test PRIVATE
+    GUILD_TEST_EXT_PREFILL_SO="$<TARGET_FILE:guild_ext_ornith_prefill>"
+    GUILD_TEST_EXT_PREFILL_V11_SO="$<TARGET_FILE:guild_ext_ornith_prefill_v11>"
+    GUILD_TEST_EXT_RUNNER_SO="$<TARGET_FILE:guild_ext_runner_smoke>"
+    GUILD_TEST_CLI_BIN="$<TARGET_FILE:guild>")
+  add_dependencies(modular_abi_test guild_ext_ornith_prefill guild_ext_ornith_prefill_v11 guild_ext_runner_smoke guild)
   add_test(NAME modular_abi_test COMMAND modular_abi_test)
-  set_tests_properties(modular_abi_test PROPERTIES TIMEOUT 60)
+  set_tests_properties(modular_abi_test PROPERTIES TIMEOUT 90)
   if(UNIX)
     add_executable(runtime_load_failure_test tests/core/runtime_load_failure_test.cpp)
     target_link_libraries(runtime_load_failure_test PRIVATE guild_server guild_artifact)
@@ -1134,10 +1197,17 @@ if(GUILD_BUILD_TESTS)
   if(GUILD_ENABLE_CUDA OR GUILD_ENABLE_HIP)
     add_executable(ornith_step_test tests/server/ornith_step_test.cpp)
     target_link_libraries(ornith_step_test PRIVATE guild_server guild_runtime guild_models guild_memory guild_model guild_cli)
+    add_executable(ornith_gkernel_plugin_test tests/core/ornith_gkernel_plugin_test.cpp)
+    target_link_libraries(ornith_gkernel_plugin_test PRIVATE guild_server guild_runtime guild_models guild_memory guild_model guild_cli ${CMAKE_DL_LIBS})
+    target_compile_definitions(ornith_gkernel_plugin_test PRIVATE
+      GUILD_TEST_EXT_PREFILL_SO="$<TARGET_FILE:guild_ext_ornith_prefill>")
+    add_dependencies(ornith_gkernel_plugin_test guild_ext_ornith_prefill)
     if(EXISTS "/home/ubuntu/models/ornith-1.5-35b/Ornith-1.5-35B-Q4_K_M.gguf" AND
        EXISTS "/mnt/models-ssd/Strata-data/packs/ornith-1.5-35b")
       add_test(NAME ornith_step_test COMMAND ornith_step_test)
       set_tests_properties(ornith_step_test PROPERTIES TIMEOUT 300 RUN_SERIAL TRUE)
+      add_test(NAME ornith_gkernel_plugin_test COMMAND ornith_gkernel_plugin_test)
+      set_tests_properties(ornith_gkernel_plugin_test PROPERTIES TIMEOUT 300 RUN_SERIAL TRUE)
     endif()
 
     add_executable(ornith_bench tests/server/ornith_bench.cpp)

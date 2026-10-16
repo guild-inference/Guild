@@ -4,6 +4,7 @@
 #if defined(GUILD_ENABLE_CUDA) || defined(GUILD_ENABLE_HIP)
 
 #include "model_impl.hpp"
+#include "guild/abi/gkernel_package.hpp"
 #include "guild/artifact/gguf_reader.hpp"
 #include "guild/model/archetype.hpp"
 #include "guild/kernels/iq_kernels.hpp"
@@ -46,6 +47,10 @@ std::unique_ptr<GuildModel> GuildModel::load(
     // A missing shard is a load failure, not a reason to continue with a partial model.
     std::vector<std::string> shards = guild::gguf_split_paths(paths.primary_model_path);
     if (shards.size() == 1) shards.insert(shards.end(), paths.additional_shards.begin(), paths.additional_shards.end());
+    {
+        std::string pkg_err;
+        abi::GKernelPackageManager::instance().load_enabled_packages(pkg_err);
+    }
     model::ModelDescriptor desc = requested_desc;
     const model::IModelRunner* runner = nullptr;
     {
@@ -81,7 +86,8 @@ std::unique_ptr<GuildModel> GuildModel::load(
     impl->desc = desc;
     impl->plan = plan;
     impl->runner = runner;
-    impl->runner_lease = model::SessionRunnerLease(&model::ModelRunnerRegistry::instance());
+    impl->runner_lease = model::SessionRunnerLease(&model::ModelRunnerRegistry::instance(),
+                                                   runner && runner->package_id() ? runner->package_id() : "");
     impl->kernel_lease = kernels::SessionKernelLease(&kernels::KernelRegistry::instance());
 
     // Apply execution plan to runtime config
@@ -149,6 +155,9 @@ std::unique_ptr<GuildModel> GuildModel::load(
         error_msg = "failed to create CUDA main stream";
         return nullptr;
     }
+    impl->kernel_lease = kernels::SessionKernelLease(&kernels::KernelRegistry::instance(),
+                                                     impl->runner_exec.resolved_package_ids,
+                                                     impl->main_stream);
 
     // Doorbell
     if (core::doorbell_init(impl->g, impl->K, impl->db) == 0) {
@@ -411,6 +420,9 @@ std::unique_ptr<GuildModel> GuildModel::load(
             impl->batched_prefill = std::make_unique<BatchedPrefill>();
             if (!impl->batched_prefill->init(impl->wt, impl->g, impl->ss, *impl->srcp, *impl->pool,
                 impl->main_stream, error_msg, batch, impl->xcache.valid() ? &impl->xcache : nullptr)) return nullptr;
+            for (const auto& pkg : impl->batched_prefill->bound_package_ids()) {
+                impl->kernel_lease.add_package(pkg);
+            }
             impl->config.prefill_chunk = impl->batched_prefill->batch_size();
             model->config_.prefill_chunk = impl->config.prefill_chunk;
         } else if (batch > 0) {

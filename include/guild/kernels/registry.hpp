@@ -7,8 +7,11 @@
 
 #include <atomic>
 #include <cstdint>
+#include <functional>
+#include <map>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -96,15 +99,35 @@ struct PrefillKernelExtensionV1 {
                                int64_t n, int64_t outputs, int rows, void* stream) = nullptr;
 };
 
+static_assert(sizeof(PrefillKernelExtensionHeader) == sizeof(guild_prefill_ext_header_t),
+              "PrefillKernelExtensionHeader must match C ABI guild_prefill_ext_header_t");
+static_assert(sizeof(PrefillKernelExtensionV1) == sizeof(guild_prefill_kernel_ext_v1_t),
+              "PrefillKernelExtensionV1 must match C ABI guild_prefill_kernel_ext_v1_t");
+
 /// Runtime-only convenience table resolved once during BatchedPrefill::init().
 /// This is not the descriptor payload: direct_fn_table exposes only PrefillKernelTableV1.
 struct ResolvedPrefillKernels : PrefillKernelTableV1 {
     decltype(PrefillKernelExtensionV1::gdn_ab) gdn_ab = nullptr;
     decltype(PrefillKernelExtensionV1::router_projection) router_projection = nullptr;
+    std::vector<std::string> bound_impl_ids;
+    std::vector<std::string> bound_package_ids;
     bool all_bound() const {
         return quantize_q8_1 && mmvq && rms_norm_weighted && gdn_conv &&
                 gdn_recurrence && gdn_out_norm && rope_apply && gdn_ab && router_projection;
     }
+};
+
+/// Value-owning snapshot of a registered kernel operation (safe across concurrent unloads).
+struct KernelOperationSnapshot {
+    guild_op_kind_t op_kind = GUILD_OP_INVALID;
+    std::string op_name;
+    std::string impl_id;
+    std::string package_id;
+    uint32_t impl_version = 0;
+    guild_backend_t backend = GUILD_BACKEND_NONE;
+    int32_t priority = 0;
+    bool enabled = true;
+    int64_t active_package_leases = 0;
 };
 
 /// Registry of built-in and plugin-provided hardware kernel operations.
@@ -125,9 +148,26 @@ public:
     /// Register a plugin via its ABI v1 entry point.
     guild_status_t register_plugin(guild_plugin_entry_fn entry_fn, std::string& err);
 
+    /// Register a plugin transactionally with an optional runner registration callback and metadata verification.
+    guild_status_t register_plugin_transactional(
+        guild_plugin_entry_fn entry_fn,
+        const std::string& expected_package_id,
+        const std::string& expected_version,
+        const std::string& expected_publisher,
+        const std::vector<std::string>& declared_ops,
+        const std::vector<std::string>& declared_runners,
+        std::function<guild_status_t(const guild_runner_desc_v1_t&, std::string&)> runner_commit_fn,
+        std::function<void(const std::string&)> runner_rollback_fn,
+        std::string& err,
+        std::shared_ptr<void> library_keepalive = nullptr);
+
     /// Unregister all operations belonging to `package_id`.
     /// Fails with GUILD_STATUS_ERR_ACTIVE_SESSION_BUSY if any session lease is active.
     guild_status_t unregister_package(const std::string& package_id, std::string& err);
+
+    /// Enable or disable all operations belonging to `package_id` for future selections.
+    void set_package_enabled(const std::string& package_id, bool enabled);
+    bool is_package_enabled(const std::string& package_id) const;
 
     /// Validate that all registered operations have their declared `required_op_deps` present.
     guild_status_t validate_dependencies(std::string& err) const;
@@ -144,15 +184,23 @@ public:
     /// Snapshot of all registered descriptors.
     std::vector<guild_kernel_op_desc_v1_t> list_operations() const;
 
+    /// Value-owning snapshots of all registered operations (safe without holding registry lock).
+    std::vector<KernelOperationSnapshot> list_operation_snapshots() const;
+
     /// Resolve direct function pointers for layer-wise batched prefill once per model init.
     bool resolve_prefill_kernels(const guild_device_capabilities_v1_t& caps,
                                  ResolvedPrefillKernels& out_table,
                                  std::string& err) const;
 
-    /// Active session lease tracking (prevents kernel replacement/removal during active inference).
+    /// Active session & per-package lease tracking (prevents kernel replacement/removal during active inference).
     void acquire_session_lease() const { active_sessions_.fetch_add(1, std::memory_order_acq_rel); }
     void release_session_lease() const { active_sessions_.fetch_sub(1, std::memory_order_acq_rel); }
     int64_t active_sessions() const { return active_sessions_.load(std::memory_order_acquire); }
+
+    void acquire_package_lease(const std::string& package_id, void* device_stream = nullptr) const;
+    void release_package_lease(const std::string& package_id, void* device_stream = nullptr) const;
+    int64_t active_package_leases(const std::string& package_id) const;
+    void synchronize_package_streams(const std::string& package_id) const;
 
 private:
     struct StoredOp {
@@ -162,17 +210,26 @@ private:
         std::string package_id;
         std::vector<std::string> dep_storage;
         std::vector<const char*> dep_ptrs;
+        std::unique_ptr<PrefillKernelTableV1> owned_direct_table;
+        std::vector<uint8_t> owned_ext_bytes;
     };
     struct LoadedPlugin {
         guild_plugin_descriptor_v1_t desc{};
         std::string package_id;
         std::string package_version;
         std::string publisher_id;
+        std::shared_ptr<void> library_keepalive;
+    };
+    struct PackageLeaseEntry {
+        int64_t count = 0;
+        std::set<void*> streams;
     };
 
     mutable std::mutex mutex_;
     std::vector<std::unique_ptr<StoredOp>> ops_;
     std::vector<LoadedPlugin> plugins_;
+    std::set<std::string> disabled_packages_;
+    mutable std::map<std::string, PackageLeaseEntry> package_leases_;
     mutable std::atomic<int64_t> active_sessions_{0};
 };
 
@@ -180,29 +237,61 @@ private:
 class SessionKernelLease {
 public:
     SessionKernelLease() = default;
-    explicit SessionKernelLease(const KernelRegistry* reg) : reg_(reg) {
-        if (reg_) reg_->acquire_session_lease();
+    explicit SessionKernelLease(const KernelRegistry* reg,
+                                std::vector<std::string> package_ids = {},
+                                void* device_stream = nullptr)
+        : reg_(reg), package_ids_(std::move(package_ids)), stream_(device_stream) {
+        if (reg_) {
+            reg_->acquire_session_lease();
+            for (const auto& pkg : package_ids_) {
+                reg_->acquire_package_lease(pkg, stream_);
+            }
+        }
     }
     ~SessionKernelLease() { reset(); }
     SessionKernelLease(const SessionKernelLease&) = delete;
     SessionKernelLease& operator=(const SessionKernelLease&) = delete;
-    SessionKernelLease(SessionKernelLease&& other) noexcept : reg_(other.reg_) { other.reg_ = nullptr; }
+    SessionKernelLease(SessionKernelLease&& other) noexcept
+        : reg_(other.reg_), package_ids_(std::move(other.package_ids_)), stream_(other.stream_) {
+        other.reg_ = nullptr;
+        other.package_ids_.clear();
+        other.stream_ = nullptr;
+    }
     SessionKernelLease& operator=(SessionKernelLease&& other) noexcept {
         if (this != &other) {
             reset();
             reg_ = other.reg_;
+            package_ids_ = std::move(other.package_ids_);
+            stream_ = other.stream_;
             other.reg_ = nullptr;
+            other.package_ids_.clear();
+            other.stream_ = nullptr;
         }
         return *this;
     }
+    void add_package(const std::string& package_id) {
+        if (!reg_ || package_id.empty()) return;
+        for (const auto& existing : package_ids_) {
+            if (existing == package_id) return;
+        }
+        reg_->acquire_package_lease(package_id, stream_);
+        package_ids_.push_back(package_id);
+    }
     void reset() {
         if (reg_) {
+            for (const auto& pkg : package_ids_) {
+                reg_->release_package_lease(pkg, stream_);
+            }
             reg_->release_session_lease();
             reg_ = nullptr;
+            package_ids_.clear();
+            stream_ = nullptr;
         }
     }
 private:
     const KernelRegistry* reg_ = nullptr;
+    std::vector<std::string> package_ids_;
+    void* stream_ = nullptr;
 };
 
 } // namespace guild::kernels

@@ -549,6 +549,15 @@ guild_status_t ModelRunnerRegistry::unregister_runner(const std::string& runner_
         return GUILD_STATUS_ERR_ACTIVE_SESSION_BUSY;
     }
     std::lock_guard<std::mutex> lock(mutex_);
+    for (const auto& r : runners_) {
+        if (runner_id == r->runner_id()) {
+            const auto lit = package_leases_.find(r->package_id());
+            if (lit != package_leases_.end() && lit->second > 0) {
+                err = "cannot unregister model runner '" + runner_id + "' while its package holds active leases";
+                return GUILD_STATUS_ERR_ACTIVE_SESSION_BUSY;
+            }
+        }
+    }
     const size_t before = runners_.size();
     runners_.erase(std::remove_if(runners_.begin(), runners_.end(), [&](const std::unique_ptr<IModelRunner>& r) {
         return runner_id == r->runner_id();
@@ -559,6 +568,57 @@ guild_status_t ModelRunnerRegistry::unregister_runner(const std::string& runner_
     }
     err.clear();
     return GUILD_STATUS_OK;
+}
+
+guild_status_t ModelRunnerRegistry::unregister_package(const std::string& package_id, std::string& err) {
+    if (active_sessions() > 0 || active_package_leases(package_id) > 0) {
+        err = "cannot unregister runner package '" + package_id + "' while active sessions are running";
+        return GUILD_STATUS_ERR_ACTIVE_SESSION_BUSY;
+    }
+    std::lock_guard<std::mutex> lock(mutex_);
+    const size_t before = runners_.size();
+    runners_.erase(std::remove_if(runners_.begin(), runners_.end(), [&](const std::unique_ptr<IModelRunner>& r) {
+        return package_id == r->package_id();
+    }), runners_.end());
+    disabled_packages_.erase(package_id);
+    if (runners_.size() == before) {
+        err = "runner package not found: " + package_id;
+        return GUILD_STATUS_ERR_MISSING_RUNNER;
+    }
+    err.clear();
+    return GUILD_STATUS_OK;
+}
+
+void ModelRunnerRegistry::set_package_enabled(const std::string& package_id, bool enabled) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (enabled) disabled_packages_.erase(package_id);
+    else disabled_packages_.insert(package_id);
+}
+
+bool ModelRunnerRegistry::is_package_enabled(const std::string& package_id) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return disabled_packages_.count(package_id) == 0;
+}
+
+void ModelRunnerRegistry::acquire_package_lease(const std::string& package_id) const {
+    if (package_id.empty()) return;
+    std::lock_guard<std::mutex> lock(mutex_);
+    ++package_leases_[package_id];
+}
+
+void ModelRunnerRegistry::release_package_lease(const std::string& package_id) const {
+    if (package_id.empty()) return;
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = package_leases_.find(package_id);
+    if (it != package_leases_.end()) {
+        if (--it->second <= 0) package_leases_.erase(it);
+    }
+}
+
+int64_t ModelRunnerRegistry::active_package_leases(const std::string& package_id) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const auto it = package_leases_.find(package_id);
+    return it != package_leases_.end() ? it->second : 0;
 }
 
 guild_status_t ModelRunnerRegistry::resolve_for_gguf(const GgufFile& gguf,
@@ -572,6 +632,7 @@ guild_status_t ModelRunnerRegistry::resolve_for_gguf(const GgufFile& gguf,
     }
     std::lock_guard<std::mutex> lock(mutex_);
     for (const auto& r : runners_) {
+        if (disabled_packages_.count(r->package_id()) > 0) continue;
         if (r->matches_gguf(gguf)) {
             if (out_runner) *out_runner = r.get();
             err.clear();
@@ -592,6 +653,7 @@ guild_status_t ModelRunnerRegistry::resolve_by_arch(const std::string& arch_name
     }
     std::lock_guard<std::mutex> lock(mutex_);
     for (const auto& r : runners_) {
+        if (disabled_packages_.count(r->package_id()) > 0) continue;
         if (r->matches_arch_name(arch_name)) {
             if (out_runner) *out_runner = r.get();
             err.clear();
@@ -626,6 +688,7 @@ guild_status_t ModelRunnerRegistry::validate_runner_requirements(const IModelRun
         return GUILD_STATUS_ERR_CAPABILITY_MISMATCH;
     }
     out_exec.resolved_kernel_ids.clear();
+    out_exec.resolved_package_ids.clear();
     out_exec.resolved_kernel_ids.reserve(out_exec.required_ops.size());
     for (guild_op_kind_t op : out_exec.required_ops) {
         kernels::KernelSelectionQuery q;
@@ -638,6 +701,13 @@ guild_status_t ModelRunnerRegistry::validate_runner_requirements(const IModelRun
             return st != GUILD_STATUS_OK ? st : GUILD_STATUS_ERR_MISSING_KERNEL;
         }
         out_exec.resolved_kernel_ids.emplace_back(kdesc->impl_id);
+        if (kdesc->package_id && kdesc->package_id[0]) {
+            const std::string pkg_id = kdesc->package_id;
+            if (std::find(out_exec.resolved_package_ids.begin(), out_exec.resolved_package_ids.end(), pkg_id) ==
+                out_exec.resolved_package_ids.end()) {
+                out_exec.resolved_package_ids.push_back(pkg_id);
+            }
+        }
     }
     err.clear();
     return GUILD_STATUS_OK;
@@ -648,6 +718,34 @@ std::vector<guild_runner_desc_v1_t> ModelRunnerRegistry::list_runners() const {
     std::vector<guild_runner_desc_v1_t> out;
     out.reserve(runners_.size());
     for (const auto& r : runners_) out.push_back(r->abi_descriptor());
+    return out;
+}
+
+std::vector<RunnerInfoSnapshot> ModelRunnerRegistry::list_runner_snapshots() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::vector<RunnerInfoSnapshot> out;
+    out.reserve(runners_.size());
+    for (const auto& r : runners_) {
+        const auto d = r->abi_descriptor();
+        RunnerInfoSnapshot snap;
+        snap.runner_id = r->runner_id();
+        snap.arch_id = r->arch_id();
+        snap.package_id = r->package_id();
+        snap.runner_version = r->runner_version();
+        snap.required_core_caps = d.required_core_caps;
+        if (d.required_op_kinds && d.n_required_op_kinds > 0) {
+            snap.required_ops.assign(d.required_op_kinds, d.required_op_kinds + d.n_required_op_kinds);
+        }
+        if (d.required_package_deps && d.n_required_package_deps > 0) {
+            for (size_t i = 0; i < d.n_required_package_deps; ++i) {
+                if (d.required_package_deps[i]) snap.required_package_deps.emplace_back(d.required_package_deps[i]);
+            }
+        }
+        snap.enabled = disabled_packages_.count(snap.package_id) == 0;
+        const auto lit = package_leases_.find(snap.package_id);
+        snap.active_package_leases = (lit != package_leases_.end()) ? lit->second : 0;
+        out.push_back(std::move(snap));
+    }
     return out;
 }
 

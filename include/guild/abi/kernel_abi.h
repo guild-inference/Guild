@@ -25,14 +25,29 @@ extern "C" {
 #define GUILD_KERNEL_ABI_VERSION_PATCH 0u
 
 #define GUILD_KERNEL_ABI_MAKE_VERSION(major, minor, patch) \
-    ((((uint32_t)(major) & 0xFFu) << 24) | (((uint32_t)(minor) & 0xFFF0u) << 8) | (((uint32_t)(minor) & 0xFFFu) << 12) | ((uint32_t)(patch) & 0xFFFu))
+    ((((uint32_t)(major) & 0xFFu) << 24) | (((uint32_t)(minor) & 0xFFFu) << 12) | ((uint32_t)(patch) & 0xFFFu))
 
 #define GUILD_KERNEL_ABI_VERSION_MAJOR_OF(v) (((uint32_t)(v) >> 24) & 0xFFu)
 #define GUILD_KERNEL_ABI_VERSION_MINOR_OF(v) (((uint32_t)(v) >> 12) & 0xFFFu)
 #define GUILD_KERNEL_ABI_VERSION_PATCH_OF(v) ((uint32_t)(v) & 0xFFFu)
 
+#define GUILD_MAKE_ABI_VERSION(major, minor, patch) GUILD_KERNEL_ABI_MAKE_VERSION(major, minor, patch)
+#define GUILD_ABI_VERSION_MAJOR(v) GUILD_KERNEL_ABI_VERSION_MAJOR_OF(v)
+#define GUILD_ABI_VERSION_MINOR(v) GUILD_KERNEL_ABI_VERSION_MINOR_OF(v)
+#define GUILD_ABI_VERSION_PATCH(v) GUILD_KERNEL_ABI_VERSION_PATCH_OF(v)
+
 #define GUILD_KERNEL_ABI_VERSION_V1 \
     GUILD_KERNEL_ABI_MAKE_VERSION(GUILD_KERNEL_ABI_VERSION_MAJOR, GUILD_KERNEL_ABI_VERSION_MINOR, GUILD_KERNEL_ABI_VERSION_PATCH)
+
+#define GUILD_PLUGIN_ENTRY_SYMBOL_V1 "guild_plugin_entry_v1"
+
+#if defined(_WIN32) || defined(__CYGW32__)
+#define GUILD_PLUGIN_EXPORT __declspec(dllexport)
+#elif defined(__GNUC__) || defined(__clang__)
+#define GUILD_PLUGIN_EXPORT __attribute__((visibility("default")))
+#else
+#define GUILD_PLUGIN_EXPORT
+#endif
 
 // =============================================================================
 // 2. Status & Error Propagation
@@ -372,6 +387,24 @@ typedef struct guild_kernel_op_desc_v1_s {
     const void* direct_fn_table; // Optional pre-bound fast-path function pointer table
     const void* next_ext;
 } guild_kernel_op_desc_v1_t;
+
+// Tagged extension payload for prefill projection fast paths (GDN A/B and MoE router).
+#define GUILD_PREFILL_KERNEL_EXT_TAG_V1 0x50464b45u // "PFKE"
+#define GUILD_PREFILL_KERNEL_EXT_VERSION_V1 1u
+
+typedef struct guild_prefill_ext_header_s {
+    uint32_t struct_size;
+    uint32_t tag;
+    uint32_t version;
+} guild_prefill_ext_header_t;
+
+typedef struct guild_prefill_kernel_ext_v1_s {
+    guild_prefill_ext_header_t header;
+    void (*gdn_ab)(const float* x, const uint16_t* wa, const uint16_t* wb, const float* dt, const float* a,
+                   float* gate, float* beta, int n, int heads, int rows, void* stream);
+    void (*router_projection)(const float* x, const uint16_t* w, float* y,
+                              int64_t n, int64_t outputs, int rows, void* stream);
+} guild_prefill_kernel_ext_v1_t;
 
 // =============================================================================
 // 8. Model Architecture Runner ABI v1

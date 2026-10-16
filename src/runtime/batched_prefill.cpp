@@ -122,6 +122,8 @@ void BatchedPrefill::set_batch_size(int64_t n) {
     if (n<1 || n>impl_->capacity) throw std::invalid_argument("prefill batch exceeds allocated capacity");
     batch_size_=n;
 }
+const std::vector<std::string>& BatchedPrefill::bound_impl_ids() const { return impl_->fns.bound_impl_ids; }
+const std::vector<std::string>& BatchedPrefill::bound_package_ids() const { return impl_->fns.bound_package_ids; }
 
 bool BatchedPrefill::init(const core::WeightTable& wt,const core::ModelGeometry& g,core::SessionState& ss,
                          core::ExpertSource& src,kernels::cpu::ExpertPool& pool,void* stream,

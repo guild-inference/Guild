@@ -7,13 +7,19 @@
 #include "guild/model/runner.hpp"
 
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <limits>
 #include <memory>
+#include <thread>
 #include <vector>
+
+#if !defined(_WIN32)
+#include <dlfcn.h>
+#endif
 
 namespace fs = std::filesystem;
 using namespace guild;
@@ -152,7 +158,7 @@ int main() {
     std::string err;
 
     // -------------------------------------------------------------------------
-    // 1. ABI Version Negotiation
+    // 1. ABI Version Negotiation & Bit-Packing
     // -------------------------------------------------------------------------
     {
         uint32_t negotiated = 0;
@@ -161,6 +167,12 @@ int main() {
         CHECK(kernels::negotiate_abi_version(GUILD_KERNEL_ABI_MAKE_VERSION(2, 0, 0), &negotiated) == GUILD_STATUS_ERR_ABI_MISMATCH);
         CHECK(kernels::negotiate_abi_version(GUILD_KERNEL_ABI_MAKE_VERSION(0, 9, 0), &negotiated) == GUILD_STATUS_ERR_ABI_MISMATCH);
         CHECK(kernels::negotiate_abi_version(GUILD_KERNEL_ABI_MAKE_VERSION(1, 5, 0), &negotiated) == GUILD_STATUS_ERR_ABI_MISMATCH);
+
+        // Verify 8/12/12 bit-packing across minor >= 16 and aliases
+        const uint32_t v_test = GUILD_MAKE_ABI_VERSION(1, 25, 7);
+        CHECK(GUILD_ABI_VERSION_MAJOR(v_test) == 1u);
+        CHECK(GUILD_ABI_VERSION_MINOR(v_test) == 25u);
+        CHECK(GUILD_ABI_VERSION_PATCH(v_test) == 7u);
     }
 
     // -------------------------------------------------------------------------
@@ -547,9 +559,42 @@ int main() {
     }
 
     // -------------------------------------------------------------------------
-    // 5. Declarative .gkmetadata Parsing, Security Policy, Dependency Graph & GEXEC Lock
+    // 5. RFC 8032 Ed25519 Cryptographic Signatures, Declarative .gkmetadata,
+    //    Three-Tier (.gkmodule) Boundary, Hardened Staging & GEXEC Lock
     // -------------------------------------------------------------------------
     {
+        // 5a. Official RFC 8032 Section 7.1 Ed25519 Test Vectors
+        {
+            // Test Vector 1 (empty message)
+            const std::string tv1_seed = "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60";
+            const std::string tv1_pub  = "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a";
+            const std::string tv1_sig  = "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e06522490155"
+                                         "5fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b";
+            abi::crypto::Ed25519KeyPair kp1;
+            CHECK(abi::crypto::ed25519_keypair_from_seed_hex(tv1_seed, kp1));
+            CHECK(kp1.public_key_hex == tv1_pub);
+            std::string sig1_out;
+            CHECK(abi::crypto::ed25519_sign_hex("", tv1_seed, sig1_out));
+            CHECK(sig1_out == tv1_sig);
+            CHECK(abi::crypto::ed25519_verify_hex("", tv1_sig, tv1_pub));
+            CHECK(!abi::crypto::ed25519_verify_hex("a", tv1_sig, tv1_pub));
+
+            // Test Vector 2 (1-byte message 0x72)
+            const std::string tv2_seed = "4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb";
+            const std::string tv2_pub  = "3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c";
+            const std::string tv2_sig  = "92a009a9f0d4cab8720e820b5f642540a2b27b5416503f8fb3762223ebdb69da"
+                                         "085ac1e43e15996e458f3613d0f11d8c387b2eaeb4302aeeb00d291612bb0c00";
+            std::string sig2_out;
+            const std::string msg2(1, '\x72');
+            CHECK(abi::crypto::ed25519_sign_hex(msg2, tv2_seed, sig2_out));
+            CHECK(sig2_out == tv2_sig);
+            CHECK(abi::crypto::ed25519_verify_hex(msg2, tv2_sig, tv2_pub));
+
+            // Non-canonical S >= L (all 0xFF in S[32..63]) must be rejected
+            std::string bad_s_sig = tv1_sig.substr(0, 64) + std::string(64, 'f');
+            CHECK(!abi::crypto::ed25519_verify_hex("", bad_s_sig, tv1_pub));
+        }
+
         const fs::path temp_dir = fs::temp_directory_path() / "guild_gkernel_test";
         fs::remove_all(temp_dir);
         fs::create_directories(temp_dir / "lib");
@@ -560,11 +605,10 @@ int main() {
             f.write(dummy_so.data(), static_cast<std::streamsize>(dummy_so.size()));
         }
         const std::string art_sha = models::Sha256::hash_string(dummy_so);
-        const std::string sig_hex(128, 'a');
-        const std::string payload_sha(64, 'b');
 
         const std::string valid_json = R"({
           "format_version": 1,
+          "package_kind": "gkernel",
           "package_id": "guild-kernels-ornith",
           "scope": "hybrid",
           "version": "1.2.0",
@@ -580,14 +624,17 @@ int main() {
           "provided_runners": ["runner.qwen35moe.v1"],
           "required_ops": [],
           "dependencies": [],
+          "module_dependencies": [
+            { "module_id": "guild-math-simd", "min_version": "1.0.0", "abi_tag": "avx2", "publisher_id": "org.illatio.guild", "sha256": ")" + art_sha + R"(" }
+          ],
           "artifacts": [
             { "path": "lib/libguild_ornith_ext.so", "sha256": ")" + art_sha + R"(", "byte_size": )" + std::to_string(dummy_so.size()) + R"( }
           ],
           "signature": {
             "algorithm": "ed25519",
             "key_id": "illatio-release-2026-01",
-            "signature_hex": ")" + sig_hex + R"(",
-            "payload_sha256": ")" + payload_sha + R"("
+            "signature_hex": ")" + std::string(128, 'a') + R"(",
+            "payload_sha256": ")" + std::string(64, 'b') + R"("
           },
           "provenance": {
             "spdx_license": "MIT",
@@ -598,6 +645,7 @@ int main() {
 
         abi::GKernelMetadata meta;
         CHECK(abi::GKernelMetadata::parse_json(valid_json, meta, err) == GUILD_STATUS_OK);
+        CHECK(meta.module_dependencies.size() == 1 && meta.module_dependencies[0].module_id == "guild-math-simd");
 
         guild_device_capabilities_v1_t host_caps{};
         host_caps.struct_size = sizeof(host_caps);
@@ -610,19 +658,62 @@ int main() {
         // Untrusted publisher rejected first
         CHECK(abi::validate_gkernel_package(meta, policy, host_caps, temp_dir.string(), err) == GUILD_STATUS_ERR_SECURITY_VIOLATION);
 
-        // Trust publisher key -> passes validation and on-disk SHA-256 verification
+        // Trust publisher key, but fake 'aaaa...' signature must still be rejected by real Ed25519 verification!
         policy.trust_publisher_key("org.illatio.guild", "illatio-release-2026-01");
+        CHECK(abi::validate_gkernel_package(meta, policy, host_caps, temp_dir.string(), err) == GUILD_STATUS_ERR_SECURITY_VIOLATION);
+
+        // Now sign with the real Ed25519 private seed -> passes cryptographic signature + on-disk SHA-256 verification
+        CHECK(meta.sign_with_seed_hex("illatio-release-2026-01", abi::kOfficialGuildDevSeedHex, err));
         CHECK(abi::validate_gkernel_package(meta, policy, host_caps, temp_dir.string(), err) == GUILD_STATUS_OK);
+
+        // Tamper with any manifest field after signing -> rejected because payload_sha256 / Ed25519 signature mismatches
+        abi::GKernelMetadata tampered_ver = meta;
+        tampered_ver.version = "1.2.1";
+        CHECK(abi::validate_gkernel_package(tampered_ver, policy, host_caps, temp_dir.string(), err) == GUILD_STATUS_ERR_SECURITY_VIOLATION);
+
+        // Tamper with signature bit -> rejected by Ed25519 verifier
+        abi::GKernelMetadata tampered_sig = meta;
+        tampered_sig.signature.signature_hex[0] = (tampered_sig.signature.signature_hex[0] == '0') ? '1' : '0';
+        CHECK(abi::validate_gkernel_package(tampered_sig, policy, host_caps, temp_dir.string(), err) == GUILD_STATUS_ERR_SECURITY_VIOLATION);
 
         // Tamper with artifact hash -> rejected
         abi::GKernelMetadata tampered = meta;
         tampered.artifacts[0].sha256 = std::string(64, '0');
         CHECK(abi::validate_gkernel_package(tampered, policy, host_caps, temp_dir.string(), err) == GUILD_STATUS_ERR_SECURITY_VIOLATION);
 
+        // Tamper with artifact file on disk after signing -> rejected
+        {
+            std::ofstream f(temp_dir / "lib" / "libguild_ornith_ext.so", std::ios::binary | std::ios::app);
+            f.put('X');
+        }
+        CHECK(abi::validate_gkernel_package(meta, policy, host_caps, temp_dir.string(), err) == GUILD_STATUS_ERR_SECURITY_VIOLATION);
+        // Restore valid artifact file
+        {
+            std::ofstream f(temp_dir / "lib" / "libguild_ornith_ext.so", std::ios::binary | std::ios::trunc);
+            f.write(dummy_so.data(), static_cast<std::streamsize>(dummy_so.size()));
+        }
+        CHECK(abi::validate_gkernel_package(meta, policy, host_caps, temp_dir.string(), err) == GUILD_STATUS_OK);
+
+        // .gkmodule packages cannot be directly loaded/validated as executable plugins by Guild Core
+        abi::GKernelMetadata gkmod = meta;
+        gkmod.package_kind = "gkmodule";
+        CHECK(gkmod.sign_with_seed_hex("illatio-release-2026-01", abi::kOfficialGuildDevSeedHex, err));
+        CHECK(abi::validate_gkernel_package(gkmod, policy, host_caps, temp_dir.string(), err) == GUILD_STATUS_ERR_INVALID_ARGUMENT);
+
         // Revoke signing key -> rejected
         abi::PackageSecurityPolicy revoked_key_policy = policy;
         revoked_key_policy.revoke_key("illatio-release-2026-01");
         CHECK(abi::validate_gkernel_package(meta, revoked_key_policy, host_caps, temp_dir.string(), err) == GUILD_STATUS_ERR_SECURITY_VIOLATION);
+
+        // Revoke publisher -> rejected
+        abi::PackageSecurityPolicy revoked_pub_policy = policy;
+        revoked_pub_policy.revoke_publisher("org.illatio.guild");
+        CHECK(abi::validate_gkernel_package(meta, revoked_pub_policy, host_caps, temp_dir.string(), err) == GUILD_STATUS_ERR_SECURITY_VIOLATION);
+
+        // Revoke release -> rejected
+        abi::PackageSecurityPolicy revoked_rel_policy = policy;
+        revoked_rel_policy.revoke_release("guild-kernels-ornith", "1.2.0");
+        CHECK(abi::validate_gkernel_package(meta, revoked_rel_policy, host_caps, temp_dir.string(), err) == GUILD_STATUS_ERR_SECURITY_VIOLATION);
 
         // Forbidden install_script hook -> rejected during parse without executing anything
         const std::string script_json = R"({
@@ -637,13 +728,53 @@ int main() {
         abi::GKernelMetadata bad_meta;
         CHECK(abi::GKernelMetadata::parse_json(script_json, bad_meta, err) == GUILD_STATUS_ERR_SECURITY_VIOLATION);
 
+        // Unknown top-level key -> rejected during parse
+        const std::string unknown_key_json = R"({
+          "format_version": 1,
+          "package_id": "unknown-key-pkg",
+          "scope": "cpu-kernels",
+          "version": "1.0.0",
+          "publisher_id": "org.illatio.guild",
+          "unexpected_field": 123,
+          "kernel_abi": { "major": 1, "minor_min": 0, "minor_max": 0 }
+        })";
+        CHECK(abi::GKernelMetadata::parse_json(unknown_key_json, bad_meta, err) == GUILD_STATUS_ERR_INVALID_ARGUMENT);
+
+        // Unsupported format_version -> rejected with ABI_MISMATCH
+        const std::string future_fmt_json = R"({
+          "format_version": 2,
+          "package_id": "future-pkg",
+          "scope": "cpu-kernels",
+          "version": "1.0.0",
+          "publisher_id": "org.illatio.guild",
+          "kernel_abi": { "major": 1, "minor_min": 0, "minor_max": 0 }
+        })";
+        CHECK(abi::GKernelMetadata::parse_json(future_fmt_json, bad_meta, err) == GUILD_STATUS_ERR_ABI_MISMATCH);
+
+        // Duplicate artifact path in .gkmetadata -> rejected with SECURITY_VIOLATION
+        const std::string dup_art_json = R"({
+          "format_version": 1,
+          "package_id": "dup-art-pkg",
+          "scope": "cpu-kernels",
+          "version": "1.0.0",
+          "publisher_id": "org.illatio.guild",
+          "kernel_abi": { "major": 1, "minor_min": 0, "minor_max": 0 },
+          "artifacts": [
+            { "path": "lib/a.so", "sha256": ")" + art_sha + R"(", "byte_size": 27 },
+            { "path": "lib/a.so", "sha256": ")" + art_sha + R"(", "byte_size": 27 }
+          ]
+        })";
+        CHECK(abi::GKernelMetadata::parse_json(dup_art_json, bad_meta, err) == GUILD_STATUS_ERR_SECURITY_VIOLATION);
+
         // Dependency graph cycle detection
         abi::GKernelMetadata pkg_a = meta;
         pkg_a.package_id = "pkg-a";
-        pkg_a.dependencies = {{"pkg-b", "1.0.0", "org.illatio.guild"}};
+        pkg_a.dependencies = {{"pkg-b", "1.0.0", "org.illatio.guild", ""}};
+        CHECK(pkg_a.sign_with_seed_hex("illatio-release-2026-01", abi::kOfficialGuildDevSeedHex, err));
         abi::GKernelMetadata pkg_b = meta;
         pkg_b.package_id = "pkg-b";
-        pkg_b.dependencies = {{"pkg-a", "1.0.0", "org.illatio.guild"}};
+        pkg_b.dependencies = {{"pkg-a", "1.0.0", "org.illatio.guild", ""}};
+        CHECK(pkg_b.sign_with_seed_hex("illatio-release-2026-01", abi::kOfficialGuildDevSeedHex, err));
         CHECK(abi::validate_package_dependency_graph({pkg_a, pkg_b}, policy, host_caps, err) == GUILD_STATUS_ERR_DEPENDENCY_MISSING);
 
         // GEXEC lock verification
@@ -662,7 +793,67 @@ int main() {
         newer_meta.version = "1.3.0";
         CHECK(abi::verify_gexec_kernel_lock(lock, newer_meta, *op_desc, err) == GUILD_STATUS_ERR_CAPABILITY_MISMATCH);
 
+        // 5b. Archive Bundling & Hardened Staging Security Tests (Symlink, Path Traversal, Undeclared .so, Zip Bomb)
+        {
+            std::ofstream mf(temp_dir / ".gkmetadata", std::ios::binary | std::ios::trunc);
+            const std::string m_str = meta.to_json_string();
+            mf.write(m_str.data(), static_cast<std::streamsize>(m_str.size()));
+        }
+        const fs::path bundle_path = temp_dir.parent_path() / "guild_test_pkg.gkernel";
+        const fs::path stage_out = temp_dir.parent_path() / "guild_test_stage";
+        CHECK(abi::create_gkernel_bundle(temp_dir.string(), bundle_path.string(), err) == GUILD_STATUS_OK);
+        abi::GKernelMetadata staged_meta;
+        CHECK(abi::stage_gkernel_source(bundle_path.string(), stage_out.string(), staged_meta, err) == GUILD_STATUS_OK);
+        CHECK(abi::validate_gkernel_package(staged_meta, policy, host_caps, stage_out.string(), err) == GUILD_STATUS_OK);
+
+        // Zip/archive bomb budget check (max_total_bytes = 8 bytes < actual payload)
+        CHECK(abi::stage_gkernel_source(bundle_path.string(), stage_out.string(), staged_meta, err, 8, 64) == GUILD_STATUS_ERR_SECURITY_VIOLATION);
+
+        // Max entries budget check (max_entries = 1 < 2 entries)
+        CHECK(abi::stage_gkernel_source(bundle_path.string(), stage_out.string(), staged_meta, err, 1024 * 1024, 1) == GUILD_STATUS_ERR_SECURITY_VIOLATION);
+
+        // Undeclared shared library in package directory -> rejected
+        {
+            std::ofstream extra_so(temp_dir / "lib" / "undeclared_evil.so", std::ios::binary);
+            extra_so << "UNDECLARED_SO";
+        }
+        CHECK(abi::stage_gkernel_source(temp_dir.string(), stage_out.string(), staged_meta, err) == GUILD_STATUS_ERR_SECURITY_VIOLATION);
+        fs::remove(temp_dir / "lib" / "undeclared_evil.so");
+
+#if !defined(_WIN32)
+        // Symlink inside package directory -> rejected
+        std::error_code sym_ec;
+        fs::create_symlink("/etc/hosts", temp_dir / "lib" / "symlink_evil.txt", sym_ec);
+        if (!sym_ec) {
+            CHECK(abi::stage_gkernel_source(temp_dir.string(), stage_out.string(), staged_meta, err) == GUILD_STATUS_ERR_SECURITY_VIOLATION);
+            fs::remove(temp_dir / "lib" / "symlink_evil.txt", sym_ec);
+        }
+#endif
+
+        // Malicious GKPK archive with "../escape.so" path traversal -> rejected before writing outside staging
+        {
+            const fs::path evil_archive = temp_dir.parent_path() / "evil_traversal.gkernel";
+            std::ofstream out(evil_archive, std::ios::binary | std::ios::trunc);
+            const char magic[8] = {'G', 'K', 'P', 'K', 1, 0, 0, 0};
+            out.write(magic, 8);
+            const uint32_t count = 1;
+            out.write(reinterpret_cast<const char*>(&count), 4);
+            const std::string evil_path = "../escaped_file.so";
+            const uint32_t plen = static_cast<uint32_t>(evil_path.size());
+            out.write(reinterpret_cast<const char*>(&plen), 4);
+            out.write(evil_path.data(), plen);
+            const uint64_t fsize = 4;
+            out.write(reinterpret_cast<const char*>(&fsize), 8);
+            out.write("EVIL", 4);
+            out.close();
+            CHECK(abi::stage_gkernel_source(evil_archive.string(), stage_out.string(), staged_meta, err) == GUILD_STATUS_ERR_SECURITY_VIOLATION);
+            CHECK(!fs::exists(stage_out.parent_path() / "escaped_file.so"));
+            fs::remove(evil_archive);
+        }
+
         fs::remove_all(temp_dir);
+        fs::remove_all(stage_out);
+        fs::remove(bundle_path);
     }
 
 #if defined(GUILD_ENABLE_CUDA) || defined(GUILD_ENABLE_HIP)
@@ -722,6 +913,244 @@ int main() {
     }
 #endif
 
-    std::cout << "modular_abi_test: ABI v1, runner registry, kernel registry, .gkmetadata security, and GEXEC lock PASS\n";
+#if !defined(_WIN32) && defined(GUILD_TEST_EXT_PREFILL_SO) && defined(GUILD_TEST_EXT_RUNNER_SO)
+    // -------------------------------------------------------------------------
+    // 7. Dynamic Shared Library .gkernel Loading (dlopen), Transactional
+    //    Registration, Per-Package Leases, Concurrency, Upgrade/Rollback & CLI
+    // -------------------------------------------------------------------------
+    {
+        const fs::path pkg_work = fs::temp_directory_path() / "guild_dyn_plugin_test";
+        fs::remove_all(pkg_work);
+        fs::create_directories(pkg_work / "store");
+
+        auto build_signed_pkg = [&](const std::string& pkg_id,
+                                    const std::string& ver,
+                                    const std::string& scope,
+                                    const std::string& so_src_path,
+                                    const std::string& so_rel_name,
+                                    const std::vector<std::string>& ops,
+                                    const std::vector<std::string>& runners,
+                                    const fs::path& out_dir,
+                                    const fs::path& out_bundle) {
+            fs::remove_all(out_dir);
+            fs::create_directories(out_dir / "lib");
+            const fs::path dst_so = out_dir / "lib" / so_rel_name;
+            fs::copy_file(so_src_path, dst_so, fs::copy_options::overwrite_existing);
+
+            abi::GKernelMetadata m;
+            m.format_version = 1;
+            m.package_kind = "gkernel";
+            m.package_id = pkg_id;
+            m.scope = scope;
+            m.version = ver;
+            m.publisher_id = abi::kOfficialGuildPublisherId;
+            m.entrypoint_symbol = GUILD_PLUGIN_ENTRY_SYMBOL_V1;
+            m.library_path = "lib/" + so_rel_name;
+            m.abi_major = 1;
+            m.abi_minor_min = 0;
+            m.abi_minor_max = 0;
+            m.supported_backends = GUILD_BACKEND_CPU | GUILD_BACKEND_CUDA;
+            m.provided_ops = ops;
+            m.provided_runners = runners;
+            abi::ArtifactHashEntry art;
+            art.relative_path = "lib/" + so_rel_name;
+            art.byte_size = fs::file_size(dst_so);
+            art.sha256 = models::Sha256::hash_file(dst_so.string());
+            art.role = "shared_library";
+            m.artifacts.push_back(art);
+            m.provenance.spdx_license = "MIT";
+            m.provenance.source_repo = "https://github.com/guild-inference/Guild";
+            m.provenance.source_revision = "9d77159000000000000000000000000000000000";
+
+            std::string sign_err;
+            CHECK(m.sign_with_seed_hex(abi::kOfficialGuildReleaseKeyId, abi::kOfficialGuildDevSeedHex, sign_err));
+            {
+                std::ofstream mf(out_dir / ".gkmetadata", std::ios::binary | std::ios::trunc);
+                const std::string j = m.to_json_string();
+                mf.write(j.data(), static_cast<std::streamsize>(j.size()));
+            }
+            if (!out_bundle.empty()) {
+                CHECK(abi::create_gkernel_bundle(out_dir.string(), out_bundle.string(), sign_err) == GUILD_STATUS_OK);
+            }
+        };
+
+        std::vector<std::string> prefill_ops = {"ext.cpu.finite_check.v1"};
+#if defined(GUILD_ENABLE_CUDA)
+        prefill_ops.push_back("ext.cuda.moe.router_topk_bf16");
+#endif
+        const fs::path pkg_v10_dir = pkg_work / "src_prefill_v10";
+        const fs::path pkg_v10_bundle = pkg_work / "ornith_prefill_v10.gkernel";
+        build_signed_pkg("ext.guild-kernels-ornith-prefill", "1.0.0", "hybrid",
+                         GUILD_TEST_EXT_PREFILL_SO, "libguild_ext_ornith_prefill.so",
+                         prefill_ops, {}, pkg_v10_dir, pkg_v10_bundle);
+
+        const fs::path pkg_v11_dir = pkg_work / "src_prefill_v11";
+        const fs::path pkg_v11_bundle = pkg_work / "ornith_prefill_v11.gkernel";
+        build_signed_pkg("ext.guild-kernels-ornith-prefill", "1.1.0", "hybrid",
+                         GUILD_TEST_EXT_PREFILL_V11_SO, "libguild_ext_ornith_prefill_v11.so",
+                         prefill_ops, {}, pkg_v11_dir, pkg_v11_bundle);
+
+        const fs::path runner_dir = pkg_work / "src_runner_smoke";
+        const fs::path runner_bundle = pkg_work / "runner_smoke.gkernel";
+        build_signed_pkg("ext.guild-runner-smoke", "1.0.0", "runner",
+                         GUILD_TEST_EXT_RUNNER_SO, "libguild_ext_runner_smoke.so",
+                         {}, {"runner.ornith_ext_smoke.v1"}, runner_dir, runner_bundle);
+
+        // Isolated registries and package manager
+        kernels::KernelRegistry iso_kreg;
+        iso_kreg.register_builtin_kernels();
+        model::ModelRunnerRegistry iso_rreg;
+        iso_rreg.register_builtin_runners();
+        abi::GKernelPackageManager mgr((pkg_work / "store").string(), &iso_kreg, &iso_rreg);
+        CHECK(mgr.init(err));
+
+        // 7a. Transactional rollback test: if .gkmetadata declares an extra op that the plugin does not register,
+        // installation must fail AND roll back all partial registrations from the plugin!
+        {
+            const fs::path bad_decl_dir = pkg_work / "src_bad_decl";
+            const fs::path bad_decl_bundle = pkg_work / "bad_decl.gkernel";
+            auto bad_ops = prefill_ops;
+            bad_ops.push_back("ext.nonexistent.declared.op");
+            build_signed_pkg("ext.guild-kernels-ornith-prefill", "1.0.0", "hybrid",
+                             GUILD_TEST_EXT_PREFILL_SO, "libguild_ext_ornith_prefill.so",
+                             bad_ops, {}, bad_decl_dir, bad_decl_bundle);
+            CHECK(mgr.install_package(bad_decl_bundle.string(), true, err) == GUILD_STATUS_ERR_MISSING_KERNEL);
+            // Verify transactional rollback: ext.cpu.finite_check.v1 was NOT left behind in iso_kreg
+            CHECK(iso_kreg.find_by_id("ext.cpu.finite_check.v1") == nullptr);
+        }
+
+        // 7b. Install valid v1.0.0 kernel bundle and runner smoke bundle
+        CHECK(mgr.install_package(pkg_v10_bundle.string(), true, err) == GUILD_STATUS_OK);
+        CHECK(mgr.install_package(runner_bundle.string(), true, err) == GUILD_STATUS_OK);
+
+        // Verify external runner is resolved
+        const model::IModelRunner* smoke_runner = nullptr;
+        CHECK(iso_rreg.resolve_by_arch("ornith_ext_smoke", &smoke_runner, err) == GUILD_STATUS_OK && smoke_runner != nullptr);
+        CHECK(std::strcmp(smoke_runner->runner_id(), "runner.ornith_ext_smoke.v1") == 0);
+        const auto r_abi = smoke_runner->abi_descriptor();
+        CHECK(r_abi.session_alloc != nullptr && r_abi.session_free != nullptr);
+        guild_session_state_handle_t smoke_state = nullptr;
+        CHECK(r_abi.session_alloc(nullptr, 4096, &smoke_state, nullptr) == GUILD_STATUS_OK && smoke_state != nullptr);
+        r_abi.session_free(smoke_state);
+
+        // Verify external kernel is selected over built-in cpu.finite_check.simd64 (priority 250 > 100)
+        const auto host_caps = kernels::query_host_device_capabilities();
+        kernels::KernelSelectionQuery fq;
+        fq.op_kind = GUILD_OP_FINITE_CHECK;
+        fq.allowed_backends = GUILD_BACKEND_CPU;
+        const guild_kernel_op_desc_v1_t* sel_finite = nullptr;
+        CHECK(iso_kreg.select(fq, host_caps, &sel_finite, err) == GUILD_STATUS_OK && sel_finite != nullptr);
+        CHECK(std::strcmp(sel_finite->impl_id, "ext.cpu.finite_check.v1") == 0);
+        CHECK(sel_finite->impl_version == GUILD_KERNEL_ABI_MAKE_VERSION(1, 0, 0));
+
+        // Execute the external plugin's finite_check kernel on real data and on NaN data
+        alignas(64) float ok_vals[16] = {1.0f, 2.0f, -3.5f, 4.25f};
+        guild_tensor_desc_t t_ok{};
+        t_ok.struct_size = sizeof(t_ok);
+        t_ok.dtype = GUILD_DTYPE_F32;
+        t_ok.n_dims = 1;
+        t_ok.dims[0] = 16;
+        t_ok.buffer.struct_size = sizeof(t_ok.buffer);
+        t_ok.buffer.data = ok_vals;
+        t_ok.buffer.byte_size = sizeof(ok_vals);
+        t_ok.buffer.alignment = 32;
+        t_ok.buffer.memory_space = GUILD_MEM_HOST_PAGEABLE;
+        t_ok.buffer.ownership = GUILD_OWNERSHIP_CORE_BORROWED;
+        t_ok.buffer.lifetime = GUILD_LIFETIME_CALL_SYNC;
+        guild_error_info_t einfo{};
+        CHECK(sel_finite->execute(nullptr, &t_ok, 1, nullptr, 0, nullptr, 0, &einfo) == GUILD_STATUS_OK);
+        ok_vals[9] = std::numeric_limits<float>::infinity();
+        CHECK(sel_finite->execute(nullptr, &t_ok, 1, nullptr, 0, nullptr, 0, &einfo) == GUILD_STATUS_ERR_NONFINITE_OUTPUT);
+
+#if defined(GUILD_ENABLE_CUDA)
+        if (host_caps.gpu_device_count > 0) {
+            kernels::ResolvedPrefillKernels pf_table{};
+            CHECK(iso_kreg.resolve_prefill_kernels(host_caps, pf_table, err));
+            CHECK(pf_table.all_bound());
+            CHECK(std::find(pf_table.bound_impl_ids.begin(), pf_table.bound_impl_ids.end(),
+                            "ext.cuda.moe.router_topk_bf16") != pf_table.bound_impl_ids.end());
+            CHECK(std::find(pf_table.bound_package_ids.begin(), pf_table.bound_package_ids.end(),
+                            "ext.guild-kernels-ornith-prefill") != pf_table.bound_package_ids.end());
+        }
+#endif
+
+        // 7c. Active per-package lease protection & 8-thread concurrency stress test
+        {
+            kernels::SessionKernelLease pkg_lease(&iso_kreg, {"ext.guild-kernels-ornith-prefill"});
+            CHECK(iso_kreg.active_package_leases("ext.guild-kernels-ornith-prefill") == 1);
+            CHECK(mgr.disable_package("ext.guild-kernels-ornith-prefill", err) == GUILD_STATUS_ERR_ACTIVE_SESSION_BUSY);
+            CHECK(mgr.remove_package("ext.guild-kernels-ornith-prefill", err) == GUILD_STATUS_ERR_ACTIVE_SESSION_BUSY);
+
+            std::atomic<bool> stop_threads{false};
+            std::vector<std::thread> workers;
+            for (int w = 0; w < 8; ++w) {
+                workers.emplace_back([&, w]() {
+                    alignas(64) float local_vals[16] = {1.0f, static_cast<float>(w)};
+                    guild_tensor_desc_t tl = t_ok;
+                    tl.buffer.data = local_vals;
+                    for (int iter = 0; iter < 50 && !stop_threads.load(std::memory_order_relaxed); ++iter) {
+                        const guild_kernel_op_desc_v1_t* d = nullptr;
+                        std::string lerr;
+                        CHECK(iso_kreg.select(fq, host_caps, &d, lerr) == GUILD_STATUS_OK && d != nullptr);
+                        guild_error_info_t le{};
+                        CHECK(d->execute(nullptr, &tl, 1, nullptr, 0, nullptr, 0, &le) == GUILD_STATUS_OK);
+                        auto snaps = iso_kreg.list_operation_snapshots();
+                        CHECK(!snaps.empty());
+                    }
+                });
+            }
+            for (auto& th : workers) th.join();
+        }
+        CHECK(iso_kreg.active_package_leases("ext.guild-kernels-ornith-prefill") == 0);
+
+        // 7d. Upgrade (1.0.0 -> 1.1.0) and Rollback (1.1.0 -> 1.0.0)
+        CHECK(mgr.install_package(pkg_v11_bundle.string(), true, err) == GUILD_STATUS_OK);
+        CHECK(iso_kreg.select(fq, host_caps, &sel_finite, err) == GUILD_STATUS_OK && sel_finite != nullptr);
+        CHECK(sel_finite->impl_version == GUILD_KERNEL_ABI_MAKE_VERSION(1, 1, 0));
+
+        CHECK(mgr.rollback_package("ext.guild-kernels-ornith-prefill", err) == GUILD_STATUS_OK);
+        CHECK(iso_kreg.select(fq, host_caps, &sel_finite, err) == GUILD_STATUS_OK && sel_finite != nullptr);
+        CHECK(sel_finite->impl_version == GUILD_KERNEL_ABI_MAKE_VERSION(1, 0, 0));
+
+        // 7e. Disable package -> automatically falls back to built-in cpu.finite_check.simd64
+        CHECK(mgr.disable_package("ext.guild-kernels-ornith-prefill", err) == GUILD_STATUS_OK);
+        CHECK(iso_kreg.select(fq, host_caps, &sel_finite, err) == GUILD_STATUS_OK && sel_finite != nullptr);
+        CHECK(std::strcmp(sel_finite->impl_id, "cpu.finite_check.simd64") == 0);
+
+        // Re-enable -> selects external plugin again
+        CHECK(mgr.enable_package("ext.guild-kernels-ornith-prefill", err) == GUILD_STATUS_OK);
+        CHECK(iso_kreg.select(fq, host_caps, &sel_finite, err) == GUILD_STATUS_OK && sel_finite != nullptr);
+        CHECK(std::strcmp(sel_finite->impl_id, "ext.cpu.finite_check.v1") == 0);
+
+        // Remove packages cleanly
+        CHECK(mgr.remove_package("ext.guild-kernels-ornith-prefill", err) == GUILD_STATUS_OK);
+        CHECK(mgr.remove_package("ext.guild-runner-smoke", err) == GUILD_STATUS_OK);
+        CHECK(mgr.list_packages().empty());
+
+#if defined(GUILD_TEST_CLI_BIN)
+        // 7f. End-to-End CLI Package Management Subcommands Test (`guild kernel ...`)
+        const fs::path cli_data_dir = pkg_work / "cli_data";
+        const std::string cli_bin = GUILD_TEST_CLI_BIN;
+        auto run_cli = [&](const std::string& args) -> int {
+            const std::string cmd = cli_bin + " kernel " + args + " > /dev/null 2>&1";
+            return std::system(cmd.c_str());
+        };
+        CHECK(run_cli("keygen --seed " + std::string(abi::kOfficialGuildDevSeedHex) + " --json") == 0);
+        CHECK(run_cli("install " + pkg_v10_bundle.string() + " --data-dir " + cli_data_dir.string() + " --json") == 0);
+        CHECK(run_cli("list --data-dir " + cli_data_dir.string() + " --json") == 0);
+        CHECK(run_cli("inspect ext.guild-kernels-ornith-prefill --data-dir " + cli_data_dir.string() + " --json") == 0);
+        CHECK(run_cli("active --data-dir " + cli_data_dir.string() + " --json") == 0);
+        CHECK(run_cli("install " + pkg_v11_bundle.string() + " --data-dir " + cli_data_dir.string()) == 0);
+        CHECK(run_cli("rollback ext.guild-kernels-ornith-prefill --data-dir " + cli_data_dir.string()) == 0);
+        CHECK(run_cli("disable ext.guild-kernels-ornith-prefill --data-dir " + cli_data_dir.string()) == 0);
+        CHECK(run_cli("enable ext.guild-kernels-ornith-prefill --data-dir " + cli_data_dir.string()) == 0);
+        CHECK(run_cli("remove ext.guild-kernels-ornith-prefill --data-dir " + cli_data_dir.string()) == 0);
+#endif
+
+        fs::remove_all(pkg_work);
+    }
+#endif
+
+    std::cout << "modular_abi_test: ABI v1, Ed25519 crypto, .gkmetadata, dlopen plugin lifecycle, concurrency, and CLI PASS\n";
     return 0;
 }

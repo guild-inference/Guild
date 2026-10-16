@@ -1,13 +1,18 @@
+#include "guild/abi/gkernel_package.hpp"
 #include "guild/cli/ansi.hpp"
 #include "guild/cli/hardware.hpp"
+#include "guild/kernels/registry.hpp"
 #include "guild/memory/planner.hpp"
 #include "guild/model/archetype.hpp"
 #include "guild/model/model_descriptor.hpp"
+#include "guild/model/runner.hpp"
 #include "guild/models/manifest.hpp"
+#include "guild/models/sha256.hpp"
 #include "guild/models/store.hpp"
 #include "guild/models/registry.hpp"
 #include "guild/models/downloader.hpp"
 #include "guild/server/engine.hpp"
+#include "guild/server/json.hpp"
 #include "guild/server/native_engine.hpp"
 #include "guild/server/server.hpp"
 #include "guild/runtime/chat_template.hpp"
@@ -94,6 +99,8 @@ void print_usage() {
               << "  " << cyan() << "serve" << reset() << " [model]     Start OpenAI-compatible HTTP inference server\n"
               << "  " << cyan() << "inspect" << reset() << " <model>   Inspect model GGUF architecture, metadata, and MoE layout\n"
               << "                      [--plan] [--json] to compute native execution memory plan\n"
+              << "  " << cyan() << "kernel" << reset() << " <subcmd>   Manage .gkernel packages (install, list, inspect, enable, disable,\n"
+              << "                      remove, rollback, active, keygen, sign, trust-key, revoke-key)\n"
               << "  " << cyan() << "bench" << reset() << " <model>     Run performance benchmark suite on target model\n"
               << "  " << cyan() << "ps" << reset() << "                List running Guild model instances and memory status\n"
               << "  " << cyan() << "version" << reset() << "           Show Guild version and platform build configuration\n\n"
@@ -1042,6 +1049,413 @@ int cmd_run(int argc, char** argv) {
     return 0;
 }
 
+int cmd_kernel(int argc, char** argv) {
+    using namespace guild::cli::ansi;
+    using guild::server::json::JsonValue;
+    namespace fs = std::filesystem;
+
+    auto print_kernel_help = []() {
+        std::cout << bold() << "Guild Kernel & Runner Package Manager (.gkernel)" << reset() << "\n\n"
+                  << "Usage:\n"
+                  << "  guild kernel <subcommand> [options]\n\n"
+                  << "Subcommands:\n"
+                  << "  install <path> [--no-enable] [--allow-unsigned-dev] [--data-dir PATH] [--json]\n"
+                  << "  list [--data-dir PATH] [--json]\n"
+                  << "  inspect <package_id|path> [--data-dir PATH] [--json]\n"
+                  << "  enable <package_id> [--data-dir PATH] [--json]\n"
+                  << "  disable <package_id> [--data-dir PATH] [--json]\n"
+                  << "  remove <package_id> [--data-dir PATH] [--json]\n"
+                  << "  rollback <package_id> [--data-dir PATH] [--json]\n"
+                  << "  active [--data-dir PATH] [--json]\n"
+                  << "  keygen [--seed <64-hex>] [--json]\n"
+                  << "  sign <pkg_dir> --key-id <id> --seed <64-hex> [--bundle <out.gkernel>]\n"
+                  << "  trust-key --publisher <pub_id> --key-id <id> --pubkey <64-hex> [--data-dir PATH]\n"
+                  << "  revoke-key <key_id> [--data-dir PATH]\n"
+                  << "  revoke-release <package_id@version> [--data-dir PATH]\n";
+    };
+
+    if (argc < 3) {
+        print_kernel_help();
+        return 1;
+    }
+
+    const std::string sub = argv[2];
+    if (sub == "-h" || sub == "--help" || sub == "help") {
+        print_kernel_help();
+        return 0;
+    }
+
+    std::string target;
+    std::string data_dir;
+    std::string key_id;
+    std::string seed_hex;
+    std::string pubkey_hex;
+    std::string publisher_id;
+    std::string bundle_out;
+    bool enable_now = true;
+    bool allow_unsigned_dev = false;
+    bool json_mode = false;
+
+    for (int i = 3; i < argc; ++i) {
+        const std::string arg = argv[i];
+        if (arg == "--data-dir" && i + 1 < argc) data_dir = argv[++i];
+        else if (arg == "--key-id" && i + 1 < argc) key_id = argv[++i];
+        else if (arg == "--seed" && i + 1 < argc) seed_hex = argv[++i];
+        else if (arg == "--pubkey" && i + 1 < argc) pubkey_hex = argv[++i];
+        else if (arg == "--publisher" && i + 1 < argc) publisher_id = argv[++i];
+        else if (arg == "--bundle" && i + 1 < argc) bundle_out = argv[++i];
+        else if (arg == "--no-enable") enable_now = false;
+        else if (arg == "--allow-unsigned-dev") allow_unsigned_dev = true;
+        else if (arg == "--json") json_mode = true;
+        else if (arg == "-h" || arg == "--help") {
+            print_kernel_help();
+            return 0;
+        } else if (!arg.empty() && arg[0] != '-' && target.empty()) {
+            target = arg;
+        }
+    }
+
+    if (sub == "keygen") {
+        guild::abi::crypto::Ed25519KeyPair kp;
+        if (!seed_hex.empty()) {
+            if (!guild::abi::crypto::ed25519_keypair_from_seed_hex(seed_hex, kp)) {
+                std::cerr << "guild kernel keygen: invalid 64-character hex seed\n";
+                return 1;
+            }
+        } else {
+            guild::abi::crypto::ed25519_generate_keypair(kp);
+        }
+        if (json_mode) {
+            std::cout << "{\n"
+                      << "  \"algorithm\": \"ed25519\",\n"
+                      << "  \"private_seed_hex\": \"" << kp.seed_hex << "\",\n"
+                      << "  \"public_key_hex\": \"" << kp.public_key_hex << "\"\n"
+                      << "}\n";
+        } else {
+            std::cout << "Algorithm:       ed25519 (RFC 8032)\n"
+                      << "Private Seed:    " << kp.seed_hex << "\n"
+                      << "Public Key:      " << kp.public_key_hex << "\n";
+        }
+        return 0;
+    }
+
+    if (sub == "sign") {
+        if (target.empty() || key_id.empty() || seed_hex.empty()) {
+            std::cerr << "Usage: guild kernel sign <pkg_dir> --key-id <id> --seed <64-hex> [--bundle <out.gkernel>]\n";
+            return 1;
+        }
+        const fs::path pkg_dir(target);
+        const fs::path meta_path = pkg_dir / ".gkmetadata";
+        std::ifstream mf(meta_path, std::ios::binary);
+        if (!mf.good()) {
+            std::cerr << "guild kernel sign: cannot open " << meta_path.string() << "\n";
+            return 1;
+        }
+        std::ostringstream ss;
+        ss << mf.rdbuf();
+        mf.close();
+        guild::abi::GKernelMetadata meta;
+        std::string err;
+        if (guild::abi::GKernelMetadata::parse_json(ss.str(), meta, err) != GUILD_STATUS_OK) {
+            std::cerr << "guild kernel sign: invalid .gkmetadata: " << err << "\n";
+            return 1;
+        }
+        // Recompute SHA-256 and byte_size for all declared artifacts on disk
+        for (auto& art : meta.artifacts) {
+            const fs::path ap = pkg_dir / art.relative_path;
+            std::error_code ec;
+            if (!fs::is_regular_file(fs::symlink_status(ap, ec))) {
+                std::cerr << "guild kernel sign: missing artifact '" << art.relative_path << "'\n";
+                return 1;
+            }
+            art.byte_size = fs::file_size(ap, ec);
+            art.sha256 = guild::models::Sha256::hash_file(ap.string());
+        }
+        if (!meta.sign_with_seed_hex(key_id, seed_hex, err)) {
+            std::cerr << "guild kernel sign: signing failed: " << err << "\n";
+            return 1;
+        }
+        {
+            std::ofstream out(meta_path, std::ios::binary | std::ios::trunc);
+            const std::string updated = meta.to_json_string();
+            out.write(updated.data(), static_cast<std::streamsize>(updated.size()));
+        }
+        if (!bundle_out.empty()) {
+            if (guild::abi::create_gkernel_bundle(pkg_dir.string(), bundle_out, err) != GUILD_STATUS_OK) {
+                std::cerr << "guild kernel sign: bundle creation failed: " << err << "\n";
+                return 1;
+            }
+        }
+        std::cout << "Signed package '" << meta.package_id << "@" << meta.version
+                  << "' with key '" << key_id << "' (payload_sha256=" << meta.signature.payload_sha256 << ").\n";
+        return 0;
+    }
+
+    const std::string store_root = data_dir.empty() ? "" : (fs::path(data_dir) / "kernels").string();
+    guild::abi::GKernelPackageManager mgr(store_root);
+    std::string err;
+    if (!mgr.init(err)) {
+        std::cerr << "guild kernel: failed to initialize package store: " << err << "\n";
+        return 1;
+    }
+    if (allow_unsigned_dev) {
+        std::cerr << "[WARNING] --allow-unsigned-dev enabled: bypassing Ed25519 signature check for local development\n";
+        mgr.security_policy().allow_unsigned_dev = true;
+    }
+
+    if (sub == "trust-key") {
+        if (publisher_id.empty() || key_id.empty() || pubkey_hex.size() != 64) {
+            std::cerr << "Usage: guild kernel trust-key --publisher <pub_id> --key-id <id> --pubkey <64-hex> [--data-dir PATH]\n";
+            return 1;
+        }
+        mgr.security_policy().trust_publisher_key(publisher_id, key_id, pubkey_hex);
+        if (!mgr.save_security_policy(err)) {
+            std::cerr << "guild kernel trust-key: " << err << "\n";
+            return 1;
+        }
+        std::cout << "Trusted publisher '" << publisher_id << "' key '" << key_id << "'.\n";
+        return 0;
+    }
+
+    if (sub == "revoke-key") {
+        if (target.empty()) {
+            std::cerr << "Usage: guild kernel revoke-key <key_id> [--data-dir PATH]\n";
+            return 1;
+        }
+        mgr.security_policy().revoke_key(target);
+        if (!mgr.save_security_policy(err)) {
+            std::cerr << "guild kernel revoke-key: " << err << "\n";
+            return 1;
+        }
+        std::cout << "Revoked signing key '" << target << "'.\n";
+        return 0;
+    }
+
+    if (sub == "revoke-release") {
+        const auto at = target.find('@');
+        if (target.empty() || at == std::string::npos) {
+            std::cerr << "Usage: guild kernel revoke-release <package_id@version> [--data-dir PATH]\n";
+            return 1;
+        }
+        mgr.security_policy().revoke_release(target.substr(0, at), target.substr(at + 1));
+        if (!mgr.save_security_policy(err)) {
+            std::cerr << "guild kernel revoke-release: " << err << "\n";
+            return 1;
+        }
+        std::cout << "Revoked package release '" << target << "'.\n";
+        return 0;
+    }
+
+    if (sub == "install") {
+        if (target.empty()) {
+            std::cerr << "Usage: guild kernel install <path> [--no-enable] [--data-dir PATH] [--json]\n";
+            return 1;
+        }
+        const guild_status_t st = mgr.install_package(target, enable_now, err);
+        if (st != GUILD_STATUS_OK) {
+            std::cerr << "guild kernel install failed (" << guild::kernels::status_to_string(st) << "): " << err << "\n";
+            return 1;
+        }
+        auto pkgs = mgr.list_packages();
+        if (json_mode) {
+            std::cout << "{\"status\":\"installed\",\"enabled\":" << (enable_now ? "true" : "false")
+                      << ",\"installed_count\":" << pkgs.size() << "}\n";
+        } else {
+            std::cout << "Installed .gkernel package from '" << target << "' ("
+                      << (enable_now ? "enabled" : "staged, disabled") << ").\n";
+        }
+        return 0;
+    }
+
+    if (sub == "list" || sub == "ls") {
+        auto pkgs = mgr.list_packages();
+        if (json_mode) {
+            std::cout << "[\n";
+            for (size_t i = 0; i < pkgs.size(); ++i) {
+                const auto& p = pkgs[i];
+                std::cout << "  {\n"
+                          << "    \"package_id\": \"" << p.package_id << "\",\n"
+                          << "    \"version\": \"" << p.active_version << "\",\n"
+                          << "    \"previous_version\": \"" << p.previous_version << "\",\n"
+                          << "    \"scope\": \"" << p.metadata.scope << "\",\n"
+                          << "    \"publisher_id\": \"" << p.metadata.publisher_id << "\",\n"
+                          << "    \"enabled\": " << (p.enabled ? "true" : "false") << "\n"
+                          << "  }" << (i + 1 < pkgs.size() ? "," : "") << "\n";
+            }
+            std::cout << "]\n";
+            return 0;
+        }
+        if (pkgs.empty()) {
+            std::cout << "No external .gkernel packages installed.\n";
+            return 0;
+        }
+        std::cout << bold() << std::left
+                  << std::setw(32) << "PACKAGE_ID"
+                  << std::setw(12) << "VERSION"
+                  << std::setw(12) << "PREV"
+                  << std::setw(15) << "SCOPE"
+                  << std::setw(22) << "PUBLISHER"
+                  << "STATUS" << reset() << "\n";
+        for (const auto& p : pkgs) {
+            std::cout << std::left
+                      << std::setw(32) << p.package_id
+                      << std::setw(12) << p.active_version
+                      << std::setw(12) << (p.previous_version.empty() ? "-" : p.previous_version)
+                      << std::setw(15) << p.metadata.scope
+                      << std::setw(22) << p.metadata.publisher_id
+                      << (p.enabled ? "enabled" : "disabled") << "\n";
+        }
+        return 0;
+    }
+
+    if (sub == "inspect") {
+        if (target.empty()) {
+            std::cerr << "Usage: guild kernel inspect <package_id|path> [--data-dir PATH] [--json]\n";
+            return 1;
+        }
+        guild::abi::InstalledPackageRecord rec;
+        if (mgr.get_package(target, rec)) {
+            if (json_mode) {
+                std::cout << rec.metadata.to_json_string() << "\n";
+            } else {
+                std::cout << "Package ID:    " << rec.package_id << "\n"
+                          << "Version:       " << rec.active_version << "\n"
+                          << "Previous Ver:  " << (rec.previous_version.empty() ? "-" : rec.previous_version) << "\n"
+                          << "Status:        " << (rec.enabled ? "enabled" : "disabled") << "\n"
+                          << "Scope:         " << rec.metadata.scope << "\n"
+                          << "Publisher:     " << rec.metadata.publisher_id << "\n"
+                          << "Signing Key:   " << rec.metadata.signature.key_id << " (" << rec.metadata.signature.algorithm << ")\n"
+                          << "Staged Dir:    " << rec.staged_dir << "\n";
+            }
+            return 0;
+        }
+        // Otherwise inspect a directory or archive on disk without installing
+        const fs::path tmp_inspect = fs::temp_directory_path() / ("guild_inspect_" + std::to_string(std::rand()));
+        guild::abi::GKernelMetadata meta;
+        const guild_status_t st = guild::abi::stage_gkernel_source(target, tmp_inspect.string(), meta, err);
+        std::error_code ec;
+        fs::remove_all(tmp_inspect, ec);
+        if (st != GUILD_STATUS_OK) {
+            std::cerr << "guild kernel inspect failed: " << err << "\n";
+            return 1;
+        }
+        if (json_mode) {
+            std::cout << meta.to_json_string() << "\n";
+        } else {
+            std::cout << "Package ID:    " << meta.package_id << "\n"
+                      << "Package Kind:  " << meta.package_kind << "\n"
+                      << "Version:       " << meta.version << "\n"
+                      << "Scope:         " << meta.scope << "\n"
+                      << "Publisher:     " << meta.publisher_id << "\n"
+                      << "Signing Key:   " << meta.signature.key_id << " (" << meta.signature.algorithm << ")\n";
+        }
+        return 0;
+    }
+
+    if (sub == "enable") {
+        if (target.empty()) {
+            std::cerr << "Usage: guild kernel enable <package_id> [--data-dir PATH]\n";
+            return 1;
+        }
+        const guild_status_t st = mgr.enable_package(target, err);
+        if (st != GUILD_STATUS_OK) {
+            std::cerr << "guild kernel enable failed: " << err << "\n";
+            return 1;
+        }
+        std::cout << "Enabled package '" << target << "'.\n";
+        return 0;
+    }
+
+    if (sub == "disable") {
+        if (target.empty()) {
+            std::cerr << "Usage: guild kernel disable <package_id> [--data-dir PATH]\n";
+            return 1;
+        }
+        const guild_status_t st = mgr.disable_package(target, err);
+        if (st != GUILD_STATUS_OK) {
+            std::cerr << "guild kernel disable failed: " << err << "\n";
+            return 1;
+        }
+        std::cout << "Disabled package '" << target << "'.\n";
+        return 0;
+    }
+
+    if (sub == "remove" || sub == "rm" || sub == "uninstall") {
+        if (target.empty()) {
+            std::cerr << "Usage: guild kernel remove <package_id> [--data-dir PATH]\n";
+            return 1;
+        }
+        const guild_status_t st = mgr.remove_package(target, err);
+        if (st != GUILD_STATUS_OK) {
+            std::cerr << "guild kernel remove failed: " << err << "\n";
+            return 1;
+        }
+        std::cout << "Removed package '" << target << "'.\n";
+        return 0;
+    }
+
+    if (sub == "rollback") {
+        if (target.empty()) {
+            std::cerr << "Usage: guild kernel rollback <package_id> [--data-dir PATH]\n";
+            return 1;
+        }
+        const guild_status_t st = mgr.rollback_package(target, err);
+        if (st != GUILD_STATUS_OK) {
+            std::cerr << "guild kernel rollback failed: " << err << "\n";
+            return 1;
+        }
+        guild::abi::InstalledPackageRecord rec;
+        mgr.get_package(target, rec);
+        std::cout << "Rolled back package '" << target << "' to version '" << rec.active_version << "'.\n";
+        return 0;
+    }
+
+    if (sub == "active") {
+        mgr.load_enabled_packages(err);
+        const auto ops = guild::kernels::KernelRegistry::instance().list_operation_snapshots();
+        const auto runners = guild::model::ModelRunnerRegistry::instance().list_runner_snapshots();
+        if (json_mode) {
+            std::cout << "{\n  \"runners\": [\n";
+            for (size_t i = 0; i < runners.size(); ++i) {
+                const auto& r = runners[i];
+                std::cout << "    {\"runner_id\":\"" << r.runner_id << "\",\"arch_id\":\"" << r.arch_id
+                          << "\",\"package_id\":\"" << r.package_id << "\",\"enabled\":" << (r.enabled ? "true" : "false")
+                          << "}" << (i + 1 < runners.size() ? "," : "") << "\n";
+            }
+            std::cout << "  ],\n  \"kernels\": [\n";
+            for (size_t i = 0; i < ops.size(); ++i) {
+                const auto& o = ops[i];
+                std::cout << "    {\"op_name\":\"" << o.op_name << "\",\"impl_id\":\"" << o.impl_id
+                          << "\",\"package_id\":\"" << o.package_id << "\",\"priority\":" << o.priority
+                          << ",\"enabled\":" << (o.enabled ? "true" : "false")
+                          << "}" << (i + 1 < ops.size() ? "," : "") << "\n";
+            }
+            std::cout << "  ]\n}\n";
+            return 0;
+        }
+        std::cout << bold() << "Active Model Runners (" << runners.size() << "):" << reset() << "\n";
+        for (const auto& r : runners) {
+            std::cout << "  " << std::left << std::setw(28) << r.runner_id
+                      << std::setw(16) << r.arch_id
+                      << std::setw(32) << r.package_id
+                      << (r.enabled ? "enabled" : "disabled") << "\n";
+        }
+        std::cout << "\n" << bold() << "Registered Hardware Kernels (" << ops.size() << "):" << reset() << "\n";
+        for (const auto& o : ops) {
+            std::cout << "  " << std::left << std::setw(24) << o.op_name
+                      << std::setw(38) << o.impl_id
+                      << std::setw(32) << o.package_id
+                      << "prio=" << std::setw(6) << o.priority
+                      << (o.enabled ? "enabled" : "disabled") << "\n";
+        }
+        return 0;
+    }
+
+    std::cerr << "Unknown 'guild kernel' subcommand: " << sub << "\n";
+    print_kernel_help();
+    return 1;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -1057,6 +1471,9 @@ int main(int argc, char** argv) {
     }
     if (cmd == "-v" || cmd == "--version" || cmd == "version") {
         return cmd_version();
+    }
+    if (cmd == "kernel" || cmd == "plugin" || cmd == "pkg") {
+        return cmd_kernel(argc, argv);
     }
     if (cmd == "pull") {
         return cmd_pull(argc, argv);

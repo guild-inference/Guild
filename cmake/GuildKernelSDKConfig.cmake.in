@@ -1,0 +1,20 @@
+# GuildKernelSDKConfig.cmake - Public C/C++/CUDA SDK for building external .gkernel plugins
+@PACKAGE_INIT@
+
+if(NOT TARGET Guild::KernelSDK)
+  add_library(Guild::KernelSDK INTERFACE IMPORTED)
+  set_target_properties(Guild::KernelSDK PROPERTIES
+    INTERFACE_INCLUDE_DIRECTORIES "${PACKAGE_PREFIX_DIR}/include"
+  )
+endif()
+
+# Helper macro for external .gkernel shared library targets.
+# Ensures CUDA shared runtime linkage (CUDA_RUNTIME_LIBRARY Shared) so dlclose()
+# on a dynamically loaded plugin never triggers static cudart primary-context teardown.
+function(guild_configure_gkernel_plugin target_name)
+  set_target_properties(${target_name} PROPERTIES
+    POSITION_INDEPENDENT_CODE ON
+    CUDA_RUNTIME_LIBRARY Shared
+  )
+  target_link_libraries(${target_name} PRIVATE Guild::KernelSDK)
+endfunction()

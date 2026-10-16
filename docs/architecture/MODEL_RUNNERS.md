@@ -3,48 +3,51 @@
 Headers & Implementation:
 - [`include/guild/model/runner.hpp`](../../include/guild/model/runner.hpp)
 - [`src/model/runner.cpp`](../../src/model/runner.cpp)
-- [`include/guild/model/descriptor.hpp`](../../include/guild/model/descriptor.hpp)
+- [`include/guild/model/model_descriptor.hpp`](../../include/guild/model/model_descriptor.hpp)
+- External Runner Plugin Example: [`plugins/runner_smoke_ext/runner_smoke_plugin.cpp`](../../plugins/runner_smoke_ext/runner_smoke_plugin.cpp)
 
-Model Architecture Runners decouple model-family topology and invariants from Guild Core's memory management, scheduler, and server.
+Model Architecture Runners decouple model-family topology, GGUF metadata validation, and kernel requirements from Guild Core's memory management, scheduler, and server.
 
 ---
 
 ## 1. Built-In Runners
 
-| Runner ID | Package Name | Architecture Name | Family | Key Architectural Features |
+| Runner ID | Package ID | Architecture ID | Family | Key Architectural Features |
 |---|---|---|---|---|
-| `runner.qwen4exp.v1` | `builtin.guild-kernels-qwen` | `qwen4exp` | `ModelFamily::Qwen4Exp` | 48 layers (36 Gated DeltaNet + 12 Full Attention, interval 4), 4-stream Hyper-Connections, 512 routed experts (`top_k=10`) + 1 shared expert, mandatory Per-Layer Embeddings (`GUILD_OP_PLE_PROJECT`), Coupled-Draft MTP |
-| `runner.qwen35moe.v1` | `builtin.guild-kernels-ornith` | `qwen35moe` | `ModelFamily::Qwen35MoE` | 40 layers (30 Gated DeltaNet + 10 Full Attention, interval 4), standard single-stream residual connections (`n_streams=1`), 256 routed experts (`top_k=8`) + 1 shared expert, no PLE, native layer-wise batched prefill (`BatchedPrefill`) |
+| `runner.qwen4exp.v1` | `builtin.guild-kernels-qwen` | `qwen4exp` | `ModelFamily::Qwen4Exp` | 48 layers (36 Gated DeltaNet + 12 Quad-Sparse Attention, interval 4), 4-stream Hyper-Connections (`hc=4`), 512 routed experts (`top_k=10`) + 1 shared expert, mandatory Per-Layer Embeddings (`ple_compute`), Coupled-Draft MTP |
+| `runner.qwen35moe.v1` | `builtin.guild-kernels-ornith` | `qwen35moe` | `ModelFamily::Qwen35MoE` | 40 layers (30 Gated DeltaNet + 10 Full GQA Attention, interval 4), single-stream residual (`hc=1`), 256 routed experts (`top_k=8`) + 1 shared expert, no PLE, native layer-wise batched prefill (`BatchedPrefill`) |
 
 ---
 
-## 2. `IModelRunner` Interface
+## 2. `IModelRunner` Interface & `AbiModelRunnerAdapter`
 
-Every model runner implements `guild::model::IModelRunner` (either directly in C++ or via `AbiModelRunnerAdapter` wrapping a C ABI `guild_runner_desc_v1_t`):
+Every model runner implements `guild::model::IModelRunner` (either directly in C++ for built-in runners or via `AbiModelRunnerAdapter`, which wraps an external C ABI `guild_runner_desc_v1_t` registered from a `.gkernel` plugin):
 
 - `runner_id()`: Stable versioned identifier (e.g., `"runner.qwen35moe.v1"`).
-- `architecture_name()`: GGUF `general.architecture` string (e.g., `"qwen35moe"`).
-- `package_name()`: Owning `.gkernel` or built-in package name.
-- `runner_version()`: Monotonic integer version.
+- `arch_id()`: Canonical architecture identifier (`"qwen4exp"`, `"qwen35moe"`, or custom architecture ID).
+- `package_id()`: Owning `.gkernel` or built-in package identifier.
 - `family()`: `ModelFamily` enum tag.
-- `inspect_gguf(const GGUFFile&, ModelDescriptor*, guild_error_info_t*)`: Populates `ModelDescriptor` from GGUF metadata and tensor headers.
-- `validate_model(const ModelDescriptor&, guild_error_info_t*)`: Enforces architecture-specific invariants before weight allocation (for example, `Qwen4ExpRunner` rejects any descriptor without `requires_ple == true`, while `Qwen35MoERunner` enforces `n_streams == 1` and `requires_ple == false`).
-- `required_ops(const ModelDescriptor&, bool has_gpu_backend)`: Returns the list of `guild_op_kind_t` operations required to run the model on the target backend.
+- `capabilities()`: Runner capability bitmask (`GUILD_RUNNER_CAP_*`).
+- `matches_gguf(const GgufMetadata&)`: Inspects GGUF header keys (`general.architecture`, tensor names, layer counts) to determine if this runner supports the artifact.
+- `validate_and_describe(const GgufModel&, ModelDescriptor&, std::string& err)`: Populates and validates `ModelDescriptor` from GGUF metadata and tensor headers.
+- `configure_geometry(const ModelDescriptor&, core::ModelGeometry&, int64_t& top_k, std::string& err)`: Populates runtime geometry and enforces architectural invariants before device memory allocation.
+- `required_operations(const ModelDescriptor&, const core::ModelGeometry&, const memory::ExecutionPlan&)`: Returns the list of `RunnerOpRequirement` entries (`op_name`, `category`, `backend`, `weight_dtype`, `activation_dtype`, `mandatory`) validated by `ModelRunnerRegistry::validate_runner_requirements()`.
 
 ---
 
-## 3. Adding a New Model Architecture Runner
+## 3. Lifecycle & Per-Package Lease Safety
 
-To add support for a new architecture (for example, `deepseek2` or `glm4moe`):
+- `ModelRunnerRegistry::register_abi_runner(const guild_runner_desc_v1_t&, std::string& err)` validates `struct_size`, `abi_version` compatibility (`guild_abi_is_compatible`), and non-empty `runner_id`/`arch_id`, and deep-copies strings into `AbiModelRunnerAdapter`.
+- When `GuildModel::load()` resolves a runner, it acquires a per-package `SessionRunnerLease(&ModelRunnerRegistry::instance(), runner->package_id())` and stores all resolved kernel `package_id`s in `RunnerExecutionPlan::resolved_package_ids` (held by `SessionKernelLease`).
+- While any `GuildModel` or `GuildSession` holds a lease on a runner's `package_id`, `ModelRunnerRegistry::unregister_package()` and `GKernelPackageManager::disable_package()` / `remove_package()` refuse to unload the package with `GUILD_STATUS_ERR_ACTIVE_SESSION_BUSY`.
 
-1. **Define or Reuse `guild_op_kind_t` Primitives**:
-   - Check whether all layer operations are covered by existing `guild_op_kind_t` categories in `include/guild/abi/kernel_abi.h`.
-2. **Implement `IModelRunner` or `guild_runner_desc_v1_t`**:
-   - Implement `inspect_gguf` to parse the model's layer count, head dimensions, KV/recurrent layer pattern, and MoE routing parameters into `ModelDescriptor`.
-   - Implement `validate_model` to check all mandatory dimensions and invariants.
-   - Implement `required_ops` to declare the exact set of kernel operations needed for prefill and decode.
-3. **Register the Runner**:
-   - For built-in runners, register in `ModelRunnerRegistry::register_builtin_runners()`.
-   - For external `.gkernel` plugins, export `guild_plugin_get_descriptor_v1` and call `host_api->register_runner(&runner_desc, &err)` inside the plugin's `init` callback.
-4. **Add Tests**:
-   - Add unit tests in `tests/core/modular_abi_test.cpp` verifying `find_by_architecture`, `validate_model` (both valid and invalid descriptors), and `verify_runner_kernel_requirements`.
+---
+
+## 4. Building an External Runner `.gkernel` Plugin
+
+See [`plugins/runner_smoke_ext/runner_smoke_plugin.cpp`](../../plugins/runner_smoke_ext/runner_smoke_plugin.cpp) for a complete external runner plugin compiled against `Guild::KernelSDK`:
+
+1. Include `"guild/abi/kernel_abi.h"`.
+2. Define a `guild_runner_desc_v1_t` with `struct_size = sizeof(guild_runner_desc_v1_t)`, `abi_version = GUILD_KERNEL_ABI_VERSION_V1`, `runner_id`, `arch_id`, `package_id`, and `probe_gguf` / `validate_model` / `build_execution_plan` callbacks.
+3. Export `GUILD_PLUGIN_EXPORT guild_status_t guild_plugin_entry_v1(...)` and call `host_api->register_runner(host, &runner_desc, out_error)` inside the plugin's `init` callback.
+4. Package with a `.gkmetadata` manifest declaring `"scope": "runner"` (or `"hybrid"`) and `"provided_runners": ["<runner_id>"]`, sign with `guild kernel sign`, and install with `guild kernel install`.

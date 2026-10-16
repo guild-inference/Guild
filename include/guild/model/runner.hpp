@@ -11,6 +11,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <set>
@@ -43,6 +44,19 @@ struct RunnerExecutionPlan {
     guild_core_cap_flags_t required_core_caps = GUILD_CORE_CAP_NONE;
     std::vector<guild_op_kind_t> required_ops;
     std::vector<std::string> resolved_kernel_ids;
+    std::vector<std::string> resolved_package_ids;
+};
+
+struct RunnerInfoSnapshot {
+    std::string runner_id;
+    std::string arch_id;
+    std::string package_id;
+    uint32_t runner_version = 0;
+    guild_core_cap_flags_t required_core_caps = GUILD_CORE_CAP_NONE;
+    std::vector<guild_op_kind_t> required_ops;
+    std::vector<std::string> required_package_deps;
+    bool enabled = true;
+    int64_t active_package_leases = 0;
 };
 
 /// Interface implemented by each model architecture runner.
@@ -125,6 +139,13 @@ public:
     /// Unregister a runner by runner_id. Fails with GUILD_STATUS_ERR_ACTIVE_SESSION_BUSY if sessions are active.
     guild_status_t unregister_runner(const std::string& runner_id, std::string& err);
 
+    /// Unregister all runners belonging to `package_id`.
+    guild_status_t unregister_package(const std::string& package_id, std::string& err);
+
+    /// Enable or disable all runners belonging to `package_id` for future resolutions.
+    void set_package_enabled(const std::string& package_id, bool enabled);
+    bool is_package_enabled(const std::string& package_id) const;
+
     /// Resolve a runner for a GGUF metadata file.
     guild_status_t resolve_for_gguf(const GgufFile& gguf,
                                     const IModelRunner** out_runner,
@@ -151,13 +172,22 @@ public:
     /// Snapshot of registered runner ABI descriptors.
     std::vector<guild_runner_desc_v1_t> list_runners() const;
 
+    /// Value-owning snapshots of registered runners (safe without holding registry lock).
+    std::vector<RunnerInfoSnapshot> list_runner_snapshots() const;
+
     void acquire_session_lease() const { active_sessions_.fetch_add(1, std::memory_order_acq_rel); }
     void release_session_lease() const { active_sessions_.fetch_sub(1, std::memory_order_acq_rel); }
     int64_t active_sessions() const { return active_sessions_.load(std::memory_order_acquire); }
 
+    void acquire_package_lease(const std::string& package_id) const;
+    void release_package_lease(const std::string& package_id) const;
+    int64_t active_package_leases(const std::string& package_id) const;
+
 private:
     mutable std::mutex mutex_;
     std::vector<std::unique_ptr<IModelRunner>> runners_;
+    std::set<std::string> disabled_packages_;
+    mutable std::map<std::string, int64_t> package_leases_;
     mutable std::atomic<int64_t> active_sessions_{0};
 };
 
@@ -165,29 +195,42 @@ private:
 class SessionRunnerLease {
 public:
     SessionRunnerLease() = default;
-    explicit SessionRunnerLease(const ModelRunnerRegistry* reg) : reg_(reg) {
-        if (reg_) reg_->acquire_session_lease();
+    explicit SessionRunnerLease(const ModelRunnerRegistry* reg, std::string package_id = "")
+        : reg_(reg), package_id_(std::move(package_id)) {
+        if (reg_) {
+            reg_->acquire_session_lease();
+            if (!package_id_.empty()) reg_->acquire_package_lease(package_id_);
+        }
     }
     ~SessionRunnerLease() { reset(); }
     SessionRunnerLease(const SessionRunnerLease&) = delete;
     SessionRunnerLease& operator=(const SessionRunnerLease&) = delete;
-    SessionRunnerLease(SessionRunnerLease&& other) noexcept : reg_(other.reg_) { other.reg_ = nullptr; }
+    SessionRunnerLease(SessionRunnerLease&& other) noexcept
+        : reg_(other.reg_), package_id_(std::move(other.package_id_)) {
+        other.reg_ = nullptr;
+        other.package_id_.clear();
+    }
     SessionRunnerLease& operator=(SessionRunnerLease&& other) noexcept {
         if (this != &other) {
             reset();
             reg_ = other.reg_;
+            package_id_ = std::move(other.package_id_);
             other.reg_ = nullptr;
+            other.package_id_.clear();
         }
         return *this;
     }
     void reset() {
         if (reg_) {
+            if (!package_id_.empty()) reg_->release_package_lease(package_id_);
             reg_->release_session_lease();
             reg_ = nullptr;
+            package_id_.clear();
         }
     }
 private:
     const ModelRunnerRegistry* reg_ = nullptr;
+    std::string package_id_;
 };
 
 } // namespace guild::model

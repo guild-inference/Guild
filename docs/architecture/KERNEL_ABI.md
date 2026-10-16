@@ -1,23 +1,28 @@
-# Guild Kernel ABI v1 Specification
+# Guild Kernel ABI v1 Specification & Plugin SDK
 
-Header: [`include/guild/abi/kernel_abi.h`](../../include/guild/abi/kernel_abi.h)
+Headers & CMake SDK:
+- [`include/guild/abi/kernel_abi.h`](../../include/guild/abi/kernel_abi.h)
+- [`cmake/GuildKernelSDKConfig.cmake.in`](../../cmake/GuildKernelSDKConfig.cmake.in)
+- Reference External Plugins:
+  - [`plugins/ornith_prefill_ext/ornith_prefill_plugin.cu`](../../plugins/ornith_prefill_ext/ornith_prefill_plugin.cu)
+  - [`plugins/runner_smoke_ext/runner_smoke_plugin.cpp`](../../plugins/runner_smoke_ext/runner_smoke_plugin.cpp)
 
-The Guild Kernel ABI v1 is a strict C99/C11/C++17-compatible binary interface separating **Guild Core**, **Model Architecture Runners**, and **Hardware Kernels**. It avoids passing any C++ standard library types (`std::vector`, `std::string`, `std::function`, or exceptions) across the boundary.
+The Guild Kernel ABI v1 is a strict C99/C11/C++17-compatible binary interface separating **Guild Core**, **Model Architecture Runners**, and **Hardware Kernels**. No C++ standard library types (`std::vector`, `std::string`, `std::function`) or C++ exceptions cross the ABI boundary.
 
 ---
 
-## 1. ABI Versioning & Negotiation
+## 1. ABI Versioning & 8/12/12 Bit-Packing
 
-- **Packed Version Macro**: `GUILD_MAKE_ABI_VERSION(major, minor, patch)`
-  - `major`: 16-bit integer (`GUILD_ABI_VERSION_MAJOR(v)`). Incompatible layout or signature changes increment `major`.
-  - `minor`: 8-bit integer (`GUILD_ABI_VERSION_MINOR(v)`). Backwards-compatible additions increment `minor`.
-  - `patch`: 8-bit integer (`GUILD_ABI_VERSION_PATCH(v)`). Bug-fix clarifications increment `patch`.
-- **Current Version**: `GUILD_KERNEL_ABI_VERSION_V1 = GUILD_MAKE_ABI_VERSION(1, 0, 0)`
+- **Packed Version Macro**: `GUILD_KERNEL_ABI_MAKE_VERSION(major, minor, patch)` (aliased as `GUILD_MAKE_ABI_VERSION(major, minor, patch)`):
+  - `major`: 8-bit unsigned integer (`bits 24..31`, extracted via `GUILD_KERNEL_ABI_VERSION_MAJOR_OF(v)` / `GUILD_ABI_VERSION_MAJOR(v)`). Incompatible struct layout or signature changes increment `major`.
+  - `minor`: 12-bit unsigned integer (`bits 12..23`, extracted via `GUILD_KERNEL_ABI_VERSION_MINOR_OF(v)` / `GUILD_ABI_VERSION_MINOR(v)`). Backwards-compatible extensions increment `minor`.
+  - `patch`: 12-bit unsigned integer (`bits 0..11`, extracted via `GUILD_KERNEL_ABI_VERSION_PATCH_OF(v)` / `GUILD_ABI_VERSION_PATCH(v)`). Bug-fix clarifications increment `patch`.
+- **Current Version**: `GUILD_KERNEL_ABI_VERSION_V1 = GUILD_KERNEL_ABI_MAKE_VERSION(1, 0, 0)` (`0x01000000u`).
 - **Compatibility Rule (`guild_abi_is_compatible(host_abi, plugin_abi_min, plugin_abi_max)`)**:
   1. `major(host_abi)` must equal `major(plugin_abi_min)` and `major(plugin_abi_max)`.
   2. `plugin_abi_min <= plugin_abi_max`.
   3. `host_abi >= plugin_abi_min`.
-- Every extensible struct begins with `uint32_t struct_size` initialized to `sizeof(struct_type)`. Receivers validate `struct_size >= sizeof(...)` before reading fields.
+- Every extensible struct begins with `uint32_t struct_size` initialized to `sizeof(struct_type)`. Guild Core validates `struct_size >= sizeof(...)` before reading fields and respects `struct_size` prefix bounds when deep-copying extension structs.
 
 ---
 
@@ -30,67 +35,85 @@ All ABI functions return `guild_status_t` (`0 = GUILD_STATUS_OK`, negative value
 | `GUILD_STATUS_OK` | `0` | Success |
 | `GUILD_STATUS_ERR_INVALID_ARGUMENT` | `-1` | Null pointer, zero `struct_size`, or invalid parameter |
 | `GUILD_STATUS_ERR_ABI_MISMATCH` | `-2` | Incompatible ABI major/minor version range |
-| `GUILD_STATUS_ERR_UNSUPPORTED_OP` | `-3` | Operation kind is not implemented |
-| `GUILD_STATUS_ERR_UNSUPPORTED_DTYPE` | `-4` | Unsupported input/weight/output data type |
-| `GUILD_STATUS_ERR_UNSUPPORTED_SHAPE` | `-5` | Zero dimension, batch out of range, or unaligned stride |
-| `GUILD_STATUS_ERR_UNSUPPORTED_HARDWARE` | `-6` | Missing CPU ISA, GPU vendor, or SM version |
-| `GUILD_STATUS_ERR_OUT_OF_MEMORY` | `-7` | Scratch workspace or allocation exceeds budget |
-| `GUILD_STATUS_ERR_MISSING_DEPENDENCY` | `-8` | Required package or operation is not registered |
-| `GUILD_STATUS_ERR_CORRUPT_METADATA` | `-9` | Malformed `.gkmetadata` or invalid field |
-| `GUILD_STATUS_ERR_UNTRUSTED_PACKAGE` | `-10` | Untrusted/revoked publisher, hash mismatch, or forbidden script |
-| `GUILD_STATUS_ERR_EXECUTION_FAILED` | `-11` | Kernel launch or execution failure |
-| `GUILD_STATUS_ERR_NOT_FOUND` | `-12` | Requested runner or kernel does not exist |
-| `GUILD_STATUS_ERR_ALREADY_EXISTS` | `-13` | Duplicate `impl_id` or `runner_id` |
-| `GUILD_STATUS_ERR_ACTIVE_SESSION_BUSY` | `-14` | Cannot unregister/unload while a session lease is active |
-| `GUILD_STATUS_ERR_INTERNAL` | `-15` | Unexpected internal error |
+| `GUILD_STATUS_ERR_UNSUPPORTED_BACKEND` | `-3` | Backend is not supported by the plugin or host |
+| `GUILD_STATUS_ERR_UNSUPPORTED_HARDWARE` | `-4` | Missing CPU ISA, GPU capabilities, or SM version |
+| `GUILD_STATUS_ERR_UNSUPPORTED_DTYPE` | `-5` | Unsupported input/weight/output data type |
+| `GUILD_STATUS_ERR_UNSUPPORTED_SHAPE` | `-6` | Invalid rank, alignment, or batch size |
+| `GUILD_STATUS_ERR_CAPABILITY_MISMATCH` | `-7` | Missing required core/runner capability or GEXEC lock mismatch |
+| `GUILD_STATUS_ERR_OUT_OF_MEMORY` | `-8` | Scratch workspace or allocation exceeds budget |
+| `GUILD_STATUS_ERR_MISSING_KERNEL` | `-9` | Required kernel operation is not registered |
+| `GUILD_STATUS_ERR_MISSING_RUNNER` | `-10` | Requested model runner is not registered |
+| `GUILD_STATUS_ERR_DUPLICATE_REGISTRATION` | `-11` | Duplicate `impl_id`, `runner_id`, or `package_id` |
+| `GUILD_STATUS_ERR_DEPENDENCY_MISSING` | `-12` | Missing package/operation dependency or dependency cycle |
+| `GUILD_STATUS_ERR_SECURITY_VIOLATION` | `-13` | Untrusted/revoked publisher, Ed25519/SHA-256 mismatch, or unsafe path |
+| `GUILD_STATUS_ERR_NUMERICAL_FAILURE` | `-14` | Non-finite (`NaN`/`Inf`) tensor detected |
+| `GUILD_STATUS_ERR_EXECUTION_FAILED` | `-15` | Kernel launch, `dlopen`, or runtime execution failure |
+| `GUILD_STATUS_ERR_ACTIVE_SESSION_BUSY` | `-16` | Cannot disable/remove/unload while a model or session lease is active |
+| `GUILD_STATUS_ERR_INTERNAL` | `-99` | Unexpected internal error |
 
 ---
 
-## 3. Memory Spaces, Ownership, and Lifetime Rules
+## 3. Plugin Entrypoint, Transactional Registration & Lifetime Safety
 
-Defined in `guild_buffer_desc_t` and `guild_tensor_desc_t`:
-
-- **Memory Space (`guild_memory_space_t`)**:
-  - `GUILD_MEM_HOST_PAGEABLE`: Standard pageable host RAM.
-  - `GUILD_MEM_HOST_PINNED`: Page-locked host RAM accessible by DMA/device.
-  - `GUILD_MEM_HOST_MMAP`: Memory-mapped file backing (read-only).
-  - `GUILD_MEM_DEVICE_VRAM`: Device HBM/GDDR memory.
-  - `GUILD_MEM_UNIFIED`: Managed/unified memory.
-- **Ownership (`guild_buffer_ownership_t`)**:
-  - `GUILD_BUFFER_OWNED_BY_RUNTIME`: Allocated and freed by Guild Core. Kernels **must never** free, reallocate, or retain pointers past their declared lifetime.
-  - `GUILD_BUFFER_BORROWED_VIEW`: Non-owning slice/view into a larger buffer.
-  - `GUILD_BUFFER_SCRATCH_TRANSIENT`: Temporary workspace slice valid only for a single `execute()` call.
-- **Lifetime (`guild_buffer_lifetime_t`)**:
-  - `GUILD_LIFETIME_CALL`: Valid only until `execute()` returns (or the enqueued stream operation completes).
-  - `GUILD_LIFETIME_STEP`: Valid for the current prefill chunk or decode step.
-  - `GUILD_LIFETIME_SESSION`: Valid for the lifetime of `GuildSession`.
-  - `GUILD_LIFETIME_MODEL`: Static weights valid for the lifetime of `GuildModel`.
-
-`KernelRegistry::validate_buffer_desc()` and `KernelRegistry::validate_tensor_desc()` enforce alignment (power-of-two, pointer divisibility), non-zero dimensions, and bounds checking against `byte_size`.
-
----
-
-## 4. Execution Context & Scratch Workspace
-
-`guild_exec_context_v1_t` provides the runtime execution environment to every kernel dispatch:
-- `device_kind` and `device_index`
-- `stream`: opaque `cudaStream_t` or `hipStream_t` (`NULL` for synchronous CPU execution)
-- `num_cpu_threads`: worker count for CPU parallel execution
-- `scratch_buffer`: pre-allocated workspace buffer (`GUILD_BUFFER_SCRATCH_TRANSIENT`, `GUILD_LIFETIME_CALL`)
-- `capabilities`: pointer to discovered `guild_device_capabilities_v1_t`
-
-Before execution, callers may query `query_scratch(op_params, inputs, num_inputs, outputs, num_outputs, &scratch_req, &err)` to determine required temporary workspace size and alignment without dynamic allocation inside the kernel.
+1. **Canonical Entrypoint Symbol**:
+   - External `.gkernel` shared libraries export `GUILD_PLUGIN_ENTRY_SYMBOL_V1` (`"guild_plugin_entry_v1"`) with signature:
+     ```c
+     GUILD_PLUGIN_EXPORT guild_status_t guild_plugin_entry_v1(
+         uint32_t host_abi_version,
+         guild_plugin_desc_v1_t* out_plugin_desc,
+         guild_error_info_t* out_error);
+     ```
+2. **Transactional Registration (`KernelRegistry::register_plugin_transactional`)**:
+   - When a plugin is loaded, Guild Core stages all `register_kernel_op` and `register_runner` calls made inside `plugin_desc.init()` into a temporary staging context:
+     - Verifies that every registered kernel/runner's `package_id` matches the `.gkmetadata` `package_id`.
+     - Verifies that every `impl_id` is declared in `.gkmetadata`'s `provided_ops` and every `runner_id` is declared in `provided_runners`.
+     - Verifies that no duplicate `impl_id`, `runner_id`, or `package_id` exists.
+   - If `init()` returns an error or any validation check fails, **zero** kernel operations or runners are committed to `KernelRegistry` or `ModelRunnerRegistry`.
+3. **Deep-Copied Descriptors & Extension Payloads**:
+   - `KernelRegistry` deep-copies all string fields (`op_name`, `impl_id`, `package_id`), any `direct_fn_table` (`direct_fn_table_size` up to 4096 bytes), and any known `next_ext` extension structs (such as `guild_prefill_kernel_ext_v1_t`, respecting `struct_size` prefix bounds) into registry-owned storage so no dangling pointers into plugin stack/static memory can occur.
+4. **Per-Package Reference-Counted Leases & CUDA Stream Synchronization**:
+   - `GuildModel` and `GuildSession` acquire `SessionKernelLease` and `SessionRunnerLease` locks on their resolved `package_id`s and register the model's `cudaStream_t` (`main_stream`).
+   - While any lease is active on `package_id`, `disable_package`, `remove_package`, and `unregister_package` fail deterministically with `GUILD_STATUS_ERR_ACTIVE_SESSION_BUSY`.
+   - When a lease is released or a package is unloaded, Guild Core synchronizes the bound CUDA streams (`cudaStreamSynchronize` / `cudaDeviceSynchronize`), invokes `plugin_desc.shutdown()`, and only then releases the `SharedLibHandle` (`dlclose`).
 
 ---
 
-## 5. Operation Categories (`guild_op_kind_t`)
+## 4. Zero-Overhead Prefill Direct-Call Extension (`guild_prefill_kernel_ext_v1_t`)
 
-ABI v1 standardizes 26 operation categories across dense, recurrent, attention, MoE, speculative, and sampling stages:
+To allow external `.gkernel` plugins to override hot-path `BatchedPrefill` CUDA kernels without per-token ABI marshaling overhead, a kernel descriptor may attach `guild_prefill_kernel_ext_v1_t` (`ext_type = GUILD_EXT_TYPE_PREFILL_KERNEL_V1 = 0x1001u`) via `guild_kernel_op_desc_v1_t::next_ext`:
 
-- **Norms & Elementwise**: `GUILD_OP_RMSNORM`, `GUILD_OP_ADD_RMSNORM`, `GUILD_OP_SILU_MUL`, `GUILD_OP_RESIDUAL_ADD`, `GUILD_OP_SCALE`
-- **Embeddings & Projections**: `GUILD_OP_EMBED_LOOKUP`, `GUILD_OP_GEMV_BF16`, `GUILD_OP_GEMM_BF16`, `GUILD_OP_GEMV_QUANT`, `GUILD_OP_GEMM_QUANT`, `GUILD_OP_QUANTIZE_ACT`
-- **Positional & Attention**: `GUILD_OP_ROPE_2D`, `GUILD_OP_ATTN_DECODE`, `GUILD_OP_ATTN_PREFILL`, `GUILD_OP_KV_WRITE`, `GUILD_OP_KV_QUANTIZE`
-- **Recurrent / Gated DeltaNet**: `GUILD_OP_GDN_CONV_SILU`, `GUILD_OP_GDN_RECURRENCE`
-- **Hyper-Connections & PLE**: `GUILD_OP_HYPER_CONNECTION`, `GUILD_OP_PLE_PROJECT`
-- **Mixture-of-Experts**: `GUILD_OP_MOE_ROUTER_TOPK`, `GUILD_OP_MOE_EXPERT_DISPATCH`, `GUILD_OP_MOE_SHARED_GATE_ADD`
-- **Head, Sampling & Speculative**: `GUILD_OP_LM_HEAD`, `GUILD_OP_SAMPLER_ARGMAX`, `GUILD_OP_SPEC_VERIFY`
+```c
+typedef struct guild_prefill_kernel_ext_v1_s {
+    uint32_t struct_size; /* sizeof(guild_prefill_kernel_ext_v1_t) */
+    uint32_t ext_type;    /* GUILD_EXT_TYPE_PREFILL_KERNEL_V1 (0x1001u) */
+    const void* next_ext;
+    void (*rms_norm_weighted)(const float* x, const float* w, float* y, int64_t cols, int64_t rows, float eps, void* stream);
+    void (*bf16_gemm)(const uint16_t* w_bf16, const float* x, float* y, int m, int n, int k, void* stream);
+    void (*quantize_q8_1)(const float* x, int rows, int cols, void* xq, void* stream);
+    void (*quantized_mmvq)(int type, const void* w, const void* xq, float* y, int out_cols, int in_cols, int rows, void* stream);
+    void (*router_projection)(const float* x, const uint16_t* w_bf16, float* logits, int64_t in_cols, int64_t n_expert, int rows, void* stream);
+    void (*router_topk_softmax)(const float* logits, int64_t n_expert, int64_t k, float* weights, int32_t* ids, int64_t rows, void* stream);
+    void (*shared_expert)(const float* x, const void* gate_w, const void* up_w, const void* down_w, const float* gate_inp,
+                          float* gate_buf, float* up_buf, float* out_buf, float* scalar_buf, void* xq_buf,
+                          int gate_type, int up_type, int down_type, int64_t n_embd, int64_t n_ff, int64_t rows, void* stream);
+    void (*moe_combine)(const float* parts, const float* weights, const float* shared, float* y, int64_t n_embd, int64_t k, int64_t rows, void* stream);
+} guild_prefill_kernel_ext_v1_t;
+```
+
+During `BatchedPrefill::init()`, `KernelRegistry::resolve_prefill_kernels()` selects the highest-priority compatible kernel for each stage and binds any non-NULL function pointers from `guild_prefill_kernel_ext_v1_t` directly into `ResolvedPrefillKernels`, recording the contributing `impl_id` and `package_id` in `bound_impl_ids` and `bound_package_ids`.
+
+---
+
+## 5. Building External `.gkernel` Plugins with `Guild::KernelSDK`
+
+Guild exports a standalone header-only CMake target `Guild::KernelSDK` (`cmake/GuildKernelSDKConfig.cmake.in`) and helper function `guild_configure_gkernel_plugin(<target>)`:
+
+```cmake
+find_package(GuildKernelSDK REQUIRED)
+
+add_library(my_custom_kernels SHARED my_custom_kernels.cu)
+guild_configure_gkernel_plugin(my_custom_kernels)
+target_link_libraries(my_custom_kernels PRIVATE CUDA::cudart)
+```
+
+`guild_configure_gkernel_plugin` automatically sets `POSITION_INDEPENDENT_CODE ON`, links `Guild::KernelSDK`, and sets `CUDA_RUNTIME_LIBRARY Shared` so dynamically unloading (`dlclose`) a CUDA `.gkernel` plugin never triggers static `cudart` primary-context teardown in the host process.

@@ -173,8 +173,13 @@ struct GuildModel::Impl {
         core::doorbell_free(db);
         if (main_stream) {
             cudaStreamSynchronize(main_stream);
+            kernel_lease = {};
+            runner_lease = {};
             cudaStreamDestroy(main_stream);
             main_stream = nullptr;
+        } else {
+            kernel_lease = {};
+            runner_lease = {};
         }
     }
 };

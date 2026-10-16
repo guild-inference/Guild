@@ -10,6 +10,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace guild::runtime {
 
@@ -54,6 +55,8 @@ public:
     int64_t batch_size() const { return batch_size_; }
 
     const BatchedPrefillStats& stats() const { return stats_; }
+    const std::vector<std::string>& bound_impl_ids() const;
+    const std::vector<std::string>& bound_package_ids() const;
 
     std::function<bool()> should_stop;
     // Diagnostic only: device rows [T,N], routing [T,K]; stream is synchronized.

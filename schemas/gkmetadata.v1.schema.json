@@ -1,0 +1,186 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://guild-inference.org/schemas/gkmetadata.v1.schema.json",
+  "title": "Guild .gkmetadata Package Manifest (v1)",
+  "description": "Declarative manifest for .gkernel (executable kernel/runner plugin) and .gkmodule (non-executable building block) packages.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "format_version",
+    "package_id",
+    "scope",
+    "version",
+    "publisher_id",
+    "kernel_abi"
+  ],
+  "properties": {
+    "format_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "package_kind": {
+      "type": "string",
+      "enum": ["gkernel", "gkmodule"],
+      "default": "gkernel"
+    },
+    "package_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_][A-Za-z0-9_.-]{0,126}[A-Za-z0-9_-]$"
+    },
+    "scope": {
+      "type": "string",
+      "enum": ["cpu-kernels", "cuda-kernels", "hip-kernels", "runner", "hybrid", "module"]
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+    },
+    "publisher_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_][A-Za-z0-9_.-]{0,126}[A-Za-z0-9_-]$"
+    },
+    "entrypoint_symbol": {
+      "type": "string",
+      "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,127}$",
+      "default": "guild_plugin_entry_v1"
+    },
+    "library_path": {
+      "type": "string"
+    },
+    "kernel_abi": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["major", "minor_min", "minor_max"],
+      "properties": {
+        "major": { "type": "integer", "const": 1 },
+        "minor_min": { "type": "integer", "minimum": 0 },
+        "minor_max": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "target_platform": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "os": { "type": "string", "enum": ["any", "linux", "windows", "macos"] },
+        "arch": { "type": "string", "enum": ["any", "x86_64", "aarch64"] }
+      }
+    },
+    "required_core_caps": { "type": "integer", "minimum": 0 },
+    "required_cpu_isa": { "type": "integer", "minimum": 0 },
+    "required_gpu_caps": { "type": "integer", "minimum": 0 },
+    "min_sm_version": { "type": "integer", "minimum": 0 },
+    "max_sm_version": { "type": "integer", "minimum": 0 },
+    "backends": {
+      "type": "array",
+      "items": { "type": "string", "enum": ["cpu", "cuda", "hip"] }
+    },
+    "supported_architectures": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "provided_ops": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "provided_runners": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "required_ops": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "dependencies": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["package_id", "min_version"],
+        "properties": {
+          "package_id": { "type": "string" },
+          "min_version": { "type": "string" },
+          "max_version": { "type": "string" },
+          "publisher_id": { "type": "string" }
+        }
+      }
+    },
+    "module_dependencies": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["module_id", "min_version"],
+        "properties": {
+          "module_id": { "type": "string" },
+          "min_version": { "type": "string" },
+          "abi_tag": { "type": "string" },
+          "publisher_id": { "type": "string" },
+          "sha256": { "type": "string", "pattern": "^[0-9a-fA-F]{64}$" }
+        }
+      }
+    },
+    "tensor_constraints": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["op_name"],
+        "properties": {
+          "op_name": { "type": "string" },
+          "allowed_dtypes": { "type": "array", "items": { "type": "string" } },
+          "max_batch_rows": { "type": "integer", "minimum": 0 },
+          "alignment_bytes": { "type": "integer", "minimum": 1 }
+        }
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "sha256", "byte_size"],
+        "properties": {
+          "path": { "type": "string" },
+          "sha256": { "type": "string", "pattern": "^[0-9a-fA-F]{64}$" },
+          "byte_size": { "type": "integer", "minimum": 0 },
+          "role": { "type": "string" }
+        }
+      }
+    },
+    "signature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["algorithm", "key_id", "signature_hex", "payload_sha256"],
+      "properties": {
+        "algorithm": { "type": "string", "const": "ed25519" },
+        "key_id": { "type": "string" },
+        "signature_hex": { "type": "string", "pattern": "^[0-9a-fA-F]{128}$" },
+        "payload_sha256": { "type": "string", "pattern": "^[0-9a-fA-F]{64}$" }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "spdx_license": { "type": "string" },
+        "source_repo": { "type": "string" },
+        "source_revision": { "type": "string" }
+      }
+    },
+    "validation_fixtures": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["fixture_id", "path", "sha256"],
+        "properties": {
+          "fixture_id": { "type": "string" },
+          "path": { "type": "string" },
+          "sha256": { "type": "string", "pattern": "^[0-9a-fA-F]{64}$" },
+          "max_abs_tol": { "type": "number" },
+          "rel_l2_tol": { "type": "number" }
+        }
+      }
+    }
+  }
+}
