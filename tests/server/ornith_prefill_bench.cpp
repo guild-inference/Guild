@@ -7,18 +7,24 @@
 #include <iomanip>
 #include <iostream>
 #include <sstream>
+#if defined(__linux__)
+#include <dlfcn.h>
+#endif
 
 using namespace guild;
 using Clock=std::chrono::steady_clock;
 double elapsed(Clock::time_point a){return std::chrono::duration<double,std::milli>(Clock::now()-a).count();}
 int main(int argc,char**argv) try {
-    int prompt=512,generated=128,runs=3,context=32768,only_batch=0;std::string csv,write_ids,dump;
-    bool sequential=false;
+    int prompt=512,generated=128,runs=3,context=32768,only_batch=0;std::string csv,write_ids,dump,activity;
+    std::string activity_library="./build-cuda12/libguild_activity.so";
+    bool sequential=false,full_warmup=false;
     for(int i=1;i<argc;++i) {
         const std::string a=argv[i];auto value=[&](){if(i+1>=argc)throw std::invalid_argument("missing argument");return std::string(argv[++i]);};
         if(a=="--prompt")prompt=std::stoi(value());else if(a=="--generate")generated=std::stoi(value());
         else if(a=="--runs")runs=std::stoi(value());else if(a=="--context")context=std::stoi(value());
         else if(a=="--batch")only_batch=std::stoi(value());
+        else if(a=="--activity")activity=value();else if(a=="--activity-library")activity_library=value();
+        else if(a=="--full-warmup")full_warmup=true;
         else if(a=="--csv")csv=value();else if(a=="--write-ids")write_ids=value();else if(a=="--dump")dump=value();
         else if(a=="--sequential")sequential=true;else throw std::invalid_argument("unknown argument: "+a);
     }
@@ -38,19 +44,38 @@ int main(int argc,char**argv) try {
     out<<"batch,run,prompt_tokens,prefill_tokens,generated_tokens,prefill_ms,decode_ms,wall_ms,ttft_ms,prefill_tps,decode_tps,load_ms,vram_sample_bytes,host_peak_bytes,host_kv_allocated_bytes,kv_staging_bytes,prefill_scratch_bytes,expert_groups,expert_weight_bytes,activation_transfer_bytes,cpu_gu_ms,cpu_quant_ms,cpu_down_ms,cpu_group_ms,host_wait_ms,gpu_dense_ms,gpu_gdn_ms,gpu_attention_ms,file_reads,gpu_groups,finish\n"<<std::setprecision(12);
     const std::vector<int> batches=sequential?std::vector<int>{0}:only_batch?std::vector<int>{only_batch}:std::vector<int>{8,16,32,64,128,256,512};
     std::vector<int32_t> expected;
+    void (*activity_start)(const char*)=nullptr;
+    void (*activity_mark)(const char*)=nullptr;
+    void (*activity_stop)()=nullptr;
+    if(!activity.empty()) {
+#if defined(__linux__)
+        auto* lib=dlopen(activity_library.c_str(),RTLD_NOW|RTLD_LOCAL);
+        if(!lib)throw std::runtime_error(dlerror());
+        activity_start=reinterpret_cast<decltype(activity_start)>(dlsym(lib,"guild_activity_start"));
+        activity_mark=reinterpret_cast<decltype(activity_mark)>(dlsym(lib,"guild_activity_mark"));
+        activity_stop=reinterpret_cast<decltype(activity_stop)>(dlsym(lib,"guild_activity_stop"));
+        CHECK(activity_start&&activity_mark&&activity_stop);
+        CHECK(runs==1&&batches.size()==1);
+#else
+        throw std::runtime_error("activity collection requires Linux and optional CUPTI library");
+#endif
+    }
     for(int batch:batches) {
         if(sequential)setenv("GUILD_PREFILL_SEQUENTIAL","1",1);else unsetenv("GUILD_PREFILL_SEQUENTIAL");
         if(batch)m->batched_prefill->set_batch_size(batch);
         runtime::GenerationRequest warm;warm.prompt_tokens={9419,11,220};warm.max_new_tokens=4;
+        if(full_warmup){warm.prompt_tokens=ids;warm.max_new_tokens=generated;}
         runtime::RuntimeTelemetry warm_t;auto session=model->create_session();CHECK(session->generate(warm,nullptr,warm_t,err));
         for(int r=0;r<runs;++r) {
             CHECK(m->ver->wait_commit(err));CHECK(cudaDeviceSynchronize()==cudaSuccess);
+            if(activity_start){activity_start(activity.c_str());activity_mark("prefill_and_first_token");}
             runtime::GenerationRequest req;req.prompt_tokens=ids;req.max_new_tokens=generated;
             runtime::RuntimeTelemetry t;std::vector<int32_t> output;
             const auto file0=m->src.file_reads();const auto start=Clock::now();double first_ms=0;
             CHECK(session->generate(req,[&](const runtime::TokenEvent& ev){
                 if(output.empty()) {
                     first_ms=elapsed(start);
+                    if(activity_mark)activity_mark("decode");
                     if(!dump.empty()) {
                         std::vector<float> logits(model->descriptor().attn.vocab_size);CHECK(m->ver->copy_logits(0,logits.data()));
                         std::ofstream f(dump+".f32",std::ios::binary);CHECK(f.write(reinterpret_cast<const char*>(logits.data()),logits.size()*4));
@@ -59,6 +84,7 @@ int main(int argc,char**argv) try {
                 output.push_back(ev.token_id);return true;
             },t,err));
             CHECK(m->ver->wait_commit(err));CHECK(cudaDeviceSynchronize()==cudaSuccess);const double wall=elapsed(start);
+            if(activity_stop){activity_mark("end");activity_stop();}
             CHECK(t.completion_tokens==int(output.size())&&t.drafts_offered==0&&t.drafts_accepted==0);
             // Early EOS is recorded, never relabeled as the requested output length.
             if(expected.empty())expected=output;else CHECK(expected==output);
