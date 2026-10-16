@@ -63,3 +63,7 @@ build-vision-cuda12.bat
 /build-strata*.bat
 /.strata-mcp/
 /scratch/
+
+# Preserved local Phase 1 executable and isolated package store; measurements are tracked.
+/bench/results/external-kernels/phase1/ornith_prefill_bench
+/bench/results/external-kernels/phase1/data/
