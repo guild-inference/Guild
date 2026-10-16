@@ -706,10 +706,10 @@ void KernelRegistry::register_builtin_kernels() {
     };
 
     register_gpu(GUILD_OP_EMBEDDING_GATHER, "gpu.embed.native_gather", 512, GUILD_DTYPE_ANY, GUILD_DTYPE_I32, GUILD_DTYPE_F32);
-    register_gpu(GUILD_OP_QUANTIZE_ACT, "gpu.quantize.q8_1_8col", 8, GUILD_DTYPE_ANY, GUILD_DTYPE_F32, GUILD_DTYPE_Q8_1);
+    register_gpu(GUILD_OP_QUANTIZE_ACT, "gpu.quantize.q8_1_8col", 512, GUILD_DTYPE_ANY, GUILD_DTYPE_F32, GUILD_DTYPE_Q8_1);
     register_gpu(GUILD_OP_DEQUANTIZE, "gpu.dequant.bf16_native", 512, GUILD_DTYPE_ANY, GUILD_DTYPE_ANY, GUILD_DTYPE_BF16);
     register_gpu(GUILD_OP_QUANTIZED_GEMV, "gpu.mmvq.native_1col", 1, GUILD_DTYPE_ANY, GUILD_DTYPE_Q8_1, GUILD_DTYPE_F32);
-    register_gpu(GUILD_OP_QUANTIZED_GEMM, "gpu.mmvq.native_8col", 8, GUILD_DTYPE_ANY, GUILD_DTYPE_Q8_1, GUILD_DTYPE_F32);
+    register_gpu(GUILD_OP_QUANTIZED_GEMM, "gpu.mmvq.native_8col", 512, GUILD_DTYPE_ANY, GUILD_DTYPE_Q8_1, GUILD_DTYPE_F32);
     register_gpu(GUILD_OP_GROUPED_MOE_GEMM, "gpu.moe.grouped_hit_native", 128, GUILD_DTYPE_ANY, GUILD_DTYPE_Q8_1, GUILD_DTYPE_F32);
     register_gpu(GUILD_OP_MOE_ROUTER_TOPK, "gpu.moe.router_topk_native", 512, GUILD_DTYPE_F32, GUILD_DTYPE_F32, GUILD_DTYPE_F32);
     register_gpu(GUILD_OP_MOE_DISPATCH, "gpu.moe.dispatch_hybrid", 512, GUILD_DTYPE_ANY, GUILD_DTYPE_F32, GUILD_DTYPE_F32);

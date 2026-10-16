@@ -841,6 +841,46 @@ template<> struct Split<23> {   // IQ4_XS
         return d * sumi;
     }
 };
+template<> inline constexpr bool kSplit<7> = true;
+template<> struct Split<7> {   // Q5_1
+    struct W { int vi0[VDR_Q5_1], vi1[VDR_Q5_1]; float2 dm5; };
+    template<bool STAGE_GRID = false>
+    __device__ static W load(const void* __restrict__ vbq, int kbx, int iqs, const uint32_t* __restrict__ = nullptr) {
+        const block_q5_1* bq5_1 = (const block_q5_1*) vbq + kbx;
+        W r;
+#pragma unroll
+        for (int i = 0; i < VDR_Q5_1; ++i) {
+            const int vl = get_int_b4(bq5_1->qs, iqs + i);
+            const int vh = get_int_b4(bq5_1->qh, 0) >> (4 * (iqs + i));
+            int vi0 = (vl >> 0) & 0x0F0F0F0F;
+            vi0 |= (vh << 4) & 0x00000010;
+            vi0 |= (vh << 11) & 0x00001000;
+            vi0 |= (vh << 18) & 0x00100000;
+            vi0 |= (vh << 25) & 0x10000000;
+            r.vi0[i] = vi0;
+            int vi1 = (vl >> 4) & 0x0F0F0F0F;
+            vi1 |= (vh >> 12) & 0x00000010;
+            vi1 |= (vh >> 5) & 0x00001000;
+            vi1 |= (vh << 2) & 0x00100000;
+            vi1 |= (vh << 9) & 0x10000000;
+            r.vi1[i] = vi1;
+        }
+        r.dm5 = __half22float2(bq5_1->dm);
+        return r;
+    }
+    __device__ static float apply(const W& r, const block_q8_1* __restrict__ bq8_1, int iqs) {
+        int sumi = 0, sumu = 0;
+#pragma unroll
+        for (int i = 0; i < VDR_Q5_1; ++i) {
+            const int u0 = get_int_b4(bq8_1->qs, iqs + i), u1 = get_int_b4(bq8_1->qs, iqs + i + QI5_1);
+            sumi = ggml_cuda_dp4a(r.vi0[i], u0, sumi);
+            sumi = ggml_cuda_dp4a(r.vi1[i], u1, sumi);
+            sumu = ggml_cuda_dp4a(0x01010101, u1, ggml_cuda_dp4a(0x01010101, u0, sumu));
+        }
+        const float d8 = __low2float(bq8_1->ds);
+        return sumi * (r.dm5.x * d8) + sumu * (r.dm5.y * d8);
+    }
+};
 template<> inline constexpr bool kSplit<42> = true;
 template<> struct Split<42> {   // Q2_0
     struct W { int qx[4], qy[4]; float d2; };
@@ -1043,6 +1083,59 @@ __global__ void __launch_bounds__(128) mmvq_multi_kernel(const uint8_t* __restri
     const int lane = threadIdx.x;
     const int nb = n_in / Fmt<TY>::qk, xb = n_in / 32;
     const uint8_t* wr = w + (size_t) row * row_bytes;
+    if constexpr (!STAGE_GRID && TY == 7) {
+        using F = Fmt<TY>;
+        using S = Split<TY>;
+        if (ncols > NC && nb * F::ipb == 32) {
+            const int kbx = lane / F::ipb, iqs = F::step * (lane % F::ipb);
+            const typename S::W wv = S::template load<false>(wr, kbx, iqs, nullptr);
+            for (int c0 = 0; c0 < ncols; c0 += NC) {
+                const int n = min(NC, ncols - c0);
+                float s[NC];
+#pragma unroll
+                for (int c = 0; c < NC; ++c) s[c] = 0.0f;
+#pragma unroll
+                for (int c = 0; c < NC; ++c) {
+                    if (c < n) {
+                        s[c] += S::apply(wv, x + (c0 + c) * xb + kbx * (F::qk / 32), iqs);
+                        s[c] = warp_sum(s[c]);
+                    }
+                }
+#pragma unroll
+                for (int c = 0; c < NC; ++c)
+                    if (c < n && lane == c) y[(size_t) (c0 + c) * n_out + row] = s[c];
+            }
+            return;
+        }
+        if (ncols > NC && nb * F::ipb == 128) {
+            typename S::W wv[4];
+#pragma unroll
+            for (int it = 0; it < 4; ++it) {
+                const int k = lane + 32 * it, kbx = k / F::ipb, iqs = F::step * (k % F::ipb);
+                wv[it] = S::template load<false>(wr, kbx, iqs, nullptr);
+            }
+            for (int c0 = 0; c0 < ncols; c0 += NC) {
+                const int n = min(NC, ncols - c0);
+                float s[NC];
+#pragma unroll
+                for (int c = 0; c < NC; ++c) s[c] = 0.0f;
+#pragma unroll
+                for (int it = 0; it < 4; ++it) {
+                    const int k = lane + 32 * it, kbx = k / F::ipb, iqs = F::step * (k % F::ipb);
+#pragma unroll
+                    for (int c = 0; c < NC; ++c)
+                        if (c < n) s[c] += S::apply(wv[it], x + (c0 + c) * xb + kbx * (F::qk / 32), iqs);
+                }
+#pragma unroll
+                for (int c = 0; c < NC; ++c)
+                    if (c < n) s[c] = warp_sum(s[c]);
+#pragma unroll
+                for (int c = 0; c < NC; ++c)
+                    if (c < n && lane == c) y[(size_t) (c0 + c) * n_out + row] = s[c];
+            }
+            return;
+        }
+    }
     for (int c0 = 0; c0 < ncols; c0 += NC) {
         const int n = min(NC, ncols - c0);
         int off[NC];

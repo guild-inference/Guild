@@ -321,9 +321,12 @@ std::unique_ptr<GuildModel> GuildModel::load(
     // Pin RAM expert complement (all remaining experts resident in RAM)
     if (impl->config.resident_budget_gib > 0) {
         const uint64_t budget = ram_budget;
+        const bool gpu_needs_pinned = std::any_of(
+            impl->expert_performance.gpu_layers.begin(), impl->expert_performance.gpu_layers.end(),
+            [](uint8_t v) { return v != 0; });
         // The source already clamps to available memory and falls back from pinning.
         // Retrying with an unbounded budget would discard the requested backing cap.
-        if (!impl->src.pin_cache_complement(impl->xcache, error_msg, true, {}, -1, 4ull << 30, budget,
+        if (!impl->src.pin_cache_complement(impl->xcache, error_msg, gpu_needs_pinned, {}, -1, 4ull << 30, budget,
                                             profile.empty() ? nullptr : &profile)) return nullptr;
     }
 

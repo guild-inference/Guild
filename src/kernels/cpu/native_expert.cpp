@@ -97,11 +97,13 @@ void native_gu_rows(const NativeFmt& f, const uint8_t* blob, const void* const* 
     // can depend on how many drafts a verify window held.  GUILD_IQ_MT_MIN=1 (opt-in, 0.1.30) uses the multi-token
     // kernels for every group: output independent of the drafting, at a measured -1..-3% decode on IQ3_S (AVX-512).
     static const int mt_min = [] { const char* e = std::getenv("GUILD_IQ_MT_MIN"); return e ? std::atoi(e) : 2; }();
-    // Unsloth UD-Q4_K_XL's Q4_K gate/up: the multi-token kernel is bit-exact against ggml's per-token dot (any group
-    // size, no #152 rule).  Opt-in, GUILD_KQ256=1: measured no faster in the engine (a window's expert groups hold
-    // ~1.4 tokens and the weights stay in L1 across ggml's per-token calls; 1.01-1.13x in native_expert_parity).
-    static const bool kq = [] { const char* v = std::getenv("GUILD_KQ256"); return cpu_avx2_ok() && v != nullptr && std::atoi(v) != 0; }();
-    if (kq && f.gu_type == 12 && nt >= 2) {   // one token: ggml's own dot below (the same bits, less overhead)
+    // Q4_K / Q6_K gate/up: the multi-token 2-row fused kernel is bit-exact against ggml's per-token dot (any group
+    // size, no #152 rule).  Enabled by default; GUILD_KQ256=0 falls back to ggml-cpu's per-token dot.
+    static const bool kq = [] {
+        const char* v = std::getenv("GUILD_KQ256");
+        return cpu_avx2_ok() && (v == nullptr || std::atoi(v) != 0);
+    }();
+    if (kq && (f.gu_type == 12 || f.gu_type == 14) && nt >= 2) {
         kq256_gu_rows(f.gu_type, blob, f.gu_row, f.up_off, (int) f.n_embd, act, nt, ff, r0, r1);
         return;
     }
@@ -111,11 +113,15 @@ void native_gu_rows(const NativeFmt& f, const uint8_t* blob, const void* const* 
     static const bool cpu512 = cpu_avx512_ok();
     if (nt >= mt_min && (iq512_supported(f.gu_type) || (!cpu512 && iq256_supported(f.gu_type)))) {
         if (avx512 && iq512_supported(f.gu_type)) {
-            iq512_gu_rows(f.gu_type, blob, f.gu_row, f.up_off, (int) f.n_embd, act, nt, ff, r0, r1);
+            for (int t0 = 0; t0 < nt; t0 += MAXT)
+                iq512_gu_rows(f.gu_type, blob, f.gu_row, f.up_off, (int) f.n_embd, act + t0,
+                              (std::min)(MAXT, nt - t0), ff + t0, r0, r1);
             return;
         }
         if (avx2 && iq256_supported(f.gu_type)) {
-            iq256_gu_rows(f.gu_type, blob, f.gu_row, f.up_off, (int) f.n_embd, act, nt, ff, r0, r1);
+            for (int t0 = 0; t0 < nt; t0 += MAXT)
+                iq256_gu_rows(f.gu_type, blob, f.gu_row, f.up_off, (int) f.n_embd, act + t0,
+                              (std::min)(MAXT, nt - t0), ff + t0, r0, r1);
             return;
         }
     }
@@ -139,16 +145,21 @@ void native_down_rows(const NativeFmt& f, const uint8_t* blob, const void* const
     // block instead of once per token; ggml-cpu's dot is single-token.  GUILD_NO_IQ4NL falls back to it.
     static const bool iq4nl_mt = std::getenv("GUILD_NO_IQ4NL") == nullptr;
     static const int mt_min = [] { const char* e = std::getenv("GUILD_IQ_MT_MIN"); return e ? std::atoi(e) : 2; }();
-    static const bool kq = [] { const char* v = std::getenv("GUILD_KQ256"); return v != nullptr && std::atoi(v) != 0; }();
+    static const bool kq = [] {
+        const char* v = std::getenv("GUILD_KQ256");
+        return cpu_avx2_ok() && (v == nullptr || std::atoi(v) != 0);
+    }();
     // Both multi-token kernels below are /arch:AVX2 translation units (kq_avx2.cpp and iq_avx2.cpp),
     // so a CPU without AVX2 has to reach ggml-cpu's vec_dot instead - same reasoning as the gate/up
     // rows above, where `avx512` tested cpu_avx512_ok() and `avx2` did not.
-    if (cpu_avx2_ok() && kq && nt >= 2 && (f.d_type == 7 || f.d_type == 8)) {   // Q5_1 / Q8_0 down: bit-exact, any group size
+    if (kq && nt >= 2 && kq256_supported(f.d_type)) {
         kq256_rows(f.d_type, blob + f.down_off, f.d_row, (int) f.n_ff, hq, nt, out, r0, r1);
         return;
     }
     if (cpu_avx2_ok() && nt >= mt_min && f.d_type == 20 && iq4nl_mt) {   // #152: the same rule as the gate/up rows
-        iq4nl256_down_rows(blob + f.down_off, f.d_row, (int) f.n_ff, hq, nt, out, r0, r1);
+        for (int t0 = 0; t0 < nt; t0 += MAXT)
+            iq4nl256_down_rows(blob + f.down_off, f.d_row, (int) f.n_ff, hq + t0, (std::min)(MAXT, nt - t0),
+                               out + t0, r0, r1);
         return;
     }
     const ggml_vec_dot_t dot = traits(f.d_type)->vec_dot;

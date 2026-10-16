@@ -51,6 +51,7 @@ constexpr int64_t H = 2560, FF = 640;
 // The three ways and the dequantizers for one expert blob; returns the number of failed checks.
 int check_blob(const cpu::NativeFmt& f, const std::vector<uint8_t>& blob, int seed, const std::string& label,
                cudaStream_t s) {
+    const int64_t H = f.n_embd, FF = f.n_ff;
     int failures = 0;
     // (a) the float reference
     const auto* tg = ggml_get_type_traits((ggml_type) f.gu_type);
@@ -180,7 +181,7 @@ int check_blob(const cpu::NativeFmt& f, const std::vector<uint8_t>& blob, int se
         // BIT FOR BIT, for 1..8 tokens; then the time of 4 tokens (a verify window) both ways
         for (int role = 0; role < 2; ++role) {
             const int type = role == 0 ? f.gu_type : f.d_type;
-            if (!cpu::cpu_avx2_ok() || !cpu::kq256_supported(type) || (role == 0 && type != 12)) continue;
+            if (!cpu::cpu_avx2_ok() || !cpu::kq256_supported(type) || (role == 0 && type != 12 && type != 14)) continue;
             const int n = role == 0 ? (int) H : (int) FF, rows = role == 0 ? (int) FF : (int) H;
             const size_t rb = role == 0 ? f.gu_row : f.d_row;
             const uint8_t* w = blob.data() + (role == 0 ? 0 : f.down_off);
@@ -276,8 +277,9 @@ int check_blob(const cpu::NativeFmt& f, const std::vector<uint8_t>& blob, int se
                         (double) (f.bytes - f.down_off) / usg / 1e3);
         }
     }
-    // (c) the GPU: one group holding the NT entries
-    {
+    // (c) the GPU: one group holding the NT entries (when GPU native_expert_grouped supports the format pair)
+    const bool gpu_sup = guild::kernels::native_expert_supported(f.gu_type, f.d_type, H, FF);
+    if (gpu_sup) {
         const auto L = guild::kernels::native_expert_layout(f.gu_type, f.d_type, H, FF);
         void *dblob, *dx, *dxq, *dscr;
         float* dout;
@@ -366,8 +368,10 @@ int check_blob(const cpu::NativeFmt& f, const std::vector<uint8_t>& blob, int se
         cudaFree(dblob); cudaFree(dx); cudaFree(dxq); cudaFree(dscr); cudaFree(dout); cudaFree(dptr);
         cudaFree(dstart); cudaFree(dn); cudaFree(ddst); cudaFree(dtok);
     }
-    const double ec = rel(got_c, ref), eg = rel(got_g, ref), ecg = rel(got_c, got_g);
-    const bool ok = ec < 3e-2 && eg < 3e-2 && std::isfinite(ec) && std::isfinite(eg);
+    const double ec = rel(got_c, ref), eg = gpu_sup ? rel(got_g, ref) : 0.0, ecg = gpu_sup ? rel(got_c, got_g) : 0.0;
+    const bool require_gpu = (label == "synthetic") && std::getenv("GUILD_CPU_ONLY_SYNTHETIC") == nullptr;
+    const bool ok = ec < 3e-2 && (require_gpu ? (gpu_sup && eg < 3e-2 && std::isfinite(eg))
+                                              : (!gpu_sup || (eg < 3e-2 && std::isfinite(eg)))) && std::isfinite(ec);
     std::printf("%-9s %-8s/%-7s blob %8zu  cpu rel %.2e  gpu rel %.2e  cpu-gpu %.2e  %s\n", label.c_str(),
                 ggml_type_name((ggml_type) f.gu_type), ggml_type_name((ggml_type) f.d_type), f.bytes, ec, eg, ecg,
                 ok ? "ok" : "FAIL");
@@ -388,6 +392,7 @@ int type_of(std::string name) {
 
 // Random weights (rows of different magnitudes) quantized by ggml into the blob layout.
 std::vector<uint8_t> synthetic_blob(const cpu::NativeFmt& f, int seed) {
+    const int64_t H = f.n_embd, FF = f.n_ff;
     std::vector<uint8_t> blob(f.bytes);
     std::mt19937 rng(seed);
     std::normal_distribution<float> nd(0.f, 1.f);
@@ -556,11 +561,11 @@ int main(int argc, char** argv) {
             const size_t slash = arg.find('/');
             const int gu = slash == std::string::npos ? -1 : type_of(arg.substr(0, slash));
             const int dn = slash == std::string::npos ? -1 : type_of(arg.substr(slash + 1));
+            const int64_t syn_ff = (dn >= 0 && ggml_blck_size((ggml_type) dn) == 256) ? 512 : FF;
             cpu::NativeFmt f;
             std::string err;
-            if (gu < 0 || dn < 0 || !cpu::native_fmt(gu, dn, H, FF, f, err) ||
-                !guild::kernels::native_expert_supported(gu, dn, H, FF)) {
-                std::printf("%s: %s\n", arg.c_str(), err.empty() ? "not a pair the GPU expert kernels take" : err.c_str());
+            if (gu < 0 || dn < 0 || !cpu::native_fmt(gu, dn, H, syn_ff, f, err)) {
+                std::printf("%s: %s\n", arg.c_str(), err.empty() ? "unsupported format pair" : err.c_str());
                 ++failures;
                 continue;
             }
@@ -581,9 +586,10 @@ int main(int argc, char** argv) {
                 if (t[r]) data[r] = model.shard(at).tensor_data(*t[r]);
             }
             if (!t[0] || !t[1] || !t[2]) { std::printf("layer %d: no expert tensors\n", l); ++failures; continue; }
+            const int64_t h_dim = (int64_t) t[0]->shape[0], ff_dim = (int64_t) t[0]->shape[1];
             cpu::NativeFmt f;
             std::string err;
-            if (!cpu::native_fmt((int) t[0]->type, (int) t[2]->type, H, FF, f, err)) {
+            if (!cpu::native_fmt((int) t[0]->type, (int) t[2]->type, h_dim, ff_dim, f, err)) {
                 std::printf("layer %d: %s\n", l, err.c_str()); ++failures; continue;
             }
             std::vector<uint8_t> blob(f.bytes);

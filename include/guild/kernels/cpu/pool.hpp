@@ -61,7 +61,12 @@ struct ExpertJobMulti {
     float* out[MAXT] = {};
     /// Plan v0.3 P6: a native pack's activations (the layer's `vec_dot_type`), one per token.
     const void* nact[MAXT] = {};
+    /// Extended token pointers when `nt > MAXT` (up to `kMaxMultiExt`, used by whole-expert prefill).
+    const void* const* nact_ext = nullptr;
+    float* const* out_ext = nullptr;
 };
+
+inline constexpr int kMaxMultiExt = 8;
 
 /// How worker threads are allocated across physical/logical CPU cores (#272).  `All` is the layout the pool has
 /// always used and the default; the hybrid-aware ones are opt-in (--pool-affinity auto|p-cores).
@@ -171,9 +176,12 @@ public:
     // Per-token quantizer and reductions are unchanged. Decode defaults to its
     // existing two-phase schedule; prompt uses a third barrier for larger groups.
     void run_split_multi_native(const NativeFmt& f, ExpertJobMulti* jobs, int n, bool parallel_quant = false);
-    static constexpr int kMaxSplitMulti = 96;
+    void quant_act_multi_native(const NativeFmt& f, const float* x, uint8_t* dst, int n_tok);
+    bool combine_multi_native(const float* parts, const float* weights, float* out, int n_tok, int k, int n_embd);
+    static constexpr int kMaxSplitMulti = 256;
     /// run_split_multi's phases, accumulated ms: gate/up rows, the intermediate quantization, down rows.
     double ms_multi_gu = 0, ms_multi_q = 0, ms_multi_down = 0;
+    double host_gu_ms_ = 0, host_q_ms_ = 0, host_down_ms_ = 0;
     int64_t multi_bytes = 0;
 
     /// Total `_mm_pause` iterations spent waiting, over all workers, is no longer counted - see the note on the
@@ -281,6 +289,14 @@ private:
         alignas(64) uint8_t hq[MAXT][kNativeHBytes];   // plan v0.3 P6: native down activations
     };
     const NativeFmt* nfmt_ = nullptr;
+    const float* qact_x_ = nullptr;
+    uint8_t* qact_dst_ = nullptr;
+    const float* comb_parts_ = nullptr;
+    const float* comb_weights_ = nullptr;
+    float* comb_out_ = nullptr;
+    int comb_k_ = 0;
+    int comb_n_embd_ = 0;
+    std::atomic<bool> comb_nonfinite_{false};
     std::vector<SplitBufMulti> split_multi_;
     PoolAffinity affinity_ = PoolAffinity::All;
     CpuTopology topo_;

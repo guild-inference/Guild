@@ -8,7 +8,7 @@
 
 namespace guild::kernels::cpu {
 
-/// Q4_K (12), Q5_1 (7), Q8_0 (8).
+/// Q4_K (12), Q6_K (14), Q5_1 (7), Q8_0 (8).
 bool kq256_supported(int ggml_type) noexcept;
 /// ff[t][r] = silu(gate_r . a[t]) * (up_r . a[t]), rows [r0, r1); gate rows at blob, up rows at blob + up_off.
 void kq256_gu_rows(int ggml_type, const uint8_t* blob, size_t gu_row, size_t up_off, int n, const void* const* act,

@@ -39,16 +39,11 @@ using Clock = std::chrono::steady_clock;
 double ms(Clock::time_point a) { return std::chrono::duration<double,std::milli>(Clock::now()-a).count(); }
 void ck(cudaError_t e) { if (e != cudaSuccess) throw std::runtime_error(cudaGetErrorString(e)); }
 void quant(const ResolvedPrefillKernels& fns, const float* x, void* dst, int width, int rows, void* stream) {
-    for (int t=0; t<rows; t+=kProjectionRows) {
-        const int n=std::min(kProjectionRows, rows-t);
-        fns.quantize_q8_1(x+size_t(t)*width, static_cast<uint8_t*>(dst)+size_t(t)*width/32*36, width,n,stream);
-    }
+    fns.quantize_q8_1(x, dst, width, rows, stream);
 }
 void project(const ResolvedPrefillKernels& fns, const core::WeightRef& w, const void* x, float* y, int rows, void* stream) {
     if (!w.native_data) throw std::runtime_error("batched prefill: missing native projection");
-    for (int t=0; t<rows; t+=kProjectionRows)
-        fns.mmvq(w.native_type,w.native_data,static_cast<const uint8_t*>(x)+size_t(t)*w.ne0/32*36,
-                 y+size_t(t)*w.ne1,int(w.ne0),int(w.ne1),std::min(kProjectionRows,rows-t),stream);
+    fns.mmvq(w.native_type, w.native_data, x, y, int(w.ne0), int(w.ne1), rows, stream);
 }
 const core::WeightRef& need(const core::LayerView& v,const char* key) {
     const auto* w=v.get(key);
@@ -85,6 +80,8 @@ struct BatchedPrefill::Impl {
     std::vector<std::vector<int>> entries;
     std::vector<std::vector<uint8_t>> file_storage;
     std::vector<kernels::cpu::ExpertJobMulti> jobs;
+    std::vector<const void*> job_nact;
+    std::vector<float*> job_out;
     kernels::ResolvedPrefillKernels fns{};
     bool profiling=false;
     cudaEvent_t events[5]={};
@@ -156,7 +153,7 @@ bool BatchedPrefill::init(const core::WeightTable& wt,const core::ModelGeometry&
     const uint64_t perrow=4ull*(5*N+2*C+2*V+2*g.ssm_v_heads+4*NH*HD+2*NK*HD+NE+K+2*F+1+K*N)+
                           2ull*N+36ull/4*std::max({N,V,NH*HD,F})+4ull*(NH+NK+kStepCount+1);
     if (requested<0 || requested>kMaxBatch) throw std::invalid_argument("prefill batch must be 0(auto) or 1..512");
-    int chosen=requested?int(requested):128;
+    int chosen=requested?int(requested):256;
     const uint64_t reserve=512ull<<20;
     if (!requested) while (chosen>1 && fixed+perrow*chosen+reserve>free) chosen/=2;
     if (fixed+perrow*chosen+reserve>free) throw std::runtime_error("prefill scratch exceeds free VRAM and reserve");
@@ -212,7 +209,8 @@ bool BatchedPrefill::run(const int64_t* tokens,int64_t n,int64_t pos0,std::strin
         for (int t=0;t<T;++t) {
             m.htokens[t]=int32_t(tokens[c0+t]);
             qsa_step_fill(m.hsteps+t*kStepCount,p0+t,s);
-            std::fill_n(m.hpositions+t*m.pos_stride,m.pos_stride,int32_t(p0+t));
+            std::fill_n(m.hpositions+t*NH,NH,int32_t(p0+t));
+            std::fill_n(m.hpositions+T*NH+t*NK,NK,int32_t(p0+t));
         }
         *m.hkeep=T;
         ck(cudaMemcpyAsync(m.tokens,m.htokens,T*4,cudaMemcpyHostToDevice,cs));
@@ -255,20 +253,21 @@ bool BatchedPrefill::run(const int64_t* tokens,int64_t n,int64_t pos0,std::strin
                 m.stamp(1);
                 const auto& st=ss.qsa_states[qi];
                 // Append current chunk first; each query's width enforces its own causal boundary.
+                ck(cudaMemcpy2DAsync(m.q,HD*4,m.qfull,HD*8,HD*4,size_t(T)*NH,cudaMemcpyDeviceToDevice,cs));
+                m.norm(m.q,need(lv,"attn_q_norm.weight"),m.q,HD,T*NH);
+                m.norm(m.k,need(lv,"attn_k_norm.weight"),m.k,HD,T*NK);
+                m.fns.rope_apply(m.q,m.q,T*NH,HD,int(s.n_rot),rope_scaling(),m.positions,cs);
+                m.fns.rope_apply(m.k,m.k,T*NK,HD,int(s.n_rot),rope_scaling(),m.positions+T*NH,cs);
                 for (int t=0;t<T;++t) {
-                    float* qt=m.q+size_t(t)*NH*HD;float* kt=m.k+size_t(t)*NK*HD;
-                    ck(cudaMemcpy2DAsync(qt,HD*4,m.qfull+size_t(t)*NH*2*HD,HD*8,HD*4,NH,cudaMemcpyDeviceToDevice,cs));
-                    m.norm(qt,need(lv,"attn_q_norm.weight"),qt,HD,NH); m.norm(kt,need(lv,"attn_k_norm.weight"),kt,HD,NK);
-                    const int32_t* p=m.positions+size_t(t)*m.pos_stride;
-                    m.fns.rope_apply(qt,qt,NH,HD,int(s.n_rot),rope_scaling(),p,cs);
-                    m.fns.rope_apply(kt,kt,NK,HD,int(s.n_rot),rope_scaling(),p+NH,cs);
+                    float* kt=m.k+size_t(t)*NK*HD;
                     kv_append_step(st.k_pool,st.v_pool,st.page_table,m.steps+t*kStepCount,kt,m.v+size_t(t)*NK*HD,s,cs,&st.host);
                 }
+                core::qsa_kv_resolve(st,g,m.ident,m.steps+(T-1)*kStepCount,1,m.cap,cs);
                 for (int t=0;t<T;t+=kAttentionQueries) {
                     const int count=std::min(kAttentionQueries,T-t);
-                    core::qsa_kv_resolve(st,g,m.ident,m.steps+t*kStepCount,count,m.cap,cs);
+                    const int active_cap=std::max(1,int(p0+t+count));
                     qsa_decode_attn_batch(m.q+size_t(t)*NH*HD,core::qsa_attn_pools(st),m.ident,m.steps+t*kStepCount,
-                        m.cap,s,m.scratch,m.attn+size_t(t)*NH*HD,count,cs);
+                        active_cap,s,m.scratch,m.attn+size_t(t)*NH*HD,count,cs,0);
                 }
                 native_qsa_gate_apply(m.attn,m.qfull,m.attn,T*NH,HD,cs);
                 m.stamp(2);
@@ -288,6 +287,9 @@ bool BatchedPrefill::run(const int64_t* tokens,int64_t n,int64_t pos0,std::strin
             const auto wait_start=Clock::now();
             ck(cudaStreamSynchronize(cs));
             stats_.host_wait_ms+=ms(wait_start);
+            stats_.gpu_dense_ms+=m.elapsed(0,1)+m.elapsed(2,3)+m.elapsed(3,4);
+            if (core::is_qsa_layer(g,l)) stats_.gpu_attention_ms+=m.elapsed(1,2);
+            else stats_.gpu_gdn_ms+=m.elapsed(1,2);
             std::string e;
             if (!core::validate_finite(m.hact,size_t(T)*N,"prefill expert input",e) ||
                 !core::validate_finite(m.hweights,size_t(T)*K,"prefill routing weights",e)) throw std::runtime_error(e);
@@ -295,15 +297,20 @@ bool BatchedPrefill::run(const int64_t* tokens,int64_t n,int64_t pos0,std::strin
             const auto& wg=need(lv,"ffn_gate_shexp.weight");const auto& wu=need(lv,"ffn_up_shexp.weight");const auto& wd=need(lv,"ffn_down_shexp.weight");
             sw.gate_type=wg.native_type;sw.gate_data=wg.native_data;sw.up_type=wu.native_type;sw.up_data=wu.native_data;
             sw.down_type=wd.native_type;sw.down_data=wd.native_data;sw.q8_1=m.xq;
-            for (int t=0;t<T;t+=kProjectionRows) shared_expert_multi(std::min(kProjectionRows,T-t),m.mixed+size_t(t)*N,
-                m.bf+size_t(t)*N,sw,static_cast<const uint16_t*>(need(lv,"ffn_gate_inp_shexp.weight").data),
-                m.sg+size_t(t)*F,m.su+size_t(t)*F,m.scalar+t,m.shared+size_t(t)*N,N,F,cs);
+            shared_expert_multi(T,m.mixed,m.bf,sw,static_cast<const uint16_t*>(need(lv,"ffn_gate_inp_shexp.weight").data),
+                m.sg,m.su,m.scalar,m.shared,N,F,cs);
             // Group by expert, but write every result to its original token/routing rank.
             const auto group_start=Clock::now();
             for (auto& list:m.entries) list.clear();
             m.jobs.clear();
+            m.job_nact.clear();
+            m.job_out.clear();
+            if (m.job_nact.capacity() < size_t(T * K)) {
+                m.job_nact.reserve(size_t(T * K));
+                m.job_out.reserve(size_t(T * K));
+            }
             const auto& fmt=layout.fmt[size_t(l)];
-            for (int t=0;t<T;++t) kernels::cpu::native_quant_act(fmt,m.hact+size_t(t)*N,m.act.data()+size_t(t)*kernels::cpu::kNativeActBytes);
+            m.pool->quant_act_multi_native(fmt,m.hact,m.act.data(),T);
             for (int i=0;i<T*K;++i) {
                 if (m.hids[i]<0 || m.hids[i]>=NE) throw std::runtime_error("prefill routed expert ID outside vocabulary");
                 m.entries[size_t(m.hids[i])].push_back(i);
@@ -321,9 +328,9 @@ bool BatchedPrefill::run(const int64_t* tokens,int64_t n,int64_t pos0,std::strin
                     if (m.src->copy_blob(l,expert,storage.data())) blob=storage.data();
                 } else blob=m.src->blob(l,expert);
                 if (!blob) throw std::runtime_error("prefill: missing routed expert blob");
-                for (size_t b=0;b<list.size();b+=kernels::cpu::MAXT) {
-                    const int nt=int(std::min<size_t>(kernels::cpu::MAXT,list.size()-b));
-                    if (slot>=0) {
+                if (slot>=0) {
+                    for (size_t b=0;b<list.size();b+=kernels::cpu::MAXT) {
+                        const int nt=int(std::min<size_t>(kernels::cpu::MAXT,list.size()-b));
                         // Native cached matrices keep their original quantization; no whole expert dequantization.
                         for (int j=0;j<nt;++j) ck(cudaMemcpyAsync(m.gx+size_t(j)*N,m.mixed+size_t(list[b+j]/K)*N,
                             N*4,cudaMemcpyDeviceToDevice,cs));
@@ -335,33 +342,56 @@ bool BatchedPrefill::run(const int64_t* tokens,int64_t n,int64_t pos0,std::strin
                         for (int j=0;j<nt;++j) ck(cudaMemcpyAsync(m.parts+size_t(list[b+j])*N,m.go+size_t(j)*N,
                             N*4,cudaMemcpyDeviceToDevice,cs));
                         ++stats_.gpu_groups;
-                    } else {
-                        kernels::cpu::ExpertJobMulti job; job.blob=blob;job.nt=nt;
-                        for (int j=0;j<nt;++j) {const int i=list[b+j];job.nact[j]=m.act.data()+size_t(i/K)*kernels::cpu::kNativeActBytes;
-                            job.out[j]=m.hparts+size_t(i)*N;}
-                        m.jobs.push_back(job); stats_.expert_bytes+=fmt.bytes;
+                        ++stats_.expert_groups;
                     }
-                    ++stats_.expert_groups;
+                } else {
+                    for (size_t b=0;b<list.size();b+=kernels::cpu::kMaxMultiExt) {
+                        const int nt=int(std::min<size_t>(kernels::cpu::kMaxMultiExt,list.size()-b));
+                        kernels::cpu::ExpertJobMulti job; job.blob=blob;job.nt=nt;
+                        if (nt<=kernels::cpu::MAXT) {
+                            for (int j=0;j<nt;++j) {const int i=list[b+j];job.nact[j]=m.act.data()+size_t(i/K)*kernels::cpu::kNativeActBytes;
+                                job.out[j]=m.hparts+size_t(i)*N;}
+                        } else {
+                            const size_t base=m.job_nact.size();
+                            for (int j=0;j<nt;++j) {const int i=list[b+j];
+                                m.job_nact.push_back(m.act.data()+size_t(i/K)*kernels::cpu::kNativeActBytes);
+                                m.job_out.push_back(m.hparts+size_t(i)*N);}
+                            job.nact_ext=m.job_nact.data()+base;
+                            job.out_ext=m.job_out.data()+base;
+                        }
+                        m.jobs.push_back(job); stats_.expert_bytes+=fmt.bytes;
+                        ++stats_.expert_groups;
+                    }
                 }
             }
+            std::stable_sort(m.jobs.begin(), m.jobs.end(),
+                             [](const kernels::cpu::ExpertJobMulti& a, const kernels::cpu::ExpertJobMulti& b) {
+                                 return a.nt > b.nt;
+                             });
             stats_.cpu_group_ms+=ms(group_start);
             m.pool->run_split_multi_native(fmt,m.jobs.data(),int(m.jobs.size()),true);
             // CPU row writes never overlap resident GPU rows. Preserve rank order, not expert-ID sum order.
             if (!m.cache || !m.cache->valid()) {
-                if (!core::validate_finite(m.hparts,size_t(T)*K*N,"prefill expert output",e)) throw std::runtime_error(e);
-                ck(cudaMemcpyAsync(m.parts,m.hparts,size_t(T)*K*N*4,cudaMemcpyHostToDevice,cs));
-            } else for (int i=0;i<T*K;++i) if (m.cache->slot_of(l,m.hids[i])<0) {
-                if (!core::validate_finite(m.hparts+size_t(i)*N,N,"prefill expert output",e)) throw std::runtime_error(e);
-                ck(cudaMemcpyAsync(m.parts+size_t(i)*N,m.hparts+size_t(i)*N,N*4,cudaMemcpyHostToDevice,cs));
+                if (!m.pool->combine_multi_native(m.hparts,m.hweights,m.hact,T,K,N)) {
+                    if (!core::validate_finite(m.hparts,size_t(T)*K*N,"prefill expert output",e)) throw std::runtime_error(e);
+                    throw std::runtime_error("prefill expert output: nonfinite value");
+                }
+                ck(cudaMemcpyAsync(m.bo,m.hact,size_t(T)*N*4,cudaMemcpyHostToDevice,cs));
+                add_inplace(m.bo,m.shared,size_t(T)*N,cs);
+                add_inplace(m.R,m.bo,size_t(T)*N,cs);
+            } else {
+                for (int i=0;i<T*K;++i) if (m.cache->slot_of(l,m.hids[i])<0) {
+                    if (!core::validate_finite(m.hparts+size_t(i)*N,N,"prefill expert output",e)) throw std::runtime_error(e);
+                    ck(cudaMemcpyAsync(m.parts+size_t(i)*N,m.hparts+size_t(i)*N,N*4,cudaMemcpyHostToDevice,cs));
+                }
+                native_moe_combine_multi(m.parts,m.weights,m.shared,m.bo,N,K,T,cs);
+                add_inplace(m.R,m.bo,size_t(T)*N,cs);
+                ck(cudaStreamSynchronize(cs));
             }
-            native_moe_combine_multi(m.parts,m.weights,m.shared,m.bo,N,K,T,cs);
-            add_inplace(m.R,m.bo,size_t(T)*N,cs);
-            // Final stream completion also protects all pinned sources from next layer/chunk reuse.
-            ck(cudaStreamSynchronize(cs));
-            stats_.gpu_dense_ms+=m.elapsed(0,1)+m.elapsed(2,3)+m.elapsed(3,4);
-            if (core::is_qsa_layer(g,l)) stats_.gpu_attention_ms+=m.elapsed(1,2);
-            else stats_.gpu_gdn_ms+=m.elapsed(1,2);
-            if (on_layer) on_layer(p0,l,T,m.R,m.ids,m.weights);
+            if (on_layer) {
+                ck(cudaStreamSynchronize(cs));
+                on_layer(p0,l,T,m.R,m.ids,m.weights);
+            }
             stats_.activation_bytes+=uint64_t(T)*(N+K*N+2*K)*4;
             stats_.ms_moe+=ms(a);
         }

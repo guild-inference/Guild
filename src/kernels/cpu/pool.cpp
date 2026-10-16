@@ -558,6 +558,87 @@ void ExpertPool::drain(int id, ExpertScratch& scratch, uint32_t epoch) {
             const int e = (int) i / parts_b_, part = (int) i % parts_b_;
             const int r0 = H * part / parts_b_, r1 = H * (part + 1) / parts_b_;
             s2_expert_down_rows(jobs_[e].blob, split_[(size_t) e].a2, jobs_[e].out, r0, r1);
+        } else if (mode_ == 9) {
+            native_quant_act(*nfmt_, qact_x_ + (size_t) i * (size_t) nfmt_->n_embd,
+                             qact_dst_ + (size_t) i * kNativeActBytes);
+        } else if (mode_ == 10) {
+            const int K = comb_k_;
+            const int N = comb_n_embd_;
+            const float* p_base = comb_parts_ + (size_t) i * (size_t) K * (size_t) N;
+            const float* w_base = comb_weights_ + (size_t) i * (size_t) K;
+            float* dst = comb_out_ + (size_t) i * (size_t) N;
+            uint32_t nonfinite = 0;
+            for (int d = 0; d < N; ++d) {
+                float acc = 0.0f;
+                for (int r = 0; r < K; ++r) {
+                    const float pv = p_base[(size_t) r * (size_t) N + d];
+                    uint32_t bits;
+                    std::memcpy(&bits, &pv, sizeof(bits));
+                    nonfinite |= (bits & 0x7f800000u) == 0x7f800000u;
+                    acc = std::fma(pv, w_base[r], acc);
+                }
+                dst[d] = acc;
+            }
+            if (nonfinite) comb_nonfinite_.store(true, std::memory_order_relaxed);
+        } else if (mode_ == 8) {
+            // Whole multi-token native expert per task: gate/up -> quant_h -> down in thread-local L1/L2 cache.
+            const ExpertJobMulti& mj = mjobs_[i];
+            const int nt = mj.nt;
+            const void* const* nact = mj.nact_ext ? mj.nact_ext : mj.nact;
+            float* const* out = mj.out_ext ? mj.out_ext : mj.out;
+            alignas(64) thread_local float ff_buf[kMaxMultiExt][FF];
+            alignas(64) thread_local ActQ a2_buf[kMaxMultiExt];
+            alignas(64) thread_local uint8_t hq_buf[kMaxMultiExt][kNativeHBytes];
+            const bool time_phases = (id < 0);
+            std::chrono::steady_clock::time_point t_a, t_b, t_c, t_d;
+            if (time_phases) t_a = std::chrono::steady_clock::now();
+            if (q2_native_kernels(nfmt_->gu_type)) {
+                thread_local float gbuf[MAXT][FF], ubuf[MAXT][FF];
+                const int nbk = (int) (nfmt_->n_embd / 64);
+                for (int t0 = 0; t0 < nt; t0 += MAXT) {
+                    const int m = (std::min)(MAXT, nt - t0);
+                    float* gp[MAXT];
+                    float* up[MAXT];
+                    for (int t = 0; t < m; ++t) { gp[t] = gbuf[t]; up[t] = ubuf[t]; }
+                    q2_rows_any(mj.blob, nfmt_->gu_row, nbk, mj.act + t0, m, gp, 0, (int) nfmt_->n_ff);
+                    q2_rows_any(mj.blob + nfmt_->up_off, nfmt_->gu_row, nbk, mj.act + t0, m, up, 0, (int) nfmt_->n_ff);
+                    for (int t = 0; t < m; ++t)
+                        for (int r = 0; r < (int) nfmt_->n_ff; ++r)
+                            ff_buf[t0 + t][r] = (gbuf[t][r] / (1.f + std::exp(-gbuf[t][r]))) * ubuf[t][r];
+                }
+            } else {
+                float* ff[kMaxMultiExt];
+                for (int t = 0; t < nt; ++t) ff[t] = ff_buf[t];
+                native_gu_rows(*nfmt_, mj.blob, nact, nt, ff, 0, (int) nfmt_->n_ff);
+            }
+            if (time_phases) t_b = std::chrono::steady_clock::now();
+            if (q2_native_kernels(nfmt_->d_type)) {
+                const ActQ* a2[kMaxMultiExt];
+                for (int t = 0; t < nt; ++t) {
+                    act_quant_any(ff_buf[t], (int) nfmt_->n_ff, a2_buf[t]);
+                    a2[t] = &a2_buf[t];
+                }
+                if (time_phases) t_c = std::chrono::steady_clock::now();
+                for (int t0 = 0; t0 < nt; t0 += MAXT) {
+                    const int m = (std::min)(MAXT, nt - t0);
+                    q2_rows_any(mj.blob + nfmt_->down_off, nfmt_->d_row, (int) (nfmt_->n_ff / 64), a2 + t0,
+                                m, out + t0, 0, (int) nfmt_->n_embd);
+                }
+            } else {
+                const void* hq[kMaxMultiExt];
+                for (int t = 0; t < nt; ++t) {
+                    native_quant_h(*nfmt_, ff_buf[t], hq_buf[t]);
+                    hq[t] = hq_buf[t];
+                }
+                if (time_phases) t_c = std::chrono::steady_clock::now();
+                native_down_rows(*nfmt_, mj.blob, hq, nt, out, 0, (int) nfmt_->n_embd);
+            }
+            if (time_phases) {
+                t_d = std::chrono::steady_clock::now();
+                host_gu_ms_ += std::chrono::duration<double, std::milli>(t_b - t_a).count();
+                host_q_ms_ += std::chrono::duration<double, std::milli>(t_c - t_b).count();
+                host_down_ms_ += std::chrono::duration<double, std::milli>(t_d - t_c).count();
+            }
         } else if (mode_ == 7) {
             // One independent expert intermediate per task, no cross-task writes.
             auto& sb=split_multi_[i];
@@ -692,9 +773,66 @@ void ExpertPool::run_split_multi(ExpertJobMulti* jobs, int n) {
     ms_drain_ += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
 }
 
+void ExpertPool::quant_act_multi_native(const NativeFmt& f, const float* x, uint8_t* dst, int n_tok) {
+    if (n_tok <= 0) return;
+    if (n_tok < 8 || n_ <= 1) {
+        for (int t = 0; t < n_tok; ++t)
+            native_quant_act(f, x + (size_t) t * (size_t) f.n_embd, dst + (size_t) t * kNativeActBytes);
+        return;
+    }
+    nfmt_ = &f;
+    qact_x_ = x;
+    qact_dst_ = dst;
+    run_phase(9, n_tok);
+    mode_ = 0;
+}
+
+bool ExpertPool::combine_multi_native(const float* parts, const float* weights, float* out,
+                                      int n_tok, int k, int n_embd) {
+    if (n_tok <= 0 || k <= 0 || n_embd <= 0) return false;
+    comb_parts_ = parts;
+    comb_weights_ = weights;
+    comb_out_ = out;
+    comb_k_ = k;
+    comb_n_embd_ = n_embd;
+    comb_nonfinite_.store(false, std::memory_order_relaxed);
+    run_phase(10, n_tok);
+    mode_ = 0;
+    return !comb_nonfinite_.load(std::memory_order_relaxed);
+}
+
 void ExpertPool::run_split_multi_native(const NativeFmt& f, ExpertJobMulti* jobs, int n, bool parallel_quant) {
     if (n <= 0) return;
     const auto t0 = std::chrono::steady_clock::now();
+    const int threads = n_ + (host_works_ ? 1 : 0);
+    static const bool whole_expert = [] {
+        const char* v = std::getenv("GUILD_POOL_WHOLE_EXPERT");
+        return v == nullptr || std::atoi(v) != 0;
+    }();
+    if (parallel_quant && whole_expert && n >= threads) {
+        mjobs_ = jobs;
+        nfmt_ = &f;
+        host_gu_ms_ = 0.0;
+        host_q_ms_ = 0.0;
+        host_down_ms_ = 0.0;
+        const auto a = std::chrono::steady_clock::now();
+        run_phase(8, n);
+        const auto d = std::chrono::steady_clock::now();
+        const double wall = std::chrono::duration<double, std::milli>(d - a).count();
+        const double hsum = host_gu_ms_ + host_q_ms_ + host_down_ms_;
+        if (hsum > 0.0) {
+            ms_multi_gu += wall * (host_gu_ms_ / hsum);
+            ms_multi_q += wall * (host_q_ms_ / hsum);
+            ms_multi_down += wall * (host_down_ms_ / hsum);
+        } else {
+            ms_multi_gu += wall * 0.65;
+            ms_multi_down += wall * 0.35;
+        }
+        multi_bytes += (int64_t) n * (int64_t) f.bytes;
+        mode_ = 0;
+        ms_drain_ += std::chrono::duration<double, std::milli>(d - t0).count();
+        return;
+    }
     // more distinct experts than buffers: run them in batches
     for (int b0 = 0; b0 < n; b0 += kMaxSplitMulti) {
         const int nb = (std::min)(kMaxSplitMulti, n - b0);
