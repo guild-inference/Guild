@@ -1,0 +1,13 @@
+event syntax error: 'uncore_imc_*/cas_count_read/,uncore_imc_*/cas_count_write/'
+                     \___ Bad event or PMU
+
+Unable to find PMU or event on a PMU of 'uncore_imc_*'
+
+Initial error:
+event syntax error: 'uncore_imc_*/cas_count_read/,uncore_imc_*/cas_count_write/'
+                     \___ Cannot find PMU `uncore_imc_*'. Missing kernel support?
+Run 'perf list' for a list of valid events
+
+ Usage: perf stat [<options>] [<command>]
+
+    -e, --event <event>   event selector. use 'perf list' to list available events

@@ -1,0 +1,29 @@
+PROMPT 512
+batch=1 pp=46.6417 sequential_pp=44.4695
+logits max_abs=0 relative_l2=0 bitwise=1
+GDN/conv max_abs=0 relative_l2=0 bitwise=1
+batch=2 pp=61.8031 sequential_pp=44.4695
+logits max_abs=0 relative_l2=0 bitwise=1
+GDN/conv max_abs=0 relative_l2=0 bitwise=1
+batch=8 pp=105.005 sequential_pp=44.4695
+logits max_abs=0 relative_l2=0 bitwise=1
+GDN/conv max_abs=0 relative_l2=0 bitwise=1
+batch=16 pp=131.805 sequential_pp=44.4695
+logits max_abs=0 relative_l2=0 bitwise=1
+GDN/conv max_abs=0 relative_l2=0 bitwise=1
+batch=32 pp=172.124 sequential_pp=44.4695
+logits max_abs=0 relative_l2=0 bitwise=1
+GDN/conv max_abs=0 relative_l2=0 bitwise=1
+batch=64 pp=207.45 sequential_pp=44.4695
+logits max_abs=0 relative_l2=0 bitwise=1
+GDN/conv max_abs=0 relative_l2=0 bitwise=1
+batch=128 pp=227.439 sequential_pp=44.4695
+logits max_abs=0 relative_l2=0 bitwise=1
+GDN/conv max_abs=0 relative_l2=0 bitwise=1
+batch=256 pp=236.858 sequential_pp=44.4695
+logits max_abs=0 relative_l2=0 bitwise=1
+GDN/conv max_abs=0 relative_l2=0 bitwise=1
+batch=512 pp=223.919 sequential_pp=44.4695
+logits max_abs=0 relative_l2=0 bitwise=1
+GDN/conv max_abs=0 relative_l2=0 bitwise=1
+ornith_prefill_test: actual model logits, state, KV and greedy parity PASS

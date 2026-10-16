@@ -1,0 +1,7 @@
+# started on Fri Oct 16 01:45:32 2026
+
+23619782774,,cycles,8180811542,100.00,,
+22058772106,,instructions,8180811542,100.00,0.93,insn per cycle
+524533,,cache-misses,8180811542,100.00,,
+140,,context-switches,8180811542,100.00,,
+2,,cpu-migrations,8180811542,100.00,,

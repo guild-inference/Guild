@@ -3,6 +3,7 @@
     python -m unittest tools.test_workload_tools -v
 """
 import csv
+import gzip
 import json
 import os
 from pathlib import Path
@@ -14,6 +15,7 @@ import unittest
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import archive_workload_results as archiver
 import bench_cpu_experts as cpu_bench
 import collect_workload_environment as environment
 import run_workload_command as runner
@@ -170,6 +172,24 @@ class BenchmarkSummaries(TemporaryFiles):
         self.assertTrue(all(data["samples"] == 1 and data["sample_status"] == "complete" for _, data in groups))
         self.assertTrue(all(data["primary_eligible"] for _, data in groups))
 
+    def test_recursive_summary_keeps_nested_cases_separate_with_relative_labels(self):
+        sub_a = self.root / "matrix" / "case-a"
+        sub_b = self.root / "matrix" / "case-b"
+        sub_a.mkdir(parents=True)
+        sub_b.mkdir(parents=True)
+        self.csv("matrix/case-a/run.csv", [self.main_row(prefill_tps=200.0)], self.complete(1))
+        self.csv("matrix/case-b/run.csv", [self.main_row(prefill_tps=240.0)], self.complete(1))
+        (self.root / "matrix" / "report.csv").write_text("case,median\n")
+        non_rec = benchmarks.summarize_directory(self.root, recursive=False)
+        self.assertEqual(non_rec["primary_measurements"], [])
+        rec = benchmarks.summarize_directory(self.root, recursive=True)
+        self.assertEqual(rec["primary_measurements"], [
+            "matrix/case-a/run.csv:b256",
+            "matrix/case-b/run.csv:b256",
+        ])
+        self.assertAlmostEqual(rec["measurements"]["matrix/case-a/run.csv:b256"]["columns"]["prefill_tps"]["median"], 200.0)
+        self.assertAlmostEqual(rec["measurements"]["matrix/case-b/run.csv:b256"]["columns"]["prefill_tps"]["median"], 240.0)
+
 
 class ActivitySummaries(TemporaryFiles):
     epoch = 1_700_000_000_000_000_000
@@ -262,6 +282,56 @@ class ActivitySummaries(TemporaryFiles):
         rows, attribution = activity.read_cpu(cpu, 1000, 2)
         self.assertEqual([row["layer"] for row in rows], [0, 1, 0])
         self.assertFalse(attribution["verified"])
+
+    def test_gzip_trace_and_cpu_profile_match_plain_and_reject_truncated_gzip(self):
+        trace = self.trace(self.marks() + [self.record("kernel", 1, 5, "mmvq_a")])
+        cpu = self.csv("cpu.csv", [{"start_ns": self.host + 2_000_000, "end_ns": self.host + 4_000_000, "layer": 0,
+                                    "gu_thread_cpu_ms": 1, "quant_thread_cpu_ms": 1, "down_thread_cpu_ms": 1}])
+        trace_gz = self.root / "gpu.tsv.gz"
+        cpu_gz = self.root / "cpu.csv.gz"
+        trace_gz.write_bytes(gzip.compress(trace.read_bytes(), mtime=0))
+        cpu_gz.write_bytes(gzip.compress(cpu.read_bytes(), mtime=0))
+        plain = activity.summarize_trace(trace, cpu)
+        compressed = activity.summarize_trace(trace_gz, cpu_gz)
+        self.assertEqual(plain["phases"], compressed["phases"])
+        truncated = self.root / "truncated.tsv.gz"
+        truncated.write_bytes(trace_gz.read_bytes()[:-4])
+        bad = activity.summarize_trace(truncated)
+        self.assertEqual(bad["status"], "invalid")
+        self.assertTrue(bad["errors"])
+
+
+class ArchiveResults(TemporaryFiles):
+    def test_deterministic_archive_skips_incomplete_and_preserves_originals_by_default(self):
+        tsv = self.root / "trace.tsv"
+        tsv.write_text("kind\tstart_ns\tend_ns\tbytes\tname\n")
+        done_cmd = self.root / "done.command.json"
+        done_cmd.write_text(json.dumps({"command": ["bench"], "exit_code": 0, "state": "completed"}))
+        done_tel = self.root / "done.telemetry.jsonl"
+        done_tel.write_text('{"rss": 1}\n')
+        live_cmd = self.root / "live.command.json"
+        live_cmd.write_text(json.dumps({"command": ["bench"], "exit_code": None, "state": "running"}))
+        live_tel = self.root / "live.telemetry.jsonl"
+        live_tel.write_text('{"rss": 2}\n')
+        qdstrm = self.root / "broken.qdstrm"
+        qdstrm.write_bytes(b"qdstrm")
+
+        dry = archiver.archive_directory(self.root, apply=False)
+        self.assertEqual([e["path"] for e in dry["entries"]], ["done.telemetry.jsonl", "trace.tsv"])
+        self.assertEqual(len(dry["skipped"]), 2)
+        self.assertFalse((self.root / "trace.tsv.gz").exists())
+
+        applied = archiver.archive_directory(self.root, apply=True)
+        self.assertTrue((self.root / "trace.tsv.gz").exists())
+        self.assertTrue((self.root / "done.telemetry.jsonl.gz").exists())
+        self.assertTrue(tsv.exists())
+        self.assertFalse((self.root / "live.telemetry.jsonl.gz").exists())
+        self.assertEqual(gzip.decompress((self.root / "trace.tsv.gz").read_bytes()), tsv.read_bytes())
+        # Re-running with identical archive succeeds idempotently; corrupting .gz fails closed.
+        archiver.archive_directory(self.root, apply=True)
+        (self.root / "trace.tsv.gz").write_bytes(b"corrupt")
+        with self.assertRaisesRegex(RuntimeError, "mismatched archive"):
+            archiver.archive_directory(self.root, apply=True)
 
 
 class CommandCleanup(TemporaryFiles):

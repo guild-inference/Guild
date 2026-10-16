@@ -1,0 +1,14 @@
+{
+  "pid": 448103,
+  "command": [
+    "/home/linuxbrew/.linuxbrew/opt/python@3.14/bin/python3.14",
+    "-u",
+    "/home/ubuntu/Guild/bench/results/hybrid-workload-optimization/hardware_matrix_owner_20261016.py",
+    "--run",
+    "/home/ubuntu/Guild/bench/results/hybrid-workload-optimization/matrix-owner-20261016T033335Z-2eb5322b"
+  ],
+  "session": "/home/ubuntu/Guild/bench/results/hybrid-workload-optimization/matrix-owner-20261016T033335Z-2eb5322b",
+  "state": "/home/ubuntu/Guild/bench/results/hybrid-workload-optimization/matrix-owner-20261016T033335Z-2eb5322b/state.json",
+  "log": "/home/ubuntu/Guild/bench/results/hybrid-workload-optimization/matrix-owner-20261016T033335Z-2eb5322b/progress.log",
+  "utc": "2026-10-16T03:33:35Z"
+}

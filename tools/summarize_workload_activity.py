@@ -6,12 +6,20 @@ host-memory traffic performed by kernels and are not a PCIe bandwidth counter.
 """
 import argparse
 import csv
+import gzip
 import json
 import math
 from collections import defaultdict
 from pathlib import Path
 import re
 import subprocess
+import zlib
+
+
+def open_text(path):
+    if path.suffix.lower() == ".gz":
+        return gzip.open(path, "rt", encoding="utf-8", newline="")
+    return path.open("r", encoding="utf-8", newline="")
 
 
 CPU_TIMES = ("gu_thread_cpu_ms", "quant_thread_cpu_ms", "down_thread_cpu_ms")
@@ -61,7 +69,7 @@ def category(name):
 
 def read_trace(path):
     records, errors = [], []
-    with path.open(newline="") as f:
+    with open_text(path) as f:
         reader = csv.DictReader(f, delimiter="\t")
         if not {"kind", "start_ns", "end_ns", "bytes", "name"} <= set(reader.fieldnames or []):
             return [], [{"error": "trace lacks required timestamp/kind/bytes/name columns"}]
@@ -90,7 +98,7 @@ def read_trace(path):
 
 def read_cpu(path, offset, layers):
     rows = []
-    with path.open(newline="") as f:
+    with open_text(path) as f:
         reader = csv.DictReader(f)
         if not {"start_ns", "end_ns", *CPU_TIMES} <= set(reader.fieldnames or []):
             raise ValueError("CPU profile lacks required timestamps/thread CPU times")
@@ -282,8 +290,8 @@ def summarize_trace(trace, cpu_path=None, cpu_layers=40, clock_tolerance_ns=1_00
             key = phase if phase_counts[phase] == 1 else f"{phase}#{phase_counts[phase]}"
             result["phases"][key] = summarize_phase(records, cpu, mark["start_ns"], following["start_ns"], names, clock_offset_deltas)
         result["status"] = "complete"
-    except (OSError, ValueError, csv.Error) as e:
-        result["errors"].append({"error": str(e)})
+    except (OSError, EOFError, zlib.error, UnicodeDecodeError, ValueError, csv.Error) as e:
+        result["errors"].append({"error": f"{type(e).__name__}: {e}"})
     return result
 
 

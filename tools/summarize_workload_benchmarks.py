@@ -160,7 +160,8 @@ def measurement_role(path, schema, metadata, config):
     return "primary", reasons, notes
 
 
-def summarize_file(path):
+def summarize_file(path, label_prefix=None):
+    file_label = label_prefix or path.name
     metadata, config, status, reasons, notes = provenance(path)
     base = {"source": str(path), "metadata_status": status, "command_configuration": config,
             "exclusion_reasons": reasons, "notes": notes}
@@ -176,16 +177,16 @@ def summarize_file(path):
         # Do not expand timestamp/layer profiles into thousands of bogus groups.
         if not metrics:
             base.update(samples=sum(1 for _ in reader), columns={}, primary_eligible=False)
-            return [(path.name, base)]
+            return [(file_label, base)]
         rows = list(reader)
     if not rows:
         base.update(samples=0, columns={}, primary_eligible=False, metadata_status="invalid")
         reasons.append("CSV has no completed measurement rows")
-        return [(path.name, base)]
+        return [(file_label, base)]
     if len(set(fields)) != len(fields) or any(None in row or any(v is None for v in row.values()) for row in rows):
         base.update(samples=len(rows), columns={}, primary_eligible=False, metadata_status="invalid")
         reasons.append("malformed/truncated CSV rows or duplicate header fields")
-        return [(path.name, base)]
+        return [(file_label, base)]
     # Every non-metric field is a dimension. This also separates future context,
     # offload, prompt/output lengths and finish reasons instead of silently mixing.
     dimensions = [col for col in fields if col not in metrics and col != "run"]
@@ -241,21 +242,25 @@ def summarize_file(path):
                                     and data["sample_status"] == "complete")
         if not data["primary_eligible"] and not data["exclusion_reasons"]:
             data["exclusion_reasons"].append("measurement is not a completed primary benchmark")
-        label = f"{path.name}:b{data['configuration'].get('batch', 'reference')}"
+        label = f"{file_label}:b{data['configuration'].get('batch', 'reference')}"
         if len(groups) > 1:
             label += f":config{index + 1}"
         result.append((label, data))
     return result
 
 
-def summarize_directory(directory):
+def summarize_directory(directory, recursive=False):
     measurements = {}
-    for path in sorted(directory.glob("*.csv")):
+    paths = sorted(directory.rglob("*.csv") if recursive else directory.glob("*.csv"))
+    for path in paths:
+        if recursive and path.name == "report.csv":
+            continue
+        file_label = path.relative_to(directory).as_posix() if recursive else path.name
         try:
-            measurements.update(summarize_file(path))
+            measurements.update(summarize_file(path, label_prefix=file_label))
         except (OSError, ValueError, csv.Error) as e:
-            measurements[path.name] = {"source": str(path), "schema": "unreadable", "metadata_status": "invalid",
-                                       "primary_eligible": False, "exclusion_reasons": [str(e)], "columns": {}}
+            measurements[file_label] = {"source": str(path), "schema": "unreadable", "metadata_status": "invalid",
+                                        "primary_eligible": False, "exclusion_reasons": [str(e)], "columns": {}}
     return {
         "schema_version": 2,
         "statistical_method": "Per-file, exact-configuration samples; median, min/max, linearly interpolated p05/p95 "
@@ -271,13 +276,14 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("directory", type=Path)
     parser.add_argument("--output", type=Path, help="default: DIRECTORY/summary.json")
+    parser.add_argument("--recursive", action="store_true", help="include nested case CSVs keyed by relative path")
     args = parser.parse_args()
     if not args.directory.is_dir():
         parser.error("directory does not exist")
     output = args.output or args.directory / "summary.json"
     if output.suffix.lower() == ".csv" or output.name.endswith(".command.json"):
         parser.error("output must not replace raw CSV or command metadata")
-    result = summarize_directory(args.directory)
+    result = summarize_directory(args.directory, recursive=args.recursive)
     output.write_text(json.dumps(result, indent=2, allow_nan=False) + "\n")
     for key, data in result["measurements"].items():
         columns = data["columns"]

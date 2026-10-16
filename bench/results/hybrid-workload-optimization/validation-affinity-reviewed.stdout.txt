@@ -1,0 +1,2 @@
+SKIP high-CPU affinity path: no allowed CPU ID is >= 64 (use --require-high-cpu to require it)
+Linux affinity test: full, sparse/nested, worker helper, invalid-target, failed-pin, and cleanup checks passed (64 allowed CPUs)

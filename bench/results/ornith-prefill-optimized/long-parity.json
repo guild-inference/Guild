@@ -1,0 +1,26 @@
+[
+  {
+    "command": [
+      "/home/ubuntu/Guild/build-cuda12/ornith_prefill_test",
+      "/home/ubuntu/models/ornith-1.5-35b/Ornith-1.5-35B-Q4_K_M.gguf",
+      "/mnt/models-ssd/Strata-data/packs/ornith-1.5-35b",
+      "2050"
+    ],
+    "prompt_tokens": 2050,
+    "exit_code": 0,
+    "elapsed_seconds": 70.78366969595663,
+    "log": "bench/results/ornith-prefill-optimized/parity-2050.log"
+  },
+  {
+    "command": [
+      "/home/ubuntu/Guild/build-cuda12/ornith_prefill_test",
+      "/home/ubuntu/models/ornith-1.5-35b/Ornith-1.5-35B-Q4_K_M.gguf",
+      "/mnt/models-ssd/Strata-data/packs/ornith-1.5-35b",
+      "4096"
+    ],
+    "prompt_tokens": 4096,
+    "exit_code": 0,
+    "elapsed_seconds": 137.9727687650593,
+    "log": "bench/results/ornith-prefill-optimized/parity-4096.log"
+  }
+]

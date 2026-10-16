@@ -1,0 +1,12 @@
+{
+  "measurement": "validation-real-long",
+  "status": "interrupted; wrapper metadata not finalized",
+  "observed_utc_date": "2026-10-16",
+  "process_check": "No run_ornith_prefill_validation.py, ornith_prefill_test, or task inference child active at recovery; nvidia-smi compute-app list empty.",
+  "completed_prompt_tokens": [2050, 2051, 2052, 4096, 8192],
+  "incomplete_prompt_tokens": [16384],
+  "original_metadata": "validation-real-long.command.json",
+  "original_partial_log": "parity-16384.log",
+  "exit_code": null,
+  "note": "The original wrapper and partial log are preserved. No exit code or end time can be recovered reliably. The missing 16384 case is rerun under validation-real-long-16384-resume."
+}

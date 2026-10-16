@@ -1,0 +1,6 @@
+prompt=1: PASS
+prompt=16: PASS
+prompt=127: PASS
+prompt=128: PASS
+prompt=129: PASS
+prompt=512: PASS

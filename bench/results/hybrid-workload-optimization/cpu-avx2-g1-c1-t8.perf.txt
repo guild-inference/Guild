@@ -1,0 +1,7 @@
+# started on Fri Oct 16 01:46:38 2026
+
+37612206600,,cycles,11554400020,100.00,,
+40261353143,,instructions,11554400020,100.00,1.07,insn per cycle
+637390,,cache-misses,11554400020,100.00,,
+193,,context-switches,11554400020,100.00,,
+2,,cpu-migrations,11554400020,100.00,,

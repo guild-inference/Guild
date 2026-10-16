@@ -1,0 +1,1 @@
+guild cpu pool: host affinity for CPU 2147483647 failed: 22; previous affinity kept

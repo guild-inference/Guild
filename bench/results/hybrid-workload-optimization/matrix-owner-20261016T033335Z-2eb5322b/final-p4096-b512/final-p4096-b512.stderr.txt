@@ -1,0 +1,24 @@
+FileExpertSource: RAM budget 18.16 GiB: 10240 of the 18.16 GiB of experts the GPU cache does not hold, by profile rank; the rest are read from the files
+FileExpertSource: allocating 18.16 GiB pageable resident cache complement
+FileExpertSource: resident NUMA interleave across 2 allowed nodes: applied
+FileExpertSource: copied cache complement through layer 8/40 (5.34 GiB)
+FileExpertSource: copied cache complement through layer 16/40 (8.17 GiB)
+FileExpertSource: copied cache complement through layer 24/40 (11.38 GiB)
+FileExpertSource: copied cache complement through layer 32/40 (15.90 GiB)
+FileExpertSource: copied cache complement through layer 40/40 (18.16 GiB)
+FileExpertSource: pageable resident cache complement ready: resident 18.16 GiB, pinned 0.00 GiB; mlock
+guild hc: CUDA0: the hyper-connection read runs as staged (the norm per token and stream, the down projection's activations staged ahead by cp.async); checked bit for bit against the plain read on this card (GUILD_HC_SPLIT=1 or 0 for the earlier ones)
+guild verify: window up to 2 tokens, 54.8 MiB of device buffers
+guild performance: 0 measured formats, CPU 0.000 ms, GPU 0.000 ms, copy 0.000 ms; PCIe up to 0/256, GPU cache 0 slots (0 bytes)
+guild performance: CPU workers 31 + host 1; verifier capacity 2; MTP off; min draft probability 0.500; RAM expert backing 19503513600 bytes
+guild verify: captured the 1-token window (upload no error, sync no error)
+batch=512 prompt=4096 generated=128 pp=206.961 tg=32.9405
+batch=512 prompt=4096 generated=128 pp=207.605 tg=32.9604
+batch=512 prompt=4096 generated=128 pp=205.92 tg=32.9661
+batch=512 prompt=4096 generated=128 pp=205.705 tg=32.9812
+batch=512 prompt=4096 generated=128 pp=204.785 tg=32.8654
+batch=512 prompt=4096 generated=128 pp=207.494 tg=32.9796
+batch=512 prompt=4096 generated=128 pp=204.769 tg=32.9605
+batch=512 prompt=4096 generated=128 pp=205.715 tg=32.9435
+batch=512 prompt=4096 generated=128 pp=206.449 tg=32.9727
+batch=512 prompt=4096 generated=128 pp=205.28 tg=32.941

@@ -1,0 +1,5 @@
+PROMPT 16384
+batch=128 pp=168.225 sequential_pp=25.9622
+logits max_abs=0 relative_l2=0 bitwise=1
+GDN/conv max_abs=0 relative_l2=0 bitwise=1
+ornith_prefill_test: actual model logits, state, KV and greedy parity PASS

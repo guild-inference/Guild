@@ -1,0 +1,23 @@
+FileExpertSource: RAM budget 18.16 GiB: 10240 of the 18.16 GiB of experts the GPU cache does not hold, by profile rank; the rest are read from the files
+FileExpertSource: allocating 18.16 GiB pageable resident cache complement
+FileExpertSource: copied cache complement through layer 8/40 (5.39 GiB)
+FileExpertSource: copied cache complement through layer 16/40 (8.22 GiB)
+FileExpertSource: copied cache complement through layer 24/40 (11.10 GiB)
+FileExpertSource: copied cache complement through layer 32/40 (16.06 GiB)
+FileExpertSource: copied cache complement through layer 40/40 (18.16 GiB)
+FileExpertSource: pageable resident cache complement ready: resident 18.16 GiB, pinned 0.00 GiB; mlock
+guild hc: CUDA0: the hyper-connection read runs as staged (the norm per token and stream, the down projection's activations staged ahead by cp.async); checked bit for bit against the plain read on this card (GUILD_HC_SPLIT=1 or 0 for the earlier ones)
+guild verify: window up to 2 tokens, 54.8 MiB of device buffers
+guild performance: 0 measured formats, CPU 0.000 ms, GPU 0.000 ms, copy 0.000 ms; PCIe up to 0/256, GPU cache 0 slots (0 bytes)
+guild performance: CPU workers 31 + host 1; verifier capacity 2; MTP off; min draft probability 0.500; RAM expert backing 19503513600 bytes
+guild verify: captured the 1-token window (upload no error, sync no error)
+batch=256 prompt=512 generated=128 pp=202.54 tg=42.0203
+batch=256 prompt=512 generated=128 pp=202.294 tg=42.0828
+batch=256 prompt=512 generated=128 pp=203.619 tg=42.1344
+batch=256 prompt=512 generated=128 pp=204.026 tg=42.035
+batch=256 prompt=512 generated=128 pp=202.013 tg=42.0397
+batch=256 prompt=512 generated=128 pp=203.354 tg=42.0352
+batch=256 prompt=512 generated=128 pp=202.872 tg=42.0476
+batch=256 prompt=512 generated=128 pp=202.494 tg=41.9932
+batch=256 prompt=512 generated=128 pp=202.837 tg=42.0686
+batch=256 prompt=512 generated=128 pp=203.619 tg=41.9371

@@ -1,0 +1,17 @@
+FileExpertSource: RAM budget 18.16 GiB: 10240 of the 18.16 GiB of experts the GPU cache does not hold, by profile rank; the rest are read from the files
+FileExpertSource: allocating 18.16 GiB pageable resident cache complement
+FileExpertSource: resident NUMA interleave across 2 allowed nodes: applied
+FileExpertSource: copied cache complement through layer 8/40 (5.35 GiB)
+FileExpertSource: copied cache complement through layer 16/40 (8.22 GiB)
+FileExpertSource: copied cache complement through layer 24/40 (11.50 GiB)
+FileExpertSource: copied cache complement through layer 32/40 (16.05 GiB)
+FileExpertSource: copied cache complement through layer 40/40 (18.16 GiB)
+FileExpertSource: pageable resident cache complement ready: resident 18.16 GiB, pinned 0.00 GiB; mlock
+guild hc: CUDA0: the hyper-connection read runs as staged (the norm per token and stream, the down projection's activations staged ahead by cp.async); checked bit for bit against the plain read on this card (GUILD_HC_SPLIT=1 or 0 for the earlier ones)
+guild verify: window up to 2 tokens, 54.8 MiB of device buffers
+guild performance: 0 measured formats, CPU 0.000 ms, GPU 0.000 ms, copy 0.000 ms; PCIe up to 0/256, GPU cache 0 slots (0 bytes)
+guild performance: CPU workers 31 + host 1; verifier capacity 2; MTP off; min draft probability 0.500; RAM expert backing 19503513600 bytes
+guild verify: captured the 1-token window (upload no error, sync no error)
+guild decode timing: 4 windows, 1.00 tokens/window, 25.86 ms/window; commit 0.068, CPU dispatch 9.93 (finite checks 0.57), draft 0.00 ms/window; PCIe 0 experts, drafts 0/0; logit validation 0.000 ms/window, 32 bytes read
+guild decode timing: 128 windows, 1.00 tokens/window, 28.16 ms/window; commit 0.244, CPU dispatch 9.91 (finite checks 0.57), draft 0.00 ms/window; PCIe 0 experts, drafts 0/0; logit validation 0.000 ms/window, 1024 bytes read
+batch=256 prompt=512 generated=128 pp=202.265 tg=35.5167

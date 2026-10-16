@@ -1,0 +1,10 @@
+{
+  "utc": "2026-10-16T03:33:36Z",
+  "prior_state": "/home/ubuntu/Guild/bench/results/hybrid-workload-optimization/hardware-execution-state.json",
+  "prior_state_sha256": "6f46f7dcbfa368fbecd835ee742607d08551ab93ff61fdc98690d98003ad7b3f",
+  "prior_pid": 404419,
+  "observation": "Prior PID absent at handoff inspection. Prior state still says running. User reports coordinator terminated it after baseline-p16384-b256 completed. All five saved baselines independently validate exit_code=0, wrapper_exit_code=0 and ten complete rows.",
+  "prior_controller_exit_code": null,
+  "active_state": "/home/ubuntu/Guild/bench/results/hybrid-workload-optimization/matrix-owner-20261016T033335Z-2eb5322b/state.json",
+  "raw_artifact_policy": "Every new case has an exclusive directory; existing raw measurements and prompt-ID files are never overwritten."
+}

@@ -1,0 +1,24 @@
+FileExpertSource: RAM budget 18.16 GiB: 10240 of the 18.16 GiB of experts the GPU cache does not hold, by profile rank; the rest are read from the files
+FileExpertSource: allocating 18.16 GiB pageable resident cache complement
+FileExpertSource: resident NUMA interleave across 2 allowed nodes: applied
+FileExpertSource: copied cache complement through layer 8/40 (5.29 GiB)
+FileExpertSource: copied cache complement through layer 16/40 (8.10 GiB)
+FileExpertSource: copied cache complement through layer 24/40 (11.49 GiB)
+FileExpertSource: copied cache complement through layer 32/40 (15.79 GiB)
+FileExpertSource: copied cache complement through layer 40/40 (18.16 GiB)
+FileExpertSource: pageable resident cache complement ready: resident 18.16 GiB, pinned 0.00 GiB; mlock
+guild hc: CUDA0: the hyper-connection read runs as staged (the norm per token and stream, the down projection's activations staged ahead by cp.async); checked bit for bit against the plain read on this card (GUILD_HC_SPLIT=1 or 0 for the earlier ones)
+guild verify: window up to 2 tokens, 54.8 MiB of device buffers
+guild performance: 0 measured formats, CPU 0.000 ms, GPU 0.000 ms, copy 0.000 ms; PCIe up to 0/256, GPU cache 0 slots (0 bytes)
+guild performance: CPU workers 31 + host 1; verifier capacity 2; MTP off; min draft probability 0.500; RAM expert backing 19503513600 bytes
+guild verify: captured the 1-token window (upload no error, sync no error)
+batch=128 prompt=2048 generated=128 pp=216.893 tg=37.7935
+batch=128 prompt=2048 generated=128 pp=215.507 tg=37.9841
+batch=128 prompt=2048 generated=128 pp=215.113 tg=37.8585
+batch=128 prompt=2048 generated=128 pp=214.006 tg=37.8611
+batch=128 prompt=2048 generated=128 pp=212.974 tg=37.8509
+batch=128 prompt=2048 generated=128 pp=211.818 tg=37.8191
+batch=128 prompt=2048 generated=128 pp=211.93 tg=37.8532
+batch=128 prompt=2048 generated=128 pp=211.914 tg=37.9605
+batch=128 prompt=2048 generated=128 pp=212.401 tg=37.5961
+batch=128 prompt=2048 generated=128 pp=212.96 tg=37.6582

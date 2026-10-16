@@ -1,0 +1,540 @@
+{
+  "schema_version": 1,
+  "utc_collected": "2026-10-16T03:16:07.377140+00:00",
+  "scope": "Independent stdlib array/math comparison of existing first-callback logits and numeric IDs; no inference, build or token decoding.",
+  "analyzer": {
+    "path": "tools/research_workload_artifacts.py",
+    "bytes": 18639,
+    "mtime_ns": 1792120559930098960,
+    "sha256": "bc643f0644ccabdb58ee1ada79613dea9c1c53c09b69cc3f82fb02d00197fe62"
+  },
+  "binary_format": "little-endian IEEE754 binary32; errors accumulated with Python binary64 and math.fsum",
+  "relative_l2_definition": "sqrt(sum((candidate-reference)^2)) / sqrt(sum(reference^2)); reference is Guild baseline",
+  "top1_definition": "Lowest token index attaining largest finite logit; numeric token ID only",
+  "token_position_convention": "Zero-based output positions. Null first mismatch means all 128 IDs match. No decoded text or raw continuation-ID arrays emitted.",
+  "provenance_notes": [
+    "Guild --dump copies logits at its first callback; later runs overwrite dump files. IDs come from the last dumped request; the bench checks sequence consistency across its runs.",
+    "llama_prefill_reference dumps first-token logits on measured run 0; IDs are rewritten each run. Cross-run oracle sequence consistency is not independently established by this file comparison.",
+    "Equal GGUF hash does not imply equal weight representation; see weight-audit.stdout.txt for BF16 alpha/beta rounding.",
+    "These dumps predate pending corrected rebuild/final matrix and do not validate later binaries."
+  ],
+  "inputs": {
+    "baseline": {
+      "logits": {
+        "path": "bench/results/hybrid-workload-optimization/baseline.f32",
+        "bytes": 993280,
+        "mtime_ns": 1792110785202552873,
+        "sha256": "341c9297d6f9a1d1a7a65872f3ebf16311dfe632279d6433cad304f31ea69fc6"
+      },
+      "ids": {
+        "path": "bench/results/hybrid-workload-optimization/baseline.ids",
+        "bytes": 632,
+        "mtime_ns": 1792110788197593511,
+        "sha256": "4ac5715eabc7249b2cec189f031d18dec4d45eb902d8432cadacb3aaca0dc40f"
+      },
+      "float32_count": 248320,
+      "token_id_count": 128,
+      "nan_count": 0,
+      "positive_infinity_count": 0,
+      "negative_infinity_count": 0,
+      "nonfinite_count": 0,
+      "top1_token_id": 760
+    },
+    "batch-projections": {
+      "logits": {
+        "path": "bench/results/hybrid-workload-optimization/batch-projections.f32",
+        "bytes": 993280,
+        "mtime_ns": 1792113606820461884,
+        "sha256": "341c9297d6f9a1d1a7a65872f3ebf16311dfe632279d6433cad304f31ea69fc6"
+      },
+      "ids": {
+        "path": "bench/results/hybrid-workload-optimization/batch-projections.ids",
+        "bytes": 632,
+        "mtime_ns": 1792113609760506841,
+        "sha256": "4ac5715eabc7249b2cec189f031d18dec4d45eb902d8432cadacb3aaca0dc40f"
+      },
+      "float32_count": 248320,
+      "token_id_count": 128,
+      "nan_count": 0,
+      "positive_infinity_count": 0,
+      "negative_infinity_count": 0,
+      "nonfinite_count": 0,
+      "top1_token_id": 760
+    },
+    "serial-projections": {
+      "logits": {
+        "path": "bench/results/hybrid-workload-optimization/serial-projections.f32",
+        "bytes": 993280,
+        "mtime_ns": 1792113671721449824,
+        "sha256": "341c9297d6f9a1d1a7a65872f3ebf16311dfe632279d6433cad304f31ea69fc6"
+      },
+      "ids": {
+        "path": "bench/results/hybrid-workload-optimization/serial-projections.ids",
+        "bytes": 632,
+        "mtime_ns": 1792113674746495653,
+        "sha256": "4ac5715eabc7249b2cec189f031d18dec4d45eb902d8432cadacb3aaca0dc40f"
+      },
+      "float32_count": 248320,
+      "token_id_count": 128,
+      "nan_count": 0,
+      "positive_infinity_count": 0,
+      "negative_infinity_count": 0,
+      "nonfinite_count": 0,
+      "top1_token_id": 760
+    },
+    "forced-avx2": {
+      "logits": {
+        "path": "bench/results/hybrid-workload-optimization/forced-avx2.f32",
+        "bytes": 993280,
+        "mtime_ns": 1792111562380661262,
+        "sha256": "341c9297d6f9a1d1a7a65872f3ebf16311dfe632279d6433cad304f31ea69fc6"
+      },
+      "ids": {
+        "path": "bench/results/hybrid-workload-optimization/forced-avx2.ids",
+        "bytes": 632,
+        "mtime_ns": 1792111565409699617,
+        "sha256": "4ac5715eabc7249b2cec189f031d18dec4d45eb902d8432cadacb3aaca0dc40f"
+      },
+      "float32_count": 248320,
+      "token_id_count": 128,
+      "nan_count": 0,
+      "positive_infinity_count": 0,
+      "negative_infinity_count": 0,
+      "nonfinite_count": 0,
+      "top1_token_id": 760
+    },
+    "host-pinned": {
+      "logits": {
+        "path": "bench/results/hybrid-workload-optimization/host-pinned.f32",
+        "bytes": 993280,
+        "mtime_ns": 1792113995288265144,
+        "sha256": "341c9297d6f9a1d1a7a65872f3ebf16311dfe632279d6433cad304f31ea69fc6"
+      },
+      "ids": {
+        "path": "bench/results/hybrid-workload-optimization/host-pinned.ids",
+        "bytes": 632,
+        "mtime_ns": 1792113998242308453,
+        "sha256": "4ac5715eabc7249b2cec189f031d18dec4d45eb902d8432cadacb3aaca0dc40f"
+      },
+      "float32_count": 248320,
+      "token_id_count": 128,
+      "nan_count": 0,
+      "positive_infinity_count": 0,
+      "negative_infinity_count": 0,
+      "nonfinite_count": 0,
+      "top1_token_id": 760
+    },
+    "expert32": {
+      "logits": {
+        "path": "bench/results/hybrid-workload-optimization/expert32.f32",
+        "bytes": 993280,
+        "mtime_ns": 1792112657815796984,
+        "sha256": "341c9297d6f9a1d1a7a65872f3ebf16311dfe632279d6433cad304f31ea69fc6"
+      },
+      "ids": {
+        "path": "bench/results/hybrid-workload-optimization/expert32.ids",
+        "bytes": 632,
+        "mtime_ns": 1792112660787861421,
+        "sha256": "4ac5715eabc7249b2cec189f031d18dec4d45eb902d8432cadacb3aaca0dc40f"
+      },
+      "float32_count": 248320,
+      "token_id_count": 128,
+      "nan_count": 0,
+      "positive_infinity_count": 0,
+      "negative_infinity_count": 0,
+      "nonfinite_count": 0,
+      "top1_token_id": 760
+    },
+    "paired-rows": {
+      "logits": {
+        "path": "bench/results/hybrid-workload-optimization/paired-rows.f32",
+        "bytes": 993280,
+        "mtime_ns": 1792111969353782613,
+        "sha256": "341c9297d6f9a1d1a7a65872f3ebf16311dfe632279d6433cad304f31ea69fc6"
+      },
+      "ids": {
+        "path": "bench/results/hybrid-workload-optimization/paired-rows.ids",
+        "bytes": 632,
+        "mtime_ns": 1792111972356820220,
+        "sha256": "4ac5715eabc7249b2cec189f031d18dec4d45eb902d8432cadacb3aaca0dc40f"
+      },
+      "float32_count": 248320,
+      "token_id_count": 128,
+      "nan_count": 0,
+      "positive_infinity_count": 0,
+      "negative_infinity_count": 0,
+      "nonfinite_count": 0,
+      "top1_token_id": 760
+    },
+    "llama-cpu-only": {
+      "logits": {
+        "path": "bench/results/hybrid-workload-optimization/llama-cpu-only.f32",
+        "bytes": 993280,
+        "mtime_ns": 1792112056712875828,
+        "sha256": "5415cab3b180f5e2f2b5a1556f463aa01eb51845dacabdcf789b3d23919088c8"
+      },
+      "ids": {
+        "path": "bench/results/hybrid-workload-optimization/llama-cpu-only.ids",
+        "bytes": 630,
+        "mtime_ns": 1792112192516572489,
+        "sha256": "b83e6d3407100a0738396b046e3c2a48c5d540a8928289988eff0d7f17a75884"
+      },
+      "float32_count": 248320,
+      "token_id_count": 128,
+      "nan_count": 0,
+      "positive_infinity_count": 0,
+      "negative_infinity_count": 0,
+      "nonfinite_count": 0,
+      "top1_token_id": 760
+    },
+    "llama-ngl16": {
+      "logits": {
+        "path": "bench/results/hybrid-workload-optimization/llama-ngl16.f32",
+        "bytes": 993280,
+        "mtime_ns": 1792112224783975199,
+        "sha256": "7949a63b30cb618cdc63695b2ed048c4221e5b68f7ea39aa17d541999543bf4f"
+      },
+      "ids": {
+        "path": "bench/results/hybrid-workload-optimization/llama-ngl16.ids",
+        "bytes": 631,
+        "mtime_ns": 1792112421438315323,
+        "sha256": "24fc62025b2f43a66f22a5cb12b48907fc973da600e6297bfa7d2912e041eed8"
+      },
+      "float32_count": 248320,
+      "token_id_count": 128,
+      "nan_count": 0,
+      "positive_infinity_count": 0,
+      "negative_infinity_count": 0,
+      "nonfinite_count": 0,
+      "top1_token_id": 760
+    },
+    "llama-dense-gpu": {
+      "logits": {
+        "path": "bench/results/hybrid-workload-optimization/llama-dense-gpu.f32",
+        "bytes": 993280,
+        "mtime_ns": 1792114299049677482,
+        "sha256": "97e7e7ed6aa2c6cd1236d23d0e816ca1712b7ed4034196e4b24f74059a0cc12d"
+      },
+      "ids": {
+        "path": "bench/results/hybrid-workload-optimization/llama-dense-gpu.ids",
+        "bytes": 632,
+        "mtime_ns": 1792114489310681309,
+        "sha256": "f124c60d45926226419a8f68e8c4e2dcb08ad4cae4bfe95b71d1921e2b7eb148"
+      },
+      "float32_count": 248320,
+      "token_id_count": 128,
+      "nan_count": 0,
+      "positive_infinity_count": 0,
+      "negative_infinity_count": 0,
+      "nonfinite_count": 0,
+      "top1_token_id": 760
+    }
+  },
+  "comparisons": [
+    {
+      "reference": "baseline",
+      "candidate": "batch-projections",
+      "logits": {
+        "count": 248320,
+        "bitwise_equal": true,
+        "numeric_equal_count": 248320,
+        "numeric_different_count": 0,
+        "nonfinite_reference_count": 0,
+        "nonfinite_candidate_count": 0,
+        "max_abs": 0.0,
+        "relative_l2_reference_denominator": 0.0,
+        "reference_l2_norm": 3754.087908377307,
+        "reference_top1_token_id": 760,
+        "candidate_top1_token_id": 760,
+        "top1_equal": true
+      },
+      "generated_ids": {
+        "reference_count": 128,
+        "candidate_count": 128,
+        "matching_positions": 128,
+        "mismatching_positions_count": 0,
+        "first_mismatch_position_zero_based": null,
+        "identical_prefix_length": 128,
+        "mismatch_positions_zero_based": [],
+        "all_equal": true
+      }
+    },
+    {
+      "reference": "baseline",
+      "candidate": "serial-projections",
+      "logits": {
+        "count": 248320,
+        "bitwise_equal": true,
+        "numeric_equal_count": 248320,
+        "numeric_different_count": 0,
+        "nonfinite_reference_count": 0,
+        "nonfinite_candidate_count": 0,
+        "max_abs": 0.0,
+        "relative_l2_reference_denominator": 0.0,
+        "reference_l2_norm": 3754.087908377307,
+        "reference_top1_token_id": 760,
+        "candidate_top1_token_id": 760,
+        "top1_equal": true
+      },
+      "generated_ids": {
+        "reference_count": 128,
+        "candidate_count": 128,
+        "matching_positions": 128,
+        "mismatching_positions_count": 0,
+        "first_mismatch_position_zero_based": null,
+        "identical_prefix_length": 128,
+        "mismatch_positions_zero_based": [],
+        "all_equal": true
+      }
+    },
+    {
+      "reference": "baseline",
+      "candidate": "forced-avx2",
+      "logits": {
+        "count": 248320,
+        "bitwise_equal": true,
+        "numeric_equal_count": 248320,
+        "numeric_different_count": 0,
+        "nonfinite_reference_count": 0,
+        "nonfinite_candidate_count": 0,
+        "max_abs": 0.0,
+        "relative_l2_reference_denominator": 0.0,
+        "reference_l2_norm": 3754.087908377307,
+        "reference_top1_token_id": 760,
+        "candidate_top1_token_id": 760,
+        "top1_equal": true
+      },
+      "generated_ids": {
+        "reference_count": 128,
+        "candidate_count": 128,
+        "matching_positions": 128,
+        "mismatching_positions_count": 0,
+        "first_mismatch_position_zero_based": null,
+        "identical_prefix_length": 128,
+        "mismatch_positions_zero_based": [],
+        "all_equal": true
+      }
+    },
+    {
+      "reference": "baseline",
+      "candidate": "host-pinned",
+      "logits": {
+        "count": 248320,
+        "bitwise_equal": true,
+        "numeric_equal_count": 248320,
+        "numeric_different_count": 0,
+        "nonfinite_reference_count": 0,
+        "nonfinite_candidate_count": 0,
+        "max_abs": 0.0,
+        "relative_l2_reference_denominator": 0.0,
+        "reference_l2_norm": 3754.087908377307,
+        "reference_top1_token_id": 760,
+        "candidate_top1_token_id": 760,
+        "top1_equal": true
+      },
+      "generated_ids": {
+        "reference_count": 128,
+        "candidate_count": 128,
+        "matching_positions": 128,
+        "mismatching_positions_count": 0,
+        "first_mismatch_position_zero_based": null,
+        "identical_prefix_length": 128,
+        "mismatch_positions_zero_based": [],
+        "all_equal": true
+      }
+    },
+    {
+      "reference": "baseline",
+      "candidate": "expert32",
+      "logits": {
+        "count": 248320,
+        "bitwise_equal": true,
+        "numeric_equal_count": 248320,
+        "numeric_different_count": 0,
+        "nonfinite_reference_count": 0,
+        "nonfinite_candidate_count": 0,
+        "max_abs": 0.0,
+        "relative_l2_reference_denominator": 0.0,
+        "reference_l2_norm": 3754.087908377307,
+        "reference_top1_token_id": 760,
+        "candidate_top1_token_id": 760,
+        "top1_equal": true
+      },
+      "generated_ids": {
+        "reference_count": 128,
+        "candidate_count": 128,
+        "matching_positions": 128,
+        "mismatching_positions_count": 0,
+        "first_mismatch_position_zero_based": null,
+        "identical_prefix_length": 128,
+        "mismatch_positions_zero_based": [],
+        "all_equal": true
+      }
+    },
+    {
+      "reference": "baseline",
+      "candidate": "paired-rows",
+      "logits": {
+        "count": 248320,
+        "bitwise_equal": true,
+        "numeric_equal_count": 248320,
+        "numeric_different_count": 0,
+        "nonfinite_reference_count": 0,
+        "nonfinite_candidate_count": 0,
+        "max_abs": 0.0,
+        "relative_l2_reference_denominator": 0.0,
+        "reference_l2_norm": 3754.087908377307,
+        "reference_top1_token_id": 760,
+        "candidate_top1_token_id": 760,
+        "top1_equal": true
+      },
+      "generated_ids": {
+        "reference_count": 128,
+        "candidate_count": 128,
+        "matching_positions": 128,
+        "mismatching_positions_count": 0,
+        "first_mismatch_position_zero_based": null,
+        "identical_prefix_length": 128,
+        "mismatch_positions_zero_based": [],
+        "all_equal": true
+      }
+    },
+    {
+      "reference": "baseline",
+      "candidate": "llama-cpu-only",
+      "logits": {
+        "count": 248320,
+        "bitwise_equal": false,
+        "numeric_equal_count": 0,
+        "numeric_different_count": 248320,
+        "nonfinite_reference_count": 0,
+        "nonfinite_candidate_count": 0,
+        "max_abs": 10.599987983703613,
+        "relative_l2_reference_denominator": 0.2261956902566993,
+        "reference_l2_norm": 3754.087908377307,
+        "reference_top1_token_id": 760,
+        "candidate_top1_token_id": 760,
+        "top1_equal": true
+      },
+      "generated_ids": {
+        "reference_count": 128,
+        "candidate_count": 128,
+        "matching_positions": 106,
+        "mismatching_positions_count": 22,
+        "first_mismatch_position_zero_based": 64,
+        "identical_prefix_length": 64,
+        "mismatch_positions_zero_based": [
+          64,
+          107,
+          108,
+          109,
+          110,
+          111,
+          112,
+          113,
+          114,
+          115,
+          116,
+          117,
+          118,
+          119,
+          120,
+          121,
+          122,
+          123,
+          124,
+          125,
+          126,
+          127
+        ],
+        "all_equal": false
+      }
+    },
+    {
+      "reference": "baseline",
+      "candidate": "llama-ngl16",
+      "logits": {
+        "count": 248320,
+        "bitwise_equal": false,
+        "numeric_equal_count": 0,
+        "numeric_different_count": 248320,
+        "nonfinite_reference_count": 0,
+        "nonfinite_candidate_count": 0,
+        "max_abs": 10.931639194488525,
+        "relative_l2_reference_denominator": 0.22627434336115923,
+        "reference_l2_norm": 3754.087908377307,
+        "reference_top1_token_id": 760,
+        "candidate_top1_token_id": 760,
+        "top1_equal": true
+      },
+      "generated_ids": {
+        "reference_count": 128,
+        "candidate_count": 128,
+        "matching_positions": 103,
+        "mismatching_positions_count": 25,
+        "first_mismatch_position_zero_based": 64,
+        "identical_prefix_length": 64,
+        "mismatch_positions_zero_based": [
+          64,
+          104,
+          105,
+          106,
+          107,
+          108,
+          109,
+          110,
+          111,
+          112,
+          113,
+          114,
+          115,
+          116,
+          117,
+          118,
+          119,
+          120,
+          121,
+          122,
+          123,
+          124,
+          125,
+          126,
+          127
+        ],
+        "all_equal": false
+      }
+    },
+    {
+      "reference": "baseline",
+      "candidate": "llama-dense-gpu",
+      "logits": {
+        "count": 248320,
+        "bitwise_equal": false,
+        "numeric_equal_count": 0,
+        "numeric_different_count": 248320,
+        "nonfinite_reference_count": 0,
+        "nonfinite_candidate_count": 0,
+        "max_abs": 5.72389554977417,
+        "relative_l2_reference_denominator": 0.16153946627969146,
+        "reference_l2_norm": 3754.087908377307,
+        "reference_top1_token_id": 760,
+        "candidate_top1_token_id": 760,
+        "top1_equal": true
+      },
+      "generated_ids": {
+        "reference_count": 128,
+        "candidate_count": 128,
+        "matching_positions": 125,
+        "mismatching_positions_count": 3,
+        "first_mismatch_position_zero_based": 80,
+        "identical_prefix_length": 80,
+        "mismatch_positions_zero_based": [
+          80,
+          96,
+          112
+        ],
+        "all_equal": false
+      }
+    }
+  ]
+}

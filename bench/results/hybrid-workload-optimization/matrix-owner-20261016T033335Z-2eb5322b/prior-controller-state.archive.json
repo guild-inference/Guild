@@ -1,0 +1,18 @@
+{
+  "pid": 404419,
+  "status": "running",
+  "completed_groups": [
+    "baseline-p512-b256",
+    "baseline-p2048-b256",
+    "baseline-p4096-b256",
+    "baseline-p8192-b256"
+  ],
+  "benchmark_sha256": "d64290965bfe580156d090a24cdc2e95c1a643136261a8f24ef9dc7160c0c1c4",
+  "started_utc": "2026-10-16T02:28:09Z",
+  "updated_utc": "2026-10-16T02:45:28Z",
+  "active_group": "baseline-p16384-b256",
+  "prompt_512_ids_sha256": "fa0754ec8c9711108b18472477b4904c443add9e61e1cbb54bcaf70f775b090d",
+  "prompt_2048_ids_sha256": "130de8de1ef5e7ca391850607b023efeda86d94b7a1f5771d081d1fda8c978b3",
+  "prompt_4096_ids_sha256": "c999aebfbdb5fdb330857dde580902043e34ac74474bafa5384b3d036f6a6f82",
+  "prompt_8192_ids_sha256": "0dcf6011d342f2c1c0933614e2758302c5ada2090808ce8d399c82b728d664e9"
+}

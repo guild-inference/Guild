@@ -1,0 +1,1366 @@
+{
+  "trace": "bench/results/hybrid-workload-optimization/profile-serial-gpu.tsv",
+  "cpu": "bench/results/hybrid-workload-optimization/profile-serial-cpu.csv",
+  "measurement_role": "instrumentation_only",
+  "status": "complete",
+  "errors": [],
+  "warnings": [],
+  "phases": {
+    "prefill_and_first_token": {
+      "wall_ms": 2560.925819,
+      "gpu_union_ms": 1430.756119,
+      "gpu_useful_union_ms": 1421.012327,
+      "gpu_useful_kernel_union_ms": 1378.541934,
+      "gpu_memcpy_union_ms": 42.470393,
+      "gpu_device_wait_union_ms": 9.743792,
+      "gpu_mapped_host_transfer_kernel_union_ms": 0.517623,
+      "gpu_category_union_ms": {
+        "kv_staging": 16.894396,
+        "memcpy": 42.470393,
+        "embedding": 0.152519,
+        "normalization": 6.964367,
+        "activation_quantization": 7.861888,
+        "projection": 1164.862163,
+        "gdn": 139.211556,
+        "residual_and_other": 10.572871,
+        "routing": 8.226853,
+        "rope": 0.376695,
+        "attention": 24.118497,
+        "mapped_host_transfer": 0.517623,
+        "device_wait": 9.743792
+      },
+      "kernel_category_sum_ms": {
+        "kv_staging": 16.894396000000047,
+        "embedding": 0.15251900000000002,
+        "normalization": 6.964367000000002,
+        "activation_quantization": 7.861888000000018,
+        "projection": 1164.9657570000004,
+        "gdn": 139.21155600000003,
+        "residual_and_other": 10.659498999999993,
+        "routing": 8.226853000000004,
+        "rope": 0.376695,
+        "attention": 24.118496999999998,
+        "mapped_host_transfer": 0.517623,
+        "device_wait": 9.743792000000003
+      },
+      "memcpy_by_kind": {
+        "host_to_device:src2:dst3": {
+          "count": 88,
+          "bytes": 167491500,
+          "sum_ms": 21.541943000000014
+        },
+        "device_to_host:src3:dst2": {
+          "count": 241,
+          "bytes": 168752648,
+          "sum_ms": 19.58796900000001
+        },
+        "device_to_device:src3:dst3": {
+          "count": 20,
+          "bytes": 83722240,
+          "sum_ms": 0.851594
+        },
+        "device_to_host:src3:dst1": {
+          "count": 2,
+          "bytes": 4186112,
+          "sum_ms": 0.48888699999999996
+        }
+      },
+      "activities": {
+        "api:cudaStreamSynchronize_v3020": {
+          "count": 85,
+          "sum_ms": 1177.174024,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "kernel:void guild::kernels::(anonymous namespace)::native_mmvq_many_reg_kernel<guild::kernels::(anonymous namespace)::Q4KTraits, 4, 1, 1>(guild::kernels::(anonymous namespace)::Q4KTraits::Block const*, guild::kernels::(anonymous namespace)::Q81Block const*, float*, int, int, int)": {
+          "count": 300,
+          "sum_ms": 568.707447,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "kernel:void guild::kernels::(anonymous namespace)::native_mmvq_many_reg_kernel<guild::kernels::(anonymous namespace)::Q4KTraits, 4, 1, 2>(guild::kernels::(anonymous namespace)::Q4KTraits::Block const*, guild::kernels::(anonymous namespace)::Q81Block const*, float*, int, int, int)": {
+          "count": 80,
+          "sum_ms": 282.168351,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "kernel:void guild::kernels::(anonymous namespace)::native_mmvq_many_reg_kernel<guild::kernels::(anonymous namespace)::Q6KTraits, 4, 1, 2>(guild::kernels::(anonymous namespace)::Q6KTraits::Block const*, guild::kernels::(anonymous namespace)::Q81Block const*, float*, int, int, int)": {
+          "count": 40,
+          "sum_ms": 170.600208,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "kernel:guild::kernels::(anonymous namespace)::gdn_step_norm_multi_kernel(float*, float const*, int, float const*, float const*, float const*, float const*, float, float*, int, int, int, int const*, int, bool)": {
+          "count": 90,
+          "sum_ms": 89.515522,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "api:cudaLaunchKernel_v7000": {
+          "count": 15162,
+          "sum_ms": 84.78756800000009,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "kernel:void guild::kernels::(anonymous namespace)::bf16_f32_mmvf_multi_kernel<256, 8, false>(float const*, long, unsigned short const*, float*, long, int, int)": {
+          "count": 5120,
+          "sum_ms": 56.34081100000011,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "kernel:void guild::kernels::(anonymous namespace)::native_mmvq_many_reg_kernel<guild::kernels::(anonymous namespace)::Q4KTraits, 4, 2, 1>(guild::kernels::(anonymous namespace)::Q4KTraits::Block const*, guild::kernels::(anonymous namespace)::Q81Block const*, float*, int, int, int)": {
+          "count": 40,
+          "sum_ms": 49.475044,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "kernel:void guild::kernels::(anonymous namespace)::gdn_ab_multi_kernel<8, false>(float const*, unsigned short const*, unsigned short const*, float const*, float const*, float*, float*, int, int, int)": {
+          "count": 1920,
+          "sum_ms": 42.631080000000004,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "kernel:void guild::kernels::(anonymous namespace)::native_mmvq_many_reg_kernel<guild::kernels::(anonymous namespace)::Q6KTraits, 4, 2, 1>(guild::kernels::(anonymous namespace)::Q6KTraits::Block const*, guild::kernels::(anonymous namespace)::Q81Block const*, float*, int, int, int)": {
+          "count": 40,
+          "sum_ms": 27.967139000000003,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "copy:copy_1_2_3": {
+          "count": 88,
+          "sum_ms": 21.541943000000014,
+          "bytes": 167491500,
+          "boundary_crossing_count": 0
+        },
+        "kernel:void guild::kernels::(anonymous namespace)::attn_chunk_kernel_pre75<8, 0>(float const*, guild::kernels::QsaAttnPools, int const*, int const*, int, int, float, float*, float*, float*, int, int, long long)": {
+          "count": 650,
+          "sum_ms": 20.376973000000003,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "copy:copy_2_3_2": {
+          "count": 241,
+          "sum_ms": 19.58796900000001,
+          "bytes": 168752648,
+          "boundary_crossing_count": 0
+        },
+        "kernel:guild::kernels::(anonymous namespace)::kv_append_kernel(unsigned short*, unsigned short*, int const*, int const*, float const*, float const*, int, int, int, guild::kernels::KvHostPools)": {
+          "count": 5120,
+          "sum_ms": 14.206300000000045,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "kernel:guild::kernels::(anonymous namespace)::wait_flag_ge_kernel(unsigned int const volatile*, unsigned int)": {
+          "count": 120,
+          "sum_ms": 9.743792000000003,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "kernel:guild::kernels::(anonymous namespace)::router_top10_kernel(float const*, int, int, int, int*, float*)": {
+          "count": 120,
+          "sum_ms": 8.226853000000004,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "kernel:guild::kernels::(anonymous namespace)::add_kernel(float*, float const*, long long)": {
+          "count": 320,
+          "sum_ms": 7.28615899999999,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "kernel:guild::kernels::(anonymous namespace)::native_quantize_q8_1_kernel(float const*, guild::kernels::(anonymous namespace)::Q81Block*, int)": {
+          "count": 361,
+          "sum_ms": 7.169981000000019,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "api:cudaMemcpyAsync_v3020": {
+          "count": 330,
+          "sum_ms": 6.5811699999999975,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "kernel:guild::kernels::(anonymous namespace)::gdn_conv_l2_multi_kernel(float const*, float const*, float const*, float*, int, int, float, int)": {
+          "count": 90,
+          "sum_ms": 6.556594000000006,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "kernel:void guild::kernels::(anonymous namespace)::norm<1024>(float const*, float const*, float*, int, float)": {
+          "count": 241,
+          "sum_ms": 5.121395000000002,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "kernel:void guild::kernels::(anonymous namespace)::native_q4_k_mmvq_kernel<false>(guild::kernels::(anonymous namespace)::Q4KBlock const*, guild::kernels::(anonymous namespace)::Q81Block const*, float*, int, int)": {
+          "count": 190,
+          "sum_ms": 4.487053,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "kernel:void guild::kernels::(anonymous namespace)::native_q6_k_mmvq_kernel<false>(guild::kernels::(anonymous namespace)::Q6KBlock const*, guild::kernels::(anonymous namespace)::Q81Block const*, float*, int, int)": {
+          "count": 21,
+          "sum_ms": 4.080572,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "api:cudaMemsetAsync_v3020": {
+          "count": 53,
+          "sum_ms": 3.7603010000000006,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "kernel:void guild::kernels::(anonymous namespace)::attn_merge_kernel<8>(float const*, float const*, float const*, int, float*, long long)": {
+          "count": 650,
+          "sum_ms": 3.741523999999996,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "api:cudaGetLastError_v3020": {
+          "count": 14522,
+          "sum_ms": 3.41572999999998,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "api:cudaGraphLaunch_v10000": {
+          "count": 2,
+          "sum_ms": 2.975835,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "kernel:guild::kernels::(anonymous namespace)::copy_kernel(guild::kernels::KvStreamMap, guild::kernels::(anonymous namespace)::Runs)": {
+          "count": 30,
+          "sum_ms": 2.394866,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "kernel:void guild::kernels::(anonymous namespace)::norm<256>(float const*, float const*, float*, int, float)": {
+          "count": 60,
+          "sum_ms": 1.8429719999999998,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "api:cudaEventRecord_v3020": {
+          "count": 401,
+          "sum_ms": 1.554945999999999,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "kernel:guild::kernels::(anonymous namespace)::sigmoid_scale_rows_kernel(float*, float const*, int)": {
+          "count": 120,
+          "sum_ms": 1.5366780000000013,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "kernel:guild::kernels::(anonymous namespace)::gate(float const*, float const*, float*, int, int)": {
+          "count": 30,
+          "sum_ms": 1.2883500000000003,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "copy:copy_8_3_3": {
+          "count": 20,
+          "sum_ms": 0.851594,
+          "bytes": 83722240,
+          "boundary_crossing_count": 0
+        },
+        "kernel:guild::kernels::(anonymous namespace)::native_swiglu_quantize_q8_1_kernel(float const*, float const*, guild::kernels::(anonymous namespace)::Q81Block*, int)": {
+          "count": 120,
+          "sum_ms": 0.6011829999999999,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "api:cudaEventElapsedTime_v3020": {
+          "count": 320,
+          "sum_ms": 0.5180010000000002,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "kernel:void guild::kernels::(anonymous namespace)::bf16_f32_mmvf_kernel<256>(float const*, unsigned short const*, float*, int)": {
+          "count": 80,
+          "sum_ms": 0.504091,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "copy:copy_2_3_1": {
+          "count": 2,
+          "sum_ms": 0.48888699999999996,
+          "bytes": 4186112,
+          "boundary_crossing_count": 0
+        },
+        "api:cudaMemcpy2DAsync_v3020": {
+          "count": 20,
+          "sum_ms": 0.400291,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "kernel:guild::kernels::copy_rows_from_mapped_kernel(float4*, float4 const volatile*, long, int const*, int const*)": {
+          "count": 40,
+          "sum_ms": 0.38878500000000005,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "kernel:void guild::kernels::(anonymous namespace)::apply<false>(float const*, float*, int, int, int, float, float, float, float, float, float, int const*, int const*, guild::kernels::RopeTab)": {
+          "count": 60,
+          "sum_ms": 0.376695,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "kernel:void guild::kernels::(anonymous namespace)::native_q4_k_mmvq_kernel<true>(guild::kernels::(anonymous namespace)::Q4KBlock const*, guild::kernels::(anonymous namespace)::Q81Block const*, float*, int, int)": {
+          "count": 20,
+          "sum_ms": 0.32024,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "kernel:void guild::kernels::(anonymous namespace)::native_q6_k_mmvq_kernel<true>(guild::kernels::(anonymous namespace)::Q6KBlock const*, guild::kernels::(anonymous namespace)::Q81Block const*, float*, int, int)": {
+          "count": 20,
+          "sum_ms": 0.31480100000000005,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "kernel:guild::kernels::doorbell_publish_res_kernel(float const*, int const*, int const*, int, int, int, float*, int*, unsigned int*)": {
+          "count": 40,
+          "sum_ms": 0.263277,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "kernel:guild::kernels::(anonymous namespace)::gdn_conv_commit_kernel(float*, float const*, int, int const*)": {
+          "count": 66,
+          "sum_ms": 0.21022800000000003,
+          "bytes": 0,
+          "boundary_crossing_count": 1
+        },
+        "api:cudaGetDevice_v3020": {
+          "count": 682,
+          "sum_ms": 0.2042999999999996,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "kernel:void guild::kernels::(anonymous namespace)::gdn_ab_multi_kernel<4, false>(float const*, unsigned short const*, unsigned short const*, float const*, float const*, float*, float*, int, int, int)": {
+          "count": 30,
+          "sum_ms": 0.190416,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "kernel:guild::kernels::(anonymous namespace)::resolve_kernel(guild::kernels::KvStreamMap, int const*, int const*, int, int, int)": {
+          "count": 30,
+          "sum_ms": 0.18308200000000002,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "kernel:guild::kernels::(anonymous namespace)::embed_rows_kernel(int, unsigned char const*, unsigned long, int const*, long, float*)": {
+          "count": 3,
+          "sum_ms": 0.15251900000000002,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "kernel:guild::kernels::(anonymous namespace)::combine(float const*, float const*, float const*, float*, long, int)": {
+          "count": 40,
+          "sum_ms": 0.138469,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "kernel:guild::kernels::copy_i32_from_mapped_kernel(int*, int const volatile*, int)": {
+          "count": 44,
+          "sum_ms": 0.128838,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "kernel:guild::kernels::(anonymous namespace)::reset_kernel(guild::kernels::KvStreamMap, bool)": {
+          "count": 40,
+          "sum_ms": 0.11014800000000002,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "kernel:guild::kernels::(anonymous namespace)::gdn_step_commit_kernel(float*, float const*, int, float const*, float const*, int, int, int const*)": {
+          "count": 5,
+          "sum_ms": 0.107716,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "kernel:guild::kernels::(anonymous namespace)::quantize_q8_1_kernel(float const*, block_q8_1*, long long)": {
+          "count": 40,
+          "sum_ms": 0.09072400000000001,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "kernel:guild::kernels::(anonymous namespace)::add_hits_kernel(float*, float const*, int const*, int const*, int)": {
+          "count": 40,
+          "sum_ms": 0.063394,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "kernel:guild::kernels::(anonymous namespace)::sampler_greedy_kernel(float const*, int, int const*, int, guild::kernels::SamplerParams, int, int, int*)": {
+          "count": 1,
+          "sum_ms": 0.04125,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "kernel:memcpyDtoD2D_aligned_smalldiffpitch": {
+          "count": 10,
+          "sum_ms": 0.016674,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "kernel:memcpy32_post": {
+          "count": 8,
+          "sum_ms": 0.013984,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "kernel:guild::kernels::(anonymous namespace)::finite_first_bad_kernel(float const*, unsigned long long, unsigned long long*)": {
+          "count": 1,
+          "sum_ms": 0.011264,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "api:cudaStreamQuery_v3020": {
+          "count": 2,
+          "sum_ms": 0.009503,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        }
+      },
+      "cpu_expert_wall_union_ms": 896.195693,
+      "cpu_expert_gpu_useful_overlap_ms": 116.018999,
+      "cpu_expert_gpu_useful_overlap_ms_by_calibration_delta_ns": {
+        "-295": 116.042009,
+        "0": 116.018999,
+        "35": 116.016269
+      },
+      "cpu_expert_without_gpu_useful_ms": 780.176694,
+      "gpu_useful_without_cpu_expert_ms": 1304.993328,
+      "neither_cpu_expert_nor_gpu_useful_ms": 359.736798,
+      "cpu_expert_calls": 120,
+      "cpu_expert_boundary_crossing_calls": 0,
+      "cpu_expert_thread_times": {
+        "gu_thread_cpu_ms": 17851.111534,
+        "quant_thread_cpu_ms": 390.479659,
+        "down_thread_cpu_ms": 9550.446195
+      },
+      "cpu_expert_layers": {
+        "0": {
+          "calls": 3,
+          "wall_ms": 25.976390999999996,
+          "gu_thread_cpu_ms": 529.6977890000001,
+          "quant_thread_cpu_ms": 12.165956,
+          "down_thread_cpu_ms": 242.11924699999997
+        },
+        "1": {
+          "calls": 3,
+          "wall_ms": 21.064621,
+          "gu_thread_cpu_ms": 426.921619,
+          "quant_thread_cpu_ms": 9.148664,
+          "down_thread_cpu_ms": 203.831207
+        },
+        "2": {
+          "calls": 3,
+          "wall_ms": 21.391550000000002,
+          "gu_thread_cpu_ms": 434.072865,
+          "quant_thread_cpu_ms": 9.324149,
+          "down_thread_cpu_ms": 210.154944
+        },
+        "3": {
+          "calls": 3,
+          "wall_ms": 21.184369,
+          "gu_thread_cpu_ms": 430.034861,
+          "quant_thread_cpu_ms": 9.167711,
+          "down_thread_cpu_ms": 209.511351
+        },
+        "4": {
+          "calls": 3,
+          "wall_ms": 21.489935,
+          "gu_thread_cpu_ms": 435.447831,
+          "quant_thread_cpu_ms": 9.471257,
+          "down_thread_cpu_ms": 215.89984199999998
+        },
+        "5": {
+          "calls": 3,
+          "wall_ms": 22.03071,
+          "gu_thread_cpu_ms": 431.17976600000003,
+          "quant_thread_cpu_ms": 9.297178,
+          "down_thread_cpu_ms": 241.55303499999997
+        },
+        "6": {
+          "calls": 3,
+          "wall_ms": 22.189477,
+          "gu_thread_cpu_ms": 436.719589,
+          "quant_thread_cpu_ms": 9.655871999999999,
+          "down_thread_cpu_ms": 245.857248
+        },
+        "7": {
+          "calls": 3,
+          "wall_ms": 20.934037,
+          "gu_thread_cpu_ms": 424.333604,
+          "quant_thread_cpu_ms": 9.137846,
+          "down_thread_cpu_ms": 211.974827
+        },
+        "8": {
+          "calls": 3,
+          "wall_ms": 22.043805000000003,
+          "gu_thread_cpu_ms": 431.113115,
+          "quant_thread_cpu_ms": 9.448221,
+          "down_thread_cpu_ms": 244.130738
+        },
+        "9": {
+          "calls": 3,
+          "wall_ms": 21.677155,
+          "gu_thread_cpu_ms": 425.483521,
+          "quant_thread_cpu_ms": 9.269963,
+          "down_thread_cpu_ms": 239.16470800000002
+        },
+        "10": {
+          "calls": 3,
+          "wall_ms": 21.667898,
+          "gu_thread_cpu_ms": 438.713776,
+          "quant_thread_cpu_ms": 9.749675,
+          "down_thread_cpu_ms": 219.331247
+        },
+        "11": {
+          "calls": 3,
+          "wall_ms": 21.764387,
+          "gu_thread_cpu_ms": 428.130428,
+          "quant_thread_cpu_ms": 9.186538,
+          "down_thread_cpu_ms": 241.21889799999997
+        },
+        "12": {
+          "calls": 3,
+          "wall_ms": 21.951752000000003,
+          "gu_thread_cpu_ms": 432.66908700000005,
+          "quant_thread_cpu_ms": 9.590244,
+          "down_thread_cpu_ms": 245.79639
+        },
+        "13": {
+          "calls": 3,
+          "wall_ms": 20.758398,
+          "gu_thread_cpu_ms": 425.803587,
+          "quant_thread_cpu_ms": 9.376014,
+          "down_thread_cpu_ms": 213.448691
+        },
+        "14": {
+          "calls": 3,
+          "wall_ms": 21.942224999999997,
+          "gu_thread_cpu_ms": 432.349029,
+          "quant_thread_cpu_ms": 9.528917999999999,
+          "down_thread_cpu_ms": 246.69534799999997
+        },
+        "15": {
+          "calls": 3,
+          "wall_ms": 21.945967,
+          "gu_thread_cpu_ms": 431.223499,
+          "quant_thread_cpu_ms": 9.448797,
+          "down_thread_cpu_ms": 245.432388
+        },
+        "16": {
+          "calls": 3,
+          "wall_ms": 21.49447,
+          "gu_thread_cpu_ms": 436.124432,
+          "quant_thread_cpu_ms": 9.629523,
+          "down_thread_cpu_ms": 220.35835799999998
+        },
+        "17": {
+          "calls": 3,
+          "wall_ms": 21.873696,
+          "gu_thread_cpu_ms": 428.249067,
+          "quant_thread_cpu_ms": 9.317029,
+          "down_thread_cpu_ms": 245.983648
+        },
+        "18": {
+          "calls": 3,
+          "wall_ms": 22.653576,
+          "gu_thread_cpu_ms": 438.488979,
+          "quant_thread_cpu_ms": 9.604818,
+          "down_thread_cpu_ms": 249.52875699999998
+        },
+        "19": {
+          "calls": 3,
+          "wall_ms": 21.488201,
+          "gu_thread_cpu_ms": 434.14194000000003,
+          "quant_thread_cpu_ms": 9.417651000000001,
+          "down_thread_cpu_ms": 221.937025
+        },
+        "20": {
+          "calls": 3,
+          "wall_ms": 22.834687,
+          "gu_thread_cpu_ms": 446.31697699999995,
+          "quant_thread_cpu_ms": 9.928937000000001,
+          "down_thread_cpu_ms": 254.998289
+        },
+        "21": {
+          "calls": 3,
+          "wall_ms": 22.582099,
+          "gu_thread_cpu_ms": 442.739013,
+          "quant_thread_cpu_ms": 9.632809000000002,
+          "down_thread_cpu_ms": 251.088988
+        },
+        "22": {
+          "calls": 3,
+          "wall_ms": 28.998057999999997,
+          "gu_thread_cpu_ms": 592.402575,
+          "quant_thread_cpu_ms": 13.144117999999999,
+          "down_thread_cpu_ms": 292.773908
+        },
+        "23": {
+          "calls": 3,
+          "wall_ms": 22.963276,
+          "gu_thread_cpu_ms": 449.548794,
+          "quant_thread_cpu_ms": 9.77475,
+          "down_thread_cpu_ms": 256.261027
+        },
+        "24": {
+          "calls": 3,
+          "wall_ms": 23.051252,
+          "gu_thread_cpu_ms": 446.67219700000004,
+          "quant_thread_cpu_ms": 9.718351,
+          "down_thread_cpu_ms": 256.9054
+        },
+        "25": {
+          "calls": 3,
+          "wall_ms": 21.871466,
+          "gu_thread_cpu_ms": 444.307455,
+          "quant_thread_cpu_ms": 9.542938000000001,
+          "down_thread_cpu_ms": 231.61054299999998
+        },
+        "26": {
+          "calls": 3,
+          "wall_ms": 23.080059000000002,
+          "gu_thread_cpu_ms": 449.87622999999996,
+          "quant_thread_cpu_ms": 9.896772,
+          "down_thread_cpu_ms": 260.87283499999995
+        },
+        "27": {
+          "calls": 3,
+          "wall_ms": 22.926696000000003,
+          "gu_thread_cpu_ms": 448.14216500000003,
+          "quant_thread_cpu_ms": 9.537701,
+          "down_thread_cpu_ms": 255.142845
+        },
+        "28": {
+          "calls": 3,
+          "wall_ms": 22.129235,
+          "gu_thread_cpu_ms": 447.817337,
+          "quant_thread_cpu_ms": 9.906323000000002,
+          "down_thread_cpu_ms": 229.83747899999997
+        },
+        "29": {
+          "calls": 3,
+          "wall_ms": 22.376728,
+          "gu_thread_cpu_ms": 437.02466,
+          "quant_thread_cpu_ms": 9.537635,
+          "down_thread_cpu_ms": 248.80558700000003
+        },
+        "30": {
+          "calls": 3,
+          "wall_ms": 22.714767999999996,
+          "gu_thread_cpu_ms": 442.574724,
+          "quant_thread_cpu_ms": 9.904449,
+          "down_thread_cpu_ms": 254.126093
+        },
+        "31": {
+          "calls": 3,
+          "wall_ms": 26.598840000000003,
+          "gu_thread_cpu_ms": 537.043284,
+          "quant_thread_cpu_ms": 12.365711999999998,
+          "down_thread_cpu_ms": 270.502651
+        },
+        "32": {
+          "calls": 3,
+          "wall_ms": 22.396154,
+          "gu_thread_cpu_ms": 435.460396,
+          "quant_thread_cpu_ms": 9.48146,
+          "down_thread_cpu_ms": 252.672759
+        },
+        "33": {
+          "calls": 3,
+          "wall_ms": 22.405049,
+          "gu_thread_cpu_ms": 434.933586,
+          "quant_thread_cpu_ms": 9.561834000000001,
+          "down_thread_cpu_ms": 249.99707800000002
+        },
+        "34": {
+          "calls": 3,
+          "wall_ms": 21.985822,
+          "gu_thread_cpu_ms": 444.36090500000006,
+          "quant_thread_cpu_ms": 9.830545,
+          "down_thread_cpu_ms": 229.347377
+        },
+        "35": {
+          "calls": 3,
+          "wall_ms": 22.052203999999996,
+          "gu_thread_cpu_ms": 443.576002,
+          "quant_thread_cpu_ms": 9.625038000000002,
+          "down_thread_cpu_ms": 229.48950100000002
+        },
+        "36": {
+          "calls": 3,
+          "wall_ms": 21.821677,
+          "gu_thread_cpu_ms": 441.204279,
+          "quant_thread_cpu_ms": 9.51977,
+          "down_thread_cpu_ms": 227.641112
+        },
+        "37": {
+          "calls": 3,
+          "wall_ms": 22.023425,
+          "gu_thread_cpu_ms": 445.89766499999996,
+          "quant_thread_cpu_ms": 9.533562,
+          "down_thread_cpu_ms": 229.415894
+        },
+        "38": {
+          "calls": 3,
+          "wall_ms": 21.920872,
+          "gu_thread_cpu_ms": 445.14959699999997,
+          "quant_thread_cpu_ms": 9.578655999999999,
+          "down_thread_cpu_ms": 225.81434900000002
+        },
+        "39": {
+          "calls": 3,
+          "wall_ms": 21.940706000000002,
+          "gu_thread_cpu_ms": 445.165309,
+          "quant_thread_cpu_ms": 9.522275,
+          "down_thread_cpu_ms": 229.214583
+        }
+      }
+    },
+    "decode": {
+      "wall_ms": 3576.563013,
+      "gpu_union_ms": 3132.697681,
+      "gpu_useful_union_ms": 1898.743645,
+      "gpu_useful_kernel_union_ms": 1898.637788,
+      "gpu_memcpy_union_ms": 0.105857,
+      "gpu_device_wait_union_ms": 1233.954036,
+      "gpu_mapped_host_transfer_kernel_union_ms": 65.443173,
+      "gpu_category_union_ms": {
+        "gdn": 210.709848,
+        "mapped_host_transfer": 65.443173,
+        "embedding": 0.607518,
+        "residual_and_other": 90.18412,
+        "normalization": 44.212667,
+        "activation_quantization": 52.145678,
+        "projection": 1211.147016,
+        "routing": 138.074503,
+        "device_wait": 1233.954036,
+        "rope": 5.92007,
+        "kv_staging": 152.943663,
+        "attention": 80.413527,
+        "memcpy": 0.105857
+      },
+      "kernel_category_sum_ms": {
+        "gdn": 210.70984799999985,
+        "mapped_host_transfer": 65.443173,
+        "embedding": 0.6075179999999996,
+        "residual_and_other": 100.75885800000101,
+        "normalization": 44.212667000000025,
+        "activation_quantization": 52.145677999999286,
+        "projection": 1224.2802330000031,
+        "routing": 138.0745030000001,
+        "device_wait": 1233.95403599999,
+        "rope": 5.920069999999921,
+        "kv_staging": 152.94366300000019,
+        "attention": 80.4135269999999
+      },
+      "memcpy_by_kind": {
+        "device_to_host:src3:dst2": {
+          "count": 127,
+          "bytes": 1016,
+          "sum_ms": 0.10585699999999994
+        }
+      },
+      "activities": {
+        "kernel:guild::kernels::(anonymous namespace)::wait_flag_ge_kernel(unsigned int const volatile*, unsigned int)": {
+          "count": 15240,
+          "sum_ms": 1233.95403599999,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "kernel:void guild::kernels::(anonymous namespace)::native_q4_k_mmvq_kernel<false>(guild::kernels::(anonymous namespace)::Q4KBlock const*, guild::kernels::(anonymous namespace)::Q81Block const*, float*, int, int)": {
+          "count": 24130,
+          "sum_ms": 564.5526810000026,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "kernel:void guild::kernels::(anonymous namespace)::native_q6_k_mmvq_kernel<false>(guild::kernels::(anonymous namespace)::Q6KBlock const*, guild::kernels::(anonymous namespace)::Q81Block const*, float*, int, int)": {
+          "count": 2667,
+          "sum_ms": 515.9261960000003,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "api:cudaGraphLaunch_v10000": {
+          "count": 254,
+          "sum_ms": 470.911525,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "api:cudaStreamSynchronize_v3020": {
+          "count": 127,
+          "sum_ms": 353.18109799999996,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "kernel:guild::kernels::(anonymous namespace)::router_top10_kernel(float const*, int, int, int, int*, float*)": {
+          "count": 5080,
+          "sum_ms": 138.0745030000001,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "kernel:guild::kernels::(anonymous namespace)::copy_kernel(guild::kernels::KvStreamMap, guild::kernels::(anonymous namespace)::Runs)": {
+          "count": 1270,
+          "sum_ms": 134.42199700000003,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "kernel:guild::kernels::(anonymous namespace)::gdn_step_commit_kernel(float*, float const*, int, float const*, float const*, int, int, int const*)": {
+          "count": 3835,
+          "sum_ms": 84.20788700000006,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "kernel:guild::kernels::(anonymous namespace)::gdn_step_norm_multi_kernel(float*, float const*, int, float const*, float const*, float const*, float const*, float, float*, int, int, int, int const*, int, bool)": {
+          "count": 3810,
+          "sum_ms": 75.26864200000007,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "kernel:void guild::kernels::(anonymous namespace)::bf16_f32_mmvf_kernel<256>(float const*, unsigned short const*, float*, int)": {
+          "count": 10160,
+          "sum_ms": 63.880980999999814,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "kernel:void guild::kernels::(anonymous namespace)::attn_merge_kernel<8>(float const*, float const*, float const*, int, float*, long long)": {
+          "count": 1270,
+          "sum_ms": 49.69624399999987,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "kernel:guild::kernels::copy_rows_from_mapped_kernel(float4*, float4 const volatile*, long, int const*, int const*)": {
+          "count": 5080,
+          "sum_ms": 49.168808,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "kernel:void guild::kernels::(anonymous namespace)::native_q4_k_mmvq_kernel<true>(guild::kernels::(anonymous namespace)::Q4KBlock const*, guild::kernels::(anonymous namespace)::Q81Block const*, float*, int, int)": {
+          "count": 2540,
+          "sum_ms": 40.33872300000004,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "kernel:void guild::kernels::(anonymous namespace)::native_q6_k_mmvq_kernel<true>(guild::kernels::(anonymous namespace)::Q6KBlock const*, guild::kernels::(anonymous namespace)::Q81Block const*, float*, int, int)": {
+          "count": 2540,
+          "sum_ms": 39.58165200000026,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "kernel:void guild::kernels::(anonymous namespace)::norm<1024>(float const*, float const*, float*, int, float)": {
+          "count": 10287,
+          "sum_ms": 35.722819000000186,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "kernel:guild::kernels::doorbell_publish_res_kernel(float const*, int const*, int const*, int, int, int, float*, int*, unsigned int*)": {
+          "count": 5080,
+          "sum_ms": 33.29894800000001,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "kernel:void guild::kernels::(anonymous namespace)::attn_chunk_kernel_pre75<8, 0>(float const*, guild::kernels::QsaAttnPools, int const*, int const*, int, int, float, float*, float*, float*, int, int, long long)": {
+          "count": 1270,
+          "sum_ms": 30.717283000000023,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "kernel:guild::kernels::(anonymous namespace)::native_quantize_q8_1_kernel(float const*, guild::kernels::(anonymous namespace)::Q81Block*, int)": {
+          "count": 15367,
+          "sum_ms": 30.64692199999924,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "kernel:void guild::kernels::(anonymous namespace)::gdn_ab_multi_kernel<4, false>(float const*, unsigned short const*, unsigned short const*, float const*, float const*, float*, float*, int, int, int)": {
+          "count": 3810,
+          "sum_ms": 24.1377179999997,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "kernel:guild::kernels::(anonymous namespace)::combine(float const*, float const*, float const*, float*, long, int)": {
+          "count": 5080,
+          "sum_ms": 17.387518000000533,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "kernel:guild::kernels::copy_i32_from_mapped_kernel(int*, int const volatile*, int)": {
+          "count": 5588,
+          "sum_ms": 16.274365000000007,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "kernel:guild::kernels::(anonymous namespace)::add_kernel(float*, float const*, long long)": {
+          "count": 10160,
+          "sum_ms": 16.2205600000009,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "kernel:guild::kernels::(anonymous namespace)::gdn_conv_l2_multi_kernel(float const*, float const*, float const*, float*, int, int, float, int)": {
+          "count": 3810,
+          "sum_ms": 14.92642999999995,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "kernel:guild::kernels::(anonymous namespace)::sigmoid_scale_rows_kernel(float*, float const*, int)": {
+          "count": 5080,
+          "sum_ms": 12.476236000000078,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "kernel:guild::kernels::(anonymous namespace)::gdn_conv_commit_kernel(float*, float const*, int, int const*)": {
+          "count": 3835,
+          "sum_ms": 12.169171000000082,
+          "bytes": 0,
+          "boundary_crossing_count": 1
+        },
+        "kernel:guild::kernels::(anonymous namespace)::quantize_q8_1_kernel(float const*, block_q8_1*, long long)": {
+          "count": 5080,
+          "sum_ms": 11.475850999999883,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "kernel:guild::kernels::(anonymous namespace)::native_swiglu_quantize_q8_1_kernel(float const*, float const*, guild::kernels::(anonymous namespace)::Q81Block*, int)": {
+          "count": 5080,
+          "sum_ms": 10.022905000000158,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "kernel:void guild::kernels::(anonymous namespace)::norm<256>(float const*, float const*, float*, int, float)": {
+          "count": 2540,
+          "sum_ms": 8.489847999999842,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "kernel:guild::kernels::(anonymous namespace)::resolve_kernel(guild::kernels::KvStreamMap, int const*, int const*, int, int, int)": {
+          "count": 1270,
+          "sum_ms": 8.073176000000103,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "kernel:guild::kernels::(anonymous namespace)::add_hits_kernel(float*, float const*, int const*, int const*, int)": {
+          "count": 5080,
+          "sum_ms": 7.942359999999472,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "kernel:guild::kernels::(anonymous namespace)::kv_append_kernel(unsigned short*, unsigned short*, int const*, int const*, float const*, float const*, int, int, int, guild::kernels::KvHostPools)": {
+          "count": 1270,
+          "sum_ms": 6.546554000000053,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "kernel:void guild::kernels::(anonymous namespace)::apply<false>(float const*, float*, int, int, int, float, float, float, float, float, float, int const*, int const*, guild::kernels::RopeTab)": {
+          "count": 2540,
+          "sum_ms": 5.920069999999921,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "kernel:guild::kernels::(anonymous namespace)::sampler_greedy_kernel(float const*, int, int const*, int, guild::kernels::SamplerParams, int, int, int*)": {
+          "count": 127,
+          "sum_ms": 5.239125999999996,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "kernel:guild::kernels::(anonymous namespace)::reset_kernel(guild::kernels::KvStreamMap, bool)": {
+          "count": 1270,
+          "sum_ms": 3.9019359999999845,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "kernel:guild::kernels::(anonymous namespace)::gate(float const*, float const*, float*, int, int)": {
+          "count": 1270,
+          "sum_ms": 3.0525610000000185,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "kernel:memcpyDtoD2D_aligned_smalldiffpitch": {
+          "count": 1270,
+          "sum_ms": 2.1088520000000206,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "kernel:memcpy32_post": {
+          "count": 1016,
+          "sum_ms": 1.5837879999999918,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "kernel:guild::kernels::(anonymous namespace)::finite_first_bad_kernel(float const*, unsigned long long, unsigned long long*)": {
+          "count": 127,
+          "sum_ms": 1.448909000000001,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "api:cudaStreamQuery_v3020": {
+          "count": 254,
+          "sum_ms": 1.1085649999999998,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "api:cudaEventRecord_v3020": {
+          "count": 127,
+          "sum_ms": 0.8289119999999999,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "api:cudaEventSynchronize_v3020": {
+          "count": 1,
+          "sum_ms": 0.634649,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "kernel:guild::kernels::(anonymous namespace)::embed_rows_kernel(int, unsigned char const*, unsigned long, int const*, long, float*)": {
+          "count": 127,
+          "sum_ms": 0.6075179999999996,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "api:cudaGetDevice_v3020": {
+          "count": 255,
+          "sum_ms": 0.2534699999999999,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        },
+        "copy:copy_2_3_2": {
+          "count": 127,
+          "sum_ms": 0.10585699999999994,
+          "bytes": 1016,
+          "boundary_crossing_count": 0
+        },
+        "api:cudaDeviceSynchronize_v3020": {
+          "count": 1,
+          "sum_ms": 0.034092,
+          "bytes": 0,
+          "boundary_crossing_count": 0
+        }
+      },
+      "cpu_expert_wall_union_ms": 1066.797602,
+      "cpu_expert_gpu_useful_overlap_ms": 0.003625,
+      "cpu_expert_gpu_useful_overlap_ms_by_calibration_delta_ns": {
+        "-295": 0.004215,
+        "0": 0.003625,
+        "35": 0.003555
+      },
+      "cpu_expert_without_gpu_useful_ms": 1066.793977,
+      "gpu_useful_without_cpu_expert_ms": 1898.74002,
+      "neither_cpu_expert_nor_gpu_useful_ms": 611.025391,
+      "cpu_expert_calls": 5080,
+      "cpu_expert_boundary_crossing_calls": 0,
+      "cpu_expert_thread_times": {
+        "gu_thread_cpu_ms": 14062.463287,
+        "quant_thread_cpu_ms": 104.622826,
+        "down_thread_cpu_ms": 8592.420484
+      },
+      "cpu_expert_layers": {
+        "0": {
+          "calls": 127,
+          "wall_ms": 31.534327999999995,
+          "gu_thread_cpu_ms": 440.59672400000005,
+          "quant_thread_cpu_ms": 3.0682129999999996,
+          "down_thread_cpu_ms": 243.42826200000013
+        },
+        "1": {
+          "calls": 127,
+          "wall_ms": 27.304061,
+          "gu_thread_cpu_ms": 341.199355,
+          "quant_thread_cpu_ms": 2.5766359999999993,
+          "down_thread_cpu_ms": 246.01027300000015
+        },
+        "2": {
+          "calls": 127,
+          "wall_ms": 27.07336,
+          "gu_thread_cpu_ms": 339.5977850000001,
+          "quant_thread_cpu_ms": 2.6155120000000007,
+          "down_thread_cpu_ms": 244.8985980000001
+        },
+        "3": {
+          "calls": 127,
+          "wall_ms": 27.582353000000015,
+          "gu_thread_cpu_ms": 347.46342200000004,
+          "quant_thread_cpu_ms": 2.674106,
+          "down_thread_cpu_ms": 245.68756099999993
+        },
+        "4": {
+          "calls": 127,
+          "wall_ms": 26.830480000000005,
+          "gu_thread_cpu_ms": 339.3010980000001,
+          "quant_thread_cpu_ms": 2.5957030000000008,
+          "down_thread_cpu_ms": 242.95747699999998
+        },
+        "5": {
+          "calls": 127,
+          "wall_ms": 24.968326,
+          "gu_thread_cpu_ms": 340.55752599999994,
+          "quant_thread_cpu_ms": 2.5996479999999997,
+          "down_thread_cpu_ms": 179.10381299999992
+        },
+        "6": {
+          "calls": 127,
+          "wall_ms": 25.334536999999987,
+          "gu_thread_cpu_ms": 347.21572199999986,
+          "quant_thread_cpu_ms": 2.646458000000001,
+          "down_thread_cpu_ms": 181.90672200000014
+        },
+        "7": {
+          "calls": 127,
+          "wall_ms": 27.40638599999998,
+          "gu_thread_cpu_ms": 347.07796199999984,
+          "quant_thread_cpu_ms": 2.6938259999999996,
+          "down_thread_cpu_ms": 247.28614600000006
+        },
+        "8": {
+          "calls": 127,
+          "wall_ms": 24.991597000000006,
+          "gu_thread_cpu_ms": 337.3276980000001,
+          "quant_thread_cpu_ms": 2.6032340000000005,
+          "down_thread_cpu_ms": 179.85284
+        },
+        "9": {
+          "calls": 127,
+          "wall_ms": 24.962059,
+          "gu_thread_cpu_ms": 344.23921099999984,
+          "quant_thread_cpu_ms": 2.576430000000001,
+          "down_thread_cpu_ms": 179.75431399999994
+        },
+        "10": {
+          "calls": 127,
+          "wall_ms": 27.423881000000005,
+          "gu_thread_cpu_ms": 345.1524610000002,
+          "quant_thread_cpu_ms": 2.6166540000000014,
+          "down_thread_cpu_ms": 246.799442
+        },
+        "11": {
+          "calls": 127,
+          "wall_ms": 25.21380999999999,
+          "gu_thread_cpu_ms": 346.0336269999999,
+          "quant_thread_cpu_ms": 2.632550999999999,
+          "down_thread_cpu_ms": 179.28736200000003
+        },
+        "12": {
+          "calls": 127,
+          "wall_ms": 25.148080999999998,
+          "gu_thread_cpu_ms": 345.2408319999999,
+          "quant_thread_cpu_ms": 2.6178939999999997,
+          "down_thread_cpu_ms": 180.87836399999992
+        },
+        "13": {
+          "calls": 127,
+          "wall_ms": 27.483906000000008,
+          "gu_thread_cpu_ms": 347.8122379999997,
+          "quant_thread_cpu_ms": 2.5802119999999995,
+          "down_thread_cpu_ms": 248.17236799999998
+        },
+        "14": {
+          "calls": 127,
+          "wall_ms": 25.176651,
+          "gu_thread_cpu_ms": 345.0048640000001,
+          "quant_thread_cpu_ms": 2.5767579999999994,
+          "down_thread_cpu_ms": 180.54607599999986
+        },
+        "15": {
+          "calls": 127,
+          "wall_ms": 25.301728,
+          "gu_thread_cpu_ms": 347.8835689999999,
+          "quant_thread_cpu_ms": 2.6932630000000017,
+          "down_thread_cpu_ms": 181.842326
+        },
+        "16": {
+          "calls": 127,
+          "wall_ms": 27.372273000000014,
+          "gu_thread_cpu_ms": 343.29068699999993,
+          "quant_thread_cpu_ms": 2.5933980000000005,
+          "down_thread_cpu_ms": 248.5895160000001
+        },
+        "17": {
+          "calls": 127,
+          "wall_ms": 27.857947000000003,
+          "gu_thread_cpu_ms": 344.4912120000001,
+          "quant_thread_cpu_ms": 2.567339000000001,
+          "down_thread_cpu_ms": 183.51920300000006
+        },
+        "18": {
+          "calls": 127,
+          "wall_ms": 25.318140000000003,
+          "gu_thread_cpu_ms": 348.4935880000001,
+          "quant_thread_cpu_ms": 2.580322999999999,
+          "down_thread_cpu_ms": 181.96911100000008
+        },
+        "19": {
+          "calls": 127,
+          "wall_ms": 27.814873,
+          "gu_thread_cpu_ms": 355.0020959999998,
+          "quant_thread_cpu_ms": 2.61758,
+          "down_thread_cpu_ms": 251.72632300000006
+        },
+        "20": {
+          "calls": 127,
+          "wall_ms": 25.268209000000002,
+          "gu_thread_cpu_ms": 351.30405799999994,
+          "quant_thread_cpu_ms": 2.566804,
+          "down_thread_cpu_ms": 180.968538
+        },
+        "21": {
+          "calls": 127,
+          "wall_ms": 25.095079000000002,
+          "gu_thread_cpu_ms": 349.286418,
+          "quant_thread_cpu_ms": 2.5478049999999994,
+          "down_thread_cpu_ms": 180.30946200000002
+        },
+        "22": {
+          "calls": 127,
+          "wall_ms": 27.89631299999999,
+          "gu_thread_cpu_ms": 354.18523099999993,
+          "quant_thread_cpu_ms": 2.5652969999999997,
+          "down_thread_cpu_ms": 252.79726499999992
+        },
+        "23": {
+          "calls": 127,
+          "wall_ms": 26.826559,
+          "gu_thread_cpu_ms": 357.5734500000002,
+          "quant_thread_cpu_ms": 2.630913000000001,
+          "down_thread_cpu_ms": 181.402807
+        },
+        "24": {
+          "calls": 127,
+          "wall_ms": 25.26411699999999,
+          "gu_thread_cpu_ms": 349.69100899999984,
+          "quant_thread_cpu_ms": 2.575393999999999,
+          "down_thread_cpu_ms": 180.53203800000006
+        },
+        "25": {
+          "calls": 127,
+          "wall_ms": 27.69694900000001,
+          "gu_thread_cpu_ms": 351.81436599999995,
+          "quant_thread_cpu_ms": 2.5758309999999986,
+          "down_thread_cpu_ms": 249.53823000000006
+        },
+        "26": {
+          "calls": 127,
+          "wall_ms": 25.241877,
+          "gu_thread_cpu_ms": 348.48942700000015,
+          "quant_thread_cpu_ms": 2.580804999999999,
+          "down_thread_cpu_ms": 180.316245
+        },
+        "27": {
+          "calls": 127,
+          "wall_ms": 25.600929999999998,
+          "gu_thread_cpu_ms": 355.05811200000016,
+          "quant_thread_cpu_ms": 2.6343670000000023,
+          "down_thread_cpu_ms": 183.36089100000004
+        },
+        "28": {
+          "calls": 127,
+          "wall_ms": 27.662848999999994,
+          "gu_thread_cpu_ms": 350.18985999999995,
+          "quant_thread_cpu_ms": 2.5864790000000006,
+          "down_thread_cpu_ms": 251.144951
+        },
+        "29": {
+          "calls": 127,
+          "wall_ms": 25.302759,
+          "gu_thread_cpu_ms": 349.7044850000001,
+          "quant_thread_cpu_ms": 2.6231969999999984,
+          "down_thread_cpu_ms": 181.48765499999996
+        },
+        "30": {
+          "calls": 127,
+          "wall_ms": 26.65003399999999,
+          "gu_thread_cpu_ms": 350.528224,
+          "quant_thread_cpu_ms": 2.5700539999999994,
+          "down_thread_cpu_ms": 183.15570299999993
+        },
+        "31": {
+          "calls": 127,
+          "wall_ms": 28.422779999999985,
+          "gu_thread_cpu_ms": 360.39696299999997,
+          "quant_thread_cpu_ms": 2.682757,
+          "down_thread_cpu_ms": 254.55075000000002
+        },
+        "32": {
+          "calls": 127,
+          "wall_ms": 25.263071000000004,
+          "gu_thread_cpu_ms": 350.07346100000007,
+          "quant_thread_cpu_ms": 2.5649980000000006,
+          "down_thread_cpu_ms": 179.1636539999999
+        },
+        "33": {
+          "calls": 127,
+          "wall_ms": 25.285073999999994,
+          "gu_thread_cpu_ms": 350.150352,
+          "quant_thread_cpu_ms": 2.6194850000000005,
+          "down_thread_cpu_ms": 180.35557699999998
+        },
+        "34": {
+          "calls": 127,
+          "wall_ms": 27.568308999999996,
+          "gu_thread_cpu_ms": 353.3169909999999,
+          "quant_thread_cpu_ms": 2.568501999999999,
+          "down_thread_cpu_ms": 250.00084800000005
+        },
+        "35": {
+          "calls": 127,
+          "wall_ms": 28.04858800000001,
+          "gu_thread_cpu_ms": 357.97193500000014,
+          "quant_thread_cpu_ms": 2.613593,
+          "down_thread_cpu_ms": 251.29808499999996
+        },
+        "36": {
+          "calls": 127,
+          "wall_ms": 27.64069199999999,
+          "gu_thread_cpu_ms": 352.1219530000001,
+          "quant_thread_cpu_ms": 2.580087999999999,
+          "down_thread_cpu_ms": 248.73332900000003
+        },
+        "37": {
+          "calls": 127,
+          "wall_ms": 27.667154,
+          "gu_thread_cpu_ms": 351.380833,
+          "quant_thread_cpu_ms": 2.5827040000000006,
+          "down_thread_cpu_ms": 250.86788399999995
+        },
+        "38": {
+          "calls": 127,
+          "wall_ms": 28.528994999999995,
+          "gu_thread_cpu_ms": 371.84301499999987,
+          "quant_thread_cpu_ms": 2.5848720000000003,
+          "down_thread_cpu_ms": 251.02253400000006
+        },
+        "39": {
+          "calls": 127,
+          "wall_ms": 27.768487,
+          "gu_thread_cpu_ms": 354.40146699999985,
+          "quant_thread_cpu_ms": 2.6431429999999985,
+          "down_thread_cpu_ms": 247.1979410000001
+        }
+      }
+    }
+  },
+  "notes": [
+    "GPU useful intervals exclude device wait/spin/poll kernels, including wait_flag_ge.",
+    "CPU wall and GPU useful overlap are unions of clipped timestamp intervals. Thread CPU times are sums across workers, not wall time.",
+    "Thread CPU times include only calls wholly inside a phase; boundary-crossing calls cannot be split reliably.",
+    "Memcpy bytes are attributed to the activity start phase; mapped host-memory kernel traffic is not counted in these bytes.",
+    "Category sums/unions may overlap each other; only the overall unions are additive with their complements.",
+    "Overlap at observed calibration offsets reports clock-alignment sensitivity, not a statistical confidence interval or guaranteed error bound.",
+    "Activity/profile instrumentation was observed to slow these runs by about 20%; these timings are not primary throughput."
+  ],
+  "clock_alignment": {
+    "method": "median_CUPTI_minus_host_mark_ns",
+    "offset_ns": 1791486566305745574,
+    "calibration_points": 3,
+    "offset_spread_ns": 330,
+    "offset_min_ns": 1791486566305745279,
+    "offset_max_ns": 1791486566305745609,
+    "tolerance_ns": 1000000
+  },
+  "cpu_layer_attribution": {
+    "method": "global_call_ordinal_modulo",
+    "layers": 40,
+    "verified": false,
+    "note": "Assumes one call per layer in a complete sequential CPU log, including warmup. Layer IDs are inferred, not recorded; interval overlap does not depend on this assumption."
+  },
+  "cpu_calls_outside_marked_window": 200
+}

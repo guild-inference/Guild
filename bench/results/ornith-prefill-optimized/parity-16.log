@@ -1,0 +1,58 @@
+FileExpertSource: RAM budget 18.16 GiB: 10240 of the 18.16 GiB of experts the GPU cache does not hold, by profile rank; the rest are read from the files
+FileExpertSource: allocating 18.16 GiB pageable resident cache complement
+FileExpertSource: copied cache complement through layer 8/40 (5.41 GiB)
+FileExpertSource: copied cache complement through layer 16/40 (8.31 GiB)
+FileExpertSource: copied cache complement through layer 24/40 (11.24 GiB)
+FileExpertSource: copied cache complement through layer 32/40 (15.95 GiB)
+FileExpertSource: copied cache complement through layer 40/40 (18.16 GiB)
+FileExpertSource: pageable resident cache complement ready: resident 18.16 GiB, pinned 0.00 GiB; mlock
+guild hc: CUDA0: the hyper-connection read runs as staged (the norm per token and stream, the down projection's activations staged ahead by cp.async); checked bit for bit against the plain read on this card (GUILD_HC_SPLIT=1 or 0 for the earlier ones)
+guild verify: window up to 2 tokens, 54.8 MiB of device buffers
+guild performance: 0 measured formats, CPU 0.000 ms, GPU 0.000 ms, copy 0.000 ms; PCIe up to 0/256, GPU cache 0 slots (0 bytes)
+guild performance: CPU workers 31 + host 1; verifier capacity 2; MTP off; min draft probability 0.500; RAM expert backing 19503513600 bytes
+PROMPT 16
+guild verify: captured the 1-token window (upload no error, sync no error)
+batch=1 pp=40.7691 sequential_pp=41.8313
+logits max_abs=0 relative_l2=0 bitwise=1
+GDN/conv max_abs=0 relative_l2=0 bitwise=1
+batch=2 pp=55.0841 sequential_pp=41.8313
+logits max_abs=0 relative_l2=0 bitwise=1
+GDN/conv max_abs=0 relative_l2=0 bitwise=1
+routing weights max_abs=0 relative_l2=0 bitwise=1
+layer residuals max_abs=0 relative_l2=0 bitwise=1
+batch=8 pp=84.9077 sequential_pp=41.8313
+logits max_abs=0 relative_l2=0 bitwise=1
+GDN/conv max_abs=0 relative_l2=0 bitwise=1
+routing weights max_abs=0 relative_l2=0 bitwise=1
+layer residuals max_abs=0 relative_l2=0 bitwise=1
+batch=16 pp=100.924 sequential_pp=41.8313
+logits max_abs=0 relative_l2=0 bitwise=1
+GDN/conv max_abs=0 relative_l2=0 bitwise=1
+routing weights max_abs=0 relative_l2=0 bitwise=1
+layer residuals max_abs=0 relative_l2=0 bitwise=1
+batch=32 pp=101.099 sequential_pp=41.8313
+logits max_abs=0 relative_l2=0 bitwise=1
+GDN/conv max_abs=0 relative_l2=0 bitwise=1
+routing weights max_abs=0 relative_l2=0 bitwise=1
+layer residuals max_abs=0 relative_l2=0 bitwise=1
+batch=64 pp=101.739 sequential_pp=41.8313
+logits max_abs=0 relative_l2=0 bitwise=1
+GDN/conv max_abs=0 relative_l2=0 bitwise=1
+routing weights max_abs=0 relative_l2=0 bitwise=1
+layer residuals max_abs=0 relative_l2=0 bitwise=1
+batch=128 pp=101.686 sequential_pp=41.8313
+logits max_abs=0 relative_l2=0 bitwise=1
+GDN/conv max_abs=0 relative_l2=0 bitwise=1
+routing weights max_abs=0 relative_l2=0 bitwise=1
+layer residuals max_abs=0 relative_l2=0 bitwise=1
+batch=256 pp=102.031 sequential_pp=41.8313
+logits max_abs=0 relative_l2=0 bitwise=1
+GDN/conv max_abs=0 relative_l2=0 bitwise=1
+routing weights max_abs=0 relative_l2=0 bitwise=1
+layer residuals max_abs=0 relative_l2=0 bitwise=1
+batch=512 pp=101.849 sequential_pp=41.8313
+logits max_abs=0 relative_l2=0 bitwise=1
+GDN/conv max_abs=0 relative_l2=0 bitwise=1
+routing weights max_abs=0 relative_l2=0 bitwise=1
+layer residuals max_abs=0 relative_l2=0 bitwise=1
+ornith_prefill_test: actual model logits, state, KV and greedy parity PASS

@@ -1,0 +1,462 @@
+Existing-object CPU assembly excerpts
+====================================
+AT&T syntax; aligned records selected from complete objdump -d -C output.
+Representative windows only; no full objdump retained.
+Static stack-memory sites are not dynamic spills or vector-utilization counters.
+
+q4_dual_avx512_nt4
+void guild::kernels::cpu::(anonymous namespace)::q4k_dot_2rows_avx512bw_nt<4>(block_q4_K const*, block_q4_K const*, int, void const* const*, float*, float*)
+object SHA256: 3a8e52627c48913a2df9e70b5975a9d3afe7694b7b1e9992d353f07aa20faff2
+symbol bytes: 3306; stack sub immediates: [448]
+
+[entry / frame setup]
+14170:	push   %rbp
+14171:	mov    %rdi,%rax
+14174:	mov    %rsi,%rdi
+14177:	movslq %edx,%rsi
+1417a:	mov    %rsp,%rbp
+1417d:	push   %r15
+1417f:	push   %r14
+14181:	mov    %r9,%r14
+14184:	push   %r13
+14186:	push   %r12
+14188:	mov    %r8,%r12
+1418b:	push   %rbx
+1418c:	and    $0xffffffffffffffc0,%rsp
+14190:	sub    $0x1c0,%rsp
+14197:	mov    %fs:0x28,%rdx
+141a0:	mov    %rdx,0x1b8(%rsp)
+141a8:	xor    %edx,%edx
+141aa:	test   %esi,%esi
+...
+[integer dot/unpack representative]
+14523:	vpand  -0x24(%rax),%ymm4,%ymm7
+14533:	vpand  %ymm4,%ymm5,%ymm5
+14537:	vmovss (%rcx),%xmm20
+1453d:	vpmaddubsw 0x4(%rcx),%zmm2,%zmm23
+14547:	vinserti64x4 $0x1,%ymm5,%zmm9,%zmm9
+1454e:	vpand  %ymm4,%ymm8,%ymm8
+14552:	vpshufb 0x0(%rip),%ymm0,%ymm5        # 1455b <void guild::kernels::cpu::(anonymous namespace)::q4k_dot_2rows_avx512bw_nt<4>(block_q4_K const*, block_q4_K const*, int, void const* const*, float*, float*)+0x3eb>
+1455b:	vpshufb 0x0(%rip),%ymm0,%ymm0        # 14564 <void guild::kernels::cpu::(anonymous namespace)::q4k_dot_2rows_avx512bw_nt<4>(block_q4_K const*, block_q4_K const*, int, void const* const*, float*, float*)+0x3f4>
+14564:	vpmaddubsw 0x44(%rcx),%zmm6,%zmm25
+1456e:	vpmaddwd %zmm23,%zmm18,%zmm23
+14574:	vinserti64x4 $0x1,%ymm5,%zmm0,%zmm0
+1457b:	vpmaddubsw 0x44(%rcx),%zmm10,%zmm22
+14585:	vpshufb 0x0(%rip),%ymm1,%ymm5        # 1458e <void guild::kernels::cpu::(anonymous namespace)::q4k_dot_2rows_avx512bw_nt<4>(block_q4_K const*, block_q4_K const*, int, void const* const*, float*, float*)+0x41e>
+...
+[stack-resident SIMD data representative]
+1460d:	vmulss %xmm12,%xmm28,%xmm12
+14613:	vbroadcastss %xmm21,%xmm21
+14619:	vfmadd213ps 0x90(%rsp),%xmm19,%xmm21
+14621:	vpmaddubsw 0x84(%rcx),%zmm9,%zmm19
+1462b:	vbroadcastss %xmm12,%xmm12
+14630:	vfmadd213ps 0x50(%rsp),%xmm8,%xmm12
+14637:	vpmaddubsw 0x4(%rcx),%zmm11,%zmm8
+14641:	vpmaddwd %zmm19,%zmm13,%zmm19
+14647:	vpmaddwd %zmm8,%zmm17,%zmm8
+...
+[largest backwards branch]
+14b60:	vmovaps %ymm29,0x160(%rsp)
+14b68:	vmovaps %ymm30,0xa0(%rsp)
+14b70:	cmp    %r10,%rax
+14b73:	jne    14280 <void guild::kernels::cpu::(anonymous namespace)::q4k_dot_2rows_avx512bw_nt<4>(block_q4_K const*, block_q4_K const*, int, void const* const*, float*, float*)+0x110>
+14b79:	mov    0x18(%rsp),%r12
+...
+
+q4_dual_avx512_nt8
+void guild::kernels::cpu::(anonymous namespace)::q4k_dot_2rows_avx512bw_nt<8>(block_q4_K const*, block_q4_K const*, int, void const* const*, float*, float*)
+object SHA256: 3a8e52627c48913a2df9e70b5975a9d3afe7694b7b1e9992d353f07aa20faff2
+symbol bytes: 5953; stack sub immediates: [1024]
+
+[entry / frame setup]
+11a90:	push   %rbp
+11a91:	mov    %rsi,%r10
+11a94:	movslq %edx,%rsi
+11a97:	mov    %rdi,%r11
+11a9a:	mov    %r8,%rdi
+11a9d:	mov    %rsp,%rbp
+11aa0:	push   %r15
+11aa2:	push   %r14
+11aa4:	push   %r13
+11aa6:	mov    %r9,%r13
+11aa9:	push   %r12
+11aab:	push   %rbx
+11aac:	and    $0xffffffffffffffc0,%rsp
+11ab0:	sub    $0x400,%rsp
+11ab7:	mov    %fs:0x28,%rdx
+11ac0:	mov    %rdx,0x3f8(%rsp)
+11ac8:	xor    %edx,%edx
+11aca:	test   %esi,%esi
+...
+[integer dot/unpack representative]
+11ef8:	vpand  -0x24(%rdx),%ymm13,%ymm12
+11efd:	vpand  %ymm13,%ymm11,%ymm11
+11f02:	vpsrlw $0x4,-0x24(%rcx),%ymm17
+11f0d:	vpmaddubsw 0x4(%rax),%zmm3,%zmm29
+11f17:	vinserti64x4 $0x1,%ymm11,%zmm14,%zmm14
+11f1e:	vpmaddubsw 0x44(%rax),%zmm6,%zmm31
+11f28:	vpshufb 0x0(%rip),%ymm1,%ymm11        # 11f31 <void guild::kernels::cpu::(anonymous namespace)::q4k_dot_2rows_avx512bw_nt<8>(block_q4_K const*, block_q4_K const*, int, void const* const*, float*, float*)+0x4a1>
+11f31:	vpshufb 0x0(%rip),%ymm1,%ymm1        # 11f3a <void guild::kernels::cpu::(anonymous namespace)::q4k_dot_2rows_avx512bw_nt<8>(block_q4_K const*, block_q4_K const*, int, void const* const*, float*, float*)+0x4aa>
+11f3a:	vpandq %ymm13,%ymm17,%ymm17
+11f40:	vpmaddwd %zmm29,%zmm23,%zmm29
+11f46:	vinserti64x4 $0x1,%ymm11,%zmm1,%zmm1
+11f4d:	vpmaddwd %zmm31,%zmm21,%zmm31
+11f53:	vpshufb 0x0(%rip),%ymm0,%ymm11        # 11f5c <void guild::kernels::cpu::(anonymous namespace)::q4k_dot_2rows_avx512bw_nt<8>(block_q4_K const*, block_q4_K const*, int, void const* const*, float*, float*)+0x4cc>
+...
+[stack-resident SIMD data representative]
+12003:	vcvtdq2ps %xmm17,%xmm17
+12009:	vbroadcastss %xmm27,%xmm27
+1200f:	vfmadd213ps 0x190(%rsp),%xmm25,%xmm27
+12017:	vpmaddubsw 0x84(%rax),%zmm14,%zmm25
+12021:	vbroadcastss %xmm24,%xmm24
+12027:	vfmadd213ps 0x180(%rsp),%xmm17,%xmm24
+1202f:	vpmaddubsw 0x4(%rax),%zmm16,%zmm17
+12039:	vpmaddwd %zmm25,%zmm18,%zmm25
+1203f:	vpmaddwd %zmm17,%zmm22,%zmm17
+...
+[largest backwards branch]
+12c01:	vmovaps %ymm8,0x260(%rsp)
+12c0a:	vmovaps %ymm7,0x140(%rsp)
+12c13:	cmp    %rdx,0x58(%rsp)
+12c18:	jne    11c60 <void guild::kernels::cpu::(anonymous namespace)::q4k_dot_2rows_avx512bw_nt<8>(block_q4_K const*, block_q4_K const*, int, void const* const*, float*, float*)+0x1d0>
+12c1e:	mov    0x40(%rsp),%rdi
+...
+
+q4_dual_avx2_runtime_nt
+guild::kernels::cpu::(anonymous namespace)::q4k_dot_2rows_avx2(block_q4_K const*, block_q4_K const*, int, void const* const*, int, float*, float*)
+object SHA256: 3a8e52627c48913a2df9e70b5975a9d3afe7694b7b1e9992d353f07aa20faff2
+symbol bytes: 4343; stack sub immediates: [1760]
+
+[entry / frame setup]
+10990:	push   %rbp
+10991:	mov    %r8d,%r8d
+10994:	movslq %edx,%r10
+10997:	mov    %rcx,%r11
+1099a:	mov    %r8,%rdx
+1099d:	shl    $0x5,%rdx
+109a1:	mov    %rsp,%rbp
+109a4:	push   %r15
+109a6:	mov    %edx,%r15d
+109a9:	push   %r14
+109ab:	shr    $0x3,%r15d
+109af:	mov    %rdi,%r14
+109b2:	push   %r13
+109b4:	mov    %r15d,%ecx
+109b7:	mov    %r9,%r13
+109ba:	push   %r12
+109bc:	mov    %rsi,%r12
+109bf:	mov    %r8,%rsi
+...
+[integer dot/unpack representative]
+10c04:	vphaddw %xmm5,%xmm4,%xmm4
+10c09:	vmovss (%rax),%xmm5
+10c0d:	vxorps 0x0(%rip),%xmm5,%xmm10        # 10c15 <guild::kernels::cpu::(anonymous namespace)::q4k_dot_2rows_avx2(block_q4_K const*, block_q4_K const*, int, void const* const*, int, float*, float*)+0x285>
+10c15:	vpmaddwd %xmm4,%xmm9,%xmm12
+10c19:	vpmaddwd %xmm4,%xmm8,%xmm4
+10c1d:	vmulss %xmm10,%xmm2,%xmm11
+10c22:	vcvtdq2ps %xmm12,%xmm12
+10c27:	vcvtdq2ps %xmm4,%xmm4
+10c2b:	vmulss %xmm10,%xmm1,%xmm10
+10c30:	vshufps $0x0,%xmm11,%xmm11,%xmm11
+10c36:	vfmadd213ps 0x1c0(%rsp),%xmm12,%xmm11
+10c40:	vshufps $0x0,%xmm10,%xmm10,%xmm10
+10c46:	vfmadd213ps 0x240(%rsp),%xmm10,%xmm4
+...
+[stack-resident SIMD data representative]
+10c50:	vmovaps %xmm11,0x1c0(%rsp)
+10c59:	vmovaps %xmm4,0x240(%rsp)
+10c62:	cmp    $0x1,%esi
+10c65:	je     10fc9 <guild::kernels::cpu::(anonymous namespace)::q4k_dot_2rows_avx2(block_q4_K const*, block_q4_K const*, int, void const* const*, int, float*, float*)+0x639>
+...
+[largest backwards branch]
+11592:	add    $0x90,%r12
+11599:	add    $0x124,%r8
+115a0:	cmp    %rax,%r14
+115a3:	jne    10ac0 <guild::kernels::cpu::(anonymous namespace)::q4k_dot_2rows_avx2(block_q4_K const*, block_q4_K const*, int, void const* const*, int, float*, float*)+0x130>
+115a9:	mov    0x18(%rsp),%r13
+...
+
+ggml_q4_single_dot
+ggml_vec_dot_q4_K_q8_K
+object SHA256: 64a085a7ea3c0834cc11e532aad5a5fc70d0aad5be619e43f8e84ea421e2b0ae
+symbol bytes: 803; stack sub immediates: [32]
+
+[entry / frame setup]
+1cc0:	endbr64
+1cc4:	push   %rbp
+1cc5:	lea    0xff(%rdi),%r11d
+1ccc:	mov    %rsi,%r8
+1ccf:	mov    %rsp,%rbp
+1cd2:	push   %r13
+1cd4:	push   %r12
+1cd6:	push   %rbx
+1cd7:	and    $0xffffffffffffffe0,%rsp
+1cdb:	sub    $0x20,%rsp
+1cdf:	mov    %fs:0x28,%rax
+1ce8:	mov    %rax,0x18(%rsp)
+1ced:	xor    %eax,%eax
+1cef:	test   %edi,%edi
+1cf1:	cmovns %edi,%r11d
+1cf5:	sar    $0x8,%r11d
+1cf9:	cmp    $0xff,%edi
+1cff:	jle    1fd1 <ggml_vec_dot_q4_K_q8_K+0x311>
+...
+[integer dot/unpack representative]
+1e3b:	vphaddw %xmm15,%xmm2,%xmm2
+1e40:	vextracti64x2 $0x1,%ymm0,%xmm15
+1e47:	vinserti128 $0x1,%xmm0,%ymm0,%ymm0
+1e4d:	vpmaddwd %xmm2,%xmm15,%xmm15
+1e51:	vmovdqu -0x84(%rax),%ymm2
+1e59:	vpshufb %ymm12,%ymm0,%ymm16
+1e5f:	vpshufb %ymm11,%ymm0,%ymm17
+1e65:	vcvtdq2ps %xmm15,%xmm15
+1e6a:	vfmadd231ps %xmm15,%xmm1,%xmm5
+1e6f:	vpshufb %ymm13,%ymm0,%ymm1
+1e74:	vpshufb %ymm10,%ymm0,%ymm18
+1e7a:	vpsrlw $0x4,%ymm2,%ymm15
+1e7f:	vpand  %ymm3,%ymm2,%ymm2
+...
+[largest backwards branch]
+1f6d:	vcvtdq2ps %ymm0,%ymm0
+1f71:	vfmadd231ps %ymm0,%ymm21,%ymm4
+1f77:	cmp    %esi,%r11d
+1f7a:	jg     1d78 <ggml_vec_dot_q4_K_q8_K+0xb8>
+1f80:	vmovhlps %xmm5,%xmm5,%xmm0
+...
+
+q6_dual_avx512_nt4
+void guild::kernels::cpu::(anonymous namespace)::q6k_dot_2rows_avx512bw_nt<4>(block_q6_K const*, block_q6_K const*, int, void const* const*, float*, float*)
+object SHA256: 3a8e52627c48913a2df9e70b5975a9d3afe7694b7b1e9992d353f07aa20faff2
+symbol bytes: 2694; stack sub immediates: [200]
+
+[entry / frame setup]
+6260:	push   %rbp
+6261:	movslq %edx,%r11
+6264:	mov    %rsp,%rbp
+6267:	push   %rbx
+6268:	mov    %r8,%rbx
+626b:	and    $0xffffffffffffffc0,%rsp
+626f:	sub    $0xc8,%rsp
+6276:	test   %r11d,%r11d
+6279:	jle    6ca7 <void guild::kernels::cpu::(anonymous namespace)::q6k_dot_2rows_avx512bw_nt<4>(block_q6_K const*, block_q6_K const*, int, void const* const*, float*, float*)+0xa47>
+627f:	lea    (%r11,%r11,8),%r8
+6283:	vxorps %xmm6,%xmm6,%xmm6
+6287:	mov    %rsi,%rax
+628a:	mov    (%rcx),%rsi
+628d:	lea    (%r11,%r8,8),%r8
+6291:	vmovaps %ymm6,-0x38(%rsp)
+6297:	movabs $0xc0c0c0c0c0c0c0c,%r11
+62a1:	mov    0x8(%rcx),%r10
+62a5:	vmovaps %ymm6,-0x18(%rsp)
+...
+[integer dot/unpack representative]
+658c:	vinserti64x4 $0x1,%ymm3,%zmm12,%zmm12
+6593:	vpand  %ymm13,%ymm15,%ymm3
+65a3:	vpsrlw $0x2,%ymm3,%ymm3
+65b3:	vpmaddubsw 0x4(%rsi),%zmm0,%zmm21
+65bd:	vpternlogq $0xf8,%ymm6,%ymm13,%ymm3
+65c4:	vpshufb 0x0(%rip),%xmm2,%xmm13        # 65cd <void guild::kernels::cpu::(anonymous namespace)::q6k_dot_2rows_avx512bw_nt<4>(block_q6_K const*, block_q6_K const*, int, void const* const*, float*, float*)+0x36d>
+65cd:	vpmaddubsw 0x44(%rsi),%zmm5,%zmm31
+65d7:	vpand  %ymm6,%ymm8,%ymm8
+65db:	vpmovsxbw %xmm13,%ymm13
+65e0:	vpmaddubsw 0x84(%rsi),%zmm14,%zmm28
+65ea:	vpternlogq $0xf8,%ymm15,%ymm24,%ymm8
+65f1:	vpmaddwd %zmm31,%zmm19,%zmm31
+65f7:	vpmaddubsw 0xc4(%rsi),%zmm9,%zmm30
+...
+[stack-resident SIMD data representative]
+6784:	vpslld $0x5,%ymm23,%ymm23
+678b:	vbroadcastss %xmm29,%ymm29
+6791:	vfmadd213ps 0xa8(%rsp),%ymm28,%ymm29
+679c:	vpmaddubsw 0x4(%r10),%zmm0,%zmm28
+67a6:	vbroadcastss %xmm21,%ymm21
+67ac:	vfmadd213ps 0x28(%rsp),%ymm27,%ymm21
+67b7:	vpmaddwd %zmm28,%zmm20,%zmm28
+67bd:	vpaddd %zmm30,%zmm28,%zmm28
+67c3:	vmovaps %ymm29,0xa8(%rsp)
+...
+[largest backwards branch]
+6b56:	vmovaps %ymm11,0x88(%rsp)
+6b5f:	vmovaps %ymm10,-0x38(%rsp)
+6b65:	cmp    %rsi,%r8
+6b68:	jne    6330 <void guild::kernels::cpu::(anonymous namespace)::q6k_dot_2rows_avx512bw_nt<4>(block_q6_K const*, block_q6_K const*, int, void const* const*, float*, float*)+0xd0>
+6b6e:	vmovaps 0xa8(%rsp),%ymm6
+...
+
+q6_dual_avx512_nt8
+void guild::kernels::cpu::(anonymous namespace)::q6k_dot_2rows_avx512bw_nt<8>(block_q6_K const*, block_q6_K const*, int, void const* const*, float*, float*)
+object SHA256: 3a8e52627c48913a2df9e70b5975a9d3afe7694b7b1e9992d353f07aa20faff2
+symbol bytes: 4529; stack sub immediates: [456]
+
+[entry / frame setup]
+9770:	push   %rbp
+9771:	mov    %rsp,%rbp
+9774:	push   %r15
+9776:	push   %r14
+9778:	mov    %r9,%r14
+977b:	push   %r13
+977d:	mov    %r8,%r13
+9780:	push   %r12
+9782:	movslq %edx,%r12
+9785:	push   %rbx
+9786:	and    $0xffffffffffffffc0,%rsp
+978a:	sub    $0x1c8,%rsp
+9791:	test   %r12d,%r12d
+9794:	jle    a89d <void guild::kernels::cpu::(anonymous namespace)::q6k_dot_2rows_avx512bw_nt<8>(block_q6_K const*, block_q6_K const*, int, void const* const*, float*, float*)+0x112d>
+979a:	lea    (%r12,%r12,8),%r15
+979e:	mov    %rsi,%rax
+97a1:	mov    (%rcx),%rsi
+97a4:	vxorps %xmm5,%xmm5,%xmm5
+...
+[integer dot/unpack representative]
+9b00:	vinserti64x4 $0x1,%ymm3,%zmm12,%zmm12
+9b07:	vpandq 0x1a8(%rsp),%ymm21,%ymm3
+9b12:	vpsrlw $0x4,-0x72(%rax),%ymm16
+9b1d:	vpmaddubsw 0x4(%rsi),%zmm5,%zmm22
+9b32:	vpsrlw $0x2,%ymm3,%ymm3
+9b37:	vpmaddubsw 0x44(%rsi),%zmm4,%zmm31
+9b41:	vpternlogq $0xf8,%ymm13,%ymm16,%ymm3
+9b48:	vpmaddwd %zmm22,%zmm20,%zmm22
+9b4e:	vpmaddubsw 0x84(%rsi),%zmm0,%zmm28
+9b58:	vpand  %ymm13,%ymm6,%ymm6
+9b5d:	vpmaddwd %zmm31,%zmm19,%zmm31
+9b63:	vpmaddubsw 0xc4(%rsi),%zmm7,%zmm30
+9b6d:	vpternlogq $0xf8,%ymm21,%ymm23,%ymm6
+...
+[stack-resident SIMD data representative]
+9cf6:	vmulss %xmm28,%xmm10,%xmm28
+9cfc:	vbroadcastss %xmm29,%ymm29
+9d02:	vfmadd213ps 0x188(%rsp),%ymm22,%ymm29
+9d0d:	vpmaddubsw 0x4(%rbx),%zmm5,%zmm22
+9d17:	vbroadcastss %xmm28,%ymm28
+9d1d:	vfmadd213ps 0x88(%rsp),%ymm27,%ymm28
+9d28:	vpmaddwd %zmm22,%zmm20,%zmm22
+9d2e:	vmovaps %ymm29,0x188(%rsp)
+9d39:	vpmaddwd 0x104(%rbx),%ymm8,%ymm29
+...
+[largest backwards branch]
+a5f9:	vmovaps %ymm11,0xa8(%rsp)
+a602:	vmovaps %ymm10,-0x58(%rsp)
+a608:	cmp    %rsi,%r15
+a60b:	jne    98a8 <void guild::kernels::cpu::(anonymous namespace)::q6k_dot_2rows_avx512bw_nt<8>(block_q6_K const*, block_q6_K const*, int, void const* const*, float*, float*)+0x138>
+a611:	vmovaps 0x188(%rsp),%ymm4
+...
+
+q6_dual_avx2_runtime_nt
+guild::kernels::cpu::(anonymous namespace)::q6k_dot_2rows_avx2(block_q6_K const*, block_q6_K const*, int, void const* const*, int, float*, float*)
+object SHA256: 3a8e52627c48913a2df9e70b5975a9d3afe7694b7b1e9992d353f07aa20faff2
+symbol bytes: 5399; stack sub immediates: [1824]
+
+[entry / frame setup]
+a80:	push   %rbp
+a81:	mov    %rsi,%r10
+a84:	mov    %rdi,%r11
+a87:	mov    %rsp,%rbp
+a8a:	push   %r15
+a8c:	push   %r14
+a8e:	mov    %rcx,%r14
+a91:	mov    %r8d,%ecx
+a94:	push   %r13
+a96:	mov    %rcx,%r15
+a99:	shl    $0x5,%rcx
+a9d:	push   %r12
+a9f:	mov    %ecx,%esi
+aa1:	push   %rbx
+aa2:	shr    $0x3,%esi
+aa5:	mov    %esi,%ecx
+aa7:	and    $0xffffffffffffffe0,%rsp
+aab:	sub    $0x720,%rsp
+...
+[integer dot/unpack representative]
+e2a:	vmovdqa %ymm13,0x140(%rsp)
+e33:	vpor   %ymm5,%ymm6,%ymm6
+e37:	vpand  %ymm11,%ymm15,%ymm5
+e3c:	vpmaddubsw 0x20(%rsi),%ymm7,%ymm11
+e42:	vpor   %ymm10,%ymm5,%ymm5
+e47:	vpmaddubsw (%rsi),%ymm3,%ymm10
+e4c:	vpshufb (%rcx),%xmm4,%xmm2
+e51:	vpmaddwd %ymm11,%ymm8,%ymm11
+e56:	vpshufb 0x10(%rcx),%xmm4,%xmm4
+e5c:	vpmovsxbw %xmm2,%ymm2
+e61:	vpmaddwd %ymm10,%ymm9,%ymm10
+e66:	vpmovsxbw %xmm4,%ymm4
+e6b:	vpaddd %ymm11,%ymm10,%ymm10
+...
+[stack-resident SIMD data representative]
+1826:	vcvtdq2ps %ymm8,%ymm8
+182b:	vbroadcastss %xmm5,%ymm5
+1830:	vfmadd213ps 0x300(%rsp),%ymm9,%ymm5
+183a:	vbroadcastss %xmm4,%ymm4
+183f:	vfmadd213ps 0x400(%rsp),%ymm8,%ymm4
+1849:	vmovaps %ymm5,0x300(%rsp)
+1852:	vmovaps %ymm4,0x400(%rsp)
+185b:	cmp    $0x1,%r15d
+185f:	je     1c28 <guild::kernels::cpu::(anonymous namespace)::q6k_dot_2rows_avx2(block_q6_K const*, block_q6_K const*, int, void const* const*, int, float*, float*)+0x11a8>
+...
+[largest backwards branch]
+1c34:	add    $0xd2,%r11
+1c3b:	add    $0xd2,%r12
+1c42:	cmp    %rax,%r13
+1c45:	jne    bc0 <guild::kernels::cpu::(anonymous namespace)::q6k_dot_2rows_avx2(block_q6_K const*, block_q6_K const*, int, void const* const*, int, float*, float*)+0x140>
+1c4b:	mov    0x10(%rsp),%r9
+...
+
+ggml_q6_single_dot
+ggml_vec_dot_q6_K_q8_K
+object SHA256: 64a085a7ea3c0834cc11e532aad5a5fc70d0aad5be619e43f8e84ea421e2b0ae
+symbol bytes: 850; stack sub immediates: [32]
+
+[entry / frame setup]
+2460:	endbr64
+2464:	push   %rbp
+2465:	mov    %rsi,%r8
+2468:	mov    %rsp,%rbp
+246b:	and    $0xffffffffffffffe0,%rsp
+246f:	sub    $0x20,%rsp
+2473:	mov    %fs:0x28,%rax
+247c:	mov    %rax,0x18(%rsp)
+2481:	xor    %eax,%eax
+2483:	test   %edi,%edi
+2485:	lea    0xff(%rdi),%eax
+248b:	cmovns %edi,%eax
+248e:	sar    $0x8,%eax
+2491:	cmp    $0xff,%edi
+2497:	jle    27a4 <ggml_vec_dot_q6_K_q8_K+0x344>
+249d:	movabs $0x303030303030303,%rdx
+24a7:	vmovdqa64 0x0(%rip),%xmm18        # 24b1 <ggml_vec_dot_q6_K_q8_K+0x51>
+24b1:	vmovdqa64 0x0(%rip),%xmm17        # 24bb <ggml_vec_dot_q6_K_q8_K+0x5b>
+...
+[integer dot/unpack representative]
+25c1:	vpternlogq $0xf8,%ymm21,%ymm5,%ymm4
+25c8:	vpsrlw $0x2,%ymm2,%ymm2
+25cd:	vpand  %ymm5,%ymm3,%ymm3
+25d1:	vpmaddubsw 0x4(%r9),%ymm24,%ymm24
+25db:	vpmaddubsw 0x24(%r9),%ymm4,%ymm4
+25e1:	vpternlogq $0xf8,%ymm0,%ymm7,%ymm3
+25e8:	vpternlogq $0xf8,%ymm5,%ymm22,%ymm2
+25ef:	vpshufb %xmm18,%xmm1,%xmm21
+25f5:	vpshufb %xmm17,%xmm1,%xmm22
+25fb:	vmovss (%rsi,%rdx,4),%xmm19
+2602:	vpmaddubsw 0x44(%r9),%ymm3,%ymm3
+2608:	vpmaddubsw 0x64(%r9),%ymm2,%ymm2
+260e:	vpshufb %xmm16,%xmm1,%xmm0
+...
+[stack-resident SIMD data representative]
+2720:	vpmaddwd %ymm3,%ymm4,%ymm4
+2724:	vpmaddwd %ymm2,%ymm1,%ymm1
+2728:	vmovss %xmm19,0x14(%rsp)
+2730:	vbroadcastss %xmm19,%ymm19
+2736:	vpaddd %ymm21,%ymm0,%ymm0
+273c:	vpaddd %ymm26,%ymm24,%ymm24
+2742:	vpslld $0x5,%ymm20,%ymm20
+2749:	vpaddd %ymm24,%ymm0,%ymm0
+274f:	vpaddd %ymm1,%ymm4,%ymm4
+...
+[largest backwards branch]
+275d:	vcvtdq2ps %ymm0,%ymm0
+2761:	vfmadd231ps %ymm0,%ymm19,%ymm6
+2767:	cmp    %eax,%r10d
+276a:	jg     2548 <ggml_vec_dot_q6_K_q8_K+0xe8>
+2770:	vextractf128 $0x1,%ymm6,%xmm0
+...
+

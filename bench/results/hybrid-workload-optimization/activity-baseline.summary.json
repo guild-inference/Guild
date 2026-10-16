@@ -1,0 +1,564 @@
+{
+  "trace": "bench/results/hybrid-workload-optimization/activity-baseline.tsv",
+  "errors": [],
+  "phases": {
+    "prefill_and_first_token": {
+      "wall_ms": 2755.225766,
+      "gpu_union_ms": 1469.203058,
+      "gpu_useful_union_ms": 1460.703159,
+      "kernel_category_sum_ms": {
+        "residual_and_other": 14.415655999999988,
+        "embedding": 0.146533,
+        "normalization": 7.075136000000006,
+        "activation_quantization": 8.065316999999991,
+        "projection": 1196.9054959999992,
+        "gdn": 142.45446299999986,
+        "routing": 8.370197000000003,
+        "kv_staging": 14.578394000000037,
+        "attention": 24.87502999999998,
+        "device_wait": 8.499899000000006
+      },
+      "activities": {
+        "api:cudaStreamSynchronize_v3020": {
+          "count": 85,
+          "sum_ms": 1204.939569,
+          "bytes": 0
+        },
+        "kernel:void guild::kernels::(anonymous namespace)::native_mmvq_many_reg_kernel<guild::kernels::(anonymous namespace)::Q4KTraits, 4, 1, 1>(guild::kernels::(anonymous namespace)::Q4KTraits::Block const*, guild::kernels::(anonymous namespace)::Q81Block const*, float*, int, int, int)": {
+          "count": 300,
+          "sum_ms": 585.222207,
+          "bytes": 0
+        },
+        "kernel:void guild::kernels::(anonymous namespace)::native_mmvq_many_reg_kernel<guild::kernels::(anonymous namespace)::Q4KTraits, 4, 1, 2>(guild::kernels::(anonymous namespace)::Q4KTraits::Block const*, guild::kernels::(anonymous namespace)::Q81Block const*, float*, int, int, int)": {
+          "count": 80,
+          "sum_ms": 286.223853,
+          "bytes": 0
+        },
+        "kernel:void guild::kernels::(anonymous namespace)::native_mmvq_many_reg_kernel<guild::kernels::(anonymous namespace)::Q6KTraits, 4, 1, 2>(guild::kernels::(anonymous namespace)::Q6KTraits::Block const*, guild::kernels::(anonymous namespace)::Q81Block const*, float*, int, int, int)": {
+          "count": 40,
+          "sum_ms": 176.731585,
+          "bytes": 0
+        },
+        "api:cudaLaunchKernel_v7000": {
+          "count": 15162,
+          "sum_ms": 94.3310450000001,
+          "bytes": 0
+        },
+        "kernel:guild::kernels::(anonymous namespace)::gdn_step_norm_multi_kernel(float*, float const*, int, float const*, float const*, float const*, float const*, float, float*, int, int, int, int const*, int, bool)": {
+          "count": 90,
+          "sum_ms": 91.81215799999997,
+          "bytes": 0
+        },
+        "kernel:void guild::kernels::(anonymous namespace)::bf16_f32_mmvf_multi_kernel<256, 8>(float const*, long, unsigned short const*, float*, long, int, int)": {
+          "count": 5120,
+          "sum_ms": 58.678611999999404,
+          "bytes": 0
+        },
+        "kernel:void guild::kernels::(anonymous namespace)::native_mmvq_many_reg_kernel<guild::kernels::(anonymous namespace)::Q4KTraits, 4, 2, 1>(guild::kernels::(anonymous namespace)::Q4KTraits::Block const*, guild::kernels::(anonymous namespace)::Q81Block const*, float*, int, int, int)": {
+          "count": 40,
+          "sum_ms": 51.47234599999999,
+          "bytes": 0
+        },
+        "kernel:void guild::kernels::(anonymous namespace)::gdn_ab_multi_kernel<8>(float const*, unsigned short const*, unsigned short const*, float const*, float const*, float*, float*, int, int, int)": {
+          "count": 1920,
+          "sum_ms": 43.379850999999924,
+          "bytes": 0
+        },
+        "kernel:void guild::kernels::(anonymous namespace)::native_mmvq_many_reg_kernel<guild::kernels::(anonymous namespace)::Q6KTraits, 4, 2, 1>(guild::kernels::(anonymous namespace)::Q6KTraits::Block const*, guild::kernels::(anonymous namespace)::Q81Block const*, float*, int, int, int)": {
+          "count": 40,
+          "sum_ms": 28.751664000000005,
+          "bytes": 0
+        },
+        "copy:copy_1_2_3": {
+          "count": 88,
+          "sum_ms": 22.567367999999995,
+          "bytes": 167491500
+        },
+        "copy:copy_2_3_2": {
+          "count": 241,
+          "sum_ms": 21.340415000000007,
+          "bytes": 168752648
+        },
+        "kernel:void guild::kernels::(anonymous namespace)::attn_chunk_kernel_pre75<8, 0>(float const*, guild::kernels::QsaAttnPools, int const*, int const*, int, int, float, float*, float*, float*, int, int, long long)": {
+          "count": 650,
+          "sum_ms": 21.034807999999977,
+          "bytes": 0
+        },
+        "kernel:guild::kernels::(anonymous namespace)::kv_append_kernel(unsigned short*, unsigned short*, int const*, int const*, float const*, float const*, int, int, int, guild::kernels::KvHostPools)": {
+          "count": 5120,
+          "sum_ms": 14.578394000000037,
+          "bytes": 0
+        },
+        "kernel:guild::kernels::(anonymous namespace)::wait_flag_ge_kernel(unsigned int const volatile*, unsigned int)": {
+          "count": 120,
+          "sum_ms": 8.499899000000006,
+          "bytes": 0
+        },
+        "kernel:guild::kernels::(anonymous namespace)::router_top10_kernel(float const*, int, int, int, int*, float*)": {
+          "count": 120,
+          "sum_ms": 8.370197000000003,
+          "bytes": 0
+        },
+        "api:cudaMemcpyAsync_v3020": {
+          "count": 330,
+          "sum_ms": 7.767698000000004,
+          "bytes": 0
+        },
+        "kernel:guild::kernels::(anonymous namespace)::native_quantize_q8_1_kernel(float const*, guild::kernels::(anonymous namespace)::Q81Block*, int)": {
+          "count": 361,
+          "sum_ms": 7.361292999999991,
+          "bytes": 0
+        },
+        "kernel:guild::kernels::(anonymous namespace)::add_kernel(float*, float const*, long long)": {
+          "count": 320,
+          "sum_ms": 7.30706199999999,
+          "bytes": 0
+        },
+        "kernel:guild::kernels::(anonymous namespace)::gdn_conv_l2_multi_kernel(float const*, float const*, float const*, float*, int, int, float, int)": {
+          "count": 90,
+          "sum_ms": 6.696503,
+          "bytes": 0
+        },
+        "kernel:void guild::kernels::(anonymous namespace)::norm<1024>(float const*, float const*, float*, int, float)": {
+          "count": 241,
+          "sum_ms": 5.180857000000005,
+          "bytes": 0
+        },
+        "kernel:void guild::kernels::(anonymous namespace)::native_q4_k_mmvq_kernel<false>(guild::kernels::(anonymous namespace)::Q4KBlock const*, guild::kernels::(anonymous namespace)::Q81Block const*, float*, int, int)": {
+          "count": 190,
+          "sum_ms": 4.5259599999999995,
+          "bytes": 0
+        },
+        "kernel:void guild::kernels::(anonymous namespace)::native_q6_k_mmvq_kernel<false>(guild::kernels::(anonymous namespace)::Q6KBlock const*, guild::kernels::(anonymous namespace)::Q81Block const*, float*, int, int)": {
+          "count": 21,
+          "sum_ms": 4.129722,
+          "bytes": 0
+        },
+        "kernel:void guild::kernels::(anonymous namespace)::attn_merge_kernel<8>(float const*, float const*, float const*, int, float*, long long)": {
+          "count": 650,
+          "sum_ms": 3.840222000000003,
+          "bytes": 0
+        },
+        "api:cudaGraphLaunch_v10000": {
+          "count": 2,
+          "sum_ms": 3.396341,
+          "bytes": 0
+        },
+        "api:cudaGetLastError_v3020": {
+          "count": 14522,
+          "sum_ms": 3.272472000000027,
+          "bytes": 0
+        },
+        "api:cudaMemsetAsync_v3020": {
+          "count": 53,
+          "sum_ms": 3.155624000000001,
+          "bytes": 0
+        },
+        "kernel:guild::kernels::(anonymous namespace)::copy_kernel(guild::kernels::KvStreamMap, guild::kernels::(anonymous namespace)::Runs)": {
+          "count": 30,
+          "sum_ms": 2.4791270000000005,
+          "bytes": 0
+        },
+        "api:cudaEventRecord_v3020": {
+          "count": 401,
+          "sum_ms": 1.97036,
+          "bytes": 0
+        },
+        "kernel:void guild::kernels::(anonymous namespace)::norm<256>(float const*, float const*, float*, int, float)": {
+          "count": 60,
+          "sum_ms": 1.8942790000000012,
+          "bytes": 0
+        },
+        "kernel:guild::kernels::(anonymous namespace)::sigmoid_scale_rows_kernel(float*, float const*, int)": {
+          "count": 120,
+          "sum_ms": 1.540314,
+          "bytes": 0
+        },
+        "kernel:guild::kernels::(anonymous namespace)::gate(float const*, float const*, float*, int, int)": {
+          "count": 30,
+          "sum_ms": 1.2920169999999993,
+          "bytes": 0
+        },
+        "copy:copy_8_3_3": {
+          "count": 20,
+          "sum_ms": 0.854526,
+          "bytes": 83722240
+        },
+        "kernel:guild::kernels::(anonymous namespace)::native_swiglu_quantize_q8_1_kernel(float const*, float const*, guild::kernels::(anonymous namespace)::Q81Block*, int)": {
+          "count": 120,
+          "sum_ms": 0.612339,
+          "bytes": 0
+        },
+        "api:cudaEventElapsedTime_v3020": {
+          "count": 320,
+          "sum_ms": 0.5213650000000001,
+          "bytes": 0
+        },
+        "kernel:void guild::kernels::(anonymous namespace)::bf16_f32_mmvf_kernel<256>(float const*, unsigned short const*, float*, int)": {
+          "count": 80,
+          "sum_ms": 0.5177809999999998,
+          "bytes": 0
+        },
+        "copy:copy_2_3_1": {
+          "count": 2,
+          "sum_ms": 0.487026,
+          "bytes": 4186112
+        },
+        "api:cudaMemcpy2DAsync_v3020": {
+          "count": 20,
+          "sum_ms": 0.4192269999999999,
+          "bytes": 0
+        },
+        "kernel:guild::kernels::copy_rows_from_mapped_kernel(float4*, float4 const volatile*, long, int const*, int const*)": {
+          "count": 40,
+          "sum_ms": 0.39438300000000004,
+          "bytes": 0
+        },
+        "kernel:void guild::kernels::(anonymous namespace)::apply<false>(float const*, float*, int, int, int, float, float, float, float, float, float, int const*, int const*, guild::kernels::RopeTab)": {
+          "count": 60,
+          "sum_ms": 0.3797659999999998,
+          "bytes": 0
+        },
+        "kernel:void guild::kernels::(anonymous namespace)::native_q6_k_mmvq_kernel<true>(guild::kernels::(anonymous namespace)::Q6KBlock const*, guild::kernels::(anonymous namespace)::Q81Block const*, float*, int, int)": {
+          "count": 20,
+          "sum_ms": 0.329002,
+          "bytes": 0
+        },
+        "kernel:void guild::kernels::(anonymous namespace)::native_q4_k_mmvq_kernel<true>(guild::kernels::(anonymous namespace)::Q4KBlock const*, guild::kernels::(anonymous namespace)::Q81Block const*, float*, int, int)": {
+          "count": 20,
+          "sum_ms": 0.32276399999999994,
+          "bytes": 0
+        },
+        "kernel:guild::kernels::doorbell_publish_res_kernel(float const*, int const*, int const*, int, int, int, float*, int*, unsigned int*)": {
+          "count": 40,
+          "sum_ms": 0.271113,
+          "bytes": 0
+        },
+        "api:cudaGetDevice_v3020": {
+          "count": 682,
+          "sum_ms": 0.2249470000000009,
+          "bytes": 0
+        },
+        "kernel:guild::kernels::(anonymous namespace)::gdn_conv_commit_kernel(float*, float const*, int, int const*)": {
+          "count": 67,
+          "sum_ms": 0.21972100000000003,
+          "bytes": 0
+        },
+        "kernel:guild::kernels::(anonymous namespace)::resolve_kernel(guild::kernels::KvStreamMap, int const*, int const*, int, int, int)": {
+          "count": 30,
+          "sum_ms": 0.20077499999999998,
+          "bytes": 0
+        },
+        "kernel:void guild::kernels::(anonymous namespace)::gdn_ab_multi_kernel<4>(float const*, unsigned short const*, unsigned short const*, float const*, float const*, float*, float*, int, int, int)": {
+          "count": 30,
+          "sum_ms": 0.19716000000000003,
+          "bytes": 0
+        },
+        "kernel:guild::kernels::(anonymous namespace)::combine(float const*, float const*, float const*, float*, long, int)": {
+          "count": 40,
+          "sum_ms": 0.15437799999999996,
+          "bytes": 0
+        },
+        "kernel:guild::kernels::(anonymous namespace)::gdn_step_commit_kernel(float*, float const*, int, float const*, float const*, int, int, int const*)": {
+          "count": 7,
+          "sum_ms": 0.14907,
+          "bytes": 0
+        },
+        "kernel:guild::kernels::(anonymous namespace)::embed_rows_kernel(int, unsigned char const*, unsigned long, int const*, long, float*)": {
+          "count": 3,
+          "sum_ms": 0.146533,
+          "bytes": 0
+        },
+        "kernel:guild::kernels::copy_i32_from_mapped_kernel(int*, int const volatile*, int)": {
+          "count": 44,
+          "sum_ms": 0.138724,
+          "bytes": 0
+        },
+        "kernel:guild::kernels::(anonymous namespace)::reset_kernel(guild::kernels::KvStreamMap, bool)": {
+          "count": 40,
+          "sum_ms": 0.11043800000000002,
+          "bytes": 0
+        },
+        "kernel:guild::kernels::(anonymous namespace)::quantize_q8_1_kernel(float const*, block_q8_1*, long long)": {
+          "count": 40,
+          "sum_ms": 0.091685,
+          "bytes": 0
+        },
+        "kernel:guild::kernels::(anonymous namespace)::add_hits_kernel(float*, float const*, int const*, int const*, int)": {
+          "count": 40,
+          "sum_ms": 0.064357,
+          "bytes": 0
+        },
+        "kernel:guild::kernels::(anonymous namespace)::sampler_greedy_kernel(float const*, int, int const*, int, guild::kernels::SamplerParams, int, int, int*)": {
+          "count": 1,
+          "sum_ms": 0.042754,
+          "bytes": 0
+        },
+        "kernel:memcpyDtoD2D_aligned_smalldiffpitch": {
+          "count": 10,
+          "sum_ms": 0.016992,
+          "bytes": 0
+        },
+        "api:cudaStreamQuery_v3020": {
+          "count": 2,
+          "sum_ms": 0.013596,
+          "bytes": 0
+        },
+        "kernel:memcpy32_post": {
+          "count": 8,
+          "sum_ms": 0.011999000000000001,
+          "bytes": 0
+        },
+        "kernel:guild::kernels::(anonymous namespace)::finite_first_bad_kernel(float const*, unsigned long long, unsigned long long*)": {
+          "count": 1,
+          "sum_ms": 0.011457,
+          "bytes": 0
+        }
+      }
+    },
+    "decode": {
+      "wall_ms": 3401.079346,
+      "gpu_union_ms": 3007.87667,
+      "gpu_useful_union_ms": 1934.50811,
+      "kernel_category_sum_ms": {
+        "gdn": 212.71921899999973,
+        "residual_and_other": 327.29307500000004,
+        "embedding": 0.5922160000000002,
+        "normalization": 45.20898799999965,
+        "activation_quantization": 53.59667999999908,
+        "projection": 1247.8432200000016,
+        "routing": 140.15158699999975,
+        "device_wait": 1073.3685599999924,
+        "kv_staging": 6.892820000000039,
+        "attention": 82.29789899999989
+      },
+      "activities": {
+        "kernel:guild::kernels::(anonymous namespace)::wait_flag_ge_kernel(unsigned int const volatile*, unsigned int)": {
+          "count": 15240,
+          "sum_ms": 1073.3685599999924,
+          "bytes": 0
+        },
+        "kernel:void guild::kernels::(anonymous namespace)::native_q4_k_mmvq_kernel<false>(guild::kernels::(anonymous namespace)::Q4KBlock const*, guild::kernels::(anonymous namespace)::Q81Block const*, float*, int, int)": {
+          "count": 24130,
+          "sum_ms": 574.3042710000022,
+          "bytes": 0
+        },
+        "kernel:void guild::kernels::(anonymous namespace)::native_q6_k_mmvq_kernel<false>(guild::kernels::(anonymous namespace)::Q6KBlock const*, guild::kernels::(anonymous namespace)::Q81Block const*, float*, int, int)": {
+          "count": 2667,
+          "sum_ms": 524.3808809999991,
+          "bytes": 0
+        },
+        "api:cudaGraphLaunch_v10000": {
+          "count": 254,
+          "sum_ms": 420.4812799999998,
+          "bytes": 0
+        },
+        "api:cudaStreamSynchronize_v3020": {
+          "count": 127,
+          "sum_ms": 359.157093,
+          "bytes": 0
+        },
+        "kernel:guild::kernels::(anonymous namespace)::router_top10_kernel(float const*, int, int, int, int*, float*)": {
+          "count": 5080,
+          "sum_ms": 140.15158699999975,
+          "bytes": 0
+        },
+        "kernel:guild::kernels::(anonymous namespace)::copy_kernel(guild::kernels::KvStreamMap, guild::kernels::(anonymous namespace)::Runs)": {
+          "count": 1270,
+          "sum_ms": 138.75146700000002,
+          "bytes": 0
+        },
+        "kernel:guild::kernels::(anonymous namespace)::gdn_step_commit_kernel(float*, float const*, int, float const*, float const*, int, int, int const*)": {
+          "count": 3834,
+          "sum_ms": 84.46456700000009,
+          "bytes": 0
+        },
+        "kernel:guild::kernels::(anonymous namespace)::gdn_step_norm_multi_kernel(float*, float const*, int, float const*, float const*, float const*, float const*, float, float*, int, int, int, int const*, int, bool)": {
+          "count": 3810,
+          "sum_ms": 75.35833199999985,
+          "bytes": 0
+        },
+        "kernel:void guild::kernels::(anonymous namespace)::bf16_f32_mmvf_kernel<256>(float const*, unsigned short const*, float*, int)": {
+          "count": 10160,
+          "sum_ms": 66.7722210000002,
+          "bytes": 0
+        },
+        "kernel:void guild::kernels::(anonymous namespace)::attn_merge_kernel<8>(float const*, float const*, float const*, int, float*, long long)": {
+          "count": 1270,
+          "sum_ms": 51.03854899999992,
+          "bytes": 0
+        },
+        "kernel:guild::kernels::copy_rows_from_mapped_kernel(float4*, float4 const volatile*, long, int const*, int const*)": {
+          "count": 5080,
+          "sum_ms": 49.73443600000004,
+          "bytes": 0
+        },
+        "kernel:void guild::kernels::(anonymous namespace)::native_q6_k_mmvq_kernel<true>(guild::kernels::(anonymous namespace)::Q6KBlock const*, guild::kernels::(anonymous namespace)::Q81Block const*, float*, int, int)": {
+          "count": 2540,
+          "sum_ms": 41.56765100000006,
+          "bytes": 0
+        },
+        "kernel:void guild::kernels::(anonymous namespace)::native_q4_k_mmvq_kernel<true>(guild::kernels::(anonymous namespace)::Q4KBlock const*, guild::kernels::(anonymous namespace)::Q81Block const*, float*, int, int)": {
+          "count": 2540,
+          "sum_ms": 40.81819599999984,
+          "bytes": 0
+        },
+        "kernel:void guild::kernels::(anonymous namespace)::norm<1024>(float const*, float const*, float*, int, float)": {
+          "count": 10287,
+          "sum_ms": 35.77236399999956,
+          "bytes": 0
+        },
+        "kernel:guild::kernels::doorbell_publish_res_kernel(float const*, int const*, int const*, int, int, int, float*, int*, unsigned int*)": {
+          "count": 5080,
+          "sum_ms": 34.27356100000018,
+          "bytes": 0
+        },
+        "kernel:guild::kernels::(anonymous namespace)::native_quantize_q8_1_kernel(float const*, guild::kernels::(anonymous namespace)::Q81Block*, int)": {
+          "count": 15367,
+          "sum_ms": 31.80012999999916,
+          "bytes": 0
+        },
+        "kernel:void guild::kernels::(anonymous namespace)::attn_chunk_kernel_pre75<8, 0>(float const*, guild::kernels::QsaAttnPools, int const*, int const*, int, int, float, float*, float*, float*, int, int, long long)": {
+          "count": 1270,
+          "sum_ms": 31.259349999999962,
+          "bytes": 0
+        },
+        "kernel:void guild::kernels::(anonymous namespace)::gdn_ab_multi_kernel<4>(float const*, unsigned short const*, unsigned short const*, float const*, float const*, float*, float*, int, int, int)": {
+          "count": 3810,
+          "sum_ms": 24.785842999999794,
+          "bytes": 0
+        },
+        "kernel:guild::kernels::(anonymous namespace)::combine(float const*, float const*, float const*, float*, long, int)": {
+          "count": 5080,
+          "sum_ms": 19.630913999999827,
+          "bytes": 0
+        },
+        "kernel:guild::kernels::copy_i32_from_mapped_kernel(int*, int const volatile*, int)": {
+          "count": 5588,
+          "sum_ms": 17.480782000000023,
+          "bytes": 0
+        },
+        "kernel:guild::kernels::(anonymous namespace)::add_kernel(float*, float const*, long long)": {
+          "count": 10160,
+          "sum_ms": 16.32565100000053,
+          "bytes": 0
+        },
+        "kernel:guild::kernels::(anonymous namespace)::gdn_conv_l2_multi_kernel(float const*, float const*, float const*, float*, int, int, float, int)": {
+          "count": 3810,
+          "sum_ms": 15.766020999999927,
+          "bytes": 0
+        },
+        "kernel:guild::kernels::(anonymous namespace)::gdn_conv_commit_kernel(float*, float const*, int, int const*)": {
+          "count": 3833,
+          "sum_ms": 12.344456000000063,
+          "bytes": 0
+        },
+        "kernel:guild::kernels::(anonymous namespace)::quantize_q8_1_kernel(float const*, block_q8_1*, long long)": {
+          "count": 5080,
+          "sum_ms": 11.67440999999967,
+          "bytes": 0
+        },
+        "kernel:guild::kernels::(anonymous namespace)::sigmoid_scale_rows_kernel(float*, float const*, int)": {
+          "count": 5080,
+          "sum_ms": 10.967884000000076,
+          "bytes": 0
+        },
+        "kernel:guild::kernels::(anonymous namespace)::native_swiglu_quantize_q8_1_kernel(float const*, float const*, guild::kernels::(anonymous namespace)::Q81Block*, int)": {
+          "count": 5080,
+          "sum_ms": 10.122140000000252,
+          "bytes": 0
+        },
+        "kernel:void guild::kernels::(anonymous namespace)::norm<256>(float const*, float const*, float*, int, float)": {
+          "count": 2540,
+          "sum_ms": 9.43662400000009,
+          "bytes": 0
+        },
+        "kernel:guild::kernels::(anonymous namespace)::resolve_kernel(guild::kernels::KvStreamMap, int const*, int const*, int, int, int)": {
+          "count": 1270,
+          "sum_ms": 8.875216999999965,
+          "bytes": 0
+        },
+        "kernel:guild::kernels::(anonymous namespace)::add_hits_kernel(float*, float const*, int const*, int const*, int)": {
+          "count": 5080,
+          "sum_ms": 8.147633999999458,
+          "bytes": 0
+        },
+        "kernel:guild::kernels::(anonymous namespace)::kv_append_kernel(unsigned short*, unsigned short*, int const*, int const*, float const*, float const*, int, int, int, guild::kernels::KvHostPools)": {
+          "count": 1270,
+          "sum_ms": 6.892820000000039,
+          "bytes": 0
+        },
+        "kernel:void guild::kernels::(anonymous namespace)::apply<false>(float const*, float*, int, int, int, float, float, float, float, float, float, int const*, int const*, guild::kernels::RopeTab)": {
+          "count": 2540,
+          "sum_ms": 5.684687999999979,
+          "bytes": 0
+        },
+        "kernel:guild::kernels::(anonymous namespace)::sampler_greedy_kernel(float const*, int, int const*, int, guild::kernels::SamplerParams, int, int, int*)": {
+          "count": 127,
+          "sum_ms": 5.366566999999995,
+          "bytes": 0
+        },
+        "kernel:guild::kernels::(anonymous namespace)::reset_kernel(guild::kernels::KvStreamMap, bool)": {
+          "count": 1270,
+          "sum_ms": 3.827533999999984,
+          "bytes": 0
+        },
+        "kernel:guild::kernels::(anonymous namespace)::gate(float const*, float const*, float*, int, int)": {
+          "count": 1270,
+          "sum_ms": 3.1353009999999926,
+          "bytes": 0
+        },
+        "kernel:memcpyDtoD2D_aligned_smalldiffpitch": {
+          "count": 1270,
+          "sum_ms": 2.1238640000000286,
+          "bytes": 0
+        },
+        "kernel:memcpy32_post": {
+          "count": 1016,
+          "sum_ms": 1.518053999999989,
+          "bytes": 0
+        },
+        "kernel:guild::kernels::(anonymous namespace)::finite_first_bad_kernel(float const*, unsigned long long, unsigned long long*)": {
+          "count": 127,
+          "sum_ms": 1.449521,
+          "bytes": 0
+        },
+        "api:cudaEventRecord_v3020": {
+          "count": 127,
+          "sum_ms": 0.9820720000000004,
+          "bytes": 0
+        },
+        "api:cudaStreamQuery_v3020": {
+          "count": 254,
+          "sum_ms": 0.6844090000000003,
+          "bytes": 0
+        },
+        "api:cudaEventSynchronize_v3020": {
+          "count": 1,
+          "sum_ms": 0.628226,
+          "bytes": 0
+        },
+        "kernel:guild::kernels::(anonymous namespace)::embed_rows_kernel(int, unsigned char const*, unsigned long, int const*, long, float*)": {
+          "count": 127,
+          "sum_ms": 0.5922160000000002,
+          "bytes": 0
+        },
+        "api:cudaGetDevice_v3020": {
+          "count": 255,
+          "sum_ms": 0.26414099999999985,
+          "bytes": 0
+        },
+        "copy:copy_2_3_2": {
+          "count": 127,
+          "sum_ms": 0.10778599999999987,
+          "bytes": 1016
+        },
+        "api:cudaDeviceSynchronize_v3020": {
+          "count": 1,
+          "sum_ms": 0.00845,
+          "bytes": 0
+        }
+      }
+    }
+  }
+}

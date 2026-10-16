@@ -1,0 +1,7 @@
+# started on Fri Oct 16 01:46:35 2026
+
+6139199310,,cycles,1940939562,100.00,,
+7652154650,,instructions,1940939562,100.00,1.25,insn per cycle
+448197,,cache-misses,1940939562,100.00,,
+35,,context-switches,1940939562,100.00,,
+2,,cpu-migrations,1940939562,100.00,,

@@ -1,0 +1,12 @@
+# Track deterministic .tsv.gz and .telemetry.jsonl.gz archives + archive-manifest.json;
+# keep uncompressed multi-hundred-MB raw traces and lock files local only.
+*.tsv
+*.telemetry.jsonl
+*.qdstrm
+*.lock
+hardware-execution-state.json
+
+# Track parity and matrix controller logs in new workload directories despite root *.log ignore rule.
+!hybrid-workload-optimization/**/parity-*.log
+!hybrid-workload-optimization/**/progress.log
+!ornith-prefill-optimized/**/parity-*.log
