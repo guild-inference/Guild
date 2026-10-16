@@ -1,5 +1,14 @@
 # Model Architecture Runners
 
+SDK 1.1 now supplies the `RMD1` model-description extension in
+`include/guild/abi/runner_abi.h`. The independent
+[guild-runners-qwen](https://github.com/guild-inference/guild-runners-qwen)
+repository uses typed metadata/tensor callbacks and copied C geometry values
+instead of delegating description to Core's archetype registry. Real Ornith
+inference has passed parity with built-in runner registration disabled.
+Qwen4Exp external inference and complete transfer of tensor/topology policy
+remain open; see [EXTERNAL_BACKENDS.md](EXTERNAL_BACKENDS.md).
+
 Headers & Implementation:
 - [`include/guild/model/runner.hpp`](../../include/guild/model/runner.hpp)
 - [`src/model/runner.cpp`](../../src/model/runner.cpp)

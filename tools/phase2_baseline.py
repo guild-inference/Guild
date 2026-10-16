@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Preserve the Phase 1 benchmark binary and measure it serially before extraction."""
 import csv
+import argparse
 import hashlib
 import json
 import os
@@ -12,13 +13,18 @@ import subprocess
 
 def main():
     root = Path(__file__).resolve().parents[1]
-    output = root / "bench/results/external-kernels/phase1"
+    parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--binary",type=Path,default=root/"build-cuda12/ornith_prefill_bench")
+    parser.add_argument("--output",type=Path,default=root/"bench/results/external-kernels/phase1")
+    parser.add_argument("--source-commit",default="42018db2e63e7febbdb7bcf58a6392166518cdc1")
+    args=parser.parse_args()
+    output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
     binary = output / "ornith_prefill_bench"
     if not binary.exists():
-        shutil.copy2(root / "build-cuda12/ornith_prefill_bench", binary)
+        shutil.copy2(args.binary, binary)
     identity = {
-        "commit": "42018db2e63e7febbdb7bcf58a6392166518cdc1",
+        "commit": args.source_commit,
         "binary_sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
         "context": 32768, "batch": 256, "generate": 128, "runs": 10,
     }

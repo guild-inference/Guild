@@ -1,0 +1,8 @@
+{
+  "commit": "4b4ded0",
+  "binary_sha256": "fc82aef209d7f4ac1347bb4f1fe4315fd5debf2a4b0ff1ae690eda929ded8fbc",
+  "context": 32768,
+  "batch": 256,
+  "generate": 128,
+  "runs": 10
+}

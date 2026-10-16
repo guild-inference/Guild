@@ -128,6 +128,13 @@ Validated against [`schemas/gkmetadata.v1.schema.json`](../../schemas/gkmetadata
 
 ## 4. `guild kernel` CLI Package Management & Signing Workflow
 
+Phase 2 adds `--seed-file PATH` to signing/key generation. Production trust no
+longer includes the old public development seed/key by default. Trust a release
+public key explicitly; keep its private seed outside source control. Existing
+stores which inherited the development identity must revoke/remove it. The
+integration tests explicitly trust temporary test identities without weakening
+signature verification. See [EXTERNAL_BACKENDS.md](EXTERNAL_BACKENDS.md).
+
 Guild's CLI (`src/cli/guild_main.cpp`) provides full `.gkernel` lifecycle and trust-store management:
 
 ```bash

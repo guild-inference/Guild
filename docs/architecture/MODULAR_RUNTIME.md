@@ -1,5 +1,17 @@
 # Modular Runtime Architecture
 
+## Phase 2 status
+
+Independent native CPU experts, an SM 6.1 CUDA router, and a real Ornith model
+description runner now build in separate repositories using standalone SDK 1.1.
+They have passed combined real-model bitwise parity, including tested recurrent
+state and host KV. Complete backend/architecture ownership transfer remains in
+progress; see [EXTERNAL_BACKENDS.md](EXTERNAL_BACKENDS.md) for supported slices,
+repository identities and remaining gates, and
+[the measurements](../performance/EXTERNAL_KERNEL_PARITY.md) for the open
+performance regression gate. The historical Phase 1 descriptions below must not
+be read as proof of complete Phase 2 decoupling.
+
 Guild separates inference execution into three strictly decoupled layers connected by a versioned C-compatible ABI (`include/guild/abi/kernel_abi.h`) and declarative `.gkernel` package manager (`include/guild/abi/gkernel_package.hpp`):
 
 1. **Guild Core (`src/runtime/`, `src/memory/`, `src/plan/`, `src/spec/`, `src/server/`, `src/abi/`)**

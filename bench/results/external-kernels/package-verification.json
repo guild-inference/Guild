@@ -1,0 +1,25 @@
+{
+  "publisher": "org.guild-inference",
+  "key_id": "integration",
+  "public_key_hex": "b8c39ba12feef4fb055da68f0cbaa9f216d6c6efff5385afd49a37c4d3cab2df",
+  "guild_sha256": "5c7b386be726e72d5220520f1dd002ed86c87972506b151c0885624a3280a869",
+  "test_only_signing_identity": true,
+  "artifacts": {
+    "cpu-upgrade.gkernel": "c49645a37cf34987a4f476b5137ac0de038cccd9b0e04041558fd01d2b32ad7a",
+    "extra-0.gkernel": "b434e230d507d707acdd7c8ab9e7ecb8d4d77c89c4d5be440fb5ae2663ef60d3",
+    "qwen.gkernel": "7991b59641f8f79d83cf85ca1e4228283771086860c87f267343645cd5a3be53",
+    "extra-1.gkernel": "e0bc1076fb11099efec8ba749cca03ff64389291aed1ad73a6ce40d1438ea08d"
+  },
+  "package_versions": {
+    "cpu-upgrade.gkernel": "org.guild.kernels.cpu@1.0.1",
+    "extra-0.gkernel": "org.guild.kernels.cpu@1.0.0",
+    "qwen.gkernel": "org.guild.runners.qwen@1.0.0",
+    "extra-1.gkernel": "org.guild.kernels.cuda@1.0.0"
+  },
+  "source_commits": {
+    "Guild": "4b4ded0827f63e62b8e6c61571f866cc551fdd0c",
+    "guild-kernels-cpu": "5c2a76f17f1cb9b0778b6e6eef68089e83101e9a",
+    "guild-kernels-cuda": "aa1c565762217eb23082f94c95cad19b26661e4f",
+    "guild-runners-qwen": "0ccff556724fc7fc8d66795ce157485e23dfbdaa"
+  }
+}

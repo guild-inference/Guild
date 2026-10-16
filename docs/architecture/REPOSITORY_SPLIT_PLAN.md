@@ -109,3 +109,18 @@ AMD and `.gkmodule` repositories are planned only. Guild dispatches `.gkernel`
 operations; modules remain build-time reusable dependencies, not dispatchable
 runtime providers. GPACK/GEXEC compilation and later optimization phases are
 outside this extraction.
+
+## Implemented migration milestone
+
+Guild `4b4ded0` supplies standalone SDK 1.1, `RMD1` model descriptions and
+`CPE1` native CPU arithmetic. Three independent repositories now build and
+pass their scoped integration tests; see `EXTERNAL_BACKENDS.md`. Real Ornith
+inference passed with external native CPU experts, external CUDA router and
+external model descriptions together, and with built-in Qwen registration /
+native CPU arithmetic disabled. CPU upgrade/rollback ran without a Core rebuild.
+
+This is a verified slice, not the complete extraction. The CUDA implementation
+graph, canonical Q2 CPU path and remaining model tensor/topology policy are still
+in Core. Atomic select/lease replacement and complete production release gates
+also remain. The performance report records the measured small prefill drop
+instead of marking the no-regression requirement complete.
