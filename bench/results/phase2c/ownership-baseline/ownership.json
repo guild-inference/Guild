@@ -1,0 +1,2881 @@
+{
+  "core_commit": "73905fae6bf1df79d1e6c824aa87313d4fa67ed8",
+  "cuda_units": 55,
+  "device_kernel_definitions": 297,
+  "units": [
+    {
+      "source": "src/core/device.cu",
+      "sha256": "ded9dee5b2e19c1fad426fe86d48380405ab065dc0f2e87718b6baf8a66e2567",
+      "category": "C/D",
+      "destination": "Core device allocation and diagnostic poison kernel",
+      "group": "device/memory",
+      "lines": 344,
+      "includes": [
+        "guild/core/device.hpp",
+        "cuda_runtime.h",
+        "cstdio",
+        "cstring",
+        "windows.h",
+        "dxgi1_4.h",
+        "atomic",
+        "cstdlib",
+        "mutex"
+      ],
+      "device_kernels": [
+        {
+          "name": "poison_kernel",
+          "line": 22
+        }
+      ],
+      "host_definitions": [
+        "check",
+        "compiled_for",
+        "device_count",
+        "device_summary"
+      ]
+    },
+    {
+      "source": "src/core/pinned.cu",
+      "sha256": "3124863f57d6fc32d699efa1583e123ee57aa7b5fa1803b90a177df38679137a",
+      "category": "C",
+      "destination": "Core pinned allocation, mapping and lifetime",
+      "group": "host/memory",
+      "lines": 725,
+      "includes": [
+        "guild/core/pinned.hpp",
+        "guild/platform/memory.hpp",
+        "cuda_runtime.h",
+        "atomic",
+        "cerrno",
+        "cstdlib",
+        "cstdio",
+        "cstring",
+        "fstream",
+        "mutex",
+        "thread",
+        "windows.h",
+        "fcntl.h",
+        "sys/mman.h",
+        "sys/stat.h",
+        "unistd.h",
+        "linux/mman.h"
+      ],
+      "device_kernels": [],
+      "host_definitions": [
+        "arena_pin_cap_gib",
+        "clear_error",
+        "experts_unbuffered",
+        "fnv1a64",
+        "release",
+        "sliced_pin_limit"
+      ]
+    },
+    {
+      "source": "src/core/remote_expert_opt.cu",
+      "sha256": "ba24f0a0575615800265aad5626e9c1d4e42edf5e1f61ee99a21a0d336d946d7",
+      "category": "A+C",
+      "destination": "Core orchestration; extract reduce_experts and copy_cpu_rows only",
+      "group": "multi-device",
+      "lines": 194,
+      "includes": [
+        "guild/core/remote_expert_opt.hpp",
+        "guild/core/remote_experts.hpp",
+        "guild/core/on_device.hpp",
+        "guild/kernels/cpu/expert_layout.hpp",
+        "guild/kernels/elementwise.hpp",
+        "guild/kernels/verify_kernels.hpp",
+        "algorithm",
+        "cstring"
+      ],
+      "device_kernels": [
+        {
+          "name": "reduce_experts",
+          "line": 23
+        },
+        {
+          "name": "copy_cpu_rows",
+          "line": 35
+        }
+      ],
+      "host_definitions": [
+        "RemoteExpertOpt::accumulate",
+        "RemoteExpertOpt::adapt",
+        "RemoteExpertOpt::attach",
+        "RemoteExpertOpt::begin",
+        "RemoteExpertOpt::init",
+        "RemoteExpertOpt::metadata_bytes",
+        "RemoteExpertOpt::reduce",
+        "check"
+      ]
+    },
+    {
+      "source": "src/kernels/cuda/bf16_gemv.cu",
+      "sha256": "2fef036b47c7c20bbe8c1a6ff79485f39351f874eed93f78977586b4a004c832",
+      "category": "A",
+      "destination": "guild-kernels-cuda",
+      "group": "dense/bf16",
+      "lines": 141,
+      "includes": [
+        "guild/kernels/bf16_gemv.hpp",
+        "guild/kernels/bf16_bits.hpp",
+        "cuda_runtime.h",
+        "cstdio",
+        "cstdlib"
+      ],
+      "device_kernels": [
+        {
+          "name": "bf16_gemv_naive_kernel",
+          "line": 18
+        },
+        {
+          "name": "bf16_gemv_warp_kernel",
+          "line": 32
+        },
+        {
+          "name": "bf16_gemv_split_kernel",
+          "line": 48
+        }
+      ],
+      "host_definitions": [
+        "bf16_gemv",
+        "bf16_gemv_split"
+      ]
+    },
+    {
+      "source": "src/kernels/cuda/cvec.cu",
+      "sha256": "0d4b624780249e8a3bf40d3d2a9487c9fb9880734292d51646a44097ce650b09",
+      "category": "B",
+      "destination": "guild-kernels-cuda: isolated qwen specialization",
+      "group": "specialized/cvec",
+      "lines": 166,
+      "includes": [
+        "guild/kernels/cvec.hpp",
+        "cuda_runtime.h",
+        "stdexcept"
+      ],
+      "device_kernels": [
+        {
+          "name": "cvec_kernel",
+          "line": 46
+        }
+      ],
+      "host_definitions": [
+        "cur_device",
+        "cvec_apply",
+        "cvec_enabled",
+        "cvec_replicate",
+        "cvec_set_enabled",
+        "cvec_upload",
+        "upload_here"
+      ]
+    },
+    {
+      "source": "src/kernels/cuda/dequant_bf16.cu",
+      "sha256": "a8978431b6e63f0cf6eb34834dc85e457dd5ce4ef58986d5ca54f5b21afbb152",
+      "category": "A",
+      "destination": "guild-kernels-cuda",
+      "group": "dense/quantization",
+      "lines": 261,
+      "includes": [
+        "guild/kernels/dequant_bf16.hpp",
+        "guild/kernels/iq_kernels.hpp",
+        "cuda_fp16.h",
+        "cuda_runtime.h",
+        "cstdio",
+        "cstdlib"
+      ],
+      "device_kernels": [
+        {
+          "name": "dequant_kernel",
+          "line": 169
+        }
+      ],
+      "host_definitions": [
+        "dequant_bf16",
+        "dequant_bf16_supported",
+        "dequant_f16",
+        "dequant_f32",
+        "geometry",
+        "iq_only",
+        "launch"
+      ]
+    },
+    {
+      "source": "src/kernels/cuda/dequant_s2.cu",
+      "sha256": "aeddb381cd8fab6d2294bb6ec6f20bd890f6f9f51cf6bca99b51d3003fd31bbd",
+      "category": "A",
+      "destination": "guild-kernels-cuda",
+      "group": "dense/quantization",
+      "lines": 51,
+      "includes": [
+        "guild/kernels/dequant_s2.hpp",
+        "cuda_runtime.h",
+        "cstdio",
+        "cstdlib"
+      ],
+      "device_kernels": [
+        {
+          "name": "dequant_s2_kernel",
+          "line": 24
+        }
+      ],
+      "host_definitions": [
+        "dequant_s2"
+      ]
+    },
+    {
+      "source": "src/kernels/cuda/elementwise.cu",
+      "sha256": "ae51b2f95726e58cfa39425d9ea972027f1d24e8ba6a69add59470cb13985e96",
+      "category": "A",
+      "destination": "guild-kernels-cuda",
+      "group": "elementwise/doorbell",
+      "lines": 397,
+      "includes": [
+        "guild/kernels/elementwise.hpp",
+        "guild/kernels/dp4a.hpp",
+        "guild/kernels/bf16_bits.hpp",
+        "guild/kernels/f16_bits.hpp",
+        "cuda_runtime.h",
+        "cmath",
+        "cstdio",
+        "cstdlib"
+      ],
+      "device_kernels": [
+        {
+          "name": "embedding_gather_kernel",
+          "line": 19
+        },
+        {
+          "name": "gdn_gate_kernel",
+          "line": 40
+        },
+        {
+          "name": "scale_kernel",
+          "line": 50
+        },
+        {
+          "name": "add_kernel",
+          "line": 57
+        },
+        {
+          "name": "to_f16_kernel",
+          "line": 62
+        },
+        {
+          "name": "to_bf16_kernel",
+          "line": 67
+        },
+        {
+          "name": "silu_kernel",
+          "line": 72
+        },
+        {
+          "name": "rms_norm_weighted_kernel",
+          "line": 88
+        },
+        {
+          "name": "doorbell_ring_kernel",
+          "line": 209
+        },
+        {
+          "name": "doorbell_wait_kernel",
+          "line": 214
+        },
+        {
+          "name": "copy_from_mapped_kernel",
+          "line": 226
+        },
+        {
+          "name": "copy_rows_from_mapped_kernel",
+          "line": 235
+        },
+        {
+          "name": "scatter_rows_kernel",
+          "line": 255
+        },
+        {
+          "name": "doorbell_publish_kernel",
+          "line": 293
+        },
+        {
+          "name": "doorbell_publish_res_kernel",
+          "line": 308
+        },
+        {
+          "name": "doorbell_publish_value_kernel",
+          "line": 331
+        },
+        {
+          "name": "copy_i32_from_mapped_kernel",
+          "line": 369
+        }
+      ],
+      "host_definitions": [
+        "add_inplace",
+        "check_launch",
+        "copy_from_mapped",
+        "copy_i32_from_mapped",
+        "copy_rows_from_mapped",
+        "doorbell_publish",
+        "doorbell_publish_res",
+        "doorbell_publish_value",
+        "doorbell_ring",
+        "doorbell_wait",
+        "embedding_gather",
+        "f32_to_bf16_bulk",
+        "f32_to_f16_bulk",
+        "gdn_gate",
+        "rms_norm_weighted",
+        "scale_inplace",
+        "scatter_rows_f32",
+        "silu_inplace",
+        "sync_if_needed"
+      ]
+    },
+    {
+      "source": "src/kernels/cuda/fused_gdn.cu",
+      "sha256": "48b25aad6ab76d17c6f1320f564ecf879ed7e236854f5788e515e53f8727892e",
+      "category": "A",
+      "destination": "guild-kernels-cuda",
+      "group": "recurrent/gdn",
+      "lines": 169,
+      "includes": [
+        "guild/kernels/fused_gdn.hpp",
+        "cuda_runtime.h",
+        "cstdio",
+        "cstdlib"
+      ],
+      "device_kernels": [
+        {
+          "name": "__launch_bounds__",
+          "line": 16
+        },
+        {
+          "name": "__launch_bounds__",
+          "line": 75
+        },
+        {
+          "name": "__launch_bounds__",
+          "line": 97
+        }
+      ],
+      "host_definitions": [
+        "fused_gdn_ab",
+        "fused_gdn_conv_l2",
+        "fused_gdn_step_norm"
+      ]
+    },
+    {
+      "source": "src/kernels/cuda/fused_gr.cu",
+      "sha256": "436439bfd7fd5ea47f4997ad1caa14a29fabe0444cd94e1882d0afd494223f45",
+      "category": "B",
+      "destination": "guild-kernels-cuda: isolated qwen specialization",
+      "group": "specialized/fused_gr",
+      "lines": 1371,
+      "includes": [
+        "guild/core/emulate.hpp",
+        "guild/kernels/fused_gr.hpp",
+        "guild/kernels/bf16_bits.hpp",
+        "guild/kernels/verify_kernels.hpp",
+        "cuda_runtime.h",
+        "atomic",
+        "cstdio",
+        "cstdlib",
+        "cstring",
+        "random",
+        "string",
+        "vector"
+      ],
+      "device_kernels": [
+        {
+          "name": "__launch_bounds__",
+          "line": 49
+        },
+        {
+          "name": "__launch_bounds__",
+          "line": 107
+        },
+        {
+          "name": "__launch_bounds__",
+          "line": 148
+        },
+        {
+          "name": "__launch_bounds__",
+          "line": 200
+        },
+        {
+          "name": "__launch_bounds__",
+          "line": 258
+        },
+        {
+          "name": "__launch_bounds__",
+          "line": 324
+        },
+        {
+          "name": "__launch_bounds__",
+          "line": 402
+        },
+        {
+          "name": "__launch_bounds__",
+          "line": 516
+        },
+        {
+          "name": "__launch_bounds__",
+          "line": 614
+        },
+        {
+          "name": "__launch_bounds__",
+          "line": 761
+        },
+        {
+          "name": "__launch_bounds__",
+          "line": 762
+        },
+        {
+          "name": "__launch_bounds__",
+          "line": 841
+        },
+        {
+          "name": "__launch_bounds__",
+          "line": 904
+        },
+        {
+          "name": "__launch_bounds__",
+          "line": 981
+        },
+        {
+          "name": "gr_down_finish_kernel",
+          "line": 1023
+        }
+      ],
+      "host_definitions": [
+        "down_chunk",
+        "env_variant",
+        "fused_gr_check",
+        "fused_gr_read",
+        "fused_gr_read_multi",
+        "fused_gr_selftest",
+        "fused_gr_set_fast",
+        "fused_gr_supported",
+        "fused_gr_variant",
+        "launch_multi"
+      ]
+    },
+    {
+      "source": "src/kernels/cuda/gdn.cu",
+      "sha256": "7351c0babd8b0c73e4be8c3d06f57630f554ee0a43bf519ff16d4632bdfe3f83",
+      "category": "A",
+      "destination": "guild-kernels-cuda",
+      "group": "recurrent/gdn",
+      "lines": 248,
+      "includes": [
+        "guild/kernels/gdn.hpp",
+        "cuda_runtime.h",
+        "cmath",
+        "cstdio",
+        "cstdlib"
+      ],
+      "device_kernels": [
+        {
+          "name": "gdn_step_kernel",
+          "line": 43
+        },
+        {
+          "name": "gdn_conv_kernel",
+          "line": 99
+        },
+        {
+          "name": "gdn_l2_kernel",
+          "line": 118
+        },
+        {
+          "name": "gdn_out_norm_kernel",
+          "line": 133
+        },
+        {
+          "name": "gdn_beta_gate_kernel",
+          "line": 217
+        }
+      ],
+      "host_definitions": [
+        "gdn_beta_gate",
+        "gdn_conv_step",
+        "gdn_l2_norm",
+        "gdn_out_norm",
+        "gdn_step"
+      ]
+    },
+    {
+      "source": "src/kernels/cuda/gr.cu",
+      "sha256": "a48275638dcdf8aebc468c0df48818fb07f59e5fc6008b808758cb1d0fb54cef",
+      "category": "B",
+      "destination": "guild-kernels-cuda: isolated qwen specialization",
+      "group": "specialized/gr",
+      "lines": 432,
+      "includes": [
+        "guild/kernels/gr.hpp",
+        "guild/kernels/bf16_bits.hpp",
+        "guild/kernels/bf16_gemv.hpp",
+        "guild/kernels/native_gr_norm.hpp",
+        "guild/kernels/native_gr_postops.hpp",
+        "cuda_runtime.h",
+        "cmath",
+        "cstdio",
+        "cstdlib",
+        "cstring",
+        "stdexcept"
+      ],
+      "device_kernels": [
+        {
+          "name": "gr_norm_kernel",
+          "line": 136
+        },
+        {
+          "name": "gr_down_kernel",
+          "line": 165
+        },
+        {
+          "name": "gr_gate_kernel",
+          "line": 234
+        },
+        {
+          "name": "gr_mean_kernel",
+          "line": 251
+        },
+        {
+          "name": "gr_inject_kernel",
+          "line": 266
+        },
+        {
+          "name": "gr_write_kernel",
+          "line": 283
+        }
+      ],
+      "host_definitions": [
+        "gr_read",
+        "gr_set_fp32_activations",
+        "gr_set_native_mmvf",
+        "gr_workspace_init",
+        "gr_write"
+      ]
+    },
+    {
+      "source": "src/kernels/cuda/iq_kernels.cu",
+      "sha256": "eb348b8eb67886e3297bd4694a8917b44275267cade2f5ba43c5879a80c349e0",
+      "category": "A",
+      "destination": "guild-kernels-cuda",
+      "group": "dense/iq",
+      "lines": 2671,
+      "includes": [
+        "guild/kernels/iq_kernels.hpp",
+        "guild/kernels/dp4a.hpp",
+        "guild/kernels/q8_1_finite.hpp",
+        "cuda_fp16.h",
+        "cuda_runtime.h",
+        "ggml-common.h",
+        "cstdio",
+        "cstdlib",
+        "type_traits"
+      ],
+      "device_kernels": [
+        {
+          "name": "__launch_bounds__",
+          "line": 548
+        },
+        {
+          "name": "__launch_bounds__",
+          "line": 1076
+        },
+        {
+          "name": "__launch_bounds__",
+          "line": 1162
+        },
+        {
+          "name": "__launch_bounds__",
+          "line": 1192
+        },
+        {
+          "name": "swiglu_entries_kernel",
+          "line": 1239
+        },
+        {
+          "name": "__launch_bounds__",
+          "line": 1248
+        },
+        {
+          "name": "__launch_bounds__",
+          "line": 1272
+        },
+        {
+          "name": "quantize_q8_1_kernel",
+          "line": 1440
+        },
+        {
+          "name": "__launch_bounds__",
+          "line": 1453
+        },
+        {
+          "name": "dequant_flat_kernel",
+          "line": 1760
+        },
+        {
+          "name": "dequant_gu_kernel",
+          "line": 1765
+        },
+        {
+          "name": "embed_rows_kernel",
+          "line": 1923
+        },
+        {
+          "name": "__launch_bounds__",
+          "line": 2034
+        },
+        {
+          "name": "__launch_bounds__",
+          "line": 2091
+        },
+        {
+          "name": "__launch_bounds__",
+          "line": 2269
+        },
+        {
+          "name": "__launch_bounds__",
+          "line": 2364
+        },
+        {
+          "name": "__launch_bounds__",
+          "line": 2434
+        }
+      ],
+      "host_definitions": [
+        "check",
+        "d_qk",
+        "embed_type_supported",
+        "env_on",
+        "exp_mode",
+        "gu_qk",
+        "iq_dequant_f16",
+        "iq_dequant_f32",
+        "iq_dequant_gu_f16",
+        "iq_embed_rows",
+        "iq_mmvq",
+        "iq_old_kernels",
+        "iq_row_bytes",
+        "iq_set_old_kernels",
+        "iq_supported",
+        "is_iq",
+        "launch_down",
+        "launch_gu",
+        "launch_mmvq",
+        "native_expert_grouped",
+        "native_expert_scratch_bytes",
+        "native_expert_set_mode",
+        "native_expert_supported",
+        "native_grouped_set_v1",
+        "quantize_q8_1_rows"
+      ]
+    },
+    {
+      "source": "src/kernels/cuda/kv_q4.cu",
+      "sha256": "0d50d10469de69de408654eb18e9a6747cdfaa5ae4b0ac4b16aa5719cdbfde1c",
+      "category": "A",
+      "destination": "guild-kernels-cuda",
+      "group": "kv/q4",
+      "lines": 231,
+      "includes": [
+        "guild/kernels/kv_q4.hpp",
+        "guild/kernels/f16_bits.hpp",
+        "guild/kernels/kv_stream.hpp",
+        "cuda_fp16.h",
+        "cuda_runtime.h",
+        "cstdio",
+        "cstdlib"
+      ],
+      "device_kernels": [
+        {
+          "name": "fwht256_kernel",
+          "line": 25
+        },
+        {
+          "name": "kv_append_q4_kernel",
+          "line": 101
+        },
+        {
+          "name": "kv_append_q4_batch_kernel",
+          "line": 119
+        },
+        {
+          "name": "kv_gather_q4_kernel",
+          "line": 139
+        }
+      ],
+      "host_definitions": [
+        "check",
+        "fwht256_cuda",
+        "kv_append_q4",
+        "kv_append_q4_step",
+        "kv_gather_q4_step",
+        "need_256"
+      ]
+    },
+    {
+      "source": "src/kernels/cuda/kv_q8.cu",
+      "sha256": "46ab968a33ee637d95fe3ce52d637f2876c88abbe6f843e8aa36066b5920c551",
+      "category": "A",
+      "destination": "guild-kernels-cuda",
+      "group": "kv/int8",
+      "lines": 127,
+      "includes": [
+        "guild/kernels/kv_q8.hpp",
+        "guild/kernels/f16_bits.hpp",
+        "cuda_runtime.h",
+        "cstdio",
+        "cstdlib"
+      ],
+      "device_kernels": [
+        {
+          "name": "kv_append_q8_kernel",
+          "line": 30
+        },
+        {
+          "name": "kv_gather_q8_kernel",
+          "line": 69
+        }
+      ],
+      "host_definitions": [
+        "check",
+        "kv_append_q8_step",
+        "kv_gather_q8_step",
+        "validate"
+      ]
+    },
+    {
+      "source": "src/kernels/cuda/kv_stream.cu",
+      "sha256": "974498a03f47feaecb1e4172adfccf8cbaab6e3a85a3656a0c9e1a73c2e6d1c5",
+      "category": "A",
+      "destination": "guild-kernels-cuda",
+      "group": "kv/streaming",
+      "lines": 281,
+      "includes": [
+        "guild/kernels/kv_stream.hpp",
+        "guild/kernels/kv_q4.hpp",
+        "guild/kernels/kv_q8.hpp",
+        "cuda_runtime.h",
+        "algorithm",
+        "cstdio",
+        "cstdlib"
+      ],
+      "device_kernels": [
+        {
+          "name": "__launch_bounds__",
+          "line": 82
+        },
+        {
+          "name": "copy_kernel",
+          "line": 161
+        },
+        {
+          "name": "reset_kernel",
+          "line": 173
+        },
+        {
+          "name": "ring_kernel",
+          "line": 184
+        }
+      ],
+      "host_definitions": [
+        "check",
+        "kv_block_bytes",
+        "kv_ring_restore",
+        "kv_ring_table",
+        "kv_stage_from_host",
+        "kv_stream_invalidate",
+        "kv_stream_reset",
+        "kv_stream_resolve",
+        "kv_unstage_to_host"
+      ]
+    },
+    {
+      "source": "src/kernels/cuda/native_bf16.cu",
+      "sha256": "40d3679d8783f1dbfe402514547f6086812166dc00953b82fd742deceef61842",
+      "category": "A",
+      "destination": "guild-kernels-cuda",
+      "group": "dense/bf16",
+      "lines": 226,
+      "includes": [
+        "guild/kernels/bf16_gemv.hpp",
+        "guild/kernels/bf16_bits.hpp",
+        "cuda_runtime.h",
+        "limits",
+        "stdexcept",
+        "string"
+      ],
+      "device_kernels": [
+        {
+          "name": "bf16_f32_mmvf_kernel",
+          "line": 44
+        },
+        {
+          "name": "bf16_f32_mmvf_multi_kernel",
+          "line": 77
+        }
+      ],
+      "host_definitions": [
+        "bf16_gemv_fp32_mmvf",
+        "bf16_gemv_fp32_mmvf_cols",
+        "bf16_gemv_fp32_mmvf_multi",
+        "mmvf_block_size"
+      ]
+    },
+    {
+      "source": "src/kernels/cuda/native_flash_attn.cu",
+      "sha256": "bcfe7663d04549b530b826c2daf0e24397036f34132540595cd7533decd04b73",
+      "category": "A",
+      "destination": "guild-kernels-cuda",
+      "group": "attention/flash",
+      "lines": 212,
+      "includes": [
+        "guild/kernels/native_flash_attn.hpp",
+        "cuda_runtime.h",
+        "cuda_fp16.h",
+        "cfloat",
+        "cstddef",
+        "cstdint",
+        "limits",
+        "stdexcept",
+        "string"
+      ],
+      "device_kernels": [
+        {
+          "name": "attend",
+          "line": 50
+        }
+      ],
+      "host_definitions": [
+        "native_flash_attn_short_step",
+        "validate_spans"
+      ]
+    },
+    {
+      "source": "src/kernels/cuda/native_gdn.cu",
+      "sha256": "b61d5e867d2f62c6154cb1d55f7b675a3844960f6db873ddef2a31a450f671ef",
+      "category": "A",
+      "destination": "guild-kernels-cuda",
+      "group": "recurrent/gdn",
+      "lines": 122,
+      "includes": [
+        "guild/kernels/native_gdn.hpp",
+        "cuda_runtime.h",
+        "atomic",
+        "cmath",
+        "cstddef",
+        "cstdint",
+        "stdexcept"
+      ],
+      "device_kernels": [
+        {
+          "name": "__launch_bounds__",
+          "line": 46
+        }
+      ],
+      "host_definitions": [
+        "native_gdn_enabled",
+        "native_gdn_set_enabled",
+        "native_gdn_step",
+        "overlap",
+        "valid_span"
+      ]
+    },
+    {
+      "source": "src/kernels/cuda/native_gdn_preprocess.cu",
+      "sha256": "b08807dd23174d055915b71a11b3d6a5266dd0a72c8a4e8c2b4505b2cb93bdcc",
+      "category": "A",
+      "destination": "guild-kernels-cuda",
+      "group": "recurrent/gdn",
+      "lines": 199,
+      "includes": [
+        "guild/kernels/native_gdn_preprocess.hpp",
+        "cuda_runtime.h",
+        "cmath",
+        "cstddef",
+        "cstdint",
+        "initializer_list",
+        "stdexcept"
+      ],
+      "device_kernels": [
+        {
+          "name": "conv_silu",
+          "line": 53
+        },
+        {
+          "name": "l2_norm",
+          "line": 70
+        },
+        {
+          "name": "beta_sigmoid",
+          "line": 86
+        },
+        {
+          "name": "gate_softplus",
+          "line": 90
+        },
+        {
+          "name": "out_norm",
+          "line": 99
+        }
+      ],
+      "host_definitions": [
+        "check_launch",
+        "count_and_stream",
+        "disjoint",
+        "native_gdn_beta_gate",
+        "native_gdn_conv_silu",
+        "native_gdn_gate",
+        "native_gdn_l2_norm",
+        "native_gdn_out_norm",
+        "norm_geometry",
+        "valid"
+      ]
+    },
+    {
+      "source": "src/kernels/cuda/native_gr_norm.cu",
+      "sha256": "85a5cc89de04a2c00d7e15e045d2cdb8fd827ac6de58b8767a1f71fbd737845b",
+      "category": "B",
+      "destination": "guild-kernels-cuda: isolated qwen specialization",
+      "group": "specialized/native_gr_norm",
+      "lines": 102,
+      "includes": [
+        "guild/kernels/native_gr_norm.hpp",
+        "cuda_runtime.h",
+        "cmath",
+        "cstddef",
+        "cstdint",
+        "stdexcept",
+        "string"
+      ],
+      "device_kernels": [
+        {
+          "name": "weighted_rms_norm",
+          "line": 46
+        }
+      ],
+      "host_definitions": [
+        "check_pointer",
+        "native_gr_rms_norm_weighted"
+      ]
+    },
+    {
+      "source": "src/kernels/cuda/native_gr_postops.cu",
+      "sha256": "727619b5f0426eab000dc89d8b614cdbfd2d83f9a72c4ec1dd4a042b063f276c",
+      "category": "B",
+      "destination": "guild-kernels-cuda: isolated qwen specialization",
+      "group": "specialized/native_gr_postops",
+      "lines": 115,
+      "includes": [
+        "guild/kernels/native_gr_postops.hpp",
+        "cuda_runtime.h",
+        "cstddef",
+        "cstdint",
+        "limits",
+        "stdexcept",
+        "string"
+      ],
+      "device_kernels": [
+        {
+          "name": "down_silu",
+          "line": 42
+        },
+        {
+          "name": "pre_gated",
+          "line": 49
+        },
+        {
+          "name": "post",
+          "line": 65
+        }
+      ],
+      "host_definitions": [
+        "check_launch",
+        "check_pointer",
+        "check_shape",
+        "native_gr_down_silu",
+        "native_gr_post",
+        "native_gr_pre_gated"
+      ]
+    },
+    {
+      "source": "src/kernels/cuda/native_mmvq.cu",
+      "sha256": "6d3ab443b490862ef0e95eb469a194fe31b1958678bfe4d47f8752621bc9efef",
+      "category": "A",
+      "destination": "guild-kernels-cuda",
+      "group": "dense/native-mmvq",
+      "lines": 1975,
+      "includes": [
+        "guild/kernels/native_mmvq.hpp",
+        "guild/kernels/dp4a.hpp",
+        "guild/kernels/q8_1_finite.hpp",
+        "guild/kernels/iq_kernels.hpp",
+        "cuda_fp16.h",
+        "cuda_runtime.h",
+        "cstdint",
+        "cstdlib",
+        "limits",
+        "stdexcept",
+        "string"
+      ],
+      "device_kernels": [
+        {
+          "name": "native_quantize_q8_1_kernel",
+          "line": 143
+        },
+        {
+          "name": "native_swiglu_quantize_q8_1_kernel",
+          "line": 157
+        },
+        {
+          "name": "native_q5_k_mmvq_kernel",
+          "line": 239
+        },
+        {
+          "name": "native_q2_0_mmvq_kernel",
+          "line": 307
+        },
+        {
+          "name": "native_q3_k_mmvq_kernel",
+          "line": 395
+        },
+        {
+          "name": "native_iq4_xs_mmvq_kernel",
+          "line": 488
+        },
+        {
+          "name": "native_q4_k_mmvq_kernel",
+          "line": 583
+        },
+        {
+          "name": "native_q6_k_mmvq_kernel",
+          "line": 658
+        },
+        {
+          "name": "native_small_mmvq_kernel",
+          "line": 770
+        },
+        {
+          "name": "native_mmvq_multi_kernel",
+          "line": 1169
+        },
+        {
+          "name": "native_mmvq_many_reg_kernel",
+          "line": 1235
+        },
+        {
+          "name": "native_mmvq_many_loop_kernel",
+          "line": 1345
+        },
+        {
+          "name": "native_mmvq_wave_kernel",
+          "line": 1498
+        }
+      ],
+      "host_definitions": [
+        "launch_check",
+        "launch_many",
+        "launch_many_rows",
+        "launch_multi",
+        "launch_multi_n",
+        "native_iq4_nl_f32",
+        "native_iq4_nl_mmvq",
+        "native_iq4_xs_f32",
+        "native_iq4_xs_mmvq",
+        "native_mmvq",
+        "native_mmvq_multi_exact",
+        "native_mmvq_set_multi_exact",
+        "native_mmvq_supported",
+        "native_mmvq_weight_bytes",
+        "native_q2_0_f32",
+        "native_q2_0_mmvq",
+        "native_q3_k_f32",
+        "native_q3_k_mmvq",
+        "native_q4_0_f32",
+        "native_q4_0_mmvq",
+        "native_q4_k_f32",
+        "native_q4_k_mmvq",
+        "native_q5_0_f32",
+        "native_q5_0_mmvq",
+        "native_q5_k_f32",
+        "native_q5_k_mmvq",
+        "native_q6_k_f32",
+        "native_q6_k_mmvq",
+        "native_q8_0_f32",
+        "native_q8_0_mmvq",
+        "native_q8_1_bytes",
+        "native_quantize_q8_1",
+        "native_swiglu_quantize_q8_1",
+        "small_f32",
+        "small_mmvq",
+        "validate_pointer",
+        "validate_shape",
+        "validate_stream",
+        "wave_launch",
+        "wave_launch_n"
+      ]
+    },
+    {
+      "source": "src/kernels/cuda/native_moe.cu",
+      "sha256": "bd696cdb90eb1560f9ed0845f6062064ce959cb78f1f0af3df2b4503a363b030",
+      "category": "A",
+      "destination": "guild-kernels-cuda",
+      "group": "moe/native",
+      "lines": 86,
+      "includes": [
+        "guild/kernels/native_moe.hpp",
+        "cuda_runtime.h",
+        "atomic",
+        "cstddef",
+        "cstdint",
+        "limits",
+        "stdexcept"
+      ],
+      "device_kernels": [
+        {
+          "name": "combine",
+          "line": 34
+        }
+      ],
+      "host_definitions": [
+        "native_moe_combine",
+        "native_moe_combine_enabled",
+        "native_moe_combine_multi",
+        "native_moe_combine_set_enabled",
+        "overlap",
+        "valid_span"
+      ]
+    },
+    {
+      "source": "src/kernels/cuda/native_ple_postops.cu",
+      "sha256": "f56788989c6eded0488350797e746f48522c5d4de92c0d7bd59d2fae790af65c",
+      "category": "B",
+      "destination": "guild-kernels-cuda: isolated qwen specialization",
+      "group": "specialized/native_ple_postops",
+      "lines": 221,
+      "includes": [
+        "guild/kernels/native_ple_postops.hpp",
+        "guild/kernels/native_gr_norm.hpp",
+        "guild/kernels/ngram.hpp",
+        "cuda_runtime.h",
+        "cuda_fp16.h",
+        "cmath",
+        "cstddef",
+        "cstdint",
+        "limits",
+        "stdexcept",
+        "string"
+      ],
+      "device_kernels": [
+        {
+          "name": "gate_kernel",
+          "line": 40
+        },
+        {
+          "name": "broadcast_kernel",
+          "line": 67
+        },
+        {
+          "name": "conv_residual_kernel",
+          "line": 71
+        },
+        {
+          "name": "rms_rep_kernel",
+          "line": 96
+        },
+        {
+          "name": "broadcast_batch_kernel",
+          "line": 121
+        },
+        {
+          "name": "conv_residual_batch_kernel",
+          "line": 128
+        },
+        {
+          "name": "history_batch_kernel",
+          "line": 146
+        }
+      ],
+      "host_definitions": [
+        "launch_check",
+        "native_ple_postops",
+        "native_ple_postops_batch",
+        "overlaps",
+        "validate"
+      ]
+    },
+    {
+      "source": "src/kernels/cuda/native_qsa.cu",
+      "sha256": "13345c766193e183e77a8dafa674561fc91d4a1458108b1aff5bbc6bdbeceb90",
+      "category": "A",
+      "destination": "guild-kernels-cuda",
+      "group": "attention/normalization",
+      "lines": 127,
+      "includes": [
+        "guild/kernels/native_qsa.hpp",
+        "cuda_runtime.h",
+        "atomic",
+        "cmath",
+        "cstddef",
+        "cstdint",
+        "limits",
+        "stdexcept",
+        "string"
+      ],
+      "device_kernels": [
+        {
+          "name": "norm",
+          "line": 45
+        },
+        {
+          "name": "gate",
+          "line": 69
+        }
+      ],
+      "host_definitions": [
+        "buffers",
+        "check_launch",
+        "elements",
+        "native_qsa_enabled",
+        "native_qsa_gate_apply",
+        "native_qsa_rms_norm_weighted",
+        "native_qsa_set_enabled",
+        "overlap",
+        "valid"
+      ]
+    },
+    {
+      "source": "src/kernels/cuda/native_qsa_indexer.cu",
+      "sha256": "82724ac890fa2dadb6cf5a76aaf7a1bf7fe9db127e9f6dfead1789570dfdf866",
+      "category": "A",
+      "destination": "guild-kernels-cuda",
+      "group": "attention/indexer",
+      "lines": 290,
+      "includes": [
+        "guild/kernels/native_qsa_indexer.hpp",
+        "guild/kernels/mrope.hpp",
+        "cuda_runtime.h",
+        "cuda_fp16.h",
+        "atomic",
+        "cmath",
+        "cstddef",
+        "cstdint",
+        "limits",
+        "stdexcept"
+      ],
+      "device_kernels": [
+        {
+          "name": "append",
+          "line": 46
+        },
+        {
+          "name": "append_first",
+          "line": 145
+        },
+        {
+          "name": "append_blocks",
+          "line": 171
+        },
+        {
+          "name": "append_tail",
+          "line": 206
+        }
+      ],
+      "host_definitions": [
+        "native_qsa_indexer_append",
+        "native_qsa_indexer_append_batch",
+        "native_qsa_indexer_enabled",
+        "native_qsa_indexer_set_enabled",
+        "overlaps",
+        "validate"
+      ]
+    },
+    {
+      "source": "src/kernels/cuda/native_qsa_score.cu",
+      "sha256": "957b55eb1d085c69541d8763aaba29ff553d67eb6a6dc93a6fd8cbce042757a9",
+      "category": "A",
+      "destination": "guild-kernels-cuda",
+      "group": "attention/scoring",
+      "lines": 213,
+      "includes": [
+        "guild/kernels/native_qsa_score.hpp",
+        "cuda_runtime.h",
+        "atomic",
+        "cstddef",
+        "cstdint",
+        "stdexcept"
+      ],
+      "device_kernels": [
+        {
+          "name": "score_kernel",
+          "line": 54
+        },
+        {
+          "name": "scalar_score_kernel",
+          "line": 148
+        }
+      ],
+      "host_definitions": [
+        "native_qsa_score",
+        "native_qsa_score_enabled",
+        "native_qsa_score_set_enabled",
+        "overlaps",
+        "validate"
+      ]
+    },
+    {
+      "source": "src/kernels/cuda/native_rope.cu",
+      "sha256": "c5656e9732aa962d755fea8fffad7c499040ac02e8225dd0823fd09ade09a82f",
+      "category": "A",
+      "destination": "guild-kernels-cuda",
+      "group": "attention/rope",
+      "lines": 147,
+      "includes": [
+        "guild/kernels/native_rope.hpp",
+        "guild/kernels/mrope.hpp",
+        "cuda_runtime.h",
+        "atomic",
+        "cmath",
+        "cstdint",
+        "cstdlib",
+        "limits",
+        "stdexcept"
+      ],
+      "device_kernels": [
+        {
+          "name": "apply",
+          "line": 46
+        }
+      ],
+      "host_definitions": [
+        "mrope_dev",
+        "mrope_table_set",
+        "native_rope_apply",
+        "native_rope_enabled",
+        "native_rope_set_enabled",
+        "overlaps",
+        "rope_table_enabled",
+        "rope_table_release",
+        "rope_table_set",
+        "same_scaling"
+      ]
+    },
+    {
+      "source": "src/kernels/cuda/native_router.cu",
+      "sha256": "4684493dcbd568304e09bb8c75fe801f6d52d283abee4939a94636d42a581b40",
+      "category": "A",
+      "destination": "guild-kernels-cuda",
+      "group": "moe/routing",
+      "lines": 127,
+      "includes": [
+        "guild/kernels/native_router.hpp",
+        "cuda_runtime.h",
+        "atomic",
+        "cfloat",
+        "cstddef",
+        "cstdint",
+        "stdexcept"
+      ],
+      "device_kernels": [
+        {
+          "name": "route",
+          "line": 45
+        }
+      ],
+      "host_definitions": [
+        "native_router_enabled",
+        "native_router_set_enabled",
+        "native_router_top10",
+        "native_router_top10_multi",
+        "overlap",
+        "valid"
+      ]
+    },
+    {
+      "source": "src/kernels/cuda/ple.cu",
+      "sha256": "d69eb55acc1799cde6760dd6e4d2fac5cf1fd76eeb69bc6c4640aec3801c00e7",
+      "category": "B",
+      "destination": "guild-kernels-cuda: isolated qwen specialization",
+      "group": "specialized/ple",
+      "lines": 386,
+      "includes": [
+        "guild/kernels/ple.hpp",
+        "guild/kernels/bf16_gemv.hpp",
+        "guild/kernels/f16_bits.hpp",
+        "guild/kernels/ngram.hpp",
+        "guild/kernels/quantize_act.hpp",
+        "guild/kernels/s2_gemv_q8.hpp",
+        "guild/kernels/native_mmvq.hpp",
+        "guild/kernels/native_ple_postops.hpp",
+        "cuda_runtime.h",
+        "cmath",
+        "cstdio",
+        "cstdlib",
+        "stdexcept",
+        "string"
+      ],
+      "device_kernels": [
+        {
+          "name": "history_advance_kernel",
+          "line": 46
+        },
+        {
+          "name": "gnorm_kernel",
+          "line": 92
+        },
+        {
+          "name": "gate_kernel",
+          "line": 115
+        },
+        {
+          "name": "bcast_kernel",
+          "line": 130
+        },
+        {
+          "name": "conv_kernel",
+          "line": 147
+        },
+        {
+          "name": "add3_kernel",
+          "line": 166
+        },
+        {
+          "name": "bf16_gemv_kernel",
+          "line": 175
+        },
+        {
+          "name": "to_bf16_kernel",
+          "line": 185
+        }
+      ],
+      "host_definitions": [
+        "ck",
+        "overlap",
+        "ple_block",
+        "ple_block_available",
+        "ple_block_projected",
+        "ple_block_scratch_bytes",
+        "ple_history_advance",
+        "ple_native_bf16_enabled",
+        "ple_native_postops_enabled",
+        "ple_set_native_bf16",
+        "ple_set_native_postops"
+      ]
+    },
+    {
+      "source": "src/kernels/cuda/qsa.cu",
+      "sha256": "b52c69cb353b374bd268e1d9fb7891c7b90480920acb06afe1c4504426377ddf",
+      "category": "A",
+      "destination": "guild-kernels-cuda",
+      "group": "attention/qsa",
+      "lines": 837,
+      "includes": [
+        "guild/core/emulate.hpp",
+        "guild/kernels/qsa.hpp",
+        "guild/kernels/f16_bits.hpp",
+        "guild/kernels/kv_stream.hpp",
+        "guild/kernels/rope.hpp",
+        "guild/kernels/mrope.hpp",
+        "cuda_runtime.h",
+        "cfloat",
+        "cmath",
+        "cstdio",
+        "cstdlib",
+        "cstring"
+      ],
+      "device_kernels": [
+        {
+          "name": "kv_append_kernel",
+          "line": 138
+        },
+        {
+          "name": "indexer_key_append_kernel",
+          "line": 171
+        },
+        {
+          "name": "qsa_index_kernel",
+          "line": 265
+        },
+        {
+          "name": "topk_kernel",
+          "line": 323
+        },
+        {
+          "name": "kv_gather_kernel",
+          "line": 422
+        },
+        {
+          "name": "qsa_attend_kernel",
+          "line": 455
+        },
+        {
+          "name": "qsa_gate_apply_kernel",
+          "line": 529
+        },
+        {
+          "name": "qsa_gate_apply_f32_kernel",
+          "line": 809
+        }
+      ],
+      "host_definitions": [
+        "check_launch",
+        "check_sync",
+        "fail",
+        "indexer_key_append",
+        "kv_append",
+        "kv_append_step",
+        "kv_gather",
+        "kv_gather_step",
+        "qsa_attend",
+        "qsa_attend_step",
+        "qsa_gate_apply",
+        "qsa_gate_apply_f32",
+        "qsa_index",
+        "qsa_index_step",
+        "qsa_step_fill",
+        "step_upload_raw",
+        "topk_512",
+        "topk_512_step",
+        "validate"
+      ]
+    },
+    {
+      "source": "src/kernels/cuda/qsa_decode_attn.cu",
+      "sha256": "7e640e0dd324a43683b60f77f098c42d9d79330f5dc7e3954b30224c261d6ec7",
+      "category": "A",
+      "destination": "guild-kernels-cuda",
+      "group": "attention/decode",
+      "lines": 643,
+      "includes": [
+        "guild/kernels/qsa_decode_attn.hpp",
+        "guild/kernels/kv_q8.hpp",
+        "guild/kernels/kv_q4.hpp",
+        "cuda_fp16.h",
+        "cuda_runtime.h",
+        "cfloat",
+        "cstdio",
+        "cstdlib"
+      ],
+      "device_kernels": [
+        {
+          "name": "__launch_bounds__",
+          "line": 83
+        },
+        {
+          "name": "__launch_bounds__",
+          "line": 260
+        },
+        {
+          "name": "__launch_bounds__",
+          "line": 416
+        }
+      ],
+      "host_definitions": [
+        "dispatch_attn_chunk_batch",
+        "dispatch_attn_chunk_step",
+        "launch_attn_chunk_batch",
+        "launch_attn_chunk_step",
+        "pre75_attn",
+        "qsa_decode_attn_batch",
+        "qsa_decode_attn_scratch_floats",
+        "qsa_decode_attn_step"
+      ]
+    },
+    {
+      "source": "src/kernels/cuda/qsa_prompt_attn.cu",
+      "sha256": "3384673154c673718c1b47cf4d882f44233eea2e57448f3c172d812326b266a4",
+      "category": "A",
+      "destination": "guild-kernels-cuda",
+      "group": "attention/prefill",
+      "lines": 1479,
+      "includes": [
+        "guild/core/emulate.hpp",
+        "cstdlib",
+        "cstring",
+        "guild/kernels/qsa_prompt_attn.hpp",
+        "guild/kernels/kv_q8.hpp",
+        "guild/kernels/kv_q4.hpp",
+        "cuda_fp16.h",
+        "cuda_runtime.h",
+        "cmath",
+        "cstdio",
+        "cstdlib",
+        "cstring",
+        "type_traits"
+      ],
+      "device_kernels": [
+        {
+          "name": "__launch_bounds__",
+          "line": 106
+        },
+        {
+          "name": "__launch_bounds__",
+          "line": 463
+        },
+        {
+          "name": "__launch_bounds__",
+          "line": 793
+        },
+        {
+          "name": "__launch_bounds__",
+          "line": 1172
+        }
+      ],
+      "host_definitions": [
+        "hip_wmma_usable",
+        "launch",
+        "launch70",
+        "launch_i8",
+        "launch_wmma",
+        "qsa_prompt_attn_batch"
+      ]
+    },
+    {
+      "source": "src/kernels/cuda/qsa_select.cu",
+      "sha256": "9f86790861a8e9003a2fa55cb7a2b8fb3817db17a60a23bd3f32025715092358",
+      "category": "A",
+      "destination": "guild-kernels-cuda",
+      "group": "attention/selection",
+      "lines": 1237,
+      "includes": [
+        "guild/core/emulate.hpp",
+        "cstdlib",
+        "cstring",
+        "guild/kernels/qsa_select.hpp",
+        "cuda_runtime.h",
+        "cfloat",
+        "cstdio",
+        "cstdlib",
+        "cstring"
+      ],
+      "device_kernels": [
+        {
+          "name": "__launch_bounds__",
+          "line": 28
+        },
+        {
+          "name": "__launch_bounds__",
+          "line": 57
+        },
+        {
+          "name": "__launch_bounds__",
+          "line": 195
+        },
+        {
+          "name": "__launch_bounds__",
+          "line": 329
+        },
+        {
+          "name": "__launch_bounds__",
+          "line": 438
+        },
+        {
+          "name": "__launch_bounds__",
+          "line": 507
+        },
+        {
+          "name": "__launch_bounds__",
+          "line": 606
+        },
+        {
+          "name": "__launch_bounds__",
+          "line": 725
+        },
+        {
+          "name": "__launch_bounds__",
+          "line": 847
+        }
+      ],
+      "host_definitions": [
+        "qsa_block_scores",
+        "qsa_block_scores_tc",
+        "qsa_block_topk",
+        "qsa_block_topk_cluster",
+        "qsa_block_topk_ref",
+        "sel_gfx12_device"
+      ]
+    },
+    {
+      "source": "src/kernels/cuda/quantize_act.cu",
+      "sha256": "f1e060d96e481c5d79a4470ab6ea0226a727df47000ca9628d7916286c4b40c3",
+      "category": "A",
+      "destination": "guild-kernels-cuda",
+      "group": "dense/quantization",
+      "lines": 313,
+      "includes": [
+        "guild/kernels/quantize_act.hpp",
+        "guild/kernels/f16_bits.hpp",
+        "cuda_runtime.h",
+        "cmath",
+        "cstdio",
+        "cstdlib"
+      ],
+      "device_kernels": [
+        {
+          "name": "quantize_q8_0_kernel",
+          "line": 47
+        },
+        {
+          "name": "quantize_q8_0_scaled_kernel",
+          "line": 100
+        },
+        {
+          "name": "dequant_q8_0_kernel",
+          "line": 129
+        },
+        {
+          "name": "quantize_q8_K_kernel",
+          "line": 161
+        },
+        {
+          "name": "dequant_q8_K_kernel",
+          "line": 210
+        }
+      ],
+      "host_definitions": [
+        "dequant_q8_0",
+        "dequant_q8_K",
+        "quantize_q8_0",
+        "quantize_q8_0_scaled",
+        "quantize_q8_K"
+      ]
+    },
+    {
+      "source": "src/kernels/cuda/rope.cu",
+      "sha256": "8838bd9d6b2a57254037e0e8840a79422fea79079dc5ab0af7723e1d215f005d",
+      "category": "A",
+      "destination": "guild-kernels-cuda",
+      "group": "attention/rope",
+      "lines": 136,
+      "includes": [
+        "guild/kernels/rope.hpp",
+        "guild/kernels/mrope.hpp",
+        "cuda_runtime.h",
+        "cmath",
+        "cstdio",
+        "cstdlib"
+      ],
+      "device_kernels": [
+        {
+          "name": "rope_neox_kernel",
+          "line": 97
+        }
+      ],
+      "host_definitions": [
+        "build_rope_table",
+        "rope_neox_apply",
+        "rope_scaling_set"
+      ]
+    },
+    {
+      "source": "src/kernels/cuda/router_top10.cu",
+      "sha256": "b22e22f1d4f110b49c1009f3fce363bcf82bd83cd6f2c70d6945970858a93ba9",
+      "category": "A",
+      "destination": "guild-kernels-cuda",
+      "group": "moe/routing",
+      "lines": 497,
+      "includes": [
+        "guild/kernels/router_top10.hpp",
+        "cuda_runtime.h",
+        "cmath",
+        "cstdio",
+        "cstdlib"
+      ],
+      "device_kernels": [
+        {
+          "name": "router_top10_kernel",
+          "line": 69
+        },
+        {
+          "name": "__launch_bounds__",
+          "line": 198
+        },
+        {
+          "name": "router_top10_fast_kernel",
+          "line": 283
+        }
+      ],
+      "host_definitions": [
+        "launch_generic",
+        "router_top10",
+        "router_top10_variant"
+      ]
+    },
+    {
+      "source": "src/kernels/cuda/s2_expert_grouped.cu",
+      "sha256": "d3b2a78342058cab5079d96a139a12df526e4be902295643d197e0f471c49c26",
+      "category": "A",
+      "destination": "guild-kernels-cuda",
+      "group": "moe/canonical",
+      "lines": 1190,
+      "includes": [
+        "guild/kernels/s2_expert_grouped.hpp",
+        "guild/kernels/dp4a.hpp",
+        "guild/kernels/quantize_act.hpp",
+        "guild/kernels/verify_kernels.hpp",
+        "cuda_fp16.h",
+        "cuda_runtime.h",
+        "atomic",
+        "cstdint",
+        "cstdio",
+        "cstdlib",
+        "cstring"
+      ],
+      "device_kernels": [
+        {
+          "name": "gu_kernel",
+          "line": 121
+        },
+        {
+          "name": "swiglu_kernel",
+          "line": 166
+        },
+        {
+          "name": "down_kernel",
+          "line": 178
+        },
+        {
+          "name": "gu_pair_kernel",
+          "line": 284
+        },
+        {
+          "name": "down_pair_kernel",
+          "line": 327
+        },
+        {
+          "name": "activation_correction_kernel",
+          "line": 368
+        },
+        {
+          "name": "cpu_order_projection_kernel",
+          "line": 412
+        },
+        {
+          "name": "cpu_order_swiglu_kernel",
+          "line": 435
+        },
+        {
+          "name": "cpu_order_quantize_kernel",
+          "line": 445
+        },
+        {
+          "name": "hit_select_kernel",
+          "line": 623
+        },
+        {
+          "name": "hit_select_multi_kernel",
+          "line": 643
+        },
+        {
+          "name": "add_hits_kernel",
+          "line": 666
+        },
+        {
+          "name": "__launch_bounds__",
+          "line": 783
+        },
+        {
+          "name": "__launch_bounds__",
+          "line": 845
+        },
+        {
+          "name": "__launch_bounds__",
+          "line": 918
+        },
+        {
+          "name": "__launch_bounds__",
+          "line": 984
+        },
+        {
+          "name": "group_resident_kernel",
+          "line": 1047
+        }
+      ],
+      "host_definitions": [
+        "check",
+        "launch_hit_down",
+        "launch_hit_gu",
+        "moe_group_resident",
+        "moe_grouped_last_path",
+        "moe_grouped_s2",
+        "moe_grouped_select_old",
+        "moe_hit_add",
+        "moe_hit_grouped_s2",
+        "moe_hit_grouped_s2_cpu_order",
+        "moe_hit_grouped_s2_dev",
+        "moe_hit_grouped_s2_multi",
+        "moe_hit_grouped_scratch_bytes",
+        "moe_hit_select",
+        "moe_hit_select_multi",
+        "new_grouped",
+        "new_hit",
+        "old_kernels"
+      ]
+    },
+    {
+      "source": "src/kernels/cuda/s2_gemv.cu",
+      "sha256": "8cb5cf433662c9326b7af69e04b7c206e184f57355088d6cd0ad2443a2fa1370",
+      "category": "A",
+      "destination": "guild-kernels-cuda",
+      "group": "dense/canonical",
+      "lines": 63,
+      "includes": [
+        "guild/kernels/s2_gemv.hpp",
+        "cuda_fp16.h",
+        "cuda_runtime.h",
+        "cstdio",
+        "cstdlib"
+      ],
+      "device_kernels": [
+        {
+          "name": "s2_gemv_kernel",
+          "line": 19
+        }
+      ],
+      "host_definitions": [
+        "s2_gemv"
+      ]
+    },
+    {
+      "source": "src/kernels/cuda/s2_gemv_fast.cu",
+      "sha256": "825ec4cb09a79cd752e5e66b0dd479f9e9af46709b0493fa2cef2d24a2896d11",
+      "category": "A",
+      "destination": "guild-kernels-cuda",
+      "group": "dense/canonical",
+      "lines": 153,
+      "includes": [
+        "guild/kernels/s_gemv.hpp",
+        "cuda_fp16.h",
+        "cuda_runtime.h",
+        "cstdio",
+        "cstdlib"
+      ],
+      "device_kernels": [
+        {
+          "name": "s2_gemv_fast_kernel",
+          "line": 70
+        }
+      ],
+      "host_definitions": [
+        "ensure_lut",
+        "s2_gemv_fast"
+      ]
+    },
+    {
+      "source": "src/kernels/cuda/s2_gemv_q8.cu",
+      "sha256": "af1d30a0b0ec42bd95fe5f4777ae4eae4587ecb5aa1232f8570dc373e5ad7e16",
+      "category": "A",
+      "destination": "guild-kernels-cuda",
+      "group": "dense/canonical",
+      "lines": 96,
+      "includes": [
+        "guild/kernels/s2_gemv_q8.hpp",
+        "cuda_fp16.h",
+        "cuda_runtime.h",
+        "cstdio",
+        "cstdlib"
+      ],
+      "device_kernels": [
+        {
+          "name": "s2_gemv_q8_kernel",
+          "line": 33
+        }
+      ],
+      "host_definitions": [
+        "s2_gemv_q8"
+      ]
+    },
+    {
+      "source": "src/kernels/cuda/s2_gemv_quads.cu",
+      "sha256": "628c12329f669e63dde7ba43ff79402427b51839832f9208b1dad63fb41015d2",
+      "category": "A",
+      "destination": "guild-kernels-cuda",
+      "group": "dense/canonical",
+      "lines": 93,
+      "includes": [
+        "guild/kernels/s_gemv.hpp",
+        "cuda_fp16.h",
+        "cuda_runtime.h",
+        "cstdio",
+        "cstdlib"
+      ],
+      "device_kernels": [
+        {
+          "name": "s2_gemv_quads_kernel",
+          "line": 33
+        }
+      ],
+      "host_definitions": [
+        "s2_gemv_quads"
+      ]
+    },
+    {
+      "source": "src/kernels/cuda/s_gemv.cu",
+      "sha256": "aa1a10d9f7a9ffe830b29890b96d5fe007038fc075ed7e167551592cf4819269",
+      "category": "A",
+      "destination": "guild-kernels-cuda",
+      "group": "dense/canonical",
+      "lines": 694,
+      "includes": [
+        "guild/kernels/s_gemv.hpp",
+        "cuda_fp16.h",
+        "cuda_runtime.h",
+        "cstdio",
+        "cstdlib"
+      ],
+      "device_kernels": [
+        {
+          "name": "s_gemv_q8k_kernel",
+          "line": 91
+        },
+        {
+          "name": "s_gemv_q8_split_kernel",
+          "line": 143
+        },
+        {
+          "name": "s_gemv_kernel",
+          "line": 302
+        },
+        {
+          "name": "s_gemv_split_kernel",
+          "line": 401
+        }
+      ],
+      "host_definitions": [
+        "finish",
+        "q8k_form_ok",
+        "s_gemv",
+        "s_gemv_q8_0_split",
+        "s_gemv_q8k",
+        "s_gemv_q8k_split",
+        "s_gemv_split",
+        "s_gemv_split_async"
+      ]
+    },
+    {
+      "source": "src/kernels/cuda/sampler.cu",
+      "sha256": "cd066cbe9a576325205e2d7d18579adf0ab5a52feb4fb73d8dc17609628bbdac",
+      "category": "A",
+      "destination": "guild-kernels-cuda",
+      "group": "sampling/device-primitives",
+      "lines": 1081,
+      "includes": [
+        "guild/kernels/sampler.hpp",
+        "guild/core/coupled_draft.hpp",
+        "guild/core/emulate.hpp",
+        "cuda_runtime.h",
+        "cmath",
+        "cstdio",
+        "cstdlib",
+        "cstring",
+        "mutex",
+        "vector"
+      ],
+      "device_kernels": [
+        {
+          "name": "sampler_greedy_kernel",
+          "line": 102
+        },
+        {
+          "name": "__launch_bounds__",
+          "line": 202
+        },
+        {
+          "name": "sampler_kernel",
+          "line": 279
+        },
+        {
+          "name": "__launch_bounds__",
+          "line": 525
+        },
+        {
+          "name": "__launch_bounds__",
+          "line": 660
+        },
+        {
+          "name": "__launch_bounds__",
+          "line": 743
+        },
+        {
+          "name": "coupled_stage_kernel",
+          "line": 770
+        },
+        {
+          "name": "coupled_penalize_kernel",
+          "line": 784
+        },
+        {
+          "name": "__launch_bounds__",
+          "line": 809
+        }
+      ],
+      "host_definitions": [
+        "coupled_blocks",
+        "coupled_check",
+        "coupled_draft_sample",
+        "coupled_draft_scratch_bytes",
+        "coupled_draft_stage",
+        "coupled_kpart",
+        "env_flag",
+        "sample_greedy_cluster",
+        "sample_tokens",
+        "stream_capturing"
+      ]
+    },
+    {
+      "source": "src/kernels/cuda/shared_expert.cu",
+      "sha256": "b907af1ccc1e0f56ab6df1d58c1355900096edbe5050b8297d385c3b7a393729",
+      "category": "A",
+      "destination": "guild-kernels-cuda",
+      "group": "moe/shared",
+      "lines": 385,
+      "includes": [
+        "guild/kernels/shared_expert.hpp",
+        "guild/kernels/bf16_gemv.hpp",
+        "guild/kernels/bf16_bits.hpp",
+        "guild/kernels/f16_bits.hpp",
+        "guild/kernels/quantize_act.hpp",
+        "guild/kernels/s2_gemv_q8.hpp",
+        "guild/kernels/s_gemv.hpp",
+        "guild/kernels/native_mmvq.hpp",
+        "cuda_fp16.h",
+        "cuda_runtime.h",
+        "cmath",
+        "climits",
+        "cstdio",
+        "string",
+        "cstdlib",
+        "cstring",
+        "stdexcept"
+      ],
+      "device_kernels": [
+        {
+          "name": "swiglu_kernel",
+          "line": 55
+        },
+        {
+          "name": "native_swiglu_kernel",
+          "line": 63
+        },
+        {
+          "name": "to_f16_kernel",
+          "line": 72
+        },
+        {
+          "name": "scalar_gate_kernel",
+          "line": 110
+        },
+        {
+          "name": "scale_kernel",
+          "line": 129
+        },
+        {
+          "name": "native_scalar_sigmoid_kernel",
+          "line": 134
+        },
+        {
+          "name": "native_scalar_sigmoid_multi_kernel",
+          "line": 139
+        },
+        {
+          "name": "moe_combine_kernel",
+          "line": 144
+        },
+        {
+          "name": "scale_rows_kernel",
+          "line": 164
+        },
+        {
+          "name": "sigmoid_scale_rows_kernel",
+          "line": 170
+        }
+      ],
+      "host_definitions": [
+        "fused_swiglu_q81_enabled",
+        "moe_combine",
+        "shared_expert",
+        "shared_expert_multi",
+        "shared_expert_native_bf16_enabled",
+        "shared_expert_scratch_bytes",
+        "shared_expert_set_native_bf16"
+      ]
+    },
+    {
+      "source": "src/kernels/cuda/verify_kernels.cu",
+      "sha256": "8eb5ccdf5b7ab0068ae66c26b03f834936774d311c38de798acc4455590cf1ed",
+      "category": "A",
+      "destination": "guild-kernels-cuda",
+      "group": "verification/device-primitives",
+      "lines": 759,
+      "includes": [
+        "guild/kernels/verify_kernels.hpp",
+        "guild/kernels/dp4a.hpp",
+        "cuda_runtime.h",
+        "cstdio",
+        "cstdlib",
+        "stdexcept"
+      ],
+      "device_kernels": [
+        {
+          "name": "finite_first_bad_kernel",
+          "line": 17
+        },
+        {
+          "name": "__launch_bounds__",
+          "line": 46
+        },
+        {
+          "name": "gdn_conv_commit_kernel",
+          "line": 74
+        },
+        {
+          "name": "__launch_bounds__",
+          "line": 92
+        },
+        {
+          "name": "__launch_bounds__",
+          "line": 146
+        },
+        {
+          "name": "__launch_bounds__",
+          "line": 188
+        },
+        {
+          "name": "embedding_gather_dev_kernel",
+          "line": 266
+        },
+        {
+          "name": "broadcast_streams_kernel",
+          "line": 286
+        },
+        {
+          "name": "copy_indexed_kernel",
+          "line": 293
+        },
+        {
+          "name": "fetch_blobs_kernel",
+          "line": 301
+        },
+        {
+          "name": "rebase_ptrs_kernel",
+          "line": 311
+        },
+        {
+          "name": "add_streams_broadcast_kernel",
+          "line": 316
+        },
+        {
+          "name": "ident_hits_kernel",
+          "line": 324
+        },
+        {
+          "name": "gather_rows_kernel",
+          "line": 333
+        },
+        {
+          "name": "map_ids_kernel",
+          "line": 342
+        },
+        {
+          "name": "row_top_prob_kernel",
+          "line": 347
+        },
+        {
+          "name": "mtp_select_kernel",
+          "line": 365
+        },
+        {
+          "name": "dense_steps_kernel",
+          "line": 381
+        },
+        {
+          "name": "window_ids_kernel",
+          "line": 458
+        },
+        {
+          "name": "wait_flag_ge_kernel",
+          "line": 573
+        },
+        {
+          "name": "__launch_bounds__",
+          "line": 584
+        },
+        {
+          "name": "wait_flag_ge_or_kernel",
+          "line": 672
+        },
+        {
+          "name": "copy_i32_unless_kernel",
+          "line": 677
+        },
+        {
+          "name": "copy_or_zero_kernel",
+          "line": 682
+        },
+        {
+          "name": "gpu_stamp_kernel",
+          "line": 744
+        }
+      ],
+      "host_definitions": [
+        "add_streams_broadcast",
+        "broadcast_streams",
+        "check",
+        "copy_i32_from_mapped_unless",
+        "copy_indexed",
+        "copy_or_zero_from_mapped",
+        "dense_steps",
+        "embedding_gather_dev",
+        "fetch_blobs",
+        "finite_first_bad",
+        "gather_rows",
+        "gdn_ab_multi",
+        "gdn_ab_prefill",
+        "gdn_conv_commit",
+        "gdn_conv_l2_multi",
+        "gdn_prefill_conv",
+        "gdn_prefill_recurrence",
+        "gdn_step_norm_multi",
+        "gpu_stamp",
+        "ident_hits",
+        "map_ids",
+        "mtp_select",
+        "rebase_ptrs",
+        "resident_plan",
+        "row_top_prob",
+        "wait_flag_ge",
+        "wait_flag_ge_or",
+        "window_ids"
+      ]
+    },
+    {
+      "source": "src/prefill/gdn_rec_parity.cu",
+      "sha256": "b4dda56324395846986a85c9b1ee9c54d4a26e4855490769ad20c2b70f057cc3",
+      "category": "D",
+      "destination": "Core test retained; standalone backend test consumer",
+      "group": "tests",
+      "lines": 886,
+      "includes": [
+        "cuda_fp16.h",
+        "cuda_runtime.h",
+        "algorithm",
+        "cstdint",
+        "cstdio",
+        "cstdlib",
+        "cstring",
+        "map",
+        "vector"
+      ],
+      "device_kernels": [
+        {
+          "name": "__launch_bounds__",
+          "line": 53
+        },
+        {
+          "name": "__launch_bounds__",
+          "line": 150
+        },
+        {
+          "name": "__launch_bounds__",
+          "line": 245
+        },
+        {
+          "name": "__launch_bounds__",
+          "line": 262
+        },
+        {
+          "name": "fill_gauss",
+          "line": 289
+        },
+        {
+          "name": "l2_rows",
+          "line": 294
+        },
+        {
+          "name": "fill_gates",
+          "line": 304
+        },
+        {
+          "name": "count_diff",
+          "line": 311
+        },
+        {
+          "name": "hold_sm",
+          "line": 341
+        },
+        {
+          "name": "wait_sitting",
+          "line": 353
+        },
+        {
+          "name": "release_sms",
+          "line": 360
+        },
+        {
+          "name": "land",
+          "line": 364
+        }
+      ],
+      "host_definitions": [
+        "bench",
+        "check_bits",
+        "ck",
+        "fewer_sms",
+        "main",
+        "run_rec",
+        "scale"
+      ]
+    },
+    {
+      "source": "src/prefill/gemm.cu",
+      "sha256": "8f9c322a560081296b46b822bec2e3de8674ece36c433ecf801a0f44d93067ee",
+      "category": "A",
+      "destination": "guild-kernels-cuda",
+      "group": "prefill/gemm",
+      "lines": 556,
+      "includes": [
+        "guild/prefill/gemm.hpp",
+        "guild/kernels/dequant_bf16.hpp",
+        "cublas_v2.h",
+        "cuda_fp16.h",
+        "cuda_runtime.h",
+        "algorithm",
+        "atomic",
+        "climits",
+        "cstdio",
+        "cstdlib",
+        "cstring",
+        "memory",
+        "hipblaslt_tuning.hpp",
+        "hip/hip_runtime_api.h",
+        "hipblaslt/hipblaslt.h",
+        "hipblaslt/hipblaslt-ext.hpp",
+        "map",
+        "set",
+        "tuple"
+      ],
+      "device_kernels": [
+        {
+          "name": "bf16_to_f16_kernel",
+          "line": 396
+        },
+        {
+          "name": "bf16_to_f32_kernel",
+          "line": 410
+        }
+      ],
+      "host_definitions": [
+        "Gemm::bf16",
+        "Gemm::f16",
+        "Gemm::init",
+        "Gemm::init_external",
+        "Gemm::native",
+        "Gemm::rebind",
+        "absorb_hipblas_sticky",
+        "bf16_path",
+        "bf16_to_f16",
+        "bf16_to_f32",
+        "ck",
+        "current_cc",
+        "grow",
+        "init",
+        "note",
+        "try_hipblaslt"
+      ]
+    },
+    {
+      "source": "src/prefill/gemm_bf16_parity.cu",
+      "sha256": "35cdb378ae0313c8ad448bbb5f5e40abded16a00b94886925e5d16d41a1a3132",
+      "category": "D",
+      "destination": "Core test retained; standalone backend test consumer",
+      "group": "tests",
+      "lines": 155,
+      "includes": [
+        "guild/prefill/gemm.hpp",
+        "cublas_v2.h",
+        "cuda_runtime.h",
+        "algorithm",
+        "chrono",
+        "cmath",
+        "cstdint",
+        "cstdio",
+        "cstring",
+        "random",
+        "string",
+        "vector"
+      ],
+      "device_kernels": [],
+      "host_definitions": [
+        "main",
+        "ok_or"
+      ]
+    },
+    {
+      "source": "src/prefill/ggml_cuda_host.cu",
+      "sha256": "1589556a6791be99030e64429b6a11852c48ce570d5d6d46fd396678d7748437",
+      "category": "D",
+      "destination": "guild-kernels-cuda private pinned GGML context",
+      "group": "ggml/context",
+      "lines": 147,
+      "includes": [
+        "guild/core/emulate.hpp",
+        "common.cuh",
+        "cstdio",
+        "cstdlib",
+        "mutex",
+        "string",
+        "vector"
+      ],
+      "device_kernels": [],
+      "host_definitions": [
+        "ggml_cuda_get_device",
+        "ggml_cuda_parse_amd_id"
+      ]
+    },
+    {
+      "source": "src/prefill/kernels.cu",
+      "sha256": "0eb3e054b32e15ef972a2eb8a98ca0a811458521e0a2b8f496cd60b4635919a9",
+      "category": "A/B",
+      "destination": "guild-kernels-cuda",
+      "group": "prefill/kernels",
+      "lines": 1024,
+      "includes": [
+        "guild/prefill/kernels.hpp",
+        "guild/kernels/mrope.hpp",
+        "guild/kernels/router_top10.hpp",
+        "cuda_fp16.h",
+        "cuda_runtime.h",
+        "algorithm",
+        "cfloat",
+        "cmath",
+        "cstdio",
+        "cstdlib"
+      ],
+      "device_kernels": [
+        {
+          "name": "gr_norm_kernel",
+          "line": 66
+        },
+        {
+          "name": "gr_norm_rs_kernel",
+          "line": 85
+        },
+        {
+          "name": "gr_mix_r_kernel",
+          "line": 103
+        },
+        {
+          "name": "__launch_bounds__",
+          "line": 129
+        },
+        {
+          "name": "gr_silu_kernel",
+          "line": 161
+        },
+        {
+          "name": "gr_mix_kernel",
+          "line": 171
+        },
+        {
+          "name": "gr_write_kernel",
+          "line": 192
+        },
+        {
+          "name": "gr_broadcast_kernel",
+          "line": 199
+        },
+        {
+          "name": "gdn_gates_kernel",
+          "line": 207
+        },
+        {
+          "name": "gdn_conv_kernel",
+          "line": 218
+        },
+        {
+          "name": "gdn_conv_tiled_kernel",
+          "line": 236
+        },
+        {
+          "name": "gdn_conv_hist_kernel",
+          "line": 254
+        },
+        {
+          "name": "gdn_l2_kernel",
+          "line": 264
+        },
+        {
+          "name": "__launch_bounds__",
+          "line": 278
+        },
+        {
+          "name": "__launch_bounds__",
+          "line": 338
+        },
+        {
+          "name": "__launch_bounds__",
+          "line": 381
+        },
+        {
+          "name": "__launch_bounds__",
+          "line": 479
+        },
+        {
+          "name": "__launch_bounds__",
+          "line": 600
+        },
+        {
+          "name": "route_kernel",
+          "line": 618
+        },
+        {
+          "name": "blob_dequant_kernel",
+          "line": 658
+        },
+        {
+          "name": "swiglu_il_kernel",
+          "line": 682
+        },
+        {
+          "name": "swiglu_pair_kernel",
+          "line": 689
+        },
+        {
+          "name": "gather_rows16_kernel",
+          "line": 696
+        },
+        {
+          "name": "moe_combine_kernel",
+          "line": 704
+        },
+        {
+          "name": "rms_rows_kernel",
+          "line": 717
+        },
+        {
+          "name": "rope_kernel",
+          "line": 730
+        },
+        {
+          "name": "split_q_kernel",
+          "line": 750
+        },
+        {
+          "name": "gate_attn_kernel",
+          "line": 756
+        },
+        {
+          "name": "kv_append_kernel",
+          "line": 766
+        },
+        {
+          "name": "to_f16_kernel",
+          "line": 809
+        },
+        {
+          "name": "round_f16_kernel",
+          "line": 813
+        },
+        {
+          "name": "to_bf16_kernel",
+          "line": 817
+        },
+        {
+          "name": "copy_i32_kernel",
+          "line": 955
+        },
+        {
+          "name": "copy_f4_kernel",
+          "line": 961
+        }
+      ],
+      "host_definitions": [
+        "blob_dequant",
+        "blob_dequant_f16",
+        "check",
+        "copy_f32_wide",
+        "copy_i32",
+        "gate_attn",
+        "gather_rows16",
+        "gdn_conv",
+        "gdn_gates",
+        "gdn_keyhead_ok",
+        "gdn_recurrence",
+        "gr_broadcast",
+        "gr_mix",
+        "gr_mix_r",
+        "gr_norm",
+        "gr_norm_rs",
+        "gr_silu",
+        "gr_write",
+        "gr_write_norm_rs",
+        "kv_append",
+        "moe_combine",
+        "rms_rows",
+        "rope",
+        "round_f16",
+        "route",
+        "split_q",
+        "swiglu_interleaved",
+        "swiglu_pair",
+        "to_bf16",
+        "to_f16"
+      ]
+    },
+    {
+      "source": "src/prefill/moe_fused.cu",
+      "sha256": "819a2d6f16be5eb618b56b02810ff526594d4cb2383e90ebb13e22fa238bd1d2",
+      "category": "A",
+      "destination": "guild-kernels-cuda",
+      "group": "prefill/moe_fused",
+      "lines": 465,
+      "includes": [
+        "guild/prefill/moe_fused.hpp",
+        "cuda_fp16.h",
+        "cuda_runtime.h",
+        "algorithm",
+        "cstdio",
+        "cstdlib",
+        "mutex"
+      ],
+      "device_kernels": [
+        {
+          "name": "quant_act_kernel",
+          "line": 71
+        },
+        {
+          "name": "count_kernel",
+          "line": 98
+        },
+        {
+          "name": "scan_kernel",
+          "line": 139
+        },
+        {
+          "name": "place_kernel",
+          "line": 157
+        },
+        {
+          "name": "__launch_bounds__",
+          "line": 195
+        }
+      ],
+      "host_definitions": [
+        "act_bytes",
+        "available",
+        "built",
+        "ck",
+        "enabled",
+        "experts",
+        "group",
+        "group_bytes",
+        "quantize_act",
+        "requested",
+        "tiles_at"
+      ]
+    },
+    {
+      "source": "src/prefill/moe_fused_iq.cu",
+      "sha256": "22c3a6c6f972570f7ca9aa7d8798dfc5fb88d5746ed0b9d772b4307f70c1d334",
+      "category": "A",
+      "destination": "guild-kernels-cuda",
+      "group": "prefill/moe_fused_iq",
+      "lines": 638,
+      "includes": [
+        "guild/prefill/moe_fused_iq.hpp",
+        "cuda_fp16.h",
+        "cuda_runtime.h",
+        "ggml.h",
+        "ggml-common.h",
+        "algorithm",
+        "cstdio",
+        "cstdlib",
+        "mutex"
+      ],
+      "device_kernels": [
+        {
+          "name": "quant_act_nat_kernel",
+          "line": 97
+        },
+        {
+          "name": "__launch_bounds__",
+          "line": 291
+        }
+      ],
+      "host_definitions": [
+        "ck",
+        "d_covered",
+        "experts_native",
+        "gu_covered",
+        "launch",
+        "native_supported",
+        "pick_ww",
+        "quantize_act_native",
+        "tiles_at"
+      ]
+    },
+    {
+      "source": "src/prefill/moe_mmq.cu",
+      "sha256": "0604897b0492fefb72b6d8c1e0742f1ca491c038889500a27c5a98e2b1e5c741",
+      "category": "A",
+      "destination": "guild-kernels-cuda",
+      "group": "prefill/moe_mmq",
+      "lines": 266,
+      "includes": [
+        "guild/prefill/moe_mmq.hpp",
+        "common.cuh",
+        "mmq.cuh",
+        "quantize.cuh",
+        "cstdio",
+        "cstdlib"
+      ],
+      "device_kernels": [
+        {
+          "name": "copy16_kernel",
+          "line": 25
+        },
+        {
+          "name": "copy16_group_kernel",
+          "line": 37
+        },
+        {
+          "name": "copy1_kernel",
+          "line": 48
+        },
+        {
+          "name": "guild_q2_kernel",
+          "line": 59
+        },
+        {
+          "name": "swiglu_kernel",
+          "line": 87
+        },
+        {
+          "name": "iota_kernel",
+          "line": 97
+        }
+      ],
+      "host_definitions": [
+        "Context::run",
+        "built",
+        "ck",
+        "fits",
+        "gather_guild_q2",
+        "gather_native",
+        "gather_native_group",
+        "iota",
+        "matrix_bytes",
+        "pad512",
+        "q8_bytes",
+        "quantize",
+        "supported",
+        "swiglu"
+      ]
+    }
+  ]
+}
