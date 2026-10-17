@@ -1,0 +1,145 @@
+name: Immutable Core release
+on:
+  push:
+    tags: ['v[0-9]*.[0-9]*.[0-9]*']
+permissions:
+  contents: read
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate tag, revision-only changes, maturity gates and main ancestry
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          python3 tools/validate_release.py --tag "$RELEASE_TAG" --require-tag
+          git merge-base --is-ancestor HEAD origin/main
+      - name: Require an existing reviewer-protected release environment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          gh api "repos/$REPOSITORY/environments/release" > "$RUNNER_TEMP/release-environment.json"
+          python3 - "$RUNNER_TEMP/release-environment.json" <<'PY'
+          import json, sys
+          rules = json.load(open(sys.argv[1])).get('protection_rules', [])
+          if not any(rule.get('type') == 'required_reviewers' and rule.get('reviewers') for rule in rules):
+              raise SystemExit('Configure required reviewers on the release environment before publishing')
+          PY
+      - name: Refuse release asset or tag replacement
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        shell: python
+        run: |
+          import json, os
+          from urllib.error import HTTPError
+          from urllib.parse import quote
+          from urllib.request import Request, urlopen
+          url = f"https://api.github.com/repos/{os.environ['GITHUB_REPOSITORY']}/releases/tags/{quote(os.environ['RELEASE_TAG'], safe='')}"
+          try:
+              with urlopen(Request(url, headers={'Authorization': 'Bearer ' + os.environ['GH_TOKEN']})) as response:
+                  raise SystemExit('Release already exists; publish a new version/revision instead')
+          except HTTPError as error:
+              if error.code != 404:
+                  raise
+  checks:
+    needs: validate
+    uses: ./.github/workflows/ci.yml
+  build:
+    needs: [validate, checks]
+    uses: ./.github/workflows/build-linux-cuda.yml
+    with:
+      release_tag: ${{ github.ref_name }}
+      artifact_name: guild-core-release-${{ github.sha }}
+  gpu:
+    name: Real-model shipped-binary validation on a dedicated GPU runner
+    needs: build
+    runs-on: [self-hosted, linux, x64, guild-cuda-validation]
+    timeout-minutes: 45
+    environment: release
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: guild-core-release-${{ github.sha }}
+          path: build-dist
+      - name: Verify, extract and test the shipped executable against a maintained golden
+        env:
+          GUILD_RELEASE_GPU_FIXTURE: ${{ vars.GUILD_RELEASE_GPU_FIXTURE }}
+        run: |
+          test -n "$GUILD_RELEASE_GPU_FIXTURE"
+          (cd build-dist && sha256sum --check ./*.sha256)
+          tar -xzf build-dist/guild-linux-x86_64-cuda13.tar.gz -C build-dist
+          nvidia-smi > build-dist/gpu-validation-hardware.txt
+          python3 tools/test_distribution_inference.py \
+            --guild build-dist/guild-linux-x86_64-cuda13/guild \
+            --fixture "$GUILD_RELEASE_GPU_FIXTURE" --output build-dist/gpu-validation
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: guild-core-gpu-evidence-${{ github.sha }}
+          path: |
+            build-dist/gpu-validation/
+            build-dist/gpu-validation-hardware.txt
+  publish:
+    needs: [build, gpu]
+    runs-on: ubuntu-24.04
+    environment: release
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: guild-core-release-${{ github.sha }}
+          path: build-dist
+      - uses: actions/download-artifact@v4
+        with:
+          name: guild-core-gpu-evidence-${{ github.sha }}
+          path: build-dist/device-evidence
+      - name: Verify artifact hashes
+        working-directory: build-dist
+        run: sha256sum --check ./*.sha256
+      - name: Match real-GPU evidence to this exact release binary
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        shell: python
+        run: |
+          import json, os
+          manifest = json.load(open('build-dist/guild-release.json'))
+          evidence = json.load(open('build-dist/device-evidence/gpu-validation/verification.json'))
+          assert manifest['commit'] == os.environ['GITHUB_SHA'] == evidence['metadata']['commit']
+          assert manifest['release_tag'] == os.environ['RELEASE_TAG'] == evidence['metadata']['release_tag']
+          assert manifest['executable_sha256'] == evidence['binary_sha256']
+          assert evidence['actual_gpu_inference'] and evidence['greedy_completion_matches']
+      - name: Attest binary and structured manifest provenance using GitHub OIDC
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            build-dist/*.tar.gz
+            build-dist/guild-release.json
+      - name: Publish new immutable release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          args=()
+          if [[ "$RELEASE_TAG" == *-* ]]; then args+=(--prerelease); fi
+          gh release create "$RELEASE_TAG" --verify-tag --title "Guild $RELEASE_TAG" \
+            --generate-notes "${args[@]}" build-dist/*.tar.gz build-dist/*.sha256 build-dist/guild-release.json \
+            build-dist/device-evidence/gpu-validation/verification.json

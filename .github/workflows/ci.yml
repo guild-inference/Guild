@@ -1,0 +1,68 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  policy:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Version, updater and archive policy
+        run: |
+          python3 tools/test_release_version.py
+          python3 tools/test_release_validation.py
+          python3 tools/test_check_guild_update.py
+          python3 tools/test_linux_packaging.py
+      - name: Installer tests without GPU or model downloads
+        run: python3 -m unittest discover -s tools -p 'test_setup_*.py'
+  sdk:
+    name: Installed C99/C++17 SDK (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04, windows-2022]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - run: cmake -S sdk -B build-sdk -DCMAKE_INSTALL_PREFIX="${{ runner.temp }}/guild-sdk"
+      - run: cmake --install build-sdk
+      - run: cmake -S tests/sdk_standalone -B build-contract -DCMAKE_PREFIX_PATH="${{ runner.temp }}/guild-sdk" -DCMAKE_BUILD_TYPE=Release
+      - run: cmake --build build-contract --config Release --parallel 2
+      - run: ctest --test-dir build-contract -C Release --output-on-failure
+  host:
+    name: Linux management/ABI tests (no CPU-only inference)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - run: sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev ninja-build
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install cmake==3.28.4
+      - run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DGUILD_BUILD_TESTS=ON -DGUILD_ENABLE_CUDA=OFF -DGUILD_PORTABLE=ON
+      - run: cmake --build build --parallel 2
+      - run: ctest --test-dir build --output-on-failure --parallel 1
+      - run: python3 tools/test_version_report.py --build build
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: host-test-results
+          path: |
+            build/Testing/Temporary/LastTest.log
+            build/build-info.json
+  integration:
+    uses: ./.github/workflows/backend-integration.yml

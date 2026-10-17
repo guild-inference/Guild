@@ -16,6 +16,7 @@
 #include "guild/server/native_engine.hpp"
 #include "guild/server/server.hpp"
 #include "guild/runtime/chat_template.hpp"
+#include "guild/runtime/version.hpp"
 
 #include <atomic>
 #include <csignal>
@@ -109,26 +110,17 @@ void print_usage() {
               << "  -v, --version     Show Guild version\n";
 }
 
-int cmd_version() {
-    using namespace guild::cli::ansi;
-    std::cout << bold() << "Guild" << reset() << " version " << cyan() << "0.1.39" << reset() << "\n";
-#if defined(GUILD_ENABLE_CUDA)
-    std::cout << "Backend: CUDA (sm_61+ Pascal / Volta / Modern NVIDIA)\n";
-#elif defined(GUILD_ENABLE_HIP)
-    std::cout << "Backend: HIP / ROCm (AMD GPU)\n";
-#else
-    std::cout << "Backend: Native CPU (AVX2 / AVX-512)\n";
-#endif
-    const auto hw = guild::cli::detect_hardware();
-    std::cout << "CPU: " << hw.summary_cpu() << " (" << hw.cpu_physical_cores << " physical cores, "
-              << hw.cpu_logical_threads << " threads)\n";
-    std::cout << "RAM: " << hw.summary_ram() << " total (" << std::fixed << std::setprecision(1) << hw.ram_free_gib << " GiB free)\n";
-    std::cout << "GPU: " << hw.summary_gpu() << "\n";
-    std::cout << "ISA: AVX2=" << (hw.isa_avx2 ? "yes" : "no")
-              << " AVX512=" << (hw.isa_avx512 ? "yes" : "no")
-              << " VNNI=" << (hw.isa_vnni ? "yes" : "no")
-              << " VBMI=" << (hw.isa_vbmi ? "yes" : "no") << "\n";
-    return 0;
+int cmd_version(int argc, char** argv) {
+    bool json=false;
+    for(int i=2;i<argc;++i) {
+        if(std::string(argv[i])=="--json")json=true;
+        else {std::cerr<<"Usage: guild --version [--json]\n";return 2;}
+    }
+    std::string output,error;
+    const bool ok=guild::runtime::version_report(json,output,error);
+    std::cout<<output;
+    if(!ok && output.empty())std::cerr<<error<<'\n';
+    return ok?0:1;
 }
 
 int cmd_inspect(int argc, char** argv) {
@@ -400,7 +392,7 @@ int cmd_serve(int argc, char** argv) {
     // UX presentation
     if (json_mode) {
         std::cout << "{\n"
-                  << "  \"guild_version\": \"0.1.39\",\n"
+                  << "  \"guild_version\": \"" << GUILD_VERSION << "\",\n"
                   << "  \"model\": \"" << desc.name << "\",\n"
                   << "  \"endpoint\": \"http://" << host << ":" << port << "\",\n"
                   << "  \"cpu\": \"" << hw.summary_cpu() << "\",\n"
@@ -413,7 +405,7 @@ int cmd_serve(int argc, char** argv) {
     } else if (no_tui) {
         std::cout << "[INFO] Guild listening on http://" << host << ":" << port << std::endl;
     } else {
-        std::cout << bold() << "Guild 0.1.39" << reset() << "\n"
+        std::cout << bold() << "Guild " << GUILD_VERSION << reset() << "\n"
                   << "────────────────────────────────────────────\n"
                   << "Model         " << bold() << desc.name << reset() << "\n"
                   << "Architecture  " << cyan() << desc.arch_name << " · MoE "
@@ -1480,7 +1472,7 @@ int main(int argc, char** argv) {
         return 0;
     }
     if (cmd == "-v" || cmd == "--version" || cmd == "version") {
-        return cmd_version();
+        return cmd_version(argc, argv);
     }
     if (cmd == "kernel" || cmd == "plugin" || cmd == "pkg") {
         return cmd_kernel(argc, argv);

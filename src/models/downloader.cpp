@@ -204,7 +204,7 @@ bool Downloader::download_file(const std::string& url,
         curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
         curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
         curl_easy_setopt(curl, CURLOPT_FAILONERROR, 1L);
-        curl_easy_setopt(curl, CURLOPT_USERAGENT, "guild/0.1.39");
+        curl_easy_setopt(curl, CURLOPT_USERAGENT, "guild/" GUILD_VERSION);
         curl_easy_setopt(curl, CURLOPT_WRITEDATA, fp);
         curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, fwrite);
         curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, curl_xfer_cb);

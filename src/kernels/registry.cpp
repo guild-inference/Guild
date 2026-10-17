@@ -1208,7 +1208,7 @@ void KernelRegistry::register_builtin_kernels() {
         d.op_name = op_kind_to_string(kind);
         d.impl_id = impl_id;
         d.package_id = pkg;
-        d.impl_version = GUILD_KERNEL_ABI_VERSION_V1;
+        d.impl_version = GUILD_KERNEL_ABI_MAKE_VERSION(1,0,0); // implementation version, not negotiated ABI
         d.backend = backend;
         d.weight_dtype = GUILD_DTYPE_ANY;
         d.input_dtype = GUILD_DTYPE_ANY;
@@ -1225,6 +1225,7 @@ void KernelRegistry::register_builtin_kernels() {
 #if GUILD_BUNDLED_CPU_ARITHMETIC
     {
         auto d = make_base(GUILD_OP_BATCHED_EXPERT_EXEC, "cpu.expert_pool.split_multi_native", "builtin.guild-kernels-cpu", GUILD_BACKEND_CPU, 100);
+        d.impl_version=GUILD_BUNDLED_CPU_IMPL_VERSION;
         d.required_cpu_isa = GUILD_ISA_AVX2;
         d.max_batch_rows = 512;
         d.max_dim_n = 2560;
@@ -1236,6 +1237,7 @@ void KernelRegistry::register_builtin_kernels() {
     }
     {
         auto d = make_base(GUILD_OP_BATCHED_EXPERT_EXEC, "cpu.expert_pool.split_multi_canonical_avx512", "builtin.guild-kernels-cpu", GUILD_BACKEND_CPU, 90);
+        d.impl_version=GUILD_BUNDLED_CPU_IMPL_VERSION;
         d.required_cpu_isa = GUILD_ISA_AVX512F | GUILD_ISA_AVX512BW | GUILD_ISA_AVX512DQ | GUILD_ISA_AVX512VL;
         d.weight_dtype = GUILD_DTYPE_Q2_0;
         d.max_batch_rows = 512;
@@ -1245,6 +1247,7 @@ void KernelRegistry::register_builtin_kernels() {
     }
     {
         auto d = make_base(GUILD_OP_QUANTIZE_ACT, "cpu.quantize.act_q8_k_avx2", "builtin.guild-kernels-cpu", GUILD_BACKEND_CPU, 80);
+        d.impl_version=GUILD_BUNDLED_CPU_IMPL_VERSION;
         d.required_cpu_isa = GUILD_ISA_AVX2;
         d.input_dtype = GUILD_DTYPE_F32;
         d.output_dtype = GUILD_DTYPE_Q8_K;

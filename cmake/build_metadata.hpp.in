@@ -1,0 +1,4 @@
+#pragma once
+namespace guild::build {
+inline constexpr const char* metadata_json = R"guild_build(@GUILD_BUILD_JSON@)guild_build";
+}

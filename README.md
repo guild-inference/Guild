@@ -35,6 +35,10 @@ Guild is particularly useful on systems such as:
 
 Guild is under active development.
 
+Core remains v0.x. See [version and revision policy](docs/releases/VERSIONING.md)
+and [build/release pipelines](docs/releases/PIPELINES.md) for build identity,
+development artifacts and release validation gates.
+
 Current work includes:
 
 - native C++ model loading and inference

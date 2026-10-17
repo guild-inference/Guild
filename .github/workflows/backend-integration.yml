@@ -1,0 +1,88 @@
+name: Pinned independent backends
+on:
+  workflow_call:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  host:
+    name: Current installed SDK with pinned CPU and runner
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install cmake==3.28.4
+      - run: sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev ninja-build
+      - name: Read immutable integration pins
+        id: pins
+        shell: python
+        run: |
+          import json, os, re
+          lock = json.load(open('backends.lock.json'))['integration']
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              for name in ('cpu', 'qwen'):
+                  pin = lock[name]
+                  assert re.fullmatch('[0-9a-f]{40}', pin['revision'])
+                  output.write(f"{name}_repo={pin['repository']}\n{name}_sha={pin['revision']}\n")
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.pins.outputs.cpu_repo }}
+          ref: ${{ steps.pins.outputs.cpu_sha }}
+          path: build-inputs/cpu
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.pins.outputs.qwen_repo }}
+          ref: ${{ steps.pins.outputs.qwen_sha }}
+          path: build-inputs/qwen
+          persist-credentials: false
+      - name: Install only the public SDK
+        run: cmake -S sdk -B build-sdk -DCMAKE_INSTALL_PREFIX="$RUNNER_TEMP/guild-sdk" && cmake --install build-sdk
+      - name: Independent CPU and runner contracts
+        run: |
+          for backend in cpu qwen; do
+            cmake -S "build-inputs/$backend" -B "build-$backend" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/guild-sdk"
+            cmake --build "build-$backend" --parallel 2
+            ctest --test-dir "build-$backend" --output-on-failure --parallel 1
+            cmake --install "build-$backend" --prefix "$PWD/build-packages/$backend"
+          done
+      - name: Core management build and fresh-process signed package registration
+        run: |
+          cmake -S . -B build-core -G Ninja -DCMAKE_BUILD_TYPE=Release -DGUILD_BUILD_TESTS=OFF -DGUILD_PORTABLE=ON
+          cmake --build build-core --target guild --parallel 2
+          python3 tools/test_package_registration.py --build build-core --package build-packages/cpu --package build-packages/qwen
+  cuda:
+    name: Pinned CUDA router compilation (no GPU execution)
+    runs-on: ubuntu-22.04
+    container: nvidia/cuda:13.0.2-devel-ubuntu22.04@sha256:6b6617592b94e7dcc6ffbe6d00720eed27bc6e3b4f06b26b93b4070c31f57391
+    steps:
+      - run: apt-get update && apt-get install -y git g++ python3-pip && pip3 install cmake==3.28.4
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - id: pin
+        shell: python3 {0}
+        run: |
+          import json, os, re
+          pin = json.load(open('backends.lock.json'))['integration']['cuda']
+          assert re.fullmatch('[0-9a-f]{40}', pin['revision'])
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f"repo={pin['repository']}\nsha={pin['revision']}\n")
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.pin.outputs.repo }}
+          ref: ${{ steps.pin.outputs.sha }}
+          path: build-inputs/cuda
+          persist-credentials: false
+      - run: cmake -S sdk -B build-sdk -DCMAKE_INSTALL_PREFIX=/opt/guild-sdk && cmake --install build-sdk
+      - run: cmake -S build-inputs/cuda -B build-cuda -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=/opt/guild-sdk -DCMAKE_CUDA_ARCHITECTURES=75 && cmake --build build-cuda --parallel 2
+      - run: cmake --install build-cuda --prefix "$PWD/build-packages/cuda"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pinned-cuda-router-unsigned-compile-only
+          path: build-packages/cuda/
+          include-hidden-files: true

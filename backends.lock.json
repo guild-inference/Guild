@@ -1,0 +1,23 @@
+{
+  "cpu": {
+    "repository": "https://github.com/guild-inference/guild-kernels-cpu.git",
+    "revision": "264227c74d0151b914d826b0fa35a0f576a117b8",
+    "version": "1.1.1"
+  },
+  "cuda": {
+    "repository": "https://github.com/guild-inference/Guild.git",
+    "revision": "42018db2e63e7febbdb7bcf58a6392166518cdc1",
+    "version": "1.0.0",
+    "ownership": "legacy-core-source; complete external extraction pending"
+  },
+  "qwen_runners": {
+    "repository": "https://github.com/guild-inference/Guild.git",
+    "version": "1.0.0",
+    "ownership": "legacy bundled policy; external description runner available"
+  },
+  "integration": {
+    "cpu": {"repository": "guild-inference/guild-kernels-cpu", "revision": "264227c74d0151b914d826b0fa35a0f576a117b8"},
+    "cuda": {"repository": "guild-inference/guild-kernels-cuda", "revision": "aa1c565762217eb23082f94c95cad19b26661e4f"},
+    "qwen": {"repository": "guild-inference/guild-runners-qwen", "revision": "0ccff556724fc7fc8d66795ce157485e23dfbdaa"}
+  }
+}

@@ -1,0 +1,15 @@
+name: Development builds
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: dev-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  linux-cuda:
+    uses: ./.github/workflows/build-linux-cuda.yml
+    with:
+      artifact_name: guild-linux-cuda-development-${{ github.sha }}

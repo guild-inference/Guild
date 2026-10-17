@@ -1,0 +1,12 @@
+{
+  "validated_architecture_families": ["qwen4exp", "qwen35moe"],
+  "stable_interfaces": false,
+  "validated_package_ecosystem": false,
+  "mature_gpack": false,
+  "mature_gexec": false,
+  "supported_hardware_inference": false,
+  "reproducible_releases": false,
+  "compatibility_guarantees": false,
+  "regression_coverage": false,
+  "notes": "Phase 2 remains incomplete. Family entries describe the current engine families, not five independent architectures or a v1.0 maturity claim."
+}

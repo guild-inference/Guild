@@ -6,7 +6,13 @@
 #
 # CUDA defaults to current cards; GUILD_EXPERIMENTAL_SM60 preserves the Pascal/Volta paths with CUDA 12.x.
 cmake_minimum_required(VERSION 3.24)
-project(guild VERSION 0.1.39 LANGUAGES CXX)
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/VERSION.json" _guild_source_version_json)
+string(JSON _guild_source_version GET "${_guild_source_version_json}" version)
+project(guild VERSION ${_guild_source_version} LANGUAGES CXX)
+file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/sdk/VERSION" GUILD_KERNEL_SDK_VERSION LIMIT_COUNT 1)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+  "${CMAKE_CURRENT_SOURCE_DIR}/VERSION.json" "${CMAKE_CURRENT_SOURCE_DIR}/sdk/VERSION"
+  "${CMAKE_CURRENT_SOURCE_DIR}/backends.lock.json")
 # EXPERIMENTAL: the Intel Arc engine, the SYCL port in sycl/ (PR #423; icpx + oneMKL, docs/INTEL_ARC.md). It is its
 # own project that takes the unported sources from src/; with this on, nothing below is configured.
 option(GUILD_ENABLE_SYCL "EXPERIMENTAL: build the Intel Arc (SYCL) engine from sycl/ - docs/INTEL_ARC.md" OFF)
@@ -18,7 +24,6 @@ if(GUILD_ENABLE_SYCL)
   add_subdirectory(sycl)
   return()
 endif()
-add_compile_definitions(GUILD_VERSION="${PROJECT_VERSION}")
 # issue #31: release builds keep a PDB beside the exe (not shipped in it), so a minidump from a stalled engine can
 # be read back to the exact source line
 if(MSVC AND CMAKE_BUILD_TYPE STREQUAL "Release")
@@ -983,7 +988,7 @@ configure_package_config_file(
   INSTALL_DESTINATION lib/cmake/GuildKernelSDK)
 write_basic_package_version_file(
   ${CMAKE_CURRENT_BINARY_DIR}/GuildKernelSDKConfigVersion.cmake
-  VERSION 1.3.0
+  VERSION ${GUILD_KERNEL_SDK_VERSION}
   COMPATIBILITY SameMajorVersion)
 install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/include/guild/abi/kernel_abi.h
               ${CMAKE_CURRENT_SOURCE_DIR}/include/guild/abi/runner_abi.h
@@ -1071,6 +1076,10 @@ target_link_libraries(guild_models PUBLIC guild_model guild_memory guild_cli gui
 
 add_executable(guild src/cli/guild_main.cpp)
 target_link_libraries(guild PRIVATE guild_runtime guild_cli guild_model guild_memory guild_server guild_models guild_artifact guild_warnings)
+include(cmake/VersionMetadata.cmake)
+target_sources(guild_runtime PRIVATE src/runtime/version.cpp)
+target_include_directories(guild_runtime PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
+target_compile_definitions(guild_runtime PRIVATE GUILD_BUNDLED_CPU_IMPL_VERSION=${GUILD_BUNDLED_CPU_IMPL_VERSION})
 
 if(GUILD_BUILD_TESTS)
   add_executable(guild_cli_test tests/cli/guild_cli_test.cpp)

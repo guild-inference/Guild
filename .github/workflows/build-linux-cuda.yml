@@ -1,0 +1,52 @@
+name: Linux CUDA distribution
+on:
+  workflow_call:
+    inputs:
+      release_tag:
+        type: string
+        default: ''
+      artifact_name:
+        type: string
+        required: true
+permissions:
+  contents: read
+jobs:
+  build:
+    name: Linux CUDA 13 compilation and packaging (no GPU execution)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    container: nvidia/cuda:13.0.2-devel-ubuntu22.04@sha256:6b6617592b94e7dcc6ffbe6d00720eed27bc6e3b4f06b26b93b4070c31f57391
+    env:
+      RELEASE_TAG: ${{ inputs.release_tag }}
+    steps:
+      - run: apt-get update && apt-get install -y git g++ ninja-build libcurl4-openssl-dev python3-pip && pip3 install cmake==3.28.4
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Reproducible timestamp and immutable release tag validation
+        run: |
+          git show -s --format='SOURCE_DATE_EPOCH=%ct' HEAD >> "$GITHUB_ENV"
+          if [ -n "$RELEASE_TAG" ]; then
+            python3 tools/validate_release.py --tag "$RELEASE_TAG" --require-tag
+          fi
+      - name: Build actual inference executable with redistributable CPU baseline
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DGUILD_BUILD_TESTS=OFF -DGUILD_ENABLE_CUDA=ON -DGUILD_PORTABLE=ON \
+            '-DCMAKE_CUDA_ARCHITECTURES=75-real;86-real;89-real;120' \
+            -DCMAKE_CUDA_RUNTIME_LIBRARY=Shared -DGUILD_RELEASE_TAG="$RELEASE_TAG"
+          cmake --build build --target guild --parallel 2
+      - name: Package exact linked CUDA libraries and licenses; launcher smoke test
+        run: |
+          python3 tools/test_version_report.py --build build
+          python3 tools/package_linux_cuda.py --build build --output build-dist/guild-linux-x86_64-cuda13
+          cp build-dist/guild-linux-x86_64-cuda13/guild-release.json build-dist/guild-release.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifact_name }}
+          if-no-files-found: error
+          path: |
+            build-dist/*.tar.gz
+            build-dist/*.sha256
+            build-dist/guild-release.json
