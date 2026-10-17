@@ -21,7 +21,9 @@ enum guild_cuda_moe_config_flags_v1_e {
     GUILD_CUDA_MOE_FLAG_GR_FP32_ACT_V1        = 1u << 3,
     GUILD_CUDA_MOE_FLAG_GR_NATIVE_MMVF_V1     = 1u << 4,
     GUILD_CUDA_MOE_FLAG_PLE_NATIVE_BF16_V1    = 1u << 5,
-    GUILD_CUDA_MOE_FLAG_PLE_NATIVE_POSTOPS_V1 = 1u << 6
+    GUILD_CUDA_MOE_FLAG_PLE_NATIVE_POSTOPS_V1 = 1u << 6,
+    GUILD_CUDA_MOE_FLAG_NATIVE_GROUPED_V1_V1  = 1u << 7,
+    GUILD_CUDA_MOE_FLAG_IQ_OLD_KERNELS_V1     = 1u << 8
 };
 
 enum guild_cuda_moe_config_mode_v1_e {
@@ -33,7 +35,8 @@ enum guild_cuda_moe_config_mode_v1_e {
     GUILD_CUDA_MOE_CFG_FUSED_GR_SET_FAST_V1       = 5u,
     GUILD_CUDA_MOE_CFG_FUSED_GR_CHECK_V1          = 6u,
     GUILD_CUDA_MOE_CFG_FUSED_GR_VARIANT_V1        = 7u,
-    GUILD_CUDA_MOE_CFG_PLE_AVAILABLE_V1           = 8u
+    GUILD_CUDA_MOE_CFG_PLE_AVAILABLE_V1           = 8u,
+    GUILD_CUDA_MOE_CFG_NATIVE_EXPERT_SET_MODE_V1  = 9u
 };
 
 typedef struct guild_cuda_moe_config_v1_s {
@@ -41,7 +44,8 @@ typedef struct guild_cuda_moe_config_v1_s {
     uint32_t mode;
     uint32_t flags;
     int32_t grouped_select_old; // -2 = unchanged, -1 = env, 0 = new, 1 = old
-    int32_t value;              // ggml_type, n_vocab, or fast flag
+    int32_t value;              // ggml_type, n_vocab, fast flag, or expert mode
+    int32_t value2;             // expert phase
     int64_t n_embd;
     int64_t hc;
     int64_t hc_lr;
@@ -168,7 +172,13 @@ enum guild_cuda_quant_dequant_mode_v1_e {
     GUILD_CUDA_QD_QUANTIZE_Q8_0_SCALED_V1 = 5u,
     GUILD_CUDA_QD_DEQUANT_Q8_0_V1         = 6u,
     GUILD_CUDA_QD_QUANTIZE_Q8_K_V1        = 7u,
-    GUILD_CUDA_QD_DEQUANT_Q8_K_V1         = 8u
+    GUILD_CUDA_QD_DEQUANT_Q8_K_V1         = 8u,
+    GUILD_CUDA_QD_QUANTIZE_Q8_1_ROWS_V1   = 9u,
+    GUILD_CUDA_QD_IQ_DEQUANT_F16_V1       = 10u,
+    GUILD_CUDA_QD_IQ_DEQUANT_F32_V1       = 11u,
+    GUILD_CUDA_QD_IQ_EMBED_ROWS_V1        = 12u,
+    GUILD_CUDA_QD_IQ_DEQUANT_GU_F16_V1    = 13u,
+    GUILD_CUDA_QD_IQ_MMVQ_V1              = 14u
 };
 
 typedef struct guild_cuda_quant_dequant_op_v1_s {
@@ -176,13 +186,17 @@ typedef struct guild_cuda_quant_dequant_op_v1_s {
     uint32_t mode;
     int32_t ggml_type;
     const void* src;
+    const void* src2;
     const float* scales;
+    const int32_t* tokens;
     void* dst;
     float* out_scales;
+    uint64_t row_bytes;
     int64_t row0;
     int64_t rows;
     int64_t cols;
     int64_t n;
+    int32_t ncols;
 } guild_cuda_quant_dequant_op_v1_t;
 
 enum guild_cuda_s_gemv_mode_v1_e {
@@ -233,7 +247,8 @@ enum guild_cuda_moe_mode_v1_e {
     GUILD_CUDA_MOE_GROUPED_S2_V1               = 16u,
     GUILD_CUDA_MOE_GROUP_RESIDENT_V1           = 17u,
     GUILD_CUDA_MOE_REMOTE_REDUCE_V1            = 18u,
-    GUILD_CUDA_MOE_REMOTE_COPY_CPU_ROWS_V1     = 19u
+    GUILD_CUDA_MOE_REMOTE_COPY_CPU_ROWS_V1     = 19u,
+    GUILD_CUDA_MOE_NATIVE_EXPERT_GROUPED_V1    = 20u
 };
 
 typedef struct guild_cuda_moe_op_v1_s {
@@ -252,12 +267,16 @@ typedef struct guild_cuda_moe_op_v1_s {
     int64_t n_ff;
     int64_t k;
     int32_t variant;
+    int32_t gu_type;
+    int32_t d_type;
+    int64_t grid_groups;
     uint32_t* out_supported;
     // Shared expert fields
     const uint8_t* x_q8_0;
     const uint8_t* x_q8k;
     const uint16_t* x_bf16;
     const float* x_f32;
+    const void* x_q8_1;
     guild_cuda_sform_v1_t gate_form;
     const uint8_t* gate_codes;
     const float* gate_scales;
