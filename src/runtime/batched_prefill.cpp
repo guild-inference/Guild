@@ -230,6 +230,8 @@ bool BatchedPrefill::run(const int64_t* tokens,int64_t n,int64_t pos0,std::strin
     const auto& g=*m.g; auto& ss=*m.ss; auto cs=m.cs;
     std::optional<ScopedCudaDense> dense_scope;
     if (m.fns.has_cuda_dense) dense_scope.emplace(m.fns.cuda_dense);
+    std::optional<ScopedCudaAttn> attn_scope;
+    if (m.fns.has_cuda_attn) attn_scope.emplace(m.fns.cuda_attn);
     const int N=int(g.n_embd),C=int(g.ssm_conv_channels),V=int(g.ssm_value_dim),F=int(g.n_ff);
     const int NH=int(g.n_head),NK=int(g.n_head_kv),HD=int(g.head_dim),HV=int(g.ssm_v_heads),HK=int(g.ssm_k_heads);
     const int K=int(ss.k), NE=int(g.n_expert);

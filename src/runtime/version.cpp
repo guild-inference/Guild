@@ -51,10 +51,13 @@ bool version_report(bool json, std::string& output, std::string& error) {
             <<"\nKernel SDK: "<<report["kernel_sdk_version"].as_string()
             <<"\nCPU kernels: "<<(report["bundled_cpu"]["enabled"].as_bool()?"bundled ":"disabled ")
             <<report["bundled_cpu"]["version"].as_string()<<" ("<<report["bundled_cpu"]["source_revision"].as_string()<<")\n";
-        if(report["bundled_cuda"]["enabled"].as_bool())
-            text<<"CUDA kernels: "<<(report["bundled_cuda"]["dense_bundled"].as_bool()?"bundled ":"external-dense ")
+        if(report["bundled_cuda"]["enabled"].as_bool()) {
+            const bool dense_b=report["bundled_cuda"]["dense_bundled"].as_bool();
+            const bool attn_b=report["bundled_cuda"]["attn_bundled"].as_bool();
+            text<<"CUDA kernels: "<<(dense_b&&attn_b?"bundled ":(dense_b?"external-attn ":(attn_b?"external-dense ":"external-dense-attn ")))
                 <<report["bundled_cuda"]["version"].as_string()
                 <<" ("<<report["bundled_cuda"]["source_revision"].as_string()<<")\n";
+        }
         if(report["backend"].as_string()=="none")text<<"CPU-only inference: unavailable (management/ABI build)\n";
         for(const auto& package:manager.list_packages())
             text<<"External package: "<<package.package_id<<"@"<<package.metadata.version

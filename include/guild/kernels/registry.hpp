@@ -3,6 +3,7 @@
 
 #include "guild/abi/kernel_abi.h"
 #include "guild/hardware/hardware_info.hpp"
+#include "guild/kernels/cuda_attn.hpp"
 #include "guild/kernels/cuda_dense.hpp"
 #include "guild/kernels/rope_scaling.hpp"
 
@@ -112,6 +113,8 @@ struct ResolvedPrefillKernels : PrefillKernelTableV1 {
     decltype(PrefillKernelExtensionV1::router_projection) router_projection = nullptr;
     ResolvedCudaDense cuda_dense{};
     bool has_cuda_dense = false;
+    ResolvedCudaAttn cuda_attn{};
+    bool has_cuda_attn = false;
     std::vector<std::string> bound_impl_ids;
     std::vector<std::string> bound_package_ids;
     bool all_bound() const {
@@ -199,6 +202,11 @@ public:
     bool resolve_cuda_dense(const guild_device_capabilities_v1_t& caps,
                             ResolvedCudaDense& out_dense,
                             std::string& err) const;
+
+    /// Resolve a copied CDA1 CUDA attention extension table once per model init.
+    bool resolve_cuda_attn(const guild_device_capabilities_v1_t& caps,
+                           ResolvedCudaAttn& out_attn,
+                           std::string& err) const;
 
     /// Active session & per-package lease tracking (prevents kernel replacement/removal during active inference).
     void acquire_session_lease() const { active_sessions_.fetch_add(1, std::memory_order_acq_rel); }

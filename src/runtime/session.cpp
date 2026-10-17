@@ -43,6 +43,8 @@ void GuildSession::reset() {
     auto* m_impl = model_->impl();
     std::lock_guard<std::mutex> lock(m_impl->generation_mutex);
     if (!model_->is_ready()) return;
+    std::optional<kernels::ScopedCudaAttn> attn_scope;
+    if (m_impl->cuda_attn) attn_scope.emplace(*m_impl->cuda_attn);
     std::string error;
     if (!m_impl->ver->wait_commit(error) || (m_impl->mtp && !m_impl->mtp->idle(error))) {
         model_->ready_.store(false);
@@ -139,6 +141,8 @@ bool GuildSession::generate(
         affinity.previous=kernels::cpu::pin_current_thread_if_allowed(m_impl->pool->host_core());
     std::optional<kernels::ScopedCudaDense> dense_scope;
     if (m_impl->cuda_dense) dense_scope.emplace(*m_impl->cuda_dense);
+    std::optional<kernels::ScopedCudaAttn> attn_scope;
+    if (m_impl->cuda_attn) attn_scope.emplace(*m_impl->cuda_attn);
 
     // Reset KV state for fresh generation
     if (!m_impl->ver->wait_commit(error_msg)) return runtime_failure();

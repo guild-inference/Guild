@@ -96,6 +96,7 @@ int main(int argc, char** argv) {
         const auto& packages=impl->batched_prefill->bound_package_ids();
         CHECK(std::find(packages.begin(),packages.end(),cuda_package)!=packages.end());
         CHECK(impl->cuda_dense && impl->cuda_dense->package_id==cuda_package);
+        CHECK(impl->cuda_attn && impl->cuda_attn->package_id==cuda_package);
         guild::abi::InstalledPackageRecord record;
         CHECK(guild::abi::GKernelPackageManager::instance().get_package(cuda_package,record));
         const auto library=std::filesystem::path(record.staged_dir)/record.metadata.library_path;
@@ -105,9 +106,11 @@ int main(int argc, char** argv) {
         if (std::getenv("GUILD_CUDA_INSTRUMENT")) {
             auto dense_count=reinterpret_cast<uint64_t(*)(uint32_t)>(dlsym(h,"guild_cuda_dense_call_count_v1"));
             CHECK(dense_count && dense_count(0)>0 && dense_count(1)>0 && dense_count(2)>0);
+            auto attn_count=reinterpret_cast<uint64_t(*)(uint32_t)>(dlsym(h,"guild_cuda_attn_call_count_v1"));
+            CHECK(attn_count && attn_count(1)>0 && attn_count(2)>0 && attn_count(3)>0 && attn_count(4)>0 && attn_count(6)>0);
         }
         dlclose(h);
-        std::cout<<"external CUDA router and dense execution verified\n";
+        std::cout<<"external CUDA router, dense and attention execution verified\n";
     }
     if (const char* cpu_package=std::getenv("GUILD_EXPECT_CPU_PACKAGE")) {
         CHECK(impl->native_cpu_package==cpu_package);

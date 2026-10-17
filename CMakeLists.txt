@@ -100,6 +100,7 @@ option(GUILD_BUILTIN_QWEN_RUNNERS "Register the validated built-in Qwen fallback
 option(GUILD_BUILTIN_NATIVE_CPU "Compile the validated native CPU arithmetic fallback" ON)
 option(GUILD_BUILTIN_CPU "Bundle CPU arithmetic from the pinned independent repository" ON)
 option(GUILD_BUILTIN_CUDA_DENSE "Bundle independently owned BF16/native-MMVQ arithmetic (OFF: external CDD1 provider required)" ON)
+option(GUILD_BUILTIN_CUDA_ATTN "Bundle independently owned attention/recurrent/RoPE/KV/selection arithmetic (OFF: external CDA1 provider required)" ON)
 if(NOT GUILD_BUILTIN_NATIVE_CPU)
   set(GUILD_BUILTIN_CPU OFF)
 endif()
@@ -314,38 +315,21 @@ if(GUILD_ENABLE_CUDA OR GUILD_ENABLE_HIP)
                           src/kernels/cuda/s2_gemv_fast.cu
                           src/kernels/cuda/router_top10.cu
                           src/kernels/cuda/quantize_act.cu
-                          src/kernels/cuda/rope.cu
                           src/kernels/cuda/sampler.cu
                           src/kernels/cuda/s2_gemv_q8.cu
     src/kernels/cuda/s2_expert_grouped.cu
                           src/kernels/cuda/shared_expert.cu
                           src/kernels/cuda/gr.cu
-                          src/kernels/cuda/gdn.cu
-                          src/kernels/cuda/qsa.cu
                           src/kernels/cuda/elementwise.cu
                           src/kernels/cuda/native_gr_norm.cu
                           src/kernels/cuda/native_moe.cu
-                          src/kernels/cuda/native_gdn.cu
                           src/kernels/cuda/native_gr_postops.cu
                           src/kernels/cuda/native_router.cu
-                          src/kernels/cuda/native_gdn_preprocess.cu
-                          src/kernels/cuda/native_qsa.cu
-                          src/kernels/cuda/native_rope.cu
                           src/kernels/cuda/native_ple_postops.cu
-                          src/kernels/cuda/native_flash_attn.cu
-                          src/kernels/cuda/native_qsa_indexer.cu
-                          src/kernels/cuda/native_qsa_score.cu
                           src/kernels/cuda/ple.cu
-                          src/kernels/cuda/kv_q8.cu
-                          src/kernels/cuda/kv_stream.cu
-                          src/kernels/cuda/kv_q4.cu
                           src/kernels/cuda/fused_gr.cu
                           src/kernels/cuda/cvec.cu
-                          src/kernels/cuda/qsa_decode_attn.cu
-                          src/kernels/cuda/qsa_prompt_attn.cu
-                          src/kernels/cuda/fused_gdn.cu
                           src/kernels/cuda/dequant_bf16.cu
-                          src/kernels/cuda/qsa_select.cu
                           src/kernels/cuda/verify_kernels.cu
                           "${_guild_cuda_source}/src/math/iq_kernels.cu"
                           src/kernels/ngram.cpp
@@ -353,8 +337,10 @@ if(GUILD_ENABLE_CUDA OR GUILD_ENABLE_HIP)
                           src/platform/direct_file.cpp)
   target_link_libraries(guild_kernels PUBLIC guild_core guild_artifact)
   if(GUILD_ENABLE_CUDA AND NOT GUILD_HIP_GFX906)
-    target_sources(guild_kernels PRIVATE src/kernels/cuda_dense_bridge.cpp)
-    target_compile_definitions(guild_kernels PUBLIC GUILD_BUNDLED_CUDA_DENSE=$<BOOL:${GUILD_BUILTIN_CUDA_DENSE}>)
+    target_sources(guild_kernels PRIVATE src/kernels/cuda_dense_bridge.cpp src/kernels/cuda_attn_bridge.cpp)
+    target_compile_definitions(guild_kernels PUBLIC
+      GUILD_BUNDLED_CUDA_DENSE=$<BOOL:${GUILD_BUILTIN_CUDA_DENSE}>
+      GUILD_BUNDLED_CUDA_ATTN=$<BOOL:${GUILD_BUILTIN_CUDA_ATTN}>)
     if(GUILD_BUILTIN_CUDA_DENSE)
       add_library(guild_cuda_dense STATIC)
       guild_cuda_attach_dense(guild_cuda_dense)
@@ -362,12 +348,37 @@ if(GUILD_ENABLE_CUDA OR GUILD_ENABLE_HIP)
       target_link_libraries(guild_cuda_dense PUBLIC CUDA::cudart)
       target_link_libraries(guild_kernels PUBLIC guild_cuda_dense)
     endif()
+    if(GUILD_BUILTIN_CUDA_ATTN)
+      add_library(guild_cuda_attn STATIC)
+      guild_cuda_attach_attn(guild_cuda_attn)
+      target_include_directories(guild_cuda_attn PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
+      target_link_libraries(guild_cuda_attn PUBLIC CUDA::cudart)
+      target_link_libraries(guild_kernels PUBLIC guild_cuda_attn)
+    endif()
   else()
     # HIP retains its existing direct entry points from the same source owner.
     target_sources(guild_kernels PRIVATE
       "${_guild_cuda_source}/src/math/bf16_gemv.cu"
       "${_guild_cuda_source}/src/math/native_bf16.cu"
-      "${_guild_cuda_source}/src/math/native_mmvq.cu")
+      "${_guild_cuda_source}/src/math/native_mmvq.cu"
+      "${_guild_cuda_source}/src/attention/fused_gdn.cu"
+      "${_guild_cuda_source}/src/attention/gdn.cu"
+      "${_guild_cuda_source}/src/attention/gdn_multi.cu"
+      "${_guild_cuda_source}/src/attention/kv_q4.cu"
+      "${_guild_cuda_source}/src/attention/kv_q8.cu"
+      "${_guild_cuda_source}/src/attention/kv_stream.cu"
+      "${_guild_cuda_source}/src/attention/native_flash_attn.cu"
+      "${_guild_cuda_source}/src/attention/native_gdn.cu"
+      "${_guild_cuda_source}/src/attention/native_gdn_preprocess.cu"
+      "${_guild_cuda_source}/src/attention/native_qsa.cu"
+      "${_guild_cuda_source}/src/attention/native_qsa_indexer.cu"
+      "${_guild_cuda_source}/src/attention/native_qsa_score.cu"
+      "${_guild_cuda_source}/src/attention/native_rope.cu"
+      "${_guild_cuda_source}/src/attention/qsa.cu"
+      "${_guild_cuda_source}/src/attention/qsa_decode_attn.cu"
+      "${_guild_cuda_source}/src/attention/qsa_prompt_attn.cu"
+      "${_guild_cuda_source}/src/attention/qsa_select.cu"
+      "${_guild_cuda_source}/src/attention/rope.cu")
   endif()
   # perf-review D-1: the tensor-core prompt attention vs the FP32 kernel and FP64 (GPU, synthetic, no model); with
   # the tests, or alone with -DGUILD_PARITY_PROMPT_ATTN=ON.  CUDA only: HIP compiles the tensor-core kernel out.
@@ -400,16 +411,9 @@ if(GUILD_ENABLE_CUDA OR GUILD_ENABLE_HIP)
   if(GUILD_ENABLE_CUDA)
     set_source_files_properties(src/kernels/cuda/native_gr_norm.cu
       src/kernels/cuda/native_moe.cu
-      src/kernels/cuda/native_gdn.cu
       src/kernels/cuda/native_gr_postops.cu
       src/kernels/cuda/native_router.cu
-      src/kernels/cuda/native_gdn_preprocess.cu
-      src/kernels/cuda/native_qsa.cu
-      src/kernels/cuda/native_rope.cu
       src/kernels/cuda/native_ple_postops.cu
-      src/kernels/cuda/native_flash_attn.cu
-      src/kernels/cuda/native_qsa_indexer.cu
-      src/kernels/cuda/native_qsa_score.cu
       PROPERTIES COMPILE_OPTIONS "$<IF:$<BOOL:${GUILD_HIP_GFX906}>,,--use_fast_math>")
   elseif(GUILD_ENABLE_HIP)
     # Keep Q8_K's multiply and magic-bias rounding as separate FP32 operations on HIP; contraction to an

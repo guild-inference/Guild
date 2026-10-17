@@ -648,6 +648,88 @@ int main() {
         CHECK(resolved_dense.table.mmvq == valid_dense.mmvq);
     }
 
+    // CDA1 CUDA attention extension validation and deep-copy on GUILD_OP_ATTENTION_DECODE.
+    {
+        kernels::KernelRegistry reg;
+        guild_cuda_attn_ext_v1_t valid_attn{};
+        valid_attn.struct_size = sizeof(valid_attn);
+        valid_attn.tag = GUILD_CUDA_ATTN_TAG_V1;
+        valid_attn.version = GUILD_CUDA_ATTN_VERSION_V1;
+        valid_attn.configure = +[](const guild_exec_context_v1_t*, const guild_cuda_attn_config_v1_t*, guild_error_info_t*) -> guild_status_t {
+            return GUILD_STATUS_OK;
+        };
+        valid_attn.rope = +[](const guild_exec_context_v1_t*, const guild_cuda_rope_op_v1_t*, guild_error_info_t*) -> guild_status_t {
+            return GUILD_STATUS_OK;
+        };
+        valid_attn.qsa_norm_gate = +[](const guild_exec_context_v1_t*, const guild_cuda_qsa_norm_gate_v1_t*, guild_error_info_t*) -> guild_status_t {
+            return GUILD_STATUS_OK;
+        };
+        valid_attn.gdn = +[](const guild_exec_context_v1_t*, const guild_cuda_gdn_op_v1_t*, guild_error_info_t*) -> guild_status_t {
+            return GUILD_STATUS_OK;
+        };
+        valid_attn.kv = +[](const guild_exec_context_v1_t*, const guild_cuda_kv_op_v1_t*, guild_error_info_t*) -> guild_status_t {
+            return GUILD_STATUS_OK;
+        };
+        valid_attn.qsa_index_select = +[](const guild_exec_context_v1_t*, const guild_cuda_qsa_index_select_v1_t*, guild_error_info_t*) -> guild_status_t {
+            return GUILD_STATUS_OK;
+        };
+        valid_attn.attention = +[](const guild_exec_context_v1_t*, const guild_cuda_attention_op_v1_t*, guild_error_info_t*) -> guild_status_t {
+            return GUILD_STATUS_OK;
+        };
+
+        guild_kernel_op_desc_v1_t desc{};
+        desc.struct_size = sizeof(desc);
+        desc.abi_version = GUILD_KERNEL_ABI_VERSION_V1;
+        desc.op_kind = GUILD_OP_ATTENTION_DECODE;
+        desc.op_name = "cuda_attn";
+        desc.impl_id = "test.cuda.attn.v1";
+        desc.package_id = "test.pkg.cuda";
+        desc.impl_version = GUILD_KERNEL_ABI_VERSION_V1;
+        desc.backend = GUILD_BACKEND_CUDA;
+        desc.numerical_flags = GUILD_NUM_BITWISE_DETERMINISTIC;
+        desc.max_batch_rows = 8;
+        desc.priority = 300;
+
+        auto bad_ext = valid_attn;
+        bad_ext.struct_size = sizeof(valid_attn) - 1;
+        desc.next_ext = &bad_ext;
+        CHECK(reg.register_op(desc, err) == GUILD_STATUS_ERR_ABI_MISMATCH);
+
+        bad_ext = valid_attn;
+        bad_ext.tag ^= 1u;
+        CHECK(reg.register_op(desc, err) == GUILD_STATUS_ERR_ABI_MISMATCH);
+
+        bad_ext = valid_attn;
+        bad_ext.attention = nullptr;
+        CHECK(reg.register_op(desc, err) == GUILD_STATUS_ERR_ABI_MISMATCH);
+
+        {
+            guild_cuda_attn_ext_v1_t stack_copy = valid_attn;
+            desc.next_ext = &stack_copy;
+            CHECK(reg.register_op(desc, err) == GUILD_STATUS_OK);
+            stack_copy = {};
+        }
+
+        guild_device_capabilities_v1_t cuda_caps{};
+        cuda_caps.struct_size = sizeof(cuda_caps);
+        cuda_caps.abi_version = GUILD_KERNEL_ABI_VERSION_V1;
+        cuda_caps.available_backends = GUILD_BACKEND_CUDA;
+        cuda_caps.available_vram_bytes = 1ull << 30;
+        cuda_caps.available_ram_bytes = 1ull << 30;
+
+        kernels::ResolvedCudaAttn resolved_attn{};
+        CHECK(reg.resolve_cuda_attn(cuda_caps, resolved_attn, err));
+        CHECK(resolved_attn.impl_id == "test.cuda.attn.v1");
+        CHECK(resolved_attn.package_id == "test.pkg.cuda");
+        CHECK(resolved_attn.table.configure == valid_attn.configure);
+        CHECK(resolved_attn.table.rope == valid_attn.rope);
+        CHECK(resolved_attn.table.qsa_norm_gate == valid_attn.qsa_norm_gate);
+        CHECK(resolved_attn.table.gdn == valid_attn.gdn);
+        CHECK(resolved_attn.table.kv == valid_attn.kv);
+        CHECK(resolved_attn.table.qsa_index_select == valid_attn.qsa_index_select);
+        CHECK(resolved_attn.table.attention == valid_attn.attention);
+    }
+
     // -------------------------------------------------------------------------
     // 5. RFC 8032 Ed25519 Cryptographic Signatures, Declarative .gkmetadata,
     //    Three-Tier (.gkmodule) Boundary, Hardened Staging & GEXEC Lock

@@ -192,6 +192,7 @@ std::unique_ptr<GuildModel> GuildModel::load(
 #endif
     }
     std::optional<kernels::ScopedCudaDense> dense_scope;
+    std::optional<kernels::ScopedCudaAttn> attn_scope;
 #if defined(GUILD_ENABLE_CUDA) && !defined(GUILD_HIP_GFX906)
     {
         kernels::ResolvedCudaDense dense{};
@@ -203,6 +204,18 @@ std::unique_ptr<GuildModel> GuildModel::load(
 #if !GUILD_BUNDLED_CUDA_DENSE
         if (!impl->cuda_dense) {
             error_msg = "model load: bundled CUDA dense arithmetic disabled; install a compatible CDD1 CUDA .gkernel";
+            return nullptr;
+        }
+#endif
+        kernels::ResolvedCudaAttn attn{};
+        if (kernels::KernelRegistry::instance().resolve_cuda_attn(host_caps, attn, error_msg)) {
+            impl->kernel_lease.add_package(attn.package_id);
+            impl->cuda_attn = attn;
+            attn_scope.emplace(*impl->cuda_attn);
+        }
+#if !GUILD_BUNDLED_CUDA_ATTN
+        if (!impl->cuda_attn) {
+            error_msg = "model load: bundled CUDA attention arithmetic disabled; install a compatible CDA1 CUDA .gkernel";
             return nullptr;
         }
 #endif

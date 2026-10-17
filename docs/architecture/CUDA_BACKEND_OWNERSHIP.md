@@ -92,6 +92,21 @@ package (`org.guild.kernels.cuda@1.1.0`), verified for fail-closed missing-provi
 rejection, `guild_cuda_dense_call_count_v1` launch instrumentation, and bitwise
 parity on Ornith-1.5-35B against the frozen Stage A reference binary.
 
+Stage C (`guild-kernels-cuda` `51919eb5bd01d123a91a78ff9e6f136b2d807444`, SDK 1.4
+[`cuda_attn_abi.h`](../../include/guild/abi/cuda_attn_abi.h)) migrated all 18
+attention, recurrent (GDN), RoPE, KV movement/quantization, and QSA selection CUDA
+files (`fused_gdn.cu`, `gdn.cu`, `gdn_multi.cu`, `kv_q4.cu`, `kv_q8.cu`,
+`kv_stream.cu`, `native_flash_attn.cu`, `native_gdn.cu`, `native_gdn_preprocess.cu`,
+`native_qsa.cu`, `native_qsa_indexer.cu`, `native_qsa_score.cu`, `native_rope.cu`,
+`qsa.cu`, `qsa_decode_attn.cu`, `qsa_prompt_attn.cu`, `qsa_select.cu`, `rope.cu`)
+and 22 shared headers out of Core into `guild-kernels-cuda` v1.2.0. Core binds the
+copied `guild_cuda_attn_ext_v1_t` (`CDA1`) payload from `GUILD_OP_ATTENTION_DECODE`
+once per model load (`resolve_cuda_attn`) and dispatches batched prefill, verifier
+graph capture, and decode attention/GDN/RoPE/KV/selection calls through
+[`cuda_attn_bridge.cpp`](../../src/kernels/cuda_attn_bridge.cpp).
+`-DGUILD_BUILTIN_CUDA_ATTN=OFF` omits `libguild_cuda_attn.a` from Core and requires
+a signed CDA1 `.gkernel` package (`org.guild.kernels.cuda@1.2.0`).
+
 Other required boundaries are explicit pending implementation gates:
 
 | Area | Current boundary requiring adaptation |
