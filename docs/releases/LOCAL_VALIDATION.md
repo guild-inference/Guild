@@ -58,3 +58,10 @@ follow-up keeps unloaded-tokenizer checks always active, registers full golden
 parity only where its explicit tokenizer paths exist, and scopes the container
 Git ownership exception through per-command environment settings. It does not
 alter the local Git configuration or change tokenization comparisons.
+
+A subsequent hosted runner exposed the real CPU expert-pack dependency: that
+runner had VNNI/VBMI, so two tests reached their absent `pack/full/experts.bin`
+input instead of taking the local machine's unsupported-ISA skip. Those two
+real-weight tests now follow the existing arena-test convention: register only
+when the pack exists, with an explicit configure-time absence message. Synthetic
+multi-token and pool stress tests remain registered on hosted machines.
