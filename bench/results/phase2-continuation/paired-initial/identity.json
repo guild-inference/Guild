@@ -1,0 +1,35 @@
+{
+  "preserved_sha256": "71dca3597ba64f135517e0d32f5dd585171d4913b18a1919a537f926c2decc7c",
+  "current_sha256": "fc82aef209d7f4ac1347bb4f1fe4315fd5debf2a4b0ff1ae690eda929ded8fbc",
+  "guild_sha256": "5c7b386be726e72d5220520f1dd002ed86c87972506b151c0885624a3280a869",
+  "cases": [
+    "preserved",
+    "builtin",
+    "cpu",
+    "cuda",
+    "runner",
+    "all"
+  ],
+  "prompts": [
+    512,
+    4096
+  ],
+  "rounds": 10,
+  "context": 32768,
+  "batch": 256,
+  "generate": 128,
+  "packages": {
+    "cpu": {
+      "manifest_sha256": "b42e9cb70bcb89ef946c25c4b31f75dcc6024e0c388b7dffbb2e0c941c11bb53",
+      "library_sha256": "4ff06fff0add13b5884e29bbf1527ecdeb621314fb219525edfb401a17ee2545"
+    },
+    "cuda": {
+      "manifest_sha256": "12455bd63cddc6011072b3a0a8568e7cb650e917a914082858c9d6422b0600bd",
+      "library_sha256": "23715995214dbacd8fd50c2f48b1e5be6e6c5d8913b07ead067ed25117d9cf79"
+    },
+    "runner": {
+      "manifest_sha256": "9bb85d2d88f6d40c548866a429d23b80b2e6b677dd8f88f1b67d91609272268c",
+      "library_sha256": "0ab424ef00e5eaf240a0d6800077029795b7df1e7a4cae613bf8488896e1f1ae"
+    }
+  }
+}

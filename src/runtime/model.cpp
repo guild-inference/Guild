@@ -9,6 +9,7 @@
 #include "guild/model/archetype.hpp"
 #include "guild/kernels/iq_kernels.hpp"
 #include "guild/kernels/verify_kernels.hpp"
+#include "guild/platform/device_policy.hpp"
 
 #include <cuda_runtime.h>
 
@@ -35,6 +36,7 @@ std::unique_ptr<GuildModel> GuildModel::load(
     const memory::ExecutionPlan& plan,
     std::string& error_msg
 ) try {
+    platform::configure_device_runtime_policy();
     error_msg.clear();
     if (paths.pack_dir.empty() || !std::filesystem::is_regular_file(std::filesystem::path(paths.pack_dir) / "index.txt")) {
         error_msg = "model load: missing pack index.txt: " + paths.pack_dir;
@@ -74,14 +76,6 @@ std::unique_ptr<GuildModel> GuildModel::load(
         error_msg = "model load: invalid expert performance configuration";
         return nullptr;
     }
-    if (std::getenv("CUDA_MODULE_LOADING") == nullptr) {
-#if defined(_WIN32)
-        _putenv_s("CUDA_MODULE_LOADING", "EAGER");
-#else
-        setenv("CUDA_MODULE_LOADING", "EAGER", 0);
-#endif
-    }
-
     auto model = std::unique_ptr<GuildModel>(new GuildModel());
     auto* impl = model->impl_.get();
 

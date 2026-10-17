@@ -1,5 +1,9 @@
 # Independent migration-slice verification
 
+Continuation: [controlled paired measurements and startup-policy fix](PHASE2_PAIRED_REGRESSION.md)
+now separate run-order drift from a real CUDA initialization-policy difference.
+The historical unpaired table below remains intact as the original evidence.
+
 Status: partial Phase 2 validation, not complete backend extraction or a passed
 no-regression gate. Raw CSVs are in `bench/results/external-kernels/`.
 

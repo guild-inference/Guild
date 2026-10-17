@@ -2,6 +2,7 @@
 #include "guild/cli/hardware.hpp"
 #include "guild/kernels/cpu/expert.hpp"
 #include "guild/kernels/cpu/expert_layout.hpp"
+#include "guild/platform/device_policy.hpp"
 
 #include <cstdio>
 #include <cstdlib>
@@ -125,6 +126,7 @@ void probe_gpu(HardwareInfo& hw) {
 }  // namespace
 
 HardwareInfo detect_hardware() {
+    platform::configure_device_runtime_policy();
     HardwareInfo hw;
     probe_linux_cpu(hw);
     probe_linux_ram(hw);
