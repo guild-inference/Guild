@@ -130,5 +130,12 @@ changing Kernel ABI v1, PFKE or the frozen seven-pointer prefill table. It carri
 BF16/F32 projection, native Q8_1 quantization and native GGUF MMVQ callbacks,
 explicit geometry/strides/stream, caller-owned buffer lifetimes, per-call exact
 multi-row selection and C status/error records. It exposes no private C++ class
-or CUDA SDK type. Discovery/registration is not an execution guarantee; the
-CUDA ownership document tracks implementation and real-model gates.
+or CUDA SDK type.
+
+`guild/abi/cuda_attn_abi.h` adds the `CDA1` size-checked extension for CUDA
+attention, recurrent (GDN), RoPE, KV cache/streaming and QSA selection
+operations. It replaces private C++ records (`QsaShapes`, `GdnShapes`,
+`QsaAttnPools`, `KvHostPools`, `KvStreamMap`, `QsaIndexerBuffers`, `RopeScaling`)
+and process-global native toggles with public C POD descriptors and explicit
+configuration callbacks. Discovery/registration is not an execution guarantee;
+the CUDA ownership document tracks implementation and real-model gates.

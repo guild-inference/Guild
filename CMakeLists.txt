@@ -1010,6 +1010,7 @@ install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/include/guild/abi/kernel_abi.h
               ${CMAKE_CURRENT_SOURCE_DIR}/include/guild/abi/cpu_expert_abi.h
                ${CMAKE_CURRENT_SOURCE_DIR}/include/guild/abi/cpu_backend_abi.h
                ${CMAKE_CURRENT_SOURCE_DIR}/include/guild/abi/cuda_dense_abi.h
+               ${CMAKE_CURRENT_SOURCE_DIR}/include/guild/abi/cuda_attn_abi.h
         DESTINATION include/guild/abi)
 install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/schemas/gkmetadata.v1.schema.json
         DESTINATION share/guild/schemas)
