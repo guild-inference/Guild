@@ -191,6 +191,23 @@ std::unique_ptr<GuildModel> GuildModel::load(
         }
 #endif
     }
+    std::optional<kernels::ScopedCudaDense> dense_scope;
+#if defined(GUILD_ENABLE_CUDA) && !defined(GUILD_HIP_GFX906)
+    {
+        kernels::ResolvedCudaDense dense{};
+        if (kernels::KernelRegistry::instance().resolve_cuda_dense(host_caps, dense, error_msg)) {
+            impl->kernel_lease.add_package(dense.package_id);
+            impl->cuda_dense = dense;
+            dense_scope.emplace(*impl->cuda_dense);
+        }
+#if !GUILD_BUNDLED_CUDA_DENSE
+        if (!impl->cuda_dense) {
+            error_msg = "model load: bundled CUDA dense arithmetic disabled; install a compatible CDD1 CUDA .gkernel";
+            return nullptr;
+        }
+#endif
+    }
+#endif
 
     // Doorbell
     if (core::doorbell_init(impl->g, impl->K, impl->db) == 0) {

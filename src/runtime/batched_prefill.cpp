@@ -25,6 +25,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <optional>
 #include <stdexcept>
 #include <vector>
 
@@ -38,11 +39,34 @@ constexpr float kEps = 1e-6f;
 using Clock = std::chrono::steady_clock;
 double ms(Clock::time_point a) { return std::chrono::duration<double,std::milli>(Clock::now()-a).count(); }
 void ck(cudaError_t e) { if (e != cudaSuccess) throw std::runtime_error(cudaGetErrorString(e)); }
+guild_exec_context_v1_t cuda_ctx(void* stream) {
+    guild_exec_context_v1_t c{}; c.struct_size=sizeof(c); c.abi_version=GUILD_KERNEL_ABI_VERSION_V1;
+    c.backend=GUILD_BACKEND_CUDA; c.device_id=0; c.device_stream=stream; c.sync_mode=GUILD_SYNC_STREAM_ORDERED; return c;
+}
+void cuda_ok(guild_status_t st, const guild_error_info_t& e) {
+    if (st == GUILD_STATUS_OK) return;
+    throw std::runtime_error(e.message[0] ? e.message : "CUDA dense prefill execution failed");
+}
 void quant(const ResolvedPrefillKernels& fns, const float* x, void* dst, int width, int rows, void* stream) {
+    if (fns.has_cuda_dense) {
+        guild_cuda_quantize_q8_1_v1_t p{}; p.struct_size=sizeof(p); p.x=x; p.q=dst; p.n_in=width; p.rows=rows;
+        p.q_bytes=native_q8_1_bytes(width, rows);
+        const auto c=cuda_ctx(stream); guild_error_info_t e{};
+        cuda_ok(fns.cuda_dense.table.quantize_q8_1(&c, &p, &e), e);
+        return;
+    }
     fns.quantize_q8_1(x, dst, width, rows, stream);
 }
 void project(const ResolvedPrefillKernels& fns, const core::WeightRef& w, const void* x, float* y, int rows, void* stream) {
     if (!w.native_data) throw std::runtime_error("batched prefill: missing native projection");
+    if (fns.has_cuda_dense) {
+        guild_cuda_mmvq_v1_t p{}; p.struct_size=sizeof(p); p.exact_multi=native_mmvq_multi_exact();
+        p.weight_dtype=w.native_type; p.n_in=int(w.ne0); p.n_out=int(w.ne1); p.rows=rows;
+        p.weights=w.native_data; p.q=x; p.y=y;
+        const auto c=cuda_ctx(stream); guild_error_info_t e{};
+        cuda_ok(fns.cuda_dense.table.mmvq(&c, &p, &e), e);
+        return;
+    }
     fns.mmvq(w.native_type, w.native_data, x, y, int(w.ne0), int(w.ne1), rows, stream);
 }
 const core::WeightRef& need(const core::LayerView& v,const char* key) {
@@ -204,6 +228,8 @@ bool BatchedPrefill::run(const int64_t* tokens,int64_t n,int64_t pos0,std::strin
     if (!n) {err.clear();return true;}
     const auto start=Clock::now();
     const auto& g=*m.g; auto& ss=*m.ss; auto cs=m.cs;
+    std::optional<ScopedCudaDense> dense_scope;
+    if (m.fns.has_cuda_dense) dense_scope.emplace(m.fns.cuda_dense);
     const int N=int(g.n_embd),C=int(g.ssm_conv_channels),V=int(g.ssm_value_dim),F=int(g.n_ff);
     const int NH=int(g.n_head),NK=int(g.n_head_kv),HD=int(g.head_dim),HV=int(g.ssm_v_heads),HK=int(g.ssm_k_heads);
     const int K=int(ss.k), NE=int(g.n_expert);

@@ -13,6 +13,7 @@ file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/sdk/VERSION" GUILD_KERNEL_SDK_VERSION 
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
   "${CMAKE_CURRENT_SOURCE_DIR}/VERSION.json" "${CMAKE_CURRENT_SOURCE_DIR}/sdk/VERSION"
   "${CMAKE_CURRENT_SOURCE_DIR}/backends.lock.json")
+include(cmake/CUDABackend.cmake)
 # EXPERIMENTAL: the Intel Arc engine, the SYCL port in sycl/ (PR #423; icpx + oneMKL, docs/INTEL_ARC.md). It is its
 # own project that takes the unported sources from src/; with this on, nothing below is configured.
 option(GUILD_ENABLE_SYCL "EXPERIMENTAL: build the Intel Arc (SYCL) engine from sycl/ - docs/INTEL_ARC.md" OFF)
@@ -98,6 +99,7 @@ option(GUILD_WERROR "Treat compiler warnings as errors" OFF)
 option(GUILD_BUILTIN_QWEN_RUNNERS "Register the validated built-in Qwen fallback runners" ON)
 option(GUILD_BUILTIN_NATIVE_CPU "Compile the validated native CPU arithmetic fallback" ON)
 option(GUILD_BUILTIN_CPU "Bundle CPU arithmetic from the pinned independent repository" ON)
+option(GUILD_BUILTIN_CUDA_DENSE "Bundle independently owned BF16/native-MMVQ arithmetic (OFF: external CDD1 provider required)" ON)
 if(NOT GUILD_BUILTIN_NATIVE_CPU)
   set(GUILD_BUILTIN_CPU OFF)
 endif()
@@ -321,9 +323,6 @@ if(GUILD_ENABLE_CUDA OR GUILD_ENABLE_HIP)
                           src/kernels/cuda/gdn.cu
                           src/kernels/cuda/qsa.cu
                           src/kernels/cuda/elementwise.cu
-                          src/kernels/cuda/bf16_gemv.cu
-                          src/kernels/cuda/native_mmvq.cu
-                          src/kernels/cuda/native_bf16.cu
                           src/kernels/cuda/native_gr_norm.cu
                           src/kernels/cuda/native_moe.cu
                           src/kernels/cuda/native_gdn.cu
@@ -348,11 +347,28 @@ if(GUILD_ENABLE_CUDA OR GUILD_ENABLE_HIP)
                           src/kernels/cuda/dequant_bf16.cu
                           src/kernels/cuda/qsa_select.cu
                           src/kernels/cuda/verify_kernels.cu
-                          src/kernels/cuda/iq_kernels.cu
+                          "${_guild_cuda_source}/src/math/iq_kernels.cu"
                           src/kernels/ngram.cpp
                           src/ngram/ple_reader.cpp
                           src/platform/direct_file.cpp)
   target_link_libraries(guild_kernels PUBLIC guild_core guild_artifact)
+  if(GUILD_ENABLE_CUDA AND NOT GUILD_HIP_GFX906)
+    target_sources(guild_kernels PRIVATE src/kernels/cuda_dense_bridge.cpp)
+    target_compile_definitions(guild_kernels PUBLIC GUILD_BUNDLED_CUDA_DENSE=$<BOOL:${GUILD_BUILTIN_CUDA_DENSE}>)
+    if(GUILD_BUILTIN_CUDA_DENSE)
+      add_library(guild_cuda_dense STATIC)
+      guild_cuda_attach_dense(guild_cuda_dense)
+      target_include_directories(guild_cuda_dense PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
+      target_link_libraries(guild_cuda_dense PUBLIC CUDA::cudart)
+      target_link_libraries(guild_kernels PUBLIC guild_cuda_dense)
+    endif()
+  else()
+    # HIP retains its existing direct entry points from the same source owner.
+    target_sources(guild_kernels PRIVATE
+      "${_guild_cuda_source}/src/math/bf16_gemv.cu"
+      "${_guild_cuda_source}/src/math/native_bf16.cu"
+      "${_guild_cuda_source}/src/math/native_mmvq.cu")
+  endif()
   # perf-review D-1: the tensor-core prompt attention vs the FP32 kernel and FP64 (GPU, synthetic, no model); with
   # the tests, or alone with -DGUILD_PARITY_PROMPT_ATTN=ON.  CUDA only: HIP compiles the tensor-core kernel out.
   if((GUILD_BUILD_TESTS OR GUILD_PARITY_PROMPT_ATTN) AND GUILD_ENABLE_CUDA)
@@ -382,8 +398,7 @@ if(GUILD_ENABLE_CUDA OR GUILD_ENABLE_HIP)
   target_include_directories(guild_kernels PRIVATE third_party/ggml)
   # Match the pinned llama.cpp CUDA arithmetic contract for this adapter only.
   if(GUILD_ENABLE_CUDA)
-    set_source_files_properties(src/kernels/cuda/native_mmvq.cu src/kernels/cuda/native_bf16.cu
-      src/kernels/cuda/native_gr_norm.cu
+    set_source_files_properties(src/kernels/cuda/native_gr_norm.cu
       src/kernels/cuda/native_moe.cu
       src/kernels/cuda/native_gdn.cu
       src/kernels/cuda/native_gr_postops.cu
@@ -1080,7 +1095,9 @@ target_link_libraries(guild PRIVATE guild_runtime guild_cli guild_model guild_me
 include(cmake/VersionMetadata.cmake)
 target_sources(guild_runtime PRIVATE src/runtime/version.cpp)
 target_include_directories(guild_runtime PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
-target_compile_definitions(guild_runtime PRIVATE GUILD_BUNDLED_CPU_IMPL_VERSION=${GUILD_BUNDLED_CPU_IMPL_VERSION})
+target_compile_definitions(guild_runtime PRIVATE
+  GUILD_BUNDLED_CPU_IMPL_VERSION=${GUILD_BUNDLED_CPU_IMPL_VERSION}
+  GUILD_BUNDLED_CUDA_IMPL_VERSION=${GUILD_BUNDLED_CUDA_IMPL_VERSION})
 
 if(GUILD_BUILD_TESTS)
   add_executable(guild_cli_test tests/cli/guild_cli_test.cpp)

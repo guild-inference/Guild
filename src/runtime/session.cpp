@@ -137,6 +137,8 @@ bool GuildSession::generate(
     const char* host_affinity=std::getenv("GUILD_HOST_AFFINITY");
     if (!host_affinity || std::atoi(host_affinity)!=0)
         affinity.previous=kernels::cpu::pin_current_thread_if_allowed(m_impl->pool->host_core());
+    std::optional<kernels::ScopedCudaDense> dense_scope;
+    if (m_impl->cuda_dense) dense_scope.emplace(*m_impl->cuda_dense);
 
     // Reset KV state for fresh generation
     if (!m_impl->ver->wait_commit(error_msg)) return runtime_failure();

@@ -32,6 +32,7 @@
 #include "guild/kernels/native_router.hpp"
 #include "guild/kernels/native_qsa.hpp"
 #include "guild/kernels/native_qsa_indexer.hpp"
+#include "guild/kernels/cuda_dense.hpp"
 #include "guild/kernels/registry.hpp"
 #include "guild/model/runner.hpp"
 #include "guild/prefill/prefill.hpp"
@@ -113,6 +114,7 @@ struct GuildModel::Impl {
     model::RunnerExecutionPlan runner_exec;
     std::string native_cpu_package;
     std::optional<guild_cpu_backend_ext_v2_t> cpu_backend;
+    std::optional<kernels::ResolvedCudaDense> cuda_dense;
     model::SessionRunnerLease runner_lease;
     kernels::SessionKernelLease kernel_lease;
     core::ModelGeometry g;

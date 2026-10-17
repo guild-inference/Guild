@@ -95,13 +95,19 @@ int main(int argc, char** argv) {
     if (const char* cuda_package=std::getenv("GUILD_EXPECT_CUDA_PACKAGE")) {
         const auto& packages=impl->batched_prefill->bound_package_ids();
         CHECK(std::find(packages.begin(),packages.end(),cuda_package)!=packages.end());
+        CHECK(impl->cuda_dense && impl->cuda_dense->package_id==cuda_package);
         guild::abi::InstalledPackageRecord record;
         CHECK(guild::abi::GKernelPackageManager::instance().get_package(cuda_package,record));
         const auto library=std::filesystem::path(record.staged_dir)/record.metadata.library_path;
         void* h=dlopen(library.c_str(),RTLD_NOW|RTLD_NOLOAD);CHECK(h);
         auto count=reinterpret_cast<int64_t(*)()>(dlsym(h,"guild_ext_ornith_router_call_count"));
-        CHECK(count && count()>0);dlclose(h);
-        std::cout<<"external CUDA router execution verified\n";
+        CHECK(count && count()>0);
+        if (std::getenv("GUILD_CUDA_INSTRUMENT")) {
+            auto dense_count=reinterpret_cast<uint64_t(*)(uint32_t)>(dlsym(h,"guild_cuda_dense_call_count_v1"));
+            CHECK(dense_count && dense_count(0)>0 && dense_count(1)>0 && dense_count(2)>0);
+        }
+        dlclose(h);
+        std::cout<<"external CUDA router and dense execution verified\n";
     }
     if (const char* cpu_package=std::getenv("GUILD_EXPECT_CPU_PACKAGE")) {
         CHECK(impl->native_cpu_package==cpu_package);

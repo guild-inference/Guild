@@ -77,6 +77,21 @@ geometry/strides/stream, no backend allocation or waits on the normal ordered
 stream, error status instead of a C++ exception crossing the DSO boundary. A
 model binds once; no general registry lookup belongs in a layer/token loop.
 
+Stage B (`guild-kernels-cuda` `ee219c2aa25b67768a51d1c3d3801fd00fb5eb51`, SDK 1.4
+[`cuda_dense_abi.h`](../../include/guild/abi/cuda_dense_abi.h)) migrated
+`bf16_gemv.cu`, `native_bf16.cu`, `native_mmvq.cu`, `iq_kernels.cu`, and the six
+shared precision headers (`bf16_gemv.hpp`, `native_mmvq.hpp`, `iq_kernels.hpp`,
+`bf16_bits.hpp`, `dp4a.hpp`, `q8_1_finite.hpp`) out of Core into
+`guild-kernels-cuda`. Core binds the copied `guild_cuda_dense_ext_v1_t` (`CDD1`)
+payload from `GUILD_OP_QUANTIZED_GEMV` once per model load (`resolve_cuda_dense`)
+and dispatches batched prefill, verifier graph capture, and decode BF16/Q8_1/MMVQ
+calls through [`cuda_dense_bridge.cpp`](../../src/kernels/cuda_dense_bridge.cpp)
+without in-tree BF16 or native-MMVQ CUDA kernels. `-DGUILD_BUILTIN_CUDA_DENSE=OFF`
+omits `libguild_cuda_dense.a` from Core and requires a signed CDD1 `.gkernel`
+package (`org.guild.kernels.cuda@1.1.0`), verified for fail-closed missing-provider
+rejection, `guild_cuda_dense_call_count_v1` launch instrumentation, and bitwise
+parity on Ornith-1.5-35B against the frozen Stage A reference binary.
+
 Other required boundaries are explicit pending implementation gates:
 
 | Area | Current boundary requiring adaptation |

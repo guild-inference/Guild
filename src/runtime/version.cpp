@@ -52,7 +52,9 @@ bool version_report(bool json, std::string& output, std::string& error) {
             <<"\nCPU kernels: "<<(report["bundled_cpu"]["enabled"].as_bool()?"bundled ":"disabled ")
             <<report["bundled_cpu"]["version"].as_string()<<" ("<<report["bundled_cpu"]["source_revision"].as_string()<<")\n";
         if(report["bundled_cuda"]["enabled"].as_bool())
-            text<<"CUDA kernels: bundled "<<report["bundled_cuda"]["version"].as_string()<<" (legacy Core source)\n";
+            text<<"CUDA kernels: "<<(report["bundled_cuda"]["dense_bundled"].as_bool()?"bundled ":"external-dense ")
+                <<report["bundled_cuda"]["version"].as_string()
+                <<" ("<<report["bundled_cuda"]["source_revision"].as_string()<<")\n";
         if(report["backend"].as_string()=="none")text<<"CPU-only inference: unavailable (management/ABI build)\n";
         for(const auto& package:manager.list_packages())
             text<<"External package: "<<package.package_id<<"@"<<package.metadata.version

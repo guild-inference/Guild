@@ -27,7 +27,23 @@ namespace guild::kernels {
 #if GUILD_BUNDLED_CPU_ARITHMETIC && defined(GUILD_NATIVE_EXPERTS)
 extern "C" const guild_cpu_backend_ext_v2_t* guild_cpu_backend_table_v2();
 #endif
+#if GUILD_BUNDLED_CUDA_DENSE && defined(GUILD_ENABLE_CUDA) && !defined(GUILD_HIP_GFX906)
+extern "C" const guild_cuda_dense_ext_v1_t* guild_cuda_dense_table_v1();
+#endif
 namespace {
+
+bool read_cuda_dense_extension(const void* payload, guild_cuda_dense_ext_v1_t& out) {
+    if (!payload) return false;
+    uint32_t size = 0;
+    std::memcpy(&size, payload, sizeof(size));
+    if (size < sizeof(guild_cuda_dense_ext_v1_t)) return false;
+    guild_cuda_dense_ext_v1_t ext{};
+    std::memcpy(&ext, payload, sizeof(ext));
+    if (ext.tag != GUILD_CUDA_DENSE_TAG_V1 || ext.version != GUILD_CUDA_DENSE_VERSION_V1 ||
+        !ext.bf16 || !ext.quantize_q8_1 || !ext.mmvq) return false;
+    out = ext;
+    return true;
+}
 
 size_t cpu_extension_size(const void* payload) {
     uint32_t size=0;
@@ -425,6 +441,15 @@ guild_status_t KernelRegistry::register_op(const guild_kernel_op_desc_v1_t& desc
         std::memcpy(stored->owned_ext_bytes.data(),desc.next_ext,bytes);
         stored->desc.next_ext=stored->owned_ext_bytes.data();
     }
+    if (desc.next_ext && desc.op_kind == GUILD_OP_QUANTIZED_GEMV) {
+        guild_cuda_dense_ext_v1_t ext{};
+        if (!read_cuda_dense_extension(desc.next_ext, ext)) {
+            err = "invalid CUDA dense extension"; return GUILD_STATUS_ERR_ABI_MISMATCH;
+        }
+        stored->owned_ext_bytes.resize(sizeof(ext));
+        std::memcpy(stored->owned_ext_bytes.data(), &ext, sizeof(ext));
+        stored->desc.next_ext = stored->owned_ext_bytes.data();
+    }
     if (desc.next_ext != nullptr &&
         (desc.op_kind == GUILD_OP_GDN_AB_PROJ || desc.op_kind == GUILD_OP_MOE_ROUTER_TOPK)) {
         uint32_t ext_size = 0;
@@ -599,6 +624,15 @@ guild_status_t KernelRegistry::register_plugin_transactional(
             if(!bytes) return GUILD_STATUS_ERR_ABI_MISMATCH;
             ext_copy.resize(bytes);
             std::memcpy(ext_copy.data(),d->next_ext,bytes);
+        }
+        if (d->next_ext && d->op_kind == GUILD_OP_QUANTIZED_GEMV) {
+            guild_cuda_dense_ext_v1_t ext{};
+            if (!read_cuda_dense_extension(d->next_ext, ext)) {
+                fill_err(e, GUILD_STATUS_ERR_ABI_MISMATCH, d->impl_id, "invalid CUDA dense extension");
+                return GUILD_STATUS_ERR_ABI_MISMATCH;
+            }
+            ext_copy.resize(sizeof(ext));
+            std::memcpy(ext_copy.data(), &ext, sizeof(ext));
         }
         if (d->next_ext != nullptr &&
             (d->op_kind == GUILD_OP_GDN_AB_PROJ || d->op_kind == GUILD_OP_MOE_ROUTER_TOPK)) {
@@ -1191,10 +1225,45 @@ bool KernelRegistry::resolve_prefill_kernels(const guild_device_capabilities_v1_
         default: break;
         }
     }
+    if ((caps.available_backends & GUILD_BACKEND_CUDA) != 0) {
+        ResolvedCudaDense dense{};
+        std::string dense_err;
+        if (resolve_cuda_dense(caps, dense, dense_err)) {
+            out_table.cuda_dense = dense;
+            out_table.has_cuda_dense = true;
+            out_table.bound_impl_ids.push_back(dense.impl_id);
+            if (!dense.package_id.empty() &&
+                std::find(out_table.bound_package_ids.begin(), out_table.bound_package_ids.end(), dense.package_id) ==
+                    out_table.bound_package_ids.end()) {
+                out_table.bound_package_ids.push_back(dense.package_id);
+            }
+        }
+    }
     if (!out_table.all_bound()) {
         err = "prefill kernel resolution did not bind all required device entry points";
         return false;
     }
+    return true;
+}
+
+bool KernelRegistry::resolve_cuda_dense(const guild_device_capabilities_v1_t& caps,
+                                        ResolvedCudaDense& out_dense,
+                                        std::string& err) const {
+    out_dense = {};
+    KernelSelectionQuery q;
+    q.op_kind = GUILD_OP_QUANTIZED_GEMV;
+    q.allowed_backends = GUILD_BACKEND_CUDA;
+    q.required_numerical_flags = GUILD_NUM_BITWISE_DETERMINISTIC;
+    q.batch_rows = 512;
+    const guild_kernel_op_desc_v1_t* d = nullptr;
+    if (select(q, caps, &d, err) != GUILD_STATUS_OK || !d) return false;
+    if (!read_cuda_dense_extension(d->next_ext, out_dense.table)) {
+        err = std::string("CUDA dense kernel '") + (d->impl_id ? d->impl_id : "") + "' is missing a valid CDD1 extension";
+        return false;
+    }
+    out_dense.impl_id = d->impl_id ? d->impl_id : "";
+    out_dense.package_id = d->package_id ? d->package_id : "";
+    err.clear();
     return true;
 }
 
@@ -1292,12 +1361,27 @@ void KernelRegistry::register_builtin_kernels() {
     register_gpu(GUILD_OP_EMBEDDING_GATHER, "gpu.embed.native_gather", 512, GUILD_DTYPE_ANY, GUILD_DTYPE_I32, GUILD_DTYPE_F32);
     register_gpu(GUILD_OP_QUANTIZE_ACT, "gpu.quantize.q8_1_8col", 512, GUILD_DTYPE_ANY, GUILD_DTYPE_F32, GUILD_DTYPE_Q8_1);
     register_gpu(GUILD_OP_DEQUANTIZE, "gpu.dequant.bf16_native", 512, GUILD_DTYPE_ANY, GUILD_DTYPE_ANY, GUILD_DTYPE_BF16);
-    register_gpu(GUILD_OP_QUANTIZED_GEMV, "gpu.mmvq.native_1col", 1, GUILD_DTYPE_ANY, GUILD_DTYPE_Q8_1, GUILD_DTYPE_F32);
-    register_gpu(GUILD_OP_QUANTIZED_GEMM, "gpu.mmvq.native_8col", 512, GUILD_DTYPE_ANY, GUILD_DTYPE_Q8_1, GUILD_DTYPE_F32);
-    register_gpu(GUILD_OP_GROUPED_MOE_GEMM, "gpu.moe.grouped_hit_native", 128, GUILD_DTYPE_ANY, GUILD_DTYPE_Q8_1, GUILD_DTYPE_F32);
+#if defined(GUILD_ENABLE_HIP) || defined(GUILD_HIP_GFX906) || GUILD_BUNDLED_CUDA_DENSE
+    {
+        auto d = make_base(GUILD_OP_QUANTIZED_GEMV, "gpu.mmvq.native_1col", gpu_pkg, gpu_backend, 200);
+        d.min_sm_version = 60;
+        d.max_batch_rows = 512;
+        d.weight_dtype = GUILD_DTYPE_ANY;
+        d.input_dtype = GUILD_DTYPE_Q8_1;
+        d.output_dtype = GUILD_DTYPE_F32;
+        d.direct_fn_table = &kBuiltinPrefillKernels;
+#if GUILD_BUNDLED_CUDA_DENSE && defined(GUILD_ENABLE_CUDA) && !defined(GUILD_HIP_GFX906)
+        d.impl_version = GUILD_BUNDLED_CUDA_IMPL_VERSION;
+        d.next_ext = guild_cuda_dense_table_v1();
+#endif
+        register_op(d, ignore_err);
+    }
     register_gpu(GUILD_OP_MOE_ROUTER_TOPK, "gpu.moe.router_topk_native", 512, GUILD_DTYPE_F32, GUILD_DTYPE_F32, GUILD_DTYPE_F32);
-    register_gpu(GUILD_OP_MOE_DISPATCH, "gpu.moe.dispatch_hybrid", 512, GUILD_DTYPE_ANY, GUILD_DTYPE_F32, GUILD_DTYPE_F32);
+#endif
+    register_gpu(GUILD_OP_QUANTIZED_GEMM, "gpu.mmvq.native_8col", 512, GUILD_DTYPE_ANY, GUILD_DTYPE_Q8_1, GUILD_DTYPE_F32);
     register_gpu(GUILD_OP_SHARED_EXPERT, "gpu.moe.shared_expert_bf16", 512, GUILD_DTYPE_ANY, GUILD_DTYPE_BF16, GUILD_DTYPE_F32);
+    register_gpu(GUILD_OP_GROUPED_MOE_GEMM, "gpu.moe.grouped_hit_native", 128, GUILD_DTYPE_ANY, GUILD_DTYPE_Q8_1, GUILD_DTYPE_F32);
+    register_gpu(GUILD_OP_MOE_DISPATCH, "gpu.moe.dispatch_hybrid", 512, GUILD_DTYPE_ANY, GUILD_DTYPE_F32, GUILD_DTYPE_F32);
     register_gpu(GUILD_OP_MOE_COMBINE, "gpu.moe.combine_native", 512, GUILD_DTYPE_ANY, GUILD_DTYPE_F32, GUILD_DTYPE_F32);
     register_gpu(GUILD_OP_RMS_NORM, "gpu.norm.qsa_rms_weighted", 512, GUILD_DTYPE_F32, GUILD_DTYPE_F32, GUILD_DTYPE_F32);
     register_gpu(GUILD_OP_GATED_RESIDUAL, "gpu.gr.fused_read_write", 8, GUILD_DTYPE_ANY, GUILD_DTYPE_F32, GUILD_DTYPE_F32);

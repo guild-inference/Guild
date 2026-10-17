@@ -582,6 +582,72 @@ int main() {
         CHECK(err.find("capability/shape/dtype constraints") != std::string::npos);
     }
 
+    // CDD1 CUDA dense extension validation and deep-copy on GUILD_OP_QUANTIZED_GEMV.
+    {
+        kernels::KernelRegistry reg;
+        guild_cuda_dense_ext_v1_t valid_dense{};
+        valid_dense.struct_size = sizeof(valid_dense);
+        valid_dense.tag = GUILD_CUDA_DENSE_TAG_V1;
+        valid_dense.version = GUILD_CUDA_DENSE_VERSION_V1;
+        valid_dense.bf16 = +[](const guild_exec_context_v1_t*, const guild_cuda_bf16_projection_v1_t*, guild_error_info_t*) -> guild_status_t {
+            return GUILD_STATUS_OK;
+        };
+        valid_dense.quantize_q8_1 = +[](const guild_exec_context_v1_t*, const guild_cuda_quantize_q8_1_v1_t*, guild_error_info_t*) -> guild_status_t {
+            return GUILD_STATUS_OK;
+        };
+        valid_dense.mmvq = +[](const guild_exec_context_v1_t*, const guild_cuda_mmvq_v1_t*, guild_error_info_t*) -> guild_status_t {
+            return GUILD_STATUS_OK;
+        };
+
+        guild_kernel_op_desc_v1_t desc{};
+        desc.struct_size = sizeof(desc);
+        desc.abi_version = GUILD_KERNEL_ABI_VERSION_V1;
+        desc.op_kind = GUILD_OP_QUANTIZED_GEMV;
+        desc.op_name = "cuda_dense";
+        desc.impl_id = "test.cuda.dense.v1";
+        desc.package_id = "test.pkg.cuda";
+        desc.impl_version = GUILD_KERNEL_ABI_VERSION_V1;
+        desc.backend = GUILD_BACKEND_CUDA;
+        desc.numerical_flags = GUILD_NUM_BITWISE_DETERMINISTIC;
+        desc.max_batch_rows = 512;
+        desc.priority = 300;
+
+        auto bad_ext = valid_dense;
+        bad_ext.struct_size = sizeof(valid_dense) - 1;
+        desc.next_ext = &bad_ext;
+        CHECK(reg.register_op(desc, err) == GUILD_STATUS_ERR_ABI_MISMATCH);
+
+        bad_ext = valid_dense;
+        bad_ext.tag ^= 1u;
+        CHECK(reg.register_op(desc, err) == GUILD_STATUS_ERR_ABI_MISMATCH);
+
+        bad_ext = valid_dense;
+        bad_ext.mmvq = nullptr;
+        CHECK(reg.register_op(desc, err) == GUILD_STATUS_ERR_ABI_MISMATCH);
+
+        {
+            guild_cuda_dense_ext_v1_t stack_copy = valid_dense;
+            desc.next_ext = &stack_copy;
+            CHECK(reg.register_op(desc, err) == GUILD_STATUS_OK);
+            stack_copy = {};
+        }
+
+        guild_device_capabilities_v1_t cuda_caps{};
+        cuda_caps.struct_size = sizeof(cuda_caps);
+        cuda_caps.abi_version = GUILD_KERNEL_ABI_VERSION_V1;
+        cuda_caps.available_backends = GUILD_BACKEND_CUDA;
+        cuda_caps.available_vram_bytes = 1ull << 30;
+        cuda_caps.available_ram_bytes = 1ull << 30;
+
+        kernels::ResolvedCudaDense resolved_dense{};
+        CHECK(reg.resolve_cuda_dense(cuda_caps, resolved_dense, err));
+        CHECK(resolved_dense.impl_id == "test.cuda.dense.v1");
+        CHECK(resolved_dense.package_id == "test.pkg.cuda");
+        CHECK(resolved_dense.table.bf16 == valid_dense.bf16);
+        CHECK(resolved_dense.table.quantize_q8_1 == valid_dense.quantize_q8_1);
+        CHECK(resolved_dense.table.mmvq == valid_dense.mmvq);
+    }
+
     // -------------------------------------------------------------------------
     // 5. RFC 8032 Ed25519 Cryptographic Signatures, Declarative .gkmetadata,
     //    Three-Tier (.gkmodule) Boundary, Hardened Staging & GEXEC Lock

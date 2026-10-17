@@ -3,6 +3,7 @@
 
 #include "guild/abi/kernel_abi.h"
 #include "guild/hardware/hardware_info.hpp"
+#include "guild/kernels/cuda_dense.hpp"
 #include "guild/kernels/rope_scaling.hpp"
 
 #include <atomic>
@@ -109,6 +110,8 @@ static_assert(sizeof(PrefillKernelExtensionV1) == sizeof(guild_prefill_kernel_ex
 struct ResolvedPrefillKernels : PrefillKernelTableV1 {
     decltype(PrefillKernelExtensionV1::gdn_ab) gdn_ab = nullptr;
     decltype(PrefillKernelExtensionV1::router_projection) router_projection = nullptr;
+    ResolvedCudaDense cuda_dense{};
+    bool has_cuda_dense = false;
     std::vector<std::string> bound_impl_ids;
     std::vector<std::string> bound_package_ids;
     bool all_bound() const {
@@ -191,6 +194,11 @@ public:
     bool resolve_prefill_kernels(const guild_device_capabilities_v1_t& caps,
                                  ResolvedPrefillKernels& out_table,
                                  std::string& err) const;
+
+    /// Resolve a copied CDD1 CUDA dense extension table once per model init.
+    bool resolve_cuda_dense(const guild_device_capabilities_v1_t& caps,
+                            ResolvedCudaDense& out_dense,
+                            std::string& err) const;
 
     /// Active session & per-package lease tracking (prevents kernel replacement/removal during active inference).
     void acquire_session_lease() const { active_sessions_.fetch_add(1, std::memory_order_acq_rel); }
