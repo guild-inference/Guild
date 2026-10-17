@@ -49,3 +49,12 @@ for this repository. Publication therefore requires the documented release
 reviewers, GPU runner and maintained reference fixture to be configured.
 Hosted Windows SDK, Ubuntu22.04 and CUDA13 checks are workflow results to inspect
 after pushing; the local results above do not stand in for them.
+
+The first hosted run confirmed the installed SDK on all three OS targets and
+the pinned independent CPU/runner contracts, signed registration and CUDA13
+router compilation. It exposed a missing-tokenizer fixture registration and a
+container-mounted Git ownership error before distribution compilation. The
+follow-up keeps unloaded-tokenizer checks always active, registers full golden
+parity only where its explicit tokenizer paths exist, and scopes the container
+Git ownership exception through per-command environment settings. It does not
+alter the local Git configuration or change tokenization comparisons.

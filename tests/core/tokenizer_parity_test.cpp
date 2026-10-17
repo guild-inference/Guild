@@ -71,6 +71,11 @@ int main(int argc, char** argv) {
         CHECK(!tok.is_loaded());
     }
 
+    if (argc == 2 && std::string(argv[1]) == "--unloaded-only") {
+        std::cout << "Unloaded tokenizer fail-closed checks PASSED.\n";
+        return 0;
+    }
+
     std::cout << "--- 2. Loading Real Qwen Tokenizer Assets ---\n";
     guild::runtime::Tokenizer qwen_tok;
     std::string load_err;

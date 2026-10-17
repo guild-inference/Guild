@@ -59,6 +59,12 @@ jobs:
     name: Pinned CUDA router compilation (no GPU execution)
     runs-on: ubuntu-22.04
     container: nvidia/cuda:13.0.2-devel-ubuntu22.04@sha256:6b6617592b94e7dcc6ffbe6d00720eed27bc6e3b4f06b26b93b4070c31f57391
+    env:
+      GIT_CONFIG_COUNT: '2'
+      GIT_CONFIG_KEY_0: safe.directory
+      GIT_CONFIG_VALUE_0: ${{ github.workspace }}
+      GIT_CONFIG_KEY_1: safe.directory
+      GIT_CONFIG_VALUE_1: ${{ github.workspace }}/build-inputs/cuda
     steps:
       - run: apt-get update && apt-get install -y git g++ python3-pip && pip3 install cmake==3.28.4
       - uses: actions/checkout@v4

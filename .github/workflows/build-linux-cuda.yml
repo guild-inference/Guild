@@ -18,6 +18,11 @@ jobs:
     container: nvidia/cuda:13.0.2-devel-ubuntu22.04@sha256:6b6617592b94e7dcc6ffbe6d00720eed27bc6e3b4f06b26b93b4070c31f57391
     env:
       RELEASE_TAG: ${{ inputs.release_tag }}
+      # Limit the container ownership exception to this mounted checkout. These
+      # command-scoped settings also reach Git subprocesses launched by CMake.
+      GIT_CONFIG_COUNT: '1'
+      GIT_CONFIG_KEY_0: safe.directory
+      GIT_CONFIG_VALUE_0: ${{ github.workspace }}
     steps:
       - run: apt-get update && apt-get install -y git g++ ninja-build libcurl4-openssl-dev python3-pip && pip3 install cmake==3.28.4
       - uses: actions/checkout@v4

@@ -1110,11 +1110,17 @@ if(GUILD_BUILD_TESTS)
 
   add_executable(tokenizer_parity_test tests/core/tokenizer_parity_test.cpp)
   target_link_libraries(tokenizer_parity_test PRIVATE guild_runtime guild_server guild_cli)
-  add_test(NAME tokenizer_parity_test COMMAND tokenizer_parity_test
-    ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/tokenizer_golden.json
-    /mnt/models-ssd/Strata-data/packs/unsloth-ud-iq4_xs/tokenizer
-    /mnt/models-ssd/Strata-data/packs/ornith-1.5-35b/tokenizer)
-  set_tests_properties(tokenizer_parity_test PROPERTIES TIMEOUT 60)
+  add_test(NAME tokenizer_fail_closed_test COMMAND tokenizer_parity_test --unloaded-only)
+  set(GUILD_QWEN_TOKENIZER_DIR "/mnt/models-ssd/Strata-data/packs/unsloth-ud-iq4_xs/tokenizer" CACHE PATH "Real Qwen golden tokenizer assets")
+  set(GUILD_ORNITH_TOKENIZER_DIR "/mnt/models-ssd/Strata-data/packs/ornith-1.5-35b/tokenizer" CACHE PATH "Real Ornith golden tokenizer assets")
+  if(EXISTS "${GUILD_QWEN_TOKENIZER_DIR}/tokenizer.json" AND EXISTS "${GUILD_ORNITH_TOKENIZER_DIR}/tokenizer.json")
+    add_test(NAME tokenizer_parity_test COMMAND tokenizer_parity_test
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/tokenizer_golden.json
+      ${GUILD_QWEN_TOKENIZER_DIR} ${GUILD_ORNITH_TOKENIZER_DIR})
+    set_tests_properties(tokenizer_parity_test PROPERTIES TIMEOUT 60)
+  else()
+    message(STATUS "guild: real tokenizer assets absent - tokenizer_parity_test is NOT registered; tokenizer_fail_closed_test remains active")
+  endif()
 
   add_executable(finite_output_test tests/core/finite_output_test.cpp)
   target_include_directories(finite_output_test PRIVATE include)
