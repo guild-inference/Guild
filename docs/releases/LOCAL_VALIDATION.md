@@ -65,3 +65,10 @@ input instead of taking the local machine's unsupported-ISA skip. Those two
 real-weight tests now follow the existing arena-test convention: register only
 when the pack exists, with an explicit configure-time absence message. Synthetic
 multi-token and pool stress tests remain registered on hosted machines.
+
+Hosted CI then passed all seven jobs. CUDA13 compiled all four requested GPU
+architectures; packaging identified the official image's license layout under
+`/usr/share/doc/cuda-cudart-13-0/copyright` and
+`/usr/share/doc/libcublas-13-0/copyright`. The packager now includes these exact
+installed-runtime license locations, with a regression test excluding unrelated
+CUDA majors. The earlier local archive result above remains unchanged.

@@ -49,6 +49,26 @@ def write_archive(source, archive, epoch):
                 tar.add(source, arcname=source.name, filter=deterministic)
 
 
+def cuda_license_files(cuda_root, dependencies, docs_root=Path("/usr/share/doc")):
+    bases = [cuda_root, cuda_root / "licenses", cuda_root / "doc", cuda_root / "DOCS",
+             docs_root / "nvidia-cuda-toolkit"]
+    # NVIDIA's official CUDA13 Debian image ships the redistribution terms in
+    # each installed runtime package's copyright file, outside the toolkit tree.
+    for dependency in dependencies:
+        name = dependency["name"]
+        major = name.rsplit(".", 1)[1]
+        if name.startswith("libcudart.so."):
+            bases.extend(docs_root.glob(f"cuda-cudart-{major}-*"))
+        elif name.startswith("libcublas.so."):
+            bases.extend(docs_root.glob(f"libcublas-{major}-*"))
+    licenses = set()
+    for base in bases:
+        if base.is_dir():
+            for pattern in ("*LICENSE*", "*EULA*", "copyright"):
+                licenses.update(path.resolve() for path in base.glob(pattern) if path.is_file())
+    return licenses
+
+
 def stage(build, dest, cuda_root, allow_native_cpu=False):
     root = Path(__file__).resolve().parents[1]
     if platform.system() != "Linux" or platform.machine() not in ("x86_64", "AMD64"):
@@ -78,12 +98,7 @@ def stage(build, dest, cuda_root, allow_native_cpu=False):
             (dest / "lib" / name).chmod(0o644)
             dependencies.append({"name": name, "sha256": sha(dest / "lib" / name)})
 
-        licenses = set()
-        for base in (cuda_root, cuda_root / "licenses", cuda_root / "doc",
-                     Path("/usr/share/doc/nvidia-cuda-toolkit")):
-            if base.is_dir():
-                for pattern in ("*LICENSE*", "*EULA*", "copyright"):
-                    licenses.update(path.resolve() for path in base.glob(pattern) if path.is_file())
+        licenses = cuda_license_files(cuda_root, dependencies)
         if not licenses:
             raise RuntimeError("CUDA redistribution license files must be included")
         for index, path in enumerate(sorted(licenses)):

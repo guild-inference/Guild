@@ -5,10 +5,27 @@ from pathlib import Path
 import tarfile
 import tempfile
 import unittest
-from package_linux_cuda import write_archive
+from package_linux_cuda import cuda_license_files,write_archive
 
 
 class Archive(unittest.TestCase):
+    def test_official_cuda_debian_runtime_licenses(self):
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory)
+            docs = work / "usr/share/doc"
+            expected = set()
+            for name in ("cuda-cudart-13-0", "libcublas-13-0"):
+                package = docs / name
+                package.mkdir(parents=True)
+                license_path = package / "copyright"
+                license_path.write_text("NVIDIA redistribution terms")
+                expected.add(license_path.resolve())
+            unrelated = docs / "libcublas-12-0"
+            unrelated.mkdir()
+            (unrelated / "copyright").write_text("other installed CUDA major")
+            dependencies = [{"name": name} for name in ("libcudart.so.13", "libcublas.so.13", "libcublasLt.so.13")]
+            self.assertEqual(cuda_license_files(work / "usr/local/cuda", dependencies, docs), expected)
+
     def test_archive_ignores_source_times_and_output_filename(self):
         with tempfile.TemporaryDirectory() as directory:
             work = Path(directory)
