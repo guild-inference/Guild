@@ -24,6 +24,9 @@
 #include <cstdlib>
 
 namespace guild::kernels {
+#if GUILD_BUNDLED_CPU_ARITHMETIC && defined(GUILD_NATIVE_EXPERTS)
+extern "C" const guild_cpu_backend_ext_v2_t* guild_cpu_backend_table_v2();
+#endif
 namespace {
 
 size_t cpu_extension_size(const void* payload) {
@@ -35,12 +38,16 @@ size_t cpu_extension_size(const void* payload) {
     if(native.tag!=GUILD_CPU_EXPERT_TAG_V1 || native.version!=1 ||
        !native.quant_act || !native.quant_h || !native.gate_up || !native.down) return 0;
     if(size==sizeof(native)) return sizeof(native);
-    if(size<sizeof(guild_cpu_backend_ext_v2_t)) return 0;
+    constexpr size_t base_size=offsetof(guild_cpu_backend_ext_v2_t,swiglu);
+    if(size<base_size) return 0;
     guild_cpu_backend_ext_v2_t full{};
-    std::memcpy(&full,payload,sizeof(full));
+    const size_t bytes=size>=sizeof(full)?sizeof(full):base_size;
+    if(size!=base_size && size<sizeof(full))return 0;
+    std::memcpy(&full,payload,bytes);
     if(full.backend_version!=GUILD_CPU_BACKEND_VERSION_V2 || !full.format || !full.quant_planar ||
        !full.canonical_gate_up || !full.canonical_down || !full.q2_gguf_rows || !full.router_bf16 || !full.combine) return 0;
-    return sizeof(full);
+    if(bytes==sizeof(full) && !full.swiglu)return 0;
+    return bytes;
 }
 
 void fill_err(guild_error_info_t* err, guild_status_t code, const char* comp, const std::string& msg) {
@@ -282,10 +289,12 @@ guild_device_capabilities_v1_t query_device_capabilities(const hardware::Hardwar
     caps.abi_version = GUILD_KERNEL_ABI_VERSION_V1;
     caps.available_backends = GUILD_BACKEND_CPU;
     caps.cpu_isa_flags = GUILD_ISA_SSE42 | GUILD_ISA_AVX;
-    if (hw.isa_avx2) caps.cpu_isa_flags |= GUILD_ISA_AVX2 | GUILD_ISA_FMA | GUILD_ISA_F16C | GUILD_ISA_BMI2;
+    if (hw.isa_avx2) caps.cpu_isa_flags |= GUILD_ISA_AVX2 | GUILD_ISA_FMA | GUILD_ISA_F16C;
+    if (hw.isa_bmi2) caps.cpu_isa_flags |= GUILD_ISA_BMI2;
     if (hw.isa_avx512) caps.cpu_isa_flags |= GUILD_ISA_AVX512F | GUILD_ISA_AVX512BW | GUILD_ISA_AVX512DQ | GUILD_ISA_AVX512VL;
     if (hw.isa_vnni) caps.cpu_isa_flags |= GUILD_ISA_AVX512VNNI;
     if (hw.isa_vbmi) caps.cpu_isa_flags |= GUILD_ISA_AVX512VBMI;
+    if (hw.isa_avx512cd) caps.cpu_isa_flags |= GUILD_ISA_AVX512CD;
     caps.cpu_physical_cores = hw.cpu_physical_cores;
     caps.cpu_sockets = hw.cpu_sockets;
     caps.gpu_device_count = hw.gpu_count;
@@ -1213,12 +1222,16 @@ void KernelRegistry::register_builtin_kernels() {
 
     std::string ignore_err;
     // Built-in CPU kernels (package: builtin.guild-kernels-cpu)
+#if GUILD_BUNDLED_CPU_ARITHMETIC
     {
         auto d = make_base(GUILD_OP_BATCHED_EXPERT_EXEC, "cpu.expert_pool.split_multi_native", "builtin.guild-kernels-cpu", GUILD_BACKEND_CPU, 100);
         d.required_cpu_isa = GUILD_ISA_AVX2;
         d.max_batch_rows = 512;
         d.max_dim_n = 2560;
         d.max_dim_k = 2560;
+#if defined(GUILD_NATIVE_EXPERTS)
+        d.next_ext=guild_cpu_backend_table_v2();
+#endif
         register_op(d, ignore_err);
     }
     {
@@ -1237,6 +1250,7 @@ void KernelRegistry::register_builtin_kernels() {
         d.output_dtype = GUILD_DTYPE_Q8_K;
         register_op(d, ignore_err);
     }
+#endif
     {
         auto d = make_base(GUILD_OP_FINITE_CHECK, "cpu.finite_check.simd64", "builtin.guild-kernels-cpu", GUILD_BACKEND_CPU, 100);
         d.input_dtype = GUILD_DTYPE_F32;

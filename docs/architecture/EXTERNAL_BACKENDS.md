@@ -3,6 +3,11 @@
 **Phase 2 is in progress.** These are functioning independent repositories and
 packages, but complete CPU/CUDA/architecture decoupling is not finished.
 
+Continuation: [CPU source ownership](CPU_BACKEND_OWNERSHIP.md) now uses pinned
+independent sources for bundled builds and proves an external-only CPU arithmetic
+configuration. The earlier preview scope and repository table below describe the
+original migration slice, not the complete current CPU operation set.
+
 | Repository | Published HEAD | Verified scope |
 |---|---|---|
 | https://github.com/guild-inference/guild-kernels-cpu | `5c2a76f` | Native expert activation/hidden quantization, gate/up and down arithmetic; own pinned GGML build |

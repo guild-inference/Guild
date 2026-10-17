@@ -19,6 +19,7 @@ def main():
     parser.add_argument("--reference",type=Path)
     parser.add_argument("--additional-package",type=Path,action="append",default=[])
     parser.add_argument("--upgrade-package",type=Path)
+    parser.add_argument("--verify-bundled-fallback",action="store_true")
     parser.add_argument("--artifact-output",type=Path)
     parser.add_argument("--benchmark-output",type=Path)
     parser.add_argument("--benchmark-prompts",type=int,nargs="+",default=[512,4096,8192,16384])
@@ -43,6 +44,7 @@ def main():
         subprocess.run([cli,"kernel","sign",str(args.package.resolve()),"--key-id","integration",
                         "--seed-file",str(seed),"--bundle",str(bundle)],env=env,check=True)
         subprocess.run([cli,"kernel","install",str(bundle)],env=env,check=True)
+        base_cpu_version=None
         for index, package in enumerate(args.additional_package):
             extra=work/f"extra-{index}.gkernel"
             subprocess.run([cli,"kernel","sign",str(package.resolve()),"--key-id","integration",
@@ -52,11 +54,14 @@ def main():
             if metadata["package_id"]=="org.guild.kernels.cpu":
                 env["GUILD_EXPECT_CPU_PACKAGE"]="org.guild.kernels.cpu"
                 env["GUILD_EXPECT_CPU_VERSION"]=metadata["version"]
+                base_cpu_version=metadata["version"]
             if metadata["package_id"]=="org.guild.kernels.cuda":
                 env["GUILD_EXPECT_CUDA_PACKAGE"]="org.guild.kernels.cuda"
         # Installation, execution and inspection are separate processes.
         subprocess.run([test,"compare",str(reference),"org.guild.runners.qwen"],env=env,check=True)
         if args.upgrade_package:
+            if base_cpu_version is None:
+                raise RuntimeError("CPU upgrade verification requires an installed CPU base package")
             upgrade=work/"cpu-upgrade.gkernel"
             subprocess.run([cli,"kernel","sign",str(args.upgrade_package.resolve()),"--key-id","integration",
                             "--seed-file",str(seed),"--bundle",str(upgrade)],env=env,check=True)
@@ -65,9 +70,23 @@ def main():
             subprocess.run([cli,"kernel","enable","org.guild.runners.qwen"],env=env,check=True)
             subprocess.run([test,"compare",str(reference),"org.guild.runners.qwen"],env=env,check=True)
             subprocess.run([cli,"kernel","rollback","org.guild.kernels.cpu"],env=env,check=True)
-            env["GUILD_EXPECT_CPU_VERSION"]="1.0.0"
+            env["GUILD_EXPECT_CPU_VERSION"]=base_cpu_version
             subprocess.run([cli,"kernel","enable","org.guild.runners.qwen"],env=env,check=True)
             subprocess.run([test,"compare",str(reference),"org.guild.runners.qwen"],env=env,check=True)
+        if args.verify_bundled_fallback:
+            if base_cpu_version is None:
+                raise RuntimeError("bundled CPU fallback verification requires an external CPU base package")
+            subprocess.run([cli,"kernel","disable","org.guild.kernels.cpu"],env=env,check=True)
+            if "GUILD_EXPECT_CUDA_PACKAGE" in env:
+                subprocess.run([cli,"kernel","disable","org.guild.kernels.cuda"],env=env,check=True)
+            fallback_env=env.copy()
+            for name in ("GUILD_EXPECT_CPU_PACKAGE","GUILD_EXPECT_CPU_VERSION","GUILD_EXPECT_CUDA_PACKAGE"):
+                fallback_env.pop(name,None)
+            fallback_env["GUILD_EXPECT_BUNDLED_CPU"]="1"
+            subprocess.run([test,"compare",str(reference),"builtin.guild-kernels-ornith"],env=fallback_env,check=True)
+            subprocess.run([cli,"kernel","enable","org.guild.kernels.cpu"],env=env,check=True)
+            if "GUILD_EXPECT_CUDA_PACKAGE" in env:
+                subprocess.run([cli,"kernel","enable","org.guild.kernels.cuda"],env=env,check=True)
         seed.unlink()
         if args.benchmark_output:
             subprocess.run([cli,"kernel","enable","org.guild.runners.qwen"],env=env,check=True)

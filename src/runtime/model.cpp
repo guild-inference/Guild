@@ -170,9 +170,9 @@ std::unique_ptr<GuildModel> GuildModel::load(
             impl->kernel_lease.add_package(selected->package_id);
             impl->pool->bind_native_kernels(table);
             impl->native_cpu_package=selected->package_id;
-            if(table.struct_size>=sizeof(guild_cpu_backend_ext_v2_t)) {
+            if(table.struct_size>=offsetof(guild_cpu_backend_ext_v2_t,swiglu)) {
                 guild_cpu_backend_ext_v2_t complete{};
-                std::memcpy(&complete,selected->next_ext,sizeof(complete));
+                std::memcpy(&complete,selected->next_ext,std::min<size_t>(table.struct_size,sizeof(complete)));
                 if(complete.backend_version!=GUILD_CPU_BACKEND_VERSION_V2){error_msg="invalid CPU backend contract";return nullptr;}
                 impl->cpu_backend=complete;
                 impl->pool->bind_backend_kernels(complete);
@@ -181,6 +181,12 @@ std::unique_ptr<GuildModel> GuildModel::load(
 #if defined(GUILD_NO_BUILTIN_NATIVE_CPU)
         if (impl->native_cpu_package.empty()) {
             error_msg="model load: native CPU fallback disabled; install a compatible CPU .gkernel";
+            return nullptr;
+        }
+#endif
+#if defined(GUILD_NO_BUILTIN_FULL_CPU)
+        if(!impl->cpu_backend || !impl->cpu_backend->swiglu){
+            error_msg="model load: all bundled CPU arithmetic disabled; a complete CPU backend contract is required";
             return nullptr;
         }
 #endif
@@ -199,6 +205,10 @@ std::unique_ptr<GuildModel> GuildModel::load(
         return nullptr;
     }
     const bool native_pack = guild::kernels::cpu::expert_layout().native;
+    if(!native_pack && (impl->g.n_embd!=GUILD_CPU_PLANAR_EMBED_V1 || impl->g.n_ff!=GUILD_CPU_PLANAR_FF_V1)) {
+        error_msg="model load: canonical planar Q2 pack geometry does not match its fixed public storage contract";
+        return nullptr;
+    }
     const auto& layout = kernels::cpu::expert_layout();
     const uint64_t ram_budget = plan.expert_ram_budget_bytes ? std::min(plan.expert_ram_budget_bytes, layout.total)
                                 : plan.routed_expert_total_bytes ? plan.routed_experts_ram_bytes : layout.total;

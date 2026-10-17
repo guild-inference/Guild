@@ -8,6 +8,7 @@ import json
 import math
 from pathlib import Path
 import re
+import shlex
 import subprocess
 import sys
 
@@ -103,8 +104,16 @@ def parse_disassembly(text):
 
 
 def assembly():
+    build = ROOT / "build-cuda12"
+    database = json.loads((build / "compile_commands.json").read_text())
+    candidates = [entry for entry in database if Path(entry["file"]).name == "kq_avx2.cpp"
+                  and "guild_kernels_cpu.dir" in entry.get("command", "")]
+    if len(candidates) != 1:
+        raise RuntimeError("the configured bundled CPU target must contain one kq_avx2 translation unit")
+    args = shlex.split(candidates[0]["command"])
+    cpu_object = Path(candidates[0]["directory"]) / args[args.index("-o") + 1]
     objects = {
-        "guild": ROOT / "build-cuda12/CMakeFiles/guild_kernels_cpu.dir/src/kernels/cpu/kq_avx2.cpp.o",
+        "guild": cpu_object,
         "ggml": ROOT / "build-cuda12/ggml/src/CMakeFiles/ggml-cpu.dir/ggml-cpu/arch/x86/quants.c.o",
     }
     targets = []

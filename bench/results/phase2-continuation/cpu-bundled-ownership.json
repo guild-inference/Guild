@@ -1,0 +1,36 @@
+{
+  "external_only": false,
+  "cpu_translation_units": [
+    "/home/ubuntu/Guild/src/kernels/cpu/pool.cpp",
+    "/home/ubuntu/Guild/src/kernels/cpu/pack_layout.cpp",
+    "/home/ubuntu/Guild/build-cuda12/_deps/guild_cpu_backend-src/src/kernels/cpu/features.cpp",
+    "/home/ubuntu/Guild/build-cuda12/_deps/guild_cpu_backend-src/src/kernels/cpu/isa.cpp",
+    "/home/ubuntu/Guild/build-cuda12/_deps/guild_cpu_backend-src/src/kernels/cpu/expert.cpp",
+    "/home/ubuntu/Guild/build-cuda12/_deps/guild_cpu_backend-src/src/kernels/cpu/q2_avx2.cpp",
+    "/home/ubuntu/Guild/build-cuda12/_deps/guild_cpu_backend-src/src/backend.cpp",
+    "/home/ubuntu/Guild/build-cuda12/_deps/guild_cpu_backend-src/src/vector_ops.cpp",
+    "/home/ubuntu/Guild/build-cuda12/_deps/guild_cpu_backend-src/src/kernels/cpu/native_expert.cpp",
+    "/home/ubuntu/Guild/build-cuda12/_deps/guild_cpu_backend-src/src/kernels/cpu/iq_avx512.cpp",
+    "/home/ubuntu/Guild/build-cuda12/_deps/guild_cpu_backend-src/src/kernels/cpu/iq_avx2.cpp",
+    "/home/ubuntu/Guild/build-cuda12/_deps/guild_cpu_backend-src/src/kernels/cpu/kq_avx2.cpp",
+    "/home/ubuntu/Guild/build-cuda12/_deps/guild_cpu_backend-src/src/kernels/cpu/kq_avx1.cpp",
+    "/home/ubuntu/Guild/build-cuda12/_deps/guild_cpu_backend-src/src/kernels/cpu/canonical_avx2.cpp"
+  ],
+  "archive_members": [
+    "pool.cpp.o",
+    "pack_layout.cpp.o",
+    "features.cpp.o",
+    "isa.cpp.o",
+    "expert.cpp.o",
+    "q2_avx2.cpp.o",
+    "backend.cpp.o",
+    "vector_ops.cpp.o",
+    "native_expert.cpp.o",
+    "iq_avx512.cpp.o",
+    "iq_avx2.cpp.o",
+    "kq_avx2.cpp.o",
+    "kq_avx1.cpp.o",
+    "canonical_avx2.cpp.o"
+  ],
+  "guild_sha256": "bf4ff968eff20905d59b58e4115e0d990f76910ea623e67575c34908af6b3780"
+}

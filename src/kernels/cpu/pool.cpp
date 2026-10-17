@@ -24,6 +24,9 @@
 #endif
 
 namespace guild::kernels::cpu {
+#if GUILD_BUNDLED_CPU_ARITHMETIC && defined(GUILD_NATIVE_EXPERTS)
+extern "C" const guild_cpu_backend_ext_v2_t* guild_cpu_backend_table_v2();
+#endif
 
 namespace {
 constexpr uint64_t pack_head(uint32_t epoch, uint32_t n, uint32_t i) {
@@ -408,6 +411,9 @@ void ExpertPool::diag(std::FILE* f) const {
 
 ExpertPool::ExpertPool(int n_workers, bool pin, bool host_works, PoolAffinity affinity)
     : host_works_(host_works), affinity_(affinity), topo_(detect_cpu_topology(true, affinity)) {
+#if GUILD_BUNDLED_CPU_ARITHMETIC && defined(GUILD_NATIVE_EXPERTS)
+    bind_backend_kernels(*guild_cpu_backend_table_v2());
+#endif
     if (const char* e = std::getenv("GUILD_POOL_SPIN_US"))   // a test knob; see kSpinBeforeSleep
         spin_before_sleep_ = std::chrono::microseconds((std::max)(0, std::atoi(e)));
     if (n_workers > 0) {
@@ -613,24 +619,8 @@ void ExpertPool::drain(int id, ExpertScratch& scratch, uint32_t epoch) {
             const float* p_base = comb_parts_ + (size_t) i * (size_t) K * (size_t) N;
             const float* w_base = comb_weights_ + (size_t) i * (size_t) K;
             float* dst = comb_out_ + (size_t) i * (size_t) N;
-            uint32_t nonfinite = 0;
-            if(backend_table_.combine) {
-                if(backend_table_.combine(p_base,w_base,dst,K,N)!=GUILD_STATUS_OK)
-                    comb_nonfinite_.store(true,std::memory_order_relaxed);
-            } else {
-            for (int d = 0; d < N; ++d) {
-                float acc = 0.0f;
-                for (int r = 0; r < K; ++r) {
-                    const float pv = p_base[(size_t) r * (size_t) N + d];
-                    uint32_t bits;
-                    std::memcpy(&bits, &pv, sizeof(bits));
-                    nonfinite |= (bits & 0x7f800000u) == 0x7f800000u;
-                    acc = std::fma(pv, w_base[r], acc);
-                }
-                dst[d] = acc;
-            }
-            if (nonfinite) comb_nonfinite_.store(true, std::memory_order_relaxed);
-            }
+            if(backend_table_.combine(p_base,w_base,dst,K,N)!=GUILD_STATUS_OK)
+                comb_nonfinite_.store(true,std::memory_order_relaxed);
         } else if (mode_ == 8) {
             // Whole multi-token native expert per task: gate/up -> quant_h -> down in thread-local L1/L2 cache.
             const ExpertJobMulti& mj = mjobs_[i];
@@ -655,8 +645,7 @@ void ExpertPool::drain(int id, ExpertScratch& scratch, uint32_t epoch) {
                     q2_rows_any(mj.blob, nfmt_->gu_row, nbk, mj.act + t0, m, gp, 0, (int) nfmt_->n_ff);
                     q2_rows_any(mj.blob + nfmt_->up_off, nfmt_->gu_row, nbk, mj.act + t0, m, up, 0, (int) nfmt_->n_ff);
                     for (int t = 0; t < m; ++t)
-                        for (int r = 0; r < (int) nfmt_->n_ff; ++r)
-                            ff_buf[t0 + t][r] = (gbuf[t][r] / (1.f + std::exp(-gbuf[t][r]))) * ubuf[t][r];
+                        swiglu(gbuf[t],ubuf[t],ff_buf[t0+t],int(nfmt_->n_ff));
                 }
             } else {
                 float* ff[kMaxMultiExt];
@@ -724,8 +713,7 @@ void ExpertPool::drain(int id, ExpertScratch& scratch, uint32_t epoch) {
                     q2_rows_any(mjobs_[e].blob, nfmt_->gu_row, nbk, mjobs_[e].act, mjobs_[e].nt, gp, r0, r1);
                     q2_rows_any(mjobs_[e].blob + nfmt_->up_off, nfmt_->gu_row, nbk, mjobs_[e].act, mjobs_[e].nt, up, r0, r1);
                     for (int t = 0; t < mjobs_[e].nt; ++t)
-                        for (int r = r0; r < r1; ++r)
-                            sb.ff[t][r] = (gbuf[t][r] / (1.f + std::exp(-gbuf[t][r]))) * ubuf[t][r];
+                        swiglu(gbuf[t]+r0,ubuf[t]+r0,sb.ff[t]+r0,r1-r0);
                 } else if (mode_ == 5) {
                     float* ff[MAXT];
                     for (int t = 0; t < mjobs_[e].nt; ++t) ff[t] = sb.ff[t];
@@ -857,7 +845,7 @@ void ExpertPool::quant_act_multi_native(const NativeFmt& f, const float* x, uint
 
 bool ExpertPool::combine_multi_native(const float* parts, const float* weights, float* out,
                                       int n_tok, int k, int n_embd) {
-    if (n_tok <= 0 || k <= 0 || n_embd <= 0) return false;
+    if (n_tok <= 0 || k <= 0 || n_embd <= 0 || !backend_table_.combine) return false;
     comb_parts_ = parts;
     comb_weights_ = weights;
     comb_out_ = out;

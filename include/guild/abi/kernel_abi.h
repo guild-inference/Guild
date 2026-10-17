@@ -123,7 +123,8 @@ enum guild_cpu_isa_e {
     GUILD_ISA_AVX512DQ   = 1ull << 8,
     GUILD_ISA_AVX512VL   = 1ull << 9,
     GUILD_ISA_AVX512VNNI = 1ull << 10,
-    GUILD_ISA_AVX512VBMI = 1ull << 11
+    GUILD_ISA_AVX512VBMI = 1ull << 11,
+    GUILD_ISA_AVX512CD   = 1ull << 12
 };
 
 typedef uint64_t guild_gpu_cap_flags_t;

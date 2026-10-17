@@ -85,12 +85,12 @@ guild_resolve(_spec src/spec/suffix_drafter.cpp src/spec/controller.cpp src/spec
 add_library(guild_spec STATIC ${_spec})
 target_link_libraries(guild_spec PUBLIC guild_includes)
 
-guild_resolve(_cpu src/kernels/cpu/expert.cpp src/kernels/cpu/features.cpp src/kernels/cpu/pool.cpp src/kernels/cpu/expert_layout.cpp
-                    src/kernels/cpu/q2_avx2.cpp)
+include(${GUILD_ROOT}/cmake/CPUBackend.cmake)
+target_include_directories(guild_includes INTERFACE "${_guild_cpu_source}/include")
+guild_resolve(_cpu src/kernels/cpu/pool.cpp src/kernels/cpu/pack_layout.cpp)
 add_library(guild_kernels_cpu STATIC ${_cpu})
-set_source_files_properties(${GUILD_ROOT}/src/kernels/cpu/expert.cpp PROPERTIES COMPILE_OPTIONS
-  "-mavx512f;-mavx512bw;-mavx512vl;-mavx512dq;-mavx512vnni;-mavx512vbmi;-mf16c;-mfma")
-set_source_files_properties(${GUILD_ROOT}/src/kernels/cpu/q2_avx2.cpp PROPERTIES COMPILE_OPTIONS "-mavx2;-mfma;-mf16c")
+guild_cpu_attach_base(guild_kernels_cpu TRUE)
+target_compile_definitions(guild_kernels_cpu PUBLIC GUILD_BUNDLED_CPU_ARITHMETIC=1)
 find_package(Threads REQUIRED)
 target_link_libraries(guild_kernels_cpu PUBLIC guild_includes Threads::Threads)
 
@@ -120,14 +120,7 @@ if(GUILD_NATIVE_EXPERTS)
     endif()
     add_subdirectory(${guild_llamacpp_SOURCE_DIR}/ggml ${CMAKE_BINARY_DIR}/ggml EXCLUDE_FROM_ALL)
   endif()
-  guild_resolve(_cpu_native src/kernels/cpu/native_expert.cpp src/kernels/cpu/iq_avx512.cpp src/kernels/cpu/iq_avx2.cpp
-                             src/kernels/cpu/kq_avx2.cpp)   # 0.1.31: the Q4_K/Q5_K/Q5_1/Q8_0 expert rows
-  target_sources(guild_kernels_cpu PRIVATE ${_cpu_native})
-  target_include_directories(guild_kernels_cpu PRIVATE ${GUILD_ROOT}/third_party/ggml)
-  set_source_files_properties(${GUILD_ROOT}/src/kernels/cpu/iq_avx512.cpp PROPERTIES COMPILE_OPTIONS
-    "-mavx512f;-mavx512bw;-mavx512vl;-mavx512dq;-mavx512vnni;-mavx512vbmi;-mf16c;-mfma")
-  set_source_files_properties(${GUILD_ROOT}/src/kernels/cpu/iq_avx2.cpp PROPERTIES COMPILE_OPTIONS "-mavx2;-mfma;-mf16c")
-  set_source_files_properties(${GUILD_ROOT}/src/kernels/cpu/kq_avx2.cpp PROPERTIES COMPILE_OPTIONS "-mavx2;-mfma;-mf16c")
+  guild_cpu_attach_native(guild_kernels_cpu)
   target_link_libraries(guild_kernels_cpu PUBLIC ggml-cpu ggml-base)
   target_compile_definitions(guild_kernels_cpu PUBLIC GUILD_NATIVE_EXPERTS=1)
 endif()

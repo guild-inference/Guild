@@ -133,9 +133,11 @@ HardwareInfo detect_hardware() {
     probe_gpu(hw);
 
     const auto feat = kernels::cpu::cpu_features();
-    hw.isa_avx512 = feat.avx512f && feat.avx512bw && feat.avx512vl;
-    hw.isa_vnni = feat.avx512_vnni;
-    hw.isa_vbmi = feat.avx512_vbmi;
+    hw.isa_avx512 = feat.os_avx512 && feat.avx512f && feat.avx512bw && feat.avx512dq && feat.avx512vl;
+    hw.isa_vnni = hw.isa_avx512 && feat.avx512_vnni;
+    hw.isa_vbmi = hw.isa_avx512 && feat.avx512_vbmi;
+    hw.isa_bmi2 = feat.bmi2;
+    hw.isa_avx512cd = hw.isa_avx512 && feat.avx512cd;
     hw.isa_avx2 = kernels::cpu::cpu_avx2_ok();
 
     hw.sync_gib();

@@ -154,7 +154,11 @@ public:
     int workers() const { return n_; }
     // Called while workers are parked, before this model publishes its first job.
     void bind_native_kernels(const guild_cpu_expert_ext_v1_t& table) { native_table_ = table; }
-    void bind_backend_kernels(const guild_cpu_backend_ext_v2_t& table) { backend_table_=table;native_table_=table.native; }
+    void bind_backend_kernels(const guild_cpu_backend_ext_v2_t& table) {
+        const auto baseline_swiglu=backend_table_.swiglu;
+        backend_table_=table;native_table_=table.native;
+        if(!backend_table_.swiglu)backend_table_.swiglu=baseline_swiglu;
+    }
     void quantize_planar(const float* x,int n,ActQ& out) { act_quant_any(x,n,out); }
     void quantize_native(const NativeFmt& f,const float* x,void* out) { native_table_.quant_act(&f,x,out); }
     int host_core() const { return topo_.host_core; }
@@ -226,6 +230,9 @@ public:
 
 private:
     guild_cpu_backend_ext_v2_t backend_table_{};
+    void swiglu(const float* gate,const float* up,float* out,int count){
+        if(backend_table_.swiglu)backend_table_.swiglu(gate,up,out,count);else cpu::swiglu(gate,up,out,count);
+    }
     void act_quant_any(const float* x,int n,ActQ& a) {
         if(backend_table_.quant_planar)backend_table_.quant_planar(x,n,&a);else cpu::act_quant_any(x,n,a);
     }

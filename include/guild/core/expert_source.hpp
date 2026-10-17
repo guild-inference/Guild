@@ -179,7 +179,7 @@ public:
     RouterLookahead& operator=(const RouterLookahead&) = delete;
     /// `routers[l]`: layer l's ffn_gate_inp as BF16 bits, n_expert rows of n_embd.
     bool start(std::vector<std::vector<uint16_t>> routers, int64_t n_embd, int64_t n_expert, int k, ExpertSource* src,
-               std::string& err);
+                std::string& err, const guild_cpu_backend_ext_v2_t* backend = nullptr);
     /// Layer `layer`'s MoE input for `n_tok` tokens (host floats): predict and warm layer + 1.  Never waits: a
     /// prediction still running for an earlier layer makes this one skip.
     void submit(int64_t layer, const float* x, int64_t n_tok, const int32_t* host_res);
@@ -189,6 +189,7 @@ public:
 
 private:
     void run();
+    decltype(guild_cpu_backend_ext_v2_t::router_bf16) router_ = nullptr;
     std::vector<std::vector<uint16_t>> routers_;
     int64_t n_embd_ = 0, n_expert_ = 0;
     int k_ = 10;

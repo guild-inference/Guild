@@ -92,6 +92,10 @@ option(GUILD_BUILD_CONVERSATION_TESTS "Build standalone conversation cache tests
 option(GUILD_WERROR "Treat compiler warnings as errors" OFF)
 option(GUILD_BUILTIN_QWEN_RUNNERS "Register the validated built-in Qwen fallback runners" ON)
 option(GUILD_BUILTIN_NATIVE_CPU "Compile the validated native CPU arithmetic fallback" ON)
+option(GUILD_BUILTIN_CPU "Bundle CPU arithmetic from the pinned independent repository" ON)
+if(NOT GUILD_BUILTIN_NATIVE_CPU)
+  set(GUILD_BUILTIN_CPU OFF)
+endif()
 
 if(GUILD_BUILD_CONVERSATION_TESTS)
   enable_testing()
@@ -935,22 +939,16 @@ if(GUILD_BUILD_TESTS OR GUILD_BUILD_CONVERSATION_TESTS)
   add_test(NAME bf16_bits_test COMMAND bf16_bits_test)
 endif()
 
-add_library(guild_kernels_cpu STATIC src/kernels/cpu/expert.cpp src/kernels/cpu/features.cpp src/kernels/cpu/pool.cpp
-            src/kernels/cpu/expert_layout.cpp src/kernels/cpu/q2_avx2.cpp)
+include(cmake/CPUBackend.cmake)
+target_include_directories(guild_artifact INTERFACE "${_guild_cpu_source}/include")
+add_library(guild_kernels_cpu STATIC src/kernels/cpu/pool.cpp src/kernels/cpu/pack_layout.cpp)
 target_include_directories(guild_kernels_cpu PUBLIC include)
-if(NOT GUILD_BUILTIN_NATIVE_CPU)
-  target_compile_definitions(guild_kernels_cpu PRIVATE GUILD_NO_BUILTIN_NATIVE_CPU=1)
-endif()
-# Plan v0.3 P6: only the kernel files get the AVX-512 / AVX2 flags; the pool and the probe run on any x86-64,
-# and the engine picks the kernels at run time (cpu_avx512_ok).
-if(MSVC)
-  set_source_files_properties(src/kernels/cpu/expert.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX512")
-  set_source_files_properties(src/kernels/cpu/q2_avx2.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX2")
+guild_cpu_attach_base(guild_kernels_cpu ${GUILD_BUILTIN_CPU})
+if(GUILD_BUILTIN_CPU)
+  target_compile_definitions(guild_kernels_cpu PUBLIC GUILD_BUNDLED_CPU_ARITHMETIC=1)
 else()
-  # GCC/Clang spell it differently, and `-mavx512vnni` alone is not enough: VBMI is a separate feature bit.
-  set_source_files_properties(src/kernels/cpu/expert.cpp
-                              PROPERTIES COMPILE_OPTIONS "-mavx512f;-mavx512bw;-mavx512vl;-mavx512dq;-mavx512vnni;-mavx512vbmi;-mf16c;-mfma")
-  set_source_files_properties(src/kernels/cpu/q2_avx2.cpp PROPERTIES COMPILE_OPTIONS "-mavx2;-mfma;-mf16c")
+  target_sources(guild_kernels_cpu PRIVATE src/kernels/cpu/external_only.cpp)
+  target_compile_definitions(guild_kernels_cpu PUBLIC GUILD_BUNDLED_CPU_ARITHMETIC=0)
 endif()
 find_package(Threads REQUIRED)
 target_link_libraries(guild_kernels_cpu PUBLIC Threads::Threads)
@@ -985,11 +983,12 @@ configure_package_config_file(
   INSTALL_DESTINATION lib/cmake/GuildKernelSDK)
 write_basic_package_version_file(
   ${CMAKE_CURRENT_BINARY_DIR}/GuildKernelSDKConfigVersion.cmake
-  VERSION 1.2.0
+  VERSION 1.3.0
   COMPATIBILITY SameMajorVersion)
 install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/include/guild/abi/kernel_abi.h
               ${CMAKE_CURRENT_SOURCE_DIR}/include/guild/abi/runner_abi.h
               ${CMAKE_CURRENT_SOURCE_DIR}/include/guild/abi/cpu_expert_abi.h
+              ${CMAKE_CURRENT_SOURCE_DIR}/include/guild/abi/cpu_backend_abi.h
         DESTINATION include/guild/abi)
 install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/schemas/gkmetadata.v1.schema.json
         DESTINATION share/guild/schemas)
@@ -1032,6 +1031,9 @@ if(NOT GUILD_BUILTIN_QWEN_RUNNERS)
 endif()
 if(NOT GUILD_BUILTIN_NATIVE_CPU)
   target_compile_definitions(guild_runtime PRIVATE GUILD_NO_BUILTIN_NATIVE_CPU=1)
+endif()
+if(NOT GUILD_BUILTIN_CPU)
+  target_compile_definitions(guild_runtime PRIVATE GUILD_NO_BUILTIN_FULL_CPU=1)
 endif()
 
 if(GUILD_ENABLE_CUDA OR GUILD_ENABLE_HIP)
@@ -1307,29 +1309,15 @@ if(GUILD_NATIVE_EXPERTS)
   endif()
   # part of guild_kernels_cpu (the pool calls these and they call its CPU probe: one library, so GNU ld's
   # one-pass static linking has no cycle to resolve)
-  target_sources(guild_kernels_cpu PRIVATE src/kernels/cpu/native_expert.cpp src/kernels/cpu/iq_avx512.cpp
-                                           src/kernels/cpu/iq_avx2.cpp src/kernels/cpu/kq_avx2.cpp
-                                           src/kernels/cpu/kq_avx1.cpp)
-  target_include_directories(guild_kernels_cpu PRIVATE third_party/ggml)
-  if(MSVC)
-    set_source_files_properties(src/kernels/cpu/iq_avx512.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX512")
-    set_source_files_properties(src/kernels/cpu/iq_avx2.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX2")
-    set_source_files_properties(src/kernels/cpu/kq_avx2.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX2")
-    # the router lookahead's AVX1 dot (older CPUs; called behind cpu_avx1_ok): no FMA, no 256-bit integer ops
-    set_source_files_properties(src/kernels/cpu/kq_avx1.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX")
-  else()
-    set_source_files_properties(src/kernels/cpu/iq_avx512.cpp PROPERTIES COMPILE_OPTIONS
-                                "-mavx512f;-mavx512bw;-mavx512vl;-mavx512dq;-mavx512vnni;-mavx512vbmi;-mf16c;-mfma")
-    set_source_files_properties(src/kernels/cpu/iq_avx2.cpp PROPERTIES COMPILE_OPTIONS "-mavx2;-mfma;-mf16c")
-    set_source_files_properties(src/kernels/cpu/kq_avx2.cpp PROPERTIES COMPILE_OPTIONS "-mavx2;-mfma;-mf16c")
-    set_source_files_properties(src/kernels/cpu/kq_avx1.cpp PROPERTIES COMPILE_OPTIONS "-mavx")
+  if(GUILD_BUILTIN_CPU)
+    guild_cpu_attach_native(guild_kernels_cpu)
+    target_link_libraries(guild_kernels_cpu PUBLIC ggml-cpu ggml-base)
   endif()
   if(GUILD_ISA_FLOOR STREQUAL "avx")
     target_compile_definitions(guild_kernels_cpu PRIVATE GUILD_ISA_FLOOR_AVX=1)
   elseif(GUILD_ISA_FLOOR STREQUAL "none")
     target_compile_definitions(guild_kernels_cpu PRIVATE GUILD_ISA_FLOOR_NONE=1)
   endif()
-  target_link_libraries(guild_kernels_cpu PUBLIC ggml-cpu ggml-base)
   target_compile_definitions(guild_kernels_cpu PUBLIC GUILD_NATIVE_EXPERTS=1)
   # the router lookahead's dot on each rung this CPU has (AVX2, the older CPUs' AVX1) against a double reference
   add_executable(router_dot_parity src/kernels/cpu/router_dot_parity.cpp)

@@ -23,6 +23,8 @@ struct HardwareInfo {
     bool isa_avx2 = false;
     bool isa_vnni = false;
     bool isa_vbmi = false;
+    bool isa_bmi2 = false;
+    bool isa_avx512cd = false;
 
     // Direct double fields preserved for compatibility
     double ram_total_gib = 0.0;

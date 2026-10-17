@@ -158,6 +158,17 @@ struct PrefillTestRegistry {
 int main() {
     std::string err;
     {
+        hardware::HardwareInfo synthetic;
+        synthetic.isa_avx2=true;
+        auto caps=kernels::query_device_capabilities(synthetic);
+        CHECK((caps.cpu_isa_flags&GUILD_ISA_BMI2)==0);
+        CHECK((caps.cpu_isa_flags&GUILD_ISA_AVX512CD)==0);
+        synthetic.isa_bmi2=true;synthetic.isa_avx512cd=true;
+        caps=kernels::query_device_capabilities(synthetic);
+        CHECK((caps.cpu_isa_flags&GUILD_ISA_BMI2)!=0);
+        CHECK((caps.cpu_isa_flags&GUILD_ISA_AVX512CD)!=0);
+    }
+    {
         const auto policy=abi::PackageSecurityPolicy::default_builtin_policy();
         CHECK(policy.require_signature && policy.verify_artifact_hashes && !policy.allow_unsigned_dev);
         CHECK(policy.trusted_public_keys.empty());

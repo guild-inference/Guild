@@ -33,6 +33,11 @@ int main(int argc, char** argv) {
     CHECK(impl->runner && expected==impl->runner->package_id());
     CHECK(impl->g.hc==1 && impl->g.ssm_v_heads==32 && impl->g.qsa_interval==4);
     CHECK(impl->batched_prefill && impl->config.kv_host_only);
+    if(std::getenv("GUILD_EXPECT_BUNDLED_CPU")) {
+        CHECK(impl->native_cpu_package=="builtin.guild-kernels-cpu");
+        const auto& ids=impl->batched_prefill->bound_impl_ids();
+        CHECK(std::find(ids.begin(),ids.end(),"gpu.moe.router_topk_native")!=ids.end());
+    }
     if (std::getenv("GUILD_EXPECT_CPU_PACKAGE") && !std::getenv("GUILD_TEST_NO_CPU_REFERENCE")) {
         const auto* op=guild::kernels::KernelRegistry::instance().find_by_id("external.cpu.native_expert.v1");
         CHECK(op && op->next_ext);

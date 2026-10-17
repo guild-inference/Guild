@@ -60,6 +60,9 @@
 #endif
 
 namespace guild::core {
+#if GUILD_BUNDLED_CPU_ARITHMETIC && defined(GUILD_NATIVE_EXPERTS)
+extern "C" const guild_cpu_backend_ext_v2_t* guild_cpu_backend_table_v2();
+#endif
 
 namespace detail {
 
@@ -1177,7 +1180,12 @@ RouterLookahead::~RouterLookahead() {
 }
 
 bool RouterLookahead::start(std::vector<std::vector<uint16_t>> routers, int64_t n_embd, int64_t n_expert, int k,
-                            ExpertSource* src, std::string& err) {
+                             ExpertSource* src, std::string& err, const guild_cpu_backend_ext_v2_t* backend) {
+    if(backend)router_=backend->router_bf16;
+#if GUILD_BUNDLED_CPU_ARITHMETIC && defined(GUILD_NATIVE_EXPERTS)
+    if(!router_)router_=guild_cpu_backend_table_v2()->router_bf16;
+#endif
+    if(!router_){err="RouterLookahead: a CPU router provider must be bound";return false;}
     if (src == nullptr || !src->warms()) { err = "RouterLookahead: the expert source does not warm"; return false; }
     if (n_embd % 8 != 0) { err = "RouterLookahead: n_embd is not a multiple of 8"; return false; }
     for (const auto& r : routers)
@@ -1225,35 +1233,9 @@ void RouterLookahead::run() {
         }
         const auto t0 = std::chrono::steady_clock::now();
         want.clear();
-        // The router dot is AVX2 (kq_avx2.cpp); a CPU without AVX2 (the experimental older-CPU builds) takes the AVX1
-        // one (kq_avx1.cpp) or, without AVX, the same sums in plain C++.  From the Strata_Dirigo fork (rwkeyes): an
-        // AVX-only Xeon E5-2687W died here (vpmovzxwd) on its first request.  An estimate only (which experts to
-        // prefetch); the order of the additions differs between the three, the output does not depend on it.
-        if (guild::kernels::cpu::cpu_avx2_ok()) {
-            guild::kernels::cpu::bf16_rows_dot_multi(routers_[(size_t) layer].data(), (int) n_expert_, (int) n_embd_,
-                                                      x_.data(), (int) nt, logits.data());
-        } else if (guild::kernels::cpu::cpu_avx1_ok()) {
-            guild::kernels::cpu::bf16_rows_dot_multi_avx1(routers_[(size_t) layer].data(), (int) n_expert_,
-                                                           (int) n_embd_, x_.data(), (int) nt, logits.data());
-        } else {
-            // a mul and an add, not std::fma: without an FMA instruction that is a libm call per element (74x
-            // slower on a Xeon E5-2665, measured by the fork)
-            const uint16_t* rw = routers_[(size_t) layer].data();
-            for (int64_t r = 0; r < n_expert_; ++r) {
-                const uint16_t* wr = rw + (size_t) r * (size_t) n_embd_;
-                for (int64_t t = 0; t < nt; ++t) {
-                    const float* xr = x_.data() + (size_t) t * (size_t) n_embd_;
-                    float acc = 0.0f;
-                    for (int64_t c = 0; c < n_embd_; ++c) {
-                        const uint32_t bits = (uint32_t) wr[c] << 16;
-                        float wf;
-                        std::memcpy(&wf, &bits, sizeof wf);
-                        acc += wf * xr[c];
-                    }
-                    logits[(size_t) t * (size_t) n_expert_ + (size_t) r] = acc;
-                }
-            }
-        }
+        // Arithmetic is owned by the bound backend; this thread owns prediction
+        // scheduling and file warming only.
+        router_(routers_[size_t(layer)].data(),int(n_expert_),int(n_embd_),x_.data(),int(nt),logits.data());
         for (int64_t t = 0; t < nt; ++t) {
             const float* lt = logits.data() + (size_t) (t * n_expert_);
             for (int64_t e = 0; e < n_expert_; ++e) order[(size_t) e] = (int32_t) e;
@@ -1940,7 +1922,7 @@ void expert_pool_dispatch(void* user, const float* x_f, const int32_t* ids, cons
 
     // Clause 1: rebuilt from `x_f` on EVERY call.  `x_f` is mapped pinned memory whose address never changes,
     // so anything cached against it would be layer 0's activation reused 48 times.
-    act_quant_q8_1(x_f, H, d.act);
+    d.pool->quantize_planar(x_f, H, d.act);
 
     // ---- R4.2c: THE POOL'S HALF OF THE SPLIT.  **IT DOES NOT DECIDE ANYTHING - `Launch` ALREADY DID.**
     //

@@ -126,7 +126,7 @@ bool calibrate_experts(const kernels::cpu::ExpertLayout& layout, core::ExpertSou
         std::vector<kernels::cpu::ActQ> canonical(tokens);
         for (int t = 0; t < tokens; ++t) {
             if (kernels::cpu::q2_native_kernels(f.gu_type))
-                kernels::cpu::act_quant_any(input.data() + size_t(t) * f.n_embd, int(f.n_embd), canonical[t]);
+                pool.quantize_planar(input.data() + size_t(t) * f.n_embd, int(f.n_embd), canonical[t]);
             else pool.quantize_native(f, input.data() + size_t(t) * f.n_embd,
                                                 activations.data() + size_t(t) * kernels::cpu::kNativeActBytes);
         }
