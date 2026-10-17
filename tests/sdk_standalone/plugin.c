@@ -1,7 +1,9 @@
 #include <guild/abi/kernel_abi.h>
 #include <guild/abi/runner_abi.h>
 #include <guild/abi/cpu_backend_abi.h>
+#include <guild/abi/cuda_dense_abi.h>
 typedef char frozen_image_size[(sizeof(guild_cpu_planar_act_v1_t)==3584)?1:-1];
+typedef char cuda_extension_prefix[(offsetof(guild_cuda_dense_ext_v1_t,tag)==4)?1:-1];
 static guild_status_t execute(const guild_exec_context_v1_t* context,const guild_tensor_desc_t* in,size_t ni,
     const guild_tensor_desc_t* out,size_t no,const void* params,size_t size,guild_error_info_t* error) {
     size_t i;float sum=0;

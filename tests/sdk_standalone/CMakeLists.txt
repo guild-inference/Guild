@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 project(guild_sdk_contract LANGUAGES C CXX)
-find_package(GuildKernelSDK 1.3 REQUIRED CONFIG)
+find_package(GuildKernelSDK 1.4 REQUIRED CONFIG)
 add_library(sdk_c_plugin SHARED plugin.c)
 guild_configure_gkernel_plugin(sdk_c_plugin)
 set_target_properties(sdk_c_plugin PROPERTIES C_STANDARD 99 C_STANDARD_REQUIRED ON)

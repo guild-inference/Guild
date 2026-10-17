@@ -123,3 +123,12 @@ The current registry still has conservative process-wide session checks and
 raw select-then-lease APIs. Atomic concurrent selection/replacement across both
 registries is an outstanding Phase 2 gate; the existing concurrency test alone
 does not prove all replacement races safe.
+# CUDA dense extension (SDK 1.4)
+
+`guild/abi/cuda_dense_abi.h` adds the `CDD1` size-checked extension without
+changing Kernel ABI v1, PFKE or the frozen seven-pointer prefill table. It carries
+BF16/F32 projection, native Q8_1 quantization and native GGUF MMVQ callbacks,
+explicit geometry/strides/stream, caller-owned buffer lifetimes, per-call exact
+multi-row selection and C status/error records. It exposes no private C++ class
+or CUDA SDK type. Discovery/registration is not an execution guarantee; the
+CUDA ownership document tracks implementation and real-model gates.
