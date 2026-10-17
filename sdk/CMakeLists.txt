@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(GuildKernelSDK VERSION 1.2.0 LANGUAGES NONE)
+project(GuildKernelSDK VERSION 1.3.0 LANGUAGES NONE)
 include(CMakePackageConfigHelpers)
 configure_package_config_file(../cmake/GuildKernelSDKConfig.cmake.in
   ${CMAKE_CURRENT_BINARY_DIR}/GuildKernelSDKConfig.cmake

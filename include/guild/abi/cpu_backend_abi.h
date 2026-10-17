@@ -45,6 +45,8 @@ typedef struct guild_cpu_backend_ext_v2_s {
     // Ordered fused multiply-add in routed-expert order; returns NONFINITE_OUTPUT
     // on non-finite expert values. No fallback is attempted on numerical failure.
     guild_status_t (*combine)(const float*, const float*, float*, int32_t, int32_t);
+    // Optional append-only tail (old v2 prefixes end before this field).
+    void (*swiglu)(const float*, const float*, float*, int32_t);
 } guild_cpu_backend_ext_v2_t;
 
 #ifdef __cplusplus
