@@ -1,6 +1,7 @@
 #include <guild/abi/cpu_backend_abi.h>
 #include <guild/abi/cuda_dense_abi.h>
 #include <guild/abi/cuda_attn_abi.h>
+#include <guild/abi/cuda_moe_abi.h>
 #include <cstdio>
 #include <cstdlib>
 #if defined(_WIN32)
@@ -16,6 +17,7 @@ int main(int argc,char** argv){
     static_assert(offsetof(guild_cpu_backend_ext_v2_t,native)==0,"frozen prefix");
     static_assert(offsetof(guild_cuda_dense_ext_v1_t,bf16)==16,"CUDA C extension alignment");
     static_assert(offsetof(guild_cuda_attn_ext_v1_t,configure)==16,"CUDA attention C extension alignment");
+    static_assert(offsetof(guild_cuda_moe_ext_v1_t,configure)==16,"CUDA MoE C extension alignment");
 #if defined(_WIN32)
     auto handle=LoadLibraryA(argv[1]);CHECK(handle);
     auto entry=reinterpret_cast<guild_plugin_entry_fn>(GetProcAddress(handle,GUILD_PLUGIN_ENTRY_SYMBOL_V1));

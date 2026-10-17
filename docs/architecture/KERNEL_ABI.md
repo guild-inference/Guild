@@ -137,5 +137,11 @@ attention, recurrent (GDN), RoPE, KV cache/streaming and QSA selection
 operations. It replaces private C++ records (`QsaShapes`, `GdnShapes`,
 `QsaAttnPools`, `KvHostPools`, `KvStreamMap`, `QsaIndexerBuffers`, `RopeScaling`)
 and process-global native toggles with public C POD descriptors and explicit
-configuration callbacks. Discovery/registration is not an execution guarantee;
+configuration callbacks.
+
+`guild/abi/cuda_moe_abi.h` adds the `CDM1` size-checked extension for CUDA MoE
+routing/combine/shared/grouped experts, S-family quantized GEMV/dequant,
+activation quantization, elementwise/doorbell operations, token sampling,
+speculative verify kernels, and an isolated Qwen specialization (`gr`, `fused_gr`,
+`ple`, `cvec`). Discovery/registration is not an execution guarantee;
 the CUDA ownership document tracks implementation and real-model gates.
