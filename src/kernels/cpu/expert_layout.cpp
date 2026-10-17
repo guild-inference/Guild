@@ -208,7 +208,7 @@ void native_down_rows(const NativeFmt&, const uint8_t*, const void* const*, int,
 #endif
 
 bool expert_layout_load(const std::string& pack_dir, int64_t n_layers, int64_t n_expert, std::string& err,
-                        int64_t n_embd, int64_t n_ff) {
+                         int64_t n_embd, int64_t n_ff, const guild_cpu_backend_ext_v2_t* backend) {
     ExpertLayout L;
     L.n_layers = n_layers;
     L.n_expert = n_expert;
@@ -261,7 +261,10 @@ bool expert_layout_load(const std::string& pack_dir, int64_t n_layers, int64_t n
         }
         if (l >= n_layers) continue;
         NativeFmt f;
-        if (!native_fmt((int) gt, (int) dt, n_embd, n_ff, f, err)) return false;
+        if(backend && backend->format) {
+            guild_error_info_t error{};
+            if(backend->format(int(gt),int(dt),n_embd,n_ff,&f,&error)!=GUILD_STATUS_OK){err=error.message;return false;}
+        } else if (!native_fmt((int) gt, (int) dt, n_embd, n_ff, f, err)) return false;
         if (f.bytes != blob) {
             err = "native_experts.txt: layer " + std::to_string(l) + " blob is " + std::to_string(blob) +
                   " B but its formats make " + std::to_string(f.bytes);

@@ -614,6 +614,10 @@ void ExpertPool::drain(int id, ExpertScratch& scratch, uint32_t epoch) {
             const float* w_base = comb_weights_ + (size_t) i * (size_t) K;
             float* dst = comb_out_ + (size_t) i * (size_t) N;
             uint32_t nonfinite = 0;
+            if(backend_table_.combine) {
+                if(backend_table_.combine(p_base,w_base,dst,K,N)!=GUILD_STATUS_OK)
+                    comb_nonfinite_.store(true,std::memory_order_relaxed);
+            } else {
             for (int d = 0; d < N; ++d) {
                 float acc = 0.0f;
                 for (int r = 0; r < K; ++r) {
@@ -626,6 +630,7 @@ void ExpertPool::drain(int id, ExpertScratch& scratch, uint32_t epoch) {
                 dst[d] = acc;
             }
             if (nonfinite) comb_nonfinite_.store(true, std::memory_order_relaxed);
+            }
         } else if (mode_ == 8) {
             // Whole multi-token native expert per task: gate/up -> quant_h -> down in thread-local L1/L2 cache.
             const ExpertJobMulti& mj = mjobs_[i];

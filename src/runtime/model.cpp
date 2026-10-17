@@ -170,6 +170,13 @@ std::unique_ptr<GuildModel> GuildModel::load(
             impl->kernel_lease.add_package(selected->package_id);
             impl->pool->bind_native_kernels(table);
             impl->native_cpu_package=selected->package_id;
+            if(table.struct_size>=sizeof(guild_cpu_backend_ext_v2_t)) {
+                guild_cpu_backend_ext_v2_t complete{};
+                std::memcpy(&complete,selected->next_ext,sizeof(complete));
+                if(complete.backend_version!=GUILD_CPU_BACKEND_VERSION_V2){error_msg="invalid CPU backend contract";return nullptr;}
+                impl->cpu_backend=complete;
+                impl->pool->bind_backend_kernels(complete);
+            }
         }
 #if defined(GUILD_NO_BUILTIN_NATIVE_CPU)
         if (impl->native_cpu_package.empty()) {
@@ -187,7 +194,8 @@ std::unique_ptr<GuildModel> GuildModel::load(
 
     // Expert layout from pack directory
     if (!guild::kernels::cpu::expert_layout_load(paths.pack_dir, impl->g.n_layers, impl->g.n_expert, error_msg,
-                                                 impl->g.n_embd, impl->g.n_ff)) {
+                                                  impl->g.n_embd, impl->g.n_ff,
+                                                  impl->cpu_backend ? &*impl->cpu_backend : nullptr)) {
         return nullptr;
     }
     const bool native_pack = guild::kernels::cpu::expert_layout().native;
@@ -196,7 +204,7 @@ std::unique_ptr<GuildModel> GuildModel::load(
                                 : plan.routed_expert_total_bytes ? plan.routed_experts_ram_bytes : layout.total;
     impl->config.resident_budget_gib = (ram_budget >> 30) + ((ram_budget & ((1ull << 30) - 1)) != 0);
     model->config_ = impl->config;
-    if ((!native_pack && !kernels::cpu::cpu_avx512_ok()) ||
+    if ((!native_pack && !kernels::cpu::cpu_avx512_ok() && !impl->cpu_backend) ||
         impl->g.n_ff > kernels::cpu::FF || impl->g.n_embd > kernels::cpu::H) {
         error_msg = "model load: expert geometry or CPU ISA exceeds this pool's supported capacities";
         return nullptr;

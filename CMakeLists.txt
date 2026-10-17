@@ -985,7 +985,7 @@ configure_package_config_file(
   INSTALL_DESTINATION lib/cmake/GuildKernelSDK)
 write_basic_package_version_file(
   ${CMAKE_CURRENT_BINARY_DIR}/GuildKernelSDKConfigVersion.cmake
-  VERSION 1.1.0
+  VERSION 1.2.0
   COMPATIBILITY SameMajorVersion)
 install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/include/guild/abi/kernel_abi.h
               ${CMAKE_CURRENT_SOURCE_DIR}/include/guild/abi/runner_abi.h

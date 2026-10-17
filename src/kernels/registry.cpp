@@ -4,6 +4,7 @@
 #include "guild/core/validation.hpp"
 #include "guild/abi/runner_abi.h"
 #include "guild/abi/cpu_expert_abi.h"
+#include "guild/abi/cpu_backend_abi.h"
 
 #if defined(GUILD_ENABLE_CUDA) || defined(GUILD_ENABLE_HIP)
 #include "guild/kernels/native_mmvq.hpp"
@@ -24,6 +25,23 @@
 
 namespace guild::kernels {
 namespace {
+
+size_t cpu_extension_size(const void* payload) {
+    uint32_t size=0;
+    std::memcpy(&size,payload,sizeof(size));
+    if(size<sizeof(guild_cpu_expert_ext_v1_t)) return 0;
+    guild_cpu_expert_ext_v1_t native{};
+    std::memcpy(&native,payload,sizeof(native));
+    if(native.tag!=GUILD_CPU_EXPERT_TAG_V1 || native.version!=1 ||
+       !native.quant_act || !native.quant_h || !native.gate_up || !native.down) return 0;
+    if(size==sizeof(native)) return sizeof(native);
+    if(size<sizeof(guild_cpu_backend_ext_v2_t)) return 0;
+    guild_cpu_backend_ext_v2_t full{};
+    std::memcpy(&full,payload,sizeof(full));
+    if(full.backend_version!=GUILD_CPU_BACKEND_VERSION_V2 || !full.format || !full.quant_planar ||
+       !full.canonical_gate_up || !full.canonical_down || !full.q2_gguf_rows || !full.router_bf16 || !full.combine) return 0;
+    return sizeof(full);
+}
 
 void fill_err(guild_error_info_t* err, guild_status_t code, const char* comp, const std::string& msg) {
     if (!err) return;
@@ -390,18 +408,12 @@ guild_status_t KernelRegistry::register_op(const guild_kernel_op_desc_v1_t& desc
     }
     // Deep-copy prefill extension payload respecting exact validated prefix bounds.
     if (desc.next_ext && desc.op_kind == GUILD_OP_BATCHED_EXPERT_EXEC) {
-        uint32_t prefix[3]={};
-        std::memcpy(prefix,desc.next_ext,sizeof(uint32_t));
-        if (prefix[0] < sizeof(guild_cpu_expert_ext_v1_t)) {
-            err="truncated CPU expert extension"; return GUILD_STATUS_ERR_ABI_MISMATCH;
-        }
-        guild_cpu_expert_ext_v1_t ext{};
-        std::memcpy(&ext,desc.next_ext,sizeof(ext));
-        if (ext.tag!=GUILD_CPU_EXPERT_TAG_V1 || ext.version!=1 || !ext.quant_act || !ext.quant_h || !ext.gate_up || !ext.down) {
+        const size_t bytes=cpu_extension_size(desc.next_ext);
+        if (!bytes) {
             err="invalid CPU expert extension"; return GUILD_STATUS_ERR_ABI_MISMATCH;
         }
-        stored->owned_ext_bytes.resize(sizeof(ext));
-        std::memcpy(stored->owned_ext_bytes.data(),&ext,sizeof(ext));
+        stored->owned_ext_bytes.resize(bytes);
+        std::memcpy(stored->owned_ext_bytes.data(),desc.next_ext,bytes);
         stored->desc.next_ext=stored->owned_ext_bytes.data();
     }
     if (desc.next_ext != nullptr &&
@@ -574,15 +586,10 @@ guild_status_t KernelRegistry::register_plugin_transactional(
         }
         std::vector<uint8_t> ext_copy;
         if (d->next_ext && d->op_kind == GUILD_OP_BATCHED_EXPERT_EXEC) {
-            uint32_t size=0;
-            std::memcpy(&size,d->next_ext,sizeof(size));
-            if(size < sizeof(guild_cpu_expert_ext_v1_t)) return GUILD_STATUS_ERR_ABI_MISMATCH;
-            guild_cpu_expert_ext_v1_t ext{};
-            std::memcpy(&ext,d->next_ext,sizeof(ext));
-            if(ext.tag!=GUILD_CPU_EXPERT_TAG_V1 || ext.version!=1 || !ext.quant_act || !ext.quant_h || !ext.gate_up || !ext.down)
-                return GUILD_STATUS_ERR_ABI_MISMATCH;
-            ext_copy.resize(sizeof(ext));
-            std::memcpy(ext_copy.data(),&ext,sizeof(ext));
+            const size_t bytes=cpu_extension_size(d->next_ext);
+            if(!bytes) return GUILD_STATUS_ERR_ABI_MISMATCH;
+            ext_copy.resize(bytes);
+            std::memcpy(ext_copy.data(),d->next_ext,bytes);
         }
         if (d->next_ext != nullptr &&
             (d->op_kind == GUILD_OP_GDN_AB_PROJ || d->op_kind == GUILD_OP_MOE_ROUTER_TOPK)) {

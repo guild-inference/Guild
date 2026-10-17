@@ -112,6 +112,7 @@ struct GuildModel::Impl {
     const model::IModelRunner* runner = nullptr;
     model::RunnerExecutionPlan runner_exec;
     std::string native_cpu_package;
+    std::optional<guild_cpu_backend_ext_v2_t> cpu_backend;
     model::SessionRunnerLease runner_lease;
     kernels::SessionKernelLease kernel_lease;
     core::ModelGeometry g;

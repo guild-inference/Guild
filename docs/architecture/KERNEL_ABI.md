@@ -100,6 +100,20 @@ in Core. The independently built DSO initializes its own GGML tables.
 
 ## Lifetime and dispatch
 
+SDK 1.2 adds `cpu_backend_abi.h`. `guild_cpu_backend_ext_v2_t` retains the
+unchanged CPE1 prefix and appends format-description, canonical planar Q2,
+native-Q2 rows, CPU BF16 router and ordered combine callbacks. The canonical
+activation image is explicitly 64-byte aligned and 3584 bytes; C and C++ builds
+check its frozen layout. Old CPE1 plugins remain readable, but do not supply
+the newly appended operations. Core copies and validates only the supported
+size-checked prefix before init's stack storage disappears.
+
+The independent CPU 1.1 implementation has oracle tests for the appended
+operations, including an AVX2/FMA/F16C canonical-Q2 fallback without VNNI.
+Core workers and native-pack format parsing can bind these operations once.
+Source ownership transfer and a build without all bundled CPU arithmetic are
+separate gates; registering this table alone does not establish either one.
+
 Core owns tensor buffers and scratch; plugins may not retain borrowed pointers
 beyond their declared lifetime or free Core allocations. Device launches use
 the supplied stream. Models hold the package while bound pointers/graphs exist;

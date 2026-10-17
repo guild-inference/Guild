@@ -29,6 +29,7 @@
 
 #include "guild/kernels/cpu/expert.hpp"
 #include "guild/kernels/cpu/native_expert.hpp"
+#include "guild/kernels/cpu/expert_layout.hpp"
 
 #include <atomic>
 #include <cstdio>
@@ -153,6 +154,8 @@ public:
     int workers() const { return n_; }
     // Called while workers are parked, before this model publishes its first job.
     void bind_native_kernels(const guild_cpu_expert_ext_v1_t& table) { native_table_ = table; }
+    void bind_backend_kernels(const guild_cpu_backend_ext_v2_t& table) { backend_table_=table;native_table_=table.native; }
+    void quantize_planar(const float* x,int n,ActQ& out) { act_quant_any(x,n,out); }
     void quantize_native(const NativeFmt& f,const float* x,void* out) { native_table_.quant_act(&f,x,out); }
     int host_core() const { return topo_.host_core; }
     /// Whether the host thread also drains.  Reported at startup, because "the engine adapts to the machine it
@@ -222,6 +225,37 @@ public:
     static constexpr std::chrono::seconds kStall{60};
 
 private:
+    guild_cpu_backend_ext_v2_t backend_table_{};
+    void act_quant_any(const float* x,int n,ActQ& a) {
+        if(backend_table_.quant_planar)backend_table_.quant_planar(x,n,&a);else cpu::act_quant_any(x,n,a);
+    }
+    void act_quant_q8_1(const float* x,int n,ActQ& a) {
+        if(backend_table_.quant_planar)backend_table_.quant_planar(x,n,&a);else cpu::act_quant_q8_1(x,n,a);
+    }
+    void q2_rows_any(const uint8_t* w,size_t bytes,int blocks,const ActQ* const* a,int n,float* const* y,int r0,int r1) {
+        if(backend_table_.q2_gguf_rows)backend_table_.q2_gguf_rows(w,bytes,blocks,a,n,y,r0,r1);
+        else cpu::q2_rows_any(w,bytes,blocks,a,n,y,r0,r1);
+    }
+    void s2_expert_gu_rows_multi(const uint8_t* b,const ActQ* const* a,int n,float* const* y,int r0,int r1) {
+        if(backend_table_.canonical_gate_up)backend_table_.canonical_gate_up(b,a,n,y,r0,r1);
+        else cpu::s2_expert_gu_rows_multi(b,a,n,y,r0,r1);
+    }
+    void s2_expert_down_rows_multi(const uint8_t* b,const ActQ* const* a,int n,float* const* y,int r0,int r1) {
+        if(backend_table_.canonical_down)backend_table_.canonical_down(b,a,n,y,r0,r1);
+        else cpu::s2_expert_down_rows_multi(b,a,n,y,r0,r1);
+    }
+    void s2_expert_gu_rows(const uint8_t* b,const ActQ& a,float* y,int r0,int r1) {
+        if(backend_table_.canonical_gate_up){const ActQ* inputs[]={&a};float* outputs[]={y};backend_table_.canonical_gate_up(b,inputs,1,outputs,r0,r1);}
+        else cpu::s2_expert_gu_rows(b,a,y,r0,r1);
+    }
+    void s2_expert_down_rows(const uint8_t* b,const ActQ& a,float* y,int r0,int r1) {
+        if(backend_table_.canonical_down){const ActQ* inputs[]={&a};float* outputs[]={y};backend_table_.canonical_down(b,inputs,1,outputs,r0,r1);}
+        else cpu::s2_expert_down_rows(b,a,y,r0,r1);
+    }
+    void s2_expert_vnni_q(const uint8_t* b,const ActQ& a,float* y,ExpertScratch& ws) {
+        if(!backend_table_.canonical_gate_up){cpu::s2_expert_vnni_q(b,a,y,ws);return;}
+        s2_expert_gu_rows(b,a,ws.ff,0,FF);act_quant_q8_1(ws.ff,FF,ws.a2);s2_expert_down_rows(b,ws.a2,y,0,H);
+    }
     guild_cpu_expert_ext_v1_t native_table_ = {
         sizeof(guild_cpu_expert_ext_v1_t), GUILD_CPU_EXPERT_TAG_V1, 1,
         +[](const NativeFmt* f,const float* x,void* out) { cpu::native_quant_act(*f,x,out); },

@@ -38,6 +38,10 @@ int main(int argc, char** argv) {
         CHECK(op && op->next_ext);
         const auto* table=static_cast<const guild_cpu_expert_ext_v1_t*>(op->next_ext);
         const auto& format=guild::kernels::cpu::expert_layout().fmt[0];
+        // A complete external backend supplies format metadata itself, so Core's
+        // private GGML reference instance may not have initialized yet.
+        guild::kernels::cpu::NativeFmt reference_format;
+        CHECK(guild::kernels::cpu::native_fmt(format.gu_type,format.d_type,format.n_embd,format.n_ff,reference_format,err));
         const uint8_t* blob=impl->src.blob(0,0);CHECK(blob);
         std::vector<float> x(size_t(format.n_embd),0.125f),a(size_t(format.n_ff)),b(a.size());
         std::vector<uint8_t> qa(size_t(format.act_bytes)),qb(qa.size());

@@ -27,6 +27,7 @@
 
 #include <cstdint>
 #include <cstddef>
+#include "guild/abi/cpu_backend_abi.h"
 
 namespace guild::kernels::cpu {
 
@@ -61,13 +62,7 @@ inline constexpr size_t O_D_SCALES = O_GU_SCALES + 2ull * FF * SC_GU * 2;
 /// `hx[k] = scale[k] * sum[k]` is the weight-independent correction the Q2_0 identity needs
 /// (`sum (c-1) d_w xhat d_x = d_w (d_x*sum(c*xhat) - d_x*sum(xhat))`), precomputed once per layer rather than
 /// once per row: 640 rows would otherwise recompute it 640 times.
-struct ActQ {
-    alignas(64) int8_t q[H];
-    float scale[MAXC];
-    int32_t sum[MAXC];
-    float hx[MAXC];
-    int nchunks;
-};
+using ActQ = guild_cpu_planar_act_v1_t;
 
 /// Per-worker scratch.  Owned by the caller and passed in, so the token path performs NO allocations
 /// (P2.T10) - the kernel itself allocates nothing.
