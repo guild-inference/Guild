@@ -1,14 +1,35 @@
 #!/usr/bin/env python3
 """Check byte reproducibility, permissions and long filenames in release archives."""
 import os
+import copy
 from pathlib import Path
 import tarfile
 import tempfile
 import unittest
-from package_linux_cuda import cuda_license_files,write_archive
+from package_linux_cuda import cuda_license_files,validate_build_info,write_archive
 
 
 class Archive(unittest.TestCase):
+    def test_distribution_rejects_stale_or_partial_cuda_baselines(self):
+        info = {
+            "backend": "cuda", "channel": "development", "portable_cpu_baseline": True,
+            "external_packages": [], "bundled_cpu": {"enabled": True, "pinned": True},
+            "bundled_cuda": {"enabled": True, "pinned": True, "revision": "a" * 40,
+                             "source_revision": "a" * 40, "dense_bundled": True,
+                             "attn_bundled": True, "moe_bundled": True},
+        }
+        validate_build_info(info)
+        # CMake can retain an old cached revision even after the source lock changes.
+        stale = copy.deepcopy(info)
+        stale["bundled_cuda"]["source_revision"] = "b" * 40
+        with self.assertRaisesRegex(RuntimeError, "source revision differs"):
+            validate_build_info(stale)
+        for group in ("dense_bundled", "attn_bundled", "moe_bundled", "pinned"):
+            partial = copy.deepcopy(info)
+            partial["bundled_cuda"][group] = False
+            with self.subTest(group=group), self.assertRaises(RuntimeError):
+                validate_build_info(partial)
+
     def test_official_cuda_debian_runtime_licenses(self):
         with tempfile.TemporaryDirectory() as directory:
             work = Path(directory)

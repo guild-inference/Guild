@@ -69,6 +69,20 @@ def cuda_license_files(cuda_root, dependencies, docs_root=Path("/usr/share/doc")
     return licenses
 
 
+def validate_build_info(info, allow_native_cpu=False):
+    if info["backend"] != "cuda" or not info["bundled_cpu"]["enabled"] or not info["bundled_cuda"]["enabled"]:
+        raise RuntimeError("distribution requires CUDA with bundled CPU/CUDA baselines")
+    cuda = info["bundled_cuda"]
+    if (not info["bundled_cpu"]["pinned"] or not cuda["pinned"] or
+            not all(cuda.get(group) for group in ("dense_bundled", "attn_bundled", "moe_bundled")) or
+            info["external_packages"]):
+        raise RuntimeError("distribution requires pinned CPU/CUDA sources, full bundled CUDA groups, and an empty package store")
+    if not cuda.get("revision") or cuda.get("source_revision") != cuda["revision"]:
+        raise RuntimeError("CUDA source revision differs from the embedded lock; reconfigure with -UGUILD_CUDA_BACKEND_REVISION")
+    if not info["portable_cpu_baseline"] and (not allow_native_cpu or info["channel"] != "development"):
+        raise RuntimeError("public distributions require GUILD_PORTABLE=ON; local development may use --allow-native-cpu")
+
+
 def stage(build, dest, cuda_root, allow_native_cpu=False):
     root = Path(__file__).resolve().parents[1]
     if platform.system() != "Linux" or platform.machine() not in ("x86_64", "AMD64"):
@@ -78,12 +92,7 @@ def stage(build, dest, cuda_root, allow_native_cpu=False):
         env.pop("LD_LIBRARY_PATH", None)
         info = json.loads(subprocess.check_output([str(build / "guild"), "--version", "--json"],
                                                  env=env, text=True))
-        if info["backend"] != "cuda" or not info["bundled_cpu"]["enabled"] or not info["bundled_cuda"]["enabled"]:
-            raise RuntimeError("distribution requires CUDA with bundled CPU/CUDA baselines")
-        if not info["bundled_cpu"]["pinned"] or info["external_packages"]:
-            raise RuntimeError("distribution requires pinned CPU sources and an empty package store")
-        if not info["portable_cpu_baseline"] and (not allow_native_cpu or info["channel"] != "development"):
-            raise RuntimeError("public distributions require GUILD_PORTABLE=ON; local development may use --allow-native-cpu")
+        validate_build_info(info, allow_native_cpu)
         resolved = linked_libraries(build / "guild", env)
         dependencies = []
         (dest / "lib").mkdir()
@@ -105,7 +114,8 @@ def stage(build, dest, cuda_root, allow_native_cpu=False):
             shutil.copyfile(path, dest / "licenses" / f"cuda-{index}-{path.name}")
         for source, name in ((root / "LICENSE", "Guild-Strata-MIT.txt"),
                              (root / "third_party/ggml/LICENSE", "GGML-MIT.txt"),
-                             (build / "_deps/guild_cpu_backend-src/LICENSE", "CPU-MIT.txt")):
+                             (build / "_deps/guild_cpu_backend-src/LICENSE", "CPU-MIT.txt"),
+                             (build / "_deps/guild_cuda_backend-src/LICENSE", "CUDA-Backend-MIT.txt")):
             if not source.is_file():
                 raise RuntimeError(f"missing source license: {source}")
             shutil.copyfile(source, dest / "licenses" / name)
@@ -124,7 +134,7 @@ def stage(build, dest, cuda_root, allow_native_cpu=False):
             "cpu": "AVX2, FMA, F16C, BMI2" if info["portable_cpu_baseline"] else "build-host-specific development artifact",
             "gpu": "NVIDIA driver compatible with the embedded CUDA toolchain and GPU architectures",
             "model_data": "GGUF and prepared Guild pack required; model data not included",
-            "kernels": "bundled CPU and legacy CUDA baseline; external packages optional",
+            "kernels": "bundled pinned CPU and CUDA baselines; external packages optional",
             "gpu_execution_in_this_build_job": False,
         }
         # Exercise the launcher and confirm CUDA resolves from the distribution.
