@@ -41,7 +41,9 @@ double ms(Clock::time_point a) { return std::chrono::duration<double,std::milli>
 void ck(cudaError_t e) { if (e != cudaSuccess) throw std::runtime_error(cudaGetErrorString(e)); }
 guild_exec_context_v1_t cuda_ctx(void* stream) {
     guild_exec_context_v1_t c{}; c.struct_size=sizeof(c); c.abi_version=GUILD_KERNEL_ABI_VERSION_V1;
-    c.backend=GUILD_BACKEND_CUDA; c.device_id=0; c.device_stream=stream; c.sync_mode=GUILD_SYNC_STREAM_ORDERED; return c;
+    c.backend=GUILD_BACKEND_CUDA;
+    if (cudaGetDevice(&c.device_id)!=cudaSuccess || c.device_id<0) { cudaGetLastError(); c.device_id=0; }
+    c.device_stream=stream; c.sync_mode=GUILD_SYNC_STREAM_ORDERED; return c;
 }
 void cuda_ok(guild_status_t st, const guild_error_info_t& e) {
     if (st == GUILD_STATUS_OK) return;
@@ -232,6 +234,8 @@ bool BatchedPrefill::run(const int64_t* tokens,int64_t n,int64_t pos0,std::strin
     if (m.fns.has_cuda_dense) dense_scope.emplace(m.fns.cuda_dense);
     std::optional<ScopedCudaAttn> attn_scope;
     if (m.fns.has_cuda_attn) attn_scope.emplace(m.fns.cuda_attn);
+    std::optional<ScopedCudaMoE> moe_scope;
+    if (m.fns.has_cuda_moe) moe_scope.emplace(m.fns.cuda_moe);
     const int N=int(g.n_embd),C=int(g.ssm_conv_channels),V=int(g.ssm_value_dim),F=int(g.n_ff);
     const int NH=int(g.n_head),NK=int(g.n_head_kv),HD=int(g.head_dim),HV=int(g.ssm_v_heads),HK=int(g.ssm_k_heads);
     const int K=int(ss.k), NE=int(g.n_expert);

@@ -60,6 +60,7 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
 endif()
 
 option(GUILD_ENABLE_CUDA "Build the CUDA targets (Phase 2+)" OFF)
+option(GUILD_BUILTIN_CUDA_MOE "Bundle the independent CDM1 CUDA MoE backend" ON)
 # AMD gfx906 (MI50, wave64): the same .cu sources compiled as HIP through the gfx906 compat layer.  The CUDA runtime and
 # cuBLAS names are mapped by the headers in include/guild/platform/hip_compat/, which go first on the include path,
 # and CUDA::cudart / CUDA::cublas become aliases of HIP's targets, so every CUDA target below stays as it is.  This is
@@ -309,43 +310,43 @@ if(GUILD_ENABLE_CUDA OR GUILD_ENABLE_HIP)
   # Naive first, each with a parity test against a reference that was itself validated against ggml.  The
   # kernels link `guild_artifact` for the scalar dequantizers, because using the VALIDATED scalar path as the
   # reference is the whole point - a kernel checked against another copy of itself proves nothing.
-  add_library(guild_kernels STATIC src/kernels/cuda/dequant_s2.cu src/kernels/cuda/s2_gemv.cu
-                          src/kernels/cuda/s_gemv.cu
-                          src/kernels/cuda/s2_gemv_quads.cu
-                          src/kernels/cuda/s2_gemv_fast.cu
-                          src/kernels/cuda/router_top10.cu
-                          src/kernels/cuda/quantize_act.cu
-                          src/kernels/cuda/sampler.cu
-                          src/kernels/cuda/s2_gemv_q8.cu
-    src/kernels/cuda/s2_expert_grouped.cu
-                          src/kernels/cuda/shared_expert.cu
-                          src/kernels/cuda/gr.cu
-                          src/kernels/cuda/elementwise.cu
-                          src/kernels/cuda/native_gr_norm.cu
-                          src/kernels/cuda/native_moe.cu
-                          src/kernels/cuda/native_gr_postops.cu
-                          src/kernels/cuda/native_router.cu
-                          src/kernels/cuda/native_ple_postops.cu
-                          src/kernels/cuda/ple.cu
-                          src/kernels/cuda/fused_gr.cu
-                          src/kernels/cuda/cvec.cu
-                          src/kernels/cuda/dequant_bf16.cu
-                          src/kernels/cuda/verify_kernels.cu
-                          "${_guild_cuda_source}/src/math/iq_kernels.cu"
-                          src/kernels/ngram.cpp
+  add_library(guild_kernels STATIC src/kernels/ngram.cpp
                           src/ngram/ple_reader.cpp
                           src/platform/direct_file.cpp)
   target_link_libraries(guild_kernels PUBLIC guild_core guild_artifact)
   if(GUILD_ENABLE_CUDA AND NOT GUILD_HIP_GFX906)
-    target_sources(guild_kernels PRIVATE src/kernels/cuda_dense_bridge.cpp src/kernels/cuda_attn_bridge.cpp)
+    target_sources(guild_kernels PRIVATE src/kernels/cuda_dense_bridge.cpp src/kernels/cuda_attn_bridge.cpp
+      src/kernels/cuda_moe_bridge.cpp src/kernels/cuda_moe_layout.cpp src/kernels/cvec.cpp)
     target_compile_definitions(guild_kernels PUBLIC
       GUILD_BUNDLED_CUDA_DENSE=$<BOOL:${GUILD_BUILTIN_CUDA_DENSE}>
-      GUILD_BUNDLED_CUDA_ATTN=$<BOOL:${GUILD_BUILTIN_CUDA_ATTN}>)
+      GUILD_BUNDLED_CUDA_ATTN=$<BOOL:${GUILD_BUILTIN_CUDA_ATTN}>
+      GUILD_BUNDLED_CUDA_MOE=$<BOOL:${GUILD_BUILTIN_CUDA_MOE}>)
+    if(GUILD_BUILTIN_CUDA_DENSE OR GUILD_BUILTIN_CUDA_MOE)
+      add_library(guild_cuda_iq STATIC "${_guild_cuda_source}/src/math/iq_kernels.cu")
+      target_include_directories(guild_cuda_iq PRIVATE "${_guild_cuda_source}/include" third_party/ggml)
+      target_compile_definitions(guild_cuda_iq PRIVATE GUILD_CUDA_MOE_MATH_NS=guild::cuda_moe_math)
+      target_link_libraries(guild_cuda_iq PUBLIC CUDA::cudart)
+      set_target_properties(guild_cuda_iq PROPERTIES CUDA_STANDARD 17)
+    endif()
+    if(GUILD_BUILTIN_CUDA_MOE)
+      add_library(guild_cuda_moe STATIC)
+      if(GUILD_BUILTIN_CUDA_DENSE)
+        guild_cuda_attach_moe(guild_cuda_moe)
+        target_link_libraries(guild_cuda_moe PUBLIC guild_cuda_dense)
+      else()
+        # Mixed builds route dense dependencies through the selected CDD1 provider.
+        guild_cuda_attach_moe(guild_cuda_moe guild::kernels)
+        target_link_libraries(guild_cuda_moe PUBLIC guild_kernels)
+      endif()
+      target_include_directories(guild_cuda_moe PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
+      target_link_libraries(guild_cuda_moe PUBLIC guild_cuda_iq CUDA::cudart)
+      target_link_libraries(guild_kernels PUBLIC guild_cuda_moe)
+    endif()
     if(GUILD_BUILTIN_CUDA_DENSE)
       add_library(guild_cuda_dense STATIC)
       guild_cuda_attach_dense(guild_cuda_dense)
       target_include_directories(guild_cuda_dense PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
-      target_link_libraries(guild_cuda_dense PUBLIC CUDA::cudart)
+      target_link_libraries(guild_cuda_dense PUBLIC guild_cuda_iq CUDA::cudart)
       target_link_libraries(guild_kernels PUBLIC guild_cuda_dense)
     endif()
     if(GUILD_BUILTIN_CUDA_ATTN)
@@ -357,7 +358,11 @@ if(GUILD_ENABLE_CUDA OR GUILD_ENABLE_HIP)
     endif()
   else()
     # HIP retains its existing direct entry points from the same source owner.
+    set(_guild_hip_moe_sources ${GUILD_CUDA_MOE_SOURCES})
+    list(REMOVE_ITEM _guild_hip_moe_sources "${_guild_cuda_source}/src/moe_backend.cpp")
     target_sources(guild_kernels PRIVATE
+      ${_guild_hip_moe_sources}
+      "${_guild_cuda_source}/src/math/iq_kernels.cu"
       "${_guild_cuda_source}/src/math/bf16_gemv.cu"
       "${_guild_cuda_source}/src/math/native_bf16.cu"
       "${_guild_cuda_source}/src/math/native_mmvq.cu"
@@ -409,16 +414,16 @@ if(GUILD_ENABLE_CUDA OR GUILD_ENABLE_HIP)
   target_include_directories(guild_kernels PRIVATE third_party/ggml)
   # Match the pinned llama.cpp CUDA arithmetic contract for this adapter only.
   if(GUILD_ENABLE_CUDA)
-    set_source_files_properties(src/kernels/cuda/native_gr_norm.cu
-      src/kernels/cuda/native_moe.cu
-      src/kernels/cuda/native_gr_postops.cu
-      src/kernels/cuda/native_router.cu
-      src/kernels/cuda/native_ple_postops.cu
+    set_source_files_properties("${_guild_cuda_source}/src/qwen/native_gr_norm.cu"
+      "${_guild_cuda_source}/src/moe/native_moe.cu"
+      "${_guild_cuda_source}/src/qwen/native_gr_postops.cu"
+      "${_guild_cuda_source}/src/moe/native_router.cu"
+      "${_guild_cuda_source}/src/qwen/native_ple_postops.cu"
       PROPERTIES COMPILE_OPTIONS "$<IF:$<BOOL:${GUILD_HIP_GFX906}>,,--use_fast_math>")
   elseif(GUILD_ENABLE_HIP)
     # Keep Q8_K's multiply and magic-bias rounding as separate FP32 operations on HIP; contraction to an
     # FMA changes tie results. The embedding gather also relies on separately rounded operations.
-    set_source_files_properties(src/kernels/cuda/elementwise.cu src/kernels/cuda/quantize_act.cu
+    set_source_files_properties("${_guild_cuda_source}/src/moe/elementwise.cu" "${_guild_cuda_source}/src/moe/quantize_act.cu"
       PROPERTIES COMPILE_OPTIONS "-ffp-contract=off")
   endif()
 
@@ -453,7 +458,7 @@ if(GUILD_ENABLE_CUDA OR GUILD_ENABLE_HIP)
   # library is the honest shape of the dependency graph: core knows about devices and weights, kernels know
   # about arithmetic, and this one knows the ORDER the arithmetic happens in.
   add_library(guild_engine STATIC src/core/layer.cpp src/core/session.cpp src/core/expert_source.cpp src/core/remote_experts.cpp
-    src/core/remote_expert_opt.cu
+    src/core/remote_expert_opt.cpp
     src/core/expert_cache.cpp src/core/native_head.cpp src/core/native_dense.cpp src/core/verify.cpp src/core/mtp.cpp
     src/core/conversation_snapshot.cpp src/core/conversation_state.cpp src/core/conversation_memory.cpp src/core/peer_experts.cpp)
   target_include_directories(guild_engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)

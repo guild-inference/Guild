@@ -28,6 +28,8 @@
 namespace guild::kernels {
 
 // ---- geometry, every value confirmed against the artifact (docs/gguf-metadata.txt) ----
+#ifndef GUILD_PLE_GEOM_CONSTANTS_DEFINED
+#define GUILD_PLE_GEOM_CONSTANTS_DEFINED
 inline constexpr int NG_N_EMBD = 2560;          // n_embd
 inline constexpr int PLE_HEAD_DIM = 160;        // qwen4exp.embedding_length_per_layer_input
 inline constexpr int NGRAM_SIZE = 3;            // qwen4exp.ple.ngram_size
@@ -40,6 +42,7 @@ inline constexpr int NG_HC_DIM = NG_HC * NG_N_EMBD;                      // 1024
 inline constexpr int NG_HIST = (PLE_CONV_KERNEL - 1) * NGRAM_SIZE;       // 9
 inline constexpr int32_t TOKEN_NULL = -1;       // LLAMA_TOKEN_NULL
 inline constexpr float NG_RMS_EPS = 1e-6f;
+#endif
 
 // The table: [160, 320001536] IQ4_NL.  ne0 = 160 is the FAST axis, so one row is 160 contiguous elements =
 // 5 blocks of 32 at 18 bytes = 90 bytes.  The head-slowest flatten then makes 16 rows exactly n_embd = 2560.

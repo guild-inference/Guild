@@ -108,6 +108,7 @@ bool read_file(const std::string& path, std::vector<uint8_t>& out) {
 }  // namespace
 
 MtpDrafter::~MtpDrafter() {
+    const OnDevice on_device(device_);
     if (cs_) cudaStreamSynchronize(cs_);
     for (auto& e : prefill_exec_) if (e) cudaGraphExecDestroy(e);
     for (auto& e : prefill_dev_exec_) if (e) cudaGraphExecDestroy(e);

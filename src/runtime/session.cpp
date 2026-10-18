@@ -45,6 +45,8 @@ void GuildSession::reset() {
     if (!model_->is_ready()) return;
     std::optional<kernels::ScopedCudaAttn> attn_scope;
     if (m_impl->cuda_attn) attn_scope.emplace(*m_impl->cuda_attn);
+    std::optional<kernels::ScopedCudaMoE> moe_scope;
+    if (m_impl->cuda_moe) moe_scope.emplace(*m_impl->cuda_moe);
     std::string error;
     if (!m_impl->ver->wait_commit(error) || (m_impl->mtp && !m_impl->mtp->idle(error))) {
         model_->ready_.store(false);
@@ -143,6 +145,8 @@ bool GuildSession::generate(
     if (m_impl->cuda_dense) dense_scope.emplace(*m_impl->cuda_dense);
     std::optional<kernels::ScopedCudaAttn> attn_scope;
     if (m_impl->cuda_attn) attn_scope.emplace(*m_impl->cuda_attn);
+    std::optional<kernels::ScopedCudaMoE> moe_scope;
+    if (m_impl->cuda_moe) moe_scope.emplace(*m_impl->cuda_moe);
 
     // Reset KV state for fresh generation
     if (!m_impl->ver->wait_commit(error_msg)) return runtime_failure();

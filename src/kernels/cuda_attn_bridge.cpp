@@ -56,7 +56,10 @@ RopeReg g_rope_tab[kMropeDevices] = {};
 
 int current_dev() {
     int d = 0;
-    if (cudaGetDevice(&d) != cudaSuccess || d < 0 || d >= kMropeDevices) d = 0;
+    if (cudaGetDevice(&d) != cudaSuccess || d < 0 || d >= kMropeDevices) {
+        cudaGetLastError();
+        d = 0;
+    }
     return d;
 }
 
@@ -80,7 +83,7 @@ guild_exec_context_v1_t context(void* stream) {
     c.struct_size = sizeof(c);
     c.abi_version = GUILD_KERNEL_ABI_VERSION_V1;
     c.backend = GUILD_BACKEND_CUDA;
-    c.device_id = 0;
+    c.device_id = current_dev();
     c.device_stream = stream;
     c.sync_mode = GUILD_SYNC_STREAM_ORDERED;
     return c;
@@ -251,8 +254,9 @@ void push_toggle(uint32_t flag, bool value) {
 }  // namespace
 
 ScopedCudaAttn::ScopedCudaAttn(const ResolvedCudaAttn& binding) : previous_(active) {
+    // A failing configure must not leave a dangling thread-local binding.
+    sync_state(binding.table);
     active = &binding.table;
-    sync_state(*active);
 }
 
 ScopedCudaAttn::~ScopedCudaAttn() {

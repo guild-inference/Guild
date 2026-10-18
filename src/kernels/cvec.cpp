@@ -1,4 +1,4 @@
-// src/kernels/cuda/cvec.cu - see include/guild/kernels/cvec.hpp.
+// Host control-vector storage; the arithmetic is dispatched through CDM1.
 #include "guild/kernels/cvec.hpp"
 
 #include <cuda_runtime.h>
@@ -32,66 +32,14 @@ bool upload_here(std::string& err) {
         cudaMemcpy(t.dir, g_dir_host.data(), g_dir_host.size() * sizeof(float), cudaMemcpyHostToDevice) != cudaSuccess ||
         cudaMemcpy(t.s, g_s_host.data(), g_s_host.size() * sizeof(float), cudaMemcpyHostToDevice) != cudaSuccess ||
         cudaMemcpy(t.on, &flag, sizeof(int), cudaMemcpyHostToDevice) != cudaSuccess) {
+        if (t.dir) cudaFree(t.dir);
+        if (t.s) cudaFree(t.s);
+        if (t.on) cudaFree(t.on);
         err = "control vector: device allocation failed";
         t = DevTables{};
         return false;
     }
     return true;
-}
-
-// the fused hyper-connection read's gate (fused_gr.cu), so a write done here is bitwise the one it would have folded
-__device__ __forceinline__ float sigmoidf_(float x) { return 1.0f / (1.0f + __expf(-x)); }
-
-// one block per (stream, token): the pending write, then h . v over the stream, then the update
-__global__ void cvec_kernel(float* __restrict__ R, const float* __restrict__ dir, const float* __restrict__ s_l,
-                            const int* __restrict__ on, int mode, int64_t layer, int n, int hc, int64_t r_ld,
-                            const float* __restrict__ bo, int64_t bo_ld, const float* __restrict__ inj,
-                            int64_t inj_ld, int write) {
-    const int c = blockIdx.x;
-    const int64_t t = blockIdx.y;
-    float* r = R + t * r_ld + (int64_t) c * n;
-    const float s = s_l[layer];
-    const bool steer = *on != 0 && s != 0.0f;   // uniform over the block
-    if (!steer && !write) return;
-    const float* v = dir + layer * n;
-    const float w = write ? 2.0f * sigmoidf_(inj[t * inj_ld + c] / (float) hc) : 0.0f;
-    const float* b = write ? bo + t * bo_ld : nullptr;
-    float x[MAXK];
-    float dot = 0.0f;
-#pragma unroll
-    for (int k = 0; k < MAXK; ++k) {
-        const int d = threadIdx.x + k * THREADS;
-        if (d < n) {
-            float xv = r[d];
-            if (write) xv = fmaf(b[d], w, xv);
-            x[k] = xv;
-            if (steer && mode == 0) dot = fmaf(xv, v[d], dot);
-        }
-    }
-    if (steer && mode == 0) {
-        __shared__ float part[THREADS / 32];
-#pragma unroll
-        for (int o = 16; o > 0; o >>= 1) dot += __shfl_xor_sync(0xffffffffu, dot, o);
-        if ((threadIdx.x & 31) == 0) part[threadIdx.x >> 5] = dot;
-        __syncthreads();
-        if (threadIdx.x < 32) {
-            float p = threadIdx.x < THREADS / 32 ? part[threadIdx.x] : 0.0f;
-#pragma unroll
-            for (int o = 16; o > 0; o >>= 1) p += __shfl_xor_sync(0xffffffffu, p, o);
-            if (threadIdx.x == 0) part[0] = p;
-        }
-        __syncthreads();
-        dot = part[0] * s;   // s (h . v)
-    }
-#pragma unroll
-    for (int k = 0; k < MAXK; ++k) {
-        const int d = threadIdx.x + k * THREADS;
-        if (d < n) {
-            float xv = x[k];
-            if (steer) xv = mode == 0 ? fmaf(-dot, v[d], xv) : xv + v[d];
-            r[d] = xv;
-        }
-    }
 }
 
 }  // namespace
@@ -156,11 +104,8 @@ void cvec_apply(float* R, int64_t layer, int64_t T, int64_t r_ld, const float* b
     if (!g_cvec.loaded() || T < 1) return;
     const DevTables& t = g_dev[cur_device()];
     if (t.dir == nullptr) throw std::runtime_error("cvec_apply: the control vector is not on this device (cvec_replicate)");
-    const dim3 grid((unsigned) g_cvec.hc, (unsigned) T);
-    cvec_kernel<<<grid, THREADS, 0, (cudaStream_t) stream>>>(R, t.dir, t.s, t.on, g_cvec.mode, layer,
-                                                            (int) g_cvec.n_embd, (int) g_cvec.hc, r_ld, bo, bo_ld,
-                                                            inj, inj_ld, write ? 1 : 0);
-    if (cudaPeekAtLastError() != cudaSuccess) throw std::runtime_error("cvec_apply: launch failed");
+    cvec_launch_kernel(R, t.dir, t.s, t.on, g_cvec.mode, layer, T, g_cvec.n_embd, g_cvec.hc,
+                       r_ld, bo, bo_ld, inj, inj_ld, write, stream);
 }
 
 }  // namespace guild::kernels

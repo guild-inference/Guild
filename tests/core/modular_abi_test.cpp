@@ -731,6 +731,54 @@ int main() {
     }
 
     // -------------------------------------------------------------------------
+    // CDM1 payload ownership, malformed tables and model-time selection.
+    {
+        kernels::KernelRegistry reg;
+        guild_cuda_moe_ext_v1_t table{};
+        table.struct_size = sizeof(table); table.tag = GUILD_CUDA_MOE_TAG_V1; table.version = GUILD_CUDA_MOE_VERSION_V1;
+#define CDM_CALLBACK(member, type) \
+        table.member = +[](const guild_exec_context_v1_t*, const type*, guild_error_info_t*) -> guild_status_t { return GUILD_STATUS_OK; }
+        CDM_CALLBACK(configure, guild_cuda_moe_config_v1_t);
+        CDM_CALLBACK(quantize_dequant, guild_cuda_quant_dequant_op_v1_t);
+        CDM_CALLBACK(s_gemv, guild_cuda_s_gemv_op_v1_t);
+        CDM_CALLBACK(moe, guild_cuda_moe_op_v1_t);
+        CDM_CALLBACK(elementwise, guild_cuda_elementwise_op_v1_t);
+        CDM_CALLBACK(sampler, guild_cuda_sampler_op_v1_t);
+        CDM_CALLBACK(verify, guild_cuda_verify_op_v1_t);
+        CDM_CALLBACK(qwen, guild_cuda_qwen_op_v1_t);
+#undef CDM_CALLBACK
+        guild_kernel_op_desc_v1_t d{};
+        d.struct_size = sizeof(d); d.abi_version = GUILD_KERNEL_ABI_VERSION_V1;
+        d.op_kind = GUILD_OP_MOE_COMBINE; d.op_name = "moe_combine";
+        d.impl_id = "test.cuda.moe.v1"; d.package_id = "test.pkg.cuda.moe";
+        d.backend = GUILD_BACKEND_CUDA; d.max_batch_rows = 512; d.priority = 300;
+        d.numerical_flags = GUILD_NUM_BITWISE_DETERMINISTIC;
+        auto bad = table; d.next_ext = &bad;
+        bad.struct_size = sizeof(uint32_t);
+        CHECK(reg.register_op(d, err) == GUILD_STATUS_ERR_ABI_MISMATCH);
+        bad = table; bad.tag ^= 1;
+        CHECK(reg.register_op(d, err) == GUILD_STATUS_ERR_ABI_MISMATCH);
+        bad = table; bad.version += 1;
+        CHECK(reg.register_op(d, err) == GUILD_STATUS_ERR_ABI_MISMATCH);
+        bad = table; bad.sampler = nullptr;
+        CHECK(reg.register_op(d, err) == GUILD_STATUS_ERR_ABI_MISMATCH);
+        {
+            auto temporary = table; d.next_ext = &temporary;
+            CHECK(reg.register_op(d, err) == GUILD_STATUS_OK);
+            temporary = {};
+        }
+        guild_device_capabilities_v1_t caps{};
+        caps.struct_size = sizeof(caps); caps.abi_version = GUILD_KERNEL_ABI_VERSION_V1;
+        caps.available_backends = GUILD_BACKEND_CUDA;
+        caps.available_vram_bytes = caps.available_ram_bytes = 1ull << 30;
+        kernels::ResolvedCudaMoE resolved{};
+        CHECK(reg.resolve_cuda_moe(caps, resolved, err));
+        CHECK(resolved.table.sampler == table.sampler && resolved.table.qwen == table.qwen);
+        CHECK(resolved.impl_id == d.impl_id && resolved.package_id == d.package_id);
+        reg.set_package_enabled(d.package_id, false);
+        CHECK(!reg.resolve_cuda_moe(caps, resolved, err));
+    }
+
     // 5. RFC 8032 Ed25519 Cryptographic Signatures, Declarative .gkmetadata,
     //    Three-Tier (.gkmodule) Boundary, Hardened Staging & GEXEC Lock
     // -------------------------------------------------------------------------

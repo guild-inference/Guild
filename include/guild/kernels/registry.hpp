@@ -5,6 +5,7 @@
 #include "guild/hardware/hardware_info.hpp"
 #include "guild/kernels/cuda_attn.hpp"
 #include "guild/kernels/cuda_dense.hpp"
+#include "guild/kernels/cuda_moe.hpp"
 #include "guild/kernels/rope_scaling.hpp"
 
 #include <atomic>
@@ -115,6 +116,8 @@ struct ResolvedPrefillKernels : PrefillKernelTableV1 {
     bool has_cuda_dense = false;
     ResolvedCudaAttn cuda_attn{};
     bool has_cuda_attn = false;
+    ResolvedCudaMoE cuda_moe{};
+    bool has_cuda_moe = false;
     std::vector<std::string> bound_impl_ids;
     std::vector<std::string> bound_package_ids;
     bool all_bound() const {
@@ -207,6 +210,11 @@ public:
     bool resolve_cuda_attn(const guild_device_capabilities_v1_t& caps,
                            ResolvedCudaAttn& out_attn,
                            std::string& err) const;
+
+    /// Resolve a copied CDM1 table once per model, retained by its package lease.
+    bool resolve_cuda_moe(const guild_device_capabilities_v1_t& caps,
+                          ResolvedCudaMoE& out_moe,
+                          std::string& err) const;
 
     /// Active session & per-package lease tracking (prevents kernel replacement/removal during active inference).
     void acquire_session_lease() const { active_sessions_.fetch_add(1, std::memory_order_acq_rel); }

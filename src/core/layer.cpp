@@ -498,7 +498,9 @@ bool moe_layer(const WeightTable& tables, const ModelGeometry& g, int64_t layer,
 // combines `parts` with them, so a caller of this wrapper must have `parts` ready BEFORE the call - which
 // is what `session_token` (the uncaptured path) does and what the captured loop CANNOT, which is why the
 // loop uses the halves separately.
-if (!moe_route(tables, g, layer, k, b, x, stream, err, db)) return false;    return moe_finish(tables, g, layer, k, b, x, parts, out, stream, err);}
+    if (!moe_route(tables, g, layer, k, b, x, stream, err, db)) return false;
+    return moe_finish(tables, g, layer, k, b, x, parts, out, stream, err);
+}
 // ================================ the QSA mixer ================================
 namespace {using guild::kernels::QsaIndexerBuffers;using guild::kernels::QsaShapes;
 /// The geometry the QSA kernels want, from the one place that defines it.  `ModelGeometry` carries the widths
@@ -957,7 +959,18 @@ void stage_timing_report(int64_t n_layers) {
 // needs nothing from the layer it is called for beyond its index.
 static void dump_slot(float* dump, const ModelGeometry& g, int64_t layer, const float* src, uint64_t off,
                       uint64_t n, void* stream);
-bool qsa_layer(const WeightTable& tables, const ModelGeometry& g, int64_t layer, int64_t pos, int32_t pos_base,               const QsaState& st, const QsaBuffers& b, const float* x, float* out, void* stream,               std::string& err, float* dump) {    using namespace guild::kernels;    const QsaShapes s = qsa_shapes(g);    const LayerView v(tables, layer);    const int64_t n_kv = pos + 1;    /* P7 audit: RoPE reads cos/sin row pos_base + pos, and the table holds max_cells rows. */    if ((int64_t) pos_base + pos >= st.max_cells || pos_base < 0) {        err = "qsa_layer: position " + std::to_string((long long) pos_base + pos) + " is outside the RoPE table (" + std::to_string((long long) st.max_cells) + " rows)";        return false;    }    const int64_t n_bid = n_kv / s.idx_block;    const int64_t width = qsa_selection_width(n_kv, s);    const int64_t cap = qsa_effective_cap(g, s, st.max_cells);
+bool qsa_layer(const WeightTable& tables, const ModelGeometry& g, int64_t layer, int64_t pos, int32_t pos_base,
+               const QsaState& st, const QsaBuffers& b, const float* x, float* out, void* stream,
+               std::string& err, float* dump) {
+    using namespace guild::kernels;
+    const QsaShapes s = qsa_shapes(g);
+    const LayerView v(tables, layer);
+    /* P7 audit: RoPE reads cos/sin row pos_base + pos, and the table holds max_cells rows. */
+    if ((int64_t) pos_base + pos >= st.max_cells || pos_base < 0) {
+        err = "qsa_layer: position " + std::to_string((long long) pos_base + pos) + " is outside the RoPE table (" + std::to_string((long long) st.max_cells) + " rows)";
+        return false;
+    }
+    const int64_t cap = qsa_effective_cap(g, s, st.max_cells);
 const auto normalize_rotate = [&](float* data, const WeightRef* norm, int rows, int cols) {
     try {
         if (native_qsa_enabled()) native_qsa_rms_norm_weighted(data, (const float*) norm->data, data, cols, rows, RMS_EPS, stream);
@@ -1035,7 +1048,14 @@ SForm f_k, f_v, f_o, f_q;    if (!sform_of(*w_attnk, f_k, v.name("attn_k.weight"
 // k and v, with the activation THIS layer's tensors ask for.  Both are K-quants in every QSA layer of this
 // artifact, but the dispatch is here for the same reason it is in `gdn_layer`: the pack decides per tensor,
 // and "it happens to be uniform here" is the assumption that was wrong for `attn_q`.
-if (!gemv_quantized(*w_attnk, p_k, f_k, b.x_q8_0, b.x_q8k, b.kcur, g.n_embd, g.n_head_kv * g.head_dim,                        v.name("attn_k.weight"), stream, err, x)) return false;    if (!gemv_quantized(*w_attnv, p_v, f_v, b.x_q8_0, b.x_q8k, b.vcur, g.n_embd, g.n_head_kv * g.head_dim,                        v.name("attn_v.weight"), stream, err, x, w_attnk->native_data && w_attnv->native_data)) return false;    dump_slot(dump, g, layer, b.vcur,                            (uint64_t) 2 * g.n_embd + 2 * g.hc + (uint64_t) g.n_head * g.head_dim,                            (uint64_t) g.n_head_kv * g.head_dim, stream);    if (!normalize_rotate(b.kcur, w_kn, (int) g.n_head_kv, (int) g.head_dim)) return false;
+    if (!gemv_quantized(*w_attnk, p_k, f_k, b.x_q8_0, b.x_q8k, b.kcur, g.n_embd, g.n_head_kv * g.head_dim,
+                        v.name("attn_k.weight"), stream, err, x)) return false;
+    if (!gemv_quantized(*w_attnv, p_v, f_v, b.x_q8_0, b.x_q8k, b.vcur, g.n_embd, g.n_head_kv * g.head_dim,
+                        v.name("attn_v.weight"), stream, err, x, w_attnk->native_data && w_attnv->native_data)) return false;
+    dump_slot(dump, g, layer, b.vcur,
+              (uint64_t) 2 * g.n_embd + 2 * g.hc + (uint64_t) g.n_head * g.head_dim,
+              (uint64_t) g.n_head_kv * g.head_dim, stream);
+    if (!normalize_rotate(b.kcur, w_kn, (int) g.n_head_kv, (int) g.head_dim)) return false;
 // ---- 5. into the cache, and the indexer's append (which pools AND rotates on a block completion).
 // EVERY ENTRY POINT FROM HERE ON IS THE CAPTURABLE ONE: the per-token counts come from `st.step` and every
 // launch is sized from a capacity in `st`/`b`, so this sequence can be captured and replayed.  The
@@ -1108,7 +1128,11 @@ qsa_kv_resolve(st, g, b.ids, st.step, 1, cap, stream);
                                            b.v_scratch, b.v_scratch, stream);
     }
     else if (st.kv_q4) guild::kernels::kv_gather_q4_step(st.k_q4, st.v_q4, st.page_table, b.ids, st.step, cap, s, b.k_scratch, b.v_scratch, stream);
-    else if (st.kv_int8) kv_gather_q8_step(st.k_q, st.v_q, st.k_scale, st.v_scale, st.page_table, b.ids, st.step, cap, s,                                 b.k_scratch, b.v_scratch, stream);    else kv_gather_step(st.k_pool, st.v_pool, st.page_table, b.ids, st.step, cap, s, b.k_scratch, b.v_scratch,                   stream);    if (native_flash_attn_short) {
+    else if (st.kv_int8) kv_gather_q8_step(st.k_q, st.v_q, st.k_scale, st.v_scale, st.page_table, b.ids, st.step, cap, s,
+                                           b.k_scratch, b.v_scratch, stream);
+    else kv_gather_step(st.k_pool, st.v_pool, st.page_table, b.ids, st.step, cap, s, b.k_scratch, b.v_scratch,
+                        stream);
+    if (native_flash_attn_short) {
     if (st.max_cells < 1 || st.max_cells > 256 || !st.attention_status || !st.host_step) {
         err = v.name("native_flash_attn") + ": short adapter requires context <=256 and persistent status storage";
         return false;
@@ -1132,7 +1156,8 @@ try {
     if (native_qsa_enabled()) native_qsa_gate_apply(b.attn, b.q_full, b.attn32, (int) g.n_head, (int) g.head_dim, stream);
     else qsa_gate_apply_f32(b.attn, b.q_full, s, b.attn32, stream);
 } catch (const std::exception& error) { err = v.name("qsa_gate") + ": " + error.what(); return false; }
-    if (!w_attno->native_data) quantize_q8_K(b.attn32, b.attn_q8k, g.n_head * g.head_dim, stream);    if (w_attno->native_data) {
+    if (!w_attno->native_data) quantize_q8_K(b.attn32, b.attn_q8k, g.n_head * g.head_dim, stream);
+    if (w_attno->native_data) {
     if (!gemv_quantized(*w_attno, p_o, f_o, nullptr, b.attn_q8k, out,
         g.n_head * g.head_dim, g.n_embd, v.name("attn_output.weight"), stream, err, b.attn32)) return false;
 } else {
@@ -1336,7 +1361,6 @@ bool block_layer_pre(const WeightTable& tables, const ModelGeometry& g, int64_t 
             gr_write(bb.R, bb.block_out, bb.inject2, gs0, bb.R, stream);
             pending_ffn = false;
         }
-        const int64_t hcd = guild::kernels::NG_HC_DIM;
         guild::kernels::PleOut po;
         // Exports must not alias the block's internal workspace. The previous diagnostic views used a
         // different layout inside that workspace: exporting gated values overwrote normalized values
@@ -1559,5 +1583,9 @@ bool block_layer(const WeightTable& tables, const ModelGeometry& g, int64_t laye
 // The two halves back to back.  `parts` must be THIS layer's experts and must be ready before the call -
 // which holds for `session_token`, where the caller supplies them, and does NOT hold for a host loop that
 // has only just seen the router.  That is why the captured path calls the halves separately.
-if (!block_layer_pre(tables, g, layer, pos, pos_base, gb, qst, qb, mb, k, bb, stream, err, db, ple))        return false;    return block_layer_post(tables, g, layer, k, mb, bb, parts, stream, err);}}
+    if (!block_layer_pre(tables, g, layer, pos, pos_base, gb, qst, qb, mb, k, bb, stream, err, db, ple))
+        return false;
+    return block_layer_post(tables, g, layer, k, mb, bb, parts, stream, err);
+}
+}
 // namespace guild::core

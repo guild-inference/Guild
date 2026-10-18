@@ -4,6 +4,7 @@
 #include "guild/kernels/cpu/expert_layout.hpp"
 #include "guild/kernels/elementwise.hpp"
 #include "guild/kernels/verify_kernels.hpp"
+#include "guild/kernels/remote_expert_kernels.hpp"
 
 #include <algorithm>
 #include <cstring>
@@ -20,32 +21,6 @@ bool check(cudaError_t status, std::string& err) {
     return false;
 }
 
-__global__ void reduce_experts(const float* parts, const ReduceMeta* meta, float* sum) {
-    const int t = blockIdx.y, c = blockIdx.x * blockDim.x + threadIdx.x;
-    if (c >= H) return;
-    float v = 0.0f;
-    for (int j = 0; j < K; ++j) {
-        const int i = t * K + j, r = meta->row[i];
-        if (r >= 0) v += parts[(int64_t) r * H + c] * meta->weight[i];
-    }
-    sum[(int64_t) t * H + c] = v;
-}
-
-// Like the upstream mapped-row copy, also skip rows returned in the remote sum.
-__global__ void copy_cpu_rows(float4* dst, const volatile float4* src, const int32_t* mask,
-                              const int32_t* hit_rows, const int32_t* count) {
-    const int row = blockIdx.x;
-    __shared__ int skip;
-    if (threadIdx.x == 0) {
-        int s = mask[row];
-        for (int i = 0; i < *count; ++i) s |= hit_rows[i] == row;
-        skip = s;
-    }
-    __syncthreads();
-    const int64_t start = (int64_t) row * (H / 4);
-    for (int i = threadIdx.x; i < H / 4; i += blockDim.x)
-        dst[start + i] = skip ? make_float4(0, 0, 0, 0) : const_cast<const float4*>(src)[start + i];
-}
 } // namespace
 
 void RemoteExpertOpt::attach(RemoteExperts& remote) {
@@ -97,10 +72,18 @@ void RemoteExpertOpt::prepare(const RemoteExperts& remote, void* metadata) const
 }
 
 bool RemoteExpertOpt::reduce(RemoteExperts& remote, const void* metadata, std::string& err) {
-    const auto& p = *std::find_if(peers_.begin(), peers_.end(), [&](const Peer& p) { return p.remote == &remote; });
-    reduce_experts<<<dim3((H + 255) / 256, tokens_), 256, 0, remote.stream_>>>(
-        remote.d_out_, (const ReduceMeta*) metadata, p.sum);
-    return check(cudaMemcpyAsync(remote.h_out_, p.sum, tokens_ * H * sizeof(float),
+    const auto it = std::find_if(peers_.begin(), peers_.end(), [&](const Peer& p) { return p.remote == &remote; });
+    if (it == peers_.end()) {
+        err = "remote expert decode optimization: peer not attached";
+        return false;
+    }
+    try {
+        guild::kernels::remote_expert_reduce(remote.d_out_, metadata, it->sum, tokens_, remote.stream_);
+    } catch (const std::exception& e) {
+        err = std::string("remote expert decode optimization: ") + e.what();
+        return false;
+    }
+    return check(cudaMemcpyAsync(remote.h_out_, it->sum, tokens_ * H * sizeof(float),
                                   cudaMemcpyDeviceToHost, remote.stream_), err);
 }
 
@@ -112,8 +95,7 @@ void RemoteExpertOpt::accumulate(const RemoteExperts& remote) {
 
 void RemoteExpertOpt::copy_rows(float* dst, const float* src, int token_begin, int tokens,
                          const int32_t* hit_rows, const int32_t* count, void* stream) const {
-    copy_cpu_rows<<<tokens * K, 128, 0, (cudaStream_t) stream>>>(
-        (float4*) dst, (const volatile float4*) src, m_mask_ + token_begin * K, hit_rows, count);
+    guild::kernels::remote_expert_copy_cpu_rows(dst, src, m_mask_ + token_begin * K, hit_rows, count, tokens, stream);
 }
 
 void RemoteExpertOpt::combine(float* dst, float* scratch, int token_begin, int tokens,

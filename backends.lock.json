@@ -6,9 +6,9 @@
   },
   "cuda": {
     "repository": "https://github.com/guild-inference/guild-kernels-cuda.git",
-    "revision": "51919eb5bd01d123a91a78ff9e6f136b2d807444",
-    "version": "1.2.0",
-    "ownership": "independent BF16/native-MMVQ/IQ and attention/recurrent/RoPE/KV/selection sources; remaining CUDA arithmetic in Core"
+    "revision": "b8b675b5fd7605366c04facd7ced079de1ac6f69",
+    "version": "1.3.0",
+    "ownership": "independent BF16/native-MMVQ/IQ, attention/recurrent/RoPE/KV/selection, and MoE/S-family/elementwise/sampler/verify/Qwen sources; prefill CUDA in Core"
   },
   "qwen_runners": {
     "repository": "https://github.com/guild-inference/Guild.git",
@@ -17,7 +17,7 @@
   },
   "integration": {
     "cpu": {"repository": "guild-inference/guild-kernels-cpu", "revision": "264227c74d0151b914d826b0fa35a0f576a117b8"},
-    "cuda": {"repository": "guild-inference/guild-kernels-cuda", "revision": "51919eb5bd01d123a91a78ff9e6f136b2d807444"},
+    "cuda": {"repository": "guild-inference/guild-kernels-cuda", "revision": "b8b675b5fd7605366c04facd7ced079de1ac6f69"},
     "qwen": {"repository": "guild-inference/guild-runners-qwen", "revision": "0ccff556724fc7fc8d66795ce157485e23dfbdaa"}
   }
 }

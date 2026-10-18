@@ -4,6 +4,7 @@
 #include "guild/kernels/native_mmvq.hpp"
 #include "guild/kernels/iq_kernels.hpp"
 #include "guild/artifact/gguf_reader.hpp"
+#include <cuda_runtime.h>
 #include <limits>
 #include <stdexcept>
 
@@ -24,7 +25,9 @@ const guild_cuda_dense_ext_v1_t& backend() {
 }
 guild_exec_context_v1_t context(void* stream) {
     guild_exec_context_v1_t c{};c.struct_size=sizeof(c);c.abi_version=GUILD_KERNEL_ABI_VERSION_V1;
-    c.backend=GUILD_BACKEND_CUDA;c.device_id=0;c.device_stream=stream;c.sync_mode=GUILD_SYNC_STREAM_ORDERED;return c;
+    c.backend=GUILD_BACKEND_CUDA;
+    if(cudaGetDevice(&c.device_id)!=cudaSuccess || c.device_id<0){cudaGetLastError();c.device_id=0;}
+    c.device_stream=stream;c.sync_mode=GUILD_SYNC_STREAM_ORDERED;return c;
 }
 void checked(guild_status_t result,const guild_error_info_t& error) {
     if(result==GUILD_STATUS_OK)return;

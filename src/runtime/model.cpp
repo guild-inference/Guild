@@ -193,6 +193,7 @@ std::unique_ptr<GuildModel> GuildModel::load(
     }
     std::optional<kernels::ScopedCudaDense> dense_scope;
     std::optional<kernels::ScopedCudaAttn> attn_scope;
+    std::optional<kernels::ScopedCudaMoE> moe_scope;
 #if defined(GUILD_ENABLE_CUDA) && !defined(GUILD_HIP_GFX906)
     {
         kernels::ResolvedCudaDense dense{};
@@ -204,6 +205,18 @@ std::unique_ptr<GuildModel> GuildModel::load(
 #if !GUILD_BUNDLED_CUDA_DENSE
         if (!impl->cuda_dense) {
             error_msg = "model load: bundled CUDA dense arithmetic disabled; install a compatible CDD1 CUDA .gkernel";
+            return nullptr;
+        }
+#endif
+        kernels::ResolvedCudaMoE moe{};
+        if (kernels::KernelRegistry::instance().resolve_cuda_moe(host_caps, moe, error_msg)) {
+            impl->kernel_lease.add_package(moe.package_id);
+            impl->cuda_moe = moe;
+            moe_scope.emplace(*impl->cuda_moe);
+        }
+#if !GUILD_BUNDLED_CUDA_MOE
+        if (!impl->cuda_moe) {
+            error_msg = "model load: bundled CUDA MoE arithmetic disabled; install a compatible CDM1 CUDA .gkernel";
             return nullptr;
         }
 #endif

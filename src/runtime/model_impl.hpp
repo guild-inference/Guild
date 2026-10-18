@@ -34,6 +34,7 @@
 #include "guild/kernels/native_qsa_indexer.hpp"
 #include "guild/kernels/cuda_attn.hpp"
 #include "guild/kernels/cuda_dense.hpp"
+#include "guild/kernels/cuda_moe.hpp"
 #include "guild/kernels/registry.hpp"
 #include "guild/model/runner.hpp"
 #include "guild/prefill/prefill.hpp"
@@ -117,6 +118,7 @@ struct GuildModel::Impl {
     std::optional<guild_cpu_backend_ext_v2_t> cpu_backend;
     std::optional<kernels::ResolvedCudaDense> cuda_dense;
     std::optional<kernels::ResolvedCudaAttn> cuda_attn;
+    std::optional<kernels::ResolvedCudaMoE> cuda_moe;
     model::SessionRunnerLease runner_lease;
     kernels::SessionKernelLease kernel_lease;
     core::ModelGeometry g;
@@ -156,14 +158,21 @@ struct GuildModel::Impl {
     std::mutex generation_mutex;
 
     ~Impl() {
+        std::optional<kernels::ScopedCudaDense> dense_scope;
+        if (cuda_dense) dense_scope.emplace(*cuda_dense);
         std::optional<kernels::ScopedCudaAttn> attn_scope;
         if (cuda_attn) attn_scope.emplace(*cuda_attn);
+        std::optional<kernels::ScopedCudaMoE> moe_scope;
+        if (cuda_moe) moe_scope.emplace(*cuda_moe);
         if (prefill) prefill.reset();
         if (batched_prefill) batched_prefill.reset();
         if (ver) ver.reset();
         if (mtp) mtp.reset();
         if (pool) pool.reset();
         if (main_stream) cudaStreamSynchronize(main_stream);
+        moe_scope.reset();
+        attn_scope.reset();
+        dense_scope.reset();
         if (ple_emb_dev) cudaFree(ple_emb_dev);
         if (ple_scratch) cudaFree(ple_scratch);
         core::session_release(ss);

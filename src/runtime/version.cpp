@@ -54,7 +54,9 @@ bool version_report(bool json, std::string& output, std::string& error) {
         if(report["bundled_cuda"]["enabled"].as_bool()) {
             const bool dense_b=report["bundled_cuda"]["dense_bundled"].as_bool();
             const bool attn_b=report["bundled_cuda"]["attn_bundled"].as_bool();
-            text<<"CUDA kernels: "<<(dense_b&&attn_b?"bundled ":(dense_b?"external-attn ":(attn_b?"external-dense ":"external-dense-attn ")))
+            const bool moe_b=report["bundled_cuda"]["moe_bundled"].as_bool();
+            text<<"CUDA kernels: dense="<<(dense_b?"bundled":"external")
+                <<" attention="<<(attn_b?"bundled":"external")<<" moe="<<(moe_b?"bundled":"external")<<" "
                 <<report["bundled_cuda"]["version"].as_string()
                 <<" ("<<report["bundled_cuda"]["source_revision"].as_string()<<")\n";
         }
