@@ -1,0 +1,38 @@
+{
+  "4096": {
+    "builtin": {
+      "samples": 10,
+      "prefill_tps": 214.7901356245,
+      "decode_tps": 32.960382872249994,
+      "cpu_gu_ms": 4328.657227625,
+      "cpu_quant_ms": 84.70413676205,
+      "cpu_down_ms": 2271.623471515,
+      "host_wait_ms": 11547.045025
+    },
+    "cuda": {
+      "samples": 10,
+      "prefill_tps": 215.3267433195,
+      "decode_tps": 32.9638878217,
+      "cpu_gu_ms": 4310.11176626,
+      "cpu_quant_ms": 84.28787797575,
+      "cpu_down_ms": 2249.196257155,
+      "host_wait_ms": 11475.806982999999,
+      "prefill_tps_vs_builtin": {
+        "median_percent": 0.4050917910501717,
+        "bootstrap_95_percent": [
+          -0.2062380391942953,
+          0.9502854834057661
+        ],
+        "pairs": 10
+      },
+      "decode_tps_vs_builtin": {
+        "median_percent": -0.013155955109467321,
+        "bootstrap_95_percent": [
+          -0.5089143845217858,
+          0.38522989425304743
+        ],
+        "pairs": 10
+      }
+    }
+  }
+}

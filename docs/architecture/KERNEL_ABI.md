@@ -1,10 +1,13 @@
-# Guild Kernel ABI v1 and standalone SDK 1.1
+# Guild Kernel ABI v1 and standalone SDK 1.4
 
 Normative headers:
 
 - `include/guild/abi/kernel_abi.h`: frozen Kernel ABI v1 descriptors and registration.
 - `include/guild/abi/runner_abi.h`: optional `RMD1` model-description extension.
 - `include/guild/abi/cpu_expert_abi.h`: optional `CPE1` native expert arithmetic.
+- `include/guild/abi/cpu_backend_abi.h`: extended CPU backend callbacks.
+- `include/guild/abi/cuda_dense_abi.h`, `cuda_attn_abi.h`, `cuda_moe_abi.h`:
+  optional `CDD1`, `CDA1`, `CDM1` CUDA execution groups.
 
 The standalone SDK builds without a compiler, GPU toolkit, GGML or Core runtime:
 
@@ -14,7 +17,7 @@ cmake --install build-sdk
 cpack --config build-sdk/CPackConfig.cmake -B build-sdk
 ```
 
-External projects use `find_package(GuildKernelSDK 1.1 REQUIRED CONFIG)` and
+External projects using all current contracts use `find_package(GuildKernelSDK 1.4 REQUIRED CONFIG)` and
 `guild_configure_gkernel_plugin(target)`. The installed files contain only public
 C headers, the manifest schema and CMake configuration. `CUDA_RUNTIME_LIBRARY
 Shared` keeps plugins on the shared CUDA runtime. The helper itself does not
@@ -25,7 +28,7 @@ prove unloading safety; Core must still retain the package and finish stream wor
 `GUILD_KERNEL_ABI_MAKE_VERSION(major, minor, patch)` packs 8/12/12 bits:
 major at bits 24–31, minor at 12–23, patch at 0–11. ABI v1.0.0 is `0x01000000`.
 The `GUILD_MAKE_ABI_VERSION` and `GUILD_ABI_VERSION_*` aliases use the same format.
-SDK version 1.1 does **not** change the layout or numeric ABI version of existing
+SDK version 1.4 does **not** change the layout or numeric ABI version of existing
 v1 descriptors. New functionality uses size/tag/version-checked extension payloads.
 
 Plugins export `guild_plugin_entry_v1` (`GUILD_PLUGIN_ENTRY_SYMBOL_V1`) with the
@@ -123,7 +126,7 @@ The current registry still has conservative process-wide session checks and
 raw select-then-lease APIs. Atomic concurrent selection/replacement across both
 registries is an outstanding Phase 2 gate; the existing concurrency test alone
 does not prove all replacement races safe.
-# CUDA dense extension (SDK 1.4)
+## CUDA execution extensions (SDK 1.4)
 
 `guild/abi/cuda_dense_abi.h` adds the `CDD1` size-checked extension without
 changing Kernel ABI v1, PFKE or the frozen seven-pointer prefill table. It carries

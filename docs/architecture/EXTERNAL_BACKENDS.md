@@ -8,7 +8,13 @@ independent sources for bundled builds and proves an external-only CPU arithmeti
 configuration. The earlier preview scope and repository table below describe the
 original migration slice, not the complete current CPU operation set.
 
-| Repository | Published HEAD | Verified scope |
+[CUDA source ownership](CUDA_BACKEND_OWNERSHIP.md) now covers CDD1 dense,
+CDA1 attention/recurrent and CDM1 MoE/device primitives in CUDA package 1.3.0,
+using SDK 1.4.0. All three extracted groups passed external-only Ornith inference.
+Legacy GEMM/MMQ and Qwen4Exp prefill remain in Core. Current immutable revisions
+are in `backends.lock.json`; the table below is the historical preview snapshot.
+
+| Repository | Original preview HEAD | Original verified scope |
 |---|---|---|
 | https://github.com/guild-inference/guild-kernels-cpu | `5c2a76f` | Native expert activation/hidden quantization, gate/up and down arithmetic; own pinned GGML build |
 | https://github.com/guild-inference/guild-kernels-cuda | `aa1c565` | SM 6.1 BF16 router projection |
@@ -103,11 +109,10 @@ CUDA backend or canonical planar Q2 implementation.
 
 ## Remaining requirements before Phase 2 completion
 
-1. Move CUDA projections, MMQ, attention, GDN, experts, elementwise and decode
-   behind complete public contracts, then prove an external-only CUDA build.
-2. Finish CPU canonical Q2, vector/router arithmetic and remove old primary
-   source dependencies. The retained arithmetic snapshots are temporary migration
-   references, not a completed ownership transfer.
+1. Finish the remaining legacy CUDA GEMM/MMQ and Qwen4Exp prefill extraction;
+   extend external-only validation beyond the tested Ornith path.
+2. Maintain the completed CPU source-ownership gates documented in
+   `CPU_BACKEND_OWNERSHIP.md` while extending architecture coverage.
 3. Move remaining Qwen topology/tensor-validation/state policy out of Core;
    validate Qwen4Exp/PLE/MTP with its actual model and the external runner.
 4. Close selection/lease and cross-registry transaction races; verify concurrent
@@ -116,8 +121,9 @@ CUDA backend or canonical planar Q2 implementation.
 5. Finish cross-repository corruption/hardware/ABI/dependency failure coverage
    and independent signed production release automation. CI has build workflows;
    successful hosted CI runs must be reported separately from local tests.
-6. Resolve the measured small prefill regression versus the preserved Phase 1
-   binary, with paired measurements. See `../performance/EXTERNAL_KERNEL_PARITY.md`.
+6. Track paired performance evidence and remaining small differences in
+   `../performance/PHASE2C_CUDA_VALIDATION.md`; the initial unpaired preview
+   measurements are historical evidence.
 
 ## Later phases (not started here)
 

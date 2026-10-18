@@ -5,7 +5,7 @@
 | Workflow | Work performed | Evidence boundary |
 | --- | --- | --- |
 | `ci.yml` | Python policy/installer tests, installed C99/C++17 SDK on Ubuntu 22.04/24.04 and Windows 2022, Linux management/ABI tests | Windows SDK checks do not validate a Windows inference engine; the Linux non-CUDA build cannot perform CPU-only inference |
-| `backend-integration.yml` | Build/test exact CPU and runner commits against the current installed SDK, fresh-process signed registration, exact CUDA-router compilation | Signing uses a temporary test identity; hosted CUDA compilation has no device execution |
+| `backend-integration.yml` | Build/test exact CPU and runner commits against the current installed SDK, fresh-process signed registration, full pinned CUDA backend compilation and manifest/operation checks | Signing uses a temporary test identity; hosted CUDA compilation has no device execution |
 | `dev-build.yml` | Linux CUDA 13 inference executable, portable CPU baseline, linked CUDA runtime/BLAS, licenses, manifest and checksums | Development artifact; no real-GPU or full-model claim |
 | `release.yml` | Tag/revision validation, all CI checks, distribution build, dedicated-GPU shipped-binary golden test, reviewer-protected publication and OIDC provenance | Publication waits for real GPU evidence and configured release protection |
 
@@ -27,7 +27,7 @@ stages:
 - `guild`: launcher that resolves bundled libraries relative to its own location;
 - `guild.bin`: the actual CUDA executable;
 - `lib/`: the exact linked libcudart, libcublas and libcublasLt SONAMEs;
-- `licenses/`: Guild/Strata, independent CPU, GGML and CUDA license files;
+- `licenses/`: Guild/Strata, independent CPU and CUDA backends, GGML and NVIDIA CUDA license files;
 - `guild-release.json`: structured build identity, dependency hashes and Linux
   system-library prerequisites.
 
@@ -38,6 +38,11 @@ public artifacts. `--allow-native-cpu` is limited to explicitly host-specific
 local development artifacts. The NVIDIA driver and listed Linux system
 libraries are prerequisites. Model GGUFs, prepared packs and tokenizers are not
 included. Install/import a matching model manifest with those paths before use.
+
+The CUDA baseline must include all three extracted groups (dense, attention and
+MoE), and its actual source revision must match the embedded lock. If an existing
+CMake cache retains a previous CUDA pin, reconfigure with
+`-UGUILD_CUDA_BACKEND_REVISION` before building and packaging.
 
 ## Release setup and real-GPU gate
 

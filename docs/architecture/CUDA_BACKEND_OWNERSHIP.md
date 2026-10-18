@@ -1,5 +1,23 @@
 # CUDA backend ownership and extraction gates
 
+## Current boundary (Phase 2C, 2026-10-18)
+
+`guild-kernels-cuda` 1.3.0 owns the dense, attention/recurrent and MoE/device
+primitive groups formerly under Core's `src/kernels/cuda/`, plus the two remote
+expert device kernels. Core builds these groups from the immutable revision in
+`backends.lock.json` or binds their independently built `.gkernel` callbacks.
+SDK 1.4.0 exposes CDD1, CDA1 and CDM1; Kernel ABI remains v1.0.0.
+
+Ornith-1.5-35B prefill/decode passed with all three bundled groups disabled.
+That is an external-only **Ornith arithmetic path**. Core still contains legacy
+GEMM/MMQ and Qwen4Exp prefill CUDA under `src/prefill/`; complete CUDA source
+extraction across all architectures remains a Phase 2D task.
+
+See the [bug audit](../quality/PHASE2C_CUDA_AUDIT.md) and
+[paired measurements](../performance/PHASE2C_CUDA_VALIDATION.md).
+
+## Preserved Stage A baseline
+
 Audit base: Core `73905fae6bf1df79d1e6c824aa87313d4fa67ed8`, CPU
 `264227c74d0151b914d826b0fa35a0f576a117b8`, CUDA
 `aa1c565762217eb23082f94c95cad19b26661e4f`, Qwen runners
@@ -57,8 +75,10 @@ Core allocation/scheduling -> direct callbacks / captured device graphs
 
 `guild_kernels -> guild_core` is a present static-library dependency. Moving
 `guild_engine` wholesale would move scheduling and create a dependency cycle.
-`remote_expert_opt.cu` must be split: `reduce_experts`/`copy_cpu_rows` move;
-host reduction bookkeeping, peer residency, allocation and adaptation stay.
+`remote_expert_opt.cu` was split in Stage D: `reduce_experts`/`copy_cpu_rows`
+now live in the backend's `src/moe/remote_expert_kernels.cu`; Core's
+`src/core/remote_expert_opt.cpp` retains reduction bookkeeping, peer residency,
+allocation and adaptation.
 The two prefill parity `.cu` programs remain tests, not runtime providers.
 The GGML MMQ quantizer and template-instance sources selected by CMake are
 additional pinned dependency inputs, not Core-owned CUDA implementations.
@@ -107,22 +127,54 @@ graph capture, and decode attention/GDN/RoPE/KV/selection calls through
 `-DGUILD_BUILTIN_CUDA_ATTN=OFF` omits `libguild_cuda_attn.a` from Core and requires
 a signed CDA1 `.gkernel` package (`org.guild.kernels.cuda@1.2.0`).
 
-Other required boundaries are explicit pending implementation gates:
+Stage D migrated MoE routing/combine/shared/grouped experts, S-family GEMV and
+dequantization, elementwise/doorbell, sampler and verifier kernels, and the
+isolated Qwen GR/PLE/cvec specialization. The package exports
+`external.cuda.moe.v1`; Core copies `guild_cuda_moe_ext_v1_t` from
+`GUILD_OP_MOE_COMBINE` at model load. `cuda_moe_bridge.cpp` translates host records
+to C POD commands; `cuda_moe_layout.cpp` retains host scratch-layout calculations
+and `cvec.cpp` owns control-vector files and allocations. All three model-bound
+tables are scoped across execution and component teardown, while package leases
+retain the backend code used by captured graphs.
+
+Stage E/F evidence on CUDA12/SM61:
+
+- Installed SDK 1.4.0, standalone backend build using that SDK, and four
+  standalone CTests passed. Core's default FetchContent build reported the locked
+  CUDA revision and `pinned: true`.
+- `cuobjdump` found no cubin/PTX in `libguild_kernels.a`, `libguild_engine.a`,
+  `libguild_runtime.a` or `libguild_server.a`. The separate backend archives own
+  the extracted arithmetic. `libguild_prefill.a`/`libguild_mmq.a` are residual
+  Core CUDA and are outside that zero-fatbin claim.
+- With `GUILD_BUILTIN_CUDA_DENSE`, `GUILD_BUILTIN_CUDA_ATTN` and
+  `GUILD_BUILTIN_CUDA_MOE` all OFF, absent providers reject model loading. With
+  only MoE OFF, the missing operation is `moe_combine`.
+- Signed external packages passed 248,320 first-token logits, eight greedy IDs,
+  recurrent-state bytes and tested host-KV-prefix equality. Model-bound package
+  IDs and DSO counters verify dense, attention and MoE execution. Bundled fallback
+  also passed after disabling the external arithmetic packages.
+
+Remaining boundaries and validation limits:
 
 | Area | Current boundary requiring adaptation |
 |---|---|
 | GEMM | `Gemm` owns cuBLAS, scratch, workspace and Pascal conversion caches; expose an opaque backend handle with C create/rebind/execute/destroy, preserving full projection batching |
 | MMQ | `Context`, `Product`, `GatherGroup`, private GGML pool/state; public POD products and opaque backend-local context, pinned dependency, initialize local device tables before capture |
-| KV/attention | `QsaShapes`, `QsaAttnPools`, `KvHostPools`, `KvStreamMap` are private C++ records; define public size-checked POD snapshots, keep page tables/state/budgets host-owned |
-| RoPE | `RopeScaling&` and global configuration cannot be exported; public numerical configuration snapshot and backend-local capture-consistent state |
-| Native toggles | Process-global enable/configuration flags need explicit transfer before capture; a DSO does not share Core's globals |
-| Graph lifetime | Captured kernel nodes retain DSO code references beyond host callback return; destroy graphs and finish all used streams/devices before releasing the model's package pin |
-| Multi-device | Two arithmetic kernels mixed into `RemoteExpertOpt`; extract launches while retaining peer stream/residency policy |
+| Device configuration | CDA1/CDM1 copy state explicitly; multi-device RoPE/table transfer and concurrent per-model configuration still need hardware validation |
+| Graph lifetime | Single-device teardown is exercised; concurrent replacement and stream completion across multiple GPUs remain unverified |
+| Qwen4Exp | Specialized kernels are externally owned, but complete external PLE/MTP and legacy prefill inference has not passed a real-model gate |
 
-These boundaries are unfinished work, not evidence of external execution. Full
-external-only CUDA prefill/decode, lifecycle and performance gates remain open
-until their implementations and tests pass. A partial-group external-only mode
-must name its group and must not be described as an external-only CUDA backend.
+The `.cu` files still under `src/` are `core/{device,pinned}.cu` and
+`prefill/{gemm,kernels,moe_fused,moe_fused_iq,moe_mmq,ggml_cuda_host,gdn_rec_parity,gemm_bf16_parity}.cu`.
+The last two are test programs. The device allocation diagnostic also remains
+Core-owned. Ornith external execution does not establish that these residual
+implementations have moved.
+
+The [post-CDM1 inventory](../../bench/results/phase2c/ownership-after-cdm1/ownership.json)
+records ten remaining Core `.cu` files and 62 scanner-detected device-kernel
+definitions (including test/diagnostic code), down from 55 files and 297
+definitions in the preserved Stage A inventory. This count is source evidence,
+not a measurement of which kernels a model executes.
 
 ## Correctness and performance gates
 
@@ -135,8 +187,9 @@ comparisons and independent numerical oracles. Do not infer execution from a
 registration record; bind identities and device-launch instrumentation are
 required. Maintain missing-provider and legacy-package compatibility tests.
 
-The prior paired experiment's approximately -0.57% 4K prefill comparison against
-the rebuilt baseline remains open. New source-owner/bundled/external/external-only
-cases must be compared against preserved executables in ten counterbalanced
-rounds at 512/4096/8192/16384 tokens before claiming performance parity.
-CUDA13 architecture compilation remains separate from SM61 real-device tests.
+The Phase 2C paired experiment compares preserved Phase 1, current pinned bundled
+arithmetic, and all external overrides in ten counterbalanced rounds at
+512/4096/8192/16384 tokens. Its raw receipts and limitations are linked above.
+External-only correctness is a separate gate; this experiment's `all` case still
+has bundled fallback available. CUDA13 architecture compilation remains separate
+from SM61 real-device tests.

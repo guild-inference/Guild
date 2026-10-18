@@ -1,0 +1,95 @@
+{
+  "16384": {
+    "builtin": {
+      "samples": 1,
+      "prefill_tps": 171.548792596,
+      "decode_tps": 17.9500925583,
+      "cpu_gu_ms": 18244.3763534,
+      "cpu_quant_ms": 349.550309296,
+      "cpu_down_ms": 9285.32888135,
+      "host_wait_ms": 63802.897123,
+      "prefill_tps_vs_preserved": {
+        "median_percent": -0.16770784412034612,
+        "bootstrap_95_percent": [
+          -0.16770784412034612,
+          -0.16770784412034612
+        ],
+        "pairs": 1
+      },
+      "decode_tps_vs_preserved": {
+        "median_percent": 0.3695187120692056,
+        "bootstrap_95_percent": [
+          0.3695187120692056,
+          0.3695187120692056
+        ],
+        "pairs": 1
+      }
+    },
+    "all": {
+      "samples": 1,
+      "prefill_tps": 171.490307006,
+      "decode_tps": 17.8767757218,
+      "cpu_gu_ms": 18012.365005,
+      "cpu_quant_ms": 355.020340696,
+      "cpu_down_ms": 9355.59497632,
+      "host_wait_ms": 63964.509106,
+      "prefill_tps_vs_preserved": {
+        "median_percent": -0.20174335331533122,
+        "bootstrap_95_percent": [
+          -0.20174335331533122,
+          -0.20174335331533122
+        ],
+        "pairs": 1
+      },
+      "decode_tps_vs_preserved": {
+        "median_percent": -0.04043881706864427,
+        "bootstrap_95_percent": [
+          -0.04043881706864427,
+          -0.04043881706864427
+        ],
+        "pairs": 1
+      },
+      "prefill_tps_vs_builtin": {
+        "median_percent": -0.034092685302511416,
+        "bootstrap_95_percent": [
+          -0.034092685302511416,
+          -0.034092685302511416
+        ],
+        "pairs": 1
+      },
+      "decode_tps_vs_builtin": {
+        "median_percent": -0.4084482364749564,
+        "bootstrap_95_percent": [
+          -0.4084482364749564,
+          -0.4084482364749564
+        ],
+        "pairs": 1
+      }
+    },
+    "preserved": {
+      "samples": 1,
+      "prefill_tps": 171.836976685,
+      "decode_tps": 17.884007803,
+      "cpu_gu_ms": 17933.9759413,
+      "cpu_quant_ms": 348.520885683,
+      "cpu_down_ms": 9303.21869101,
+      "host_wait_ms": 63832.346422,
+      "prefill_tps_vs_builtin": {
+        "median_percent": 0.16798957581629637,
+        "bootstrap_95_percent": [
+          0.16798957581629637,
+          0.16798957581629637
+        ],
+        "pairs": 1
+      },
+      "decode_tps_vs_builtin": {
+        "median_percent": -0.3681582982670628,
+        "bootstrap_95_percent": [
+          -0.3681582982670628,
+          -0.3681582982670628
+        ],
+        "pairs": 1
+      }
+    }
+  }
+}

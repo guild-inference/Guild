@@ -1,0 +1,322 @@
+{
+  "within_round_start_spread_seconds": {
+    "512": [
+      42.258613,
+      42.912116,
+      42.88304,
+      43.199978,
+      43.02233,
+      42.964229,
+      42.943215,
+      42.850777,
+      43.260416,
+      42.811564
+    ],
+    "4096": [
+      111.541126,
+      113.371964,
+      113.918827,
+      114.378671,
+      113.906084,
+      114.253595,
+      193.662928,
+      114.127447,
+      114.045841,
+      113.080662
+    ],
+    "8192": [
+      207.130984,
+      277.853637,
+      208.631183,
+      208.150978,
+      208.739812,
+      274.397052,
+      208.882454,
+      209.459277,
+      208.419278,
+      208.185959
+    ],
+    "16384": [
+      435.557294,
+      463.087315,
+      35589.795393,
+      423.382046,
+      428.955488,
+      431.473342,
+      431.858288,
+      432.824794,
+      434.053971,
+      430.778714
+    ]
+  },
+  "resources": {
+    "512": {
+      "preserved": {
+        "vram_sample_bytes": [
+          2145583104
+        ],
+        "host_kv_allocated_bytes": [
+          671098880
+        ],
+        "kv_staging_bytes": [
+          67125248
+        ],
+        "prefill_scratch_bytes": [
+          212471812
+        ]
+      },
+      "builtin": {
+        "vram_sample_bytes": [
+          2145583104
+        ],
+        "host_kv_allocated_bytes": [
+          671098880
+        ],
+        "kv_staging_bytes": [
+          67125248
+        ],
+        "prefill_scratch_bytes": [
+          212471812
+        ]
+      },
+      "all": {
+        "vram_sample_bytes": [
+          2156068864
+        ],
+        "host_kv_allocated_bytes": [
+          671098880
+        ],
+        "kv_staging_bytes": [
+          67125248
+        ],
+        "prefill_scratch_bytes": [
+          212471812
+        ]
+      }
+    },
+    "4096": {
+      "preserved": {
+        "vram_sample_bytes": [
+          2145583104
+        ],
+        "host_kv_allocated_bytes": [
+          671098880
+        ],
+        "kv_staging_bytes": [
+          67125248
+        ],
+        "prefill_scratch_bytes": [
+          212471812
+        ]
+      },
+      "builtin": {
+        "vram_sample_bytes": [
+          2145583104
+        ],
+        "host_kv_allocated_bytes": [
+          671098880
+        ],
+        "kv_staging_bytes": [
+          67125248
+        ],
+        "prefill_scratch_bytes": [
+          212471812
+        ]
+      },
+      "all": {
+        "vram_sample_bytes": [
+          2156068864
+        ],
+        "host_kv_allocated_bytes": [
+          671098880
+        ],
+        "kv_staging_bytes": [
+          67125248
+        ],
+        "prefill_scratch_bytes": [
+          212471812
+        ]
+      }
+    },
+    "8192": {
+      "preserved": {
+        "vram_sample_bytes": [
+          2145583104
+        ],
+        "host_kv_allocated_bytes": [
+          671098880
+        ],
+        "kv_staging_bytes": [
+          67125248
+        ],
+        "prefill_scratch_bytes": [
+          212471812
+        ]
+      },
+      "builtin": {
+        "vram_sample_bytes": [
+          2145583104
+        ],
+        "host_kv_allocated_bytes": [
+          671098880
+        ],
+        "kv_staging_bytes": [
+          67125248
+        ],
+        "prefill_scratch_bytes": [
+          212471812
+        ]
+      },
+      "all": {
+        "vram_sample_bytes": [
+          2156068864
+        ],
+        "host_kv_allocated_bytes": [
+          671098880
+        ],
+        "kv_staging_bytes": [
+          67125248
+        ],
+        "prefill_scratch_bytes": [
+          212471812
+        ]
+      }
+    },
+    "16384": {
+      "preserved": {
+        "vram_sample_bytes": [
+          2145583104
+        ],
+        "host_kv_allocated_bytes": [
+          671098880
+        ],
+        "kv_staging_bytes": [
+          67125248
+        ],
+        "prefill_scratch_bytes": [
+          212471812
+        ]
+      },
+      "builtin": {
+        "vram_sample_bytes": [
+          2145583104
+        ],
+        "host_kv_allocated_bytes": [
+          671098880
+        ],
+        "kv_staging_bytes": [
+          67125248
+        ],
+        "prefill_scratch_bytes": [
+          212471812
+        ]
+      },
+      "all": {
+        "vram_sample_bytes": [
+          2156068864
+        ],
+        "host_kv_allocated_bytes": [
+          671098880
+        ],
+        "kv_staging_bytes": [
+          67125248
+        ],
+        "prefill_scratch_bytes": [
+          212471812
+        ]
+      }
+    }
+  },
+  "sensitivity_16k_replace_interrupted_round_3": {
+    "builtin": {
+      "prefill_tps_vs_preserved": {
+        "median_percent": -0.5049547073859961,
+        "bootstrap_95_percent": [
+          -0.7532917313547549,
+          -0.08468114765780577
+        ],
+        "pairs": 10
+      },
+      "decode_tps_vs_preserved": {
+        "median_percent": 0.11470155022510475,
+        "bootstrap_95_percent": [
+          -0.42968256126600934,
+          0.4118048964579124
+        ],
+        "pairs": 10
+      }
+    },
+    "all": {
+      "prefill_tps_vs_preserved": {
+        "median_percent": -0.23602239027677996,
+        "bootstrap_95_percent": [
+          -0.5815047288400543,
+          0.07140504873128783
+        ],
+        "pairs": 10
+      },
+      "decode_tps_vs_preserved": {
+        "median_percent": -0.09433306005685038,
+        "bootstrap_95_percent": [
+          -0.3586339045955178,
+          0.21759675844392756
+        ],
+        "pairs": 10
+      },
+      "prefill_tps_vs_builtin": {
+        "median_percent": 0.20539169838720284,
+        "bootstrap_95_percent": [
+          -0.07645494432219069,
+          0.5813508957692282
+        ],
+        "pairs": 10
+      },
+      "decode_tps_vs_builtin": {
+        "median_percent": -0.01787735848763905,
+        "bootstrap_95_percent": [
+          -0.45106046416003576,
+          0.33445937632849976
+        ],
+        "pairs": 10
+      }
+    }
+  },
+  "cuda_only_4k": {
+    "4096": {
+      "builtin": {
+        "samples": 10,
+        "prefill_tps": 214.7901356245,
+        "decode_tps": 32.960382872249994,
+        "cpu_gu_ms": 4328.657227625,
+        "cpu_quant_ms": 84.70413676205,
+        "cpu_down_ms": 2271.623471515,
+        "host_wait_ms": 11547.045025
+      },
+      "cuda": {
+        "samples": 10,
+        "prefill_tps": 215.3267433195,
+        "decode_tps": 32.9638878217,
+        "cpu_gu_ms": 4310.11176626,
+        "cpu_quant_ms": 84.28787797575,
+        "cpu_down_ms": 2249.196257155,
+        "host_wait_ms": 11475.806982999999,
+        "prefill_tps_vs_builtin": {
+          "median_percent": 0.4050917910501717,
+          "bootstrap_95_percent": [
+            -0.2062380391942953,
+            0.9502854834057661
+          ],
+          "pairs": 10
+        },
+        "decode_tps_vs_builtin": {
+          "median_percent": -0.013155955109467321,
+          "bootstrap_95_percent": [
+            -0.5089143845217858,
+            0.38522989425304743
+          ],
+          "pairs": 10
+        }
+      }
+    }
+  }
+}
