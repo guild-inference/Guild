@@ -32,15 +32,12 @@ GuildModel::GuildModel() : impl_(std::make_shared<Impl>()) {
     impl_->ready = ready_;
 }
 GuildModel::~GuildModel() {
-    if (ready_) ready_->store(false);
+    if (ready_)
+        ready_->store(false);
 }
 
-std::unique_ptr<GuildModel> GuildModel::load(
-    const ModelPaths& paths,
-    const model::ModelDescriptor& requested_desc,
-    const memory::ExecutionPlan& plan,
-    std::string& error_msg
-) try {
+std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const model::ModelDescriptor& requested_desc,
+                                             const memory::ExecutionPlan& plan, std::string& error_msg) try {
     const auto load_t0 = Clock::now();
     auto ms_since = [](Clock::time_point t) {
         return std::chrono::duration<double, std::milli>(Clock::now() - t).count();
@@ -67,8 +64,8 @@ std::unique_ptr<GuildModel> GuildModel::load(
     auto has_gpack_ext = [](const std::string& p) {
         return p.size() >= 6 && p.compare(p.size() - 6, 6, ".gpack") == 0;
     };
-    const bool explicit_gpack = has_gpack_ext(paths.primary_model_path) ||
-                                artifact::GPackReader::is_gpack_file(paths.primary_model_path);
+    const bool explicit_gpack =
+        has_gpack_ext(paths.primary_model_path) || artifact::GPackReader::is_gpack_file(paths.primary_model_path);
     std::unique_ptr<artifact::GPackReader> gpack_reader;
     std::string gpack_candidate_path;
     if (explicit_gpack) {
@@ -114,26 +111,29 @@ std::unique_ptr<GuildModel> GuildModel::load(
         }
         sp.runner_and_plan_ms += ms_since(run_t0);
     } else {
-        if (paths.pack_dir.empty() || !std::filesystem::is_regular_file(std::filesystem::path(paths.pack_dir) / "index.txt")) {
+        if (paths.pack_dir.empty() ||
+            !std::filesystem::is_regular_file(std::filesystem::path(paths.pack_dir) / "index.txt")) {
             error_msg = "model load: missing pack index.txt: " + paths.pack_dir;
             return nullptr;
         }
         // A missing shard is a load failure, not a reason to continue with a partial model.
         shards = guild::gguf_split_paths(paths.primary_model_path);
-        if (shards.size() == 1) shards.insert(shards.end(), paths.additional_shards.begin(), paths.additional_shards.end());
+        if (shards.size() == 1)
+            shards.insert(shards.end(), paths.additional_shards.begin(), paths.additional_shards.end());
         const auto parse_t0 = Clock::now();
         const guild::GgufModel artifact(shards);
         sp.container_opens += static_cast<int64_t>(shards.size());
         sp.model_open_parse_ms += ms_since(parse_t0);
         const auto run_t0 = Clock::now();
-        if (model::ModelRunnerRegistry::instance().resolve_for_gguf(artifact.meta(), &runner, error_msg) != GUILD_STATUS_OK ||
+        if (model::ModelRunnerRegistry::instance().resolve_for_gguf(artifact.meta(), &runner, error_msg) !=
+                GUILD_STATUS_OK ||
             !runner || !runner->validate_and_describe(artifact, desc, error_msg)) {
             return nullptr;
         }
         sp.runner_and_plan_ms += ms_since(run_t0);
     }
-    if (plan.context_length <= 0 || plan.context_length > desc.attn.context_length ||
-        plan.mtp_spec_tokens < 0 || plan.mtp_spec_tokens > kernels::kVerifyMaxT) {
+    if (plan.context_length <= 0 || plan.context_length > desc.attn.context_length || plan.mtp_spec_tokens < 0 ||
+        plan.mtp_spec_tokens > kernels::kVerifyMaxT) {
         error_msg = "model load: invalid context or verification capacity";
         return nullptr;
     }
@@ -180,20 +180,26 @@ std::unique_ptr<GuildModel> GuildModel::load(
     }
     const auto host_caps = kernels::query_host_device_capabilities();
     if (model::ModelRunnerRegistry::instance().validate_runner_requirements(
-            *runner, desc, impl->g, plan, kernels::KernelRegistry::instance(),
-            host_caps, impl->runner_exec, error_msg) != GUILD_STATUS_OK) {
+            *runner, desc, impl->g, plan, kernels::KernelRegistry::instance(), host_caps, impl->runner_exec,
+            error_msg) != GUILD_STATUS_OK) {
         return nullptr;
     }
     sp.runner_and_plan_ms += ms_since(geom_t0);
 
     // RoPE scaling
     kernels::RopeScaling rope_cfg;
-    if (desc.rope.freq_base > 0) rope_cfg.freq_base = desc.rope.freq_base;
-    if (desc.rope.factor > 0) rope_cfg.factor = desc.rope.factor;
-    if (desc.rope.orig_ctx > 0) rope_cfg.orig_ctx = desc.rope.orig_ctx;
-    if (desc.rope.type == "linear") rope_cfg.type = kernels::RopeScalingType::Linear;
-    else if (desc.rope.type == "yarn") rope_cfg.type = kernels::RopeScalingType::YaRN;
-    else rope_cfg.type = kernels::RopeScalingType::None;
+    if (desc.rope.freq_base > 0)
+        rope_cfg.freq_base = desc.rope.freq_base;
+    if (desc.rope.factor > 0)
+        rope_cfg.factor = desc.rope.factor;
+    if (desc.rope.orig_ctx > 0)
+        rope_cfg.orig_ctx = desc.rope.orig_ctx;
+    if (desc.rope.type == "linear")
+        rope_cfg.type = kernels::RopeScalingType::Linear;
+    else if (desc.rope.type == "yarn")
+        rope_cfg.type = kernels::RopeScalingType::YaRN;
+    else
+        rope_cfg.type = kernels::RopeScalingType::None;
     kernels::rope_scaling_set(rope_cfg);
 
     // KV configuration
@@ -213,7 +219,9 @@ std::unique_ptr<GuildModel> GuildModel::load(
     const auto kprov_t0 = Clock::now();
     int n_workers = impl->config.pool_workers;
     if (const char* ew = std::getenv("GUILD_POOL_WORKERS")) {
-        try { n_workers = std::stoi(ew); } catch (...) {}
+        try {
+            n_workers = std::stoi(ew);
+        } catch (...) {}
     }
     impl->pool = std::make_unique<kernels::cpu::ExpertPool>(n_workers, true, true, kernels::cpu::PoolAffinity::All);
     impl->config.pool_workers = impl->pool->workers();
@@ -228,23 +236,19 @@ std::unique_ptr<GuildModel> GuildModel::load(
     sp.cuda_init_ms += ms_since(stream_t0);
     const auto ksel_t0 = Clock::now();
     impl->kernel_lease = kernels::SessionKernelLease(&kernels::KernelRegistry::instance(),
-                                                      impl->runner_exec.resolved_package_ids,
-                                                      impl->main_stream);
+                                                     impl->runner_exec.resolved_package_ids, impl->main_stream);
 
     // Phase 5 GEXEC ahead-of-time optimization resolution & validation
     if (use_gpack) {
         const auto cur_gexec_id = gexec::build_current_gexec_identity(
-            *impl->gpack,
-            impl->config.kv_format,
-            impl->config.kv_host_only ? "host_only" : "resident",
-            impl->config.max_context,
-            plan.prefill_batch > 0 ? plan.prefill_batch : impl->config.prefill_chunk,
+            *impl->gpack, impl->config.kv_format, impl->config.kv_host_only ? "host_only" : "resident",
+            impl->config.max_context, plan.prefill_batch > 0 ? plan.prefill_batch : impl->config.prefill_chunk,
             plan.mtp_spec_tokens);
         auto greader = std::make_unique<gexec::GExecReader>();
         std::string gexec_fallback;
         gexec::GExecInvalidationReason gexec_reason = gexec::GExecInvalidationReason::None;
-        if (gexec::resolve_gexec_for_gpack(
-                gpack_candidate_path, paths.gexec_path, cur_gexec_id, *greader, gexec_fallback, &gexec_reason) &&
+        if (gexec::resolve_gexec_for_gpack(gpack_candidate_path, paths.gexec_path, cur_gexec_id, *greader,
+                                           gexec_fallback, &gexec_reason) &&
             !greader->is_partial()) {
             impl->gexec = std::move(greader);
             sp.container_format = "gpack.v1+gexec.v1";
@@ -262,7 +266,8 @@ std::unique_ptr<GuildModel> GuildModel::load(
 
     {
         kernels::KernelSelectionQuery query;
-        query.op_kind=GUILD_OP_BATCHED_EXPERT_EXEC; query.allowed_backends=GUILD_BACKEND_CPU;
+        query.op_kind = GUILD_OP_BATCHED_EXPERT_EXEC;
+        query.allowed_backends = GUILD_BACKEND_CPU;
         if (impl->gexec && impl->gexec->has_section(gexec::GExecSectionKind::AutotuneTable)) {
             const auto& at = impl->gexec->autotune_table();
             for (const auto& rec : at.records) {
@@ -278,11 +283,11 @@ std::unique_ptr<GuildModel> GuildModel::load(
             const bool want_zero_copy = (zcopy_env != nullptr && std::atoi(zcopy_env) != 0) &&
                                         impl->gpack->has_embedded_experts() &&
                                         !impl->gexec->has_section(gexec::GExecSectionKind::PackedExpertsBlob);
-            const bool gpu_decode_experts = (plan.routed_experts_in_gpu != 0) ||
-                                            (plan.pcie_expert_fraction > 0.0);
+            const bool gpu_decode_experts = (plan.routed_experts_in_gpu != 0) || (plan.pcie_expert_fraction > 0.0);
             if ((want_zero_copy || gpu_decode_experts || plan.pcie_expert_fraction < 0 || plan.expert_cache_auto) &&
                 kernels::cpu::is_gexec_interleaved_impl(query.frozen_impl_id.c_str())) {
-                sp.gexec_fallback_reason = "interleaved expert plan is incompatible with the requested mmap/GPU expert path";
+                sp.gexec_fallback_reason =
+                    "interleaved expert plan is incompatible with the requested mmap/GPU expert path";
                 std::fprintf(stderr, "guild runtime: GEXEC fallback to GPACK (%s)\n", sp.gexec_fallback_reason.c_str());
                 impl->gexec.reset();
                 sp.gexec_active = false;
@@ -292,10 +297,12 @@ std::unique_ptr<GuildModel> GuildModel::load(
             }
         }
         kernels::KernelBinding selected;
-        if (kernels::KernelRegistry::instance().select(query,host_caps,&selected,error_msg) != GUILD_STATUS_OK) {
+        if (kernels::KernelRegistry::instance().select(query, host_caps, &selected, error_msg) != GUILD_STATUS_OK) {
             if (!query.frozen_impl_id.empty()) {
-                std::fprintf(stderr, "guild runtime: GEXEC frozen kernel '%s' unavailable (%s); falling back to default selection\n",
-                             query.frozen_impl_id.c_str(), error_msg.c_str());
+                std::fprintf(
+                    stderr,
+                    "guild runtime: GEXEC frozen kernel '%s' unavailable (%s); falling back to default selection\n",
+                    query.frozen_impl_id.c_str(), error_msg.c_str());
                 sp.gexec_fallback_reason = error_msg;
                 impl->gexec.reset();
                 sp.gexec_active = false;
@@ -303,7 +310,8 @@ std::unique_ptr<GuildModel> GuildModel::load(
                 error_msg.clear();
                 query.frozen_impl_id.clear();
                 query.frozen_impl_version = 0;
-                if (kernels::KernelRegistry::instance().select(query,host_caps,&selected,error_msg) != GUILD_STATUS_OK)
+                if (kernels::KernelRegistry::instance().select(query, host_caps, &selected, error_msg) !=
+                    GUILD_STATUS_OK)
                     return nullptr;
             } else {
                 return nullptr;
@@ -318,30 +326,34 @@ std::unique_ptr<GuildModel> GuildModel::load(
         if (selected->next_ext) {
             impl->cpu_binding = selected;
             guild_cpu_expert_ext_v1_t table{};
-            std::memcpy(&table,selected->next_ext,sizeof(table));
-            if (table.struct_size<sizeof(table) || table.tag!=GUILD_CPU_EXPERT_TAG_V1 || table.version!=1) {
-                error_msg="model load: invalid CPU expert contract"; return nullptr;
+            std::memcpy(&table, selected->next_ext, sizeof(table));
+            if (table.struct_size < sizeof(table) || table.tag != GUILD_CPU_EXPERT_TAG_V1 || table.version != 1) {
+                error_msg = "model load: invalid CPU expert contract";
+                return nullptr;
             }
             impl->kernel_lease.add_package(selected->package_id);
             impl->pool->bind_native_kernels(table);
-            impl->native_cpu_package=selected->package_id;
-            if(table.struct_size>=offsetof(guild_cpu_backend_ext_v2_t,swiglu)) {
+            impl->native_cpu_package = selected->package_id;
+            if (table.struct_size >= offsetof(guild_cpu_backend_ext_v2_t, swiglu)) {
                 guild_cpu_backend_ext_v2_t complete{};
-                std::memcpy(&complete,selected->next_ext,std::min<size_t>(table.struct_size,sizeof(complete)));
-                if(complete.backend_version!=GUILD_CPU_BACKEND_VERSION_V2){error_msg="invalid CPU backend contract";return nullptr;}
-                impl->cpu_backend=complete;
+                std::memcpy(&complete, selected->next_ext, std::min<size_t>(table.struct_size, sizeof(complete)));
+                if (complete.backend_version != GUILD_CPU_BACKEND_VERSION_V2) {
+                    error_msg = "invalid CPU backend contract";
+                    return nullptr;
+                }
+                impl->cpu_backend = complete;
                 impl->pool->bind_backend_kernels(complete);
             }
         }
 #if defined(GUILD_NO_BUILTIN_NATIVE_CPU)
         if (impl->native_cpu_package.empty()) {
-            error_msg="model load: native CPU fallback disabled; install a compatible CPU .gkernel";
+            error_msg = "model load: native CPU fallback disabled; install a compatible CPU .gkernel";
             return nullptr;
         }
 #endif
 #if defined(GUILD_NO_BUILTIN_FULL_CPU)
-        if(!impl->cpu_backend || !impl->cpu_backend->swiglu){
-            error_msg="model load: all bundled CPU arithmetic disabled; a complete CPU backend contract is required";
+        if (!impl->cpu_backend || !impl->cpu_backend->swiglu) {
+            error_msg = "model load: all bundled CPU arithmetic disabled; a complete CPU backend contract is required";
             return nullptr;
         }
 #endif
@@ -383,7 +395,8 @@ std::unique_ptr<GuildModel> GuildModel::load(
         }
 #if !GUILD_BUNDLED_CUDA_ATTN
         if (!impl->cuda_attn) {
-            error_msg = "model load: bundled CUDA attention arithmetic disabled; install a compatible CDA1 CUDA .gkernel";
+            error_msg =
+                "model load: bundled CUDA attention arithmetic disabled; install a compatible CDA1 CUDA .gkernel";
             return nullptr;
         }
 #endif
@@ -409,31 +422,31 @@ std::unique_ptr<GuildModel> GuildModel::load(
         }
     } else {
         if (!guild::kernels::cpu::expert_layout_load(paths.pack_dir, impl->g.n_layers, impl->g.n_expert, error_msg,
-                                                      impl->g.n_embd, impl->g.n_ff,
-                                                      impl->cpu_backend ? &*impl->cpu_backend : nullptr)) {
+                                                     impl->g.n_embd, impl->g.n_ff,
+                                                     impl->cpu_backend ? &*impl->cpu_backend : nullptr)) {
             return nullptr;
         }
     }
-    const bool use_gexec_interleaved =
-        impl->gexec &&
-        kernels::cpu::is_gexec_interleaved_impl(sp.gexec_cpu_expert_impl.c_str()) &&
-        guild::kernels::cpu::expert_layout().native;
+    const bool use_gexec_interleaved = impl->gexec &&
+                                       kernels::cpu::is_gexec_interleaved_impl(sp.gexec_cpu_expert_impl.c_str()) &&
+                                       guild::kernels::cpu::expert_layout().native;
     guild::kernels::cpu::expert_layout_set_gate_up_interleaved(use_gexec_interleaved);
     sp.gexec_expert_layout = use_gexec_interleaved ? "GateUpRowInterleaved" : "PortableContiguous";
     sp.quant_layout_prep_ms += ms_since(qlay_t0);
     const bool native_pack = guild::kernels::cpu::expert_layout().native;
     const bool has_native_sources = use_gpack || !shards.empty();
-    if(!native_pack && (impl->g.n_embd!=GUILD_CPU_PLANAR_EMBED_V1 || impl->g.n_ff!=GUILD_CPU_PLANAR_FF_V1)) {
-        error_msg="model load: canonical planar Q2 pack geometry does not match its fixed public storage contract";
+    if (!native_pack && (impl->g.n_embd != GUILD_CPU_PLANAR_EMBED_V1 || impl->g.n_ff != GUILD_CPU_PLANAR_FF_V1)) {
+        error_msg = "model load: canonical planar Q2 pack geometry does not match its fixed public storage contract";
         return nullptr;
     }
     const auto& layout = kernels::cpu::expert_layout();
-    const uint64_t ram_budget = plan.expert_ram_budget_bytes ? std::min(plan.expert_ram_budget_bytes, layout.total)
-                                : plan.routed_expert_total_bytes ? plan.routed_experts_ram_bytes : layout.total;
+    const uint64_t ram_budget = plan.expert_ram_budget_bytes     ? std::min(plan.expert_ram_budget_bytes, layout.total)
+                                : plan.routed_expert_total_bytes ? plan.routed_experts_ram_bytes
+                                                                 : layout.total;
     impl->config.resident_budget_gib = (ram_budget >> 30) + ((ram_budget & ((1ull << 30) - 1)) != 0);
     model->config_ = impl->config;
-    if ((!native_pack && !kernels::cpu::cpu_avx512_ok() && !impl->cpu_backend) ||
-        impl->g.n_ff > kernels::cpu::FF || impl->g.n_embd > kernels::cpu::H) {
+    if ((!native_pack && !kernels::cpu::cpu_avx512_ok() && !impl->cpu_backend) || impl->g.n_ff > kernels::cpu::FF ||
+        impl->g.n_embd > kernels::cpu::H) {
         error_msg = "model load: expert geometry or CPU ISA exceeds this pool's supported capacities";
         return nullptr;
     }
@@ -481,8 +494,7 @@ std::unique_ptr<GuildModel> GuildModel::load(
     uint64_t pool_bytes = 0;
     if (use_gpack) {
         skip = impl->gpack->precomputed_skip_set();
-        if (!core::WeightTable::pool_bytes_gpack(*impl->gpack, pool_bytes, error_msg,
-                                                 skip.empty() ? nullptr : &skip)) {
+        if (!core::WeightTable::pool_bytes_gpack(*impl->gpack, pool_bytes, error_msg, skip.empty() ? nullptr : &skip)) {
             return nullptr;
         }
         if (cudaMalloc(&impl->arena, pool_bytes) != cudaSuccess) {
@@ -491,8 +503,7 @@ std::unique_ptr<GuildModel> GuildModel::load(
         }
         ++sp.dense_device_allocs;
         sp.dense_vram_bytes += pool_bytes;
-        if (!impl->wt.load_gpack(*impl->gpack, impl->arena, pool_bytes, error_msg,
-                                 skip.empty() ? nullptr : &skip)) {
+        if (!impl->wt.load_gpack(*impl->gpack, impl->arena, pool_bytes, error_msg, skip.empty() ? nullptr : &skip)) {
             return nullptr;
         }
     } else {
@@ -504,7 +515,8 @@ std::unique_ptr<GuildModel> GuildModel::load(
             if (native_pack && !guild::core::NativeDense::keep_unquantized_ple_key(paths.pack_dir, skip, error_msg)) {
                 return nullptr;
             }
-            if (native_pack) ++sp.index_parses;
+            if (native_pack)
+                ++sp.index_parses;
         }
         if (!runner->configure_weight_skip_set(native_pack, !shards.empty(), paths.pack_dir, skip, error_msg)) {
             return nullptr;
@@ -548,7 +560,8 @@ std::unique_ptr<GuildModel> GuildModel::load(
         sp.dense_device_allocs += static_cast<int64_t>(skip.size());
         sp.dense_vram_bytes += impl->native_dense.weight_bytes();
     }
-    if (!core::check_all(impl->wt, impl->g, error_msg)) return nullptr;
+    if (!core::check_all(impl->wt, impl->g, error_msg))
+        return nullptr;
     sp.native_dense_load_ms += ms_since(ndense_t0);
 
     // Load native head if available
@@ -573,7 +586,8 @@ std::unique_ptr<GuildModel> GuildModel::load(
         sp.dense_vram_bytes += impl->native_head.weight_bytes();
     }
 
-    // Open expert source (FileExpertSource over GEXEC PackedExpertsBlob, GPACK ExpertBlobs, or pack directory / GGUF shards)
+    // Open expert source (FileExpertSource over GEXEC PackedExpertsBlob, GPACK ExpertBlobs, or pack directory / GGUF
+    // shards)
     const auto esrc_t0 = Clock::now();
     if (impl->gexec && impl->gexec->has_section(gexec::GExecSectionKind::PackedExpertsBlob)) {
         uint64_t exp_bytes = 0;
@@ -604,15 +618,15 @@ std::unique_ptr<GuildModel> GuildModel::load(
             return nullptr;
         }
         impl->src.set_gate_up_interleaved(use_gexec_interleaved);
-        if (!shards.empty()) sp.container_opens += static_cast<int64_t>(shards.size());
+        if (!shards.empty())
+            sp.container_opens += static_cast<int64_t>(shards.size());
     }
     impl->srcp = &impl->src;
     sp.expert_source_open_ms += ms_since(esrc_t0);
 
     const auto cal1_t0 = Clock::now();
     if (impl->gexec && impl->gexec->has_section(gexec::GExecSectionKind::HeterogeneousPlan) &&
-        impl->gexec->heterogeneous_plan().measured_formats > 0 &&
-        plan.pcie_expert_fraction <= 0.0) {
+        impl->gexec->heterogeneous_plan().measured_formats > 0 && plan.pcie_expert_fraction <= 0.0) {
         const auto& hp = impl->gexec->heterogeneous_plan();
         impl->expert_performance.gpu_layers = hp.gpu_layers;
         if (impl->expert_performance.gpu_layers.size() != static_cast<size_t>(impl->g.n_layers)) {
@@ -627,8 +641,9 @@ std::unique_ptr<GuildModel> GuildModel::load(
         impl->expert_performance.gpu_ms = hp.calibrated_gpu_ms;
         impl->expert_performance.copy_ms = hp.calibrated_copy_ms;
     } else {
-        if (!calibrate_experts(layout, impl->src, *impl->pool, 0, impl->main_stream,
-                               impl->expert_performance, error_msg)) return nullptr;
+        if (!calibrate_experts(layout, impl->src, *impl->pool, 0, impl->main_stream, impl->expert_performance,
+                               error_msg))
+            return nullptr;
     }
     if (!native_pack) {
         const bool supported = impl->g.n_embd == kernels::cpu::H && impl->g.n_ff == kernels::cpu::FF;
@@ -641,8 +656,9 @@ std::unique_ptr<GuildModel> GuildModel::load(
     std::vector<std::pair<int32_t, int32_t>> profile;
     if (!paths.expert_profile_path.empty()) {
         int64_t profile_slots = 0;
-        if (!core::read_expert_profile(paths.expert_profile_path, impl->g.n_layers, impl->g.n_expert,
-                                       profile, profile_slots, error_msg)) return nullptr;
+        if (!core::read_expert_profile(paths.expert_profile_path, impl->g.n_layers, impl->g.n_expert, profile,
+                                       profile_slots, error_msg))
+            return nullptr;
     }
 
     // Explicit cache counts are exact. Automatic caches wait for all fixed allocations.
@@ -667,12 +683,17 @@ std::unique_ptr<GuildModel> GuildModel::load(
             if (impl->src.transient(l, e)) {
                 // Cache population must not retain thousands of file-tier staging blobs.
                 staging.resize(size_t(bytes));
-                if (!impl->src.copy_blob(l, e, staging.data())) { error_msg = "cache source copy failed"; return false; }
+                if (!impl->src.copy_blob(l, e, staging.data())) {
+                    error_msg = "cache source copy failed";
+                    return false;
+                }
                 blob = staging.data();
-            } else blob = impl->src.blob(l, e);
+            } else
+                blob = impl->src.blob(l, e);
             if (slot < 0 || !blob || !impl->xcache.fill_slot_blocking(slot, blob, error_msg, bytes) ||
                 !impl->xcache.verify_slot(slot, blob, error_msg, bytes)) {
-                if (error_msg.empty()) error_msg = "model load: GPU expert slot could not be filled and verified";
+                if (error_msg.empty())
+                    error_msg = "model load: GPU expert slot could not be filled and verified";
                 return false;
             }
             impl->host_res[size_t(l * impl->g.n_expert + e)] = slot;
@@ -685,12 +706,14 @@ std::unique_ptr<GuildModel> GuildModel::load(
             error_msg = "model load: requested cache exceeds validated, GPU-capable profile pairs";
             return nullptr;
         }
-        if (!fill_cache(sizing)) return nullptr;
+        if (!fill_cache(sizing))
+            return nullptr;
     }
     impl->config.expert_cache_slots = int(slots);
 
     if (cudaMalloc(&impl->d_res, total_experts * sizeof(int32_t)) != cudaSuccess ||
-        cudaMemcpy(impl->d_res, impl->host_res.data(), total_experts * sizeof(int32_t), cudaMemcpyHostToDevice) != cudaSuccess) {
+        cudaMemcpy(impl->d_res, impl->host_res.data(), total_experts * sizeof(int32_t), cudaMemcpyHostToDevice) !=
+            cudaSuccess) {
         error_msg = "failed to allocate device expert residency table";
         return nullptr;
     }
@@ -702,15 +725,14 @@ std::unique_ptr<GuildModel> GuildModel::load(
         const uint64_t budget = ram_budget;
         const char* pin_env = std::getenv("GUILD_PIN_EXPERTS");
         const bool force_pin = (pin_env != nullptr && std::atoi(pin_env) != 0);
-        const bool pcie_offload_requested =
-            force_pin || (plan.pcie_expert_fraction > 0.0) ||
-            (plan.pcie_expert_fraction < 0.0 && budget <= (24ull << 30));
-        const bool gpu_needs_pinned = pcie_offload_requested && std::any_of(
-            impl->expert_performance.gpu_layers.begin(), impl->expert_performance.gpu_layers.end(),
-            [](uint8_t v) { return v != 0; });
+        const bool pcie_offload_requested = force_pin || (plan.pcie_expert_fraction > 0.0) ||
+                                            (plan.pcie_expert_fraction < 0.0 && budget <= (24ull << 30));
+        const bool gpu_needs_pinned = pcie_offload_requested && std::any_of(impl->expert_performance.gpu_layers.begin(),
+                                                                            impl->expert_performance.gpu_layers.end(),
+                                                                            [](uint8_t v) { return v != 0; });
         const char* zcopy_env = std::getenv("GUILD_EXPERT_MMAP");
-        const bool zero_copy_mmap = (zcopy_env != nullptr && std::atoi(zcopy_env) != 0) &&
-                                    use_gpack && impl->gpack->has_embedded_experts() && !gpu_needs_pinned;
+        const bool zero_copy_mmap = (zcopy_env != nullptr && std::atoi(zcopy_env) != 0) && use_gpack &&
+                                    impl->gpack->has_embedded_experts() && !gpu_needs_pinned;
         if (zero_copy_mmap) {
             sp.expert_zero_copy = true;
             sp.expert_ram_bytes = impl->gpack->total_expert_bytes();
@@ -719,14 +741,13 @@ std::unique_ptr<GuildModel> GuildModel::load(
             // The source already clamps to available memory and falls back from pinning.
             // Retrying with an unbounded budget would discard the requested backing cap.
             if (!impl->src.pin_cache_complement(impl->xcache, error_msg, gpu_needs_pinned, {}, -1, 4ull << 30, budget,
-                                                profile.empty() ? nullptr : &profile)) return nullptr;
+                                                profile.empty() ? nullptr : &profile))
+                return nullptr;
             sp.expert_ram_bytes = impl->src.resident_bytes();
             sp.expert_page_locked = impl->src.pinned_bytes() > 0;
             sp.expert_numa_interleaved = !sp.expert_page_locked;
             const int64_t rem_experts = static_cast<int64_t>(total_experts) - slots;
-            sp.expert_copy_calls = (use_gpack && impl->gpack->has_embedded_experts())
-                                       ? rem_experts
-                                       : rem_experts * 3;
+            sp.expert_copy_calls = (use_gpack && impl->gpack->has_embedded_experts()) ? rem_experts : rem_experts * 3;
         }
         sp.numa_expert_pin_ms += ms_since(pin_t0);
     }
@@ -738,7 +759,8 @@ std::unique_ptr<GuildModel> GuildModel::load(
     {
         size_t free_vram = 0, total_vram = 0;
         if (cudaMemGetInfo(&free_vram, &total_vram) == cudaSuccess && free_vram > 0) {
-            const uint64_t reserve_needed = (plan.safety_reserve_bytes ? plan.safety_reserve_bytes : (512ull << 20)) + (512ull << 20);
+            const uint64_t reserve_needed =
+                (plan.safety_reserve_bytes ? plan.safety_reserve_bytes : (512ull << 20)) + (512ull << 20);
             if (free_vram < sbytes + reserve_needed &&
                 core::session_own_qsa_staging(impl->g, impl->config.max_context)) {
                 core::session_set_kv_share_staging(1);
@@ -770,10 +792,13 @@ std::unique_ptr<GuildModel> GuildModel::load(
 
     const auto ple_t0 = Clock::now();
     if (use_gpack) {
-        if (!bind_required_ple_gpack(*impl, *impl->gpack, error_msg)) return nullptr;
+        if (!bind_required_ple_gpack(*impl, *impl->gpack, error_msg))
+            return nullptr;
     } else {
-        if (!bind_required_ple(*impl, shards, error_msg)) return nullptr;
-        if (impl->ple_required) sp.container_opens += static_cast<int64_t>(shards.size()) + 1;
+        if (!bind_required_ple(*impl, shards, error_msg))
+            return nullptr;
+        if (impl->ple_required)
+            sp.container_opens += static_cast<int64_t>(shards.size()) + 1;
     }
     sp.ple_bind_ms += ms_since(ple_t0);
 
@@ -802,9 +827,8 @@ std::unique_ptr<GuildModel> GuildModel::load(
     vh.blob = static_cast<int64_t>(kernels::cpu::expert_layout().max_blob);
 
     impl->ver = std::make_unique<core::Verifier>();
-    if (!impl->ver->init(impl->wt, impl->g, impl->ss, vh,
-                        impl->native_head.loaded() ? &impl->native_head : nullptr,
-                        impl->config.spec, error_msg)) {
+    if (!impl->ver->init(impl->wt, impl->g, impl->ss, vh, impl->native_head.loaded() ? &impl->native_head : nullptr,
+                         impl->config.spec, error_msg)) {
         error_msg = "Verifier::init failed: " + error_msg;
         return nullptr;
     }
@@ -813,9 +837,8 @@ std::unique_ptr<GuildModel> GuildModel::load(
 
     if (use_mtp) {
         const auto mtpb_t0 = Clock::now();
-        if (!impl->mtp->bind(impl->wt,
-                            impl->native_head.loaded() ? &impl->native_head : nullptr,
-                            impl->ver->final_R_all(), error_msg)) {
+        if (!impl->mtp->bind(impl->wt, impl->native_head.loaded() ? &impl->native_head : nullptr,
+                             impl->ver->final_R_all(), error_msg)) {
             error_msg = "MTP bind failed: " + error_msg;
             return nullptr;
         }
@@ -827,10 +850,11 @@ std::unique_ptr<GuildModel> GuildModel::load(
     impl->prefill = std::make_unique<prefill::Prefill>();
     std::string pf_err;
     if (!impl->prefill->init(impl->wt, impl->g, impl->ss, impl->srcp,
-                            impl->xcache.slots() > 0 ? &impl->xcache : nullptr,
-                            impl->host_res.empty() ? nullptr : impl->host_res.data(),
-                            impl->config.prefill_chunk, impl->main_stream, pf_err)) {
-        // Prefill engine is optimized for Qwen4Exp; architectures with different geometry fall back to Verifier ingestion
+                             impl->xcache.slots() > 0 ? &impl->xcache : nullptr,
+                             impl->host_res.empty() ? nullptr : impl->host_res.data(), impl->config.prefill_chunk,
+                             impl->main_stream, pf_err)) {
+        // Prefill engine is optimized for Qwen4Exp; architectures with different geometry fall back to Verifier
+        // ingestion
         impl->prefill.reset();
     }
 
@@ -844,12 +868,12 @@ std::unique_ptr<GuildModel> GuildModel::load(
                 return nullptr;
             }
         }
-        if (impl->g.hc == 1 && impl->g.ssm_state_size == 128 && impl->g.ssm_d_conv == 4 &&
-            impl->g.head_dim == 256 && kernels::cpu::expert_layout().native &&
-            plan.kv_format == memory::KvPrecision::FP16) {
+        if (impl->g.hc == 1 && impl->g.ssm_state_size == 128 && impl->g.ssm_d_conv == 4 && impl->g.head_dim == 256 &&
+            kernels::cpu::expert_layout().native && plan.kv_format == memory::KvPrecision::FP16) {
             impl->batched_prefill = std::make_unique<BatchedPrefill>();
-            if (!impl->batched_prefill->init(impl->wt, impl->g, impl->ss, *impl->srcp, *impl->pool,
-                impl->main_stream, error_msg, batch, impl->xcache.valid() ? &impl->xcache : nullptr)) return nullptr;
+            if (!impl->batched_prefill->init(impl->wt, impl->g, impl->ss, *impl->srcp, *impl->pool, impl->main_stream,
+                                             error_msg, batch, impl->xcache.valid() ? &impl->xcache : nullptr))
+                return nullptr;
             for (const auto& pkg : impl->batched_prefill->bound_package_ids()) {
                 impl->kernel_lease.add_package(pkg);
             }
@@ -863,9 +887,13 @@ std::unique_ptr<GuildModel> GuildModel::load(
     sp.prefill_init_ms += ms_since(pf_t0);
 
     auto finalize_cache = [&]() -> bool {
-        if (!auto_cache) return true;
+        if (!auto_cache)
+            return true;
         size_t free = 0, total = 0;
-        if (cudaMemGetInfo(&free, &total) != cudaSuccess) { error_msg = "cache free-memory query failed"; return false; }
+        if (cudaMemGetInfo(&free, &total) != cudaSuccess) {
+            error_msg = "cache free-memory query failed";
+            return false;
+        }
         const uint64_t reserve = plan.safety_reserve_bytes ? plan.safety_reserve_bytes : (512ull << 20);
         uint64_t budget = free > reserve ? free - reserve : 0;
         std::vector<std::pair<int32_t, int32_t>> cache_ranking = profile;
@@ -878,37 +906,53 @@ std::unique_ptr<GuildModel> GuildModel::load(
             if (all_bytes <= budget)
                 for (int32_t e = 0; e < layout.n_expert; ++e)
                     for (int32_t l = 0; l < layout.n_layers; ++l)
-                        if (impl->expert_performance.gpu_layers[size_t(l)]) cache_ranking.emplace_back(l, e);
+                        if (impl->expert_performance.gpu_layers[size_t(l)])
+                            cache_ranking.emplace_back(l, e);
         }
         for (int attempt = 0; attempt < 8 && budget; ++attempt) {
-            const auto sizing = size_expert_cache(layout, cache_ranking, impl->expert_performance.gpu_layers,
-                                                   budget, int64_t(cache_ranking.size()));
-            if (sizing.pairs.empty()) break;
+            const auto sizing = size_expert_cache(layout, cache_ranking, impl->expert_performance.gpu_layers, budget,
+                                                  int64_t(cache_ranking.size()));
+            if (sizing.pairs.empty())
+                break;
             if (!fill_cache(sizing)) {
-                if (!cache_allocation_failed) return false;
+                if (!cache_allocation_failed)
+                    return false;
                 const auto status = cudaGetLastError();
-                if (status != cudaSuccess && status != cudaErrorMemoryAllocation) return false;
-                impl->xcache.close(); error_msg.clear(); budget = budget / 4 * 3;
+                if (status != cudaSuccess && status != cudaErrorMemoryAllocation)
+                    return false;
+                impl->xcache.close();
+                error_msg.clear();
+                budget = budget / 4 * 3;
                 std::fill(impl->host_res.begin(), impl->host_res.end(), core::kNotResident);
                 continue;
             }
             slots = impl->xcache.slots();
-            if (cudaMemGetInfo(&free, &total) != cudaSuccess) { error_msg = "cache memory query failed"; return false; }
-            if (free >= reserve) break;
-            impl->xcache.close(); slots = 0;
+            if (cudaMemGetInfo(&free, &total) != cudaSuccess) {
+                error_msg = "cache memory query failed";
+                return false;
+            }
+            if (free >= reserve)
+                break;
+            impl->xcache.close();
+            slots = 0;
             std::fill(impl->host_res.begin(), impl->host_res.end(), core::kNotResident);
             budget = budget / 4 * 3;
         }
         impl->config.expert_cache_slots = int(slots);
-        if (cudaMemcpy(impl->d_res, impl->host_res.data(), total_experts * sizeof(int32_t), cudaMemcpyHostToDevice) != cudaSuccess) {
-            error_msg = "cache residency upload failed"; return false;
+        if (cudaMemcpy(impl->d_res, impl->host_res.data(), total_experts * sizeof(int32_t), cudaMemcpyHostToDevice) !=
+            cudaSuccess) {
+            error_msg = "cache residency upload failed";
+            return false;
         }
         vh.n_slots = slots;
         vh.cache_base = slots ? impl->xcache.device_slot(0) : nullptr;
         vh.slot_off = slots ? impl->xcache.slot_offsets() : nullptr;
-        if (slots && (!impl->ver->reset_graphs(error_msg) || !impl->ver->configure_expert_cache(vh, error_msg))) return false;
-        if (impl->prefill) impl->prefill->set_expert_cache(slots ? &impl->xcache : nullptr, impl->host_res.data());
-        if (impl->batched_prefill) impl->batched_prefill->set_expert_cache(slots ? &impl->xcache : nullptr);
+        if (slots && (!impl->ver->reset_graphs(error_msg) || !impl->ver->configure_expert_cache(vh, error_msg)))
+            return false;
+        if (impl->prefill)
+            impl->prefill->set_expert_cache(slots ? &impl->xcache : nullptr, impl->host_res.data());
+        if (impl->batched_prefill)
+            impl->batched_prefill->set_expert_cache(slots ? &impl->xcache : nullptr);
         return true;
     };
 
@@ -925,11 +969,12 @@ std::unique_ptr<GuildModel> GuildModel::load(
     impl->drive.d.cache_slot_off = slots > 0 ? impl->xcache.slot_offsets() : nullptr;
     impl->drive.d.host_res = impl->host_res.data();
     const auto cal2_t0 = Clock::now();
-    const bool need_post_calibrate = (plan.pcie_expert_fraction != 0.0) &&
-                                     (impl->src.pinned_bytes() > 0 || impl->xcache.slots() > 0);
+    const bool need_post_calibrate =
+        (plan.pcie_expert_fraction != 0.0) && (impl->src.pinned_bytes() > 0 || impl->xcache.slots() > 0);
     if (need_post_calibrate) {
-        if (!calibrate_experts(layout, impl->src, *impl->pool, plan.pcie_expert_fraction,
-                               impl->main_stream, impl->expert_performance, error_msg)) return nullptr;
+        if (!calibrate_experts(layout, impl->src, *impl->pool, plan.pcie_expert_fraction, impl->main_stream,
+                               impl->expert_performance, error_msg))
+            return nullptr;
     } else {
         impl->expert_performance.pcie_numerators.assign(size_t(impl->g.n_layers), 0);
     }
@@ -940,12 +985,14 @@ std::unique_ptr<GuildModel> GuildModel::load(
     }
     impl->drive.d.plan = impl->ver->plan_sink();
     impl->drive.d.pcie_layer_numerators = impl->expert_performance.pcie_numerators;
-    const bool any_offload = std::any_of(impl->drive.d.pcie_layer_numerators.begin(),
-                                        impl->drive.d.pcie_layer_numerators.end(), [](int value) { return value > 0; });
+    const bool any_offload =
+        std::any_of(impl->drive.d.pcie_layer_numerators.begin(), impl->drive.d.pcie_layer_numerators.end(),
+                    [](int value) { return value > 0; });
     impl->ver->set_pcie_mode(any_offload ? 2 : 0);
     if (plan.pcie_expert_fraction < 0 && any_offload &&
-        !tune_expert_split(*impl->ver, impl->ss, impl->g, impl->drive.d, drive_pool_multi,
-                            &impl->drive, impl->config.spec, impl->main_stream, impl->expert_performance, error_msg)) return nullptr;
+        !tune_expert_split(*impl->ver, impl->ss, impl->g, impl->drive.d, drive_pool_multi, &impl->drive,
+                           impl->config.spec, impl->main_stream, impl->expert_performance, error_msg))
+        return nullptr;
     sp.expert_calibration_post_ms += ms_since(cal2_t0);
     if (auto_cache) {
         const auto gcap_t0 = Clock::now();
@@ -955,12 +1002,14 @@ std::unique_ptr<GuildModel> GuildModel::load(
         for (int rows = 1; rows <= impl->config.spec; ++rows) {
             core::session_zero(impl->ss, impl->g, nullptr, impl->main_stream);
             if (cudaStreamSynchronize(impl->main_stream) != cudaSuccess ||
-                !impl->ver->run(rows, input.data(), 0, drive_pool_multi, &impl->drive, output.data(), error_msg)) return nullptr;
+                !impl->ver->run(rows, input.data(), 0, drive_pool_multi, &impl->drive, output.data(), error_msg))
+                return nullptr;
         }
         sp.graph_capture_startup_ms += ms_since(gcap_t0);
         const auto fcache_t0 = Clock::now();
         core::session_zero(impl->ss, impl->g, nullptr, impl->main_stream);
-        if (cudaStreamSynchronize(impl->main_stream) != cudaSuccess || !finalize_cache()) return nullptr;
+        if (cudaStreamSynchronize(impl->main_stream) != cudaSuccess || !finalize_cache())
+            return nullptr;
         sp.expert_cache_init_ms += ms_since(fcache_t0);
         impl->drive.d.cache = slots ? &impl->xcache : nullptr;
         impl->drive.d.cache_base = slots ? impl->xcache.device_slot(0) : nullptr;
@@ -970,16 +1019,17 @@ std::unique_ptr<GuildModel> GuildModel::load(
     const auto& numerators = impl->drive.d.pcie_layer_numerators;
     impl->drive.d.pcie_num = numerators.empty() ? 0 : *std::max_element(numerators.begin(), numerators.end());
     impl->config.pcie_layer_numerators = numerators;
-    std::fprintf(stderr, "guild performance: %d measured formats, CPU %.3f ms, GPU %.3f ms, copy %.3f ms; "
-                         "PCIe up to %d/256, GPU cache %lld slots (%lld bytes)\n",
+    std::fprintf(stderr,
+                 "guild performance: %d measured formats, CPU %.3f ms, GPU %.3f ms, copy %.3f ms; "
+                 "PCIe up to %d/256, GPU cache %lld slots (%lld bytes)\n",
                  impl->expert_performance.measured_formats, impl->expert_performance.cpu_ms,
                  impl->expert_performance.gpu_ms, impl->expert_performance.copy_ms, impl->drive.d.pcie_num,
                  static_cast<long long>(slots), static_cast<long long>(impl->xcache.bytes()));
-    std::fprintf(stderr, "guild performance: CPU workers %d + host %d; verifier capacity %d; "
-                         "MTP %s; min draft probability %.3f; RAM expert backing %llu bytes\n",
-                 impl->pool->workers(), int(impl->pool->host_works()), impl->config.spec,
-                 use_mtp ? "on" : "off", double(impl->config.spec_min_p),
-                 static_cast<unsigned long long>(impl->src.resident_bytes()));
+    std::fprintf(stderr,
+                 "guild performance: CPU workers %d + host %d; verifier capacity %d; "
+                 "MTP %s; min draft probability %.3f; RAM expert backing %llu bytes\n",
+                 impl->pool->workers(), int(impl->pool->host_works()), impl->config.spec, use_mtp ? "on" : "off",
+                 double(impl->config.spec_min_p), static_cast<unsigned long long>(impl->src.resident_bytes()));
     model->config_ = impl->config;
 
     // Load tokenizer (from GPACK binary section if available, else tokenizer_dir)
@@ -995,7 +1045,8 @@ std::unique_ptr<GuildModel> GuildModel::load(
         const auto& eids = model->tokenizer_->eos_token_ids();
         if (!eids.empty()) {
             impl->config.eos_token_ids.clear();
-            for (int32_t id : eids) impl->config.eos_token_ids.push_back(id);
+            for (int32_t id : eids)
+                impl->config.eos_token_ids.push_back(id);
             model->config_.eos_token_ids = impl->config.eos_token_ids;
         }
         sp.tokenizer_load_ms += ms_since(tok_t0);
@@ -1009,7 +1060,8 @@ std::unique_ptr<GuildModel> GuildModel::load(
             const auto& eids = model->tokenizer_->eos_token_ids();
             if (!eids.empty()) {
                 impl->config.eos_token_ids.clear();
-                for (int32_t id : eids) impl->config.eos_token_ids.push_back(id);
+                for (int32_t id : eids)
+                    impl->config.eos_token_ids.push_back(id);
                 model->config_.eos_token_ids = impl->config.eos_token_ids;
             }
         }
@@ -1027,9 +1079,11 @@ std::unique_ptr<GuildModel> GuildModel::load(
 }
 
 std::unique_ptr<GuildSession> GuildModel::create_session(int64_t max_context) {
-    if (!is_ready()) return nullptr;
+    if (!is_ready())
+        return nullptr;
     int64_t ctx = max_context > 0 ? max_context : config_.max_context;
-    if (ctx > config_.max_context) return nullptr;
+    if (ctx > config_.max_context)
+        return nullptr;
     return std::make_unique<GuildSession>(this, ctx);
 }
 

@@ -16,8 +16,7 @@ public:
     std::string finalize_hex();
 
     static std::string hash_string(const std::string& str);
-    static std::string hash_file(const std::string& path,
-                                 uint64_t max_bytes = 0,
+    static std::string hash_file(const std::string& path, uint64_t max_bytes = 0,
                                  std::function<void(uint64_t bytes_hashed)> progress_cb = nullptr);
 
 private:

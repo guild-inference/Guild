@@ -61,4 +61,4 @@ struct Batch {
 void experts(const Batch& b, int n_expert, int64_t n, const void* scratch, const void* xa, const int32_t* src, void* ha,
              float* dm, void* stream);
 
-}  // namespace guild::prefill::fused
+} // namespace guild::prefill::fused

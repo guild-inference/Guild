@@ -30,10 +30,11 @@ struct ConversationCheckpoint {
     std::vector<ConversationCheckpoint> stage_parts;
 
     size_t bytes() const {
-        size_t n = ids.capacity() * sizeof(int32_t) + imgs.capacity() * sizeof(ConversationImageKey) +
-               gdn.capacity() + ple.capacity() + tails.capacity() + dead.capacity() + block_pos.capacity() +
-               stage_parts.capacity() * sizeof(ConversationCheckpoint);
-        for (const auto& part : stage_parts) n += part.bytes();
+        size_t n = ids.capacity() * sizeof(int32_t) + imgs.capacity() * sizeof(ConversationImageKey) + gdn.capacity() +
+                   ple.capacity() + tails.capacity() + dead.capacity() + block_pos.capacity() +
+                   stage_parts.capacity() * sizeof(ConversationCheckpoint);
+        for (const auto& part : stage_parts)
+            n += part.bytes();
         return n;
     }
 };
@@ -57,8 +58,10 @@ struct ConversationKvReuse {
     std::vector<ConversationKvReuse> stages;
     size_t bytes() const {
         size_t n = kv.capacity() * sizeof(ConversationKv) + stages.capacity() * sizeof(ConversationKvReuse);
-        for (const auto& layer : kv) n += layer.bytes();
-        for (const auto& s : stages) n += s.bytes();
+        for (const auto& layer : kv)
+            n += layer.bytes();
+        for (const auto& s : stages)
+            n += s.bytes();
         return n;
     }
 };
@@ -70,9 +73,9 @@ struct ConversationKvReuse {
 /// original order.  merge(split(x)) == x.
 struct ConversationCheckpointSplit {
     std::vector<ConversationCheckpoint> stage0;
-    std::vector<std::vector<ConversationCheckpoint>> parts;   ///< [stage][checkpoint]
-    std::vector<ConversationCheckpoint> rest;                 ///< not split (no complete set of stage parts)
-    std::vector<bool> complete;                               ///< per original position: in stage0/parts or in rest
+    std::vector<std::vector<ConversationCheckpoint>> parts; ///< [stage][checkpoint]
+    std::vector<ConversationCheckpoint> rest;               ///< not split (no complete set of stage parts)
+    std::vector<bool> complete;                             ///< per original position: in stage0/parts or in rest
 };
 
 inline ConversationCheckpointSplit conversation_checkpoints_split(std::vector<ConversationCheckpoint>&& checks,
@@ -82,10 +85,16 @@ inline ConversationCheckpointSplit conversation_checkpoints_split(std::vector<Co
     for (auto& c : checks) {
         const bool whole = c.stage_parts.size() == stages;
         out.complete.push_back(whole);
-        if (!whole) { out.rest.push_back(std::move(c)); continue; }
+        if (!whole) {
+            out.rest.push_back(std::move(c));
+            continue;
+        }
         for (size_t k = 0; k < stages; ++k) {
             ConversationCheckpoint part = std::move(c.stage_parts[k]);
-            part.ids = c.ids; part.imgs = c.imgs; part.used = c.used; part.stage_parts.clear();
+            part.ids = c.ids;
+            part.imgs = c.imgs;
+            part.used = c.used;
+            part.stage_parts.clear();
             out.parts[k].push_back(std::move(part));
         }
         c.stage_parts.clear();
@@ -97,22 +106,32 @@ inline ConversationCheckpointSplit conversation_checkpoints_split(std::vector<Co
 
 /// false (and `out` empty) when the parts do not line up: a stage with another number of checkpoints, or a part
 /// whose ids differ from its checkpoint's.
-inline bool conversation_checkpoints_merge(ConversationCheckpointSplit&& split, std::vector<ConversationCheckpoint>& out) {
+inline bool conversation_checkpoints_merge(ConversationCheckpointSplit&& split,
+                                           std::vector<ConversationCheckpoint>& out) {
     out.clear();
     for (const auto& p : split.parts)
-        if (p.size() != split.stage0.size()) return false;
+        if (p.size() != split.stage0.size())
+            return false;
     size_t whole = 0, other = 0;
-    for (bool c : split.complete) (c ? whole : other) += 1;
-    if (!split.complete.empty() && (whole != split.stage0.size() || other != split.rest.size())) return false;
-    if (split.complete.empty()) split.complete.assign(split.stage0.size(), true);   // a restored image: all whole
+    for (bool c : split.complete)
+        (c ? whole : other) += 1;
+    if (!split.complete.empty() && (whole != split.stage0.size() || other != split.rest.size()))
+        return false;
+    if (split.complete.empty())
+        split.complete.assign(split.stage0.size(), true); // a restored image: all whole
     for (size_t j = 0; j < split.stage0.size(); ++j)
         for (const auto& p : split.parts)
-            if (p[j].ids != split.stage0[j].ids) return false;
+            if (p[j].ids != split.stage0[j].ids)
+                return false;
     size_t w = 0, r = 0;
     for (bool c : split.complete) {
-        if (!c) { out.push_back(std::move(split.rest[r++])); continue; }
+        if (!c) {
+            out.push_back(std::move(split.rest[r++]));
+            continue;
+        }
         ConversationCheckpoint cp = std::move(split.stage0[w]);
-        for (auto& p : split.parts) cp.stage_parts.push_back(std::move(p[w]));
+        for (auto& p : split.parts)
+            cp.stage_parts.push_back(std::move(p[w]));
         ++w;
         out.push_back(std::move(cp));
     }
@@ -134,25 +153,32 @@ struct SavedConversation {
     size_t bytes() const {
         size_t n = live.bytes() + checkpoints.capacity() * sizeof(ConversationCheckpoint) +
                    kv.capacity() * sizeof(ConversationKv);
-        for (const auto& s : stage_images) n += s.bytes();
-        for (const auto& c : checkpoints) n += c.bytes();
-        for (const auto& k : kv) n += k.bytes();
+        for (const auto& s : stage_images)
+            n += s.bytes();
+        for (const auto& c : checkpoints)
+            n += c.bytes();
+        for (const auto& k : kv)
+            n += k.bytes();
         return n;
     }
 };
 
-template<class Token>
+template <class Token>
 int64_t conversation_prefix(const ConversationCheckpoint& c, const std::vector<Token>& prompt,
                             const std::vector<ConversationImageKey>& images) {
     const size_t n = c.ids.size();
     // The last prompt token always starts the next verify window.
-    if (n == 0 || n >= prompt.size() || !std::equal(c.ids.begin(), c.ids.end(), prompt.begin())) return 0;
+    if (n == 0 || n >= prompt.size() || !std::equal(c.ids.begin(), c.ids.end(), prompt.begin()))
+        return 0;
     size_t j = 0;
     for (const auto& image : images) {
-        if (image.start >= (int64_t) n) continue;
-        if (j == c.imgs.size() || !(c.imgs[j++] == image)) return 0;
+        if (image.start >= (int64_t) n)
+            continue;
+        if (j == c.imgs.size() || !(c.imgs[j++] == image))
+            return 0;
     }
-    if (j != c.imgs.size()) return 0;
+    if (j != c.imgs.size())
+        return 0;
     return (int64_t) n;
 }
 
@@ -164,11 +190,20 @@ public:
         bool live = false;
     };
 
-    ConversationCache(size_t budget, size_t slots) : budget_(budget), slots_(slots) {}
-    bool enabled() const { return budget_ != 0 && slots_ != 0; }
-    size_t bytes() const { return bytes_ + reuse_.bytes(); }
-    size_t size() const { return entries_.size(); }
-    size_t evictions() const { return evictions_; }
+    ConversationCache(size_t budget, size_t slots) : budget_(budget), slots_(slots) {
+    }
+    bool enabled() const {
+        return budget_ != 0 && slots_ != 0;
+    }
+    size_t bytes() const {
+        return bytes_ + reuse_.bytes();
+    }
+    size_t size() const {
+        return entries_.size();
+    }
+    size_t evictions() const {
+        return evictions_;
+    }
 
     // Retain only the restored K/V buffers, not duplicate running checkpoints.
     // This optimization never evicts a parked conversation to make itself fit.
@@ -177,35 +212,46 @@ public:
                 std::vector<std::vector<ConversationKv>>&& stage_kv = {}) {
         reuse_ = {};
         ConversationKvReuse candidate{std::move(kv), tokens, tokens, {}};
-        for (auto& k : stage_kv) candidate.stages.push_back(ConversationKvReuse{std::move(k), tokens, tokens, {}});
-        if (enabled() && candidate.bytes() <= budget_ - bytes_) reuse_ = std::move(candidate);
+        for (auto& k : stage_kv)
+            candidate.stages.push_back(ConversationKvReuse{std::move(k), tokens, tokens, {}});
+        if (enabled() && candidate.bytes() <= budget_ - bytes_)
+            reuse_ = std::move(candidate);
     }
     void limit_reuse(int64_t first_dirty) {
         reuse_.unchanged_tokens = std::min(reuse_.unchanged_tokens, first_dirty);
-        for (auto& s : reuse_.stages) s.unchanged_tokens = std::min(s.unchanged_tokens, first_dirty);
-        if (reuse_.unchanged_tokens <= 0) reuse_ = {};
+        for (auto& s : reuse_.stages)
+            s.unchanged_tokens = std::min(s.unchanged_tokens, first_dirty);
+        if (reuse_.unchanged_tokens <= 0)
+            reuse_ = {};
     }
-    ConversationKvReuse take_reuse() { return std::exchange(reuse_, {}); }
-    size_t retained_bytes() const { return reuse_.bytes(); }
+    ConversationKvReuse take_reuse() {
+        return std::exchange(reuse_, {});
+    }
+    size_t retained_bytes() const {
+        return reuse_.bytes();
+    }
     bool can_fit(size_t incoming, size_t held = 0) const {
-        return enabled() && held <= budget_ && incoming <= budget_ - held &&
-               entries_.size() < slots_ && bytes() <= budget_ - held - incoming;
+        return enabled() && held <= budget_ && incoming <= budget_ - held && entries_.size() < slots_ &&
+               bytes() <= budget_ - held - incoming;
     }
 
-    template<class Token>
+    template <class Token>
     Match best(const std::vector<Token>& prompt, const std::vector<ConversationImageKey>& images, bool cvec) const {
         Match best;
         // Ties prefer the most recently parked branch. The caller prefers its
         // already-active state when that offers the same prefix length.
         for (size_t i = entries_.size(); i-- > 0;) {
             const auto& e = entries_[i];
-            if (e.cvec != cvec) continue;
+            if (e.cvec != cvec)
+                continue;
             auto consider = [&](const ConversationCheckpoint& c, bool live) {
                 const int64_t n = conversation_prefix(c, prompt, images);
-                if (n > best.tokens) best = {i, n, live};
+                if (n > best.tokens)
+                    best = {i, n, live};
             };
             consider(e.live, true);
-            for (const auto& c : e.checkpoints) consider(c, false);
+            for (const auto& c : e.checkpoints)
+                consider(c, false);
         }
         return best;
     }
@@ -220,8 +266,10 @@ public:
     // Reserve before allocating a snapshot. held is an incoming image removed
     // with take() but still alive during the exchange; count it against RAM too.
     bool make_room(size_t incoming, size_t held = 0) {
-        if (!enabled() || held > budget_ || incoming > budget_ - held) return false;
-        if (bytes() > budget_ - held - incoming) reuse_ = {};
+        if (!enabled() || held > budget_ || incoming > budget_ - held)
+            return false;
+        if (bytes() > budget_ - held - incoming)
+            reuse_ = {};
         while (!entries_.empty() && (entries_.size() >= slots_ || bytes_ > budget_ - held - incoming)) {
             bytes_ -= entries_.front().bytes();
             entries_.pop_front();
@@ -240,9 +288,11 @@ public:
     size_t drop_superseded(const std::vector<int32_t>& ids, const std::vector<ConversationImageKey>& images,
                            const std::vector<ConversationCheckpoint>& checkpoints, bool cvec) {
         auto held = [&](const ConversationCheckpoint& c) {
-            if (c.ids == ids && c.imgs == images) return true;
+            if (c.ids == ids && c.imgs == images)
+                return true;
             for (const auto& k : checkpoints)
-                if (k.ids == c.ids && k.imgs == c.imgs) return true;
+                if (k.ids == c.ids && k.imgs == c.imgs)
+                    return true;
             return false;
         };
         size_t dropped = 0;
@@ -250,7 +300,8 @@ public:
             const auto& e = entries_[i];
             const ConversationCheckpoint* deepest = nullptr;
             for (const auto& c : e.checkpoints)
-                if (!deepest || c.ids.size() > deepest->ids.size()) deepest = &c;
+                if (!deepest || c.ids.size() > deepest->ids.size())
+                    deepest = &c;
             if (e.cvec == cvec && deepest && !deepest->ids.empty() && held(*deepest)) {
                 bytes_ -= e.bytes();
                 entries_.erase(entries_.begin() + (std::ptrdiff_t) i);
@@ -262,13 +313,17 @@ public:
         superseded_ += dropped;
         return dropped;
     }
-    size_t superseded() const { return superseded_; }
+    size_t superseded() const {
+        return superseded_;
+    }
 
     bool put(SavedConversation&& image, size_t held = 0) {
         const size_t n = image.bytes();
-        if (!enabled() || held > budget_ || n > budget_ - held) return false;   // make_room's refusal, first
+        if (!enabled() || held > budget_ || n > budget_ - held)
+            return false; // make_room's refusal, first
         drop_superseded(image.live.ids, image.live.imgs, image.checkpoints, image.cvec);
-        if (!make_room(n, held)) return false;
+        if (!make_room(n, held))
+            return false;
         entries_.push_back(std::move(image));
         bytes_ += n;
         return true;

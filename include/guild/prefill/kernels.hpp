@@ -97,4 +97,4 @@ void round_f16(const float* x, float* y, int64_t n, void* stream);
 /// Expert blob -> FP16 (Q2_0 values are exact in FP16).
 void blob_dequant_f16(const uint8_t* blob, uint16_t* gu16, uint16_t* down16, void* stream);
 
-}  // namespace guild::prefill
+} // namespace guild::prefill

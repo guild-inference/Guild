@@ -9,7 +9,7 @@
 namespace guild::runtime {
 class Tokenizer;
 class ChatTemplate;
-}
+} // namespace guild::runtime
 
 namespace guild::server {
 
@@ -75,9 +75,7 @@ public:
     virtual bool is_ready() const = 0;
 
     virtual bool generate(const InferenceRequest& req, GenerationResult& result) = 0;
-    virtual bool generate_stream(const InferenceRequest& req,
-                                 StreamCallback on_token,
-                                 GenerationResult& result) = 0;
+    virtual bool generate_stream(const InferenceRequest& req, StreamCallback on_token, GenerationResult& result) = 0;
     virtual void stop() = 0;
 
     virtual bool encode(const std::string& /*text*/, std::vector<int32_t>& /*tokens*/, std::string& err) {
@@ -87,30 +85,42 @@ public:
     virtual bool decode(const std::vector<int32_t>& /*tokens*/, std::string& /*text*/) const {
         return false;
     }
-    virtual const runtime::ChatTemplate* chat_template() const { return nullptr; }
-    virtual const runtime::Tokenizer* tokenizer() const { return nullptr; }
+    virtual const runtime::ChatTemplate* chat_template() const {
+        return nullptr;
+    }
+    virtual const runtime::Tokenizer* tokenizer() const {
+        return nullptr;
+    }
 };
 
 class MockInferenceEngine : public IInferenceEngine {
 public:
-    MockInferenceEngine(const std::string& model = "Qwen3.8-Flash-Next",
-                        int64_t max_ctx = 262144,
+    MockInferenceEngine(const std::string& model = "Qwen3.8-Flash-Next", int64_t max_ctx = 262144,
                         const std::string& script = "Hello! I am Guild running natively.");
 
-    std::string model_name() const override { return model_; }
-    int64_t max_context() const override { return max_context_; }
-    bool is_ready() const override { return true; }
+    std::string model_name() const override {
+        return model_;
+    }
+    int64_t max_context() const override {
+        return max_context_;
+    }
+    bool is_ready() const override {
+        return true;
+    }
 
     bool generate(const InferenceRequest& req, GenerationResult& result) override;
-    bool generate_stream(const InferenceRequest& req,
-                         StreamCallback on_token,
-                         GenerationResult& result) override;
-    void stop() override {}
+    bool generate_stream(const InferenceRequest& req, StreamCallback on_token, GenerationResult& result) override;
+    void stop() override {
+    }
 
     bool encode(const std::string& text, std::vector<int32_t>& tokens, std::string& err) override;
 
-    void set_script(const std::string& s) { script_ = s; }
-    void set_delay_ms(int ms) { delay_ms_ = ms; }
+    void set_script(const std::string& s) {
+        script_ = s;
+    }
+    void set_delay_ms(int ms) {
+        delay_ms_ = ms;
+    }
 
 private:
     std::string model_;
@@ -134,14 +144,18 @@ public:
     ~GuildProcessEngine() override;
 
     bool start();
-    std::string model_name() const override { return options_.model_name; }
-    int64_t max_context() const override { return actual_max_context_ > 0 ? actual_max_context_ : options_.max_context; }
-    bool is_ready() const override { return ready_; }
+    std::string model_name() const override {
+        return options_.model_name;
+    }
+    int64_t max_context() const override {
+        return actual_max_context_ > 0 ? actual_max_context_ : options_.max_context;
+    }
+    bool is_ready() const override {
+        return ready_;
+    }
 
     bool generate(const InferenceRequest& req, GenerationResult& result) override;
-    bool generate_stream(const InferenceRequest& req,
-                         StreamCallback on_token,
-                         GenerationResult& result) override;
+    bool generate_stream(const InferenceRequest& req, StreamCallback on_token, GenerationResult& result) override;
     void stop() override;
 
     bool encode(const std::string& text, std::vector<int32_t>& tokens, std::string& err) override;

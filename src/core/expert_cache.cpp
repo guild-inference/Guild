@@ -9,7 +9,7 @@
 
 #include <cuda_runtime.h>
 #if !defined(GUILD_EC_NO_VMM)
-#include <cuda.h>   // #533: the virtual memory management types (the functions come through the runtime's entry points)
+#include <cuda.h> // #533: the virtual memory management types (the functions come through the runtime's entry points)
 #endif
 
 #include <algorithm>
@@ -45,7 +45,8 @@ bool read_expert_profile(const std::string& path, int64_t n_layers, int64_t n_ex
         char buf[256];
         std::snprintf(buf, sizeof buf,
                       "read_expert_profile: %s is %ux%u but this model is %lldx%lld - it is a profile for a "
-                      "different artifact", path.c_str(), nl, ne, (long long) n_layers, (long long) n_expert);
+                      "different artifact",
+                      path.c_str(), nl, ne, (long long) n_layers, (long long) n_expert);
         err = buf;
         return false;
     }
@@ -66,8 +67,8 @@ bool read_expert_profile(const std::string& path, int64_t n_layers, int64_t n_ex
         const int32_t l = (int32_t) raw[(size_t) i * 2], e = (int32_t) raw[(size_t) i * 2 + 1];
         if (l < 0 || l >= n_layers || e < 0 || e >= n_expert) {
             char buf[256];
-            std::snprintf(buf, sizeof buf, "read_expert_profile: pair %u is (layer %d, expert %d), out of range",
-                          i, l, e);
+            std::snprintf(buf, sizeof buf, "read_expert_profile: pair %u is (layer %d, expert %d), out of range", i, l,
+                          e);
             err = buf;
             return false;
         }
@@ -87,17 +88,22 @@ std::vector<std::pair<int32_t, int32_t>> rank_learned_profile(int64_t n_layers, 
         const auto [l, e] = prior[r];
         if (l >= 0 && l < n_layers && e >= 0 && e < n_expert) {
             int64_t& pr = prior_rank[(size_t) (l * n_expert + e)];
-            if (pr == INT64_MAX) pr = (int64_t) r;
+            if (pr == INT64_MAX)
+                pr = (int64_t) r;
         }
     }
     std::vector<int64_t> order(n);
-    for (size_t i = 0; i < n; ++i) order[i] = (int64_t) i;
+    for (size_t i = 0; i < n; ++i)
+        order[i] = (int64_t) i;
     auto res = [&](int64_t i) { return (size_t) i < resident.size() && resident[(size_t) i] != 0; };
     auto ht = [&](int64_t i) { return (size_t) i < heat.size() ? heat[(size_t) i] : 0.0; };
     std::stable_sort(order.begin(), order.end(), [&](int64_t a, int64_t b) {
-        if (res(a) != res(b)) return res(a);
-        if (ht(a) != ht(b)) return ht(a) > ht(b);
-        if (prior_rank[(size_t) a] != prior_rank[(size_t) b]) return prior_rank[(size_t) a] < prior_rank[(size_t) b];
+        if (res(a) != res(b))
+            return res(a);
+        if (ht(a) != ht(b))
+            return ht(a) > ht(b);
+        if (prior_rank[(size_t) a] != prior_rank[(size_t) b])
+            return prior_rank[(size_t) a] < prior_rank[(size_t) b];
         return a < b;
     });
     std::vector<std::pair<int32_t, int32_t>> ranked(n);
@@ -139,7 +145,8 @@ bool write_expert_profile(const std::string& path, int64_t n_layers, int64_t n_e
               std::fwrite(table.data(), 4, table.size(), f) == table.size();
     ok = (std::fclose(f) == 0) && ok;
     std::error_code ec;
-    if (ok) std::filesystem::rename(tmp, path, ec);   // replaces an existing file (MoveFileEx / rename(2))
+    if (ok)
+        std::filesystem::rename(tmp, path, ec); // replaces an existing file (MoveFileEx / rename(2))
     if (!ok || ec) {
         std::filesystem::remove(tmp, ec);
         err = "write_expert_profile: cannot write " + path;
@@ -148,7 +155,9 @@ bool write_expert_profile(const std::string& path, int64_t n_layers, int64_t n_e
     return true;
 }
 
-ExpertCache::~ExpertCache() { close(); }
+ExpertCache::~ExpertCache() {
+    close();
+}
 
 // ---- #533: the segmented arena (--vram-elastic).  The driver API's virtual memory functions, looked up through the
 // runtime (no link against the driver library): one address range for the whole arena, backed by physical segments,
@@ -156,17 +165,17 @@ ExpertCache::~ExpertCache() { close(); }
 #if !defined(GUILD_EC_NO_VMM)
 namespace {
 struct Vmm {
-    CUresult (CUDAAPI* device_get)(CUdevice*, int) = nullptr;
-    CUresult (CUDAAPI* attribute)(int*, CUdevice_attribute, CUdevice) = nullptr;
-    CUresult (CUDAAPI* granularity)(size_t*, const CUmemAllocationProp*, CUmemAllocationGranularity_flags) = nullptr;
-    CUresult (CUDAAPI* reserve)(CUdeviceptr*, size_t, size_t, CUdeviceptr, unsigned long long) = nullptr;
-    CUresult (CUDAAPI* address_free)(CUdeviceptr, size_t) = nullptr;
-    CUresult (CUDAAPI* create)(CUmemGenericAllocationHandle*, size_t, const CUmemAllocationProp*,
-                               unsigned long long) = nullptr;
-    CUresult (CUDAAPI* release)(CUmemGenericAllocationHandle) = nullptr;
-    CUresult (CUDAAPI* map)(CUdeviceptr, size_t, size_t, CUmemGenericAllocationHandle, unsigned long long) = nullptr;
-    CUresult (CUDAAPI* unmap)(CUdeviceptr, size_t) = nullptr;
-    CUresult (CUDAAPI* set_access)(CUdeviceptr, size_t, const CUmemAccessDesc*, size_t) = nullptr;
+    CUresult(CUDAAPI* device_get)(CUdevice*, int) = nullptr;
+    CUresult(CUDAAPI* attribute)(int*, CUdevice_attribute, CUdevice) = nullptr;
+    CUresult(CUDAAPI* granularity)(size_t*, const CUmemAllocationProp*, CUmemAllocationGranularity_flags) = nullptr;
+    CUresult(CUDAAPI* reserve)(CUdeviceptr*, size_t, size_t, CUdeviceptr, unsigned long long) = nullptr;
+    CUresult(CUDAAPI* address_free)(CUdeviceptr, size_t) = nullptr;
+    CUresult(CUDAAPI* create)(CUmemGenericAllocationHandle*, size_t, const CUmemAllocationProp*,
+                              unsigned long long) = nullptr;
+    CUresult(CUDAAPI* release)(CUmemGenericAllocationHandle) = nullptr;
+    CUresult(CUDAAPI* map)(CUdeviceptr, size_t, size_t, CUmemGenericAllocationHandle, unsigned long long) = nullptr;
+    CUresult(CUDAAPI* unmap)(CUdeviceptr, size_t) = nullptr;
+    CUresult(CUDAAPI* set_access)(CUdeviceptr, size_t, const CUmemAccessDesc*, size_t) = nullptr;
     bool ok = false;
 };
 
@@ -211,7 +220,8 @@ CUmemAllocationProp device_prop(int dev) {
 bool map_segment(const Vmm& v, int dev, CUdeviceptr va, size_t bytes, unsigned long long& handle) {
     const CUmemAllocationProp prop = device_prop(dev);
     CUmemGenericAllocationHandle h = 0;
-    if (v.create(&h, bytes, &prop, 0) != CUDA_SUCCESS) return false;
+    if (v.create(&h, bytes, &prop, 0) != CUDA_SUCCESS)
+        return false;
     if (v.map(va, bytes, 0, h, 0) != CUDA_SUCCESS) {
         v.release(h);
         return false;
@@ -228,7 +238,7 @@ bool map_segment(const Vmm& v, int dev, CUdeviceptr va, size_t bytes, unsigned l
     handle = (unsigned long long) h;
     return true;
 }
-}  // namespace
+} // namespace
 #endif
 
 bool ExpertCache::open_segmented(uint64_t want, std::string& err) {
@@ -271,10 +281,11 @@ bool ExpertCache::open_segmented(uint64_t want, std::string& err) {
         if (!map_segment(v, dev, va + (CUdeviceptr) ((uint64_t) i * (uint64_t) seg_), (size_t) seg_size_[i],
                          segs_[i])) {
             char buf[200];
-            std::snprintf(buf, sizeof buf, "ExpertCache: cudaMalloc failed: segment %zu of %zu (%.2f GiB) of the "
-                          "segmented cache could not be allocated", i + 1, segs_.size(),
-                          (double) seg_size_[i] / 1073741824.0);
-            err = buf;   // "cudaMalloc failed": the auto cache's smaller-retry path reads it as an allocation failure
+            std::snprintf(buf, sizeof buf,
+                          "ExpertCache: cudaMalloc failed: segment %zu of %zu (%.2f GiB) of the "
+                          "segmented cache could not be allocated",
+                          i + 1, segs_.size(), (double) seg_size_[i] / 1073741824.0);
+            err = buf; // "cudaMalloc failed": the auto cache's smaller-retry path reads it as an allocation failure
             release_segmented();
             return false;
         }
@@ -287,14 +298,16 @@ bool ExpertCache::open_segmented(uint64_t want, std::string& err) {
 void ExpertCache::release_segmented() {
 #if !defined(GUILD_EC_NO_VMM)
     const Vmm& v = vmm();
-    if (base_ != nullptr) cudaDeviceSynchronize();
+    if (base_ != nullptr)
+        cudaDeviceSynchronize();
     const CUdeviceptr va = reinterpret_cast<CUdeviceptr>(base_);
     for (size_t i = 0; i < segs_.size(); ++i)
         if (segs_[i] != 0) {
             v.unmap(va + (CUdeviceptr) ((uint64_t) i * (uint64_t) seg_), (size_t) seg_size_[i]);
             v.release((CUmemGenericAllocationHandle) segs_[i]);
         }
-    if (base_ != nullptr && reserved_ > 0) v.address_free(va, (size_t) reserved_);
+    if (base_ != nullptr && reserved_ > 0)
+        v.address_free(va, (size_t) reserved_);
 #endif
     segs_.clear();
     seg_size_.clear();
@@ -304,16 +317,21 @@ void ExpertCache::release_segmented() {
 }
 
 int64_t ExpertCache::mapped_bytes() const {
-    if (segs_.empty()) return base_ != nullptr ? full_bytes() : 0;
+    if (segs_.empty())
+        return base_ != nullptr ? full_bytes() : 0;
     int64_t b = 0;
-    for (int64_t i = 0; i < mapped_segs_; ++i) b += seg_size_[(size_t) i];
+    for (int64_t i = 0; i < mapped_segs_; ++i)
+        b += seg_size_[(size_t) i];
     return b;
 }
 
 int64_t ExpertCache::slots_within(int64_t bytes) const {
-    if (bytes >= full_bytes()) return slots_;
-    if (bytes <= 0) return 0;
-    if (off_.empty()) return blob_ > 0 ? bytes / blob_ : 0;
+    if (bytes >= full_bytes())
+        return slots_;
+    if (bytes <= 0)
+        return 0;
+    if (off_.empty())
+        return blob_ > 0 ? bytes / blob_ : 0;
     // off_[i + 1] is slot i's end: count the slots whose end is at most `bytes`
     return (int64_t) (std::upper_bound(off_.begin() + 1, off_.end(), (uint64_t) bytes) - (off_.begin() + 1));
 }
@@ -328,9 +346,11 @@ bool ExpertCache::shrink(int64_t keep_bytes, std::string& err) {
     return false;
 #else
     const Vmm& v = vmm();
-    int64_t keep = 0, at = 0;   // the segments [0, keep) hold the first keep_bytes
-    while (keep < (int64_t) segs_.size() && at < keep_bytes) at += seg_size_[(size_t) keep++];
-    if (keep >= mapped_segs_) return true;
+    int64_t keep = 0, at = 0; // the segments [0, keep) hold the first keep_bytes
+    while (keep < (int64_t) segs_.size() && at < keep_bytes)
+        at += seg_size_[(size_t) keep++];
+    if (keep >= mapped_segs_)
+        return true;
     if (cudaDeviceSynchronize() != cudaSuccess) {
         err = std::string("the device failed before the cache shrank: ") + cudaGetErrorString(cudaGetLastError());
         return false;
@@ -385,22 +405,23 @@ bool ExpertCache::grow(int64_t want_bytes, std::string& err) {
 
 #if defined(GUILD_USE_HIP)
 bool ExpertCache::ensure_blocking_staging(std::size_t bytes, std::string& err) {
-    if (bytes <= blocking_staging_bytes_) return true;
+    if (bytes <= blocking_staging_bytes_)
+        return true;
     void* next = nullptr;
     const cudaError_t status = cudaHostAlloc(&next, bytes, cudaHostAllocDefault);
     if (status != cudaSuccess) {
         err = std::string("ExpertCache: HIP blocking staging allocation: ") + cudaGetErrorString(status);
         return false;
     }
-    if (blocking_staging_) (void) cudaFreeHost(blocking_staging_);
+    if (blocking_staging_)
+        (void) cudaFreeHost(blocking_staging_);
     blocking_staging_ = static_cast<uint8_t*>(next);
     blocking_staging_bytes_ = bytes;
     return true;
 }
 #endif
 
-bool ExpertCache::open(int64_t n_slots, int64_t n_layers, int64_t n_expert, int64_t blob_bytes,
-                       std::string& err) {
+bool ExpertCache::open(int64_t n_slots, int64_t n_layers, int64_t n_expert, int64_t blob_bytes, std::string& err) {
     close();
     if (n_slots <= 0) {
         err = "ExpertCache: n_slots must be positive";
@@ -434,13 +455,14 @@ bool ExpertCache::open(int64_t n_slots, int64_t n_layers, int64_t n_expert, int6
         }
     }
 
-    if (seg_req_ > 0) {   // #533: --vram-elastic: physical segments behind one address range (zeroed below)
-        if (!open_segmented(want, err)) return false;
+    if (seg_req_ > 0) { // #533: --vram-elastic: physical segments behind one address range (zeroed below)
+        if (!open_segmented(want, err))
+            return false;
     } else if (cudaMalloc((void**) &base_, (size_t) want) != cudaSuccess) {
         base_ = nullptr;
         char buf[256];
-        std::snprintf(buf, sizeof buf, "ExpertCache: cudaMalloc(%.2f GiB) failed: %s",
-                      (double) want / 1073741824.0, cudaGetErrorString(cudaGetLastError()));
+        std::snprintf(buf, sizeof buf, "ExpertCache: cudaMalloc(%.2f GiB) failed: %s", (double) want / 1073741824.0,
+                      cudaGetErrorString(cudaGetLastError()));
         err = buf;
         return false;
     }
@@ -480,7 +502,10 @@ bool ExpertCache::open(int64_t n_slots, int64_t n_layers, int64_t n_expert, int6
 
 bool ExpertCache::open_sized(const std::vector<int64_t>& slot_bytes, int64_t n_layers, int64_t n_expert,
                              std::string& err) {
-    if (slot_bytes.empty()) { err = "ExpertCache: no slots"; return false; }
+    if (slot_bytes.empty()) {
+        err = "ExpertCache: no slots";
+        return false;
+    }
     int64_t mx = 0;
     std::vector<uint64_t> off(slot_bytes.size() + 1, 0);
     for (size_t i = 0; i < slot_bytes.size(); ++i) {
@@ -489,7 +514,8 @@ bool ExpertCache::open_sized(const std::vector<int64_t>& slot_bytes, int64_t n_l
         mx = slot_bytes[i] > mx ? slot_bytes[i] : mx;
     }
     // one allocation of the summed size, through the uniform path's checks: n "slots" of 1 byte
-    if (!open((int64_t) off.back(), n_layers, n_expert, 1, err)) return false;
+    if (!open((int64_t) off.back(), n_layers, n_expert, 1, err))
+        return false;
     slots_ = (int64_t) slot_bytes.size();
     live_slots_ = slots_;
     blob_ = mx;
@@ -513,7 +539,8 @@ bool ExpertCache::open_sized(const std::vector<int64_t>& slot_bytes, int64_t n_l
 
 void ExpertCache::close() {
 #if defined(GUILD_USE_HIP)
-    if (blocking_staging_) (void) cudaFreeHost(blocking_staging_);
+    if (blocking_staging_)
+        (void) cudaFreeHost(blocking_staging_);
     blocking_staging_ = nullptr;
     blocking_staging_bytes_ = 0;
 #endif
@@ -541,46 +568,57 @@ void ExpertCache::close() {
 void ExpertCache::layer_slot_range(int64_t layer, int64_t& lo, int64_t& hi) const {
     lo = 0;
     hi = 0;
-    if (n_layers_ <= 0 || slots_ <= 0 || layer < 0 || layer >= n_layers_) return;
+    if (n_layers_ <= 0 || slots_ <= 0 || layer < 0 || layer >= n_layers_)
+        return;
     const int64_t q = slots_ / n_layers_;
     lo = layer * q;
     hi = (layer == n_layers_ - 1) ? slots_ : (layer + 1) * q;
 }
 
 int32_t ExpertCache::slot_of(int64_t layer, int64_t expert) const {
-    if (layer < 0 || layer >= n_layers_ || expert < 0 || expert >= n_expert_) return kNotResident;
+    if (layer < 0 || layer >= n_layers_ || expert < 0 || expert >= n_expert_)
+        return kNotResident;
     return residency_[(size_t) (layer * n_expert_ + expert)];
 }
 
 int32_t ExpertCache::admit(int64_t layer, int64_t expert) {
-    if (layer < 0 || layer >= n_layers_ || expert < 0 || expert >= n_expert_) return kNotResident;
+    if (layer < 0 || layer >= n_layers_ || expert < 0 || expert >= n_expert_)
+        return kNotResident;
     const size_t at = (size_t) (layer * n_expert_ + expert);
-    if (residency_[at] != kNotResident) return residency_[at];
+    if (residency_[at] != kNotResident)
+        return residency_[at];
     // R4.2g: THE PER-LAYER PATH.  Same "no eviction" rule, but the ceiling is this layer's own range rather
     // than one counter shared by all 48 - which is what confined the measured hit rate to 2.97%.
     if (per_layer_) {
-        if (layer_next_.empty()) return kNotResident;
+        if (layer_next_.empty())
+            return kNotResident;
         int64_t lo = 0, hi = 0;
         layer_slot_range(layer, lo, hi);
-        if ((int64_t) layer_next_[(size_t) layer] >= hi) return kNotResident;   // this layer's quota is full
+        if ((int64_t) layer_next_[(size_t) layer] >= hi)
+            return kNotResident; // this layer's quota is full
         residency_[at] = layer_next_[(size_t) layer]++;
         ++admitted_;
         return residency_[at];
     }
-    if (next_free_ >= slots_) return kNotResident;   // full: no eviction, deliberately - see the header
+    if (next_free_ >= slots_)
+        return kNotResident; // full: no eviction, deliberately - see the header
     residency_[at] = (int32_t) next_free_;
     return (int32_t) next_free_++;
 }
 
 uint8_t* ExpertCache::device_slot(int32_t slot) {
-    if (slot < 0 || slot >= slots_) return nullptr;
-    if (!off_.empty()) return base_ + off_[(size_t) slot];
+    if (slot < 0 || slot >= slots_)
+        return nullptr;
+    if (!off_.empty())
+        return base_ + off_[(size_t) slot];
     return base_ + (size_t) slot * (size_t) blob_;
 }
 
 const uint8_t* ExpertCache::device_slot(int32_t slot) const {
-    if (slot < 0 || slot >= slots_) return nullptr;
-    if (!off_.empty()) return base_ + off_[(size_t) slot];
+    if (slot < 0 || slot >= slots_)
+        return nullptr;
+    if (!off_.empty())
+        return base_ + off_[(size_t) slot];
     return base_ + (size_t) slot * (size_t) blob_;
 }
 
@@ -588,16 +626,14 @@ bool ExpertCache::fill_slot(int32_t slot, const uint8_t* host_blob, void* stream
     const size_t n = (size_t) (bytes > 0 && bytes <= blob_ ? bytes : blob_);
     uint8_t* dst = device_slot(slot);
     if (dst == nullptr) {
-        err = "ExpertCache::fill_slot: slot " + std::to_string(slot) + " is outside 0.." +
-              std::to_string(slots_ - 1);
+        err = "ExpertCache::fill_slot: slot " + std::to_string(slot) + " is outside 0.." + std::to_string(slots_ - 1);
         return false;
     }
     if (host_blob == nullptr) {
         err = "ExpertCache::fill_slot: the host blob is null";
         return false;
     }
-    const cudaError_t e = cudaMemcpyAsync(dst, host_blob, n, cudaMemcpyHostToDevice,
-                                          (cudaStream_t) stream);
+    const cudaError_t e = cudaMemcpyAsync(dst, host_blob, n, cudaMemcpyHostToDevice, (cudaStream_t) stream);
     if (e != cudaSuccess) {
         err = std::string("ExpertCache::fill_slot: ") + cudaGetErrorString(e);
         return false;
@@ -681,15 +717,16 @@ bool ExpertCache::verify_slot(int32_t slot, const uint8_t* host_blob, std::strin
     }
     if (std::memcmp(got.data(), host_blob, (size_t) nb) != 0) {
         size_t first = 0;
-        while (first < (size_t) nb && got[first] == host_blob[first]) ++first;
+        while (first < (size_t) nb && got[first] == host_blob[first])
+            ++first;
         char buf[256];
         std::snprintf(buf, sizeof buf,
-                      "ExpertCache::verify_slot: slot %d differs from the arena at byte %llu (of %lld)",
-                      (int) slot, (unsigned long long) first, (long long) blob_);
+                      "ExpertCache::verify_slot: slot %d differs from the arena at byte %llu (of %lld)", (int) slot,
+                      (unsigned long long) first, (long long) blob_);
         err = buf;
         return false;
     }
     return true;
 }
 
-}  // namespace guild::core
+} // namespace guild::core

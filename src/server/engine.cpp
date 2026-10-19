@@ -21,15 +21,17 @@ namespace guild::server {
 // MockInferenceEngine
 // ============================================================================
 
-MockInferenceEngine::MockInferenceEngine(const std::string& model,
-                                         int64_t max_ctx,
-                                         const std::string& script)
-    : model_(model), max_context_(max_ctx), script_(script) {}
+MockInferenceEngine::MockInferenceEngine(const std::string& model, int64_t max_ctx, const std::string& script)
+    : model_(model),
+      max_context_(max_ctx),
+      script_(script) {
+}
 
 bool MockInferenceEngine::encode(const std::string& text, std::vector<int32_t>& tokens, std::string& err) {
     err.clear();
     tokens.clear();
-    if (text.empty()) return true;
+    if (text.empty())
+        return true;
     size_t count = text.size() / 4 + 1;
     for (size_t i = 0; i < count; ++i) {
         tokens.push_back(static_cast<int32_t>(1000 + i));
@@ -41,13 +43,11 @@ bool MockInferenceEngine::generate(const InferenceRequest& req, GenerationResult
     return generate_stream(req, [](const TokenOutput&) { return true; }, result);
 }
 
-bool MockInferenceEngine::generate_stream(const InferenceRequest& req,
-                                         StreamCallback on_token,
-                                         GenerationResult& result) {
+bool MockInferenceEngine::generate_stream(const InferenceRequest& req, StreamCallback on_token,
+                                          GenerationResult& result) {
     result = GenerationResult{};
-    result.prompt_tokens = req.prompt_tokens.empty()
-                               ? static_cast<int>(req.prompt.size() / 4 + 1)
-                               : static_cast<int>(req.prompt_tokens.size());
+    result.prompt_tokens = req.prompt_tokens.empty() ? static_cast<int>(req.prompt.size() / 4 + 1)
+                                                     : static_cast<int>(req.prompt_tokens.size());
     result.prompt_ms = 12.5;
     result.prompt_tok_s = 850.0;
     result.finish_reason = "stop";
@@ -66,7 +66,8 @@ bool MockInferenceEngine::generate_stream(const InferenceRequest& req,
             current += c;
         }
     }
-    if (!current.empty()) words.push_back(current);
+    if (!current.empty())
+        words.push_back(current);
 
     auto start_decode = std::chrono::steady_clock::now();
     int token_id_counter = 1000;
@@ -134,15 +135,16 @@ bool MockInferenceEngine::generate_stream(const InferenceRequest& req,
 // GuildProcessEngine
 // ============================================================================
 
-GuildProcessEngine::GuildProcessEngine(GuildProcessEngineOptions options)
-    : options_(std::move(options)) {}
+GuildProcessEngine::GuildProcessEngine(GuildProcessEngineOptions options) : options_(std::move(options)) {
+}
 
 GuildProcessEngine::~GuildProcessEngine() {
     stop();
 }
 
 bool GuildProcessEngine::load_tokenizer() {
-    if (options_.tokenizer_dir.empty()) return false;
+    if (options_.tokenizer_dir.empty())
+        return false;
     tokenizer_ = std::make_unique<runtime::Tokenizer>();
     std::string err;
     if (!tokenizer_->load(options_.tokenizer_dir, err)) {
@@ -153,7 +155,8 @@ bool GuildProcessEngine::load_tokenizer() {
 }
 
 std::string GuildProcessEngine::decode_token(int32_t token_id) const {
-    if (!tokenizer_) return "";
+    if (!tokenizer_)
+        return "";
     return tokenizer_->decode(token_id, true);
 }
 
@@ -166,13 +169,15 @@ bool GuildProcessEngine::encode(const std::string& text, std::vector<int32_t>& t
 }
 
 bool GuildProcessEngine::decode(const std::vector<int32_t>& tokens, std::string& text) const {
-    if (!tokenizer_) return false;
+    if (!tokenizer_)
+        return false;
     text = tokenizer_->decode(tokens, true);
     return true;
 }
 
 const runtime::ChatTemplate* GuildProcessEngine::chat_template() const {
-    if (!tokenizer_) return nullptr;
+    if (!tokenizer_)
+        return nullptr;
     return &tokenizer_->chat_template();
 }
 
@@ -181,7 +186,8 @@ const runtime::Tokenizer* GuildProcessEngine::tokenizer() const {
 }
 
 bool GuildProcessEngine::start() {
-    if (options_.executable.empty()) return false;
+    if (options_.executable.empty())
+        return false;
 
     if (pipe(in_pipe_) != 0 || pipe(out_pipe_) != 0) {
         return false;
@@ -240,7 +246,8 @@ bool GuildProcessEngine::start() {
                 iss >> tag >> actual_max_context_;
                 std::string flag;
                 while (iss >> flag) {
-                    if (flag == "stop") can_stop_ = true;
+                    if (flag == "stop")
+                        can_stop_ = true;
                 }
                 ready_ = true;
                 break;
@@ -279,9 +286,8 @@ bool GuildProcessEngine::generate(const InferenceRequest& req, GenerationResult&
     return generate_stream(req, [](const TokenOutput&) { return true; }, result);
 }
 
-bool GuildProcessEngine::generate_stream(const InferenceRequest& req,
-                                          StreamCallback on_token,
-                                          GenerationResult& result) {
+bool GuildProcessEngine::generate_stream(const InferenceRequest& req, StreamCallback on_token,
+                                         GenerationResult& result) {
     result = GenerationResult{};
     if (!ready_ || in_pipe_[1] < 0 || out_pipe_[0] < 0) {
         return result.fail("Process inference engine is not ready");
@@ -315,7 +321,8 @@ bool GuildProcessEngine::generate_stream(const InferenceRequest& req,
     }
     cmd << " ";
     for (size_t i = 0; i < ids.size(); ++i) {
-        if (i > 0) cmd << ",";
+        if (i > 0)
+            cmd << ",";
         cmd << ids[i];
     }
     cmd << "\n";

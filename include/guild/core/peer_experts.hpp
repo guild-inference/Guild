@@ -45,11 +45,17 @@ public:
               ExpertSource& src, int64_t n_layers, int64_t n_expert, int reserve_mib, int64_t max_slots,
               std::string& err);
     void close();
-    bool valid() const { return device_ >= 0; }
-    int device() const { return device_; }
+    bool valid() const {
+        return device_ >= 0;
+    }
+    int device() const {
+        return device_;
+    }
 
     /// Whether the peer holds (layer, expert) right now.
-    bool has(int64_t layer, int64_t expert) const { return res_[(size_t) (layer * n_expert_ + expert)] >= 0; }
+    bool has(int64_t layer, int64_t expert) const {
+        return res_[(size_t) (layer * n_expert_ + expert)] >= 0;
+    }
 
     /// The device address of (layer, expert)'s blob on the peer, or null when it is not resident.
     const uint8_t* slot_ptr(int64_t layer, int64_t expert) {
@@ -57,7 +63,9 @@ public:
         return sl >= 0 ? cache_.device_slot(sl) : nullptr;
     }
     /// Whether the primary (device 0) and the peer can read each other's memory directly (NVLink / PCIe P2P).
-    bool p2p() const { return p2p_; }
+    bool p2p() const {
+        return p2p_;
+    }
 
     /// Starts the peer's share of one layer: the entries i with kind[i] == 2 (x: n_tok rows of n_embd floats).
     /// multi-GPU: with `out` (pinned, portable host rows) the peer writes its rows straight into
@@ -73,14 +81,26 @@ public:
     bool adapt(const float* usage, const int32_t* res0, int max_swaps, std::string& err);
     void apply_pending(bool wait);
 
-    int64_t resident() const { return resident_; }
+    int64_t resident() const {
+        return resident_;
+    }
     /// the last launch writes its rows into the host rows itself (the caller must not touch them)
-    bool launched_direct() const { return launched_direct_; }
-    double gib() const { return cache_.gib(); }
-    int64_t entries() const { return entries_; }      ///< routed entries the peer computed
-    int64_t experts() const { return experts_; }      ///< distinct (layer, expert) the peer computed
-    int64_t swaps() const { return swaps_; }
-    double ms_wait = 0;                               ///< host time spent in finish() waiting for the peer
+    bool launched_direct() const {
+        return launched_direct_;
+    }
+    double gib() const {
+        return cache_.gib();
+    }
+    int64_t entries() const {
+        return entries_;
+    } ///< routed entries the peer computed
+    int64_t experts() const {
+        return experts_;
+    } ///< distinct (layer, expert) the peer computed
+    int64_t swaps() const {
+        return swaps_;
+    }
+    double ms_wait = 0; ///< host time spent in finish() waiting for the peer
 
 private:
     int device_ = -1;
@@ -88,19 +108,22 @@ private:
     int64_t n_layers_ = 0, n_expert_ = 0;
     ExpertCache cache_;
     ExpertSource* src_ = nullptr;
-    std::vector<int32_t> res_;                        ///< [n_layers * n_expert] -> peer slot or -1
-    std::vector<std::pair<int32_t, int32_t>> pending_;   ///< (residency index, slot) once the copies land
+    std::vector<int32_t> res_;                         ///< [n_layers * n_expert] -> peer slot or -1
+    std::vector<std::pair<int32_t, int32_t>> pending_; ///< (residency index, slot) once the copies land
     int64_t resident_ = 0, entries_ = 0, experts_ = 0, swaps_ = 0;
     cudaStream_t stream_ = nullptr, refill_ = nullptr;
     cudaEvent_t refill_ev_ = nullptr;
-    float* h_x_ = nullptr;   float* d_x_ = nullptr;   // n_tok x n_embd
-    float* h_out_ = nullptr; float* d_out_ = nullptr; // compact rows
-    void* h_meta_ = nullptr; void* d_meta_ = nullptr; // groups: ptr | start | dst | tok | count
+    float* h_x_ = nullptr;
+    float* d_x_ = nullptr; // n_tok x n_embd
+    float* h_out_ = nullptr;
+    float* d_out_ = nullptr; // compact rows
+    void* h_meta_ = nullptr;
+    void* d_meta_ = nullptr; // groups: ptr | start | dst | tok | count
     uint8_t* d_q8_ = nullptr;
     void* d_scratch_ = nullptr;
-    std::vector<int32_t> row_of_;                     ///< compact row -> original entry
+    std::vector<int32_t> row_of_; ///< compact row -> original entry
     int64_t launched_rows_ = 0;
     bool launched_direct_ = false;
 };
 
-}  // namespace guild::core
+} // namespace guild::core

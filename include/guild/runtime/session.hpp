@@ -18,13 +18,8 @@ public:
     GuildSession& operator=(const GuildSession&) = delete;
 
     // Generates output tokens for request
-    bool generate(
-        const GenerationRequest& req,
-        TokenStreamCallback on_token,
-        RuntimeTelemetry& telemetry,
-        std::string& error_msg,
-        PrefillProgressCallback on_prefill = nullptr
-    );
+    bool generate(const GenerationRequest& req, TokenStreamCallback on_token, RuntimeTelemetry& telemetry,
+                  std::string& error_msg, PrefillProgressCallback on_prefill = nullptr);
 
     // Resets session conversation/KV history
     void reset();
@@ -32,11 +27,17 @@ public:
     // Signals in-flight generation to cancel immediately
     void cancel();
 
-    GuildModel* model() const { return model_; }
-    int64_t max_context() const { return max_context_; }
+    GuildModel* model() const {
+        return model_;
+    }
+    int64_t max_context() const {
+        return max_context_;
+    }
 
     struct Impl;
-    Impl* impl() { return impl_.get(); }
+    Impl* impl() {
+        return impl_.get();
+    }
 
 private:
     GuildModel* model_;

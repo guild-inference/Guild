@@ -47,10 +47,10 @@ using namespace guild::server::json;
 
 const char* opt_mode_to_string(GExecOptMode mode) noexcept {
     switch (mode) {
-        case GExecOptMode::Skip: return "skip";
-        case GExecOptMode::Quick: return "quick";
-        case GExecOptMode::Auto: return "auto";
-        case GExecOptMode::Exhaustive: return "exhaustive";
+    case GExecOptMode::Skip: return "skip";
+    case GExecOptMode::Quick: return "quick";
+    case GExecOptMode::Auto: return "auto";
+    case GExecOptMode::Exhaustive: return "exhaustive";
     }
     return "auto";
 }
@@ -80,7 +80,9 @@ namespace {
 class ScopedAdvisoryLock {
 public:
     ScopedAdvisoryLock() = default;
-    ~ScopedAdvisoryLock() { release(); }
+    ~ScopedAdvisoryLock() {
+        release();
+    }
     ScopedAdvisoryLock(const ScopedAdvisoryLock&) = delete;
     ScopedAdvisoryLock& operator=(const ScopedAdvisoryLock&) = delete;
 
@@ -111,12 +113,13 @@ public:
         path_ = lock_path;
 #else
         const auto wide = std::filesystem::u8path(lock_path).wstring();
-        HANDLE file = CreateFileW(wide.c_str(), GENERIC_READ | GENERIC_WRITE,
-            FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        HANDLE file = CreateFileW(wide.c_str(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                  nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
         OVERLAPPED overlap{};
-        if (file == INVALID_HANDLE_VALUE || !LockFileEx(file, LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY,
-                                                       0, 1, 0, &overlap)) {
-            if (file != INVALID_HANDLE_VALUE) CloseHandle(file);
+        if (file == INVALID_HANDLE_VALUE ||
+            !LockFileEx(file, LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, &overlap)) {
+            if (file != INVALID_HANDLE_VALUE)
+                CloseHandle(file);
             err = "cannot acquire GEXEC writer lock: " + lock_path;
             return false;
         }
@@ -154,7 +157,8 @@ private:
 };
 
 std::string resolve_cache_dir(const std::string& gpack_path, const std::string& explicit_dir) {
-    if (!explicit_dir.empty()) return explicit_dir;
+    if (!explicit_dir.empty())
+        return explicit_dir;
     if (const char* env_dir = std::getenv("GUILD_GEXEC_CACHE_DIR"); env_dir && env_dir[0] != '\0') {
         return std::string(env_dir);
     }
@@ -181,15 +185,19 @@ struct CheckpointState {
         std::string perr;
         auto put = [&](const char* k, const std::string& j) {
             JsonValue v;
-            if (JsonValue::parse(j, v, perr)) root[k] = std::move(v);
+            if (JsonValue::parse(j, v, perr))
+                root[k] = std::move(v);
         };
-        if (last_completed_pass >= 1) put("identity", identity.to_json());
-        if (last_completed_pass >= 2) put("pack_meta", pack_meta.to_json());
+        if (last_completed_pass >= 1)
+            put("identity", identity.to_json());
+        if (last_completed_pass >= 2)
+            put("pack_meta", pack_meta.to_json());
         if (last_completed_pass >= 3) {
             put("autotune", autotune.to_json());
             put("diag_log", diag_log.to_json());
         }
-        if (last_completed_pass >= 4) put("hplan", hplan.to_json());
+        if (last_completed_pass >= 4)
+            put("hplan", hplan.to_json());
         if (last_completed_pass >= 5) {
             put("workspace", workspace.to_json());
             put("provenance", provenance.to_json());
@@ -201,26 +209,36 @@ struct CheckpointState {
     static bool from_json(const std::string& jstr, CheckpointState& out) {
         std::string err;
         JsonValue root;
-        if (!JsonValue::parse(jstr, root, err) || !root.is_object() || !root.contains("digest")) return false;
+        if (!JsonValue::parse(jstr, root, err) || !root.is_object() || !root.contains("digest"))
+            return false;
         const std::string rec_dig = root["digest"].as_string();
         JsonValue chk = root;
         chk.obj_val.erase(
-            std::remove_if(chk.obj_val.begin(), chk.obj_val.end(),
-                           [](const auto& kv) { return kv.first == "digest"; }),
+            std::remove_if(chk.obj_val.begin(), chk.obj_val.end(), [](const auto& kv) { return kv.first == "digest"; }),
             chk.obj_val.end());
-        if (rec_dig != models::Sha256::hash_string(chk.dump())) return false;
+        if (rec_dig != models::Sha256::hash_string(chk.dump()))
+            return false;
         out.cache_key = root["cache_key"].as_string();
         out.last_completed_pass = static_cast<int32_t>(root["last_completed_pass"].as_int(0));
-        if (out.last_completed_pass >= 1 && !GExecArtifactIdentity::from_json(root["identity"].dump(), out.identity, err)) return false;
-        if (out.last_completed_pass >= 2 && !GExecExpertPackMeta::from_json(root["pack_meta"].dump(), out.pack_meta, err)) return false;
+        if (out.last_completed_pass >= 1 &&
+            !GExecArtifactIdentity::from_json(root["identity"].dump(), out.identity, err))
+            return false;
+        if (out.last_completed_pass >= 2 &&
+            !GExecExpertPackMeta::from_json(root["pack_meta"].dump(), out.pack_meta, err))
+            return false;
         if (out.last_completed_pass >= 3) {
-            if (!GExecAutotuneTable::from_json(root["autotune"].dump(), out.autotune, err)) return false;
-            if (!GExecDiagnosticLog::from_json(root["diag_log"].dump(), out.diag_log, err)) return false;
+            if (!GExecAutotuneTable::from_json(root["autotune"].dump(), out.autotune, err))
+                return false;
+            if (!GExecDiagnosticLog::from_json(root["diag_log"].dump(), out.diag_log, err))
+                return false;
         }
-        if (out.last_completed_pass >= 4 && !GExecHeterogeneousPlan::from_json(root["hplan"].dump(), out.hplan, err)) return false;
+        if (out.last_completed_pass >= 4 && !GExecHeterogeneousPlan::from_json(root["hplan"].dump(), out.hplan, err))
+            return false;
         if (out.last_completed_pass >= 5) {
-            if (!GExecWorkspaceRecipe::from_json(root["workspace"].dump(), out.workspace, err)) return false;
-            if (!GExecCompilationProvenance::from_json(root["provenance"].dump(), out.provenance, err)) return false;
+            if (!GExecWorkspaceRecipe::from_json(root["workspace"].dump(), out.workspace, err))
+                return false;
+            if (!GExecCompilationProvenance::from_json(root["provenance"].dump(), out.provenance, err))
+                return false;
         }
         return true;
     }
@@ -230,10 +248,12 @@ bool save_checkpoint_atomic(const std::string& progress_path, const CheckpointSt
     const std::string tmp = progress_path + ".tmp";
     {
         std::ofstream ofs(tmp, std::ios::binary | std::ios::trunc);
-        if (!ofs) return false;
+        if (!ofs)
+            return false;
         const std::string s = st.to_json();
         ofs.write(s.data(), static_cast<std::streamsize>(s.size()));
-        if (!ofs.good()) return false;
+        if (!ofs.good())
+            return false;
     }
     std::error_code ec;
     std::filesystem::rename(tmp, progress_path, ec);
@@ -242,13 +262,9 @@ bool save_checkpoint_atomic(const std::string& progress_path, const CheckpointSt
 
 } // namespace
 
-GExecArtifactIdentity build_current_gexec_identity(
-    const artifact::GPackReader& gpack,
-    const std::string& kv_format,
-    const std::string& kv_mode,
-    int64_t max_context,
-    int64_t prefill_batch,
-    int32_t mtp_spec_tokens) {
+GExecArtifactIdentity build_current_gexec_identity(const artifact::GPackReader& gpack, const std::string& kv_format,
+                                                   const std::string& kv_mode, int64_t max_context,
+                                                   int64_t prefill_batch, int32_t mtp_spec_tokens) {
     GExecArtifactIdentity id;
     id.format_version = kGExecVersionV1;
     id.gpack_manifest_sha256 = gpack.manifest_sha256_hex();
@@ -257,11 +273,9 @@ GExecArtifactIdentity build_current_gexec_identity(
 
     std::shared_ptr<const model::IModelRunner> runner;
     std::string rerr;
-    const std::string arch_str = !gpack.execution_metadata().arch_id.empty()
-        ? gpack.execution_metadata().arch_id
-        : gpack.descriptor().arch_name;
-    if (model::ModelRunnerRegistry::instance().resolve_by_arch(
-            arch_str, &runner, rerr) == GUILD_STATUS_OK && runner) {
+    const std::string arch_str =
+        !gpack.execution_metadata().arch_id.empty() ? gpack.execution_metadata().arch_id : gpack.descriptor().arch_name;
+    if (model::ModelRunnerRegistry::instance().resolve_by_arch(arch_str, &runner, rerr) == GUILD_STATUS_OK && runner) {
         id.runner_id = runner->runner_id();
         id.runner_version = runner->runner_version();
     } else {
@@ -275,7 +289,8 @@ GExecArtifactIdentity build_current_gexec_identity(
     JsonValue::parse(build::metadata_json, build_info, rerr);
     std::set<std::string> seen_pkgs;
     for (const auto& s : snaps) {
-        if (!s.enabled || s.package_id.empty()) continue;
+        if (!s.enabled || s.package_id.empty())
+            continue;
         if (seen_pkgs.insert(s.package_id).second) {
             GExecBoundPackageDigest d;
             d.package_id = s.package_id;
@@ -283,12 +298,13 @@ GExecArtifactIdentity build_current_gexec_identity(
                         std::to_string(GUILD_KERNEL_ABI_VERSION_MINOR_OF(s.impl_version)) + "." +
                         std::to_string(GUILD_KERNEL_ABI_VERSION_PATCH_OF(s.impl_version));
             abi::InstalledPackageRecord package;
-            if (abi::GKernelPackageManager::instance().get_package(s.package_id, package) && package.loaded_in_process) {
+            if (abi::GKernelPackageManager::instance().get_package(s.package_id, package) &&
+                package.loaded_in_process) {
                 d.version = package.metadata.version;
                 d.payload_sha256 = package.metadata.compute_payload_sha256();
             } else {
-                d.payload_sha256 = models::Sha256::hash_string(s.package_id + ":" +
-                    build_info["gexec_source_sha256"].as_string());
+                d.payload_sha256 =
+                    models::Sha256::hash_string(s.package_id + ":" + build_info["gexec_source_sha256"].as_string());
             }
             id.bound_packages.push_back(std::move(d));
         }
@@ -297,7 +313,8 @@ GExecArtifactIdentity build_current_gexec_identity(
     // Runner-only modules have no kernel operation snapshot.
     for (const auto& package : abi::GKernelPackageManager::instance().list_packages()) {
         if (package.loaded_in_process && package.enabled && seen_pkgs.insert(package.package_id).second)
-            id.bound_packages.push_back({package.package_id, package.metadata.version, package.metadata.compute_payload_sha256()});
+            id.bound_packages.push_back(
+                {package.package_id, package.metadata.version, package.metadata.compute_payload_sha256()});
     }
 
     id.hardware = GExecHardwareFingerprint::detect();
@@ -316,10 +333,8 @@ GExecArtifactIdentity build_current_gexec_identity(
     return id;
 }
 
-std::string default_gexec_path_for_gpack(
-    const std::string& gpack_path,
-    const GExecArtifactIdentity& identity,
-    const std::string& cache_dir) {
+std::string default_gexec_path_for_gpack(const std::string& gpack_path, const GExecArtifactIdentity& identity,
+                                         const std::string& cache_dir) {
     const std::string dir = resolve_cache_dir(gpack_path, cache_dir);
     const std::filesystem::path gp(gpack_path);
     const std::string stem = gp.stem().string().empty() ? "model" : gp.stem().string();
@@ -330,11 +345,11 @@ std::string default_gexec_path_for_gpack(
 
 namespace {
 
-bool read_expert(const artifact::GPackReader& gpack, size_t layer, int64_t expert,
-                 std::vector<uint8_t>& blob, std::string& err) {
+bool read_expert(const artifact::GPackReader& gpack, size_t layer, int64_t expert, std::vector<uint8_t>& blob,
+                 std::string& err) {
     const auto& lr = gpack.expert_layers().at(layer);
-    if (expert < 0 || expert >= gpack.expert_count_per_layer() ||
-        lr.up_off > lr.down_off || lr.down_off > lr.blob_bytes || lr.gate_off != 0) {
+    if (expert < 0 || expert >= gpack.expert_count_per_layer() || lr.up_off > lr.down_off ||
+        lr.down_off > lr.blob_bytes || lr.gate_off != 0) {
         err = "invalid GPACK expert geometry";
         return false;
     }
@@ -355,13 +370,13 @@ bool read_expert(const artifact::GPackReader& gpack, size_t layer, int64_t exper
         const auto path = parent / shard;
         std::ifstream in(path, std::ios::binary);
         const uint64_t start = base + static_cast<uint64_t>(expert) * bytes;
-        if (start < base || start > static_cast<uint64_t>(INT64_MAX) || bytes > static_cast<uint64_t>(INT64_MAX)) return false;
+        if (start < base || start > static_cast<uint64_t>(INT64_MAX) || bytes > static_cast<uint64_t>(INT64_MAX))
+            return false;
         in.seekg(static_cast<std::streamoff>(start));
         in.read(reinterpret_cast<char*>(blob.data() + offset), static_cast<std::streamsize>(bytes));
         return in.good();
     };
-    if (!gpack.has_external_experts() ||
-        !read_role(lr.gate_shard, lr.gguf_gate_off, 0, lr.up_off) ||
+    if (!gpack.has_external_experts() || !read_role(lr.gate_shard, lr.gguf_gate_off, 0, lr.up_off) ||
         !read_role(lr.up_shard, lr.gguf_up_off, lr.up_off, lr.down_off - lr.up_off) ||
         !read_role(lr.down_shard, lr.gguf_down_off, lr.down_off, lr.blob_bytes - lr.down_off)) {
         err = "cannot read GPACK external expert roles";
@@ -371,22 +386,16 @@ bool read_expert(const artifact::GPackReader& gpack, size_t layer, int64_t exper
 }
 
 // Pass 3: Staged Kernel Autotuner + Multi-Expert Pool Validation
-bool run_autotune_pass(const artifact::GPackReader& gpack,
-                       const GExecArtifactIdentity& identity,
-                       GExecOptMode mode,
-                       GExecExpertPackMeta& inout_pack_meta,
-                       GExecAutotuneTable& out_table,
-                       GExecDiagnosticLog& out_log,
-                       std::string& out_selected_cpu_impl,
-                       uint32_t& out_selected_cpu_ver,
-                        std::string& err,
-                        const GExecOptBudget& budget = {},
-                        const std::function<bool()>& should_stop = {}) {
+bool run_autotune_pass(const artifact::GPackReader& gpack, const GExecArtifactIdentity& identity, GExecOptMode mode,
+                       GExecExpertPackMeta& inout_pack_meta, GExecAutotuneTable& out_table, GExecDiagnosticLog& out_log,
+                       std::string& out_selected_cpu_impl, uint32_t& out_selected_cpu_ver, std::string& err,
+                       const GExecOptBudget& budget = {}, const std::function<bool()>& should_stop = {}) {
     out_table = GExecAutotuneTable{};
     out_table.identity = identity;
     out_log = GExecDiagnosticLog{};
     auto interrupted = [&] {
-        if (!should_stop || !should_stop()) return false;
+        if (!should_stop || !should_stop())
+            return false;
         err = "GEXEC autotuning time budget expired";
         return true;
     };
@@ -397,16 +406,16 @@ bool run_autotune_pass(const artifact::GPackReader& gpack,
     // Determine baseline reference CPU expert backend table
     const guild_cpu_backend_ext_v2_t* ref_table = nullptr;
     for (const auto& op : all_ops) {
-        if (op->op_kind == GUILD_OP_BATCHED_EXPERT_EXEC &&
-            op->impl_id && std::strcmp(op->impl_id, "cpu.expert_pool.split_multi_native") == 0 &&
-            op->next_ext) {
+        if (op->op_kind == GUILD_OP_BATCHED_EXPERT_EXEC && op->impl_id &&
+            std::strcmp(op->impl_id, "cpu.expert_pool.split_multi_native") == 0 && op->next_ext) {
             ref_table = static_cast<const guild_cpu_backend_ext_v2_t*>(op->next_ext);
             break;
         }
     }
     inout_pack_meta.layout_kind = ExpertPackLayoutKind::PortableContiguous;
     inout_pack_meta.fused_single_barrier_pipeline = false;
-    for (auto& s : inout_pack_meta.layer_specs) s.layout_kind = inout_pack_meta.layout_kind;
+    for (auto& s : inout_pack_meta.layer_specs)
+        s.layout_kind = inout_pack_meta.layout_kind;
     if (!ref_table) {
         out_log.notes.push_back("No reference CPU backend is available; expert tuning skipped.");
         return true;
@@ -419,9 +428,12 @@ bool run_autotune_pass(const artifact::GPackReader& gpack,
         int64_t n_embd = 2048;
         int64_t n_ff = 512;
         bool operator<(const LayerFmtKey& o) const noexcept {
-            if (gu_type != o.gu_type) return gu_type < o.gu_type;
-            if (d_type != o.d_type) return d_type < o.d_type;
-            if (n_embd != o.n_embd) return n_embd < o.n_embd;
+            if (gu_type != o.gu_type)
+                return gu_type < o.gu_type;
+            if (d_type != o.d_type)
+                return d_type < o.d_type;
+            if (n_embd != o.n_embd)
+                return n_embd < o.n_embd;
             return n_ff < o.n_ff;
         }
     };
@@ -431,14 +443,15 @@ bool run_autotune_pass(const artifact::GPackReader& gpack,
     std::vector<size_t> format_layers;
     std::set<LayerFmtKey> seen_formats;
     std::map<LayerFmtKey, size_t> format_counts;
-    if (gpack.has_expert_layout() && gpack.expert_native_format() &&
-        model_n_embd > 0 && model_n_embd <= kernels::cpu::H &&
-        model_n_ff > 0 && model_n_ff <= kernels::cpu::FF) {
+    if (gpack.has_expert_layout() && gpack.expert_native_format() && model_n_embd > 0 &&
+        model_n_embd <= kernels::cpu::H && model_n_ff > 0 && model_n_ff <= kernels::cpu::FF) {
         for (size_t l = 0; l < gpack.expert_layers().size(); ++l) {
             const auto& lrow = gpack.expert_layers()[l];
             guild_cpu_expert_format_v1_t probe_fmt{};
-            if (ref_table->format(lrow.gu_type, lrow.d_type, model_n_embd, model_n_ff, &probe_fmt, nullptr) == GUILD_STATUS_OK &&
-                probe_fmt.bytes == lrow.blob_bytes && probe_fmt.up_off == lrow.up_off && probe_fmt.down_off == lrow.down_off) {
+            if (ref_table->format(lrow.gu_type, lrow.d_type, model_n_embd, model_n_ff, &probe_fmt, nullptr) ==
+                    GUILD_STATUS_OK &&
+                probe_fmt.bytes == lrow.blob_bytes && probe_fmt.up_off == lrow.up_off &&
+                probe_fmt.down_off == lrow.down_off) {
                 LayerFmtKey k{lrow.gu_type, lrow.d_type, model_n_embd, model_n_ff};
                 ++format_counts[k];
                 if (seen_formats.insert(k).second) {
@@ -446,7 +459,8 @@ bool run_autotune_pass(const artifact::GPackReader& gpack,
                     format_layers.push_back(l);
                 }
             } else {
-                out_log.notes.push_back("Expert tuning skipped: unsupported native geometry at layer " + std::to_string(l));
+                out_log.notes.push_back("Expert tuning skipped: unsupported native geometry at layer " +
+                                        std::to_string(l));
                 return true;
             }
         }
@@ -457,13 +471,13 @@ bool run_autotune_pass(const artifact::GPackReader& gpack,
     }
 
     const int warmup_iters = (mode == GExecOptMode::Quick) ? 2 : (mode == GExecOptMode::Exhaustive ? 6 : 3);
-    const int bench_iters  = (mode == GExecOptMode::Quick) ? 5 : (mode == GExecOptMode::Exhaustive ? 19 : 9);
+    const int bench_iters = (mode == GExecOptMode::Quick) ? 5 : (mode == GExecOptMode::Exhaustive ? 19 : 9);
 
     std::string overall_best_impl = "cpu.expert_pool.split_multi_native";
-    std::string overall_best_pkg  = "builtin.guild-kernels-cpu";
-    uint32_t overall_best_ver     = 0;
-    double total_baseline_us      = 0.0;
-    double total_best_us          = 0.0;
+    std::string overall_best_pkg = "builtin.guild-kernels-cpu";
+    uint32_t overall_best_ver = 0;
+    double total_baseline_us = 0.0;
+    double total_best_us = 0.0;
     struct CandidateResult {
         std::string impl_id;
         std::string pkg_id;
@@ -473,7 +487,8 @@ bool run_autotune_pass(const artifact::GPackReader& gpack,
     std::map<std::string, std::vector<CandidateResult>> global_candidates;
 
     for (size_t fi = 0; fi < distinct_formats.size(); ++fi) {
-        if (interrupted()) return false;
+        if (interrupted())
+            return false;
         const auto& fk = distinct_formats[fi];
         guild_cpu_expert_format_v1_t fmt{};
         guild_error_info_t einfo{};
@@ -481,7 +496,8 @@ bool run_autotune_pass(const artifact::GPackReader& gpack,
             continue;
         }
         const uint64_t active = std::max<int64_t>(1, gpack.descriptor().moe.k_active_experts);
-        const uint64_t temporary_bytes = (64ull << 20) + 2 * active * fmt.bytes +
+        const uint64_t temporary_bytes =
+            (64ull << 20) + 2 * active * fmt.bytes +
             (static_cast<uint64_t>(std::max(1, identity.hardware.cpu_logical_threads)) << 20);
         if (budget.max_memory_bytes && temporary_bytes > budget.max_memory_bytes) {
             err = "GEXEC autotuning working set exceeds memory budget";
@@ -490,15 +506,12 @@ bool run_autotune_pass(const artifact::GPackReader& gpack,
 
         // Use the real model bytes, including the actual per-block scales.
         std::vector<uint8_t> blob_contig;
-        if (!read_expert(gpack, format_layers[fi], 0, blob_contig, err)) return false;
+        if (!read_expert(gpack, format_layers[fi], 0, blob_contig, err))
+            return false;
         std::vector<uint8_t> blob_interleaved(blob_contig.size(), 0);
-        pack_expert_gate_up_interleaved(
-            blob_contig.data(),
-            blob_interleaved.data(),
-            static_cast<size_t>(fmt.n_ff),
-            static_cast<size_t>(fmt.gu_row),
-            static_cast<size_t>(fmt.gu_row),
-            static_cast<size_t>(fmt.bytes - fmt.down_off));
+        pack_expert_gate_up_interleaved(blob_contig.data(), blob_interleaved.data(), static_cast<size_t>(fmt.n_ff),
+                                        static_cast<size_t>(fmt.gu_row), static_cast<size_t>(fmt.gu_row),
+                                        static_cast<size_t>(fmt.bytes - fmt.down_off));
 
         // Prepare deterministic input activations for nt = 1 and nt = 2
         std::vector<float> x_in(static_cast<size_t>(2 * fmt.n_embd), 0.0f);
@@ -532,43 +545,44 @@ bool run_autotune_pass(const artifact::GPackReader& gpack,
         double fmt_baseline_us = 0.0;
 
         for (const auto& op : all_ops) {
-            if (interrupted()) return false;
-            if (op->op_kind != GUILD_OP_BATCHED_EXPERT_EXEC) continue;
+            if (interrupted())
+                return false;
+            if (op->op_kind != GUILD_OP_BATCHED_EXPERT_EXEC)
+                continue;
             const std::string cid = op->impl_id ? op->impl_id : "";
             const std::string cpkg = op->package_id ? op->package_id : "";
-            if (cid != "cpu.expert_pool.split_multi_native" && !kernels::cpu::is_gexec_optimized_cpu_impl(cid.c_str())) continue;
-            if (!kernels::KernelRegistry::instance().is_package_enabled(cpkg)) continue;
+            if (cid != "cpu.expert_pool.split_multi_native" && !kernels::cpu::is_gexec_optimized_cpu_impl(cid.c_str()))
+                continue;
+            if (!kernels::KernelRegistry::instance().is_package_enabled(cpkg))
+                continue;
 
             // Stage 1: Hardware / Capability Compatibility Filter
             if ((op->backend & GUILD_BACKEND_CPU) == 0) {
-                out_log.rejected_candidates.push_back({
-                    GUILD_OP_BATCHED_EXPERT_EXEC, "batched_expert_exec", cid,
-                    "compatibility", "non-CPU backend", 0.0, 0.0
-                });
+                out_log.rejected_candidates.push_back({GUILD_OP_BATCHED_EXPERT_EXEC, "batched_expert_exec", cid,
+                                                       "compatibility", "non-CPU backend", 0.0, 0.0});
                 continue;
             }
             if ((op->required_cpu_isa & caps.cpu_isa_flags) != op->required_cpu_isa) {
-                out_log.rejected_candidates.push_back({
-                    GUILD_OP_BATCHED_EXPERT_EXEC, "batched_expert_exec", cid,
-                    "compatibility", "host CPU lacks required ISA flags", 0.0, 0.0
-                });
+                out_log.rejected_candidates.push_back({GUILD_OP_BATCHED_EXPERT_EXEC, "batched_expert_exec", cid,
+                                                       "compatibility", "host CPU lacks required ISA flags", 0.0, 0.0});
                 continue;
             }
             if (!op->next_ext) {
-                out_log.rejected_candidates.push_back({
-                    GUILD_OP_BATCHED_EXPERT_EXEC, "batched_expert_exec", cid,
-                    "compatibility", "missing guild_cpu_backend_ext_v2_t extension table", 0.0, 0.0
-                });
+                out_log.rejected_candidates.push_back({GUILD_OP_BATCHED_EXPERT_EXEC, "batched_expert_exec", cid,
+                                                       "compatibility",
+                                                       "missing guild_cpu_backend_ext_v2_t extension table", 0.0, 0.0});
                 continue;
             }
 
             const auto* tbl = static_cast<const guild_cpu_backend_ext_v2_t*>(op->next_ext);
             if (tbl->native.struct_size < sizeof(*tbl) || tbl->native.tag != GUILD_CPU_EXPERT_TAG_V1 ||
-                tbl->native.version != 1 || tbl->backend_version != GUILD_CPU_BACKEND_VERSION_V2 ||
-                !tbl->format || !tbl->native.gate_up || !tbl->native.quant_h || !tbl->native.down) continue;
+                tbl->native.version != 1 || tbl->backend_version != GUILD_CPU_BACKEND_VERSION_V2 || !tbl->format ||
+                !tbl->native.gate_up || !tbl->native.quant_h || !tbl->native.down)
+                continue;
             guild_cpu_expert_format_v1_t candidate_fmt{};
             if (tbl->format(fk.gu_type, fk.d_type, fk.n_embd, fk.n_ff, &candidate_fmt, nullptr) != GUILD_STATUS_OK ||
-                std::memcmp(&candidate_fmt, &fmt, sizeof(fmt)) != 0) continue;
+                std::memcmp(&candidate_fmt, &fmt, sizeof(fmt)) != 0)
+                continue;
             const bool is_interleaved = kernels::cpu::is_gexec_interleaved_impl(cid.c_str());
             const uint8_t* test_blob = is_interleaved ? blob_interleaved.data() : blob_contig.data();
 
@@ -578,9 +592,11 @@ bool run_autotune_pass(const artifact::GPackReader& gpack,
             float* cand_ff_ptrs[2] = {cand_ff0.data(), cand_ff1.data()};
 
             // Test nt = 1
-            ref_table->native.gate_up(&fmt, blob_contig.data(), act_ptrs, 1, ref_ff_ptrs, 0, static_cast<int>(fmt.n_ff));
+            ref_table->native.gate_up(&fmt, blob_contig.data(), act_ptrs, 1, ref_ff_ptrs, 0,
+                                      static_cast<int>(fmt.n_ff));
             ref_table->native.quant_h(&fmt, ref_ff0.data(), ref_hq0);
-            ref_table->native.down(&fmt, blob_contig.data(), ref_hq_ptrs, 1, ref_out_ptrs, 0, static_cast<int>(fmt.n_embd));
+            ref_table->native.down(&fmt, blob_contig.data(), ref_hq_ptrs, 1, ref_out_ptrs, 0,
+                                   static_cast<int>(fmt.n_embd));
             tbl->native.gate_up(&fmt, test_blob, act_ptrs, 1, cand_ff_ptrs, 0, static_cast<int>(fmt.n_ff));
             alignas(64) uint8_t cand_hq0[kernels::cpu::kNativeHBytes] = {};
             tbl->native.quant_h(&fmt, cand_ff0.data(), cand_hq0);
@@ -596,14 +612,19 @@ bool run_autotune_pass(const artifact::GPackReader& gpack,
                          std::memcmp(cand_hq0, ref_hq0, fmt.h_bytes) == 0 &&
                          std::memcmp(cand_out0.data(), ref_out0.data(), fmt.n_embd * sizeof(float)) == 0;
             for (size_t i = 0; i < static_cast<size_t>(fmt.n_embd); ++i) {
-                if (!std::isfinite(cand_out0[i])) { finite_ok = false; break; }
+                if (!std::isfinite(cand_out0[i])) {
+                    finite_ok = false;
+                    break;
+                }
                 max_err = std::max(max_err, static_cast<double>(std::fabs(cand_out0[i] - ref_out0[i])));
             }
             // Test nt = 2
-            ref_table->native.gate_up(&fmt, blob_contig.data(), act_ptrs, 2, ref_ff_ptrs, 0, static_cast<int>(fmt.n_ff));
+            ref_table->native.gate_up(&fmt, blob_contig.data(), act_ptrs, 2, ref_ff_ptrs, 0,
+                                      static_cast<int>(fmt.n_ff));
             ref_table->native.quant_h(&fmt, ref_ff0.data(), ref_hq0);
             ref_table->native.quant_h(&fmt, ref_ff1.data(), ref_hq1);
-            ref_table->native.down(&fmt, blob_contig.data(), ref_hq_ptrs, 2, ref_out_ptrs, 0, static_cast<int>(fmt.n_embd));
+            ref_table->native.down(&fmt, blob_contig.data(), ref_hq_ptrs, 2, ref_out_ptrs, 0,
+                                   static_cast<int>(fmt.n_embd));
             tbl->native.gate_up(&fmt, test_blob, act_ptrs, 2, cand_ff_ptrs, 0, static_cast<int>(fmt.n_ff));
             alignas(64) uint8_t cand_hq1[kernels::cpu::kNativeHBytes] = {};
             tbl->native.quant_h(&fmt, cand_ff0.data(), cand_hq0);
@@ -618,17 +639,18 @@ bool run_autotune_pass(const artifact::GPackReader& gpack,
                     std::memcmp(cand_out0.data(), ref_out0.data(), fmt.n_embd * sizeof(float)) == 0 &&
                     std::memcmp(cand_out1.data(), ref_out1.data(), fmt.n_embd * sizeof(float)) == 0;
             for (size_t i = 0; i < static_cast<size_t>(fmt.n_embd); ++i) {
-                if (!std::isfinite(cand_out0[i]) || !std::isfinite(cand_out1[i])) { finite_ok = false; break; }
+                if (!std::isfinite(cand_out0[i]) || !std::isfinite(cand_out1[i])) {
+                    finite_ok = false;
+                    break;
+                }
                 max_err = std::max(max_err, static_cast<double>(std::fabs(cand_out0[i] - ref_out0[i])));
                 max_err = std::max(max_err, static_cast<double>(std::fabs(cand_out1[i] - ref_out1[i])));
             }
 
             if (!finite_ok || !exact) {
-                out_log.rejected_candidates.push_back({
-                    GUILD_OP_BATCHED_EXPERT_EXEC, "batched_expert_exec", cid,
-                    "correctness", finite_ok ? "bitwise parity mismatch" : "non-finite output",
-                    max_err, 0.0
-                });
+                out_log.rejected_candidates.push_back(
+                    {GUILD_OP_BATCHED_EXPERT_EXEC, "batched_expert_exec", cid, "correctness",
+                     finite_ok ? "bitwise parity mismatch" : "non-finite output", max_err, 0.0});
                 continue;
             }
 
@@ -645,7 +667,8 @@ bool run_autotune_pass(const artifact::GPackReader& gpack,
                 tbl->native.gate_up(&fmt, test_blob, act_ptrs, 1, cand_ff_ptrs, 0, static_cast<int>(fmt.n_ff));
                 tbl->native.quant_h(&fmt, cand_ff0.data(), cand_hq0);
                 tbl->native.down(&fmt, test_blob, cand_hq_ptrs, 1, cand_out_ptrs, 0, static_cast<int>(fmt.n_embd));
-                const double us = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t0).count();
+                const double us =
+                    std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t0).count();
                 samples_us.push_back(us);
             }
             std::sort(samples_us.begin(), samples_us.end());
@@ -666,28 +689,25 @@ bool run_autotune_pass(const artifact::GPackReader& gpack,
         // Keep the comparator transitive; noisy ties cannot define a sort order.
         std::sort(valid_candidates.begin(), valid_candidates.end(),
                   [](const CandidateResult& a, const CandidateResult& b) {
-                      if (a.median_us == b.median_us) return a.impl_id < b.impl_id;
+                      if (a.median_us == b.median_us)
+                          return a.impl_id < b.impl_id;
                       return a.median_us < b.median_us;
                   });
 
         const auto& winner = valid_candidates.front();
         for (size_t i = 1; i < valid_candidates.size(); ++i) {
-            out_log.rejected_candidates.push_back({
-                GUILD_OP_BATCHED_EXPERT_EXEC,
-                "batched_expert_exec(gu=" + std::to_string(fk.gu_type) + ",d=" + std::to_string(fk.d_type) + ")",
-                valid_candidates[i].impl_id,
-                "microbenchmark",
-                "slower than winning candidate " + winner.impl_id,
-                0.0,
-                valid_candidates[i].median_us
-            });
+            out_log.rejected_candidates.push_back(
+                {GUILD_OP_BATCHED_EXPERT_EXEC,
+                 "batched_expert_exec(gu=" + std::to_string(fk.gu_type) + ",d=" + std::to_string(fk.d_type) + ")",
+                 valid_candidates[i].impl_id, "microbenchmark", "slower than winning candidate " + winner.impl_id, 0.0,
+                 valid_candidates[i].median_us});
         }
 
         total_baseline_us += (fmt_baseline_us > 0.0 ? fmt_baseline_us : winner.median_us);
         total_best_us += winner.median_us;
         overall_best_impl = winner.impl_id;
-        overall_best_pkg  = winner.pkg_id;
-        overall_best_ver  = winner.impl_ver;
+        overall_best_pkg = winner.pkg_id;
+        overall_best_ver = winner.impl_ver;
 
         // Record for m_tokens = 1 (Decode) and m_tokens = 2 (Verify)
         for (int64_t m_tok : {int64_t(1), int64_t(2)}) {
@@ -718,14 +738,17 @@ bool run_autotune_pass(const artifact::GPackReader& gpack,
     };
     std::vector<RankedCandidate> ranked_candidates;
     for (const auto& [cid, results] : global_candidates) {
-        if (results.size() != distinct_formats.size() || cid == "cpu.expert_pool.split_multi_native") continue;
+        if (results.size() != distinct_formats.size() || cid == "cpu.expert_pool.split_multi_native")
+            continue;
         double score = 0;
-        for (size_t i = 0; i < results.size(); ++i) score += results[i].median_us * format_counts.at(distinct_formats[i]);
+        for (size_t i = 0; i < results.size(); ++i)
+            score += results[i].median_us * format_counts.at(distinct_formats[i]);
         ranked_candidates.push_back({cid, results.front().pkg_id, results.front().impl_ver, score});
     }
     std::sort(ranked_candidates.begin(), ranked_candidates.end(),
               [](const RankedCandidate& a, const RankedCandidate& b) {
-                  if (a.score == b.score) return a.impl_id < b.impl_id;
+                  if (a.score == b.score)
+                      return a.impl_id < b.impl_id;
                   return a.score < b.score;
               });
     const auto baseline = global_candidates.find("cpu.expert_pool.split_multi_native");
@@ -747,25 +770,26 @@ bool run_autotune_pass(const artifact::GPackReader& gpack,
     std::vector<double> cand_max_err(pool_candidates.size(), 0.0);
 
     for (size_t fi = 0; !pool_candidates.empty() && fi < distinct_formats.size(); ++fi) {
-        if (interrupted()) return false;
+        if (interrupted())
+            return false;
         const auto& fk = distinct_formats[fi];
         guild_cpu_expert_format_v1_t fmt{};
         ref_table->format(fk.gu_type, fk.d_type, fk.n_embd, fk.n_ff, &fmt, nullptr);
 
-        const int k_active = std::max(1, static_cast<int>(gpack.descriptor().moe.k_active_experts > 0 ? gpack.descriptor().moe.k_active_experts : 8));
+        const int k_active =
+            std::max(1, static_cast<int>(
+                            gpack.descriptor().moe.k_active_experts > 0 ? gpack.descriptor().moe.k_active_experts : 8));
         std::vector<std::vector<uint8_t>> blobs_contig(static_cast<size_t>(k_active));
         std::vector<std::vector<uint8_t>> blobs_inter(static_cast<size_t>(k_active));
         for (int e = 0; e < k_active; ++e) {
             if (!read_expert(gpack, format_layers[fi], e % gpack.expert_count_per_layer(),
-                             blobs_contig[static_cast<size_t>(e)], err)) return false;
+                             blobs_contig[static_cast<size_t>(e)], err))
+                return false;
             blobs_inter[static_cast<size_t>(e)].resize(blobs_contig[static_cast<size_t>(e)].size());
-            pack_expert_gate_up_interleaved(
-                blobs_contig[static_cast<size_t>(e)].data(),
-                blobs_inter[static_cast<size_t>(e)].data(),
-                static_cast<size_t>(fmt.n_ff),
-                static_cast<size_t>(fmt.gu_row),
-                static_cast<size_t>(fmt.gu_row),
-                static_cast<size_t>(fmt.bytes - fmt.down_off));
+            pack_expert_gate_up_interleaved(blobs_contig[static_cast<size_t>(e)].data(),
+                                            blobs_inter[static_cast<size_t>(e)].data(), static_cast<size_t>(fmt.n_ff),
+                                            static_cast<size_t>(fmt.gu_row), static_cast<size_t>(fmt.gu_row),
+                                            static_cast<size_t>(fmt.bytes - fmt.down_off));
         }
 
         const int pool_nt = (identity.mtp_spec_tokens > 0) ? 2 : 1;
@@ -806,14 +830,15 @@ bool run_autotune_pass(const artifact::GPackReader& gpack,
                 tables_cands[ci] = static_cast<const guild_cpu_backend_ext_v2_t*>(bnd->next_ext);
             }
             for (int e = 0; e < k_active; ++e) {
-                jobs_cands[ci][static_cast<size_t>(e)].blob = use_inter
-                    ? blobs_inter[static_cast<size_t>(e)].data()
-                    : blobs_contig[static_cast<size_t>(e)].data();
+                jobs_cands[ci][static_cast<size_t>(e)].blob = use_inter ? blobs_inter[static_cast<size_t>(e)].data()
+                                                                        : blobs_contig[static_cast<size_t>(e)].data();
                 jobs_cands[ci][static_cast<size_t>(e)].nt = pool_nt;
                 jobs_cands[ci][static_cast<size_t>(e)].nact[0] = qact0;
                 jobs_cands[ci][static_cast<size_t>(e)].nact[1] = qact1;
-                jobs_cands[ci][static_cast<size_t>(e)].out[0] = outs_cands0[ci].data() + static_cast<size_t>(e) * n_embd_sz;
-                jobs_cands[ci][static_cast<size_t>(e)].out[1] = outs_cands1[ci].data() + static_cast<size_t>(e) * n_embd_sz;
+                jobs_cands[ci][static_cast<size_t>(e)].out[0] =
+                    outs_cands0[ci].data() + static_cast<size_t>(e) * n_embd_sz;
+                jobs_cands[ci][static_cast<size_t>(e)].out[1] =
+                    outs_cands1[ci].data() + static_cast<size_t>(e) * n_embd_sz;
             }
         }
 
@@ -822,9 +847,11 @@ bool run_autotune_pass(const artifact::GPackReader& gpack,
             pool.set_fused_pipeline(false);
             const auto start = std::chrono::steady_clock::now();
             pool.run_split_multi_native(fmt, jobs_base.data(), k_active);
-            ref_table->combine(outs_base0.data(), combine_w.data(), comb_base0.data(), k_active, static_cast<int>(fmt.n_embd));
+            ref_table->combine(outs_base0.data(), combine_w.data(), comb_base0.data(), k_active,
+                               static_cast<int>(fmt.n_embd));
             if (pool_nt >= 2) {
-                ref_table->combine(outs_base1.data(), combine_w.data(), comb_base1.data(), k_active, static_cast<int>(fmt.n_embd));
+                ref_table->combine(outs_base1.data(), combine_w.data(), comb_base1.data(), k_active,
+                                   static_cast<int>(fmt.n_embd));
             }
             return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
         };
@@ -833,26 +860,32 @@ bool run_autotune_pass(const artifact::GPackReader& gpack,
             pool.set_fused_pipeline(kernels::cpu::is_gexec_optimized_cpu_impl(pool_candidates[ci].impl_id.c_str()));
             const auto start = std::chrono::steady_clock::now();
             pool.run_split_multi_native(fmt, jobs_cands[ci].data(), k_active);
-            tables_cands[ci]->combine(outs_cands0[ci].data(), combine_w.data(), comb_cands0[ci].data(), k_active, static_cast<int>(fmt.n_embd));
+            tables_cands[ci]->combine(outs_cands0[ci].data(), combine_w.data(), comb_cands0[ci].data(), k_active,
+                                      static_cast<int>(fmt.n_embd));
             if (pool_nt >= 2) {
-                tables_cands[ci]->combine(outs_cands1[ci].data(), combine_w.data(), comb_cands1[ci].data(), k_active, static_cast<int>(fmt.n_embd));
+                tables_cands[ci]->combine(outs_cands1[ci].data(), combine_w.data(), comb_cands1[ci].data(), k_active,
+                                          static_cast<int>(fmt.n_embd));
             }
             return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
         };
 
         for (int w = 0; w < warmup_iters; ++w) {
             run_base();
-            for (size_t ci = 0; ci < pool_candidates.size(); ++ci) run_cand(ci);
+            for (size_t ci = 0; ci < pool_candidates.size(); ++ci)
+                run_cand(ci);
         }
         std::vector<double> base_samples;
         std::vector<std::vector<double>> cand_samples(pool_candidates.size());
         for (int it = 0; it < bench_iters; ++it) {
-            if (interrupted()) return false;
+            if (interrupted())
+                return false;
             if (it % 2 == 0) {
                 base_samples.push_back(run_base());
-                for (size_t ci = 0; ci < pool_candidates.size(); ++ci) cand_samples[ci].push_back(run_cand(ci));
+                for (size_t ci = 0; ci < pool_candidates.size(); ++ci)
+                    cand_samples[ci].push_back(run_cand(ci));
             } else {
-                for (size_t ci = pool_candidates.size(); ci-- > 0;) cand_samples[ci].push_back(run_cand(ci));
+                for (size_t ci = pool_candidates.size(); ci-- > 0;)
+                    cand_samples[ci].push_back(run_cand(ci));
                 base_samples.push_back(run_base());
             }
         }
@@ -868,11 +901,14 @@ bool run_autotune_pass(const artifact::GPackReader& gpack,
             double fmt_max_err = 0.0;
             bool exact = true;
             for (size_t i = 0; i < k_embd_sz; ++i) {
-                if (!std::isfinite(outs_cands0[ci][i]) || !std::isfinite(outs_base0[i])) exact = false;
+                if (!std::isfinite(outs_cands0[ci][i]) || !std::isfinite(outs_base0[i]))
+                    exact = false;
                 fmt_max_err = std::max(fmt_max_err, static_cast<double>(std::fabs(outs_cands0[ci][i] - outs_base0[i])));
                 if (pool_nt >= 2) {
-                    if (!std::isfinite(outs_cands1[ci][i]) || !std::isfinite(outs_base1[i])) exact = false;
-                    fmt_max_err = std::max(fmt_max_err, static_cast<double>(std::fabs(outs_cands1[ci][i] - outs_base1[i])));
+                    if (!std::isfinite(outs_cands1[ci][i]) || !std::isfinite(outs_base1[i]))
+                        exact = false;
+                    fmt_max_err =
+                        std::max(fmt_max_err, static_cast<double>(std::fabs(outs_cands1[ci][i] - outs_base1[i])));
                 }
             }
             exact = exact && std::memcmp(outs_cands0[ci].data(), outs_base0.data(), k_embd_sz * sizeof(float)) == 0;
@@ -882,10 +918,11 @@ bool run_autotune_pass(const artifact::GPackReader& gpack,
                 exact = exact && std::memcmp(comb_cands1[ci].data(), comb_base1.data(), n_embd_sz * sizeof(float)) == 0;
             }
             cand_max_err[ci] = std::max(cand_max_err[ci], fmt_max_err);
-            if (!exact) cand_exact[ci] = false;
+            if (!exact)
+                cand_exact[ci] = false;
             out_log.notes.push_back("ExpertPool format " + std::to_string(fi) + " (" + pool_candidates[ci].impl_id +
-                "): baseline_ms=" + std::to_string(base_med) + ", candidate_ms=" +
-                std::to_string(c_med) + ", max_abs_err=" + std::to_string(fmt_max_err));
+                                    "): baseline_ms=" + std::to_string(base_med) + ", candidate_ms=" +
+                                    std::to_string(c_med) + ", max_abs_err=" + std::to_string(fmt_max_err));
         }
     }
 
@@ -897,22 +934,20 @@ bool run_autotune_pass(const artifact::GPackReader& gpack,
     double best_pool_ms = baseline_pool_ms;
     for (size_t ci = 0; ci < pool_candidates.size(); ++ci) {
         if (!cand_exact[ci]) {
-            out_log.rejected_candidates.push_back({
-                GUILD_OP_BATCHED_EXPERT_EXEC, "batched_expert_exec", pool_candidates[ci].impl_id,
-                "pool", "failed multi-thread ExpertPool bitwise parity check", cand_max_err[ci], cand_pool_ms[ci] * 1000.0
-            });
+            out_log.rejected_candidates.push_back(
+                {GUILD_OP_BATCHED_EXPERT_EXEC, "batched_expert_exec", pool_candidates[ci].impl_id, "pool",
+                 "failed multi-thread ExpertPool bitwise parity check", cand_max_err[ci], cand_pool_ms[ci] * 1000.0});
             continue;
         }
         if (cand_pool_ms[ci] < best_pool_ms) {
             best_pool_ms = cand_pool_ms[ci];
             overall_best_impl = pool_candidates[ci].impl_id;
-            overall_best_pkg  = pool_candidates[ci].pkg_id;
-            overall_best_ver  = pool_candidates[ci].impl_ver;
+            overall_best_pkg = pool_candidates[ci].pkg_id;
+            overall_best_ver = pool_candidates[ci].impl_ver;
         } else {
-            out_log.rejected_candidates.push_back({
-                GUILD_OP_BATCHED_EXPERT_EXEC, "batched_expert_exec", pool_candidates[ci].impl_id,
-                "pool", "slower in multi-thread ExpertPool trial", 0.0, cand_pool_ms[ci] * 1000.0
-            });
+            out_log.rejected_candidates.push_back(
+                {GUILD_OP_BATCHED_EXPERT_EXEC, "batched_expert_exec", pool_candidates[ci].impl_id, "pool",
+                 "slower in multi-thread ExpertPool trial", 0.0, cand_pool_ms[ci] * 1000.0});
         }
     }
     out_log.notes.push_back("Model-wide pool winner: " + overall_best_impl);
@@ -921,8 +956,8 @@ bool run_autotune_pass(const artifact::GPackReader& gpack,
         r.selected_impl_id = overall_best_impl;
         r.selected_package_id = overall_best_pkg;
         r.selected_impl_version = overall_best_ver;
-        r.median_latency_us = r.phase == GExecWorkloadPhase::Decode
-            ? global_candidates.at(overall_best_impl).at(i / 2).median_us : 0.0;
+        r.median_latency_us =
+            r.phase == GExecWorkloadPhase::Decode ? global_candidates.at(overall_best_impl).at(i / 2).median_us : 0.0;
     }
     out_log.notes.push_back("Full-model decode and break-even have not been measured by this pool trial.");
 
@@ -942,13 +977,13 @@ bool run_autotune_pass(const artifact::GPackReader& gpack,
     }
 
     out_selected_cpu_impl = overall_best_impl;
-    out_selected_cpu_ver  = overall_best_ver;
+    out_selected_cpu_ver = overall_best_ver;
 
     const bool winner_interleaved = kernels::cpu::is_gexec_interleaved_impl(overall_best_impl.c_str());
-    inout_pack_meta.layout_kind = winner_interleaved
-        ? ExpertPackLayoutKind::GateUpRowInterleaved
-        : ExpertPackLayoutKind::PortableContiguous;
-    inout_pack_meta.fused_single_barrier_pipeline = kernels::cpu::is_gexec_optimized_cpu_impl(overall_best_impl.c_str());
+    inout_pack_meta.layout_kind =
+        winner_interleaved ? ExpertPackLayoutKind::GateUpRowInterleaved : ExpertPackLayoutKind::PortableContiguous;
+    inout_pack_meta.fused_single_barrier_pipeline =
+        kernels::cpu::is_gexec_optimized_cpu_impl(overall_best_impl.c_str());
     for (auto& ls : inout_pack_meta.layer_specs) {
         ls.layout_kind = inout_pack_meta.layout_kind;
     }
@@ -957,24 +992,26 @@ bool run_autotune_pass(const artifact::GPackReader& gpack,
 
 } // namespace
 
-GExecOptimizeResult optimize_gpack(
-    const GExecOptimizeOptions& opts,
-    std::function<void(const std::string& stage_msg)> progress_cb) {
+GExecOptimizeResult optimize_gpack(const GExecOptimizeOptions& opts,
+                                   std::function<void(const std::string& stage_msg)> progress_cb) {
     GExecOptimizeResult res;
-    if (!std::isfinite(opts.budget.max_time_seconds) || opts.budget.max_time_seconds < 0 ||
-        opts.max_context <= 0 || opts.prefill_batch <= 0) {
+    if (!std::isfinite(opts.budget.max_time_seconds) || opts.budget.max_time_seconds < 0 || opts.max_context <= 0 ||
+        opts.prefill_batch <= 0) {
         res.error = "invalid GEXEC time or execution-plan budget";
         return res;
     }
     GExecOptBudget budget = opts.budget;
-    if (!budget.max_memory_bytes) budget.max_memory_bytes = hardware::detect_hardware().ram_free_bytes / 2;
+    if (!budget.max_memory_bytes)
+        budget.max_memory_bytes = hardware::detect_hardware().ram_free_bytes / 2;
     const auto wall_t0 = std::chrono::steady_clock::now();
     auto elapsed_sec = [&]() -> double {
         return std::chrono::duration<double>(std::chrono::steady_clock::now() - wall_t0).count();
     };
     auto budget_expired = [&](int32_t pass_num) -> bool {
-        if (opts.stop_after_pass >= 0 && pass_num >= opts.stop_after_pass) return true;
-        if (opts.budget.max_time_seconds > 0.0 && elapsed_sec() >= opts.budget.max_time_seconds) return true;
+        if (opts.stop_after_pass >= 0 && pass_num >= opts.stop_after_pass)
+            return true;
+        if (opts.budget.max_time_seconds > 0.0 && elapsed_sec() >= opts.budget.max_time_seconds)
+            return true;
         return false;
     };
 
@@ -995,13 +1032,15 @@ GExecOptimizeResult optimize_gpack(
         gpack, opts.kv_format, opts.kv_mode, opts.max_context, opts.prefill_batch, opts.mtp_spec_tokens);
     res.cache_key = identity.compute_cache_key();
     res.output_path = opts.output_gexec_path.empty()
-        ? default_gexec_path_for_gpack(opts.gpack_path, identity, opts.cache_dir)
-        : opts.output_gexec_path;
+                          ? default_gexec_path_for_gpack(opts.gpack_path, identity, opts.cache_dir)
+                          : opts.output_gexec_path;
 
     if (budget.only_section != GExecSectionKind::Invalid) {
-        if (!regenerate_gexec_section(res.output_path, opts.gpack_path, budget.only_section, res.error, budget)) return res;
+        if (!regenerate_gexec_section(res.output_path, opts.gpack_path, budget.only_section, res.error, budget))
+            return res;
         GExecReader updated;
-        if (!updated.open(res.output_path, res.error)) return res;
+        if (!updated.open(res.output_path, res.error))
+            return res;
         res.ok = true;
         res.cache_key = updated.identity().compute_cache_key();
         res.partial_artifact = updated.is_partial();
@@ -1051,13 +1090,16 @@ GExecOptimizeResult optimize_gpack(
         pbuilder.set_flags(kGExecFlagPartialArtifact |
                            (ckpt.pack_meta.fused_single_barrier_pipeline ? kGExecFlagFusedPipeline : 0u));
         pbuilder.set_identity(ckpt.identity);
-        if (ckpt.last_completed_pass >= 2) pbuilder.set_expert_pack_meta(ckpt.pack_meta);
+        if (ckpt.last_completed_pass >= 2)
+            pbuilder.set_expert_pack_meta(ckpt.pack_meta);
         if (ckpt.last_completed_pass >= 3) {
             pbuilder.set_autotune_table(ckpt.autotune);
             pbuilder.set_diagnostic_log(ckpt.diag_log);
         }
-        if (ckpt.last_completed_pass >= 4) pbuilder.set_heterogeneous_plan(ckpt.hplan);
-        if (!pbuilder.write_file(res.output_path, res.error, budget.max_disk_bytes)) return false;
+        if (ckpt.last_completed_pass >= 4)
+            pbuilder.set_heterogeneous_plan(ckpt.hplan);
+        if (!pbuilder.write_file(res.output_path, res.error, budget.max_disk_bytes))
+            return false;
         res.ok = true;
         res.partial_artifact = true;
         res.optimization_wall_ms = elapsed_sec() * 1000.0;
@@ -1068,7 +1110,8 @@ GExecOptimizeResult optimize_gpack(
 
     // Pass 1: Identity & Manifest
     if (ckpt.last_completed_pass < 1) {
-        if (progress_cb) progress_cb("Pass 1/5: Computing hardware/software identity and ABI compatibility contract");
+        if (progress_cb)
+            progress_cb("Pass 1/5: Computing hardware/software identity and ABI compatibility contract");
         ckpt.identity = identity;
         ckpt.last_completed_pass = 1;
         save_checkpoint_atomic(progress_path, ckpt);
@@ -1080,7 +1123,8 @@ GExecOptimizeResult optimize_gpack(
 
     // Pass 2: Expert Packing Metadata
     if (ckpt.last_completed_pass < 2) {
-        if (progress_cb) progress_cb("Pass 2/5: Analyzing MoE expert layout and GateUpRowInterleaved specialization");
+        if (progress_cb)
+            progress_cb("Pass 2/5: Analyzing MoE expert layout and GateUpRowInterleaved specialization");
         GExecExpertPackMeta pmeta;
         pmeta.layout_kind = ExpertPackLayoutKind::PortableContiguous;
         pmeta.embedded_blob_present = false;
@@ -1089,7 +1133,7 @@ GExecOptimizeResult optimize_gpack(
         pmeta.n_expert = gpack.expert_count_per_layer();
         pmeta.total_expert_bytes = gpack.total_expert_bytes();
         const int64_t m_embd = gpack.descriptor().attn.n_embd;
-        const int64_t m_ff   = gpack.descriptor().moe.expert_dim_ff;
+        const int64_t m_ff = gpack.descriptor().moe.expert_dim_ff;
         for (const auto& lrow : gpack.expert_layers()) {
             GExecExpertPackSpec s;
             s.layout_kind = pmeta.layout_kind;
@@ -1111,13 +1155,16 @@ GExecOptimizeResult optimize_gpack(
 
     // Pass 3: Staged Kernel Autotuning & Numerical Verification
     if (ckpt.last_completed_pass < 3) {
-        if (progress_cb) progress_cb("Pass 3/5: Staged kernel autotuning (compatibility -> parity -> microbench -> pool)");
+        if (progress_cb)
+            progress_cb("Pass 3/5: Staged kernel autotuning (compatibility -> parity -> microbench -> pool)");
         std::string sel_impl;
         uint32_t sel_ver = 0;
-        if (!run_autotune_pass(gpack, ckpt.identity, opts.mode, ckpt.pack_meta,
-                               ckpt.autotune, ckpt.diag_log, sel_impl, sel_ver, res.error, budget,
-                               [&] { return budget.max_time_seconds > 0 && elapsed_sec() >= budget.max_time_seconds; })) {
-            if (res.error.find("budget") != std::string::npos) flush_partial_if_allowed();
+        if (!run_autotune_pass(gpack, ckpt.identity, opts.mode, ckpt.pack_meta, ckpt.autotune, ckpt.diag_log, sel_impl,
+                               sel_ver, res.error, budget, [&] {
+                                   return budget.max_time_seconds > 0 && elapsed_sec() >= budget.max_time_seconds;
+                               })) {
+            if (res.error.find("budget") != std::string::npos)
+                flush_partial_if_allowed();
             return res;
         }
         ckpt.last_completed_pass = 3;
@@ -1130,12 +1177,13 @@ GExecOptimizeResult optimize_gpack(
 
     // Pass 4: NUMA & Heterogeneous Execution Plan
     if (ckpt.last_completed_pass < 4) {
-        if (progress_cb) progress_cb("Pass 4/5: Computing NUMA/THP memory policy and heterogeneous placement plan");
+        if (progress_cb)
+            progress_cb("Pass 4/5: Computing NUMA/THP memory policy and heterogeneous placement plan");
         GExecHeterogeneousPlan hp;
         hp.identity = ckpt.identity;
         hp.numa_policy = (ckpt.identity.hardware.numa_nodes > 1) ? "interleave" : "process";
-        hp.use_thp_hugepages = ckpt.identity.hardware.thp_madvise_available ||
-                               (gpack.total_expert_bytes() >= (1ull << 30));
+        hp.use_thp_hugepages =
+            ckpt.identity.hardware.thp_madvise_available || (gpack.total_expert_bytes() >= (1ull << 30));
         hp.measured_formats = 0; // CPU pool trials do not calibrate GPU/PCIe placement.
         hp.calibrated_cpu_ms = 0.0;
         hp.calibrated_gpu_ms = 0.0;
@@ -1155,20 +1203,20 @@ GExecOptimizeResult optimize_gpack(
 
     // Pass 5: Workspace Recipe & Compilation Provenance
     if (ckpt.last_completed_pass < 5) {
-        if (progress_cb) progress_cb("Pass 5/5: Precomputing execution workspace recipe and provenance metadata");
+        if (progress_cb)
+            progress_cb("Pass 5/5: Precomputing execution workspace recipe and provenance metadata");
         GExecWorkspaceRecipe wr;
-        wr.dense_arena_bytes = gpack.dense_compacted_pool_bytes() > 0
-            ? gpack.dense_compacted_pool_bytes()
-            : gpack.dense_pool_bytes();
+        wr.dense_arena_bytes =
+            gpack.dense_compacted_pool_bytes() > 0 ? gpack.dense_compacted_pool_bytes() : gpack.dense_pool_bytes();
         wr.native_dense_arena_bytes = gpack.native_dense_arena_bytes();
         wr.capture_commit_graph = false;
         ckpt.workspace = std::move(wr);
 
         GExecCompilationProvenance prov;
         prov.key.cuda_runtime_version = ckpt.identity.hardware.cuda_runtime_version;
-        prov.key.cuda_driver_version  = ckpt.identity.hardware.cuda_driver_version;
-        prov.key.gpu_cc_major         = ckpt.identity.hardware.gpu_cc_major;
-        prov.key.gpu_cc_minor         = ckpt.identity.hardware.gpu_cc_minor;
+        prov.key.cuda_driver_version = ckpt.identity.hardware.cuda_driver_version;
+        prov.key.gpu_cc_major = ckpt.identity.hardware.gpu_cc_major;
+        prov.key.gpu_cc_minor = ckpt.identity.hardware.gpu_cc_minor;
         prov.key.kernel_package_sha256 = ckpt.identity.compute_cache_key();
         JsonValue build_info;
         std::string parse_error;
@@ -1199,15 +1247,17 @@ GExecOptimizeResult optimize_gpack(
 
     if (budget.embed_packed_experts && gpack.total_expert_bytes()) {
         uint64_t max_blob = 0;
-        for (const auto& layer : gpack.expert_layers()) max_blob = std::max(max_blob, layer.blob_bytes);
+        for (const auto& layer : gpack.expert_layers())
+            max_blob = std::max(max_blob, layer.blob_bytes);
         if (budget.max_memory_bytes && 2 * max_blob + (2ull << 20) > budget.max_memory_bytes) {
             res.error = "expert packing working set exceeds memory budget";
             return res;
         }
         const bool interleaved = ckpt.pack_meta.layout_kind == ExpertPackLayoutKind::GateUpRowInterleaved;
-        builder.set_packed_experts_stream(gpack.total_expert_bytes(),
-            [&, interleaved, cached_offset = UINT64_MAX, source = std::vector<uint8_t>{}, packed = std::vector<uint8_t>{}]
-            (uint64_t offset, uint8_t* dst, size_t count, std::string& err) mutable {
+        builder.set_packed_experts_stream(
+            gpack.total_expert_bytes(),
+            [&, interleaved, cached_offset = UINT64_MAX, source = std::vector<uint8_t>{},
+             packed = std::vector<uint8_t>{}](uint64_t offset, uint8_t* dst, size_t count, std::string& err) mutable {
                 while (count) {
                     if (budget.max_time_seconds > 0 && elapsed_sec() >= budget.max_time_seconds) {
                         err = "expert packing time budget expired";
@@ -1217,28 +1267,39 @@ GExecOptimizeResult optimize_gpack(
                     for (; l < gpack.expert_layers().size(); ++l) {
                         const auto& row = gpack.expert_layers()[l];
                         if (offset >= row.layer_offset && row.blob_bytes &&
-                            (offset - row.layer_offset) / row.blob_bytes < static_cast<uint64_t>(gpack.expert_count_per_layer())) break;
+                            (offset - row.layer_offset) / row.blob_bytes <
+                                static_cast<uint64_t>(gpack.expert_count_per_layer()))
+                            break;
                     }
-                    if (l == gpack.expert_layers().size()) { err = "invalid GPACK packing offset"; return false; }
+                    if (l == gpack.expert_layers().size()) {
+                        err = "invalid GPACK packing offset";
+                        return false;
+                    }
                     const auto& row = gpack.expert_layers()[l];
                     const uint64_t expert = (offset - row.layer_offset) / row.blob_bytes;
                     const uint64_t begin = row.layer_offset + expert * row.blob_bytes;
                     if (begin != cached_offset) {
-                        if (!read_expert(gpack, l, static_cast<int64_t>(expert), source, err)) return false;
+                        if (!read_expert(gpack, l, static_cast<int64_t>(expert), source, err))
+                            return false;
                         packed.resize(source.size());
                         if (interleaved) {
                             const auto ff = static_cast<size_t>(gpack.descriptor().moe.expert_dim_ff);
                             if (!ff || row.up_off % ff || row.down_off != 2 * row.up_off) {
-                                err = "invalid GPACK gate/up packing geometry"; return false;
+                                err = "invalid GPACK gate/up packing geometry";
+                                return false;
                             }
-                            pack_expert_gate_up_interleaved(source.data(), packed.data(), ff,
-                                row.up_off / ff, row.up_off / ff, row.blob_bytes - row.down_off);
-                        } else packed = source;
+                            pack_expert_gate_up_interleaved(source.data(), packed.data(), ff, row.up_off / ff,
+                                                            row.up_off / ff, row.blob_bytes - row.down_off);
+                        } else
+                            packed = source;
                         cached_offset = begin;
                     }
-                    const auto bytes = static_cast<size_t>(std::min<uint64_t>(count, row.blob_bytes - (offset - begin)));
+                    const auto bytes =
+                        static_cast<size_t>(std::min<uint64_t>(count, row.blob_bytes - (offset - begin)));
                     std::memcpy(dst, packed.data() + (offset - begin), bytes);
-                    count -= bytes; offset += bytes; dst += bytes;
+                    count -= bytes;
+                    offset += bytes;
+                    dst += bytes;
                 }
                 return true;
             });
@@ -1274,10 +1335,10 @@ GExecOptimizeResult optimize_gpack(
         res.selected_cpu_expert_impl_version = ckpt.autotune.records.front().selected_impl_version;
     }
     res.optimization_wall_ms = ckpt.provenance.optimization_wall_ms;
-    res.baseline_decode_ms   = ckpt.diag_log.baseline_decode_ms;
-    res.optimized_decode_ms  = ckpt.diag_log.optimized_decode_ms;
-    res.speedup_ratio        = ckpt.diag_log.speedup_ratio;
-    res.break_even_tokens    = ckpt.diag_log.break_even_tokens;
+    res.baseline_decode_ms = ckpt.diag_log.baseline_decode_ms;
+    res.optimized_decode_ms = ckpt.diag_log.optimized_decode_ms;
+    res.speedup_ratio = ckpt.diag_log.speedup_ratio;
+    res.break_even_tokens = ckpt.diag_log.break_even_tokens;
     {
         std::error_code ec;
         res.artifact_bytes = static_cast<uint64_t>(std::filesystem::file_size(res.output_path, ec));
@@ -1285,40 +1346,43 @@ GExecOptimizeResult optimize_gpack(
     return res;
 }
 
-bool regenerate_gexec_section(
-    const std::string& gexec_path,
-    const std::string& gpack_path,
-    GExecSectionKind section_kind,
-    std::string& err,
-    const GExecOptBudget& budget) {
+bool regenerate_gexec_section(const std::string& gexec_path, const std::string& gpack_path,
+                              GExecSectionKind section_kind, std::string& err, const GExecOptBudget& budget) {
     const auto start = std::chrono::steady_clock::now();
     auto expired = [&] {
         return budget.max_time_seconds > 0 &&
-            std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count() >= budget.max_time_seconds;
+               std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count() >=
+                   budget.max_time_seconds;
     };
     GExecReader reader;
     ScopedAdvisoryLock lock;
-    if (!lock.acquire(gexec_path + ".lock", err)) return false;
-    if (!reader.open(gexec_path, err, nullptr, true)) return false;
+    if (!lock.acquire(gexec_path + ".lock", err))
+        return false;
+    if (!reader.open(gexec_path, err, nullptr, true))
+        return false;
 
     artifact::GPackReader gpack;
-    if (!gpack.open(gpack_path, err, /*verify_hashes=*/false)) return false;
+    if (!gpack.open(gpack_path, err, /*verify_hashes=*/false))
+        return false;
 
     const auto& cached = reader.identity();
-    const auto current = build_current_gexec_identity(gpack, cached.kv_format, cached.kv_mode,
-        cached.max_context, cached.prefill_batch, cached.mtp_spec_tokens);
-    if (!reader.validate_against(current, err)) return false;
+    const auto current = build_current_gexec_identity(gpack, cached.kv_format, cached.kv_mode, cached.max_context,
+                                                      cached.prefill_batch, cached.mtp_spec_tokens);
+    if (!reader.validate_against(current, err))
+        return false;
 
     uint64_t working_bytes = 2ull << 20;
     for (const auto& section : reader.sections()) {
-        if (section.kind != static_cast<uint32_t>(GExecSectionKind::PackedExpertsBlob)) working_bytes += section.byte_size;
+        if (section.kind != static_cast<uint32_t>(GExecSectionKind::PackedExpertsBlob))
+            working_bytes += section.byte_size;
     }
     if (budget.max_memory_bytes && working_bytes > budget.max_memory_bytes) {
         err = "section regeneration exceeds memory budget";
         return false;
     }
     GExecBuilder builder;
-    if (!builder.import_from(reader, err, true)) return false;
+    if (!builder.import_from(reader, err, true))
+        return false;
 
     const auto id = reader.identity();
     if (section_kind == GExecSectionKind::HeterogeneousPlan) {
@@ -1329,9 +1393,8 @@ bool regenerate_gexec_section(
         builder.set_heterogeneous_plan(hp);
     } else if (section_kind == GExecSectionKind::WorkspaceRecipe) {
         GExecWorkspaceRecipe wr = reader.workspace_recipe();
-        wr.dense_arena_bytes = gpack.dense_compacted_pool_bytes() > 0
-            ? gpack.dense_compacted_pool_bytes()
-            : gpack.dense_pool_bytes();
+        wr.dense_arena_bytes =
+            gpack.dense_compacted_pool_bytes() > 0 ? gpack.dense_compacted_pool_bytes() : gpack.dense_pool_bytes();
         wr.native_dense_arena_bytes = gpack.native_dense_arena_bytes();
         wr.capture_window_tokens.clear();
         wr.capture_commit_graph = false;
@@ -1342,7 +1405,8 @@ bool regenerate_gexec_section(
         GExecDiagnosticLog dlog;
         std::string sel_impl;
         uint32_t sel_ver = 0;
-        if (!run_autotune_pass(gpack, id, GExecOptMode::Auto, pmeta, atable, dlog, sel_impl, sel_ver, err, budget, expired)) {
+        if (!run_autotune_pass(gpack, id, GExecOptMode::Auto, pmeta, atable, dlog, sel_impl, sel_ver, err, budget,
+                               expired)) {
             return false;
         }
         if (reader.has_section(GExecSectionKind::PackedExpertsBlob) &&
@@ -1358,25 +1422,26 @@ bool regenerate_gexec_section(
         prov.created_unix_seconds = static_cast<int64_t>(std::time(nullptr));
         builder.set_provenance(prov);
     } else {
-        err = std::string("unsupported section kind for selective regeneration: ") + section_kind_to_string(section_kind);
+        err =
+            std::string("unsupported section kind for selective regeneration: ") + section_kind_to_string(section_kind);
         return false;
     }
 
-    if (expired()) { err = "section regeneration time budget expired"; return false; }
+    if (expired()) {
+        err = "section regeneration time budget expired";
+        return false;
+    }
     return builder.write_file(gexec_path, err, budget.max_disk_bytes);
 }
 
-bool resolve_gexec_for_gpack(
-    const std::string& gpack_path,
-    const std::string& explicit_gexec_path,
-    const GExecArtifactIdentity& current_identity,
-    GExecReader& out_reader,
-    std::string& fallback_reason,
-    GExecInvalidationReason* out_reason) {
+bool resolve_gexec_for_gpack(const std::string& gpack_path, const std::string& explicit_gexec_path,
+                             const GExecArtifactIdentity& current_identity, GExecReader& out_reader,
+                             std::string& fallback_reason, GExecInvalidationReason* out_reason) {
     out_reader.close();
     if (const char* env_skip = std::getenv("GUILD_DISABLE_GEXEC"); env_skip && std::atoi(env_skip) != 0) {
         fallback_reason = "disabled via GUILD_DISABLE_GEXEC=1";
-        if (out_reason) *out_reason = GExecInvalidationReason::None;
+        if (out_reason)
+            *out_reason = GExecInvalidationReason::None;
         return false;
     }
 
@@ -1394,7 +1459,8 @@ bool resolve_gexec_for_gpack(
         if (sibling.string() != candidates.front()) {
             candidates.push_back(sibling.string());
         }
-        // Also scan cache_dir for any .gexec file in case an outdated cache entry is present so we can report the exact invalidation reason
+        // Also scan cache_dir for any .gexec file in case an outdated cache entry is present so we can report the exact
+        // invalidation reason
         const std::string cdir = resolve_cache_dir(gpack_path, "");
         std::error_code ec;
         if (std::filesystem::exists(cdir, ec) && std::filesystem::is_directory(cdir, ec)) {
@@ -1414,7 +1480,8 @@ bool resolve_gexec_for_gpack(
 
     for (const auto& cand : candidates) {
         std::error_code ec;
-        if (!std::filesystem::exists(cand, ec)) continue;
+        if (!std::filesystem::exists(cand, ec))
+            continue;
 
         GExecReader reader;
         std::string open_err;
@@ -1438,52 +1505,60 @@ bool resolve_gexec_for_gpack(
         bool valid = !reader.is_partial() && source.open(gpack_path, val_err, false);
         const auto& meta = reader.expert_pack_meta();
         valid = valid && reader.has_section(GExecSectionKind::ExpertPackMeta) &&
-            meta.n_layers == static_cast<int64_t>(source.expert_layers().size()) &&
-            meta.n_expert == source.expert_count_per_layer() && meta.total_expert_bytes == source.total_expert_bytes() &&
-            meta.layer_specs.size() == source.expert_layers().size();
+                meta.n_layers == static_cast<int64_t>(source.expert_layers().size()) &&
+                meta.n_expert == source.expert_count_per_layer() &&
+                meta.total_expert_bytes == source.total_expert_bytes() &&
+                meta.layer_specs.size() == source.expert_layers().size();
         for (size_t i = 0; valid && i < meta.layer_specs.size(); ++i) {
             const auto& spec = meta.layer_specs[i];
             const auto& layer = source.expert_layers()[i];
-            valid = spec.layout_kind == meta.layout_kind && spec.gu_type == layer.gu_type && spec.d_type == layer.d_type &&
-                spec.n_embd == source.descriptor().attn.n_embd && spec.n_ff == source.descriptor().moe.expert_dim_ff;
+            valid = spec.layout_kind == meta.layout_kind && spec.gu_type == layer.gu_type &&
+                    spec.d_type == layer.d_type && spec.n_embd == source.descriptor().attn.n_embd &&
+                    spec.n_ff == source.descriptor().moe.expert_dim_ff;
         }
         std::string binding;
         uint32_t binding_version = 0;
         for (const auto& rec : reader.autotune_table().records) {
-            if (rec.op_kind != GUILD_OP_BATCHED_EXPERT_EXEC) continue;
-            if (binding.empty()) { binding = rec.selected_impl_id; binding_version = rec.selected_impl_version; }
+            if (rec.op_kind != GUILD_OP_BATCHED_EXPERT_EXEC)
+                continue;
+            if (binding.empty()) {
+                binding = rec.selected_impl_id;
+                binding_version = rec.selected_impl_version;
+            }
             valid = valid && rec.selected_impl_id == binding && rec.selected_impl_version == binding_version;
         }
         const bool interleaved = meta.layout_kind == ExpertPackLayoutKind::GateUpRowInterleaved;
         valid = valid && (meta.layout_kind == ExpertPackLayoutKind::PortableContiguous || interleaved) &&
-            interleaved == kernels::cpu::is_gexec_interleaved_impl(binding.c_str());
+                interleaved == kernels::cpu::is_gexec_interleaved_impl(binding.c_str());
         if (!valid) {
             if (first_mismatch_reason.empty()) {
-                first_mismatch_reason = reader.is_partial() ? "GEXEC artifact is incomplete" : "GEXEC expert layout or bindings do not match GPACK";
+                first_mismatch_reason = reader.is_partial() ? "GEXEC artifact is incomplete"
+                                                            : "GEXEC expert layout or bindings do not match GPACK";
                 first_mismatch_code = GExecInvalidationReason::ExecutionPlanMismatch;
             }
             continue;
         }
         out_reader = std::move(reader);
         fallback_reason.clear();
-        if (out_reason) *out_reason = GExecInvalidationReason::None;
+        if (out_reason)
+            *out_reason = GExecInvalidationReason::None;
         return true;
     }
 
     if (!first_mismatch_reason.empty()) {
         fallback_reason = first_mismatch_reason;
-        if (out_reason) *out_reason = first_mismatch_code;
+        if (out_reason)
+            *out_reason = first_mismatch_code;
     } else {
         fallback_reason = "no GEXEC artifact found for GPACK";
-        if (out_reason) *out_reason = GExecInvalidationReason::None;
+        if (out_reason)
+            *out_reason = GExecInvalidationReason::None;
     }
     return false;
 }
 
-GExecCacheCleanResult clean_gexec_cache(
-    const std::string& cache_dir,
-    bool remove_all,
-    const GExecArtifactIdentity* keep_identity) {
+GExecCacheCleanResult clean_gexec_cache(const std::string& cache_dir, bool remove_all,
+                                        const GExecArtifactIdentity* keep_identity) {
     GExecCacheCleanResult res;
     std::error_code ec;
     if (!std::filesystem::exists(cache_dir, ec)) {
@@ -1496,19 +1571,23 @@ GExecCacheCleanResult clean_gexec_cache(
     }
 
     for (const auto& entry : std::filesystem::directory_iterator(cache_dir, ec)) {
-        if (entry.is_symlink(ec) || !entry.is_regular_file(ec)) continue;
+        if (entry.is_symlink(ec) || !entry.is_regular_file(ec))
+            continue;
         const std::filesystem::path p = entry.path();
         const std::string fname = p.filename().string();
         const size_t marker = fname.rfind(".gexec");
-        if (marker == std::string::npos) continue;
+        if (marker == std::string::npos)
+            continue;
         const std::string suffix = fname.substr(marker + 6);
         if (!suffix.empty() && suffix != ".progress.json" && suffix != ".progress.json.tmp" &&
-            suffix.rfind(".tmp.", 0) != 0) continue;
+            suffix.rfind(".tmp.", 0) != 0)
+            continue;
         const auto owner = p.parent_path() / fname.substr(0, marker + 6);
         ScopedAdvisoryLock lock;
         std::string lock_error;
         if (!lock.acquire(owner.string() + ".lock", lock_error)) {
-            if (suffix.empty()) ++res.kept_files;
+            if (suffix.empty())
+                ++res.kept_files;
             continue;
         }
         const uint64_t fsize = static_cast<uint64_t>(entry.file_size(ec));

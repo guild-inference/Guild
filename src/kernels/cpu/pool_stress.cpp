@@ -56,7 +56,11 @@ int main(int argc, char** argv) {
             std::this_thread::sleep_for(std::chrono::milliseconds(200));
             const long long b = beat.load();
             const auto now = std::chrono::steady_clock::now();
-            if (b != last) { last = b; since = now; continue; }
+            if (b != last) {
+                last = b;
+                since = now;
+                continue;
+            }
             if (now - since > std::chrono::seconds(10)) {
                 std::printf("\npool_stress: HANG - batch %lld has not returned for 10 s\n", b);
                 std::fflush(stdout);
@@ -78,11 +82,15 @@ int main(int argc, char** argv) {
             std::this_thread::sleep_for(std::chrono::microseconds(rng() % 300));
         }
         const int n = (int) (rng() % (NJ + 1));
-        for (int e = 0; e < n; ++e) std::fill(jobs[(size_t) e].out, jobs[(size_t) e].out + cpu::H, SENTINEL);
-        if (rng() % 2) pool.run(jobs.data(), n);
-        else pool.run_split(jobs.data(), n);
         for (int e = 0; e < n; ++e)
-            if (jobs[(size_t) e].out[0] == SENTINEL || jobs[(size_t) e].out[cpu::H - 1] == SENTINEL) ++missed;
+            std::fill(jobs[(size_t) e].out, jobs[(size_t) e].out + cpu::H, SENTINEL);
+        if (rng() % 2)
+            pool.run(jobs.data(), n);
+        else
+            pool.run_split(jobs.data(), n);
+        for (int e = 0; e < n; ++e)
+            if (jobs[(size_t) e].out[0] == SENTINEL || jobs[(size_t) e].out[cpu::H - 1] == SENTINEL)
+                ++missed;
         beat.fetch_add(1);
         ++batches;
     }

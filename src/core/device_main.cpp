@@ -18,8 +18,7 @@
 
 static std::string human(uint64_t b) {
     char buf[64];
-    std::snprintf(buf, sizeof(buf), "%.3f GiB (%llu B)", (double) b / (1024.0 * 1024 * 1024),
-                  (unsigned long long) b);
+    std::snprintf(buf, sizeof(buf), "%.3f GiB (%llu B)", (double) b / (1024.0 * 1024 * 1024), (unsigned long long) b);
     return buf;
 }
 
@@ -27,8 +26,10 @@ int main(int argc, char** argv) {
     bool selftest = false;
     bool list_devices = false;
     for (int i = 1; i < argc; ++i) {
-        if (std::strcmp(argv[i], "--selftest") == 0) selftest = true;
-        else if (std::strcmp(argv[i], "--list-devices") == 0) list_devices = true;
+        if (std::strcmp(argv[i], "--selftest") == 0)
+            selftest = true;
+        else if (std::strcmp(argv[i], "--list-devices") == 0)
+            list_devices = true;
         else if (std::strcmp(argv[i], "--help") == 0 || std::strcmp(argv[i], "-h") == 0) {
             std::printf("usage: guild-device [--selftest] [--list-devices]\n"
                         "  --list-devices  every GPU the runtime enumerates, numbered as HIP_VISIBLE_DEVICES /\n"
@@ -48,7 +49,8 @@ int main(int argc, char** argv) {
     //     cannot run: <why>                       (only for a card this binary cannot run)
     if (list_devices) {
         const int count = guild::core::device_count();
-        if (count == 0) std::printf("(no GPU device)\n");
+        if (count == 0)
+            std::printf("(no GPU device)\n");
         for (int ordinal = 0; ordinal < count; ++ordinal) {
             std::string name, detail;
             if (!guild::core::device_summary(ordinal, name, detail)) {
@@ -78,7 +80,8 @@ int main(int argc, char** argv) {
         // #468 #461: which HIP runtime this process loaded - the one beside the exe, or an AMD driver's System32 copy
         if (HMODULE h = GetModuleHandleA("amdhip64_7.dll")) {
             char path[MAX_PATH] = {};
-            if (GetModuleFileNameA(h, path, MAX_PATH) > 0) std::printf("  HIP runtime         %s\n", path);
+            if (GetModuleFileNameA(h, path, MAX_PATH) > 0)
+                std::printf("  HIP runtime         %s\n", path);
         }
 #endif
 
@@ -87,14 +90,13 @@ int main(int argc, char** argv) {
         const auto plan = guild::plan::make_plan(20480, guild::plan::Geometry{}, guild::plan::Costs{});
         std::printf("\n%s", guild::plan::to_string(plan).c_str());
         std::printf("  card free           %s\n", human(d.free_bytes).c_str());
-        std::printf("  plan + KV vs free   %s\n",
-                    plan.vram_budget <= d.free_bytes ? "FITS" : "*** DOES NOT FIT ***");
+        std::printf("  plan + KV vs free   %s\n", plan.vram_budget <= d.free_bytes ? "FITS" : "*** DOES NOT FIT ***");
 
         if (selftest) {
             // Exercise the arena for real: allocate, write from the host, read back, and check the poison
             // path leaves NaNs rather than zeros.  A GPU test that only asks the driver for its name does not
             // test the runtime this file exists to provide.
-            const uint64_t bytes = 64ull << 20;      // 64 MiB, small enough to be safe on any card
+            const uint64_t bytes = 64ull << 20; // 64 MiB, small enough to be safe on any card
             guild::core::DeviceArena arena(bytes, 0, /*poison=*/true);
             void* a = arena.alloc(1 << 20, 256);
             void* b = arena.alloc(1 << 20, 4096);

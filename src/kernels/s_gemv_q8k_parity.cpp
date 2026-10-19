@@ -25,8 +25,8 @@
 
 namespace {
 
-using guild::kernels::SForm;
 using guild::kernels::Codebook;
+using guild::kernels::SForm;
 
 void check(cudaError_t e, const char* what) {
     if (e != cudaSuccess) {
@@ -39,18 +39,18 @@ void check(cudaError_t e, const char* what) {
 /// the integer bias applied INSIDE the integer domain before the one multiply.
 const signed char kIq4Nl[16] = {-127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113};
 
-double weight_at(const std::vector<uint8_t>& codes, const std::vector<float>& scales,
-                 const std::vector<float>& offset, const SForm& f, long long n_in, long long o, long long i) {
+double weight_at(const std::vector<uint8_t>& codes, const std::vector<float>& scales, const std::vector<float>& offset,
+                 const SForm& f, long long n_in, long long o, long long i) {
     const int per_byte = 8 / f.code_bits;
     const long long codes_per_row = n_in / per_byte;
     const long long n_groups = n_in / f.group_elems;
     const uint8_t* c = codes.data() + o * codes_per_row;
     const int code = (c[i / per_byte] >> ((int) (i % per_byte) * f.code_bits)) & ((1 << f.code_bits) - 1);
-    const double v = (f.codebook == Codebook::Iq4Nl) ? (double) kIq4Nl[code & 0x0F]
-                                                     : (double) (code + f.code_bias);
+    const double v = (f.codebook == Codebook::Iq4Nl) ? (double) kIq4Nl[code & 0x0F] : (double) (code + f.code_bias);
     const long long g = i / f.group_elems;
     double w = v * (double) scales[(size_t) (o * n_groups + g)];
-    if (f.has_offset) w += (double) offset[(size_t) (o * n_groups + g)];
+    if (f.has_offset)
+        w += (double) offset[(size_t) (o * n_groups + g)];
     return w;
 }
 
@@ -84,7 +84,8 @@ int ragged_rows(const Case& cs, long long n_out) {
     std::mt19937 rng(77 + (unsigned) n_out);
     std::normal_distribution<float> g(0.0f, 1.0f);
     std::vector<float> xf((size_t) n_in);
-    for (auto& v : xf) v = g(rng);
+    for (auto& v : xf)
+        v = g(rng);
     SForm f;
     f.code_bits = cs.bits;
     f.code_bias = cs.bias;
@@ -93,11 +94,14 @@ int ragged_rows(const Case& cs, long long n_out) {
     f.has_offset = cs.has_offset;
     const int per_byte = 8 / cs.bits;
     std::vector<uint8_t> codes((size_t) (n_out * n_in / per_byte));
-    for (auto& v : codes) v = (uint8_t) (rng() & 0xFF);
+    for (auto& v : codes)
+        v = (uint8_t) (rng() & 0xFF);
     const long long n_groups = n_in / cs.group;
     std::vector<float> scales((size_t) (n_out * n_groups)), offs((size_t) (n_out * n_groups));
-    for (auto& v : scales) v = 0.01f + 0.001f * (float) (rng() % 20);
-    for (auto& v : offs) v = 0.2f * g(rng);
+    for (auto& v : scales)
+        v = 0.01f + 0.001f * (float) (rng() % 20);
+    for (auto& v : offs)
+        v = 0.2f * g(rng);
 
     float* d_xf = nullptr;
     uint8_t *d_xk = nullptr, *d_x0 = nullptr, *d_codes = nullptr;
@@ -120,10 +124,10 @@ int ragged_rows(const Case& cs, long long n_out) {
     check(cudaMemcpy(x0.data(), d_x0, x0.size(), cudaMemcpyDeviceToHost), "rcx0");
 
     int bad = 0;
-    for (int kind = 0; kind < 2; ++kind) {           // 0: Q8_K activation, 1: Q8_0 activation
+    for (int kind = 0; kind < 2; ++kind) { // 0: Q8_K activation, 1: Q8_0 activation
         std::vector<float> want((size_t) n_out);
-        std::vector<double> mag((size_t) n_out);   // sum |w_i a_i| per row: a row whose sum cancels near 0
-        for (long long o = 0; o < n_out; ++o) {    // must not turn f32 rounding into a relative failure
+        std::vector<double> mag((size_t) n_out); // sum |w_i a_i| per row: a row whose sum cancels near 0
+        for (long long o = 0; o < n_out; ++o) {  // must not turn f32 rounding into a relative failure
             double acc = 0, am = 0;
             for (long long i = 0; i < n_in; ++i) {
                 double a;
@@ -147,10 +151,10 @@ int ragged_rows(const Case& cs, long long n_out) {
         check(cudaMemcpy(d_y, sentinel.data(), sentinel.size() * 4, cudaMemcpyHostToDevice), "rsent");
         if (kind == 0)
             guild::kernels::s_gemv_q8k_split(d_xk, d_codes, d_scales, cs.has_offset ? d_offs : nullptr, d_y, n_in,
-                                              n_out, f, nullptr);
+                                             n_out, f, nullptr);
         else
             guild::kernels::s_gemv_q8_0_split(d_x0, d_codes, d_scales, cs.has_offset ? d_offs : nullptr, d_y, n_in,
-                                               n_out, f, nullptr);
+                                              n_out, f, nullptr);
         check(cudaDeviceSynchronize(), "ragged split");
         std::vector<uint32_t> got_bits(sentinel.size());
         check(cudaMemcpy(got_bits.data(), d_y, got_bits.size() * 4, cudaMemcpyDeviceToHost), "rcy");
@@ -162,25 +166,36 @@ int ragged_rows(const Case& cs, long long n_out) {
             d += std::fabs((double) want[(size_t) o] - (double) v);
         }
         long long touched = 0;
-        for (long long o = n_out; o < n_out + guard; ++o) touched += got_bits[(size_t) o] != 0x7FC0DEADu;
+        for (long long o = n_out; o < n_out + guard; ++o)
+            touched += got_bits[(size_t) o] != 0x7FC0DEADu;
         const double rel = d / (m > 1e-30 ? m : 1e-30);
         const bool ok = rel <= 1e-5 && touched == 0;
         std::printf("  %-28s %s n_out %3lld: rel %.3e, guard words written %lld  %s\n", cs.what,
                     kind == 0 ? "Q8_K" : "Q8_0", n_out, rel, touched, ok ? "ok" : "*** WRONG ***");
-        if (!ok) ++bad;
+        if (!ok)
+            ++bad;
     }
-    cudaFree(d_xf); cudaFree(d_xk); cudaFree(d_x0); cudaFree(d_codes); cudaFree(d_scales); cudaFree(d_offs);
+    cudaFree(d_xf);
+    cudaFree(d_xk);
+    cudaFree(d_x0);
+    cudaFree(d_codes);
+    cudaFree(d_scales);
+    cudaFree(d_offs);
     cudaFree(d_y);
     return bad;
 }
 
-}  // namespace
+} // namespace
 
 int main(int argc, char** argv) {
     bool selftest = false;
     for (int i = 1; i < argc; ++i) {
-        if (std::string(argv[i]) == "--selftest") selftest = true;
-        else { std::fprintf(stderr, "usage: s_gemv_q8k_parity [--selftest]\n"); return 2; }
+        if (std::string(argv[i]) == "--selftest")
+            selftest = true;
+        else {
+            std::fprintf(stderr, "usage: s_gemv_q8k_parity [--selftest]\n");
+            return 2;
+        }
     }
     int bad = 0;
 
@@ -195,11 +210,12 @@ int main(int argc, char** argv) {
     };
 
     for (const Case& cs : cases) {
-        const long long n_in = 512, n_out = 64;   // 2 Q8_K blocks wide, small enough for a host reference
+        const long long n_in = 512, n_out = 64; // 2 Q8_K blocks wide, small enough for a host reference
         std::mt19937 rng(2024);
         std::normal_distribution<float> g(0.0f, 1.0f);
         std::vector<float> xf((size_t) n_in);
-        for (auto& v : xf) v = g(rng);
+        for (auto& v : xf)
+            v = g(rng);
 
         SForm f;
         f.code_bits = cs.bits;
@@ -210,11 +226,14 @@ int main(int argc, char** argv) {
 
         const int per_byte = 8 / cs.bits;
         std::vector<uint8_t> codes((size_t) (n_out * n_in / per_byte));
-        for (auto& v : codes) v = (uint8_t) (rng() & 0xFF);
+        for (auto& v : codes)
+            v = (uint8_t) (rng() & 0xFF);
         const long long n_groups = n_in / cs.group;
         std::vector<float> scales((size_t) (n_out * n_groups)), offs((size_t) (n_out * n_groups));
-        for (auto& v : scales) v = 0.01f + 0.001f * (float) (rng() % 20);
-        for (auto& v : offs) v = 0.2f * g(rng);
+        for (auto& v : scales)
+            v = 0.01f + 0.001f * (float) (rng() % 20);
+        for (auto& v : offs)
+            v = 0.2f * g(rng);
 
         // ---- the activation, from the REAL quantizer
         std::vector<uint8_t> xq8k((size_t) (n_in / 256) * 292);
@@ -247,11 +266,11 @@ int main(int argc, char** argv) {
         check(cudaMemcpy(d_offs, offs.data(), offs.size() * 4, cudaMemcpyHostToDevice), "co");
 
         std::vector<float> naive((size_t) n_out), warp((size_t) n_out);
-        guild::kernels::s_gemv_q8k(d_xq, d_codes, d_scales, cs.has_offset ? d_offs : nullptr, d_y, n_in, n_out,
-                                    f, nullptr);
+        guild::kernels::s_gemv_q8k(d_xq, d_codes, d_scales, cs.has_offset ? d_offs : nullptr, d_y, n_in, n_out, f,
+                                   nullptr);
         check(cudaMemcpy(naive.data(), d_y, (size_t) n_out * 4, cudaMemcpyDeviceToHost), "cy1");
-        guild::kernels::s_gemv_q8k_split(d_xq, d_codes, d_scales, cs.has_offset ? d_offs : nullptr, d_y, n_in,
-                                          n_out, f, nullptr);
+        guild::kernels::s_gemv_q8k_split(d_xq, d_codes, d_scales, cs.has_offset ? d_offs : nullptr, d_y, n_in, n_out, f,
+                                         nullptr);
         check(cudaMemcpy(warp.data(), d_y, (size_t) n_out * 4, cudaMemcpyDeviceToHost), "cy2");
 
         double mag = 0, d1 = 0, d2 = 0;
@@ -263,7 +282,10 @@ int main(int argc, char** argv) {
         std::printf("  %-28s naive %.3e   warp %.3e\n", cs.what, d1 / mag, d2 / mag);
         // The kernel accumulates in f32, the reference in f64, over 512 terms with values of similar size.
         // 1e-5 is the arithmetic's floor, not a structural allowance.
-        if (!(d1 / mag <= 1e-5 && d2 / mag <= 1e-5)) { std::printf("    *** over 1e-5 ***\n"); ++bad; }
+        if (!(d1 / mag <= 1e-5 && d2 / mag <= 1e-5)) {
+            std::printf("    *** over 1e-5 ***\n");
+            ++bad;
+        }
 
         // ---- 2b. THE Q8_0 ACTIVATION, on the SAME weight planes.  `s_gemv_q8_0_split` exists because the
         // legacy block formats want Q8_0 and `ffn_down_shexp` cannot use Q8_K at all (n_in = 640 is not a
@@ -290,8 +312,8 @@ int main(int argc, char** argv) {
                 }
                 want0[(size_t) o] = (float) acc;
             }
-            guild::kernels::s_gemv_q8_0_split(d_x0, d_codes, d_scales, cs.has_offset ? d_offs : nullptr, d_y,
-                                               n_in, n_out, f, nullptr);
+            guild::kernels::s_gemv_q8_0_split(d_x0, d_codes, d_scales, cs.has_offset ? d_offs : nullptr, d_y, n_in,
+                                              n_out, f, nullptr);
             std::vector<float> got0((size_t) n_out);
             check(cudaMemcpy(got0.data(), d_y, (size_t) n_out * 4, cudaMemcpyDeviceToHost), "cy0");
             double m0 = 0, dd0 = 0;
@@ -310,13 +332,13 @@ int main(int argc, char** argv) {
         // ---- 3. THE Q8_K vs FP16 GAP, on a K-quant weight - the case the contract decision needs
         {
             std::vector<uint16_t> x16((size_t) n_in);
-            for (long long i = 0; i < n_in; ++i) x16[(size_t) i] = guild::kernels::f16_from_f32(xf[(size_t) i]);
+            for (long long i = 0; i < n_in; ++i)
+                x16[(size_t) i] = guild::kernels::f16_from_f32(xf[(size_t) i]);
             uint16_t* d_x16 = nullptr;
             check(cudaMalloc(&d_x16, (size_t) n_in * 2), "x16");
             check(cudaMemcpy(d_x16, x16.data(), (size_t) n_in * 2, cudaMemcpyHostToDevice), "cx16");
             std::vector<float> fp16out((size_t) n_out);
-            guild::kernels::s_gemv(d_x16, d_codes, d_scales, cs.has_offset ? d_offs : nullptr, d_y, n_in, n_out,
-                                    f);
+            guild::kernels::s_gemv(d_x16, d_codes, d_scales, cs.has_offset ? d_offs : nullptr, d_y, n_in, n_out, f);
             check(cudaMemcpy(fp16out.data(), d_y, (size_t) n_out * 4, cudaMemcpyDeviceToHost), "cy3");
             double dd = 0;
             for (long long o = 0; o < n_out; ++o)
@@ -325,19 +347,28 @@ int main(int argc, char** argv) {
             const bool visible = rel > 1e-3;
             std::printf("      %-24s %s (%.4f%% apart, tolerance 0.1%%)\n", "Q8_K vs fp16 activation",
                         visible ? "yes" : "*** NO ***", rel * 100);
-            if (!visible) ++bad;
+            if (!visible)
+                ++bad;
             cudaFree(d_x16);
         }
-        cudaFree(d_xf); cudaFree(d_xq); cudaFree(d_codes); cudaFree(d_scales); cudaFree(d_offs); cudaFree(d_y);
+        cudaFree(d_xf);
+        cudaFree(d_xq);
+        cudaFree(d_codes);
+        cudaFree(d_scales);
+        cudaFree(d_offs);
+        cudaFree(d_y);
     }
 
     // ---- 4. output widths that are NOT a multiple of the eight rows per block
     std::printf("\n");
     for (const Case& cs : cases)
-        for (long long n_out : {1LL, 7LL, 9LL, 61LL}) bad += ragged_rows(cs, n_out);
+        for (long long n_out : {1LL, 7LL, 9LL, 61LL})
+            bad += ragged_rows(cs, n_out);
 
     std::printf("\ns_gemv_q8k: %d failures\n", bad);
-    if (bad) return 1;
-    if (selftest) std::printf("s_gemv_q8k_parity OK\n");
+    if (bad)
+        return 1;
+    if (selftest)
+        std::printf("s_gemv_q8k_parity OK\n");
     return 0;
 }

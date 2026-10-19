@@ -46,19 +46,23 @@ void check(cudaError_t e, const char* what) {
     }
 }
 
-}  // namespace
+} // namespace
 
 int main(int argc, char** argv) {
     bool selftest = false;
     for (int i = 1; i < argc; ++i) {
-        if (std::string(argv[i]) == "--selftest") selftest = true;
-        else { std::fprintf(stderr, "usage: rope_parity [--selftest]\n"); return 2; }
+        if (std::string(argv[i]) == "--selftest")
+            selftest = true;
+        else {
+            std::fprintf(stderr, "usage: rope_parity [--selftest]\n");
+            return 2;
+        }
     }
 
-    const int n_rot = 64;          // the artifact's rope.dimension_count
-    const double theta = 1.0e7;    // rope.freq_base
+    const int n_rot = 64;       // the artifact's rope.dimension_count
+    const double theta = 1.0e7; // rope.freq_base
     const int head_dim = 256;
-    const int rows = 24 * 8;       // 24 heads over 8 positions, so several positions exercise the table
+    const int rows = 24 * 8; // 24 heads over 8 positions, so several positions exercise the table
     const int max_pos = 32;
     const int half = n_rot / 2;
     int bad = 0;
@@ -73,10 +77,11 @@ int main(int argc, char** argv) {
             const double inv = std::pow(theta, -2.0 * (double) i / (double) n_rot);
             const double ang = (double) p * inv;
             const float rc = (float) std::cos(ang), rs = (float) std::sin(ang);
-            if (std::memcmp(&rc, &hcos[(size_t) p * half + i], 4) != 0) ++table_bad;
-            if (std::memcmp(&rs, &hsin[(size_t) p * half + i], 4) != 0) ++table_bad;
-            table_worst = std::max(table_worst,
-                                   std::fabs((double) rc - (double) hcos[(size_t) p * half + i]));
+            if (std::memcmp(&rc, &hcos[(size_t) p * half + i], 4) != 0)
+                ++table_bad;
+            if (std::memcmp(&rs, &hsin[(size_t) p * half + i], 4) != 0)
+                ++table_bad;
+            table_worst = std::max(table_worst, std::fabs((double) rc - (double) hcos[(size_t) p * half + i]));
         }
     }
     std::printf("  rope table vs float64 reference   %s (%lld of %d entries differ, worst %.1e)\n",
@@ -87,15 +92,18 @@ int main(int argc, char** argv) {
     std::mt19937 rng(11);
     std::normal_distribution<float> gauss(0.0f, 1.0f);
     std::vector<float> x((size_t) rows * head_dim);
-    for (auto& v : x) v = gauss(rng);
+    for (auto& v : x)
+        v = gauss(rng);
     std::vector<int> pos((size_t) rows);
-    for (int r = 0; r < rows; ++r) pos[(size_t) r] = r % max_pos;
+    for (int r = 0; r < rows; ++r)
+        pos[(size_t) r] = r % max_pos;
 
     std::vector<float> ref(x.size());
     for (int r = 0; r < rows; ++r) {
         const float* xr = &x[(size_t) r * head_dim];
         float* orow = &ref[(size_t) r * head_dim];
-        for (int d = 0; d < head_dim; ++d) orow[d] = xr[d];          // the tail passes through
+        for (int d = 0; d < head_dim; ++d)
+            orow[d] = xr[d]; // the tail passes through
         for (int i = 0; i < half; ++i) {
             const float c = hcos[(size_t) pos[(size_t) r] * half + i];
             const float s = hsin[(size_t) pos[(size_t) r] * half + i];
@@ -136,18 +144,25 @@ int main(int argc, char** argv) {
     std::vector<double> row_scale((size_t) rows, 0.0);
     for (int r = 0; r < rows; ++r) {
         double m = 0;
-        for (int d = 0; d < head_dim; ++d) m = std::max(m, (double) std::fabs(x[(size_t) r * head_dim + d]));
+        for (int d = 0; d < head_dim; ++d)
+            m = std::max(m, (double) std::fabs(x[(size_t) r * head_dim + d]));
         row_scale[(size_t) r] = m > 1e-30 ? m : 1e-30;
     }
     for (size_t i = 0; i < ref.size(); ++i) {
         const double a = ref[i], b = got[i];
         const double rel = std::fabs(a - b) / row_scale[i / (size_t) head_dim];
-        if (!(rel <= worst)) worst = rel;
-        if (!(rel <= 1e-6)) { if (first_bad < 0) first_bad = (long long) i; ++rot_bad; }
+        if (!(rel <= worst))
+            worst = rel;
+        if (!(rel <= 1e-6)) {
+            if (first_bad < 0)
+                first_bad = (long long) i;
+            ++rot_bad;
+        }
     }
     std::printf("  rope rotation vs host reference   %s (%lld of %zu over 1e-6, worst rel %.3e)\n",
                 rot_bad ? "*** WRONG ***" : "agrees", rot_bad, ref.size(), worst);
-    if (first_bad >= 0) std::printf("    first over-tolerance at element %lld\n", first_bad);
+    if (first_bad >= 0)
+        std::printf("    first over-tolerance at element %lld\n", first_bad);
     bad += (int) rot_bad;
 
     // ---- 3. THE PAIRING, asserted structurally rather than as a tolerance.  NEOX pairs (i, i+half); the
@@ -165,16 +180,18 @@ int main(int argc, char** argv) {
         check(cudaMemcpy(d_pos, &p7, sizeof(int), cudaMemcpyHostToDevice), "copy p7");
         guild::kernels::rope_neox_apply(d_x, d_out, 1, head_dim, n_rot, d_cos, d_sin, d_pos, nullptr);
         check(cudaMemcpy(o.data(), d_out, o.size() * sizeof(float), cudaMemcpyDeviceToHost), "back e");
-        int moved[4] = {0, 0, 0, 0};       // dims 0, 1, half, half+1
+        int moved[4] = {0, 0, 0, 0}; // dims 0, 1, half, half+1
         const float* chk[4] = {&e[0], &e[1], &e[half], &e[half + 1]};
         (void) chk;
         moved[0] = (o[0] != 0.0f || o[half] != 0.0f) ? 1 : 0;
         const bool adjacent_moved = (o[1] != 0.0f);
         const bool neox_moved = (o[half] != 0.0f);
         std::printf("  pairing: dim 0 set -> NEOX moves dim %d (o[half]=%.6f), adjacent would move dim 1 "
-                    "(o[1]=%.6f)   %s\n", half, (double) o[half], (double) o[1],
+                    "(o[1]=%.6f)   %s\n",
+                    half, (double) o[half], (double) o[1],
                     (neox_moved && !adjacent_moved) ? "NEOX confirmed" : "*** WRONG CONVENTION ***");
-        if (!(neox_moved && !adjacent_moved)) ++bad;
+        if (!(neox_moved && !adjacent_moved))
+            ++bad;
     }
 
     // ---- 4. THE SCALED TABLES (rope_scaling.hpp).  Scaling lives in the table contents, so each variant is
@@ -186,9 +203,8 @@ int main(int argc, char** argv) {
         guild::kernels::RopeScaling none;
         none.freq_base = theta;
         guild::kernels::build_rope_table(n_rot, none, max_pos, nc.data(), ns.data());
-        const long long none_bad =
-            (long long) (std::memcmp(nc.data(), hcos.data(), nc.size() * 4) != 0) +
-            (long long) (std::memcmp(ns.data(), hsin.data(), ns.size() * 4) != 0);
+        const long long none_bad = (long long) (std::memcmp(nc.data(), hcos.data(), nc.size() * 4) != 0) +
+                                   (long long) (std::memcmp(ns.data(), hsin.data(), ns.size() * 4) != 0);
         std::printf("  scaled table, None vs unscaled builder  %s\n", none_bad ? "*** WRONG ***" : "bit-identical");
         bad += (int) none_bad;
 
@@ -206,8 +222,10 @@ int main(int argc, char** argv) {
                 const double inv = std::pow(theta, -2.0 * (double) i / (double) n_rot);
                 const double ang = (double) p * inv / 4.0;
                 const float rc = (float) std::cos(ang), rs = (float) std::sin(ang);
-                if (std::memcmp(&rc, &lc[(size_t) p * half + i], 4) != 0) ++lin_bad;
-                if (std::memcmp(&rs, &ls[(size_t) p * half + i], 4) != 0) ++lin_bad;
+                if (std::memcmp(&rc, &lc[(size_t) p * half + i], 4) != 0)
+                    ++lin_bad;
+                if (std::memcmp(&rs, &ls[(size_t) p * half + i], 4) != 0)
+                    ++lin_bad;
             }
         }
         std::printf("  scaled table, linear factor 4          %s (%lld of %d entries differ)\n",
@@ -221,8 +239,10 @@ int main(int argc, char** argv) {
         long long equiv_bad = 0;
         for (int p = 0; p < 4 * max_pos; p += 4) {
             for (int i = 0; i < half; ++i) {
-                if (std::memcmp(&wc[(size_t) p * half + i], &hcos[(size_t) (p / 4) * half + i], 4) != 0) ++equiv_bad;
-                if (std::memcmp(&ws[(size_t) p * half + i], &hsin[(size_t) (p / 4) * half + i], 4) != 0) ++equiv_bad;
+                if (std::memcmp(&wc[(size_t) p * half + i], &hcos[(size_t) (p / 4) * half + i], 4) != 0)
+                    ++equiv_bad;
+                if (std::memcmp(&ws[(size_t) p * half + i], &hsin[(size_t) (p / 4) * half + i], 4) != 0)
+                    ++equiv_bad;
             }
         }
         std::printf("  linear(4) @ p == none @ p/4            %s (%lld of %d rows differ)\n",
@@ -240,8 +260,8 @@ int main(int argc, char** argv) {
         yarn.ext_factor = 1.0;
         std::vector<float> yc((size_t) max_pos * half), ys((size_t) max_pos * half);
         guild::kernels::build_rope_table(n_rot, yarn, max_pos, yc.data(), ys.data());
-        const double fs = yarn.freq_scale();          // 0.25
-        const double ms = yarn.mscale();              // attn_factor * (1 + 0.1*ln(4))
+        const double fs = yarn.freq_scale(); // 0.25
+        const double ms = yarn.mscale();     // attn_factor * (1 + 0.1*ln(4))
         double cd[2];
         yarn.corr_dims(n_rot, cd);
         long long yarn_bad = 0;
@@ -250,12 +270,14 @@ int main(int argc, char** argv) {
                 const double inv = std::pow(theta, -2.0 * (double) i / (double) n_rot);
                 const double extrap = (double) p * inv;
                 const double interp = fs * extrap;
-                const double ramp = (double) guild::kernels::rope_yarn_ramp((float) cd[0], (float) cd[1], i) *
-                                    yarn.ext_factor;
+                const double ramp =
+                    (double) guild::kernels::rope_yarn_ramp((float) cd[0], (float) cd[1], i) * yarn.ext_factor;
                 const double ang = interp * (1.0 - ramp) + extrap * ramp;
                 const float rc = (float) (std::cos(ang) * ms), rs = (float) (std::sin(ang) * ms);
-                if (std::memcmp(&rc, &yc[(size_t) p * half + i], 4) != 0) ++yarn_bad;
-                if (std::memcmp(&rs, &ys[(size_t) p * half + i], 4) != 0) ++yarn_bad;
+                if (std::memcmp(&rc, &yc[(size_t) p * half + i], 4) != 0)
+                    ++yarn_bad;
+                if (std::memcmp(&rs, &ys[(size_t) p * half + i], 4) != 0)
+                    ++yarn_bad;
             }
         }
         std::printf("  scaled table, yarn factor 4            %s (%lld of %d entries differ)\n",
@@ -274,7 +296,7 @@ int main(int argc, char** argv) {
             const float msv = (float) ms;
             const bool zero_ok = std::memcmp(&msv, &yc[0], 4) == 0 && ys[0] == 0.0f;
             const int far = max_pos - 1;
-            const double inv_f = 1.0;   // pair 0: theta ** 0
+            const double inv_f = 1.0; // pair 0: theta ** 0
             const double extrap_f = (double) far * inv_f, interp_f = fs * extrap_f;
             const double inv_l = std::pow(theta, -2.0 * (double) (half - 1) / (double) n_rot);
             const double extrap_l = (double) far * inv_l, interp_l = fs * extrap_l;
@@ -285,14 +307,15 @@ int main(int argc, char** argv) {
             const float got_f = yc[(size_t) far * half], got_l = ys[(size_t) far * half + (half - 1)];
             const bool first_extrapolates = std::memcmp(&got_f, &ef, 4) == 0;
             const bool last_interpolates = std::memcmp(&got_l, &sl_i, 4) == 0;
-            const bool distinguishable = std::fabs((double) ef - (double) itf) > 1e-3 &&
-                                         std::fabs((double) sl_e - (double) sl_i) > 1e-8;
+            const bool distinguishable =
+                std::fabs((double) ef - (double) itf) > 1e-3 && std::fabs((double) sl_e - (double) sl_i) > 1e-8;
             std::printf("  yarn structure: cos_tab[0]==mscale %.4f, first pair extrapolates, last interpolates   "
-                        "%s\n", (double) msv,
-                        zero_ok && first_extrapolates && last_interpolates && distinguishable
-                            ? "confirmed"
-                            : "*** WRONG ***");
-            if (!(zero_ok && first_extrapolates && last_interpolates && distinguishable)) ++bad;
+                        "%s\n",
+                        (double) msv,
+                        zero_ok && first_extrapolates && last_interpolates && distinguishable ? "confirmed"
+                                                                                              : "*** WRONG ***");
+            if (!(zero_ok && first_extrapolates && last_interpolates && distinguishable))
+                ++bad;
         }
 
         // 4f. THE OBSERVABILITY assertion: the fixtures must SEE scaling.  If the builder ignored its config,
@@ -304,12 +327,13 @@ int main(int argc, char** argv) {
             lin2.factor = 2.0;
             std::vector<float> l2c((size_t) 101 * half), l2s((size_t) 101 * half);
             guild::kernels::build_rope_table(n_rot, lin2, 101, l2c.data(), l2s.data());
-            const float c_none = (float) std::cos(100.0);      // pair 0, position 100, unscaled: ang = 100
-            const float c_lin = l2c[(size_t) 100 * half];      // pair 0, position 100, linear(2): ang = 50
+            const float c_none = (float) std::cos(100.0); // pair 0, position 100, unscaled: ang = 100
+            const float c_lin = l2c[(size_t) 100 * half]; // pair 0, position 100, linear(2): ang = 50
             const bool sees = std::fabs((double) c_none - (double) c_lin) > 1e-3;
             std::printf("  observability: none vs linear(2) at position 100   %s (|%.4f - %.4f|)\n",
                         sees ? "visible" : "*** VACUUM ***", (double) c_none, (double) c_lin);
-            if (!sees) ++bad;
+            if (!sees)
+                ++bad;
         }
 
         // 4g. THE ROTATION under a scaled table.  The kernel is table-agnostic and must not know or care:
@@ -318,7 +342,8 @@ int main(int argc, char** argv) {
         for (int r = 0; r < rows; ++r) {
             const float* xr = &x[(size_t) r * head_dim];
             float* orow = &ref2[(size_t) r * head_dim];
-            for (int d = 0; d < head_dim; ++d) orow[d] = xr[d];
+            for (int d = 0; d < head_dim; ++d)
+                orow[d] = xr[d];
             for (int i = 0; i < half; ++i) {
                 float c = yc[(size_t) pos[(size_t) r] * half + i], s = ys[(size_t) pos[(size_t) r] * half + i];
                 guild::kernels::rope_neox_pair(xr[i], xr[half + i], c, s, orow[i], orow[half + i]);
@@ -337,7 +362,8 @@ int main(int argc, char** argv) {
             const double a = ref2[i], b = got2[i];
             const double rel = std::fabs(a - b) / row_scale[i / (size_t) head_dim];
             worst2 = std::max(worst2, rel);
-            if (!(rel <= 1e-6)) ++rot2_bad;
+            if (!(rel <= 1e-6))
+                ++rot2_bad;
         }
         std::printf("  rope rotation over the yarn table      %s (%lld of %zu over 1e-6, worst rel %.3e)\n",
                     rot2_bad ? "*** WRONG ***" : "agrees", rot2_bad, ref2.size(), worst2);
@@ -361,11 +387,13 @@ int main(int argc, char** argv) {
         guild::kernels::build_rope_table(n_rot, yarn, npos, sc.data(), ss.data());
         std::mt19937 rng2(23);
         std::normal_distribution<float> gauss2(0.0f, 1.0f);
-        const int nrows = 24 * 16;             // 16 positions spread over the table's range
+        const int nrows = 24 * 16; // 16 positions spread over the table's range
         std::vector<float> x2((size_t) nrows * head_dim);
-        for (auto& v : x2) v = gauss2(rng2);
+        for (auto& v : x2)
+            v = gauss2(rng2);
         std::vector<int> pos2((size_t) nrows);
-        for (int r = 0; r < nrows; ++r) pos2[(size_t) r] = (r * 127) % npos;
+        for (int r = 0; r < nrows; ++r)
+            pos2[(size_t) r] = (r * 127) % npos;
 
         float *d_x2 = nullptr, *d_t2 = nullptr, *d_n2 = nullptr, *d_c2 = nullptr, *d_s2 = nullptr;
         int* d_p2 = nullptr;
@@ -392,13 +420,16 @@ int main(int argc, char** argv) {
         double worst = 0.0;
         for (int r = 0; r < nrows; ++r) {
             double m = 0;
-            for (int d = 0; d < head_dim; ++d) m = std::max(m, (double) std::fabs(x2[(size_t) r * head_dim + d]));
+            for (int d = 0; d < head_dim; ++d)
+                m = std::max(m, (double) std::fabs(x2[(size_t) r * head_dim + d]));
             const double scale = m > 1e-30 ? m : 1e-30;
             for (int d = 0; d < head_dim; ++d) {
-                const double rel = std::fabs((double) got_t[(size_t) r * head_dim + d] -
-                                             (double) got_n[(size_t) r * head_dim + d]) / scale;
+                const double rel =
+                    std::fabs((double) got_t[(size_t) r * head_dim + d] - (double) got_n[(size_t) r * head_dim + d]) /
+                    scale;
                 worst = std::max(worst, rel);
-                if (!(rel <= 3e-3)) ++agree_bad;
+                if (!(rel <= 3e-3))
+                    ++agree_bad;
             }
         }
         std::printf("  native path vs table path, yarn factor 2   %s (%lld of %d over 3e-3, worst rel %.3e)\n",
@@ -407,7 +438,7 @@ int main(int argc, char** argv) {
 
         // and the None config: the native path against the UNSCALED table - the identity this feature must
         // not disturb.
-        guild::kernels::RopeScaling none5;               // all defaults: type None, freq_scale 1, mscale 1
+        guild::kernels::RopeScaling none5; // all defaults: type None, freq_scale 1, mscale 1
         guild::kernels::native_rope_apply(d_x2, d_n2, nrows, head_dim, n_rot, none5, d_p2, cs5);
         check(cudaStreamSynchronize(cs5), "sync5b");
         check(cudaMemcpy(got_n.data(), d_n2, got_n.size() * sizeof(float), cudaMemcpyDeviceToHost), "back n2b");
@@ -421,13 +452,16 @@ int main(int argc, char** argv) {
         double worst5 = 0.0;
         for (int r = 0; r < nrows; ++r) {
             double m = 0;
-            for (int d = 0; d < head_dim; ++d) m = std::max(m, (double) std::fabs(x2[(size_t) r * head_dim + d]));
+            for (int d = 0; d < head_dim; ++d)
+                m = std::max(m, (double) std::fabs(x2[(size_t) r * head_dim + d]));
             const double scale = m > 1e-30 ? m : 1e-30;
             for (int d = 0; d < head_dim; ++d) {
-                const double rel = std::fabs((double) got_t[(size_t) r * head_dim + d] -
-                                             (double) got_n[(size_t) r * head_dim + d]) / scale;
+                const double rel =
+                    std::fabs((double) got_t[(size_t) r * head_dim + d] - (double) got_n[(size_t) r * head_dim + d]) /
+                    scale;
                 worst5 = std::max(worst5, rel);
-                if (!(rel <= 3e-3)) ++none_bad5;
+                if (!(rel <= 3e-3))
+                    ++none_bad5;
             }
         }
         std::printf("  native path vs table path, none            %s (%lld of %d over 3e-3, worst rel %.3e)\n",
@@ -436,7 +470,9 @@ int main(int argc, char** argv) {
     }
 
     std::printf("\nrope: %d failures\n", bad);
-    if (bad) return 1;
-    if (selftest) std::printf("rope_parity OK\n");
+    if (bad)
+        return 1;
+    if (selftest)
+        std::printf("rope_parity OK\n");
     return 0;
 }

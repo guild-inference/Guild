@@ -69,7 +69,8 @@ typedef struct guild_cuda_dense_ext_v1_s {
     uint32_t version;
     uint32_t reserved;
     guild_status_t (*bf16)(const guild_exec_context_v1_t*, const guild_cuda_bf16_projection_v1_t*, guild_error_info_t*);
-    guild_status_t (*quantize_q8_1)(const guild_exec_context_v1_t*, const guild_cuda_quantize_q8_1_v1_t*, guild_error_info_t*);
+    guild_status_t (*quantize_q8_1)(const guild_exec_context_v1_t*, const guild_cuda_quantize_q8_1_v1_t*,
+                                    guild_error_info_t*);
     guild_status_t (*mmvq)(const guild_exec_context_v1_t*, const guild_cuda_mmvq_v1_t*, guild_error_info_t*);
 } guild_cuda_dense_ext_v1_t;
 

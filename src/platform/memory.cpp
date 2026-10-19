@@ -17,7 +17,10 @@ namespace guild::platform {
 #if defined(_WIN32)
 LockResult lock_resident(void* p, uint64_t bytes) {
     LockResult r;
-    if (p == nullptr || bytes == 0) { r.note = "nothing to lock"; return r; }
+    if (p == nullptr || bytes == 0) {
+        r.note = "nothing to lock";
+        return r;
+    }
     HANDLE self = GetCurrentProcess();
     SIZE_T min_ws = 0, max_ws = 0;
     DWORD flags = 0;
@@ -50,12 +53,14 @@ LockResult lock_resident(void* p, uint64_t bytes) {
         r.locked_bytes = off + n;
     }
     r.ok = true;
-    r.note = "locked " + std::to_string((unsigned long long) (bytes >> 20)) + " MiB via working-set minimum + VirtualLock";
+    r.note =
+        "locked " + std::to_string((unsigned long long) (bytes >> 20)) + " MiB via working-set minimum + VirtualLock";
     return r;
 }
 
 void unlock_resident(void* p, uint64_t bytes) {
-    if (p == nullptr || bytes == 0) return;
+    if (p == nullptr || bytes == 0)
+        return;
     const uint64_t chunk = 1ull << 30;
     for (uint64_t off = 0; off < bytes; off += chunk)
         VirtualUnlock((uint8_t*) p + off, (SIZE_T) (bytes - off < chunk ? bytes - off : chunk));
@@ -65,7 +70,10 @@ bool gpu_shared_memory_budget(const void* luid, uint64_t& budget, uint64_t& usag
     budget = usage = 0;
     // dxgi.dll is loaded when asked, not linked: a start that never needs this keeps the imports it had
     HMODULE dxgi = LoadLibraryA("dxgi.dll");
-    if (dxgi == nullptr) { why = "dxgi.dll not found"; return false; }
+    if (dxgi == nullptr) {
+        why = "dxgi.dll not found";
+        return false;
+    }
     using CreateFactory = HRESULT(WINAPI*)(REFIID, void**);
     const auto create = (CreateFactory) (void*) GetProcAddress(dxgi, "CreateDXGIFactory1");
     IDXGIFactory1* factory = nullptr;
@@ -78,7 +86,8 @@ bool gpu_shared_memory_budget(const void* luid, uint64_t& budget, uint64_t& usag
     why = "no DXGI adapter has the CUDA device's LUID";
     for (UINT i = 0; !ok; ++i) {
         IDXGIAdapter1* a = nullptr;
-        if (factory->EnumAdapters1(i, &a) == DXGI_ERROR_NOT_FOUND || a == nullptr) break;
+        if (factory->EnumAdapters1(i, &a) == DXGI_ERROR_NOT_FOUND || a == nullptr)
+            break;
         DXGI_ADAPTER_DESC1 d{};
         if (SUCCEEDED(a->GetDesc1(&d)) && std::memcmp(&d.AdapterLuid, luid, sizeof d.AdapterLuid) == 0) {
             IDXGIAdapter3* a3 = nullptr;
@@ -92,7 +101,8 @@ bool gpu_shared_memory_budget(const void* luid, uint64_t& budget, uint64_t& usag
             } else {
                 why = "QueryVideoMemoryInfo failed";
             }
-            if (a3 != nullptr) a3->Release();
+            if (a3 != nullptr)
+                a3->Release();
             a->Release();
             break;
         }
@@ -111,8 +121,14 @@ uint64_t total_physical_memory() {
 #else
 LockResult lock_resident(void* p, uint64_t bytes) {
     LockResult r;
-    if (p == nullptr || bytes == 0) { r.note = "nothing to lock"; return r; }
-    if (mlock(p, bytes) != 0) { r.note = "mlock failed (raise ulimit -l)"; return r; }
+    if (p == nullptr || bytes == 0) {
+        r.note = "nothing to lock";
+        return r;
+    }
+    if (mlock(p, bytes) != 0) {
+        r.note = "mlock failed (raise ulimit -l)";
+        return r;
+    }
     r.ok = true;
     r.locked_bytes = bytes;
     r.note = "mlock";
@@ -120,7 +136,8 @@ LockResult lock_resident(void* p, uint64_t bytes) {
 }
 
 void unlock_resident(void* p, uint64_t bytes) {
-    if (p != nullptr && bytes != 0) munlock(p, bytes);
+    if (p != nullptr && bytes != 0)
+        munlock(p, bytes);
 }
 
 bool gpu_shared_memory_budget(const void*, uint64_t& budget, uint64_t& usage, std::string& why) {
@@ -135,4 +152,4 @@ uint64_t total_physical_memory() {
 }
 #endif
 
-}  // namespace guild::platform
+} // namespace guild::platform

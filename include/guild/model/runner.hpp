@@ -73,7 +73,9 @@ public:
     virtual const char* package_id() const = 0;
     virtual const char* arch_id() const = 0;
     virtual uint32_t runner_version() const = 0;
-    virtual int32_t priority() const { return 0; }
+    virtual int32_t priority() const {
+        return 0;
+    }
     virtual ModelArchetype archetype() const = 0;
 
     /// Returns true if this runner supports the given architecture string or alias.
@@ -86,34 +88,24 @@ public:
     virtual const RunnerTensorMap& tensor_map() const = 0;
 
     /// Validate GGUF metadata/tensors and populate ModelDescriptor.
-    virtual bool validate_and_describe(const GgufModel& artifact,
-                                       ModelDescriptor& out_desc,
+    virtual bool validate_and_describe(const GgufModel& artifact, ModelDescriptor& out_desc,
                                        std::string& err) const = 0;
 
     /// Populate execution geometry and active expert count K from ModelDescriptor.
-    virtual bool configure_geometry(const ModelDescriptor& desc,
-                                    core::ModelGeometry& out_geom,
-                                    int64_t& out_k_active,
+    virtual bool configure_geometry(const ModelDescriptor& desc, core::ModelGeometry& out_geom, int64_t& out_k_active,
                                     std::string& err) const = 0;
 
     /// Determine which canonical pack tensors should be skipped when loading WeightTable.
-    virtual bool configure_weight_skip_set(bool native_pack,
-                                           bool has_shards,
-                                           const std::string& pack_dir,
-                                           std::set<std::string>& inout_skip,
-                                           std::string& err) const = 0;
+    virtual bool configure_weight_skip_set(bool native_pack, bool has_shards, const std::string& pack_dir,
+                                           std::set<std::string>& inout_skip, std::string& err) const = 0;
 
     /// Build the execution capability and operation requirements for a loaded model and plan.
-    virtual bool build_execution_plan(const ModelDescriptor& desc,
-                                      const core::ModelGeometry& geom,
-                                      const memory::ExecutionPlan& mem_plan,
-                                      RunnerExecutionPlan& out_exec,
+    virtual bool build_execution_plan(const ModelDescriptor& desc, const core::ModelGeometry& geom,
+                                      const memory::ExecutionPlan& mem_plan, RunnerExecutionPlan& out_exec,
                                       std::string& err) const = 0;
 
     /// Architecture-specific numerical validation of output buffers.
-    virtual bool validate_numerical(const float* values,
-                                    size_t count,
-                                    const std::string& label,
+    virtual bool validate_numerical(const float* values, size_t count, const std::string& label,
                                     std::string& err) const = 0;
 
     /// Export C-compatible ABI v1 runner descriptor.
@@ -137,7 +129,7 @@ public:
 
     /// Register a C ABI v1 runner descriptor.
     guild_status_t register_abi_runner(const guild_runner_desc_v1_t& desc, std::string& err,
-                                      std::shared_ptr<void> library_keepalive = nullptr);
+                                       std::shared_ptr<void> library_keepalive = nullptr);
 
     /// Unregister a runner by runner_id. Fails with GUILD_STATUS_ERR_ACTIVE_SESSION_BUSY if sessions are active.
     guild_status_t unregister_runner(const std::string& runner_id, std::string& err);
@@ -150,27 +142,22 @@ public:
     bool is_package_enabled(const std::string& package_id) const;
 
     /// Resolve a runner for a GGUF metadata file.
-    guild_status_t resolve_for_gguf(const GgufFile& gguf,
-                                    std::shared_ptr<const IModelRunner>* out_runner,
+    guild_status_t resolve_for_gguf(const GgufFile& gguf, std::shared_ptr<const IModelRunner>* out_runner,
                                     std::string& err) const;
 
     /// Resolve a runner by architecture tag or alias.
-    guild_status_t resolve_by_arch(const std::string& arch_name,
-                                   std::shared_ptr<const IModelRunner>* out_runner,
+    guild_status_t resolve_by_arch(const std::string& arch_name, std::shared_ptr<const IModelRunner>* out_runner,
                                    std::string& err) const;
 
     /// Resolve a runner by exact runner_id.
     std::shared_ptr<const IModelRunner> find_by_id(const std::string& runner_id) const;
 
     /// Validate that a runner's required Core capabilities and kernel operations can be satisfied.
-    guild_status_t validate_runner_requirements(const IModelRunner& runner,
-                                                const ModelDescriptor& desc,
-                                                const core::ModelGeometry& geom,
-                                                const memory::ExecutionPlan& mem_plan,
+    guild_status_t validate_runner_requirements(const IModelRunner& runner, const ModelDescriptor& desc,
+                                                const core::ModelGeometry& geom, const memory::ExecutionPlan& mem_plan,
                                                 const kernels::KernelRegistry& kernel_reg,
                                                 const guild_device_capabilities_v1_t& caps,
-                                                RunnerExecutionPlan& out_exec,
-                                                std::string& err) const;
+                                                RunnerExecutionPlan& out_exec, std::string& err) const;
 
     /// Snapshot of registered runner ABI descriptors.
     std::vector<std::shared_ptr<const IModelRunner>> list_runners() const;
@@ -178,9 +165,15 @@ public:
     /// Value-owning snapshots of registered runners (safe without holding registry lock).
     std::vector<RunnerInfoSnapshot> list_runner_snapshots() const;
 
-    void acquire_session_lease() const { active_sessions_.fetch_add(1, std::memory_order_acq_rel); }
-    void release_session_lease() const { active_sessions_.fetch_sub(1, std::memory_order_acq_rel); }
-    int64_t active_sessions() const { return active_sessions_.load(std::memory_order_acquire); }
+    void acquire_session_lease() const {
+        active_sessions_.fetch_add(1, std::memory_order_acq_rel);
+    }
+    void release_session_lease() const {
+        active_sessions_.fetch_sub(1, std::memory_order_acq_rel);
+    }
+    int64_t active_sessions() const {
+        return active_sessions_.load(std::memory_order_acquire);
+    }
 
     void acquire_package_lease(const std::string& package_id) const;
     void release_package_lease(const std::string& package_id) const;
@@ -199,17 +192,22 @@ class SessionRunnerLease {
 public:
     SessionRunnerLease() = default;
     explicit SessionRunnerLease(const ModelRunnerRegistry* reg, std::string package_id = "")
-        : reg_(reg), package_id_(std::move(package_id)) {
+        : reg_(reg),
+          package_id_(std::move(package_id)) {
         if (reg_) {
             reg_->acquire_session_lease();
-            if (!package_id_.empty()) reg_->acquire_package_lease(package_id_);
+            if (!package_id_.empty())
+                reg_->acquire_package_lease(package_id_);
         }
     }
-    ~SessionRunnerLease() { reset(); }
+    ~SessionRunnerLease() {
+        reset();
+    }
     SessionRunnerLease(const SessionRunnerLease&) = delete;
     SessionRunnerLease& operator=(const SessionRunnerLease&) = delete;
     SessionRunnerLease(SessionRunnerLease&& other) noexcept
-        : reg_(other.reg_), package_id_(std::move(other.package_id_)) {
+        : reg_(other.reg_),
+          package_id_(std::move(other.package_id_)) {
         other.reg_ = nullptr;
         other.package_id_.clear();
     }
@@ -225,12 +223,14 @@ public:
     }
     void reset() {
         if (reg_) {
-            if (!package_id_.empty()) reg_->release_package_lease(package_id_);
+            if (!package_id_.empty())
+                reg_->release_package_lease(package_id_);
             reg_->release_session_lease();
             reg_ = nullptr;
             package_id_.clear();
         }
     }
+
 private:
     const ModelRunnerRegistry* reg_ = nullptr;
     std::string package_id_;

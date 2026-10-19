@@ -11,7 +11,8 @@ bool bind_required_ple(GuildModel::Impl& m, const std::vector<std::string>& shar
     {
         const guild::GgufModel artifact(shards);
         size_t shard = 0;
-        const std::string ple_table_name = m.runner ? m.runner->tensor_map().ple_table_tensor : "per_layer_token_embd.weight";
+        const std::string ple_table_name =
+            m.runner ? m.runner->tensor_map().ple_table_tensor : "per_layer_token_embd.weight";
         const std::string ple_key_name = m.runner ? m.runner->tensor_map().ple_key_tensor : "blk.1.ple_key.weight";
         const auto* table = artifact.find(ple_table_name, &shard);
         const bool required = table != nullptr || m.wt.find(ple_key_name) != nullptr ||
@@ -19,25 +20,30 @@ bool bind_required_ple(GuildModel::Impl& m, const std::vector<std::string>& shar
                                         : (m.desc.runner_model ? (m.desc.runner_model->requires_ple != 0)
                                                                : m.desc.archetype == model::ModelArchetype::Qwen4Exp));
         m.ple_required = required;
-        if (!required) return true;
+        if (!required)
+            return true;
         if (!table && table_path.empty()) {
             err = "required PLE table " + ple_table_name + " is absent";
             return false;
         }
-        if (table_path.empty()) table_path = artifact.shard(shard).path();
+        if (table_path.empty())
+            table_path = artifact.shard(shard).path();
         std::string arch_prefix = m.runner ? m.runner->arch_id() : m.desc.arch_name;
         if (arch_prefix.empty()) {
             if (const auto* av = artifact.meta().get("general.architecture")) {
-                if (av->type == MetaType::STRING) arch_prefix = av->s;
+                if (av->type == MetaType::STRING)
+                    arch_prefix = av->s;
             }
         }
-        if (arch_prefix.empty()) arch_prefix = "qwen4exp";
+        if (arch_prefix.empty())
+            arch_prefix = "qwen4exp";
         const std::string ple_prefix = arch_prefix + ".ple.";
         const auto constants = ple_artifact_consts();
         auto scalar = [&](const char* suffix, uint64_t want) {
             const std::string name = ple_prefix + std::string(suffix);
             const auto* v = artifact.meta().get(name);
-            if (v && v->is_num() && v->u == want) return true;
+            if (v && v->is_num() && v->u == want)
+                return true;
             err = "required PLE metadata differs from the supported contract: " + name;
             return false;
         };
@@ -61,7 +67,8 @@ bool bind_required_ple(GuildModel::Impl& m, const std::vector<std::string>& shar
             !scalar("conv_kernel", PLE_CONV_KERNEL) || !scalar("eos_token_id", PLE_EOS_TOKEN_ID) ||
             !array("layers", &layer, 1) || !array("layer_multipliers", constants.mult, NGRAM_SIZE) ||
             !array("head_offsets", constants.offset, PLE_N_HEADS) ||
-            !array("head_vocab_sizes", constants.vocab, PLE_N_HEADS)) return false;
+            !array("head_vocab_sizes", constants.vocab, PLE_N_HEADS))
+            return false;
     }
     if (m.g.n_embd != NG_N_EMBD || m.g.hc != NG_HC) {
         err = "required PLE geometry is not supported by the existing kernels";
@@ -83,7 +90,8 @@ bool bind_required_ple(GuildModel::Impl& m, const std::vector<std::string>& shar
     const auto* nc = tensor("ple_norm_conv.weight", NG_HC_DIM, 0, WeightKind::F32);
     const auto* conv = m.wt.find("blk.1.ple_conv1d.weight");
     if (!key || !value || !nk || !nq || !nc || !conv) {
-        if (err.empty()) err = "required blk.1.ple_* tensor is absent";
+        if (err.empty())
+            err = "required blk.1.ple_* tensor is absent";
         return false;
     }
     if (key->ne0 != NG_N_EMBD || key->ne1 != NG_HC_DIM) {
@@ -109,14 +117,14 @@ bool bind_required_ple(GuildModel::Impl& m, const std::vector<std::string>& shar
         err = "required PLE key has no compatible projection";
         return false;
     }
-    const bool f16 = conv->kind == WeightKind::F16InF32 ||
-                     (conv->kind == WeightKind::Verbatim && !conv->quantized());
+    const bool f16 = conv->kind == WeightKind::F16InF32 || (conv->kind == WeightKind::Verbatim && !conv->quantized());
     if (!f16 || !conv->data || conv->ne0 != PLE_CONV_KERNEL || conv->ne1 != NG_HC_DIM ||
         conv->bytes != uint64_t(PLE_CONV_KERNEL) * NG_HC_DIM * 2) {
         err = "required PLE convolution must have the existing F16 engine form";
         return false;
     }
-    if (!m.ple_table.open(table_path, err)) return false;
+    if (!m.ple_table.open(table_path, err))
+        return false;
     m.ss.ple.consts = ple_artifact_consts();
     for (int h = 0; h < PLE_N_HEADS; ++h) {
         if (m.ss.ple.consts.offset[h] + m.ss.ple.consts.vocab[h] > m.ple_table.rows()) {
@@ -143,7 +151,10 @@ bool bind_required_ple(GuildModel::Impl& m, const std::vector<std::string>& shar
     p.emb_host = m.ple_emb_host.data();
     p.emb_dev = m.ple_emb_dev;
     p.scratch = static_cast<float*>(m.ple_scratch);
-    if (!p.ready()) { err = "required PLE binding is incomplete"; return false; }
+    if (!p.ready()) {
+        err = "required PLE binding is incomplete";
+        return false;
+    }
     std::fprintf(stderr, "guild runtime: required PLE connected (%s, %llu rows)\n", table_path.c_str(),
                  static_cast<unsigned long long>(m.ple_table.rows()));
     return true;
@@ -158,10 +169,10 @@ bool bind_required_ple_gpack(GuildModel::Impl& m, const artifact::GPackReader& g
     const bool has_embedded_ple = gpack.ple_tensor(ple_hdr, ple_data, &ple_file_off);
     const std::string ple_key_name = m.runner ? m.runner->tensor_map().ple_key_tensor : "blk.1.ple_key.weight";
     const bool required = has_embedded_ple || gpack.execution_metadata().requires_ple ||
-                          m.wt.find(ple_key_name) != nullptr ||
-                          (m.runner ? m.runner_exec.requires_ple : false);
+                          m.wt.find(ple_key_name) != nullptr || (m.runner ? m.runner_exec.requires_ple : false);
     m.ple_required = required;
-    if (!required) return true;
+    if (!required)
+        return true;
 
     if (m.g.n_embd != NG_N_EMBD || m.g.hc != NG_HC) {
         err = "required PLE geometry is not supported by the existing kernels";
@@ -183,7 +194,8 @@ bool bind_required_ple_gpack(GuildModel::Impl& m, const artifact::GPackReader& g
     const auto* nc = tensor("ple_norm_conv.weight", NG_HC_DIM, 0, WeightKind::F32);
     const auto* conv = m.wt.find("blk.1.ple_conv1d.weight");
     if (!key || !value || !nk || !nq || !nc || !conv) {
-        if (err.empty()) err = "required blk.1.ple_* tensor is absent";
+        if (err.empty())
+            err = "required blk.1.ple_* tensor is absent";
         return false;
     }
     if (key->ne0 != NG_N_EMBD || key->ne1 != NG_HC_DIM) {
@@ -209,8 +221,7 @@ bool bind_required_ple_gpack(GuildModel::Impl& m, const artifact::GPackReader& g
         err = "required PLE key has no compatible projection";
         return false;
     }
-    const bool f16 = conv->kind == WeightKind::F16InF32 ||
-                     (conv->kind == WeightKind::Verbatim && !conv->quantized());
+    const bool f16 = conv->kind == WeightKind::F16InF32 || (conv->kind == WeightKind::Verbatim && !conv->quantized());
     if (!f16 || !conv->data || conv->ne0 != PLE_CONV_KERNEL || conv->ne1 != NG_HC_DIM ||
         conv->bytes != uint64_t(PLE_CONV_KERNEL) * NG_HC_DIM * 2) {
         err = "required PLE convolution must have the existing F16 engine form";
@@ -220,7 +231,8 @@ bool bind_required_ple_gpack(GuildModel::Impl& m, const artifact::GPackReader& g
     if (has_embedded_ple) {
         float fp8_scale = 1.0f;
         if (const auto* sv = gpack.get_meta("guild.ple.scale")) {
-            if (sv->type == MetaType::F64 || sv->type == MetaType::F32) fp8_scale = static_cast<float>(sv->f);
+            if (sv->type == MetaType::F64 || sv->type == MetaType::F32)
+                fp8_scale = static_cast<float>(sv->f);
         }
         PleIoOptions io{}; // Direct I/O + row cache, matching GGUF PleTable::open
         if (!m.ple_table.open_raw(gpack.path(), ple_file_off, ple_data, ple_hdr.ggml_type,
@@ -233,8 +245,8 @@ bool bind_required_ple_gpack(GuildModel::Impl& m, const artifact::GPackReader& g
             const auto ext_shards = guild::gguf_split_paths(gpack.external_expert_primary_gguf());
             const guild::GgufModel artifact(ext_shards);
             size_t shard = 0;
-            const std::string ple_table_name = m.runner ? m.runner->tensor_map().ple_table_tensor
-                                                        : "per_layer_token_embd.weight";
+            const std::string ple_table_name =
+                m.runner ? m.runner->tensor_map().ple_table_tensor : "per_layer_token_embd.weight";
             if (artifact.find(ple_table_name, &shard)) {
                 table_path = artifact.shard(shard).path();
             }
@@ -243,7 +255,8 @@ bool bind_required_ple_gpack(GuildModel::Impl& m, const artifact::GPackReader& g
             err = "required PLE table is absent from GPACK and no external PLE shard was found";
             return false;
         }
-        if (!m.ple_table.open(table_path, err)) return false;
+        if (!m.ple_table.open(table_path, err))
+            return false;
     }
 
     m.ss.ple.consts = ple_artifact_consts();
@@ -272,7 +285,10 @@ bool bind_required_ple_gpack(GuildModel::Impl& m, const artifact::GPackReader& g
     p.emb_host = m.ple_emb_host.data();
     p.emb_dev = m.ple_emb_dev;
     p.scratch = static_cast<float*>(m.ple_scratch);
-    if (!p.ready()) { err = "required PLE binding is incomplete"; return false; }
+    if (!p.ready()) {
+        err = "required PLE binding is incomplete";
+        return false;
+    }
     std::fprintf(stderr, "guild runtime: required PLE connected (GPACK, %llu rows)\n",
                  static_cast<unsigned long long>(m.ple_table.rows()));
     return true;

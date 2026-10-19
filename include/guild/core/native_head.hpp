@@ -5,7 +5,9 @@
 #include <string>
 #include <vector>
 
-namespace guild::artifact { class GPackReader; }
+namespace guild::artifact {
+class GPackReader;
+}
 
 namespace guild::core {
 
@@ -24,13 +26,23 @@ public:
     bool load(const std::vector<std::string>& shards, int64_t n_in, int64_t n_out, std::string& err);
     bool load_gpack(const guild::artifact::GPackReader& gpack, int64_t n_in, int64_t n_out, std::string& err);
     bool run(const float* mixed, float* logits, void* stream, std::string& err) const;
-    uint64_t weight_bytes() const { return bytes_; }
-    bool loaded() const { return weights_ != nullptr; }
+    uint64_t weight_bytes() const {
+        return bytes_;
+    }
+    bool loaded() const {
+        return weights_ != nullptr;
+    }
     /// Plan v0.3 P6: the GGUF blocks, for the verify window's multi-column head.
-    const void* weights() const { return weights_; }
-    int type() const { return type_; }
+    const void* weights() const {
+        return weights_;
+    }
+    int type() const {
+        return type_;
+    }
     /// Bytes of one vocabulary row.
-    size_t row_bytes() const { return n_out_ > 0 ? (size_t) (bytes_ / (uint64_t) n_out_) : 0; }
+    size_t row_bytes() const {
+        return n_out_ > 0 ? (size_t) (bytes_ / (uint64_t) n_out_) : 0;
+    }
 
 private:
     void* weights_ = nullptr;
@@ -55,8 +67,12 @@ public:
     void gather_dev(const int32_t* tokens, int64_t n_tok, float* out, void* stream) const;
     /// One row for a host token id.
     void gather_one(int64_t token, float* out, void* stream) const;
-    uint64_t bytes() const { return bytes_; }
-    int type() const { return type_; }
+    uint64_t bytes() const {
+        return bytes_;
+    }
+    int type() const {
+        return type_;
+    }
 
 private:
     void* host_ = nullptr;
@@ -69,4 +85,4 @@ private:
 void set_native_embed(const NativeEmbed* e);
 const NativeEmbed* native_embed();
 
-}  // namespace guild::core
+} // namespace guild::core

@@ -24,8 +24,10 @@ typedef struct guild_cpu_expert_ext_v1_s {
     uint32_t struct_size, tag, version;
     void (*quant_act)(const guild_cpu_expert_format_v1_t*, const float*, void*);
     void (*quant_h)(const guild_cpu_expert_format_v1_t*, const float*, void*);
-    void (*gate_up)(const guild_cpu_expert_format_v1_t*, const uint8_t*, const void* const*, int32_t, float* const*, int32_t, int32_t);
-    void (*down)(const guild_cpu_expert_format_v1_t*, const uint8_t*, const void* const*, int32_t, float* const*, int32_t, int32_t);
+    void (*gate_up)(const guild_cpu_expert_format_v1_t*, const uint8_t*, const void* const*, int32_t, float* const*,
+                    int32_t, int32_t);
+    void (*down)(const guild_cpu_expert_format_v1_t*, const uint8_t*, const void* const*, int32_t, float* const*,
+                 int32_t, int32_t);
 } guild_cpu_expert_ext_v1_t;
 #undef GUILD_CPU_DEFAULT
 #ifdef __cplusplus

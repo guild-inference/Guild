@@ -22,7 +22,9 @@
 #include <memory>
 #include <string>
 
-namespace guild::core { class PeerExperts; }
+namespace guild::core {
+class PeerExperts;
+}
 
 namespace guild::prefill {
 
@@ -30,15 +32,17 @@ struct PrefillStats {
     int64_t tokens = 0;
     int64_t chunks = 0;
     double ms_total = 0;
-    double ms_experts_host = 0;     ///< host time staging non-resident experts
-    int64_t experts_streamed = 0;   ///< expert blobs copied host -> device
-    int64_t experts_dma = 0;        ///< ...of which straight from the pinned arena (no CPU copy)
-    int64_t experts_resident = 0;   ///< expert-layer groups served from the VRAM tier
+    double ms_experts_host = 0;   ///< host time staging non-resident experts
+    int64_t experts_streamed = 0; ///< expert blobs copied host -> device
+    int64_t experts_dma = 0;      ///< ...of which straight from the pinned arena (no CPU copy)
+    int64_t experts_resident = 0; ///< expert-layer groups served from the VRAM tier
     double ms_ple = 0;
 };
 
-}  // namespace guild::prefill
-namespace guild::core { class MtpDrafter; }
+} // namespace guild::prefill
+namespace guild::core {
+class MtpDrafter;
+}
 namespace guild::prefill {
 
 class Prefill {
@@ -116,7 +120,9 @@ public:
     /// first, -1 for none) and is advanced to the last two of these.
     bool run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& err);
 
-    const PrefillStats& stats() const { return stats_; }
+    const PrefillStats& stats() const {
+        return stats_;
+    }
 
     /// multi-GPU: the experts the peer GPU holds are computed THERE for every prompt chunk (up to `cap_rows` routed
     /// rows per layer; the rest of the peer's experts are read by this GPU over P2P).  Allocates the peer's buffers for
@@ -147,7 +153,9 @@ public:
     /// to pinned host buffers (two, allocated by `init`) and runs `next` on them - on a thread, so the next stage
     /// reads chunk c while this one reads chunk c + 1.  `on_chunk` belongs on the last stage.  Set before `init`.
     void set_stage(int64_t layer_begin, int64_t layer_end, Prefill* next) {
-        stage_lb_ = layer_begin; stage_le_ = layer_end; next_ = next;
+        stage_lb_ = layer_begin;
+        stage_le_ = layer_end;
+        next_ = next;
     }
 
     /// LAYER SPLIT: `helper` is another stage's prompt path (another GPU).  A prompt of one chunk runs the stages one
@@ -155,8 +163,8 @@ public:
     /// non-resident experts over its own PCIe link into its own (lent) prompt buffers, computes their rows, and sends
     /// them back - the --peer-device peer's streaming, without P2P (activations and rows through mapped host memory,
     /// read by copy kernels).  Only on the MMQ prompt path, only for chunks of stream_all_min() tokens and more, up to
-    /// the size where the measured share stops paying.  Opt-in: GUILD_PREFILL_HELP=1 (not bit-identical to the default).  Both stages must have
-    /// run `init`.
+    /// the size where the measured share stops paying.  Opt-in: GUILD_PREFILL_HELP=1 (not bit-identical to the
+    /// default).  Both stages must have run `init`.
     bool set_stage_helper(Prefill* helper, std::string& err);
 
 private:
@@ -167,20 +175,20 @@ private:
 
     int64_t stage_lb_ = 0, stage_le_ = -1;
     Prefill* next_ = nullptr;
-    Prefill* helper_ = nullptr;         ///< set_stage_helper
-    bool single_chunk_ = false;         ///< a later stage: the prompt is one chunk (set by the stage before)
-    bool bind_stage_helper(int64_t T);  // binds the helper's buffers for a one-chunk prompt of T tokens
-    const float* hand_in_ = nullptr;    ///< the previous stage's rows of the chunk being read (host, pinned)
+    Prefill* helper_ = nullptr;        ///< set_stage_helper
+    bool single_chunk_ = false;        ///< a later stage: the prompt is one chunk (set by the stage before)
+    bool bind_stage_helper(int64_t T); // binds the helper's buffers for a one-chunk prompt of T tokens
+    const float* hand_in_ = nullptr;   ///< the previous stage's rows of the chunk being read (host, pinned)
 
     std::string next_err_;
     std::future<bool> next_run_;
     int hand_buf_ = 0;
 
-    bool carve(std::size_t T, void* alloc);   // the device buffers of a chunk (prefill.cpp's Alloc)
-    void release();                          // the destructor's cleanup (also `reset`'s)
+    bool carve(std::size_t T, void* alloc); // the device buffers of a chunk (prefill.cpp's Alloc)
+    void release();                         // the destructor's cleanup (also `reset`'s)
     struct Impl;
     std::unique_ptr<Impl> impl_;
     PrefillStats stats_;
 };
 
-}  // namespace guild::prefill
+} // namespace guild::prefill

@@ -26,7 +26,8 @@
 
 int main(int argc, char** argv) {
     const std::string dir = argc > 1 ? argv[1] : "logs/iq_fixture";
-    const char* names[] = {"IQ2_XXS", "IQ2_XS", "IQ2_S", "IQ3_XXS", "IQ3_S", "IQ1_M", "IQ4_NL", "IQ4_XS", "Q2_0", "Q3_K"};
+    const char* names[] = {"IQ2_XXS", "IQ2_XS", "IQ2_S",  "IQ3_XXS", "IQ3_S",
+                           "IQ1_M",   "IQ4_NL", "IQ4_XS", "Q2_0",    "Q3_K"};
     int failures = 0, missing = 0;
     cudaStream_t s;
     cudaStreamCreate(&s);
@@ -37,8 +38,10 @@ int main(int argc, char** argv) {
             std::printf("%-8s missing fixture: %s/%s.bin or %s/%s.f32 - generate the fixtures first with "
                         "python tools/iq_fixture.py --out %s (deterministic; see the tool's --help)\n",
                         nm, dir.c_str(), nm, dir.c_str(), nm, dir.c_str());
-            if (f) std::fclose(f);
-            if (g) std::fclose(g);
+            if (f)
+                std::fclose(f);
+            if (g)
+                std::fclose(g);
             ++failures;
             ++missing;
             continue;
@@ -47,7 +50,12 @@ int main(int argc, char** argv) {
         std::fread(hdr, 4, 3, f);
         const int type = hdr[0], rows = hdr[1], cols = hdr[2];
         std::vector<uint8_t> raw;
-        { uint8_t buf[1 << 16]; size_t n; while ((n = std::fread(buf, 1, sizeof buf, f)) > 0) raw.insert(raw.end(), buf, buf + n); }
+        {
+            uint8_t buf[1 << 16];
+            size_t n;
+            while ((n = std::fread(buf, 1, sizeof buf, f)) > 0)
+                raw.insert(raw.end(), buf, buf + n);
+        }
         std::vector<float> ref((size_t) rows * cols);
         std::fread(ref.data(), 4, ref.size(), g);
         std::fclose(f);
@@ -63,7 +71,10 @@ int main(int argc, char** argv) {
             std::vector<float> got(ref.size());
             cudaMemcpy(got.data(), dq, got.size() * 4, cudaMemcpyDeviceToHost);
             double num = 0, den = 0;
-            for (size_t i = 0; i < ref.size(); ++i) { num += std::fabs(got[i] - ref[i]); den += std::fabs(ref[i]); }
+            for (size_t i = 0; i < ref.size(); ++i) {
+                num += std::fabs(got[i] - ref[i]);
+                den += std::fabs(ref[i]);
+            }
             dq_err = num / (den + 1e-30);
         }
         // the dot, ncols 1..8: each column of an ncols call bitwise equal to a one-column call on it (the
@@ -72,7 +83,8 @@ int main(int argc, char** argv) {
         std::mt19937 rng(7);
         std::normal_distribution<float> nd(0.f, 1.f);
         std::vector<float> x((size_t) MC * cols);
-        for (auto& v : x) v = nd(rng);
+        for (auto& v : x)
+            v = nd(rng);
         float* dx = nullptr;
         void* xq = nullptr;
         float* dy = nullptr;
@@ -86,7 +98,7 @@ int main(int argc, char** argv) {
         try {
             for (int c = 0; c < MC; ++c)
                 guild::kernels::native_mmvq(type, dw, (const uint8_t*) xq + (size_t) c * cols / 32 * 36,
-                                             dy + (size_t) c * rows, cols, rows, 1, s);
+                                            dy + (size_t) c * rows, cols, rows, 1, s);
             cudaStreamSynchronize(s);
             cudaMemcpy(y.data(), dy, y.size() * 4, cudaMemcpyDeviceToHost);
             for (int nc = 2; nc <= MC; ++nc) {
@@ -99,21 +111,31 @@ int main(int argc, char** argv) {
                     ++multi_bad;
                 }
             }
-        } catch (const std::exception& e) { std::printf("%-8s mmvq: %s\n", nm, e.what()); ++failures; continue; }
+        } catch (const std::exception& e) {
+            std::printf("%-8s mmvq: %s\n", nm, e.what());
+            ++failures;
+            continue;
+        }
         double num = 0, den = 0;
         for (int c = 0; c < MC; ++c)
             for (int r = 0; r < rows; ++r) {
                 double acc = 0;
-                for (int k = 0; k < cols; ++k) acc += (double) ref[(size_t) r * cols + k] * x[(size_t) c * cols + k];
+                for (int k = 0; k < cols; ++k)
+                    acc += (double) ref[(size_t) r * cols + k] * x[(size_t) c * cols + k];
                 num += std::fabs(y[(size_t) c * rows + r] - acc);
                 den += std::fabs(acc);
             }
         const double mm_err = num / (den + 1e-30);
         const bool ok = dq_err < 1e-6 && mm_err < 2e-2 && multi_bad == 0;
-        std::printf("%-8s type %2d %4d x %5d  dequant rel %.2e  mmvq rel %.2e (ncols 1..%d)  %s\n", nm, type, rows, cols,
-                    dq_err, mm_err, MC, ok ? "ok" : "FAIL");
-        if (!ok) ++failures;
-        cudaFree(dw); cudaFree(dq); cudaFree(dx); cudaFree(xq); cudaFree(dy);
+        std::printf("%-8s type %2d %4d x %5d  dequant rel %.2e  mmvq rel %.2e (ncols 1..%d)  %s\n", nm, type, rows,
+                    cols, dq_err, mm_err, MC, ok ? "ok" : "FAIL");
+        if (!ok)
+            ++failures;
+        cudaFree(dw);
+        cudaFree(dq);
+        cudaFree(dx);
+        cudaFree(xq);
+        cudaFree(dy);
     }
     std::printf("iq_parity: %d failures\n", failures);
     // no fixture at all: the generator was skipped (no numpy / vendored gguf-py) - a skip (3), not a failure

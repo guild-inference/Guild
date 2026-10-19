@@ -60,28 +60,28 @@ struct GdnBuffers {
     // the activation, in the formats the contract asks for.  BOTH quantized images are produced for every
     // layer, because WHICH ONE A WEIGHT WANTS IS A PROPERTY OF THE WEIGHT and the pack mixes them by layer -
     // `attn_qkv` alone is IQ4_XS on 13 layers, Q3_K on 18, Q4_K on 4 and S2 on 1.
-    uint8_t* x_q8k = nullptr;      ///< n_embd, block_q8_K
-    uint8_t* x_q8_0 = nullptr;     ///< n_embd, block_q8_0
-    uint16_t* x_bf16 = nullptr;    ///< n_embd, bf16 bits
+    uint8_t* x_q8k = nullptr;   ///< n_embd, block_q8_K
+    uint8_t* x_q8_0 = nullptr;  ///< n_embd, block_q8_0
+    uint16_t* x_bf16 = nullptr; ///< n_embd, bf16 bits
 
     // the qkv path
-    float* qkv = nullptr;          ///< conv_channels
-    float* conv_out = nullptr;     ///< conv_channels
-    float* h = nullptr;            ///< conv_channels = silu(conv_out), and it IS q|k|v in place
+    float* qkv = nullptr;      ///< conv_channels
+    float* conv_out = nullptr; ///< conv_channels
+    float* h = nullptr;        ///< conv_channels = silu(conv_out), and it IS q|k|v in place
 
     // the per-head scalars and the recurrence
-    float* alpha = nullptr;        ///< h_v
-    float* beta = nullptr;         ///< h_v
-    float* gate = nullptr;         ///< h_v
-    float* o = nullptr;            ///< h_v * S
-    float* z = nullptr;            ///< value_dim
-    float* y = nullptr;            ///< value_dim
-    uint8_t* y_q8k = nullptr;      ///< value_dim, block_q8_K
-    uint8_t* y_q8_0 = nullptr;     ///< value_dim, block_q8_0
+    float* alpha = nullptr;    ///< h_v
+    float* beta = nullptr;     ///< h_v
+    float* gate = nullptr;     ///< h_v
+    float* o = nullptr;        ///< h_v * S
+    float* z = nullptr;        ///< value_dim
+    float* y = nullptr;        ///< value_dim
+    uint8_t* y_q8k = nullptr;  ///< value_dim, block_q8_K
+    uint8_t* y_q8_0 = nullptr; ///< value_dim, block_q8_0
 
     // the recurrent state, which outlives the call
-    float* state = nullptr;        ///< S * h_v * S
-    float* conv_state = nullptr;   ///< conv_channels * (d_conv-1)
+    float* state = nullptr;      ///< S * h_v * S
+    float* conv_state = nullptr; ///< conv_channels * (d_conv-1)
 };
 
 /// Bytes needed for `b`, 16-byte aligned between regions.
@@ -101,20 +101,20 @@ bool gdn_layer(const WeightTable& tables, const ModelGeometry& g, int64_t layer,
 
 // ================================ the MoE block ================================
 
-struct Doorbell;   // defined with the rest of the handoff, below; only a pointer is needed here
+struct Doorbell; // defined with the rest of the handoff, below; only a pointer is needed here
 
 /// Buffers for the MoE block, on EVERY layer.
 struct MoEBuffers {
-    uint16_t* x_bf16 = nullptr;   ///< n_embd, for the ROUTER's weight, which is BF16
-    uint16_t* x_f16 = nullptr;    ///< n_embd, for the SHARED EXPERT's weights (see the note in `moe_layer`)
-    float* logits = nullptr;      ///< n_expert
-    int* ids = nullptr;           ///< k
-    float* weights = nullptr;     ///< k
-    float* shared = nullptr;      ///< n_embd
-    float* sh_scratch = nullptr;  ///< shared_expert_scratch_bytes(n_ff): the shared expert's own scratch
-    uint8_t* x_q8_0 = nullptr;    ///< n_embd, block_q8_0 - the shared expert's weights want Q8_0 on the layers
-                                  ///< whose types are Q2_0/Q4_0/Q5_0/Q8_0/IQ4_NL, which is most of them
-    uint8_t* x_q8k = nullptr;     ///< n_embd, block_q8_K - and Q8_K on the K-quant ones
+    uint16_t* x_bf16 = nullptr;  ///< n_embd, for the ROUTER's weight, which is BF16
+    uint16_t* x_f16 = nullptr;   ///< n_embd, for the SHARED EXPERT's weights (see the note in `moe_layer`)
+    float* logits = nullptr;     ///< n_expert
+    int* ids = nullptr;          ///< k
+    float* weights = nullptr;    ///< k
+    float* shared = nullptr;     ///< n_embd
+    float* sh_scratch = nullptr; ///< shared_expert_scratch_bytes(n_ff): the shared expert's own scratch
+    uint8_t* x_q8_0 = nullptr;   ///< n_embd, block_q8_0 - the shared expert's weights want Q8_0 on the layers
+                                 ///< whose types are Q2_0/Q4_0/Q5_0/Q8_0/IQ4_NL, which is most of them
+    uint8_t* x_q8k = nullptr;    ///< n_embd, block_q8_K - and Q8_K on the K-quant ones
 };
 
 uint64_t moe_buffers_bytes(const ModelGeometry& g, int64_t k);
@@ -170,7 +170,8 @@ bool moe_route(const WeightTable& tables, const ModelGeometry& g, int64_t layer,
                const float* x, void* stream, std::string& err, const Doorbell* db = nullptr);
 /// The verify window's n tokens routed at once (see layer.cpp); bitwise per token what `moe_route` gives.
 bool moe_route_window(const WeightTable& tables, const ModelGeometry& g, int64_t layer, int64_t k, const MoEBuffers& b,
-                      const float* x, float* logits, int32_t* ids, float* weights, int n, void* stream, std::string& err);
+                      const float* x, float* logits, int32_t* ids, float* weights, int n, void* stream,
+                      std::string& err);
 
 /// The finishing half: the shared expert and the combination.
 ///
@@ -183,8 +184,8 @@ bool moe_finish(const WeightTable& tables, const ModelGeometry& g, int64_t layer
 /// Plan v0.3 P3: the two parts of `moe_finish` separately.  `moe_shared` computes the shared expert into
 /// `b.shared` and needs only `x`; `moe_combine_parts` combines `parts` with `b.weights` and `b.shared`.
 /// `moe_finish` is exactly `moe_shared` followed by `moe_combine_parts`.
-bool moe_shared(const WeightTable& tables, const ModelGeometry& g, int64_t layer, const MoEBuffers& b,
-                const float* x, void* stream, std::string& err);
+bool moe_shared(const WeightTable& tables, const ModelGeometry& g, int64_t layer, const MoEBuffers& b, const float* x,
+                void* stream, std::string& err);
 bool moe_combine_parts(const ModelGeometry& g, int64_t layer, int64_t k, const MoEBuffers& b, const float* parts,
                        float* out, void* stream, std::string& err);
 
@@ -204,7 +205,7 @@ bool layer_shared_early();
 /// shorter than the sequence would have `rope_neox_apply` read past it, which is a wrong rotation rather than a
 /// fault.
 struct QsaState {
-    uint16_t* k_pool = nullptr;      ///< [page][kv_head][page_size][head_dim] fp16 (null in INT8 mode)
+    uint16_t* k_pool = nullptr; ///< [page][kv_head][page_size][head_dim] fp16 (null in INT8 mode)
     uint16_t* v_pool = nullptr;
     /// Plan v0.3 P7: INT8 KV (qsa_set_kv_int8). Codes [page][kv_head][page_size][head_dim], one FP16 scale per 64.
     bool kv_int8 = false;
@@ -223,7 +224,7 @@ struct QsaState {
     /// K and V go through kv_q4.hpp's Walsh-Hadamard rotation before they are stored, the queries too, the output
     /// back: always for Q4_0, for INT8 by qsa_set_kv_int8_rotate (spreads outlier channels over the scale groups)
     bool kv_rot = false;
-    int32_t* page_table = nullptr;   ///< (n_pages,) logical page -> physical page (-1: not resident, streamed)
+    int32_t* page_table = nullptr; ///< (n_pages,) logical page -> physical page (-1: not resident, streamed)
     int64_t n_pages = 0;
     int64_t max_cells = 0;
 
@@ -234,21 +235,21 @@ struct QsaState {
     /// bounded staging pool shared by this session's main layers. Resolve invalidates it before each operation.
     /// The pool pointers above point at the slots.
     int kv_mode = 0;
-    bool shares_staging = false;     ///< true when multiple QSA states share the same host-only staging pool
+    bool shares_staging = false; ///< true when multiple QSA states share the same host-only staging pool
     int64_t n_slots = 0;
     guild::kernels::KvHostPools host;
-    void* host_allocation = nullptr;   ///< owns the pinned KV backing the mapped host pointers
+    void* host_allocation = nullptr; ///< owns the pinned KV backing the mapped host pointers
     uint64_t host_allocation_bytes = 0;
     guild::kernels::KvStreamMap map;
-    int64_t idx_pooled_rows = 0;     ///< rows of `idx_pooled` (a ring, which has no indexer, keeps 2)
+    int64_t idx_pooled_rows = 0; ///< rows of `idx_pooled` (a ring, which has no indexer, keeps 2)
 
-    float* idx_tail = nullptr;       ///< (idx_block - 1, idx_dim): the raw tail of the block being filled
-    float* idx_dead = nullptr;       ///< (idx_dim,): the spare slot's key, CONSTANT for the sequence
-    float* idx_pooled = nullptr;     ///< (max_cells/idx_block + 2, idx_dim)
+    float* idx_tail = nullptr;   ///< (idx_block - 1, idx_dim): the raw tail of the block being filled
+    float* idx_dead = nullptr;   ///< (idx_dim,): the spare slot's key, CONSTANT for the sequence
+    float* idx_pooled = nullptr; ///< (max_cells/idx_block + 2, idx_dim)
     int32_t* idx_block_pos = nullptr;
 
-    float* cos_tab = nullptr;        ///< (max_cells, n_rot/2), built on the HOST in float64
-    bool owns_rope = false;          ///< built the table above (not borrowed with share_rope): it releases it
+    float* cos_tab = nullptr; ///< (max_cells, n_rot/2), built on the HOST in float64
+    bool owns_rope = false;   ///< built the table above (not borrowed with share_rope): it releases it
     float* sin_tab = nullptr;
 
     /// THE PER-TOKEN COUNTS, IN DEVICE MEMORY - the whole reason this layer can be a graph.  `qsa_step_fill`
@@ -268,8 +269,8 @@ struct QsaState {
     ///
     /// Pinned as well as fixed, because a pageable source would make `cudaMemcpyAsync` a synchronous staged
     /// copy and give back the overlap the doorbell protocol exists for.
-    int32_t* host_step = nullptr;    ///< (kStepCount + 1,) pinned; final element is attention status
-    int32_t* host_pos = nullptr;     ///< (n_head,) pinned
+    int32_t* host_step = nullptr; ///< (kStepCount + 1,) pinned; final element is attention status
+    int32_t* host_pos = nullptr;  ///< (n_head,) pinned
 };
 
 /// Plan v0.3 P7: the RoPE cos/sin table (max_cells x n_rot/2 x 2 floats, 64 MiB at 262K) is identical in every
@@ -314,7 +315,7 @@ inline int qsa_kv_format(const QsaState& st) {
     // fall through to kKvF16 - a wrong layout silently applied is worse than a hard stop (PR review).
     if (st.kv_hybrid) {
         std::fprintf(stderr, "guild: qsa_kv_format: a hybrid K8V4 state must never reach the block movers\n");
-        std::exit(1);   // the kernels' own "unsupported geometry" convention (kv_q8.cu, qsa_decode_attn.cu)
+        std::exit(1); // the kernels' own "unsupported geometry" convention (kv_q8.cu, qsa_decode_attn.cu)
     }
     return st.kv_q4 ? guild::kernels::kKvQ4 : st.kv_int8 ? guild::kernels::kKvInt8 : guild::kernels::kKvF16;
 }
@@ -365,14 +366,14 @@ struct QsaBuffers {
     int32_t* ids = nullptr;        ///< cap = qsa_selection_width(kTopkMaxCells, s)
     uint16_t* k_scratch = nullptr; ///< cap * n_head_kv * head_dim
     uint16_t* v_scratch = nullptr;
-    float* attn = nullptr;         ///< n_head * head_dim
-    uint16_t* attn16 = nullptr;    ///< n_head * head_dim, for a fp16-activation consumer
+    float* attn = nullptr;      ///< n_head * head_dim
+    uint16_t* attn16 = nullptr; ///< n_head * head_dim, for a fp16-activation consumer
     /// `attn * sigmoid(gate)` in f32 and then in Q8_K - what `attn_output` ACTUALLY wants.  Its weights are
     /// Q4_K/Q5_K/Q6_K, whose `vec_dot_type` is Q8_K, and the fp16 path is worth 0.66-1.41% against the
     /// reference.  `docs/activation-contract.md`.
     float* attn32 = nullptr;
     uint8_t* attn_q8k = nullptr;
-    float* attn_scratch = nullptr;   ///< plan v0.3 P3: split-K decode attention partials
+    float* attn_scratch = nullptr; ///< plan v0.3 P3: split-K decode attention partials
 };
 
 uint64_t qsa_buffers_bytes(const ModelGeometry& g, int64_t max_cells);
@@ -394,8 +395,8 @@ uint64_t qsa_buffers_init(const ModelGeometry& g, int64_t max_cells, void* base,
 /// `attn_q` is Q2_0 (Q8_0 activation), `attn_k`/`attn_v`/`attn_output` are K-quants (Q8_K), and the two
 /// indexer projections are BF16 (bf16).
 bool qsa_layer(const WeightTable& tables, const ModelGeometry& g, int64_t layer, int64_t pos, int32_t pos_base,
-               const QsaState& st, const QsaBuffers& b, const float* x, float* out, void* stream,
-               std::string& err, float* dump = nullptr);
+               const QsaState& st, const QsaBuffers& b, const float* x, float* out, void* stream, std::string& err,
+               float* dump = nullptr);
 
 // ================================ THE DOORBELL ================================
 
@@ -420,13 +421,13 @@ struct Doorbell {
     int64_t n_embd = 0;
     int64_t k = 0;
     // the HOST's view
-    float* h_x_f = nullptr;        ///< n_embd
-    int32_t* h_ids = nullptr;      ///< k
-    float* h_weights = nullptr;    ///< k
-    uint32_t* h_seq = nullptr;     ///< 1
+    float* h_x_f = nullptr;     ///< n_embd
+    int32_t* h_ids = nullptr;   ///< k
+    float* h_weights = nullptr; ///< k
+    uint32_t* h_seq = nullptr;  ///< 1
     /// Plan v0.3 P3 token graph: the HOST's answer.  The host writes the ring value it has served (after the
     /// pool's output is in place); the device's `doorbell_wait` spins until the flag equals the ring.
-    uint32_t* h_flag = nullptr;    ///< 1
+    uint32_t* h_flag = nullptr; ///< 1
     // the DEVICE's view of the same bytes
     float* d_x_f = nullptr;
     int32_t* d_ids = nullptr;
@@ -448,16 +449,16 @@ void doorbell_reset(const Doorbell& db);
 /// `R` is (hc, n_embd) and is BOTH the input and the output: `hc` residual streams, each n_embd wide, which is
 /// what `gr_read`/`gr_write` exist for.  It is not one vector with a gate.
 struct BlockBuffers {
-    float* R = nullptr;                       ///< (hc, n_embd)
-    float* mixed = nullptr;                   ///< n_embd: what the mixer consumes
-    float* block_out = nullptr;               ///< n_embd: what a half produces
-    float* inject = nullptr;                  ///< hc: `gr_read`'s per-stream injection, reused per half
+    float* R = nullptr;         ///< (hc, n_embd)
+    float* mixed = nullptr;     ///< n_embd: what the mixer consumes
+    float* block_out = nullptr; ///< n_embd: what a half produces
+    float* inject = nullptr;    ///< hc: `gr_read`'s per-stream injection, reused per half
     /// Plan v0.3 P3 fused GR: the FFN half's injection lives here (the attention half's stays in `inject`),
     /// because the fused read of one half reads the other half's injection while writing its own.
-    float* inject2 = nullptr;                 ///< hc
-    float* gr_rs = nullptr;                   ///< hc: the fused read's per-stream 1/rms
-    uint8_t* head_q8k = nullptr;              ///< `q8k_bytes(n_embd)`: the head's Q8_K activation image
-    guild::kernels::GrWorkspace gr;          ///< `gr_read`'s scratch
+    float* inject2 = nullptr;       ///< hc
+    float* gr_rs = nullptr;         ///< hc: the fused read's per-stream 1/rms
+    uint8_t* head_q8k = nullptr;    ///< `q8k_bytes(n_embd)`: the head's Q8_K activation image
+    guild::kernels::GrWorkspace gr; ///< `gr_read`'s scratch
 
     /// THE HALF-LEVEL C1 ORACLE, and it is a HOST buffer of `(2 * n_embd + 2 * hc + n_head * head_dim)` floats
     /// PER LAYER: `[0, n_embd)` the attention half's `block_out`, `[n_embd, 2*n_embd)` the MoE half's, the two
@@ -514,15 +515,17 @@ bool embed_row(const WeightTable& tables, const ModelGeometry& g, int64_t token,
 ///
 /// `R` is read from `bb.R` and the result goes to `logits`, which the caller sizes at `output.weight`'s `ne1`
 /// (the vocabulary).  `bb.head_q8k` and `bb.mixed` are scratch.
-bool lm_head(const WeightTable& tables, const ModelGeometry& g, const BlockBuffers& bb, float* logits,
-             void* stream, std::string& err);
+bool lm_head(const WeightTable& tables, const ModelGeometry& g, const BlockBuffers& bb, float* logits, void* stream,
+             std::string& err);
 
 /// Compute the final residual mix in bb.mixed, before the output projection. This is shared by the
 /// canonical and experimental native head so only the projection's arithmetic changes in their A/B test.
-bool lm_head_mix(const WeightTable& tables, const ModelGeometry& g, const BlockBuffers& bb,
-                 void* stream, std::string& err);
+bool lm_head_mix(const WeightTable& tables, const ModelGeometry& g, const BlockBuffers& bb, void* stream,
+                 std::string& err);
 
-/// THE PER-LAYER OP ORDER of `phases/phase-2-correct-engine.md` P2.S5, architecture Ă„â€šĂ˘â‚¬ĹľÄ‚ËĂ˘â€šÂ¬ÄąË‡Ă„â€šĂ‹ÂÄ‚ËĂ˘â‚¬ĹˇĂ‚Â¬Ă„Ä…Ă‹â€ˇÄ‚â€žĂ˘â‚¬ĹˇÄ‚ËĂ˘â€šÂ¬ÄąË‡Ă„â€šĂ˘â‚¬ĹˇÄ‚â€šĂ‚Â§6.1, for ONE layer:
+/// THE PER-LAYER OP ORDER of `phases/phase-2-correct-engine.md` P2.S5, architecture
+/// Ă„â€šĂ˘â‚¬ĹľÄ‚ËĂ˘â€šÂ¬ÄąË‡Ă„â€šĂ‹ÂÄ‚ËĂ˘â‚¬ĹˇĂ‚Â¬Ă„Ä…Ă‹â€ˇÄ‚â€žĂ˘â‚¬ĹˇÄ‚ËĂ˘â€šÂ¬ÄąË‡Ă„â€šĂ˘â‚¬ĹˇÄ‚â€šĂ‚Â§6.1,
+/// for ONE layer:
 ///
 ///     gr_read (attn)  ->  mixer  ->  gr_write (attn)
 ///     gr_read (ffn)   ->  MoE    ->  gr_write (ffn)
@@ -554,9 +557,9 @@ struct PleRun {
     guild::kernels::PleTable* table = nullptr;
     guild::kernels::PleWeights w;
     /// The session's PLE state, by pointer so `block_layer_pre` needs no `SessionState`.
-    const int32_t* token = nullptr;    ///< the token being decoded
-    const int32_t* prev = nullptr;     ///< (2,) predecessors, OLDEST FIRST, `-1` where there is none
-    float* hist = nullptr;             ///< NG_HIST x hc_dim NORMALIZED history, row-fastest
+    const int32_t* token = nullptr; ///< the token being decoded
+    const int32_t* prev = nullptr;  ///< (2,) predecessors, OLDEST FIRST, `-1` where there is none
+    float* hist = nullptr;          ///< NG_HIST x hc_dim NORMALIZED history, row-fastest
     /// The gathered 2560-wide row vector on the DEVICE, and the host staging it is copied from: `gather`
     /// writes HOST memory (the table is a host mapping) and the block wants the device.
     float* emb_dev = nullptr;
@@ -566,12 +569,11 @@ struct PleRun {
     float* scratch = nullptr;
     guild::kernels::PleConsts consts;
     bool ready() const {
-        return table != nullptr && table->is_open() && hist != nullptr && emb_dev != nullptr &&
-               emb_host != nullptr && scratch != nullptr && token != nullptr && prev != nullptr &&
+        return table != nullptr && table->is_open() && hist != nullptr && emb_dev != nullptr && emb_host != nullptr &&
+               scratch != nullptr && token != nullptr && prev != nullptr &&
                ((w.key_codes != nullptr && w.key_scales != nullptr) || w.key_bf16 != nullptr ||
                 w.key_native_data != nullptr) &&
-               w.value_bf16 != nullptr &&
-               w.norm_key != nullptr && w.norm_query != nullptr && w.norm_conv != nullptr &&
+               w.value_bf16 != nullptr && w.norm_key != nullptr && w.norm_query != nullptr && w.norm_conv != nullptr &&
                w.conv1d_f16 != nullptr;
     }
 };
@@ -596,8 +598,8 @@ uint64_t ple_run_scratch_bytes();
 /// `hidden + gated + silu(conv)` on the residual itself - it is a residual UPDATE, and the architecture puts
 /// the gathered rows in place "before layer 2".
 bool block_layer(const WeightTable& tables, const ModelGeometry& g, int64_t layer, int64_t pos, int32_t pos_base,
-                 const GdnBuffers& gb, const QsaState& qst, const QsaBuffers& qb, const MoEBuffers& mb,
-                 int64_t k, const BlockBuffers& bb, const float* parts, void* stream, std::string& err,
+                 const GdnBuffers& gb, const QsaState& qst, const QsaBuffers& qb, const MoEBuffers& mb, int64_t k,
+                 const BlockBuffers& bb, const float* parts, void* stream, std::string& err,
                  const Doorbell* db = nullptr, const PleRun* ple = nullptr);
 
 /// **THE BLOCK, SPLIT AT THE ROUTER, SO A HOST LOOP CAN PUT THE CPU POOL IN THE MIDDLE.**
@@ -628,14 +630,12 @@ bool block_layer(const WeightTable& tables, const ModelGeometry& g, int64_t laye
 /// **A half is not a free-standing call.**  `2` reads what `1` left in `bb.mixed`/`bb.inject`, exactly as
 /// `block_layer_post` does; the two are only meaningful replayed in order on one stream, which is what
 /// `session_replay_stages` does.
-bool block_layer_pre(const WeightTable& tables, const ModelGeometry& g, int64_t layer, int64_t pos,
-                     int32_t pos_base, const GdnBuffers& gb, const QsaState& qst, const QsaBuffers& qb,
-                     const MoEBuffers& mb, int64_t k, const BlockBuffers& bb, void* stream, std::string& err,
-                     const Doorbell* db = nullptr, const PleRun* ple = nullptr, int half = 0,
-                     int stage_prefix = 0);
+bool block_layer_pre(const WeightTable& tables, const ModelGeometry& g, int64_t layer, int64_t pos, int32_t pos_base,
+                     const GdnBuffers& gb, const QsaState& qst, const QsaBuffers& qb, const MoEBuffers& mb, int64_t k,
+                     const BlockBuffers& bb, void* stream, std::string& err, const Doorbell* db = nullptr,
+                     const PleRun* ple = nullptr, int half = 0, int stage_prefix = 0);
 
-bool block_layer_post(const WeightTable& tables, const ModelGeometry& g, int64_t layer, int64_t k,
-                      const MoEBuffers& mb, const BlockBuffers& bb, const float* parts, void* stream,
-                      std::string& err);
+bool block_layer_post(const WeightTable& tables, const ModelGeometry& g, int64_t layer, int64_t k, const MoEBuffers& mb,
+                      const BlockBuffers& bb, const float* parts, void* stream, std::string& err);
 
-}  // namespace guild::core
+} // namespace guild::core

@@ -40,17 +40,19 @@ std::string sse_data(const std::string& payload) {
     std::string event = "data: ";
     for (char c : payload) {
         event += c;
-        if (c == '\n') event += "data: ";
+        if (c == '\n')
+            event += "data: ";
     }
     return event + "\n\n";
 }
 
-bool generate_checked(IInferenceEngine& engine, const InferenceRequest& req,
-                      StreamCallback callback, GenerationResult& result) {
+bool generate_checked(IInferenceEngine& engine, const InferenceRequest& req, StreamCallback callback,
+                      GenerationResult& result) {
     try {
-        const bool ok = callback ? engine.generate_stream(req, std::move(callback), result)
-                                 : engine.generate(req, result);
-        if (!ok || result.finish_reason == "error") return result.fail(result.error_message);
+        const bool ok =
+            callback ? engine.generate_stream(req, std::move(callback), result) : engine.generate(req, result);
+        if (!ok || result.finish_reason == "error")
+            return result.fail(result.error_message);
         return true;
     } catch (const std::exception& e) {
         return result.fail(std::string("Inference failed: ") + e.what());
@@ -62,14 +64,17 @@ bool generate_checked(IInferenceEngine& engine, const InferenceRequest& req,
 } // namespace
 
 Server::Server(std::shared_ptr<IInferenceEngine> engine, ServerOptions options)
-    : engine_(std::move(engine)), options_(std::move(options)) {}
+    : engine_(std::move(engine)),
+      options_(std::move(options)) {
+}
 
 Server::~Server() {
     stop();
 }
 
 bool Server::start() {
-    if (running_.load()) return true;
+    if (running_.load())
+        return true;
 
     signal(SIGPIPE, SIG_IGN);
 
@@ -98,8 +103,8 @@ bool Server::start() {
 
     if (bind(listen_fd_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
         if (options_.verbose) {
-            std::cerr << "[server] Bind failed on " << options_.host << ":" << options_.port
-                      << ": " << std::strerror(errno) << "\n";
+            std::cerr << "[server] Bind failed on " << options_.host << ":" << options_.port << ": "
+                      << std::strerror(errno) << "\n";
         }
         close(listen_fd_);
         listen_fd_ = -1;
@@ -149,7 +154,8 @@ void Server::run() {
 
 void Server::stop() {
     running_.store(false);
-    if (stopped_.exchange(true)) return;
+    if (stopped_.exchange(true))
+        return;
 
     if (listen_fd_ >= 0) {
         shutdown(listen_fd_, SHUT_RDWR);
@@ -177,13 +183,14 @@ void Server::stop() {
 
 void Server::listener_loop() {
     while (running_.load()) {
-        struct pollfd pfd{};
+        struct pollfd pfd {};
         pfd.fd = listen_fd_;
         pfd.events = POLLIN;
 
         int ret = poll(&pfd, 1, 100);
         if (ret < 0) {
-            if (errno == EINTR) continue;
+            if (errno == EINTR)
+                continue;
             break;
         }
         if (ret == 0) {
@@ -196,7 +203,7 @@ void Server::listener_loop() {
             int client_fd = accept(listen_fd_, reinterpret_cast<sockaddr*>(&client_addr), &client_len);
             if (client_fd >= 0) {
                 // Set send/recv timeouts
-                struct timeval tv{};
+                struct timeval tv {};
                 tv.tv_sec = 30;
                 tv.tv_usec = 0;
                 setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
@@ -209,7 +216,8 @@ void Server::listener_loop() {
                         queue_cv_.notify_one();
                     } else {
                         // Queue full: reject immediately
-                        const char busy_msg[] = "HTTP/1.1 503 Service Unavailable\r\nRetry-After: 1\r\nContent-Length: 0\r\n\r\n";
+                        const char busy_msg[] =
+                            "HTTP/1.1 503 Service Unavailable\r\nRetry-After: 1\r\nContent-Length: 0\r\n\r\n";
                         send(client_fd, busy_msg, sizeof(busy_msg) - 1, MSG_NOSIGNAL);
                         close(client_fd);
                     }
@@ -224,9 +232,7 @@ void Server::worker_loop() {
         int client_fd = -1;
         {
             std::unique_lock<std::mutex> lock(queue_mutex_);
-            queue_cv_.wait(lock, [this] {
-                return !client_queue_.empty() || !running_.load();
-            });
+            queue_cv_.wait(lock, [this] { return !client_queue_.empty() || !running_.load(); });
 
             if (!running_.load() && client_queue_.empty()) {
                 return;
@@ -252,11 +258,13 @@ void Server::handle_client(int client_fd) {
 
     while (header_end == std::string::npos) {
         ssize_t n = recv(client_fd, buf, sizeof(buf), 0);
-        if (n <= 0) return;
+        if (n <= 0)
+            return;
         raw_buffer.append(buf, static_cast<size_t>(n));
         header_end = raw_buffer.find("\r\n\r\n");
         if (raw_buffer.size() > 65536) {
-            send_response(client_fd, HttpResponse::json(400, OpenAiFormatter::format_error("Request headers too large")));
+            send_response(client_fd,
+                          HttpResponse::json(400, OpenAiFormatter::format_error("Request headers too large")));
             return;
         }
     }
@@ -270,14 +278,17 @@ void Server::handle_client(int client_fd) {
 
     size_t content_len = req.content_length();
     if (content_len > MAX_BODY_SIZE) {
-        send_response(client_fd, HttpResponse::json(413, OpenAiFormatter::format_error("Payload too large", "invalid_request_error", "", "payload_too_large")));
+        send_response(client_fd, HttpResponse::json(413, OpenAiFormatter::format_error("Payload too large",
+                                                                                       "invalid_request_error", "",
+                                                                                       "payload_too_large")));
         return;
     }
     req.body = raw_buffer.substr(header_end + 4);
 
     while (req.body.size() < content_len) {
         ssize_t n = recv(client_fd, buf, sizeof(buf), 0);
-        if (n <= 0) break;
+        if (n <= 0)
+            break;
         req.body.append(buf, static_cast<size_t>(n));
     }
 
@@ -292,10 +303,9 @@ void Server::handle_client(int client_fd) {
         auto start = std::chrono::steady_clock::now();
         telemetry_.record_request_start();
 
-        std::string json_body = OpenAiFormatter::format_health(
-            engine_ ? engine_->model_name() : "None",
-            engine_ ? engine_->max_context() : 0,
-            engine_ ? engine_->is_ready() : false);
+        std::string json_body =
+            OpenAiFormatter::format_health(engine_ ? engine_->model_name() : "None",
+                                           engine_ ? engine_->max_context() : 0, engine_ ? engine_->is_ready() : false);
         send_response(client_fd, HttpResponse::json(200, json_body));
 
         auto end = std::chrono::steady_clock::now();
@@ -314,8 +324,10 @@ void Server::handle_client(int client_fd) {
         telemetry_.record_request_start();
 
         std::vector<std::string> names;
-        if (engine_) names.push_back(engine_->model_name());
-        else names.push_back("Qwen3.8-Flash-Next");
+        if (engine_)
+            names.push_back(engine_->model_name());
+        else
+            names.push_back("Qwen3.8-Flash-Next");
 
         std::string json_body = OpenAiFormatter::format_models(names);
         send_response(client_fd, HttpResponse::json(200, json_body));
@@ -347,7 +359,8 @@ void Server::handle_client(int client_fd) {
     m.path = req.path;
     m.status_code = 404;
     m.outcome = "not_found";
-    send_response(client_fd, HttpResponse::json(404, OpenAiFormatter::format_error("Not found", "invalid_request_error", "", "not_found")));
+    send_response(client_fd, HttpResponse::json(404, OpenAiFormatter::format_error("Not found", "invalid_request_error",
+                                                                                   "", "not_found")));
     log_request(m);
 }
 
@@ -365,7 +378,8 @@ void Server::process_chat_completions(int client_fd, const HttpRequest& req) {
         m.status_code = 400;
         m.outcome = "error";
         m.duration_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - start_time).count();
-        send_response(client_fd, HttpResponse::json(400, OpenAiFormatter::format_error(err_msg, err_type, err_param, err_code)));
+        send_response(client_fd,
+                      HttpResponse::json(400, OpenAiFormatter::format_error(err_msg, err_type, err_param, err_code)));
         telemetry_.record_request_finish(m);
         log_request(m);
         return;
@@ -378,7 +392,9 @@ void Server::process_chat_completions(int client_fd, const HttpRequest& req) {
         m.status_code = 503;
         m.outcome = "error";
         m.duration_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - start_time).count();
-        send_response(client_fd, HttpResponse::json(503, OpenAiFormatter::format_error("Engine not ready", "server_error", "", "engine_not_ready")));
+        send_response(client_fd,
+                      HttpResponse::json(503, OpenAiFormatter::format_error("Engine not ready", "server_error", "",
+                                                                            "engine_not_ready")));
         telemetry_.record_request_finish(m);
         log_request(m);
         return;
@@ -402,7 +418,9 @@ void Server::process_chat_completions(int client_fd, const HttpRequest& req) {
             m.status_code = 400;
             m.outcome = "error";
             m.duration_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - start_time).count();
-            send_response(client_fd, HttpResponse::json(400, OpenAiFormatter::format_error(tpl_err, "invalid_request_error", "messages", "template_error")));
+            send_response(client_fd,
+                          HttpResponse::json(400, OpenAiFormatter::format_error(tpl_err, "invalid_request_error",
+                                                                                "messages", "template_error")));
             telemetry_.record_request_finish(m);
             log_request(m);
             return;
@@ -419,7 +437,9 @@ void Server::process_chat_completions(int client_fd, const HttpRequest& req) {
         m.status_code = 400;
         m.outcome = "error";
         m.duration_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - start_time).count();
-        send_response(client_fd, HttpResponse::json(400, OpenAiFormatter::format_error(enc_err, "invalid_request_error", "prompt", "tokenization_failed")));
+        send_response(client_fd,
+                      HttpResponse::json(400, OpenAiFormatter::format_error(enc_err, "invalid_request_error", "prompt",
+                                                                            "tokenization_failed")));
         telemetry_.record_request_finish(m);
         log_request(m);
         return;
@@ -439,36 +459,40 @@ void Server::process_chat_completions(int client_fd, const HttpRequest& req) {
     }
     inf_req.sampling.stop = chat_req.stop;
 
-    int64_t created = std::chrono::duration_cast<std::chrono::seconds>(
-                          std::chrono::system_clock::now().time_since_epoch())
-                          .count();
+    int64_t created =
+        std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
 
     if (chat_req.stream) {
         // SSE Headers
-        const char sse_header[] =
-            "HTTP/1.1 200 OK\r\n"
-            "Content-Type: text/event-stream; charset=utf-8\r\n"
-            "Cache-Control: no-cache\r\n"
-            "Connection: keep-alive\r\n"
-            "Access-Control-Allow-Origin: *\r\n\r\n";
+        const char sse_header[] = "HTTP/1.1 200 OK\r\n"
+                                  "Content-Type: text/event-stream; charset=utf-8\r\n"
+                                  "Cache-Control: no-cache\r\n"
+                                  "Connection: keep-alive\r\n"
+                                  "Access-Control-Allow-Origin: *\r\n\r\n";
 
         // Delay success headers until inference has produced a checked token. An
         // initialization/prefill failure must still be an HTTP error response.
         bool stream_started = false;
         bool client_alive = true;
-        std::string first_chunk = "data: " + OpenAiFormatter::format_chat_chunk(
-            inf_req.request_id, inf_req.model, created, "assistant", "", "") + "\n\n";
+        std::string first_chunk =
+            "data: " +
+            OpenAiFormatter::format_chat_chunk(inf_req.request_id, inf_req.model, created, "assistant", "", "") +
+            "\n\n";
         auto start_stream = [&]() {
-            if (stream_started) return client_alive;
+            if (stream_started)
+                return client_alive;
             stream_started = true;
             client_alive = send_all(client_fd, sse_header, sizeof(sse_header) - 1) &&
                            send_all(client_fd, first_chunk.data(), first_chunk.size());
             return client_alive;
         };
         auto stream_cb = [&](const TokenOutput& tok) -> bool {
-            if (!start_stream()) return false;
-            std::string chunk_data = "data: " + OpenAiFormatter::format_chat_chunk(
-                inf_req.request_id, inf_req.model, created, "", tok.text, "") + "\n\n";
+            if (!start_stream())
+                return false;
+            std::string chunk_data =
+                "data: " +
+                OpenAiFormatter::format_chat_chunk(inf_req.request_id, inf_req.model, created, "", tok.text, "") +
+                "\n\n";
             if (!send_all(client_fd, chunk_data.data(), chunk_data.size())) {
                 client_alive = false;
                 return false;
@@ -481,16 +505,19 @@ void Server::process_chat_completions(int client_fd, const HttpRequest& req) {
 
         if (client_alive && ok) {
             start_stream();
-            std::string final_chunk = "data: " + OpenAiFormatter::format_chat_chunk(
-                inf_req.request_id, inf_req.model, created, "", "", gen_res.finish_reason) + "\n\n";
+            std::string final_chunk = "data: " +
+                                      OpenAiFormatter::format_chat_chunk(inf_req.request_id, inf_req.model, created, "",
+                                                                         "", gen_res.finish_reason) +
+                                      "\n\n";
             send_all(client_fd, final_chunk.data(), final_chunk.size());
 
             const char done_msg[] = "data: [DONE]\n\n";
             send_all(client_fd, done_msg, sizeof(done_msg) - 1);
         } else if (client_alive) {
-            const std::string error = OpenAiFormatter::format_error(
-                gen_res.error_message, "server_error", "", "inference_failed");
-            if (!stream_started) send_response(client_fd, HttpResponse::json(500, error));
+            const std::string error =
+                OpenAiFormatter::format_error(gen_res.error_message, "server_error", "", "inference_failed");
+            if (!stream_started)
+                send_response(client_fd, HttpResponse::json(500, error));
             else {
                 const std::string event = sse_data(error);
                 send_all(client_fd, event.data(), event.size());
@@ -527,10 +554,11 @@ void Server::process_chat_completions(int client_fd, const HttpRequest& req) {
         GenerationResult gen_res;
         const bool ok = generate_checked(*engine_, inf_req, nullptr, gen_res);
 
-        std::string json_res = ok ? OpenAiFormatter::format_chat_completion(
-            inf_req.request_id, inf_req.model, created, gen_res.text,
-            gen_res.finish_reason, gen_res.prompt_tokens, gen_res.completion_tokens)
-            : OpenAiFormatter::format_error(gen_res.error_message, "server_error", "", "inference_failed");
+        std::string json_res =
+            ok ? OpenAiFormatter::format_chat_completion(inf_req.request_id, inf_req.model, created, gen_res.text,
+                                                         gen_res.finish_reason, gen_res.prompt_tokens,
+                                                         gen_res.completion_tokens)
+               : OpenAiFormatter::format_error(gen_res.error_message, "server_error", "", "inference_failed");
 
         send_response(client_fd, HttpResponse::json(ok ? 200 : 500, json_res));
 
@@ -577,7 +605,8 @@ void Server::process_completions(int client_fd, const HttpRequest& req) {
         m.status_code = 400;
         m.outcome = "error";
         m.duration_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - start_time).count();
-        send_response(client_fd, HttpResponse::json(400, OpenAiFormatter::format_error(err_msg, err_type, err_param, err_code)));
+        send_response(client_fd,
+                      HttpResponse::json(400, OpenAiFormatter::format_error(err_msg, err_type, err_param, err_code)));
         telemetry_.record_request_finish(m);
         log_request(m);
         return;
@@ -590,7 +619,9 @@ void Server::process_completions(int client_fd, const HttpRequest& req) {
         m.status_code = 503;
         m.outcome = "error";
         m.duration_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - start_time).count();
-        send_response(client_fd, HttpResponse::json(503, OpenAiFormatter::format_error("Engine not ready", "server_error", "", "engine_not_ready")));
+        send_response(client_fd,
+                      HttpResponse::json(503, OpenAiFormatter::format_error("Engine not ready", "server_error", "",
+                                                                            "engine_not_ready")));
         telemetry_.record_request_finish(m);
         log_request(m);
         return;
@@ -609,7 +640,9 @@ void Server::process_completions(int client_fd, const HttpRequest& req) {
         m.status_code = 400;
         m.outcome = "error";
         m.duration_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - start_time).count();
-        send_response(client_fd, HttpResponse::json(400, OpenAiFormatter::format_error(enc_err, "invalid_request_error", "prompt", "tokenization_failed")));
+        send_response(client_fd,
+                      HttpResponse::json(400, OpenAiFormatter::format_error(enc_err, "invalid_request_error", "prompt",
+                                                                            "tokenization_failed")));
         telemetry_.record_request_finish(m);
         log_request(m);
         return;
@@ -629,30 +662,32 @@ void Server::process_completions(int client_fd, const HttpRequest& req) {
     }
     inf_req.sampling.stop = comp_req.stop;
 
-    int64_t created = std::chrono::duration_cast<std::chrono::seconds>(
-                          std::chrono::system_clock::now().time_since_epoch())
-                          .count();
+    int64_t created =
+        std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
 
     if (comp_req.stream) {
-        const char sse_header[] =
-            "HTTP/1.1 200 OK\r\n"
-            "Content-Type: text/event-stream; charset=utf-8\r\n"
-            "Cache-Control: no-cache\r\n"
-            "Connection: keep-alive\r\n"
-            "Access-Control-Allow-Origin: *\r\n\r\n";
+        const char sse_header[] = "HTTP/1.1 200 OK\r\n"
+                                  "Content-Type: text/event-stream; charset=utf-8\r\n"
+                                  "Cache-Control: no-cache\r\n"
+                                  "Connection: keep-alive\r\n"
+                                  "Access-Control-Allow-Origin: *\r\n\r\n";
 
         bool stream_started = false;
         bool client_alive = true;
         auto start_stream = [&]() {
-            if (stream_started) return client_alive;
+            if (stream_started)
+                return client_alive;
             stream_started = true;
             client_alive = send_all(client_fd, sse_header, sizeof(sse_header) - 1);
             return client_alive;
         };
         auto stream_cb = [&](const TokenOutput& tok) -> bool {
-            if (!start_stream()) return false;
-            std::string chunk_data = "data: " + OpenAiFormatter::format_completion_chunk(
-                inf_req.request_id, inf_req.model, created, tok.text, "") + "\n\n";
+            if (!start_stream())
+                return false;
+            std::string chunk_data =
+                "data: " +
+                OpenAiFormatter::format_completion_chunk(inf_req.request_id, inf_req.model, created, tok.text, "") +
+                "\n\n";
             if (!send_all(client_fd, chunk_data.data(), chunk_data.size())) {
                 client_alive = false;
                 return false;
@@ -665,16 +700,19 @@ void Server::process_completions(int client_fd, const HttpRequest& req) {
 
         if (client_alive && ok) {
             start_stream();
-            std::string final_chunk = "data: " + OpenAiFormatter::format_completion_chunk(
-                inf_req.request_id, inf_req.model, created, "", gen_res.finish_reason) + "\n\n";
+            std::string final_chunk = "data: " +
+                                      OpenAiFormatter::format_completion_chunk(inf_req.request_id, inf_req.model,
+                                                                               created, "", gen_res.finish_reason) +
+                                      "\n\n";
             send_all(client_fd, final_chunk.data(), final_chunk.size());
 
             const char done_msg[] = "data: [DONE]\n\n";
             send_all(client_fd, done_msg, sizeof(done_msg) - 1);
         } else if (client_alive) {
-            const std::string error = OpenAiFormatter::format_error(
-                gen_res.error_message, "server_error", "", "inference_failed");
-            if (!stream_started) send_response(client_fd, HttpResponse::json(500, error));
+            const std::string error =
+                OpenAiFormatter::format_error(gen_res.error_message, "server_error", "", "inference_failed");
+            if (!stream_started)
+                send_response(client_fd, HttpResponse::json(500, error));
             else {
                 const std::string event = sse_data(error);
                 send_all(client_fd, event.data(), event.size());
@@ -711,10 +749,11 @@ void Server::process_completions(int client_fd, const HttpRequest& req) {
         GenerationResult gen_res;
         const bool ok = generate_checked(*engine_, inf_req, nullptr, gen_res);
 
-        std::string json_res = ok ? OpenAiFormatter::format_completion(
-            inf_req.request_id, inf_req.model, created, gen_res.text,
-            gen_res.finish_reason, gen_res.prompt_tokens, gen_res.completion_tokens)
-            : OpenAiFormatter::format_error(gen_res.error_message, "server_error", "", "inference_failed");
+        std::string json_res =
+            ok ? OpenAiFormatter::format_completion(inf_req.request_id, inf_req.model, created, gen_res.text,
+                                                    gen_res.finish_reason, gen_res.prompt_tokens,
+                                                    gen_res.completion_tokens)
+               : OpenAiFormatter::format_error(gen_res.error_message, "server_error", "", "inference_failed");
 
         send_response(client_fd, HttpResponse::json(ok ? 200 : 500, json_res));
 
@@ -748,7 +787,8 @@ void Server::process_completions(int client_fd, const HttpRequest& req) {
 }
 
 void Server::log_request(const RequestMetrics& m) {
-    if (options_.quiet) return;
+    if (options_.quiet)
+        return;
 
     if (options_.json_telemetry) {
         std::cout << Telemetry::format_jsonl(m) << std::endl;

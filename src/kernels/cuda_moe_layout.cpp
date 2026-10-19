@@ -9,18 +9,43 @@
 namespace guild::kernels {
 bool dequant_bf16_supported(int t) noexcept {
     switch (t) {
-    case 2: case 6: case 7: case 8: case 20: case 11: case 12: case 13: case 14: case 23: case 42: return true;
+    case 2:
+    case 6:
+    case 7:
+    case 8:
+    case 20:
+    case 11:
+    case 12:
+    case 13:
+    case 14:
+    case 23:
+    case 42: return true;
     default: return false;
     }
 }
 bool iq_supported(int t) noexcept {
     switch (t) {
-    case 16: case 17: case 18: case 20: case 21: case 22: case 23: case 29: case 42:
-    case 11: case 12: case 13: case 7: case 6: case 8: return true;
+    case 16:
+    case 17:
+    case 18:
+    case 20:
+    case 21:
+    case 22:
+    case 23:
+    case 29:
+    case 42:
+    case 11:
+    case 12:
+    case 13:
+    case 7:
+    case 6:
+    case 8: return true;
     default: return false;
     }
 }
-bool embed_type_supported(int t) noexcept { return iq_supported(t) || t == 30; }
+bool embed_type_supported(int t) noexcept {
+    return iq_supported(t) || t == 30;
+}
 size_t iq_row_bytes(int t, int64_t n) noexcept {
     switch (t) {
     case 16: return size_t(n / 256) * 66;
@@ -45,31 +70,50 @@ size_t iq_row_bytes(int t, int64_t n) noexcept {
 bool native_expert_supported(int gu, int down, int64_t n, int64_t ff) noexcept {
     int qg = 0, qd = 0;
     switch (gu) {
-    case 16: case 17: case 18: case 21: case 22: case 23: case 29: case 12: case 13: qg = 256; break;
+    case 16:
+    case 17:
+    case 18:
+    case 21:
+    case 22:
+    case 23:
+    case 29:
+    case 12:
+    case 13: qg = 256; break;
     case 42: qg = 64; break;
-    case 6: case 8: qg = 32; break;
+    case 6:
+    case 8: qg = 32; break;
     }
     switch (down) {
-    case 20: case 7: case 6: case 8: qd = 32; break;
+    case 20:
+    case 7:
+    case 6:
+    case 8: qd = 32; break;
     case 23: qd = 256; break;
     case 42: qd = 64; break;
     }
-    return qg && qd && iq_supported(gu) && iq_supported(down) && n % qg == 0 && ff % qd == 0 &&
-           n % 256 == 0 && (ff * n) % 256 == 0;
+    return qg && qd && iq_supported(gu) && iq_supported(down) && n % qg == 0 && ff % qd == 0 && n % 256 == 0 &&
+           (ff * n) % 256 == 0;
 }
 NativeExpertLayout native_expert_layout(int gu, int down, int64_t n, int64_t ff) {
     NativeExpertLayout l;
-    l.gu_type = gu; l.d_type = down; l.n_embd = n; l.n_ff = ff;
-    l.gu_row = iq_row_bytes(gu, n); l.d_row = iq_row_bytes(down, ff);
-    l.up_off = size_t(ff) * l.gu_row; l.down_off = 2 * l.up_off;
-    l.bytes = l.down_off + size_t(n) * l.d_row; return l;
+    l.gu_type = gu;
+    l.d_type = down;
+    l.n_embd = n;
+    l.n_ff = ff;
+    l.gu_row = iq_row_bytes(gu, n);
+    l.d_row = iq_row_bytes(down, ff);
+    l.up_off = size_t(ff) * l.gu_row;
+    l.down_off = 2 * l.up_off;
+    l.bytes = l.down_off + size_t(n) * l.d_row;
+    return l;
 }
 size_t native_expert_scratch_bytes(int64_t cap, int64_t ff) {
     const size_t f = size_t(cap) * size_t(ff) * sizeof(float);
     return 3 * ((f + 255) & ~size_t(255)) + ((size_t(cap) * size_t(ff / 32) * 36 + 255) & ~size_t(255));
 }
 uint64_t moe_hit_grouped_scratch_bytes(int64_t hits, int64_t n, int64_t ff) {
-    if (hits <= 0) return 0;
+    if (hits <= 0)
+        return 0;
     const uint64_t gu = uint64_t(hits) * uint64_t(2 * ff) * 4;
     const uint64_t q8 = uint64_t(hits) * uint64_t(ff / 32) * 34;
     const uint64_t hs = uint64_t(hits) * uint64_t(ff / 32) * 4;
@@ -88,13 +132,17 @@ size_t gr_workspace_init(const GrShapes& s, void* base, GrWorkspace& out) {
     size_t bytes = 0;
     void* ptr[5]{};
     for (int k = 0; k < 5; ++k) {
-        if (base) ptr[k] = static_cast<unsigned char*>(base) + bytes;
+        if (base)
+            ptr[k] = static_cast<unsigned char*>(base) + bytes;
         bytes += (sz[k] + 15) & ~size_t(15);
     }
     out.bytes = bytes;
     if (base) {
-        out.xn = static_cast<float*>(ptr[0]); out.xq = static_cast<uint16_t*>(ptr[1]);
-        out.lq = static_cast<uint16_t*>(ptr[2]); out.gated = static_cast<float*>(ptr[3]); out.lo = static_cast<float*>(ptr[4]);
+        out.xn = static_cast<float*>(ptr[0]);
+        out.xq = static_cast<uint16_t*>(ptr[1]);
+        out.lq = static_cast<uint16_t*>(ptr[2]);
+        out.gated = static_cast<float*>(ptr[3]);
+        out.lo = static_cast<float*>(ptr[4]);
     }
     return bytes;
 }

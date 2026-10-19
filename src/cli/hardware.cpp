@@ -21,14 +21,16 @@ namespace {
 
 std::string trim(const std::string& str) {
     size_t first = str.find_first_not_of(" \t\r\n");
-    if (first == std::string::npos) return "";
+    if (first == std::string::npos)
+        return "";
     size_t last = str.find_last_not_of(" \t\r\n");
     return str.substr(first, (last - first + 1));
 }
 
 void probe_linux_cpu(HardwareInfo& hw) {
     std::ifstream cpuinfo("/proc/cpuinfo");
-    if (!cpuinfo.is_open()) return;
+    if (!cpuinfo.is_open())
+        return;
 
     std::string line;
     std::set<std::string> physical_cores;
@@ -63,12 +65,14 @@ void probe_linux_cpu(HardwareInfo& hw) {
     hw.cpu_logical_threads = logical_count;
     hw.cpu_physical_cores = (int) physical_cores.size();
     hw.cpu_sockets = std::max(1, (int) physical_sockets.size());
-    if (hw.cpu_physical_cores == 0) hw.cpu_physical_cores = hw.cpu_logical_threads;
+    if (hw.cpu_physical_cores == 0)
+        hw.cpu_physical_cores = hw.cpu_logical_threads;
 }
 
 void probe_linux_ram(HardwareInfo& hw) {
     std::ifstream meminfo("/proc/meminfo");
-    if (!meminfo.is_open()) return;
+    if (!meminfo.is_open())
+        return;
 
     std::string line;
     uint64_t total_kb = 0, avail_kb = 0;
@@ -123,7 +127,7 @@ void probe_gpu(HardwareInfo& hw) {
     }
 }
 
-}  // namespace
+} // namespace
 
 HardwareInfo detect_hardware() {
     platform::configure_device_runtime_policy();
@@ -154,26 +158,34 @@ std::string HardwareInfo::summary_cpu() const {
     const std::string reg = "(R)";
     const std::string tm = "(TM)";
     size_t pos;
-    while ((pos = name.find(intel)) != std::string::npos) name.erase(pos, intel.length());
-    while ((pos = name.find(reg)) != std::string::npos) name.erase(pos, reg.length());
-    while ((pos = name.find(tm)) != std::string::npos) name.erase(pos, tm.length());
+    while ((pos = name.find(intel)) != std::string::npos)
+        name.erase(pos, intel.length());
+    while ((pos = name.find(reg)) != std::string::npos)
+        name.erase(pos, reg.length());
+    while ((pos = name.find(tm)) != std::string::npos)
+        name.erase(pos, tm.length());
     auto at = name.find(" CPU @");
-    if (at != std::string::npos) name = name.substr(0, at);
+    if (at != std::string::npos)
+        name = name.substr(0, at);
     at = name.find(" @");
-    if (at != std::string::npos) name = name.substr(0, at);
+    if (at != std::string::npos)
+        name = name.substr(0, at);
 
     s += trim(name);
     return s.empty() ? "x86_64 CPU" : s;
 }
 
 std::string HardwareInfo::summary_gpu() const {
-    if (gpu_name.empty()) return "None (CPU-only)";
+    if (gpu_name.empty())
+        return "None (CPU-only)";
     std::string name = gpu_name;
     const std::string nvid = "NVIDIA GeForce ";
     const std::string nvid2 = "NVIDIA ";
     size_t pos;
-    if ((pos = name.find(nvid)) != std::string::npos) name.erase(pos, nvid.length());
-    else if ((pos = name.find(nvid2)) != std::string::npos) name.erase(pos, nvid2.length());
+    if ((pos = name.find(nvid)) != std::string::npos)
+        name.erase(pos, nvid.length());
+    else if ((pos = name.find(nvid2)) != std::string::npos)
+        name.erase(pos, nvid2.length());
 
     char buf[64];
     std::snprintf(buf, sizeof(buf), "%.1f GiB", gpu_vram_gib);
@@ -186,4 +198,4 @@ std::string HardwareInfo::summary_ram() const {
     return std::string(buf);
 }
 
-}  // namespace guild::hardware
+} // namespace guild::hardware

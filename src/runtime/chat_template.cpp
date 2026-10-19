@@ -10,7 +10,8 @@ namespace {
 
 std::string trim_string(const std::string& str) {
     size_t first = str.find_first_not_of(" \t\r\n");
-    if (first == std::string::npos) return "";
+    if (first == std::string::npos)
+        return "";
     size_t last = str.find_last_not_of(" \t\r\n");
     return str.substr(first, (last - first + 1));
 }
@@ -85,9 +86,7 @@ bool ChatTemplate::load_from_string(const std::string& content, std::string& err
     return true;
 }
 
-bool ChatTemplate::render(const std::vector<ChatMessage>& messages,
-                          bool add_generation_prompt,
-                          std::string& rendered,
+bool ChatTemplate::render(const std::vector<ChatMessage>& messages, bool add_generation_prompt, std::string& rendered,
                           std::string& err_msg) const {
     rendered.clear();
     err_msg.clear();
@@ -103,20 +102,14 @@ bool ChatTemplate::render(const std::vector<ChatMessage>& messages,
     }
 
     switch (type_) {
-        case TemplateType::Qwen:
-            return render_qwen(messages, add_generation_prompt, rendered, err_msg);
-        case TemplateType::Ornith:
-            return render_ornith(messages, add_generation_prompt, rendered, err_msg);
-        default:
-            err_msg = "unsupported chat template type";
-            return false;
+    case TemplateType::Qwen: return render_qwen(messages, add_generation_prompt, rendered, err_msg);
+    case TemplateType::Ornith: return render_ornith(messages, add_generation_prompt, rendered, err_msg);
+    default: err_msg = "unsupported chat template type"; return false;
     }
 }
 
-bool ChatTemplate::render_qwen(const std::vector<ChatMessage>& messages,
-                               bool add_generation_prompt,
-                               std::string& rendered,
-                               std::string& err_msg) const {
+bool ChatTemplate::render_qwen(const std::vector<ChatMessage>& messages, bool add_generation_prompt,
+                               std::string& rendered, std::string& err_msg) const {
     // 1. Validate roles and locate system messages at the start
     size_t num_sys = 0;
     std::string merged_system;
@@ -130,7 +123,8 @@ bool ChatTemplate::render_qwen(const std::vector<ChatMessage>& messages,
             }
             std::string content = trim_string(messages[i].content);
             if (!content.empty()) {
-                if (!merged_system.empty()) merged_system += "\n";
+                if (!merged_system.empty())
+                    merged_system += "\n";
                 merged_system += content;
             }
             num_sys++;
@@ -189,10 +183,8 @@ bool ChatTemplate::render_qwen(const std::vector<ChatMessage>& messages,
     return true;
 }
 
-bool ChatTemplate::render_ornith(const std::vector<ChatMessage>& messages,
-                                 bool add_generation_prompt,
-                                 std::string& rendered,
-                                 std::string& err_msg) const {
+bool ChatTemplate::render_ornith(const std::vector<ChatMessage>& messages, bool add_generation_prompt,
+                                 std::string& rendered, std::string& err_msg) const {
     size_t num_sys = 0;
     std::string merged_system;
 
@@ -205,7 +197,8 @@ bool ChatTemplate::render_ornith(const std::vector<ChatMessage>& messages,
             }
             std::string content = trim_string(messages[i].content);
             if (!content.empty()) {
-                if (!merged_system.empty()) merged_system += "\n";
+                if (!merged_system.empty())
+                    merged_system += "\n";
                 merged_system += content;
             }
             num_sys++;

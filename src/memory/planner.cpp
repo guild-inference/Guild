@@ -12,13 +12,16 @@ std::string ExecutionPlan::to_human_string() const {
     char buf[128];
 
     oss << "Memory plan\n";
-    std::snprintf(buf, sizeof(buf), "  Host RAM        %.0f GiB\n", (double) total_host_ram_bytes / (1024.0 * 1024.0 * 1024.0));
+    std::snprintf(buf, sizeof(buf), "  Host RAM        %.0f GiB\n",
+                  (double) total_host_ram_bytes / (1024.0 * 1024.0 * 1024.0));
     oss << buf;
-    std::snprintf(buf, sizeof(buf), "  GPU VRAM        %.1f GiB\n\n", (double) total_gpu_vram_bytes / (1024.0 * 1024.0 * 1024.0));
+    std::snprintf(buf, sizeof(buf), "  GPU VRAM        %.1f GiB\n\n",
+                  (double) total_gpu_vram_bytes / (1024.0 * 1024.0 * 1024.0));
     oss << buf;
 
     oss << "  Experts\n";
-    std::snprintf(buf, sizeof(buf), "    total         %.2f GiB\n", (double) routed_expert_total_bytes / (1024.0 * 1024.0 * 1024.0));
+    std::snprintf(buf, sizeof(buf), "    total         %.2f GiB\n",
+                  (double) routed_expert_total_bytes / (1024.0 * 1024.0 * 1024.0));
     oss << buf;
     if (routed_experts_in_gpu == 0) {
         oss << "    GPU           0\n";
@@ -28,7 +31,8 @@ std::string ExecutionPlan::to_human_string() const {
         oss << buf;
     }
     if (routed_experts_in_ram == total_routed_experts) {
-        std::snprintf(buf, sizeof(buf), "    RAM           %.2f GiB\n", (double) routed_experts_ram_bytes / (1024.0 * 1024.0 * 1024.0));
+        std::snprintf(buf, sizeof(buf), "    RAM           %.2f GiB\n",
+                      (double) routed_experts_ram_bytes / (1024.0 * 1024.0 * 1024.0));
         oss << buf;
     } else {
         std::snprintf(buf, sizeof(buf), "    RAM           %lld / %lld (%.2f GiB)\n", (long long) routed_experts_in_ram,
@@ -46,11 +50,13 @@ std::string ExecutionPlan::to_human_string() const {
     oss << "  KV\n";
     oss << "    format        " << kv_precision_to_string(kv_format) << "\n";
     oss << "    context       " << context_length << "\n";
-    std::snprintf(buf, sizeof(buf), "    host          %.2f GiB\n", (double) full_host_kv_bytes / (1024.0 * 1024.0 * 1024.0));
+    std::snprintf(buf, sizeof(buf), "    host          %.2f GiB\n",
+                  (double) full_host_kv_bytes / (1024.0 * 1024.0 * 1024.0));
     oss << buf;
     oss << "    GPU mode      " << kv_mode_to_string(kv_mode) << "\n";
     if (host_only_kv) {
-        std::snprintf(buf, sizeof(buf), "    staging       %.1f MiB\n\n", (double) kv_staging_bytes / (1024.0 * 1024.0));
+        std::snprintf(buf, sizeof(buf), "    staging       %.1f MiB\n\n",
+                      (double) kv_staging_bytes / (1024.0 * 1024.0));
     } else {
         std::snprintf(buf, sizeof(buf), "    staging       -\n\n");
     }
@@ -65,7 +71,8 @@ std::string ExecutionPlan::to_human_string() const {
     oss << "    prefill       " << prefill_chunk << "\n";
     std::snprintf(buf, sizeof(buf), "    GPU reserve   %.0f MiB\n", (double) safety_reserve_bytes / (1024.0 * 1024.0));
     oss << buf;
-    std::snprintf(buf, sizeof(buf), "    free VRAM     %.1f GiB\n", (double) remaining_vram_bytes / (1024.0 * 1024.0 * 1024.0));
+    std::snprintf(buf, sizeof(buf), "    free VRAM     %.1f GiB\n",
+                  (double) remaining_vram_bytes / (1024.0 * 1024.0 * 1024.0));
     oss << buf;
 
     if (!warnings.empty()) {
@@ -115,20 +122,23 @@ std::string ExecutionPlan::to_json_string() const {
         << "  \"warnings\": [";
     for (size_t i = 0; i < warnings.size(); ++i) {
         oss << "\n    \"" << warnings[i] << "\"";
-        if (i + 1 < warnings.size()) oss << ",";
+        if (i + 1 < warnings.size())
+            oss << ",";
     }
-    if (!warnings.empty()) oss << "\n  ";
+    if (!warnings.empty())
+        oss << "\n  ";
     oss << "]\n}\n";
     return oss.str();
 }
 
 uint64_t MemoryPlanner::estimate_dense_gpu_bytes(const model::ModelDescriptor& desc) {
-    const bool is_indexed_ple = (desc.runner_model && (desc.runner_model->requires_ple != 0 || desc.runner_model->indexed_attention != 0)) ||
-                                desc.attn.mechanism == model::AttentionMechanism::IndexedSparse ||
-                                desc.archetype == model::ModelArchetype::Qwen4Exp || desc.arch_name == "qwen4exp";
+    const bool is_indexed_ple =
+        (desc.runner_model && (desc.runner_model->requires_ple != 0 || desc.runner_model->indexed_attention != 0)) ||
+        desc.attn.mechanism == model::AttentionMechanism::IndexedSparse ||
+        desc.archetype == model::ModelArchetype::Qwen4Exp || desc.arch_name == "qwen4exp";
     if (is_indexed_ple) {
-        // 4-stream indexed-attention PLE dense weights (projections, recurrent conv, attention, embed, head, router, PLE)
-        // Measured footprint: ~3.75 GiB (4,026,531,840 bytes)
+        // 4-stream indexed-attention PLE dense weights (projections, recurrent conv, attention, embed, head, router,
+        // PLE) Measured footprint: ~3.75 GiB (4,026,531,840 bytes)
         return 4026531840ULL;
     }
 
@@ -145,7 +155,8 @@ uint64_t MemoryPlanner::estimate_dense_gpu_bytes(const model::ModelDescriptor& d
 }
 
 uint64_t MemoryPlanner::calculate_prompt_scratch_bytes(const model::ModelDescriptor& desc, int64_t prefill_chunk) {
-    if (prefill_chunk <= 0) prefill_chunk = 512;
+    if (prefill_chunk <= 0)
+        prefill_chunk = 512;
 
     // Base MMQ workspaces, cuBLAS workspaces, and temporary quantization buffers
     const uint64_t base = 350ULL * 1024ULL * 1024ULL; // 350 MiB
@@ -165,24 +176,22 @@ uint64_t MemoryPlanner::calculate_prompt_scratch_bytes(const model::ModelDescrip
 }
 
 uint64_t MemoryPlanner::calculate_safety_reserve_bytes(const hardware::HardwareInfo& hw) {
-    if (hw.gpu_vram_bytes <= 8589934592ULL) { // <= 8 GiB
-        return 512ULL * 1024ULL * 1024ULL;   // 512 MiB
+    if (hw.gpu_vram_bytes <= 8589934592ULL) {         // <= 8 GiB
+        return 512ULL * 1024ULL * 1024ULL;            // 512 MiB
     } else if (hw.gpu_vram_bytes <= 17179869184ULL) { // <= 16 GiB
-        return 768ULL * 1024ULL * 1024ULL;   // 768 MiB
+        return 768ULL * 1024ULL * 1024ULL;            // 768 MiB
     } else {
-        return 1024ULL * 1024ULL * 1024ULL;  // 1024 MiB
+        return 1024ULL * 1024ULL * 1024ULL; // 1024 MiB
     }
 }
 
-ExecutionPlan MemoryPlanner::plan(
-    const model::ModelDescriptor& desc,
-    const hardware::HardwareInfo& hw,
-    const PlannerOptions& options)
-{
+ExecutionPlan MemoryPlanner::plan(const model::ModelDescriptor& desc, const hardware::HardwareInfo& hw,
+                                  const PlannerOptions& options) {
     ExecutionPlan p;
 
     // 1. Context length & KV precision (preserves explicit requests)
-    const int64_t ctx = options.context_length.value_or(desc.attn.context_length > 0 ? desc.attn.context_length : 262144);
+    const int64_t ctx =
+        options.context_length.value_or(desc.attn.context_length > 0 ? desc.attn.context_length : 262144);
     const KvPrecision kv_prec = options.kv_format.value_or(KvPrecision::FP16);
 
     // 2. Fixed GPU requirements & baselines
@@ -203,7 +212,8 @@ ExecutionPlan MemoryPlanner::plan(
     } else {
         // Automatic decision: prefer normal KV residency if it comfortably fits
         const KvBudget res_kv = calculate_kv_budget(desc, ctx, kv_prec, KvMode::Resident);
-        const uint64_t req_resident = dense_gpu_bytes + mtp_bytes + res_kv.persistent_gpu_bytes + prompt_scratch + safety_reserve;
+        const uint64_t req_resident =
+            dense_gpu_bytes + mtp_bytes + res_kv.persistent_gpu_bytes + prompt_scratch + safety_reserve;
 
         if (req_resident <= hw.gpu_vram_bytes && (hw.gpu_vram_bytes > 8589934592ULL || ctx <= 32768)) {
             kv_mode = KvMode::Resident;
@@ -215,13 +225,15 @@ ExecutionPlan MemoryPlanner::plan(
 
     // 4. Iterative degradation on tight VRAM (Rules 5, 6, 7)
     KvBudget kv_b = calculate_kv_budget(desc, ctx, kv_prec, kv_mode);
-    uint64_t total_gpu = dense_gpu_bytes + mtp_bytes + kv_b.persistent_gpu_bytes + kv_b.staging_gpu_bytes + prompt_scratch + safety_reserve;
+    uint64_t total_gpu = dense_gpu_bytes + mtp_bytes + kv_b.persistent_gpu_bytes + kv_b.staging_gpu_bytes +
+                         prompt_scratch + safety_reserve;
 
     // Rule 6: Reduce prefill chunk if necessary
     if (total_gpu > hw.gpu_vram_bytes && prefill_chunk > 512 && !options.prefill_chunk.has_value()) {
         prefill_chunk = 512;
         prompt_scratch = calculate_prompt_scratch_bytes(desc, prefill_chunk);
-        total_gpu = dense_gpu_bytes + mtp_bytes + kv_b.persistent_gpu_bytes + kv_b.staging_gpu_bytes + prompt_scratch + safety_reserve;
+        total_gpu = dense_gpu_bytes + mtp_bytes + kv_b.persistent_gpu_bytes + kv_b.staging_gpu_bytes + prompt_scratch +
+                    safety_reserve;
         p.warnings.push_back("Reduced prefill chunk to 512 to preserve prompt scratch in VRAM.");
     }
 
@@ -230,7 +242,8 @@ ExecutionPlan MemoryPlanner::plan(
         enable_mtp = false;
         mtp_bytes = 0;
         mtp_spec_tokens = 0;
-        total_gpu = dense_gpu_bytes + mtp_bytes + kv_b.persistent_gpu_bytes + kv_b.staging_gpu_bytes + prompt_scratch + safety_reserve;
+        total_gpu = dense_gpu_bytes + mtp_bytes + kv_b.persistent_gpu_bytes + kv_b.staging_gpu_bytes + prompt_scratch +
+                    safety_reserve;
         p.warnings.push_back("Disabled speculative decoding (MTP) to fit prompt scratch in VRAM.");
     }
 
@@ -238,13 +251,16 @@ ExecutionPlan MemoryPlanner::plan(
     if (total_gpu > hw.gpu_vram_bytes && kv_mode != KvMode::HostOnly && !options.kv_mode.has_value()) {
         kv_mode = KvMode::HostOnly;
         kv_b = calculate_kv_budget(desc, ctx, kv_prec, kv_mode);
-        total_gpu = dense_gpu_bytes + mtp_bytes + kv_b.persistent_gpu_bytes + kv_b.staging_gpu_bytes + prompt_scratch + safety_reserve;
+        total_gpu = dense_gpu_bytes + mtp_bytes + kv_b.persistent_gpu_bytes + kv_b.staging_gpu_bytes + prompt_scratch +
+                    safety_reserve;
         p.warnings.push_back("Switched to host-only KV mode to free VRAM for prompt scratch.");
     }
 
     // 5. Expert Tier Distribution
-    const uint64_t fixed_gpu_allocated = dense_gpu_bytes + mtp_bytes + kv_b.persistent_gpu_bytes + kv_b.staging_gpu_bytes + prompt_scratch + safety_reserve;
-    const uint64_t free_vram = (hw.gpu_vram_bytes > fixed_gpu_allocated) ? (hw.gpu_vram_bytes - fixed_gpu_allocated) : 0ULL;
+    const uint64_t fixed_gpu_allocated = dense_gpu_bytes + mtp_bytes + kv_b.persistent_gpu_bytes +
+                                         kv_b.staging_gpu_bytes + prompt_scratch + safety_reserve;
+    const uint64_t free_vram =
+        (hw.gpu_vram_bytes > fixed_gpu_allocated) ? (hw.gpu_vram_bytes - fixed_gpu_allocated) : 0ULL;
 
     // Size GPU expert cache only from genuinely free VRAM
     uint64_t free_vram_for_cache = free_vram;
@@ -301,9 +317,8 @@ ExecutionPlan MemoryPlanner::plan(
     p.total_host_ram_bytes = hw.ram_total_bytes;
     p.total_gpu_vram_bytes = hw.gpu_vram_bytes;
 
-    const uint64_t total_vram_used = p.dense_gpu_bytes + p.mtp_bytes + p.persistent_gpu_kv_bytes +
-                                    p.kv_staging_bytes + p.routed_experts_gpu_bytes +
-                                    p.prompt_scratch_bytes + p.safety_reserve_bytes;
+    const uint64_t total_vram_used = p.dense_gpu_bytes + p.mtp_bytes + p.persistent_gpu_kv_bytes + p.kv_staging_bytes +
+                                     p.routed_experts_gpu_bytes + p.prompt_scratch_bytes + p.safety_reserve_bytes;
     p.remaining_vram_bytes = (hw.gpu_vram_bytes > total_vram_used) ? (hw.gpu_vram_bytes - total_vram_used) : 0ULL;
 
     const uint64_t total_ram_used = p.pinned_host_bytes + p.routed_experts_ram_bytes + host_headroom;
@@ -312,11 +327,8 @@ ExecutionPlan MemoryPlanner::plan(
     return p;
 }
 
-PlanValidation MemoryPlanner::validate(
-    const ExecutionPlan& plan,
-    const hardware::HardwareInfo& hw,
-    const model::ModelDescriptor& /*desc*/)
-{
+PlanValidation MemoryPlanner::validate(const ExecutionPlan& plan, const hardware::HardwareInfo& hw,
+                                       const model::ModelDescriptor& /*desc*/) {
     PlanValidation val;
 
     if (plan.context_length <= 0) {
@@ -325,35 +337,34 @@ PlanValidation MemoryPlanner::validate(
     }
 
     // Check worst-case GPU memory allocation
-    const uint64_t total_gpu_needed = plan.dense_gpu_bytes + plan.mtp_bytes +
-                                     plan.persistent_gpu_kv_bytes + plan.kv_staging_bytes +
-                                     plan.routed_experts_gpu_bytes + plan.prompt_scratch_bytes +
-                                     plan.safety_reserve_bytes;
+    const uint64_t total_gpu_needed = plan.dense_gpu_bytes + plan.mtp_bytes + plan.persistent_gpu_kv_bytes +
+                                      plan.kv_staging_bytes + plan.routed_experts_gpu_bytes +
+                                      plan.prompt_scratch_bytes + plan.safety_reserve_bytes;
 
     if (total_gpu_needed > hw.gpu_vram_bytes) {
         val.valid = false;
         char buf[128];
-        std::snprintf(buf, sizeof(buf),
-                      "Estimated worst-case GPU allocation (%.2f GiB) exceeds VRAM (%.2f GiB): prompt scratch cannot allocate.",
-                      (double) total_gpu_needed / (1024.0 * 1024.0 * 1024.0),
-                      (double) hw.gpu_vram_bytes / (1024.0 * 1024.0 * 1024.0));
+        std::snprintf(
+            buf, sizeof(buf),
+            "Estimated worst-case GPU allocation (%.2f GiB) exceeds VRAM (%.2f GiB): prompt scratch cannot allocate.",
+            (double) total_gpu_needed / (1024.0 * 1024.0 * 1024.0),
+            (double) hw.gpu_vram_bytes / (1024.0 * 1024.0 * 1024.0));
         val.errors.push_back(buf);
     }
 
     // Verify prompt scratch allocation headroom explicitly
-    const uint64_t fixed_pre_scratch = plan.dense_gpu_bytes + plan.mtp_bytes +
-                                      plan.persistent_gpu_kv_bytes + plan.kv_staging_bytes +
-                                      plan.routed_experts_gpu_bytes + plan.safety_reserve_bytes;
+    const uint64_t fixed_pre_scratch = plan.dense_gpu_bytes + plan.mtp_bytes + plan.persistent_gpu_kv_bytes +
+                                       plan.kv_staging_bytes + plan.routed_experts_gpu_bytes +
+                                       plan.safety_reserve_bytes;
 
-    if (hw.gpu_vram_bytes <= fixed_pre_scratch ||
-        (hw.gpu_vram_bytes - fixed_pre_scratch) < plan.prompt_scratch_bytes)
-    {
+    if (hw.gpu_vram_bytes <= fixed_pre_scratch || (hw.gpu_vram_bytes - fixed_pre_scratch) < plan.prompt_scratch_bytes) {
         val.valid = false;
         char buf[128];
-        std::snprintf(buf, sizeof(buf),
-                      "Insufficient VRAM for prompt prefill scratch (needs %.1f MiB, only %.1f MiB available).",
-                      (double) plan.prompt_scratch_bytes / (1024.0 * 1024.0),
-                      hw.gpu_vram_bytes > fixed_pre_scratch ? (double)(hw.gpu_vram_bytes - fixed_pre_scratch) / (1024.0 * 1024.0) : 0.0);
+        std::snprintf(
+            buf, sizeof(buf), "Insufficient VRAM for prompt prefill scratch (needs %.1f MiB, only %.1f MiB available).",
+            (double) plan.prompt_scratch_bytes / (1024.0 * 1024.0),
+            hw.gpu_vram_bytes > fixed_pre_scratch ? (double) (hw.gpu_vram_bytes - fixed_pre_scratch) / (1024.0 * 1024.0)
+                                                  : 0.0);
         val.errors.push_back(buf);
     }
 
@@ -371,4 +382,4 @@ PlanValidation MemoryPlanner::validate(
     return val;
 }
 
-}  // namespace guild::memory
+} // namespace guild::memory

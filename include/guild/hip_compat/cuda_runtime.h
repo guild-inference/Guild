@@ -120,11 +120,10 @@ hipError_t mem_get_info(size_t* free_bytes, size_t* total_bytes);
 #define cudaSuccess hipSuccess
 
 namespace guild::hip_compat {
-template <typename T>
-inline hipError_t malloc_host(T** pointer, size_t bytes) {
+template <typename T> inline hipError_t malloc_host(T** pointer, size_t bytes) {
     return hipHostMalloc(reinterpret_cast<void**>(pointer), bytes, hipHostMallocDefault);
 }
-}  // namespace guild::hip_compat
+} // namespace guild::hip_compat
 
 template <typename Kernel>
 inline hipError_t cudaFuncSetAttribute(Kernel kernel, hipFuncAttribute attribute, int value) {
@@ -133,11 +132,11 @@ inline hipError_t cudaFuncSetAttribute(Kernel kernel, hipFuncAttribute attribute
 inline hipError_t cudaGraphInstantiate(hipGraphExec_t* exec, hipGraph_t graph, unsigned long long flags) {
     return hipGraphInstantiateWithFlags(exec, graph, flags);
 }
-inline hipError_t cudaGraphInstantiate(hipGraphExec_t* exec, hipGraph_t graph,
-                                     hipGraphNode_t* error, char* log, size_t size) {
+inline hipError_t cudaGraphInstantiate(hipGraphExec_t* exec, hipGraph_t graph, hipGraphNode_t* error, char* log,
+                                       size_t size) {
     return hipGraphInstantiate(exec, graph, error, log, size);
 }
-#define __trap() __builtin_trap()   // the compiled-out sm_80 paths (never selected on AMD)
+#define __trap() __builtin_trap() // the compiled-out sm_80 paths (never selected on AMD)
 #define cudaMemcpyToSymbol(symbol, ...) hipMemcpyToSymbol(HIP_SYMBOL(symbol), __VA_ARGS__)
 
 #include "intrinsics.hpp"

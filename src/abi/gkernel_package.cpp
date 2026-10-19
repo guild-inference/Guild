@@ -35,42 +35,54 @@ namespace fs = std::filesystem;
 using server::json::JsonValue;
 
 bool is_valid_hex(const std::string& s, size_t expected_len) {
-    if (s.size() != expected_len) return false;
+    if (s.size() != expected_len)
+        return false;
     return std::all_of(s.begin(), s.end(), [](unsigned char c) { return std::isxdigit(c) != 0; });
 }
 
 bool is_safe_identifier(const std::string& s) {
-    if (s.empty() || s.size() > 128) return false;
-    if (s.find("..") != std::string::npos) return false;
+    if (s.empty() || s.size() > 128)
+        return false;
+    if (s.find("..") != std::string::npos)
+        return false;
     for (unsigned char c : s) {
-        if (!(std::isalnum(c) || c == '_' || c == '-' || c == '.')) return false;
+        if (!(std::isalnum(c) || c == '_' || c == '-' || c == '.'))
+            return false;
     }
     return s.front() != '.' && s.back() != '.';
 }
 
 bool is_valid_c_identifier(const std::string& s) {
-    if (s.empty() || s.size() > 128) return false;
+    if (s.empty() || s.size() > 128)
+        return false;
     const unsigned char f = static_cast<unsigned char>(s[0]);
-    if (!(std::isalpha(f) || f == '_')) return false;
+    if (!(std::isalpha(f) || f == '_'))
+        return false;
     for (unsigned char c : s) {
-        if (!(std::isalnum(c) || c == '_')) return false;
+        if (!(std::isalnum(c) || c == '_'))
+            return false;
     }
     return true;
 }
 
 bool is_safe_relative_path(const std::string& p) {
-    if (p.empty() || p.size() > 512) return false;
-    if (p[0] == '/' || p[0] == '\\' || p.back() == '/' || p.back() == '\\') return false;
+    if (p.empty() || p.size() > 512)
+        return false;
+    if (p[0] == '/' || p[0] == '\\' || p.back() == '/' || p.back() == '\\')
+        return false;
     for (unsigned char c : p) {
-        if (c < 0x20 || c == 0x7f || c == '\\' || c == ':') return false;
+        if (c < 0x20 || c == 0x7f || c == '\\' || c == ':')
+            return false;
     }
     // Check each segment between '/'
     size_t start = 0;
     while (start < p.size()) {
         size_t slash = p.find('/', start);
-        if (slash == std::string::npos) slash = p.size();
+        if (slash == std::string::npos)
+            slash = p.size();
         const std::string seg = p.substr(start, slash - start);
-        if (seg.empty() || seg == "." || seg == "..") return false;
+        if (seg.empty() || seg == "." || seg == "..")
+            return false;
         start = slash + 1;
     }
     return true;
@@ -79,7 +91,8 @@ bool is_safe_relative_path(const std::string& p) {
 bool parse_semver(const std::string& s, uint32_t& maj, uint32_t& min, uint32_t& pat) {
     unsigned a = 0, b = 0, c = 0;
     char tail = 0;
-    if (std::sscanf(s.c_str(), "%u.%u.%u%c", &a, &b, &c, &tail) != 3) return false;
+    if (std::sscanf(s.c_str(), "%u.%u.%u%c", &a, &b, &c, &tail) != 3)
+        return false;
     maj = a;
     min = b;
     pat = c;
@@ -88,17 +101,23 @@ bool parse_semver(const std::string& s, uint32_t& maj, uint32_t& min, uint32_t& 
 
 bool semver_gte(const std::string& actual, const std::string& required_min) {
     uint32_t a0 = 0, a1 = 0, a2 = 0, r0 = 0, r1 = 0, r2 = 0;
-    if (!parse_semver(actual, a0, a1, a2) || !parse_semver(required_min, r0, r1, r2)) return false;
-    if (a0 != r0) return a0 > r0;
-    if (a1 != r1) return a1 > r1;
+    if (!parse_semver(actual, a0, a1, a2) || !parse_semver(required_min, r0, r1, r2))
+        return false;
+    if (a0 != r0)
+        return a0 > r0;
+    if (a1 != r1)
+        return a1 > r1;
     return a2 >= r2;
 }
 
 bool semver_lte(const std::string& actual, const std::string& required_max) {
     uint32_t a0 = 0, a1 = 0, a2 = 0, r0 = 0, r1 = 0, r2 = 0;
-    if (!parse_semver(actual, a0, a1, a2) || !parse_semver(required_max, r0, r1, r2)) return false;
-    if (a0 != r0) return a0 < r0;
-    if (a1 != r1) return a1 < r1;
+    if (!parse_semver(actual, a0, a1, a2) || !parse_semver(required_max, r0, r1, r2))
+        return false;
+    if (a0 != r0)
+        return a0 < r0;
+    if (a1 != r1)
+        return a1 < r1;
     return a2 <= r2;
 }
 
@@ -134,11 +153,13 @@ bool is_shared_lib_extension(const std::string& path) {
 
 bool has_any_symlink_in_tree(const fs::path& root, const fs::path& rel) {
     std::error_code ec;
-    if (fs::is_symlink(fs::symlink_status(root, ec))) return true;
+    if (fs::is_symlink(fs::symlink_status(root, ec)))
+        return true;
     fs::path cur = root;
     for (const auto& part : rel) {
         cur /= part;
-        if (fs::is_symlink(fs::symlink_status(cur, ec))) return true;
+        if (fs::is_symlink(fs::symlink_status(cur, ec)))
+            return true;
     }
     return false;
 }
@@ -167,17 +188,13 @@ bool sync_directory_durable(const fs::path& dir, std::string& err) {
         return false;
     }
 #else
-    (void)dir;
-    (void)err;
+    (void) dir;
+    (void) err;
 #endif
     return true;
 }
 
-bool write_file_durable(const fs::path& dst,
-                        const char* data,
-                        size_t len,
-                        int posix_mode,
-                        std::string& err) {
+bool write_file_durable(const fs::path& dst, const char* data, size_t len, int posix_mode, std::string& err) {
 #if !defined(_WIN32)
     int flags = O_WRONLY | O_CREAT | O_TRUNC;
 #if defined(O_CLOEXEC)
@@ -195,7 +212,8 @@ bool write_file_durable(const fs::path& dst,
     while (written < len) {
         const ssize_t n = ::write(fd, data + written, len - written);
         if (n < 0) {
-            if (errno == EINTR) continue;
+            if (errno == EINTR)
+                continue;
             err = "failed to write file '" + dst.string() + "': " + std::strerror(errno);
             ::close(fd);
             return false;
@@ -218,7 +236,7 @@ bool write_file_durable(const fs::path& dst,
     }
     return true;
 #else
-    (void)posix_mode;
+    (void) posix_mode;
     std::ofstream out(dst, std::ios::binary | std::ios::trunc);
     if (!out.good()) {
         err = "failed to open file for writing: " + dst.string();
@@ -237,11 +255,8 @@ bool write_file_durable(const fs::path& dst,
 #endif
 }
 
-bool atomic_write_json_file(const fs::path& final_path,
-                            const std::string& content,
-                            std::string& err,
-                            bool fail_before_rename = false,
-                            bool abort_before_rename = false) {
+bool atomic_write_json_file(const fs::path& final_path, const std::string& content, std::string& err,
+                            bool fail_before_rename = false, bool abort_before_rename = false) {
     std::error_code ec;
     const fs::path parent = final_path.parent_path();
     if (!parent.empty()) {
@@ -268,7 +283,8 @@ bool atomic_write_json_file(const fs::path& final_path,
     }
     fs::rename(tmp_path, final_path, ec);
     if (ec) {
-        err = "failed to atomically rename '" + tmp_path.string() + "' to '" + final_path.string() + "': " + ec.message();
+        err =
+            "failed to atomically rename '" + tmp_path.string() + "' to '" + final_path.string() + "': " + ec.message();
         fs::remove(tmp_path, ec);
         return false;
     }
@@ -280,14 +296,21 @@ bool atomic_write_json_file(const fs::path& final_path,
 
 PackageFaultPoint parse_env_fault_point() {
     const char* env_pt = std::getenv("GUILD_PACKAGE_FAULT_POINT");
-    if (!env_pt || !env_pt[0]) return PackageFaultPoint::None;
+    if (!env_pt || !env_pt[0])
+        return PackageFaultPoint::None;
     const std::string s(env_pt);
-    if (s == "archive_read") return PackageFaultPoint::ArchiveRead;
-    if (s == "after_staging") return PackageFaultPoint::AfterStagingBeforeVerify;
-    if (s == "after_verify") return PackageFaultPoint::AfterVerifyBeforePublish;
-    if (s == "after_publish") return PackageFaultPoint::AfterPublishBeforeLoad;
-    if (s == "registry_write") return PackageFaultPoint::DuringRegistryWrite;
-    if (s == "rollback_load") return PackageFaultPoint::DuringRollbackLoad;
+    if (s == "archive_read")
+        return PackageFaultPoint::ArchiveRead;
+    if (s == "after_staging")
+        return PackageFaultPoint::AfterStagingBeforeVerify;
+    if (s == "after_verify")
+        return PackageFaultPoint::AfterVerifyBeforePublish;
+    if (s == "after_publish")
+        return PackageFaultPoint::AfterPublishBeforeLoad;
+    if (s == "registry_write")
+        return PackageFaultPoint::DuringRegistryWrite;
+    if (s == "rollback_load")
+        return PackageFaultPoint::DuringRollbackLoad;
     return PackageFaultPoint::None;
 }
 
@@ -300,12 +323,14 @@ JsonValue build_unsigned_json_object(const GKernelMetadata& m) {
     JsonValue root = JsonValue(std::vector<std::pair<std::string, JsonValue>>{});
     root["format_version"] = static_cast<int64_t>(m.format_version);
     root["package_kind"] = m.package_kind.empty() ? std::string("gkernel") : m.package_kind;
-    if (m.module_abi) root["module_abi"] = static_cast<int64_t>(m.module_abi);
+    if (m.module_abi)
+        root["module_abi"] = static_cast<int64_t>(m.module_abi);
     root["package_id"] = m.package_id;
     root["scope"] = m.scope;
     root["version"] = m.version;
     root["publisher_id"] = m.publisher_id;
-    root["entrypoint_symbol"] = m.entrypoint_symbol.empty() ? std::string(GUILD_PLUGIN_ENTRY_SYMBOL_V1) : m.entrypoint_symbol;
+    root["entrypoint_symbol"] =
+        m.entrypoint_symbol.empty() ? std::string(GUILD_PLUGIN_ENTRY_SYMBOL_V1) : m.entrypoint_symbol;
     if (!m.library_path.empty()) {
         root["library_path"] = m.library_path;
     }
@@ -332,14 +357,18 @@ JsonValue build_unsigned_json_object(const GKernelMetadata& m) {
     }
 
     std::vector<JsonValue> b_arr;
-    if (m.supported_backends & GUILD_BACKEND_CPU) b_arr.emplace_back("cpu");
-    if (m.supported_backends & GUILD_BACKEND_CUDA) b_arr.emplace_back("cuda");
-    if (m.supported_backends & GUILD_BACKEND_HIP) b_arr.emplace_back("hip");
+    if (m.supported_backends & GUILD_BACKEND_CPU)
+        b_arr.emplace_back("cpu");
+    if (m.supported_backends & GUILD_BACKEND_CUDA)
+        b_arr.emplace_back("cuda");
+    if (m.supported_backends & GUILD_BACKEND_HIP)
+        b_arr.emplace_back("hip");
     root["backends"] = JsonValue(std::move(b_arr));
 
     auto write_str_array = [](const std::vector<std::string>& src) {
         std::vector<JsonValue> arr;
-        for (const auto& s : src) arr.emplace_back(s);
+        for (const auto& s : src)
+            arr.emplace_back(s);
         return JsonValue(std::move(arr));
     };
     root["supported_architectures"] = write_str_array(m.supported_architectures);
@@ -353,7 +382,8 @@ JsonValue build_unsigned_json_object(const GKernelMetadata& m) {
         o["package_id"] = d.package_id;
         o["min_version"] = d.min_version;
         o["publisher_id"] = d.expected_publisher_id;
-        if (!d.max_version.empty()) o["max_version"] = d.max_version;
+        if (!d.max_version.empty())
+            o["max_version"] = d.max_version;
         dep_arr.push_back(std::move(o));
     }
     root["dependencies"] = JsonValue(std::move(dep_arr));
@@ -367,7 +397,8 @@ JsonValue build_unsigned_json_object(const GKernelMetadata& m) {
             o["abi_tag"] = md.abi_tag;
             o["publisher_id"] = md.expected_publisher_id;
             o["sha256"] = md.sha256;
-            if (!md.max_version.empty()) o["max_version"] = md.max_version;
+            if (!md.max_version.empty())
+                o["max_version"] = md.max_version;
             mdep_arr.push_back(std::move(o));
         }
         root["module_dependencies"] = JsonValue(std::move(mdep_arr));
@@ -392,7 +423,8 @@ JsonValue build_unsigned_json_object(const GKernelMetadata& m) {
         o["path"] = a.relative_path;
         o["sha256"] = a.sha256;
         o["byte_size"] = static_cast<int64_t>(a.byte_size);
-        if (!a.role.empty()) o["role"] = a.role;
+        if (!a.role.empty())
+            o["role"] = a.role;
         art_arr.push_back(std::move(o));
     }
     root["artifacts"] = JsonValue(std::move(art_arr));
@@ -422,21 +454,18 @@ JsonValue build_unsigned_json_object(const GKernelMetadata& m) {
 
 } // namespace
 
-guild_status_t GKernelMetadata::parse_json(const std::string& json_text,
-                                           GKernelMetadata& out_meta,
-                                           std::string& err) {
+guild_status_t GKernelMetadata::parse_json(const std::string& json_text, GKernelMetadata& out_meta, std::string& err) {
     out_meta = {};
     JsonValue root;
     if (!JsonValue::parse(json_text, root, err) || !root.is_object()) {
-        if (err.empty()) err = ".gkmetadata root must be a JSON object";
+        if (err.empty())
+            err = ".gkmetadata root must be a JSON object";
         return GUILD_STATUS_ERR_INVALID_ARGUMENT;
     }
 
     // 1. Security rule: reject any installation scripts or arbitrary command hooks
-    const char* forbidden_keys[] = {
-        "install_script", "post_install", "pre_install", "build_script",
-        "shell_command", "exec_hook", "python_hook", "init_script", "uninstall_script"
-    };
+    const char* forbidden_keys[] = {"install_script", "post_install", "pre_install", "build_script",    "shell_command",
+                                    "exec_hook",      "python_hook",  "init_script", "uninstall_script"};
     for (const char* fkey : forbidden_keys) {
         if (root.contains(fkey)) {
             err = std::string("security violation: forbidden executable hook '") + fkey + "' in .gkmetadata";
@@ -445,15 +474,34 @@ guild_status_t GKernelMetadata::parse_json(const std::string& json_text,
     }
 
     // 2. Reject unknown top-level keys so malformed/drifted manifests never silently pass
-    const std::vector<std::string> allowed_keys = {
-        "format_version", "package_kind", "package_id", "scope", "version", "publisher_id",
-        "entrypoint_symbol", "library_path", "kernel_abi", "target_platform",
-        "required_core_caps", "required_cpu_isa", "required_gpu_caps",
-        "min_sm_version", "max_sm_version", "backends", "supported_architectures",
-        "provided_ops", "provided_runners", "required_ops", "dependencies",
-        "module_dependencies", "tensor_constraints", "artifacts",
-        "signature", "provenance", "validation_fixtures", "module_abi"
-    };
+    const std::vector<std::string> allowed_keys = {"format_version",
+                                                   "package_kind",
+                                                   "package_id",
+                                                   "scope",
+                                                   "version",
+                                                   "publisher_id",
+                                                   "entrypoint_symbol",
+                                                   "library_path",
+                                                   "kernel_abi",
+                                                   "target_platform",
+                                                   "required_core_caps",
+                                                   "required_cpu_isa",
+                                                   "required_gpu_caps",
+                                                   "min_sm_version",
+                                                   "max_sm_version",
+                                                   "backends",
+                                                   "supported_architectures",
+                                                   "provided_ops",
+                                                   "provided_runners",
+                                                   "required_ops",
+                                                   "dependencies",
+                                                   "module_dependencies",
+                                                   "tensor_constraints",
+                                                   "artifacts",
+                                                   "signature",
+                                                   "provenance",
+                                                   "validation_fixtures",
+                                                   "module_abi"};
     std::string unknown_key;
     if (!root.check_unsupported_keys(allowed_keys, unknown_key)) {
         err = "unsupported or unknown key '" + unknown_key + "' in .gkmetadata";
@@ -504,8 +552,8 @@ guild_status_t GKernelMetadata::parse_json(const std::string& json_text,
     }
 
     const bool valid_gkernel_scope =
-        (out_meta.scope == "cpu-kernels" || out_meta.scope == "cuda-kernels" ||
-         out_meta.scope == "hip-kernels" || out_meta.scope == "runner" || out_meta.scope == "hybrid");
+        (out_meta.scope == "cpu-kernels" || out_meta.scope == "cuda-kernels" || out_meta.scope == "hip-kernels" ||
+         out_meta.scope == "runner" || out_meta.scope == "hybrid");
     const bool valid_gkmodule_scope = (out_meta.scope == "module" || valid_gkernel_scope);
     if ((out_meta.package_kind == "gkernel" && !valid_gkernel_scope) ||
         (out_meta.package_kind == "gkmodule" && !valid_gkmodule_scope)) {
@@ -546,9 +594,12 @@ guild_status_t GKernelMetadata::parse_json(const std::string& json_text,
     if (backends.is_array()) {
         for (const auto& b : backends.arr_val) {
             const std::string bs = b.as_string("");
-            if (bs == "cpu") out_meta.supported_backends |= GUILD_BACKEND_CPU;
-            else if (bs == "cuda") out_meta.supported_backends |= GUILD_BACKEND_CUDA;
-            else if (bs == "hip") out_meta.supported_backends |= GUILD_BACKEND_HIP;
+            if (bs == "cpu")
+                out_meta.supported_backends |= GUILD_BACKEND_CPU;
+            else if (bs == "cuda")
+                out_meta.supported_backends |= GUILD_BACKEND_CUDA;
+            else if (bs == "hip")
+                out_meta.supported_backends |= GUILD_BACKEND_HIP;
             else {
                 err = "invalid backend '" + bs + "' in .gkmetadata";
                 return GUILD_STATUS_ERR_INVALID_ARGUMENT;
@@ -557,16 +608,22 @@ guild_status_t GKernelMetadata::parse_json(const std::string& json_text,
     }
 
     auto read_str_array = [](const JsonValue& arr, std::vector<std::string>& dst) {
-        if (!arr.is_array()) return;
+        if (!arr.is_array())
+            return;
         for (const auto& v : arr.arr_val) {
-            if (v.is_string() && !v.as_string().empty()) dst.push_back(v.as_string());
+            if (v.is_string() && !v.as_string().empty())
+                dst.push_back(v.as_string());
         }
     };
     for (const char* key : {"provided_ops", "provided_runners", "required_ops"}) {
-        if (!root.contains(key)) continue;
+        if (!root.contains(key))
+            continue;
         const auto& value = root[key];
         std::set<std::string> seen;
-        if (!value.is_array()) { err = std::string(key) + " must be an array"; return GUILD_STATUS_ERR_INVALID_ARGUMENT; }
+        if (!value.is_array()) {
+            err = std::string(key) + " must be an array";
+            return GUILD_STATUS_ERR_INVALID_ARGUMENT;
+        }
         for (const auto& item : value.arr_val) {
             if (!item.is_string() || item.as_string().empty() || !seen.insert(item.as_string()).second) {
                 err = std::string(key) + " contains invalid or duplicate provider IDs";
@@ -580,12 +637,16 @@ guild_status_t GKernelMetadata::parse_json(const std::string& json_text,
     read_str_array(root["required_ops"], out_meta.required_ops);
 
     if (root.contains("dependencies") && !root["dependencies"].is_array()) {
-        err = "dependencies must be an array"; return GUILD_STATUS_ERR_INVALID_ARGUMENT;
+        err = "dependencies must be an array";
+        return GUILD_STATUS_ERR_INVALID_ARGUMENT;
     }
     const JsonValue& deps = root["dependencies"];
     if (deps.is_array()) {
         for (const auto& d : deps.arr_val) {
-            if (!d.is_object()) { err = "invalid package dependency"; return GUILD_STATUS_ERR_INVALID_ARGUMENT; }
+            if (!d.is_object()) {
+                err = "invalid package dependency";
+                return GUILD_STATUS_ERR_INVALID_ARGUMENT;
+            }
             PackageDependency dep;
             dep.package_id = d["package_id"].as_string("");
             dep.min_version = d["min_version"].as_string("1.0.0");
@@ -602,15 +663,19 @@ guild_status_t GKernelMetadata::parse_json(const std::string& json_text,
     }
 
     if (root.contains("module_dependencies") && !root["module_dependencies"].is_array()) {
-        err = "module_dependencies must be an array"; return GUILD_STATUS_ERR_INVALID_ARGUMENT;
+        err = "module_dependencies must be an array";
+        return GUILD_STATUS_ERR_INVALID_ARGUMENT;
     }
     const JsonValue& mdeps = root["module_dependencies"];
     if (mdeps.is_array()) {
         std::set<std::string> seen;
         for (const auto& md : mdeps.arr_val) {
             std::string unknown;
-            if (!md.is_object() || !md.check_unsupported_keys({"module_id", "min_version", "max_version", "abi_tag", "publisher_id", "sha256"}, unknown)) {
-                err = "invalid module dependency object: " + unknown; return GUILD_STATUS_ERR_INVALID_ARGUMENT;
+            if (!md.is_object() ||
+                !md.check_unsupported_keys(
+                    {"module_id", "min_version", "max_version", "abi_tag", "publisher_id", "sha256"}, unknown)) {
+                err = "invalid module dependency object: " + unknown;
+                return GUILD_STATUS_ERR_INVALID_ARGUMENT;
             }
             for (const char* key : {"module_id", "min_version", "max_version", "abi_tag", "publisher_id", "sha256"}) {
                 if (md.contains(key) && !md[key].is_string()) {
@@ -628,7 +693,8 @@ guild_status_t GKernelMetadata::parse_json(const std::string& json_text,
             uint32_t d0 = 0, d1 = 0, d2 = 0;
             if (!is_safe_identifier(mspec.module_id) || !parse_semver(mspec.min_version, d0, d1, d2) ||
                 (!mspec.sha256.empty() && !is_valid_hex(mspec.sha256, 64)) ||
-                (!mspec.max_version.empty() && (!parse_semver(mspec.max_version, d0, d1, d2) || !semver_gte(mspec.max_version, mspec.min_version))) ||
+                (!mspec.max_version.empty() &&
+                 (!parse_semver(mspec.max_version, d0, d1, d2) || !semver_gte(mspec.max_version, mspec.min_version))) ||
                 !seen.insert(mspec.module_id).second) {
                 err = ".gkmetadata module_dependencies entry has invalid module_id, min_version, or sha256";
                 return GUILD_STATUS_ERR_INVALID_ARGUMENT;
@@ -640,7 +706,8 @@ guild_status_t GKernelMetadata::parse_json(const std::string& json_text,
     const JsonValue& tconstraints = root["tensor_constraints"];
     if (tconstraints.is_array()) {
         for (const auto& tc : tconstraints.arr_val) {
-            if (!tc.is_object()) continue;
+            if (!tc.is_object())
+                continue;
             TensorConstraintSpec spec;
             spec.op_name = tc["op_name"].as_string("");
             read_str_array(tc["allowed_dtypes"], spec.allowed_dtypes);
@@ -654,7 +721,8 @@ guild_status_t GKernelMetadata::parse_json(const std::string& json_text,
     if (arts.is_array()) {
         std::set<std::string> seen_paths;
         for (const auto& a : arts.arr_val) {
-            if (!a.is_object()) continue;
+            if (!a.is_object())
+                continue;
             ArtifactHashEntry entry;
             entry.relative_path = a["path"].as_string("");
             entry.sha256 = a["sha256"].as_string("");
@@ -694,7 +762,8 @@ guild_status_t GKernelMetadata::parse_json(const std::string& json_text,
     const JsonValue& fixtures = root["validation_fixtures"];
     if (fixtures.is_array()) {
         for (const auto& fx : fixtures.arr_val) {
-            if (!fx.is_object()) continue;
+            if (!fx.is_object())
+                continue;
             ValidationFixtureSpec fspec;
             fspec.fixture_id = fx["fixture_id"].as_string("");
             fspec.relative_path = fx["path"].as_string("");
@@ -725,8 +794,7 @@ std::string GKernelMetadata::signing_message() const {
     return "GUILD-GKERNEL-SIG-V1:" + compute_payload_sha256();
 }
 
-bool GKernelMetadata::sign_with_seed_hex(const std::string& key_id,
-                                         const std::string& private_seed_hex,
+bool GKernelMetadata::sign_with_seed_hex(const std::string& key_id, const std::string& private_seed_hex,
                                          std::string& err) {
     if (key_id.empty()) {
         err = "signing key_id cannot be empty";
@@ -759,7 +827,8 @@ std::string GKernelMetadata::to_json_string() const {
 }
 
 std::string GKernelMetadata::resolve_primary_library_path() const {
-    if (!library_path.empty()) return library_path;
+    if (!library_path.empty())
+        return library_path;
     for (const auto& a : artifacts) {
         if (a.role == "shared_library" || is_shared_lib_extension(a.relative_path)) {
             return a.relative_path;
@@ -802,7 +871,8 @@ bool PackageSecurityPolicy::save_to_file(const std::string& path, std::string& e
 
     auto set_to_json = [](const std::set<std::string>& s) {
         std::vector<JsonValue> arr;
-        for (const auto& item : s) arr.emplace_back(item);
+        for (const auto& item : s)
+            arr.emplace_back(item);
         return JsonValue(std::move(arr));
     };
     root["revoked_key_ids"] = set_to_json(revoked_key_ids);
@@ -841,7 +911,8 @@ bool PackageSecurityPolicy::load_from_file(const std::string& path, std::string&
     const JsonValue& tkeys = root["trusted_keys"];
     if (tkeys.is_array()) {
         for (const auto& tk : tkeys.arr_val) {
-            if (!tk.is_object()) continue;
+            if (!tk.is_object())
+                continue;
             const std::string pub = tk["publisher_id"].as_string("");
             const std::string kid = tk["key_id"].as_string("");
             const std::string pk = tk["public_key_hex"].as_string("");
@@ -851,9 +922,11 @@ bool PackageSecurityPolicy::load_from_file(const std::string& path, std::string&
         }
     }
     auto json_to_set = [](const JsonValue& arr, std::set<std::string>& dst) {
-        if (!arr.is_array()) return;
+        if (!arr.is_array())
+            return;
         for (const auto& v : arr.arr_val) {
-            if (v.is_string() && !v.as_string().empty()) dst.insert(v.as_string());
+            if (v.is_string() && !v.as_string().empty())
+                dst.insert(v.as_string());
         }
     };
     json_to_set(root["revoked_key_ids"], revoked_key_ids);
@@ -863,16 +936,14 @@ bool PackageSecurityPolicy::load_from_file(const std::string& path, std::string&
     return true;
 }
 
-guild_status_t validate_gkernel_package(const GKernelMetadata& meta,
-                                        const PackageSecurityPolicy& policy,
-                                        const guild_device_capabilities_v1_t& host_caps,
-                                        const std::string& package_dir,
+guild_status_t validate_gkernel_package(const GKernelMetadata& meta, const PackageSecurityPolicy& policy,
+                                        const guild_device_capabilities_v1_t& host_caps, const std::string& package_dir,
                                         std::string& err) {
     // Legacy build-time modules remain non-loadable. Runtime modules explicitly
     // opt in, use the same signed envelope and may provide operations, not runners.
     if (meta.package_kind == "gkmodule") {
-        if (meta.module_abi != GUILD_MODULE_ABI_V1 || meta.scope != "module" ||
-            meta.library_path.empty() || meta.provided_ops.empty() || !meta.provided_runners.empty() ||
+        if (meta.module_abi != GUILD_MODULE_ABI_V1 || meta.scope != "module" || meta.library_path.empty() ||
+            meta.provided_ops.empty() || !meta.provided_runners.empty() ||
             meta.entrypoint_symbol != GUILD_PLUGIN_ENTRY_SYMBOL_V1) {
             err = "runtime gkmodule requires module_abi=1, scope=module, library_path, operations and no runners";
             return GUILD_STATUS_ERR_INVALID_ARGUMENT;
@@ -902,8 +973,7 @@ guild_status_t validate_gkernel_package(const GKernelMetadata& meta,
     // 2. Check cryptographic Ed25519 signature & publisher trust policy
     if (policy.require_signature && !policy.allow_unsigned_dev) {
         if (meta.signature.algorithm != "ed25519" || meta.signature.key_id.empty() ||
-            !is_valid_hex(meta.signature.signature_hex, 128) ||
-            !is_valid_hex(meta.signature.payload_sha256, 64)) {
+            !is_valid_hex(meta.signature.signature_hex, 128) || !is_valid_hex(meta.signature.payload_sha256, 64)) {
             err = "security violation: unsigned or malformed Ed25519 signature in package '" + meta.package_id + "'";
             return GUILD_STATUS_ERR_SECURITY_VIOLATION;
         }
@@ -912,16 +982,15 @@ guild_status_t validate_gkernel_package(const GKernelMetadata& meta,
             return GUILD_STATUS_ERR_SECURITY_VIOLATION;
         }
         const auto pub_it = policy.trusted_publishers.find(meta.publisher_id);
-        if (pub_it == policy.trusted_publishers.end() ||
-            pub_it->second.count(meta.signature.key_id) == 0) {
-            err = "security violation: publisher '" + meta.publisher_id + "' or key '" +
-                  meta.signature.key_id + "' is not trusted";
+        if (pub_it == policy.trusted_publishers.end() || pub_it->second.count(meta.signature.key_id) == 0) {
+            err = "security violation: publisher '" + meta.publisher_id + "' or key '" + meta.signature.key_id +
+                  "' is not trusted";
             return GUILD_STATUS_ERR_SECURITY_VIOLATION;
         }
         const auto pk_it = policy.trusted_public_keys.find({meta.publisher_id, meta.signature.key_id});
         if (pk_it == policy.trusted_public_keys.end() || !is_valid_hex(pk_it->second, 64)) {
-            err = "security violation: no pinned Ed25519 public key configured for publisher '" +
-                  meta.publisher_id + "' key '" + meta.signature.key_id + "'";
+            err = "security violation: no pinned Ed25519 public key configured for publisher '" + meta.publisher_id +
+                  "' key '" + meta.signature.key_id + "'";
             return GUILD_STATUS_ERR_SECURITY_VIOLATION;
         }
         const std::string expected_payload_sha = meta.compute_payload_sha256();
@@ -939,8 +1008,7 @@ guild_status_t validate_gkernel_package(const GKernelMetadata& meta,
 
     // 3. Check Kernel ABI compatibility
     const uint32_t host_abi_minor = GUILD_KERNEL_ABI_VERSION_MINOR;
-    if (meta.abi_major != GUILD_KERNEL_ABI_VERSION_MAJOR ||
-        meta.abi_minor_min > host_abi_minor ||
+    if (meta.abi_major != GUILD_KERNEL_ABI_VERSION_MAJOR || meta.abi_minor_min > host_abi_minor ||
         meta.abi_minor_max < host_abi_minor) {
         err = "package '" + meta.package_id + "' requires incompatible Kernel ABI version";
         return GUILD_STATUS_ERR_ABI_MISMATCH;
@@ -1023,7 +1091,8 @@ guild_status_t validate_gkernel_package(const GKernelMetadata& meta,
             return GUILD_STATUS_ERR_SECURITY_VIOLATION;
         }
         for (const auto& fx : meta.validation_fixtures) {
-            if (fx.relative_path.empty()) continue;
+            if (fx.relative_path.empty())
+                continue;
             if (!is_safe_relative_path(fx.relative_path)) {
                 err = "security violation: unsafe fixture path '" + fx.relative_path + "'";
                 return GUILD_STATUS_ERR_SECURITY_VIOLATION;
@@ -1056,12 +1125,12 @@ guild_status_t validate_gkernel_package(const GKernelMetadata& meta,
 
 guild_status_t validate_package_dependency_graph(const std::vector<GKernelMetadata>& packages,
                                                  const PackageSecurityPolicy& policy,
-                                                 const guild_device_capabilities_v1_t& host_caps,
-                                                 std::string& err) {
+                                                 const guild_device_capabilities_v1_t& host_caps, std::string& err) {
     std::map<std::string, const GKernelMetadata*> by_id;
     std::set<std::string> provided_ops;
     for (const auto& op : kernels::KernelRegistry::instance().list_operation_snapshots()) {
-        if (op.enabled) provided_ops.insert(op.impl_id);
+        if (op.enabled)
+            provided_ops.insert(op.impl_id);
     }
     for (const auto& pkg : packages) {
         if (by_id.count(pkg.package_id) > 0) {
@@ -1069,15 +1138,18 @@ guild_status_t validate_package_dependency_graph(const std::vector<GKernelMetada
             return GUILD_STATUS_ERR_DUPLICATE_REGISTRATION;
         }
         const guild_status_t st = validate_gkernel_package(pkg, policy, host_caps, "", err);
-        if (st != GUILD_STATUS_OK) return st;
+        if (st != GUILD_STATUS_OK)
+            return st;
         by_id[pkg.package_id] = &pkg;
-        for (const auto& op : pkg.provided_ops) provided_ops.insert(op);
+        for (const auto& op : pkg.provided_ops)
+            provided_ops.insert(op);
     }
 
     // Check package dependencies, versions, publisher pinning, and required_ops
     for (const auto& pkg : packages) {
         for (const auto& dep : pkg.module_dependencies) {
-            if (dep.abi_tag != GUILD_MODULE_ABI_TAG_V1) continue;
+            if (dep.abi_tag != GUILD_MODULE_ABI_TAG_V1)
+                continue;
             const auto it = by_id.find(dep.module_id);
             if (it == by_id.end() || it->second->package_kind != "gkmodule" || it->second->module_abi != 1 ||
                 !semver_gte(it->second->version, dep.min_version) ||
@@ -1093,10 +1165,8 @@ guild_status_t validate_package_dependency_graph(const std::vector<GKernelMetada
         }
         for (const auto& dep : pkg.dependencies) {
             // Allow built-in pseudo-packages
-            if (dep.package_id == "builtin.guild-kernels-cpu" ||
-                dep.package_id == "builtin.guild-kernels-cuda" ||
-                dep.package_id == "builtin.guild-kernels-amd" ||
-                dep.package_id == "builtin.guild-kernels-qwen" ||
+            if (dep.package_id == "builtin.guild-kernels-cpu" || dep.package_id == "builtin.guild-kernels-cuda" ||
+                dep.package_id == "builtin.guild-kernels-amd" || dep.package_id == "builtin.guild-kernels-qwen" ||
                 dep.package_id == "builtin.guild-kernels-ornith") {
                 continue;
             }
@@ -1106,24 +1176,24 @@ guild_status_t validate_package_dependency_graph(const std::vector<GKernelMetada
                 return GUILD_STATUS_ERR_DEPENDENCY_MISSING;
             }
             if (!semver_gte(it->second->version, dep.min_version)) {
-                err = "package '" + pkg.package_id + "' requires '" + dep.package_id + "' >= " +
-                      dep.min_version + " (found " + it->second->version + ")";
+                err = "package '" + pkg.package_id + "' requires '" + dep.package_id + "' >= " + dep.min_version +
+                      " (found " + it->second->version + ")";
                 return GUILD_STATUS_ERR_DEPENDENCY_MISSING;
             }
             if (!dep.max_version.empty() && !semver_lte(it->second->version, dep.max_version)) {
-                err = "package '" + pkg.package_id + "' requires '" + dep.package_id + "' <= " +
-                      dep.max_version + " (found " + it->second->version + ")";
+                err = "package '" + pkg.package_id + "' requires '" + dep.package_id + "' <= " + dep.max_version +
+                      " (found " + it->second->version + ")";
                 return GUILD_STATUS_ERR_DEPENDENCY_MISSING;
             }
-            if (!dep.expected_publisher_id.empty() &&
-                it->second->publisher_id != dep.expected_publisher_id) {
+            if (!dep.expected_publisher_id.empty() && it->second->publisher_id != dep.expected_publisher_id) {
                 err = "security violation: dependency '" + dep.package_id + "' publisher mismatch";
                 return GUILD_STATUS_ERR_SECURITY_VIOLATION;
             }
         }
         for (const auto& req_op : pkg.required_ops) {
             if (provided_ops.count(req_op) == 0) {
-                err = "package '" + pkg.package_id + "' requires operation '" + req_op + "' not provided by any loaded package";
+                err = "package '" + pkg.package_id + "' requires operation '" + req_op +
+                      "' not provided by any loaded package";
                 return GUILD_STATUS_ERR_DEPENDENCY_MISSING;
             }
         }
@@ -1135,14 +1205,19 @@ guild_status_t validate_package_dependency_graph(const std::vector<GKernelMetada
         visit_state[id] = 1;
         const auto* node = by_id.at(id);
         for (const auto& dep : node->module_dependencies) {
-            if (dep.abi_tag != GUILD_MODULE_ABI_TAG_V1 || !by_id.count(dep.module_id)) continue;
-            if (visit_state[dep.module_id] == 1 || (visit_state[dep.module_id] == 0 && has_cycle(dep.module_id))) return true;
+            if (dep.abi_tag != GUILD_MODULE_ABI_TAG_V1 || !by_id.count(dep.module_id))
+                continue;
+            if (visit_state[dep.module_id] == 1 || (visit_state[dep.module_id] == 0 && has_cycle(dep.module_id)))
+                return true;
         }
         for (const auto& dep : node->dependencies) {
-            if (by_id.count(dep.package_id) == 0) continue;
+            if (by_id.count(dep.package_id) == 0)
+                continue;
             const int st = visit_state[dep.package_id];
-            if (st == 1) return true;
-            if (st == 0 && has_cycle(dep.package_id)) return true;
+            if (st == 1)
+                return true;
+            if (st == 0 && has_cycle(dep.package_id))
+                return true;
         }
         visit_state[id] = 2;
         return false;
@@ -1158,13 +1233,11 @@ guild_status_t validate_package_dependency_graph(const std::vector<GKernelMetada
     return GUILD_STATUS_OK;
 }
 
-guild_status_t verify_gexec_kernel_lock(const GexecKernelLock& lock,
-                                        const GKernelMetadata& meta,
-                                        const guild_kernel_op_desc_v1_t& op_desc,
-                                        std::string& err) {
+guild_status_t verify_gexec_kernel_lock(const GexecKernelLock& lock, const GKernelMetadata& meta,
+                                        const guild_kernel_op_desc_v1_t& op_desc, std::string& err) {
     if (meta.package_id != lock.package_id || meta.version != lock.package_version) {
-        err = "GEXEC lock mismatch: expected " + lock.package_id + "@" + lock.package_version +
-              ", found " + meta.package_id + "@" + meta.version;
+        err = "GEXEC lock mismatch: expected " + lock.package_id + "@" + lock.package_version + ", found " +
+              meta.package_id + "@" + meta.version;
         return GUILD_STATUS_ERR_CAPABILITY_MISMATCH;
     }
     if (!op_desc.impl_id || lock.impl_id != op_desc.impl_id || op_desc.abi_version != lock.abi_version) {
@@ -1172,9 +1245,8 @@ guild_status_t verify_gexec_kernel_lock(const GexecKernelLock& lock,
         return GUILD_STATUS_ERR_CAPABILITY_MISMATCH;
     }
     if (!lock.artifact_sha256.empty()) {
-        const bool match = std::any_of(meta.artifacts.begin(), meta.artifacts.end(), [&](const ArtifactHashEntry& a) {
-            return a.sha256 == lock.artifact_sha256;
-        });
+        const bool match = std::any_of(meta.artifacts.begin(), meta.artifacts.end(),
+                                       [&](const ArtifactHashEntry& a) { return a.sha256 == lock.artifact_sha256; });
         if (!match) {
             err = "GEXEC lock mismatch: locked artifact SHA-256 digest is not present in package";
             return GUILD_STATUS_ERR_SECURITY_VIOLATION;
@@ -1193,12 +1265,8 @@ namespace {
 constexpr char kGkpkMagic[8] = {'G', 'K', 'P', 'K', 1, 0, 0, 0};
 
 void write_le32(std::ostream& os, uint32_t v) {
-    uint8_t b[4] = {
-        static_cast<uint8_t>(v & 0xff),
-        static_cast<uint8_t>((v >> 8) & 0xff),
-        static_cast<uint8_t>((v >> 16) & 0xff),
-        static_cast<uint8_t>((v >> 24) & 0xff)
-    };
+    uint8_t b[4] = {static_cast<uint8_t>(v & 0xff), static_cast<uint8_t>((v >> 8) & 0xff),
+                    static_cast<uint8_t>((v >> 16) & 0xff), static_cast<uint8_t>((v >> 24) & 0xff)};
     os.write(reinterpret_cast<const char*>(b), 4);
 }
 
@@ -1211,26 +1279,24 @@ void write_le64(std::ostream& os, uint64_t v) {
 
 bool read_le32(std::istream& is, uint32_t& out) {
     uint8_t b[4];
-    if (!is.read(reinterpret_cast<char*>(b), 4)) return false;
-    out = static_cast<uint32_t>(b[0]) |
-          (static_cast<uint32_t>(b[1]) << 8) |
-          (static_cast<uint32_t>(b[2]) << 16) |
+    if (!is.read(reinterpret_cast<char*>(b), 4))
+        return false;
+    out = static_cast<uint32_t>(b[0]) | (static_cast<uint32_t>(b[1]) << 8) | (static_cast<uint32_t>(b[2]) << 16) |
           (static_cast<uint32_t>(b[3]) << 24);
     return true;
 }
 
 bool read_le64(std::istream& is, uint64_t& out) {
     uint8_t b[8];
-    if (!is.read(reinterpret_cast<char*>(b), 8)) return false;
+    if (!is.read(reinterpret_cast<char*>(b), 8))
+        return false;
     out = 0;
-    for (int i = 0; i < 8; ++i) out |= (static_cast<uint64_t>(b[i]) << (8 * i));
+    for (int i = 0; i < 8; ++i)
+        out |= (static_cast<uint64_t>(b[i]) << (8 * i));
     return true;
 }
 
-bool write_staged_file(const fs::path& staging_root,
-                       const std::string& rel_path,
-                       const char* data,
-                       size_t len,
+bool write_staged_file(const fs::path& staging_root, const std::string& rel_path, const char* data, size_t len,
                        std::string& err) {
     if (rel_path != ".gkmetadata" && !is_safe_relative_path(rel_path)) {
         err = "security violation: unsafe archive entry path '" + rel_path + "'";
@@ -1256,8 +1322,7 @@ bool write_staged_file(const fs::path& staging_root,
 
 } // namespace
 
-guild_status_t create_gkernel_bundle(const std::string& source_dir,
-                                     const std::string& output_bundle_path,
+guild_status_t create_gkernel_bundle(const std::string& source_dir, const std::string& output_bundle_path,
                                      std::string& err) {
     const fs::path src_root(source_dir);
     const fs::path meta_path = src_root / ".gkmetadata";
@@ -1275,7 +1340,8 @@ guild_status_t create_gkernel_bundle(const std::string& source_dir,
     }
     GKernelMetadata meta;
     const guild_status_t pst = GKernelMetadata::parse_json(meta_json, meta, err);
-    if (pst != GUILD_STATUS_OK) return pst;
+    if (pst != GUILD_STATUS_OK)
+        return pst;
 
     std::vector<std::pair<std::string, std::string>> files;
     files.emplace_back(".gkmetadata", meta_json);
@@ -1295,7 +1361,8 @@ guild_status_t create_gkernel_bundle(const std::string& source_dir,
         files.emplace_back(art.relative_path, ss.str());
     }
     for (const auto& fx : meta.validation_fixtures) {
-        if (fx.relative_path.empty()) continue;
+        if (fx.relative_path.empty())
+            continue;
         const fs::path fp = src_root / fx.relative_path;
         if (!fs::is_regular_file(fs::symlink_status(fp, ec))) {
             err = "missing declared fixture '" + fx.relative_path + "'";
@@ -1331,11 +1398,8 @@ guild_status_t create_gkernel_bundle(const std::string& source_dir,
     return GUILD_STATUS_OK;
 }
 
-guild_status_t stage_gkernel_source(const std::string& source_path,
-                                    const std::string& staging_dir,
-                                    GKernelMetadata& out_meta,
-                                    std::string& err,
-                                    uint64_t max_total_bytes,
+guild_status_t stage_gkernel_source(const std::string& source_path, const std::string& staging_dir,
+                                    GKernelMetadata& out_meta, std::string& err, uint64_t max_total_bytes,
                                     size_t max_entries) {
     std::error_code ec;
     const fs::path src(source_path);
@@ -1362,7 +1426,8 @@ guild_status_t stage_gkernel_source(const std::string& source_path,
 
     if (fs::is_directory(src_status)) {
         // Walk directory without following symlinks
-        for (fs::recursive_directory_iterator it(src, fs::directory_options::none, ec), end; it != end; it.increment(ec)) {
+        for (fs::recursive_directory_iterator it(src, fs::directory_options::none, ec), end; it != end;
+             it.increment(ec)) {
             if (ec) {
                 err = "error iterating package directory: " + ec.message();
                 return GUILD_STATUS_ERR_SECURITY_VIOLATION;
@@ -1372,13 +1437,15 @@ guild_status_t stage_gkernel_source(const std::string& source_path,
                 err = "security violation: symlink encountered inside package directory: " + it->path().string();
                 return GUILD_STATUS_ERR_SECURITY_VIOLATION;
             }
-            if (fs::is_directory(st)) continue;
+            if (fs::is_directory(st))
+                continue;
             if (!fs::is_regular_file(st)) {
                 err = "security violation: non-regular file encountered inside package directory";
                 return GUILD_STATUS_ERR_SECURITY_VIOLATION;
             }
             if (++entry_count > max_entries) {
-                err = "security violation: package exceeds maximum file count limit (" + std::to_string(max_entries) + ")";
+                err = "security violation: package exceeds maximum file count limit (" + std::to_string(max_entries) +
+                      ")";
                 return GUILD_STATUS_ERR_SECURITY_VIOLATION;
             }
             const uint64_t fsize = fs::file_size(it->path(), ec);
@@ -1461,14 +1528,20 @@ guild_status_t stage_gkernel_source(const std::string& source_path,
                     break;
                 }
                 bool all_zero = true;
-                for (char c : block) if (c != 0) { all_zero = false; break; }
-                if (all_zero) break;
+                for (char c : block)
+                    if (c != 0) {
+                        all_zero = false;
+                        break;
+                    }
+                if (all_zero)
+                    break;
                 if (++entry_count > max_entries) {
                     err = "security violation: tar archive exceeds maximum entry count";
                     return GUILD_STATUS_ERR_SECURITY_VIOLATION;
                 }
                 std::string name(block, strnlen(block, 100));
-                if (!name.empty() && name.rfind("./", 0) == 0) name = name.substr(2);
+                if (!name.empty() && name.rfind("./", 0) == 0)
+                    name = name.substr(2);
                 const char typeflag = block[156];
                 // Parse octal size at [124..135]
                 uint64_t fsize = 0;
@@ -1533,16 +1606,21 @@ guild_status_t stage_gkernel_source(const std::string& source_path,
         meta_text = ss.str();
     }
     const guild_status_t pst = GKernelMetadata::parse_json(meta_text, out_meta, err);
-    if (pst != GUILD_STATUS_OK) return pst;
+    if (pst != GUILD_STATUS_OK)
+        return pst;
 
-    // Reject any undeclared files in the staged package (every extracted file must be declared in artifacts or validation_fixtures)
+    // Reject any undeclared files in the staged package (every extracted file must be declared in artifacts or
+    // validation_fixtures)
     std::set<std::string> declared_files;
-    for (const auto& a : out_meta.artifacts) declared_files.insert(a.relative_path);
+    for (const auto& a : out_meta.artifacts)
+        declared_files.insert(a.relative_path);
     for (const auto& fx : out_meta.validation_fixtures) {
-        if (!fx.relative_path.empty()) declared_files.insert(fx.relative_path);
+        if (!fx.relative_path.empty())
+            declared_files.insert(fx.relative_path);
     }
     for (const auto& p : staged_rel_paths) {
-        if (p == ".gkmetadata") continue;
+        if (p == ".gkmetadata")
+            continue;
         if (declared_files.count(p) == 0) {
             err = "security violation: undeclared file '" + p + "' present in package";
             return GUILD_STATUS_ERR_SECURITY_VIOLATION;
@@ -1565,7 +1643,8 @@ namespace {
 struct SharedLibHandle {
     void* handle = nullptr;
     std::string path;
-    explicit SharedLibHandle(void* h, std::string p) : handle(h), path(std::move(p)) {}
+    explicit SharedLibHandle(void* h, std::string p) : handle(h), path(std::move(p)) {
+    }
     ~SharedLibHandle() {
 #if !defined(_WIN32)
         if (handle) {
@@ -1588,13 +1667,13 @@ std::string default_kernels_store_dir() {
 
 } // namespace
 
-GKernelPackageManager::GKernelPackageManager(std::string store_root_dir,
-                                             kernels::KernelRegistry* kernel_reg,
+GKernelPackageManager::GKernelPackageManager(std::string store_root_dir, kernels::KernelRegistry* kernel_reg,
                                              model::ModelRunnerRegistry* runner_reg)
     : root_dir_(store_root_dir.empty() ? default_kernels_store_dir() : std::move(store_root_dir)),
       kernel_reg_(kernel_reg ? kernel_reg : &kernels::KernelRegistry::instance()),
       runner_reg_(runner_reg ? runner_reg : &model::ModelRunnerRegistry::instance()),
-      policy_(PackageSecurityPolicy::default_builtin_policy()) {}
+      policy_(PackageSecurityPolicy::default_builtin_policy()) {
+}
 
 GKernelPackageManager::~GKernelPackageManager() = default;
 
@@ -1627,7 +1706,8 @@ bool GKernelPackageManager::should_trigger_fault_unlocked(PackageFaultPoint poin
         active = parse_env_fault_point();
         do_abort = parse_env_fault_abort();
     }
-    if (active != point) return false;
+    if (active != point)
+        return false;
     fault_point_ = PackageFaultPoint::None;
     fault_abort_process_ = false;
     if (do_abort) {
@@ -1681,12 +1761,14 @@ bool GKernelPackageManager::init(std::string& err) {
     if (fs::is_regular_file(reg_path, ec)) {
         initialized_ = load_registry_unlocked(err);
         initialization_error_ = err;
-        if (!initialized_) return false;
+        if (!initialized_)
+            return false;
     } else {
         packages_.clear();
     }
 
-    // Sweep unreferenced package/version directories or backup directories left behind by a crash before registry commit
+    // Sweep unreferenced package/version directories or backup directories left behind by a crash before registry
+    // commit
     for (fs::directory_iterator pkg_it(pkgs_p, ec), pkg_end; !ec && pkg_it != pkg_end; pkg_it.increment(ec)) {
         const std::string pid = pkg_it->path().filename().string();
         const auto rec_it = packages_.find(pid);
@@ -1700,7 +1782,8 @@ bool GKernelPackageManager::init(std::string& err) {
         for (const auto& [v, vd] : rec_it->second.version_dirs) {
             valid_vdirs.insert(fs::path(vd).lexically_normal().string());
         }
-        for (fs::directory_iterator ver_it(pkg_it->path(), ec), ver_end; !ec && ver_it != ver_end; ver_it.increment(ec)) {
+        for (fs::directory_iterator ver_it(pkg_it->path(), ec), ver_end; !ec && ver_it != ver_end;
+             ver_it.increment(ec)) {
             const std::string norm_p = ver_it->path().lexically_normal().string();
             if (valid_vdirs.count(norm_p) == 0) {
                 std::error_code rm_ec;
@@ -1775,7 +1858,8 @@ bool GKernelPackageManager::load_registry_unlocked(std::string& err) {
     ss << f.rdbuf();
     JsonValue root;
     if (!JsonValue::parse(ss.str(), root, err) || !root.is_object()) {
-        if (err.empty()) err = "kernel package registry root must be a JSON object";
+        if (err.empty())
+            err = "kernel package registry root must be a JSON object";
         return false;
     }
     packages_.clear();
@@ -1845,25 +1929,34 @@ guild_status_t GKernelPackageManager::load_staged_package_unlocked(InstalledPack
     const auto host_caps = kernels::query_host_device_capabilities();
     // Re-verify metadata, signature, and on-disk SHA-256 digests immediately before dlopen
     const guild_status_t vst = validate_gkernel_package(rec.metadata, policy_, host_caps, rec.staged_dir, err);
-    if (vst != GUILD_STATUS_OK) return vst;
+    if (vst != GUILD_STATUS_OK)
+        return vst;
 
     // Recheck the entire candidate graph on every load path, including enable and
     // rollback, before executing any code. rec can be an unpublished replacement.
     std::vector<GKernelMetadata> graph{rec.metadata};
     for (const auto& [id, other] : packages_)
-        if (id != rec.package_id && other.enabled) graph.push_back(other.metadata);
+        if (id != rec.package_id && other.enabled)
+            graph.push_back(other.metadata);
     const auto graph_status = validate_package_dependency_graph(graph, policy_, host_caps, err);
-    if (graph_status != GUILD_STATUS_OK) return graph_status;
+    if (graph_status != GUILD_STATUS_OK)
+        return graph_status;
     std::vector<std::string> dependency_ids;
-    for (const auto& dep : rec.metadata.dependencies) dependency_ids.push_back(dep.package_id);
+    for (const auto& dep : rec.metadata.dependencies)
+        dependency_ids.push_back(dep.package_id);
     for (const auto& dep : rec.metadata.module_dependencies)
-        if (dep.abi_tag == GUILD_MODULE_ABI_TAG_V1) dependency_ids.push_back(dep.module_id);
+        if (dep.abi_tag == GUILD_MODULE_ABI_TAG_V1)
+            dependency_ids.push_back(dep.module_id);
     for (const auto& id : dependency_ids) {
         auto it = packages_.find(id);
         if (it != packages_.end()) {
-            if (!it->second.enabled) { err = "dependency disabled: " + id; return GUILD_STATUS_ERR_DEPENDENCY_MISSING; }
+            if (!it->second.enabled) {
+                err = "dependency disabled: " + id;
+                return GUILD_STATUS_ERR_DEPENDENCY_MISSING;
+            }
             const auto st = load_staged_package_unlocked(it->second, err);
-            if (st != GUILD_STATUS_OK) return st;
+            if (st != GUILD_STATUS_OK)
+                return st;
         }
     }
 
@@ -1889,9 +1982,8 @@ guild_status_t GKernelPackageManager::load_staged_package_unlocked(InstalledPack
     }
     auto lib_keepalive = std::make_shared<SharedLibHandle>(raw_handle, lib_path.string());
 
-    const std::string sym_name = rec.metadata.entrypoint_symbol.empty()
-                                     ? std::string(GUILD_PLUGIN_ENTRY_SYMBOL_V1)
-                                     : rec.metadata.entrypoint_symbol;
+    const std::string sym_name = rec.metadata.entrypoint_symbol.empty() ? std::string(GUILD_PLUGIN_ENTRY_SYMBOL_V1)
+                                                                        : rec.metadata.entrypoint_symbol;
     ::dlerror();
     void* sym = ::dlsym(raw_handle, sym_name.c_str());
     if (!sym && sym_name == GUILD_PLUGIN_ENTRY_SYMBOL_V1) {
@@ -1904,7 +1996,8 @@ guild_status_t GKernelPackageManager::load_staged_package_unlocked(InstalledPack
     }
 
     auto entry_fn = reinterpret_cast<guild_plugin_entry_fn>(sym);
-    auto runner_commit = [this, lib_keepalive](const guild_runner_desc_v1_t& rdesc, std::string& rerr) -> guild_status_t {
+    auto runner_commit = [this, lib_keepalive](const guild_runner_desc_v1_t& rdesc,
+                                               std::string& rerr) -> guild_status_t {
         return runner_reg_->register_abi_runner(rdesc, rerr, lib_keepalive);
     };
     auto runner_rollback = [this](const std::string& runner_id) {
@@ -1913,16 +2006,8 @@ guild_status_t GKernelPackageManager::load_staged_package_unlocked(InstalledPack
     };
 
     const guild_status_t rst = kernel_reg_->register_plugin_transactional(
-        entry_fn,
-        rec.metadata.package_id,
-        rec.metadata.version,
-        rec.metadata.publisher_id,
-        rec.metadata.provided_ops,
-        rec.metadata.provided_runners,
-        runner_commit,
-        runner_rollback,
-        err,
-        lib_keepalive);
+        entry_fn, rec.metadata.package_id, rec.metadata.version, rec.metadata.publisher_id, rec.metadata.provided_ops,
+        rec.metadata.provided_runners, runner_commit, runner_rollback, err, lib_keepalive);
     if (rst != GUILD_STATUS_OK) {
         return rst;
     }
@@ -1947,7 +2032,8 @@ guild_status_t GKernelPackageManager::unload_package_unlocked(InstalledPackageRe
         return GUILD_STATUS_ERR_ACTIVE_SESSION_BUSY;
     }
     const auto preflight = kernel_reg_->can_unregister_package(rec.package_id, err);
-    if (preflight != GUILD_STATUS_OK) return preflight;
+    if (preflight != GUILD_STATUS_OK)
+        return preflight;
     if (!rec.metadata.provided_runners.empty()) {
         const guild_status_t rst = runner_reg_->unregister_package(rec.package_id, err);
         if (rst != GUILD_STATUS_OK && rst != GUILD_STATUS_ERR_MISSING_RUNNER) {
@@ -1963,8 +2049,7 @@ guild_status_t GKernelPackageManager::unload_package_unlocked(InstalledPackageRe
     return GUILD_STATUS_OK;
 }
 
-guild_status_t GKernelPackageManager::install_package(const std::string& source_path,
-                                                      bool enable_now,
+guild_status_t GKernelPackageManager::install_package(const std::string& source_path, bool enable_now,
                                                       std::string& err) {
     std::lock_guard<std::mutex> lock(mutex_);
     std::error_code ec;
@@ -1983,7 +2068,8 @@ guild_status_t GKernelPackageManager::install_package(const std::string& source_
         fs::path p;
         ~StageCleanup() {
             std::error_code ignore;
-            if (!p.empty()) fs::remove_all(p, ignore);
+            if (!p.empty())
+                fs::remove_all(p, ignore);
         }
     } cleanup{temp_stage};
 
@@ -1993,7 +2079,8 @@ guild_status_t GKernelPackageManager::install_package(const std::string& source_
 
     GKernelMetadata meta;
     const guild_status_t sst = stage_gkernel_source(source_path, temp_stage.string(), meta, err);
-    if (sst != GUILD_STATUS_OK) return sst;
+    if (sst != GUILD_STATUS_OK)
+        return sst;
 
     if (should_trigger_fault_unlocked(PackageFaultPoint::AfterStagingBeforeVerify, err)) {
         return GUILD_STATUS_ERR_INTERNAL;
@@ -2001,7 +2088,8 @@ guild_status_t GKernelPackageManager::install_package(const std::string& source_
 
     const auto host_caps = kernels::query_host_device_capabilities();
     const guild_status_t vst = validate_gkernel_package(meta, policy_, host_caps, temp_stage.string(), err);
-    if (vst != GUILD_STATUS_OK) return vst;
+    if (vst != GUILD_STATUS_OK)
+        return vst;
 
     // Validate dependency graph together with currently enabled packages
     std::vector<GKernelMetadata> graph_pkgs;
@@ -2012,7 +2100,8 @@ guild_status_t GKernelPackageManager::install_package(const std::string& source_
     }
     graph_pkgs.push_back(meta);
     const guild_status_t dst = validate_package_dependency_graph(graph_pkgs, policy_, host_caps, err);
-    if (dst != GUILD_STATUS_OK) return dst;
+    if (dst != GUILD_STATUS_OK)
+        return dst;
 
     // Keep newly published providers invisible until the durable registry commit
     // succeeds; otherwise a concurrent selection can prevent failure rollback.
@@ -2027,9 +2116,8 @@ guild_status_t GKernelPackageManager::install_package(const std::string& source_
     const bool had_existing = (existing_it != packages_.end());
 
     // Enforce same-version immutability if this package_id@version already exists in store or registry
-    const bool version_exists_in_reg = had_existing &&
-        (existing_it->second.active_version == meta.version ||
-         existing_it->second.version_dirs.count(meta.version) > 0);
+    const bool version_exists_in_reg = had_existing && (existing_it->second.active_version == meta.version ||
+                                                        existing_it->second.version_dirs.count(meta.version) > 0);
     if (version_exists_in_reg || fs::exists(final_dir, ec)) {
         const fs::path existing_meta_path = final_dir / ".gkmetadata";
         GKernelMetadata existing_meta;
@@ -2040,12 +2128,13 @@ guild_status_t GKernelPackageManager::install_package(const std::string& source_
             mss << mf.rdbuf();
             std::string ignore_err;
             if (GKernelMetadata::parse_json(mss.str(), existing_meta, ignore_err) == GUILD_STATUS_OK &&
-                validate_gkernel_package(existing_meta, policy_, host_caps, final_dir.string(), ignore_err) == GUILD_STATUS_OK) {
+                validate_gkernel_package(existing_meta, policy_, host_caps, final_dir.string(), ignore_err) ==
+                    GUILD_STATUS_OK) {
                 existing_valid = true;
             }
         }
-        const bool identical_content = existing_valid &&
-            (existing_meta.compute_payload_sha256() == meta.compute_payload_sha256());
+        const bool identical_content =
+            existing_valid && (existing_meta.compute_payload_sha256() == meta.compute_payload_sha256());
         if (!identical_content && !policy_.allow_same_version_replacement) {
             err = "same-version immutability violation: package '" + meta.package_id + "@" + meta.version +
                   "' is already installed with different content";
@@ -2061,7 +2150,8 @@ guild_status_t GKernelPackageManager::install_package(const std::string& source_
                 const guild_status_t lst = load_staged_package_unlocked(existing_it->second, err);
                 if (lst != GUILD_STATUS_OK || !save_registry_unlocked(err)) {
                     std::string ignore;
-                    if (!was_loaded) unload_package_unlocked(existing_it->second, ignore);
+                    if (!was_loaded)
+                        unload_package_unlocked(existing_it->second, ignore);
                     existing_it->second.enabled = was_enabled;
                     kernel_reg_->set_package_enabled(meta.package_id, was_enabled);
                     runner_reg_->set_package_enabled(meta.package_id, was_enabled);
@@ -2083,7 +2173,8 @@ guild_status_t GKernelPackageManager::install_package(const std::string& source_
         }
     }
 
-    // Publish verified staged directory into <root_dir>/packages/<package_id>/<version> without destroying existing data first
+    // Publish verified staged directory into <root_dir>/packages/<package_id>/<version> without destroying existing
+    // data first
     fs::create_directories(final_dir.parent_path(), ec);
 #if !defined(_WIN32)
     ::chmod(final_dir.parent_path().c_str(), 0700);
@@ -2141,9 +2232,11 @@ guild_status_t GKernelPackageManager::install_package(const std::string& source_
     const bool was_loaded = had_existing && existing_it->second.loaded_in_process;
 
     InstalledPackageRecord rec;
-    if (had_existing) rec = existing_it->second;
+    if (had_existing)
+        rec = existing_it->second;
     rec.package_id = meta.package_id;
-    rec.previous_version = (!prev_version.empty() && prev_version != meta.version) ? prev_version : rec.previous_version;
+    rec.previous_version =
+        (!prev_version.empty() && prev_version != meta.version) ? prev_version : rec.previous_version;
     rec.active_version = meta.version;
     rec.enabled = enable_now;
     rec.loaded_in_process = false;
@@ -2176,7 +2269,8 @@ guild_status_t GKernelPackageManager::install_package(const std::string& source_
     }
 
     InstalledPackageRecord old_copy;
-    if (had_existing) old_copy = existing_it->second;
+    if (had_existing)
+        old_copy = existing_it->second;
     packages_[meta.package_id] = std::move(rec);
 
     std::string save_err;
@@ -2222,7 +2316,8 @@ guild_status_t GKernelPackageManager::load_enabled_packages(std::string& err) {
     }
     std::vector<GKernelMetadata> enabled_metas;
     for (const auto& [id, rec] : packages_) {
-        if (rec.enabled) enabled_metas.push_back(rec.metadata);
+        if (rec.enabled)
+            enabled_metas.push_back(rec.metadata);
     }
     if (enabled_metas.empty()) {
         err.clear();
@@ -2230,35 +2325,42 @@ guild_status_t GKernelPackageManager::load_enabled_packages(std::string& err) {
     }
     const auto host_caps = kernels::query_host_device_capabilities();
     const guild_status_t gst = validate_package_dependency_graph(enabled_metas, policy_, host_caps, err);
-    if (gst != GUILD_STATUS_OK) return gst;
+    if (gst != GUILD_STATUS_OK)
+        return gst;
 
     // Topological load order
     std::set<std::string> loaded;
     std::function<guild_status_t(const std::string&)> load_rec = [&](const std::string& id) -> guild_status_t {
-        if (loaded.count(id) > 0) return GUILD_STATUS_OK;
+        if (loaded.count(id) > 0)
+            return GUILD_STATUS_OK;
         auto it = packages_.find(id);
-        if (it == packages_.end() || !it->second.enabled) return GUILD_STATUS_OK;
+        if (it == packages_.end() || !it->second.enabled)
+            return GUILD_STATUS_OK;
         for (const auto& dep : it->second.metadata.dependencies) {
             if (packages_.count(dep.package_id) > 0) {
                 const guild_status_t st = load_rec(dep.package_id);
-                if (st != GUILD_STATUS_OK) return st;
+                if (st != GUILD_STATUS_OK)
+                    return st;
             }
         }
         for (const auto& dep : it->second.metadata.module_dependencies) {
             if (dep.abi_tag == GUILD_MODULE_ABI_TAG_V1) {
                 const auto st = load_rec(dep.module_id);
-                if (st != GUILD_STATUS_OK) return st;
+                if (st != GUILD_STATUS_OK)
+                    return st;
             }
         }
         const guild_status_t st = load_staged_package_unlocked(it->second, err);
-        if (st == GUILD_STATUS_OK) loaded.insert(id);
+        if (st == GUILD_STATUS_OK)
+            loaded.insert(id);
         return st;
     };
 
     for (const auto& [id, rec] : packages_) {
         if (rec.enabled) {
             const guild_status_t st = load_rec(id);
-            if (st != GUILD_STATUS_OK) return st;
+            if (st != GUILD_STATUS_OK)
+                return st;
         }
     }
     err.clear();
@@ -2285,7 +2387,8 @@ guild_status_t GKernelPackageManager::enable_package(const std::string& package_
     runner_reg_->set_package_enabled(package_id, true);
     if (!save_registry_unlocked(err)) {
         std::string ignore;
-        if (!was_loaded) unload_package_unlocked(it->second, ignore);
+        if (!was_loaded)
+            unload_package_unlocked(it->second, ignore);
         it->second.enabled = was_enabled;
         kernel_reg_->set_package_enabled(package_id, was_enabled);
         runner_reg_->set_package_enabled(package_id, was_enabled);
@@ -2304,7 +2407,8 @@ guild_status_t GKernelPackageManager::disable_package(const std::string& package
     }
     // Check if any other enabled package depends on this package
     for (const auto& [other_id, other_rec] : packages_) {
-        if (other_id == package_id || !other_rec.enabled) continue;
+        if (other_id == package_id || !other_rec.enabled)
+            continue;
         for (const auto& dep : other_rec.metadata.module_dependencies) {
             if (dep.abi_tag == GUILD_MODULE_ABI_TAG_V1 && dep.module_id == package_id) {
                 err = "enabled package '" + other_id + "' depends on module '" + package_id + "'";
@@ -2313,7 +2417,8 @@ guild_status_t GKernelPackageManager::disable_package(const std::string& package
         }
         for (const auto& dep : other_rec.metadata.dependencies) {
             if (dep.package_id == package_id) {
-                err = "cannot disable package '" + package_id + "' because enabled package '" + other_id + "' depends on it";
+                err = "cannot disable package '" + package_id + "' because enabled package '" + other_id +
+                      "' depends on it";
                 return GUILD_STATUS_ERR_DEPENDENCY_MISSING;
             }
         }
@@ -2321,14 +2426,16 @@ guild_status_t GKernelPackageManager::disable_package(const std::string& package
     const bool was_enabled = it->second.enabled;
     const bool was_loaded = it->second.loaded_in_process;
     const guild_status_t ust = unload_package_unlocked(it->second, err);
-    if (ust != GUILD_STATUS_OK) return ust;
+    if (ust != GUILD_STATUS_OK)
+        return ust;
     it->second.enabled = false;
     kernel_reg_->set_package_enabled(package_id, false);
     runner_reg_->set_package_enabled(package_id, false);
     if (!save_registry_unlocked(err)) {
         it->second.enabled = was_enabled;
         std::string ignore;
-        if (was_loaded) load_staged_package_unlocked(it->second, ignore);
+        if (was_loaded)
+            load_staged_package_unlocked(it->second, ignore);
         kernel_reg_->set_package_enabled(package_id, was_enabled);
         runner_reg_->set_package_enabled(package_id, was_enabled);
         return GUILD_STATUS_ERR_INTERNAL;
@@ -2345,7 +2452,8 @@ guild_status_t GKernelPackageManager::remove_package(const std::string& package_
         return GUILD_STATUS_ERR_MISSING_KERNEL;
     }
     for (const auto& [other_id, other_rec] : packages_) {
-        if (other_id == package_id) continue;
+        if (other_id == package_id)
+            continue;
         for (const auto& dep : other_rec.metadata.module_dependencies) {
             if (dep.abi_tag == GUILD_MODULE_ABI_TAG_V1 && dep.module_id == package_id) {
                 err = "installed package '" + other_id + "' depends on module '" + package_id + "'";
@@ -2354,16 +2462,19 @@ guild_status_t GKernelPackageManager::remove_package(const std::string& package_
         }
         for (const auto& dep : other_rec.metadata.dependencies) {
             if (dep.package_id == package_id) {
-                err = "cannot remove package '" + package_id + "' because installed package '" + other_id + "' depends on it";
+                err = "cannot remove package '" + package_id + "' because installed package '" + other_id +
+                      "' depends on it";
                 return GUILD_STATUS_ERR_DEPENDENCY_MISSING;
             }
         }
     }
     const bool was_loaded = it->second.loaded_in_process;
     const guild_status_t ust = unload_package_unlocked(it->second, err);
-    if (ust != GUILD_STATUS_OK) return ust;
+    if (ust != GUILD_STATUS_OK)
+        return ust;
 
-    // Commit registry removal BEFORE deleting on-disk package files so a crash or write failure never leaves a broken registry entry
+    // Commit registry removal BEFORE deleting on-disk package files so a crash or write failure never leaves a broken
+    // registry entry
     InstalledPackageRecord removed_rec = std::move(it->second);
     packages_.erase(it);
     if (!save_registry_unlocked(err)) {
@@ -2407,16 +2518,20 @@ guild_status_t GKernelPackageManager::rollback_package(const std::string& packag
     ss << mf.rdbuf();
     GKernelMetadata prev_meta;
     const guild_status_t pst = GKernelMetadata::parse_json(ss.str(), prev_meta, err);
-    if (pst != GUILD_STATUS_OK) return pst;
+    if (pst != GUILD_STATUS_OK)
+        return pst;
 
     const auto caps = kernels::query_host_device_capabilities();
     auto validation = validate_gkernel_package(prev_meta, policy_, caps, target_dir, err);
-    if (validation != GUILD_STATUS_OK) return validation;
+    if (validation != GUILD_STATUS_OK)
+        return validation;
     std::vector<GKernelMetadata> graph{prev_meta};
     for (const auto& [id, other] : packages_)
-        if (id != package_id && other.enabled) graph.push_back(other.metadata);
+        if (id != package_id && other.enabled)
+            graph.push_back(other.metadata);
     validation = validate_package_dependency_graph(graph, policy_, caps, err);
-    if (validation != GUILD_STATUS_OK) return validation;
+    if (validation != GUILD_STATUS_OK)
+        return validation;
 
     const std::string old_active = rec.active_version;
     const std::string old_dir = rec.staged_dir;
@@ -2426,7 +2541,8 @@ guild_status_t GKernelPackageManager::rollback_package(const std::string& packag
     {
         ProviderTransaction transaction(provider_lifecycle_mutex());
         const guild_status_t ust = unload_package_unlocked(rec, err);
-        if (ust != GUILD_STATUS_OK) return ust;
+        if (ust != GUILD_STATUS_OK)
+            return ust;
 
         rec.active_version = target_ver;
         rec.previous_version = old_active;
@@ -2480,14 +2596,16 @@ std::vector<InstalledPackageRecord> GKernelPackageManager::list_packages() const
     std::lock_guard<std::mutex> lock(mutex_);
     std::vector<InstalledPackageRecord> out;
     out.reserve(packages_.size());
-    for (const auto& [id, rec] : packages_) out.push_back(rec);
+    for (const auto& [id, rec] : packages_)
+        out.push_back(rec);
     return out;
 }
 
 bool GKernelPackageManager::get_package(const std::string& package_id, InstalledPackageRecord& out_rec) const {
     std::lock_guard<std::mutex> lock(mutex_);
     const auto it = packages_.find(package_id);
-    if (it == packages_.end()) return false;
+    if (it == packages_.end())
+        return false;
     out_rec = it->second;
     return true;
 }

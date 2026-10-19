@@ -49,13 +49,15 @@ void canonical_gu_avx2(const uint8_t*, const ActQ* const*, int, float* const*, i
 void canonical_down_avx2(const uint8_t*, const ActQ* const*, int, float* const*, int, int);
 
 bool is_gexec_interleaved_impl(const char* impl_id) noexcept {
-    if (!impl_id) return false;
+    if (!impl_id)
+        return false;
     return std::strcmp(impl_id, "cpu.expert_pool.gexec_interleaved_avx2") == 0 ||
            std::strcmp(impl_id, "cpu.expert_pool.gexec_interleaved_avx512") == 0;
 }
 
 bool is_gexec_optimized_cpu_impl(const char* impl_id) noexcept {
-    if (!impl_id) return false;
+    if (!impl_id)
+        return false;
     return std::strcmp(impl_id, "cpu.expert_pool.gexec_fused_avx2") == 0 ||
            std::strcmp(impl_id, "cpu.expert_pool.gexec_fused_avx512") == 0 ||
            std::strcmp(impl_id, "cpu.expert_pool.gexec_interleaved_avx2") == 0 ||
@@ -133,7 +135,8 @@ void quantize_q8_K_host(const float* x, void* vy, int k) noexcept {
         }
         for (int j = 0; j < QK_K / 16; ++j) {
             int sum = 0;
-            for (int ii = 0; ii < 16; ++ii) sum += y[i].qs[j * 16 + ii];
+            for (int ii = 0; ii < 16; ++ii)
+                sum += y[i].qs[j * 16 + ii];
             y[i].bsums[j] = (int16_t) sum;
         }
         y[i].d = 1.0f / iscale;
@@ -184,27 +187,83 @@ void quantize_q8_1_host(const float* x, void* vy, int k) noexcept {
 
 bool type_geom_host(int t, int& qk, size_t& block_bytes, int& act_type, size_t& act_block_bytes) noexcept {
     switch (t) {
-        case 7:  qk = 32;  block_bytes = 24;  act_type = 9;  act_block_bytes = 36;  return true;
-        case 8:  qk = 32;  block_bytes = 34;  act_type = 8;  act_block_bytes = 34;  return true;
-        case 12: qk = 256; block_bytes = 144; act_type = 15; act_block_bytes = 292; return true;
-        case 14: qk = 256; block_bytes = 210; act_type = 15; act_block_bytes = 292; return true;
-        case 16: qk = 256; block_bytes = 66;  act_type = 15; act_block_bytes = 292; return true;
-        case 17: qk = 256; block_bytes = 74;  act_type = 15; act_block_bytes = 292; return true;
-        case 18: qk = 256; block_bytes = 98;  act_type = 15; act_block_bytes = 292; return true;
-        case 20: qk = 32;  block_bytes = 18;  act_type = 8;  act_block_bytes = 34;  return true;
-        case 21: qk = 256; block_bytes = 110; act_type = 15; act_block_bytes = 292; return true;
-        case 22: qk = 256; block_bytes = 82;  act_type = 15; act_block_bytes = 292; return true;
-        case 23: qk = 256; block_bytes = 136; act_type = 15; act_block_bytes = 292; return true;
-        default: return false;
+    case 7:
+        qk = 32;
+        block_bytes = 24;
+        act_type = 9;
+        act_block_bytes = 36;
+        return true;
+    case 8:
+        qk = 32;
+        block_bytes = 34;
+        act_type = 8;
+        act_block_bytes = 34;
+        return true;
+    case 12:
+        qk = 256;
+        block_bytes = 144;
+        act_type = 15;
+        act_block_bytes = 292;
+        return true;
+    case 14:
+        qk = 256;
+        block_bytes = 210;
+        act_type = 15;
+        act_block_bytes = 292;
+        return true;
+    case 16:
+        qk = 256;
+        block_bytes = 66;
+        act_type = 15;
+        act_block_bytes = 292;
+        return true;
+    case 17:
+        qk = 256;
+        block_bytes = 74;
+        act_type = 15;
+        act_block_bytes = 292;
+        return true;
+    case 18:
+        qk = 256;
+        block_bytes = 98;
+        act_type = 15;
+        act_block_bytes = 292;
+        return true;
+    case 20:
+        qk = 32;
+        block_bytes = 18;
+        act_type = 8;
+        act_block_bytes = 34;
+        return true;
+    case 21:
+        qk = 256;
+        block_bytes = 110;
+        act_type = 15;
+        act_block_bytes = 292;
+        return true;
+    case 22:
+        qk = 256;
+        block_bytes = 82;
+        act_type = 15;
+        act_block_bytes = 292;
+        return true;
+    case 23:
+        qk = 256;
+        block_bytes = 136;
+        act_type = 15;
+        act_block_bytes = 292;
+        return true;
+    default: return false;
     }
 }
 
 bool native_fmt_host(int gu_type, int d_type, int64_t n_embd, int64_t n_ff, NativeFmt& out) noexcept {
     int gu_qk = 0, d_qk = 0, gu_act = 0, d_act = 0;
     size_t gu_bb = 0, d_bb = 0, gu_ab = 0, d_ab = 0;
-    if (!type_geom_host(gu_type, gu_qk, gu_bb, gu_act, gu_ab) ||
-        !type_geom_host(d_type, d_qk, d_bb, d_act, d_ab)) return false;
-    if (n_embd <= 0 || (n_embd % gu_qk) != 0 || n_ff <= 0 || (n_ff % d_qk) != 0) return false;
+    if (!type_geom_host(gu_type, gu_qk, gu_bb, gu_act, gu_ab) || !type_geom_host(d_type, d_qk, d_bb, d_act, d_ab))
+        return false;
+    if (n_embd <= 0 || (n_embd % gu_qk) != 0 || n_ff <= 0 || (n_ff % d_qk) != 0)
+        return false;
     out.gu_type = gu_type;
     out.d_type = d_type;
     out.gu_act = gu_act;
@@ -222,9 +281,12 @@ bool native_fmt_host(int gu_type, int d_type, int64_t n_embd, int64_t n_ff, Nati
 }
 
 void quantize_act_by_type_host(int act_type, const float* x, void* out, int n) noexcept {
-    if (act_type == 15) quantize_q8_K_host(x, out, n);
-    else if (act_type == 8) quantize_q8_0_host(x, out, n);
-    else if (act_type == 9) quantize_q8_1_host(x, out, n);
+    if (act_type == 15)
+        quantize_q8_K_host(x, out, n);
+    else if (act_type == 8)
+        quantize_q8_0_host(x, out, n);
+    else if (act_type == 9)
+        quantize_q8_1_host(x, out, n);
 }
 #endif
 
@@ -271,8 +333,8 @@ GEXEC_AVX2_INLINE __m256i bytes_from_nibbles_32_avx2(const uint8_t* rsi) noexcep
 GEXEC_AVX2_INLINE __m256i bytes_from_bits_32_avx2(const uint8_t* hbits) noexcept {
     uint32_t h32;
     std::memcpy(&h32, hbits, 4);
-    const __m256i shuf = _mm256_set_epi64x(0x0303030303030303ULL, 0x0202020202020202ULL,
-                                           0x0101010101010101ULL, 0x0000000000000000ULL);
+    const __m256i shuf =
+        _mm256_set_epi64x(0x0303030303030303ULL, 0x0202020202020202ULL, 0x0101010101010101ULL, 0x0000000000000000ULL);
     const __m256i bytes = _mm256_shuffle_epi8(_mm256_set1_epi32((int) h32), shuf);
     const __m256i mask = _mm256_set1_epi64x(0x7fbfdfeff7fbfdfeULL);
     return _mm256_cmpeq_epi8(_mm256_or_si256(bytes, mask), _mm256_set1_epi8(-1));
@@ -284,28 +346,27 @@ GEXEC_AVX2_INLINE __m256i bytes_from_bits_32_avx2(const uint8_t* hbits) noexcept
 
 GEXEC_AVX2_INLINE __m256i scale_shuffle_k4(int i) noexcept {
     alignas(32) static const uint8_t k_shuffle[256] = {
-         0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1,
-         2, 3, 2, 3, 2, 3, 2, 3, 2, 3, 2, 3, 2, 3, 2, 3, 2, 3, 2, 3, 2, 3, 2, 3, 2, 3, 2, 3, 2, 3, 2, 3,
-         4, 5, 4, 5, 4, 5, 4, 5, 4, 5, 4, 5, 4, 5, 4, 5, 4, 5, 4, 5, 4, 5, 4, 5, 4, 5, 4, 5, 4, 5, 4, 5,
-         6, 7, 6, 7, 6, 7, 6, 7, 6, 7, 6, 7, 6, 7, 6, 7, 6, 7, 6, 7, 6, 7, 6, 7, 6, 7, 6, 7, 6, 7, 6, 7,
-         8, 9, 8, 9, 8, 9, 8, 9, 8, 9, 8, 9, 8, 9, 8, 9, 8, 9, 8, 9, 8, 9, 8, 9, 8, 9, 8, 9, 8, 9, 8, 9,
-        10,11,10,11,10,11,10,11,10,11,10,11,10,11,10,11,10,11,10,11,10,11,10,11,10,11,10,11,10,11,10,11,
-        12,13,12,13,12,13,12,13,12,13,12,13,12,13,12,13,12,13,12,13,12,13,12,13,12,13,12,13,12,13,12,13,
-        14,15,14,15,14,15,14,15,14,15,14,15,14,15,14,15,14,15,14,15,14,15,14,15,14,15,14,15,14,15,14,15,
+        0,  1,  0,  1,  0,  1,  0,  1,  0,  1,  0,  1,  0,  1,  0,  1,  0,  1,  0,  1,  0,  1,  0,  1,  0,  1,
+        0,  1,  0,  1,  0,  1,  2,  3,  2,  3,  2,  3,  2,  3,  2,  3,  2,  3,  2,  3,  2,  3,  2,  3,  2,  3,
+        2,  3,  2,  3,  2,  3,  2,  3,  2,  3,  2,  3,  4,  5,  4,  5,  4,  5,  4,  5,  4,  5,  4,  5,  4,  5,
+        4,  5,  4,  5,  4,  5,  4,  5,  4,  5,  4,  5,  4,  5,  4,  5,  4,  5,  6,  7,  6,  7,  6,  7,  6,  7,
+        6,  7,  6,  7,  6,  7,  6,  7,  6,  7,  6,  7,  6,  7,  6,  7,  6,  7,  6,  7,  6,  7,  6,  7,  8,  9,
+        8,  9,  8,  9,  8,  9,  8,  9,  8,  9,  8,  9,  8,  9,  8,  9,  8,  9,  8,  9,  8,  9,  8,  9,  8,  9,
+        8,  9,  8,  9,  10, 11, 10, 11, 10, 11, 10, 11, 10, 11, 10, 11, 10, 11, 10, 11, 10, 11, 10, 11, 10, 11,
+        10, 11, 10, 11, 10, 11, 10, 11, 10, 11, 12, 13, 12, 13, 12, 13, 12, 13, 12, 13, 12, 13, 12, 13, 12, 13,
+        12, 13, 12, 13, 12, 13, 12, 13, 12, 13, 12, 13, 12, 13, 12, 13, 14, 15, 14, 15, 14, 15, 14, 15, 14, 15,
+        14, 15, 14, 15, 14, 15, 14, 15, 14, 15, 14, 15, 14, 15, 14, 15, 14, 15, 14, 15, 14, 15,
     };
     return _mm256_loadu_si256((const __m256i*) k_shuffle + i);
 }
 
 GEXEC_AVX2_INLINE __m128i scale_shuffle_q6(int i) noexcept {
     static const uint8_t k_shuffle[128] = {
-         0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1,
-         2, 2, 2, 2, 2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3,
-         4, 4, 4, 4, 4, 4, 4, 4, 5, 5, 5, 5, 5, 5, 5, 5,
-         6, 6, 6, 6, 6, 6, 6, 6, 7, 7, 7, 7, 7, 7, 7, 7,
-         8, 8, 8, 8, 8, 8, 8, 8, 9, 9, 9, 9, 9, 9, 9, 9,
-        10,10,10,10,10,10,10,10, 11,11,11,11,11,11,11,11,
-        12,12,12,12,12,12,12,12, 13,13,13,13,13,13,13,13,
-        14,14,14,14,14,14,14,14, 15,15,15,15,15,15,15,15,
+        0,  0,  0,  0,  0,  0,  0,  0,  1,  1,  1,  1,  1,  1,  1,  1,  2,  2,  2,  2,  2,  2,  2,  2,  3,  3,
+        3,  3,  3,  3,  3,  3,  4,  4,  4,  4,  4,  4,  4,  4,  5,  5,  5,  5,  5,  5,  5,  5,  6,  6,  6,  6,
+        6,  6,  6,  6,  7,  7,  7,  7,  7,  7,  7,  7,  8,  8,  8,  8,  8,  8,  8,  8,  9,  9,  9,  9,  9,  9,
+        9,  9,  10, 10, 10, 10, 10, 10, 10, 10, 11, 11, 11, 11, 11, 11, 11, 11, 12, 12, 12, 12, 12, 12, 12, 12,
+        13, 13, 13, 13, 13, 13, 13, 13, 14, 14, 14, 14, 14, 14, 14, 14, 15, 15, 15, 15, 15, 15, 15, 15,
     };
     return _mm_loadu_si128((const __m128i*) k_shuffle + i);
 }
@@ -321,7 +382,8 @@ GEXEC_AVX2_INLINE void unpack_q4k_scales_avx2(const uint8_t* sc_bytes, __m128i& 
     utmp[1] = (utmp[2] & kmask2) | (((utmp[0] >> 6) & kmask3) << 4);
     utmp[2] = uaux;
     utmp[0] &= kmask1;
-    const __m256i mins_and_scales = _mm256_cvtepu8_epi16(_mm_set_epi32((int) utmp[3], (int) utmp[2], (int) utmp[1], (int) utmp[0]));
+    const __m256i mins_and_scales =
+        _mm256_cvtepu8_epi16(_mm_set_epi32((int) utmp[3], (int) utmp[2], (int) utmp[1], (int) utmp[0]));
     mins16 = _mm256_extracti128_si256(mins_and_scales, 1);
     const __m128i sc128 = _mm256_extracti128_si256(mins_and_scales, 0);
     scales_b = _mm256_insertf128_si256(_mm256_castsi128_si256(sc128), sc128, 1);
@@ -333,8 +395,10 @@ GEXEC_AVX2_INLINE void unpack_q4k_scales_avx2(const uint8_t* sc_bytes, __m128i& 
     __m256 acc0[NT], acc1[NT];                                                                                         \
     __m128 acc_m0[NT], acc_m1[NT];                                                                                     \
     for (int t = 0; t < nt; ++t) {                                                                                     \
-        acc0[t] = _mm256_setzero_ps(); acc_m0[t] = _mm_setzero_ps();                                                   \
-        acc1[t] = _mm256_setzero_ps(); acc_m1[t] = _mm_setzero_ps();                                                   \
+        acc0[t] = _mm256_setzero_ps();                                                                                 \
+        acc_m0[t] = _mm_setzero_ps();                                                                                  \
+        acc1[t] = _mm256_setzero_ps();                                                                                 \
+        acc_m1[t] = _mm_setzero_ps();                                                                                  \
     }                                                                                                                  \
     for (int i = 0; i < nb; ++i) {                                                                                     \
         const float xd0 = f16_pair_at(&x0[i], 0), xdmin0 = f16_pair_at(&x0[i], 1);                                     \
@@ -347,9 +411,12 @@ GEXEC_AVX2_INLINE void unpack_q4k_scales_avx2(const uint8_t* sc_bytes, __m128i& 
         for (int t = 0; t < nt; ++t) {                                                                                 \
             const block_q8_K* y = (const block_q8_K*) act[t] + i;                                                      \
             const __m256i q8sums = _mm256_loadu_si256((const __m256i*) y->bsums);                                      \
-            const __m128i q8s = _mm_hadd_epi16(_mm256_extracti128_si256(q8sums, 0), _mm256_extracti128_si256(q8sums, 1)); \
-            acc_m0[t] = _mm_fmadd_ps(_mm_set1_ps(-y->d * xdmin0), _mm_cvtepi32_ps(_mm_madd_epi16(mins0, q8s)), acc_m0[t]); \
-            acc_m1[t] = _mm_fmadd_ps(_mm_set1_ps(-y->d * xdmin1), _mm_cvtepi32_ps(_mm_madd_epi16(mins1, q8s)), acc_m1[t]); \
+            const __m128i q8s =                                                                                        \
+                _mm_hadd_epi16(_mm256_extracti128_si256(q8sums, 0), _mm256_extracti128_si256(q8sums, 1));              \
+            acc_m0[t] =                                                                                                \
+                _mm_fmadd_ps(_mm_set1_ps(-y->d * xdmin0), _mm_cvtepi32_ps(_mm_madd_epi16(mins0, q8s)), acc_m0[t]);     \
+            acc_m1[t] =                                                                                                \
+                _mm_fmadd_ps(_mm_set1_ps(-y->d * xdmin1), _mm_cvtepi32_ps(_mm_madd_epi16(mins1, q8s)), acc_m1[t]);     \
             sumi0[t] = _mm256_setzero_si256();                                                                         \
             sumi1[t] = _mm256_setzero_si256();                                                                         \
         }                                                                                                              \
@@ -419,12 +486,16 @@ GEXEC_AVX2_INLINE void unpack_q4k_scales_avx2(const uint8_t* sc_bytes, __m128i& 
             const __m256i qb1_H = _mm256_loadu_si256((const __m256i*) (x1[i].qh + 32 * j));                            \
             const __m128i sh0 = scale_shuffle_q6(4 * j + 0);                                                           \
             const __m128i sh1 = scale_shuffle_q6(4 * j + 1);                                                           \
-            const __m256i q40_0 = _mm256_or_si256(_mm256_and_si256(qb0_1, m15), _mm256_slli_epi16(_mm256_and_si256(qb0_H, m3), 4)); \
-            const __m256i q40_1 = _mm256_or_si256(_mm256_and_si256(qb0_2, m15), _mm256_slli_epi16(_mm256_and_si256(qb0_H, m12), 2)); \
+            const __m256i q40_0 =                                                                                      \
+                _mm256_or_si256(_mm256_and_si256(qb0_1, m15), _mm256_slli_epi16(_mm256_and_si256(qb0_H, m3), 4));      \
+            const __m256i q40_1 =                                                                                      \
+                _mm256_or_si256(_mm256_and_si256(qb0_2, m15), _mm256_slli_epi16(_mm256_and_si256(qb0_H, m12), 2));     \
             const __m256i sc0_0 = _mm256_cvtepi8_epi16(_mm_shuffle_epi8(scales0, sh0));                                \
             const __m256i sc0_1 = _mm256_cvtepi8_epi16(_mm_shuffle_epi8(scales0, sh1));                                \
-            const __m256i q41_0 = _mm256_or_si256(_mm256_and_si256(qb1_1, m15), _mm256_slli_epi16(_mm256_and_si256(qb1_H, m3), 4)); \
-            const __m256i q41_1 = _mm256_or_si256(_mm256_and_si256(qb1_2, m15), _mm256_slli_epi16(_mm256_and_si256(qb1_H, m12), 2)); \
+            const __m256i q41_0 =                                                                                      \
+                _mm256_or_si256(_mm256_and_si256(qb1_1, m15), _mm256_slli_epi16(_mm256_and_si256(qb1_H, m3), 4));      \
+            const __m256i q41_1 =                                                                                      \
+                _mm256_or_si256(_mm256_and_si256(qb1_2, m15), _mm256_slli_epi16(_mm256_and_si256(qb1_H, m12), 2));     \
             const __m256i sc1_0 = _mm256_cvtepi8_epi16(_mm_shuffle_epi8(scales1, sh0));                                \
             const __m256i sc1_1 = _mm256_cvtepi8_epi16(_mm_shuffle_epi8(scales1, sh1));                                \
             for (int t = 0; t < nt; ++t) {                                                                             \
@@ -440,12 +511,16 @@ GEXEC_AVX2_INLINE void unpack_q4k_scales_avx2(const uint8_t* sc_bytes, __m128i& 
             }                                                                                                          \
             const __m128i sh2 = scale_shuffle_q6(4 * j + 2);                                                           \
             const __m128i sh3 = scale_shuffle_q6(4 * j + 3);                                                           \
-            const __m256i q40_2 = _mm256_or_si256(_mm256_and_si256(_mm256_srli_epi16(qb0_1, 4), m15), _mm256_and_si256(qb0_H, m48)); \
-            const __m256i q40_3 = _mm256_or_si256(_mm256_and_si256(_mm256_srli_epi16(qb0_2, 4), m15), _mm256_srli_epi16(_mm256_and_si256(qb0_H, m_neg64), 2)); \
+            const __m256i q40_2 =                                                                                      \
+                _mm256_or_si256(_mm256_and_si256(_mm256_srli_epi16(qb0_1, 4), m15), _mm256_and_si256(qb0_H, m48));     \
+            const __m256i q40_3 = _mm256_or_si256(_mm256_and_si256(_mm256_srli_epi16(qb0_2, 4), m15),                  \
+                                                  _mm256_srli_epi16(_mm256_and_si256(qb0_H, m_neg64), 2));             \
             const __m256i sc0_2 = _mm256_cvtepi8_epi16(_mm_shuffle_epi8(scales0, sh2));                                \
             const __m256i sc0_3 = _mm256_cvtepi8_epi16(_mm_shuffle_epi8(scales0, sh3));                                \
-            const __m256i q41_2 = _mm256_or_si256(_mm256_and_si256(_mm256_srli_epi16(qb1_1, 4), m15), _mm256_and_si256(qb1_H, m48)); \
-            const __m256i q41_3 = _mm256_or_si256(_mm256_and_si256(_mm256_srli_epi16(qb1_2, 4), m15), _mm256_srli_epi16(_mm256_and_si256(qb1_H, m_neg64), 2)); \
+            const __m256i q41_2 =                                                                                      \
+                _mm256_or_si256(_mm256_and_si256(_mm256_srli_epi16(qb1_1, 4), m15), _mm256_and_si256(qb1_H, m48));     \
+            const __m256i q41_3 = _mm256_or_si256(_mm256_and_si256(_mm256_srli_epi16(qb1_2, 4), m15),                  \
+                                                  _mm256_srli_epi16(_mm256_and_si256(qb1_H, m_neg64), 2));             \
             const __m256i sc1_2 = _mm256_cvtepi8_epi16(_mm_shuffle_epi8(scales1, sh2));                                \
             const __m256i sc1_3 = _mm256_cvtepi8_epi16(_mm_shuffle_epi8(scales1, sh3));                                \
             for (int t = 0; t < nt; ++t) {                                                                             \
@@ -467,8 +542,10 @@ GEXEC_AVX2_INLINE void unpack_q4k_scales_avx2(const uint8_t* sc_bytes, __m128i& 
             const __m256i q8sums = _mm256_loadu_si256((const __m256i*) y->bsums);                                      \
             const __m256i sub0 = _mm256_slli_epi32(_mm256_madd_epi16(q8sums, sc0_16), 5);                              \
             const __m256i sub1 = _mm256_slli_epi32(_mm256_madd_epi16(q8sums, sc1_16), 5);                              \
-            acc0[t] = _mm256_fmadd_ps(_mm256_set1_ps(y->d * xd0), _mm256_cvtepi32_ps(_mm256_sub_epi32(sumi0[t], sub0)), acc0[t]); \
-            acc1[t] = _mm256_fmadd_ps(_mm256_set1_ps(y->d * xd1), _mm256_cvtepi32_ps(_mm256_sub_epi32(sumi1[t], sub1)), acc1[t]); \
+            acc0[t] = _mm256_fmadd_ps(_mm256_set1_ps(y->d * xd0),                                                      \
+                                      _mm256_cvtepi32_ps(_mm256_sub_epi32(sumi0[t], sub0)), acc0[t]);                  \
+            acc1[t] = _mm256_fmadd_ps(_mm256_set1_ps(y->d * xd1),                                                      \
+                                      _mm256_cvtepi32_ps(_mm256_sub_epi32(sumi1[t], sub1)), acc1[t]);                  \
         }                                                                                                              \
     }                                                                                                                  \
     for (int t = 0; t < nt; ++t) {                                                                                     \
@@ -477,86 +554,80 @@ GEXEC_AVX2_INLINE void unpack_q4k_scales_avx2(const uint8_t* sc_bytes, __m128i& 
     }
 
 template <int NT>
-GEXEC_AVX2_TARGET
-void gexec_q4k_dot_2rows_avx2(const block_q4_K* x0, const block_q4_K* x1, int nb,
-                              const void* const* act, float* res0, float* res1) {
+GEXEC_AVX2_TARGET void gexec_q4k_dot_2rows_avx2(const block_q4_K* x0, const block_q4_K* x1, int nb,
+                                                const void* const* act, float* res0, float* res1) {
     GEXEC_Q4K_2ROWS_BODY(NT)
 }
 
 template <int NT>
-GEXEC_AVX2_TARGET
-void gexec_q6k_dot_2rows_avx2(const block_q6_K* x0, const block_q6_K* x1, int nb,
-                              const void* const* act, float* res0, float* res1) {
+GEXEC_AVX2_TARGET void gexec_q6k_dot_2rows_avx2(const block_q6_K* x0, const block_q6_K* x1, int nb,
+                                                const void* const* act, float* res0, float* res1) {
     GEXEC_Q6K_2ROWS_BODY(NT)
 }
 
 template <int NT>
-GEXEC_AVX512BW_TARGET
-void gexec_q4k_dot_2rows_avx512bw(const block_q4_K* x0, const block_q4_K* x1, int nb,
-                                  const void* const* act, float* res0, float* res1) {
+GEXEC_AVX512BW_TARGET void gexec_q4k_dot_2rows_avx512bw(const block_q4_K* x0, const block_q4_K* x1, int nb,
+                                                        const void* const* act, float* res0, float* res1) {
     GEXEC_Q4K_2ROWS_BODY(NT)
 }
 
 template <int NT>
-GEXEC_AVX512BW_TARGET
-void gexec_q6k_dot_2rows_avx512bw(const block_q6_K* x0, const block_q6_K* x1, int nb,
-                                  const void* const* act, float* res0, float* res1) {
-    GEXEC_Q6K_2ROWS_BODY(NT)
-}
+GEXEC_AVX512BW_TARGET void gexec_q6k_dot_2rows_avx512bw(const block_q6_K* x0, const block_q6_K* x1, int nb,
+                                                        const void* const* act, float* res0,
+                                                        float* res1){GEXEC_Q6K_2ROWS_BODY(NT)}
 #undef GEXEC_Q4K_2ROWS_BODY
 #undef GEXEC_Q6K_2ROWS_BODY
 
-GEXEC_AVX2_TARGET
-void dispatch_q4k_2rows(bool use_avx512, const block_q4_K* x0, const block_q4_K* x1, int nb,
-                        const void* const* act, int nt, float* res0, float* res1) {
+GEXEC_AVX2_TARGET void dispatch_q4k_2rows(bool use_avx512, const block_q4_K* x0, const block_q4_K* x1, int nb,
+                                          const void* const* act, int nt, float* res0, float* res1) {
     if (use_avx512) {
         switch (nt) {
-            case 1: gexec_q4k_dot_2rows_avx512bw<1>(x0, x1, nb, act, res0, res1); return;
-            case 2: gexec_q4k_dot_2rows_avx512bw<2>(x0, x1, nb, act, res0, res1); return;
-            case 3: gexec_q4k_dot_2rows_avx512bw<3>(x0, x1, nb, act, res0, res1); return;
-            case 4: gexec_q4k_dot_2rows_avx512bw<4>(x0, x1, nb, act, res0, res1); return;
-            case 5: gexec_q4k_dot_2rows_avx512bw<5>(x0, x1, nb, act, res0, res1); return;
-            case 6: gexec_q4k_dot_2rows_avx512bw<6>(x0, x1, nb, act, res0, res1); return;
-            case 7: gexec_q4k_dot_2rows_avx512bw<7>(x0, x1, nb, act, res0, res1); return;
-            default: gexec_q4k_dot_2rows_avx512bw<8>(x0, x1, nb, act, res0, res1); return;
+        case 1: gexec_q4k_dot_2rows_avx512bw<1>(x0, x1, nb, act, res0, res1); return;
+        case 2: gexec_q4k_dot_2rows_avx512bw<2>(x0, x1, nb, act, res0, res1); return;
+        case 3: gexec_q4k_dot_2rows_avx512bw<3>(x0, x1, nb, act, res0, res1); return;
+        case 4: gexec_q4k_dot_2rows_avx512bw<4>(x0, x1, nb, act, res0, res1); return;
+        case 5: gexec_q4k_dot_2rows_avx512bw<5>(x0, x1, nb, act, res0, res1); return;
+        case 6: gexec_q4k_dot_2rows_avx512bw<6>(x0, x1, nb, act, res0, res1); return;
+        case 7: gexec_q4k_dot_2rows_avx512bw<7>(x0, x1, nb, act, res0, res1); return;
+        default: gexec_q4k_dot_2rows_avx512bw<8>(x0, x1, nb, act, res0, res1); return;
         }
     }
     switch (nt) {
-        case 1: gexec_q4k_dot_2rows_avx2<1>(x0, x1, nb, act, res0, res1); return;
-        case 2: gexec_q4k_dot_2rows_avx2<2>(x0, x1, nb, act, res0, res1); return;
-        case 3: gexec_q4k_dot_2rows_avx2<3>(x0, x1, nb, act, res0, res1); return;
-        case 4: gexec_q4k_dot_2rows_avx2<4>(x0, x1, nb, act, res0, res1); return;
-        case 5: gexec_q4k_dot_2rows_avx2<5>(x0, x1, nb, act, res0, res1); return;
-        case 6: gexec_q4k_dot_2rows_avx2<6>(x0, x1, nb, act, res0, res1); return;
-        case 7: gexec_q4k_dot_2rows_avx2<7>(x0, x1, nb, act, res0, res1); return;
-        case 8: gexec_q4k_dot_2rows_avx2<8>(x0, x1, nb, act, res0, res1); return;
+    case 1: gexec_q4k_dot_2rows_avx2<1>(x0, x1, nb, act, res0, res1); return;
+    case 2: gexec_q4k_dot_2rows_avx2<2>(x0, x1, nb, act, res0, res1); return;
+    case 3: gexec_q4k_dot_2rows_avx2<3>(x0, x1, nb, act, res0, res1); return;
+    case 4: gexec_q4k_dot_2rows_avx2<4>(x0, x1, nb, act, res0, res1); return;
+    case 5: gexec_q4k_dot_2rows_avx2<5>(x0, x1, nb, act, res0, res1); return;
+    case 6: gexec_q4k_dot_2rows_avx2<6>(x0, x1, nb, act, res0, res1); return;
+    case 7: gexec_q4k_dot_2rows_avx2<7>(x0, x1, nb, act, res0, res1); return;
+    case 8: gexec_q4k_dot_2rows_avx2<8>(x0, x1, nb, act, res0, res1); return;
     }
 }
 
 GEXEC_AVX2_TARGET
-void dispatch_q6k_2rows(bool use_avx512, const block_q6_K* x0, const block_q6_K* x1, int nb,
-                        const void* const* act, int nt, float* res0, float* res1) {
+void dispatch_q6k_2rows(bool use_avx512, const block_q6_K* x0, const block_q6_K* x1, int nb, const void* const* act,
+                        int nt, float* res0, float* res1) {
     if (use_avx512) {
         switch (nt) {
-            case 1: gexec_q6k_dot_2rows_avx512bw<1>(x0, x1, nb, act, res0, res1); return;
-            case 2: gexec_q6k_dot_2rows_avx512bw<2>(x0, x1, nb, act, res0, res1); return;
-            case 3: gexec_q6k_dot_2rows_avx512bw<3>(x0, x1, nb, act, res0, res1); return;
-            case 4: gexec_q6k_dot_2rows_avx512bw<4>(x0, x1, nb, act, res0, res1); return;
-            case 5: gexec_q6k_dot_2rows_avx512bw<5>(x0, x1, nb, act, res0, res1); return;
-            case 6: gexec_q6k_dot_2rows_avx512bw<6>(x0, x1, nb, act, res0, res1); return;
-            case 7: gexec_q6k_dot_2rows_avx512bw<7>(x0, x1, nb, act, res0, res1); return;
-            default: gexec_q6k_dot_2rows_avx512bw<8>(x0, x1, nb, act, res0, res1); return;
+        case 1: gexec_q6k_dot_2rows_avx512bw<1>(x0, x1, nb, act, res0, res1); return;
+        case 2: gexec_q6k_dot_2rows_avx512bw<2>(x0, x1, nb, act, res0, res1); return;
+        case 3: gexec_q6k_dot_2rows_avx512bw<3>(x0, x1, nb, act, res0, res1); return;
+        case 4: gexec_q6k_dot_2rows_avx512bw<4>(x0, x1, nb, act, res0, res1); return;
+        case 5: gexec_q6k_dot_2rows_avx512bw<5>(x0, x1, nb, act, res0, res1); return;
+        case 6: gexec_q6k_dot_2rows_avx512bw<6>(x0, x1, nb, act, res0, res1); return;
+        case 7: gexec_q6k_dot_2rows_avx512bw<7>(x0, x1, nb, act, res0, res1); return;
+        default: gexec_q6k_dot_2rows_avx512bw<8>(x0, x1, nb, act, res0, res1); return;
         }
     }
     switch (nt) {
-        case 1: gexec_q6k_dot_2rows_avx2<1>(x0, x1, nb, act, res0, res1); return;
-        case 2: gexec_q6k_dot_2rows_avx2<2>(x0, x1, nb, act, res0, res1); return;
-        case 3: gexec_q6k_dot_2rows_avx2<3>(x0, x1, nb, act, res0, res1); return;
-        case 4: gexec_q6k_dot_2rows_avx2<4>(x0, x1, nb, act, res0, res1); return;
-        case 5: gexec_q6k_dot_2rows_avx2<5>(x0, x1, nb, act, res0, res1); return;
-        case 6: gexec_q6k_dot_2rows_avx2<6>(x0, x1, nb, act, res0, res1); return;
-        case 7: gexec_q6k_dot_2rows_avx2<7>(x0, x1, nb, act, res0, res1); return;
-        case 8: gexec_q6k_dot_2rows_avx2<8>(x0, x1, nb, act, res0, res1); return;
+    case 1: gexec_q6k_dot_2rows_avx2<1>(x0, x1, nb, act, res0, res1); return;
+    case 2: gexec_q6k_dot_2rows_avx2<2>(x0, x1, nb, act, res0, res1); return;
+    case 3: gexec_q6k_dot_2rows_avx2<3>(x0, x1, nb, act, res0, res1); return;
+    case 4: gexec_q6k_dot_2rows_avx2<4>(x0, x1, nb, act, res0, res1); return;
+    case 5: gexec_q6k_dot_2rows_avx2<5>(x0, x1, nb, act, res0, res1); return;
+    case 6: gexec_q6k_dot_2rows_avx2<6>(x0, x1, nb, act, res0, res1); return;
+    case 7: gexec_q6k_dot_2rows_avx2<7>(x0, x1, nb, act, res0, res1); return;
+    case 8: gexec_q6k_dot_2rows_avx2<8>(x0, x1, nb, act, res0, res1); return;
     }
 }
 
@@ -565,11 +636,9 @@ void dispatch_q6k_2rows(bool use_avx512, const block_q6_K* x0, const block_q6_K*
 // ============================================================================
 
 template <int NT>
-GEXEC_AVX2_TARGET
-void gexec_q8_0_dot_4rows_avx2(const block_q8_0* x0, const block_q8_0* x1,
-                               const block_q8_0* x2, const block_q8_0* x3, int nb,
-                               const void* const* act,
-                               float* res0, float* res1, float* res2, float* res3) {
+GEXEC_AVX2_TARGET void gexec_q8_0_dot_4rows_avx2(const block_q8_0* x0, const block_q8_0* x1, const block_q8_0* x2,
+                                                 const block_q8_0* x3, int nb, const void* const* act, float* res0,
+                                                 float* res1, float* res2, float* res3) {
     constexpr int nt = NT;
     __m256 acc0[NT], acc1[NT], acc2[NT], acc3[NT];
     for (int t = 0; t < nt; ++t) {
@@ -595,10 +664,14 @@ void gexec_q8_0_dot_4rows_avx2(const block_q8_0* x0, const block_q8_0* x1,
             const block_q8_0* y = (const block_q8_0*) act[t] + ib;
             const float yd = fp16_to_fp32(y->d);
             const __m256i qy = _mm256_loadu_si256((const __m256i*) y->qs);
-            acc0[t] = _mm256_fmadd_ps(_mm256_set1_ps(xd0 * yd), mul_sum_i8_pairs_f32(ax0, _mm256_sign_epi8(qy, qx0)), acc0[t]);
-            acc1[t] = _mm256_fmadd_ps(_mm256_set1_ps(xd1 * yd), mul_sum_i8_pairs_f32(ax1, _mm256_sign_epi8(qy, qx1)), acc1[t]);
-            acc2[t] = _mm256_fmadd_ps(_mm256_set1_ps(xd2 * yd), mul_sum_i8_pairs_f32(ax2, _mm256_sign_epi8(qy, qx2)), acc2[t]);
-            acc3[t] = _mm256_fmadd_ps(_mm256_set1_ps(xd3 * yd), mul_sum_i8_pairs_f32(ax3, _mm256_sign_epi8(qy, qx3)), acc3[t]);
+            acc0[t] = _mm256_fmadd_ps(_mm256_set1_ps(xd0 * yd), mul_sum_i8_pairs_f32(ax0, _mm256_sign_epi8(qy, qx0)),
+                                      acc0[t]);
+            acc1[t] = _mm256_fmadd_ps(_mm256_set1_ps(xd1 * yd), mul_sum_i8_pairs_f32(ax1, _mm256_sign_epi8(qy, qx1)),
+                                      acc1[t]);
+            acc2[t] = _mm256_fmadd_ps(_mm256_set1_ps(xd2 * yd), mul_sum_i8_pairs_f32(ax2, _mm256_sign_epi8(qy, qx2)),
+                                      acc2[t]);
+            acc3[t] = _mm256_fmadd_ps(_mm256_set1_ps(xd3 * yd), mul_sum_i8_pairs_f32(ax3, _mm256_sign_epi8(qy, qx3)),
+                                      acc3[t]);
         }
     }
     for (int t = 0; t < nt; ++t) {
@@ -610,9 +683,8 @@ void gexec_q8_0_dot_4rows_avx2(const block_q8_0* x0, const block_q8_0* x1,
 }
 
 template <int NT>
-GEXEC_AVX2_TARGET
-void gexec_q8_0_dot_2rows_avx2(const block_q8_0* x0, const block_q8_0* x1, int nb,
-                               const void* const* act, float* res0, float* res1) {
+GEXEC_AVX2_TARGET void gexec_q8_0_dot_2rows_avx2(const block_q8_0* x0, const block_q8_0* x1, int nb,
+                                                 const void* const* act, float* res0, float* res1) {
     constexpr int nt = NT;
     __m256 acc0[NT], acc1[NT];
     for (int t = 0; t < nt; ++t) {
@@ -630,8 +702,10 @@ void gexec_q8_0_dot_2rows_avx2(const block_q8_0* x0, const block_q8_0* x1, int n
             const block_q8_0* y = (const block_q8_0*) act[t] + ib;
             const float yd = fp16_to_fp32(y->d);
             const __m256i qy = _mm256_loadu_si256((const __m256i*) y->qs);
-            acc0[t] = _mm256_fmadd_ps(_mm256_set1_ps(xd0 * yd), mul_sum_i8_pairs_f32(ax0, _mm256_sign_epi8(qy, qx0)), acc0[t]);
-            acc1[t] = _mm256_fmadd_ps(_mm256_set1_ps(xd1 * yd), mul_sum_i8_pairs_f32(ax1, _mm256_sign_epi8(qy, qx1)), acc1[t]);
+            acc0[t] = _mm256_fmadd_ps(_mm256_set1_ps(xd0 * yd), mul_sum_i8_pairs_f32(ax0, _mm256_sign_epi8(qy, qx0)),
+                                      acc0[t]);
+            acc1[t] = _mm256_fmadd_ps(_mm256_set1_ps(xd1 * yd), mul_sum_i8_pairs_f32(ax1, _mm256_sign_epi8(qy, qx1)),
+                                      acc1[t]);
         }
     }
     for (int t = 0; t < nt; ++t) {
@@ -641,15 +715,16 @@ void gexec_q8_0_dot_2rows_avx2(const block_q8_0* x0, const block_q8_0* x1, int n
 }
 
 template <int NT>
-GEXEC_AVX2_TARGET
-void gexec_q5_1_dot_2rows_avx2(const block_q5_1* x0, const block_q5_1* x1, int nb,
-                               const void* const* act, float* res0, float* res1) {
+GEXEC_AVX2_TARGET void gexec_q5_1_dot_2rows_avx2(const block_q5_1* x0, const block_q5_1* x1, int nb,
+                                                 const void* const* act, float* res0, float* res1) {
     constexpr int nt = NT;
     __m256 acc0[NT], acc1[NT];
     float summs0[NT], summs1[NT];
     for (int t = 0; t < nt; ++t) {
-        acc0[t] = _mm256_setzero_ps(); summs0[t] = 0.0f;
-        acc1[t] = _mm256_setzero_ps(); summs1[t] = 0.0f;
+        acc0[t] = _mm256_setzero_ps();
+        summs0[t] = 0.0f;
+        acc1[t] = _mm256_setzero_ps();
+        summs1[t] = 0.0f;
     }
     const __m256i m0x10 = _mm256_set1_epi8(0x10);
     for (int ib = 0; ib < nb; ++ib) {
@@ -681,53 +756,49 @@ void gexec_q5_1_dot_2rows_avx2(const block_q5_1* x0, const block_q5_1* x1, int n
 // ============================================================================
 // Dispatch only the supported token groups; callers split larger groups at MAXT.
 // The fixed token extent lets the compiler keep small accumulators in registers.
-#define GEXEC_DISPATCH_NT(kernel, ...) \
-    switch (nt) { \
-        case 1: kernel<1>(__VA_ARGS__); return; \
-        case 2: kernel<2>(__VA_ARGS__); return; \
-        case 3: kernel<3>(__VA_ARGS__); return; \
-        case 4: kernel<4>(__VA_ARGS__); return; \
-        case 5: kernel<5>(__VA_ARGS__); return; \
-        case 6: kernel<6>(__VA_ARGS__); return; \
-        case 7: kernel<7>(__VA_ARGS__); return; \
-        case 8: kernel<8>(__VA_ARGS__); return; \
+#define GEXEC_DISPATCH_NT(kernel, ...)                                                                                 \
+    switch (nt) {                                                                                                      \
+    case 1: kernel<1>(__VA_ARGS__); return;                                                                            \
+    case 2: kernel<2>(__VA_ARGS__); return;                                                                            \
+    case 3: kernel<3>(__VA_ARGS__); return;                                                                            \
+    case 4: kernel<4>(__VA_ARGS__); return;                                                                            \
+    case 5: kernel<5>(__VA_ARGS__); return;                                                                            \
+    case 6: kernel<6>(__VA_ARGS__); return;                                                                            \
+    case 7: kernel<7>(__VA_ARGS__); return;                                                                            \
+    case 8: kernel<8>(__VA_ARGS__); return;                                                                            \
     }
 
-void dispatch_q8_0_4rows(const block_q8_0* x0, const block_q8_0* x1,
-                        const block_q8_0* x2, const block_q8_0* x3, int nb,
-                        const void* const* act, int nt,
-                        float* res0, float* res1, float* res2, float* res3) {
+void dispatch_q8_0_4rows(const block_q8_0* x0, const block_q8_0* x1, const block_q8_0* x2, const block_q8_0* x3, int nb,
+                         const void* const* act, int nt, float* res0, float* res1, float* res2, float* res3) {
     GEXEC_DISPATCH_NT(gexec_q8_0_dot_4rows_avx2, x0, x1, x2, x3, nb, act, res0, res1, res2, res3)
 }
 
-void dispatch_q8_0_2rows(const block_q8_0* x0, const block_q8_0* x1, int nb,
-                        const void* const* act, int nt, float* res0, float* res1) {
+void dispatch_q8_0_2rows(const block_q8_0* x0, const block_q8_0* x1, int nb, const void* const* act, int nt,
+                         float* res0, float* res1) {
     GEXEC_DISPATCH_NT(gexec_q8_0_dot_2rows_avx2, x0, x1, nb, act, res0, res1)
 }
 
-void dispatch_q5_1_2rows(const block_q5_1* x0, const block_q5_1* x1, int nb,
-                        const void* const* act, int nt, float* res0, float* res1) {
-    GEXEC_DISPATCH_NT(gexec_q5_1_dot_2rows_avx2, x0, x1, nb, act, res0, res1)
-}
+void dispatch_q5_1_2rows(const block_q5_1* x0, const block_q5_1* x1, int nb, const void* const* act, int nt,
+                         float* res0,
+                         float* res1){GEXEC_DISPATCH_NT(gexec_q5_1_dot_2rows_avx2, x0, x1, nb, act, res0, res1)}
 #undef GEXEC_DISPATCH_NT
 
 // 3. IQ4_NL (type 20): 4-Row and 2-Row Fused Kernels (Bit-Exact for nt==1 & nt>=2)
 // ============================================================================
 
-GEXEC_AVX2_INLINE void decode_iq4nl_block(const uint8_t* blk, __m128i values, __m128i m4b,
-                               __m256i& aq, __m256i& q4, float& dx) noexcept {
+GEXEC_AVX2_INLINE void decode_iq4nl_block(const uint8_t* blk, __m128i values, __m128i m4b, __m256i& aq, __m256i& q4,
+                                          float& dx) noexcept {
     const __m128i bits = _mm_loadu_si128((const __m128i*) (blk + 2));
     const __m128i lo = _mm_and_si128(bits, m4b);
     const __m128i hi = _mm_and_si128(_mm_srli_epi16(bits, 4), m4b);
-    q4 = _mm256_inserti128_si256(_mm256_castsi128_si256(_mm_shuffle_epi8(values, lo)),
-                                 _mm_shuffle_epi8(values, hi), 1);
+    q4 = _mm256_inserti128_si256(_mm256_castsi128_si256(_mm_shuffle_epi8(values, lo)), _mm_shuffle_epi8(values, hi), 1);
     aq = _mm256_sign_epi8(q4, q4);
     dx = fp16_to_fp32(read_u16(blk));
 }
 
 GEXEC_AVX2_INLINE void iq4nl_step_row_2blk(const uint8_t* row_ptr, int ib, __m128i values, __m128i m4b, __m256i mone,
-                                __m256i q8_1, __m256i q8_2, float yd_1, float yd_2,
-                                __m256& a1, __m256& a2) noexcept {
+                                           __m256i q8_1, __m256i q8_2, float yd_1, float yd_2, __m256& a1,
+                                           __m256& a2) noexcept {
     __m256i aq1, q4_1, aq2, q4_2;
     float dx1, dx2;
     decode_iq4nl_block(row_ptr + (size_t) (ib + 0) * sizeof(block_iq4_nl), values, m4b, aq1, q4_1, dx1);
@@ -740,10 +811,8 @@ GEXEC_AVX2_INLINE void iq4nl_step_row_2blk(const uint8_t* row_ptr, int ib, __m12
 
 // For nt == 1: matches ggml_vec_dot_iq4_nl_q8_0's dual (accum1, accum2) even/odd block order to the bit!
 GEXEC_AVX2_TARGET
-void gexec_iq4nl_4rows_nt1(const uint8_t* r0_ptr, const uint8_t* r1_ptr,
-                           const uint8_t* r2_ptr, const uint8_t* r3_ptr,
-                           int nb, const block_q8_0* y,
-                           float& out0, float& out1, float& out2, float& out3) {
+void gexec_iq4nl_4rows_nt1(const uint8_t* r0_ptr, const uint8_t* r1_ptr, const uint8_t* r2_ptr, const uint8_t* r3_ptr,
+                           int nb, const block_q8_0* y, float& out0, float& out1, float& out2, float& out3) {
     const __m128i values = _mm_loadu_si128((const __m128i*) kvalues_iq4nl);
     const __m128i m4b = _mm_set1_epi8(0x0f);
     const __m256i mone = _mm256_set1_epi16(1);
@@ -821,9 +890,8 @@ void gexec_iq4nl_1row_nt1(const uint8_t* r0_ptr, int nb, const block_q8_0* y, fl
 }
 
 template <int NT>
-GEXEC_AVX2_TARGET
-void gexec_iq4nl_rows_nt(const uint8_t* w, size_t row_bytes, int n,
-                         const block_q8_0* const* y, float* const* out, int r0, int r1) {
+GEXEC_AVX2_TARGET void gexec_iq4nl_rows_nt(const uint8_t* w, size_t row_bytes, int n, const block_q8_0* const* y,
+                                           float* const* out, int r0, int r1) {
     const __m128i values = _mm_loadu_si128((const __m128i*) kvalues_iq4nl);
     const __m128i m4b = _mm_set1_epi8(0x0f);
     const __m256i ones = _mm256_set1_epi16(1);
@@ -866,7 +934,8 @@ void gexec_iq4nl_rows_nt(const uint8_t* w, size_t row_bytes, int n,
     for (; r < r1; ++r) {
         const uint8_t* row = w + (size_t) r * row_bytes;
         __m256 accf[NT];
-        for (int t = 0; t < NT; ++t) accf[t] = _mm256_setzero_ps();
+        for (int t = 0; t < NT; ++t)
+            accf[t] = _mm256_setzero_ps();
         for (int ib = 0; ib < nb; ++ib) {
             const uint8_t* blk = row + (size_t) ib * sizeof(block_iq4_nl);
             _mm_prefetch((const char*) (blk + 2048), _MM_HINT_T0);
@@ -881,22 +950,20 @@ void gexec_iq4nl_rows_nt(const uint8_t* w, size_t row_bytes, int n,
                 accf[t] = _mm256_fmadd_ps(_mm256_set1_ps(dx * fp16_to_fp32(b.d)), _mm256_cvtepi32_ps(p), accf[t]);
             }
         }
-        for (int t = 0; t < NT; ++t) out[t][r] = hsum8_hadd(accf[t]);
+        for (int t = 0; t < NT; ++t)
+            out[t][r] = hsum8_hadd(accf[t]);
     }
 }
 
-void gexec_iq4nl_down_rows(const uint8_t* w, size_t row_bytes, int n,
-                           const void* const* hq, int nt, float* const* out, int r0, int r1) {
+void gexec_iq4nl_down_rows(const uint8_t* w, size_t row_bytes, int n, const void* const* hq, int nt, float* const* out,
+                           int r0, int r1) {
     if (nt == 1) {
         const auto* y0 = (const block_q8_0*) hq[0];
         const int nb = n / QK4_NL;
         int r = r0;
         for (; r + 4 <= r1; r += 4) {
-            gexec_iq4nl_4rows_nt1(w + (size_t) (r + 0) * row_bytes,
-                                  w + (size_t) (r + 1) * row_bytes,
-                                  w + (size_t) (r + 2) * row_bytes,
-                                  w + (size_t) (r + 3) * row_bytes,
-                                  nb, y0,
+            gexec_iq4nl_4rows_nt1(w + (size_t) (r + 0) * row_bytes, w + (size_t) (r + 1) * row_bytes,
+                                  w + (size_t) (r + 2) * row_bytes, w + (size_t) (r + 3) * row_bytes, nb, y0,
                                   out[0][r + 0], out[0][r + 1], out[0][r + 2], out[0][r + 3]);
         }
         for (; r < r1; ++r) {
@@ -905,22 +972,23 @@ void gexec_iq4nl_down_rows(const uint8_t* w, size_t row_bytes, int n,
         return;
     }
     const block_q8_0* y[4];
-    for (int t = 0; t < std::min(nt, 4); ++t) y[t] = (const block_q8_0*) hq[t];
+    for (int t = 0; t < std::min(nt, 4); ++t)
+        y[t] = (const block_q8_0*) hq[t];
     switch (nt) {
-        case 2: gexec_iq4nl_rows_nt<2>(w, row_bytes, n, y, out, r0, r1); break;
-        case 3: gexec_iq4nl_rows_nt<3>(w, row_bytes, n, y, out, r0, r1); break;
-        case 4: gexec_iq4nl_rows_nt<4>(w, row_bytes, n, y, out, r0, r1); break;
-        default:
-            for (int t0 = 0; t0 < nt; t0 += 4) {
-                const int k = std::min(4, nt - t0);
-                if (k == 1) {
-                    const block_q8_0* y1[1] = {(const block_q8_0*) hq[t0]};
-                    gexec_iq4nl_rows_nt<1>(w, row_bytes, n, y1, out + t0, r0, r1);
-                } else {
-                    gexec_iq4nl_down_rows(w, row_bytes, n, hq + t0, k, out + t0, r0, r1);
-                }
+    case 2: gexec_iq4nl_rows_nt<2>(w, row_bytes, n, y, out, r0, r1); break;
+    case 3: gexec_iq4nl_rows_nt<3>(w, row_bytes, n, y, out, r0, r1); break;
+    case 4: gexec_iq4nl_rows_nt<4>(w, row_bytes, n, y, out, r0, r1); break;
+    default:
+        for (int t0 = 0; t0 < nt; t0 += 4) {
+            const int k = std::min(4, nt - t0);
+            if (k == 1) {
+                const block_q8_0* y1[1] = {(const block_q8_0*) hq[t0]};
+                gexec_iq4nl_rows_nt<1>(w, row_bytes, n, y1, out + t0, r0, r1);
+            } else {
+                gexec_iq4nl_down_rows(w, row_bytes, n, hq + t0, k, out + t0, r0, r1);
             }
-            break;
+        }
+        break;
     }
 }
 
@@ -930,8 +998,8 @@ void gexec_iq4nl_down_rows(const uint8_t* w, size_t row_bytes, int n,
 // ============================================================================
 
 GEXEC_AVX512_INLINE __m512i iq512_scales4(int s0, int s1, int s2, int s3) noexcept {
-    const __m512i idx = _mm512_set_epi16(3, 3, 3, 3, 3, 3, 3, 3, 2, 2, 2, 2, 2, 2, 2, 2,
-                                         1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0);
+    const __m512i idx = _mm512_set_epi16(3, 3, 3, 3, 3, 3, 3, 3, 2, 2, 2, 2, 2, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0,
+                                         0, 0, 0, 0, 0, 0);
     const uint64_t packed = (uint64_t) (uint16_t) s0 | ((uint64_t) (uint16_t) s1 << 16) |
                             ((uint64_t) (uint16_t) s2 << 32) | ((uint64_t) (uint16_t) s3 << 48);
     return _mm512_permutexvar_epi16(idx, _mm512_set1_epi64((long long) packed));
@@ -949,10 +1017,11 @@ template <> struct Iq512Fmt<16> {
                              (long long) iq2xxs_grid[(b0 >> 8) & 255], (long long) iq2xxs_grid[b0 & 255],
                              (long long) iq2xxs_grid[a0 >> 24], (long long) iq2xxs_grid[(a0 >> 16) & 255],
                              (long long) iq2xxs_grid[(a0 >> 8) & 255], (long long) iq2xxs_grid[a0 & 255]);
-        const uint64_t s = (uint64_t) ksigns_iq2xs[a1 & 127] | ((uint64_t) ksigns_iq2xs[(a1 >> 7) & 127] << 8) |
-                           ((uint64_t) ksigns_iq2xs[(a1 >> 14) & 127] << 16) | ((uint64_t) ksigns_iq2xs[(a1 >> 21) & 127] << 24) |
-                           ((uint64_t) ksigns_iq2xs[b1 & 127] << 32) | ((uint64_t) ksigns_iq2xs[(b1 >> 7) & 127] << 40) |
-                           ((uint64_t) ksigns_iq2xs[(b1 >> 14) & 127] << 48) | ((uint64_t) ksigns_iq2xs[(b1 >> 21) & 127] << 56);
+        const uint64_t s =
+            (uint64_t) ksigns_iq2xs[a1 & 127] | ((uint64_t) ksigns_iq2xs[(a1 >> 7) & 127] << 8) |
+            ((uint64_t) ksigns_iq2xs[(a1 >> 14) & 127] << 16) | ((uint64_t) ksigns_iq2xs[(a1 >> 21) & 127] << 24) |
+            ((uint64_t) ksigns_iq2xs[b1 & 127] << 32) | ((uint64_t) ksigns_iq2xs[(b1 >> 7) & 127] << 40) |
+            ((uint64_t) ksigns_iq2xs[(b1 >> 14) & 127] << 48) | ((uint64_t) ksigns_iq2xs[(b1 >> 21) & 127] << 56);
         m = _cvtu64_mask64(s);
         const int sa = 2 * (int) (a1 >> 28) + 1, sb = 2 * (int) (b1 >> 28) + 1;
         sc = iq512_scales4(sa, sa, sb, sb);
@@ -971,7 +1040,8 @@ template <> struct Iq512Fmt<17> {
                              (long long) iq2xs_grid[v[3] & 511], (long long) iq2xs_grid[v[2] & 511],
                              (long long) iq2xs_grid[v[1] & 511], (long long) iq2xs_grid[v[0] & 511]);
         uint64_t s = 0;
-        for (int l = 0; l < 8; ++l) s |= (uint64_t) ksigns_iq2xs[v[l] >> 9] << (8 * l);
+        for (int l = 0; l < 8; ++l)
+            s |= (uint64_t) ksigns_iq2xs[v[l] >> 9] << (8 * l);
         m = _cvtu64_mask64(s);
         const uint8_t s0 = b[66 + 2 * j], s1 = b[66 + 2 * j + 1];
         sc = iq512_scales4(2 * (s0 & 15) + 1, 2 * (s0 >> 4) + 1, 2 * (s1 & 15) + 1, 2 * (s1 >> 4) + 1);
@@ -984,10 +1054,11 @@ template <> struct Iq512Fmt<22> {
     static GEXEC_AVX512_INLINE void decode(const uint8_t* b, int j, __m512i& g, __mmask64& m, __m512i& sc) noexcept {
         const uint8_t* qs = b + 2 + 8 * j;
         const uint8_t h0 = b[66 + 2 * j], h1 = b[66 + 2 * j + 1];
-        g = _mm512_set_epi64((long long) iq2s_grid[qs[7] | ((h1 << 2) & 0x300)], (long long) iq2s_grid[qs[6] | ((h1 << 4) & 0x300)],
-                             (long long) iq2s_grid[qs[5] | ((h1 << 6) & 0x300)], (long long) iq2s_grid[qs[4] | ((h1 << 8) & 0x300)],
-                             (long long) iq2s_grid[qs[3] | ((h0 << 2) & 0x300)], (long long) iq2s_grid[qs[2] | ((h0 << 4) & 0x300)],
-                             (long long) iq2s_grid[qs[1] | ((h0 << 6) & 0x300)], (long long) iq2s_grid[qs[0] | ((h0 << 8) & 0x300)]);
+        g = _mm512_set_epi64(
+            (long long) iq2s_grid[qs[7] | ((h1 << 2) & 0x300)], (long long) iq2s_grid[qs[6] | ((h1 << 4) & 0x300)],
+            (long long) iq2s_grid[qs[5] | ((h1 << 6) & 0x300)], (long long) iq2s_grid[qs[4] | ((h1 << 8) & 0x300)],
+            (long long) iq2s_grid[qs[3] | ((h0 << 2) & 0x300)], (long long) iq2s_grid[qs[2] | ((h0 << 4) & 0x300)],
+            (long long) iq2s_grid[qs[1] | ((h0 << 6) & 0x300)], (long long) iq2s_grid[qs[0] | ((h0 << 8) & 0x300)]);
         m = _cvtu64_mask64(read_u64(b + 2 + 32 + 8 * j));
         const uint8_t s0 = b[74 + 2 * j], s1 = b[74 + 2 * j + 1];
         sc = iq512_scales4(2 * (s0 & 15) + 1, 2 * (s0 >> 4) + 1, 2 * (s1 & 15) + 1, 2 * (s1 >> 4) + 1);
@@ -999,15 +1070,17 @@ template <> struct Iq512Fmt<18> {
     static constexpr float K = 0.25f;
     static GEXEC_AVX512_INLINE void decode(const uint8_t* b, int j, __m512i& g, __mmask64& m, __m512i& sc) noexcept {
         const uint8_t* q = b + 2 + 16 * j;
-        g = _mm512_set_epi32((int) iq3xxs_grid[q[15]], (int) iq3xxs_grid[q[14]], (int) iq3xxs_grid[q[13]], (int) iq3xxs_grid[q[12]],
-                             (int) iq3xxs_grid[q[11]], (int) iq3xxs_grid[q[10]], (int) iq3xxs_grid[q[9]], (int) iq3xxs_grid[q[8]],
-                             (int) iq3xxs_grid[q[7]], (int) iq3xxs_grid[q[6]], (int) iq3xxs_grid[q[5]], (int) iq3xxs_grid[q[4]],
-                             (int) iq3xxs_grid[q[3]], (int) iq3xxs_grid[q[2]], (int) iq3xxs_grid[q[1]], (int) iq3xxs_grid[q[0]]);
+        g = _mm512_set_epi32(
+            (int) iq3xxs_grid[q[15]], (int) iq3xxs_grid[q[14]], (int) iq3xxs_grid[q[13]], (int) iq3xxs_grid[q[12]],
+            (int) iq3xxs_grid[q[11]], (int) iq3xxs_grid[q[10]], (int) iq3xxs_grid[q[9]], (int) iq3xxs_grid[q[8]],
+            (int) iq3xxs_grid[q[7]], (int) iq3xxs_grid[q[6]], (int) iq3xxs_grid[q[5]], (int) iq3xxs_grid[q[4]],
+            (int) iq3xxs_grid[q[3]], (int) iq3xxs_grid[q[2]], (int) iq3xxs_grid[q[1]], (int) iq3xxs_grid[q[0]]);
         const uint32_t a = read_u32(b + 2 + 64 + 8 * j), c = read_u32(b + 2 + 64 + 8 * j + 4);
-        const uint64_t s = (uint64_t) ksigns_iq2xs[a & 127] | ((uint64_t) ksigns_iq2xs[(a >> 7) & 127] << 8) |
-                           ((uint64_t) ksigns_iq2xs[(a >> 14) & 127] << 16) | ((uint64_t) ksigns_iq2xs[(a >> 21) & 127] << 24) |
-                           ((uint64_t) ksigns_iq2xs[c & 127] << 32) | ((uint64_t) ksigns_iq2xs[(c >> 7) & 127] << 40) |
-                           ((uint64_t) ksigns_iq2xs[(c >> 14) & 127] << 48) | ((uint64_t) ksigns_iq2xs[(c >> 21) & 127] << 56);
+        const uint64_t s =
+            (uint64_t) ksigns_iq2xs[a & 127] | ((uint64_t) ksigns_iq2xs[(a >> 7) & 127] << 8) |
+            ((uint64_t) ksigns_iq2xs[(a >> 14) & 127] << 16) | ((uint64_t) ksigns_iq2xs[(a >> 21) & 127] << 24) |
+            ((uint64_t) ksigns_iq2xs[c & 127] << 32) | ((uint64_t) ksigns_iq2xs[(c >> 7) & 127] << 40) |
+            ((uint64_t) ksigns_iq2xs[(c >> 14) & 127] << 48) | ((uint64_t) ksigns_iq2xs[(c >> 21) & 127] << 56);
         m = _cvtu64_mask64(s);
         const int sa = 2 * (int) (a >> 28) + 1, sb = 2 * (int) (c >> 28) + 1;
         sc = iq512_scales4(sa, sa, sb, sb);
@@ -1034,9 +1107,8 @@ template <> struct Iq512Fmt<21> {
 };
 
 template <int TY, int NT>
-GEXEC_AVX512BW_TARGET
-void iq512_row_dot_2rows(const uint8_t* row0, const uint8_t* row1, int nblocks,
-                         const block_q8_K* const* y, float* res0, float* res1) {
+GEXEC_AVX512BW_TARGET void iq512_row_dot_2rows(const uint8_t* row0, const uint8_t* row1, int nblocks,
+                                               const block_q8_K* const* y, float* res0, float* res1) {
     __m512 accf0[NT], accf1[NT];
     for (int t = 0; t < NT; ++t) {
         accf0[t] = _mm512_setzero_ps();
@@ -1083,39 +1155,41 @@ void iq512_row_dot_2rows(const uint8_t* row0, const uint8_t* row1, int nblocks,
 }
 
 template <int TY, int NT, bool INTERLEAVED>
-GEXEC_AVX512BW_TARGET
-void gexec_iq512_gu_rows_nt(const uint8_t* blob, size_t gu_row, size_t up_off, int n,
-                            const void* const* act, float* const* ff, int r0, int r1) {
+GEXEC_AVX512BW_TARGET void gexec_iq512_gu_rows_nt(const uint8_t* blob, size_t gu_row, size_t up_off, int n,
+                                                  const void* const* act, float* const* ff, int r0, int r1) {
     const block_q8_K* y[NT];
-    for (int t = 0; t < NT; ++t) y[t] = (const block_q8_K*) act[t];
+    for (int t = 0; t < NT; ++t)
+        y[t] = (const block_q8_K*) act[t];
     const int nb = n / QK_K;
     for (int r = r0; r < r1; ++r) {
         const uint8_t* gr = INTERLEAVED ? (blob + (size_t) (2 * r + 0) * gu_row) : (blob + (size_t) r * gu_row);
-        const uint8_t* ur = INTERLEAVED ? (blob + (size_t) (2 * r + 1) * gu_row) : (blob + up_off + (size_t) r * gu_row);
+        const uint8_t* ur =
+            INTERLEAVED ? (blob + (size_t) (2 * r + 1) * gu_row) : (blob + up_off + (size_t) r * gu_row);
         float g[NT], u[NT];
         iq512_row_dot_2rows<TY, NT>(gr, ur, nb, y, g, u);
-        for (int t = 0; t < NT; ++t) ff[t][r] = (g[t] / (1.f + std::exp(-g[t]))) * u[t];
+        for (int t = 0; t < NT; ++t)
+            ff[t][r] = (g[t] / (1.f + std::exp(-g[t]))) * u[t];
     }
 }
 
 template <int TY, bool INTERLEAVED>
-void dispatch_iq512_gu(int nt, const uint8_t* blob, size_t gu_row, size_t up_off, int n,
-                       const void* const* act, float* const* ff, int r0, int r1) {
+void dispatch_iq512_gu(int nt, const uint8_t* blob, size_t gu_row, size_t up_off, int n, const void* const* act,
+                       float* const* ff, int r0, int r1) {
     switch (nt) {
-        case 1: gexec_iq512_gu_rows_nt<TY, 1, INTERLEAVED>(blob, gu_row, up_off, n, act, ff, r0, r1); break;
-        case 2: gexec_iq512_gu_rows_nt<TY, 2, INTERLEAVED>(blob, gu_row, up_off, n, act, ff, r0, r1); break;
-        case 3: gexec_iq512_gu_rows_nt<TY, 3, INTERLEAVED>(blob, gu_row, up_off, n, act, ff, r0, r1); break;
-        case 4: gexec_iq512_gu_rows_nt<TY, 4, INTERLEAVED>(blob, gu_row, up_off, n, act, ff, r0, r1); break;
-        case 5: gexec_iq512_gu_rows_nt<TY, 5, INTERLEAVED>(blob, gu_row, up_off, n, act, ff, r0, r1); break;
-        case 6: gexec_iq512_gu_rows_nt<TY, 6, INTERLEAVED>(blob, gu_row, up_off, n, act, ff, r0, r1); break;
-        case 7: gexec_iq512_gu_rows_nt<TY, 7, INTERLEAVED>(blob, gu_row, up_off, n, act, ff, r0, r1); break;
-        case 8: gexec_iq512_gu_rows_nt<TY, 8, INTERLEAVED>(blob, gu_row, up_off, n, act, ff, r0, r1); break;
-        default:
-            for (int t0 = 0; t0 < nt; t0 += 8) {
-                const int m = std::min(8, nt - t0);
-                dispatch_iq512_gu<TY, INTERLEAVED>(m, blob, gu_row, up_off, n, act + t0, ff + t0, r0, r1);
-            }
-            break;
+    case 1: gexec_iq512_gu_rows_nt<TY, 1, INTERLEAVED>(blob, gu_row, up_off, n, act, ff, r0, r1); break;
+    case 2: gexec_iq512_gu_rows_nt<TY, 2, INTERLEAVED>(blob, gu_row, up_off, n, act, ff, r0, r1); break;
+    case 3: gexec_iq512_gu_rows_nt<TY, 3, INTERLEAVED>(blob, gu_row, up_off, n, act, ff, r0, r1); break;
+    case 4: gexec_iq512_gu_rows_nt<TY, 4, INTERLEAVED>(blob, gu_row, up_off, n, act, ff, r0, r1); break;
+    case 5: gexec_iq512_gu_rows_nt<TY, 5, INTERLEAVED>(blob, gu_row, up_off, n, act, ff, r0, r1); break;
+    case 6: gexec_iq512_gu_rows_nt<TY, 6, INTERLEAVED>(blob, gu_row, up_off, n, act, ff, r0, r1); break;
+    case 7: gexec_iq512_gu_rows_nt<TY, 7, INTERLEAVED>(blob, gu_row, up_off, n, act, ff, r0, r1); break;
+    case 8: gexec_iq512_gu_rows_nt<TY, 8, INTERLEAVED>(blob, gu_row, up_off, n, act, ff, r0, r1); break;
+    default:
+        for (int t0 = 0; t0 < nt; t0 += 8) {
+            const int m = std::min(8, nt - t0);
+            dispatch_iq512_gu<TY, INTERLEAVED>(m, blob, gu_row, up_off, n, act + t0, ff + t0, r0, r1);
+        }
+        break;
     }
 }
 
@@ -1123,14 +1197,14 @@ void dispatch_iq512_gu(int nt, const uint8_t* blob, size_t gu_row, size_t up_off
 // 5. IQ4_XS (type 23): 2-Row & 4-Row Fused AVX2 Kernel (Bit-Exact for all nt >= 1)
 // ============================================================================
 
-GEXEC_AVX2_INLINE void decode_iq4xs_subblock(const uint8_t* b, int j, int half, __m128i values, __m128i m4b,
-                                  __m256i& g, __m256i& sgn, __m256i& sc) noexcept {
+GEXEC_AVX2_INLINE void decode_iq4xs_subblock(const uint8_t* b, int j, int half, __m128i values, __m128i m4b, __m256i& g,
+                                             __m256i& sgn, __m256i& sc) noexcept {
     const int H = 2 * j + half;
     const __m128i bits = _mm_loadu_si128((const __m128i*) (b + 8 + 16 * H));
     const __m128i lo = _mm_and_si128(bits, m4b);
     const __m128i hi = _mm_and_si128(_mm_srli_epi16(bits, 4), m4b);
-    const __m256i q4 = _mm256_inserti128_si256(_mm256_castsi128_si256(_mm_shuffle_epi8(values, lo)),
-                                               _mm_shuffle_epi8(values, hi), 1);
+    const __m256i q4 =
+        _mm256_inserti128_si256(_mm256_castsi128_si256(_mm_shuffle_epi8(values, lo)), _mm_shuffle_epi8(values, hi), 1);
     g = _mm256_sign_epi8(q4, q4);
     sgn = q4;
     const uint16_t sh = read_u16(b + 2);
@@ -1140,17 +1214,18 @@ GEXEC_AVX2_INLINE void decode_iq4xs_subblock(const uint8_t* b, int j, int half, 
 }
 
 template <int NT, bool INTERLEAVED>
-GEXEC_AVX2_TARGET
-void gexec_iq4xs_gu_rows_nt(const uint8_t* blob, size_t gu_row, size_t up_off, int n,
-                            const void* const* act, float* const* ff, int r0, int r1) {
+GEXEC_AVX2_TARGET void gexec_iq4xs_gu_rows_nt(const uint8_t* blob, size_t gu_row, size_t up_off, int n,
+                                              const void* const* act, float* const* ff, int r0, int r1) {
     const __m128i values = _mm_loadu_si128((const __m128i*) kvalues_iq4nl);
     const __m128i m4b = _mm_set1_epi8(0x0f);
     const block_q8_K* y[NT];
-    for (int t = 0; t < NT; ++t) y[t] = (const block_q8_K*) act[t];
+    for (int t = 0; t < NT; ++t)
+        y[t] = (const block_q8_K*) act[t];
     const int nblocks = n / QK_K;
     for (int r = r0; r < r1; ++r) {
         const uint8_t* row0 = INTERLEAVED ? (blob + (size_t) (2 * r + 0) * gu_row) : (blob + (size_t) r * gu_row);
-        const uint8_t* row1 = INTERLEAVED ? (blob + (size_t) (2 * r + 1) * gu_row) : (blob + up_off + (size_t) r * gu_row);
+        const uint8_t* row1 =
+            INTERLEAVED ? (blob + (size_t) (2 * r + 1) * gu_row) : (blob + up_off + (size_t) r * gu_row);
         __m256 accf0[NT], accf1[NT];
         for (int t = 0; t < NT; ++t) {
             accf0[t] = _mm256_setzero_ps();
@@ -1173,8 +1248,10 @@ void gexec_iq4xs_gu_rows_nt(const uint8_t* blob, size_t gu_row, size_t up_off, i
                     decode_iq4xs_subblock(blk1, j, half, values, m4b, g1, sgn1, sc1);
                     for (int t = 0; t < NT; ++t) {
                         const __m256i yv = _mm256_loadu_si256((const __m256i*) (y[t][i].qs + 32 * (2 * j + half)));
-                        acci0[t] = _mm256_add_epi32(acci0[t], _mm256_madd_epi16(_mm256_maddubs_epi16(g0, _mm256_sign_epi8(yv, sgn0)), sc0));
-                        acci1[t] = _mm256_add_epi32(acci1[t], _mm256_madd_epi16(_mm256_maddubs_epi16(g1, _mm256_sign_epi8(yv, sgn1)), sc1));
+                        acci0[t] = _mm256_add_epi32(
+                            acci0[t], _mm256_madd_epi16(_mm256_maddubs_epi16(g0, _mm256_sign_epi8(yv, sgn0)), sc0));
+                        acci1[t] = _mm256_add_epi32(
+                            acci1[t], _mm256_madd_epi16(_mm256_maddubs_epi16(g1, _mm256_sign_epi8(yv, sgn1)), sc1));
                     }
                 }
             }
@@ -1197,23 +1274,23 @@ void gexec_iq4xs_gu_rows_nt(const uint8_t* blob, size_t gu_row, size_t up_off, i
 }
 
 template <bool INTERLEAVED>
-void dispatch_iq4xs_gu(int nt, const uint8_t* blob, size_t gu_row, size_t up_off, int n,
-                       const void* const* act, float* const* ff, int r0, int r1) {
+void dispatch_iq4xs_gu(int nt, const uint8_t* blob, size_t gu_row, size_t up_off, int n, const void* const* act,
+                       float* const* ff, int r0, int r1) {
     switch (nt) {
-        case 1: gexec_iq4xs_gu_rows_nt<1, INTERLEAVED>(blob, gu_row, up_off, n, act, ff, r0, r1); break;
-        case 2: gexec_iq4xs_gu_rows_nt<2, INTERLEAVED>(blob, gu_row, up_off, n, act, ff, r0, r1); break;
-        case 3: gexec_iq4xs_gu_rows_nt<3, INTERLEAVED>(blob, gu_row, up_off, n, act, ff, r0, r1); break;
-        case 4: gexec_iq4xs_gu_rows_nt<4, INTERLEAVED>(blob, gu_row, up_off, n, act, ff, r0, r1); break;
-        case 5: gexec_iq4xs_gu_rows_nt<5, INTERLEAVED>(blob, gu_row, up_off, n, act, ff, r0, r1); break;
-        case 6: gexec_iq4xs_gu_rows_nt<6, INTERLEAVED>(blob, gu_row, up_off, n, act, ff, r0, r1); break;
-        case 7: gexec_iq4xs_gu_rows_nt<7, INTERLEAVED>(blob, gu_row, up_off, n, act, ff, r0, r1); break;
-        case 8: gexec_iq4xs_gu_rows_nt<8, INTERLEAVED>(blob, gu_row, up_off, n, act, ff, r0, r1); break;
-        default:
-            for (int t0 = 0; t0 < nt; t0 += 8) {
-                const int m = std::min(8, nt - t0);
-                dispatch_iq4xs_gu<INTERLEAVED>(m, blob, gu_row, up_off, n, act + t0, ff + t0, r0, r1);
-            }
-            break;
+    case 1: gexec_iq4xs_gu_rows_nt<1, INTERLEAVED>(blob, gu_row, up_off, n, act, ff, r0, r1); break;
+    case 2: gexec_iq4xs_gu_rows_nt<2, INTERLEAVED>(blob, gu_row, up_off, n, act, ff, r0, r1); break;
+    case 3: gexec_iq4xs_gu_rows_nt<3, INTERLEAVED>(blob, gu_row, up_off, n, act, ff, r0, r1); break;
+    case 4: gexec_iq4xs_gu_rows_nt<4, INTERLEAVED>(blob, gu_row, up_off, n, act, ff, r0, r1); break;
+    case 5: gexec_iq4xs_gu_rows_nt<5, INTERLEAVED>(blob, gu_row, up_off, n, act, ff, r0, r1); break;
+    case 6: gexec_iq4xs_gu_rows_nt<6, INTERLEAVED>(blob, gu_row, up_off, n, act, ff, r0, r1); break;
+    case 7: gexec_iq4xs_gu_rows_nt<7, INTERLEAVED>(blob, gu_row, up_off, n, act, ff, r0, r1); break;
+    case 8: gexec_iq4xs_gu_rows_nt<8, INTERLEAVED>(blob, gu_row, up_off, n, act, ff, r0, r1); break;
+    default:
+        for (int t0 = 0; t0 < nt; t0 += 8) {
+            const int m = std::min(8, nt - t0);
+            dispatch_iq4xs_gu<INTERLEAVED>(m, blob, gu_row, up_off, n, act + t0, ff + t0, r0, r1);
+        }
+        break;
     }
 }
 
@@ -1233,8 +1310,8 @@ bool native_iq512_policy(int nt) {
 }
 
 template <bool USE_AVX512, bool INTERLEAVED>
-void gexec_gu_rows_impl(const NativeFmt* f_ptr, const uint8_t* blob, const void* const* act,
-                        int nt, float* const* ff, int r0, int r1) {
+void gexec_gu_rows_impl(const NativeFmt* f_ptr, const uint8_t* blob, const void* const* act, int nt, float* const* ff,
+                        int r0, int r1) {
     const NativeFmt& f = *f_ptr;
 #if defined(GUILD_NATIVE_EXPERTS)
     // For nt > 2 (prefill groups), 1-row multi-token kernels already amortize weight unpacking
@@ -1255,15 +1332,23 @@ void gexec_gu_rows_impl(const NativeFmt* f_ptr, const uint8_t* blob, const void*
     if (f.gu_type == 12 || f.gu_type == 14 || f.gu_type == 8 || f.gu_type == 7) {
         for (int r = r0; r < r1; ++r) {
             const uint8_t* gr = INTERLEAVED ? (blob + (size_t) (2 * r + 0) * gu_row) : (blob + (size_t) r * gu_row);
-            const uint8_t* ur = INTERLEAVED ? (blob + (size_t) (2 * r + 1) * gu_row) : (blob + up_off + (size_t) r * gu_row);
+            const uint8_t* ur =
+                INTERLEAVED ? (blob + (size_t) (2 * r + 1) * gu_row) : (blob + up_off + (size_t) r * gu_row);
             for (int t0 = 0; t0 < nt; t0 += MAXT) {
                 const int m = std::min(MAXT, nt - t0);
                 float g[MAXT], u[MAXT];
-                if (f.gu_type == 12)      dispatch_q4k_2rows(avx512_ok, (const block_q4_K*) gr, (const block_q4_K*) ur, n / QK_K, act + t0, m, g, u);
-                else if (f.gu_type == 14) dispatch_q6k_2rows(avx512_ok, (const block_q6_K*) gr, (const block_q6_K*) ur, n / QK_K, act + t0, m, g, u);
-                else if (f.gu_type == 8)  dispatch_q8_0_2rows((const block_q8_0*) gr, (const block_q8_0*) ur, n / QK8_0, act + t0, m, g, u);
-                else                      dispatch_q5_1_2rows((const block_q5_1*) gr, (const block_q5_1*) ur, n / QK5_1, act + t0, m, g, u);
-                for (int t = 0; t < m; ++t) ff[t0 + t][r] = (g[t] / (1.f + std::exp(-g[t]))) * u[t];
+                if (f.gu_type == 12)
+                    dispatch_q4k_2rows(avx512_ok, (const block_q4_K*) gr, (const block_q4_K*) ur, n / QK_K, act + t0, m,
+                                       g, u);
+                else if (f.gu_type == 14)
+                    dispatch_q6k_2rows(avx512_ok, (const block_q6_K*) gr, (const block_q6_K*) ur, n / QK_K, act + t0, m,
+                                       g, u);
+                else if (f.gu_type == 8)
+                    dispatch_q8_0_2rows((const block_q8_0*) gr, (const block_q8_0*) ur, n / QK8_0, act + t0, m, g, u);
+                else
+                    dispatch_q5_1_2rows((const block_q5_1*) gr, (const block_q5_1*) ur, n / QK5_1, act + t0, m, g, u);
+                for (int t = 0; t < m; ++t)
+                    ff[t0 + t][r] = (g[t] / (1.f + std::exp(-g[t]))) * u[t];
             }
         }
         return;
@@ -1279,12 +1364,12 @@ void gexec_gu_rows_impl(const NativeFmt* f_ptr, const uint8_t* blob, const void*
     if constexpr (INTERLEAVED) {
         if (avx512_ok && native_iq512_policy(nt)) {
             switch (f.gu_type) {
-                case 16: dispatch_iq512_gu<16, INTERLEAVED>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); return;
-                case 17: dispatch_iq512_gu<17, INTERLEAVED>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); return;
-                case 18: dispatch_iq512_gu<18, INTERLEAVED>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); return;
-                case 21: dispatch_iq512_gu<21, INTERLEAVED>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); return;
-                case 22: dispatch_iq512_gu<22, INTERLEAVED>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); return;
-                default: break;
+            case 16: dispatch_iq512_gu<16, INTERLEAVED>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); return;
+            case 17: dispatch_iq512_gu<17, INTERLEAVED>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); return;
+            case 18: dispatch_iq512_gu<18, INTERLEAVED>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); return;
+            case 21: dispatch_iq512_gu<21, INTERLEAVED>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); return;
+            case 22: dispatch_iq512_gu<22, INTERLEAVED>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); return;
+            default: break;
             }
         }
     }
@@ -1299,12 +1384,11 @@ void gexec_gu_rows_impl(const NativeFmt* f_ptr, const uint8_t* blob, const void*
 
 // Helper for interleaved fallback when !avx512_ok on I-quants (e.g. AVX2-only hosts)
 template <bool USE_AVX512>
-void gexec_gu_rows_interleaved_safe(const NativeFmt* f_ptr, const uint8_t* blob, const void* const* act,
-                                    int nt, float* const* ff, int r0, int r1) {
+void gexec_gu_rows_interleaved_safe(const NativeFmt* f_ptr, const uint8_t* blob, const void* const* act, int nt,
+                                    float* const* ff, int r0, int r1) {
     const NativeFmt& f = *f_ptr;
     const bool avx512_ok = USE_AVX512 && cpu_avx512bw_ok();
-    if (f.gu_type == 12 || f.gu_type == 14 || f.gu_type == 8 || f.gu_type == 7 ||
-        (f.gu_type == 23 && cpu_avx2_ok()) ||
+    if (f.gu_type == 12 || f.gu_type == 14 || f.gu_type == 8 || f.gu_type == 7 || (f.gu_type == 23 && cpu_avx2_ok()) ||
         (avx512_ok && native_iq512_policy(nt) &&
          (f.gu_type == 16 || f.gu_type == 17 || f.gu_type == 18 || f.gu_type == 21 || f.gu_type == 22))) {
         gexec_gu_rows_impl<USE_AVX512, true>(f_ptr, blob, act, nt, ff, r0, r1);
@@ -1319,7 +1403,8 @@ void gexec_gu_rows_interleaved_safe(const NativeFmt* f_ptr, const uint8_t* blob,
         for (int t0 = 0; t0 < nt; t0 += MAXT) {
             const int m = std::min(MAXT, nt - t0);
             float* ff_shifted[MAXT];
-            for (int t = 0; t < m; ++t) ff_shifted[t] = ff[t0 + t] + r;
+            for (int t = 0; t < m; ++t)
+                ff_shifted[t] = ff[t0 + t] + r;
             native_gu_rows(row_fmt, pair_base, act + t0, m, ff_shifted, 0, 1);
         }
     }
@@ -1327,8 +1412,8 @@ void gexec_gu_rows_interleaved_safe(const NativeFmt* f_ptr, const uint8_t* blob,
 }
 
 template <bool USE_AVX512>
-void gexec_down_rows_impl(const NativeFmt* f_ptr, const uint8_t* blob, const void* const* act,
-                          int nt, float* const* out, int r0, int r1) {
+void gexec_down_rows_impl(const NativeFmt* f_ptr, const uint8_t* blob, const void* const* act, int nt,
+                          float* const* out, int r0, int r1) {
     const NativeFmt& f = *f_ptr;
 #if defined(GUILD_NATIVE_EXPERTS)
     if (nt > 2) {
@@ -1374,7 +1459,8 @@ void gexec_down_rows_impl(const NativeFmt* f_ptr, const uint8_t* blob, const voi
                 const int m = std::min(MAXT, nt - t0);
                 float s0[MAXT], s1[MAXT];
                 dispatch_q8_0_2rows(w0, w0, nb, act + t0, m, s0, s1);
-                for (int t = 0; t < m; ++t) out[t0 + t][r] = s0[t];
+                for (int t = 0; t < m; ++t)
+                    out[t0 + t][r] = s0[t];
             }
         }
         return;
@@ -1389,9 +1475,14 @@ void gexec_down_rows_impl(const NativeFmt* f_ptr, const uint8_t* blob, const voi
             for (int t0 = 0; t0 < nt; t0 += MAXT) {
                 const int m = std::min(MAXT, nt - t0);
                 float s0[MAXT], s1[MAXT];
-                if (f.d_type == 12)      dispatch_q4k_2rows(avx512_ok, (const block_q4_K*) w0, (const block_q4_K*) w1, n / QK_K, act + t0, m, s0, s1);
-                else if (f.d_type == 14) dispatch_q6k_2rows(avx512_ok, (const block_q6_K*) w0, (const block_q6_K*) w1, n / QK_K, act + t0, m, s0, s1);
-                else                     dispatch_q5_1_2rows((const block_q5_1*) w0, (const block_q5_1*) w1, n / QK5_1, act + t0, m, s0, s1);
+                if (f.d_type == 12)
+                    dispatch_q4k_2rows(avx512_ok, (const block_q4_K*) w0, (const block_q4_K*) w1, n / QK_K, act + t0, m,
+                                       s0, s1);
+                else if (f.d_type == 14)
+                    dispatch_q6k_2rows(avx512_ok, (const block_q6_K*) w0, (const block_q6_K*) w1, n / QK_K, act + t0, m,
+                                       s0, s1);
+                else
+                    dispatch_q5_1_2rows((const block_q5_1*) w0, (const block_q5_1*) w1, n / QK5_1, act + t0, m, s0, s1);
                 for (int t = 0; t < m; ++t) {
                     out[t0 + t][r + 0] = s0[t];
                     out[t0 + t][r + 1] = s1[t];
@@ -1403,10 +1494,16 @@ void gexec_down_rows_impl(const NativeFmt* f_ptr, const uint8_t* blob, const voi
             for (int t0 = 0; t0 < nt; t0 += MAXT) {
                 const int m = std::min(MAXT, nt - t0);
                 float s0[MAXT], s1[MAXT];
-                if (f.d_type == 12)      dispatch_q4k_2rows(avx512_ok, (const block_q4_K*) w0, (const block_q4_K*) w0, n / QK_K, act + t0, m, s0, s1);
-                else if (f.d_type == 14) dispatch_q6k_2rows(avx512_ok, (const block_q6_K*) w0, (const block_q6_K*) w0, n / QK_K, act + t0, m, s0, s1);
-                else                     dispatch_q5_1_2rows((const block_q5_1*) w0, (const block_q5_1*) w0, n / QK5_1, act + t0, m, s0, s1);
-                for (int t = 0; t < m; ++t) out[t0 + t][r] = s0[t];
+                if (f.d_type == 12)
+                    dispatch_q4k_2rows(avx512_ok, (const block_q4_K*) w0, (const block_q4_K*) w0, n / QK_K, act + t0, m,
+                                       s0, s1);
+                else if (f.d_type == 14)
+                    dispatch_q6k_2rows(avx512_ok, (const block_q6_K*) w0, (const block_q6_K*) w0, n / QK_K, act + t0, m,
+                                       s0, s1);
+                else
+                    dispatch_q5_1_2rows((const block_q5_1*) w0, (const block_q5_1*) w0, n / QK5_1, act + t0, m, s0, s1);
+                for (int t = 0; t < m; ++t)
+                    out[t0 + t][r] = s0[t];
             }
         }
         return;
@@ -1431,7 +1528,8 @@ guild_status_t gexec_combine_avx2(const float* parts, const float* weights, floa
         for (int r = 0; r < k; ++r) {
             const __m256 val = _mm256_loadu_ps(parts + (size_t) r * (size_t) n + (size_t) d);
             const __m256i bits = _mm256_castps_si256(val);
-            nonfinite_any = _mm256_or_si256(nonfinite_any, _mm256_cmpeq_epi32(_mm256_and_si256(bits, exp_mask), exp_mask));
+            nonfinite_any =
+                _mm256_or_si256(nonfinite_any, _mm256_cmpeq_epi32(_mm256_and_si256(bits, exp_mask), exp_mask));
             acc = _mm256_fmadd_ps(val, _mm256_set1_ps(weights[r]), acc);
         }
         _mm256_storeu_ps(out + d, acc);
@@ -1451,29 +1549,34 @@ guild_status_t gexec_combine_avx2(const float* parts, const float* weights, floa
     return nonfinite ? GUILD_STATUS_ERR_NONFINITE_OUTPUT : GUILD_STATUS_OK;
 }
 
-guild_status_t gexec_format_fn(int32_t gu, int32_t down, int64_t n, int64_t ff,
-                               guild_cpu_expert_format_v1_t* out, guild_error_info_t* error) {
-    if (!out || n <= 0 || n > H || ff <= 0 || ff > FF) return GUILD_STATUS_ERR_INVALID_ARGUMENT;
+guild_status_t gexec_format_fn(int32_t gu, int32_t down, int64_t n, int64_t ff, guild_cpu_expert_format_v1_t* out,
+                               guild_error_info_t* error) {
+    if (!out || n <= 0 || n > H || ff <= 0 || ff > FF)
+        return GUILD_STATUS_ERR_INVALID_ARGUMENT;
     try {
 #if defined(GUILD_NATIVE_EXPERTS)
         std::string message;
-        if (native_fmt(gu, down, n, ff, *out, message)) return GUILD_STATUS_OK;
+        if (native_fmt(gu, down, n, ff, *out, message))
+            return GUILD_STATUS_OK;
         if (error) {
             error->struct_size = sizeof(*error);
             error->code = GUILD_STATUS_ERR_INVALID_TENSOR;
             std::snprintf(error->message, sizeof(error->message), "%s", message.c_str());
         }
 #else
-        if (native_fmt_host(gu, down, n, ff, *out)) return GUILD_STATUS_OK;
+        if (native_fmt_host(gu, down, n, ff, *out))
+            return GUILD_STATUS_OK;
         if (error) {
             error->struct_size = sizeof(*error);
             error->code = GUILD_STATUS_ERR_INVALID_TENSOR;
-            std::snprintf(error->message, sizeof(error->message), "unsupported native expert format (%d, %d)", gu, down);
+            std::snprintf(error->message, sizeof(error->message), "unsupported native expert format (%d, %d)", gu,
+                          down);
         }
 #endif
         return GUILD_STATUS_ERR_INVALID_TENSOR;
     } catch (const std::exception& e) {
-        if (error) std::snprintf(error->message, sizeof(error->message), "%s", e.what());
+        if (error)
+            std::snprintf(error->message, sizeof(error->message), "%s", e.what());
         return GUILD_STATUS_ERR_EXECUTION_FAILED;
     } catch (...) {
         return GUILD_STATUS_ERR_EXECUTION_FAILED;
@@ -1482,28 +1585,32 @@ guild_status_t gexec_format_fn(int32_t gu, int32_t down, int64_t n, int64_t ff,
 
 void gexec_router_bf16(const uint16_t* w, int rows, int cols, const float* x, int nt, float* out) {
 #if defined(GUILD_NATIVE_EXPERTS)
-    if (cpu_avx2_ok()) bf16_rows_dot_multi(w, rows, cols, x, nt, out);
-    else if (cpu_avx1_ok()) bf16_rows_dot_multi_avx1(w, rows, cols, x, nt, out);
+    if (cpu_avx2_ok())
+        bf16_rows_dot_multi(w, rows, cols, x, nt, out);
+    else if (cpu_avx1_ok())
+        bf16_rows_dot_multi_avx1(w, rows, cols, x, nt, out);
     else
 #endif
-    for (int t = 0; t < nt; ++t) {
-        for (int r = 0; r < rows; ++r) {
-            float sum = 0.0f;
-            for (int c = 0; c < cols; ++c) {
-                uint32_t bits = uint32_t(w[(size_t) r * (size_t) cols + (size_t) c]) << 16;
-                float f;
-                std::memcpy(&f, &bits, sizeof(f));
-                sum += f * x[(size_t) t * (size_t) cols + (size_t) c];
+        for (int t = 0; t < nt; ++t) {
+            for (int r = 0; r < rows; ++r) {
+                float sum = 0.0f;
+                for (int c = 0; c < cols; ++c) {
+                    uint32_t bits = uint32_t(w[(size_t) r * (size_t) cols + (size_t) c]) << 16;
+                    float f;
+                    std::memcpy(&f, &bits, sizeof(f));
+                    sum += f * x[(size_t) t * (size_t) cols + (size_t) c];
+                }
+                out[(size_t) t * (size_t) rows + (size_t) r] = sum;
             }
-            out[(size_t) t * (size_t) rows + (size_t) r] = sum;
         }
-    }
 }
 
 void gexec_canonical_gu(const uint8_t* b, const ActQ* const* a, int n, float* const* y, int r0, int r1) {
 #if defined(GUILD_NATIVE_EXPERTS)
-    if (cpu_avx512_ok()) s2_expert_gu_rows_multi(b, a, n, y, r0, r1);
-    else canonical_gu_avx2(b, a, n, y, r0, r1);
+    if (cpu_avx512_ok())
+        s2_expert_gu_rows_multi(b, a, n, y, r0, r1);
+    else
+        canonical_gu_avx2(b, a, n, y, r0, r1);
 #else
     s2_expert_gu_rows_multi(b, a, n, y, r0, r1);
 #endif
@@ -1511,55 +1618,51 @@ void gexec_canonical_gu(const uint8_t* b, const ActQ* const* a, int n, float* co
 
 void gexec_canonical_down(const uint8_t* b, const ActQ* const* a, int n, float* const* y, int r0, int r1) {
 #if defined(GUILD_NATIVE_EXPERTS)
-    if (cpu_avx512_ok()) s2_expert_down_rows_multi(b, a, n, y, r0, r1);
-    else canonical_down_avx2(b, a, n, y, r0, r1);
+    if (cpu_avx512_ok())
+        s2_expert_down_rows_multi(b, a, n, y, r0, r1);
+    else
+        canonical_down_avx2(b, a, n, y, r0, r1);
 #else
     s2_expert_down_rows_multi(b, a, n, y, r0, r1);
 #endif
 }
 
-template <bool USE_AVX512, bool INTERLEAVED>
-const guild_cpu_backend_ext_v2_t* make_gexec_table() noexcept {
+template <bool USE_AVX512, bool INTERLEAVED> const guild_cpu_backend_ext_v2_t* make_gexec_table() noexcept {
     static const guild_cpu_backend_ext_v2_t kTable = {
-        {
-            sizeof(guild_cpu_backend_ext_v2_t),
-            GUILD_CPU_EXPERT_TAG_V1,
-            1,
-            +[](const NativeFmt* f, const float* x, void* y) {
+        {sizeof(guild_cpu_backend_ext_v2_t), GUILD_CPU_EXPERT_TAG_V1, 1,
+         +[](const NativeFmt* f, const float* x, void* y) {
 #if defined(GUILD_NATIVE_EXPERTS)
-                native_quant_act(*f, x, y);
+             native_quant_act(*f, x, y);
 #else
-                quantize_act_by_type_host(f->gu_act, x, y, (int) f->n_embd);
+             quantize_act_by_type_host(f->gu_act, x, y, (int) f->n_embd);
 #endif
-            },
-            +[](const NativeFmt* f, const float* x, void* y) {
+         },
+         +[](const NativeFmt* f, const float* x, void* y) {
 #if defined(GUILD_NATIVE_EXPERTS)
-                native_quant_h(*f, x, y);
+             native_quant_h(*f, x, y);
 #else
-                quantize_act_by_type_host(f->d_act, x, y, (int) f->n_ff);
+             quantize_act_by_type_host(f->d_act, x, y, (int) f->n_ff);
 #endif
-            },
-            INTERLEAVED ? +[](const NativeFmt* f, const uint8_t* b, const void* const* x, int n, float* const* y, int a, int z) {
-                gexec_gu_rows_interleaved_safe<USE_AVX512>(f, b, x, n, y, a, z);
-            } : +[](const NativeFmt* f, const uint8_t* b, const void* const* x, int n, float* const* y, int a, int z) {
-                gexec_gu_rows_impl<USE_AVX512, false>(f, b, x, n, y, a, z);
-            },
-            +[](const NativeFmt* f, const uint8_t* b, const void* const* x, int n, float* const* y, int a, int z) {
-                gexec_down_rows_impl<USE_AVX512>(f, b, x, n, y, a, z);
-            }
-        },
+         },
+         INTERLEAVED ? +[](const NativeFmt* f, const uint8_t* b, const void* const* x, int n, float* const* y, int a,
+                           int z) { gexec_gu_rows_interleaved_safe<USE_AVX512>(f, b, x, n, y, a, z); }
+                     : +[](const NativeFmt* f, const uint8_t* b, const void* const* x, int n, float* const* y, int a,
+                           int z) { gexec_gu_rows_impl<USE_AVX512, false>(f, b, x, n, y, a, z); },
+         +[](const NativeFmt* f, const uint8_t* b, const void* const* x, int n, float* const* y, int a, int z) {
+             gexec_down_rows_impl<USE_AVX512>(f, b, x, n, y, a, z);
+         }},
         GUILD_CPU_BACKEND_VERSION_V2,
         0,
         gexec_format_fn,
         +[](const float* x, int n, ActQ* a) { act_quant_any(x, n, *a); },
         gexec_canonical_gu,
         gexec_canonical_down,
-        +[](const uint8_t* w, uint64_t bytes, int blocks, const ActQ* const* a, int n, float* const* y, int r0, int r1) {
-            q2_rows_any(w, size_t(bytes), blocks, a, n, y, r0, r1);
-        },
+        +[](const uint8_t* w, uint64_t bytes, int blocks, const ActQ* const* a, int n, float* const* y, int r0,
+            int r1) { q2_rows_any(w, size_t(bytes), blocks, a, n, y, r0, r1); },
         gexec_router_bf16,
         +[](const float* parts, const float* weights, float* out, int k, int n) -> guild_status_t {
-            if (cpu_avx2_ok()) return gexec_combine_avx2(parts, weights, out, k, n);
+            if (cpu_avx2_ok())
+                return gexec_combine_avx2(parts, weights, out, k, n);
             uint32_t nonfinite = 0;
             for (int d = 0; d < n; ++d) {
                 float acc = 0.0f;
@@ -1574,8 +1677,7 @@ const guild_cpu_backend_ext_v2_t* make_gexec_table() noexcept {
             }
             return nonfinite ? GUILD_STATUS_ERR_NONFINITE_OUTPUT : GUILD_STATUS_OK;
         },
-        swiglu
-    };
+        swiglu};
     return &kTable;
 }
 

@@ -50,7 +50,9 @@ namespace {
 constexpr float EPS = 1e-6f;
 constexpr int GGML_Q8_0 = 8;
 using Clock = std::chrono::steady_clock;
-double ms_since(Clock::time_point t) { return std::chrono::duration<double, std::milli>(Clock::now() - t).count(); }
+double ms_since(Clock::time_point t) {
+    return std::chrono::duration<double, std::milli>(Clock::now() - t).count();
+}
 
 struct Bump {
     uint8_t* base = nullptr;
@@ -63,7 +65,8 @@ struct Bump {
 };
 
 bool mapped(size_t bytes, void** h, void** d) {
-    if (cudaHostAlloc(h, bytes, cudaHostAllocMapped | (peer_portable() ? cudaHostAllocPortable : 0)) != cudaSuccess) return false;
+    if (cudaHostAlloc(h, bytes, cudaHostAllocMapped | (peer_portable() ? cudaHostAllocPortable : 0)) != cudaSuccess)
+        return false;
     std::memset(*h, 0, bytes);
     return cudaHostGetDevicePointer(d, *h, 0) == cudaSuccess;
 }
@@ -92,96 +95,152 @@ bool read_file(const std::string& path, std::vector<uint8_t>& out) {
     // split `load_experts_ranges` had - so the drafter's 111 MiB dense blob paid 4 KiB per operation on a cold
     // start.  `fread` passes a request bigger than the stream buffer straight to `ReadFile()`.
     FILE* f = std::fopen(path.c_str(), "rb");
-    if (f == nullptr) return false;
+    if (f == nullptr)
+        return false;
     // A `FILE*` has no destructor and the short-read path below returns early: the guard closes on every path.
     struct Closer {
         FILE* f;
-        ~Closer() { if (f != nullptr) std::fclose(f); }
+        ~Closer() {
+            if (f != nullptr)
+                std::fclose(f);
+        }
     } closer{f};
-    if (GUILD_FILE_SEEK64(f, 0, SEEK_END) != 0) return false;
+    if (GUILD_FILE_SEEK64(f, 0, SEEK_END) != 0)
+        return false;
     const long long n = (long long) GUILD_FILE_TELL64(f);
-    if (n < 0 || GUILD_FILE_SEEK64(f, 0, SEEK_SET) != 0) return false;
+    if (n < 0 || GUILD_FILE_SEEK64(f, 0, SEEK_SET) != 0)
+        return false;
     out.resize((size_t) n);
     return n == 0 || std::fread(out.data(), 1, (size_t) n, f) == (size_t) n;
 }
 
-}  // namespace
+} // namespace
 
 MtpDrafter::~MtpDrafter() {
     const OnDevice on_device(device_);
-    if (cs_) cudaStreamSynchronize(cs_);
-    for (auto& e : prefill_exec_) if (e) cudaGraphExecDestroy(e);
-    for (auto& e : prefill_dev_exec_) if (e) cudaGraphExecDestroy(e);
-    if (pf_dev_) cudaFree(pf_dev_);
-    for (auto& e : round_exec_) if (e) cudaGraphExecDestroy(e);
-    for (auto& e : step_exec_) if (e) cudaGraphExecDestroy(e);
-    for (auto& e : round_exec_c_) if (e) cudaGraphExecDestroy(e);
-    for (auto& e : step_exec_c_) if (e) cudaGraphExecDestroy(e);
-    if (cparams_) cudaFree(cparams_);
-    if (cring_) cudaFree(cring_);
-    if (dinv_) cudaFree(dinv_);
-    if (cscratch_) cudaFree(cscratch_);
-    if (h_cparams_) cudaFreeHost(h_cparams_);
-    if (h_chist_) cudaFreeHost(h_chist_);
-    if (cs_) cudaStreamDestroy(cs_);
-    if (dense_) cudaFree(dense_);
-    if (experts_) cudaFree(experts_);
-    if (state_arena_) cudaFree(state_arena_);
+    if (cs_)
+        cudaStreamSynchronize(cs_);
+    for (auto& e : prefill_exec_)
+        if (e)
+            cudaGraphExecDestroy(e);
+    for (auto& e : prefill_dev_exec_)
+        if (e)
+            cudaGraphExecDestroy(e);
+    if (pf_dev_)
+        cudaFree(pf_dev_);
+    for (auto& e : round_exec_)
+        if (e)
+            cudaGraphExecDestroy(e);
+    for (auto& e : step_exec_)
+        if (e)
+            cudaGraphExecDestroy(e);
+    for (auto& e : round_exec_c_)
+        if (e)
+            cudaGraphExecDestroy(e);
+    for (auto& e : step_exec_c_)
+        if (e)
+            cudaGraphExecDestroy(e);
+    if (cparams_)
+        cudaFree(cparams_);
+    if (cring_)
+        cudaFree(cring_);
+    if (dinv_)
+        cudaFree(dinv_);
+    if (cscratch_)
+        cudaFree(cscratch_);
+    if (h_cparams_)
+        cudaFreeHost(h_cparams_);
+    if (h_chist_)
+        cudaFreeHost(h_chist_);
+    if (cs_)
+        cudaStreamDestroy(cs_);
+    if (dense_)
+        cudaFree(dense_);
+    if (experts_)
+        cudaFree(experts_);
+    if (state_arena_)
+        cudaFree(state_arena_);
     qsa_state_release_host(st_);
-    if (arena_) cudaFree(arena_);
-    if (head_logits_) cudaFree(head_logits_);
-    if (dhead_) cudaFree(dhead_);
-    if (dvocab_) cudaFree(dvocab_);
+    if (arena_)
+        cudaFree(arena_);
+    if (head_logits_)
+        cudaFree(head_logits_);
+    if (dhead_)
+        cudaFree(dhead_);
+    if (dvocab_)
+        cudaFree(dvocab_);
     void* hosts[] = {h_tok_, h_step_, h_pos_, h_row_, h_out_, h_prob_};
-    for (void* h : hosts) if (h) cudaFreeHost(h);
+    for (void* h : hosts)
+        if (h)
+            cudaFreeHost(h);
 }
 
 const float* MtpDrafter::f32(const char* name) const {
-    for (const auto& t : tensors_) if (t.name == name && t.kind == "f32") return (const float*) (dense_ + t.off);
+    for (const auto& t : tensors_)
+        if (t.name == name && t.kind == "f32")
+            return (const float*) (dense_ + t.off);
     return nullptr;
 }
 const uint16_t* MtpDrafter::bf16(const char* name) const {
-    for (const auto& t : tensors_) if (t.name == name && t.kind == "bf16") return (const uint16_t*) (dense_ + t.off);
+    for (const auto& t : tensors_)
+        if (t.name == name && t.kind == "bf16")
+            return (const uint16_t*) (dense_ + t.off);
     return nullptr;
 }
 const void* MtpDrafter::q8(const char* name) const {
-    for (const auto& t : tensors_) if (t.name == name && t.kind == "q8_0") return dense_ + t.off;
+    for (const auto& t : tensors_)
+        if (t.name == name && t.kind == "q8_0")
+            return dense_ + t.off;
     return nullptr;
 }
 
 bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, SessionState& ss, int max_t, std::string& err,
                       int64_t window) {
-    cudaGetDevice(&device_);   // a layer split's last stage on another GPU: the drafter lives there
+    cudaGetDevice(&device_); // a layer split's last stage on another GPU: the drafter lives there
     g_ = &g;
     ss_ = &ss;
-    if (ple_ss_ == nullptr) ple_ss_ = &ss;
+    if (ple_ss_ == nullptr)
+        ple_ss_ = &ss;
     max_t_ = max_t;
     rt_dir_ = rt_dir;
-    if (max_t < 1 || max_t > guild::kernels::kVerifyMaxT) { err = "mtp: max_t out of range"; return false; }
+    if (max_t < 1 || max_t > guild::kernels::kVerifyMaxT) {
+        err = "mtp: max_t out of range";
+        return false;
+    }
     // Loader fix (0.1.15+loaderfix.2): the two reads below are the whole “drafter files” cost; reporting
     // them apart from the rest of the stage is what makes the next regression visible.
     const auto t_files = std::chrono::steady_clock::now();
     // ---- the index and the dense weights
     {
         std::ifstream idx(rt_dir + "/dense.txt");
-        if (!idx) { err = "mtp: cannot open " + rt_dir + "/dense.txt (run tools/mtp_rt.py)"; return false; }
+        if (!idx) {
+            err = "mtp: cannot open " + rt_dir + "/dense.txt (run tools/mtp_rt.py)";
+            return false;
+        }
         std::string line;
         while (std::getline(idx, line)) {
-            if (line.empty()) continue;
+            if (line.empty())
+                continue;
             std::istringstream is(line);
             Tensor t;
             is >> t.name >> t.kind >> t.rows >> t.cols >> t.off >> t.bytes;
-            if (!is) { err = "mtp: malformed dense.txt line: " + line; return false; }
+            if (!is) {
+                err = "mtp: malformed dense.txt line: " + line;
+                return false;
+            }
             tensors_.push_back(t);
         }
         std::vector<uint8_t> blob;
-        if (!read_file(rt_dir + "/dense.bin", blob)) { err = "mtp: cannot read dense.bin"; return false; }
+        if (!read_file(rt_dir + "/dense.bin", blob)) {
+            err = "mtp: cannot read dense.bin";
+            return false;
+        }
         const cudaError_t alloc = cudaMalloc((void**) &dense_, blob.size());
         if (alloc != cudaSuccess) {
             size_t free_bytes = 0, total_bytes = 0;
             const cudaError_t info = cudaMemGetInfo(&free_bytes, &total_bytes);
-            err = "mtp: dense weights allocation failed (" + std::string(cudaGetErrorString(alloc)) +
-                  "), requested " + std::to_string(blob.size() >> 20) + " MiB, CUDA0 free " +
+            err = "mtp: dense weights allocation failed (" + std::string(cudaGetErrorString(alloc)) + "), requested " +
+                  std::to_string(blob.size() >> 20) + " MiB, CUDA0 free " +
                   (info == cudaSuccess ? std::to_string(free_bytes >> 20) + " MiB" : "unknown");
             return false;
         }
@@ -194,25 +253,47 @@ bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, Session
         // Loader fix (0.1.15+loaderfix.2): each 64 MiB read below reached the disk as ~16k 4095-byte reads under
         // MSVC's `basic_filebuf::xsgetn`, which is what made 675 MiB of drafter experts take minutes.
         FILE* f = std::fopen((rt_dir + "/experts.bin").c_str(), "rb");
-        if (f == nullptr) { err = "mtp: cannot open experts.bin"; return false; }
+        if (f == nullptr) {
+            err = "mtp: cannot open experts.bin";
+            return false;
+        }
         struct Closer {
             FILE* f;
-            ~Closer() { if (f != nullptr) std::fclose(f); }
+            ~Closer() {
+                if (f != nullptr)
+                    std::fclose(f);
+            }
         } closer{f};
-        if (cudaMalloc((void**) &experts_, bytes) != cudaSuccess) { err = "mtp: the 512 experts do not fit in VRAM"; return false; }
+        if (cudaMalloc((void**) &experts_, bytes) != cudaSuccess) {
+            err = "mtp: the 512 experts do not fit in VRAM";
+            return false;
+        }
         std::vector<uint8_t> chunk(64u << 20);
         for (uint64_t off = 0; off < bytes;) {
             const uint64_t n = std::min<uint64_t>(chunk.size(), bytes - off);
-            if (std::fread(chunk.data(), 1, (size_t) n, f) != (size_t) n) { err = "mtp: experts.bin is truncated"; return false; }
+            if (std::fread(chunk.data(), 1, (size_t) n, f) != (size_t) n) {
+                err = "mtp: experts.bin is truncated";
+                return false;
+            }
             cudaMemcpy(experts_ + off, chunk.data(), n, cudaMemcpyHostToDevice);
             off += n;
         }
         vram_ += bytes;
     }
-    const char* required[] = {"fc_embedding.weight", "fc_hidden.weight", "self_attn.q_proj.weight", "self_attn.k_proj.weight",
-                              "self_attn.v_proj.weight", "self_attn.o_proj.weight", "mlp.shared_expert.gate_proj.weight",
-                              "mlp.shared_expert.up_proj.weight", "mlp.shared_expert.down_proj.weight"};
-    for (const char* n : required) if (!q8(n)) { err = std::string("mtp: ") + n + " is missing (q8_0)"; return false; }
+    const char* required[] = {"fc_embedding.weight",
+                              "fc_hidden.weight",
+                              "self_attn.q_proj.weight",
+                              "self_attn.k_proj.weight",
+                              "self_attn.v_proj.weight",
+                              "self_attn.o_proj.weight",
+                              "mlp.shared_expert.gate_proj.weight",
+                              "mlp.shared_expert.up_proj.weight",
+                              "mlp.shared_expert.down_proj.weight"};
+    for (const char* n : required)
+        if (!q8(n)) {
+            err = std::string("mtp: ") + n + " is missing (q8_0)";
+            return false;
+        }
 
     // ---- the layer's own K/V (dense attention: no indexer state is read)
     const guild::kernels::QsaShapes s = shapes_of(g);
@@ -223,31 +304,48 @@ bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, Session
     int64_t ring = (window > 0 && window < max_cells) ? window + 4 * (int64_t) max_t + 64 : 0;
     // Dense draft attention has no sparse block resolver. An unbounded draft window must therefore use its
     // own resident pool, never borrow the main model's transient sparse-attention staging buffer.
-    if (ring == 0 && qsa_kv_host_only()) ring = -1;
+    if (ring == 0 && qsa_kv_host_only())
+        ring = -1;
     // K8V4 never applies to the drafter: its own attention paths (below, and verify.cpp) handle whole formats
     // only, whatever ring shape it takes (0, a window, or the -1 fully-resident fallback).
     const bool kv_hybrid_was = qsa_kv_hybrid();
     const bool kv_int8_was = qsa_kv_int8();
     struct RestoreKvFormat {
         bool hybrid, int8;
-        ~RestoreKvFormat() { qsa_set_kv_int8(int8); qsa_set_kv_hybrid(hybrid); }
+        ~RestoreKvFormat() {
+            qsa_set_kv_int8(int8);
+            qsa_set_kv_hybrid(hybrid);
+        }
     } restore_format{kv_hybrid_was, kv_int8_was}; // includes an optional drafter's allocation-failure paths
     qsa_set_kv_hybrid(false);
-    if (kv_hybrid_was) qsa_set_kv_int8(true);   // the drafter under --kv k8v4: plain INT8
+    if (kv_hybrid_was)
+        qsa_set_kv_int8(true); // the drafter under --kv k8v4: plain INT8
     uint64_t sb = qsa_state_bytes(g, max_cells, false, ring);
-    if (cudaMalloc(&state_arena_, sb) != cudaSuccess) { err = "mtp: the K/V state does not fit"; return false; }
+    if (cudaMalloc(&state_arena_, sb) != cudaSuccess) {
+        err = "mtp: the K/V state does not fit";
+        return false;
+    }
     if (qsa_state_init(g, max_cells, state_arena_, st_, &ss.qsa_states[ss.qsa_primary()], ring) == 0) {
-        if (st_.kv_mode == 0) { err = "mtp: state init failed"; return false; }
+        if (st_.kv_mode == 0) {
+            err = "mtp: state init failed";
+            return false;
+        }
         std::fprintf(stderr, "guild mtp: no pinned RAM left for the draft layer's K/V copy; keeping it in VRAM\n");
         cudaGetLastError();
         cudaFree(state_arena_);
         state_arena_ = nullptr;
         qsa_state_release_host(st_);
         st_ = QsaState{};
-        ring = -1;   // fully resident
+        ring = -1; // fully resident
         sb = qsa_state_bytes(g, max_cells, false, ring);
-        if (cudaMalloc(&state_arena_, sb) != cudaSuccess) { err = "mtp: the K/V state does not fit"; return false; }
-        if (qsa_state_init(g, max_cells, state_arena_, st_, &ss.qsa_states[ss.qsa_primary()], ring) == 0) { err = "mtp: state init failed"; return false; }
+        if (cudaMalloc(&state_arena_, sb) != cudaSuccess) {
+            err = "mtp: the K/V state does not fit";
+            return false;
+        }
+        if (qsa_state_init(g, max_cells, state_arena_, st_, &ss.qsa_states[ss.qsa_primary()], ring) == 0) {
+            err = "mtp: state init failed";
+            return false;
+        }
     }
     qsa_set_kv_int8(kv_int8_was);
     qsa_set_kv_hybrid(kv_hybrid_was);
@@ -261,36 +359,62 @@ bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, Session
     attn_scratch_floats_ = (int64_t) guild::kernels::qsa_decode_attn_scratch_floats(cap_, s);
     const uint64_t T = (uint64_t) max_t, N = (uint64_t) g.n_embd, HC = (uint64_t) g.hc, K = (uint64_t) ss.k;
     const uint64_t NH = (uint64_t) g.n_head, HD = (uint64_t) g.head_dim, NKV = (uint64_t) g.n_head_kv;
-    const uint64_t R2 = 2 * T;   // step/pos rows: T catch-up rows + up to T-2 chain steps
+    const uint64_t R2 = 2 * T; // step/pos rows: T catch-up rows + up to T-2 chain steps
     bool ok = mapped(T * 4 + 64, (void**) &h_tok_, (void**) &m_tok_) &&
               mapped(R2 * 4 * 4 + 64, (void**) &h_step_, (void**) &m_step_) &&
               mapped(R2 * NH * 4 + 64, (void**) &h_pos_, (void**) &m_pos_) &&
               mapped(64, (void**) &h_row_, (void**) &m_row_) &&
               mapped(T * 4 + 64, (void**) &h_out_, (void**) &m_out_) &&
               mapped(T * 4 + 64, (void**) &h_prob_, (void**) &m_prob_);
-    if (!ok) { err = "mtp: mapped staging failed"; return false; }
+    if (!ok) {
+        err = "mtp: mapped staging failed";
+        return false;
+    }
     auto carve = [&](Bump& b) {
-        tok_ = b.take<int32_t>(T); step_ = b.take<int32_t>(R2 * 4); pos_ = b.take<int32_t>(R2 * NH); row_ = b.take<int32_t>(4);
+        tok_ = b.take<int32_t>(T);
+        step_ = b.take<int32_t>(R2 * 4);
+        pos_ = b.take<int32_t>(R2 * NH);
+        row_ = b.take<int32_t>(4);
         ident_ = b.take<int32_t>(T * (uint64_t) cap_);
-        Rin_ = b.take<float>(T * HC * N); R_ = b.take<float>(T * HC * N);
-        emb_ = b.take<float>(T * N); en_ = b.take<float>(T * N); e2_ = b.take<float>(T * N);
-        hn_ = b.take<float>(T * HC * N); h2_ = b.take<float>(T * HC * N);
-        mixed_ = b.take<float>(T * N); inj_ = b.take<float>(T * HC); inj2_ = b.take<float>(T * HC);
-        lo_ = b.take<float>(T * (uint64_t) g.hc_lr); rs_ = b.take<float>(T * HC); bo_ = b.take<float>(T * N);
+        Rin_ = b.take<float>(T * HC * N);
+        R_ = b.take<float>(T * HC * N);
+        emb_ = b.take<float>(T * N);
+        en_ = b.take<float>(T * N);
+        e2_ = b.take<float>(T * N);
+        hn_ = b.take<float>(T * HC * N);
+        h2_ = b.take<float>(T * HC * N);
+        mixed_ = b.take<float>(T * N);
+        inj_ = b.take<float>(T * HC);
+        inj2_ = b.take<float>(T * HC);
+        lo_ = b.take<float>(T * (uint64_t) g.hc_lr);
+        rs_ = b.take<float>(T * HC);
+        bo_ = b.take<float>(T * N);
         xn_ = b.take<float>(T * HC * N);
         xq_ = b.take<uint8_t>(guild::kernels::native_q8_1_bytes((int) (NH * HD), 8));
-        qfull_ = b.take<float>(T * NH * 2 * HD); qcur_ = b.take<float>(T * NH * HD);
-        kcur_ = b.take<float>(T * NKV * HD); vcur_ = b.take<float>(T * NKV * HD);
-        attn_ = b.take<float>(T * NH * HD); attn32_ = b.take<float>(T * NH * HD);
-        attn_scratch_ = b.take<float>((uint64_t) attn_scratch_floats_);   // the full layer runs one row at a time
-        logits_ = b.take<float>(T * (uint64_t) g.n_expert); w_ = b.take<float>(T * K); ids_ = b.take<int32_t>(T * K);
-        shared_ = b.take<float>(T * N); parts_ = b.take<float>(T * K * N); y_ = b.take<float>(T * N);
+        qfull_ = b.take<float>(T * NH * 2 * HD);
+        qcur_ = b.take<float>(T * NH * HD);
+        kcur_ = b.take<float>(T * NKV * HD);
+        vcur_ = b.take<float>(T * NKV * HD);
+        attn_ = b.take<float>(T * NH * HD);
+        attn32_ = b.take<float>(T * NH * HD);
+        attn_scratch_ = b.take<float>((uint64_t) attn_scratch_floats_); // the full layer runs one row at a time
+        logits_ = b.take<float>(T * (uint64_t) g.n_expert);
+        w_ = b.take<float>(T * K);
+        ids_ = b.take<int32_t>(T * K);
+        shared_ = b.take<float>(T * N);
+        parts_ = b.take<float>(T * K * N);
+        y_ = b.take<float>(T * N);
         sample_ = b.take<float>(T * N);
-        hit_slot_ = b.take<int32_t>(T * K); hit_dst_ = b.take<int32_t>(T * K); hit_count_ = b.take<int32_t>(4);
-        grp_ptr_ = b.take<unsigned long long>(T * K); grp_start_ = b.take<int32_t>(T * K + 1);
+        hit_slot_ = b.take<int32_t>(T * K);
+        hit_dst_ = b.take<int32_t>(T * K);
+        hit_count_ = b.take<int32_t>(4);
+        grp_ptr_ = b.take<unsigned long long>(T * K);
+        grp_start_ = b.take<int32_t>(T * K + 1);
         grp_counts_ = b.take<int32_t>(4);
-        hit_xq_ = b.take<uint8_t>(T * (N / 32) * 34); hit_xs_ = b.take<float>(T * (N / 32));
-        hit_scratch_ = b.take<uint8_t>(guild::kernels::moe_hit_grouped_scratch_bytes((int64_t) (T * K), g.n_embd, g.n_ff));
+        hit_xq_ = b.take<uint8_t>(T * (N / 32) * 34);
+        hit_xs_ = b.take<float>(T * (N / 32));
+        hit_scratch_ =
+            b.take<uint8_t>(guild::kernels::moe_hit_grouped_scratch_bytes((int64_t) (T * K), g.n_embd, g.n_ff));
         sh_scratch_ = (float*) b.take<uint8_t>(guild::kernels::shared_expert_scratch_bytes(g.n_ff));
         x_bf16_ = b.take<uint16_t>(N);
         out_ids_ = b.take<int32_t>(T + 4);
@@ -299,7 +423,10 @@ bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, Session
     };
     Bump count;
     carve(count);
-    if (cudaMalloc(&arena_, count.used) != cudaSuccess) { err = "mtp: buffers do not fit"; return false; }
+    if (cudaMalloc(&arena_, count.used) != cudaSuccess) {
+        err = "mtp: buffers do not fit";
+        return false;
+    }
     cudaMemset(arena_, 0, count.used);
     Bump real;
     real.base = (uint8_t*) arena_;
@@ -308,16 +435,23 @@ bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, Session
     {
         std::vector<int32_t> id((size_t) (T * (uint64_t) cap_));
         for (uint64_t t = 0; t < T; ++t)
-            for (int64_t i = 0; i < cap_; ++i) id[(size_t) (t * (uint64_t) cap_ + (uint64_t) i)] = (int32_t) i;
+            for (int64_t i = 0; i < cap_; ++i)
+                id[(size_t) (t * (uint64_t) cap_ + (uint64_t) i)] = (int32_t) i;
         cudaMemcpy(ident_, id.data(), id.size() * 4, cudaMemcpyHostToDevice);
     }
-    if (cudaStreamCreateWithFlags(&cs_, cudaStreamNonBlocking) != cudaSuccess) { err = "mtp: stream"; return false; }
+    if (cudaStreamCreateWithFlags(&cs_, cudaStreamNonBlocking) != cudaSuccess) {
+        err = "mtp: stream";
+        return false;
+    }
     const double files_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t_files).count();
-    std::fprintf(stderr, "guild mtp: draft layer loaded, %.0f MiB of VRAM (experts %.0f, dense %.0f), files read in %.2f s (%.0f MiB/s)\n",
+    std::fprintf(stderr,
+                 "guild mtp: draft layer loaded, %.0f MiB of VRAM (experts %.0f, dense %.0f), files read in %.2f s "
+                 "(%.0f MiB/s)\n",
                  (double) vram_ / 1048576.0, (double) g.n_expert * guild::kernels::cpu::BLOB / 1048576.0,
                  (double) tensors_.back().off / 1048576.0, files_s,
                  files_s > 0 ? ((double) g.n_expert * guild::kernels::cpu::BLOB + (double) tensors_.back().off) /
-                                   1048576.0 / files_s : 0.0);
+                                   1048576.0 / files_s
+                             : 0.0);
     return true;
 }
 
@@ -328,7 +462,8 @@ uint64_t MtpDrafter::bind_bytes(uint64_t head_row_bytes, int64_t n_vocab) const 
             std::fseek(f, 0, SEEK_END);
             const long size = std::ftell(f);
             std::fclose(f);
-            if (size >= 4 && size % 4 == 0) bytes += (uint64_t) (size / 4) * head_row_bytes + (uint64_t) size;
+            if (size >= 4 && size % 4 == 0)
+                bytes += (uint64_t) (size / 4) * head_row_bytes + (uint64_t) size;
         }
     }
     // coupled draft sampling (GUILD_SPEC_COUPLED=1 only): an upper bound - the id -> subset map, the penalty ring,
@@ -342,8 +477,10 @@ bool MtpDrafter::setup_coupled(std::string& err) {
     const int64_t nv = dhead_ != nullptr ? n_dvocab_ : n_vocab_;
     const size_t scratch = guild::kernels::coupled_draft_scratch_bytes((int) nv);
     if (scratch == 0) {
-        std::fprintf(stderr, "guild mtp: GUILD_SPEC_COUPLED: %lld draft logits are too wide for the coupled sampler; "
-                             "argmax drafts\n", (long long) nv);
+        std::fprintf(stderr,
+                     "guild mtp: GUILD_SPEC_COUPLED: %lld draft logits are too wide for the coupled sampler; "
+                     "argmax drafts\n",
+                     (long long) nv);
         return true;
     }
     const size_t ring = (size_t) (kCoupledHistCap + max_t_) * sizeof(int32_t);
@@ -354,14 +491,15 @@ bool MtpDrafter::setup_coupled(std::string& err) {
         err = "mtp: the coupled draft sampler's buffers do not fit";
         return false;
     }
-    cudaMemset(cring_, 0xff, ring);   // -1: no token
+    cudaMemset(cring_, 0xff, ring); // -1: no token
     std::fill(h_chist_, h_chist_ + kCoupledHistCap, -1);
     vram_ += sizeof(guild::kernels::SamplerParams) + ring + scratch;
-    if (dhead_ != nullptr) {   // token id -> subset index (-1: not in the draft head), for the penalties
+    if (dhead_ != nullptr) { // token id -> subset index (-1: not in the draft head), for the penalties
         std::vector<int32_t> sub((size_t) n_dvocab_), inv((size_t) n_vocab_, -1);
         cudaMemcpy(sub.data(), dvocab_, sub.size() * sizeof(int32_t), cudaMemcpyDeviceToHost);
         for (size_t i = 0; i < sub.size(); ++i)
-            if (sub[i] >= 0 && sub[i] < n_vocab_ && inv[(size_t) sub[i]] < 0) inv[(size_t) sub[i]] = (int32_t) i;
+            if (sub[i] >= 0 && sub[i] < n_vocab_ && inv[(size_t) sub[i]] < 0)
+                inv[(size_t) sub[i]] = (int32_t) i;
         if (cudaMalloc((void**) &dinv_, inv.size() * sizeof(int32_t)) != cudaSuccess) {
             err = "mtp: the coupled draft sampler's token map does not fit";
             return false;
@@ -374,20 +512,24 @@ bool MtpDrafter::setup_coupled(std::string& err) {
         return false;
     }
     coupled_ok_ = true;
-    std::fprintf(stderr, "guild mtp: coupled draft sampling on (GUILD_SPEC_COUPLED): sampled requests draft with the "
-                         "target's chain and Philox draw over %lld tokens\n", (long long) nv);
+    std::fprintf(stderr,
+                 "guild mtp: coupled draft sampling on (GUILD_SPEC_COUPLED): sampled requests draft with the "
+                 "target's chain and Philox draw over %lld tokens\n",
+                 (long long) nv);
     return true;
 }
 
 void MtpDrafter::set_draft_sampling(const guild::kernels::SamplerParams& sp) {
     coupled_active_ = coupled_ok_ && !sp.greedy && sp.temperature > 0.0f;
-    if (!coupled_active_) return;
-    *h_cparams_ = sp;   // read by the next round graph (after the previous one has synced)
+    if (!coupled_active_)
+        return;
+    *h_cparams_ = sp; // read by the next round graph (after the previous one has synced)
     std::fill(h_chist_, h_chist_ + kCoupledHistCap, -1);
 }
 
 void MtpDrafter::set_draft_history(const int32_t* tail, int64_t n_tail, int32_t next) {
-    if (!coupled_active_) return;
+    if (!coupled_active_)
+        return;
     const int h = coupled_hist_len(h_cparams_->penalty_last_n, kCoupledHistCap);
     coupled_hist_base(tail, n_tail, next, h, h_chist_ + (kCoupledHistCap - h));
 }
@@ -406,9 +548,13 @@ void draft_head_hint(int64_t n_tokens, int64_t row_bytes) {
         std::snprintf(b, sizeof(b), " and %.0f MiB is free", (double) free_b / 1048576.0);
         free_s = b;
     }
-    std::fprintf(stderr, "guild mtp: the draft head over %lld tokens needs %.0f MiB of VRAM%s.\n",
-                 (long long) n_tokens, mib(n_tokens), free_s.c_str());
-    struct Subset { const char* name; int64_t tokens; const char* what; };
+    std::fprintf(stderr, "guild mtp: the draft head over %lld tokens needs %.0f MiB of VRAM%s.\n", (long long) n_tokens,
+                 mib(n_tokens), free_s.c_str());
+    struct Subset {
+        const char* name;
+        int64_t tokens;
+        const char* what;
+    };
     static const Subset smaller[] = {{"cyrillic", 58963, "English, code and the Cyrillic script"},
                                      {"en", 40525, "English and code"}};
     std::string opts;
@@ -420,16 +566,17 @@ void draft_head_hint(int64_t n_tokens, int64_t row_bytes) {
             opts += b;
         }
     if (!opts.empty())
-        std::fprintf(stderr, "guild mtp: hint: a smaller draft vocabulary needs less VRAM: %s. Start once with it - "
-                             "START-HERE.bat --draft-vocab en (Windows) or ./setup.sh --draft-vocab en - and the model "
-                             "keeps it (\"draft_vocab\" in its guild-*.json config); or a smaller --context in "
-                             "setup.\n",
+        std::fprintf(stderr,
+                     "guild mtp: hint: a smaller draft vocabulary needs less VRAM: %s. Start once with it - "
+                     "START-HERE.bat --draft-vocab en (Windows) or ./setup.sh --draft-vocab en - and the model "
+                     "keeps it (\"draft_vocab\" in its guild-*.json config); or a smaller --context in "
+                     "setup.\n",
                      opts.c_str());
     else
         std::fprintf(stderr, "guild mtp: hint: this is already the smallest shipped draft vocabulary: a smaller "
                              "--context (or closing what else uses the GPU) leaves it room.\n");
 }
-}  // namespace
+} // namespace
 
 bool MtpDrafter::bind(const WeightTable& wt, const NativeHead* head, const float* window_R, std::string& err) {
     const OnDevice on_device(device_);
@@ -437,9 +584,15 @@ bool MtpDrafter::bind(const WeightTable& wt, const NativeHead* head, const float
     head_ = head;
     window_R_ = window_R;
     const WeightRef* wo = wt.find("output.weight");
-    if (!wo) { err = "mtp: output.weight is missing"; return false; }
+    if (!wo) {
+        err = "mtp: output.weight is missing";
+        return false;
+    }
     n_vocab_ = wo->ne1;
-    if (head == nullptr || !head->loaded()) { err = "mtp: the draft layer needs the native head (--native)"; return false; }
+    if (head == nullptr || !head->loaded()) {
+        err = "mtp: the draft layer needs the native head (--native)";
+        return false;
+    }
     if (head_logits_ == nullptr &&
         cudaMalloc((void**) &head_logits_, (size_t) max_t_ * (size_t) n_vocab_ * sizeof(float)) != cudaSuccess) {
         err = "mtp: the draft logits do not fit";
@@ -450,7 +603,7 @@ bool MtpDrafter::bind(const WeightTable& wt, const NativeHead* head, const float
         std::vector<uint8_t> raw;
         if (read_file(rt_dir_ + "/draft_vocab.bin", raw) && raw.size() >= 4 && raw.size() % 4 == 0) {
             n_dvocab_ = (int64_t) (raw.size() / 4);
-            const int64_t row_bytes = (int64_t) head->row_bytes();   // a vocabulary row of the native head
+            const int64_t row_bytes = (int64_t) head->row_bytes(); // a vocabulary row of the native head
             if (cudaMalloc((void**) &dvocab_, raw.size()) != cudaSuccess ||
                 cudaMalloc((void**) &dhead_, (size_t) (n_dvocab_ * row_bytes)) != cudaSuccess) {
                 err = "mtp: the draft head does not fit";
@@ -458,14 +611,16 @@ bool MtpDrafter::bind(const WeightTable& wt, const NativeHead* head, const float
                 return false;
             }
             cudaMemcpy(dvocab_, raw.data(), raw.size(), cudaMemcpyHostToDevice);
-            guild::kernels::gather_rows((const uint8_t*) head->weights(), row_bytes, dvocab_, n_dvocab_, dhead_, nullptr);
+            guild::kernels::gather_rows((const uint8_t*) head->weights(), row_bytes, dvocab_, n_dvocab_, dhead_,
+                                        nullptr);
             cudaDeviceSynchronize();
             vram_ += (uint64_t) (n_dvocab_ * row_bytes) + raw.size();
             std::fprintf(stderr, "guild mtp: draft head over %lld tokens (%.1f MiB)\n", (long long) n_dvocab_,
                          (double) (n_dvocab_ * row_bytes) / 1048576.0);
         }
     }
-    if (coupled_draft_env() && cparams_ == nullptr && !setup_coupled(err)) return false;
+    if (coupled_draft_env() && cparams_ == nullptr && !setup_coupled(err))
+        return false;
     return true;
 }
 
@@ -477,7 +632,10 @@ bool MtpDrafter::record_forward(int T, int step_row0, cudaStream_t cs, std::stri
     // step_row0 >= 0: the full layer on step rows [step_row0, +T); step_row0 < 0: K/V only on rows [-1 - step_row0, +T)
     const bool full = step_row0 >= 0;
     const int row0 = full ? step_row0 : -1 - step_row0;
-    if (full && T != 1) { err = "mtp: the full layer runs one row at a time (its attention scratch is sized for one)"; return false; }
+    if (full && T != 1) {
+        err = "mtp: the full layer runs one row at a time (its attention scratch is sized for one)";
+        return false;
+    }
     const int64_t N = g.n_embd, HC = g.hc, K = ss.k, NH = g.n_head, HD = g.head_dim, NKV = g.n_head_kv;
     const QsaShapes s = shapes_of(g);
     const GrShapes gs{g.n_embd, g.hc, g.hc_lr};
@@ -486,15 +644,20 @@ bool MtpDrafter::record_forward(int T, int step_row0, cudaStream_t cs, std::stri
     try {
         // ---- the two input branches
         const WeightRef* we = wt_->find("token_embd.weight");
-        if (!we) { err = "mtp: token_embd.weight is missing"; return false; }
-        if (const NativeEmbed* ne = native_embed()) {   // plan v0.3 P6: the GGUF-form table
+        if (!we) {
+            err = "mtp: token_embd.weight is missing";
+            return false;
+        }
+        if (const NativeEmbed* ne = native_embed()) { // plan v0.3 P6: the GGUF-form table
             ne->gather_dev(tok_, T, emb_, cs);
         } else {
             const auto* codes = (const uint8_t*) we->data;
             const auto* scales = (const float*) (codes + we->codes_bytes);
-            const auto* offsets = we->has_offset ? (const float*) (codes + we->codes_bytes + we->scales_bytes) : nullptr;
-            embedding_gather_dev(codes, scales, offsets, tok_, T, we->ne0, we->code_bits, we->code_bias, we->group_elems,
-                                 (uint64_t) (we->ne0 / (8 / we->code_bits)), (uint64_t) (we->ne0 / we->group_elems), emb_, cs);
+            const auto* offsets =
+                we->has_offset ? (const float*) (codes + we->codes_bytes + we->scales_bytes) : nullptr;
+            embedding_gather_dev(codes, scales, offsets, tok_, T, we->ne0, we->code_bits, we->code_bias,
+                                 we->group_elems, (uint64_t) (we->ne0 / (8 / we->code_bits)),
+                                 (uint64_t) (we->ne0 / we->group_elems), emb_, cs);
         }
         native_qsa_rms_norm_weighted(emb_, f32("pre_fc_norm_embedding.weight"), en_, (int) N, T, EPS, cs);
         native_quantize_q8_1(en_, xq_, (int) N, T, cs);
@@ -510,28 +673,35 @@ bool MtpDrafter::record_forward(int T, int step_row0, cudaStream_t cs, std::stri
         {
             FusedGrArgs fa[kFusedGrMaxT];
             for (int t = 0; t < T; ++t) {
-                fa[t].R = R_ + (size_t) t * HC * N; fa[t].R_out = R_ + (size_t) t * HC * N; fa[t].apply = false;
+                fa[t].R = R_ + (size_t) t * HC * N;
+                fa[t].R_out = R_ + (size_t) t * HC * N;
+                fa[t].apply = false;
                 fa[t].w_norm = f32("attn_hyper_connection.hc_norm.weight");
                 fa[t].w_down = bf16("attn_hyper_connection.input_mix_weight_down.weight");
                 fa[t].w_up = bf16("attn_hyper_connection.input_mix_weight_up.weight");
                 fa[t].w_inject = bf16("attn_hyper_connection.block_inject_weight.weight");
-                fa[t].eps = EPS; fa[t].lo = lo_ + t * g.hc_lr; fa[t].rs = rs_ + t * HC;
-                fa[t].inject_out = inj_ + t * HC; fa[t].mixed = mixed_ + t * N;
+                fa[t].eps = EPS;
+                fa[t].lo = lo_ + t * g.hc_lr;
+                fa[t].rs = rs_ + t * HC;
+                fa[t].inject_out = inj_ + t * HC;
+                fa[t].mixed = mixed_ + t * N;
             }
             fused_gr_read_multi(fa, T, xn_, cs);
         }
         // ---- attention: K/V into the layer's own cache, then (full) dense attention over every cell
         auto norm_rope = [&](float* data, const float* gamma, int rows, int cols, const int32_t* p) {
             native_qsa_rms_norm_weighted(data, gamma, data, cols, rows, EPS, cs);
-            if (native_rope_enabled()) native_rope_apply(data, data, rows, cols, (int) s.n_rot, rope_scaling(), p, cs);
-            else rope_neox_apply(data, data, rows, cols, (int) s.n_rot, st_.cos_tab, st_.sin_tab, p, cs);
+            if (native_rope_enabled())
+                native_rope_apply(data, data, rows, cols, (int) s.n_rot, rope_scaling(), p, cs);
+            else
+                rope_neox_apply(data, data, rows, cols, (int) s.n_rot, st_.cos_tab, st_.sin_tab, p, cs);
         };
         native_quantize_q8_1(mixed_, xq_, (int) N, T, cs);
         native_mmvq(GGML_Q8_0, q8("self_attn.k_proj.weight"), xq_, kcur_, (int) N, (int) (NKV * HD), T, cs);
         native_mmvq(GGML_Q8_0, q8("self_attn.v_proj.weight"), xq_, vcur_, (int) N, (int) (NKV * HD), T, cs);
         for (int t = 0; t < T; ++t) {
             norm_rope(kcur_ + t * NKV * HD, f32("self_attn.k_norm.weight"), (int) NKV, (int) HD, pos + t * NH);
-            if (st_.kv_rot) {   // rotated K and V (kv_q4.hpp): Q4_0, and INT8 with GUILD_KV_ROT=1
+            if (st_.kv_rot) { // rotated K and V (kv_q4.hpp): Q4_0, and INT8 with GUILD_KV_ROT=1
                 fwht256_inplace_cuda(kcur_ + t * NKV * HD, NKV, cs);
                 fwht256_inplace_cuda(vcur_ + t * NKV * HD, NKV, cs);
             }
@@ -546,7 +716,8 @@ bool MtpDrafter::record_forward(int T, int step_row0, cudaStream_t cs, std::stri
                 kv_append_step(st_.k_pool, st_.v_pool, st_.page_table, step + t * 4, kcur_ + t * NKV * HD,
                                vcur_ + t * NKV * HD, s, cs, &st_.host);
         }
-        if (!full) return true;
+        if (!full)
+            return true;
         native_mmvq(GGML_Q8_0, q8("self_attn.q_proj.weight"), xq_, qfull_, (int) N, (int) (NH * 2 * HD), T, cs);
         for (int t = 0; t < T; ++t) {
             float* qc = qcur_ + t * NH * HD;
@@ -556,46 +727,62 @@ bool MtpDrafter::record_forward(int T, int step_row0, cudaStream_t cs, std::stri
                 return false;
             }
             norm_rope(qc, f32("self_attn.q_norm.weight"), (int) NH, (int) HD, pos + t * NH);
-            if (st_.kv_rot) fwht256_inplace_cuda(qc, NH, cs);
+            if (st_.kv_rot)
+                fwht256_inplace_cuda(qc, NH, cs);
         }
         const QsaAttnPools pools = qsa_attn_pools(st_);
-        if (window_ > 0) window_ids(const_cast<int32_t*>(step), T, (int) window_, ident_, cap_, cs);
+        if (window_ > 0)
+            window_ids(const_cast<int32_t*>(step), T, (int) window_, ident_, cap_, cs);
         qsa_decode_attn_batch(qcur_, pools, ident_, step, cap_, s, attn_scratch_, attn_, T, cs);
-        if (st_.kv_rot) fwht256_inplace_cuda(attn_, (int64_t) T * NH, cs);
+        if (st_.kv_rot)
+            fwht256_inplace_cuda(attn_, (int64_t) T * NH, cs);
         for (int t = 0; t < T; ++t)
-            native_qsa_gate_apply(attn_ + t * NH * HD, qfull_ + t * NH * 2 * HD, attn32_ + t * NH * HD, (int) NH, (int) HD, cs);
+            native_qsa_gate_apply(attn_ + t * NH * HD, qfull_ + t * NH * 2 * HD, attn32_ + t * NH * HD, (int) NH,
+                                  (int) HD, cs);
         native_quantize_q8_1(attn32_, xq_, (int) (NH * HD), T, cs);
         native_mmvq(GGML_Q8_0, q8("self_attn.o_proj.weight"), xq_, bo_, (int) (NH * HD), (int) N, T, cs);
         // ---- the MLP hyper-connection (the attention write folded in)
         {
             FusedGrArgs fa[kFusedGrMaxT];
             for (int t = 0; t < T; ++t) {
-                fa[t].R = R_ + (size_t) t * HC * N; fa[t].R_out = R_ + (size_t) t * HC * N; fa[t].apply = true;
-                fa[t].bo_prev = bo_ + t * N; fa[t].inj_prev = inj_ + t * HC;
+                fa[t].R = R_ + (size_t) t * HC * N;
+                fa[t].R_out = R_ + (size_t) t * HC * N;
+                fa[t].apply = true;
+                fa[t].bo_prev = bo_ + t * N;
+                fa[t].inj_prev = inj_ + t * HC;
                 fa[t].w_norm = f32("mlp_hyper_connection.hc_norm.weight");
                 fa[t].w_down = bf16("mlp_hyper_connection.input_mix_weight_down.weight");
                 fa[t].w_up = bf16("mlp_hyper_connection.input_mix_weight_up.weight");
                 fa[t].w_inject = bf16("mlp_hyper_connection.block_inject_weight.weight");
-                fa[t].eps = EPS; fa[t].lo = lo_ + t * g.hc_lr; fa[t].rs = rs_ + t * HC;
-                fa[t].inject_out = inj2_ + t * HC; fa[t].mixed = mixed_ + t * N;
+                fa[t].eps = EPS;
+                fa[t].lo = lo_ + t * g.hc_lr;
+                fa[t].rs = rs_ + t * HC;
+                fa[t].inject_out = inj2_ + t * HC;
+                fa[t].mixed = mixed_ + t * N;
             }
             fused_gr_read_multi(fa, T, xn_, cs);
         }
         // ---- MoE: router, the 512 resident experts, the shared expert, the combine, the write
         for (int t = 0; t < T; ++t) {
-            bf16_gemv_fp32_mmvf(mixed_ + t * N, bf16("mlp.gate.weight"), logits_ + t * g.n_expert, (int) N, (int) g.n_expert, cs);
-            if (native_router_enabled()) native_router_top10(logits_ + t * g.n_expert, ids_ + t * K, w_ + t * K, cs);
-            else router_top10(logits_ + t * g.n_expert, 1, (int) g.n_expert, (int) K, ids_ + t * K, w_ + t * K, cs);
+            bf16_gemv_fp32_mmvf(mixed_ + t * N, bf16("mlp.gate.weight"), logits_ + t * g.n_expert, (int) N,
+                                (int) g.n_expert, cs);
+            if (native_router_enabled())
+                native_router_top10(logits_ + t * g.n_expert, ids_ + t * K, w_ + t * K, cs);
+            else
+                router_top10(logits_ + t * g.n_expert, 1, (int) g.n_expert, (int) K, ids_ + t * K, w_ + t * K, cs);
         }
         moe_group_resident(ids_, (int) (T * K), (int) K, experts_, (int64_t) guild::kernels::cpu::BLOB, grp_ptr_,
                            grp_start_, grp_counts_, hit_dst_, hit_slot_, cs);
         quantize_q8_0_scaled(mixed_, hit_xq_, hit_xs_, (int64_t) T * N, cs);
-        moe_grouped_s2(grp_ptr_, grp_start_, grp_counts_, hit_dst_, hit_slot_, (int64_t) T * K, (int64_t) T * K, hit_xq_,
-                       hit_xs_, hit_scratch_, parts_, cs);
+        moe_grouped_s2(grp_ptr_, grp_start_, grp_counts_, hit_dst_, hit_slot_, (int64_t) T * K, (int64_t) T * K,
+                       hit_xq_, hit_xs_, hit_scratch_, parts_, cs);
         NativeSharedWeights nsw;
-        nsw.gate_type = GGML_Q8_0; nsw.gate_data = q8("mlp.shared_expert.gate_proj.weight");
-        nsw.up_type = GGML_Q8_0; nsw.up_data = q8("mlp.shared_expert.up_proj.weight");
-        nsw.down_type = GGML_Q8_0; nsw.down_data = q8("mlp.shared_expert.down_proj.weight");
+        nsw.gate_type = GGML_Q8_0;
+        nsw.gate_data = q8("mlp.shared_expert.gate_proj.weight");
+        nsw.up_type = GGML_Q8_0;
+        nsw.up_data = q8("mlp.shared_expert.up_proj.weight");
+        nsw.down_type = GGML_Q8_0;
+        nsw.down_data = q8("mlp.shared_expert.down_proj.weight");
         nsw.q8_1 = xq_;
         const SForm none{};
         const bool need_bf16_x = !shared_expert_native_bf16_enabled();
@@ -604,10 +791,11 @@ bool MtpDrafter::record_forward(int T, int step_row0, cudaStream_t cs, std::stri
             return v != nullptr && std::atoi(v) != 0;
         }();
         for (int t = 0; t < T; ++t) {
-            if (need_bf16_x) f32_to_bf16_bulk(mixed_ + t * N, x_bf16_, N, cs);
-            shared_expert(nullptr, nullptr, x_bf16_, none, nullptr, nullptr, nullptr, none, nullptr, nullptr, nullptr, none,
-                          nullptr, nullptr, nullptr, bf16("mlp.shared_expert_gate.weight"), sh_scratch_, shared_ + t * N,
-                          N, g.n_ff, 32, cs, mixed_ + t * N, &nsw);
+            if (need_bf16_x)
+                f32_to_bf16_bulk(mixed_ + t * N, x_bf16_, N, cs);
+            shared_expert(nullptr, nullptr, x_bf16_, none, nullptr, nullptr, nullptr, none, nullptr, nullptr, nullptr,
+                          none, nullptr, nullptr, nullptr, bf16("mlp.shared_expert_gate.weight"), sh_scratch_,
+                          shared_ + t * N, N, g.n_ff, 32, cs, mixed_ + t * N, &nsw);
             if (native_moe_combine_enabled())
                 native_moe_combine(parts_ + (size_t) t * K * N, w_ + t * K, shared_ + t * N, y_ + t * N, N, K, cs);
             else
@@ -619,14 +807,20 @@ bool MtpDrafter::record_forward(int T, int step_row0, cudaStream_t cs, std::stri
         if (fuse_head_gr) {
             FusedGrArgs fa[kFusedGrMaxT];
             for (int t = 0; t < T; ++t) {
-                fa[t].R = R_ + (size_t) t * HC * N; fa[t].R_out = R_ + (size_t) t * HC * N; fa[t].apply = true;
-                fa[t].bo_prev = y_ + t * N; fa[t].inj_prev = inj2_ + t * HC;
+                fa[t].R = R_ + (size_t) t * HC * N;
+                fa[t].R_out = R_ + (size_t) t * HC * N;
+                fa[t].apply = true;
+                fa[t].bo_prev = y_ + t * N;
+                fa[t].inj_prev = inj2_ + t * HC;
                 fa[t].w_norm = f32("hyper_connection_mixer.hc_norm.weight");
                 fa[t].w_down = bf16("hyper_connection_mixer.input_mix_weight_down.weight");
                 fa[t].w_up = bf16("hyper_connection_mixer.input_mix_weight_up.weight");
                 fa[t].w_inject = nullptr;
-                fa[t].eps = EPS; fa[t].lo = lo_ + t * g.hc_lr; fa[t].rs = rs_ + t * HC;
-                fa[t].inject_out = dummy_inj_; fa[t].mixed = sample_ + t * N;
+                fa[t].eps = EPS;
+                fa[t].lo = lo_ + t * g.hc_lr;
+                fa[t].rs = rs_ + t * HC;
+                fa[t].inject_out = dummy_inj_;
+                fa[t].mixed = sample_ + t * N;
             }
             fused_gr_read_multi(fa, T, xn_, cs);
         } else {
@@ -652,7 +846,8 @@ bool MtpDrafter::record_forward(int T, int step_row0, cudaStream_t cs, std::stri
         sp.temperature = 0.0f;
         sample_tokens(head_logits_, T, (int) nv, nullptr, 0, sp, out_ids_, cs);
         row_top_prob(head_logits_, T, (int) nv, out_ids_, probs_, cs);
-        if (sub) map_ids(out_ids_, dvocab_, T, cs);
+        if (sub)
+            map_ids(out_ids_, dvocab_, T, cs);
     } catch (const std::exception& e) {
         err = std::string("mtp: ") + e.what();
         return false;
@@ -665,11 +860,13 @@ bool finish_capture(cudaStream_t cs, bool ok, cudaGraphExec_t& exec, const char*
     cudaGraph_t graph = nullptr;
     const cudaError_t ce = cudaStreamEndCapture(cs, &graph);
     if (!ok) {
-        if (graph) cudaGraphDestroy(graph);
+        if (graph)
+            cudaGraphDestroy(graph);
         return false;
     }
     if (ce != cudaSuccess || cudaGraphInstantiate(&exec, graph, 0) != cudaSuccess) {
-        if (graph) cudaGraphDestroy(graph);
+        if (graph)
+            cudaGraphDestroy(graph);
         err = std::string("mtp: ") + what + " capture: " + cudaGetErrorString(ce);
         return false;
     }
@@ -679,35 +876,48 @@ bool finish_capture(cudaStream_t cs, bool ok, cudaGraphExec_t& exec, const char*
     cudaStreamSynchronize(cs);
     return true;
 }
-}  // namespace
+} // namespace
 
 bool MtpDrafter::capture_prefill(int T, std::string& err) {
-    if (prefill_exec_[T]) return true;
+    if (prefill_exec_[T])
+        return true;
     using namespace guild::kernels;
-    if (cudaStreamBeginCapture(cs_, cudaStreamCaptureModeThreadLocal) != cudaSuccess) { err = "mtp: begin capture"; return false; }
+    if (cudaStreamBeginCapture(cs_, cudaStreamCaptureModeThreadLocal) != cudaSuccess) {
+        err = "mtp: begin capture";
+        return false;
+    }
     copy_i32_from_mapped(tok_, m_tok_, T, cs_);
     copy_i32_from_mapped(step_, m_step_, (int64_t) T * 4, cs_);
     copy_i32_from_mapped(pos_, m_pos_, (int64_t) T * g_->n_head, cs_);
-    const bool ok = record_forward(T, -1, cs_, err);   // K/V only, rows [0, T)
+    const bool ok = record_forward(T, -1, cs_, err); // K/V only, rows [0, T)
     return finish_capture(cs_, ok, prefill_exec_[T], "prefill", err);
 }
 
 bool MtpDrafter::capture_prefill_dev(int T, std::string& err) {
-    if (prefill_dev_exec_[T]) return true;
-    if (cudaStreamBeginCapture(cs_, cudaStreamCaptureModeThreadLocal) != cudaSuccess) { err = "mtp: begin capture"; return false; }
-    const bool ok = record_forward(T, -1, cs_, err);   // K/V only, rows [0, T); tok_/step_/pos_ filled before launch
+    if (prefill_dev_exec_[T])
+        return true;
+    if (cudaStreamBeginCapture(cs_, cudaStreamCaptureModeThreadLocal) != cudaSuccess) {
+        err = "mtp: begin capture";
+        return false;
+    }
+    const bool ok = record_forward(T, -1, cs_, err); // K/V only, rows [0, T); tok_/step_/pos_ filled before launch
     return finish_capture(cs_, ok, prefill_dev_exec_[T], "prefill (device inputs)", err);
 }
 
 bool MtpDrafter::capture_round(int T, bool coupled, std::string& err) {
     cudaGraphExec_t& exec = coupled ? round_exec_c_[T] : round_exec_[T];
-    if (exec) return true;
+    if (exec)
+        return true;
     using namespace guild::kernels;
     const int64_t HCN = g_->hc * g_->n_embd;
-    if (cudaStreamBeginCapture(cs_, cudaStreamCaptureModeThreadLocal) != cudaSuccess) { err = "mtp: begin capture"; return false; }
+    if (cudaStreamBeginCapture(cs_, cudaStreamCaptureModeThreadLocal) != cudaSuccess) {
+        err = "mtp: begin capture";
+        return false;
+    }
     bool ok = true;
     // coupled: the request's chain and the penalty history's base, for this round's drafts
-    if (coupled) coupled_draft_stage(m_cparams_, m_chist_, cparams_, cring_, kCoupledHistCap, cs_);
+    if (coupled)
+        coupled_draft_stage(m_cparams_, m_chist_, cparams_, cring_, kCoupledHistCap, cs_);
     copy_i32_from_mapped(tok_, m_tok_, T, cs_);
     copy_i32_from_mapped(step_, m_step_, (int64_t) 2 * T * 4, cs_);
     copy_i32_from_mapped(pos_, m_pos_, (int64_t) 2 * T * g_->n_head, cs_);
@@ -718,7 +928,8 @@ bool MtpDrafter::capture_round(int T, bool coupled, std::string& err) {
     // (`capture_step`) so the host can stop it when a draft is unlikely
     const int ra = 2 * max_t_ - 1;
     ok = record_forward(T, -1, cs_, err);
-    if (ok) mtp_select(Rin_, HCN, tok_, row_, Rin_, tok_, nullptr, 0, cs_);
+    if (ok)
+        mtp_select(Rin_, HCN, tok_, row_, Rin_, tok_, nullptr, 0, cs_);
     if (ok) {
         copy_i32_from_mapped(step_ + ra * 4, m_step_ + ra * 4, 4, cs_);
         copy_i32_from_mapped(pos_ + ra * g_->n_head, m_pos_ + ra * g_->n_head, g_->n_head, cs_);
@@ -727,7 +938,8 @@ bool MtpDrafter::capture_round(int T, bool coupled, std::string& err) {
         ok = record_forward(1, ra, cs_, err);
         coupled_rec_ = false;
     }
-    if (ok) mtp_select(R_, HCN, out_ids_, row_ + 1, Rin_, tok_, m_out_, 0, cs_, probs_, m_prob_);
+    if (ok)
+        mtp_select(R_, HCN, out_ids_, row_ + 1, Rin_, tok_, m_out_, 0, cs_, probs_, m_prob_);
     return finish_capture(cs_, ok, exec, coupled ? "round (coupled)" : "round", err);
 }
 
@@ -735,24 +947,30 @@ bool MtpDrafter::capture_round(int T, bool coupled, std::string& err) {
 // residual and token (left in Rin_[0] / tok_[0] by mtp_select); draft j and its probability to the mapped outputs.
 bool MtpDrafter::capture_step(int j, bool coupled, std::string& err) {
     cudaGraphExec_t& exec = coupled ? step_exec_c_[j] : step_exec_[j];
-    if (exec) return true;
+    if (exec)
+        return true;
     using namespace guild::kernels;
     const int64_t HCN = g_->hc * g_->n_embd;
     const int row = max_t_ + j - 1;
-    if (cudaStreamBeginCapture(cs_, cudaStreamCaptureModeThreadLocal) != cudaSuccess) { err = "mtp: begin capture"; return false; }
+    if (cudaStreamBeginCapture(cs_, cudaStreamCaptureModeThreadLocal) != cudaSuccess) {
+        err = "mtp: begin capture";
+        return false;
+    }
     copy_i32_from_mapped(step_ + row * 4, m_step_ + row * 4, 4, cs_);
     copy_i32_from_mapped(pos_ + row * g_->n_head, m_pos_ + row * g_->n_head, g_->n_head, cs_);
     coupled_rec_ = coupled;
     coupled_j_ = j;
     bool ok = record_forward(1, row, cs_, err);
     coupled_rec_ = false;
-    if (ok) mtp_select(R_, HCN, out_ids_, row_ + 1, Rin_, tok_, m_out_, j, cs_, probs_, m_prob_);
+    if (ok)
+        mtp_select(R_, HCN, out_ids_, row_ + 1, Rin_, tok_, m_out_, j, cs_, probs_, m_prob_);
     return finish_capture(cs_, ok, exec, coupled ? "step (coupled)" : "step", err);
 }
 
 void MtpDrafter::kv_restore(int64_t upto) {
     const OnDevice on_device(device_);
-    if (st_.kv_mode != 2 || upto <= 0) return;
+    if (st_.kv_mode != 2 || upto <= 0)
+        return;
     // the ring's blocks below `upto`, from the host copy: a checkpoint resume may have left later cells in them
     const guild::kernels::QsaShapes s = shapes_of(*g_);
     const int64_t b1 = (upto + s.page_size - 1) / s.page_size, b0 = std::max<int64_t>(0, b1 - st_.n_slots);
@@ -777,7 +995,8 @@ bool MtpDrafter::prefill(const float* R_rows, const int32_t* next_tokens, int64_
     // 32768, mixed load (chats, 32K and 7K prompts, deep follow-ups): E-4 hung in the first round on 2 of 2 tries,
     // the old loop ran 30 of 30 rounds clean, prompt speed unchanged.
     static const bool per_group_sync = [] {
-        if (const char* v = std::getenv("GUILD_MTP_PREFILL_SYNC")) return std::atoi(v) != 0;
+        if (const char* v = std::getenv("GUILD_MTP_PREFILL_SYNC"))
+            return std::atoi(v) != 0;
 #if defined(GUILD_USE_HIP)
         return true;
 #else
@@ -787,7 +1006,8 @@ bool MtpDrafter::prefill(const float* R_rows, const int32_t* next_tokens, int64_
     const int64_t NHp = g_->n_head, per_row = 1 + 4 + NHp;
     if (!per_group_sync && n > 0) {
         if (pf_cap_ < n * per_row) {
-            if (pf_dev_) cudaFree(pf_dev_);
+            if (pf_dev_)
+                cudaFree(pf_dev_);
             pf_dev_ = nullptr;
             pf_cap_ = 0;
             if (cudaMalloc((void**) &pf_dev_, (size_t) (n * per_row) * sizeof(int32_t)) != cudaSuccess) {
@@ -807,9 +1027,11 @@ bool MtpDrafter::prefill(const float* R_rows, const int32_t* next_tokens, int64_
             stp[i * 4 + 1] = (int32_t) (cell + 1);
             stp[i * 4 + 2] = (int32_t) ((cell + 1) / 4);
             stp[i * 4 + 3] = (int32_t) (cell + 1);
-            for (int64_t h = 0; h < NHp; ++h) ps[i * NHp + h] = (int32_t) cell;
+            for (int64_t h = 0; h < NHp; ++h)
+                ps[i * NHp + h] = (int32_t) cell;
         }
-        if (cudaMemcpyAsync(pf_dev_, rec.data(), rec.size() * sizeof(int32_t), cudaMemcpyHostToDevice, cs_) != cudaSuccess) {
+        if (cudaMemcpyAsync(pf_dev_, rec.data(), rec.size() * sizeof(int32_t), cudaMemcpyHostToDevice, cs_) !=
+            cudaSuccess) {
             err = "mtp prefill: the input records upload failed";
             return false;
         }
@@ -818,13 +1040,16 @@ bool MtpDrafter::prefill(const float* R_rows, const int32_t* next_tokens, int64_
         const int32_t* d_ps = d_stp + 4 * n;
         for (int64_t c = 0; c < n; c += max_t_) {
             const int T = (int) std::min<int64_t>(max_t_, n - c);
-            if (cell0 + c + T <= first_needed) continue;
-            if (!capture_prefill_dev(T, err)) return false;
+            if (cell0 + c + T <= first_needed)
+                continue;
+            if (!capture_prefill_dev(T, err))
+                return false;
             if (cudaMemcpyAsync(tok_, d_tk + c, (size_t) T * 4, cudaMemcpyDeviceToDevice, cs_) != cudaSuccess ||
                 cudaMemcpyAsync(step_, d_stp + c * 4, (size_t) T * 16, cudaMemcpyDeviceToDevice, cs_) != cudaSuccess ||
-                cudaMemcpyAsync(pos_, d_ps + c * NHp, (size_t) (T * NHp) * 4, cudaMemcpyDeviceToDevice, cs_) != cudaSuccess ||
-                cudaMemcpyAsync(Rin_, R_rows + (size_t) c * HCN, (size_t) T * HCN * sizeof(float), cudaMemcpyDeviceToDevice,
-                                cs_) != cudaSuccess ||
+                cudaMemcpyAsync(pos_, d_ps + c * NHp, (size_t) (T * NHp) * 4, cudaMemcpyDeviceToDevice, cs_) !=
+                    cudaSuccess ||
+                cudaMemcpyAsync(Rin_, R_rows + (size_t) c * HCN, (size_t) T * HCN * sizeof(float),
+                                cudaMemcpyDeviceToDevice, cs_) != cudaSuccess ||
                 cudaGraphLaunch(prefill_dev_exec_[T], cs_) != cudaSuccess) {
                 err = std::string("mtp prefill: ") + cudaGetErrorString(cudaGetLastError());
                 return false;
@@ -839,8 +1064,10 @@ bool MtpDrafter::prefill(const float* R_rows, const int32_t* next_tokens, int64_
     }
     for (int64_t c = 0; c < n; c += max_t_) {
         const int T = (int) std::min<int64_t>(max_t_, n - c);
-        if (cell0 + c + T <= first_needed) continue;
-        if (!capture_prefill(T, err)) return false;
+        if (cell0 + c + T <= first_needed)
+            continue;
+        if (!capture_prefill(T, err))
+            return false;
         for (int t = 0; t < T; ++t) {
             const int64_t cell = cell0 + c + t;
             h_tok_[t] = next_tokens[c + t];
@@ -848,12 +1075,12 @@ bool MtpDrafter::prefill(const float* R_rows, const int32_t* next_tokens, int64_
             h_step_[t * 4 + 1] = (int32_t) (cell + 1);
             h_step_[t * 4 + 2] = (int32_t) ((cell + 1) / 4);
             h_step_[t * 4 + 3] = (int32_t) (cell + 1);
-            for (int64_t h = 0; h < g_->n_head; ++h) h_pos_[t * g_->n_head + h] = (int32_t) cell;
+            for (int64_t h = 0; h < g_->n_head; ++h)
+                h_pos_[t * g_->n_head + h] = (int32_t) cell;
         }
         if (cudaMemcpyAsync(Rin_, R_rows + (size_t) c * HCN, (size_t) T * HCN * sizeof(float), cudaMemcpyDeviceToDevice,
                             cs_) != cudaSuccess ||
-            cudaGraphLaunch(prefill_exec_[T], cs_) != cudaSuccess ||
-            cudaStreamSynchronize(cs_) != cudaSuccess) {
+            cudaGraphLaunch(prefill_exec_[T], cs_) != cudaSuccess || cudaStreamSynchronize(cs_) != cudaSuccess) {
             err = std::string("mtp prefill: ") + cudaGetErrorString(cudaGetLastError());
             return false;
         }
@@ -862,15 +1089,20 @@ bool MtpDrafter::prefill(const float* R_rows, const int32_t* next_tokens, int64_
     return true;
 }
 
-bool MtpDrafter::draft(int T, const int32_t* tokens, int64_t p, int a, int32_t* drafts, std::string& err,
-                       float* probs, float min_p, int* n_drafts) {
+bool MtpDrafter::draft(int T, const int32_t* tokens, int64_t p, int a, int32_t* drafts, std::string& err, float* probs,
+                       float min_p, int* n_drafts) {
     const OnDevice on_device(device_);
-    if (T < 1 || T > max_t_ || a < 0 || a >= T) { err = "mtp: draft arguments out of range"; return false; }
-    const bool cp = coupled_active_;   // coupled draft sampling for this request: its own graphs
-    if (!capture_round(T, cp, err)) return false;
+    if (T < 1 || T > max_t_ || a < 0 || a >= T) {
+        err = "mtp: draft arguments out of range";
+        return false;
+    }
+    const bool cp = coupled_active_; // coupled draft sampling for this request: its own graphs
+    if (!capture_round(T, cp, err))
+        return false;
     const int max_steps = std::min(max_t_ - 1, max_drafts_);
     for (int j = 1; j < max_steps; ++j)
-        if (!capture_step(j, cp, err)) return false;
+        if (!capture_step(j, cp, err))
+            return false;
     const Clock::time_point t0 = Clock::now();
     const int64_t NH = g_->n_head;
     auto put = [&](int row, int64_t cell) {
@@ -878,16 +1110,18 @@ bool MtpDrafter::draft(int T, const int32_t* tokens, int64_t p, int a, int32_t* 
         h_step_[row * 4 + 1] = (int32_t) (cell + 1);
         h_step_[row * 4 + 2] = (int32_t) ((cell + 1) / 4);
         h_step_[row * 4 + 3] = (int32_t) (cell + 1);
-        for (int64_t h = 0; h < NH; ++h) h_pos_[row * NH + h] = (int32_t) cell;
+        for (int64_t h = 0; h < NH; ++h)
+            h_pos_[row * NH + h] = (int32_t) cell;
     };
     for (int t = 0; t < T; ++t) {
         h_tok_[t] = tokens[t];
         put(t, p + t);
     }
-    put(2 * max_t_ - 1, coupled_draft_cell(p, a, 0));   // p + a: draft 0's cell
+    put(2 * max_t_ - 1, coupled_draft_cell(p, a, 0)); // p + a: draft 0's cell
     for (int j = 1; j < max_steps; ++j)
         put(max_t_ + j - 1, coupled_draft_cell(p, a, j));
-    for (int j = 0; j < max_steps; ++j) ((volatile int32_t*) h_out_)[j] = -1;
+    for (int j = 0; j < max_steps; ++j)
+        ((volatile int32_t*) h_out_)[j] = -1;
     h_row_[0] = a;
     h_row_[1] = 0;
     std::atomic_thread_fence(std::memory_order_seq_cst);
@@ -896,7 +1130,8 @@ bool MtpDrafter::draft(int T, const int32_t* tokens, int64_t p, int a, int32_t* 
     const bool do_ple = pss != nullptr && pss->ple.ready() && pss->ple.table != nullptr;
     int32_t ple_prev[2] = {do_ple ? pss->ple_prev[0] : 0, do_ple ? pss->ple_prev[1] : 0};
     auto prefetch_ple = [&](int32_t tok) {
-        if (!do_ple || tok < 0) return;
+        if (!do_ple || tok < 0)
+            return;
         uint32_t rows16[guild::kernels::PLE_N_HEADS];
         guild::kernels::ngram_rows(&tok, ple_prev, 1, pss->ple.consts, rows16);
         ple_prev[0] = ple_prev[1];
@@ -924,10 +1159,12 @@ bool MtpDrafter::draft(int T, const int32_t* tokens, int64_t p, int a, int32_t* 
 #if defined(_WIN32) || defined(__x86_64__)
                 _mm_pause();
 #endif
-                if ((++spins & 1023u) == 0 && cudaStreamQuery(cs_) != cudaErrorNotReady) break;
+                if ((++spins & 1023u) == 0 && cudaStreamQuery(cs_) != cudaErrorNotReady)
+                    break;
             }
             drafts[j] = ((volatile int32_t*) h_out_)[j];
-            if (probs) probs[j] = ((volatile float*) h_prob_)[j];
+            if (probs)
+                probs[j] = ((volatile float*) h_prob_)[j];
             prefetch_ple(drafts[j]);
         }
         if (cudaStreamSynchronize(cs_) != cudaSuccess) {
@@ -936,7 +1173,8 @@ bool MtpDrafter::draft(int T, const int32_t* tokens, int64_t p, int a, int32_t* 
         }
         const int last = max_steps - 1;
         drafts[last] = ((volatile int32_t*) h_out_)[last];
-        if (probs) probs[last] = ((volatile float*) h_prob_)[last];
+        if (probs)
+            probs[last] = ((volatile float*) h_prob_)[last];
         prefetch_ple(drafts[last]);
         n = max_steps;
     } else if (max_steps > 0) {
@@ -952,13 +1190,15 @@ bool MtpDrafter::draft(int T, const int32_t* tokens, int64_t p, int a, int32_t* 
 #if defined(_WIN32) || defined(__x86_64__)
                 _mm_pause();
 #endif
-                if ((++spins & 1023u) == 0 && cudaStreamQuery(cs_) != cudaErrorNotReady) break;
+                if ((++spins & 1023u) == 0 && cudaStreamQuery(cs_) != cudaErrorNotReady)
+                    break;
             }
         };
         wait_step(0);
         drafts[0] = ((volatile int32_t*) h_out_)[0];
         float pj = ((volatile float*) h_prob_)[0];
-        if (probs) probs[0] = pj;
+        if (probs)
+            probs[0] = pj;
         n = 1;
         for (int j = 1; j < max_steps && pj >= min_p; ++j) {
             if (cudaGraphLaunch(cp ? step_exec_c_[j] : step_exec_[j], cs_) != cudaSuccess) {
@@ -970,7 +1210,8 @@ bool MtpDrafter::draft(int T, const int32_t* tokens, int64_t p, int a, int32_t* 
             wait_step(j);
             drafts[j] = ((volatile int32_t*) h_out_)[j];
             pj = ((volatile float*) h_prob_)[j];
-            if (probs) probs[j] = pj;
+            if (probs)
+                probs[j] = pj;
             ++n;
         }
         prefetch_ple(drafts[n - 1]);
@@ -979,8 +1220,13 @@ bool MtpDrafter::draft(int T, const int32_t* tokens, int64_t p, int a, int32_t* 
             return false;
         }
     }
-    for (int j = n; j < max_t_ - 1; ++j) { drafts[j] = 0; if (probs) probs[j] = 0.0f; }
-    if (n_drafts) *n_drafts = n;
+    for (int j = n; j < max_t_ - 1; ++j) {
+        drafts[j] = 0;
+        if (probs)
+            probs[j] = 0.0f;
+    }
+    if (n_drafts)
+        *n_drafts = n;
     ms_draft += ms_since(t0);
     ++rounds;
     return true;
@@ -1001,4 +1247,4 @@ bool MtpDrafter::draft_first(int T, const float* R_row, int32_t token, int64_t c
     return draft(T, toks.data(), cell, 0, drafts, err, probs, min_p, n_drafts);
 }
 
-}  // namespace guild::core
+} // namespace guild::core

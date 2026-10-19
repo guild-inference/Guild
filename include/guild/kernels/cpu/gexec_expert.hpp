@@ -6,11 +6,11 @@
 
 namespace guild::kernels::cpu {
 
-inline constexpr const char* kGExecFusedAvx2ImplId         = "cpu.expert_pool.gexec_fused_avx2";
-inline constexpr const char* kGExecFusedAvx512ImplId       = "cpu.expert_pool.gexec_fused_avx512";
-inline constexpr const char* kGExecInterleavedAvx2ImplId   = "cpu.expert_pool.gexec_interleaved_avx2";
+inline constexpr const char* kGExecFusedAvx2ImplId = "cpu.expert_pool.gexec_fused_avx2";
+inline constexpr const char* kGExecFusedAvx512ImplId = "cpu.expert_pool.gexec_fused_avx512";
+inline constexpr const char* kGExecInterleavedAvx2ImplId = "cpu.expert_pool.gexec_interleaved_avx2";
 inline constexpr const char* kGExecInterleavedAvx512ImplId = "cpu.expert_pool.gexec_interleaved_avx512";
-inline constexpr uint32_t    kGExecExpertImplVersion       = GUILD_KERNEL_ABI_MAKE_VERSION(5, 0, 0);
+inline constexpr uint32_t kGExecExpertImplVersion = GUILD_KERNEL_ABI_MAKE_VERSION(5, 0, 0);
 
 // Returns the v2 CPU backend extension table for GEXEC fused 2-row/4-row expert execution
 // over the standard PortableContiguous [gate(n_ff) | up(n_ff) | down(n_embd)] layout (AVX2).

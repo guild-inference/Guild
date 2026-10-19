@@ -36,7 +36,7 @@ struct Timing {
     const char* name = "";
 };
 
-}  // namespace
+} // namespace
 
 int main(int argc, char** argv) {
     std::string path;
@@ -45,18 +45,27 @@ int main(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         auto val = [&]() -> const char* {
-            if (i + 1 >= argc) { std::fprintf(stderr, "%s needs a value\n", a.c_str()); std::exit(2); }
+            if (i + 1 >= argc) {
+                std::fprintf(stderr, "%s needs a value\n", a.c_str());
+                std::exit(2);
+            }
             return argv[++i];
         };
-        if (a == "--file") path = val();
-        else if (a == "--experts") experts = std::atoi(val());
-        else if (a == "--tpr") threads_per_row = std::atoi(val());
+        if (a == "--file")
+            path = val();
+        else if (a == "--experts")
+            experts = std::atoi(val());
+        else if (a == "--tpr")
+            threads_per_row = std::atoi(val());
         else {
             std::fprintf(stderr, "usage: guild-overlap --file experts.bin [--experts N] [--tpr N]\n");
             return 2;
         }
     }
-    if (path.empty()) { std::fprintf(stderr, "--file is required\n"); return 2; }
+    if (path.empty()) {
+        std::fprintf(stderr, "--file is required\n");
+        return 2;
+    }
 
     // One ROLE's worth of S2 weights: gate is [n_embd 2560] x [ff 640] = 1,638,400 weights = 460,800 B of
     // codes at 4 codes per byte, plus 40 scales per row.
@@ -67,10 +76,16 @@ int main(int argc, char** argv) {
 
     // host side: `experts` blobs read into a pinned arena, and the S2 planes the GEMV will read
     guild::core::PinnedArena arena((uint64_t) experts * role_codes);
-    if (!arena.valid()) { std::fprintf(stderr, "arena allocation failed\n"); return 1; }
+    if (!arena.valid()) {
+        std::fprintf(stderr, "arena allocation failed\n");
+        return 1;
+    }
     {
         std::ifstream f(path, std::ios::binary);
-        if (!f) { std::fprintf(stderr, "cannot open %s\n", path.c_str()); return 1; }
+        if (!f) {
+            std::fprintf(stderr, "cannot open %s\n", path.c_str());
+            return 1;
+        }
         // take the first `experts` blobs' worth of CODE bytes, pretending each is a role's plane: the bytes
         // are real Q2_0 codes, so the kernel decodes real data and no cache-friendly pattern is invented
         for (int i = 0; i < experts; ++i) {
@@ -86,7 +101,8 @@ int main(int argc, char** argv) {
 
     // device side: double buffered codes, plus x / scales / y
     uint8_t* d_codes[2] = {nullptr, nullptr};
-    for (int b = 0; b < 2; ++b) check(cudaMalloc(&d_codes[b], role_codes), "cudaMalloc codes");
+    for (int b = 0; b < 2; ++b)
+        check(cudaMalloc(&d_codes[b], role_codes), "cudaMalloc codes");
     uint16_t* d_x = nullptr;
     float *d_scales = nullptr, *d_y = nullptr;
     check(cudaMalloc(&d_x, n_in * sizeof(uint16_t)), "cudaMalloc x");
@@ -112,11 +128,11 @@ int main(int argc, char** argv) {
     check(cudaStreamSynchronize(0), "pre sync");
     auto t0 = std::chrono::steady_clock::now();
     for (int i = 0; i < experts; ++i) {
-        check(cudaMemcpyAsync(d_codes[0], arena.data() + (uint64_t) i * role_codes, role_codes,
-                              cudaMemcpyHostToDevice, 0),
+        check(cudaMemcpyAsync(d_codes[0], arena.data() + (uint64_t) i * role_codes, role_codes, cudaMemcpyHostToDevice,
+                              0),
               "serial copy");
-        guild::kernels::s_gemv_split_async(d_x, d_codes[0], d_scales, nullptr, d_y, n_in, n_out, form,
-                                            threads_per_row, (void*) (cudaStream_t) 0);
+        guild::kernels::s_gemv_split_async(d_x, d_codes[0], d_scales, nullptr, d_y, n_in, n_out, form, threads_per_row,
+                                           (void*) (cudaStream_t) 0);
     }
     check(cudaStreamSynchronize(0), "serial final sync");
     const double serial = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
@@ -124,7 +140,8 @@ int main(int argc, char** argv) {
     // ---- OVERLAPPED: copy the next one while computing on the current one ----
     check(cudaStreamSynchronize(0), "pre sync 2");
     cudaEvent_t ev[2];
-    for (int b = 0; b < 2; ++b) check(cudaEventCreateWithFlags(&ev[b], cudaEventDisableTiming), "event");
+    for (int b = 0; b < 2; ++b)
+        check(cudaEventCreateWithFlags(&ev[b], cudaEventDisableTiming), "event");
     t0 = std::chrono::steady_clock::now();
     check(cudaMemcpyAsync(d_codes[0], arena.data(), role_codes, cudaMemcpyHostToDevice, s_copy), "prologue");
     check(cudaEventRecord(ev[0], s_copy), "prologue event");
@@ -140,7 +157,7 @@ int main(int argc, char** argv) {
         check(cudaStreamWaitEvent(s_comp, ev[cur], 0), "wait");
         // a hand-written launch so it goes on s_comp; `s_gemv` synchronises on the default stream
         guild::kernels::s_gemv_split_async(d_x, d_codes[cur], d_scales, nullptr, d_y, n_in, n_out, form,
-                                            threads_per_row, (void*) s_comp);
+                                           threads_per_row, (void*) s_comp);
     }
     check(cudaStreamSynchronize(s_comp), "final sync");
     check(cudaStreamSynchronize(s_copy), "final sync 2");
@@ -154,7 +171,8 @@ int main(int argc, char** argv) {
     std::printf("\nNOTE: the OVERLAPPED loop launches on `s_comp` without synchronising, so the copy and the\n"
                 "      compute really are concurrent; the serial loop waits after each step.  What this does NOT\n"
                 "      model is the CPU expert path, the router, or the fact that a real token has 1440 roles to\n"
-                "      stream rather than %d.\n", experts);
+                "      stream rather than %d.\n",
+                experts);
 
     for (int b = 0; b < 2; ++b) {
         cudaFree(d_codes[b]);

@@ -21,7 +21,8 @@ namespace {
 
 /// ggml_compute_fp32_to_bf16, ggml/src/ggml-impl.h (MIT, the ggml authors), on raw bits.
 uint16_t ggml_bf16(uint32_t u) {
-    if ((u & 0x7fffffffu) > 0x7f800000u) return (uint16_t) ((u >> 16) | 64);
+    if ((u & 0x7fffffffu) > 0x7f800000u)
+        return (uint16_t) ((u >> 16) | 64);
     return (uint16_t) ((u + (0x7fffu + ((u >> 16) & 1u))) >> 16);
 }
 
@@ -31,9 +32,11 @@ uint16_t previous_bf16(uint32_t u) {
     return (uint16_t) (u >> 16);
 }
 
-bool is_nan_bits(uint32_t u) { return (u & 0x7fffffffu) > 0x7f800000u; }
+bool is_nan_bits(uint32_t u) {
+    return (u & 0x7fffffffu) > 0x7f800000u;
+}
 
-}  // namespace
+} // namespace
 
 int main() {
     unsigned long long vs_ggml = 0, vs_previous = 0, nan_lost = 0, nan_inputs = 0, previous_masked = 0;
@@ -46,31 +49,41 @@ int main() {
         const uint16_t got = guild::kernels::bf16_from_f32(f);
         if (got != ggml_bf16(u)) {
             ++vs_ggml;
-            if (!have_bad) { first_bad = u; have_bad = true; }
+            if (!have_bad) {
+                first_bad = u;
+                have_bad = true;
+            }
         }
         if (is_nan_bits(u)) {
             ++nan_inputs;
             const uint32_t back = (uint32_t) got << 16;
             // a quiet NaN (bit 22 of the f32) with the input's sign
-            if (!is_nan_bits(back) || (back & 0x00400000u) == 0 || (back >> 31) != (u >> 31)) ++nan_lost;
-            if (!is_nan_bits((uint32_t) previous_bf16(u) << 16)) ++previous_masked;
+            if (!is_nan_bits(back) || (back & 0x00400000u) == 0 || (back >> 31) != (u >> 31))
+                ++nan_lost;
+            if (!is_nan_bits((uint32_t) previous_bf16(u) << 16))
+                ++previous_masked;
         } else if (got != previous_bf16(u)) {
             ++vs_previous;
-            if (!have_bad) { first_bad = u; have_bad = true; }
+            if (!have_bad) {
+                first_bad = u;
+                have_bad = true;
+            }
         }
     }
     std::printf("  f32 -> bf16 over 2^32 inputs: %llu differ from ggml, %llu non-NaN differ from the previous rule\n",
                 vs_ggml, vs_previous);
     std::printf("  NaN inputs: %llu, not a quiet same-sign NaN now: %llu (the previous rule masked %llu of them)\n",
                 nan_inputs, nan_lost, previous_masked);
-    if (have_bad) std::printf("    first mismatch at input 0x%08x\n", first_bad);
+    if (have_bad)
+        std::printf("    first mismatch at input 0x%08x\n", first_bad);
 
     unsigned long long trip_bad = 0;
     for (uint32_t h = 0; h <= 0xFFFFu; ++h) {
         const float f = guild::kernels::f32_from_bf16((uint16_t) h);
         const uint16_t back = guild::kernels::bf16_from_f32(f);
         const bool nan = is_nan_bits(h << 16);
-        if (back != (nan ? (uint16_t) (h | 64u) : (uint16_t) h)) ++trip_bad;
+        if (back != (nan ? (uint16_t) (h | 64u) : (uint16_t) h))
+            ++trip_bad;
     }
     std::printf("  bf16 -> f32 -> bf16 over 65536 patterns: %llu wrong\n", trip_bad);
 

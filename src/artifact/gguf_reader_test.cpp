@@ -23,7 +23,8 @@ namespace {
 int g_fail = 0;
 void check(bool ok, const char* what) {
     std::printf("  %-66s %s\n", what, ok ? "ok" : "FAIL");
-    if (!ok) ++g_fail;
+    if (!ok)
+        ++g_fail;
 }
 
 template <class T> void put(std::vector<uint8_t>& b, T v) {
@@ -39,23 +40,23 @@ void put_str(std::vector<uint8_t>& b, const std::string& s) {
 // A GGUF v3 file of F32[8] tensors named `names`, laid out 32 bytes apart from a 32-byte-aligned data start.
 std::filesystem::path write_gguf(const std::vector<std::string>& names) {
     std::vector<uint8_t> b;
-    put<uint32_t>(b, 0x46554747u);   // "GGUF"
+    put<uint32_t>(b, 0x46554747u); // "GGUF"
     put<uint32_t>(b, 3);
-    put<uint64_t>(b, names.size());  // n_tensors
-    put<uint64_t>(b, 0);             // n_kv
+    put<uint64_t>(b, names.size()); // n_tensors
+    put<uint64_t>(b, 0);            // n_kv
     for (size_t i = 0; i < names.size(); ++i) {
         put_str(b, names[i]);
-        put<uint32_t>(b, 1);         // n_dims
+        put<uint32_t>(b, 1); // n_dims
         put<uint64_t>(b, 8);
-        put<uint32_t>(b, 0);         // F32
-        put<uint64_t>(b, 32 * i);    // offset from data_start
+        put<uint32_t>(b, 0);      // F32
+        put<uint64_t>(b, 32 * i); // offset from data_start
     }
     b.resize((b.size() + 31) / 32 * 32 + 32 * names.size(), 0);
     const auto path = std::filesystem::temp_directory_path() / "guild_gguf_reader_test.gguf";
-    std::ofstream(path, std::ios::binary).write(reinterpret_cast<const char*>(b.data()), (std::streamsize)b.size());
+    std::ofstream(path, std::ios::binary).write(reinterpret_cast<const char*>(b.data()), (std::streamsize) b.size());
     return path;
 }
-}  // namespace
+} // namespace
 
 int main() {
     std::printf("gguf_reader_test\n");
@@ -86,7 +87,8 @@ int main() {
         check(!err.empty(), "the same name twice: refused at open");
         check(err.find("blk.0.attn_q.weight") != std::string::npos, "  the error names the tensor");
         check(err.find(path.filename().string()) != std::string::npos, "  the error names the file");
-        if (!err.empty()) std::printf("  (%s)\n", err.c_str());
+        if (!err.empty())
+            std::printf("  (%s)\n", err.c_str());
     }
     std::printf(g_fail ? "gguf_reader_test: %d FAILED\n" : "gguf_reader_test: all passed\n", g_fail);
     return g_fail ? 1 : 0;

@@ -46,8 +46,7 @@ static const uint32_t K[64] = {
     0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
     0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
     0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
-    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
-};
+    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2};
 
 } // namespace
 
@@ -70,10 +69,8 @@ void Sha256::reset() {
 void Sha256::transform(const uint8_t block[64]) {
     uint32_t w[64];
     for (int i = 0; i < 16; ++i) {
-        w[i] = (static_cast<uint32_t>(block[i * 4]) << 24) |
-               (static_cast<uint32_t>(block[i * 4 + 1]) << 16) |
-               (static_cast<uint32_t>(block[i * 4 + 2]) << 8) |
-               (static_cast<uint32_t>(block[i * 4 + 3]));
+        w[i] = (static_cast<uint32_t>(block[i * 4]) << 24) | (static_cast<uint32_t>(block[i * 4 + 1]) << 16) |
+               (static_cast<uint32_t>(block[i * 4 + 2]) << 8) | (static_cast<uint32_t>(block[i * 4 + 3]));
     }
     for (int i = 16; i < 64; ++i) {
         w[i] = theta1(w[i - 2]) + w[i - 7] + theta0(w[i - 15]) + w[i - 16];
@@ -173,11 +170,10 @@ std::string Sha256::hash_string(const std::string& str) {
     return h.finalize_hex();
 }
 
-std::string Sha256::hash_file(const std::string& path,
-                              uint64_t max_bytes,
-                              std::function<void(uint64_t)> progress_cb) {
+std::string Sha256::hash_file(const std::string& path, uint64_t max_bytes, std::function<void(uint64_t)> progress_cb) {
     std::ifstream file(path, std::ios::binary);
-    if (!file.is_open()) return "";
+    if (!file.is_open())
+        return "";
 
     Sha256 h;
     const size_t chunk_size = 1024 * 1024; // 1 MiB chunk
@@ -189,11 +185,13 @@ std::string Sha256::hash_file(const std::string& path,
         if (max_bytes > 0 && total_read + to_read > max_bytes) {
             to_read = static_cast<size_t>(max_bytes - total_read);
         }
-        if (to_read == 0) break;
+        if (to_read == 0)
+            break;
 
         file.read(buffer.data(), to_read);
         std::streamsize bytes = file.gcount();
-        if (bytes <= 0) break;
+        if (bytes <= 0)
+            break;
 
         h.update(buffer.data(), static_cast<size_t>(bytes));
         total_read += static_cast<uint64_t>(bytes);
@@ -202,7 +200,8 @@ std::string Sha256::hash_file(const std::string& path,
             progress_cb(total_read);
         }
 
-        if (max_bytes > 0 && total_read >= max_bytes) break;
+        if (max_bytes > 0 && total_read >= max_bytes)
+            break;
     }
 
     return h.finalize_hex();

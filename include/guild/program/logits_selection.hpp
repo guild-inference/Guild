@@ -9,10 +9,12 @@ namespace guild::program::logits_selection {
 // Storage selection only: callers must still condition on every input token.
 // Positive decimal int64, with no sign, whitespace, suffix or overflow.
 inline bool parse_stride(std::string_view text, int64_t& result) {
-    if (text.empty() || text.front() < '0' || text.front() > '9') return false;
+    if (text.empty() || text.front() < '0' || text.front() > '9')
+        return false;
     int64_t value = 0;
     const auto parsed = std::from_chars(text.data(), text.data() + text.size(), value);
-    if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size() || value <= 0) return false;
+    if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size() || value <= 0)
+        return false;
     result = value;
     return true;
 }

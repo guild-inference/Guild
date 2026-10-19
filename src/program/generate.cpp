@@ -63,7 +63,10 @@ bool parse_token_list(const std::string& str, std::vector<int32_t>& tokens) {
         try {
             size_t used = 0;
             const int64_t id = std::stoll(item, &used);
-            if (used != item.size() || id < 0 || id > INT32_MAX) { tokens.clear(); return false; }
+            if (used != item.size() || id < 0 || id > INT32_MAX) {
+                tokens.clear();
+                return false;
+            }
             tokens.push_back(static_cast<int32_t>(id));
         } catch (...) {
             tokens.clear();
@@ -207,7 +210,8 @@ int main(int argc, char** argv) try {
             max_new = std::stoi(next("--max-new"));
         } else if (a == "--temperature") {
             temperature = std::stof(next("--temperature"));
-            if (temperature > 0.0f) greedy = false;
+            if (temperature > 0.0f)
+                greedy = false;
         } else if (a == "--top-p") {
             top_p = std::stof(next("--top-p"));
         } else if (a == "--top-k") {
@@ -258,12 +262,20 @@ int main(int argc, char** argv) try {
         popts.resident_budget_gib = resident_budget_gib;
     }
     if (expert_cache != "auto") {
-        if (expert_cache == "off") popts.gpu_cache_slots = 0;
-        else { try { popts.gpu_cache_slots = std::stoi(expert_cache); } catch (...) {} }
+        if (expert_cache == "off")
+            popts.gpu_cache_slots = 0;
+        else {
+            try {
+                popts.gpu_cache_slots = std::stoi(expert_cache);
+            } catch (...) {}
+        }
     }
-    if (pcie_fraction >= 0) popts.pcie_expert_fraction = pcie_fraction;
+    if (pcie_fraction >= 0)
+        popts.pcie_expert_fraction = pcie_fraction;
     if (prefill != "auto") {
-        try { popts.prefill_chunk = std::stoi(prefill); } catch (...) {}
+        try {
+            popts.prefill_chunk = std::stoi(prefill);
+        } catch (...) {}
     }
     popts.spec_tokens = spec;
     if (!std::isfinite(spec_min_p) || spec_min_p < 0 || spec_min_p > 1 || pool_workers < 0) {
@@ -301,7 +313,8 @@ int main(int argc, char** argv) try {
 
         std::string line;
         while (std::getline(std::cin, line)) {
-            if (line.empty()) continue;
+            if (line.empty())
+                continue;
             if (line == "QUIT") {
                 break;
             }
@@ -350,8 +363,8 @@ int main(int argc, char** argv) try {
                     return true;
                 };
                 auto on_pref = [](const PrefillProgressEvent& pe) {
-                    std::cout << "PP " << pe.pos << " " << pe.total << " "
-                              << pe.ms << " " << pe.tok_s << "\n" << std::flush;
+                    std::cout << "PP " << pe.pos << " " << pe.total << " " << pe.ms << " " << pe.tok_s << "\n"
+                              << std::flush;
                 };
 
                 bool ok = session->generate(req, on_tok, telem, gen_err, on_pref);
@@ -360,11 +373,10 @@ int main(int argc, char** argv) try {
                 } else {
                     std::cout << "DONE " << telem.completion_tokens << " " << telem.prompt_tokens << " "
                               << telem.prompt_ms << " " << telem.decode_ms << " " << telem.finish_reason << " "
-                              << telem.drafts_accepted << " " << telem.drafts_offered << " 0 "
-                              << telem.gpu_cache_hits << " " << telem.gpu_cache_lookups << " "
-                              << telem.ram_expert_hits << " " << telem.file_expert_reads << " "
-                              << double(telem.file_read_bytes) / 1e6 << " " << telem.prompt_tokens << " "
-                              << telem.offload_entries << "\n"
+                              << telem.drafts_accepted << " " << telem.drafts_offered << " 0 " << telem.gpu_cache_hits
+                              << " " << telem.gpu_cache_lookups << " " << telem.ram_expert_hits << " "
+                              << telem.file_expert_reads << " " << double(telem.file_read_bytes) / 1e6 << " "
+                              << telem.prompt_tokens << " " << telem.offload_entries << "\n"
                               << std::flush;
                 }
             }
@@ -389,8 +401,7 @@ int main(int argc, char** argv) try {
         return true;
     };
     auto on_pref = [](const PrefillProgressEvent& pe) {
-        std::cerr << "Prefill chunk " << pe.pos << "/" << pe.total
-                  << " (" << pe.tok_s << " tok/s)\n";
+        std::cerr << "Prefill chunk " << pe.pos << "/" << pe.total << " (" << pe.tok_s << " tok/s)\n";
     };
 
     bool ok = session->generate(req, on_tok, telem, gen_err, on_pref);
@@ -401,8 +412,8 @@ int main(int argc, char** argv) try {
     }
 
     std::fprintf(stderr, "\nCompleted %d tokens in %.2f ms (%.2f tok/s), prompt %d tokens in %.2f ms (%.2f tok/s)\n",
-                 telem.completion_tokens, telem.decode_ms, telem.decode_tok_s,
-                 telem.prompt_tokens, telem.prompt_ms, telem.prompt_tok_s);
+                 telem.completion_tokens, telem.decode_ms, telem.decode_tok_s, telem.prompt_tokens, telem.prompt_ms,
+                 telem.prompt_tok_s);
     return 0;
 } catch (const std::exception& e) {
     std::fprintf(stderr, "guild-generate: %s\n", e.what());

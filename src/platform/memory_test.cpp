@@ -14,13 +14,19 @@
 #endif
 
 namespace {
-uint64_t gib(double g) { return (uint64_t) (g * 1073741824.0); }
+uint64_t gib(double g) {
+    return (uint64_t) (g * 1073741824.0);
+}
 
 // #577: the file tier's unbuffered choice (true = the file cache keeps its reads, so they stay buffered)
 int file_cache_keeps_cases() {
     using guild::platform::file_cache_keeps;
-    struct Case { const char* what; double avail, arena, read; bool keeps; };
-    const double experts = 71.7;   // UD-Q4_K_XL's routed experts
+    struct Case {
+        const char* what;
+        double avail, arena, read;
+        bool keeps;
+    };
+    const double experts = 71.7; // UD-Q4_K_XL's routed experts
     const Case cases[] = {
         // the reporter's 96 GB PC (83.0 GiB available at start): 0.1.38 passed the budget asked for and every
         // shard's bytes (103.7 GiB) and went unbuffered
@@ -47,13 +53,14 @@ int file_cache_keeps_cases() {
     }
     return fail;
 }
-}  // namespace
+} // namespace
 
 int main() {
     int fail_keeps = file_cache_keeps_cases();
     const uint64_t bytes = 256ull << 20;
     void* p = std::malloc(bytes);
-    if (p == nullptr) return 2;
+    if (p == nullptr)
+        return 2;
     std::memset(p, 1, bytes);
     const guild::platform::LockResult r = guild::platform::lock_resident(p, bytes);
     std::printf("lock_resident: ok=%d locked=%llu MiB (%s)\n", (int) r.ok, (unsigned long long) (r.locked_bytes >> 20),

@@ -13,9 +13,9 @@
 namespace guild::gexec {
 
 enum class GExecOptMode : uint32_t {
-    Skip       = 0,
-    Quick      = 1,
-    Auto       = 2,
+    Skip = 0,
+    Quick = 1,
+    Auto = 2,
     Exhaustive = 3,
 };
 
@@ -23,19 +23,19 @@ const char* opt_mode_to_string(GExecOptMode mode) noexcept;
 bool parse_opt_mode(const std::string& str, GExecOptMode& out) noexcept;
 
 struct GExecOptBudget {
-    double max_time_seconds = 300.0;       // Maximum wall-clock time budget (0 = unlimited)
-    uint64_t max_memory_bytes = 0;         // Maximum temporary RAM budget (0 = auto from free RAM)
-    uint64_t max_disk_bytes = 0;           // Maximum disk space budget (0 = auto from free disk)
-    bool embed_packed_experts = false;     // Embed full PackedExpertsBlob in .gexec (vs zero-extra-pass on-load interleave)
-    bool allow_partial_artifact = true;    // Save resumable partial .gexec if budget expires mid-run
-    bool resume_interrupted = true;        // Resume from <output>.progress.json if valid
+    double max_time_seconds = 300.0;   // Maximum wall-clock time budget (0 = unlimited)
+    uint64_t max_memory_bytes = 0;     // Maximum temporary RAM budget (0 = auto from free RAM)
+    uint64_t max_disk_bytes = 0;       // Maximum disk space budget (0 = auto from free disk)
+    bool embed_packed_experts = false; // Embed full PackedExpertsBlob in .gexec (vs zero-extra-pass on-load interleave)
+    bool allow_partial_artifact = true; // Save resumable partial .gexec if budget expires mid-run
+    bool resume_interrupted = true;     // Resume from <output>.progress.json if valid
     GExecSectionKind only_section = GExecSectionKind::Invalid; // If != Invalid, regenerate only this section
 };
 
 struct GExecOptimizeOptions {
     std::string gpack_path;
-    std::string output_gexec_path;         // Empty = auto path in cache_dir
-    std::string cache_dir;                 // Empty = <gpack_dir>/.gexec_cache or $GUILD_GEXEC_CACHE_DIR
+    std::string output_gexec_path; // Empty = auto path in cache_dir
+    std::string cache_dir;         // Empty = <gpack_dir>/.gexec_cache or $GUILD_GEXEC_CACHE_DIR
     GExecOptMode mode = GExecOptMode::Auto;
     GExecOptBudget budget;
 
@@ -44,10 +44,10 @@ struct GExecOptimizeOptions {
     std::string kv_mode = "host_only";
     int64_t max_context = 2048;
     int64_t prefill_batch = 64;
-    int32_t mtp_spec_tokens = -1;          // -1 = auto from GPACK manifest (1 if has_mtp else 0)
+    int32_t mtp_spec_tokens = -1; // -1 = auto from GPACK manifest (1 if has_mtp else 0)
 
     // Optional fault injection for testing interrupted runs / corruption recovery
-    int32_t stop_after_pass = -1;          // If >= 0, simulates budget/interruption stop after pass N
+    int32_t stop_after_pass = -1; // If >= 0, simulates budget/interruption stop after pass N
 };
 
 struct GExecOptimizeResult {
@@ -80,47 +80,31 @@ struct GExecCacheCleanResult {
 };
 
 // Builds the canonical GExecArtifactIdentity for an opened GPACK container on the current host.
-GExecArtifactIdentity build_current_gexec_identity(
-    const artifact::GPackReader& gpack,
-    const std::string& kv_format = "fp16",
-    const std::string& kv_mode = "host_only",
-    int64_t max_context = 2048,
-    int64_t prefill_batch = 64,
-    int32_t mtp_spec_tokens = -1);
+GExecArtifactIdentity build_current_gexec_identity(const artifact::GPackReader& gpack,
+                                                   const std::string& kv_format = "fp16",
+                                                   const std::string& kv_mode = "host_only", int64_t max_context = 2048,
+                                                   int64_t prefill_batch = 64, int32_t mtp_spec_tokens = -1);
 
 // Computes the default .gexec artifact path for a given GPACK path and identity.
-std::string default_gexec_path_for_gpack(
-    const std::string& gpack_path,
-    const GExecArtifactIdentity& identity,
-    const std::string& cache_dir = "");
+std::string default_gexec_path_for_gpack(const std::string& gpack_path, const GExecArtifactIdentity& identity,
+                                         const std::string& cache_dir = "");
 
 // Runs the GEXEC ahead-of-time optimization pipeline on a GPACK model.
-GExecOptimizeResult optimize_gpack(
-    const GExecOptimizeOptions& opts,
-    std::function<void(const std::string& stage_msg)> progress_cb = nullptr);
+GExecOptimizeResult optimize_gpack(const GExecOptimizeOptions& opts,
+                                   std::function<void(const std::string& stage_msg)> progress_cb = nullptr);
 
 // Regenerates a single section inside an existing .gexec file without re-running other passes.
-bool regenerate_gexec_section(
-    const std::string& gexec_path,
-    const std::string& gpack_path,
-    GExecSectionKind section_kind,
-    std::string& err,
-    const GExecOptBudget& budget = {});
+bool regenerate_gexec_section(const std::string& gexec_path, const std::string& gpack_path,
+                              GExecSectionKind section_kind, std::string& err, const GExecOptBudget& budget = {});
 
 // Resolves and opens a compatible .gexec artifact for a GPACK model if one exists.
 // Never fails model loading: if absent, incompatible, or corrupted, returns false and populates `fallback_reason`.
-bool resolve_gexec_for_gpack(
-    const std::string& gpack_path,
-    const std::string& explicit_gexec_path,
-    const GExecArtifactIdentity& current_identity,
-    GExecReader& out_reader,
-    std::string& fallback_reason,
-    GExecInvalidationReason* out_reason = nullptr);
+bool resolve_gexec_for_gpack(const std::string& gpack_path, const std::string& explicit_gexec_path,
+                             const GExecArtifactIdentity& current_identity, GExecReader& out_reader,
+                             std::string& fallback_reason, GExecInvalidationReason* out_reason = nullptr);
 
 // Cleans obsolete, corrupted, temporary, or all .gexec cache files in `cache_dir`.
-GExecCacheCleanResult clean_gexec_cache(
-    const std::string& cache_dir,
-    bool remove_all = false,
-    const GExecArtifactIdentity* keep_identity = nullptr);
+GExecCacheCleanResult clean_gexec_cache(const std::string& cache_dir, bool remove_all = false,
+                                        const GExecArtifactIdentity* keep_identity = nullptr);
 
 } // namespace guild::gexec

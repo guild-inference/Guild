@@ -15,7 +15,7 @@ struct StoreOptions {
 };
 
 struct BlobInfo {
-    std::string blob_id;        // SHA-256 or digest
+    std::string blob_id; // SHA-256 or digest
     uint64_t size_bytes{0};
     int ref_count{1};
     std::string path;
@@ -26,7 +26,9 @@ public:
     explicit ModelStore(const StoreOptions& options = {});
 
     // Root store directories
-    std::string data_dir() const { return root_dir_; }
+    std::string data_dir() const {
+        return root_dir_;
+    }
     std::string models_dir() const;
     std::string manifests_dir() const;
     std::string blobs_dir() const;
@@ -49,9 +51,7 @@ public:
     bool unregister_blob(const std::string& blob_id);
 
     // Model import without copying 94 GiB
-    bool import_model_directory(const ModelManifest& base_manifest,
-                                const std::string& source_dir,
-                                bool use_symlinks,
+    bool import_model_directory(const ModelManifest& base_manifest, const std::string& source_dir, bool use_symlinks,
                                 std::string& err_msg);
 
     // Validation

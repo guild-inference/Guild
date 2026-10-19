@@ -85,22 +85,38 @@ public:
     /// profile-filled tier never moves an expert to another layer's slot, so each slot keeps its first size).
     bool open_sized(const std::vector<int64_t>& slot_bytes, int64_t n_layers, int64_t n_expert, std::string& err);
     /// Byte offset of each slot in the arena (null for uniform slots).
-    const uint64_t* slot_offsets() const { return off_.empty() ? nullptr : off_.data(); }
+    const uint64_t* slot_offsets() const {
+        return off_.empty() ? nullptr : off_.data();
+    }
     void close();
 
-    bool valid() const { return base_ != nullptr; }
+    bool valid() const {
+        return base_ != nullptr;
+    }
     /// The slots usable now: all of them, unless `shrink` gave the tail's VRAM back (#533) - then the ones wholly
     /// inside the VRAM still backed, always a prefix.  The prompt path's loan (the last slots) and every report
     /// follow this; `full_slots()` is what `open` allocated.
-    int64_t slots() const { return live_slots_; }
-    int64_t full_slots() const { return slots_; }
+    int64_t slots() const {
+        return live_slots_;
+    }
+    int64_t full_slots() const {
+        return slots_;
+    }
     /// Slots actually claimed.  Not the same as `slots()` - the cache does not evict, so a run that routes
     /// fewer distinct experts than there are slots leaves the rest empty.
-    int64_t resident() const { return per_layer_ ? admitted_ : next_free_; }
+    int64_t resident() const {
+        return per_layer_ ? admitted_ : next_free_;
+    }
     /// The bytes of `slots()` (all of the arena unless shrunk); `full_bytes()`: of every slot.
-    int64_t bytes() const { return slot_end(live_slots_); }
-    int64_t full_bytes() const { return slot_end(slots_); }
-    double gib() const { return (double) bytes() / 1073741824.0; }
+    int64_t bytes() const {
+        return slot_end(live_slots_);
+    }
+    int64_t full_bytes() const {
+        return slot_end(slots_);
+    }
+    double gib() const {
+        return (double) bytes() / 1073741824.0;
+    }
 
     /// **#533: HOT VRAM RESIZE, OPT-IN (--vram-elastic).**  With a segment size set before `open`/`open_sized`, the
     /// arena is one reserved address range backed by physical segments of that size (CUDA virtual memory
@@ -109,9 +125,15 @@ public:
     /// plan's pointers and the prompt path's loan all hold addresses into it).  0 (the default): one cudaMalloc, as
     /// always.  CUDA only: a HIP build refuses it at open.  The slots past `slots()` after a shrink must hold no
     /// resident expert and no loan: the CALLER evicts them first (they become CPU misses).
-    void set_segment_bytes(int64_t seg_bytes) { seg_req_ = seg_bytes > 0 ? seg_bytes : 0; }
-    bool segmented() const { return !segs_.empty(); }
-    int64_t segment_bytes() const { return seg_; }
+    void set_segment_bytes(int64_t seg_bytes) {
+        seg_req_ = seg_bytes > 0 ? seg_bytes : 0;
+    }
+    bool segmented() const {
+        return !segs_.empty();
+    }
+    int64_t segment_bytes() const {
+        return seg_;
+    }
     /// Bytes of the arena backed by VRAM now (a whole number of segments; the arena when not segmented).
     int64_t mapped_bytes() const;
     /// Unmaps every segment past the first `keep_bytes` (rounded UP to a segment boundary): `slots()` becomes the
@@ -125,7 +147,9 @@ public:
     /// The number of leading slots that fit wholly inside the first `bytes` bytes.
     int64_t slots_within(int64_t bytes) const;
     /// The bytes the first `n` slots span.
-    int64_t bytes_of(int64_t n) const { return slot_end(n < 0 ? 0 : n > slots_ ? slots_ : n); }
+    int64_t bytes_of(int64_t n) const {
+        return slot_end(n < 0 ? 0 : n > slots_ ? slots_ : n);
+    }
 
     /// `(layer, expert)` -> slot index, or `kNotResident`.  Bounds-checked: a bad layer or expert returns
     /// `kNotResident` rather than reading whatever is adjacent in the table.
@@ -158,8 +182,12 @@ public:
     /// layer taking the remainder.  **EVICTION IS STILL ABSENT** - the property the comment above calls
     /// deliberate is preserved exactly; only WHICH slot a layer may take changes.  Default off, so every
     /// caller that predates this flag is bit-for-bit unaffected.
-    void set_per_layer_admission(bool on) { per_layer_ = on; }
-    bool per_layer_admission() const { return per_layer_; }
+    void set_per_layer_admission(bool on) {
+        per_layer_ = on;
+    }
+    bool per_layer_admission() const {
+        return per_layer_;
+    }
     /// The slot range layer `l` may admit into under per-layer admission.  Exposed so a test can check it.
     void layer_slot_range(int64_t layer, int64_t& lo, int64_t& hi) const;
 
@@ -190,7 +218,9 @@ public:
     bool verify_slot(int32_t slot, const uint8_t* host_blob, std::string& err, int64_t bytes = 0);
 
     /// Slots filled so far, for the startup report.
-    int64_t fills() const { return fills_; }
+    int64_t fills() const {
+        return fills_;
+    }
 
 private:
 #if defined(GUILD_USE_HIP)
@@ -198,18 +228,20 @@ private:
     uint8_t* blocking_staging_ = nullptr;
     std::size_t blocking_staging_bytes_ = 0;
 #endif
-    int64_t slot_end(int64_t n) const { return off_.empty() ? n * blob_ : (int64_t) off_[(size_t) n]; }
+    int64_t slot_end(int64_t n) const {
+        return off_.empty() ? n * blob_ : (int64_t) off_[(size_t) n];
+    }
     bool open_segmented(uint64_t want, std::string& err);
     void release_segmented();
     uint8_t* base_ = nullptr;
-    int64_t live_slots_ = 0;            ///< #533: slots() - all of them unless shrunk
-    int64_t seg_req_ = 0;               ///< #533: the segment size asked for (0: one cudaMalloc)
-    int64_t seg_ = 0;                   ///< #533: the segment size used (a multiple of the driver's granularity)
-    uint64_t reserved_ = 0;             ///< #533: the reserved address range's size
-    std::vector<unsigned long long> segs_;   ///< #533: each segment's physical handle (0: unmapped)
-    std::vector<int64_t> seg_size_;     ///< #533: each segment's size (the last one may be shorter)
-    int64_t mapped_segs_ = 0;           ///< #533: segments [0, mapped_segs_) are backed
-    std::vector<int32_t> residency_;   ///< [n_layers * n_expert] -> slot or kNotResident
+    int64_t live_slots_ = 0;               ///< #533: slots() - all of them unless shrunk
+    int64_t seg_req_ = 0;                  ///< #533: the segment size asked for (0: one cudaMalloc)
+    int64_t seg_ = 0;                      ///< #533: the segment size used (a multiple of the driver's granularity)
+    uint64_t reserved_ = 0;                ///< #533: the reserved address range's size
+    std::vector<unsigned long long> segs_; ///< #533: each segment's physical handle (0: unmapped)
+    std::vector<int64_t> seg_size_;        ///< #533: each segment's size (the last one may be shorter)
+    int64_t mapped_segs_ = 0;              ///< #533: segments [0, mapped_segs_) are backed
+    std::vector<int32_t> residency_;       ///< [n_layers * n_expert] -> slot or kNotResident
     int64_t slots_ = 0;
     int64_t n_layers_ = 0;
     int64_t n_expert_ = 0;
@@ -219,9 +251,9 @@ private:
     /// R4.2g.  `per_layer_` off (the default) leaves `next_free_` as the only admission counter, so the
     /// pre-existing path is untouched.
     bool per_layer_ = false;
-    std::vector<int32_t> layer_next_;   ///< [n_layers] -> that layer's next free slot
-    std::vector<uint64_t> off_;         ///< plan v0.3 P6: slot offsets (slots + 1 entries) when sized
+    std::vector<int32_t> layer_next_; ///< [n_layers] -> that layer's next free slot
+    std::vector<uint64_t> off_;       ///< plan v0.3 P6: slot offsets (slots + 1 entries) when sized
     int64_t admitted_ = 0;
 };
 
-}  // namespace guild::core
+} // namespace guild::core

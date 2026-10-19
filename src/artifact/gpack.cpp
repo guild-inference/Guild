@@ -38,7 +38,8 @@ using Clock = std::chrono::steady_clock;
 namespace {
 
 uint64_t align_up(uint64_t v, uint64_t a) {
-    if (a <= 1) return v;
+    if (a <= 1)
+        return v;
     return (v + a - 1) / a * a;
 }
 
@@ -50,24 +51,29 @@ std::string bytes_to_hex(const uint8_t* bytes, size_t n) {
     static const char* lut = "0123456789abcdef";
     std::string out(n * 2, '0');
     for (size_t i = 0; i < n; ++i) {
-        out[2 * i]     = lut[(bytes[i] >> 4) & 0xF];
+        out[2 * i] = lut[(bytes[i] >> 4) & 0xF];
         out[2 * i + 1] = lut[bytes[i] & 0xF];
     }
     return out;
 }
 
 bool hex_to_bytes(const std::string& hex, uint8_t* out, size_t n) {
-    if (hex.size() != n * 2) return false;
+    if (hex.size() != n * 2)
+        return false;
     auto val = [](char c) -> int {
-        if (c >= '0' && c <= '9') return c - '0';
-        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+        if (c >= '0' && c <= '9')
+            return c - '0';
+        if (c >= 'a' && c <= 'f')
+            return c - 'a' + 10;
+        if (c >= 'A' && c <= 'F')
+            return c - 'A' + 10;
         return -1;
     };
     for (size_t i = 0; i < n; ++i) {
         int hi = val(hex[2 * i]);
         int lo = val(hex[2 * i + 1]);
-        if (hi < 0 || lo < 0) return false;
+        if (hi < 0 || lo < 0)
+            return false;
         out[i] = static_cast<uint8_t>((hi << 4) | lo);
     }
     return true;
@@ -85,15 +91,28 @@ void sha256_bytes(const void* data, size_t len, uint8_t out[32]) {
 class BinaryWriter {
 public:
     std::vector<uint8_t> buf;
-    void u8(uint8_t v) { buf.push_back(v); }
-    void i32(int32_t v) { append(&v, sizeof(v)); }
-    void u32(uint32_t v) { append(&v, sizeof(v)); }
-    void i64(int64_t v) { append(&v, sizeof(v)); }
-    void u64(uint64_t v) { append(&v, sizeof(v)); }
-    void f64(double v) { append(&v, sizeof(v)); }
+    void u8(uint8_t v) {
+        buf.push_back(v);
+    }
+    void i32(int32_t v) {
+        append(&v, sizeof(v));
+    }
+    void u32(uint32_t v) {
+        append(&v, sizeof(v));
+    }
+    void i64(int64_t v) {
+        append(&v, sizeof(v));
+    }
+    void u64(uint64_t v) {
+        append(&v, sizeof(v));
+    }
+    void f64(double v) {
+        append(&v, sizeof(v));
+    }
     void str(const std::string& s) {
         u32(static_cast<uint32_t>(s.size()));
-        if (!s.empty()) append(s.data(), s.size());
+        if (!s.empty())
+            append(s.data(), s.size());
     }
     void append(const void* p, size_t n) {
         const auto* b = static_cast<const uint8_t*>(p);
@@ -107,23 +126,39 @@ public:
     size_t n = 0;
     size_t at = 0;
 
-    BinaryReader(const uint8_t* ptr, size_t size) : p(ptr), n(size), at(0) {}
+    BinaryReader(const uint8_t* ptr, size_t size) : p(ptr), n(size), at(0) {
+    }
 
     bool read_bytes(void* dst, size_t len) {
-        if (at > n || len > n - at) return false;
-        if (len > 0) std::memcpy(dst, p + at, len);
+        if (at > n || len > n - at)
+            return false;
+        if (len > 0)
+            std::memcpy(dst, p + at, len);
         at += len;
         return true;
     }
-    bool u8(uint8_t& v) { return read_bytes(&v, sizeof(v)); }
-    bool i32(int32_t& v) { return read_bytes(&v, sizeof(v)); }
-    bool u32(uint32_t& v) { return read_bytes(&v, sizeof(v)); }
-    bool i64(int64_t& v) { return read_bytes(&v, sizeof(v)); }
-    bool u64(uint64_t& v) { return read_bytes(&v, sizeof(v)); }
-    bool f64(double& v) { return read_bytes(&v, sizeof(v)); }
+    bool u8(uint8_t& v) {
+        return read_bytes(&v, sizeof(v));
+    }
+    bool i32(int32_t& v) {
+        return read_bytes(&v, sizeof(v));
+    }
+    bool u32(uint32_t& v) {
+        return read_bytes(&v, sizeof(v));
+    }
+    bool i64(int64_t& v) {
+        return read_bytes(&v, sizeof(v));
+    }
+    bool u64(uint64_t& v) {
+        return read_bytes(&v, sizeof(v));
+    }
+    bool f64(double& v) {
+        return read_bytes(&v, sizeof(v));
+    }
     bool str(std::string& s, uint32_t max_len = 16u << 20) {
         uint32_t len = 0;
-        if (!u32(len) || len > max_len || at > n || len > n - at) return false;
+        if (!u32(len) || len > max_len || at > n || len > n - at)
+            return false;
         s.assign(reinterpret_cast<const char*>(p + at), len);
         at += len;
         return true;
@@ -132,61 +167,53 @@ public:
 
 bool eligible_native_dense(const guild::TensorInfo& tensor, bool include_ple_key) {
     const auto& name = tensor.name;
-    if (name.rfind("blk.", 0) != 0) return false;
+    if (name.rfind("blk.", 0) != 0)
+        return false;
     if (name == "blk.1.ple_key.weight") {
         return include_ple_key && (tensor.type == 42 || tensor.type == 18 || tensor.type == 23 || tensor.type == 8);
     }
     constexpr const char* suffixes[] = {
-        ".attn_qkv.weight",
-        ".attn_gate.weight",
-        ".ssm_out.weight",
-        ".attn_q.weight",
-        ".attn_k.weight",
-        ".attn_v.weight",
-        ".attn_output.weight",
-        ".ffn_gate_shexp.weight",
-        ".ffn_up_shexp.weight",
-        ".ffn_down_shexp.weight",
-        ".nextn.eh_proj.weight",
+        ".attn_qkv.weight",     ".attn_gate.weight",      ".ssm_out.weight",       ".attn_q.weight",
+        ".attn_k.weight",       ".attn_v.weight",         ".attn_output.weight",   ".ffn_gate_shexp.weight",
+        ".ffn_up_shexp.weight", ".ffn_down_shexp.weight", ".nextn.eh_proj.weight",
     };
     for (const char* suffix : suffixes) {
         const size_t n = std::strlen(suffix);
-        if (name.size() > n && name.compare(name.size() - n, n, suffix) == 0) return true;
+        if (name.size() > n && name.compare(name.size() - n, n, suffix) == 0)
+            return true;
     }
     return false;
 }
 
 bool supported_native_mmvq_type(int type, int64_t ne0, int64_t ne1) {
-    if (ne0 <= 0 || ne1 <= 0) return false;
+    if (ne0 <= 0 || ne1 <= 0)
+        return false;
     switch (type) {
-        case 2:  // Q4_0
-        case 6:  // Q5_0
-        case 7:  // Q5_1
-        case 8:  // Q8_0
-        case 11: // Q3_K
-        case 12: // Q4_K
-        case 13: // Q5_K
-        case 14: // Q6_K
-        case 16: // IQ2_XXS
-        case 17: // IQ2_XS
-        case 18: // IQ3_XXS
-        case 19: // IQ1_S
-        case 20: // IQ4_NL
-        case 21: // IQ3_S
-        case 22: // IQ2_S
-        case 23: // IQ4_XS
-        case 29: // IQ1_M
-        case 42: // Q2_0
-            return true;
-        default:
-            return false;
+    case 2:  // Q4_0
+    case 6:  // Q5_0
+    case 7:  // Q5_1
+    case 8:  // Q8_0
+    case 11: // Q3_K
+    case 12: // Q4_K
+    case 13: // Q5_K
+    case 14: // Q6_K
+    case 16: // IQ2_XXS
+    case 17: // IQ2_XS
+    case 18: // IQ3_XXS
+    case 19: // IQ1_S
+    case 20: // IQ4_NL
+    case 21: // IQ3_S
+    case 22: // IQ2_S
+    case 23: // IQ4_XS
+    case 29: // IQ1_M
+    case 42: // Q2_0
+        return true;
+    default: return false;
     }
 }
 
-bool parse_pack_index_file(const std::string& index_path,
-                           uint64_t& out_pool_bytes,
-                           std::vector<GPackDenseRowV1>& out_rows,
-                           std::string& err) {
+bool parse_pack_index_file(const std::string& index_path, uint64_t& out_pool_bytes,
+                           std::vector<GPackDenseRowV1>& out_rows, std::string& err) {
     std::ifstream in(index_path);
     if (!in.is_open()) {
         err = "cannot open pack index: " + index_path;
@@ -198,8 +225,10 @@ bool parse_pack_index_file(const std::string& index_path,
     size_t want_n = 0;
     std::string line;
     while (std::getline(in, line)) {
-        if (!line.empty() && line.back() == '\r') line.pop_back();
-        if (line.empty()) continue;
+        if (!line.empty() && line.back() == '\r')
+            line.pop_back();
+        if (line.empty())
+            continue;
         if (line[0] == '#') {
             unsigned long long a = 0, pb = 0, tn = 0;
             if (std::sscanf(line.c_str(), "# align %llu pool %llu tensors %llu", &a, &pb, &tn) == 3) {
@@ -217,11 +246,10 @@ bool parse_pack_index_file(const std::string& index_path,
         int file_id = 0, kind = 0, cb = 0, bias = 0, grp = 0, cbk = 0, hoff = 0, sfp16 = 0, ak = 0, raw16 = 0;
         unsigned long long so = 0, sb = 0, doff = 0, db = 0, cbytes = 0, sbytes = 0, obytes = 0;
         long long n0 = 0, n1 = 0;
-        int n = std::sscanf(
-            line.c_str(),
-            "%255s %d %d %llu %llu %llu %llu %lld %lld %d %d %d %d %d %llu %llu %llu %d %d",
-            name_buf, &file_id, &kind, &so, &sb, &doff, &db, &n0, &n1,
-            &cb, &bias, &grp, &cbk, &hoff, &cbytes, &sbytes, &obytes, &sfp16, &ak);
+        int n =
+            std::sscanf(line.c_str(), "%255s %d %d %llu %llu %llu %llu %lld %lld %d %d %d %d %d %llu %llu %llu %d %d",
+                        name_buf, &file_id, &kind, &so, &sb, &doff, &db, &n0, &n1, &cb, &bias, &grp, &cbk, &hoff,
+                        &cbytes, &sbytes, &obytes, &sfp16, &ak);
         if (n < 19) {
             err = "malformed row in pack index: " + line;
             return false;
@@ -269,11 +297,14 @@ GPackReader::~GPackReader() {
 }
 
 bool GPackReader::is_gpack_file(const std::string& path) {
-    if (path.empty()) return false;
+    if (path.empty())
+        return false;
     std::ifstream f(path, std::ios::binary);
-    if (!f.is_open()) return false;
+    if (!f.is_open())
+        return false;
     uint32_t magic = 0;
-    if (!f.read(reinterpret_cast<char*>(&magic), sizeof(magic))) return false;
+    if (!f.read(reinterpret_cast<char*>(&magic), sizeof(magic)))
+        return false;
     return magic == kGPackMagic;
 }
 
@@ -281,13 +312,16 @@ void GPackReader::close() {
     if (base_ != nullptr) {
 #if defined(_WIN32)
         UnmapViewOfFile(base_);
-        if (mapping_handle_) CloseHandle(static_cast<HANDLE>(mapping_handle_));
-        if (file_handle_) CloseHandle(static_cast<HANDLE>(file_handle_));
+        if (mapping_handle_)
+            CloseHandle(static_cast<HANDLE>(mapping_handle_));
+        if (file_handle_)
+            CloseHandle(static_cast<HANDLE>(file_handle_));
         mapping_handle_ = nullptr;
         file_handle_ = nullptr;
 #else
         munmap(const_cast<uint8_t*>(base_), static_cast<size_t>(file_size_));
-        if (fd_ >= 0) ::close(fd_);
+        if (fd_ >= 0)
+            ::close(fd_);
         fd_ = -1;
 #endif
         base_ = nullptr;
@@ -315,7 +349,8 @@ bool GPackReader::open(const std::string& path, std::string& err, bool verify_al
     }
 
 #if defined(_WIN32)
-    HANDLE hf = CreateFileA(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    HANDLE hf = CreateFileA(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL,
+                            nullptr);
     if (hf == INVALID_HANDLE_VALUE) {
         err = "GPACK open: cannot open " + path;
         return false;
@@ -349,7 +384,7 @@ bool GPackReader::open(const std::string& path, std::string& err, bool verify_al
         err = "GPACK open: cannot open " + path;
         return false;
     }
-    struct stat st{};
+    struct stat st {};
     if (fstat(fd, &st) != 0 || st.st_size < static_cast<off_t>(sizeof(GPackHeaderV1) + sizeof(GPackFooterV1))) {
         ::close(fd);
         err = "GPACK open: file truncated or smaller than minimum GPACK container size: " + path;
@@ -380,7 +415,8 @@ bool GPackReader::open(const std::string& path, std::string& err, bool verify_al
         close();
         return false;
     }
-    if (header_.format_version != kGPackVersionV1 || header_.min_reader_version > kGPackVersionV1 || header_.min_reader_version == 0) {
+    if (header_.format_version != kGPackVersionV1 || header_.min_reader_version > kGPackVersionV1 ||
+        header_.min_reader_version == 0) {
         err = "GPACK open: unsupported GPACK format version " + std::to_string(header_.format_version) +
               " (min_reader_version " + std::to_string(header_.min_reader_version) + ")";
         close();
@@ -412,10 +448,8 @@ bool GPackReader::open(const std::string& path, std::string& err, bool verify_al
 
     const uint64_t payload_end = file_size_ - sizeof(GPackFooterV1);
     const uint64_t table_bytes = static_cast<uint64_t>(header_.section_count) * sizeof(GPackSectionEntryV1);
-    if (header_.section_table_offset < sizeof(GPackHeaderV1) ||
-        (header_.section_table_offset % 64) != 0 ||
-        header_.section_table_offset > payload_end ||
-        table_bytes > payload_end - header_.section_table_offset) {
+    if (header_.section_table_offset < sizeof(GPackHeaderV1) || (header_.section_table_offset % 64) != 0 ||
+        header_.section_table_offset > payload_end || table_bytes > payload_end - header_.section_table_offset) {
         err = "GPACK open: section table out of bounds or unaligned";
         close();
         return false;
@@ -469,9 +503,8 @@ bool GPackReader::open(const std::string& path, std::string& err, bool verify_al
         }
     }
 
-    std::sort(spans.begin(), spans.end(), [](const Span& a, const Span& b) {
-        return a.begin != b.begin ? a.begin < b.begin : a.end < b.end;
-    });
+    std::sort(spans.begin(), spans.end(),
+              [](const Span& a, const Span& b) { return a.begin != b.begin ? a.begin < b.begin : a.end < b.end; });
     for (size_t i = 1; i < spans.size(); ++i) {
         if (spans[i].begin < spans[i - 1].end) {
             err = "GPACK open: overlapping section spans detected";
@@ -480,8 +513,8 @@ bool GPackReader::open(const std::string& path, std::string& err, bool verify_al
         }
     }
 
-    if (!manifest_sec || manifest_sec->offset != header_.manifest_offset || manifest_sec->size != header_.manifest_size ||
-        manifest_sec->size == 0) {
+    if (!manifest_sec || manifest_sec->offset != header_.manifest_offset ||
+        manifest_sec->size != header_.manifest_size || manifest_sec->size == 0) {
         err = "GPACK open: missing or mismatched ManifestJson section";
         close();
         return false;
@@ -514,8 +547,8 @@ bool GPackReader::open(const std::string& path, std::string& err, bool verify_al
         close();
         return false;
     }
-    if (!mroot.contains("model") || !mroot["model"].is_object() ||
-        !mroot.contains("execution") || !mroot["execution"].is_object()) {
+    if (!mroot.contains("model") || !mroot["model"].is_object() || !mroot.contains("execution") ||
+        !mroot["execution"].is_object()) {
         err = "GPACK open: manifest missing required 'model' or 'execution' object";
         close();
         return false;
@@ -538,8 +571,8 @@ bool GPackReader::open(const std::string& path, std::string& err, bool verify_al
     desc_.attn.n_kv_heads = mobj["n_kv_heads"].as_int(0);
     desc_.attn.head_dim = mobj["head_dim"].as_int(0);
     desc_.attn.full_attn_interval = mobj["full_attn_interval"].as_int(0);
-    desc_.attn.pattern = desc_.attn.full_attn_interval > 0 ? model::AttentionPattern::HybridGDN
-                                                           : model::AttentionPattern::Standard;
+    desc_.attn.pattern =
+        desc_.attn.full_attn_interval > 0 ? model::AttentionPattern::HybridGDN : model::AttentionPattern::Standard;
     if (mobj.contains("rope") && mobj["rope"].is_object()) {
         const auto& robj = mobj["rope"];
         desc_.rope.freq_base = robj["freq_base"].as_double(10000.0);
@@ -653,18 +686,34 @@ bool GPackReader::open(const std::string& path, std::string& err, bool verify_al
             MetaValue mv{};
             if (kind == 1) { // int64
                 int64_t iv = 0;
-                if (!br.i64(iv)) { close(); err = "GPACK open: bad int64 meta"; return false; }
+                if (!br.i64(iv)) {
+                    close();
+                    err = "GPACK open: bad int64 meta";
+                    return false;
+                }
                 mv.type = MetaType::I64;
                 mv.u = static_cast<uint64_t>(iv);
             } else if (kind == 2) { // float64
                 mv.type = MetaType::F64;
-                if (!br.f64(mv.f)) { close(); err = "GPACK open: bad float64 meta"; return false; }
+                if (!br.f64(mv.f)) {
+                    close();
+                    err = "GPACK open: bad float64 meta";
+                    return false;
+                }
             } else if (kind == 3) { // string
                 mv.type = MetaType::STRING;
-                if (!br.str(mv.s)) { close(); err = "GPACK open: bad string meta"; return false; }
+                if (!br.str(mv.s)) {
+                    close();
+                    err = "GPACK open: bad string meta";
+                    return false;
+                }
             } else if (kind == 4) { // bool
                 uint8_t b = 0;
-                if (!br.u8(b)) { close(); err = "GPACK open: bad bool meta"; return false; }
+                if (!br.u8(b)) {
+                    close();
+                    err = "GPACK open: bad bool meta";
+                    return false;
+                }
                 mv.type = MetaType::BOOL;
                 mv.u = (b != 0) ? 1u : 0u;
             } else {
@@ -726,7 +775,8 @@ bool GPackReader::open(const std::string& path, std::string& err, bool verify_al
     if (const auto* sec = find_section(GPackSectionKind::DenseIndexBin)) {
         BinaryReader br(base_ + sec->offset, static_cast<size_t>(sec->size));
         uint32_t count = 0;
-        if (!br.u64(dense_pool_bytes_) || !br.u64(dense_compacted_pool_bytes_) || !br.u32(count) || count != sec->item_count) {
+        if (!br.u64(dense_pool_bytes_) || !br.u64(dense_compacted_pool_bytes_) || !br.u32(count) ||
+            count != sec->item_count) {
             err = "GPACK open: corrupted DenseIndexBin header";
             close();
             return false;
@@ -735,21 +785,19 @@ bool GPackReader::open(const std::string& path, std::string& err, bool verify_al
         for (uint32_t i = 0; i < count; ++i) {
             auto& r = dense_rows_[i];
             uint8_t flags = 0;
-            if (!br.str(r.name) || !br.i32(r.file_id) || !br.i32(r.kind) ||
-                !br.u64(r.src_off) || !br.u64(r.src_bytes) ||
-                !br.u64(r.dst_off) || !br.u64(r.dst_bytes) ||
-                !br.i64(r.ne0) || !br.i64(r.ne1) ||
-                !br.i32(r.code_bits) || !br.i32(r.code_bias) || !br.i32(r.group_elems) ||
-                !br.i32(r.codebook) || !br.i32(r.has_offset) ||
-                !br.u64(r.codes_bytes) || !br.u64(r.scales_bytes) || !br.u64(r.offset_bytes) ||
-                !br.i32(r.scales_fp16) || !br.i32(r.act_kind) || !br.u8(flags)) {
+            if (!br.str(r.name) || !br.i32(r.file_id) || !br.i32(r.kind) || !br.u64(r.src_off) ||
+                !br.u64(r.src_bytes) || !br.u64(r.dst_off) || !br.u64(r.dst_bytes) || !br.i64(r.ne0) ||
+                !br.i64(r.ne1) || !br.i32(r.code_bits) || !br.i32(r.code_bias) || !br.i32(r.group_elems) ||
+                !br.i32(r.codebook) || !br.i32(r.has_offset) || !br.u64(r.codes_bytes) || !br.u64(r.scales_bytes) ||
+                !br.u64(r.offset_bytes) || !br.i32(r.scales_fp16) || !br.i32(r.act_kind) || !br.u8(flags)) {
                 err = "GPACK open: truncated DenseIndexBin row";
                 close();
                 return false;
             }
             r.raw16 = (flags & 1u) != 0;
             r.skip_in_native = (flags & 2u) != 0;
-            if (r.skip_in_native) precomputed_skip_set_.insert(r.name);
+            if (r.skip_in_native)
+                precomputed_skip_set_.insert(r.name);
         }
     }
 
@@ -766,11 +814,8 @@ bool GPackReader::open(const std::string& path, std::string& err, bool verify_al
         for (uint32_t i = 0; i < count; ++i) {
             auto& r = native_dense_rows_[i];
             uint8_t ple_flag = 0;
-            if (!br.str(r.name) || !br.i32(r.ggml_type) ||
-                !br.i64(r.ne0) || !br.i64(r.ne1) ||
-                !br.u64(r.blob_offset) || !br.u64(r.byte_size) ||
-                !br.u64(r.arena_offset) || !br.u64(r.aligned_size) ||
-                !br.u8(ple_flag)) {
+            if (!br.str(r.name) || !br.i32(r.ggml_type) || !br.i64(r.ne0) || !br.i64(r.ne1) || !br.u64(r.blob_offset) ||
+                !br.u64(r.byte_size) || !br.u64(r.arena_offset) || !br.u64(r.aligned_size) || !br.u8(ple_flag)) {
                 err = "GPACK open: truncated NativeDenseIndexBin row";
                 close();
                 return false;
@@ -794,9 +839,8 @@ bool GPackReader::open(const std::string& path, std::string& err, bool verify_al
         expert_layers_.resize(count);
         for (uint32_t i = 0; i < count; ++i) {
             auto& r = expert_layers_[i];
-            if (!br.i64(r.layer) || !br.i32(r.gu_type) || !br.i32(r.d_type) ||
-                !br.u64(r.layer_offset) || !br.u64(r.blob_bytes) ||
-                !br.u64(r.gate_off) || !br.u64(r.up_off) || !br.u64(r.down_off) ||
+            if (!br.i64(r.layer) || !br.i32(r.gu_type) || !br.i32(r.d_type) || !br.u64(r.layer_offset) ||
+                !br.u64(r.blob_bytes) || !br.u64(r.gate_off) || !br.u64(r.up_off) || !br.u64(r.down_off) ||
                 !br.u64(r.gguf_gate_off) || !br.u64(r.gguf_up_off) || !br.u64(r.gguf_down_off) ||
                 !br.str(r.gate_shard) || !br.str(r.up_shard) || !br.str(r.down_shard)) {
                 err = "GPACK open: truncated ExpertLayoutBin row";
@@ -853,7 +897,8 @@ bool GPackReader::extract_tokenizer_assets(const std::string& dst_dir, std::stri
         }
         fs::path out_p = fs::path(dst_dir) / filename;
         std::ofstream out(out_p, std::ios::binary);
-        if (!out.is_open() || !out.write(reinterpret_cast<const char*>(br.p + br.at), static_cast<std::streamsize>(fbytes))) {
+        if (!out.is_open() ||
+            !out.write(reinterpret_cast<const char*>(br.p + br.at), static_cast<std::streamsize>(fbytes))) {
             err = "failed to write extracted tokenizer file: " + out_p.string();
             return false;
         }
@@ -867,39 +912,48 @@ guild_model_reader_v1_t GPackReader::make_abi_model_reader() const {
     reader.struct_size = sizeof(reader);
     reader.user = const_cast<GPackReader*>(this);
     reader.get_i64 = [](void* u, const char* key, int64_t* out) -> guild_status_t {
-        if (!key || !out) return GUILD_STATUS_ERR_INVALID_ARGUMENT;
+        if (!key || !out)
+            return GUILD_STATUS_ERR_INVALID_ARGUMENT;
         const auto* self = static_cast<const GPackReader*>(u);
         const auto* v = self->get_meta(key);
-        if (!v || !v->is_num()) return GUILD_STATUS_ERR_INVALID_ARGUMENT;
+        if (!v || !v->is_num())
+            return GUILD_STATUS_ERR_INVALID_ARGUMENT;
         *out = static_cast<int64_t>(v->u);
         return GUILD_STATUS_OK;
     };
     reader.get_f64 = [](void* u, const char* key, double* out) -> guild_status_t {
-        if (!key || !out) return GUILD_STATUS_ERR_INVALID_ARGUMENT;
+        if (!key || !out)
+            return GUILD_STATUS_ERR_INVALID_ARGUMENT;
         const auto* self = static_cast<const GPackReader*>(u);
         const auto* v = self->get_meta(key);
-        if (!v || !v->is_num()) return GUILD_STATUS_ERR_INVALID_ARGUMENT;
+        if (!v || !v->is_num())
+            return GUILD_STATUS_ERR_INVALID_ARGUMENT;
         *out = v->num();
         return GUILD_STATUS_OK;
     };
     reader.get_string = [](void* u, const char* key, char* out, size_t cap) -> guild_status_t {
-        if (!key || !out || cap == 0) return GUILD_STATUS_ERR_INVALID_ARGUMENT;
+        if (!key || !out || cap == 0)
+            return GUILD_STATUS_ERR_INVALID_ARGUMENT;
         const auto* self = static_cast<const GPackReader*>(u);
         const auto* v = self->get_meta(key);
-        if (!v || v->type != MetaType::STRING || v->s.size() + 1 > cap) return GUILD_STATUS_ERR_INVALID_ARGUMENT;
+        if (!v || v->type != MetaType::STRING || v->s.size() + 1 > cap)
+            return GUILD_STATUS_ERR_INVALID_ARGUMENT;
         std::memcpy(out, v->s.c_str(), v->s.size() + 1);
         return GUILD_STATUS_OK;
     };
     reader.get_tensor = [](void* u, const char* name, guild_tensor_desc_t* out) -> guild_status_t {
-        if (!name || !out) return GUILD_STATUS_ERR_INVALID_ARGUMENT;
+        if (!name || !out)
+            return GUILD_STATUS_ERR_INVALID_ARGUMENT;
         const auto* self = static_cast<const GPackReader*>(u);
         const auto* t = self->find_tensor(name);
-        if (!t) return GUILD_STATUS_ERR_INVALID_ARGUMENT;
+        if (!t)
+            return GUILD_STATUS_ERR_INVALID_ARGUMENT;
         *out = guild_tensor_desc_t{};
         out->struct_size = sizeof(*out);
         out->dtype = static_cast<guild_dtype_t>(t->type);
         out->n_dims = static_cast<int32_t>(std::min<size_t>(t->shape.size(), GUILD_MAX_TENSOR_DIMS));
-        for (int32_t i = 0; i < out->n_dims; ++i) out->dims[i] = static_cast<int64_t>(t->shape[static_cast<size_t>(i)]);
+        for (int32_t i = 0; i < out->n_dims; ++i)
+            out->dims[i] = static_cast<int64_t>(t->shape[static_cast<size_t>(i)]);
         out->buffer.struct_size = sizeof(out->buffer);
         out->buffer.byte_size = tensor_payload_bytes(*t);
         return GUILD_STATUS_OK;
@@ -926,10 +980,9 @@ bool GPackBuilder::build(const GPackBuildOptions& opts, GPackBuildReport& report
         err = "GPackBuilder: input path does not exist: " + opts.primary_input_path;
         return false;
     }
-    if (in_path.extension() == ".safetensors" ||
-        in_path.filename() == "model.safetensors.index.json" ||
-        (fs::is_directory(in_path) && (fs::exists(in_path / "model.safetensors") ||
-                                       fs::exists(in_path / "model.safetensors.index.json")))) {
+    if (in_path.extension() == ".safetensors" || in_path.filename() == "model.safetensors.index.json" ||
+        (fs::is_directory(in_path) &&
+         (fs::exists(in_path / "model.safetensors") || fs::exists(in_path / "model.safetensors.index.json")))) {
         return build_from_safetensors(opts, report, err);
     }
 
@@ -943,10 +996,12 @@ bool GPackBuilder::build(const GPackBuildOptions& opts, GPackBuildReport& report
     model::ModelDescriptor desc;
     if (model::ModelRunnerRegistry::instance().resolve_for_gguf(gguf_model.meta(), &runner, err) != GUILD_STATUS_OK ||
         !runner || !runner->validate_and_describe(gguf_model, desc, err)) {
-        if (err.empty()) err = "GPackBuilder: model failed runner validation";
+        if (err.empty())
+            err = "GPackBuilder: model failed runner validation";
         return false;
     }
-    if (!opts.model_name.empty()) desc.name = opts.model_name;
+    if (!opts.model_name.empty())
+        desc.name = opts.model_name;
 
     core::ModelGeometry geom;
     int64_t k_active = 0;
@@ -972,7 +1027,8 @@ bool GPackBuilder::build(const GPackBuildOptions& opts, GPackBuildReport& report
     }
     meta_bw.u32(meta_count);
     for (const auto& [k, v] : gguf_model.meta().metadata()) {
-        if (v.type == MetaType::ARRAY) continue;
+        if (v.type == MetaType::ARRAY)
+            continue;
         if (v.type == MetaType::STRING) {
             meta_bw.str(k);
             meta_bw.u8(3);
@@ -1020,7 +1076,8 @@ bool GPackBuilder::build(const GPackBuildOptions& opts, GPackBuildReport& report
         tidx_bw.str(t.name);
         tidx_bw.i32(static_cast<int32_t>(t.type));
         tidx_bw.u32(static_cast<uint32_t>(t.shape.size()));
-        for (uint64_t d : t.shape) tidx_bw.u64(d);
+        for (uint64_t d : t.shape)
+            tidx_bw.u64(d);
         tidx_bw.u64(t.offset);
         tidx_bw.u64(st.n_bytes);
     }
@@ -1034,7 +1091,8 @@ bool GPackBuilder::build(const GPackBuildOptions& opts, GPackBuildReport& report
     bool native_pack = true;
 
     if (has_pack_dir) {
-        if (!parse_pack_index_file((fs::path(opts.pack_dir) / "index.txt").string(), dense_pool_bytes, dense_rows, err)) {
+        if (!parse_pack_index_file((fs::path(opts.pack_dir) / "index.txt").string(), dense_pool_bytes, dense_rows,
+                                   err)) {
             return false;
         }
         native_pack = fs::exists(fs::path(opts.pack_dir) / "native_experts.txt");
@@ -1044,8 +1102,7 @@ bool GPackBuilder::build(const GPackBuildOptions& opts, GPackBuildReport& report
         for (const auto& st : all_tensors) {
             const auto& t = st.info;
             const uint64_t t_bytes = st.n_bytes;
-            if (t.name.find("_exps.weight") != std::string::npos ||
-                t.name == "per_layer_token_embd.weight") {
+            if (t.name.find("_exps.weight") != std::string::npos || t.name == "per_layer_token_embd.weight") {
                 continue;
             }
             GPackDenseRowV1 row{};
@@ -1055,10 +1112,8 @@ bool GPackBuilder::build(const GPackBuildOptions& opts, GPackBuildReport& report
             row.ne1 = t.shape.size() >= 2 ? static_cast<int64_t>(t.shape[1]) : 0;
             row.group_elems = 1;
             if (t.type == 0) { // F32
-                if (t.name.find("ffn_gate_inp") != std::string::npos ||
-                    t.name.find("ssm_alpha") != std::string::npos ||
-                    t.name.find("ssm_beta") != std::string::npos ||
-                    t.name.find("hc_") != std::string::npos) {
+                if (t.name.find("ffn_gate_inp") != std::string::npos || t.name.find("ssm_alpha") != std::string::npos ||
+                    t.name.find("ssm_beta") != std::string::npos || t.name.find("hc_") != std::string::npos) {
                     // Convert F32 router/gate/hc weights to BF16 raw16 if not norm
                     if (t.name.find("norm") == std::string::npos) {
                         row.kind = 1; // WeightKind::Bf16InF32
@@ -1148,11 +1203,14 @@ bool GPackBuilder::build(const GPackBuildOptions& opts, GPackBuildReport& report
 
     for (const auto& st : all_tensors) {
         const auto& t = st.info;
-        if (!eligible_native_dense(t, !keep_ple_key_in_pack)) continue;
-        if (t.shape.size() != 2) continue;
+        if (!eligible_native_dense(t, !keep_ple_key_in_pack))
+            continue;
+        if (t.shape.size() != 2)
+            continue;
         const int64_t ne0 = static_cast<int64_t>(t.shape[0]);
         const int64_t ne1 = static_cast<int64_t>(t.shape[1]);
-        if (!supported_native_mmvq_type(static_cast<int>(t.type), ne0, ne1)) continue;
+        if (!supported_native_mmvq_type(static_cast<int>(t.type), ne0, ne1))
+            continue;
         skip_set.insert(t.name);
 
         GPackNativeDenseRowV1 nrow{};
@@ -1246,15 +1304,14 @@ bool GPackBuilder::build(const GPackBuildOptions& opts, GPackBuildReport& report
         const std::string pfx = "blk." + std::to_string(l) + ".ffn_";
         size_t s_gate = 0, s_up = 0, s_down = 0;
         const auto* t_gate = gguf_model.find(pfx + "gate_exps.weight", &s_gate);
-        const auto* t_up   = gguf_model.find(pfx + "up_exps.weight", &s_up);
+        const auto* t_up = gguf_model.find(pfx + "up_exps.weight", &s_up);
         const auto* t_down = gguf_model.find(pfx + "down_exps.weight", &s_down);
         if (!t_gate || !t_up || !t_down) {
             err = "GPackBuilder: missing routed expert tensor at layer " + std::to_string(l);
             return false;
         }
         if (t_gate->shape.size() != 3 || t_up->shape.size() != 3 || t_down->shape.size() != 3 ||
-            static_cast<int64_t>(t_gate->shape[2]) != n_expert ||
-            static_cast<int64_t>(t_up->shape[2]) != n_expert ||
+            static_cast<int64_t>(t_gate->shape[2]) != n_expert || static_cast<int64_t>(t_up->shape[2]) != n_expert ||
             static_cast<int64_t>(t_down->shape[2]) != n_expert) {
             err = "GPackBuilder: invalid routed expert tensor shape at layer " + std::to_string(l);
             return false;
@@ -1264,10 +1321,9 @@ bool GPackBuilder::build(const GPackBuildOptions& opts, GPackBuildReport& report
             return false;
         }
         const uint64_t gate_tot = tensor_payload_bytes(*t_gate);
-        const uint64_t up_tot   = tensor_payload_bytes(*t_up);
+        const uint64_t up_tot = tensor_payload_bytes(*t_up);
         const uint64_t down_tot = tensor_payload_bytes(*t_down);
-        if ((gate_tot % static_cast<uint64_t>(n_expert)) != 0 ||
-            (up_tot % static_cast<uint64_t>(n_expert)) != 0 ||
+        if ((gate_tot % static_cast<uint64_t>(n_expert)) != 0 || (up_tot % static_cast<uint64_t>(n_expert)) != 0 ||
             (down_tot % static_cast<uint64_t>(n_expert)) != 0) {
             err = "GPackBuilder: expert tensor byte size not divisible by n_expert at layer " + std::to_string(l);
             return false;
@@ -1287,20 +1343,18 @@ bool GPackBuilder::build(const GPackBuildOptions& opts, GPackBuildReport& report
         erow.up_off = g_per;
         erow.down_off = g_per + u_per;
         erow.gguf_gate_off = gguf_model.shard(s_gate).data_start() + t_gate->offset;
-        erow.gguf_up_off   = gguf_model.shard(s_up).data_start() + t_up->offset;
+        erow.gguf_up_off = gguf_model.shard(s_up).data_start() + t_up->offset;
         erow.gguf_down_off = gguf_model.shard(s_down).data_start() + t_down->offset;
         erow.gate_shard = fs::path(shards[s_gate]).filename().string();
-        erow.up_shard   = fs::path(shards[s_up]).filename().string();
+        erow.up_shard = fs::path(shards[s_up]).filename().string();
         erow.down_shard = fs::path(shards[s_down]).filename().string();
 
-        expert_src_ptrs[static_cast<size_t>(l)] = {
-            gguf_model.shard(s_gate).tensor_data(*t_gate),
-            gguf_model.shard(s_up).tensor_data(*t_up),
-            gguf_model.shard(s_down).tensor_data(*t_down),
-            g_per,
-            u_per,
-            d_per
-        };
+        expert_src_ptrs[static_cast<size_t>(l)] = {gguf_model.shard(s_gate).tensor_data(*t_gate),
+                                                   gguf_model.shard(s_up).tensor_data(*t_up),
+                                                   gguf_model.shard(s_down).tensor_data(*t_down),
+                                                   g_per,
+                                                   u_per,
+                                                   d_per};
         expert_total_bytes += blob_bytes * static_cast<uint64_t>(n_expert);
         expert_layers.push_back(std::move(erow));
     }
@@ -1330,11 +1384,11 @@ bool GPackBuilder::build(const GPackBuildOptions& opts, GPackBuildReport& report
 
     // 5. Find token_embd.weight, output.weight, and optional per_layer_token_embd.weight
     size_t s_emb = 0, s_head = 0, s_ple = 0;
-    const auto* t_emb  = gguf_model.find(runner->tensor_map().embedding_tensor, &s_emb);
+    const auto* t_emb = gguf_model.find(runner->tensor_map().embedding_tensor, &s_emb);
     const auto* t_head = gguf_model.find(runner->tensor_map().output_tensor, &s_head);
-    const auto* t_ple  = !runner->tensor_map().ple_table_tensor.empty()
-                             ? gguf_model.find(runner->tensor_map().ple_table_tensor, &s_ple)
-                             : nullptr;
+    const auto* t_ple = !runner->tensor_map().ple_table_tensor.empty()
+                            ? gguf_model.find(runner->tensor_map().ple_table_tensor, &s_ple)
+                            : nullptr;
     if (!t_emb || !t_head) {
         err = "GPackBuilder: missing token_embd.weight or output.weight";
         return false;
@@ -1361,11 +1415,11 @@ bool GPackBuilder::build(const GPackBuildOptions& opts, GPackBuildReport& report
             return false;
         }
         eos_ids.clear();
-        for (int32_t id : tok.eos_token_ids()) eos_ids.push_back(id);
+        for (int32_t id : tok.eos_token_ids())
+            eos_ids.push_back(id);
 
-        const std::vector<std::string> asset_names = {
-            "tokenizer.json", "vocab.json", "merges.txt", "token_type.json", "chat_template.jinja"
-        };
+        const std::vector<std::string> asset_names = {"tokenizer.json", "vocab.json", "merges.txt", "token_type.json",
+                                                      "chat_template.jinja"};
         std::vector<std::pair<std::string, std::vector<uint8_t>>> asset_files;
         for (const auto& aname : asset_names) {
             fs::path ap = fs::path(tok_dir) / aname;
@@ -1380,7 +1434,8 @@ bool GPackBuilder::build(const GPackBuildOptions& opts, GPackBuildReport& report
         for (const auto& [aname, data] : asset_files) {
             tok_assets_bw.str(aname);
             tok_assets_bw.u64(data.size());
-            if (!data.empty()) tok_assets_bw.append(data.data(), data.size());
+            if (!data.empty())
+                tok_assets_bw.append(data.data(), data.size());
         }
     }
 
@@ -1392,7 +1447,8 @@ bool GPackBuilder::build(const GPackBuildOptions& opts, GPackBuildReport& report
         std::vector<std::pair<std::string, fs::path>> found_mtp;
         for (const auto& mf : mtp_files) {
             fs::path mp = fs::path(opts.mtp_dir) / mf;
-            if (fs::is_regular_file(mp)) found_mtp.push_back({mf, mp});
+            if (fs::is_regular_file(mp))
+                found_mtp.push_back({mf, mp});
         }
         if (!found_mtp.empty()) {
             mtp_file_count = static_cast<uint32_t>(found_mtp.size());
@@ -1402,7 +1458,8 @@ bool GPackBuilder::build(const GPackBuildOptions& opts, GPackBuildReport& report
                 std::vector<uint8_t> data((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
                 mtp_bw.str(mf);
                 mtp_bw.u64(data.size());
-                if (!data.empty()) mtp_bw.append(data.data(), data.size());
+                if (!data.empty())
+                    mtp_bw.append(data.data(), data.size());
             }
         }
     }
@@ -1429,13 +1486,15 @@ bool GPackBuilder::build(const GPackBuildOptions& opts, GPackBuildReport& report
         fs::create_directories(out_file.parent_path(), ec);
     }
     static std::atomic<uint64_t> tmp_counter{0};
-    const fs::path tmp_path = out_file.string() + ".tmp." + std::to_string(
+    const fs::path tmp_path = out_file.string() + ".tmp." +
+                              std::to_string(
 #if defined(_WIN32)
-        GetCurrentProcessId()
+                                  GetCurrentProcessId()
 #else
-        ::getpid()
+                                  ::getpid()
 #endif
-    ) + "." + std::to_string(++tmp_counter);
+                                      ) +
+                              "." + std::to_string(++tmp_counter);
 
     struct TempGuard {
         fs::path p;
@@ -1455,14 +1514,16 @@ bool GPackBuilder::build(const GPackBuildOptions& opts, GPackBuildReport& report
     }
     struct FileGuard {
         FILE* f = nullptr;
-        ~FileGuard() { if (f) std::fclose(f); }
+        ~FileGuard() {
+            if (f)
+                std::fclose(f);
+        }
     } fguard{fp};
 
-    auto write_exact = [&](const void* buf, size_t n) -> bool {
-        return n == 0 || std::fwrite(buf, 1, n, fp) == n;
-    };
+    auto write_exact = [&](const void* buf, size_t n) -> bool { return n == 0 || std::fwrite(buf, 1, n, fp) == n; };
     auto pad_to = [&](uint64_t cur, uint64_t target) -> bool {
-        if (target <= cur) return true;
+        if (target <= cur)
+            return true;
         std::vector<uint8_t> zeros(static_cast<size_t>(target - cur), 0);
         return write_exact(zeros.data(), zeros.size());
     };
@@ -1501,23 +1562,32 @@ bool GPackBuilder::build(const GPackBuildOptions& opts, GPackBuildReport& report
         return true;
     };
 
-    if (!add_memory_section(GPackSectionKind::MetadataKvBin, "metadata_kv", 64, meta_count,
-                            meta_bw.buf.data(), meta_bw.buf.size())) return false;
+    if (!add_memory_section(GPackSectionKind::MetadataKvBin, "metadata_kv", 64, meta_count, meta_bw.buf.data(),
+                            meta_bw.buf.size()))
+        return false;
     if (!add_memory_section(GPackSectionKind::TensorIndexBin, "tensor_index", 64, all_tensors.size(),
-                            tidx_bw.buf.data(), tidx_bw.buf.size())) return false;
-    if (!add_memory_section(GPackSectionKind::DenseIndexBin, "dense_index", 64, dense_rows.size(),
-                            didx_bw.buf.data(), didx_bw.buf.size())) return false;
+                            tidx_bw.buf.data(), tidx_bw.buf.size()))
+        return false;
+    if (!add_memory_section(GPackSectionKind::DenseIndexBin, "dense_index", 64, dense_rows.size(), didx_bw.buf.data(),
+                            didx_bw.buf.size()))
+        return false;
 
     // Write DensePackBlob (4096-byte aligned)
     {
         const uint64_t align = 4096;
         const uint64_t aligned_off = align_up(cursor, align);
-        if (!pad_to(cursor, aligned_off)) { err = "GPackBuilder: pad failed"; return false; }
+        if (!pad_to(cursor, aligned_off)) {
+            err = "GPackBuilder: pad failed";
+            return false;
+        }
         cursor = aligned_off;
         models::Sha256 hasher;
         if (has_pack_dir) {
             std::ifstream dbin(dense_bin_path, std::ios::binary);
-            if (!dbin.is_open()) { err = "GPackBuilder: cannot open dense.bin"; return false; }
+            if (!dbin.is_open()) {
+                err = "GPackBuilder: cannot open dense.bin";
+                return false;
+            }
             std::vector<uint8_t> chunk(8u << 20);
             uint64_t rem = dense_bin_size;
             while (rem > 0) {
@@ -1555,11 +1625,15 @@ bool GPackBuilder::build(const GPackBuildOptions& opts, GPackBuildReport& report
     // Write NativeDenseIndexBin + NativeDenseBlob
     if (!native_dense_rows.empty()) {
         if (!add_memory_section(GPackSectionKind::NativeDenseIndexBin, "native_dense_index", 64,
-                                native_dense_rows.size(), ndidx_bw.buf.data(), ndidx_bw.buf.size())) return false;
+                                native_dense_rows.size(), ndidx_bw.buf.data(), ndidx_bw.buf.size()))
+            return false;
 
         const uint64_t align = 4096;
         const uint64_t aligned_off = align_up(cursor, align);
-        if (!pad_to(cursor, aligned_off)) { err = "GPackBuilder: pad failed"; return false; }
+        if (!pad_to(cursor, aligned_off)) {
+            err = "GPackBuilder: pad failed";
+            return false;
+        }
         cursor = aligned_off;
         models::Sha256 hasher;
         uint64_t rel_off = 0;
@@ -1603,7 +1677,10 @@ bool GPackBuilder::build(const GPackBuildOptions& opts, GPackBuildReport& report
                                          uint64_t& out_bytes) -> bool {
         const uint64_t align = 4096;
         const uint64_t aligned_off = align_up(cursor, align);
-        if (!pad_to(cursor, aligned_off)) { err = "GPackBuilder: pad failed"; return false; }
+        if (!pad_to(cursor, aligned_off)) {
+            err = "GPackBuilder: pad failed";
+            return false;
+        }
         cursor = aligned_off;
 
         const uint64_t t_bytes = tensor_payload_bytes(t);
@@ -1652,20 +1729,24 @@ bool GPackBuilder::build(const GPackBuildOptions& opts, GPackBuildReport& report
     }
 
     // Write ExpertLayoutBin and optional contiguous ExpertBlobs
-    if (!add_memory_section(GPackSectionKind::ExpertLayoutBin, "expert_layout", 64,
-                            expert_layers.size(), elay_bw.buf.data(), elay_bw.buf.size())) return false;
+    if (!add_memory_section(GPackSectionKind::ExpertLayoutBin, "expert_layout", 64, expert_layers.size(),
+                            elay_bw.buf.data(), elay_bw.buf.size()))
+        return false;
 
     if (opts.embed_experts) {
         const uint64_t align = 4096;
         const uint64_t aligned_off = align_up(cursor, align);
-        if (!pad_to(cursor, aligned_off)) { err = "GPackBuilder: pad failed"; return false; }
+        if (!pad_to(cursor, aligned_off)) {
+            err = "GPackBuilder: pad failed";
+            return false;
+        }
         cursor = aligned_off;
         models::Sha256 hasher;
         for (int64_t l = 0; l < n_layers; ++l) {
             const auto& sp = expert_src_ptrs[static_cast<size_t>(l)];
             for (int64_t e = 0; e < n_expert; ++e) {
                 const uint8_t* g_slice = sp.gate_ptr + static_cast<uint64_t>(e) * sp.gate_bytes;
-                const uint8_t* u_slice = sp.up_ptr   + static_cast<uint64_t>(e) * sp.up_bytes;
+                const uint8_t* u_slice = sp.up_ptr + static_cast<uint64_t>(e) * sp.up_bytes;
                 const uint8_t* d_slice = sp.down_ptr + static_cast<uint64_t>(e) * sp.down_bytes;
                 if (!write_exact(g_slice, static_cast<size_t>(sp.gate_bytes)) ||
                     !write_exact(u_slice, static_cast<size_t>(sp.up_bytes)) ||
@@ -1693,19 +1774,22 @@ bool GPackBuilder::build(const GPackBuildOptions& opts, GPackBuildReport& report
 
     // Write TokenizerBin & TokenizerAssets
     if (!tok_bin_buf.empty()) {
-        if (!add_memory_section(GPackSectionKind::TokenizerBin, "tokenizer_bin", 64, 1,
-                                tok_bin_buf.data(), tok_bin_buf.size())) return false;
+        if (!add_memory_section(GPackSectionKind::TokenizerBin, "tokenizer_bin", 64, 1, tok_bin_buf.data(),
+                                tok_bin_buf.size()))
+            return false;
         report.tokenizer_bin_bytes = tok_bin_buf.size();
     }
     if (tok_asset_count > 0) {
         if (!add_memory_section(GPackSectionKind::TokenizerAssets, "tokenizer_assets", 64, tok_asset_count,
-                                tok_assets_bw.buf.data(), tok_assets_bw.buf.size())) return false;
+                                tok_assets_bw.buf.data(), tok_assets_bw.buf.size()))
+            return false;
     }
 
     // Write MtpBlob
     if (mtp_file_count > 0) {
-        if (!add_memory_section(GPackSectionKind::MtpBlob, "mtp_draft", 4096, mtp_file_count,
-                                mtp_bw.buf.data(), mtp_bw.buf.size())) return false;
+        if (!add_memory_section(GPackSectionKind::MtpBlob, "mtp_draft", 4096, mtp_file_count, mtp_bw.buf.data(),
+                                mtp_bw.buf.size()))
+            return false;
     }
 
     // 10. Build canonical ManifestJson (including all section records)
@@ -1776,7 +1860,8 @@ bool GPackBuilder::build(const GPackBuildOptions& opts, GPackBuildReport& report
     eobj["requires_ple"] = (runner_exec.requires_ple || t_ple != nullptr);
     eobj["supports_mtp"] = (runner_exec.supports_mtp || mtp_file_count > 0);
     JsonValue eos_arr(std::vector<JsonValue>{});
-    for (int64_t id : eos_ids) eos_arr.arr_val.push_back(JsonValue(id));
+    for (int64_t id : eos_ids)
+        eos_arr.arr_val.push_back(JsonValue(id));
     eobj["eos_token_ids"] = std::move(eos_arr);
     mroot["execution"] = std::move(eobj);
 
@@ -1809,8 +1894,9 @@ bool GPackBuilder::build(const GPackBuildOptions& opts, GPackBuildReport& report
 
     const std::string manifest_str = mroot.dump_pretty();
     const uint64_t manifest_offset = align_up(cursor, 64);
-    if (!add_memory_section(GPackSectionKind::ManifestJson, "manifest", 64, 1,
-                            manifest_str.data(), manifest_str.size())) return false;
+    if (!add_memory_section(GPackSectionKind::ManifestJson, "manifest", 64, 1, manifest_str.data(),
+                            manifest_str.size()))
+        return false;
     const auto& manifest_sec = sections.back();
     if (manifest_sec.offset != manifest_offset) {
         err = "GPackBuilder: internal manifest offset mismatch";
@@ -1819,7 +1905,10 @@ bool GPackBuilder::build(const GPackBuildOptions& opts, GPackBuildReport& report
 
     // 11. Write Section Table (64-byte aligned) and Footer
     const uint64_t section_table_offset = align_up(cursor, 64);
-    if (!pad_to(cursor, section_table_offset)) { err = "GPackBuilder: pad failed"; return false; }
+    if (!pad_to(cursor, section_table_offset)) {
+        err = "GPackBuilder: pad failed";
+        return false;
+    }
     cursor = section_table_offset;
     const uint64_t table_bytes = sections.size() * sizeof(GPackSectionEntryV1);
     if (!write_exact(sections.data(), static_cast<size_t>(table_bytes))) {
@@ -1829,7 +1918,10 @@ bool GPackBuilder::build(const GPackBuildOptions& opts, GPackBuildReport& report
     cursor += table_bytes;
 
     const uint64_t footer_offset = align_up(cursor, 64);
-    if (!pad_to(cursor, footer_offset)) { err = "GPackBuilder: pad failed"; return false; }
+    if (!pad_to(cursor, footer_offset)) {
+        err = "GPackBuilder: pad failed";
+        return false;
+    }
     cursor = footer_offset;
 
     GPackFooterV1 footer{};
@@ -1851,12 +1943,18 @@ bool GPackBuilder::build(const GPackBuildOptions& opts, GPackBuildReport& report
     header.format_version = kGPackVersionV1;
     header.min_reader_version = kGPackVersionV1;
     header.flags = GUILD_GPACK_FLAG_LITTLE_ENDIAN | GUILD_GPACK_FLAG_HAS_DENSE_PACK;
-    if (!native_dense_rows.empty()) header.flags |= GUILD_GPACK_FLAG_HAS_NATIVE_DENSE;
-    if (opts.embed_experts) header.flags |= GUILD_GPACK_FLAG_HAS_EXPERT_BLOBS;
-    else header.flags |= GUILD_GPACK_FLAG_EXTERNAL_EXPERTS;
-    if (!tok_bin_buf.empty()) header.flags |= GUILD_GPACK_FLAG_HAS_TOKENIZER_BIN;
-    if (mtp_file_count > 0) header.flags |= GUILD_GPACK_FLAG_HAS_MTP;
-    if (t_ple != nullptr) header.flags |= GUILD_GPACK_FLAG_HAS_PLE;
+    if (!native_dense_rows.empty())
+        header.flags |= GUILD_GPACK_FLAG_HAS_NATIVE_DENSE;
+    if (opts.embed_experts)
+        header.flags |= GUILD_GPACK_FLAG_HAS_EXPERT_BLOBS;
+    else
+        header.flags |= GUILD_GPACK_FLAG_EXTERNAL_EXPERTS;
+    if (!tok_bin_buf.empty())
+        header.flags |= GUILD_GPACK_FLAG_HAS_TOKENIZER_BIN;
+    if (mtp_file_count > 0)
+        header.flags |= GUILD_GPACK_FLAG_HAS_MTP;
+    if (t_ple != nullptr)
+        header.flags |= GUILD_GPACK_FLAG_HAS_PLE;
     header.section_count = static_cast<uint32_t>(sections.size());
     header.manifest_offset = manifest_sec.offset;
     header.manifest_size = manifest_sec.size;
@@ -1917,7 +2015,8 @@ bool GPackBuilder::build(const GPackBuildOptions& opts, GPackBuildReport& report
     return false;
 }
 
-bool GPackBuilder::build_from_safetensors(const GPackBuildOptions& opts, GPackBuildReport& report, std::string& err) try {
+bool GPackBuilder::build_from_safetensors(const GPackBuildOptions& opts, GPackBuildReport& report,
+                                          std::string& err) try {
     const auto build_t0 = Clock::now();
     report = GPackBuildReport{};
     err.clear();
@@ -1960,8 +2059,8 @@ bool GPackBuilder::build_from_safetensors(const GPackBuildOptions& opts, GPackBu
         std::string idx_str((std::istreambuf_iterator<char>(idx_f)), std::istreambuf_iterator<char>());
         JsonValue idx_root;
         std::string jerr;
-        if (!JsonValue::parse(idx_str, idx_root, jerr) || !idx_root.is_object() ||
-            !idx_root.contains("weight_map") || !idx_root["weight_map"].is_object()) {
+        if (!JsonValue::parse(idx_str, idx_root, jerr) || !idx_root.is_object() || !idx_root.contains("weight_map") ||
+            !idx_root["weight_map"].is_object()) {
             err = "Safetensors import: malformed model.safetensors.index.json";
             return false;
         }
@@ -1979,7 +2078,8 @@ bool GPackBuilder::build_from_safetensors(const GPackBuildOptions& opts, GPackBu
         }
     } else {
         st_files.push_back(in_path);
-        for (const auto& add : opts.additional_shards) st_files.push_back(add);
+        for (const auto& add : opts.additional_shards)
+            st_files.push_back(add);
     }
 
     if (st_files.empty()) {
@@ -2056,18 +2156,26 @@ bool GPackBuilder::build_from_safetensors(const GPackBuildOptions& opts, GPackBu
         }
         const uint64_t data_base = 8 + hdr_len;
         for (const auto& [tname, tval] : hroot.obj_val) {
-            if (tname == "__metadata__") continue;
-            if (!tval.is_object() || !tval.contains("dtype") || !tval.contains("shape") || !tval.contains("data_offsets")) {
+            if (tname == "__metadata__")
+                continue;
+            if (!tval.is_object() || !tval.contains("dtype") || !tval.contains("shape") ||
+                !tval.contains("data_offsets")) {
                 err = "Safetensors import: invalid tensor descriptor for '" + tname + "'";
                 return false;
             }
             const std::string dtype = tval["dtype"].as_string();
             uint32_t gtype = 0;
             uint64_t elem_bytes = 0;
-            if (dtype == "F32") { gtype = 0; elem_bytes = 4; }
-            else if (dtype == "F16") { gtype = 1; elem_bytes = 2; }
-            else if (dtype == "BF16") { gtype = 30; elem_bytes = 2; }
-            else {
+            if (dtype == "F32") {
+                gtype = 0;
+                elem_bytes = 4;
+            } else if (dtype == "F16") {
+                gtype = 1;
+                elem_bytes = 2;
+            } else if (dtype == "BF16") {
+                gtype = 30;
+                elem_bytes = 2;
+            } else {
                 err = "Safetensors import: unsupported safetensors dtype '" + dtype + "' for tensor '" + tname + "'";
                 return false;
             }
@@ -2116,7 +2224,8 @@ bool GPackBuilder::build_from_safetensors(const GPackBuildOptions& opts, GPackBu
             slice.ne = std::move(ne);
             slice.data.resize(static_cast<size_t>(byte_len));
             sf.seekg(static_cast<std::streamoff>(data_base + off0));
-            if (byte_len > 0 && !sf.read(reinterpret_cast<char*>(slice.data.data()), static_cast<std::streamsize>(byte_len))) {
+            if (byte_len > 0 &&
+                !sf.read(reinterpret_cast<char*>(slice.data.data()), static_cast<std::streamsize>(byte_len))) {
                 err = "Safetensors import: failed reading tensor '" + tname + "'";
                 return false;
             }
@@ -2133,10 +2242,14 @@ bool GPackBuilder::build_from_safetensors(const GPackBuildOptions& opts, GPackBu
     BinaryWriter meta_bw;
     meta_bw.u32(7);
     auto write_kv_str = [&](const std::string& k, const std::string& v) {
-        meta_bw.str(k); meta_bw.u8(3); meta_bw.str(v);
+        meta_bw.str(k);
+        meta_bw.u8(3);
+        meta_bw.str(v);
     };
     auto write_kv_i64 = [&](const std::string& k, int64_t v) {
-        meta_bw.str(k); meta_bw.u8(1); meta_bw.i64(v);
+        meta_bw.str(k);
+        meta_bw.u8(1);
+        meta_bw.i64(v);
     };
     write_kv_str("general.architecture", arch_name);
     write_kv_str("general.name", opts.model_name.empty() ? "safetensors-model" : opts.model_name);
@@ -2153,7 +2266,8 @@ bool GPackBuilder::build_from_safetensors(const GPackBuildOptions& opts, GPackBu
         tidx_bw.str(tname);
         tidx_bw.i32(static_cast<int32_t>(sl.ggml_type));
         tidx_bw.u32(static_cast<uint32_t>(sl.ne.size()));
-        for (uint64_t d : sl.ne) tidx_bw.u64(d);
+        for (uint64_t d : sl.ne)
+            tidx_bw.u64(d);
         tidx_bw.u64(synthetic_off);
         tidx_bw.u64(sl.data.size());
         synthetic_off += align_up(sl.data.size(), 64);
@@ -2163,7 +2277,8 @@ bool GPackBuilder::build_from_safetensors(const GPackBuildOptions& opts, GPackBu
     std::vector<uint8_t> dense_blob;
     uint64_t cur_off = 0;
     for (const auto& [tname, sl] : parsed_tensors) {
-        if (tname.find("_exps.weight") != std::string::npos) continue;
+        if (tname.find("_exps.weight") != std::string::npos)
+            continue;
         GPackDenseRowV1 r{};
         r.name = tname;
         r.kind = (sl.ggml_type == 0) ? 2 : 0;
@@ -2179,7 +2294,8 @@ bool GPackBuilder::build_from_safetensors(const GPackBuildOptions& opts, GPackBu
         const uint64_t padded = align_up(sl.data.size(), 64);
         const size_t old_sz = dense_blob.size();
         dense_blob.resize(old_sz + static_cast<size_t>(padded), 0);
-        if (!sl.data.empty()) std::memcpy(dense_blob.data() + old_sz, sl.data.data(), sl.data.size());
+        if (!sl.data.empty())
+            std::memcpy(dense_blob.data() + old_sz, sl.data.data(), sl.data.size());
         cur_off += padded;
         dense_rows.push_back(std::move(r));
     }
@@ -2277,16 +2393,19 @@ bool GPackBuilder::build_from_safetensors(const GPackBuildOptions& opts, GPackBu
     // Write container atomically
     fs::path out_file(opts.output_path);
     std::error_code ec;
-    if (out_file.has_parent_path()) fs::create_directories(out_file.parent_path(), ec);
+    if (out_file.has_parent_path())
+        fs::create_directories(out_file.parent_path(), ec);
     const fs::path tmp_path = out_file.string() + ".tmp.safetensors";
     FILE* fp = std::fopen(tmp_path.string().c_str(), "wb+");
-    if (!fp) { err = "Safetensors import: cannot open temp file"; return false; }
+    if (!fp) {
+        err = "Safetensors import: cannot open temp file";
+        return false;
+    }
 
-    auto write_exact = [&](const void* buf, size_t n) -> bool {
-        return n == 0 || std::fwrite(buf, 1, n, fp) == n;
-    };
+    auto write_exact = [&](const void* buf, size_t n) -> bool { return n == 0 || std::fwrite(buf, 1, n, fp) == n; };
     auto pad_to = [&](uint64_t cur, uint64_t target) -> bool {
-        if (target <= cur) return true;
+        if (target <= cur)
+            return true;
         std::vector<uint8_t> zeros(static_cast<size_t>(target - cur), 0);
         return write_exact(zeros.data(), zeros.size());
     };
@@ -2296,12 +2415,14 @@ bool GPackBuilder::build_from_safetensors(const GPackBuildOptions& opts, GPackBu
     write_exact(&dummy_hdr, sizeof(dummy_hdr));
 
     std::vector<GPackSectionEntryV1> sections;
-    auto add_mem = [&](GPackSectionKind kind, const char* name, uint64_t align, uint64_t items,
-                       const void* data, uint64_t size) -> bool {
+    auto add_mem = [&](GPackSectionKind kind, const char* name, uint64_t align, uint64_t items, const void* data,
+                       uint64_t size) -> bool {
         const uint64_t aligned_off = align_up(cursor, align);
-        if (!pad_to(cursor, aligned_off)) return false;
+        if (!pad_to(cursor, aligned_off))
+            return false;
         cursor = aligned_off;
-        if (!write_exact(data, static_cast<size_t>(size))) return false;
+        if (!write_exact(data, static_cast<size_t>(size)))
+            return false;
         GPackSectionEntryV1 sec{};
         sec.kind = static_cast<uint32_t>(kind);
         sec.offset = cursor;
@@ -2316,9 +2437,12 @@ bool GPackBuilder::build_from_safetensors(const GPackBuildOptions& opts, GPackBu
     };
 
     add_mem(GPackSectionKind::MetadataKvBin, "metadata_kv", 64, 7, meta_bw.buf.data(), meta_bw.buf.size());
-    add_mem(GPackSectionKind::TensorIndexBin, "tensor_index", 64, parsed_tensors.size(), tidx_bw.buf.data(), tidx_bw.buf.size());
-    add_mem(GPackSectionKind::DenseIndexBin, "dense_index", 64, dense_rows.size(), didx_bw.buf.data(), didx_bw.buf.size());
-    add_mem(GPackSectionKind::DensePackBlob, "dense_pack", 4096, dense_rows.size(), dense_blob.data(), dense_blob.size());
+    add_mem(GPackSectionKind::TensorIndexBin, "tensor_index", 64, parsed_tensors.size(), tidx_bw.buf.data(),
+            tidx_bw.buf.size());
+    add_mem(GPackSectionKind::DenseIndexBin, "dense_index", 64, dense_rows.size(), didx_bw.buf.data(),
+            didx_bw.buf.size());
+    add_mem(GPackSectionKind::DensePackBlob, "dense_pack", 4096, dense_rows.size(), dense_blob.data(),
+            dense_blob.size());
 
     auto write_single = [&](GPackSectionKind kind, const char* name, const SafetensorSlice& sl) {
         std::vector<uint8_t> buf(sizeof(GPackSingleTensorHeaderV1) + sl.data.size(), 0);
@@ -2329,13 +2453,16 @@ bool GPackBuilder::build_from_safetensors(const GPackBuildOptions& opts, GPackBu
         th.byte_size = sl.data.size();
         th.data_offset = sizeof(th);
         std::memcpy(buf.data(), &th, sizeof(th));
-        if (!sl.data.empty()) std::memcpy(buf.data() + sizeof(th), sl.data.data(), sl.data.size());
+        if (!sl.data.empty())
+            std::memcpy(buf.data() + sizeof(th), sl.data.data(), sl.data.size());
         add_mem(kind, name, 4096, 1, buf.data(), buf.size());
     };
     write_single(GPackSectionKind::EmbedBlob, "token_embd", parsed_tensors.at("token_embd.weight"));
     write_single(GPackSectionKind::HeadBlob, "output_head", parsed_tensors.at("output.weight"));
-    add_mem(GPackSectionKind::ExpertLayoutBin, "expert_layout", 64, exp_layers.size(), elay_bw.buf.data(), elay_bw.buf.size());
-    add_mem(GPackSectionKind::ExpertBlobs, "expert_blobs", 4096, static_cast<uint64_t>(n_layers * n_expert), exp_blob.data(), exp_blob.size());
+    add_mem(GPackSectionKind::ExpertLayoutBin, "expert_layout", 64, exp_layers.size(), elay_bw.buf.data(),
+            elay_bw.buf.size());
+    add_mem(GPackSectionKind::ExpertBlobs, "expert_blobs", 4096, static_cast<uint64_t>(n_layers * n_expert),
+            exp_blob.data(), exp_blob.size());
 
     JsonValue mroot;
     mroot["schema"] = "guild.gpack.v1";
@@ -2355,7 +2482,10 @@ bool GPackBuilder::build_from_safetensors(const GPackBuildOptions& opts, GPackBu
     mobj["head_dim"] = head_dim;
     mobj["full_attn_interval"] = full_attn_interval;
     JsonValue robj;
-    robj["freq_base"] = 10000.0; robj["factor"] = 1.0; robj["orig_ctx"] = context_length; robj["type"] = "none";
+    robj["freq_base"] = 10000.0;
+    robj["factor"] = 1.0;
+    robj["orig_ctx"] = context_length;
+    robj["type"] = "none";
     mobj["rope"] = std::move(robj);
     JsonValue moe;
     moe["n_routed_experts"] = n_expert;

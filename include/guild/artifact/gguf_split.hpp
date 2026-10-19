@@ -30,11 +30,13 @@ inline std::vector<std::string> gguf_split_paths(const std::string& any) {
     int no = 0, n = 0;
     for (size_t i = 0; i < 5; ++i) {
         const char a = any[at - 5 + i], b = any[at + 4 + i];
-        if (a < '0' || a > '9' || b < '0' || b > '9') return {any};
+        if (a < '0' || a > '9' || b < '0' || b > '9')
+            return {any};
         no = no * 10 + (a - '0');
         n = n * 10 + (b - '0');
     }
-    if (n < 1 || no < 1 || no > n) return {any};
+    if (n < 1 || no < 1 || no > n)
+        return {any};
     std::vector<std::string> out;
     for (int i = 1; i <= n; ++i) {
         char num[8];
@@ -49,4 +51,4 @@ inline std::vector<std::string> gguf_split_paths(const std::string& any) {
     return out;
 }
 
-}  // namespace guild
+} // namespace guild

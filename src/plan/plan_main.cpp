@@ -55,15 +55,15 @@ int main(int argc, char** argv) {
     }
     // DEFAULT THE STATE FROM THE GEOMETRY.  A `--state` that defaults to 0 and is never passed is not a
     // default, it is an omission - and this one was worth 85 cache slots of overcommit.
-    if (!state_given) costs.state_bytes = guild::plan::state_bytes(guild::plan::Geometry{});
+    if (!state_given)
+        costs.state_bytes = guild::plan::state_bytes(guild::plan::Geometry{});
     // The pool is what the KV cache and the expert cache share.  Derived from the card's free VRAM less the
     // resident dense weights; `--pool` overrides it for reproducing the standard-tier numbers exactly.
-    const uint64_t pool = free_vram > costs.dense_bytes + costs.embd_bytes
-                              ? free_vram - costs.dense_bytes - costs.embd_bytes
-                              : 0;
+    const uint64_t pool =
+        free_vram > costs.dense_bytes + costs.embd_bytes ? free_vram - costs.dense_bytes - costs.embd_bytes : 0;
     try {
-        const guild::plan::Plan p = guild::plan::make_plan(ctx, guild::plan::Geometry{}, costs,
-                                                             pool ? pool : guild::plan::vram_pool_bytes());
+        const guild::plan::Plan p =
+            guild::plan::make_plan(ctx, guild::plan::Geometry{}, costs, pool ? pool : guild::plan::vram_pool_bytes());
         std::printf("%s", guild::plan::to_string(p).c_str());
         return 0;
     } catch (const guild::plan::DoesNotClose& e) {

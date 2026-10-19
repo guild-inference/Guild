@@ -12,8 +12,10 @@ int main(int argc, char** argv) {
         guild::GgufFile g(argv[1]);
         int checked = 0, bad = 0;
         for (const auto& t : g.tensors()) {
-            if (t.type != 42) continue; // Q2_0 only for now
-            if (checked >= 8) break;
+            if (t.type != 42)
+                continue; // Q2_0 only for now
+            if (checked >= 8)
+                break;
             const uint8_t* base = g.tensor_data(t);
             const uint64_t nblocks = t.elements() / 64;
             for (uint64_t b = 0; b < nblocks && b < 64; ++b) {
@@ -29,7 +31,7 @@ int main(int argc, char** argv) {
                         ++bad;
                         if (bad < 4)
                             std::printf("  VIOLATION %s block %llu elem %d: v=%g d=%g\n", t.name.c_str(),
-                                        (unsigned long long)b, j, v, d);
+                                        (unsigned long long) b, j, v, d);
                     }
                 }
             }
@@ -62,12 +64,10 @@ int main(int argc, char** argv) {
                     ? 18
                     : (t.type == 14
                            ? 210
-                           : (t.type == 12
-                                  ? 144
-                                  : (t.type == 13 ? 176 : (t.type == 11 ? 110 : (t.type == 23 ? 136 : 22)))));
-            const int nel =
-                (t.type == 14 || t.type == 12 || t.type == 13 || t.type == 11 || t.type == 23) ? 256 : 32;
-            const uint64_t nb = t.elements() / (uint64_t)nel;
+                           : (t.type == 12 ? 144
+                                           : (t.type == 13 ? 176 : (t.type == 11 ? 110 : (t.type == 23 ? 136 : 22)))));
+            const int nel = (t.type == 14 || t.type == 12 || t.type == 13 || t.type == 11 || t.type == 23) ? 256 : 32;
+            const uint64_t nb = t.elements() / (uint64_t) nel;
             double sum = 0, sumabs = 0;
             for (uint64_t b = 0; b < nb && b < 64; ++b) {
                 float out[256];
@@ -90,8 +90,7 @@ int main(int argc, char** argv) {
                     sumabs += std::fabs(out[j]);
                 }
             }
-            std::printf("  CHECKSUM %s %s sum=%.10g sumabs=%.10g\n", t.type_name(), t.name.c_str(), sum,
-                        sumabs);
+            std::printf("  CHECKSUM %s %s sum=%.10g sumabs=%.10g\n", t.type_name(), t.name.c_str(), sum, sumabs);
             float f8[256];
             if (t.type == 20)
                 guild::dequantize_iq4_nl(base, f8);
@@ -108,12 +107,14 @@ int main(int argc, char** argv) {
             else
                 guild::dequantize_q5_0(base, f8);
             std::printf("  REF first8:");
-            for (int j = 0; j < 8; ++j) std::printf(" %.6g", f8[j]);
+            for (int j = 0; j < 8; ++j)
+                std::printf(" %.6g", f8[j]);
             std::printf("\n");
-            if (t.type == 23) break; // emit Q5_0 first, then IQ4_NL
+            if (t.type == 23)
+                break; // emit Q5_0 first, then IQ4_NL
         }
-        std::printf("%s\n  Q2_0 tensors spot-checked: %d\n  symbolic invariant violations: %d -> %s\n",
-                    argv[1], checked, bad, bad ? "FAIL" : "PASS");
+        std::printf("%s\n  Q2_0 tensors spot-checked: %d\n  symbolic invariant violations: %d -> %s\n", argv[1],
+                    checked, bad, bad ? "FAIL" : "PASS");
         return bad ? 1 : 0;
     } catch (const std::exception& e) {
         std::printf("ERROR: %s\n", e.what());

@@ -15,8 +15,8 @@
 namespace guild::platform {
 
 struct Completion {
-    uint64_t tag = 0;      ///< the caller's tag from `submit`
-    uint32_t bytes = 0;    ///< bytes transferred (short only at end of file)
+    uint64_t tag = 0;   ///< the caller's tag from `submit`
+    uint32_t bytes = 0; ///< bytes transferred (short only at end of file)
     bool ok = false;
 };
 
@@ -31,7 +31,9 @@ public:
     void close();
     bool is_open() const;
     uint64_t size() const;
-    static constexpr uint32_t alignment() { return 4096; }
+    static constexpr uint32_t alignment() {
+        return 4096;
+    }
 
     /// Queue one read. Returns false (and sets `err`) if the request could not be queued; a queued request
     /// always produces exactly one completion.
@@ -57,4 +59,4 @@ private:
 /// Monotonic time in microseconds, for latency accounting.
 double now_us();
 
-}  // namespace guild::platform
+} // namespace guild::platform

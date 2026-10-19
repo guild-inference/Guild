@@ -31,29 +31,19 @@ bool ed25519_keypair_from_seed_hex(const std::string& seed_hex, Ed25519KeyPair& 
 bool ed25519_generate_keypair(Ed25519KeyPair& out_kp);
 
 /// Compute an RFC 8032 Ed25519 64-byte signature over `msg[0..msg_len)`.
-void ed25519_sign(const uint8_t* msg,
-                  size_t msg_len,
-                  const uint8_t seed[32],
-                  const uint8_t public_key[32],
+void ed25519_sign(const uint8_t* msg, size_t msg_len, const uint8_t seed[32], const uint8_t public_key[32],
                   uint8_t out_sig[64]);
 
 /// Verify an RFC 8032 Ed25519 64-byte signature over `msg[0..msg_len)` against `public_key[32]`.
 /// Returns true iff the signature is cryptographically valid (including canonical S < L check).
-bool ed25519_verify(const uint8_t* msg,
-                    size_t msg_len,
-                    const uint8_t sig[64],
-                    const uint8_t public_key[32]);
+bool ed25519_verify(const uint8_t* msg, size_t msg_len, const uint8_t sig[64], const uint8_t public_key[32]);
 
 /// Sign a string message using a 64-char hex seed, returning a 128-char lowercase hex signature.
-bool ed25519_sign_hex(const std::string& message,
-                      const std::string& seed_hex,
-                      std::string& out_sig_hex,
+bool ed25519_sign_hex(const std::string& message, const std::string& seed_hex, std::string& out_sig_hex,
                       std::string* out_pubkey_hex = nullptr);
 
 /// Verify a 128-char hex signature over `message` against a 64-char hex public key.
-bool ed25519_verify_hex(const std::string& message,
-                        const std::string& sig_hex,
-                        const std::string& pubkey_hex);
+bool ed25519_verify_hex(const std::string& message, const std::string& sig_hex, const std::string& pubkey_hex);
 
 /// Hex encoding/decoding utilities.
 std::string bytes_to_hex(const uint8_t* data, size_t len);

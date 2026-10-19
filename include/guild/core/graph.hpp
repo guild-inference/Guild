@@ -43,18 +43,27 @@
 namespace guild::core {
 
 /// The two attention families.  `docs/semantics.md`: 36 GDN layers and 12 QSA, at indices 3, 7, ... 47.
-enum class LayerType : int { GDN = 0, QSA = 1 };
-inline const char* to_string(LayerType t) { return t == LayerType::GDN ? "GDN" : "QSA"; }
+enum class LayerType : int {
+    GDN = 0,
+    QSA = 1
+};
+inline const char* to_string(LayerType t) {
+    return t == LayerType::GDN ? "GDN" : "QSA";
+}
 
 /// One recorded graph.  Move-only: it owns a `cudaGraphExec_t` and an event, and two owners would
 /// double-destroy.
 class CapturedGraph {
 public:
     CapturedGraph() = default;
-    ~CapturedGraph() { reset(); }
+    ~CapturedGraph() {
+        reset();
+    }
     CapturedGraph(const CapturedGraph&) = delete;
     CapturedGraph& operator=(const CapturedGraph&) = delete;
-    CapturedGraph(CapturedGraph&& o) noexcept { *this = std::move(o); }
+    CapturedGraph(CapturedGraph&& o) noexcept {
+        *this = std::move(o);
+    }
     CapturedGraph& operator=(CapturedGraph&& o) noexcept;
 
     /// Start recording everything the caller launches into `stream`.
@@ -73,8 +82,12 @@ public:
     /// this exists instead of a memory spin.
     bool wait_ms(int timeout_ms) const;
 
-    size_t nodes() const { return nodes_; }
-    bool valid() const { return exec_ != nullptr; }
+    size_t nodes() const {
+        return nodes_;
+    }
+    bool valid() const {
+        return exec_ != nullptr;
+    }
 
 private:
     void reset();
@@ -91,7 +104,8 @@ private:
 /// inside the body will be surprised, which is why the body must only launch.
 class GraphRegistry {
 public:
-    explicit GraphRegistry(void* stream) : stream_(stream) {}
+    explicit GraphRegistry(void* stream) : stream_(stream) {
+    }
 
     /// Capture `body` for `key` if it is not already recorded.  Returns false and fills `err` on failure.
     /// Recording the same key twice is a no-op and is NOT an error - that is the point of a registry, and a
@@ -103,9 +117,13 @@ public:
     /// Launch and wait, in that order, the two things the host loop does per layer.
     bool launch(LayerType type, int n_tokens, int timeout_ms, std::string& err) const;
 
-    size_t size() const { return graphs_.size(); }
+    size_t size() const {
+        return graphs_.size();
+    }
     /// How many times a BODY was actually captured.  With a working cache this equals `size()`.
-    size_t captures() const { return captures_; }
+    size_t captures() const {
+        return captures_;
+    }
 
 private:
     using Key = std::pair<int, int>;
@@ -114,4 +132,4 @@ private:
     size_t captures_ = 0;
 };
 
-}  // namespace guild::core
+} // namespace guild::core

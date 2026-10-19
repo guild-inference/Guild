@@ -60,4 +60,4 @@ private:
     std::vector<std::unique_ptr<IModelArchetype>> registry_;
 };
 
-}  // namespace guild::model
+} // namespace guild::model

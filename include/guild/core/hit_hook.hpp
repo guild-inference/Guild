@@ -25,7 +25,10 @@ namespace guild::core {
 /// half the experts - and **the token did not move at all**, because the GPU's half had simply been moved onto
 /// the critical path behind the CPU's instead of beside it.  A second buffer and one `add_inplace` buy the
 /// overlap back.
-enum class HitPhase { Launch, Combine };
+enum class HitPhase {
+    Launch,
+    Combine
+};
 
 /// `ids` AND `k` ARE THE ROUTER'S OWN OUTPUT, AND THEY ARE WHY THIS HOOK TAKES ARGUMENTS AT ALL.
 ///
@@ -38,4 +41,4 @@ enum class HitPhase { Launch, Combine };
 /// A null `HitFn` means "no VRAM tier" - the default, and what every caller had before R4.
 using HitFn = void (*)(void* user, void* stream, HitPhase phase, const int32_t* ids, int64_t k);
 
-}  // namespace guild::core
+} // namespace guild::core

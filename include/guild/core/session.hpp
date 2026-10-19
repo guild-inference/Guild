@@ -31,12 +31,12 @@ namespace guild::core {
 struct SessionState {
     int64_t max_cells = 0;
 
-    GdnBuffers gdn;                 ///< the 36 GDN layers share one set of scratch; their STATE is per layer
-    float* gdn_state = nullptr;     ///< (n_gdn_layers, gdn_state_floats)
+    GdnBuffers gdn;             ///< the 36 GDN layers share one set of scratch; their STATE is per layer
+    float* gdn_state = nullptr; ///< (n_gdn_layers, gdn_state_floats)
 
-    QsaState* qsa_states = nullptr;      ///< one per QSA layer
+    QsaState* qsa_states = nullptr; ///< one per QSA layer
     void* qsa_state_arena = nullptr;
-    QsaBuffers qsa_bufs;                 ///< scratch, shared across the 12 (they never run concurrently)
+    QsaBuffers qsa_bufs; ///< scratch, shared across the 12 (they never run concurrently)
     void* qsa_buf_arena = nullptr;
 
     MoEBuffers moe;
@@ -44,8 +44,8 @@ struct SessionState {
     BlockBuffers block;
     void* block_arena = nullptr;
 
-    float* R = nullptr;             ///< alias of `block.R`, named for what it means at this level
-    int64_t k = 10;                 ///< experts per token
+    float* R = nullptr; ///< alias of `block.R`, named for what it means at this level
+    int64_t k = 10;     ///< experts per token
 
     // **THE LAYER-RANGE CARVE (multi-GPU).**  A split stage's session used to carve state for ALL 48 layers
     // (every QSA KV pool at max_cells, every GDN recurrence) while running only its slice - the same
@@ -54,12 +54,14 @@ struct SessionState {
     // fewer rows, so per-layer consumers subtract `gdn_ord0`, and every old model-level `qsa_states[0]` use
     // (the shared RoPE table, the prefill staging identity, the MTP rope borrow) reads `qsa_states[primary]`.
     // A range with no QSA layer still carves ONE primary state so those model-level uses stay valid.
-    int64_t layer_lo = 0, layer_hi = 0;   ///< resolved by `session_init` (hi = n_layers for the full range)
-    int64_t qsa_ord0 = 0;                 ///< global QSA ordinal of the first allocated state
-    int64_t qsa_alloc = 0;                ///< allocated QSA states (>= 1 whenever the model has any)
-    int64_t gdn_ord0 = 0;                 ///< global GDN ordinal of `gdn_state` row 0
-    int64_t gdn_alloc = 0;                ///< allocated GDN rows
-    int qsa_primary() const { return (int) qsa_ord0; }
+    int64_t layer_lo = 0, layer_hi = 0; ///< resolved by `session_init` (hi = n_layers for the full range)
+    int64_t qsa_ord0 = 0;               ///< global QSA ordinal of the first allocated state
+    int64_t qsa_alloc = 0;              ///< allocated QSA states (>= 1 whenever the model has any)
+    int64_t gdn_ord0 = 0;               ///< global GDN ordinal of `gdn_state` row 0
+    int64_t gdn_alloc = 0;              ///< allocated GDN rows
+    int qsa_primary() const {
+        return (int) qsa_ord0;
+    }
     /// The doorbell the host loop polls.  Null until a caller provides one - the engine runs without it, and
     /// neither `session_token` nor `session_replay` looks at it.
     const Doorbell* db = nullptr;
@@ -95,7 +97,8 @@ struct SessionState {
 /// [layer_lo, layer_hi) carves only that range's per-layer state (a split stage runs a slice of the model);
 /// the default full range is byte-identical to the old whole-model carve.  Pure arithmetic - safe to call for
 /// a candidate range before anything is allocated, which is how the layer-split search prices a placement.
-/// Configure host-only QSA staging policy across layers: -1 = resource-aware auto, 0 = per-layer staging, 1 = shared staging.
+/// Configure host-only QSA staging policy across layers: -1 = resource-aware auto, 0 = per-layer staging, 1 = shared
+/// staging.
 void session_set_kv_share_staging(int mode);
 /// Returns true when each QSA layer in [layer_lo, layer_hi) allocates its own device staging tile.
 bool session_own_qsa_staging(const ModelGeometry& g, int64_t max_cells, int64_t layer_lo = 0, int64_t layer_hi = -1);
@@ -123,9 +126,8 @@ void session_zero(SessionState& s, const ModelGeometry& g, const float* R_init, 
 /// `--sync-every-layer` debug mode, and it is deliberately a parameter rather than a compile-time choice: the
 /// errors it catches (a kernel reading a buffer that a later layer writes) are invisible otherwise, and the
 /// synchronisation it costs is exactly what P2.X3 forbids in the fast path.
-bool session_token(const WeightTable& tables, const ModelGeometry& g, int64_t pos, int32_t pos_base,
-                   SessionState& s, const float* parts, void* stream, bool sync_every_layer,
-                   std::string& err);
+bool session_token(const WeightTable& tables, const ModelGeometry& g, int64_t pos, int32_t pos_base, SessionState& s,
+                   const float* parts, void* stream, bool sync_every_layer, std::string& err);
 
 // ================================ the captured form ================================
 
@@ -140,7 +142,7 @@ bool session_token(const WeightTable& tables, const ModelGeometry& g, int64_t po
 /// of them while a block makes ~45.  Replaying the 43-node block graph measured **1.585 ms against 2.393 ms**
 /// for the same work as direct launches - a 1.51x that is pure launch overhead.
 struct SessionGraphs {
-    cudaGraphExec_t* execs = nullptr;   ///< one per layer, in layer order
+    cudaGraphExec_t* execs = nullptr; ///< one per layer, in layer order
     int64_t n = 0;
     /// **THE SECOND GRAPH PER LAYER: `moe_finish` + `gr_write`, launched AFTER the host has run the pool.**
     ///
@@ -200,8 +202,8 @@ struct SessionGraphs {
     /// difference attributed ALL of it to stage 4, the router. Capturing prefix 5 the same way as the others
     /// makes the two comparable and the difference purely stage 4's.
     cudaGraphExec_t* preP[5] = {nullptr, nullptr, nullptr, nullptr, nullptr};
-    cudaGraphExec_t* preA = nullptr;   ///< `half == 1`: gr_read -> attention -> gr_write   (the MIXER)
-    cudaGraphExec_t* preB = nullptr;   ///< `half == 2`: gr_read -> moe_route              (FFN front + ROUTER)
+    cudaGraphExec_t* preA = nullptr; ///< `half == 1`: gr_read -> attention -> gr_write   (the MIXER)
+    cudaGraphExec_t* preB = nullptr; ///< `half == 2`: gr_read -> moe_route              (FFN front + ROUTER)
     bool split_captured = false;
 
     /// How many times `session_loop` has run.  `rings_mid_graph` and `ms_to_ring` are CUMULATIVE and the loop
@@ -254,8 +256,8 @@ bool session_replay(const ModelGeometry& g, int64_t pos, int32_t pos_base, Sessi
 /// `parts` is left at whatever the buffer holds, because no pool writes it; that is deliberate and makes the
 /// measurement pure GPU work.  The LM head is NOT included here - the caller times it separately, since it runs
 /// on the host-side path rather than inside a captured graph.
-bool session_replay_full(const ModelGeometry& g, int64_t pos, int32_t pos_base, SessionState& s,
-                         SessionGraphs& gr, void* stream, std::string& err);
+bool session_replay_full(const ModelGeometry& g, int64_t pos, int32_t pos_base, SessionState& s, SessionGraphs& gr,
+                         void* stream, std::string& err);
 
 /// **ONE TOKEN THROUGH THE SPLIT GRAPHS, WITH EVERY STAGE TIMED FROM OUTSIDE THE CAPTURE.**  Requires
 /// `session_capture(..., split = true)`.  Replays `preA[l]`, `preB[l]`, `post[l]` in order on one stream -
@@ -290,9 +292,8 @@ bool session_replay_stage_prefixes(const ModelGeometry& g, int64_t pos, int32_t 
 bool session_replay_stage_sweep(const ModelGeometry& g, int64_t pos, int32_t pos_base, SessionState& s,
                                 SessionGraphs& gr, void* stream, int k, double& ms, std::string& err);
 
-bool session_replay_stages(const ModelGeometry& g, int64_t pos, int32_t pos_base, SessionState& s,
-                           SessionGraphs& gr, void* stream, double& ms_mixer, double& ms_ffn, double& ms_post,
-                           std::string& err);
+bool session_replay_stages(const ModelGeometry& g, int64_t pos, int32_t pos_base, SessionState& s, SessionGraphs& gr,
+                           void* stream, double& ms_mixer, double& ms_ffn, double& ms_post, std::string& err);
 
 /// **THE SAME REPLAY, KEEPING EVERY LAYER INSTEAD OF SUMMING THEM.**
 ///
@@ -372,10 +373,10 @@ using PoolFn = void (*)(void* user, const float* x_f, const int32_t* ids, const 
 /// allocates and frees locally - so every existing caller and test is unaffected, but the allocation is then
 /// visible at the call site instead of hidden inside a hot function.
 struct SessionLoopScratch {
-    float* y_miss = nullptr;        ///< pinned host staging for the pool's answer, `parts_bytes` long
+    float* y_miss = nullptr; ///< pinned host staging for the pool's answer, `parts_bytes` long
     size_t parts_bytes = 0;
     cudaEvent_t probe = nullptr;
-    guild::kernels::cpu::ThreadAffinity pinned_core{};  ///< affinity to restore, or invalid if the host was not pinned
+    guild::kernels::cpu::ThreadAffinity pinned_core{}; ///< affinity to restore, or invalid if the host was not pinned
     bool pinned = false;
 
     /// Allocates the buffers and pins the host thread.  Call ONCE, at session setup.
@@ -405,19 +406,19 @@ struct TokenGraph {
     cudaGraphExec_t exec = nullptr;
     bool captured = false;
     int64_t n_layers = 0;
-    const float* y_src = nullptr;    ///< the pinned host staging the graph's H2D copies read (baked in)
+    const float* y_src = nullptr; ///< the pinned host staging the graph's H2D copies read (baked in)
     size_t parts_bytes = 0;
     int64_t calls = 0;
-    double ms_wait = 0;              ///< host waiting for rings (the GPU is running)
-    double ms_pool = 0;              ///< host inside the pool
-    int64_t flushes = 0;             ///< cudaStreamQuery calls made because a ring was slow to appear
+    double ms_wait = 0;  ///< host waiting for rings (the GPU is running)
+    double ms_pool = 0;  ///< host inside the pool
+    int64_t flushes = 0; ///< cudaStreamQuery calls made because a ring was slow to appear
 };
 
 /// Plan v0.3 P4: the VRAM expert tier inside the token graph.  Residency is STATIC during a token (a
 /// `n_layers x n_expert` table, slot or -1, on the device; the host pool reads its own copy), so the hit list
 /// is built on the device right after the ring and the hits run while the CPU computes the misses.
 struct TokenHits {
-    const int32_t* d_res = nullptr;      ///< device [n_layers * n_expert]
+    const int32_t* d_res = nullptr; ///< device [n_layers * n_expert]
     int64_t n_expert = 0;
     const uint8_t* cache_base = nullptr; ///< slot 0 of the VRAM expert arena
     int64_t blob = 0;                    ///< bytes per slot
@@ -428,7 +429,9 @@ struct TokenHits {
     float* x_scale = nullptr;            ///< and its fp32 scales (the CPU pool's contract)
     void* scratch = nullptr;             ///< moe_hit_grouped_scratch_bytes(k, ...)
     float* hit_out = nullptr;            ///< device, k * n_embd
-    bool on() const { return d_res && cache_base && d_slot && d_dst && d_count && x_q8 && x_scale && scratch && hit_out; }
+    bool on() const {
+        return d_res && cache_base && d_slot && d_dst && d_count && x_q8 && x_scale && scratch && hit_out;
+    }
 };
 
 bool session_capture_token(const WeightTable& tables, const ModelGeometry& g, SessionState& s, float* parts_dev,
@@ -438,4 +441,4 @@ bool session_run_token(const ModelGeometry& g, int64_t pos, int32_t pos_base, Se
                        PoolFn pool, void* user, float* y_miss_host, void* stream, std::string& err);
 void token_graph_free(TokenGraph& tg);
 
-}  // namespace guild::core
+} // namespace guild::core

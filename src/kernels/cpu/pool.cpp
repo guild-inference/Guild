@@ -43,20 +43,24 @@ bool slice_all_finite_avx2(const float* values, int count) noexcept {
         const __m256i v = _mm256_loadu_si256((const __m256i*) (values + i));
         bad = _mm256_or_si256(bad, _mm256_cmpeq_epi32(_mm256_and_si256(v, exp_mask), exp_mask));
     }
-    if (_mm256_movemask_epi8(bad) != 0) return false;
+    if (_mm256_movemask_epi8(bad) != 0)
+        return false;
     for (; i < count; ++i) {
         uint32_t bits;
         std::memcpy(&bits, values + i, sizeof(bits));
-        if ((bits & 0x7f800000u) == 0x7f800000u) return false;
+        if ((bits & 0x7f800000u) == 0x7f800000u)
+            return false;
     }
     return true;
 }
 inline bool slice_all_finite(const float* values, int count) noexcept {
-    if (cpu_avx2_ok()) return slice_all_finite_avx2(values, count);
+    if (cpu_avx2_ok())
+        return slice_all_finite_avx2(values, count);
     for (int i = 0; i < count; ++i) {
         uint32_t bits;
         std::memcpy(&bits, values + i, sizeof(bits));
-        if ((bits & 0x7f800000u) == 0x7f800000u) return false;
+        if ((bits & 0x7f800000u) == 0x7f800000u)
+            return false;
     }
     return true;
 }
@@ -70,14 +74,16 @@ double thread_cpu_ms() {
     if (!GetThreadTimes(GetCurrentThread(), &created, &exited, &kernel, &user))
         throw std::runtime_error("cannot read thread CPU time");
     ULARGE_INTEGER k{}, u{};
-    k.LowPart=kernel.dwLowDateTime;k.HighPart=kernel.dwHighDateTime;
-    u.LowPart=user.dwLowDateTime;u.HighPart=user.dwHighDateTime;
+    k.LowPart = kernel.dwLowDateTime;
+    k.HighPart = kernel.dwHighDateTime;
+    u.LowPart = user.dwLowDateTime;
+    u.HighPart = user.dwHighDateTime;
     return double(k.QuadPart + u.QuadPart) / 10000.0; // 100 ns units
 #else
     return double(std::clock()) * 1000.0 / CLOCKS_PER_SEC;
 #endif
 }
-}  // namespace
+} // namespace
 
 CpuTopology detect_cpu_topology(bool skip_first, PoolAffinity affinity) {
     CpuTopology topo;
@@ -92,8 +98,10 @@ CpuTopology detect_cpu_topology(bool skip_first, PoolAffinity affinity) {
         const WORD groups = GetActiveProcessorGroupCount();
         for (WORD group = 0; group < groups; ++group) {
             const DWORD count = GetActiveProcessorCount(group);
-            if (count == 0 || count == (DWORD) -1 || count > 64) continue;
-            for (DWORD i = 0; i < count; ++i) topo.worker_cores.push_back((int) group * 64 + (int) i);
+            if (count == 0 || count == (DWORD) -1 || count > 64)
+                continue;
+            for (DWORD i = 0; i < count; ++i)
+                topo.worker_cores.push_back((int) group * 64 + (int) i);
         }
         if (skip_first && !topo.worker_cores.empty()) {
             topo.host_core = topo.worker_cores.front();
@@ -102,8 +110,8 @@ CpuTopology detect_cpu_topology(bool skip_first, PoolAffinity affinity) {
         return topo;
     }
     std::vector<char> buf(len);
-    if (GetLogicalProcessorInformationEx(RelationProcessorCore,
-                                         (PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX) buf.data(), &len)) {
+    if (GetLogicalProcessorInformationEx(RelationProcessorCore, (PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX) buf.data(),
+                                         &len)) {
         const char* p = buf.data();
         const char* end = p + len;
         struct CoreDesc {
@@ -151,7 +159,8 @@ CpuTopology detect_cpu_topology(bool skip_first, PoolAffinity affinity) {
             }
         } else {
             topo.p_cores = (int) descs.size();
-            for (const auto& c : descs) topo.p_threads += (int) c.lps.size();
+            for (const auto& c : descs)
+                topo.p_threads += (int) c.lps.size();
         }
 
         if (affinity == PoolAffinity::All || !topo.is_hybrid) {
@@ -161,7 +170,8 @@ CpuTopology detect_cpu_topology(bool skip_first, PoolAffinity affinity) {
             if (topo.is_hybrid)
                 std::stable_sort(descs.begin(), descs.end(),
                                  [](const CoreDesc& x, const CoreDesc& y) { return x.efficiency > y.efficiency; });
-            for (const auto& c : descs) topo.worker_cores.push_back(c.lps[0]);
+            for (const auto& c : descs)
+                topo.worker_cores.push_back(c.lps[0]);
             if (skip_first && !topo.worker_cores.empty()) {
                 topo.host_core = topo.worker_cores.front();
                 topo.worker_cores.erase(topo.worker_cores.begin());
@@ -185,7 +195,8 @@ CpuTopology detect_cpu_topology(bool skip_first, PoolAffinity affinity) {
                     p_siblings.push_back(c.lps[s]);
                 }
             } else {
-                for (int lp : c.lps) e_cores.push_back(lp);
+                for (int lp : c.lps)
+                    e_cores.push_back(lp);
             }
         }
 
@@ -194,10 +205,13 @@ CpuTopology detect_cpu_topology(bool skip_first, PoolAffinity affinity) {
             p_primaries.erase(p_primaries.begin());
         }
 
-        for (int cpu : p_primaries) topo.worker_cores.push_back(cpu);
-        for (int cpu : p_siblings) topo.worker_cores.push_back(cpu);
+        for (int cpu : p_primaries)
+            topo.worker_cores.push_back(cpu);
+        for (int cpu : p_siblings)
+            topo.worker_cores.push_back(cpu);
         if (affinity != PoolAffinity::PCores) {
-            for (int cpu : e_cores) topo.worker_cores.push_back(cpu);
+            for (int cpu : e_cores)
+                topo.worker_cores.push_back(cpu);
         }
         return topo;
     }
@@ -211,7 +225,8 @@ CpuTopology detect_cpu_topology(bool skip_first, PoolAffinity affinity) {
         std::snprintf(path, sizeof path, "/sys/devices/system/cpu/cpu%d/topology/%s", cpu, what);
         long v = -1;
         if (std::FILE* f = std::fopen(path, "r")) {
-            if (std::fscanf(f, "%ld", &v) != 1) v = -1;
+            if (std::fscanf(f, "%ld", &v) != 1)
+                v = -1;
             std::fclose(f);
         }
         return v;
@@ -221,7 +236,8 @@ CpuTopology detect_cpu_topology(bool skip_first, PoolAffinity affinity) {
         std::snprintf(path, sizeof path, "/sys/devices/system/cpu/cpu%d/cpu_capacity", cpu);
         long v = -1;
         if (std::FILE* f = std::fopen(path, "r")) {
-            if (std::fscanf(f, "%ld", &v) != 1) v = -1;
+            if (std::fscanf(f, "%ld", &v) != 1)
+                v = -1;
             std::fclose(f);
         }
         return v;
@@ -230,7 +246,8 @@ CpuTopology detect_cpu_topology(bool skip_first, PoolAffinity affinity) {
     std::vector<int> allowed;
     std::vector<unsigned long> allowed_mask;
     if (detail::get_thread_affinity(allowed_mask, &allowed) != 0) {
-        for (unsigned i = 0; i < std::thread::hardware_concurrency(); ++i) allowed.push_back((int) i);
+        for (unsigned i = 0; i < std::thread::hardware_concurrency(); ++i)
+            allowed.push_back((int) i);
     }
 
     struct CoreLinux {
@@ -269,10 +286,12 @@ CpuTopology detect_cpu_topology(bool skip_first, PoolAffinity affinity) {
     if (topo.is_hybrid) {
         for (const auto& cl : all_cpus) {
             if (cl.cap == max_cap) {
-                if (!cl.is_sibling) topo.p_cores++;
+                if (!cl.is_sibling)
+                    topo.p_cores++;
                 topo.p_threads++;
             } else {
-                if (!cl.is_sibling) topo.e_cores++;
+                if (!cl.is_sibling)
+                    topo.e_cores++;
             }
         }
     } else {
@@ -281,11 +300,12 @@ CpuTopology detect_cpu_topology(bool skip_first, PoolAffinity affinity) {
     }
 
     if (affinity == PoolAffinity::All || !topo.is_hybrid) {
-        if (topo.is_hybrid)   // #642: the P-cores first (see the Windows branch)
+        if (topo.is_hybrid) // #642: the P-cores first (see the Windows branch)
             std::stable_sort(all_cpus.begin(), all_cpus.end(),
                              [](const CoreLinux& x, const CoreLinux& y) { return x.cap > y.cap; });
         for (const auto& cl : all_cpus) {
-            if (!cl.is_sibling) topo.worker_cores.push_back(cl.cpu);
+            if (!cl.is_sibling)
+                topo.worker_cores.push_back(cl.cpu);
         }
         if (skip_first && !topo.worker_cores.empty()) {
             topo.host_core = topo.worker_cores.front();
@@ -301,8 +321,10 @@ CpuTopology detect_cpu_topology(bool skip_first, PoolAffinity affinity) {
 
     for (const auto& cl : all_cpus) {
         if (cl.cap == max_cap) {
-            if (!cl.is_sibling) p_primaries.push_back(cl.cpu);
-            else p_siblings.push_back(cl.cpu);
+            if (!cl.is_sibling)
+                p_primaries.push_back(cl.cpu);
+            else
+                p_siblings.push_back(cl.cpu);
         } else {
             e_cores.push_back(cl.cpu);
         }
@@ -313,10 +335,13 @@ CpuTopology detect_cpu_topology(bool skip_first, PoolAffinity affinity) {
         p_primaries.erase(p_primaries.begin());
     }
 
-    for (int cpu : p_primaries) topo.worker_cores.push_back(cpu);
-    for (int cpu : p_siblings) topo.worker_cores.push_back(cpu);
+    for (int cpu : p_primaries)
+        topo.worker_cores.push_back(cpu);
+    for (int cpu : p_siblings)
+        topo.worker_cores.push_back(cpu);
     if (affinity != PoolAffinity::PCores) {
-        for (int cpu : e_cores) topo.worker_cores.push_back(cpu);
+        for (int cpu : e_cores)
+            topo.worker_cores.push_back(cpu);
     }
     return topo;
 #endif
@@ -330,7 +355,8 @@ std::vector<int> physical_cores(bool skip_first, PoolAffinity affinity) {
 namespace {
 
 bool pin_this_thread(int core, [[maybe_unused]] int worker = -1) {
-    if (core < 0) return false;
+    if (core < 0)
+        return false;
 #if defined(_WIN32)
     return detail::set_thread_group_affinity(core, worker);
 #else
@@ -342,16 +368,18 @@ bool pin_this_thread(int core, [[maybe_unused]] int worker = -1) {
 #endif
 }
 
-}  // namespace
+} // namespace
 
 ThreadAffinity pin_current_thread(int core) {
-    if (core < 0) return {};
+    if (core < 0)
+        return {};
 #if defined(_WIN32)
     ThreadAffinity previous;
     ULONG target = 0;
     if (!detail::get_thread_cpu_sets(previous.cpu_sets) || !detail::cpu_set_for_core(core, target) ||
         !SetThreadSelectedCpuSets(GetCurrentThread(), &target, 1)) {
-        std::fprintf(stderr, "guild cpu pool: host CPU Set selection for processor %d failed: %lu; previous placement kept\n",
+        std::fprintf(stderr,
+                     "guild cpu pool: host CPU Set selection for processor %d failed: %lu; previous placement kept\n",
                      core, (unsigned long) GetLastError());
         return {};
     }
@@ -360,9 +388,11 @@ ThreadAffinity pin_current_thread(int core) {
 #else
     ThreadAffinity previous;
     int error = detail::get_thread_affinity(previous.mask);
-    if (error == 0) error = detail::pin_thread_to_cpu(core);
+    if (error == 0)
+        error = detail::pin_thread_to_cpu(core);
     if (error != 0) {
-        std::fprintf(stderr, "guild cpu pool: host affinity for CPU %d failed: %d; previous affinity kept\n", core, error);
+        std::fprintf(stderr, "guild cpu pool: host affinity for CPU %d failed: %d; previous affinity kept\n", core,
+                     error);
         return {};
     }
     previous.valid = true;
@@ -371,33 +401,38 @@ ThreadAffinity pin_current_thread(int core) {
 }
 
 ThreadAffinity pin_current_thread_if_allowed(int core) {
-    if (core < 0) return {};
+    if (core < 0)
+        return {};
 #if defined(_WIN32)
     GROUP_AFFINITY group{};
-    if (!GetThreadGroupAffinity(GetCurrentThread(), &group) ||
-        unsigned(core / 64) != group.Group || !(group.Mask & (KAFFINITY(1) << (core % 64)))) return {};
+    if (!GetThreadGroupAffinity(GetCurrentThread(), &group) || unsigned(core / 64) != group.Group ||
+        !(group.Mask & (KAFFINITY(1) << (core % 64))))
+        return {};
     std::vector<unsigned long> selected;
-    ULONG target=0;
-    if (!detail::get_thread_cpu_sets(selected) || !detail::cpu_set_for_core(core,target)) return {};
-    if (!selected.empty() && std::find(selected.begin(),selected.end(),target)==selected.end()) return {};
+    ULONG target = 0;
+    if (!detail::get_thread_cpu_sets(selected) || !detail::cpu_set_for_core(core, target))
+        return {};
+    if (!selected.empty() && std::find(selected.begin(), selected.end(), target) == selected.end())
+        return {};
 #else
     std::vector<unsigned long> mask;
     std::vector<int> allowed;
-    if (detail::get_thread_affinity(mask,&allowed)!=0 ||
-        std::find(allowed.begin(),allowed.end(),core)==allowed.end()) return {};
+    if (detail::get_thread_affinity(mask, &allowed) != 0 ||
+        std::find(allowed.begin(), allowed.end(), core) == allowed.end())
+        return {};
 #endif
     return pin_current_thread(core);
 }
 
 void restore_thread_affinity(const ThreadAffinity& previous) {
-    if (!previous.valid) return;
+    if (!previous.valid)
+        return;
 #if defined(_WIN32)
     // Clearing an originally empty selection restores process-default/all-group eligibility without
     // turning the caller's implicit Windows 11 affinity into an explicit single-group hard mask.
     if (!SetThreadSelectedCpuSets(GetCurrentThread(), previous.cpu_sets.empty() ? nullptr : previous.cpu_sets.data(),
-                                 (ULONG) previous.cpu_sets.size()))
-        std::fprintf(stderr, "guild cpu pool: host CPU Set restoration failed: %lu\n",
-                     (unsigned long) GetLastError());
+                                  (ULONG) previous.cpu_sets.size()))
+        std::fprintf(stderr, "guild cpu pool: host CPU Set restoration failed: %lu\n", (unsigned long) GetLastError());
 #else
     const int error = detail::set_thread_affinity(previous.mask);
     if (error != 0)
@@ -408,41 +443,53 @@ void restore_thread_affinity(const ThreadAffinity& previous) {
 namespace {
 std::atomic<const ExpertPool*> g_diag_pool{nullptr};
 void diag_active_pool(std::FILE* f) {
-    if (const ExpertPool* p = g_diag_pool.load()) p->diag(f);
+    if (const ExpertPool* p = g_diag_pool.load())
+        p->diag(f);
 }
 int64_t now_ms() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch())
         .count();
 }
-}  // namespace
+} // namespace
 
 void ExpertPool::diag(std::FILE* f) const {
     const uint64_t h = head_.load();
-    std::fprintf(f, "  expert pool: epoch %u, batch epoch %u: %u of %u jobs claimed, %u done; %u of %d workers parked, "
-                    "%u sleeping; mode %d\n", epoch_.load(), (uint32_t) (h >> 32), (uint32_t) h & 0xffffu,
-                 (uint32_t) (h >> 16) & 0xffffu, done_.load(), parked_.load(), n_, sleepers_.load(), mode_);
+    std::fprintf(f,
+                 "  expert pool: epoch %u, batch epoch %u: %u of %u jobs claimed, %u done; %u of %d workers parked, "
+                 "%u sleeping; mode %d\n",
+                 epoch_.load(), (uint32_t) (h >> 32), (uint32_t) h & 0xffffu, (uint32_t) (h >> 16) & 0xffffu,
+                 done_.load(), parked_.load(), n_, sleepers_.load(), mode_);
     std::fprintf(f, "  expert pool threads:");
     for (int i = 0; i < n_; ++i) {
         const int32_t s = wstate_[(size_t) i].load();
-        if (s == kParked) std::fprintf(f, " w%d=parked", i);
-        else if (s == kSleeping) std::fprintf(f, " w%d=sleeping", i);
-        else if (s == kBetween) std::fprintf(f, " w%d=draining", i);
-        else std::fprintf(f, " w%d=job%d", i, s);
+        if (s == kParked)
+            std::fprintf(f, " w%d=parked", i);
+        else if (s == kSleeping)
+            std::fprintf(f, " w%d=sleeping", i);
+        else if (s == kBetween)
+            std::fprintf(f, " w%d=draining", i);
+        else
+            std::fprintf(f, " w%d=job%d", i, s);
     }
     const int32_t hs = hstate_.load();
-    const char* hn = hs == kIdle ? "idle" : hs == kWaitParked ? "waiting for the workers to park"
-                   : hs == kWaitDone ? "waiting for the jobs to finish" : "running a job";
+    const char* hn = hs == kIdle         ? "idle"
+                     : hs == kWaitParked ? "waiting for the workers to park"
+                     : hs == kWaitDone   ? "waiting for the jobs to finish"
+                                         : "running a job";
     std::fprintf(f, "; host %s", hn);
-    if (hs >= 0) std::fprintf(f, " %d", hs);
+    if (hs >= 0)
+        std::fprintf(f, " %d", hs);
     std::fprintf(f, " for %lld ms\n", (long long) (now_ms() - hstate_ms_.load()));
 }
 
 ExpertPool::ExpertPool(int n_workers, bool pin, bool host_works, PoolAffinity affinity)
-    : host_works_(host_works), affinity_(affinity), topo_(detect_cpu_topology(true, affinity)) {
+    : host_works_(host_works),
+      affinity_(affinity),
+      topo_(detect_cpu_topology(true, affinity)) {
 #if GUILD_BUNDLED_CPU_ARITHMETIC && defined(GUILD_NATIVE_EXPERTS)
     bind_backend_kernels(*guild_cpu_backend_table_v2());
 #endif
-    if (const char* e = std::getenv("GUILD_POOL_SPIN_US"))   // a test knob; see kSpinBeforeSleep
+    if (const char* e = std::getenv("GUILD_POOL_SPIN_US")) // a test knob; see kSpinBeforeSleep
         spin_before_sleep_ = std::chrono::microseconds((std::max)(0, std::atoi(e)));
     if (n_workers > 0) {
         n_ = n_workers;
@@ -451,16 +498,21 @@ ExpertPool::ExpertPool(int n_workers, bool pin, bool host_works, PoolAffinity af
     } else {
         n_ = (int) topo_.worker_cores.size();
     }
-    if (n_ < 1) n_ = 1;
+    if (n_ < 1)
+        n_ = 1;
     if (const char* path = std::getenv("GUILD_CPU_PROFILE")) {
         profile_file_ = std::fopen(path, "w");
-        if (!profile_file_) throw std::runtime_error("cannot open GUILD_CPU_PROFILE");
+        if (!profile_file_)
+            throw std::runtime_error("cannot open GUILD_CPU_PROFILE");
         profile_times_.resize(size_t(n_) + 1);
-        std::fputs("start_ns,end_ns,gu_type,down_type,jobs,entries,whole,gu_thread_cpu_ms,quant_thread_cpu_ms,down_thread_cpu_ms\n", profile_file_);
+        std::fputs("start_ns,end_ns,gu_type,down_type,jobs,entries,whole,gu_thread_cpu_ms,quant_thread_cpu_ms,down_"
+                   "thread_cpu_ms\n",
+                   profile_file_);
     }
     scratch_.resize((size_t) n_);
     wstate_.reset(new std::atomic<int32_t>[(size_t) n_]);
-    for (int i = 0; i < n_; ++i) wstate_[(size_t) i].store(kParked);
+    for (int i = 0; i < n_; ++i)
+        wstate_[(size_t) i].store(kParked);
     hstate_ms_.store(now_ms());
     g_diag_pool.store(this);
     guild::core::diag_pool_fn().store(&diag_active_pool);
@@ -482,8 +534,10 @@ ExpertPool::~ExpertPool() {
     stop_.store(true, std::memory_order_release);
     // Bump the epoch so a PARKED worker notices the stop flag rather than sleeping through it.
     publish();
-    for (auto& t : threads_) t.join();
-    if (profile_file_) std::fclose(profile_file_);
+    for (auto& t : threads_)
+        t.join();
+    if (profile_file_)
+        std::fclose(profile_file_);
 }
 
 void ExpertPool::publish() {
@@ -521,10 +575,13 @@ void ExpertPool::worker(int id) {
         const auto parked_at = std::chrono::steady_clock::now();
         uint32_t spins = 0;
         while (epoch_.load(std::memory_order_acquire) == seen) {
-            if (stop_.load(std::memory_order_relaxed)) return;
+            if (stop_.load(std::memory_order_relaxed))
+                return;
             _mm_pause();
-            if ((++spins & 1023u) != 0) continue;
-            if (std::chrono::steady_clock::now() - parked_at < spin_before_sleep_) continue;
+            if ((++spins & 1023u) != 0)
+                continue;
+            if (std::chrono::steady_clock::now() - parked_at < spin_before_sleep_)
+                continue;
             std::unique_lock<std::mutex> lk(sleep_mu_);
             wstate_[(size_t) id].store(kSleeping, std::memory_order_relaxed);
             sleepers_.fetch_add(1, std::memory_order_seq_cst);
@@ -534,10 +591,11 @@ void ExpertPool::worker(int id) {
             sleepers_.fetch_sub(1, std::memory_order_relaxed);
             wstate_[(size_t) id].store(kParked, std::memory_order_relaxed);
         }
-        if (stop_.load(std::memory_order_acquire)) return;
+        if (stop_.load(std::memory_order_acquire))
+            return;
         // acquire: the batch this epoch published (`head`, and the description before it) is visible from here
         seen = epoch_.load(std::memory_order_acquire);
-        parked_.fetch_sub(1, std::memory_order_acq_rel);   // leaving the park
+        parked_.fetch_sub(1, std::memory_order_acq_rel); // leaving the park
 
         // Drain: one claim per iteration, so a slow worker takes fewer experts and a fast one takes more.
         // Every job is the same size (all experts are 1,382,400 bytes), so there is nothing to schedule.  Only
@@ -545,16 +603,18 @@ void ExpertPool::worker(int id) {
         wstate_[(size_t) id].store(kBetween, std::memory_order_relaxed);
         drain(id, scratch_[(size_t) id], seen);
         wstate_[(size_t) id].store(kParked, std::memory_order_relaxed);
-        parked_.fetch_add(1, std::memory_order_acq_rel);   // back at the park
+        parked_.fetch_add(1, std::memory_order_acq_rel); // back at the park
     }
 }
 
 int ExpertPool::claim(uint32_t epoch) {
     uint64_t h = head_.load(std::memory_order_acquire);
     for (;;) {
-        if ((uint32_t) (h >> 32) != epoch) return -1;               // not the batch this thread woke for
+        if ((uint32_t) (h >> 32) != epoch)
+            return -1; // not the batch this thread woke for
         const uint32_t n = (uint32_t) (h >> 16) & 0xffffu, i = (uint32_t) h & 0xffffu;
-        if (i >= n) return -1;                                       // exhausted
+        if (i >= n)
+            return -1; // exhausted
         if (head_.compare_exchange_weak(h, h + 1, std::memory_order_acq_rel, std::memory_order_acquire))
             return (int) i;
     }
@@ -568,7 +628,7 @@ uint32_t ExpertPool::begin_batch(int n) {
     // Every job of the previous batch has completed (`wait_done`), and a claim of it can no longer succeed, so
     // nothing adds to `done` until this batch's first claim - which the release below orders after the reset.
     done_.store(0, std::memory_order_relaxed);
-    const uint32_t e = epoch_.load(std::memory_order_relaxed) + 1;   // only the host bumps the epoch
+    const uint32_t e = epoch_.load(std::memory_order_relaxed) + 1; // only the host bumps the epoch
     head_.store(pack_head(e, (uint32_t) n, 0), std::memory_order_release);
     publish();
     return e;
@@ -581,14 +641,17 @@ void ExpertPool::wait_parked(const char* what) {
     std::chrono::steady_clock::time_point t0{};
     while (parked_.load(std::memory_order_acquire) != (uint32_t) n_) {
         _mm_pause();
-        if ((++spins & 1023u) != 0) continue;
+        if ((++spins & 1023u) != 0)
+            continue;
         const auto now = std::chrono::steady_clock::now();
-        if (spins == 1024u) t0 = now;
+        if (spins == 1024u)
+            t0 = now;
         else if (now - t0 > kStall) {
-            std::fprintf(stderr, "guild: the CPU expert pool stalled %s (%u of %d workers parked) - stopping the engine "
-                                 "so the server can start it again (issue #29)\n",
+            std::fprintf(stderr,
+                         "guild: the CPU expert pool stalled %s (%u of %d workers parked) - stopping the engine "
+                         "so the server can start it again (issue #29)\n",
                          what, parked_.load(), n_);
-            guild::core::release_gpu_waits(stderr);   // #267: the GPU may be spinning on this layer's flag
+            guild::core::release_gpu_waits(stderr); // #267: the GPU may be spinning on this layer's flag
             std::fflush(stderr);
             std::abort();
         }
@@ -602,16 +665,22 @@ void ExpertPool::wait_done(int n) {
     std::chrono::steady_clock::time_point t0{};
     for (;;) {
         const uint32_t d = done_.load(std::memory_order_acquire);
-        if (d >= (uint32_t) n) return;                                // `>=`: never a wait that an overshoot outlives
+        if (d >= (uint32_t) n)
+            return; // `>=`: never a wait that an overshoot outlives
         _mm_pause();
-        if ((++spins & 1023u) != 0) continue;
+        if ((++spins & 1023u) != 0)
+            continue;
         const auto now = std::chrono::steady_clock::now();
-        if (spins == 1024u || d != seen) { t0 = now; seen = d; }     // progress restarts the clock
+        if (spins == 1024u || d != seen) {
+            t0 = now;
+            seen = d;
+        } // progress restarts the clock
         else if (now - t0 > kStall) {
-            std::fprintf(stderr, "guild: the CPU expert pool stalled: %u of %d jobs done, %u of %d workers parked - "
-                                 "stopping the engine so the server can start it again (issue #29)\n",
+            std::fprintf(stderr,
+                         "guild: the CPU expert pool stalled: %u of %d jobs done, %u of %d workers parked - "
+                         "stopping the engine so the server can start it again (issue #29)\n",
                          d, n, parked_.load(), n_);
-            guild::core::release_gpu_waits(stderr);   // #267
+            guild::core::release_gpu_waits(stderr); // #267
             std::fflush(stderr);
             std::abort();
         }
@@ -622,10 +691,15 @@ void ExpertPool::drain(int id, ExpertScratch& scratch, uint32_t epoch) {
     (void) id;
     for (;;) {
         const int ci = claim(epoch);
-        if (ci < 0) break;
+        if (ci < 0)
+            break;
         const uint32_t i = (uint32_t) ci;
-        if (id >= 0) wstate_[(size_t) id].store(ci, std::memory_order_relaxed);
-        else { hstate_.store(ci, std::memory_order_relaxed); hstate_ms_.store(now_ms(), std::memory_order_relaxed); }
+        if (id >= 0)
+            wstate_[(size_t) id].store(ci, std::memory_order_relaxed);
+        else {
+            hstate_.store(ci, std::memory_order_relaxed);
+            hstate_ms_.store(now_ms(), std::memory_order_relaxed);
+        }
         const double profile_start = profile_file_ ? thread_cpu_ms() : 0;
         if (mode_ == 0) {
             const ExpertJob& j = jobs_[i];
@@ -647,8 +721,8 @@ void ExpertPool::drain(int id, ExpertScratch& scratch, uint32_t epoch) {
             const float* p_base = comb_parts_ + (size_t) i * (size_t) K * (size_t) N;
             const float* w_base = comb_weights_ + (size_t) i * (size_t) K;
             float* dst = comb_out_ + (size_t) i * (size_t) N;
-            if(backend_table_.combine(p_base,w_base,dst,K,N)!=GUILD_STATUS_OK)
-                comb_nonfinite_.store(true,std::memory_order_relaxed);
+            if (backend_table_.combine(p_base, w_base, dst, K, N) != GUILD_STATUS_OK)
+                comb_nonfinite_.store(true, std::memory_order_relaxed);
         } else if (mode_ == 8) {
             // Whole multi-token native expert per task: gate/up -> quant_h -> down in thread-local L1/L2 cache.
             const ExpertJobMulti& mj = mjobs_[i];
@@ -661,7 +735,8 @@ void ExpertPool::drain(int id, ExpertScratch& scratch, uint32_t epoch) {
             const bool time_phases = (id < 0);
             double cpu_a = 0, cpu_b = 0;
             std::chrono::steady_clock::time_point t_a, t_b, t_c, t_d;
-            if (time_phases) t_a = std::chrono::steady_clock::now();
+            if (time_phases)
+                t_a = std::chrono::steady_clock::now();
             if (q2_native_kernels(nfmt_->gu_type)) {
                 thread_local float gbuf[MAXT][FF], ubuf[MAXT][FF];
                 const int nbk = (int) (nfmt_->n_embd / 64);
@@ -669,31 +744,39 @@ void ExpertPool::drain(int id, ExpertScratch& scratch, uint32_t epoch) {
                     const int m = (std::min)(MAXT, nt - t0);
                     float* gp[MAXT];
                     float* up[MAXT];
-                    for (int t = 0; t < m; ++t) { gp[t] = gbuf[t]; up[t] = ubuf[t]; }
+                    for (int t = 0; t < m; ++t) {
+                        gp[t] = gbuf[t];
+                        up[t] = ubuf[t];
+                    }
                     q2_rows_any(mj.blob, nfmt_->gu_row, nbk, mj.act + t0, m, gp, 0, (int) nfmt_->n_ff);
                     q2_rows_any(mj.blob + nfmt_->up_off, nfmt_->gu_row, nbk, mj.act + t0, m, up, 0, (int) nfmt_->n_ff);
                     for (int t = 0; t < m; ++t)
-                        swiglu(gbuf[t],ubuf[t],ff_buf[t0+t],int(nfmt_->n_ff));
+                        swiglu(gbuf[t], ubuf[t], ff_buf[t0 + t], int(nfmt_->n_ff));
                 }
             } else {
                 float* ff[kMaxMultiExt];
-                for (int t = 0; t < nt; ++t) ff[t] = ff_buf[t];
+                for (int t = 0; t < nt; ++t)
+                    ff[t] = ff_buf[t];
                 native_gu_rows(*nfmt_, mj.blob, nact, nt, ff, 0, (int) nfmt_->n_ff);
             }
-            if (time_phases) t_b = std::chrono::steady_clock::now();
-            if (profile_file_) cpu_a = thread_cpu_ms();
+            if (time_phases)
+                t_b = std::chrono::steady_clock::now();
+            if (profile_file_)
+                cpu_a = thread_cpu_ms();
             if (q2_native_kernels(nfmt_->d_type)) {
                 const ActQ* a2[kMaxMultiExt];
                 for (int t = 0; t < nt; ++t) {
                     act_quant_any(ff_buf[t], (int) nfmt_->n_ff, a2_buf[t]);
                     a2[t] = &a2_buf[t];
                 }
-                if (time_phases) t_c = std::chrono::steady_clock::now();
-                if (profile_file_) cpu_b = thread_cpu_ms();
+                if (time_phases)
+                    t_c = std::chrono::steady_clock::now();
+                if (profile_file_)
+                    cpu_b = thread_cpu_ms();
                 for (int t0 = 0; t0 < nt; t0 += MAXT) {
                     const int m = (std::min)(MAXT, nt - t0);
-                    q2_rows_any(mj.blob + nfmt_->down_off, nfmt_->d_row, (int) (nfmt_->n_ff / 64), a2 + t0,
-                                m, out + t0, 0, (int) nfmt_->n_embd);
+                    q2_rows_any(mj.blob + nfmt_->down_off, nfmt_->d_row, (int) (nfmt_->n_ff / 64), a2 + t0, m, out + t0,
+                                0, (int) nfmt_->n_embd);
                 }
             } else {
                 const void* hq[kMaxMultiExt];
@@ -701,8 +784,10 @@ void ExpertPool::drain(int id, ExpertScratch& scratch, uint32_t epoch) {
                     native_quant_h(*nfmt_, ff_buf[t], hq_buf[t]);
                     hq[t] = hq_buf[t];
                 }
-                if (time_phases) t_c = std::chrono::steady_clock::now();
-                if (profile_file_) cpu_b = thread_cpu_ms();
+                if (time_phases)
+                    t_c = std::chrono::steady_clock::now();
+                if (profile_file_)
+                    cpu_b = thread_cpu_ms();
                 native_down_rows(*nfmt_, mj.blob, hq, nt, out, 0, (int) nfmt_->n_embd);
             }
             if (time_phases) {
@@ -728,25 +813,35 @@ void ExpertPool::drain(int id, ExpertScratch& scratch, uint32_t epoch) {
                 const int part = (int) i % fused_gu_parts_;
                 const int n_ff = (int) nfmt_->n_ff;
                 const int ff_q = n_ff / 4;
-                const int r0 = (ff_q >= fused_gu_parts_) ? ((ff_q * part / fused_gu_parts_) * 4) : (n_ff * part / fused_gu_parts_);
-                const int r1 = (part + 1 == fused_gu_parts_) ? n_ff : ((ff_q >= fused_gu_parts_) ? ((ff_q * (part + 1) / fused_gu_parts_) * 4) : (n_ff * (part + 1) / fused_gu_parts_));
+                const int r0 =
+                    (ff_q >= fused_gu_parts_) ? ((ff_q * part / fused_gu_parts_) * 4) : (n_ff * part / fused_gu_parts_);
+                const int r1 = (part + 1 == fused_gu_parts_)
+                                   ? n_ff
+                                   : ((ff_q >= fused_gu_parts_) ? ((ff_q * (part + 1) / fused_gu_parts_) * 4)
+                                                                : (n_ff * (part + 1) / fused_gu_parts_));
                 SplitBufMulti& sb = split_multi_[(size_t) e];
                 std::chrono::steady_clock::time_point t_a, t_b, t_c;
-                if (time_phases) t_a = std::chrono::steady_clock::now();
+                if (time_phases)
+                    t_a = std::chrono::steady_clock::now();
                 if (r0 < r1) {
                     if (q2_native_kernels(nfmt_->gu_type)) {
                         thread_local float gbuf[MAXT][FF], ubuf[MAXT][FF];
                         float* gp[MAXT];
                         float* up[MAXT];
-                        for (int t = 0; t < mjobs_[e].nt; ++t) { gp[t] = gbuf[t]; up[t] = ubuf[t]; }
+                        for (int t = 0; t < mjobs_[e].nt; ++t) {
+                            gp[t] = gbuf[t];
+                            up[t] = ubuf[t];
+                        }
                         const int nbk = (int) (nfmt_->n_embd / 64);
                         q2_rows_any(mjobs_[e].blob, nfmt_->gu_row, nbk, mjobs_[e].act, mjobs_[e].nt, gp, r0, r1);
-                        q2_rows_any(mjobs_[e].blob + nfmt_->up_off, nfmt_->gu_row, nbk, mjobs_[e].act, mjobs_[e].nt, up, r0, r1);
+                        q2_rows_any(mjobs_[e].blob + nfmt_->up_off, nfmt_->gu_row, nbk, mjobs_[e].act, mjobs_[e].nt, up,
+                                    r0, r1);
                         for (int t = 0; t < mjobs_[e].nt; ++t)
                             swiglu(gbuf[t] + r0, ubuf[t] + r0, sb.ff[t] + r0, r1 - r0);
                     } else {
                         float* ff[MAXT];
-                        for (int t = 0; t < mjobs_[e].nt; ++t) ff[t] = sb.ff[t];
+                        for (int t = 0; t < mjobs_[e].nt; ++t)
+                            ff[t] = sb.ff[t];
                         native_gu_rows(*nfmt_, mjobs_[e].blob, mjobs_[e].nact, mjobs_[e].nt, ff, r0, r1);
                     }
                 }
@@ -756,8 +851,10 @@ void ExpertPool::drain(int id, ExpertScratch& scratch, uint32_t epoch) {
                 }
                 if (sb.gu_rem.fetch_sub(1, std::memory_order_acq_rel) == 1) {
                     for (int t = 0; t < mjobs_[e].nt; ++t) {
-                        if (q2_native_kernels(nfmt_->d_type)) act_quant_any(sb.ff[t], n_ff, sb.a2[t]);
-                        else native_quant_h(*nfmt_, sb.ff[t], sb.hq[t]);
+                        if (q2_native_kernels(nfmt_->d_type))
+                            act_quant_any(sb.ff[t], n_ff, sb.a2[t]);
+                        else
+                            native_quant_h(*nfmt_, sb.ff[t], sb.hq[t]);
                     }
                     sb.hq_ready.store(1, std::memory_order_release);
                     if (time_phases) {
@@ -771,23 +868,30 @@ void ExpertPool::drain(int id, ExpertScratch& scratch, uint32_t epoch) {
                 const int part = di % fused_down_parts_;
                 const int n_embd = (int) nfmt_->n_embd;
                 const int emb_q = n_embd / 4;
-                const int r0 = (emb_q >= fused_down_parts_) ? ((emb_q * part / fused_down_parts_) * 4) : (n_embd * part / fused_down_parts_);
-                const int r1 = (part + 1 == fused_down_parts_) ? n_embd : ((emb_q >= fused_down_parts_) ? ((emb_q * (part + 1) / fused_down_parts_) * 4) : (n_embd * (part + 1) / fused_down_parts_));
+                const int r0 = (emb_q >= fused_down_parts_) ? ((emb_q * part / fused_down_parts_) * 4)
+                                                            : (n_embd * part / fused_down_parts_);
+                const int r1 = (part + 1 == fused_down_parts_)
+                                   ? n_embd
+                                   : ((emb_q >= fused_down_parts_) ? ((emb_q * (part + 1) / fused_down_parts_) * 4)
+                                                                   : (n_embd * (part + 1) / fused_down_parts_));
                 SplitBufMulti& sb = split_multi_[(size_t) e];
                 while (sb.hq_ready.load(std::memory_order_acquire) == 0) {
                     _mm_pause();
                 }
                 std::chrono::steady_clock::time_point t_c, t_d;
-                if (time_phases) t_c = std::chrono::steady_clock::now();
+                if (time_phases)
+                    t_c = std::chrono::steady_clock::now();
                 if (r0 < r1) {
                     if (q2_native_kernels(nfmt_->d_type)) {
                         const ActQ* a2[MAXT];
-                        for (int t = 0; t < mjobs_[e].nt; ++t) a2[t] = &sb.a2[t];
+                        for (int t = 0; t < mjobs_[e].nt; ++t)
+                            a2[t] = &sb.a2[t];
                         q2_rows_any(mjobs_[e].blob + nfmt_->down_off, nfmt_->d_row, (int) (nfmt_->n_ff / 64), a2,
                                     mjobs_[e].nt, mjobs_[e].out, r0, r1);
                     } else {
                         const void* hq[MAXT];
-                        for (int t = 0; t < mjobs_[e].nt; ++t) hq[t] = sb.hq[t];
+                        for (int t = 0; t < mjobs_[e].nt; ++t)
+                            hq[t] = sb.hq[t];
                         native_down_rows(*nfmt_, mjobs_[e].blob, hq, mjobs_[e].nt, mjobs_[e].out, r0, r1);
                     }
                     for (int t = 0; t < mjobs_[e].nt; ++t) {
@@ -803,10 +907,12 @@ void ExpertPool::drain(int id, ExpertScratch& scratch, uint32_t epoch) {
             }
         } else if (mode_ == 7) {
             // One independent expert intermediate per task, no cross-task writes.
-            auto& sb=split_multi_[i];
-            for (int t=0;t<mjobs_[i].nt;++t)
-                if (q2_native_kernels(nfmt_->d_type)) act_quant_any(sb.ff[t],int(nfmt_->n_ff),sb.a2[t]);
-                else native_quant_h(*nfmt_,sb.ff[t],sb.hq[t]);
+            auto& sb = split_multi_[i];
+            for (int t = 0; t < mjobs_[i].nt; ++t)
+                if (q2_native_kernels(nfmt_->d_type))
+                    act_quant_any(sb.ff[t], int(nfmt_->n_ff), sb.a2[t]);
+                else
+                    native_quant_h(*nfmt_, sb.ff[t], sb.hq[t]);
         } else if (mode_ >= 5) {
             // plan v0.3 P6: native layers, 5 = gate/up rows, 6 = down rows
             const int per = mode_ == 5 ? (int) nfmt_->n_ff : (int) nfmt_->n_embd;
@@ -820,25 +926,32 @@ void ExpertPool::drain(int id, ExpertScratch& scratch, uint32_t epoch) {
                     thread_local float gbuf[MAXT][FF], ubuf[MAXT][FF];
                     float* gp[MAXT];
                     float* up[MAXT];
-                    for (int t = 0; t < mjobs_[e].nt; ++t) { gp[t] = gbuf[t]; up[t] = ubuf[t]; }
+                    for (int t = 0; t < mjobs_[e].nt; ++t) {
+                        gp[t] = gbuf[t];
+                        up[t] = ubuf[t];
+                    }
                     const int nbk = (int) (nfmt_->n_embd / 64);
                     q2_rows_any(mjobs_[e].blob, nfmt_->gu_row, nbk, mjobs_[e].act, mjobs_[e].nt, gp, r0, r1);
-                    q2_rows_any(mjobs_[e].blob + nfmt_->up_off, nfmt_->gu_row, nbk, mjobs_[e].act, mjobs_[e].nt, up, r0, r1);
+                    q2_rows_any(mjobs_[e].blob + nfmt_->up_off, nfmt_->gu_row, nbk, mjobs_[e].act, mjobs_[e].nt, up, r0,
+                                r1);
                     for (int t = 0; t < mjobs_[e].nt; ++t)
-                        swiglu(gbuf[t]+r0,ubuf[t]+r0,sb.ff[t]+r0,r1-r0);
+                        swiglu(gbuf[t] + r0, ubuf[t] + r0, sb.ff[t] + r0, r1 - r0);
                 } else if (mode_ == 5) {
                     float* ff[MAXT];
-                    for (int t = 0; t < mjobs_[e].nt; ++t) ff[t] = sb.ff[t];
+                    for (int t = 0; t < mjobs_[e].nt; ++t)
+                        ff[t] = sb.ff[t];
                     native_gu_rows(*nfmt_, mjobs_[e].blob, mjobs_[e].nact, mjobs_[e].nt, ff, r0, r1);
                 } else if (q2_native_kernels(nfmt_->d_type)) {
                     // Q2_0 down (most IQ layers): the AVX-512 kernel, ggml-cpu has only a scalar one on x86
                     const ActQ* a2[MAXT];
-                    for (int t = 0; t < mjobs_[e].nt; ++t) a2[t] = &sb.a2[t];
+                    for (int t = 0; t < mjobs_[e].nt; ++t)
+                        a2[t] = &sb.a2[t];
                     q2_rows_any(mjobs_[e].blob + nfmt_->down_off, nfmt_->d_row, (int) (nfmt_->n_ff / 64), a2,
                                 mjobs_[e].nt, mjobs_[e].out, r0, r1);
                 } else {
                     const void* hq[MAXT];
-                    for (int t = 0; t < mjobs_[e].nt; ++t) hq[t] = sb.hq[t];
+                    for (int t = 0; t < mjobs_[e].nt; ++t)
+                        hq[t] = sb.hq[t];
                     native_down_rows(*nfmt_, mjobs_[e].blob, hq, mjobs_[e].nt, mjobs_[e].out, r0, r1);
                 }
                 r += r1 - r0;
@@ -853,11 +966,13 @@ void ExpertPool::drain(int id, ExpertScratch& scratch, uint32_t epoch) {
                 SplitBufMulti& sb = split_multi_[(size_t) e];
                 if (mode_ == 3) {
                     float* ff[MAXT];
-                    for (int t = 0; t < mjobs_[e].nt; ++t) ff[t] = sb.ff[t];
+                    for (int t = 0; t < mjobs_[e].nt; ++t)
+                        ff[t] = sb.ff[t];
                     s2_expert_gu_rows_multi(mjobs_[e].blob, mjobs_[e].act, mjobs_[e].nt, ff, r0, r1);
                 } else {
                     const ActQ* a2[MAXT];
-                    for (int t = 0; t < mjobs_[e].nt; ++t) a2[t] = &sb.a2[t];
+                    for (int t = 0; t < mjobs_[e].nt; ++t)
+                        a2[t] = &sb.a2[t];
                     s2_expert_down_rows_multi(mjobs_[e].blob, a2, mjobs_[e].nt, mjobs_[e].out, r0, r1);
                 }
                 r += r1 - r0;
@@ -866,9 +981,12 @@ void ExpertPool::drain(int id, ExpertScratch& scratch, uint32_t epoch) {
         if (profile_file_ && mode_ != 8) {
             auto& p = profile_times_[size_t(id + 1)];
             const double value = thread_cpu_ms() - profile_start;
-            if (mode_ == 5) p.gu += value;
-            else if (mode_ == 6) p.down += value;
-            else if (mode_ == 7 || mode_ == 9) p.quant += value;
+            if (mode_ == 5)
+                p.gu += value;
+            else if (mode_ == 6)
+                p.down += value;
+            else if (mode_ == 7 || mode_ == 9)
+                p.quant += value;
         }
         done_.fetch_add(1, std::memory_order_release);
     }
@@ -879,7 +997,8 @@ void ExpertPool::run_phase(int mode, int n_tasks) {
     mode_ = mode;
     njobs_ = n_tasks;
     const uint32_t e = begin_batch(n_tasks);
-    if (host_works_) drain(-1, host_scratch_, e);
+    if (host_works_)
+        drain(-1, host_scratch_, e);
     wait_done(n_tasks);
     wait_parked("after a phase");
     hstate_.store(kIdle, std::memory_order_relaxed);
@@ -887,8 +1006,12 @@ void ExpertPool::run_phase(int mode, int n_tasks) {
 }
 
 void ExpertPool::run_split(ExpertJob* jobs, int n) {
-    if (n <= 0) return;
-    if (n > kMaxSplit || n_ == 1 || expert_oracle_q8_0_enabled()) { run(jobs, n); return; }
+    if (n <= 0)
+        return;
+    if (n > kMaxSplit || n_ == 1 || expert_oracle_q8_0_enabled()) {
+        run(jobs, n);
+        return;
+    }
     const auto t0 = std::chrono::steady_clock::now();
     jobs_ = jobs;
     const int threads = n_ + (host_works_ ? 1 : 0);
@@ -896,14 +1019,16 @@ void ExpertPool::run_split(ExpertJob* jobs, int n) {
     parts_a_ = (std::max)(1, (3 * threads + n - 1) / n);
     parts_b_ = parts_a_;
     run_phase(1, n * parts_a_);
-    for (int e = 0; e < n; ++e) act_quant_q8_1(split_[(size_t) e].ff, FF, split_[(size_t) e].a2);
+    for (int e = 0; e < n; ++e)
+        act_quant_q8_1(split_[(size_t) e].ff, FF, split_[(size_t) e].a2);
     run_phase(2, n * parts_b_);
     mode_ = 0;
     ms_drain_ += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
 }
 
 void ExpertPool::run_split_multi(ExpertJobMulti* jobs, int n) {
-    if (n <= 0) return;
+    if (n <= 0)
+        return;
     if (n > kMaxSplitMulti || expert_oracle_q8_0_enabled()) {
         // one token at a time through the single-token path (the oracle contract has no multi kernel)
         std::vector<ExpertJob> single;
@@ -942,7 +1067,8 @@ void ExpertPool::run_split_multi(ExpertJobMulti* jobs, int n) {
 }
 
 void ExpertPool::quant_act_multi_native(const NativeFmt& f, const float* x, uint8_t* dst, int n_tok) {
-    if (n_tok <= 0) return;
+    if (n_tok <= 0)
+        return;
     if (n_tok < 8 || n_ <= 1) {
         for (int t = 0; t < n_tok; ++t)
             native_quant_act(f, x + (size_t) t * (size_t) f.n_embd, dst + (size_t) t * kNativeActBytes);
@@ -955,9 +1081,10 @@ void ExpertPool::quant_act_multi_native(const NativeFmt& f, const float* x, uint
     mode_ = 0;
 }
 
-bool ExpertPool::combine_multi_native(const float* parts, const float* weights, float* out,
-                                      int n_tok, int k, int n_embd) {
-    if (n_tok <= 0 || k <= 0 || n_embd <= 0 || !backend_table_.combine) return false;
+bool ExpertPool::combine_multi_native(const float* parts, const float* weights, float* out, int n_tok, int k,
+                                      int n_embd) {
+    if (n_tok <= 0 || k <= 0 || n_embd <= 0 || !backend_table_.combine)
+        return false;
     comb_parts_ = parts;
     comb_weights_ = weights;
     comb_out_ = out;
@@ -971,9 +1098,11 @@ bool ExpertPool::combine_multi_native(const float* parts, const float* weights, 
 
 void ExpertPool::run_split_multi_native(const NativeFmt& f, ExpertJobMulti* jobs, int n, bool parallel_quant) {
     last_run_verified_finite_ = false;
-    if (n <= 0) return;
+    if (n <= 0)
+        return;
     const auto t0 = std::chrono::steady_clock::now();
-    if (profile_file_) std::fill(profile_times_.begin(), profile_times_.end(), ProfileTimes{});
+    if (profile_file_)
+        std::fill(profile_times_.begin(), profile_times_.end(), ProfileTimes{});
     const int threads = n_ + (host_works_ ? 1 : 0);
     static const bool whole_expert = [] {
         const char* v = std::getenv("GUILD_POOL_WHOLE_EXPERT");
@@ -1001,7 +1130,8 @@ void ExpertPool::run_split_multi_native(const NativeFmt& f, ExpertJobMulti* jobs
         multi_bytes += (int64_t) n * (int64_t) f.bytes;
         mode_ = 0;
         ms_drain_ += std::chrono::duration<double, std::milli>(d - t0).count();
-        if (profile_file_) report_profile(t0, f, jobs, n, true);
+        if (profile_file_)
+            report_profile(t0, f, jobs, n, true);
         return;
     }
     if (fused_pipeline_ && threads > 1) {
@@ -1040,7 +1170,8 @@ void ExpertPool::run_split_multi_native(const NativeFmt& f, ExpertJobMulti* jobs
         multi_bytes += (int64_t) n * (int64_t) f.bytes;
         mode_ = 0;
         ms_drain_ += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
-        if (profile_file_) report_profile(t0, f, jobs, n, false);
+        if (profile_file_)
+            report_profile(t0, f, jobs, n, false);
         return;
     }
     // more distinct experts than buffers: run them in batches
@@ -1054,14 +1185,18 @@ void ExpertPool::run_split_multi_native(const NativeFmt& f, ExpertJobMulti* jobs
         const auto a = std::chrono::steady_clock::now();
         run_phase(5, mtasks_);
         const auto b = std::chrono::steady_clock::now();
-        if (parallel_quant && nb >= 32) run_phase(7,nb);
+        if (parallel_quant && nb >= 32)
+            run_phase(7, nb);
         else {
             const double cpu_start = profile_file_ ? thread_cpu_ms() : 0;
             for (int e = 0; e < nb; ++e)
                 for (int t = 0; t < mjobs_[e].nt; ++t)
-                    if (q2_native_kernels(f.d_type)) act_quant_any(split_multi_[(size_t) e].ff[t], (int) f.n_ff, split_multi_[(size_t) e].a2[t]);
-                    else native_quant_h(f, split_multi_[(size_t) e].ff[t], split_multi_[(size_t) e].hq[t]);
-            if (profile_file_) profile_times_[0].quant += thread_cpu_ms() - cpu_start;
+                    if (q2_native_kernels(f.d_type))
+                        act_quant_any(split_multi_[(size_t) e].ff[t], (int) f.n_ff, split_multi_[(size_t) e].a2[t]);
+                    else
+                        native_quant_h(f, split_multi_[(size_t) e].ff[t], split_multi_[(size_t) e].hq[t]);
+            if (profile_file_)
+                profile_times_[0].quant += thread_cpu_ms() - cpu_start;
         }
         const auto c = std::chrono::steady_clock::now();
         mrows_ = (int64_t) nb * f.n_embd;
@@ -1074,27 +1209,35 @@ void ExpertPool::run_split_multi_native(const NativeFmt& f, ExpertJobMulti* jobs
     multi_bytes += (int64_t) n * (int64_t) f.bytes;
     mode_ = 0;
     ms_drain_ += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
-    if (profile_file_) report_profile(t0, f, jobs, n, false);
+    if (profile_file_)
+        report_profile(t0, f, jobs, n, false);
 }
 
-void ExpertPool::report_profile(std::chrono::steady_clock::time_point start, const NativeFmt& f,
-                                ExpertJobMulti* jobs, int n, bool whole) {
+void ExpertPool::report_profile(std::chrono::steady_clock::time_point start, const NativeFmt& f, ExpertJobMulti* jobs,
+                                int n, bool whole) {
     ProfileTimes sum;
-    for (const auto& p : profile_times_) { sum.gu += p.gu; sum.quant += p.quant; sum.down += p.down; }
+    for (const auto& p : profile_times_) {
+        sum.gu += p.gu;
+        sum.quant += p.quant;
+        sum.down += p.down;
+    }
     int entries = 0;
-    for (int i = 0; i < n; ++i) entries += jobs[i].nt;
+    for (int i = 0; i < n; ++i)
+        entries += jobs[i].nt;
     const auto end = std::chrono::steady_clock::now();
     std::fprintf(profile_file_, "%lld,%lld,%d,%d,%d,%d,%d,%.9f,%.9f,%.9f\n",
-        (long long) std::chrono::duration_cast<std::chrono::nanoseconds>(start.time_since_epoch()).count(),
-        (long long) std::chrono::duration_cast<std::chrono::nanoseconds>(end.time_since_epoch()).count(),
-        f.gu_type, f.d_type, n, entries, int(whole), sum.gu, sum.quant, sum.down);
+                 (long long) std::chrono::duration_cast<std::chrono::nanoseconds>(start.time_since_epoch()).count(),
+                 (long long) std::chrono::duration_cast<std::chrono::nanoseconds>(end.time_since_epoch()).count(),
+                 f.gu_type, f.d_type, n, entries, int(whole), sum.gu, sum.quant, sum.down);
     std::fflush(profile_file_);
 }
 
 void ExpertPool::run(ExpertJob* jobs, int n) {
-    if (n <= 0) return;
-    if (n_ == 1) {   // no workers: run inline, so a single-core machine still produces a token
-        for (int i = 0; i < n; ++i) s2_expert_vnni_q(jobs[i].blob, *jobs[i].act, jobs[i].out, scratch_[0]);
+    if (n <= 0)
+        return;
+    if (n_ == 1) { // no workers: run inline, so a single-core machine still produces a token
+        for (int i = 0; i < n; ++i)
+            s2_expert_vnni_q(jobs[i].blob, *jobs[i].act, jobs[i].out, scratch_[0]);
         return;
     }
     // Wait for every worker to be parked BEFORE touching the batch, so the publish below is the only thing
@@ -1108,7 +1251,7 @@ void ExpertPool::run(ExpertJob* jobs, int n) {
     jobs_ = jobs;
     njobs_ = n;
     mode_ = 0;
-    const uint32_t e = begin_batch(n);   // done, then head (release), then the epoch: the batch is described first
+    const uint32_t e = begin_batch(n); // done, then head (release), then the epoch: the batch is described first
 
     // ---- **THE HOST DRAINS TOO (R2.2), INSTEAD OF SPINNING ON `done_`.**
     //
@@ -1127,7 +1270,8 @@ void ExpertPool::run(ExpertJob* jobs, int n) {
     if (host_works_) {
         for (;;) {
             const int ci = claim(e);
-            if (ci < 0) break;
+            if (ci < 0)
+                break;
             hstate_.store(ci, std::memory_order_relaxed);
             hstate_ms_.store(now_ms(), std::memory_order_relaxed);
             const ExpertJob& j = jobs_[ci];
@@ -1150,4 +1294,4 @@ void ExpertPool::run(ExpertJob* jobs, int n) {
     ms_repark_ += std::chrono::duration<double, std::milli>(t_d - t_c).count();
 }
 
-}  // namespace guild::kernels::cpu
+} // namespace guild::kernels::cpu

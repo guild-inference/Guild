@@ -21,9 +21,9 @@ namespace guild::prefill::fused {
 
 /// One layer's native expert geometry (cpu::NativeFmt's fields the kernels read; n_embd 2560, n_ff 640).
 struct NativeGeom {
-    int gu_type = -1, d_type = -1;    ///< ggml types
-    size_t gu_row = 0, d_row = 0;     ///< bytes per gate/up row and per down row
-    size_t up_off = 0, down_off = 0;  ///< inside the blob
+    int gu_type = -1, d_type = -1;   ///< ggml types
+    size_t gu_row = 0, d_row = 0;    ///< bytes per gate/up row and per down row
+    size_t up_off = 0, down_off = 0; ///< inside the blob
 };
 
 /// enabled() (GUILD_PF_FUSED=1 on sm_80+), and the kernels cover this gate/up and down pair on this device.
@@ -38,4 +38,4 @@ void quantize_act_native(const float* x, int64_t rows, int64_t cols, void* xa, v
 void experts_native(const Batch& b, const NativeGeom& g, int n_expert, int64_t n, const void* scratch, const void* xa,
                     const int32_t* src, void* ha, float* dm, void* stream);
 
-}  // namespace guild::prefill::fused
+} // namespace guild::prefill::fused

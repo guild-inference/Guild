@@ -14,29 +14,29 @@ extern "C" {
 #define GUILD_CUDA_MOE_VERSION_V1 1u
 
 enum guild_cuda_moe_config_flags_v1_e {
-    GUILD_CUDA_MOE_FLAG_NONE_V1               = 0u,
+    GUILD_CUDA_MOE_FLAG_NONE_V1 = 0u,
     GUILD_CUDA_MOE_FLAG_SHARED_NATIVE_BF16_V1 = 1u << 0,
-    GUILD_CUDA_MOE_FLAG_NATIVE_ROUTER_V1      = 1u << 1,
+    GUILD_CUDA_MOE_FLAG_NATIVE_ROUTER_V1 = 1u << 1,
     GUILD_CUDA_MOE_FLAG_NATIVE_MOE_COMBINE_V1 = 1u << 2,
-    GUILD_CUDA_MOE_FLAG_GR_FP32_ACT_V1        = 1u << 3,
-    GUILD_CUDA_MOE_FLAG_GR_NATIVE_MMVF_V1     = 1u << 4,
-    GUILD_CUDA_MOE_FLAG_PLE_NATIVE_BF16_V1    = 1u << 5,
+    GUILD_CUDA_MOE_FLAG_GR_FP32_ACT_V1 = 1u << 3,
+    GUILD_CUDA_MOE_FLAG_GR_NATIVE_MMVF_V1 = 1u << 4,
+    GUILD_CUDA_MOE_FLAG_PLE_NATIVE_BF16_V1 = 1u << 5,
     GUILD_CUDA_MOE_FLAG_PLE_NATIVE_POSTOPS_V1 = 1u << 6,
-    GUILD_CUDA_MOE_FLAG_NATIVE_GROUPED_V1_V1  = 1u << 7,
-    GUILD_CUDA_MOE_FLAG_IQ_OLD_KERNELS_V1     = 1u << 8
+    GUILD_CUDA_MOE_FLAG_NATIVE_GROUPED_V1_V1 = 1u << 7,
+    GUILD_CUDA_MOE_FLAG_IQ_OLD_KERNELS_V1 = 1u << 8
 };
 
 enum guild_cuda_moe_config_mode_v1_e {
-    GUILD_CUDA_MOE_CFG_SET_FLAGS_V1               = 0u,
+    GUILD_CUDA_MOE_CFG_SET_FLAGS_V1 = 0u,
     GUILD_CUDA_MOE_CFG_QUERY_GROUPED_LAST_PATH_V1 = 1u,
-    GUILD_CUDA_MOE_CFG_DEQUANT_BF16_SUPPORTED_V1  = 2u,
-    GUILD_CUDA_MOE_CFG_COUPLED_SCRATCH_BYTES_V1   = 3u,
-    GUILD_CUDA_MOE_CFG_FUSED_GR_SUPPORTED_V1      = 4u,
-    GUILD_CUDA_MOE_CFG_FUSED_GR_SET_FAST_V1       = 5u,
-    GUILD_CUDA_MOE_CFG_FUSED_GR_CHECK_V1          = 6u,
-    GUILD_CUDA_MOE_CFG_FUSED_GR_VARIANT_V1        = 7u,
-    GUILD_CUDA_MOE_CFG_PLE_AVAILABLE_V1           = 8u,
-    GUILD_CUDA_MOE_CFG_NATIVE_EXPERT_SET_MODE_V1  = 9u
+    GUILD_CUDA_MOE_CFG_DEQUANT_BF16_SUPPORTED_V1 = 2u,
+    GUILD_CUDA_MOE_CFG_COUPLED_SCRATCH_BYTES_V1 = 3u,
+    GUILD_CUDA_MOE_CFG_FUSED_GR_SUPPORTED_V1 = 4u,
+    GUILD_CUDA_MOE_CFG_FUSED_GR_SET_FAST_V1 = 5u,
+    GUILD_CUDA_MOE_CFG_FUSED_GR_CHECK_V1 = 6u,
+    GUILD_CUDA_MOE_CFG_FUSED_GR_VARIANT_V1 = 7u,
+    GUILD_CUDA_MOE_CFG_PLE_AVAILABLE_V1 = 8u,
+    GUILD_CUDA_MOE_CFG_NATIVE_EXPERT_SET_MODE_V1 = 9u
 };
 
 typedef struct guild_cuda_moe_config_v1_s {
@@ -58,9 +58,9 @@ typedef struct guild_cuda_sform_v1_s {
     int32_t code_bits;
     int32_t code_bias;
     int32_t group_elems;
-    int32_t codebook;   // 0 = Affine, 1 = Iq4Nl
+    int32_t codebook; // 0 = Affine, 1 = Iq4Nl
     uint32_t has_offset;
-    int32_t act_kind;   // 0 = Q8_0, 1 = Q8_K
+    int32_t act_kind; // 0 = Q8_0, 1 = Q8_K
 } guild_cuda_sform_v1_t;
 
 typedef struct guild_cuda_native_shared_weights_v1_s {
@@ -164,21 +164,21 @@ typedef struct guild_cuda_native_ple_postops_buffers_v1_s {
 } guild_cuda_native_ple_postops_buffers_v1_t;
 
 enum guild_cuda_quant_dequant_mode_v1_e {
-    GUILD_CUDA_QD_DEQUANT_BF16_V1         = 0u,
-    GUILD_CUDA_QD_DEQUANT_F16_V1          = 1u,
-    GUILD_CUDA_QD_DEQUANT_F32_V1          = 2u,
-    GUILD_CUDA_QD_DEQUANT_S2_V1           = 3u,
-    GUILD_CUDA_QD_QUANTIZE_Q8_0_V1        = 4u,
+    GUILD_CUDA_QD_DEQUANT_BF16_V1 = 0u,
+    GUILD_CUDA_QD_DEQUANT_F16_V1 = 1u,
+    GUILD_CUDA_QD_DEQUANT_F32_V1 = 2u,
+    GUILD_CUDA_QD_DEQUANT_S2_V1 = 3u,
+    GUILD_CUDA_QD_QUANTIZE_Q8_0_V1 = 4u,
     GUILD_CUDA_QD_QUANTIZE_Q8_0_SCALED_V1 = 5u,
-    GUILD_CUDA_QD_DEQUANT_Q8_0_V1         = 6u,
-    GUILD_CUDA_QD_QUANTIZE_Q8_K_V1        = 7u,
-    GUILD_CUDA_QD_DEQUANT_Q8_K_V1         = 8u,
-    GUILD_CUDA_QD_QUANTIZE_Q8_1_ROWS_V1   = 9u,
-    GUILD_CUDA_QD_IQ_DEQUANT_F16_V1       = 10u,
-    GUILD_CUDA_QD_IQ_DEQUANT_F32_V1       = 11u,
-    GUILD_CUDA_QD_IQ_EMBED_ROWS_V1        = 12u,
-    GUILD_CUDA_QD_IQ_DEQUANT_GU_F16_V1    = 13u,
-    GUILD_CUDA_QD_IQ_MMVQ_V1              = 14u
+    GUILD_CUDA_QD_DEQUANT_Q8_0_V1 = 6u,
+    GUILD_CUDA_QD_QUANTIZE_Q8_K_V1 = 7u,
+    GUILD_CUDA_QD_DEQUANT_Q8_K_V1 = 8u,
+    GUILD_CUDA_QD_QUANTIZE_Q8_1_ROWS_V1 = 9u,
+    GUILD_CUDA_QD_IQ_DEQUANT_F16_V1 = 10u,
+    GUILD_CUDA_QD_IQ_DEQUANT_F32_V1 = 11u,
+    GUILD_CUDA_QD_IQ_EMBED_ROWS_V1 = 12u,
+    GUILD_CUDA_QD_IQ_DEQUANT_GU_F16_V1 = 13u,
+    GUILD_CUDA_QD_IQ_MMVQ_V1 = 14u
 };
 
 typedef struct guild_cuda_quant_dequant_op_v1_s {
@@ -200,16 +200,16 @@ typedef struct guild_cuda_quant_dequant_op_v1_s {
 } guild_cuda_quant_dequant_op_v1_t;
 
 enum guild_cuda_s_gemv_mode_v1_e {
-    GUILD_CUDA_SGEMV_S2_V1            = 0u,
-    GUILD_CUDA_SGEMV_S2_QUADS_V1      = 1u,
-    GUILD_CUDA_SGEMV_S2_FAST_V1       = 2u,
-    GUILD_CUDA_SGEMV_S2_Q8_V1         = 3u,
-    GUILD_CUDA_SGEMV_S_V1             = 4u,
-    GUILD_CUDA_SGEMV_S_SPLIT_V1       = 5u,
+    GUILD_CUDA_SGEMV_S2_V1 = 0u,
+    GUILD_CUDA_SGEMV_S2_QUADS_V1 = 1u,
+    GUILD_CUDA_SGEMV_S2_FAST_V1 = 2u,
+    GUILD_CUDA_SGEMV_S2_Q8_V1 = 3u,
+    GUILD_CUDA_SGEMV_S_V1 = 4u,
+    GUILD_CUDA_SGEMV_S_SPLIT_V1 = 5u,
     GUILD_CUDA_SGEMV_S_SPLIT_ASYNC_V1 = 6u,
-    GUILD_CUDA_SGEMV_S_Q8K_V1         = 7u,
-    GUILD_CUDA_SGEMV_S_Q8K_SPLIT_V1   = 8u,
-    GUILD_CUDA_SGEMV_S_Q8_0_SPLIT_V1  = 9u
+    GUILD_CUDA_SGEMV_S_Q8K_V1 = 7u,
+    GUILD_CUDA_SGEMV_S_Q8K_SPLIT_V1 = 8u,
+    GUILD_CUDA_SGEMV_S_Q8_0_SPLIT_V1 = 9u
 };
 
 typedef struct guild_cuda_s_gemv_op_v1_s {
@@ -228,27 +228,27 @@ typedef struct guild_cuda_s_gemv_op_v1_s {
 } guild_cuda_s_gemv_op_v1_t;
 
 enum guild_cuda_moe_mode_v1_e {
-    GUILD_CUDA_MOE_ROUTER_TOP10_V1             = 0u,
-    GUILD_CUDA_MOE_ROUTER_TOP10_VARIANT_V1     = 1u,
-    GUILD_CUDA_MOE_NATIVE_ROUTER_TOP10_V1      = 2u,
-    GUILD_CUDA_MOE_NATIVE_ROUTER_TOP10_MULTI_V1= 3u,
-    GUILD_CUDA_MOE_COMBINE_V1                  = 4u,
-    GUILD_CUDA_MOE_NATIVE_COMBINE_V1           = 5u,
-    GUILD_CUDA_MOE_NATIVE_COMBINE_MULTI_V1     = 6u,
-    GUILD_CUDA_MOE_SHARED_EXPERT_V1            = 7u,
-    GUILD_CUDA_MOE_SHARED_EXPERT_MULTI_V1      = 8u,
-    GUILD_CUDA_MOE_HIT_SELECT_V1               = 9u,
-    GUILD_CUDA_MOE_HIT_SELECT_MULTI_V1         = 10u,
-    GUILD_CUDA_MOE_HIT_ADD_V1                  = 11u,
-    GUILD_CUDA_MOE_HIT_GROUPED_S2_V1           = 12u,
-    GUILD_CUDA_MOE_HIT_GROUPED_S2_DEV_V1       = 13u,
-    GUILD_CUDA_MOE_HIT_GROUPED_S2_MULTI_V1     = 14u,
+    GUILD_CUDA_MOE_ROUTER_TOP10_V1 = 0u,
+    GUILD_CUDA_MOE_ROUTER_TOP10_VARIANT_V1 = 1u,
+    GUILD_CUDA_MOE_NATIVE_ROUTER_TOP10_V1 = 2u,
+    GUILD_CUDA_MOE_NATIVE_ROUTER_TOP10_MULTI_V1 = 3u,
+    GUILD_CUDA_MOE_COMBINE_V1 = 4u,
+    GUILD_CUDA_MOE_NATIVE_COMBINE_V1 = 5u,
+    GUILD_CUDA_MOE_NATIVE_COMBINE_MULTI_V1 = 6u,
+    GUILD_CUDA_MOE_SHARED_EXPERT_V1 = 7u,
+    GUILD_CUDA_MOE_SHARED_EXPERT_MULTI_V1 = 8u,
+    GUILD_CUDA_MOE_HIT_SELECT_V1 = 9u,
+    GUILD_CUDA_MOE_HIT_SELECT_MULTI_V1 = 10u,
+    GUILD_CUDA_MOE_HIT_ADD_V1 = 11u,
+    GUILD_CUDA_MOE_HIT_GROUPED_S2_V1 = 12u,
+    GUILD_CUDA_MOE_HIT_GROUPED_S2_DEV_V1 = 13u,
+    GUILD_CUDA_MOE_HIT_GROUPED_S2_MULTI_V1 = 14u,
     GUILD_CUDA_MOE_HIT_GROUPED_S2_CPU_ORDER_V1 = 15u,
-    GUILD_CUDA_MOE_GROUPED_S2_V1               = 16u,
-    GUILD_CUDA_MOE_GROUP_RESIDENT_V1           = 17u,
-    GUILD_CUDA_MOE_REMOTE_REDUCE_V1            = 18u,
-    GUILD_CUDA_MOE_REMOTE_COPY_CPU_ROWS_V1     = 19u,
-    GUILD_CUDA_MOE_NATIVE_EXPERT_GROUPED_V1    = 20u
+    GUILD_CUDA_MOE_GROUPED_S2_V1 = 16u,
+    GUILD_CUDA_MOE_GROUP_RESIDENT_V1 = 17u,
+    GUILD_CUDA_MOE_REMOTE_REDUCE_V1 = 18u,
+    GUILD_CUDA_MOE_REMOTE_COPY_CPU_ROWS_V1 = 19u,
+    GUILD_CUDA_MOE_NATIVE_EXPERT_GROUPED_V1 = 20u
 };
 
 typedef struct guild_cuda_moe_op_v1_s {
@@ -328,23 +328,23 @@ typedef struct guild_cuda_moe_op_v1_s {
 } guild_cuda_moe_op_v1_t;
 
 enum guild_cuda_elementwise_mode_v1_e {
-    GUILD_CUDA_ELEM_EMBEDDING_GATHER_V1       = 0u,
-    GUILD_CUDA_ELEM_GDN_GATE_V1               = 1u,
-    GUILD_CUDA_ELEM_SCALE_INPLACE_V1          = 2u,
-    GUILD_CUDA_ELEM_ADD_INPLACE_V1            = 3u,
-    GUILD_CUDA_ELEM_F32_TO_F16_V1             = 4u,
-    GUILD_CUDA_ELEM_F32_TO_BF16_V1            = 5u,
-    GUILD_CUDA_ELEM_SILU_INPLACE_V1           = 6u,
-    GUILD_CUDA_ELEM_RMS_NORM_WEIGHTED_V1      = 7u,
-    GUILD_CUDA_ELEM_DOORBELL_RING_V1          = 8u,
-    GUILD_CUDA_ELEM_DOORBELL_WAIT_V1          = 9u,
-    GUILD_CUDA_ELEM_COPY_FROM_MAPPED_V1       = 10u,
-    GUILD_CUDA_ELEM_SCATTER_ROWS_F32_V1       = 11u,
-    GUILD_CUDA_ELEM_COPY_ROWS_FROM_MAPPED_V1  = 12u,
-    GUILD_CUDA_ELEM_DOORBELL_PUBLISH_V1       = 13u,
+    GUILD_CUDA_ELEM_EMBEDDING_GATHER_V1 = 0u,
+    GUILD_CUDA_ELEM_GDN_GATE_V1 = 1u,
+    GUILD_CUDA_ELEM_SCALE_INPLACE_V1 = 2u,
+    GUILD_CUDA_ELEM_ADD_INPLACE_V1 = 3u,
+    GUILD_CUDA_ELEM_F32_TO_F16_V1 = 4u,
+    GUILD_CUDA_ELEM_F32_TO_BF16_V1 = 5u,
+    GUILD_CUDA_ELEM_SILU_INPLACE_V1 = 6u,
+    GUILD_CUDA_ELEM_RMS_NORM_WEIGHTED_V1 = 7u,
+    GUILD_CUDA_ELEM_DOORBELL_RING_V1 = 8u,
+    GUILD_CUDA_ELEM_DOORBELL_WAIT_V1 = 9u,
+    GUILD_CUDA_ELEM_COPY_FROM_MAPPED_V1 = 10u,
+    GUILD_CUDA_ELEM_SCATTER_ROWS_F32_V1 = 11u,
+    GUILD_CUDA_ELEM_COPY_ROWS_FROM_MAPPED_V1 = 12u,
+    GUILD_CUDA_ELEM_DOORBELL_PUBLISH_V1 = 13u,
     GUILD_CUDA_ELEM_DOORBELL_PUBLISH_VALUE_V1 = 14u,
-    GUILD_CUDA_ELEM_DOORBELL_PUBLISH_RES_V1   = 15u,
-    GUILD_CUDA_ELEM_COPY_I32_FROM_MAPPED_V1   = 16u
+    GUILD_CUDA_ELEM_DOORBELL_PUBLISH_RES_V1 = 15u,
+    GUILD_CUDA_ELEM_COPY_I32_FROM_MAPPED_V1 = 16u
 };
 
 typedef struct guild_cuda_elementwise_op_v1_s {
@@ -380,9 +380,9 @@ typedef struct guild_cuda_elementwise_op_v1_s {
 } guild_cuda_elementwise_op_v1_t;
 
 enum guild_cuda_sampler_mode_v1_e {
-    GUILD_CUDA_SAMPLER_SAMPLE_TOKENS_V1  = 0u,
+    GUILD_CUDA_SAMPLER_SAMPLE_TOKENS_V1 = 0u,
     GUILD_CUDA_SAMPLER_GREEDY_CLUSTER_V1 = 1u,
-    GUILD_CUDA_SAMPLER_COUPLED_STAGE_V1  = 2u,
+    GUILD_CUDA_SAMPLER_COUPLED_STAGE_V1 = 2u,
     GUILD_CUDA_SAMPLER_COUPLED_SAMPLE_V1 = 3u
 };
 
@@ -413,26 +413,26 @@ typedef struct guild_cuda_sampler_op_v1_s {
 } guild_cuda_sampler_op_v1_t;
 
 enum guild_cuda_verify_mode_v1_e {
-    GUILD_CUDA_VERIFY_FINITE_FIRST_BAD_V1      = 0u,
-    GUILD_CUDA_VERIFY_WAIT_FLAG_GE_V1          = 1u,
-    GUILD_CUDA_VERIFY_GPU_STAMP_V1             = 2u,
-    GUILD_CUDA_VERIFY_RESIDENT_PLAN_V1         = 3u,
-    GUILD_CUDA_VERIFY_WAIT_FLAG_GE_OR_V1       = 4u,
-    GUILD_CUDA_VERIFY_COPY_I32_UNLESS_V1       = 5u,
-    GUILD_CUDA_VERIFY_COPY_OR_ZERO_V1          = 6u,
-    GUILD_CUDA_VERIFY_EMBEDDING_GATHER_DEV_V1  = 7u,
-    GUILD_CUDA_VERIFY_BROADCAST_STREAMS_V1     = 8u,
-    GUILD_CUDA_VERIFY_COPY_INDEXED_V1          = 9u,
-    GUILD_CUDA_VERIFY_FETCH_BLOBS_V1           = 10u,
-    GUILD_CUDA_VERIFY_REBASE_PTRS_V1           = 11u,
+    GUILD_CUDA_VERIFY_FINITE_FIRST_BAD_V1 = 0u,
+    GUILD_CUDA_VERIFY_WAIT_FLAG_GE_V1 = 1u,
+    GUILD_CUDA_VERIFY_GPU_STAMP_V1 = 2u,
+    GUILD_CUDA_VERIFY_RESIDENT_PLAN_V1 = 3u,
+    GUILD_CUDA_VERIFY_WAIT_FLAG_GE_OR_V1 = 4u,
+    GUILD_CUDA_VERIFY_COPY_I32_UNLESS_V1 = 5u,
+    GUILD_CUDA_VERIFY_COPY_OR_ZERO_V1 = 6u,
+    GUILD_CUDA_VERIFY_EMBEDDING_GATHER_DEV_V1 = 7u,
+    GUILD_CUDA_VERIFY_BROADCAST_STREAMS_V1 = 8u,
+    GUILD_CUDA_VERIFY_COPY_INDEXED_V1 = 9u,
+    GUILD_CUDA_VERIFY_FETCH_BLOBS_V1 = 10u,
+    GUILD_CUDA_VERIFY_REBASE_PTRS_V1 = 11u,
     GUILD_CUDA_VERIFY_ADD_STREAMS_BROADCAST_V1 = 12u,
-    GUILD_CUDA_VERIFY_IDENT_HITS_V1            = 13u,
-    GUILD_CUDA_VERIFY_MTP_SELECT_V1            = 14u,
-    GUILD_CUDA_VERIFY_GATHER_ROWS_V1           = 15u,
-    GUILD_CUDA_VERIFY_MAP_IDS_V1               = 16u,
-    GUILD_CUDA_VERIFY_ROW_TOP_PROB_V1          = 17u,
-    GUILD_CUDA_VERIFY_DENSE_STEPS_V1           = 18u,
-    GUILD_CUDA_VERIFY_WINDOW_IDS_V1            = 19u
+    GUILD_CUDA_VERIFY_IDENT_HITS_V1 = 13u,
+    GUILD_CUDA_VERIFY_MTP_SELECT_V1 = 14u,
+    GUILD_CUDA_VERIFY_GATHER_ROWS_V1 = 15u,
+    GUILD_CUDA_VERIFY_MAP_IDS_V1 = 16u,
+    GUILD_CUDA_VERIFY_ROW_TOP_PROB_V1 = 17u,
+    GUILD_CUDA_VERIFY_DENSE_STEPS_V1 = 18u,
+    GUILD_CUDA_VERIFY_WINDOW_IDS_V1 = 19u
 };
 
 typedef struct guild_cuda_verify_op_v1_s {
@@ -475,20 +475,20 @@ typedef struct guild_cuda_verify_op_v1_s {
 } guild_cuda_verify_op_v1_t;
 
 enum guild_cuda_qwen_mode_v1_e {
-    GUILD_CUDA_QWEN_GR_READ_V1                  = 0u,
-    GUILD_CUDA_QWEN_GR_WRITE_V1                 = 1u,
-    GUILD_CUDA_QWEN_FUSED_GR_READ_V1            = 2u,
-    GUILD_CUDA_QWEN_FUSED_GR_READ_MULTI_V1      = 3u,
-    GUILD_CUDA_QWEN_NATIVE_GR_RMS_NORM_V1       = 4u,
-    GUILD_CUDA_QWEN_NATIVE_GR_DOWN_SILU_V1      = 5u,
-    GUILD_CUDA_QWEN_NATIVE_GR_PRE_GATED_V1      = 6u,
-    GUILD_CUDA_QWEN_NATIVE_GR_POST_V1           = 7u,
-    GUILD_CUDA_QWEN_PLE_BLOCK_V1                = 8u,
-    GUILD_CUDA_QWEN_PLE_BLOCK_PROJECTED_V1      = 9u,
-    GUILD_CUDA_QWEN_PLE_HISTORY_ADVANCE_V1      = 10u,
-    GUILD_CUDA_QWEN_NATIVE_PLE_POSTOPS_V1       = 11u,
+    GUILD_CUDA_QWEN_GR_READ_V1 = 0u,
+    GUILD_CUDA_QWEN_GR_WRITE_V1 = 1u,
+    GUILD_CUDA_QWEN_FUSED_GR_READ_V1 = 2u,
+    GUILD_CUDA_QWEN_FUSED_GR_READ_MULTI_V1 = 3u,
+    GUILD_CUDA_QWEN_NATIVE_GR_RMS_NORM_V1 = 4u,
+    GUILD_CUDA_QWEN_NATIVE_GR_DOWN_SILU_V1 = 5u,
+    GUILD_CUDA_QWEN_NATIVE_GR_PRE_GATED_V1 = 6u,
+    GUILD_CUDA_QWEN_NATIVE_GR_POST_V1 = 7u,
+    GUILD_CUDA_QWEN_PLE_BLOCK_V1 = 8u,
+    GUILD_CUDA_QWEN_PLE_BLOCK_PROJECTED_V1 = 9u,
+    GUILD_CUDA_QWEN_PLE_HISTORY_ADVANCE_V1 = 10u,
+    GUILD_CUDA_QWEN_NATIVE_PLE_POSTOPS_V1 = 11u,
     GUILD_CUDA_QWEN_NATIVE_PLE_POSTOPS_BATCH_V1 = 12u,
-    GUILD_CUDA_QWEN_CVEC_APPLY_V1               = 13u
+    GUILD_CUDA_QWEN_CVEC_APPLY_V1 = 13u
 };
 
 typedef struct guild_cuda_qwen_op_v1_s {
@@ -549,38 +549,22 @@ typedef struct guild_cuda_moe_ext_v1_s {
     uint32_t tag;
     uint32_t version;
     uint32_t reserved;
-    guild_status_t (*configure)(
-        const guild_exec_context_v1_t* ctx,
-        const guild_cuda_moe_config_v1_t* params,
-        guild_error_info_t* err);
-    guild_status_t (*quantize_dequant)(
-        const guild_exec_context_v1_t* ctx,
-        const guild_cuda_quant_dequant_op_v1_t* params,
-        guild_error_info_t* err);
-    guild_status_t (*s_gemv)(
-        const guild_exec_context_v1_t* ctx,
-        const guild_cuda_s_gemv_op_v1_t* params,
-        guild_error_info_t* err);
-    guild_status_t (*moe)(
-        const guild_exec_context_v1_t* ctx,
-        const guild_cuda_moe_op_v1_t* params,
-        guild_error_info_t* err);
-    guild_status_t (*elementwise)(
-        const guild_exec_context_v1_t* ctx,
-        const guild_cuda_elementwise_op_v1_t* params,
-        guild_error_info_t* err);
-    guild_status_t (*sampler)(
-        const guild_exec_context_v1_t* ctx,
-        const guild_cuda_sampler_op_v1_t* params,
-        guild_error_info_t* err);
-    guild_status_t (*verify)(
-        const guild_exec_context_v1_t* ctx,
-        const guild_cuda_verify_op_v1_t* params,
-        guild_error_info_t* err);
-    guild_status_t (*qwen)(
-        const guild_exec_context_v1_t* ctx,
-        const guild_cuda_qwen_op_v1_t* params,
-        guild_error_info_t* err);
+    guild_status_t (*configure)(const guild_exec_context_v1_t* ctx, const guild_cuda_moe_config_v1_t* params,
+                                guild_error_info_t* err);
+    guild_status_t (*quantize_dequant)(const guild_exec_context_v1_t* ctx,
+                                       const guild_cuda_quant_dequant_op_v1_t* params, guild_error_info_t* err);
+    guild_status_t (*s_gemv)(const guild_exec_context_v1_t* ctx, const guild_cuda_s_gemv_op_v1_t* params,
+                             guild_error_info_t* err);
+    guild_status_t (*moe)(const guild_exec_context_v1_t* ctx, const guild_cuda_moe_op_v1_t* params,
+                          guild_error_info_t* err);
+    guild_status_t (*elementwise)(const guild_exec_context_v1_t* ctx, const guild_cuda_elementwise_op_v1_t* params,
+                                  guild_error_info_t* err);
+    guild_status_t (*sampler)(const guild_exec_context_v1_t* ctx, const guild_cuda_sampler_op_v1_t* params,
+                              guild_error_info_t* err);
+    guild_status_t (*verify)(const guild_exec_context_v1_t* ctx, const guild_cuda_verify_op_v1_t* params,
+                             guild_error_info_t* err);
+    guild_status_t (*qwen)(const guild_exec_context_v1_t* ctx, const guild_cuda_qwen_op_v1_t* params,
+                           guild_error_info_t* err);
 } guild_cuda_moe_ext_v1_t;
 
 #ifdef __cplusplus

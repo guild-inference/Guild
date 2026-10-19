@@ -14,7 +14,9 @@
 #include <string>
 #include <vector>
 
-namespace guild::artifact { class GPackReader; }
+namespace guild::artifact {
+class GPackReader;
+}
 
 namespace guild::kernels::cpu {
 
@@ -22,8 +24,8 @@ struct ExpertLayout {
     bool native = false;
     bool gate_up_interleaved = false;
     int64_t n_layers = 0, n_expert = NE;
-    std::vector<NativeFmt> fmt;           ///< per layer (native packs)
-    std::vector<uint64_t> offset, bytes;  ///< per layer: where its 512 blobs start, bytes per blob
+    std::vector<NativeFmt> fmt;          ///< per layer (native packs)
+    std::vector<uint64_t> offset, bytes; ///< per layer: where its 512 blobs start, bytes per blob
     /// Plan v0.3 P6: per layer, the absolute offsets of the gate / up / down tensors in their GGUF files, so the
     /// arena can be filled from the GGUF itself when the pack has no experts.bin (3 x n_layers, 0 = unknown).
     std::vector<uint64_t> gguf_off;
@@ -32,11 +34,13 @@ struct ExpertLayout {
     /// shard boundary can fall inside a layer: Unsloth's UD-Q4_K_XL has layer 11's down in shard 2 and its gate
     /// and up in shard 3 (native_experts.txt v4, the `gate,up,down` shard column).
     std::vector<std::string> gguf_file;
-    int version = 0;                      ///< native_experts.txt's header version (0 = none given)
+    int version = 0; ///< native_experts.txt's header version (0 = none given)
     uint64_t max_blob = BLOB;
-    uint64_t total = 0;                   ///< experts.bin size
+    uint64_t total = 0; ///< experts.bin size
 
-    uint64_t blob_bytes(int64_t layer) const { return native ? bytes[(size_t) layer] : (uint64_t) BLOB; }
+    uint64_t blob_bytes(int64_t layer) const {
+        return native ? bytes[(size_t) layer] : (uint64_t) BLOB;
+    }
     uint64_t layer_offset(int64_t layer) const {
         return native ? offset[(size_t) layer] : (uint64_t) layer * (uint64_t) n_expert * (uint64_t) BLOB;
     }
@@ -79,8 +83,7 @@ void expert_layout_set_gate_up_interleaved(bool interleaved) noexcept;
 /// Reads `<pack_dir>/native_experts.txt` when it exists (a native pack), else sets the canonical layout.
 /// Versions up to kExpertLayoutVersion are read; a newer one is refused (a newer packer wrote it).
 bool expert_layout_load(const std::string& pack_dir, int64_t n_layers, int64_t n_expert, std::string& err,
-                         int64_t n_embd = 2560, int64_t n_ff = 640,
-                         const guild_cpu_backend_ext_v2_t* backend = nullptr);
+                        int64_t n_embd = 2560, int64_t n_ff = 640, const guild_cpu_backend_ext_v2_t* backend = nullptr);
 bool expert_layout_load_gpack(const guild::artifact::GPackReader& gpack, int64_t n_layers, int64_t n_expert,
                               std::string& err, int64_t n_embd = 2560, int64_t n_ff = 640,
                               const guild_cpu_backend_ext_v2_t* backend = nullptr);
@@ -88,4 +91,4 @@ bool expert_layout_load_gpack(const guild::artifact::GPackReader& gpack, int64_t
 /// written only when some layer's roles are in different shards (every other pack stays v3, byte for byte).
 inline constexpr int kExpertLayoutVersion = 4;
 
-}  // namespace guild::kernels::cpu
+} // namespace guild::kernels::cpu

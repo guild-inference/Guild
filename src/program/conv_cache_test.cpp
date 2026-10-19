@@ -25,14 +25,15 @@ namespace {
 int g_fail = 0;
 void check(bool ok, const char* what) {
     std::printf("  %-66s %s\n", what, ok ? "ok" : "FAIL");
-    if (!ok) ++g_fail;
+    if (!ok)
+        ++g_fail;
 }
-}  // namespace
+} // namespace
 
 int main() {
     std::printf("conv_cache_test\n");
     {
-        const std::vector<uint64_t> stamps = {1, 2, 3, 4, 5, 6, 7};   // chat A: root + six turns, one over
+        const std::vector<uint64_t> stamps = {1, 2, 3, 4, 5, 6, 7}; // chat A: root + six turns, one over
         check(eviction_victim(stamps.data(), stamps.size(), 6) == 1,
               "over budget with fresh stamps: the oldest leaf leaves (the FIFO it was)");
     }

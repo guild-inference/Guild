@@ -19,9 +19,9 @@ struct Progress {
     std::atomic<bool> busy{false};
     std::atomic<const char*> where{"idle"};
     std::atomic<int64_t> detail{-1};
-    std::atomic<int64_t> chunk{-1};      ///< #251: the prompt chunk (its first position) a batched-read stage is in
-    std::atomic<int64_t> since_ms{0};    ///< when `where` was set (steady clock): how long a stage has lasted
-    std::atomic<uint64_t> ticks{0};      ///< layers served: a window that still moves, slowly, against one that stopped
+    std::atomic<int64_t> chunk{-1};   ///< #251: the prompt chunk (its first position) a batched-read stage is in
+    std::atomic<int64_t> since_ms{0}; ///< when `where` was set (steady clock): how long a stage has lasted
+    std::atomic<uint64_t> ticks{0};   ///< layers served: a window that still moves, slowly, against one that stopped
 };
 
 inline int64_t progress_now_ms() {
@@ -31,13 +31,23 @@ inline int64_t progress_now_ms() {
 
 /// What the watchdog prints about a part of the engine when it fires (the expert pool, the verify window).
 using DiagFn = void (*)(std::FILE*);
-inline std::atomic<DiagFn>& diag_pool_fn() { static std::atomic<DiagFn> f{nullptr}; return f; }
-inline std::atomic<DiagFn>& diag_verify_fn() { static std::atomic<DiagFn> f{nullptr}; return f; }
+inline std::atomic<DiagFn>& diag_pool_fn() {
+    static std::atomic<DiagFn> f{nullptr};
+    return f;
+}
+inline std::atomic<DiagFn>& diag_verify_fn() {
+    static std::atomic<DiagFn> f{nullptr};
+    return f;
+}
 /// #267: what a path that ends the engine runs first - it releases the GPU's spin waits on host flags (the verify
 /// window's), so no kernel stays resident while the process goes away (on Windows that left the GPU "lost").
-inline std::atomic<DiagFn>& release_gpu_fn() { static std::atomic<DiagFn> f{nullptr}; return f; }
+inline std::atomic<DiagFn>& release_gpu_fn() {
+    static std::atomic<DiagFn> f{nullptr};
+    return f;
+}
 inline void release_gpu_waits(std::FILE* f) {
-    if (auto fn = release_gpu_fn().load()) fn(f);
+    if (auto fn = release_gpu_fn().load())
+        fn(f);
 }
 
 inline Progress& progress() {
@@ -53,7 +63,11 @@ inline void progress_at(const char* where, int64_t detail = -1, int64_t chunk = 
     p.since_ms.store(progress_now_ms(), std::memory_order_relaxed);
 }
 
-inline void progress_beat() { progress().beats.fetch_add(1, std::memory_order_relaxed); }
-inline void progress_tick() { progress().ticks.fetch_add(1, std::memory_order_relaxed); }
+inline void progress_beat() {
+    progress().beats.fetch_add(1, std::memory_order_relaxed);
+}
+inline void progress_tick() {
+    progress().ticks.fetch_add(1, std::memory_order_relaxed);
+}
 
-}  // namespace guild::core
+} // namespace guild::core

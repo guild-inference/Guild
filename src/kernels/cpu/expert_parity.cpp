@@ -37,18 +37,26 @@ double rel_l1(const float* a, const float* b, int n, double* mag_out = nullptr) 
         d += std::fabs((double) a[i] - (double) b[i]);
         mag += std::fabs((double) a[i]);
     }
-    if (mag_out) *mag_out = mag / n;
+    if (mag_out)
+        *mag_out = mag / n;
     return d / (mag > 1e-30 ? mag : 1e-30);
 }
 
 bool read_blob(const char* path, long long index, std::vector<uint8_t>& out) {
     out.assign(cpu::BLOB, 0);
     std::FILE* f = std::fopen(path, "rb");
-    if (!f) return false;
+    if (!f)
+        return false;
 #if defined(_MSC_VER)
-    if (_fseeki64(f, (long long) index * (long long) cpu::BLOB, SEEK_SET) != 0) { std::fclose(f); return false; }
+    if (_fseeki64(f, (long long) index * (long long) cpu::BLOB, SEEK_SET) != 0) {
+        std::fclose(f);
+        return false;
+    }
 #else
-    if (fseeko(f, (off_t) index * (off_t) cpu::BLOB, SEEK_SET) != 0) { std::fclose(f); return false; }
+    if (fseeko(f, (off_t) index * (off_t) cpu::BLOB, SEEK_SET) != 0) {
+        std::fclose(f);
+        return false;
+    }
 #endif
     const size_t got = std::fread(out.data(), 1, out.size(), f);
     std::fclose(f);
@@ -63,9 +71,17 @@ float f16_at(const std::vector<uint8_t>& b, size_t off) {
     const uint32_t sign = (uint32_t) (h >> 15) & 1u;
     uint32_t exp = (h >> 10) & 0x1Fu, man = h & 0x3FFu, f;
     if (exp == 0) {
-        if (man == 0) f = sign << 31;
-        else { exp = 127 - 15 + 1; while (!(man & 0x400u)) { man <<= 1; --exp; } man &= 0x3FFu;
-               f = (sign << 31) | (exp << 23) | (man << 13); }
+        if (man == 0)
+            f = sign << 31;
+        else {
+            exp = 127 - 15 + 1;
+            while (!(man & 0x400u)) {
+                man <<= 1;
+                --exp;
+            }
+            man &= 0x3FFu;
+            f = (sign << 31) | (exp << 23) | (man << 13);
+        }
     } else if (exp == 31) {
         f = (sign << 31) | 0x7F800000u | (man << 13);
     } else {
@@ -76,7 +92,7 @@ float f16_at(const std::vector<uint8_t>& b, size_t off) {
     return o;
 }
 
-}  // namespace
+} // namespace
 
 int main(int argc, char** argv) {
     bool selftest = false;
@@ -84,20 +100,25 @@ int main(int argc, char** argv) {
     long long layer = 0, expert = 0;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
-        if (a == "--selftest") selftest = true;
-        else if (a == "--file" && i + 1 < argc) path = argv[++i];
-        else if (a == "--layer" && i + 1 < argc) layer = std::atoll(argv[++i]);
-        else if (a == "--expert" && i + 1 < argc) expert = std::atoll(argv[++i]);
-        else { std::fprintf(stderr, "usage: expert_parity [--selftest] [--file P] [--layer N] [--expert N]\n");
-               return 2; }
+        if (a == "--selftest")
+            selftest = true;
+        else if (a == "--file" && i + 1 < argc)
+            path = argv[++i];
+        else if (a == "--layer" && i + 1 < argc)
+            layer = std::atoll(argv[++i]);
+        else if (a == "--expert" && i + 1 < argc)
+            expert = std::atoll(argv[++i]);
+        else {
+            std::fprintf(stderr, "usage: expert_parity [--selftest] [--file P] [--layer N] [--expert N]\n");
+            return 2;
+        }
     }
 
     int bad = 0;
 
     // ---- the CPU must be able to run the kernel, and the report must say WHICH feature is missing
     const cpu::CpuFeatures feat = cpu::cpu_features();
-    std::printf("  %-44s %s\n", "AVX512 F/BW/VL/VNNI/VBMI",
-                feat.usable() ? "all present" : feat.reason());
+    std::printf("  %-44s %s\n", "AVX512 F/BW/VL/VNNI/VBMI", feat.usable() ? "all present" : feat.reason());
     if (!feat.usable()) {
         std::printf("      the VNNI path cannot run here; only the scalar oracle can be exercised.\n");
         std::printf("      P2.S3's kernel check is SKIPPED, not passed.\n");
@@ -121,25 +142,30 @@ int main(int argc, char** argv) {
         float smin = 1e30f, smax = -1e30f;
         for (int b = 0; b < cpu::SC_GU; ++b) {
             const float s = f16_at(blob, cpu::O_GU_SCALES + (size_t) b * 2);
-            if (s != 0.f) ++nonzero;
+            if (s != 0.f)
+                ++nonzero;
             smin = std::fmin(smin, std::fabs(s));
             smax = std::fmax(smax, std::fabs(s));
         }
         const bool ok = nonzero > cpu::SC_GU / 2 && std::isfinite(smin) && std::isfinite(smax) && smax > 0.f;
         std::printf("  %-44s %s (%d/%d non-zero, |s| in [%.4g, %.4g])\n", "blob decodes to live scales",
                     ok ? "yes" : "*** NO ***", nonzero, cpu::SC_GU, (double) smin, (double) smax);
-        if (!ok) ++bad;
+        if (!ok)
+            ++bad;
     }
     {
         std::vector<uint8_t> other;
         if (read_blob(path, (layer * 512 + expert) + 1, other)) {
             long long diff = 0;
-            for (size_t i = 0; i < blob.size(); ++i) if (blob[i] != other[i]) ++diff;
+            for (size_t i = 0; i < blob.size(); ++i)
+                if (blob[i] != other[i])
+                    ++diff;
             const double frac = (double) diff / (double) blob.size();
             const bool ok = frac > 0.1;
             std::printf("  %-44s %s (%.1f%% of bytes differ)\n", "the next expert is different data",
                         ok ? "yes" : "*** NO ***", frac * 100);
-            if (!ok) ++bad;
+            if (!ok)
+                ++bad;
         }
     }
 
@@ -147,7 +173,8 @@ int main(int argc, char** argv) {
     std::mt19937 rng(4242);
     std::normal_distribution<float> gauss(0.0f, 1.0f);
     std::vector<float> x(cpu::H);
-    for (auto& v : x) v = gauss(rng);
+    for (auto& v : x)
+        v = gauss(rng);
 
     cpu::ExpertScratch ws;
     std::vector<float> vnni(cpu::H), scalar_q(cpu::H), scalar_fp(cpu::H);
@@ -165,20 +192,26 @@ int main(int argc, char** argv) {
         const bool visible = trap_contract > 1e-4;
         std::printf("  %-44s %s (%.4f%% apart)\n", "the Q8_1 activation contract is observable",
                     visible ? "yes" : "*** NO ***", trap_contract * 100);
-        if (!visible) ++bad;
+        if (!visible)
+            ++bad;
     }
 
     // ---- 1. the kernel, against an oracle fed the SAME activations
-    std::printf("  %-44s rel %.3e   (P2.S3 asks <= 3e-3, mean |ref| %.4f)\n", "VNNI vs scalar (INT8 acts)",
-                rel_kernel, mag);
-    if (!(rel_kernel <= 3e-3)) { std::printf("    *** over P2.S3's 3e-3 ***\n"); ++bad; }
+    std::printf("  %-44s rel %.3e   (P2.S3 asks <= 3e-3, mean |ref| %.4f)\n", "VNNI vs scalar (INT8 acts)", rel_kernel,
+                mag);
+    if (!(rel_kernel <= 3e-3)) {
+        std::printf("    *** over P2.S3's 3e-3 ***\n");
+        ++bad;
+    }
 
     // ---- 2. the activation contract's own cost, reported rather than asserted
-    std::printf("  %-44s rel %.3e   (the cost of the contract, REPORTED)\n",
-                "VNNI vs scalar (FP32 acts)", rel_contract);
+    std::printf("  %-44s rel %.3e   (the cost of the contract, REPORTED)\n", "VNNI vs scalar (FP32 acts)",
+                rel_contract);
 
     std::printf("\nexpert_parity: %d failures (layer %lld expert %lld of %s)\n", bad, layer, expert, path);
-    if (bad) return 1;
-    if (selftest) std::printf("expert_parity OK\n");
+    if (bad)
+        return 1;
+    if (selftest)
+        std::printf("expert_parity OK\n");
     return 0;
 }

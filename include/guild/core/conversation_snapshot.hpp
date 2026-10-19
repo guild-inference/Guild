@@ -14,21 +14,21 @@ size_t conversation_kv_bytes(const QsaState& state, const ModelGeometry& g, int6
 // A nonzero unchanged_tokens is valid only for storage retained from an image
 // actually restored into this session, bounded by every subsequent rewrite.
 // Equal token IDs alone do not establish that its K/V bytes are unchanged.
-bool conversation_kv_save(ConversationKv& image, const QsaState& state, const ModelGeometry& g,
-                          int64_t upto, bool include_index, std::string& error,
-                          int64_t unchanged_tokens = 0, size_t* reused_bytes = nullptr);
+bool conversation_kv_save(ConversationKv& image, const QsaState& state, const ModelGeometry& g, int64_t upto,
+                          bool include_index, std::string& error, int64_t unchanged_tokens = 0,
+                          size_t* reused_bytes = nullptr);
 bool conversation_kv_capture_bytes(const ConversationKv& image, const QsaState& state, const ModelGeometry& g,
                                    int64_t upto, bool include_index, size_t& bytes, std::string& error);
 // No CUDA calls or destination writes. Used for whole-session prevalidation.
-bool conversation_kv_validate(const ConversationKv& image, const QsaState& state, const ModelGeometry& g,
-                              int64_t upto, bool include_index, std::string& error);
-bool conversation_kv_restore(const ConversationKv& image, const QsaState& state, const ModelGeometry& g,
-                             int64_t upto, bool include_index, std::string& error);
+bool conversation_kv_validate(const ConversationKv& image, const QsaState& state, const ModelGeometry& g, int64_t upto,
+                              bool include_index, std::string& error);
+bool conversation_kv_restore(const ConversationKv& image, const QsaState& state, const ModelGeometry& g, int64_t upto,
+                             bool include_index, std::string& error);
 // Diagnostic read-back after a synchronized restore. Uses 64 KiB of stack
 // workspace, compares authoritative bytes and resident draft-ring pages, and
 // fingerprints the authoritative payload only. Never changes model state.
-bool conversation_kv_verify(const ConversationKv& image, const QsaState& state, const ModelGeometry& g,
-                            int64_t upto, bool include_index, uint64_t& fingerprint, std::string& error);
+bool conversation_kv_verify(const ConversationKv& image, const QsaState& state, const ModelGeometry& g, int64_t upto,
+                            bool include_index, uint64_t& fingerprint, std::string& error);
 
 struct ConversationStateSizes {
     size_t gdn = 0, ple = 0, tail = 0, dead = 0, block_pos = 0;
@@ -53,28 +53,30 @@ struct ConversationView {
     const std::vector<ConversationCheckpoint>& checkpoints;
     bool cvec;
 };
-bool conversation_snapshot_bytes(const ConversationView& view, const SessionState& session,
-                                 const ModelGeometry& g, const QsaState& draft, size_t& bytes, std::string& error);
+bool conversation_snapshot_bytes(const ConversationView& view, const SessionState& session, const ModelGeometry& g,
+                                 const QsaState& draft, size_t& bytes, std::string& error);
 bool conversation_snapshot_capture_bytes(const ConversationKvReuse& reuse, const ConversationView& view,
-                                         const SessionState& session, const ModelGeometry& g,
-                                         const QsaState& draft, size_t& bytes, std::string& error);
+                                         const SessionState& session, const ModelGeometry& g, const QsaState& draft,
+                                         size_t& bytes, std::string& error);
 // The capture estimate includes retained capacity and transient segment directories;
 // only estimate - reuse.bytes() requires additional physical RAM. Capture consumes
 // the uniquely owned reusable buffers, including on failure.
 // Caller admits the estimate before invoking capture. Allocation failures propagate
 // to the RAM policy; the active session is never modified by capture.
-bool conversation_snapshot_save(SavedConversation& image, const ConversationView& view,
-                                const SessionState& session, const ModelGeometry& g,
-                                const QsaState& draft, std::string& error,
+bool conversation_snapshot_save(SavedConversation& image, const ConversationView& view, const SessionState& session,
+                                const ModelGeometry& g, const QsaState& draft, std::string& error,
                                 ConversationKvReuse reuse = {}, size_t* reused_bytes = nullptr);
-bool conversation_snapshot_validate(const SavedConversation& image, const SessionState& session,
-                                    const ModelGeometry& g, const QsaState& draft, std::string& error);
-enum class ConversationRestore { restored, invalid, transfer_failed };
+bool conversation_snapshot_validate(const SavedConversation& image, const SessionState& session, const ModelGeometry& g,
+                                    const QsaState& draft, std::string& error);
+enum class ConversationRestore {
+    restored,
+    invalid,
+    transfer_failed
+};
 // Invalid images are rejected before any CUDA call/write. Transfer failure may
 // leave partial state: caller MUST NOT continue inference from that session.
 ConversationRestore conversation_snapshot_restore(const SavedConversation& image, SessionState& session,
-                                                   const ModelGeometry& g, const QsaState& draft,
-                                                   std::string& error);
+                                                  const ModelGeometry& g, const QsaState& draft, std::string& error);
 
 // The same with `draft == nullptr`: an image WITHOUT the draft layer's K/V (kv holds the session's own QSA layers
 // only).  A layer split's later stages park this way; the draft ring is saved once, with the first stage's image.
@@ -88,9 +90,9 @@ bool conversation_snapshot_capture_bytes(const ConversationKvReuse& reuse, const
 bool conversation_snapshot_save(SavedConversation& image, const ConversationView& view, const SessionState& session,
                                 const ModelGeometry& g, const QsaState* draft, std::string& error,
                                 ConversationKvReuse reuse = {}, size_t* reused_bytes = nullptr);
-bool conversation_snapshot_validate(const SavedConversation& image, const SessionState& session,
-                                    const ModelGeometry& g, const QsaState* draft, std::string& error);
+bool conversation_snapshot_validate(const SavedConversation& image, const SessionState& session, const ModelGeometry& g,
+                                    const QsaState* draft, std::string& error);
 ConversationRestore conversation_snapshot_restore(const SavedConversation& image, SessionState& session,
-                                                   const ModelGeometry& g, const QsaState* draft, std::string& error);
+                                                  const ModelGeometry& g, const QsaState* draft, std::string& error);
 
 } // namespace guild::core

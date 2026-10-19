@@ -13,10 +13,14 @@ namespace guild::core {
 namespace {
 constexpr int64_t H = guild::kernels::cpu::H;
 constexpr int K = 10, MAXT = guild::kernels::cpu::MAXT, CAP = MAXT * K;
-struct ReduceMeta { int32_t row[CAP]; float weight[CAP]; };
+struct ReduceMeta {
+    int32_t row[CAP];
+    float weight[CAP];
+};
 
 bool check(cudaError_t status, std::string& err) {
-    if (status == cudaSuccess) return true;
+    if (status == cudaSuccess)
+        return true;
     err = std::string("remote expert decode optimization: ") + cudaGetErrorString(status);
     return false;
 }
@@ -31,14 +35,17 @@ void RemoteExpertOpt::attach(RemoteExperts& remote) {
 bool RemoteExpertOpt::init(std::string& err) {
     void* mapped = nullptr;
     if (!check(cudaHostAlloc((void**) &h_sum_, MAXT * (H + K) * sizeof(float),
-                             cudaHostAllocPortable | cudaHostAllocMapped), err) ||
-        !check(cudaHostGetDevicePointer(&mapped, h_sum_, 0), err)) return false;
+                             cudaHostAllocPortable | cudaHostAllocMapped),
+               err) ||
+        !check(cudaHostGetDevicePointer(&mapped, h_sum_, 0), err))
+        return false;
     m_sum_ = (float*) mapped;
     h_mask_ = reinterpret_cast<int32_t*>(h_sum_ + MAXT * H);
     m_mask_ = reinterpret_cast<int32_t*>(m_sum_ + MAXT * H);
     for (auto& p : peers_) {
         const OnDevice on(p.remote->device_);
-        if (!check(cudaMalloc((void**) &p.sum, MAXT * H * sizeof(float)), err)) return false;
+        if (!check(cudaMalloc((void**) &p.sum, MAXT * H * sizeof(float)), err))
+            return false;
     }
     return true;
 }
@@ -46,14 +53,19 @@ bool RemoteExpertOpt::init(std::string& err) {
 RemoteExpertOpt::~RemoteExpertOpt() {
     for (auto& p : peers_) {
         const OnDevice on(p.remote->device_);
-        if (p.remote->stream_) cudaStreamSynchronize(p.remote->stream_);
-        if (p.sum) cudaFree(p.sum);
+        if (p.remote->stream_)
+            cudaStreamSynchronize(p.remote->stream_);
+        if (p.sum)
+            cudaFree(p.sum);
         p.remote->remote_opt_ = nullptr;
     }
-    if (h_sum_) cudaFreeHost(h_sum_);
+    if (h_sum_)
+        cudaFreeHost(h_sum_);
 }
 
-size_t RemoteExpertOpt::metadata_bytes() { return sizeof(ReduceMeta); }
+size_t RemoteExpertOpt::metadata_bytes() {
+    return sizeof(ReduceMeta);
+}
 
 void RemoteExpertOpt::begin(const float* weights, int token_begin, int tokens) {
     weights_ = weights;
@@ -83,23 +95,25 @@ bool RemoteExpertOpt::reduce(RemoteExperts& remote, const void* metadata, std::s
         err = std::string("remote expert decode optimization: ") + e.what();
         return false;
     }
-    return check(cudaMemcpyAsync(remote.h_out_, it->sum, tokens_ * H * sizeof(float),
-                                  cudaMemcpyDeviceToHost, remote.stream_), err);
+    return check(
+        cudaMemcpyAsync(remote.h_out_, it->sum, tokens_ * H * sizeof(float), cudaMemcpyDeviceToHost, remote.stream_),
+        err);
 }
 
 void RemoteExpertOpt::accumulate(const RemoteExperts& remote) {
-    for (int64_t i = 0; i < tokens_ * H; ++i) h_sum_[token_begin_ * H + i] += remote.h_out_[i];
+    for (int64_t i = 0; i < tokens_ * H; ++i)
+        h_sum_[token_begin_ * H + i] += remote.h_out_[i];
     for (int i = 0; i < tokens_ * K; ++i)
         h_mask_[token_begin_ * K + i] |= remote.owned_[(size_t) i] != 0;
 }
 
-void RemoteExpertOpt::copy_rows(float* dst, const float* src, int token_begin, int tokens,
-                         const int32_t* hit_rows, const int32_t* count, void* stream) const {
+void RemoteExpertOpt::copy_rows(float* dst, const float* src, int token_begin, int tokens, const int32_t* hit_rows,
+                                const int32_t* count, void* stream) const {
     guild::kernels::remote_expert_copy_cpu_rows(dst, src, m_mask_ + token_begin * K, hit_rows, count, tokens, stream);
 }
 
-void RemoteExpertOpt::combine(float* dst, float* scratch, int token_begin, int tokens,
-                       const uint32_t* skip, uint32_t ring, void* stream) const {
+void RemoteExpertOpt::combine(float* dst, float* scratch, int token_begin, int tokens, const uint32_t* skip,
+                              uint32_t ring, void* stream) const {
     const float* sum = m_sum_ + token_begin * H;
     if (skip) {
         // An all-primary device-planned group bypasses the host: ignore its stale sum.
@@ -111,59 +125,78 @@ void RemoteExpertOpt::combine(float* dst, float* scratch, int token_begin, int t
 
 bool RemoteExpertOpt::owns(int64_t layer, int32_t expert) const {
     for (const auto& p : peers_)
-        if (p.remote->cache_.slot_of(layer, expert) >= 0) return true;
+        if (p.remote->cache_.slot_of(layer, expert) >= 0)
+            return true;
     return false;
 }
 
 bool RemoteExpertOpt::adapt(const std::vector<float>& usage, const std::vector<int32_t>& primary,
-                     const std::vector<std::pair<int32_t, int32_t>>& pending, int max_swaps,
-                     ExpertSource& source) {
-    if (max_swaps <= 0) return true;
+                            const std::vector<std::pair<int32_t, int32_t>>& pending, int max_swaps,
+                            ExpertSource& source) {
+    if (max_swaps <= 0)
+        return true;
     const auto& lay = guild::kernels::cpu::expert_layout();
     std::vector<uint8_t> resident(primary.size(), 0);
-    for (size_t i = 0; i < primary.size(); ++i) resident[i] = primary[i] >= 0;
-    for (const auto& [i, slot] : pending) resident[(size_t) i] = 1;
+    for (size_t i = 0; i < primary.size(); ++i)
+        resident[i] = primary[i] >= 0;
+    for (const auto& [i, slot] : pending)
+        resident[(size_t) i] = 1;
     for (const auto& p : peers_) {
         const auto& r = *p.remote;
         for (int32_t l = 0; l < (int32_t) r.layers_present_.size(); ++l)
             for (int32_t e = 0; e < r.n_expert_; ++e)
-                if (r.cache_.slot_of(l, e) >= 0) resident[(size_t) l * r.n_expert_ + e] = 1;
+                if (r.cache_.slot_of(l, e) >= 0)
+                    resident[(size_t) l * r.n_expert_ + e] = 1;
     }
-    struct Swap { float gain; int32_t layer, in, out; };
+    struct Swap {
+        float gain;
+        int32_t layer, in, out;
+    };
     std::string err;
     for (auto& p : peers_) {
         auto& r = *p.remote;
         std::vector<Swap> swaps;
         std::vector<std::pair<float, int32_t>> candidates, victims;
         for (int32_t l = 0; l < (int32_t) r.layers_present_.size(); ++l) {
-            candidates.clear(); victims.clear();
+            candidates.clear();
+            victims.clear();
             const size_t base = (size_t) l * r.n_expert_;
             float primary_cold = 1.0e30f;
             for (int32_t e = 0; e < r.n_expert_; ++e) {
                 const float u = usage[base + e];
-                if (primary[base + e] >= 0) primary_cold = std::min(primary_cold, u);
-                if (r.cache_.slot_of(l, e) >= 0) victims.emplace_back(u, e);
-                else if (!resident[base + e] && u >= 2.0f) candidates.emplace_back(u, e);
+                if (primary[base + e] >= 0)
+                    primary_cold = std::min(primary_cold, u);
+                if (r.cache_.slot_of(l, e) >= 0)
+                    victims.emplace_back(u, e);
+                else if (!resident[base + e] && u >= 2.0f)
+                    candidates.emplace_back(u, e);
             }
             const size_t n = std::min(candidates.size(), victims.size());
-            if (!n) continue;
+            if (!n)
+                continue;
             std::sort(candidates.begin(), candidates.end(), [](auto& a, auto& b) { return a.first > b.first; });
             std::partial_sort(victims.begin(), victims.begin() + n, victims.end(),
                               [](auto& a, auto& b) { return a.first < b.first; });
             for (size_t i = 0; i < n; ++i) {
-                if (victims[i].first > primary_cold) break;
-                if (candidates[i].first < victims[i].first + 1.5f) break;
+                if (victims[i].first > primary_cold)
+                    break;
+                if (candidates[i].first < victims[i].first + 1.5f)
+                    break;
                 swaps.push_back({candidates[i].first - victims[i].first, l, candidates[i].second, victims[i].second});
             }
         }
         std::sort(swaps.begin(), swaps.end(), [](auto& a, auto& b) { return a.gain > b.gain; });
-        if ((int) swaps.size() > max_swaps) swaps.resize((size_t) max_swaps);
-        if (swaps.empty()) continue;
+        if ((int) swaps.size() > max_swaps)
+            swaps.resize((size_t) max_swaps);
+        if (swaps.empty())
+            continue;
         const OnDevice on(r.device_);
         for (const auto& s : swaps)
-            if (!r.cache_.fill_slot(r.cache_.slot_of(s.layer, s.out), source.blob(s.layer, s.in),
-                                    r.stream_, err, (int64_t) lay.blob_bytes(s.layer))) return false;
-        if (!check(cudaStreamSynchronize(r.stream_), err)) return false;
+            if (!r.cache_.fill_slot(r.cache_.slot_of(s.layer, s.out), source.blob(s.layer, s.in), r.stream_, err,
+                                    (int64_t) lay.blob_bytes(s.layer)))
+                return false;
+        if (!check(cudaStreamSynchronize(r.stream_), err))
+            return false;
         for (const auto& s : swaps) {
             r.cache_.replace(s.layer, s.out, s.in);
             const size_t base = (size_t) s.layer * r.n_expert_;

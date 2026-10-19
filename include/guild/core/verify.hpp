@@ -47,11 +47,11 @@ using PoolMultiFn = void (*)(void* user, const float* x_f, const int32_t* ids, i
                              int64_t layer);
 
 struct VerifyHits {
-    const int32_t* d_res = nullptr;      ///< device [n_layers * n_expert] slot or -1
-    const int32_t* h_res = nullptr;      ///< host [n_layers * n_expert] slot or -1 (when all >= 0 in stage: zero-doorbell)
+    const int32_t* d_res = nullptr; ///< device [n_layers * n_expert] slot or -1
+    const int32_t* h_res = nullptr; ///< host [n_layers * n_expert] slot or -1 (when all >= 0 in stage: zero-doorbell)
     const uint8_t* cache_base = nullptr; ///< slot 0 of the VRAM expert arena
-    const uint64_t* slot_off = nullptr;   ///< E-6: host per-slot offsets when slots differ in size (null: slot * blob)
-    int64_t n_slots = 0;                  ///< E-6: how many (for the device copy)
+    const uint64_t* slot_off = nullptr;  ///< E-6: host per-slot offsets when slots differ in size (null: slot * blob)
+    int64_t n_slots = 0;                 ///< E-6: how many (for the device copy)
     int64_t blob = 0;
 };
 
@@ -61,7 +61,9 @@ public:
     ~Verifier();
     Verifier(const Verifier&) = delete;
     Verifier& operator=(const Verifier&) = delete;
-    void set_remote_expert_opt(RemoteExpertOpt* opt) { remote_opt_ = opt; } // before init/capture
+    void set_remote_expert_opt(RemoteExpertOpt* opt) {
+        remote_opt_ = opt;
+    } // before init/capture
 
     /// The watchdog's view of the window in flight (issue #31): the layer, the GPU's sequence, the flags.
     void diag(std::FILE* f) const;
@@ -90,15 +92,22 @@ public:
     /// Diagnostics: row `t` of the last window's head logits (n_vocab floats) to the host. Valid after run().
     bool copy_logits(int t, float* host) const;
     void debug_dump_layer0() const;
-    int64_t vocab() const { return next_ ? next_->vocab() : n_vocab_; }
-    int64_t attention_capacity() const { return cap_; }
-    bool all_experts_resident() const { return all_resident_; }
+    int64_t vocab() const {
+        return next_ ? next_->vocab() : n_vocab_;
+    }
+    int64_t attention_capacity() const {
+        return cap_;
+    }
+    bool all_experts_resident() const {
+        return all_resident_;
+    }
     /// The sampling the verify window's head applies (temperature / top_p / top_k / seed).  Set per
     /// request; greedy by default.  The sampling itself runs OUTSIDE the captured graph - its
     /// parameters would otherwise be baked forever - so this can change between requests freely.
     void set_sampling(const guild::kernels::SamplerParams& sp) {
-        sampling_ = sp;   // row t of a window at pos0 draws Philox(seed, pos0 + t): see run()
-        if (next_) next_->set_sampling(sp);
+        sampling_ = sp; // row t of a window at pos0 draws Philox(seed, pos0 + t): see run()
+        if (next_)
+            next_->set_sampling(sp);
     }
 
     /// The penalty histories for `sampling_.penalty_last_n`: ONE ROW PER WINDOW ROW, T rows of `history_len`
@@ -110,12 +119,17 @@ public:
     void set_history(const int32_t* history, int history_len) {
         hist_d_ = history;
         hist_len_ = history_len;
-        if (next_) next_->set_history(history, history_len);
+        if (next_)
+            next_->set_history(history, history_len);
     }
     /// Off: `run` skips the request's head sampling and `out` is the recorded greedy pick.  For windows whose
     /// picks are discarded - a prompt read through windows commits every token - so they cost no sampler launch
     /// or sync and never read a history staged for another position.
-    void set_head_sampling(bool on) { head_sampling_ = on; if (next_) next_->set_head_sampling(on); }
+    void set_head_sampling(bool on) {
+        head_sampling_ = on;
+        if (next_)
+            next_->set_head_sampling(on);
+    }
 
     /// LAYER SPLIT (multi-GPU): this verifier runs layers [layer_begin, layer_end) of every window.  A stage that
     /// does not start at layer 0 takes its residual from `handoff_in` instead of embedding the tokens; a stage that
@@ -125,13 +139,21 @@ public:
     /// Both pointers must be device-visible (mapped pinned memory, portable when the stages are on two devices).
     /// Set before `init`.  Default: the whole model, no hand-off.
     void set_stage(int64_t layer_begin, int64_t layer_end, const float* handoff_in, float* handoff_out) {
-        lb_ = layer_begin; le_ = layer_end; hand_in_ = handoff_in; hand_out_ = handoff_out;
+        lb_ = layer_begin;
+        le_ = layer_end;
+        hand_in_ = handoff_in;
+        hand_out_ = handoff_out;
     }
     /// The next stage: `run` and `commit` continue into it (its pool calls get `next_user`); sampling settings
     /// and `final_R` are the last stage's.
-    void set_next(Verifier* next, void* next_user) { next_ = next; next_user_ = next_user; }
+    void set_next(Verifier* next, void* next_user) {
+        next_ = next;
+        next_user_ = next_user;
+    }
     /// floats per token in a hand-off buffer
-    static int64_t handoff_floats(const ModelGeometry& g) { return (int64_t) g.hc * g.n_embd + g.n_embd + g.hc; }
+    static int64_t handoff_floats(const ModelGeometry& g) {
+        return (int64_t) g.hc * g.n_embd + g.n_embd + g.hc;
+    }
 
     /// Keep the first `n_keep` (1..T) tokens of the last window; advances `ss.ple_prev` by them.
     bool commit(int n_keep, std::string& err);
@@ -149,7 +171,9 @@ public:
     // Greedy only, no drafts (MTP) in a batch window.  `init_slots` once after `init` (S <= max_t); a layer
     // split's stages each get their own sessions, and run_slots/commit_slots continue into the next stage.
     bool init_slots(const std::vector<SessionState*>& slots, std::string& err);
-    int n_slots() const { return (int) slots_.size(); }
+    int n_slots() const {
+        return (int) slots_.size();
+    }
     /// One batch window over slots [0, S): tokens[s] at positions pos[s]; out[s] = the greedy pick after it.
     bool run_slots(int S, const int32_t* tokens, const int64_t* pos, PoolMultiFn pool, void* user, int32_t* out,
                    std::string& err);
@@ -169,16 +193,24 @@ public:
     /// 1 = this stage's window and commit are done (the last stage's picks are in batch_out), 0 = still running,
     /// -1 = an error (err).  Serves every layer that has rung so far.
     int batch_poll(PoolMultiFn pool, void* user, std::string& err);
-    bool batch_busy() const { return b_running_; }
+    bool batch_busy() const {
+        return b_running_;
+    }
     /// A slot's sampling (temperature / top_p / top_k / min_p / seed; penalties are not applied in batch windows):
     /// its row is drawn again on the last stage with Philox(seed, position), as a solo window draws it.  Greedy by
     /// default.  Set on the first stage, it reaches the last.
     void set_slot_sampling(int slot, const guild::kernels::SamplerParams& sp) {
-        if (slot >= 0 && slot < (int) slot_sp_.size()) slot_sp_[(size_t) slot] = sp;
-        if (next_) next_->set_slot_sampling(slot, sp);
+        if (slot >= 0 && slot < (int) slot_sp_.size())
+            slot_sp_[(size_t) slot] = sp;
+        if (next_)
+            next_->set_slot_sampling(slot, sp);
     }
-    const int32_t* batch_out() const { return b_out_; }
-    bool last_stage() const { return g_ != nullptr && le_ == g_->n_layers; }
+    const int32_t* batch_out() const {
+        return b_out_;
+    }
+    bool last_stage() const {
+        return g_ != nullptr && le_ == g_->n_layers;
+    }
     /// commit() returns without waiting for its graph (a single-GPU session sets it): the next window follows it on
     /// the same stream and the drafter reads nothing it writes, so it overlaps the draft. Whoever reads or writes
     /// the session from another stream or the host afterwards (a new request, a checkpoint, a snapshot, the prompt
@@ -186,7 +218,9 @@ public:
     static void set_commit_async(bool on);
     /// Per-instance setting for reusable runtimes; the static setting is a legacy default.
     void set_async_commit(bool on);
-    bool async_commit_enabled() const { return async_commit_; }
+    bool async_commit_enabled() const {
+        return async_commit_;
+    }
     /// Waits for the last commit graph when commit() did not (an event recorded after it, not the whole device);
     /// false with `err` when it failed.  Free when nothing is pending.
     bool wait_commit(std::string& err);
@@ -202,19 +236,27 @@ public:
 
     /// Token t's residual after the last layer, (hc, n_embd) on the device, valid until the next `run`.
     const float* final_R(int t) const;
-    const float* final_R_all() const { return next_ ? next_->final_R_all() : R_; }
+    const float* final_R_all() const {
+        return next_ ? next_->final_R_all() : R_;
+    }
 
     /// The GPU plan the pool writes each layer (VRAM hits + the PCIe share of the misses); give it to the
     /// dispatch (`ExpertDispatch::plan`) before the first `run`.
-    GpuPlanSink* plan_sink() { return &sink_; }
+    GpuPlanSink* plan_sink() {
+        return &sink_;
+    }
     /// Plan v0.3 P6: split the window into two token groups and pipeline the CPU experts of one with the GPU work
     /// of the other (default on).  Set before the first `run`.
-    void set_split(bool on) { split_ = on; }
+    void set_split(bool on) {
+        split_ = on;
+    }
     /// Plan v0.3 P6: how the PCIe share of the misses reaches the GPU: 0 = DMA into staging (the copy engine works
     /// beside the CPU; best when the CPU is compute-bound, the i-quants), 1 = the grouped kernel reads the mapped
     /// arena directly, 2 = a copy kernel stages it inside the graph (no API calls on the pool's thread; best when
     /// the CPU is RAM-bound, Q2_0).  Set before the first `run`.
-    void set_pcie_mode(int mode) { sink_.pcie_mode = mode; }
+    void set_pcie_mode(int mode) {
+        sink_.pcie_mode = mode;
+    }
     /// the pool never plans a PCIe share (--pcie-frac 0): the window skips that path.  Before the first run.
 
     double ms_wait = 0, ms_pool = 0, ms_host = 0, ms_commit = 0;
@@ -231,15 +273,16 @@ private:
     bool capture(int T, std::string& err);
     // batch windows (see init_slots)
     std::vector<SessionState*> slots_;
-    bool batch_rec_ = false;               ///< record_window is capturing a batch window
-    int row_base_ = 0;                     ///< ... its hand-off rows start here (a pipeline group's own rows)
-    int brow_[8] = {};                     ///< ... and row t is slot brow_[t]
-    bool last_batch_ = false;              ///< the last run was a batch window (set_plan_slot: one group)
-    std::map<uint64_t, cudaGraphExec_t> exec_bm_, commit_bm_;   ///< key: batch_key(rows, S, hand-off base)
-    int last_rows_[8] = {};                ///< the slots of the last batch window's rows
+    bool batch_rec_ = false;  ///< record_window is capturing a batch window
+    int row_base_ = 0;        ///< ... its hand-off rows start here (a pipeline group's own rows)
+    int brow_[8] = {};        ///< ... and row t is slot brow_[t]
+    bool last_batch_ = false; ///< the last run was a batch window (set_plan_slot: one group)
+    std::map<uint64_t, cudaGraphExec_t> exec_bm_, commit_bm_; ///< key: batch_key(rows, S, hand-off base)
+    int last_rows_[8] = {};                                   ///< the slots of the last batch window's rows
     static uint64_t batch_key(const int* rows, int S, int hbase) {
         uint64_t k = (uint64_t) hbase << 40 | (uint64_t) S << 32;
-        for (int t = 0; t < S; ++t) k |= (uint64_t) (rows[t] & 15) << (4 * t);
+        for (int t = 0; t < S; ++t)
+            k |= (uint64_t) (rows[t] & 15) << (4 * t);
         return k;
     }
     // batch_launch / batch_poll
@@ -248,14 +291,15 @@ private:
     std::chrono::steady_clock::time_point b_last_;
     int32_t b_out_[8] = {};
     std::vector<guild::kernels::SamplerParams> slot_sp_;
-    bool sample_rows(int S, std::string& err);   ///< the sampled slots' rows of the last batch window
-    int32_t* h_commitb_ = nullptr; int32_t* m_commitb_ = nullptr;   // per slot [1, 0, pos, -1 ..], stride 2 + max_t
+    bool sample_rows(int S, std::string& err); ///< the sampled slots' rows of the last batch window
+    int32_t* h_commitb_ = nullptr;
+    int32_t* m_commitb_ = nullptr; // per slot [1, 0, pos, -1 ..], stride 2 + max_t
     int32_t* commitb_ = nullptr;
-    float* tail_snap_b_ = nullptr;         ///< per (slot, QSA layer) indexer tail snapshot
+    float* tail_snap_b_ = nullptr; ///< per (slot, QSA layer) indexer tail snapshot
     void* arena_b_ = nullptr;
     int64_t last_pos_b_[8] = {};
     bool capture_batch(const int* rows, int S, int hbase, std::string& err);
-    void collect_profile();   ///< GUILD_VERIFY_PROFILE: add the last window's stamps to prof_sum_
+    void collect_profile(); ///< GUILD_VERIFY_PROFILE: add the last window's stamps to prof_sum_
     bool capture_commit_batch(const int* rows, int S, int hbase, std::string& err);
     bool stage_batch(const int* rows, int S, int hbase, const int32_t* tokens, const int64_t* pos, std::string& err);
     guild::kernels::SamplerParams sampling_ = [] {
@@ -263,22 +307,24 @@ private:
         s.greedy = true;
         s.temperature = 0.0f;
         return s;
-    }();   ///< greedy by default; per-request via set_sampling
-    const int32_t* hist_d_ = nullptr;   ///< penalty-history row (set_history); null = no penalties apply
+    }(); ///< greedy by default; per-request via set_sampling
+    const int32_t* hist_d_ = nullptr; ///< penalty-history row (set_history); null = no penalties apply
     int hist_len_ = 0;
-    bool head_sampling_ = true;          ///< set_head_sampling
-    int device_ = -1;                    ///< the device `init` ran on: run/commit switch to it (layer split)
-    std::atomic<bool> released_{false};  ///< #267: release_gpu_waits ran (maybe on the watchdog thread): no more windows
-    bool all_resident_ = false;           ///< 100% of experts in [lb_, le_) resident in VRAM: zero-doorbell graph
-    bool device_plan_ = false;            ///< E-6: resident-only layers planned on the device (GUILD_VERIFY_DEVICE_PLAN)
-    uint32_t* skip_ = nullptr;            ///< E-6: per group, the ring whose plan the device built (0: the host's)
-    unsigned long long* slot_off_d_ = nullptr;   ///< E-6: the slot offsets on the device
-    int64_t lb_ = 0, le_ = -1;           ///< set_stage: the layers this verifier runs (-1: to the last)
+    bool head_sampling_ = true;         ///< set_head_sampling
+    int device_ = -1;                   ///< the device `init` ran on: run/commit switch to it (layer split)
+    std::atomic<bool> released_{false}; ///< #267: release_gpu_waits ran (maybe on the watchdog thread): no more windows
+    bool all_resident_ = false;         ///< 100% of experts in [lb_, le_) resident in VRAM: zero-doorbell graph
+    bool device_plan_ = false;          ///< E-6: resident-only layers planned on the device (GUILD_VERIFY_DEVICE_PLAN)
+    uint32_t* skip_ = nullptr;          ///< E-6: per group, the ring whose plan the device built (0: the host's)
+    unsigned long long* slot_off_d_ = nullptr; ///< E-6: the slot offsets on the device
+    int64_t lb_ = 0, le_ = -1;                 ///< set_stage: the layers this verifier runs (-1: to the last)
     const float* hand_in_ = nullptr;
     float* hand_out_ = nullptr;
     Verifier* next_ = nullptr;
     void* next_user_ = nullptr;
-    bool ple_stage() const { return lb_ <= 1 && 1 < le_; }   ///< holds layer 1, where the PLE block runs
+    bool ple_stage() const {
+        return lb_ <= 1 && 1 < le_;
+    } ///< holds layer 1, where the PLE block runs
     void stage_inputs(int T, const int32_t* tokens, int64_t pos0);
     bool staged_ = false;
     bool copy_used_ = false;
@@ -290,12 +336,12 @@ private:
     unsigned long long* trace_h_ = nullptr;
     unsigned long long* trace_m_ = nullptr;
     size_t trace_n_ = 0;
-    static constexpr int kProfPer = 33;              // stamps per layer (32 left the hc-read second
-                                      // half's up-stamp at slot 32 = the next layer's slot 0: D8)
+    static constexpr int kProfPer = 33; // stamps per layer (32 left the hc-read second
+                                        // half's up-stamp at slot 32 = the next layer's slot 0: D8)
     bool prof_on_ = false;
-    unsigned long long* prof_ = nullptr;              // device: n_layers * kProfPer + 4 stamps
+    unsigned long long* prof_ = nullptr; // device: n_layers * kProfPer + 4 stamps
     std::vector<unsigned long long> prof_h_;
-    double prof_sum_[2][kProfPer] = {};   // [GDN / QSA layers][stage]
+    double prof_sum_[2][kProfPer] = {}; // [GDN / QSA layers][stage]
     int64_t prof_windows_ = 0;
 
     const WeightTable* wt_ = nullptr;
@@ -315,20 +361,33 @@ private:
     cudaGraphExec_t commit_exec_ = nullptr;
 
     // mapped staging (host pointer, device alias)
-    int32_t* h_tok_ = nullptr;   int32_t* m_tok_ = nullptr;     // T
-    int32_t* h_step_ = nullptr;  int32_t* m_step_ = nullptr;    // T * kStepCount
-    int32_t* h_pos_ = nullptr;   int32_t* m_pos_ = nullptr;     // T * n_head
-    int32_t* h_commit_ = nullptr; int32_t* m_commit_ = nullptr; // [n_keep, n_keep-1, pos_0 .. pos_{T-1}]
-    float* h_ple_ = nullptr;     float* m_ple_ = nullptr;       // T * n_embd
-    int32_t* h_out_ = nullptr;   int32_t* m_out_ = nullptr;     // T argmax ids
-    float* h_x_ = nullptr;       float* m_x_ = nullptr;         // doorbell payload: T * n_embd
-    int32_t* h_ids_ = nullptr;   int32_t* m_ids_ = nullptr;     // T * k
-    float* h_w_ = nullptr;       float* m_w_ = nullptr;         // T * k
-    uint32_t* h_seq_ = nullptr;  uint32_t* m_seq_ = nullptr;
-    uint32_t* h_flag_ = nullptr; uint32_t* m_flag_ = nullptr;
-    uint32_t* h_flagA_ = nullptr; uint32_t* m_flagA_ = nullptr;  // the GPU plan is in place
-    uint32_t* h_flagB_ = nullptr; uint32_t* m_flagB_ = nullptr;  // the PCIe share's DMA copies have landed
-    cudaEvent_t commit_done_ = nullptr;   // recorded after an async commit (set_commit_async); see wait_commit
+    int32_t* h_tok_ = nullptr;
+    int32_t* m_tok_ = nullptr; // T
+    int32_t* h_step_ = nullptr;
+    int32_t* m_step_ = nullptr; // T * kStepCount
+    int32_t* h_pos_ = nullptr;
+    int32_t* m_pos_ = nullptr; // T * n_head
+    int32_t* h_commit_ = nullptr;
+    int32_t* m_commit_ = nullptr; // [n_keep, n_keep-1, pos_0 .. pos_{T-1}]
+    float* h_ple_ = nullptr;
+    float* m_ple_ = nullptr; // T * n_embd
+    int32_t* h_out_ = nullptr;
+    int32_t* m_out_ = nullptr; // T argmax ids
+    float* h_x_ = nullptr;
+    float* m_x_ = nullptr; // doorbell payload: T * n_embd
+    int32_t* h_ids_ = nullptr;
+    int32_t* m_ids_ = nullptr; // T * k
+    float* h_w_ = nullptr;
+    float* m_w_ = nullptr; // T * k
+    uint32_t* h_seq_ = nullptr;
+    uint32_t* m_seq_ = nullptr;
+    uint32_t* h_flag_ = nullptr;
+    uint32_t* m_flag_ = nullptr;
+    uint32_t* h_flagA_ = nullptr;
+    uint32_t* m_flagA_ = nullptr; // the GPU plan is in place
+    uint32_t* h_flagB_ = nullptr;
+    uint32_t* m_flagB_ = nullptr;       // the PCIe share's DMA copies have landed
+    cudaEvent_t commit_done_ = nullptr; // recorded after an async commit (set_commit_async); see wait_commit
     bool commit_pending_ = false;
     bool async_commit_ = false;
     bool device_logit_validation_ = true;
@@ -337,48 +396,53 @@ private:
     unsigned long long* m_finite_status_ = nullptr;
     std::vector<float> validation_logits_;
     bool validate_logits(int rows, int64_t position, std::string& err);
-    cudaStream_t copy_ = nullptr;                                 // the copy engine's stream (DMA of missed experts)
-    struct FlagSet { uint32_t* flag; uint32_t value; };
-    FlagSet flag_sets_[2 * 64 * 2] = {};                          // host-function arguments, one per (layer, group)
+    cudaStream_t copy_ = nullptr; // the copy engine's stream (DMA of missed experts)
+    struct FlagSet {
+        uint32_t* flag;
+        uint32_t value;
+    };
+    FlagSet flag_sets_[2 * 64 * 2] = {}; // host-function arguments, one per (layer, group)
     static void fetch_dma(void* ctx, const uint8_t* const* src, int n, size_t bytes);
     static void raise_flag(uint32_t* flag, uint32_t value);
-    int32_t* h_plan_ = nullptr;  int32_t* m_plan_ = nullptr;     // counts | start | dst | tok | ptr (as int32 pairs)
-    int64_t plan_i32_ = 0;                                        // int32 words in the plan block
+    int32_t* h_plan_ = nullptr;
+    int32_t* m_plan_ = nullptr; // counts | start | dst | tok | ptr (as int32 pairs)
+    int64_t plan_i32_ = 0;      // int32 words in the plan block
     GpuPlanSink sink_;
     uint32_t cur_layer_ = 0;
     static void publish_plan(void* ctx);
     void set_plan_slot(int grp);
-    bool split_ = false;   // opt-in (--spec-split): exact but slower, see the overlap study
+    bool split_ = false; // opt-in (--spec-split): exact but slower, see the overlap study
     int groups_[9] = {};
-    float* h_ymiss_ = nullptr;   float* m_ymiss_ = nullptr;     // T * k * n_embd
+    float* h_ymiss_ = nullptr;
+    float* m_ymiss_ = nullptr; // T * k * n_embd
 
     // device
     void* arena_ = nullptr;
     int32_t *tok_ = nullptr, *step_ = nullptr, *pos_ = nullptr, *commit_ = nullptr;
     float *ple_ = nullptr, *emb_ = nullptr, *R_ = nullptr, *mixed_ = nullptr, *bo_ = nullptr;
     float *inj_ = nullptr, *inj2_ = nullptr, *lo_ = nullptr, *rs_ = nullptr, *xn_ = nullptr;
-    uint8_t* xq_ = nullptr;                                   // T columns of q8_1
-    uint8_t* sh_xq_ = nullptr;                                // T columns of q8_1 for shared expert branch
-    float *qkv_L_ = nullptr, *h_L_ = nullptr, *gate_L_ = nullptr, *beta_L_ = nullptr;   // per GDN layer
+    uint8_t* xq_ = nullptr;    // T columns of q8_1
+    uint8_t* sh_xq_ = nullptr; // T columns of q8_1 for shared expert branch
+    float *qkv_L_ = nullptr, *h_L_ = nullptr, *gate_L_ = nullptr, *beta_L_ = nullptr; // per GDN layer
     float *z_ = nullptr, *y_ = nullptr, *y_dummy_ = nullptr;
     float *qfull_ = nullptr, *qcur_ = nullptr, *kcur_ = nullptr, *vcur_ = nullptr, *idx_raw_L_ = nullptr;
     float *qidx_ = nullptr, *scores_ = nullptr, *attn_ = nullptr, *attn32_ = nullptr, *attn_scratch_ = nullptr;
-    float* tail_snap_ = nullptr;                              // per QSA layer
+    float* tail_snap_ = nullptr; // per QSA layer
     int32_t* sel_ = nullptr;
     float *logits_ = nullptr, *w_ = nullptr, *shared_ = nullptr, *parts_ = nullptr, *hit_out_ = nullptr;
     int32_t *ids_ = nullptr, *hit_slot_ = nullptr, *hit_dst_ = nullptr, *hit_count_ = nullptr;
-    int32_t* plan_ = nullptr;                                     // device copy of the plan block
-    uint8_t* staging_ = nullptr;                                  // VRAM slots for the PCIe share of the misses
+    int32_t* plan_ = nullptr;    // device copy of the plan block
+    uint8_t* staging_ = nullptr; // VRAM slots for the PCIe share of the misses
     static constexpr int64_t kStagingBlobs = 16;
-    static constexpr int64_t kPcieGroupRows = 4;                  // the PCIe call's groups side by side (of <= 16)
+    static constexpr int64_t kPcieGroupRows = 4; // the PCIe call's groups side by side (of <= 16)
     uint8_t* hit_xq_ = nullptr;
-    uint8_t* nat_xq_ = nullptr;   // plan v0.3 P6: q8_1 activations for a native pack's grouped experts
+    uint8_t* nat_xq_ = nullptr; // plan v0.3 P6: q8_1 activations for a native pack's grouped experts
     float* hit_xs_ = nullptr;
     void* hit_scratch_ = nullptr;
     float *head_mixed_ = nullptr, *head_inj_ = nullptr, *head_logits_ = nullptr;
     uint16_t* sh_bf16_ = nullptr;
     float *sh_gate_ = nullptr, *sh_up_ = nullptr, *sh_g_ = nullptr;
-    float* hist_snap_ = nullptr;                              // T * NG_HIST * NG_HC_DIM
+    float* hist_snap_ = nullptr; // T * NG_HIST * NG_HC_DIM
     int64_t cap_ = 0, max_blocks_ = 0, attn_scratch_floats_ = 0;
     float* dbg_l0_attn_norm_ = nullptr;
     float* dbg_l0_z_ = nullptr;
@@ -389,4 +453,4 @@ private:
     float* dbg_l0_shared_ = nullptr;
 };
 
-}  // namespace guild::core
+} // namespace guild::core

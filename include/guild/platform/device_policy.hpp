@@ -15,4 +15,4 @@ inline void configure_device_runtime_policy() {
 #endif
     }
 }
-}
+} // namespace guild::platform

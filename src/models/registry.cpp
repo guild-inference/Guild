@@ -20,14 +20,7 @@ void ModelRegistry::init_builtins() {
     {
         ModelManifest m;
         m.name = "qwen3.8-flash-next";
-        m.aliases = {
-            "qwen",
-            "qwen3.8",
-            "qwen-flash",
-            "unsloth-ud-iq4_xs",
-            "UD-IQ4_XS",
-            "Qwen3.8-Flash-Next"
-        };
+        m.aliases = {"qwen", "qwen3.8", "qwen-flash", "unsloth-ud-iq4_xs", "UD-IQ4_XS", "Qwen3.8-Flash-Next"};
         m.architecture = "qwen4exp";
         m.quantization = "UD-IQ4_XS";
         m.source = "unsloth/Qwen3.8-Flash-Next-GGUF";
@@ -53,7 +46,8 @@ void ModelRegistry::init_builtins() {
         s1.size_bytes = 10946624;
         s1.sha256 = "5ce89370720f8bf90890f439361282104c1aa1482d4013bb9a50923e758e71a4";
         s1.role = "primary";
-        s1.url = "https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/resolve/main/UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf";
+        s1.url = "https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/resolve/main/UD-IQ4_XS/"
+                 "Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf";
         m.files.push_back(s1);
 
         ModelFile s2;
@@ -61,7 +55,8 @@ void ModelRegistry::init_builtins() {
         s2.size_bytes = 49835229856;
         s2.sha256 = "577a38a2392b40ca2193cea502e1d92f60b8cd370675d308e0ec21885d9daaa7";
         s2.role = "shard";
-        s2.url = "https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/resolve/main/UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00002-of-00003.gguf";
+        s2.url = "https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/resolve/main/UD-IQ4_XS/"
+                 "Qwen3.8-Flash-Next-UD-IQ4_XS-00002-of-00003.gguf";
         m.files.push_back(s2);
 
         ModelFile s3;
@@ -69,7 +64,8 @@ void ModelRegistry::init_builtins() {
         s3.size_bytes = 43836407744;
         s3.sha256 = "d4634e6d84f0ebb0940be15c90d3790bf6464e3dea3a1cddc567dc0e83ad8833";
         s3.role = "shard";
-        s3.url = "https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/resolve/main/UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00003-of-00003.gguf";
+        s3.url = "https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/resolve/main/UD-IQ4_XS/"
+                 "Qwen3.8-Flash-Next-UD-IQ4_XS-00003-of-00003.gguf";
         m.files.push_back(s3);
 
         m.expected_size_bytes = m.total_size_bytes();
@@ -80,11 +76,7 @@ void ModelRegistry::init_builtins() {
     {
         ModelManifest m;
         m.name = "ornith:35b";
-        m.aliases = {
-            "ornith",
-            "ornith-1.5-35b",
-            "ornith-35b"
-        };
+        m.aliases = {"ornith", "ornith-1.5-35b", "ornith-35b"};
         m.architecture = "qwen35moe";
         m.quantization = "Q4_K_M";
         m.source = "ukisai/Ornith-1.5-35B-GGUF";

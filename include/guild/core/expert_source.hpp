@@ -43,7 +43,7 @@ struct ExpertLayout;
 
 namespace guild::core {
 
-class PeerExperts;   // multi-GPU: the second GPU's expert tier (peer_experts.hpp)
+class PeerExperts; // multi-GPU: the second GPU's expert tier (peer_experts.hpp)
 class RemoteExperts;
 struct LoadStats;
 
@@ -83,16 +83,14 @@ bool host_available_memory(HostMemory& m, const std::string& meminfo = "/proc/me
 
 /// Build compact offsets for experts absent from both the primary GPU cache and an optional second GPU tier.
 /// Kept CPU-only so selection and byte accounting can be tested without initializing a GPU.
-bool make_cache_complement_plan(
-    int64_t n_layers, int64_t n_expert, const std::vector<uint64_t>& layer_blob_bytes,
-    const std::vector<std::pair<int32_t, int32_t>>& primary_gpu_pairs,
-    const std::vector<std::pair<int32_t, int32_t>>& additional_gpu_pairs,
-    std::vector<uint64_t>& offsets, uint64_t& bytes, std::string& err);
+bool make_cache_complement_plan(int64_t n_layers, int64_t n_expert, const std::vector<uint64_t>& layer_blob_bytes,
+                                const std::vector<std::pair<int32_t, int32_t>>& primary_gpu_pairs,
+                                const std::vector<std::pair<int32_t, int32_t>>& additional_gpu_pairs,
+                                std::vector<uint64_t>& offsets, uint64_t& bytes, std::string& err);
 
 /// Resolve one blob through the compact copy when present, otherwise preserve its exact mapped-file fallback.
-const uint8_t* cache_complement_blob_or_fallback(
-    size_t index, const std::vector<uint64_t>& offsets, const uint8_t* complement_host,
-    const uint8_t* mapped_fallback);
+const uint8_t* cache_complement_blob_or_fallback(size_t index, const std::vector<uint64_t>& offsets,
+                                                 const uint8_t* complement_host, const uint8_t* mapped_fallback);
 
 /// The resident RAM mode: which GPU-cache slots' experts are kept in RAM too.  The prompt path lends the cache's
 /// LAST slots (from `lend_from` on; a short prompt lends only the last few), and a lent slot's expert is streamed
@@ -106,9 +104,7 @@ int64_t choose_resident_keep_from(const std::vector<uint64_t>& slot_bytes, uint6
 /// (the caller copies out's bytes there).  False, and nothing changed, unless `in` is in the copy and `out` is not.
 bool exchange_cache_complement(std::vector<uint64_t>& offsets, size_t in, size_t out);
 
-}  // namespace detail
-
-
+} // namespace detail
 
 /// Where one routed expert's bytes come from.
 ///
@@ -127,43 +123,80 @@ public:
     virtual const uint8_t* blob(int64_t layer, int64_t expert) = 0;
 
     /// Blobs touched, for the driver to report.  A source that does not count returns 0.
-    virtual int64_t reads() const { return 0; }
+    virtual int64_t reads() const {
+        return 0;
+    }
 
     /// Plan v0.3 P5: whether `blob(layer, expert)` lies in page-locked, CUDA-registered memory, so an
     /// asynchronous host-to-device copy can DMA it directly (no staging copy on the CPU).
-    virtual bool pinned(int64_t layer, int64_t expert) const { (void) layer; (void) expert; return false; }
+    virtual bool pinned(int64_t layer, int64_t expert) const {
+        (void) layer;
+        (void) expert;
+        return false;
+    }
 
     /// Called once before the first expert of a layer.  A source that reads from disk wants to start the read
     /// here so it overlaps the quantisation, and a prefetching source in Phase 3 wants the ids.
-    virtual void begin_layer(int64_t layer, const int32_t* ids, int64_t k) { (void) layer; (void) ids; (void) k; }
+    virtual void begin_layer(int64_t layer, const int32_t* ids, int64_t k) {
+        (void) layer;
+        (void) ids;
+        (void) k;
+    }
     /// Plan v0.3 P6: the DEVICE address of a pinned, mapped blob (the GPU can read it over PCIe), or null.
-    virtual const uint8_t* device_alias(int64_t layer, int64_t expert) const { (void) layer; (void) expert; return nullptr; }
+    virtual const uint8_t* device_alias(int64_t layer, int64_t expert) const {
+        (void) layer;
+        (void) expert;
+        return nullptr;
+    }
     /// A file-backed source: start reading this expert's pages now (it will be needed by the CPU); no-op elsewhere.
-    virtual void prefetch(int64_t layer, int64_t expert) { (void) layer; (void) expert; }
+    virtual void prefetch(int64_t layer, int64_t expert) {
+        (void) layer;
+        (void) expert;
+    }
     /// A file-backed source: this expert lives in VRAM, so its pages need not stay in RAM - hand them back to the
     /// kernel (a later read re-reads the file; no result depends on it).  Returns the bytes released; 0 elsewhere.
-    virtual uint64_t release(int64_t layer, int64_t expert) { (void) layer; (void) expert; return 0; }
+    virtual uint64_t release(int64_t layer, int64_t expert) {
+        (void) layer;
+        (void) expert;
+        return 0;
+    }
     /// Whether the verify window may give the GPU a PCIe share of this layer's misses at all (each expert is still
     /// checked with `pinned`).  The arena answers per layer through its expert 0; the resident RAM mode's compact
     /// copy has no expert 0 when the GPU cache holds it, so it answers for the whole copy.
-    virtual bool pcie_layer(int64_t layer) const { return device_alias(layer, 0) != nullptr; }
+    virtual bool pcie_layer(int64_t layer) const {
+        return device_alias(layer, 0) != nullptr;
+    }
 
     /// CS-T: whether `blob(layer, expert)` would be assembled into a short-lived buffer (a native pack read from its
     /// GGUF shards in place, where an expert's gate, up and down rows are three separate slices).  Such a pointer
     /// stays valid for the layer it was asked in and the next one or two; a consumer that keeps a blob longer (the
     /// prompt path's stager queues a whole chunk) copies it with `copy_blob` instead.
-    virtual bool transient(int64_t layer, int64_t expert) const { (void) layer; (void) expert; return false; }
+    virtual bool transient(int64_t layer, int64_t expert) const {
+        (void) layer;
+        (void) expert;
+        return false;
+    }
     /// The blob's bytes into `dst` (blob_bytes(layer) of them).  Safe from several threads for a source whose
     /// `transient` can be true.
     virtual bool copy_blob(int64_t layer, int64_t expert, uint8_t* dst);
     /// The `n` experts of `layer` the CPU is about to ask `blob` for, all at once: a source that reads a file may
     /// fetch them in parallel.  The bytes `blob` then returns are the same.  Default: nothing.
-    virtual void prefetch(int64_t layer, const int64_t* experts, int64_t n) { (void) layer; (void) experts; (void) n; }
+    virtual void prefetch(int64_t layer, const int64_t* experts, int64_t n) {
+        (void) layer;
+        (void) experts;
+        (void) n;
+    }
     /// CS-T: the experts of `layer` a predictor expects next - a source that reads a file may start reading their
     /// pages now, in the background.  Only warms: what `blob` returns is unchanged.  Default: nothing.
-    virtual void warm(int64_t layer, const int64_t* experts, int64_t n) { (void) layer; (void) experts; (void) n; }
+    virtual void warm(int64_t layer, const int64_t* experts, int64_t n) {
+        (void) layer;
+        (void) experts;
+        (void) n;
+    }
     /// Whether `warm` does anything (the predictor is not run otherwise).
-    virtual bool warms() const { return false; }
+    virtual bool warms() const {
+        return false;
+    }
 };
 
 /// CS-T, routing-aware prefetch of the file tier: when the CPU pool starts layer `l`, a worker thread applies layer
@@ -179,13 +212,19 @@ public:
     RouterLookahead& operator=(const RouterLookahead&) = delete;
     /// `routers[l]`: layer l's ffn_gate_inp as BF16 bits, n_expert rows of n_embd.
     bool start(std::vector<std::vector<uint16_t>> routers, int64_t n_embd, int64_t n_expert, int k, ExpertSource* src,
-                std::string& err, const guild_cpu_backend_ext_v2_t* backend = nullptr);
+               std::string& err, const guild_cpu_backend_ext_v2_t* backend = nullptr);
     /// Layer `layer`'s MoE input for `n_tok` tokens (host floats): predict and warm layer + 1.  Never waits: a
     /// prediction still running for an earlier layer makes this one skip.
     void submit(int64_t layer, const float* x, int64_t n_tok, const int32_t* host_res);
-    int64_t predicted() const { return predicted_.load(std::memory_order_relaxed); }
-    int64_t skipped() const { return skipped_.load(std::memory_order_relaxed); }
-    double busy_ms() const { return (double) busy_us_.load(std::memory_order_relaxed) / 1000.0; }
+    int64_t predicted() const {
+        return predicted_.load(std::memory_order_relaxed);
+    }
+    int64_t skipped() const {
+        return skipped_.load(std::memory_order_relaxed);
+    }
+    double busy_ms() const {
+        return (double) busy_us_.load(std::memory_order_relaxed) / 1000.0;
+    }
 
 private:
     void run();
@@ -209,11 +248,11 @@ private:
 /// after the ring and published before the CPU starts its own share.  Groups of entries that share a blob; the
 /// blob is a VRAM slot or a pinned host blob read over PCIe.
 struct GpuPlanSink {
-    int32_t* counts = nullptr;             ///< [0] groups, [1] entries
-    int32_t* start = nullptr;              ///< cap + 1
-    int32_t* dst = nullptr;                ///< cap: the entry's row of parts (token * k + j)
-    int32_t* tok = nullptr;                ///< cap: the entry's token
-    unsigned long long* ptr = nullptr;     ///< cap: the group's blob, device address
+    int32_t* counts = nullptr;         ///< [0] groups, [1] entries
+    int32_t* start = nullptr;          ///< cap + 1
+    int32_t* dst = nullptr;            ///< cap: the entry's row of parts (token * k + j)
+    int32_t* tok = nullptr;            ///< cap: the entry's token
+    unsigned long long* ptr = nullptr; ///< cap: the group's blob, device address
     /// Plan v0.3 P6 (DMA): the PCIe share is a second list of groups - `ptr2[q]` is staging slot q, `start2` indexes
     /// the same dst/tok entries - computed by the GPU after `fetch` has copied their blobs into staging with the
     /// copy engine.  counts[0] = VRAM groups, counts[1] = all entries, counts[2] = PCIe groups.
@@ -236,8 +275,8 @@ struct GpuPlanSink {
 struct ExpertDispatch {
     guild::kernels::cpu::ExpertPool* pool = nullptr;
     ExpertSource* src = nullptr;
-    RouterLookahead* lookahead = nullptr;   ///< CS-T: warms the next layer's predicted file-tier experts
-    RemoteExperts* remote[3] = {}; ///< optional CUDA1..3 tiers for otherwise CPU-served rows
+    RouterLookahead* lookahead = nullptr; ///< CS-T: warms the next layer's predicted file-tier experts
+    RemoteExperts* remote[3] = {};        ///< optional CUDA1..3 tiers for otherwise CPU-served rows
     int remote_count = 0;
     int64_t n_expert = guild::kernels::cpu::NE;
     int64_t n_embd = guild::kernels::cpu::H;
@@ -262,9 +301,9 @@ struct ExpertDispatch {
     // admitted and filled from the arena.  No eviction, because eviction policy is the measured question
     // (`R4.1`'s LFU-decay vs LRU sweep) and a placeholder would set the hit rate everything is sized against.
     ExpertCache* cache = nullptr;
-    int64_t cache_hits = 0;      ///< lookups already resident
-    int64_t cache_admitted = 0;  ///< lookups that took a slot
-    int64_t cache_refused = 0;   ///< lookups with no slot free (the cache is full)
+    int64_t cache_hits = 0;     ///< lookups already resident
+    int64_t cache_admitted = 0; ///< lookups that took a slot
+    int64_t cache_refused = 0;  ///< lookups with no slot free (the cache is full)
     void* cache_stream = nullptr;
     const char* cache_fail = nullptr;
 
@@ -276,26 +315,26 @@ struct ExpertDispatch {
     // rows are zeroed for the hits, and each hit carries its routed index to the kernel as `dst`.
     //
     // Everything below is per-session state rather than per-call, so the token path allocates nothing (P2.T10).
-    const uint8_t* cache_base = nullptr;   ///< the slot arena on the DEVICE
-    int64_t cache_blob = 0;                ///< bytes per slot
-    const uint64_t* cache_slot_off = nullptr;   ///< plan v0.3 P6: per-slot offsets when the slots differ in size
-    void* hit_scratch = nullptr;           ///< `moe_hit_grouped_scratch_bytes(K, ...)`
-    float* parts_out = nullptr;            ///< the graph's `parts` buffer, on the device
+    const uint8_t* cache_base = nullptr;      ///< the slot arena on the DEVICE
+    int64_t cache_blob = 0;                   ///< bytes per slot
+    const uint64_t* cache_slot_off = nullptr; ///< plan v0.3 P6: per-slot offsets when the slots differ in size
+    void* hit_scratch = nullptr;              ///< `moe_hit_grouped_scratch_bytes(K, ...)`
+    float* parts_out = nullptr;               ///< the graph's `parts` buffer, on the device
     /// Where the GPU's hits land, `K x n_embd`, DEVICE and separate from `parts_out` on purpose: see
     /// `HitPhase`.  Zeroed by the hit path each layer before the kernel writes it.
     float* hit_out = nullptr;
-    int64_t parts_elems = 0;               ///< `K * n_embd`, the length of both buffers
-    const float* mixed = nullptr;          ///< the layer's normed activation, for the hit kernel's Q8_0
-    uint8_t* x_q8_0_hit = nullptr;         ///< `(n_embd/32) * 34` bytes, its own buffer
+    int64_t parts_elems = 0;       ///< `K * n_embd`, the length of both buffers
+    const float* mixed = nullptr;  ///< the layer's normed activation, for the hit kernel's Q8_0
+    uint8_t* x_q8_0_hit = nullptr; ///< `(n_embd/32) * 34` bytes, its own buffer
     /// **R4.2h: THE CPU's fp32 ACTIVATION SCALES, `(n_embd/32)` FLOATS.**  Without them the GPU's hits are
     /// computed with the `block_q8_0`'s fp16 `d` while the CPU's misses use the fp32 `ActQ::scale`
     /// (`cpu/expert.cpp:92`) - **4.761e-04 relative on 80 of 80 chunks**, measured with both real
     /// implementations linked in `bench/micro/act_quant_parity.cu`.  That disagreement is why turning the
     /// cache on changed the generated tokens.  Required whenever the hit path runs.
     float* x_q8_0_hit_scale = nullptr;
-    int32_t* d_slot = nullptr;             ///< device, K entries
-    int32_t* d_dst = nullptr;              ///< device, K entries
-    std::vector<int32_t> h_slot, h_dst;    ///< host staging, sized at session setup
+    int32_t* d_slot = nullptr;          ///< device, K entries
+    int32_t* d_dst = nullptr;           ///< device, K entries
+    std::vector<int32_t> h_slot, h_dst; ///< host staging, sized at session setup
     /// **PER ROUTER INDEX, DECIDED IN `Launch` AND CONSUMED BY THE POOL.**  The two callbacks share it
     /// so the decision is made exactly once, on this layer's ids, and neither side can re-decide it.
     std::vector<uint8_t> is_hit;
@@ -319,14 +358,14 @@ struct ExpertDispatch {
     // `hit_done` is recorded on the stream straight after the hit kernel.  `Combine` - which runs after the
     // pool - queries it: SUCCESS means the GPU finished while the CPU was working, NOT-READY means it had not.
     // Same shape as the doorbell's `rings_mid_graph`, and for the same reason.
-    void* hit_done = nullptr;      ///< cudaEvent_t, created at session setup
-    int64_t hit_ready = 0;         ///< layers where the hit work was DONE by the time the pool returned
-    int64_t hit_late = 0;          ///< layers where it was not
+    void* hit_done = nullptr; ///< cudaEvent_t, created at session setup
+    int64_t hit_ready = 0;    ///< layers where the hit work was DONE by the time the pool returned
+    int64_t hit_late = 0;     ///< layers where it was not
     /// The candidate fix, as an A/B arm: enter the driver once right after the hit launch.  If submission is
     /// lazy, this starts the GPU work before the pool instead of after it.
     bool hit_poke = false;
-    bool hit_cpu_order = false;    ///< experimental CPU-order GPU expert arithmetic; opt-in only
-    int64_t n_hits = 0;                    ///< this layer's hits
+    bool hit_cpu_order = false; ///< experimental CPU-order GPU expert arithmetic; opt-in only
+    int64_t n_hits = 0;         ///< this layer's hits
     /// Set by `Launch` and consumed by `Combine`, so a `Combine` with no `Launch` in front of it cannot
     /// add a stale buffer into `parts`.
     bool hit_pending = false;
@@ -336,8 +375,8 @@ struct ExpertDispatch {
     /// some experts twice and others not at all, which is a wrong token rather than an error.
     bool hits_ready() const {
         return cache != nullptr && cache_base != nullptr && parts_out != nullptr && hit_out != nullptr &&
-               mixed != nullptr &&
-               hit_scratch != nullptr && x_q8_0_hit != nullptr && x_q8_0_hit_scale != nullptr && d_slot != nullptr && d_dst != nullptr;
+               mixed != nullptr && hit_scratch != nullptr && x_q8_0_hit != nullptr && x_q8_0_hit_scale != nullptr &&
+               d_slot != nullptr && d_dst != nullptr;
     }
 
     std::vector<guild::kernels::cpu::ExpertJob> jobs;
@@ -354,19 +393,19 @@ struct ExpertDispatch {
     GpuPlanSink* plan = nullptr;
     int pcie_num = 0;
     std::vector<int> pcie_layer_numerators; ///< optional format/geometry-calibrated fraction for each layer
-    int64_t pcie_experts = 0;      ///< distinct experts the GPU read over PCIe in verify windows
+    int64_t pcie_experts = 0;               ///< distinct experts the GPU read over PCIe in verify windows
     /// #588: routed (token, expert) entries the GPU computed from outside its cache in verify windows: read over PCIe
     /// (--pcie-frac, kind 1) or on another GPU (kind 2).  In neither cache_hits nor cache_refused.
     int64_t offload_entries = 0;
-    double ms_plan = 0, ms_actq = 0, ms_jobs = 0, ms_run = 0;   ///< verify-window dispatch sections
+    double ms_plan = 0, ms_actq = 0, ms_jobs = 0, ms_run = 0; ///< verify-window dispatch sections
     /// Plan v0.3 P6: decayed routing counts per (layer, expert) during decode (sized by the caller; empty = off),
     /// which the driver uses to swap the most-routed missing experts into the VRAM tier between rounds.
     std::vector<float> usage;
-    int64_t multi_misses = 0;      ///< distinct (layer, expert) pairs the CPU computed in verify windows
-    int64_t multi_entries = 0;     ///< routed (token, expert) entries the CPU served in verify windows
+    int64_t multi_misses = 0;  ///< distinct (layer, expert) pairs the CPU computed in verify windows
+    int64_t multi_entries = 0; ///< routed (token, expert) entries the CPU served in verify windows
     /// Multi-GPU: the second GPU's tier.  Its experts are computed there instead of on the CPU (kind 2).
     PeerExperts* peer = nullptr;
-    int64_t peer_entries = 0;      ///< routed entries the peer served in verify windows
+    int64_t peer_entries = 0; ///< routed entries the peer served in verify windows
     /// Set when `dispatch` could not produce an answer.  The loop itself has no error channel, so this is
     /// where a source failure surfaces: the driver checks it after `session_loop` returns rather than the
     /// engine computing from a half-filled `parts`.
@@ -434,9 +473,13 @@ public:
     bool open(const std::string& pack_dir, int64_t n_layers, int64_t n_expert, std::string& err);
     bool open_gpack(const uint8_t* exp_base, uint64_t exp_bytes, int64_t n_layers, int64_t n_expert, std::string& err);
     /// CS-T: the --native shard (native_experts.txt names the other files beside it); see `open`.
-    void set_gguf(const std::string& native) { gguf_ = native; }
+    void set_gguf(const std::string& native) {
+        gguf_ = native;
+    }
     /// Whether the experts are read from the GGUF shards in place (no experts.bin).
-    bool gguf_mode() const { return !role_ptr_.empty(); }
+    bool gguf_mode() const {
+        return !role_ptr_.empty();
+    }
     /// Pin a compact host mirror of experts absent from a fully filled static GPU cache. The mmap remains open
     /// as a fallback for later cache reloads. This is opt-in because the complement may still be a large allocation.
     ///
@@ -459,25 +502,41 @@ public:
     /// and the #403 margin) - the soft --resident-experts mode's second try when the whole complement does not fit;
     /// false when not even one expert fits.  On Windows the mapped experts leave the working set before any reading.
     static constexpr uint64_t kResidentWhatFits = ~0ull;
-    bool pin_cache_complement(
-        const ExpertCache& cache, std::string& err, bool pin = true,
-        const std::vector<std::pair<int32_t, int32_t>>& additional_gpu_pairs = {}, int64_t lend_from_slot = -1,
-        uint64_t headroom_bytes = 8ull << 30, uint64_t budget_bytes = 0,
-        const std::vector<std::pair<int32_t, int32_t>>* rank = nullptr);
+    bool pin_cache_complement(const ExpertCache& cache, std::string& err, bool pin = true,
+                              const std::vector<std::pair<int32_t, int32_t>>& additional_gpu_pairs = {},
+                              int64_t lend_from_slot = -1, uint64_t headroom_bytes = 8ull << 30,
+                              uint64_t budget_bytes = 0,
+                              const std::vector<std::pair<int32_t, int32_t>>* rank = nullptr);
     void close();
 
-    bool mapped() const { return base_ != nullptr; }
-    int64_t blobs() const { return blobs_; }
-    uint64_t pinned_bytes() const { return complement_pinned_ ? complement_pin_limit_ : 0; }
-    uint64_t resident_bytes() const { return complement_bytes_; }
+    bool mapped() const {
+        return base_ != nullptr;
+    }
+    int64_t blobs() const {
+        return blobs_;
+    }
+    uint64_t pinned_bytes() const {
+        return complement_pinned_ ? complement_pin_limit_ : 0;
+    }
+    uint64_t resident_bytes() const {
+        return complement_bytes_;
+    }
     /// Experts held by the compact RAM tier.  Useful for reporting the three tiers; unlike bytes this is exact for
     /// native packs whose per-layer expert sizes differ.
     int64_t resident_experts() const;
-    bool complement_pinned() const { return complement_pinned_; }
-    bool complement_ready() const { return complement_ready_; }
-    uint64_t locked_bytes() const { return complement_locked_; }
+    bool complement_pinned() const {
+        return complement_pinned_;
+    }
+    bool complement_ready() const {
+        return complement_ready_;
+    }
+    uint64_t locked_bytes() const {
+        return complement_locked_;
+    }
     /// Lend-region slots whose experts the compact copy holds (the last ones of the cache).
-    int64_t resident_lent_slots() const { return complement_lent_slots_; }
+    int64_t resident_lent_slots() const {
+        return complement_lent_slots_;
+    }
 
     // ---- the resident RAM mode and the adaptive tier.  A swap puts `in` (held here) into a GPU slot and evicts
     // `out` (held only by that slot).  Before the slot is overwritten the caller copies it back into an exchange
@@ -488,30 +547,48 @@ public:
     bool has_resident(int64_t layer, int64_t expert) const;
     /// Host room for `n` evicted blobs (page-locked when possible).  Idempotent for the same or a smaller `n`.
     bool reserve_exchanges(int64_t n, std::string& err);
-    int64_t exchange_capacity() const { return xstage_cap_; }
+    int64_t exchange_capacity() const {
+        return xstage_cap_;
+    }
     uint8_t* exchange_buffer(int64_t q) const;
     /// Requires `has_resident(layer, in)`, `!has_resident(layer, out)` and `exchange_buffer(q)` holding out's blob.
     bool stage_exchange(int64_t layer, int64_t in, int64_t out, int64_t q);
     /// After the GPU copies of every staged swap have landed.  Returns how many exchanges were applied.
     int64_t commit_exchanges();
-    int64_t exchanges() const { return exchanges_; }
+    int64_t exchanges() const {
+        return exchanges_;
+    }
     /// With the compact copy ready: blobs read from the mapped file since (what the plain mmap mode may read from
     /// the SSD).  0 in a steady resident mode; lend-region experts that did not fit the RAM count here.
-    int64_t file_reads() const { return file_reads_.load(std::memory_order_relaxed); }
+    int64_t file_reads() const {
+        return file_reads_.load(std::memory_order_relaxed);
+    }
     /// CS-T per-tier counters: blobs served from the RAM copy, and the bytes read from the mapped files (the blobs
     /// `file_reads` counts, plus the prompt path's copies of them).
-    int64_t ram_reads() const { return ram_reads_.load(std::memory_order_relaxed); }
-    uint64_t file_read_bytes() const { return file_read_bytes_.load(std::memory_order_relaxed); }
+    int64_t ram_reads() const {
+        return ram_reads_.load(std::memory_order_relaxed);
+    }
+    uint64_t file_read_bytes() const {
+        return file_read_bytes_.load(std::memory_order_relaxed);
+    }
     /// Of those, the bytes `blob` read (decode windows, adaptive swaps; the rest are the prompt path's copies), and
     /// the time spent reading the files, summed over threads.
-    uint64_t file_blob_bytes() const { return file_blob_bytes_.load(std::memory_order_relaxed); }
-    double file_ms() const { return (double) file_us_.load(std::memory_order_relaxed) / 1000.0; }
+    uint64_t file_blob_bytes() const {
+        return file_blob_bytes_.load(std::memory_order_relaxed);
+    }
+    double file_ms() const {
+        return (double) file_us_.load(std::memory_order_relaxed) / 1000.0;
+    }
     /// Threads `prefetch` reads the GGUF with (GUILD_FETCH_THREADS, default 8).
-    void set_fetch_threads(int n) { fetch_threads_ = n < 1 ? 1 : n; }
+    void set_fetch_threads(int n) {
+        fetch_threads_ = n < 1 ? 1 : n;
+    }
     /// Phase 5 GEXEC: interleave gate and up rows [gate_0, up_0, gate_1, up_1, ...] on the fly when copying from
     /// split source files into the resident arena or stage buffers (zero extra pass).
     void set_gate_up_interleaved(bool interleave_on_copy);
-    bool gate_up_interleaved() const { return interleave_on_copy_; }
+    bool gate_up_interleaved() const {
+        return interleave_on_copy_;
+    }
     /// #286 (Windows): read the experts straight from the drive (FILE_FLAG_NO_BUFFERING, overlapped) instead of
     /// through the mapped files - the GGUF in place, or a pack's experts.bin - when the file cache could not keep them
     /// beside `ram_bytes` (the RAM budget), cached now or not (their mapped pages would land in the working set); see
@@ -522,7 +599,9 @@ public:
     /// #577: the same decision once the RAM copy is built (pin_cache_complement), from the RAM it really holds and the
     /// expert bytes outside it; switches either way (startup only, nothing reading).  Returns whether unbuffered.
     bool recheck_unbuffered(std::string& why);
-    bool unbuffered() const { return !direct_.empty(); }
+    bool unbuffered() const {
+        return !direct_.empty();
+    }
     /// Every expert's bytes (n_layers x n_expert blobs).
     uint64_t expert_bytes() const;
     /// #286, unbuffered: assembles the blobs of these pairs ahead of the `blob` calls that will ask for them (the
@@ -543,14 +622,22 @@ public:
     /// madvise(WILLNEED) elsewhere), skipping the RAM copy's.
     void warm(int64_t layer, const int64_t* experts, int64_t n) override;
     /// Not when the reads are unbuffered: the warmed pages would be read through the file cache, a second time.
-    bool warms() const override { return !role_ptr_.empty() && direct_.empty(); }
+    bool warms() const override {
+        return !role_ptr_.empty() && direct_.empty();
+    }
     /// Of the blobs the file tier read for the decode, how many had been warmed for their layer beforehand.
-    int64_t warmed_hits() const { return warm_hits_.load(std::memory_order_relaxed); }
-    int64_t warmed() const { return warm_count_.load(std::memory_order_relaxed); }
+    int64_t warmed_hits() const {
+        return warm_hits_.load(std::memory_order_relaxed);
+    }
+    int64_t warmed() const {
+        return warm_count_.load(std::memory_order_relaxed);
+    }
 
     /// Blobs touched, for the driver to report.  With `h = 0` this is `48 * k` per token and the number is only
     /// interesting once Phase 3 makes it not so.
-    int64_t reads() const override { return reads_; }
+    int64_t reads() const override {
+        return reads_;
+    }
 
 private:
     const uint8_t* mapped_blob(int64_t layer, int64_t expert) const;
@@ -561,18 +648,25 @@ private:
     bool claim_stage(int64_t key, size_t& v, bool& fill);
     bool fill_stage(size_t v, int64_t layer, int64_t expert, uint8_t* dst);
     void publish_stage(size_t v, int64_t layer, bool ok, double us);
-    struct Fill { size_t v; int64_t layer, e; uint8_t* dst; };
+    struct Fill {
+        size_t v;
+        int64_t layer, e;
+        uint8_t* dst;
+    };
     /// The claimed buffers' blobs: one overlapped batch when unbuffered, else the fetch threads' mapped copies.
     void fill_many(const std::vector<Fill>& todo);
     /// #286: the blobs from the drive, unbuffered: every role's 4 KiB-aligned window is read at once (overlapped)
     /// into this thread's aligned buffer, then copied into place.  False when a read fails.
     bool read_direct(const Fill* fills, size_t n) const;
     bool open_direct(std::string& why);
-    std::vector<std::string> paths_;          ///< the mapped files, as maps_
-    std::vector<void*> direct_;               ///< #286: per file, an unbuffered overlapped handle (Windows)
-    std::vector<int> role_file_;              ///< 3 x n_layers: index into maps_ / direct_
-    /// blobs assembled in the stage buffers (`blob` hands those out): the GGUF in place, any unbuffered source, or on-copy interleaving
-    bool staged() const { return !role_ptr_.empty() || !direct_.empty() || interleave_on_copy_; }
+    std::vector<std::string> paths_; ///< the mapped files, as maps_
+    std::vector<void*> direct_;      ///< #286: per file, an unbuffered overlapped handle (Windows)
+    std::vector<int> role_file_;     ///< 3 x n_layers: index into maps_ / direct_
+    /// blobs assembled in the stage buffers (`blob` hands those out): the GGUF in place, any unbuffered source, or
+    /// on-copy interleaving
+    bool staged() const {
+        return !role_ptr_.empty() || !direct_.empty() || interleave_on_copy_;
+    }
     static constexpr uint64_t kNoComplement = detail::kNoCacheComplement;
     // ---- CS-T: the GGUF shards in place
     std::string gguf_;
@@ -587,8 +681,8 @@ private:
 #endif
     };
     std::vector<Map> maps_;
-    std::vector<const uint8_t*> role_ptr_;    ///< 3 x n_layers: gate / up / down of the layer's expert 0
-    std::vector<uint64_t> role_bytes_;        ///< 3 x n_layers: bytes per expert of that role
+    std::vector<const uint8_t*> role_ptr_; ///< 3 x n_layers: gate / up / down of the layer's expert 0
+    std::vector<uint64_t> role_bytes_;     ///< 3 x n_layers: bytes per expert of that role
     // the blobs assembled for `blob()`: a small pool of buffers, one per recent (layer, expert).  A buffer is
     // reused only once `kStageAge` layer changes have passed since its blob was last asked for, so a pointer holds
     // through the layer it was asked in and the next ones (the pool computes a layer's misses before the next).
@@ -597,11 +691,11 @@ private:
     std::vector<std::unique_ptr<uint8_t[]>> stage_buf_;
     std::vector<int64_t> stage_key_;
     std::vector<uint64_t> stage_epoch_, stage_used_;
-    std::vector<char> stage_busy_;            ///< being filled (outside stage_mu_): never a victim
+    std::vector<char> stage_busy_; ///< being filled (outside stage_mu_): never a victim
     std::condition_variable stage_cv_;
     int fetch_threads_ = 8;
     std::atomic<uint64_t> file_blob_bytes_{0}, file_us_{0};
-    std::unique_ptr<std::atomic<uint32_t>[]> warm_stamp_;   ///< per (layer, expert): epoch_ + 1 when warmed
+    std::unique_ptr<std::atomic<uint32_t>[]> warm_stamp_; ///< per (layer, expert): epoch_ + 1 when warmed
     std::atomic<int64_t> warm_hits_{0}, warm_count_{0};
     std::unordered_map<int64_t, size_t> stage_of_;
     uint64_t stage_blob_ = 0;
@@ -625,16 +719,20 @@ private:
     uint64_t complement_bytes_ = 0;
     std::vector<uint64_t> complement_offsets_;
     bool complement_pinned_ = false;
-    bool complement_partial_ = false;         ///< CS-T: only the first complement_pin_limit_ bytes are registered
+    bool complement_partial_ = false; ///< CS-T: only the first complement_pin_limit_ bytes are registered
     uint64_t complement_pin_limit_ = 0;
-    uint64_t complement_lock_off_ = 0;        ///< the working-set lock covers [lock_off, lock_off + locked)
+    uint64_t complement_lock_off_ = 0; ///< the working-set lock covers [lock_off, lock_off + locked)
     bool complement_ready_ = false;
-    uint64_t complement_locked_ = 0;          ///< bytes held in the working set (pin refused)
+    uint64_t complement_locked_ = 0; ///< bytes held in the working set (pin refused)
     int64_t complement_lent_slots_ = 0;
-    std::vector<const uint8_t*> override_;    ///< staged exchanges: an evicted expert read from its exchange buffer
-    struct Exchange { size_t in, out; int64_t q; uint64_t bytes; };
+    std::vector<const uint8_t*> override_; ///< staged exchanges: an evicted expert read from its exchange buffer
+    struct Exchange {
+        size_t in, out;
+        int64_t q;
+        uint64_t bytes;
+    };
     std::vector<Exchange> staged_;
-    uint8_t* xstage_ = nullptr;               ///< exchange buffers, `xstage_cap_ x xstage_blob_`
+    uint8_t* xstage_ = nullptr; ///< exchange buffers, `xstage_cap_ x xstage_blob_`
     bool xstage_pinned_ = false;
     int64_t xstage_cap_ = 0;
     uint64_t xstage_blob_ = 0;
@@ -678,13 +776,21 @@ public:
               uint64_t max_pinned_bytes = 0, const std::string& shared_arena_file = {});
     /// Plan v0.3 P6: a native pack without experts.bin takes its experts from the model's GGUF: `native` is the
     /// --native shard, and native_experts.txt names the other shards beside it (per layer, or per role in v4).
-    void set_gguf(const std::string& native) { gguf_ = native; }
+    void set_gguf(const std::string& native) {
+        gguf_ = native;
+    }
     void close();
 
-    bool mapped() const { return base_ != nullptr; }
-    int64_t blobs() const { return blobs_; }
+    bool mapped() const {
+        return base_ != nullptr;
+    }
+    int64_t blobs() const {
+        return blobs_;
+    }
     const uint8_t* blob(int64_t layer, int64_t expert) override;
-    int64_t reads() const { return reads_; }
+    int64_t reads() const {
+        return reads_;
+    }
     bool pinned(int64_t layer, int64_t expert) const override;
     const uint8_t* device_alias(int64_t layer, int64_t expert) const override;
     void prefetch(int64_t layer, int64_t expert) override;
@@ -692,22 +798,34 @@ public:
 
     /// What backing was obtained and why, for the startup print.  "The engine adapts to the machine it is on" is
     /// only true if the engine says what it got.
-    const std::string& note() const { return note_; }
+    const std::string& note() const {
+        return note_;
+    }
     /// #633: set by `open` when the RAM available is less than the arena needs (a recommendation; it still loads)
-    const std::string& ram_warning() const { return ram_warning_; }
-    double load_gib_per_second() const { return gib_per_s_; }
+    const std::string& ram_warning() const {
+        return ram_warning_;
+    }
+    double load_gib_per_second() const {
+        return gib_per_s_;
+    }
     // Loader fix: the load, split.  `load_seconds()` is the wall clock of the load loop; the other two are
     // sums over the reader threads (see LoadStats), so on their own they say how much of that wall was spent
     // waiting for the disk and how much in memcpy + FNV-1a.
-    double load_seconds() const { return load_seconds_; }
-    double load_read_seconds() const { return load_read_s_; }
-    double load_copy_seconds() const { return load_copy_s_; }
+    double load_seconds() const {
+        return load_seconds_;
+    }
+    double load_read_seconds() const {
+        return load_read_s_;
+    }
+    double load_copy_seconds() const {
+        return load_copy_s_;
+    }
 
 private:
-    void* arena_ = nullptr;          ///< the PinnedArena, owned
-    void* map_ = nullptr;            ///< GUILD_ARENA_MMAP: the arena file, mapped read-only (not the PinnedArena)
+    void* arena_ = nullptr; ///< the PinnedArena, owned
+    void* map_ = nullptr;   ///< GUILD_ARENA_MMAP: the arena file, mapped read-only (not the PinnedArena)
     uint64_t map_bytes_ = 0;
-    std::vector<const uint8_t*> dev_slice_;   ///< device alias of each registered slice (or of the whole range)
+    std::vector<const uint8_t*> dev_slice_; ///< device alias of each registered slice (or of the whole range)
     uint64_t slice_bytes_ = 0;
     const uint8_t* base_ = nullptr;
     int64_t blobs_ = 0;
@@ -732,4 +850,4 @@ bool check_experts_gguf(const std::string& native, const guild::kernels::cpu::Ex
 LoadStats load_experts_gguf(const std::string& native, uint8_t* dst, const guild::kernels::cpu::ExpertLayout& lay,
                             int threads, bool unbuffered = false);
 
-}  // namespace guild::core
+} // namespace guild::core

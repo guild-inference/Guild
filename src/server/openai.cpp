@@ -17,12 +17,8 @@ std::string OpenAiFormatter::generate_id(const std::string& prefix) {
     return id;
 }
 
-bool OpenAiParser::parse_chat_request(const std::string& body,
-                                      ChatCompletionRequest& req,
-                                      std::string& err_type,
-                                      std::string& err_param,
-                                      std::string& err_code,
-                                      std::string& err_msg) {
+bool OpenAiParser::parse_chat_request(const std::string& body, ChatCompletionRequest& req, std::string& err_type,
+                                      std::string& err_param, std::string& err_code, std::string& err_msg) {
     json::JsonValue val;
     std::string parse_err;
     if (!json::JsonValue::parse(body, val, parse_err)) {
@@ -42,9 +38,7 @@ bool OpenAiParser::parse_chat_request(const std::string& body,
     }
 
     static const std::vector<std::string> allowed_keys = {
-        "model", "messages", "temperature", "top_p", "max_tokens",
-        "max_completion_tokens", "stream", "stop", "seed"
-    };
+        "model", "messages", "temperature", "top_p", "max_tokens", "max_completion_tokens", "stream", "stop", "seed"};
 
     std::string unsupported_key;
     if (!val.check_unsupported_keys(allowed_keys, unsupported_key)) {
@@ -52,7 +46,8 @@ bool OpenAiParser::parse_chat_request(const std::string& body,
         err_param = unsupported_key;
         err_code = "unsupported_parameter";
         err_msg = "Unsupported parameter: '" + unsupported_key +
-                  "'. Supported parameters: model, messages, temperature, top_p, max_tokens, max_completion_tokens, stream, stop, seed.";
+                  "'. Supported parameters: model, messages, temperature, top_p, max_tokens, max_completion_tokens, "
+                  "stream, stop, seed.";
         return false;
     }
 
@@ -183,12 +178,8 @@ bool OpenAiParser::parse_chat_request(const std::string& body,
     return true;
 }
 
-bool OpenAiParser::parse_completion_request(const std::string& body,
-                                            CompletionRequest& req,
-                                            std::string& err_type,
-                                            std::string& err_param,
-                                            std::string& err_code,
-                                            std::string& err_msg) {
+bool OpenAiParser::parse_completion_request(const std::string& body, CompletionRequest& req, std::string& err_type,
+                                            std::string& err_param, std::string& err_code, std::string& err_msg) {
     json::JsonValue val;
     std::string parse_err;
     if (!json::JsonValue::parse(body, val, parse_err)) {
@@ -207,9 +198,8 @@ bool OpenAiParser::parse_completion_request(const std::string& body,
         return false;
     }
 
-    static const std::vector<std::string> allowed_keys = {
-        "model", "prompt", "temperature", "top_p", "max_tokens", "stream", "stop", "seed"
-    };
+    static const std::vector<std::string> allowed_keys = {"model",      "prompt", "temperature", "top_p",
+                                                          "max_tokens", "stream", "stop",        "seed"};
 
     std::string unsupported_key;
     if (!val.check_unsupported_keys(allowed_keys, unsupported_key)) {
@@ -279,9 +269,7 @@ bool OpenAiParser::parse_completion_request(const std::string& body,
     return true;
 }
 
-std::string OpenAiFormatter::format_error(const std::string& message,
-                                          const std::string& type,
-                                          const std::string& param,
+std::string OpenAiFormatter::format_error(const std::string& message, const std::string& type, const std::string& param,
                                           const std::string& code) {
     std::ostringstream ss;
     ss << "{\n"
@@ -299,13 +287,9 @@ std::string OpenAiFormatter::format_error(const std::string& message,
     return ss.str();
 }
 
-std::string OpenAiFormatter::format_chat_completion(const std::string& id,
-                                                    const std::string& model,
-                                                    int64_t created,
-                                                    const std::string& content,
-                                                    const std::string& finish_reason,
-                                                    int prompt_tokens,
-                                                    int completion_tokens) {
+std::string OpenAiFormatter::format_chat_completion(const std::string& id, const std::string& model, int64_t created,
+                                                    const std::string& content, const std::string& finish_reason,
+                                                    int prompt_tokens, int completion_tokens) {
     std::ostringstream ss;
     ss << "{\n"
        << "  \"id\": \"" << json::JsonValue::escape_string(id) << "\",\n"
@@ -331,17 +315,13 @@ std::string OpenAiFormatter::format_chat_completion(const std::string& id,
     return ss.str();
 }
 
-std::string OpenAiFormatter::format_chat_chunk(const std::string& id,
-                                               const std::string& model,
-                                               int64_t created,
-                                               const std::string& delta_role,
-                                               const std::string& delta_content,
+std::string OpenAiFormatter::format_chat_chunk(const std::string& id, const std::string& model, int64_t created,
+                                               const std::string& delta_role, const std::string& delta_content,
                                                const std::string& finish_reason) {
     std::ostringstream ss;
     ss << "{\"id\":\"" << json::JsonValue::escape_string(id)
-       << "\",\"object\":\"chat.completion.chunk\",\"created\":" << created
-       << ",\"model\":\"" << json::JsonValue::escape_string(model)
-       << "\",\"choices\":[{\"index\":0,\"delta\":{";
+       << "\",\"object\":\"chat.completion.chunk\",\"created\":" << created << ",\"model\":\""
+       << json::JsonValue::escape_string(model) << "\",\"choices\":[{\"index\":0,\"delta\":{";
 
     bool has_field = false;
     if (!delta_role.empty()) {
@@ -349,7 +329,8 @@ std::string OpenAiFormatter::format_chat_chunk(const std::string& id,
         has_field = true;
     }
     if (!delta_content.empty()) {
-        if (has_field) ss << ",";
+        if (has_field)
+            ss << ",";
         ss << "\"content\":\"" << json::JsonValue::escape_string(delta_content) << "\"";
     }
     ss << "},\"finish_reason\":";
@@ -362,13 +343,9 @@ std::string OpenAiFormatter::format_chat_chunk(const std::string& id,
     return ss.str();
 }
 
-std::string OpenAiFormatter::format_completion(const std::string& id,
-                                               const std::string& model,
-                                               int64_t created,
-                                               const std::string& text,
-                                               const std::string& finish_reason,
-                                               int prompt_tokens,
-                                               int completion_tokens) {
+std::string OpenAiFormatter::format_completion(const std::string& id, const std::string& model, int64_t created,
+                                               const std::string& text, const std::string& finish_reason,
+                                               int prompt_tokens, int completion_tokens) {
     std::ostringstream ss;
     ss << "{\n"
        << "  \"id\": \"" << json::JsonValue::escape_string(id) << "\",\n"
@@ -392,17 +369,13 @@ std::string OpenAiFormatter::format_completion(const std::string& id,
     return ss.str();
 }
 
-std::string OpenAiFormatter::format_completion_chunk(const std::string& id,
-                                                     const std::string& model,
-                                                     int64_t created,
-                                                     const std::string& text,
-                                                     const std::string& finish_reason) {
+std::string OpenAiFormatter::format_completion_chunk(const std::string& id, const std::string& model, int64_t created,
+                                                     const std::string& text, const std::string& finish_reason) {
     std::ostringstream ss;
     ss << "{\"id\":\"" << json::JsonValue::escape_string(id)
-       << "\",\"object\":\"text_completion\",\"created\":" << created
-       << ",\"model\":\"" << json::JsonValue::escape_string(model)
-       << "\",\"choices\":[{\"text\":\"" << json::JsonValue::escape_string(text)
-       << "\",\"index\":0,\"logprobs\":null,\"finish_reason\":";
+       << "\",\"object\":\"text_completion\",\"created\":" << created << ",\"model\":\""
+       << json::JsonValue::escape_string(model) << "\",\"choices\":[{\"text\":\""
+       << json::JsonValue::escape_string(text) << "\",\"index\":0,\"logprobs\":null,\"finish_reason\":";
     if (finish_reason.empty()) {
         ss << "null";
     } else {
@@ -418,7 +391,8 @@ std::string OpenAiFormatter::format_models(const std::vector<std::string>& model
        << "  \"object\": \"list\",\n"
        << "  \"data\": [\n";
     for (size_t i = 0; i < model_names.size(); ++i) {
-        if (i > 0) ss << ",\n";
+        if (i > 0)
+            ss << ",\n";
         ss << "    {\n"
            << "      \"id\": \"" << json::JsonValue::escape_string(model_names[i]) << "\",\n"
            << "      \"object\": \"model\",\n"

@@ -25,7 +25,7 @@ Controller::Controller(CostModel cost, double min_gain, double ema) : cost_(cost
 }
 
 double Controller::expected(const double* p, int k, bool same) {
-    double e = 1.0, run = 1.0;                                // the verify pass always commits one token
+    double e = 1.0, run = 1.0; // the verify pass always commits one token
     for (int i = 0; i < k; ++i) {
         run *= same ? p[0] : p[i];
         e += run;
@@ -39,13 +39,16 @@ Choice Controller::choose(int lookup_available, int lookup_match, bool mtp_ready
     const double baseline = best.tokens_per_ms;
     auto consider = [&](Source s, int k, double e) {
         const double rate = e / cost_.step_ms(k, s == Source::Mtp);
-        if (rate > best.tokens_per_ms) best = Choice{s, k, e, rate};
+        if (rate > best.tokens_per_ms)
+            best = Choice{s, k, e, rate};
     };
     const int lk = std::min(lookup_available, K_MAX);
     const double q = lookup_q_[bucket(lookup_match)];
-    for (int k = 1; k <= lk; ++k) consider(Source::Lookup, k, expected(&q, k, true));
+    for (int k = 1; k <= lk; ++k)
+        consider(Source::Lookup, k, expected(&q, k, true));
     if (mtp_ready)
-        for (int k = 1; k <= K_MAX; ++k) consider(Source::Mtp, k, expected(mtp_p_.data(), k, false));
+        for (int k = 1; k <= K_MAX; ++k)
+            consider(Source::Mtp, k, expected(mtp_p_.data(), k, false));
     if (best.source != Source::None && best.tokens_per_ms < baseline * (1.0 + min_gain_)) {
         Choice none;
         none.tokens_per_ms = baseline;
@@ -55,19 +58,23 @@ Choice Controller::choose(int lookup_available, int lookup_match, bool mtp_ready
 }
 
 void Controller::observe(const Choice& c, int accepted, int lookup_match) {
-    if (c.source == Source::None || c.k <= 0) return;
+    if (c.source == Source::None || c.k <= 0)
+        return;
     accepted = std::clamp(accepted, 0, c.k);
     // Positions 0..accepted-1 were accepted given their prefix; position `accepted` (if drafted) was rejected.
     const int seen = std::min(c.k, accepted + 1);
     for (int i = 0; i < seen; ++i) {
         const double hit = i < accepted ? 1.0 : 0.0;
-        if (c.source == Source::Mtp) mtp_p_[i] += ema_ * (hit - mtp_p_[i]);
-        else lookup_q_[bucket(lookup_match)] += ema_ * (hit - lookup_q_[bucket(lookup_match)]);
+        if (c.source == Source::Mtp)
+            mtp_p_[i] += ema_ * (hit - mtp_p_[i]);
+        else
+            lookup_q_[bucket(lookup_match)] += ema_ * (hit - lookup_q_[bucket(lookup_match)]);
     }
     // Everything drafted was accepted: the positions beyond the window were never tested, so without this they
     // keep their prior forever and the window can never grow. Pull them toward the deepest observed rate.
     if (c.source == Source::Mtp && accepted == c.k && c.k < K_MAX)
-        for (int i = c.k; i < K_MAX; ++i) mtp_p_[i] += ema_ * (mtp_p_[c.k - 1] - mtp_p_[i]);
+        for (int i = c.k; i < K_MAX; ++i)
+            mtp_p_[i] += ema_ * (mtp_p_[c.k - 1] - mtp_p_[i]);
 }
 
-}  // namespace guild::spec
+} // namespace guild::spec

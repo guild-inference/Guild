@@ -33,8 +33,7 @@ void ck(cudaError_t e, const char* w) {
     }
 }
 
-template <typename T>
-T* dalloc(size_t n) {
+template <typename T> T* dalloc(size_t n) {
     T* p = nullptr;
     ck(cudaMalloc(&p, n * sizeof(T) + 64), "malloc");
     ck(cudaMemset(p, 0, n * sizeof(T) + 64), "memset");
@@ -50,7 +49,7 @@ void fwht256_host_reference(float* x) {
             for (int j = 0; j < s; ++j) {
                 const float u = x[i + j];
                 const float v = x[i + j + s];
-                x[i + j]     = u + v;
+                x[i + j] = u + v;
                 x[i + j + s] = u - v;
             }
         }
@@ -125,7 +124,8 @@ int main() {
     double max_fwht_diff = 0.0;
     for (size_t i = 0; i < h_out.size(); ++i) {
         double diff = std::fabs(h_out[i] - h_ref[i]);
-        if (diff > max_fwht_diff) max_fwht_diff = diff;
+        if (diff > max_fwht_diff)
+            max_fwht_diff = diff;
     }
     if (max_fwht_diff > 1e-5) {
         std::fprintf(stderr, "FAIL: FWHT-256 GPU output differs from host reference (max diff = %e)\n", max_fwht_diff);
@@ -142,7 +142,8 @@ int main() {
     double max_inv_diff = 0.0;
     for (size_t i = 0; i < h_out.size(); ++i) {
         double diff = std::fabs(h_out[i] - h_in[i]);
-        if (diff > max_inv_diff) max_inv_diff = diff;
+        if (diff > max_inv_diff)
+            max_inv_diff = diff;
     }
     if (max_inv_diff > 1e-5) {
         std::fprintf(stderr, "FAIL: FWHT-256 self-inverse property failed (max diff = %e)\n", max_inv_diff);
@@ -169,7 +170,8 @@ int main() {
             dot_rot += (double) hq[i] * (double) hk[i];
         }
         double d = std::fabs(dot_raw - dot_rot);
-        if (d > max_dot_diff) max_dot_diff = d;
+        if (d > max_dot_diff)
+            max_dot_diff = d;
     }
     if (max_dot_diff > 1e-5) {
         std::fprintf(stderr, "FAIL: Rotated dot product differs from original (max diff = %e)\n", max_dot_diff);
@@ -185,13 +187,14 @@ int main() {
     k::QsaShapes s = k::qsa_real_shapes();
     s.page_size = 64;
     const int H = (int) s.n_head_kv; // 2
-    const int D = (int) s.head_dim;   // 256
-    const int P = (int) s.page_size;  // 64
+    const int D = (int) s.head_dim;  // 256
+    const int P = (int) s.page_size; // 64
     const int pages = 8;
     const int cells = pages * P;
 
     std::vector<int32_t> table(pages);
-    for (int i = 0; i < pages; ++i) table[i] = (i * 3 + 5) % pages; // permutation
+    for (int i = 0; i < pages; ++i)
+        table[i] = (i * 3 + 5) % pages; // permutation
     int32_t* d_table = dalloc<int32_t>(pages);
     ck(cudaMemcpy(d_table, table.data(), pages * sizeof(int32_t), cudaMemcpyHostToDevice), "memcpy table");
 
@@ -204,15 +207,18 @@ int main() {
 
     std::vector<std::vector<float>> host_k(cells), host_v(cells);
     std::vector<int> positions(cells);
-    for (int i = 0; i < cells; ++i) positions[i] = i;
+    for (int i = 0; i < cells; ++i)
+        positions[i] = i;
     std::shuffle(positions.begin(), positions.end(), rng);
 
     const int n_fill = cells - 25; // leave some cells empty
     for (int n = 0; n < n_fill; ++n) {
         const int pos = positions[n];
         std::vector<float> kv(H * D), vv(H * D);
-        for (auto& x : kv) x = nd(rng) * 2.0f;
-        for (auto& x : vv) x = nd(rng) * 2.0f;
+        for (auto& x : kv)
+            x = nd(rng) * 2.0f;
+        for (auto& x : vv)
+            x = nd(rng) * 2.0f;
 
         // Apply FWHT before append
         for (int h = 0; h < H; ++h) {
@@ -237,7 +243,7 @@ int main() {
     ck(cudaMemcpy(h_v_q4.data(), d_v_q4, pool_bytes, cudaMemcpyDeviceToHost), "memcpy d2h v_q4");
 
     long bad_blocks = 0;
-    const int blocks_per_head = D / k::QK4_0; // 8
+    const int blocks_per_head = D / k::QK4_0;                           // 8
     const int bytes_per_head = blocks_per_head * sizeof(k::block_q4_0); // 144
 
     for (int n = 0; n < n_fill; ++n) {
@@ -257,13 +263,14 @@ int main() {
                     if (std::memcmp(&host_blk, gpu_blk, sizeof(k::block_q4_0)) != 0) {
                         if (bad_blocks == 0) {
                             std::printf("MISMATCH at n=%d, pos=%d, is_v=%d, h=%d, b=%d\n", n, pos, is_v, h, b);
-                            std::printf("  host blk.d = 0x%04x (%f), gpu blk.d = 0x%04x (%f)\n",
-                                        host_blk.d, k::f32_from_f16(host_blk.d),
-                                        gpu_blk->d, k::f32_from_f16(gpu_blk->d));
+                            std::printf("  host blk.d = 0x%04x (%f), gpu blk.d = 0x%04x (%f)\n", host_blk.d,
+                                        k::f32_from_f16(host_blk.d), gpu_blk->d, k::f32_from_f16(gpu_blk->d));
                             std::printf("  host qs: ");
-                            for (int i = 0; i < 16; ++i) std::printf("%02x ", host_blk.qs[i]);
+                            for (int i = 0; i < 16; ++i)
+                                std::printf("%02x ", host_blk.qs[i]);
                             std::printf("\n  gpu  qs: ");
-                            for (int i = 0; i < 16; ++i) std::printf("%02x ", gpu_blk->qs[i]);
+                            for (int i = 0; i < 16; ++i)
+                                std::printf("%02x ", gpu_blk->qs[i]);
                             std::printf("\n");
                         }
                         ++bad_blocks;
@@ -302,8 +309,10 @@ int main() {
 
     std::vector<uint16_t> h_k_scratch((size_t) max_ids * H * D);
     std::vector<uint16_t> h_v_scratch((size_t) max_ids * H * D);
-    ck(cudaMemcpy(h_k_scratch.data(), d_k_scratch, h_k_scratch.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost), "memcpy d2h k_scratch");
-    ck(cudaMemcpy(h_v_scratch.data(), d_v_scratch, h_v_scratch.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost), "memcpy d2h v_scratch");
+    ck(cudaMemcpy(h_k_scratch.data(), d_k_scratch, h_k_scratch.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost),
+       "memcpy d2h k_scratch");
+    ck(cudaMemcpy(h_v_scratch.data(), d_v_scratch, h_v_scratch.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost),
+       "memcpy d2h v_scratch");
 
     double worst_quant_err = 0.0;
     for (int i = 0; i < max_ids; ++i) {
@@ -317,7 +326,8 @@ int main() {
                     float deq = k::f32_from_f16(gathered[d]);
                     float raw = orig[d];
                     double err = std::fabs(deq - raw);
-                    if (err > worst_quant_err) worst_quant_err = err;
+                    if (err > worst_quant_err)
+                        worst_quant_err = err;
                 }
             }
         }

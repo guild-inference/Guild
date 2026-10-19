@@ -16,7 +16,8 @@ public:
     ~ScopedCudaMoE();
     ScopedCudaMoE(const ScopedCudaMoE&) = delete;
     ScopedCudaMoE& operator=(const ScopedCudaMoE&) = delete;
+
 private:
     const guild_cuda_moe_ext_v1_t* previous_;
 };
-}
+} // namespace guild::kernels

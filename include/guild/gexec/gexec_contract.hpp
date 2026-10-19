@@ -80,18 +80,16 @@ struct GExecArtifactIdentity {
     std::string to_json() const;
     static bool from_json(const std::string& json_str, GExecArtifactIdentity& out, std::string& err);
 
-    static GExecInvalidationReason validate(
-        const GExecArtifactIdentity& cached,
-        const GExecArtifactIdentity& current,
-        std::string& reason_msg);
+    static GExecInvalidationReason validate(const GExecArtifactIdentity& cached, const GExecArtifactIdentity& current,
+                                            std::string& reason_msg);
 };
 
 // Family A: Offline Expert Weight Packing Contract & Prototype
 enum class ExpertPackLayoutKind : uint32_t {
-    PortableContiguous     = 0, // [gate(n_ff) | up(n_ff) | down(n_embd)] (GPACK canonical)
-    GateUpRowInterleaved   = 1, // [gate_row_0, up_row_0, ..., gate_row_{n_ff-1}, up_row_{n_ff-1} | down(n_embd)]
-    SimdTilePacked         = 2, // CPU SIMD-tiled block arrangement (GEXEC Phase 5)
-    GpuMmvqPacked          = 3, // GPU warp-tiled MMVQ arrangement (GEXEC Phase 5)
+    PortableContiguous = 0,   // [gate(n_ff) | up(n_ff) | down(n_embd)] (GPACK canonical)
+    GateUpRowInterleaved = 1, // [gate_row_0, up_row_0, ..., gate_row_{n_ff-1}, up_row_{n_ff-1} | down(n_embd)]
+    SimdTilePacked = 2,       // CPU SIMD-tiled block arrangement (GEXEC Phase 5)
+    GpuMmvqPacked = 3,        // GPU warp-tiled MMVQ arrangement (GEXEC Phase 5)
 };
 
 struct GExecExpertPackSpec {
@@ -103,27 +101,17 @@ struct GExecExpertPackSpec {
     uint64_t alignment = 64;
 };
 
-void pack_expert_gate_up_interleaved(
-    const uint8_t* src_blob,
-    uint8_t* dst_blob,
-    size_t n_ff,
-    size_t gate_row_bytes,
-    size_t up_row_bytes,
-    size_t down_bytes);
+void pack_expert_gate_up_interleaved(const uint8_t* src_blob, uint8_t* dst_blob, size_t n_ff, size_t gate_row_bytes,
+                                     size_t up_row_bytes, size_t down_bytes);
 
-void unpack_expert_gate_up_interleaved(
-    const uint8_t* packed_blob,
-    uint8_t* dst_blob,
-    size_t n_ff,
-    size_t gate_row_bytes,
-    size_t up_row_bytes,
-    size_t down_bytes);
+void unpack_expert_gate_up_interleaved(const uint8_t* packed_blob, uint8_t* dst_blob, size_t n_ff,
+                                       size_t gate_row_bytes, size_t up_row_bytes, size_t down_bytes);
 
 // Family B: Kernel Autotuning & Exact Implementation Locking
 enum class GExecWorkloadPhase : uint32_t {
     Prefill = 0,
-    Decode  = 1,
-    Verify  = 2,
+    Decode = 1,
+    Verify = 2,
 };
 
 struct GExecKernelTuneRecord {
@@ -147,12 +135,8 @@ struct GExecAutotuneTable {
     GExecArtifactIdentity identity;
     std::vector<GExecKernelTuneRecord> records;
 
-    const GExecKernelTuneRecord* find(
-        uint32_t op_kind,
-        const std::string& operation_name,
-        GExecWorkloadPhase phase,
-        int32_t quant_type,
-        int64_t m_tokens) const;
+    const GExecKernelTuneRecord* find(uint32_t op_kind, const std::string& operation_name, GExecWorkloadPhase phase,
+                                      int32_t quant_type, int64_t m_tokens) const;
 
     std::string to_json() const;
     static bool from_json(const std::string& json_str, GExecAutotuneTable& out, std::string& err);
@@ -257,51 +241,51 @@ struct GExecDiagnosticLog {
 inline constexpr uint16_t kGExecLittleEndianTag = 0x0102u;
 
 enum GExecHeaderFlags : uint32_t {
-    kGExecFlagNone                = 0u,
-    kGExecFlagPartialArtifact     = 1u << 0,
-    kGExecFlagHasEmbeddedExperts  = 1u << 1,
-    kGExecFlagFusedPipeline       = 1u << 2,
+    kGExecFlagNone = 0u,
+    kGExecFlagPartialArtifact = 1u << 0,
+    kGExecFlagHasEmbeddedExperts = 1u << 1,
+    kGExecFlagFusedPipeline = 1u << 2,
 };
 
 enum class GExecSectionKind : uint32_t {
-    Invalid               = 0,
-    IdentityAndManifest   = 1,
-    AutotuneTable         = 2,
-    HeterogeneousPlan     = 3,
-    WorkspaceRecipe       = 4,
+    Invalid = 0,
+    IdentityAndManifest = 1,
+    AutotuneTable = 2,
+    HeterogeneousPlan = 3,
+    WorkspaceRecipe = 4,
     CompilationProvenance = 5,
-    ExpertPackMeta        = 6,
-    PackedExpertsBlob     = 7,
-    DiagnosticLog         = 8,
+    ExpertPackMeta = 6,
+    PackedExpertsBlob = 7,
+    DiagnosticLog = 8,
 };
 
 const char* section_kind_to_string(GExecSectionKind kind) noexcept;
 
 enum GExecSectionFlags : uint32_t {
-    kGExecSectionFlagNone        = 0u,
-    kGExecSectionFlagRequired    = 1u << 0,
+    kGExecSectionFlagNone = 0u,
+    kGExecSectionFlagRequired = 1u << 0,
     kGExecSectionFlagPageAligned = 1u << 1,
 };
 
 #pragma pack(push, 1)
 struct GExecFileHeader {
-    uint32_t magic = kGExecMagic;                     // "GEXC" (0x43584547)
-    uint16_t format_version = kGExecVersionV1;        // 1
-    uint16_t endianness_tag = kGExecLittleEndianTag;  // 0x0102
-    uint32_t flags = 0;                               // GExecHeaderFlags bitmask
-    uint32_t section_count = 0;                       // Number of GExecSectionEntry records
-    uint64_t section_table_offset = 64;               // Byte offset of section directory (64)
-    uint64_t total_file_bytes = 0;                    // Exact total file size in bytes
-    uint8_t  header_and_table_sha256[32] = {};        // SHA-256 over header[0..32) + section table
+    uint32_t magic = kGExecMagic;                    // "GEXC" (0x43584547)
+    uint16_t format_version = kGExecVersionV1;       // 1
+    uint16_t endianness_tag = kGExecLittleEndianTag; // 0x0102
+    uint32_t flags = 0;                              // GExecHeaderFlags bitmask
+    uint32_t section_count = 0;                      // Number of GExecSectionEntry records
+    uint64_t section_table_offset = 64;              // Byte offset of section directory (64)
+    uint64_t total_file_bytes = 0;                   // Exact total file size in bytes
+    uint8_t header_and_table_sha256[32] = {};        // SHA-256 over header[0..32) + section table
 };
 
 struct GExecSectionEntry {
-    uint32_t kind = 0;                                // GExecSectionKind
-    uint32_t flags = 0;                               // GExecSectionFlags
-    uint64_t offset = 0;                              // Byte offset in .gexec container
-    uint64_t byte_size = 0;                           // Payload byte size
-    uint64_t alignment = 64;                          // Required byte alignment (power of 2)
-    uint8_t  sha256[32] = {};                         // Raw 32-byte SHA-256 of section payload
+    uint32_t kind = 0;       // GExecSectionKind
+    uint32_t flags = 0;      // GExecSectionFlags
+    uint64_t offset = 0;     // Byte offset in .gexec container
+    uint64_t byte_size = 0;  // Payload byte size
+    uint64_t alignment = 64; // Required byte alignment (power of 2)
+    uint8_t sha256[32] = {}; // Raw 32-byte SHA-256 of section payload
 };
 #pragma pack(pop)
 
@@ -321,14 +305,11 @@ public:
     // endianness, file size, section bounds/alignments, and header+table SHA-256.
     // If verify_all_sections is true, also verifies SHA-256 of every metadata section
     // (and PackedExpertsBlob if verify_expert_blob_digest is true).
-    bool open(const std::string& path,
-              std::string& err,
-              GExecInvalidationReason* out_reason = nullptr,
+    bool open(const std::string& path, std::string& err, GExecInvalidationReason* out_reason = nullptr,
               bool verify_expert_blob_digest = false);
 
     // Validates that this opened .gexec container matches the current runtime identity.
-    bool validate_against(const GExecArtifactIdentity& current_identity,
-                          std::string& reason_msg,
+    bool validate_against(const GExecArtifactIdentity& current_identity, std::string& reason_msg,
                           GExecInvalidationReason* out_reason = nullptr) const;
 
     // Verifies the cryptographic SHA-256 digest of a specific section (or all sections).
@@ -337,23 +318,47 @@ public:
 
     void close();
 
-    bool is_open() const noexcept { return mapped_base_ != nullptr; }
-    const std::string& path() const noexcept { return path_; }
-    const GExecFileHeader& header() const noexcept { return header_; }
-    const std::vector<GExecSectionEntry>& sections() const noexcept { return sections_; }
+    bool is_open() const noexcept {
+        return mapped_base_ != nullptr;
+    }
+    const std::string& path() const noexcept {
+        return path_;
+    }
+    const GExecFileHeader& header() const noexcept {
+        return header_;
+    }
+    const std::vector<GExecSectionEntry>& sections() const noexcept {
+        return sections_;
+    }
 
-    bool is_partial() const noexcept { return (header_.flags & kGExecFlagPartialArtifact) != 0; }
+    bool is_partial() const noexcept {
+        return (header_.flags & kGExecFlagPartialArtifact) != 0;
+    }
     bool has_section(GExecSectionKind kind) const noexcept;
     const GExecSectionEntry* find_section(GExecSectionKind kind) const noexcept;
     const uint8_t* section_data(GExecSectionKind kind, uint64_t* out_size = nullptr) const noexcept;
 
-    const GExecArtifactIdentity& identity() const noexcept { return identity_; }
-    const GExecAutotuneTable& autotune_table() const noexcept { return autotune_; }
-    const GExecHeterogeneousPlan& heterogeneous_plan() const noexcept { return hplan_; }
-    const GExecWorkspaceRecipe& workspace_recipe() const noexcept { return workspace_; }
-    const GExecCompilationProvenance& provenance() const noexcept { return provenance_; }
-    const GExecExpertPackMeta& expert_pack_meta() const noexcept { return pack_meta_; }
-    const GExecDiagnosticLog& diagnostic_log() const noexcept { return diag_log_; }
+    const GExecArtifactIdentity& identity() const noexcept {
+        return identity_;
+    }
+    const GExecAutotuneTable& autotune_table() const noexcept {
+        return autotune_;
+    }
+    const GExecHeterogeneousPlan& heterogeneous_plan() const noexcept {
+        return hplan_;
+    }
+    const GExecWorkspaceRecipe& workspace_recipe() const noexcept {
+        return workspace_;
+    }
+    const GExecCompilationProvenance& provenance() const noexcept {
+        return provenance_;
+    }
+    const GExecExpertPackMeta& expert_pack_meta() const noexcept {
+        return pack_meta_;
+    }
+    const GExecDiagnosticLog& diagnostic_log() const noexcept {
+        return diag_log_;
+    }
 
     const uint8_t* packed_experts_blob(uint64_t* out_bytes = nullptr) const noexcept;
 
@@ -381,8 +386,12 @@ class GExecBuilder {
 public:
     GExecBuilder() = default;
 
-    void set_flags(uint32_t flags) { flags_ = flags; }
-    uint32_t flags() const noexcept { return flags_; }
+    void set_flags(uint32_t flags) {
+        flags_ = flags;
+    }
+    uint32_t flags() const noexcept {
+        return flags_;
+    }
 
     void set_identity(const GExecArtifactIdentity& id);
     void set_autotune_table(const GExecAutotuneTable& table);

@@ -1,4 +1,5 @@
-// include/guild/abi/gkernel_package.hpp - Declarative .gkmetadata Specification, Ed25519 Security Policy & Package Manager
+// include/guild/abi/gkernel_package.hpp - Declarative .gkmetadata Specification, Ed25519 Security Policy & Package
+// Manager
 #pragma once
 
 #include "guild/abi/ed25519.hpp"
@@ -13,7 +14,7 @@
 #include <utility>
 #include <vector>
 
-namespace guild:: kernels {
+namespace guild::kernels {
 class KernelRegistry;
 }
 namespace guild::model {
@@ -87,13 +88,13 @@ struct ProvenanceMetadata {
 struct GKernelMetadata {
     uint32_t format_version = 1;
     std::string package_kind = "gkernel";
-    uint32_t module_abi = 0; // 1 opts a gkmodule into runtime operation registration
-    std::string package_id;               // e.g. "guild-kernels-cuda"
-    std::string scope;                    // "cpu-kernels", "cuda-kernels", "hip-kernels", "runner", "hybrid", "module"
-    std::string version;                  // Semantic version "MAJOR.MINOR.PATCH"
-    std::string publisher_id;             // e.g. "org.illatio.guild"
+    uint32_t module_abi = 0;  // 1 opts a gkmodule into runtime operation registration
+    std::string package_id;   // e.g. "guild-kernels-cuda"
+    std::string scope;        // "cpu-kernels", "cuda-kernels", "hip-kernels", "runner", "hybrid", "module"
+    std::string version;      // Semantic version "MAJOR.MINOR.PATCH"
+    std::string publisher_id; // e.g. "org.illatio.guild"
     std::string entrypoint_symbol = GUILD_PLUGIN_ENTRY_SYMBOL_V1;
-    std::string library_path;             // Optional primary shared library relative path in artifacts
+    std::string library_path; // Optional primary shared library relative path in artifacts
 
     // Kernel ABI compatibility range
     uint32_t abi_major = 1;
@@ -126,9 +127,7 @@ struct GKernelMetadata {
 
     /// Parse a declarative `.gkmetadata` JSON string without executing any external code.
     /// Rejects any manifest containing installation scripts, unknown keys, or unsafe paths.
-    static guild_status_t parse_json(const std::string& json_text,
-                                     GKernelMetadata& out_meta,
-                                     std::string& err);
+    static guild_status_t parse_json(const std::string& json_text, GKernelMetadata& out_meta, std::string& err);
 
     /// Serialize canonical unsigned payload JSON string (deterministic field order, excludes `signature`).
     std::string canonical_signing_payload() const;
@@ -140,9 +139,7 @@ struct GKernelMetadata {
     std::string signing_message() const;
 
     /// Sign this metadata in-place using an Ed25519 private 32-byte seed (64 hex chars).
-    bool sign_with_seed_hex(const std::string& key_id,
-                            const std::string& private_seed_hex,
-                            std::string& err);
+    bool sign_with_seed_hex(const std::string& key_id, const std::string& private_seed_hex, std::string& err);
 
     /// Serialize full `.gkmetadata` to pretty-printed JSON string.
     std::string to_json_string() const;
@@ -168,16 +165,19 @@ struct PackageSecurityPolicy {
     // Revoked "package_id@version" releases
     std::set<std::string> revoked_releases;
 
-    void trust_publisher_key(const std::string& publisher_id,
-                             const std::string& key_id,
+    void trust_publisher_key(const std::string& publisher_id, const std::string& key_id,
                              const std::string& public_key_hex = "") {
         trusted_publishers[publisher_id].insert(key_id);
         if (!public_key_hex.empty()) {
             trusted_public_keys[{publisher_id, key_id}] = public_key_hex;
         }
     }
-    void revoke_key(const std::string& key_id) { revoked_key_ids.insert(key_id); }
-    void revoke_publisher(const std::string& publisher_id) { revoked_publishers.insert(publisher_id); }
+    void revoke_key(const std::string& key_id) {
+        revoked_key_ids.insert(key_id);
+    }
+    void revoke_publisher(const std::string& publisher_id) {
+        revoked_publishers.insert(publisher_id);
+    }
     void revoke_release(const std::string& package_id, const std::string& version) {
         revoked_releases.insert(package_id + "@" + version);
     }
@@ -199,38 +199,29 @@ struct GexecKernelLock {
 
 /// Validate a parsed `.gkmetadata` against the security policy, host ABI, hardware capabilities,
 /// and (optionally) on-disk artifact SHA-256 digests under `package_dir`.
-guild_status_t validate_gkernel_package(const GKernelMetadata& meta,
-                                        const PackageSecurityPolicy& policy,
-                                        const guild_device_capabilities_v1_t& host_caps,
-                                        const std::string& package_dir,
+guild_status_t validate_gkernel_package(const GKernelMetadata& meta, const PackageSecurityPolicy& policy,
+                                        const guild_device_capabilities_v1_t& host_caps, const std::string& package_dir,
                                         std::string& err);
 
 /// Validate a set of packages and their dependency graph (detecting missing dependencies,
 /// untrusted dependencies, version mismatches, and dependency cycles).
 guild_status_t validate_package_dependency_graph(const std::vector<GKernelMetadata>& packages,
                                                  const PackageSecurityPolicy& policy,
-                                                 const guild_device_capabilities_v1_t& host_caps,
-                                                 std::string& err);
+                                                 const guild_device_capabilities_v1_t& host_caps, std::string& err);
 
 /// Verify that a candidate package & kernel descriptor match a frozen GEXEC lock.
-guild_status_t verify_gexec_kernel_lock(const GexecKernelLock& lock,
-                                        const GKernelMetadata& meta,
-                                        const guild_kernel_op_desc_v1_t& op_desc,
-                                        std::string& err);
+guild_status_t verify_gexec_kernel_lock(const GexecKernelLock& lock, const GKernelMetadata& meta,
+                                        const guild_kernel_op_desc_v1_t& op_desc, std::string& err);
 
 /// Create a deterministic single-file `.gkernel` archive bundle from a package directory containing `.gkmetadata`.
-guild_status_t create_gkernel_bundle(const std::string& source_dir,
-                                     const std::string& output_bundle_path,
+guild_status_t create_gkernel_bundle(const std::string& source_dir, const std::string& output_bundle_path,
                                      std::string& err);
 
 /// Hardened staging & extraction of a `.gkernel` directory or archive (`GKPK` or `.tar`) into `staging_dir`.
 /// Defends against path traversal, symlinks, duplicate entries, and zip/tar bombs before parsing `.gkmetadata`.
-guild_status_t stage_gkernel_source(const std::string& source_path,
-                                    const std::string& staging_dir,
-                                    GKernelMetadata& out_meta,
-                                    std::string& err,
-                                    uint64_t max_total_bytes = (256ull << 20),
-                                    size_t max_entries = 64);
+guild_status_t stage_gkernel_source(const std::string& source_path, const std::string& staging_dir,
+                                    GKernelMetadata& out_meta, std::string& err,
+                                    uint64_t max_total_bytes = (256ull << 20), size_t max_entries = 64);
 
 /// Deterministic fault-injection points for package installation, upgrade, rollback, and persistence testing.
 enum class PackageFaultPoint {
@@ -258,8 +249,7 @@ struct InstalledPackageRecord {
 /// Persistent local package manager & dynamic loader for `.gkernel` plugins.
 class GKernelPackageManager {
 public:
-    explicit GKernelPackageManager(std::string store_root_dir = "",
-                                   kernels::KernelRegistry* kernel_reg = nullptr,
+    explicit GKernelPackageManager(std::string store_root_dir = "", kernels::KernelRegistry* kernel_reg = nullptr,
                                    model::ModelRunnerRegistry* runner_reg = nullptr);
     ~GKernelPackageManager();
 
@@ -269,17 +259,21 @@ public:
     /// Initialize store directories, load persisted trust policy and package registry.
     bool init(std::string& err);
 
-    const std::string& store_root_dir() const { return root_dir_; }
-    PackageSecurityPolicy& security_policy() { return policy_; }
-    const PackageSecurityPolicy& security_policy() const { return policy_; }
+    const std::string& store_root_dir() const {
+        return root_dir_;
+    }
+    PackageSecurityPolicy& security_policy() {
+        return policy_;
+    }
+    const PackageSecurityPolicy& security_policy() const {
+        return policy_;
+    }
     bool save_security_policy(std::string& err) const;
 
     /// Install a `.gkernel` package from a directory or `.gkernel` archive file.
     /// Verifies metadata, Ed25519 signature, ABI/hardware compatibility, dependency graph, and artifact hashes
     /// before staging into the immutable package store and (if `enable_now` is true) dynamically loading it.
-    guild_status_t install_package(const std::string& source_path,
-                                   bool enable_now,
-                                   std::string& err);
+    guild_status_t install_package(const std::string& source_path, bool enable_now, std::string& err);
 
     /// Load and register an already-installed package into the active registries.
     guild_status_t load_installed_package(const std::string& package_id, std::string& err);

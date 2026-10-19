@@ -20,7 +20,11 @@
 
 namespace guild::core {
 
-enum class PageBacking { LargePages, NormalPages, PinnedByCuda };
+enum class PageBacking {
+    LargePages,
+    NormalPages,
+    PinnedByCuda
+};
 
 /// #243: GUILD_ARENA_PIN_GIB, the cap on the expert arena's CUDA registration in GiB.  -1 when unset (the engine
 /// decides, as in 0.1.30), 0 = no cap (the whole arena, or as many slices as the driver takes), N > 0 = at most N GiB,
@@ -31,8 +35,8 @@ struct PinnedArena {
     void* base = nullptr;
     uint64_t capacity = 0;
     PageBacking backing = PageBacking::NormalPages;
-    std::string note;              // why the backing is what it is, for the startup print
-    uint64_t locked_bytes = 0;     // resident via the working-set lock when CUDA could not pin it
+    std::string note;          // why the backing is what it is, for the startup print
+    uint64_t locked_bytes = 0; // resident via the working-set lock when CUDA could not pin it
     /// Plan v0.3 P5: when the whole arena cannot be registered, it is registered in `slice`-byte pieces from the
     /// start; this is the pinned prefix (a copy that stays inside one slice can then DMA straight from the arena).
     uint64_t registered_bytes = 0;
@@ -52,14 +56,18 @@ struct PinnedArena {
     PinnedArena(uint64_t bytes, const std::vector<uint64_t>& bounds, uint64_t max_pinned_bytes = 0,
                 const std::string& shared_file = {}, uint64_t shared_pack_hash = 0);
     std::vector<uint64_t> slice_starts;
-    void* mapping_base = nullptr;     ///< actual mapping start; differs from base when a shared-file header exists
-    uint64_t mapping_bytes = 0;       ///< bytes to release from mapping_base
+    void* mapping_base = nullptr; ///< actual mapping start; differs from base when a shared-file header exists
+    uint64_t mapping_bytes = 0;   ///< bytes to release from mapping_base
     ~PinnedArena();
     PinnedArena(const PinnedArena&) = delete;
     PinnedArena& operator=(const PinnedArena&) = delete;
 
-    bool valid() const { return base != nullptr; }
-    uint8_t* data() const { return (uint8_t*) base; }
+    bool valid() const {
+        return base != nullptr;
+    }
+    uint8_t* data() const {
+        return (uint8_t*) base;
+    }
 };
 
 struct LoadStats {
@@ -67,22 +75,25 @@ struct LoadStats {
     // Loader fix: the two halves of `seconds`, both SUMMED OVER THE READER THREADS rather than wall clock, so
     // either can exceed `seconds` when the threads overlap.  They exist to separate the read from the copy and
     // the hash: an 8 MiB chunk that reaches the disk as ~2048 4 KiB reads spends its time in the first one.
-    double read_seconds = 0.0;                  // inside the read call only: no seek, no copy, no hash
-    double copy_seconds = 0.0;                  // memcpy + FNV-1a
+    double read_seconds = 0.0; // inside the read call only: no seek, no copy, no hash
+    double copy_seconds = 0.0; // memcpy + FNV-1a
     // A short read is not a slow load, it is a WRONG one: the caller must refuse the pack rather than run
     // on an arena whose tail was never written.  `seconds` alone cannot say that (it is -1.0 on failure, but
     // the caller's own check is on the REQUESTED byte count, which a refused read does not change).
-    bool ok = true;                             // false: the load failed, see `error`
-    std::string error;                          // why it failed, for the caller's message
+    bool ok = true;    // false: the load failed, see `error`
+    std::string error; // why it failed, for the caller's message
     uint64_t bytes = 0;
     uint64_t layers = 0;
-    std::vector<uint64_t> layer_checksums;      // one FNV-1a per layer
-    double gib_per_second() const { return seconds > 0 ? (double) bytes / (1024.0 * 1024 * 1024) / seconds : 0.0; }
+    std::vector<uint64_t> layer_checksums; // one FNV-1a per layer
+    double gib_per_second() const {
+        return seconds > 0 ? (double) bytes / (1024.0 * 1024 * 1024) / seconds : 0.0;
+    }
     // Aggregate rate of the readers WHILE THEY WERE INSIDE THE READ CALL: `bytes` over the mean per-thread
     // read time.  `gib_per_second()` above divides the same bytes by the wall clock of the whole loop, which
     // also contains the copy and the hash, so the two differ by how much of the loop was not I/O.
     double read_gib_per_second(int threads) const {
-        if (read_seconds <= 0.0 || threads < 1) return 0.0;
+        if (read_seconds <= 0.0 || threads < 1)
+            return 0.0;
         return (double) bytes / (1024.0 * 1024 * 1024) / (read_seconds / (double) threads);
     }
 };
@@ -142,11 +153,13 @@ struct StreamStats {
     double seconds = 0.0;
     uint64_t bytes = 0;
     uint64_t chunk = 0;
-    double gib_per_second() const { return seconds > 0 ? (double) bytes / (1024.0 * 1024 * 1024) / seconds : 0.0; }
+    double gib_per_second() const {
+        return seconds > 0 ? (double) bytes / (1024.0 * 1024 * 1024) / seconds : 0.0;
+    }
 };
 
 // Copy `bytes` from pinned host memory at `src` to a device buffer of `chunk` bytes, in `chunk`-sized
 // transfers, `iters` times.  The destination is REUSED, so this measures the bus and not allocation.
 StreamStats stream_bandwidth(const uint8_t* src, uint64_t bytes, uint64_t chunk, int iters);
 
-}  // namespace guild::core
+} // namespace guild::core

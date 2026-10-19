@@ -41,11 +41,13 @@ int main(int argc, char** argv) {
     std::vector<uint16_t> got_bf16(elements);
     cudaMemcpy(got.data(), dfloat, elements * sizeof(float), cudaMemcpyDeviceToHost);
     cudaMemcpy(got_bf16.data(), dbf16, elements * sizeof(uint16_t), cudaMemcpyDeviceToHost);
-    cudaFree(dweight); cudaFree(dfloat); cudaFree(dbf16);
+    cudaFree(dweight);
+    cudaFree(dfloat);
+    cudaFree(dbf16);
     const auto* traits = ggml_get_type_traits(GGML_TYPE_Q5_1);
     for (int64_t r = 0; r < rows; ++r)
-        traits->to_float(source + (size_t) r * (size_t) (cols / 32) * 24,
-                         ref.data() + (size_t) r * (size_t) cols, cols);
+        traits->to_float(source + (size_t) r * (size_t) (cols / 32) * 24, ref.data() + (size_t) r * (size_t) cols,
+                         cols);
     double max_abs = 0;
     size_t bf16_bad = 0;
     for (size_t i = 0; i < elements; ++i) {
@@ -53,10 +55,11 @@ int main(int argc, char** argv) {
         uint32_t bits;
         std::memcpy(&bits, &ref[i], sizeof(bits));
         const uint16_t expected = (uint16_t) ((bits + 0x7fffu + ((bits >> 16) & 1u)) >> 16);
-        if (got_bf16[i] != expected) ++bf16_bad;
+        if (got_bf16[i] != expected)
+            ++bf16_bad;
     }
     const bool ok = max_abs <= 1e-6 && bf16_bad == 0;
-    std::printf("Q5_1 projection: %zu elements, max_abs %.3e, bf16 differences %zu %s\n",
-                elements, max_abs, bf16_bad, ok ? "PASS" : "FAIL");
+    std::printf("Q5_1 projection: %zu elements, max_abs %.3e, bf16 differences %zu %s\n", elements, max_abs, bf16_bad,
+                ok ? "PASS" : "FAIL");
     return ok ? 0 : 1;
 }

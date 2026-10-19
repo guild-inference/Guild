@@ -22,11 +22,11 @@ struct DeviceInfo {
     int ordinal = -1;
     std::string name;
     int cc_major = 0, cc_minor = 0;
-    uint64_t total_bytes = 0;      // as reported by cudaMemGetInfo at query time
+    uint64_t total_bytes = 0; // as reported by cudaMemGetInfo at query time
     uint64_t free_bytes = 0;
     int driver_version = 0, runtime_version = 0;
     int multi_processor_count = 0;
-    std::string arch;              // HIP: gcnArchName without its feature suffix ("gfx1201"); empty on CUDA
+    std::string arch; // HIP: gcnArchName without its feature suffix ("gfx1201"); empty on CUDA
 };
 
 // HIP builds: whether GPU `ordinal` can run this binary - its architecture must be one the binary was COMPILED
@@ -59,8 +59,11 @@ std::string device_code_error();
 
 class CudaError : public std::runtime_error {
 public:
-    CudaError(const std::string& what, int code) : std::runtime_error(what), code_(code) {}
-    int code() const { return code_; }
+    CudaError(const std::string& what, int code) : std::runtime_error(what), code_(code) {
+    }
+    int code() const {
+        return code_;
+    }
 
 private:
     int code_;
@@ -79,11 +82,21 @@ public:
     // `align` must be a power of two; 256 keeps every sub-allocation at a sector boundary.
     void* alloc(uint64_t bytes, uint64_t align = 256);
 
-    uint64_t capacity() const { return capacity_; }
-    uint64_t used() const { return used_; }
-    uint64_t peak() const { return used_; }        // no frees, so used IS the peak
-    int ordinal() const { return ordinal_; }
-    void* base() const { return base_; }
+    uint64_t capacity() const {
+        return capacity_;
+    }
+    uint64_t used() const {
+        return used_;
+    }
+    uint64_t peak() const {
+        return used_;
+    } // no frees, so used IS the peak
+    int ordinal() const {
+        return ordinal_;
+    }
+    void* base() const {
+        return base_;
+    }
 
 private:
     void* base_ = nullptr;
@@ -92,4 +105,4 @@ private:
     bool poison_ = false;
 };
 
-}  // namespace guild::core
+} // namespace guild::core

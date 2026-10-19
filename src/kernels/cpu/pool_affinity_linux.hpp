@@ -16,9 +16,12 @@ namespace guild::kernels::cpu::detail {
 class LinuxCpuSet {
 public:
     explicit LinuxCpuSet(int cpus) : bytes(CPU_ALLOC_SIZE(cpus)), set(CPU_ALLOC(cpus)) {
-        if (set) CPU_ZERO_S(bytes, set);
+        if (set)
+            CPU_ZERO_S(bytes, set);
     }
-    ~LinuxCpuSet() { CPU_FREE(set); }
+    ~LinuxCpuSet() {
+        CPU_FREE(set);
+    }
     LinuxCpuSet(const LinuxCpuSet&) = delete;
     LinuxCpuSet& operator=(const LinuxCpuSet&) = delete;
 
@@ -31,7 +34,8 @@ public:
 inline int get_thread_affinity(std::vector<unsigned long>& mask, std::vector<int>* cpus = nullptr) {
     for (int count = CPU_SETSIZE;;) {
         LinuxCpuSet current(count);
-        if (!current.set) return ENOMEM;
+        if (!current.set)
+            return ENOMEM;
         const int error = pthread_getaffinity_np(pthread_self(), current.bytes, current.set);
         if (error == 0) {
             mask.resize(current.bytes / sizeof(unsigned long));
@@ -39,31 +43,37 @@ inline int get_thread_affinity(std::vector<unsigned long>& mask, std::vector<int
             if (cpus) {
                 cpus->clear();
                 for (int cpu = 0; cpu < count; ++cpu)
-                    if (CPU_ISSET_S(cpu, current.bytes, current.set)) cpus->push_back(cpu);
+                    if (CPU_ISSET_S(cpu, current.bytes, current.set))
+                        cpus->push_back(cpu);
             }
             return 0;
         }
-        if (error != EINVAL || count > INT_MAX / 2) return error;
+        if (error != EINVAL || count > INT_MAX / 2)
+            return error;
         count *= 2;
     }
 }
 
 inline int set_thread_affinity(const std::vector<unsigned long>& mask) {
     constexpr size_t word_bits = sizeof(unsigned long) * CHAR_BIT;
-    if (mask.empty() || mask.size() > INT_MAX / word_bits) return EINVAL;
+    if (mask.empty() || mask.size() > INT_MAX / word_bits)
+        return EINVAL;
     LinuxCpuSet target(static_cast<int>(mask.size() * word_bits));
-    if (!target.set) return ENOMEM;
+    if (!target.set)
+        return ENOMEM;
     std::memcpy(target.set, mask.data(), target.bytes);
     return pthread_setaffinity_np(pthread_self(), target.bytes, target.set);
 }
 
 inline int pin_thread_to_cpu(int core) {
-    if (core < 0 || core == INT_MAX) return EINVAL;
+    if (core < 0 || core == INT_MAX)
+        return EINVAL;
     LinuxCpuSet target(core < CPU_SETSIZE ? CPU_SETSIZE : core + 1);
-    if (!target.set) return ENOMEM;
+    if (!target.set)
+        return ENOMEM;
     CPU_SET_S(core, target.bytes, target.set);
     return pthread_setaffinity_np(pthread_self(), target.bytes, target.set);
 }
 
-}  // namespace guild::kernels::cpu::detail
+} // namespace guild::kernels::cpu::detail
 #endif

@@ -1,8 +1,9 @@
 // include/guild/ngram/ple_reader.hpp - plan v0.3 P2: the n-gram table read straight from the SSD.
 //
-// The table is 320,001,536 rows of 90 bytes (IQ4_NL, 26.8 GiB) or 160 (FP8 E4M3, 51.2 GB) and is never held in RAM: every row comes from an
-// unbuffered 4 KiB read (platform::DirectFile). A token needs 16 rows on 16 different pages, and all 16 depend
-// on the token itself, so the only time to hide them is the embedding plus layer 0. Hence the split API:
+// The table is 320,001,536 rows of 90 bytes (IQ4_NL, 26.8 GiB) or 160 (FP8 E4M3, 51.2 GB) and is never held in RAM:
+// every row comes from an unbuffered 4 KiB read (platform::DirectFile). A token needs 16 rows on 16 different pages,
+// and all 16 depend on the token itself, so the only time to hide them is the embedding plus layer 0. Hence the split
+// API:
 //
 //     Ticket t = reader.issue(rows, n, out_raw);    // as soon as the token id is known
 //     ...                                           // embedding, layer 0
@@ -24,7 +25,7 @@
 
 namespace guild::ngram {
 
-inline constexpr uint32_t ROW_BYTES = 90;          ///< an IQ4_NL row; `open` takes the table's own size
+inline constexpr uint32_t ROW_BYTES = 90; ///< an IQ4_NL row; `open` takes the table's own size
 inline constexpr uint32_t PAGE = 4096;
 
 struct ReaderStats {
@@ -97,4 +98,4 @@ private:
     Impl* impl_ = nullptr;
 };
 
-}  // namespace guild::ngram
+} // namespace guild::ngram

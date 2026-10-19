@@ -23,21 +23,25 @@ namespace guild::spec {
 inline constexpr int K_MAX = 8;
 
 struct CostModel {
-    double dense_ms = 11.0;                                  // one-token dense pass (plan P3 target)
-    std::array<double, K_MAX + 1> dense_ratio{1.0, 1.05, 1.3, 1.45, 1.85, 2.2, 2.6, 3.0, 3.3};   // by n = k+1 (index n-1)
-    double cpu_all_miss_ms = 15.8;                           // 480 experts on the CPU
-    double hit_rate = 0.55;                                  // share of distinct experts served from VRAM
-    std::array<double, K_MAX + 1> distinct_ratio{1.0, 1.70, 2.31, 2.88, 3.40, 3.89, 4.35, 4.80, 5.2};  // U(n)/U(1)
-    double extra_use_cost = 0.25;                            // each extra token on an expert, fraction of a read
+    double dense_ms = 11.0; // one-token dense pass (plan P3 target)
+    std::array<double, K_MAX + 1> dense_ratio{1.0, 1.05, 1.3, 1.45, 1.85, 2.2, 2.6, 3.0, 3.3}; // by n = k+1 (index n-1)
+    double cpu_all_miss_ms = 15.8;                                                             // 480 experts on the CPU
+    double hit_rate = 0.55; // share of distinct experts served from VRAM
+    std::array<double, K_MAX + 1> distinct_ratio{1.0, 1.70, 2.31, 2.88, 3.40, 3.89, 4.35, 4.80, 5.2}; // U(n)/U(1)
+    double extra_use_cost = 0.25; // each extra token on an expert, fraction of a read
     double sync_ms = 2.4;
-    double mtp_draft_ms = 1.2;                               // per MTP draft token
+    double mtp_draft_ms = 1.2; // per MTP draft token
     double lookup_draft_ms = 0.01;
 
     /// Step time for verifying n = k + 1 tokens, plus drafting k tokens with the given source.
     double step_ms(int k, bool mtp) const;
 };
 
-enum class Source { None, Lookup, Mtp };
+enum class Source {
+    None,
+    Lookup,
+    Mtp
+};
 
 struct Choice {
     Source source = Source::None;
@@ -56,12 +60,20 @@ public:
     /// After verification: `accepted` of the `k` drafted tokens matched (a prefix).
     void observe(const Choice& c, int accepted, int lookup_match);
 
-    double mtp_accept(int position) const { return mtp_p_[position]; }     // position 0 = first draft token
-    double lookup_accept(int match) const { return lookup_q_[bucket(match)]; }
-    const CostModel& cost() const { return cost_; }
+    double mtp_accept(int position) const {
+        return mtp_p_[position];
+    } // position 0 = first draft token
+    double lookup_accept(int match) const {
+        return lookup_q_[bucket(match)];
+    }
+    const CostModel& cost() const {
+        return cost_;
+    }
 
 private:
-    static int bucket(int match) { return match >= 16 ? 3 : match >= 8 ? 2 : match >= 5 ? 1 : 0; }
+    static int bucket(int match) {
+        return match >= 16 ? 3 : match >= 8 ? 2 : match >= 5 ? 1 : 0;
+    }
     static double expected(const double* p, int k, bool conditional_same);
 
     CostModel cost_;
@@ -70,4 +82,4 @@ private:
     std::array<double, 4> lookup_q_{};
 };
 
-}  // namespace guild::spec
+} // namespace guild::spec

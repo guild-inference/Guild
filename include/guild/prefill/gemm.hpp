@@ -42,9 +42,15 @@ public:
     /// Caller-owned buffers only: the scratch and workspace moved (the prompt path laid its buffers out again).
     void rebind(uint16_t* scratch, int64_t scratch_elems, void* workspace, size_t ws_bytes);
 
-    uint16_t* scratch() const { return scratch_; }
-    int64_t scratch_elems() const { return scratch_elems_; }
-    void* stream() const { return stream_; }
+    uint16_t* scratch() const {
+        return scratch_;
+    }
+    int64_t scratch_elems() const {
+        return scratch_elems_;
+    }
+    void* stream() const {
+        return stream_;
+    }
 
 private:
     void* handle_ = nullptr;
@@ -61,6 +67,4 @@ private:
     int64_t tc_x_elems_ = 0;
 };
 
-
-
-}  // namespace guild::prefill
+} // namespace guild::prefill

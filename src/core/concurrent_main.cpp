@@ -47,7 +47,7 @@ struct Run {
     double gpu_experts = 0; // experts streamed and computed by the GPU
 };
 
-}  // namespace
+} // namespace
 
 int main(int argc, char** argv) {
     std::string path;
@@ -60,34 +60,53 @@ int main(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         auto val = [&]() -> const char* {
-            if (i + 1 >= argc) { std::fprintf(stderr, "%s needs a value\n", a.c_str()); std::exit(2); }
+            if (i + 1 >= argc) {
+                std::fprintf(stderr, "%s needs a value\n", a.c_str());
+                std::exit(2);
+            }
             return argv[++i];
         };
-        if (a == "--file") path = val();
-        else if (a == "--experts") experts = std::atoi(val());
-        else if (a == "--cpu-threads") cpu_threads = std::atoi(val());
-        else if (a == "--gpu-roles") gpu_roles = std::atoi(val());
+        if (a == "--file")
+            path = val();
+        else if (a == "--experts")
+            experts = std::atoi(val());
+        else if (a == "--cpu-threads")
+            cpu_threads = std::atoi(val());
+        else if (a == "--gpu-roles")
+            gpu_roles = std::atoi(val());
         else {
             std::fprintf(stderr, "usage: guild-concurrent --file experts.bin [--experts N] "
                                  "[--cpu-threads N] [--gpu-roles N]\n");
             return 2;
         }
     }
-    if (path.empty()) { std::fprintf(stderr, "--file is required\n"); return 2; }
+    if (path.empty()) {
+        std::fprintf(stderr, "--file is required\n");
+        return 2;
+    }
 
     const long long n_in = 2560, n_out = 640;
     const uint64_t role_codes = (uint64_t) n_out * n_in / 4;
-    const uint64_t plane_bytes = role_codes;      // the CPU loop reads the same planes
+    const uint64_t plane_bytes = role_codes; // the CPU loop reads the same planes
 
     guild::core::PinnedArena arena((uint64_t) experts * role_codes);
-    if (!arena.valid()) { std::fprintf(stderr, "arena allocation failed\n"); return 1; }
+    if (!arena.valid()) {
+        std::fprintf(stderr, "arena allocation failed\n");
+        return 1;
+    }
     {
         std::ifstream f(path, std::ios::binary);
-        if (!f) { std::fprintf(stderr, "cannot open %s\n", path.c_str()); return 1; }
+        if (!f) {
+            std::fprintf(stderr, "cannot open %s\n", path.c_str());
+            return 1;
+        }
         for (int i = 0; i < experts; ++i) {
             f.seekg((std::streamoff) i * 1382400);
             f.read((char*) arena.data() + (uint64_t) i * role_codes, (std::streamsize) role_codes);
-            if ((uint64_t) f.gcount() != role_codes) { std::fprintf(stderr, "short read\n"); return 1; }
+            if ((uint64_t) f.gcount() != role_codes) {
+                std::fprintf(stderr, "short read\n");
+                return 1;
+            }
         }
     }
     std::printf("arena %.2f GiB pinned; %d CPU threads; %d GPU roles\n",
@@ -115,7 +134,8 @@ int main(int argc, char** argv) {
         const uint8_t* p = arena.data();
         while (!stop.load(std::memory_order_relaxed)) {
             // touch one byte per 64 - a stride that defeats prefetch into a pure streaming read
-            for (uint64_t i = 0; i < plane_bytes * (uint64_t) experts; i += 64) acc += p[i];
+            for (uint64_t i = 0; i < plane_bytes * (uint64_t) experts; i += 64)
+                acc += p[i];
             n += plane_bytes * (uint64_t) experts;
         }
         bytes.fetch_add(n);
@@ -125,25 +145,27 @@ int main(int argc, char** argv) {
     // The GPU loop: stream each role plane on the copy stream while computing on the compute stream.
     auto gpu_work = [&](int roles) {
         cudaEvent_t ev[2];
-        for (int b = 0; b < 2; ++b) check(cudaEventCreateWithFlags(&ev[b], cudaEventDisableTiming), "event");
-        uint8_t* buf[2] = {d_codes, d_codes};      // one buffer is enough: the timing is what is measured
+        for (int b = 0; b < 2; ++b)
+            check(cudaEventCreateWithFlags(&ev[b], cudaEventDisableTiming), "event");
+        uint8_t* buf[2] = {d_codes, d_codes}; // one buffer is enough: the timing is what is measured
         check(cudaMemcpyAsync(buf[0], arena.data(), role_codes, cudaMemcpyHostToDevice, s_copy), "prologue");
         check(cudaEventRecord(ev[0], s_copy), "prologue event");
         for (int i = 0; i < roles; ++i) {
             const int cur = i & 1, nxt = (i + 1) & 1;
             if (i + 1 < roles) {
-                check(cudaMemcpyAsync(buf[nxt], arena.data() + (uint64_t) ((i + 1) % experts) * role_codes,
-                                      role_codes, cudaMemcpyHostToDevice, s_copy),
+                check(cudaMemcpyAsync(buf[nxt], arena.data() + (uint64_t) ((i + 1) % experts) * role_codes, role_codes,
+                                      cudaMemcpyHostToDevice, s_copy),
                       "copy");
                 check(cudaEventRecord(ev[nxt], s_copy), "event");
             }
             check(cudaStreamWaitEvent(s_comp, ev[cur], 0), "wait");
             guild::kernels::s_gemv_split_async(d_x, buf[cur], d_scales, nullptr, d_y, n_in, n_out, form, 32,
-                                                (void*) s_comp);
+                                               (void*) s_comp);
         }
         check(cudaStreamSynchronize(s_comp), "sync comp");
         check(cudaStreamSynchronize(s_copy), "sync copy");
-        for (int b = 0; b < 2; ++b) cudaEventDestroy(ev[b]);
+        for (int b = 0; b < 2; ++b)
+            cudaEventDestroy(ev[b]);
     };
 
     auto run = [&](bool do_cpu, bool do_gpu, const char* name) {
@@ -152,7 +174,9 @@ int main(int argc, char** argv) {
         std::vector<std::thread> cpu;
         check(cudaStreamSynchronize(0), "pre");
         const auto t0 = std::chrono::steady_clock::now();
-        if (do_cpu) for (int t = 0; t < cpu_threads; ++t) cpu.emplace_back(cpu_work, std::ref(stop), std::ref(bytes));
+        if (do_cpu)
+            for (int t = 0; t < cpu_threads; ++t)
+                cpu.emplace_back(cpu_work, std::ref(stop), std::ref(bytes));
         if (do_gpu) {
             gpu_work(gpu_roles);
         } else {
@@ -162,7 +186,8 @@ int main(int argc, char** argv) {
         }
         const auto t1 = std::chrono::steady_clock::now();
         stop = true;
-        for (auto& t : cpu) t.join();
+        for (auto& t : cpu)
+            t.join();
         Run r;
         r.seconds = std::chrono::duration<double>(t1 - t0).count();
         r.cpu_gb = (double) bytes.load() / 1e9 / r.seconds;

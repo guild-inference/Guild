@@ -24,7 +24,8 @@ std::string get_env_var(const char* name) {
 
 std::string ModelStore::default_data_dir() {
     std::string custom = get_env_var("GUILD_DATA_DIR");
-    if (!custom.empty()) return custom;
+    if (!custom.empty())
+        return custom;
 
     std::string xdg = get_env_var("XDG_DATA_HOME");
     if (!xdg.empty()) {
@@ -40,13 +41,19 @@ std::string ModelStore::default_data_dir() {
 }
 
 bool ModelStore::is_safe_name(const std::string& name) {
-    if (name.empty()) return false;
-    if (name == "." || name == "..") return false;
-    if (name.find('/') != std::string::npos || name.find('\\') != std::string::npos) return false;
-    if (name.find("..") != std::string::npos) return false;
+    if (name.empty())
+        return false;
+    if (name == "." || name == "..")
+        return false;
+    if (name.find('/') != std::string::npos || name.find('\\') != std::string::npos)
+        return false;
+    if (name.find("..") != std::string::npos)
+        return false;
     for (char c : name) {
-        if (static_cast<unsigned char>(c) < 32) return false;
-        if (c == '*' || c == '?' || c == '<' || c == '>' || c == '|' || c == '\"') return false;
+        if (static_cast<unsigned char>(c) < 32)
+            return false;
+        if (c == '*' || c == '?' || c == '<' || c == '>' || c == '|' || c == '\"')
+            return false;
     }
     return true;
 }
@@ -91,13 +98,15 @@ bool ModelStore::init() {
 void ModelStore::load_blob_index() const {
     blob_index_.clear();
     std::ifstream f(index_path());
-    if (!f.is_open()) return;
+    if (!f.is_open())
+        return;
 
     std::stringstream buffer;
     buffer << f.rdbuf();
     std::string err;
     auto val = JsonValue::parse(buffer.str(), err);
-    if (!val.has_value() || !val->is_object()) return;
+    if (!val.has_value() || !val->is_object())
+        return;
 
     const auto& root = *val;
     if (root.contains("blobs") && root["blobs"].is_object()) {
@@ -135,7 +144,8 @@ void ModelStore::save_blob_index() const {
 std::vector<ModelManifest> ModelStore::list_manifests() const {
     std::vector<ModelManifest> manifests;
     std::error_code ec;
-    if (!fs::exists(manifests_dir(), ec)) return manifests;
+    if (!fs::exists(manifests_dir(), ec))
+        return manifests;
 
     for (const auto& entry : fs::directory_iterator(manifests_dir(), ec)) {
         if (entry.is_regular_file() && entry.path().extension() == ".json") {
@@ -162,7 +172,8 @@ std::optional<ModelManifest> ModelStore::get_manifest(const std::string& name_or
                 std::stringstream buffer;
                 buffer << file.rdbuf();
                 auto m = ModelManifest::from_json(buffer.str());
-                if (m.has_value()) return m;
+                if (m.has_value())
+                    return m;
             }
         }
     }
@@ -182,12 +193,14 @@ bool ModelStore::has_manifest(const std::string& name_or_alias) const {
 }
 
 bool ModelStore::save_manifest(const ModelManifest& manifest) {
-    if (!is_safe_name(manifest.name)) return false;
+    if (!is_safe_name(manifest.name))
+        return false;
     init();
 
     fs::path p = fs::path(manifests_dir()) / (manifest.name + ".json");
     std::ofstream file(p);
-    if (!file.is_open()) return false;
+    if (!file.is_open())
+        return false;
 
     file << manifest.to_json() << "\n";
     return true;
@@ -195,7 +208,8 @@ bool ModelStore::save_manifest(const ModelManifest& manifest) {
 
 bool ModelStore::remove_model(const std::string& name_or_alias) {
     auto m_opt = get_manifest(name_or_alias);
-    if (!m_opt.has_value()) return false;
+    if (!m_opt.has_value())
+        return false;
 
     const auto& m = *m_opt;
     init();
@@ -221,13 +235,15 @@ bool ModelStore::remove_model(const std::string& name_or_alias) {
 }
 
 std::string ModelStore::get_blob_path(const std::string& blob_id) const {
-    if (!is_safe_name(blob_id)) return "";
+    if (!is_safe_name(blob_id))
+        return "";
     return (fs::path(blobs_dir()) / blob_id).string();
 }
 
 bool ModelStore::has_blob(const std::string& blob_id) const {
     std::string path = get_blob_path(blob_id);
-    if (path.empty()) return false;
+    if (path.empty())
+        return false;
     return fs::exists(path);
 }
 
@@ -251,7 +267,8 @@ bool ModelStore::register_blob(const std::string& blob_id, uint64_t size_bytes, 
 bool ModelStore::unregister_blob(const std::string& blob_id) {
     load_blob_index();
     auto it = blob_index_.find(blob_id);
-    if (it == blob_index_.end()) return false;
+    if (it == blob_index_.end())
+        return false;
 
     it->second.ref_count--;
     if (it->second.ref_count <= 0) {
@@ -271,10 +288,8 @@ bool ModelStore::unregister_blob(const std::string& blob_id) {
     return true;
 }
 
-bool ModelStore::import_model_directory(const ModelManifest& base_manifest,
-                                        const std::string& source_dir,
-                                        bool use_symlinks,
-                                        std::string& err_msg) {
+bool ModelStore::import_model_directory(const ModelManifest& base_manifest, const std::string& source_dir,
+                                        bool use_symlinks, std::string& err_msg) {
     if (!is_safe_name(base_manifest.name)) {
         err_msg = "Invalid or unsafe model name: " + base_manifest.name;
         return false;
@@ -369,17 +384,15 @@ bool ModelStore::verify_model(const ModelManifest& manifest, bool verify_hashes,
         }
 
         if (f.size_bytes > 0 && actual_size != f.size_bytes) {
-            err_msg = "File size mismatch for " + f.name + ": expected " +
-                      std::to_string(f.size_bytes) + " bytes, got " +
-                      std::to_string(actual_size) + " bytes";
+            err_msg = "File size mismatch for " + f.name + ": expected " + std::to_string(f.size_bytes) +
+                      " bytes, got " + std::to_string(actual_size) + " bytes";
             return false;
         }
 
         if (verify_hashes && !f.sha256.empty()) {
             std::string actual_hash = Sha256::hash_file(f.local_path);
             if (actual_hash != f.sha256) {
-                err_msg = "SHA-256 hash mismatch for " + f.name + ": expected " +
-                          f.sha256 + ", got " + actual_hash;
+                err_msg = "SHA-256 hash mismatch for " + f.name + ": expected " + f.sha256 + ", got " + actual_hash;
                 return false;
             }
         }

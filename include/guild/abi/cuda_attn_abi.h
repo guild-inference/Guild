@@ -365,13 +365,17 @@ typedef struct guild_cuda_attn_ext_v1_s {
     uint32_t tag;
     uint32_t version;
     uint32_t reserved;
-    guild_status_t (*configure)(const guild_exec_context_v1_t*, const guild_cuda_attn_config_v1_t*, guild_error_info_t*);
+    guild_status_t (*configure)(const guild_exec_context_v1_t*, const guild_cuda_attn_config_v1_t*,
+                                guild_error_info_t*);
     guild_status_t (*rope)(const guild_exec_context_v1_t*, const guild_cuda_rope_op_v1_t*, guild_error_info_t*);
-    guild_status_t (*qsa_norm_gate)(const guild_exec_context_v1_t*, const guild_cuda_qsa_norm_gate_v1_t*, guild_error_info_t*);
+    guild_status_t (*qsa_norm_gate)(const guild_exec_context_v1_t*, const guild_cuda_qsa_norm_gate_v1_t*,
+                                    guild_error_info_t*);
     guild_status_t (*gdn)(const guild_exec_context_v1_t*, const guild_cuda_gdn_op_v1_t*, guild_error_info_t*);
     guild_status_t (*kv)(const guild_exec_context_v1_t*, const guild_cuda_kv_op_v1_t*, guild_error_info_t*);
-    guild_status_t (*qsa_index_select)(const guild_exec_context_v1_t*, const guild_cuda_qsa_index_select_v1_t*, guild_error_info_t*);
-    guild_status_t (*attention)(const guild_exec_context_v1_t*, const guild_cuda_attention_op_v1_t*, guild_error_info_t*);
+    guild_status_t (*qsa_index_select)(const guild_exec_context_v1_t*, const guild_cuda_qsa_index_select_v1_t*,
+                                       guild_error_info_t*);
+    guild_status_t (*attention)(const guild_exec_context_v1_t*, const guild_cuda_attention_op_v1_t*,
+                                guild_error_info_t*);
 } guild_cuda_attn_ext_v1_t;
 
 #ifdef __cplusplus

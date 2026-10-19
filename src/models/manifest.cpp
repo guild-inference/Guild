@@ -12,7 +12,8 @@ using namespace guild::server::json;
 namespace {
 
 std::string to_lower(std::string s) {
-    for (char& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    for (char& c : s)
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     return s;
 }
 
@@ -35,9 +36,12 @@ std::string ModelManifest::to_json() const {
     root["expected_size_bytes"] = static_cast<int64_t>(expected_size_bytes);
     root["context_length"] = static_cast<int64_t>(context_length);
 
-    if (!tokenizer_source.empty()) root["tokenizer_source"] = tokenizer_source;
-    if (!mtp_source.empty()) root["mtp_source"] = mtp_source;
-    if (!expert_profile_source.empty()) root["expert_profile_source"] = expert_profile_source;
+    if (!tokenizer_source.empty())
+        root["tokenizer_source"] = tokenizer_source;
+    if (!mtp_source.empty())
+        root["mtp_source"] = mtp_source;
+    if (!expert_profile_source.empty())
+        root["expert_profile_source"] = expert_profile_source;
 
     // Geometry
     JsonValue geom;
@@ -70,10 +74,13 @@ std::string ModelManifest::to_json() const {
         f_obj["name"] = f.name;
         f_obj["url"] = f.url;
         f_obj["size_bytes"] = static_cast<int64_t>(f.size_bytes);
-        if (!f.sha256.empty()) f_obj["sha256"] = f.sha256;
+        if (!f.sha256.empty())
+            f_obj["sha256"] = f.sha256;
         f_obj["role"] = f.role;
-        if (!f.blob_id.empty()) f_obj["blob_id"] = f.blob_id;
-        if (!f.local_path.empty()) f_obj["local_path"] = f.local_path;
+        if (!f.blob_id.empty())
+            f_obj["blob_id"] = f.blob_id;
+        if (!f.local_path.empty())
+            f_obj["local_path"] = f.local_path;
         files_arr.arr_val.push_back(std::move(f_obj));
     }
     root["files"] = std::move(files_arr);
@@ -91,7 +98,8 @@ std::optional<ModelManifest> ModelManifest::from_json(const std::string& json_st
     const auto& root = *root_opt;
     ModelManifest m;
     m.name = root["name"].as_string();
-    if (m.name.empty()) return std::nullopt;
+    if (m.name.empty())
+        return std::nullopt;
 
     if (root.contains("aliases") && root["aliases"].is_array()) {
         for (const auto& a : root["aliases"].arr_val) {
@@ -139,7 +147,8 @@ std::optional<ModelManifest> ModelManifest::from_json(const std::string& json_st
 
     if (root.contains("files") && root["files"].is_array()) {
         for (const auto& item : root["files"].arr_val) {
-            if (!item.is_object()) continue;
+            if (!item.is_object())
+                continue;
             ModelFile f;
             f.name = item["name"].as_string();
             f.url = item["url"].as_string();
@@ -165,12 +174,15 @@ guild::model::ModelDescriptor ModelManifest::to_descriptor() const {
     desc.arch_name = architecture;
     desc.archetype = guild::model::archetype_from_string(architecture);
     if (desc.archetype == guild::model::ModelArchetype::Unknown) {
-        if (architecture == "qwen4exp") desc.archetype = guild::model::ModelArchetype::Qwen4Exp;
-        else if (architecture == "qwen35moe") desc.archetype = guild::model::ModelArchetype::Qwen35MoE;
+        if (architecture == "qwen4exp")
+            desc.archetype = guild::model::ModelArchetype::Qwen4Exp;
+        else if (architecture == "qwen35moe")
+            desc.archetype = guild::model::ModelArchetype::Qwen35MoE;
     }
 
     const ModelFile* prim = find_file_by_role("primary");
-    if (!prim) prim = find_file_by_role("shard");
+    if (!prim)
+        prim = find_file_by_role("shard");
     if (prim && !prim->local_path.empty()) {
         desc.file_path = prim->local_path;
     } else if (!files.empty() && !files[0].local_path.empty()) {
@@ -222,23 +234,27 @@ bool ModelManifest::has_file(const std::string& filename) const {
 
 const ModelFile* ModelManifest::find_file_by_name(const std::string& filename) const {
     for (const auto& f : files) {
-        if (f.name == filename) return &f;
+        if (f.name == filename)
+            return &f;
     }
     return nullptr;
 }
 
 const ModelFile* ModelManifest::find_file_by_role(const std::string& role) const {
     for (const auto& f : files) {
-        if (f.role == role) return &f;
+        if (f.role == role)
+            return &f;
     }
     return nullptr;
 }
 
 bool ModelManifest::matches_name_or_alias(const std::string& query) const {
     std::string q = to_lower(query);
-    if (to_lower(name) == q) return true;
+    if (to_lower(name) == q)
+        return true;
     for (const auto& a : aliases) {
-        if (to_lower(a) == q) return true;
+        if (to_lower(a) == q)
+            return true;
     }
     return false;
 }

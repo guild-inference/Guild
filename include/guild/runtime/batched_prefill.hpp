@@ -38,23 +38,22 @@ public:
     BatchedPrefill& operator=(const BatchedPrefill&) = delete;
 
     // Initializes device and host buffers for batched prefill
-    bool init(const core::WeightTable& wt,
-              const core::ModelGeometry& g,
-              core::SessionState& ss,
-              core::ExpertSource& src,
-              kernels::cpu::ExpertPool& pool,
-              void* stream,
-              std::string& err, int64_t requested_batch = 0,
-              const core::ExpertCache* cache = nullptr);
+    bool init(const core::WeightTable& wt, const core::ModelGeometry& g, core::SessionState& ss,
+              core::ExpertSource& src, kernels::cpu::ExpertPool& pool, void* stream, std::string& err,
+              int64_t requested_batch = 0, const core::ExpertCache* cache = nullptr);
 
     // Ingests prompt tokens [pos0, pos0 + n) in batches of batch_size_
     bool run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& err);
 
     void set_batch_size(int64_t b);
     void set_expert_cache(const core::ExpertCache* cache);
-    int64_t batch_size() const { return batch_size_; }
+    int64_t batch_size() const {
+        return batch_size_;
+    }
 
-    const BatchedPrefillStats& stats() const { return stats_; }
+    const BatchedPrefillStats& stats() const {
+        return stats_;
+    }
     const std::vector<std::string>& bound_impl_ids() const;
     const std::vector<std::string>& bound_package_ids() const;
 

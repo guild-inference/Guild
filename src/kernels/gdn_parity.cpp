@@ -39,15 +39,17 @@ void check(cudaError_t e, const char* what) {
     }
 }
 
-float sigmoid_f(float x) { return 1.0f / (1.0f + std::exp(-x)); }
+float sigmoid_f(float x) {
+    return 1.0f / (1.0f + std::exp(-x));
+}
 
 /// The reference's `gdn_step`, with switches for the rival readings.
 ///
 /// `state` is passed in the REFERENCE layout (S, S, h_v) - i.e. (i, j, h) - so that this function is a
 /// transcription of `ref/gdn.py` and not of the kernel.
 void ref_step(std::vector<double>& state, const std::vector<float>& q, const std::vector<float>& k,
-              const std::vector<float>& v, const std::vector<float>& gate, const std::vector<float>& beta,
-              int S, int h_k, int h_v, std::vector<float>& o, bool modulo_heads, bool decay_first) {
+              const std::vector<float>& v, const std::vector<float>& gate, const std::vector<float>& beta, int S,
+              int h_k, int h_v, std::vector<float>& o, bool modulo_heads, bool decay_first) {
     auto at = [&](int i, int j, int h) -> double& { return state[(size_t) (i * S + j) * h_v + h]; };
     std::vector<float> oo((size_t) h_v * S, 0.0f);
     for (int h = 0; h < h_v; ++h) {
@@ -55,14 +57,21 @@ void ref_step(std::vector<double>& state, const std::vector<float>& q, const std
         const double dec = std::exp((double) gate[(size_t) h]);
         const double b = (double) beta[(size_t) h];
         for (int j = 0; j < S; ++j) {
-            if (decay_first) for (int i = 0; i < S; ++i) at(i, j, h) *= dec;
+            if (decay_first)
+                for (int i = 0; i < S; ++i)
+                    at(i, j, h) *= dec;
             double sk = 0;
-            for (int i = 0; i < S; ++i) sk += at(i, j, h) * (double) k[(size_t) (src * S + i)];
+            for (int i = 0; i < S; ++i)
+                sk += at(i, j, h) * (double) k[(size_t) (src * S + i)];
             const double d = ((double) v[(size_t) (h * S + j)] - sk) * b;
-            for (int i = 0; i < S; ++i) at(i, j, h) += (double) k[(size_t) (src * S + i)] * d;
-            if (!decay_first) for (int i = 0; i < S; ++i) at(i, j, h) *= dec;
+            for (int i = 0; i < S; ++i)
+                at(i, j, h) += (double) k[(size_t) (src * S + i)] * d;
+            if (!decay_first)
+                for (int i = 0; i < S; ++i)
+                    at(i, j, h) *= dec;
             double dot = 0;
-            for (int i = 0; i < S; ++i) dot += at(i, j, h) * (double) q[(size_t) (src * S + i)];
+            for (int i = 0; i < S; ++i)
+                dot += at(i, j, h) * (double) q[(size_t) (src * S + i)];
             oo[(size_t) (h * S + j)] = (float) dot;
         }
     }
@@ -70,15 +79,17 @@ void ref_step(std::vector<double>& state, const std::vector<float>& q, const std
 }
 
 /// `ref/gdn.py::conv_step` in its own (d_conv, C) row-major orientation.
-void ref_conv(std::vector<float>& cs, const std::vector<float>& x, const std::vector<float>& kern, int C,
-              int dc, std::vector<float>& out) {
+void ref_conv(std::vector<float>& cs, const std::vector<float>& x, const std::vector<float>& kern, int C, int dc,
+              std::vector<float>& out) {
     out.assign((size_t) C, 0.0f);
     for (int c = 0; c < C; ++c) {
         double acc = 0;
-        for (int i = 0; i < dc - 1; ++i) acc += (double) cs[(size_t) (i * C + c)] * (double) kern[(size_t) (i * C + c)];
+        for (int i = 0; i < dc - 1; ++i)
+            acc += (double) cs[(size_t) (i * C + c)] * (double) kern[(size_t) (i * C + c)];
         acc += (double) x[(size_t) c] * (double) kern[(size_t) ((dc - 1) * C + c)];
         out[(size_t) c] = (float) acc;
-        for (int i = 0; i < dc - 2; ++i) cs[(size_t) (i * C + c)] = cs[(size_t) ((i + 1) * C + c)];
+        for (int i = 0; i < dc - 2; ++i)
+            cs[(size_t) (i * C + c)] = cs[(size_t) ((i + 1) * C + c)];
         cs[(size_t) ((dc - 2) * C + c)] = x[(size_t) c];
     }
 }
@@ -92,16 +103,20 @@ double rel_l1(const std::vector<float>& a, const std::vector<float>& b) {
     return d / (m > 1e-30 ? m : 1e-30);
 }
 
-}  // namespace
+} // namespace
 
 int main(int argc, char** argv) {
     bool selftest = false;
     for (int i = 1; i < argc; ++i) {
-        if (std::string(argv[i]) == "--selftest") selftest = true;
-        else { std::fprintf(stderr, "usage: gdn_parity [--selftest]\n"); return 2; }
+        if (std::string(argv[i]) == "--selftest")
+            selftest = true;
+        else {
+            std::fprintf(stderr, "usage: gdn_parity [--selftest]\n");
+            return 2;
+        }
     }
 
-    const int S = 128, h_k = 16, h_v = 48;      // the artifact's real geometry
+    const int S = 128, h_k = 16, h_v = 48; // the artifact's real geometry
     std::mt19937 rng(2024);
     std::normal_distribution<float> gauss(0.0f, 1.0f);
     int bad = 0;
@@ -117,16 +132,21 @@ int main(int argc, char** argv) {
                 for (int h = 0; h < h_v; ++h) {
                     const float val = (float) (0.001 * (i + 2 * j + 3 * h) - 1.0);
                     st_ref[(size_t) (i * S + j) * h_v + h] = val;
-                    st_dev[(size_t) (i * h_v + h) * S + j] = val;   // (S, h_v, S), j fastest
+                    st_dev[(size_t) (i * h_v + h) * S + j] = val; // (S, h_v, S), j fastest
                 }
 
         std::vector<float> q((size_t) h_k * S), k((size_t) h_k * S), v((size_t) h_v * S), gate((size_t) h_v),
             beta((size_t) h_v);
-        for (auto& x : q) x = gauss(rng) * 0.1f;
-        for (auto& x : k) x = gauss(rng) * 0.1f;
-        for (auto& x : v) x = gauss(rng);
-        for (auto& x : gate) x = -(2.0f + 4.0f * (float) (rng() % 100) / 100.0f);   // dec in (0.0025, 0.135]
-        for (auto& x : beta) x = (float) (rng() % 100) / 100.0f;
+        for (auto& x : q)
+            x = gauss(rng) * 0.1f;
+        for (auto& x : k)
+            x = gauss(rng) * 0.1f;
+        for (auto& x : v)
+            x = gauss(rng);
+        for (auto& x : gate)
+            x = -(2.0f + 4.0f * (float) (rng() % 100) / 100.0f); // dec in (0.0025, 0.135]
+        for (auto& x : beta)
+            x = (float) (rng() % 100) / 100.0f;
 
         std::vector<float> want_o;
         std::vector<double> st_mod = st_ref;
@@ -140,7 +160,8 @@ int main(int argc, char** argv) {
             const double rel = rel_l1(want_o, oo);
             std::printf("  %-42s %-4s (%.2f%% apart)\n", "modulo vs interleave head pairing",
                         rel > 0.05 ? "yes" : "*** NO ***", rel * 100);
-            if (!(rel > 0.05)) ++bad;
+            if (!(rel > 0.05))
+                ++bad;
         }
         {
             std::vector<double> a = st_ref;
@@ -154,7 +175,8 @@ int main(int argc, char** argv) {
             // gate in [-0.99, 0] - dec in [0.37, 1] - and managed 3.25%, which is a threshold the wrong
             // reading nearly clears.  Deep decay is also the realistic regime: `ssm_a = -exp(A_log) < 0` and
             // softplus is positive, so gate is comfortably negative in the real model.
-            if (!(rel > 0.05)) ++bad;
+            if (!(rel > 0.05))
+                ++bad;
         }
 
         // the kernel
@@ -197,8 +219,14 @@ int main(int argc, char** argv) {
         std::printf("  %-42s rel %.3e\n", "state (read via (S,h_v,S)) vs reference", rel_st);
         // The kernel accumulates in f32 and the reference in f64, and the state is a RECURRENCE over 128
         // terms, so 1e-5 is the arithmetic's floor here and not a structural allowance.
-        if (!(rel_o <= 1e-5)) { std::printf("    *** o over 1e-5 ***\n"); ++bad; }
-        if (!(rel_st <= 1e-5)) { std::printf("    *** state over 1e-5 ***\n"); ++bad; }
+        if (!(rel_o <= 1e-5)) {
+            std::printf("    *** o over 1e-5 ***\n");
+            ++bad;
+        }
+        if (!(rel_st <= 1e-5)) {
+            std::printf("    *** state over 1e-5 ***\n");
+            ++bad;
+        }
 
         // a zero state stays zero, and a zero gate/beta leaves the state untouched (the reference's
         // PROPERTY 4 setup) - a cheap independent invariant that no layout can fake
@@ -211,19 +239,27 @@ int main(int argc, char** argv) {
             std::vector<float> zz(zero.size());
             check(cudaMemcpy(zz.data(), d_st, zz.size() * 4, cudaMemcpyDeviceToHost), "z3");
             double nz = 0;
-            for (float x : zz) nz += std::fabs(x);
+            for (float x : zz)
+                nz += std::fabs(x);
             const bool ok = nz == 0.0;
             std::printf("  %-42s %s\n", "gate=beta=0 from a zero state is a no-op", ok ? "yes" : "*** NO ***");
-            if (!ok) ++bad;
+            if (!ok)
+                ++bad;
         }
 
         // ephemeral state: unchanged when the state is untouched but beta=1 — the delta rule writing k*d
-        cudaFree(d_st); cudaFree(d_q); cudaFree(d_k); cudaFree(d_v); cudaFree(d_g); cudaFree(d_b); cudaFree(d_o);
+        cudaFree(d_st);
+        cudaFree(d_q);
+        cudaFree(d_k);
+        cudaFree(d_v);
+        cudaFree(d_g);
+        cudaFree(d_b);
+        cudaFree(d_o);
     }
 
     // ================= 2. the conv =================
     {
-        const int C = 24, dc = 4;      // small, so the host reference is a plain loop
+        const int C = 24, dc = 4; // small, so the host reference is a plain loop
         // TWO DIFFERENT LAYOUTS MEET HERE, and this is where the first version of this test failed at 0.136.
         // `ref/gdn.py` carries the conv state as (d_conv-1, C) ROW-MAJOR - (i, c) at i*C + c - because it is
         // numpy.  The kernel carries it as (C, d_conv-1) with c fastest - c*(dc-1) + i - because that is
@@ -231,20 +267,25 @@ int main(int argc, char** argv) {
         // mapping between them is written out below rather than assumed, in both directions.
         std::vector<float> cs_ref((size_t) (dc - 1) * C), x((size_t) C), kern((size_t) dc * C);
         for (int i = 0; i < dc - 1; ++i)
-            for (int c = 0; c < C; ++c) cs_ref[(size_t) (i * C + c)] = (float) (10 * (i + 1) + c);  // labelled
-        for (int c = 0; c < C; ++c) x[(size_t) c] = (float) (100 + c);
-        for (size_t i = 0; i < kern.size(); ++i) kern[i] = gauss(rng);
+            for (int c = 0; c < C; ++c)
+                cs_ref[(size_t) (i * C + c)] = (float) (10 * (i + 1) + c); // labelled
+        for (int c = 0; c < C; ++c)
+            x[(size_t) c] = (float) (100 + c);
+        for (size_t i = 0; i < kern.size(); ++i)
+            kern[i] = gauss(rng);
 
         auto to_dev_layout = [&](const std::vector<float>& r) {
             std::vector<float> d(r.size());
             for (int i = 0; i < dc - 1; ++i)
-                for (int c = 0; c < C; ++c) d[(size_t) (c * (dc - 1) + i)] = r[(size_t) (i * C + c)];
+                for (int c = 0; c < C; ++c)
+                    d[(size_t) (c * (dc - 1) + i)] = r[(size_t) (i * C + c)];
             return d;
         };
         auto to_ref_layout = [&](const std::vector<float>& d) {
             std::vector<float> r(d.size());
             for (int i = 0; i < dc - 1; ++i)
-                for (int c = 0; c < C; ++c) r[(size_t) (i * C + c)] = d[(size_t) (c * (dc - 1) + i)];
+                for (int c = 0; c < C; ++c)
+                    r[(size_t) (i * C + c)] = d[(size_t) (c * (dc - 1) + i)];
             return r;
         };
 
@@ -259,24 +300,28 @@ int main(int argc, char** argv) {
         // below is the ONLY place the two meet.
         std::vector<float> kW((size_t) C * dc);
         for (int c = 0; c < C; ++c)
-            for (int i = 0; i < dc; ++i) kW[(size_t) (c * dc + i)] = kern[(size_t) (i * C + c)];
+            for (int i = 0; i < dc; ++i)
+                kW[(size_t) (c * dc + i)] = kern[(size_t) (i * C + c)];
         // and the rival reading, which must differ or the fixture cannot see a transposed weight
         std::vector<float> kW_wrong((size_t) C * dc);
-        for (size_t i = 0; i < kern.size(); ++i) kW_wrong[i] = kern[i];
+        for (size_t i = 0; i < kern.size(); ++i)
+            kW_wrong[i] = kern[i];
         {
             // apply the WRONG layout by hand: tap i of channel c is kW[c*dc+i] read as kW[i*C+c]
             std::vector<float> cs2 = cs;
             std::vector<float> out_bad((size_t) C, 0.0f);
             for (int c = 0; c < C; ++c) {
                 double a = 0;
-                for (int i = 0; i < dc - 1; ++i) a += (double) cs2[(size_t) (i * C + c)] * (double) kW_wrong[(size_t) (c * dc + i)];
+                for (int i = 0; i < dc - 1; ++i)
+                    a += (double) cs2[(size_t) (i * C + c)] * (double) kW_wrong[(size_t) (c * dc + i)];
                 a += (double) x[(size_t) c] * (double) kW_wrong[(size_t) (c * dc + dc - 1)];
                 out_bad[(size_t) c] = (float) a;
             }
             const double rel = rel_l1(want, out_bad);
             std::printf("\n  %-42s %-4s (%.1f%% apart)\n", "conv weight layout is observable",
                         rel > 0.05 ? "yes" : "*** NO ***", rel * 100);
-            if (!(rel > 0.05)) ++bad;
+            if (!(rel > 0.05))
+                ++bad;
         }
 
         float *d_cs = nullptr, *d_x = nullptr, *d_w = nullptr, *d_o = nullptr;
@@ -294,23 +339,35 @@ int main(int argc, char** argv) {
         const double rel_out = rel_l1(want, got), rel_cs = rel_l1(cs_want, got_cs);
         std::printf("  %-42s rel %.3e\n", "conv out vs reference", rel_out);
         std::printf("  %-42s rel %.3e\n", "conv state slide (mapped) vs reference", rel_cs);
-        if (!(rel_out <= 1e-6)) { std::printf("    *** conv out ***\n"); ++bad; }
-        if (!(rel_cs <= 1e-6)) { std::printf("    *** conv state ***\n"); ++bad; }
-        cudaFree(d_cs); cudaFree(d_x); cudaFree(d_w); cudaFree(d_o);
+        if (!(rel_out <= 1e-6)) {
+            std::printf("    *** conv out ***\n");
+            ++bad;
+        }
+        if (!(rel_cs <= 1e-6)) {
+            std::printf("    *** conv state ***\n");
+            ++bad;
+        }
+        cudaFree(d_cs);
+        cudaFree(d_x);
+        cudaFree(d_w);
+        cudaFree(d_o);
     }
 
     // ================= 3. l2_norm =================
     {
         const int rows = 16, cols = 128;
         std::vector<float> x((size_t) rows * cols), x_ref;
-        for (auto& val : x) val = gauss(rng) * 3.0f;
+        for (auto& val : x)
+            val = gauss(rng) * 3.0f;
         x_ref = x;
         const float eps = 1e-6f;
         for (int r = 0; r < rows; ++r) {
             double acc = 0;
-            for (int i = 0; i < cols; ++i) acc += (double) x_ref[(size_t) (r * cols + i)] * (double) x_ref[(size_t) (r * cols + i)];
+            for (int i = 0; i < cols; ++i)
+                acc += (double) x_ref[(size_t) (r * cols + i)] * (double) x_ref[(size_t) (r * cols + i)];
             const float inv = (float) (1.0 / std::sqrt(acc + (double) eps));
-            for (int i = 0; i < cols; ++i) x_ref[(size_t) (r * cols + i)] *= inv;
+            for (int i = 0; i < cols; ++i)
+                x_ref[(size_t) (r * cols + i)] *= inv;
         }
         // The rival reading puts THE SAME eps on the MEAN instead of on the squared norm, which at
         // ||x||^2 ~ 1152 and cols = 128 changes the divisor from sqrt(1152) to sqrt(9) - a factor of 11.3, so
@@ -319,14 +376,17 @@ int main(int argc, char** argv) {
         std::vector<float> x_mean = x;
         for (int r = 0; r < rows; ++r) {
             double acc = 0;
-            for (int i = 0; i < cols; ++i) acc += (double) x_mean[(size_t) (r * cols + i)] * (double) x_mean[(size_t) (r * cols + i)];
+            for (int i = 0; i < cols; ++i)
+                acc += (double) x_mean[(size_t) (r * cols + i)] * (double) x_mean[(size_t) (r * cols + i)];
             const float inv = (float) (1.0 / std::sqrt(acc / cols + (double) eps));
-            for (int i = 0; i < cols; ++i) x_mean[(size_t) (r * cols + i)] *= inv;
+            for (int i = 0; i < cols; ++i)
+                x_mean[(size_t) (r * cols + i)] *= inv;
         }
         const double rel_trap = rel_l1(x_ref, x_mean);
         std::printf("\n  %-42s %-4s (%.1f%% apart)\n", "eps on sum vs on mean is observable",
                     rel_trap > 0.05 ? "yes" : "*** NO ***", rel_trap * 100);
-        if (!(rel_trap > 0.05)) ++bad;
+        if (!(rel_trap > 0.05))
+            ++bad;
 
         float* d_x = nullptr;
         check(cudaMalloc(&d_x, x.size() * 4), "lx");
@@ -336,7 +396,8 @@ int main(int argc, char** argv) {
         check(cudaMemcpy(got.data(), d_x, got.size() * 4, cudaMemcpyDeviceToHost), "lcg");
         const double rel = rel_l1(x_ref, got);
         std::printf("  %-42s rel %.3e\n", "l2_norm vs reference", rel);
-        if (!(rel <= 1e-6)) ++bad;
+        if (!(rel <= 1e-6))
+            ++bad;
         cudaFree(d_x);
     }
 
@@ -344,17 +405,21 @@ int main(int argc, char** argv) {
     {
         const int S2 = 128, hv2 = 8;
         std::vector<float> o((size_t) hv2 * S2), z((size_t) hv2 * S2), sn((size_t) S2), y_ref((size_t) hv2 * S2);
-        for (auto& val : o) val = gauss(rng);
-        for (auto& val : z) val = gauss(rng);
-        for (auto& val : sn) val = 1.0f + 0.1f * gauss(rng);
+        for (auto& val : o)
+            val = gauss(rng);
+        for (auto& val : z)
+            val = gauss(rng);
+        for (auto& val : sn)
+            val = 1.0f + 0.1f * gauss(rng);
         const float eps = 1e-6f;
         for (int h = 0; h < hv2; ++h) {
             double acc = 0;
-            for (int i = 0; i < S2; ++i) acc += (double) o[(size_t) (h * S2 + i)] * (double) o[(size_t) (h * S2 + i)];
+            for (int i = 0; i < S2; ++i)
+                acc += (double) o[(size_t) (h * S2 + i)] * (double) o[(size_t) (h * S2 + i)];
             const float inv = (float) (1.0 / std::sqrt(acc / S2 + (double) eps));
             for (int i = 0; i < S2; ++i)
-                y_ref[(size_t) (h * S2 + i)] = o[(size_t) (h * S2 + i)] * inv * sn[(size_t) i] *
-                                              sigmoid_f(z[(size_t) (h * S2 + i)]);
+                y_ref[(size_t) (h * S2 + i)] =
+                    o[(size_t) (h * S2 + i)] * inv * sn[(size_t) i] * sigmoid_f(z[(size_t) (h * S2 + i)]);
         }
         float *d_o = nullptr, *d_z = nullptr, *d_sn = nullptr, *d_y = nullptr;
         check(cudaMalloc(&d_o, o.size() * 4), "no");
@@ -369,13 +434,15 @@ int main(int argc, char** argv) {
         check(cudaMemcpy(got.data(), d_y, got.size() * 4, cudaMemcpyDeviceToHost), "ncy");
         const double rel = rel_l1(y_ref, got);
         std::printf("\n  %-42s rel %.3e\n", "out norm (rms * ssm_norm * sigmoid z)", rel);
-        if (!(rel <= 1e-6)) ++bad;
+        if (!(rel <= 1e-6))
+            ++bad;
 
         // SiLU instead of sigmoid is the qwen3.5 reading; `ref/gdn.py` says this artifact does NOT use it
         std::vector<float> y_silu(y_ref.size());
         for (int h = 0; h < hv2; ++h) {
             double acc = 0;
-            for (int i = 0; i < S2; ++i) acc += (double) o[(size_t) (h * S2 + i)] * (double) o[(size_t) (h * S2 + i)];
+            for (int i = 0; i < S2; ++i)
+                acc += (double) o[(size_t) (h * S2 + i)] * (double) o[(size_t) (h * S2 + i)];
             const float inv = (float) (1.0 / std::sqrt(acc / S2 + (double) eps));
             for (int i = 0; i < S2; ++i) {
                 const float zz = z[(size_t) (h * S2 + i)];
@@ -386,12 +453,18 @@ int main(int argc, char** argv) {
         const double rel_silu = rel_l1(y_ref, y_silu);
         std::printf("  %-42s %-4s (%.2f%% apart)\n", "sigmoid vs SiLU on the gate is observable",
                     rel_silu > 0.05 ? "yes" : "*** NO ***", rel_silu * 100);
-        if (!(rel_silu > 0.05)) ++bad;
-        cudaFree(d_o); cudaFree(d_z); cudaFree(d_sn); cudaFree(d_y);
+        if (!(rel_silu > 0.05))
+            ++bad;
+        cudaFree(d_o);
+        cudaFree(d_z);
+        cudaFree(d_sn);
+        cudaFree(d_y);
     }
 
     std::printf("\ngdn: %d failures\n", bad);
-    if (bad) return 1;
-    if (selftest) std::printf("gdn_parity OK\n");
+    if (bad)
+        return 1;
+    if (selftest)
+        std::printf("gdn_parity OK\n");
     return 0;
 }

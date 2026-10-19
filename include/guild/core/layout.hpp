@@ -30,8 +30,8 @@ struct Qwen4ExpGeometry {
     int64_t ssm_k_heads = 16;
     int64_t ssm_v_heads = 48;
     int64_t ssm_d_conv = 4;
-    int64_t ssm_conv_channels = 10240;   ///< 2*128*16 + 128*48
-    int64_t ssm_value_dim = 6144;        ///< 128 * 48
+    int64_t ssm_conv_channels = 10240; ///< 2*128*16 + 128*48
+    int64_t ssm_value_dim = 6144;      ///< 128 * 48
 
     // QSA indexer heads (12 layers)
     int64_t idx_q_heads = 4;
@@ -48,7 +48,7 @@ struct Qwen4ExpGeometry {
 struct ModelGeometry {
     int64_t n_embd = 2560;
     int64_t n_layers = 48;
-    int64_t qsa_interval = 4;      ///< attention interval: layers 3, 7, ... 47 for interval 4
+    int64_t qsa_interval = 4; ///< attention interval: layers 3, 7, ... 47 for interval 4
 
     int64_t n_head = 24;
     int64_t n_head_kv = 2;
@@ -97,17 +97,25 @@ struct ModelGeometry {
     }
 
     void apply_descriptor(const model::ModelDescriptor& desc) {
-        if (desc.attn.n_embd > 0) n_embd = desc.attn.n_embd;
-        if (desc.attn.n_layers > 0) n_layers = desc.attn.n_layers;
-        if (desc.attn.full_attn_interval > 0) qsa_interval = desc.attn.full_attn_interval;
-        if (desc.attn.n_heads > 0) n_head = desc.attn.n_heads;
-        if (desc.attn.n_kv_heads > 0) n_head_kv = desc.attn.n_kv_heads;
-        if (desc.attn.head_dim > 0) head_dim = desc.attn.head_dim;
-        if (desc.moe.n_routed_experts > 0) n_expert = desc.moe.n_routed_experts;
-        if (desc.moe.expert_dim_ff > 0) n_ff = desc.moe.expert_dim_ff;
+        if (desc.attn.n_embd > 0)
+            n_embd = desc.attn.n_embd;
+        if (desc.attn.n_layers > 0)
+            n_layers = desc.attn.n_layers;
+        if (desc.attn.full_attn_interval > 0)
+            qsa_interval = desc.attn.full_attn_interval;
+        if (desc.attn.n_heads > 0)
+            n_head = desc.attn.n_heads;
+        if (desc.attn.n_kv_heads > 0)
+            n_head_kv = desc.attn.n_kv_heads;
+        if (desc.attn.head_dim > 0)
+            head_dim = desc.attn.head_dim;
+        if (desc.moe.n_routed_experts > 0)
+            n_expert = desc.moe.n_routed_experts;
+        if (desc.moe.expert_dim_ff > 0)
+            n_ff = desc.moe.expert_dim_ff;
         attn_mechanism = desc.attn.mechanism;
-        if (desc.archetype == model::ModelArchetype::Qwen35MoE ||
-            desc.arch_name == "qwen35moe" || desc.arch_name == "qwen2moe" || desc.arch_name == "ornith") {
+        if (desc.archetype == model::ModelArchetype::Qwen35MoE || desc.arch_name == "qwen35moe" ||
+            desc.arch_name == "qwen2moe" || desc.arch_name == "ornith") {
             ssm_state_size = 128;
             ssm_k_heads = 16;
             ssm_v_heads = 32;
@@ -128,24 +136,32 @@ struct ModelGeometry {
         }
     }
 
-    int64_t hc_dim() const { return hc * n_embd; }
+    int64_t hc_dim() const {
+        return hc * n_embd;
+    }
     /// Derived layer counts based on is_qsa_layer
     int64_t n_qsa_layers() const;
-    int64_t n_gdn_layers() const { return n_layers - n_qsa_layers(); }
+    int64_t n_gdn_layers() const {
+        return n_layers - n_qsa_layers();
+    }
 };
 
 /// True for the full-attention layers.
 inline bool is_qsa_layer(const ModelGeometry& g, int64_t layer) {
-    if (g.qsa_interval <= 1) return true;
-    if (layer % g.qsa_interval == g.qsa_interval - 1) return true;
+    if (g.qsa_interval <= 1)
+        return true;
+    if (layer % g.qsa_interval == g.qsa_interval - 1)
+        return true;
     return false;
 }
 
 inline int64_t ModelGeometry::n_qsa_layers() const {
-    if (qsa_interval <= 1) return n_layers;
+    if (qsa_interval <= 1)
+        return n_layers;
     int64_t count = 0;
     for (int64_t l = 0; l < n_layers; ++l) {
-        if (is_qsa_layer(*this, l)) count++;
+        if (is_qsa_layer(*this, l))
+            count++;
     }
     return count;
 }
@@ -157,11 +173,16 @@ inline int64_t ModelGeometry::n_qsa_layers() const {
 /// Holds a reference to the table; the table must outlive it.
 class LayerView {
 public:
-    LayerView(const WeightTable& table, int64_t layer) : table_(&table), layer_(layer) {}
+    LayerView(const WeightTable& table, int64_t layer) : table_(&table), layer_(layer) {
+    }
 
-    int64_t layer() const { return layer_; }
+    int64_t layer() const {
+        return layer_;
+    }
     std::string name(const char* suffix) const;
-    const WeightRef* get(const char* suffix) const { return table_->find(name(suffix)); }
+    const WeightRef* get(const char* suffix) const {
+        return table_->find(name(suffix));
+    }
 
 private:
     const WeightTable* table_;
@@ -180,4 +201,4 @@ bool check_layer(const WeightTable& table, const ModelGeometry& g, int64_t layer
 /// indices, every GDN layer having the GDN set and no QSA tensor, and vice versa.  Returns the first failure.
 bool check_all(const WeightTable& table, const ModelGeometry& g, std::string& err);
 
-}  // namespace guild::core
+} // namespace guild::core

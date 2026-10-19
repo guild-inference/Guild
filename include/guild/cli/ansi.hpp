@@ -15,17 +15,39 @@ inline bool is_tty() {
 }
 
 namespace ansi {
-    inline const char* reset()   { return is_tty() ? "\033[0m" : ""; }
-    inline const char* bold()    { return is_tty() ? "\033[1m" : ""; }
-    inline const char* dim()     { return is_tty() ? "\033[2m" : ""; }
-    inline const char* cyan()    { return is_tty() ? "\033[36m" : ""; }
-    inline const char* red()     { return is_tty() ? "\033[31m" : ""; }
-    inline const char* green()   { return is_tty() ? "\033[32m" : ""; }
-    inline const char* yellow()  { return is_tty() ? "\033[33m" : ""; }
-    inline const char* blue()    { return is_tty() ? "\033[34m" : ""; }
-    inline const char* magenta() { return is_tty() ? "\033[35m" : ""; }
-    inline const char* white()   { return is_tty() ? "\033[37m" : ""; }
-    inline const char* gray()    { return is_tty() ? "\033[90m" : ""; }
-}  // namespace ansi
+inline const char* reset() {
+    return is_tty() ? "\033[0m" : "";
+}
+inline const char* bold() {
+    return is_tty() ? "\033[1m" : "";
+}
+inline const char* dim() {
+    return is_tty() ? "\033[2m" : "";
+}
+inline const char* cyan() {
+    return is_tty() ? "\033[36m" : "";
+}
+inline const char* red() {
+    return is_tty() ? "\033[31m" : "";
+}
+inline const char* green() {
+    return is_tty() ? "\033[32m" : "";
+}
+inline const char* yellow() {
+    return is_tty() ? "\033[33m" : "";
+}
+inline const char* blue() {
+    return is_tty() ? "\033[34m" : "";
+}
+inline const char* magenta() {
+    return is_tty() ? "\033[35m" : "";
+}
+inline const char* white() {
+    return is_tty() ? "\033[37m" : "";
+}
+inline const char* gray() {
+    return is_tty() ? "\033[90m" : "";
+}
+} // namespace ansi
 
-}  // namespace guild::cli
+} // namespace guild::cli

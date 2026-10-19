@@ -85,4 +85,4 @@ void swiglu(const float* gu, float* h, int64_t rows, int64_t n_ff, bool interlea
 /// dst[i] = i for i < n (the identity row map MMQ's MoE mode writes through).
 void iota(int32_t* dst, int64_t n, void* stream);
 
-}  // namespace guild::prefill::mmq
+} // namespace guild::prefill::mmq

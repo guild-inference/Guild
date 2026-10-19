@@ -13,7 +13,8 @@ void Telemetry::record_request_start() {
 }
 
 void Telemetry::record_request_finish(const RequestMetrics& m) {
-    if (active_requests_ > 0) active_requests_--;
+    if (active_requests_ > 0)
+        active_requests_--;
     completed_requests_++;
     prompt_tokens_processed_ += m.prompt_tokens;
     generated_tokens_produced_ += m.completion_tokens;
@@ -25,10 +26,14 @@ void Telemetry::record_request_finish(const RequestMetrics& m) {
     context_usage_ = m.context_tokens;
 
     std::lock_guard<std::mutex> lock(stats_mutex_);
-    if (m.prompt_tok_s > 0.0) prompt_tok_s_last_ = m.prompt_tok_s;
-    if (m.decode_tok_s > 0.0) decode_tok_s_last_ = m.decode_tok_s;
-    if (m.prompt_ms > 0.0) total_prompt_time_s_ += m.prompt_ms / 1000.0;
-    if (m.decode_ms > 0.0) total_decode_time_s_ += m.decode_ms / 1000.0;
+    if (m.prompt_tok_s > 0.0)
+        prompt_tok_s_last_ = m.prompt_tok_s;
+    if (m.decode_tok_s > 0.0)
+        decode_tok_s_last_ = m.decode_tok_s;
+    if (m.prompt_ms > 0.0)
+        total_prompt_time_s_ += m.prompt_ms / 1000.0;
+    if (m.decode_ms > 0.0)
+        total_decode_time_s_ += m.decode_ms / 1000.0;
 }
 
 TelemetrySnapshot Telemetry::snapshot() const {
@@ -47,12 +52,10 @@ TelemetrySnapshot Telemetry::snapshot() const {
     std::lock_guard<std::mutex> lock(stats_mutex_);
     s.prompt_tok_s_last = prompt_tok_s_last_;
     s.decode_tok_s_last = decode_tok_s_last_;
-    s.prompt_tok_s_mean = (total_prompt_time_s_ > 0.0)
-                              ? (static_cast<double>(s.prompt_tokens_processed) / total_prompt_time_s_)
-                              : 0.0;
-    s.decode_tok_s_mean = (total_decode_time_s_ > 0.0)
-                              ? (static_cast<double>(s.generated_tokens_produced) / total_decode_time_s_)
-                              : 0.0;
+    s.prompt_tok_s_mean =
+        (total_prompt_time_s_ > 0.0) ? (static_cast<double>(s.prompt_tokens_processed) / total_prompt_time_s_) : 0.0;
+    s.decode_tok_s_mean =
+        (total_decode_time_s_ > 0.0) ? (static_cast<double>(s.generated_tokens_produced) / total_decode_time_s_) : 0.0;
     return s;
 }
 
@@ -107,8 +110,8 @@ std::string Telemetry::format_log_line(const RequestMetrics& m) {
     std::strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", &tm_buf);
 
     std::ostringstream ss;
-    ss << "[" << time_str << "] " << m.method << " " << m.path << " " << m.status_code
-       << " " << std::fixed << std::setprecision(2) << m.duration_s << "s";
+    ss << "[" << time_str << "] " << m.method << " " << m.path << " " << m.status_code << " " << std::fixed
+       << std::setprecision(2) << m.duration_s << "s";
 
     if (m.completion_tokens > 0) {
         ss << " " << m.completion_tokens << " tok";
@@ -123,27 +126,20 @@ std::string Telemetry::format_log_line(const RequestMetrics& m) {
 }
 
 std::string Telemetry::format_jsonl(const RequestMetrics& m) {
-    auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                      std::chrono::system_clock::now().time_since_epoch())
-                      .count();
+    auto now_ms =
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
+            .count();
 
     std::ostringstream ss;
-    ss << "{\"timestamp\":" << now_ms
-       << ",\"method\":\"" << json::JsonValue::escape_string(m.method) << "\""
+    ss << "{\"timestamp\":" << now_ms << ",\"method\":\"" << json::JsonValue::escape_string(m.method) << "\""
        << ",\"path\":\"" << json::JsonValue::escape_string(m.path) << "\""
-       << ",\"status\":" << m.status_code
-       << ",\"duration_s\":" << std::fixed << std::setprecision(3) << m.duration_s
-       << ",\"prompt_tokens\":" << m.prompt_tokens
-       << ",\"completion_tokens\":" << m.completion_tokens
-       << ",\"prompt_tok_s\":" << std::setprecision(1) << m.prompt_tok_s
-       << ",\"decode_tok_s\":" << std::setprecision(1) << m.decode_tok_s
-       << ",\"ram_expert_hits\":" << m.ram_expert_hits
-       << ",\"file_expert_reads\":" << m.file_expert_reads
-       << ",\"gpu_cache_hits\":" << m.gpu_cache_hits
-       << ",\"drafts_accepted\":" << m.drafts_accepted
-       << ",\"drafts_offered\":" << m.drafts_offered
-       << ",\"context_tokens\":" << m.context_tokens
-       << ",\"stream\":" << (m.streamed ? "true" : "false")
+       << ",\"status\":" << m.status_code << ",\"duration_s\":" << std::fixed << std::setprecision(3) << m.duration_s
+       << ",\"prompt_tokens\":" << m.prompt_tokens << ",\"completion_tokens\":" << m.completion_tokens
+       << ",\"prompt_tok_s\":" << std::setprecision(1) << m.prompt_tok_s << ",\"decode_tok_s\":" << std::setprecision(1)
+       << m.decode_tok_s << ",\"ram_expert_hits\":" << m.ram_expert_hits
+       << ",\"file_expert_reads\":" << m.file_expert_reads << ",\"gpu_cache_hits\":" << m.gpu_cache_hits
+       << ",\"drafts_accepted\":" << m.drafts_accepted << ",\"drafts_offered\":" << m.drafts_offered
+       << ",\"context_tokens\":" << m.context_tokens << ",\"stream\":" << (m.streamed ? "true" : "false")
        << ",\"outcome\":\"" << json::JsonValue::escape_string(m.outcome) << "\"}";
     return ss.str();
 }

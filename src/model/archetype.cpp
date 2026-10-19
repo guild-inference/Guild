@@ -24,7 +24,8 @@ double get_meta_double(const GgufFile& gguf, const std::string& key, double fall
 
 std::string get_meta_string(const GgufFile& gguf, const std::string& key, const std::string& fallback) {
     if (const MetaValue* v = gguf.get(key)) {
-        if (v->type == MetaType::STRING) return v->s;
+        if (v->type == MetaType::STRING)
+            return v->s;
     }
     return fallback;
 }
@@ -38,12 +39,17 @@ std::string get_arch_tag(const GgufFile& gguf) {
 // -----------------------------------------------------------------------------
 class Qwen4ExpArchetype final : public IModelArchetype {
 public:
-    ModelArchetype archetype() const override { return ModelArchetype::Qwen4Exp; }
-    const char* name() const override { return "qwen4exp"; }
+    ModelArchetype archetype() const override {
+        return ModelArchetype::Qwen4Exp;
+    }
+    const char* name() const override {
+        return "qwen4exp";
+    }
 
     bool matches(const GgufFile& gguf) const override {
         const std::string arch = get_arch_tag(gguf);
-        if (arch == "qwen4exp") return true;
+        if (arch == "qwen4exp")
+            return true;
         return gguf.get("qwen4exp.expert_count") != nullptr;
     }
 
@@ -88,19 +94,25 @@ public:
 // -----------------------------------------------------------------------------
 class Qwen35MoEArchetype final : public IModelArchetype {
 public:
-    ModelArchetype archetype() const override { return ModelArchetype::Qwen35MoE; }
-    const char* name() const override { return "qwen35moe"; }
+    ModelArchetype archetype() const override {
+        return ModelArchetype::Qwen35MoE;
+    }
+    const char* name() const override {
+        return "qwen35moe";
+    }
 
     bool matches(const GgufFile& gguf) const override {
         const std::string arch = get_arch_tag(gguf);
-        if (arch == "qwen35moe" || arch == "qwen2moe" || arch == "ornith") return true;
+        if (arch == "qwen35moe" || arch == "qwen2moe" || arch == "ornith")
+            return true;
         return gguf.get("qwen35moe.expert_count") != nullptr || gguf.get("qwen2moe.expert_count") != nullptr;
     }
 
     bool describe(const GgufFile& gguf, ModelDescriptor& out, std::string& /*err*/) const override {
         out.archetype = ModelArchetype::Qwen35MoE;
         std::string p = "qwen35moe";
-        if (gguf.get("qwen2moe.expert_count") != nullptr || get_arch_tag(gguf) == "qwen2moe") p = "qwen2moe";
+        if (gguf.get("qwen2moe.expert_count") != nullptr || get_arch_tag(gguf) == "qwen2moe")
+            p = "qwen2moe";
         out.arch_name = p;
         out.file_path = gguf.path();
         out.name = get_meta_string(gguf, "general.name", "Ornith-1.5-35B");
@@ -121,10 +133,11 @@ public:
 
         out.moe.n_routed_experts = get_meta_i64(gguf, p + ".expert_count", 256);
         out.moe.k_active_experts = get_meta_i64(gguf, p + ".expert_used_count", 8);
-        out.moe.expert_dim_ff = get_meta_i64(gguf, p + ".expert_feed_forward_length",
-                                            get_meta_i64(gguf, p + ".feed_forward_length", 512));
+        out.moe.expert_dim_ff =
+            get_meta_i64(gguf, p + ".expert_feed_forward_length", get_meta_i64(gguf, p + ".feed_forward_length", 512));
         out.moe.shared_dim_ff = get_meta_i64(gguf, p + ".expert_shared_feed_forward_length", 512);
-        out.moe.n_shared_experts = (out.moe.shared_dim_ff > 0 || gguf.get(p + ".expert_shared_count") != nullptr) ? 1 : 0;
+        out.moe.n_shared_experts =
+            (out.moe.shared_dim_ff > 0 || gguf.get(p + ".expert_shared_count") != nullptr) ? 1 : 0;
         out.moe.expert_blob_bytes = 1907936;
 
         out.rope.type = get_meta_string(gguf, p + ".rope.scaling.type", "none");
@@ -139,8 +152,12 @@ public:
 // -----------------------------------------------------------------------------
 class GLMArchetype final : public IModelArchetype {
 public:
-    ModelArchetype archetype() const override { return ModelArchetype::GLM; }
-    const char* name() const override { return "glm"; }
+    ModelArchetype archetype() const override {
+        return ModelArchetype::GLM;
+    }
+    const char* name() const override {
+        return "glm";
+    }
 
     bool matches(const GgufFile& gguf) const override {
         const std::string arch = get_arch_tag(gguf);
@@ -181,8 +198,12 @@ public:
 // -----------------------------------------------------------------------------
 class DeepSeekArchetype final : public IModelArchetype {
 public:
-    ModelArchetype archetype() const override { return ModelArchetype::DeepSeek; }
-    const char* name() const override { return "deepseek"; }
+    ModelArchetype archetype() const override {
+        return ModelArchetype::DeepSeek;
+    }
+    const char* name() const override {
+        return "deepseek";
+    }
 
     bool matches(const GgufFile& gguf) const override {
         const std::string arch = get_arch_tag(gguf);
@@ -223,12 +244,17 @@ public:
 // -----------------------------------------------------------------------------
 class MixtralArchetype final : public IModelArchetype {
 public:
-    ModelArchetype archetype() const override { return ModelArchetype::Mixtral; }
-    const char* name() const override { return "mixtral"; }
+    ModelArchetype archetype() const override {
+        return ModelArchetype::Mixtral;
+    }
+    const char* name() const override {
+        return "mixtral";
+    }
 
     bool matches(const GgufFile& gguf) const override {
         const std::string arch = get_arch_tag(gguf);
-        if (arch == "mixtral") return true;
+        if (arch == "mixtral")
+            return true;
         if (arch == "llama") {
             return gguf.get("llama.expert_count") != nullptr;
         }
@@ -264,7 +290,7 @@ public:
     }
 };
 
-}  // namespace
+} // namespace
 
 ArchetypeRegistry& ArchetypeRegistry::instance() {
     static ArchetypeRegistry reg;
@@ -287,7 +313,8 @@ void ArchetypeRegistry::register_archetype(std::unique_ptr<IModelArchetype> arch
 
 const IModelArchetype* ArchetypeRegistry::find(ModelArchetype type) const {
     for (const auto& arch : registry_) {
-        if (arch->archetype() == type) return arch.get();
+        if (arch->archetype() == type)
+            return arch.get();
     }
     return nullptr;
 }
@@ -298,14 +325,16 @@ const IModelArchetype* ArchetypeRegistry::find(const std::string& name) const {
         return find(type);
     }
     for (const auto& arch : registry_) {
-        if (std::strcmp(arch->name(), name.c_str()) == 0) return arch.get();
+        if (std::strcmp(arch->name(), name.c_str()) == 0)
+            return arch.get();
     }
     return nullptr;
 }
 
 const IModelArchetype* ArchetypeRegistry::detect(const GgufFile& gguf) const {
     for (const auto& arch : registry_) {
-        if (arch->matches(gguf)) return arch.get();
+        if (arch->matches(gguf))
+            return arch.get();
     }
     return nullptr;
 }
@@ -319,4 +348,4 @@ bool ArchetypeRegistry::describe_gguf(const GgufFile& gguf, ModelDescriptor& out
     return arch->describe(gguf, out, err);
 }
 
-}  // namespace guild::model
+} // namespace guild::model

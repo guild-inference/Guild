@@ -23,11 +23,11 @@ typedef struct guild_operation_ext_v1_s {
     uint32_t struct_size, tag, version;
     uint32_t operation_version; /* packed semantic version, nonzero major */
     uint64_t capabilities;
-    uint32_t layouts;          /* nonempty GUILD_LAYOUT_* mask */
-    uint32_t memory_spaces;    /* nonempty GUILD_MEMORY_BIT mask */
-    uint32_t sync_modes;       /* GUILD_SYNC_BIT; unlike legacy supported_sync_modes */
+    uint32_t layouts;       /* nonempty GUILD_LAYOUT_* mask */
+    uint32_t memory_spaces; /* nonempty GUILD_MEMORY_BIT mask */
+    uint32_t sync_modes;    /* GUILD_SYNC_BIT; unlike legacy supported_sync_modes */
     uint32_t min_rank, max_rank;
-    uint64_t alignment;        /* power of two, >= 1 */
+    uint64_t alignment; /* power of two, >= 1 */
 } guild_operation_ext_v1_t;
 
 typedef struct guild_operation_query_v1_s {
@@ -61,13 +61,12 @@ typedef struct guild_operation_binding_s* guild_operation_binding_t;
 typedef struct guild_operation_api_v1_s {
     uint32_t struct_size, version;
     void* user;
-    guild_status_t (*resolve)(void*, const guild_operation_query_v1_t*,
-                             const guild_device_capabilities_v1_t*,
-                             guild_operation_binding_t*, guild_error_info_t*);
+    guild_status_t (*resolve)(void*, const guild_operation_query_v1_t*, const guild_device_capabilities_v1_t*,
+                              guild_operation_binding_t*, guild_error_info_t*);
     const guild_kernel_op_desc_v1_t* (*describe)(guild_operation_binding_t);
     guild_status_t (*scratch)(guild_operation_binding_t, guild_scratch_request_t*, guild_error_info_t*);
-    guild_status_t (*execute)(guild_operation_binding_t, const guild_exec_context_v1_t*,
-                             const void*, size_t, guild_error_info_t*);
+    guild_status_t (*execute)(guild_operation_binding_t, const guild_exec_context_v1_t*, const void*, size_t,
+                              guild_error_info_t*);
     void (*release)(guild_operation_binding_t);
 } guild_operation_api_v1_t;
 

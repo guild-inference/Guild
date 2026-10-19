@@ -27,7 +27,7 @@
 
 namespace {
 
-constexpr int S = 128, HK = 16, HV = 48, C = 10240;   // as kernels.cu: head size, key heads, value heads, q|k|v width
+constexpr int S = 128, HK = 16, HV = 48, C = 10240; // as kernels.cu: head size, key heads, value heads, q|k|v width
 constexpr int RG = 4, RPG = S / RG;
 constexpr int CB = 32, NCB = S / CB;
 
@@ -40,21 +40,25 @@ void ck(cudaError_t e, const char* what) {
 
 __device__ __forceinline__ float warp_sum(float v) {
 #pragma unroll
-    for (int o = 16; o > 0; o >>= 1) v += __shfl_xor_sync(0xffffffffu, v, o);
+    for (int o = 16; o > 0; o >>= 1)
+        v += __shfl_xor_sync(0xffffffffu, v, o);
     return v;
 }
-__device__ __forceinline__ float sigm(float x) { return 1.0f / (1.0f + __expf(-x)); }
-__device__ __forceinline__ uint16_t hf(float f) { return __half_as_ushort(__float2half_rn(f)); }
+__device__ __forceinline__ float sigm(float x) {
+    return 1.0f / (1.0f + __expf(-x));
+}
+__device__ __forceinline__ uint16_t hf(float f) {
+    return __half_as_ushort(__float2half_rn(f));
+}
 
 // ------------------------------------------------------------------ the engine's kernels (src/prefill/kernels.cu)
 // gdn_rec_cols_kernel with the next token's inputs (q/k rows, v, gate, beta) loaded into registers while this token
 // computes (software pipelining).  The same arithmetic in the same order: the same bits, and the same CB-column split.
 // GUILD_GDN_PIPELINE=0: gdn_rec_cols_kernel.
-__global__ void __launch_bounds__(CB * RG) gdn_rec_cols_pipe_kernel(float* __restrict__ state, const float* __restrict__ h,
-                                                                      const float* __restrict__ gate,
-                                                                      const float* __restrict__ beta,
-                                                                      float* __restrict__ oc_out, int64_t T) {
-    constexpr int NT = CB * RG, LPT = S / NT;   // threads, q/k rows loaded per thread
+__global__ void __launch_bounds__(CB* RG)
+    gdn_rec_cols_pipe_kernel(float* __restrict__ state, const float* __restrict__ h, const float* __restrict__ gate,
+                             const float* __restrict__ beta, float* __restrict__ oc_out, int64_t T) {
+    constexpr int NT = CB * RG, LPT = S / NT; // threads, q/k rows loaded per thread
     __shared__ float sk[S], sq[S], red[RG][CB];
     const int head = blockIdx.x / NCB, cb = blockIdx.x % NCB;
     const int c = threadIdx.x, rg = threadIdx.y, tid = rg * CB + c, col = cb * CB + c;
@@ -63,31 +67,44 @@ __global__ void __launch_bounds__(CB * RG) gdn_rec_cols_pipe_kernel(float* __res
     float* base = state + ((size_t) (rg * RPG) * HV + head) * S + col;
     const size_t rs = (size_t) HV * S;
 #pragma unroll
-    for (int r = 0; r < RPG; ++r) s[r] = base[r * rs];
+    for (int r = 0; r < RPG; ++r)
+        s[r] = base[r * rs];
     float nq[LPT], nk[LPT], nv = 0.0f, ng = 0.0f, nb = 0.0f;
     auto fetch = [&](int64_t t) {
         const float* ht = h + t * C;
 #pragma unroll
-        for (int u = 0; u < LPT; ++u) { nq[u] = ht[qh * S + tid + u * NT]; nk[u] = ht[HK * S + qh * S + tid + u * NT]; }
+        for (int u = 0; u < LPT; ++u) {
+            nq[u] = ht[qh * S + tid + u * NT];
+            nk[u] = ht[HK * S + qh * S + tid + u * NT];
+        }
         nv = ht[2 * HK * S + head * S + col];
         ng = gate[t * HV + head];
         nb = beta[t * HV + head];
     };
-    if (T > 0) fetch(0);
+    if (T > 0)
+        fetch(0);
     for (int64_t t = 0; t < T; ++t) {
         float cq[LPT], ck[LPT];
 #pragma unroll
-        for (int u = 0; u < LPT; ++u) { cq[u] = nq[u]; ck[u] = nk[u]; }
+        for (int u = 0; u < LPT; ++u) {
+            cq[u] = nq[u];
+            ck[u] = nk[u];
+        }
         const float cv = nv, cg = ng, cbt = nb;
         __syncthreads();
 #pragma unroll
-        for (int u = 0; u < LPT; ++u) { sq[tid + u * NT] = cq[u]; sk[tid + u * NT] = ck[u]; }
+        for (int u = 0; u < LPT; ++u) {
+            sq[tid + u * NT] = cq[u];
+            sk[tid + u * NT] = ck[u];
+        }
         __syncthreads();
-        if (t + 1 < T) fetch(t + 1);
+        if (t + 1 < T)
+            fetch(t + 1);
         const float g = __expf(cg);
         float kv = 0.0f;
 #pragma unroll
-        for (int r = 0; r < RPG; ++r) kv = fmaf(s[r], sk[rg * RPG + r], kv);
+        for (int r = 0; r < RPG; ++r)
+            kv = fmaf(s[r], sk[rg * RPG + r], kv);
         red[rg][c] = kv;
         __syncthreads();
         const float kv_col = red[0][c] + red[1][c] + red[2][c] + red[3][c];
@@ -101,10 +118,12 @@ __global__ void __launch_bounds__(CB * RG) gdn_rec_cols_pipe_kernel(float* __res
         __syncthreads();
         red[rg][c] = o;
         __syncthreads();
-        if (rg == 0) oc_out[t * HV * S + head * S + col] = (red[0][c] + red[1][c] + red[2][c] + red[3][c]) * rsqrtf((float) S);
+        if (rg == 0)
+            oc_out[t * HV * S + head * S + col] = (red[0][c] + red[1][c] + red[2][c] + red[3][c]) * rsqrtf((float) S);
     }
 #pragma unroll
-    for (int r = 0; r < RPG; ++r) base[r * rs] = s[r];
+    for (int r = 0; r < RPG; ++r)
+        base[r * rs] = s[r];
 }
 // The recurrence with one thread for the three value heads that share a key head (head % HK): column c of heads
 // qh, qh + 16 and qh + 32, row group rg.  gdn_rec_cols_pipe_kernel spends its time in shared memory, not in
@@ -118,20 +137,22 @@ __global__ void __launch_bounds__(CB * RG) gdn_rec_cols_pipe_kernel(float* __res
 // order: the same bits (src/prefill/gdn_rec_parity.cu checks them and times the variants: 1.41x on a 4080 Super).
 // sm_80+ (gdn_keyhead_ok); GUILD_GDN_KEYHEAD=0: gdn_rec_cols_pipe_kernel.
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ < 800
-#define GUILD_GDN_CP_ASYNC 0   // Turing builds: plain copies (never launched there, see gdn_keyhead_ok)
+#define GUILD_GDN_CP_ASYNC 0 // Turing builds: plain copies (never launched there, see gdn_keyhead_ok)
 #else
 #define GUILD_GDN_CP_ASYNC 1
 #endif
 __device__ __forceinline__ void gdn_cp4(float* smem, const float* gmem) {
 #if GUILD_GDN_CP_ASYNC
-    asm volatile("cp.async.ca.shared.global [%0], [%1], 4;\n" ::"r"((unsigned) __cvta_generic_to_shared(smem)), "l"(gmem));
+    asm volatile("cp.async.ca.shared.global [%0], [%1], 4;\n" ::"r"((unsigned) __cvta_generic_to_shared(smem)),
+                 "l"(gmem));
 #else
     *smem = *gmem;
 #endif
 }
 __device__ __forceinline__ void gdn_cp16(float* smem, const float* gmem) {
 #if GUILD_GDN_CP_ASYNC
-    asm volatile("cp.async.cg.shared.global [%0], [%1], 16;\n" ::"r"((unsigned) __cvta_generic_to_shared(smem)), "l"(gmem));
+    asm volatile("cp.async.cg.shared.global [%0], [%1], 16;\n" ::"r"((unsigned) __cvta_generic_to_shared(smem)),
+                 "l"(gmem));
 #else
     *reinterpret_cast<float4*>(smem) = *reinterpret_cast<const float4*>(gmem);
 #endif
@@ -141,17 +162,16 @@ __device__ __forceinline__ void gdn_cp_commit() {
     asm volatile("cp.async.commit_group;\n" ::);
 #endif
 }
-__device__ __forceinline__ void gdn_cp_wait_prev() {   // every group but the newest has landed
+__device__ __forceinline__ void gdn_cp_wait_prev() { // every group but the newest has landed
 #if GUILD_GDN_CP_ASYNC
     asm volatile("cp.async.wait_group 1;\n" ::);
 #endif
 }
-constexpr int GDN_TB = 8, VPK = HV / HK;   // tokens per staged block, value heads per key head
-__global__ void __launch_bounds__(CB * RG) gdn_rec_kh_kernel(float* __restrict__ state, const float* __restrict__ h,
-                                                               const float* __restrict__ gate,
-                                                               const float* __restrict__ beta,
-                                                               float* __restrict__ oc_out, int64_t T) {
-    constexpr int TB = GDN_TB, NT = CB * RG, QKP = S / 4, VP = CB / 4;   // threads, 16-byte pieces of a q/k row, of v
+constexpr int GDN_TB = 8, VPK = HV / HK; // tokens per staged block, value heads per key head
+__global__ void __launch_bounds__(CB* RG)
+    gdn_rec_kh_kernel(float* __restrict__ state, const float* __restrict__ h, const float* __restrict__ gate,
+                      const float* __restrict__ beta, float* __restrict__ oc_out, int64_t T) {
+    constexpr int TB = GDN_TB, NT = CB * RG, QKP = S / 4, VP = CB / 4; // threads, 16-byte pieces of a q/k row, of v
     __shared__ __align__(16) float sq[2][TB][S];
     __shared__ __align__(16) float sk[2][TB][S];
     __shared__ __align__(16) float sv[2][TB][VPK][CB];
@@ -164,10 +184,11 @@ __global__ void __launch_bounds__(CB * RG) gdn_rec_kh_kernel(float* __restrict__
     for (int j = 0; j < VPK; ++j) {
         const float* base = state + ((size_t) (rg * RPG) * HV + qh + j * HK) * S + col;
 #pragma unroll
-        for (int r = 0; r < RPG; ++r) s[j][r] = base[r * rs];
+        for (int r = 0; r < RPG; ++r)
+            s[j][r] = base[r * rs];
     }
     const int64_t nblk = (T + TB - 1) / TB;
-    auto stage = [&](int64_t k) {   // tokens [k * TB, k * TB + TB) into buffer k & 1
+    auto stage = [&](int64_t k) { // tokens [k * TB, k * TB + TB) into buffer k & 1
         const int bb = (int) (k & 1);
         const int64_t t0 = k * TB;
         for (int p = tid; p < TB * 2 * QKP; p += NT) {
@@ -186,11 +207,13 @@ __global__ void __launch_bounds__(CB * RG) gdn_rec_kh_kernel(float* __restrict__
                 gdn_cp4(isb ? &sb[bb][i][j] : &sg[bb][i][j], (isb ? beta : gate) + (t0 + i) * HV + qh + j * HK);
         }
     };
-    if (nblk > 0) stage(0);
+    if (nblk > 0)
+        stage(0);
     gdn_cp_commit();
     for (int64_t k = 0; k < nblk; ++k) {
         // buffer (k + 1) & 1 was read by block k - 1, whose last token's second __syncthreads every thread has passed
-        if (k + 1 < nblk) stage(k + 1);
+        if (k + 1 < nblk)
+            stage(k + 1);
         gdn_cp_commit();
         gdn_cp_wait_prev();
         __syncthreads();
@@ -200,16 +223,23 @@ __global__ void __launch_bounds__(CB * RG) gdn_rec_kh_kernel(float* __restrict__
             const int64_t t = k * TB + i;
             float kc[RPG];
 #pragma unroll
-            for (int r = 0; r < RPG; ++r) kc[r] = sk[bb][i][rg * RPG + r];
+            for (int r = 0; r < RPG; ++r)
+                kc[r] = sk[bb][i][rg * RPG + r];
             float g[VPK], kv[VPK], delta[VPK], o[VPK];
 #pragma unroll
-            for (int j = 0; j < VPK; ++j) { g[j] = __expf(sg[bb][i][j]); kv[j] = 0.0f; o[j] = 0.0f; }
+            for (int j = 0; j < VPK; ++j) {
+                g[j] = __expf(sg[bb][i][j]);
+                kv[j] = 0.0f;
+                o[j] = 0.0f;
+            }
 #pragma unroll
             for (int r = 0; r < RPG; ++r)
 #pragma unroll
-                for (int j = 0; j < VPK; ++j) kv[j] = fmaf(s[j][r], kc[r], kv[j]);
+                for (int j = 0; j < VPK; ++j)
+                    kv[j] = fmaf(s[j][r], kc[r], kv[j]);
 #pragma unroll
-            for (int j = 0; j < VPK; ++j) rkv[j][rg][c] = kv[j];
+            for (int j = 0; j < VPK; ++j)
+                rkv[j][rg][c] = kv[j];
             __syncthreads();
 #pragma unroll
             for (int j = 0; j < VPK; ++j) {
@@ -226,9 +256,10 @@ __global__ void __launch_bounds__(CB * RG) gdn_rec_kh_kernel(float* __restrict__
                 }
             }
 #pragma unroll
-            for (int j = 0; j < VPK; ++j) ro[j][rg][c] = o[j];
+            for (int j = 0; j < VPK; ++j)
+                ro[j][rg][c] = o[j];
             __syncthreads();
-            if (rg < VPK)   // row group j writes head j's output
+            if (rg < VPK) // row group j writes head j's output
                 oc_out[t * HV * S + (qh + rg * HK) * S + col] =
                     (ro[rg][0][c] + ro[rg][1][c] + ro[rg][2][c] + ro[rg][3][c]) * rsqrtf((float) S);
         }
@@ -237,21 +268,23 @@ __global__ void __launch_bounds__(CB * RG) gdn_rec_kh_kernel(float* __restrict__
     for (int j = 0; j < VPK; ++j) {
         float* base = state + ((size_t) (rg * RPG) * HV + qh + j * HK) * S + col;
 #pragma unroll
-        for (int r = 0; r < RPG; ++r) base[r * rs] = s[j][r];
+        for (int r = 0; r < RPG; ++r)
+            base[r * rs] = s[j][r];
     }
 }
 // the output norm over a head's 128 columns, into the FP16 copy the out projection reads (the FP32 output before the
 // norm stays in its scratch buffer)
-__global__ void __launch_bounds__(S) gdn_out_norm_kernel(const float* __restrict__ z, const float* __restrict__ gamma,
-                                                         float eps, const float* __restrict__ y,
-                                                         uint16_t* __restrict__ y16) {
+__global__ void __launch_bounds__(S)
+    gdn_out_norm_kernel(const float* __restrict__ z, const float* __restrict__ gamma, float eps,
+                        const float* __restrict__ y, uint16_t* __restrict__ y16) {
     __shared__ float wsum[4];
     const int64_t t = blockIdx.x;
     const int head = blockIdx.y, col = threadIdx.x;
     const size_t at = (size_t) t * HV * S + (size_t) head * S + col;
     const float oc = y[at];
     float sp = warp_sum(oc * oc);
-    if ((col & 31) == 0) wsum[col >> 5] = sp;
+    if ((col & 31) == 0)
+        wsum[col >> 5] = sp;
     __syncthreads();
     const float ss = wsum[0] + wsum[1] + wsum[2] + wsum[3];
     const float v = oc * rsqrtf(ss / (float) S + eps) * gamma[col] * sigm(z[t * HV * S + head * S + col]);
@@ -259,16 +292,17 @@ __global__ void __launch_bounds__(S) gdn_out_norm_kernel(const float* __restrict
 }
 
 // ------------------------------------------------------------------ the output norm before (0.1.31)
-__global__ void __launch_bounds__(S) gdn_out_norm_old_kernel(const float* __restrict__ z, const float* __restrict__ gamma,
-                                                             float eps, float* __restrict__ y,
-                                                             uint16_t* __restrict__ y16) {
+__global__ void __launch_bounds__(S)
+    gdn_out_norm_old_kernel(const float* __restrict__ z, const float* __restrict__ gamma, float eps,
+                            float* __restrict__ y, uint16_t* __restrict__ y16) {
     __shared__ float wsum[4];
     const int64_t t = blockIdx.x;
     const int head = blockIdx.y, col = threadIdx.x;
     const size_t at = (size_t) t * HV * S + (size_t) head * S + col;
     const float oc = y[at];
     float sp = warp_sum(oc * oc);
-    if ((col & 31) == 0) wsum[col >> 5] = sp;
+    if ((col & 31) == 0)
+        wsum[col >> 5] = sp;
     __syncthreads();
     const float ss = wsum[0] + wsum[1] + wsum[2] + wsum[3];
     const float v = oc * rsqrtf(ss / (float) S + eps) * gamma[col] * sigm(z[t * HV * S + head * S + col]);
@@ -278,10 +312,16 @@ __global__ void __launch_bounds__(S) gdn_out_norm_old_kernel(const float* __rest
 
 // ------------------------------------------------------------------ synthetic inputs
 __device__ __forceinline__ uint32_t mix(uint64_t x) {
-    x ^= x >> 33; x *= 0xff51afd7ed558ccdULL; x ^= x >> 33; x *= 0xc4ceb9fe1a85ec53ULL; x ^= x >> 33;
+    x ^= x >> 33;
+    x *= 0xff51afd7ed558ccdULL;
+    x ^= x >> 33;
+    x *= 0xc4ceb9fe1a85ec53ULL;
+    x ^= x >> 33;
     return (uint32_t) x;
 }
-__device__ __forceinline__ float uni(uint64_t key) { return ((mix(key) >> 8) + 0.5f) * (1.0f / 16777216.0f); }
+__device__ __forceinline__ float uni(uint64_t key) {
+    return ((mix(key) >> 8) + 0.5f) * (1.0f / 16777216.0f);
+}
 __device__ __forceinline__ float gauss(uint64_t key) {
     const float u1 = uni(key * 2 + 1), u2 = uni(key * 2 + 2);
     return sqrtf(-2.0f * logf(u1)) * cosf(6.2831853f * u2);
@@ -296,7 +336,8 @@ __global__ void l2_rows(float* h, float eps) {
     const float v = x[threadIdx.x];
     __shared__ float part[4];
     const float sq = warp_sum(v * v);
-    if ((threadIdx.x & 31) == 0) part[threadIdx.x >> 5] = sq;
+    if ((threadIdx.x & 31) == 0)
+        part[threadIdx.x >> 5] = sq;
     __syncthreads();
     x[threadIdx.x] = v * rsqrtf(part[0] + part[1] + part[2] + part[3] + eps);
 }
@@ -312,7 +353,8 @@ __global__ void count_diff(const uint32_t* a, const uint32_t* b, int64_t n, unsi
     unsigned long long d = 0;
     for (int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x; i < n; i += (int64_t) gridDim.x * blockDim.x)
         d += a[i] != b[i];
-    if (d) atomicAdd(out, d);
+    if (d)
+        atomicAdd(out, d);
 }
 
 // ------------------------------------------------------------------ holding SMs (fewer_sms)
@@ -345,7 +387,10 @@ __global__ void hold_sm(unsigned long long* sitting, const volatile unsigned* re
     atomicAdd(sitting, 1ull);
     const uint64_t t0 = gtime();
     while (*release != gen) {
-        if (gtime() - t0 > kHoldLimitNs) { atomicAdd(late, 1u); return; }
+        if (gtime() - t0 > kHoldLimitNs) {
+            atomicAdd(late, 1u);
+            return;
+        }
         nap(20000);
     }
 }
@@ -353,22 +398,31 @@ __global__ void hold_sm(unsigned long long* sitting, const volatile unsigned* re
 __global__ void wait_sitting(const volatile unsigned long long* sitting, unsigned long long all, unsigned* late) {
     const uint64_t t0 = gtime();
     while (*sitting < all) {
-        if (gtime() - t0 > kWaitLimitNs) { atomicAdd(late, 1u); return; }
+        if (gtime() - t0 > kWaitLimitNs) {
+            atomicAdd(late, 1u);
+            return;
+        }
         nap(1000);
     }
 }
-__global__ void release_sms(volatile unsigned* release, unsigned gen) { *release = gen; }
+__global__ void release_sms(volatile unsigned* release, unsigned gen) {
+    *release = gen;
+}
 // Where the blocks of a grid land: launched like the recurrence it stands for (the same grid and block size, and as
 // much dynamic shared memory as lets as many blocks share an SM), every block notes its SM and stays until all of them
 // have landed, so they all sit at once as the recurrence's blocks do for the whole chunk.
 __global__ void land(int* where, unsigned* landed, unsigned* apart) {
-    extern __shared__ unsigned char land_smem[];   // only its size matters
-    if (threadIdx.x != 0 || threadIdx.y != 0) return;
+    extern __shared__ unsigned char land_smem[]; // only its size matters
+    if (threadIdx.x != 0 || threadIdx.y != 0)
+        return;
     where[blockIdx.x] = sm_id();
     atomicAdd(landed, 1u);
     const uint64_t t0 = gtime();
     while (*(volatile unsigned*) landed < gridDim.x) {
-        if (gtime() - t0 > kWaitLimitNs) { atomicAdd(apart, 1u); return; }   // they did not all fit at once
+        if (gtime() - t0 > kWaitLimitNs) {
+            atomicAdd(apart, 1u);
+            return;
+        } // they did not all fit at once
         nap(1000);
     }
     (void) land_smem;
@@ -408,10 +462,21 @@ struct Inputs {
     }
     Inputs(const Inputs&) = delete;
     Inputs& operator=(const Inputs&) = delete;
-    ~Inputs() { cudaFree(h); cudaFree(gate); cudaFree(beta); cudaFree(z); cudaFree(gamma); cudaFree(state0); }
+    ~Inputs() {
+        cudaFree(h);
+        cudaFree(gate);
+        cudaFree(beta);
+        cudaFree(z);
+        cudaFree(gamma);
+        cudaFree(state0);
+    }
 };
 
-enum Rec { kBefore, kKeyHead, kRecCount };
+enum Rec {
+    kBefore,
+    kKeyHead,
+    kRecCount
+};
 void run_rec(Rec v, float* state, const Inputs& in, float* oc, cudaStream_t s = 0) {
     if (v == kBefore)
         gdn_rec_cols_pipe_kernel<<<HV * NCB, dim3(CB, RG), 0, s>>>(state, in.h, in.gate, in.beta, oc, in.T);
@@ -453,8 +518,13 @@ int check_bits(int64_t T, uint64_t seed) {
         ++fails;
     }
     std::printf("T=%-6lld %s\n", (long long) T, fails ? "DIFFERENT" : "the same bits (output, state, FP16 output)");
-    for (int v = 0; v < kRecCount; ++v) { cudaFree(state[v]); cudaFree(oc[v]); }
-    cudaFree(y16a); cudaFree(y16b); cudaFree(yb);
+    for (int v = 0; v < kRecCount; ++v) {
+        cudaFree(state[v]);
+        cudaFree(oc[v]);
+    }
+    cudaFree(y16a);
+    cudaFree(y16b);
+    cudaFree(yb);
     return fails;
 }
 
@@ -486,23 +556,29 @@ void bench(int64_t T) {
     std::vector<float> t_rec[kRecCount], t_norm[2];
     for (int i = 0; i < warm + rounds; ++i) {
         for (int j = 0; j < kRecCount; ++j) {
-            const Rec v = (Rec) ((i + j) % kRecCount);   // a different variant first in each round
+            const Rec v = (Rec) ((i + j) % kRecCount); // a different variant first in each round
             const float ms = timed([&] { run_rec(v, state, in, oc); });
-            if (i >= warm) t_rec[v].push_back(ms);
+            if (i >= warm)
+                t_rec[v].push_back(ms);
         }
     }
     for (int i = 0; i < warm + rounds; ++i) {
         for (int j = 0; j < 2; ++j) {
             const int v = (i + j) % 2;
             const float ms = timed([&] {
-                if (v == 0) gdn_out_norm_old_kernel<<<dim3((unsigned) T, HV), S>>>(in.z, in.gamma, 1e-6f, oc, y16);
-                else gdn_out_norm_kernel<<<dim3((unsigned) T, HV), S>>>(in.z, in.gamma, 1e-6f, oc, y16);
+                if (v == 0)
+                    gdn_out_norm_old_kernel<<<dim3((unsigned) T, HV), S>>>(in.z, in.gamma, 1e-6f, oc, y16);
+                else
+                    gdn_out_norm_kernel<<<dim3((unsigned) T, HV), S>>>(in.z, in.gamma, 1e-6f, oc, y16);
             });
-            if (i >= warm) t_norm[v].push_back(ms);
+            if (i >= warm)
+                t_norm[v].push_back(ms);
         }
     }
-    const float r0 = median(t_rec[kBefore]), r1 = median(t_rec[kKeyHead]), n0 = median(t_norm[0]), n1 = median(t_norm[1]);
-    std::printf("  T = %lld tokens, one layer (48 value heads), medians of %d alternating runs:\n", (long long) T, rounds);
+    const float r0 = median(t_rec[kBefore]), r1 = median(t_rec[kKeyHead]), n0 = median(t_norm[0]),
+                n1 = median(t_norm[1]);
+    std::printf("  T = %lld tokens, one layer (48 value heads), medians of %d alternating runs:\n", (long long) T,
+                rounds);
     std::printf("    recurrence, before (gdn_rec_cols_pipe_kernel)  %8.2f ms  (%.3f us per token)\n", r0,
                 1000.0f * r0 / (float) T);
     std::printf("    recurrence, gdn_rec_kh_kernel                  %8.2f ms  (%.3f us per token)  %.2fx\n", r1,
@@ -513,7 +589,9 @@ void bench(int64_t T) {
                 (long long) T, 36.0f * (r0 + n0), 36.0f * (r1 + n1), 36.0f * (r0 + n0 - r1 - n1));
     cudaEventDestroy(e0);
     cudaEventDestroy(e1);
-    cudaFree(state); cudaFree(oc); cudaFree(y16);
+    cudaFree(state);
+    cudaFree(oc);
+    cudaFree(y16);
 }
 
 // The two kernels at a given number of blocks per SM, as on cards with more or fewer SMs than this one: the kernel
@@ -526,11 +604,12 @@ void scale(int64_t T) {
     int dev = 0, sms = 0, per_sm[kRecCount] = {};
     ck(cudaGetDevice(&dev), "device");
     ck(cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, dev), "SMs");
-    ck(cudaOccupancyMaxActiveBlocksPerMultiprocessor(&per_sm[kBefore], gdn_rec_cols_pipe_kernel, CB * RG, 0), "occupancy");
+    ck(cudaOccupancyMaxActiveBlocksPerMultiprocessor(&per_sm[kBefore], gdn_rec_cols_pipe_kernel, CB * RG, 0),
+       "occupancy");
     ck(cudaOccupancyMaxActiveBlocksPerMultiprocessor(&per_sm[kKeyHead], gdn_rec_kh_kernel, CB * RG, 0), "occupancy");
     constexpr int kMaxB = 6, kMaxLaunches = 6;
-    const int full[kRecCount] = {HV * NCB, HK * NCB};   // the grids as the engine launches them
-    auto parts = [&](int v) { return (sms + full[v] - 1) / full[v]; };   // launches per round
+    const int full[kRecCount] = {HV * NCB, HK * NCB};                  // the grids as the engine launches them
+    auto parts = [&](int v) { return (sms + full[v] - 1) / full[v]; }; // launches per round
     Inputs in(T, 0xC7);
     const size_t st = (size_t) S * HV * S, oc_n = (size_t) T * HV * S;
     float* state[kMaxLaunches];
@@ -545,26 +624,33 @@ void scale(int64_t T) {
         ck(cudaStreamCreateWithFlags(&stream[c], cudaStreamNonBlocking), "stream");
         ck(cudaEventCreate(&done[c]), "event");
     }
-    struct Case { int v, b; };
+    struct Case {
+        int v, b;
+    };
     std::vector<Case> cases;
     for (int v = 0; v < kRecCount; ++v)
         for (int b = 1; b <= std::min(kMaxB, per_sm[v]); ++b)
-            if (b * parts(v) <= kMaxLaunches) cases.push_back({v, b});
+            if (b * parts(v) <= kMaxLaunches)
+                cases.push_back({v, b});
     auto run = [&](const Case& cs) {
-        for (int c = 0; c < kMaxLaunches; ++c) ck(cudaMemcpy(state[c], in.state0, st * 4, cudaMemcpyDeviceToDevice), "state");
+        for (int c = 0; c < kMaxLaunches; ++c)
+            ck(cudaMemcpy(state[c], in.state0, st * 4, cudaMemcpyDeviceToDevice), "state");
         ck(cudaDeviceSynchronize(), "sync");
         const int np = parts(cs.v), n = cs.b * np;
         cudaEventRecord(e0, stream[0]);
         for (int c = 0; c < n; ++c) {
-            const int k = c % np, grid = sms / np + (k < sms % np ? 1 : 0);   // round c / np, part k
-            if (c > 0) cudaStreamWaitEvent(stream[c], e0, 0);
+            const int k = c % np, grid = sms / np + (k < sms % np ? 1 : 0); // round c / np, part k
+            if (c > 0)
+                cudaStreamWaitEvent(stream[c], e0, 0);
             if (cs.v == kBefore)
-                gdn_rec_cols_pipe_kernel<<<grid, dim3(CB, RG), 0, stream[c]>>>(state[c], in.h, in.gate, in.beta, oc[c], T);
+                gdn_rec_cols_pipe_kernel<<<grid, dim3(CB, RG), 0, stream[c]>>>(state[c], in.h, in.gate, in.beta, oc[c],
+                                                                               T);
             else
                 gdn_rec_kh_kernel<<<grid, dim3(CB, RG), 0, stream[c]>>>(state[c], in.h, in.gate, in.beta, oc[c], T);
             cudaEventRecord(done[c], stream[c]);
         }
-        for (int c = 1; c < n; ++c) cudaStreamWaitEvent(stream[0], done[c], 0);
+        for (int c = 1; c < n; ++c)
+            cudaStreamWaitEvent(stream[0], done[c], 0);
         cudaEventRecord(e1, stream[0]);
         ck(cudaEventSynchronize(e1), "scale");
         float ms = 0.0f;
@@ -575,40 +661,50 @@ void scale(int64_t T) {
     std::vector<std::vector<float>> t(cases.size());
     for (int i = 0; i < warm + rounds; ++i)
         for (size_t j = 0; j < cases.size(); ++j) {
-            const size_t k = (i + j) % cases.size();   // a different case first in each round
+            const size_t k = (i + j) % cases.size(); // a different case first in each round
             const float ms = run(cases[k]);
-            if (i >= warm) t[k].push_back(ms);
+            if (i >= warm)
+                t[k].push_back(ms);
         }
-    auto us = [&](int v, int b) {   // per token, or < 0 if not measured
+    auto us = [&](int v, int b) { // per token, or < 0 if not measured
         for (size_t k = 0; k < cases.size(); ++k)
-            if (cases[k].v == v && cases[k].b == b) return 1000.0f * median(t[k]) / (float) T;
+            if (cases[k].v == v && cases[k].b == b)
+                return 1000.0f * median(t[k]) / (float) T;
         return -1.0f;
     };
-    std::printf("  per token at a given number of blocks per SM (%lld tokens, medians of %d alternating runs; this card has "
-                "%d SMs):\n", (long long) T, rounds, sms);
+    std::printf(
+        "  per token at a given number of blocks per SM (%lld tokens, medians of %d alternating runs; this card has "
+        "%d SMs):\n",
+        (long long) T, rounds, sms);
     std::printf("    blocks per SM   before      gdn_rec_kh_kernel\n");
     for (int b = 1; b <= kMaxB; ++b) {
         const float u0 = us(kBefore, b), u1 = us(kKeyHead, b);
-        if (u0 < 0 && u1 < 0) continue;
+        if (u0 < 0 && u1 < 0)
+            continue;
         char a0[32] = "-", a1[32] = "-";
-        if (u0 >= 0) std::snprintf(a0, sizeof a0, "%.3f us", u0);
-        if (u1 >= 0) std::snprintf(a1, sizeof a1, "%.3f us", u1);
+        if (u0 >= 0)
+            std::snprintf(a0, sizeof a0, "%.3f us", u0);
+        if (u1 >= 0)
+            std::snprintf(a1, sizeof a1, "%.3f us", u1);
         std::printf("    %8d        %-11s %s\n", b, a0, a1);
     }
     std::printf("  so on a card with N SMs (the kernel before puts ceil(192 / N) blocks on an SM, gdn_rec_kh_kernel "
-                "ceil(64 / N), at most %d):\n", per_sm[kKeyHead]);
+                "ceil(64 / N), at most %d):\n",
+                per_sm[kKeyHead]);
     const int bands[][2] = {{192, 0}, {96, 191}, {64, 95}, {48, 63}, {39, 47}, {32, 38}};
     for (const auto& bd : bands) {
         const int nsm = bd[0], b0 = (192 + nsm - 1) / nsm, b1 = (64 + nsm - 1) / nsm;
         const float u0 = us(kBefore, b0), u1 = us(kKeyHead, b1);
         char range[32];
-        if (bd[1]) std::snprintf(range, sizeof range, "%d-%d SMs", bd[0], bd[1]);
-        else std::snprintf(range, sizeof range, "%d+ SMs", bd[0]);
+        if (bd[1])
+            std::snprintf(range, sizeof range, "%d-%d SMs", bd[0], bd[1]);
+        else
+            std::snprintf(range, sizeof range, "%d+ SMs", bd[0]);
         if (u0 < 0 || u1 < 0)
             std::printf("    %-12s before %d / new %d per SM: not measured on this card\n", range, b0, b1);
         else
-            std::printf("    %-12s before %d / new %d per SM: %.3f -> %.3f us per token, %.2fx\n", range, b0, b1, u0, u1,
-                        u0 / u1);
+            std::printf("    %-12s before %d / new %d per SM: %.3f -> %.3f us per token, %.2fx\n", range, b0, b1, u0,
+                        u1, u0 / u1);
     }
     for (int c = 0; c < kMaxLaunches; ++c) {
         cudaFree(state[c]);
@@ -636,7 +732,8 @@ void fewer_sms(int64_t T) {
     ck(cudaDeviceGetAttribute(&reserved, cudaDevAttrReservedSharedMemoryPerBlock, dev), "shared memory");
     for (const void* f : {(const void*) hold_sm, (const void*) land}) {
         ck(cudaFuncSetAttribute(f, cudaFuncAttributeMaxDynamicSharedMemorySize, optin), "shared memory");
-        ck(cudaFuncSetAttribute(f, cudaFuncAttributePreferredSharedMemoryCarveout, (int) cudaSharedmemCarveoutMaxShared),
+        ck(cudaFuncSetAttribute(f, cudaFuncAttributePreferredSharedMemoryCarveout,
+                                (int) cudaSharedmemCarveoutMaxShared),
            "carveout");
     }
     // Loaded now rather than at a first launch: with lazy loading (CUDA 12's default) a kernel's first launch may wait
@@ -644,15 +741,19 @@ void fewer_sms(int64_t T) {
     cudaFuncAttributes fa[kRecCount], fx;
     ck(cudaFuncGetAttributes(&fa[kBefore], gdn_rec_cols_pipe_kernel), "attributes");
     ck(cudaFuncGetAttributes(&fa[kKeyHead], gdn_rec_kh_kernel), "attributes");
-    for (const void* f : {(const void*) hold_sm, (const void*) wait_sitting, (const void*) release_sms, (const void*) land})
+    for (const void* f :
+         {(const void*) hold_sm, (const void*) wait_sitting, (const void*) release_sms, (const void*) land})
         ck(cudaFuncGetAttributes(&fx, f), "attributes");
     ck(cudaOccupancyMaxActiveBlocksPerMultiprocessor(&hold_per_sm, hold_sm, 1, optin), "occupancy");
-    ck(cudaOccupancyMaxActiveBlocksPerMultiprocessor(&per_sm[kBefore], gdn_rec_cols_pipe_kernel, CB * RG, 0), "occupancy");
+    ck(cudaOccupancyMaxActiveBlocksPerMultiprocessor(&per_sm[kBefore], gdn_rec_cols_pipe_kernel, CB * RG, 0),
+       "occupancy");
     ck(cudaOccupancyMaxActiveBlocksPerMultiprocessor(&per_sm[kKeyHead], gdn_rec_kh_kernel, CB * RG, 0), "occupancy");
-    const int grid[kRecCount] = {HV * NCB, HK * NCB};   // as the engine launches them
-    std::printf("  the engine's grids on N of this card's %d SMs (%lld tokens; the other SMs held by a sleeping kernel, see "
-                "fewer_sms):\n", sms, (long long) T);
-    const int left = smem_sm - optin - reserved;   // shared memory a holding block leaves on its SM
+    const int grid[kRecCount] = {HV * NCB, HK * NCB}; // as the engine launches them
+    std::printf(
+        "  the engine's grids on N of this card's %d SMs (%lld tokens; the other SMs held by a sleeping kernel, see "
+        "fewer_sms):\n",
+        sms, (long long) T);
+    const int left = smem_sm - optin - reserved; // shared memory a holding block leaves on its SM
     if (hold_per_sm != 1 || (int) fa[kBefore].sharedSizeBytes + reserved <= left ||
         (int) fa[kKeyHead].sharedSizeBytes + reserved <= left) {
         std::printf("    not on this card: a block of a recurrence would fit beside a holding block (%d bytes left)\n",
@@ -667,16 +768,19 @@ void fewer_sms(int64_t T) {
             const int mid = (lo + hi + 1) / 2;
             int nb = 0;
             ck(cudaOccupancyMaxActiveBlocksPerMultiprocessor(&nb, land, CB * RG, mid), "occupancy");
-            if (nb >= per_sm[v]) lo = mid;
-            else hi = mid - 1;
+            if (nb >= per_sm[v])
+                lo = mid;
+            else
+                hi = mid - 1;
         }
         land_smem[v] = lo;
     }
     // N: all SMs, and below that the SM counts of cards and the band edges, as long as both grids fit at once
     std::vector<int> ns = {sms};
-    for (const int n : {170, 144, 132, 128, 112, 108, 96, 95, 84, 82, 80, 76, 72, 70, 66, 64, 63, 60, 56, 52, 48, 47, 46, 44,
-                        40, 39, 38, 36, 34, 32})
-        if (n < sms && (int64_t) n * per_sm[kBefore] >= grid[kBefore] && (int64_t) n * per_sm[kKeyHead] >= grid[kKeyHead])
+    for (const int n : {170, 144, 132, 128, 112, 108, 96, 95, 84, 82, 80, 76, 72, 70, 66,
+                        64,  63,  60,  56,  52,  48,  47, 46, 44, 40, 39, 38, 36, 34, 32})
+        if (n < sms && (int64_t) n * per_sm[kBefore] >= grid[kBefore] &&
+            (int64_t) n * per_sm[kKeyHead] >= grid[kKeyHead])
             ns.push_back(n);
 
     Inputs in(T, 0xD5);
@@ -686,7 +790,7 @@ void fewer_sms(int64_t T) {
     unsigned long long* sitting = dalloc<unsigned long long>(1);
     unsigned* flags = dalloc<unsigned>(4);
     unsigned *release = flags, *late = flags + 1, *landed = flags + 2, *apart = flags + 3;
-    int* where = dalloc<int>((size_t) sms + grid[kBefore]);   // the holding blocks' SMs, then land()'s
+    int* where = dalloc<int>((size_t) sms + grid[kBefore]); // the holding blocks' SMs, then land()'s
     ck(cudaMemset(sitting, 0, sizeof(*sitting)), "memset");
     ck(cudaMemset(flags, 0, 4 * sizeof(unsigned)), "memset");
     cudaStream_t s_hold, s_run;
@@ -695,27 +799,30 @@ void fewer_sms(int64_t T) {
     cudaEvent_t e0, e1;
     ck(cudaEventCreate(&e0), "event");
     ck(cudaEventCreate(&e1), "event");
-    unsigned long long all = 0;   // holding blocks launched so far: sitting counts every one that sat down
+    unsigned long long all = 0; // holding blocks launched so far: sitting counts every one that sat down
     unsigned gen = 0;
-    auto hold = [&](int n) {   // all but n SMs, before the next launch on s_run
-        if (n >= sms) return;
+    auto hold = [&](int n) { // all but n SMs, before the next launch on s_run
+        if (n >= sms)
+            return;
         ++gen;
         all += (unsigned long long) (sms - n);
         hold_sm<<<sms - n, 1, optin, s_hold>>>(sitting, release, gen, where, late);
         ck(cudaGetLastError(), "hold_sm");
-        const cudaError_t q = cudaStreamQuery(s_hold);   // hands the launch to the GPU now (Windows collects launches)
-        if (q != cudaErrorNotReady) ck(q, "hold_sm");
-        (void) cudaGetLastError();   // not ready is no error
+        const cudaError_t q = cudaStreamQuery(s_hold); // hands the launch to the GPU now (Windows collects launches)
+        if (q != cudaErrorNotReady)
+            ck(q, "hold_sm");
+        (void) cudaGetLastError(); // not ready is no error
         wait_sitting<<<1, 1, 0, s_run>>>(sitting, all, late);
     };
     auto let_go = [&](int n) {
-        if (n < sms) release_sms<<<1, 1, 0, s_run>>>(release, gen);
+        if (n < sms)
+            release_sms<<<1, 1, 0, s_run>>>(release, gen);
     };
     auto settle = [&](const char* what) {
         ck(cudaStreamSynchronize(s_run), what);
         ck(cudaStreamSynchronize(s_hold), what);
     };
-    auto count = [&](const unsigned* c) {   // after settle()
+    auto count = [&](const unsigned* c) { // after settle()
         unsigned h = 0;
         ck(cudaMemcpy(&h, c, sizeof(h), cudaMemcpyDeviceToHost), "count");
         return h;
@@ -725,11 +832,18 @@ void fewer_sms(int64_t T) {
         cudaEventDestroy(e1);
         cudaStreamDestroy(s_hold);
         cudaStreamDestroy(s_run);
-        cudaFree(state); cudaFree(oc); cudaFree(sitting); cudaFree(flags); cudaFree(where);
+        cudaFree(state);
+        cudaFree(oc);
+        cudaFree(sitting);
+        cudaFree(flags);
+        cudaFree(where);
     };
 
     // where the grids land, once per N
-    struct Landing { bool held = true; int busiest[kRecCount] = {}, on[kRecCount] = {}; };
+    struct Landing {
+        bool held = true;
+        int busiest[kRecCount] = {}, on[kRecCount] = {};
+    };
     std::vector<Landing> lands(ns.size());
     for (size_t i = 0; i < ns.size(); ++i) {
         const int n = ns[i];
@@ -747,7 +861,7 @@ void fewer_sms(int64_t T) {
                 settle("land");
                 sat = count(late) == late0;
             }
-            if (!sat) {   // twice: the holding kernel and the launches beside it do not run at the same time here
+            if (!sat) { // twice: the holding kernel and the launches beside it do not run at the same time here
                 std::printf("    not on this card: the other SMs could not be held (the kernel holding them and the "
                             "launches beside it did not run at the same time)\n");
                 done();
@@ -756,14 +870,22 @@ void fewer_sms(int64_t T) {
             std::vector<int> w((size_t) sms + grid[v]);
             ck(cudaMemcpy(w.data(), where, w.size() * sizeof(int), cudaMemcpyDeviceToHost), "where");
             std::map<int, int> held, blocks;
-            for (int b = 0; b < (n < sms ? sms - n : 0); ++b) ++held[w[b]];
-            for (int b = 0; b < grid[v]; ++b) ++blocks[w[sms + b]];
-            bool ok = count(apart) == apart0 && (int) held.size() == (n < sms ? sms - n : 0) && (int) blocks.size() <= n;
+            for (int b = 0; b < (n < sms ? sms - n : 0); ++b)
+                ++held[w[b]];
+            for (int b = 0; b < grid[v]; ++b)
+                ++blocks[w[sms + b]];
+            bool ok =
+                count(apart) == apart0 && (int) held.size() == (n < sms ? sms - n : 0) && (int) blocks.size() <= n;
             int most = 0, on = 0;
             for (const auto& sb : blocks) {
-                if (held.count(sb.first)) ok = false;
-                if (sb.second > most) { most = sb.second; on = 0; }
-                if (sb.second == most) ++on;
+                if (held.count(sb.first))
+                    ok = false;
+                if (sb.second > most) {
+                    most = sb.second;
+                    on = 0;
+                }
+                if (sb.second == most)
+                    ++on;
             }
             lands[i].held = lands[i].held && ok;
             lands[i].busiest[v] = most;
@@ -772,12 +894,16 @@ void fewer_sms(int64_t T) {
     }
 
     // the timings: every N and recurrence once per round, a different one first in each round
-    struct Case { size_t i; Rec v; };
+    struct Case {
+        size_t i;
+        Rec v;
+    };
     std::vector<Case> cases;
     for (size_t i = 0; i < ns.size(); ++i)
         if (lands[i].held)
-            for (int v = 0; v < kRecCount; ++v) cases.push_back({i, (Rec) v});
-    auto run = [&](const Case& cs) {   // ms, or < 0 if the SMs were not held for the whole launch
+            for (int v = 0; v < kRecCount; ++v)
+                cases.push_back({i, (Rec) v});
+    auto run = [&](const Case& cs) { // ms, or < 0 if the SMs were not held for the whole launch
         const int n = ns[cs.i];
         const unsigned late0 = count(late);
         ck(cudaMemcpyAsync(state, in.state0, st * 4, cudaMemcpyDeviceToDevice, s_run), "state");
@@ -787,7 +913,8 @@ void fewer_sms(int64_t T) {
         ck(cudaEventRecord(e1, s_run), "event");
         let_go(n);
         settle("fewer SMs");
-        if (count(late) != late0) return -1.0f;
+        if (count(late) != late0)
+            return -1.0f;
         float ms = 0.0f;
         ck(cudaEventElapsedTime(&ms, e0, e1), "event");
         return ms;
@@ -799,17 +926,20 @@ void fewer_sms(int64_t T) {
         for (size_t j = 0; j < cases.size() && dropped <= max_dropped; ++j) {
             const size_t k = (r + j) % cases.size();
             const float ms = run(cases[k]);
-            if (ms < 0.0f) ++dropped;
-            else if (r >= warm) t[k].push_back(ms);
+            if (ms < 0.0f)
+                ++dropped;
+            else if (r >= warm)
+                t[k].push_back(ms);
         }
-    if (dropped > max_dropped) {   // each such run waits for a limit of a second or so
+    if (dropped > max_dropped) { // each such run waits for a limit of a second or so
         std::printf("    stopped: in %d runs the other SMs were not held for the whole launch\n", dropped);
         done();
         return;
     }
-    auto us = [&](size_t i, int v) {   // per token, or < 0 if not measured
+    auto us = [&](size_t i, int v) { // per token, or < 0 if not measured
         for (size_t k = 0; k < cases.size(); ++k)
-            if (cases[k].i == i && cases[k].v == v && !t[k].empty()) return 1000.0f * median(t[k]) / (float) T;
+            if (cases[k].i == i && cases[k].v == v && !t[k].empty())
+                return 1000.0f * median(t[k]) / (float) T;
         return -1.0f;
     };
     auto blocks_on = [](char* out, size_t size, int most, int on) {
@@ -826,12 +956,16 @@ void fewer_sms(int64_t T) {
         blocks_on(b0, sizeof b0, lands[i].busiest[kBefore], lands[i].on[kBefore]);
         blocks_on(b1, sizeof b1, lands[i].busiest[kKeyHead], lands[i].on[kKeyHead]);
         const float u0 = us(i, kBefore), u1 = us(i, kKeyHead);
-        if (u0 < 0.0f || u1 < 0.0f) std::printf("    %3d   %-20s %-20s not measured\n", ns[i], b0, b1);
-        else std::printf("    %3d   %-20s %-20s %.3f -> %.3f   %.2fx\n", ns[i], b0, b1, u0, u1, u0 / u1);
+        if (u0 < 0.0f || u1 < 0.0f)
+            std::printf("    %3d   %-20s %-20s not measured\n", ns[i], b0, b1);
+        else
+            std::printf("    %3d   %-20s %-20s %.3f -> %.3f   %.2fx\n", ns[i], b0, b1, u0, u1, u0 / u1);
     }
-    if (dropped) std::printf("    (%d runs dropped: the other SMs were not held for the whole launch)\n", dropped);
-    std::printf("  so on a card with N SMs, as measured here (the kernel before puts ceil(192 / N) blocks on the busiest SM, "
-                "gdn_rec_kh_kernel ceil(64 / N)):\n");
+    if (dropped)
+        std::printf("    (%d runs dropped: the other SMs were not held for the whole launch)\n", dropped);
+    std::printf(
+        "  so on a card with N SMs, as measured here (the kernel before puts ceil(192 / N) blocks on the busiest SM, "
+        "gdn_rec_kh_kernel ceil(64 / N)):\n");
     const int bands[][2] = {{96, 191}, {64, 95}, {48, 63}, {39, 47}, {32, 38}};
     for (const auto& bd : bands) {
         const int b0 = (192 + bd[0] - 1) / bd[0], b1 = (64 + bd[0] - 1) / bd[0];
@@ -839,41 +973,48 @@ void fewer_sms(int64_t T) {
         int cnt = 0, nmin = 0, nmax = 0;
         for (size_t i = 0; i < ns.size(); ++i) {
             const float u0 = us(i, kBefore), u1 = us(i, kKeyHead);
-            if (ns[i] < bd[0] || ns[i] > bd[1] || u0 < 0.0f || u1 < 0.0f) continue;
+            if (ns[i] < bd[0] || ns[i] > bd[1] || u0 < 0.0f || u1 < 0.0f)
+                continue;
             const float x = u0 / u1;
-            if (cnt == 0 || x < lo) lo = x;
-            if (cnt == 0 || x > hi) hi = x;
-            if (cnt == 0 || ns[i] < nmin) nmin = ns[i];
-            if (cnt == 0 || ns[i] > nmax) nmax = ns[i];
+            if (cnt == 0 || x < lo)
+                lo = x;
+            if (cnt == 0 || x > hi)
+                hi = x;
+            if (cnt == 0 || ns[i] < nmin)
+                nmin = ns[i];
+            if (cnt == 0 || ns[i] > nmax)
+                nmax = ns[i];
             ++cnt;
         }
         char range[32];
         std::snprintf(range, sizeof range, "%d-%d SMs", bd[0], bd[1]);
         if (cnt > 0)
-            std::printf("    %-12s before %d / new %d per SM: %.2fx to %.2fx (%d to %d SMs)\n", range, b0, b1, lo, hi, nmin,
-                        nmax);
+            std::printf("    %-12s before %d / new %d per SM: %.2fx to %.2fx (%d to %d SMs)\n", range, b0, b1, lo, hi,
+                        nmin, nmax);
         else if (bd[0] > sms)
-            std::printf("    %-12s before %d / new %d per SM: more SMs than this card has (see the estimate above)\n", range,
-                        b0, b1);
+            std::printf("    %-12s before %d / new %d per SM: more SMs than this card has (see the estimate above)\n",
+                        range, b0, b1);
         else
             std::printf("    %-12s before %d / new %d per SM: not measured\n", range, b0, b1);
     }
     done();
 }
 
-}  // namespace
+} // namespace
 
 int main(int argc, char** argv) {
     bool do_bench = false;
     for (int i = 1; i < argc; ++i)
-        if (std::strcmp(argv[i], "--bench") == 0) do_bench = true;
+        if (std::strcmp(argv[i], "--bench") == 0)
+            do_bench = true;
     cudaDeviceProp p{};
     ck(cudaGetDeviceProperties(&p, 0), "device");
     std::printf("gdn_rec_parity on %s (sm_%d%d)\n", p.name, p.major, p.minor);
     int fails = 0;
     const int64_t Ts[] = {1, 2, 3, 4, 5, 7, 8, 9, 15, 16, 17, 31, 33, 257, 1000, 4099};
     uint64_t seed = 11;
-    for (const int64_t T : Ts) fails += check_bits(T, seed++);
+    for (const int64_t T : Ts)
+        fails += check_bits(T, seed++);
     if (do_bench) {
         std::printf("--bench: the prompt path's DeltaNet recurrence\n");
         bench(8192);

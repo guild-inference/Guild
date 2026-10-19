@@ -54,8 +54,12 @@ void set_env(const char* name, const char* value) {
 template <typename T> struct Dev {
     T* p = nullptr;
     size_t n = 0;
-    explicit Dev(size_t count) : n(count) { ck(cudaMalloc(&p, count * sizeof(T) + 64), "cudaMalloc"); }
-    ~Dev() { cudaFree(p); }
+    explicit Dev(size_t count) : n(count) {
+        ck(cudaMalloc(&p, count * sizeof(T) + 64), "cudaMalloc");
+    }
+    ~Dev() {
+        cudaFree(p);
+    }
     void put(const std::vector<T>& h) {
         ck(cudaMemcpy(p, h.data(), h.size() * sizeof(T), cudaMemcpyHostToDevice), "up");
         // #548 #536: a pageable cudaMemcpy can return before its DMA lands, and the graph replays and the timing
@@ -72,11 +76,23 @@ template <typename T> struct Dev {
 const float kNaN = std::numeric_limits<float>::quiet_NaN(), kInf = std::numeric_limits<float>::infinity();
 
 // ---- QSA top-k fixtures
-enum Pattern { kRandom, kAllEqual, kFewValues, kNaNs, kInfs, kSignedZero, kDenormal, kAscending, kDescending, kAllNaN,
-               kQuantized, kPatterns };
+enum Pattern {
+    kRandom,
+    kAllEqual,
+    kFewValues,
+    kNaNs,
+    kInfs,
+    kSignedZero,
+    kDenormal,
+    kAscending,
+    kDescending,
+    kAllNaN,
+    kQuantized,
+    kPatterns
+};
 const char* pattern_name(int p) {
-    static const char* n[] = {"random", "all-equal", "few-values", "nan", "inf", "signed-zero", "denormal", "ascending",
-                              "descending", "all-nan", "quantized"};
+    static const char* n[] = {"random",   "all-equal", "few-values", "nan",     "inf",      "signed-zero",
+                              "denormal", "ascending", "descending", "all-nan", "quantized"};
     return n[p];
 }
 
@@ -88,30 +104,31 @@ void fill_row(float* row, int64_t n_kv, int64_t n_bid, int pattern, std::mt19937
         float v = 0.f;
         const float g = nd(rng);
         switch (pattern) {
-            case kRandom: v = std::fmax(0.f, g) * 3.f + std::fmax(0.f, nd(rng)); break;   // relu sums: exact zeros too
-            case kAllEqual: v = 1.f; break;
-            case kFewValues: v = (float) (pick(rng) % 4) * 0.5f; break;
-            case kNaNs: v = pick(rng) < 15 ? kNaN : std::fabs(g); break;
-            case kInfs: {
-                const int r = pick(rng);
-                v = r < 5 ? kInf : r < 15 ? -kInf : r < 30 ? -std::fabs(g) : g;
-                break;
-            }
-            case kSignedZero: v = pick(rng) < 50 ? -0.0f : (pick(rng) < 50 ? 0.0f : -std::fabs(g) * 1e-3f); break;
-            case kDenormal: v = (float) (pick(rng) % 7) * 1e-41f; break;
-            case kAscending: v = (float) b; break;
-            case kDescending: v = (float) (n_bid - b); break;
-            case kAllNaN: v = kNaN; break;
-            case kQuantized: v = std::round(std::fabs(g) * 8.f) / 8.f; break;
+        case kRandom: v = std::fmax(0.f, g) * 3.f + std::fmax(0.f, nd(rng)); break; // relu sums: exact zeros too
+        case kAllEqual: v = 1.f; break;
+        case kFewValues: v = (float) (pick(rng) % 4) * 0.5f; break;
+        case kNaNs: v = pick(rng) < 15 ? kNaN : std::fabs(g); break;
+        case kInfs: {
+            const int r = pick(rng);
+            v = r < 5 ? kInf : r < 15 ? -kInf : r < 30 ? -std::fabs(g) : g;
+            break;
+        }
+        case kSignedZero: v = pick(rng) < 50 ? -0.0f : (pick(rng) < 50 ? 0.0f : -std::fabs(g) * 1e-3f); break;
+        case kDenormal: v = (float) (pick(rng) % 7) * 1e-41f; break;
+        case kAscending: v = (float) b; break;
+        case kDescending: v = (float) (n_bid - b); break;
+        case kAllNaN: v = kNaN; break;
+        case kQuantized: v = std::round(std::fabs(g) * 8.f) / 8.f; break;
         }
         row[b] = v;
     }
-    if (n_kv % 4 != 0 && pattern != kAllNaN && pattern != kAllEqual) row[n_bid] += 1e9f;
+    if (n_kv % 4 != 0 && pattern != kAllNaN && pattern != kAllEqual)
+        row[n_bid] += 1e9f;
 }
 
 struct TopkCase {
-    int64_t ctx;         // the last query's n_kv
-    int64_t capacity;    // --max-context: max_blocks = capacity / 4 + 2 (the engine's rule)
+    int64_t ctx;      // the last query's n_kv
+    int64_t capacity; // --max-context: max_blocks = capacity / 4 + 2 (the engine's rule)
     int nq;
     int pattern;
 };
@@ -122,7 +139,7 @@ int run_topk_case(const TopkCase& c, std::mt19937& rng, bool verbose) {
     std::vector<float> sc((size_t) (c.nq * max_blocks), 0.f);
     std::vector<int32_t> steps((size_t) c.nq * k::kStepCount);
     for (int i = 0; i < c.nq; ++i) {
-        const int64_t n_kv = c.ctx - (c.nq - 1 - i);   // the window's queries, one cell apart, the last at ctx
+        const int64_t n_kv = c.ctx - (c.nq - 1 - i); // the window's queries, one cell apart, the last at ctx
         int32_t* st = steps.data() + (size_t) i * k::kStepCount;
         st[k::kStepPos] = (int32_t) (n_kv - 1);
         st[k::kStepNKv] = (int32_t) n_kv;
@@ -149,61 +166,113 @@ int run_topk_case(const TopkCase& c, std::mt19937& rng, bool verbose) {
     const std::vector<int32_t> a = d_new.get(), b = d_old.get(), r = d_ref.get();
     int64_t diff_old = 0, diff_ref = 0, first = -1;
     for (size_t i = 0; i < a.size(); ++i) {
-        if (a[i] != b[i]) { ++diff_old; if (first < 0) first = (int64_t) i; }
-        if (a[i] != r[i]) ++diff_ref;
+        if (a[i] != b[i]) {
+            ++diff_old;
+            if (first < 0)
+                first = (int64_t) i;
+        }
+        if (a[i] != r[i])
+            ++diff_ref;
     }
     const bool ok = diff_old == 0 && diff_ref == 0;
     if (!ok || verbose)
         std::printf("%s topk ctx %7lld cap %7lld nq %2d %-11s: %lld ids differ from the one-CTA dispatch, %lld from "
-                    "the reference%s\n", ok ? "ok  " : "FAIL", (long long) c.ctx, (long long) c.capacity, c.nq,
-                    pattern_name(c.pattern), (long long) diff_old, (long long) diff_ref,
+                    "the reference%s\n",
+                    ok ? "ok  " : "FAIL", (long long) c.ctx, (long long) c.capacity, c.nq, pattern_name(c.pattern),
+                    (long long) diff_old, (long long) diff_ref,
                     first >= 0 ? (" (first at " + std::to_string(first) + ")").c_str() : "");
     return ok ? 0 : 1;
 }
 
 // ---- argmax fixtures
-enum AmPattern { aRandom, aTies, aAllEqual, aAllNegInf, aAllNaN, aNaNMax, aPosInf, aSignedZero, aLast, aFirst,
-                 aDenormal, aTiesAcross, aPatterns };
+enum AmPattern {
+    aRandom,
+    aTies,
+    aAllEqual,
+    aAllNegInf,
+    aAllNaN,
+    aNaNMax,
+    aPosInf,
+    aSignedZero,
+    aLast,
+    aFirst,
+    aDenormal,
+    aTiesAcross,
+    aPatterns
+};
 const char* am_name(int p) {
-    static const char* n[] = {"random", "ties", "all-equal", "all--inf", "all-nan", "nan+max", "+inf", "signed-zero",
-                              "max-last", "max-first", "denormal", "ties-across"};
+    static const char* n[] = {"random", "ties",        "all-equal", "all--inf",  "all-nan",  "nan+max",
+                              "+inf",   "signed-zero", "max-last",  "max-first", "denormal", "ties-across"};
     return n[p];
 }
 
 void fill_logits(float* l, int nv, int pattern, std::mt19937& rng) {
     std::normal_distribution<float> nd(0.f, 3.f);
     std::uniform_int_distribution<int> at(0, nv - 1);
-    for (int v = 0; v < nv; ++v) l[v] = nd(rng);
+    for (int v = 0; v < nv; ++v)
+        l[v] = nd(rng);
     switch (pattern) {
-        case aRandom: break;
-        case aTies: { const int n = 1 + at(rng) % 9; for (int i = 0; i < n; ++i) l[at(rng)] = 100.f; break; }
-        case aAllEqual: for (int v = 0; v < nv; ++v) l[v] = 0.25f; break;
-        case aAllNegInf: for (int v = 0; v < nv; ++v) l[v] = -kInf; break;
-        case aAllNaN: for (int v = 0; v < nv; ++v) l[v] = kNaN; break;
-        case aNaNMax:
-            for (int v = 0; v < nv; ++v) if (at(rng) % 3 == 0) l[v] = kNaN;
-            l[at(rng)] = 50.f;
-            l[at(rng)] = 50.f;
-            break;
-        case aPosInf: for (int i = 0; i < 4; ++i) l[at(rng)] = kInf; break;
-        case aSignedZero:
-            for (int v = 0; v < nv; ++v) l[v] = -std::fabs(l[v]) - 1.f;
-            for (int i = 0; i < 6; ++i) l[at(rng)] = (i & 1) ? 0.0f : -0.0f;
-            break;
-        case aLast: l[nv - 1] = 1e30f; break;
-        case aFirst: l[0] = 1e30f; if (nv > 1) l[nv - 1] = 1e30f; break;
-        case aDenormal: for (int v = 0; v < nv; ++v) l[v] = (float) (at(rng) % 5) * 1e-42f - 1e-30f * (v & 1); break;
-        case aTiesAcross:   // the same maximum in several CTAs' and threads' ranges (8 x 1024 stride), plus -inf, NaN
-            for (int v = 0; v < nv; v += 1 + at(rng) % 9000) l[v] = 7.f;
-            for (int v = 3; v < nv; v += 11) l[v] = kNaN;
-            for (int v = 5; v < nv; v += 13) l[v] = -kInf;
-            break;
+    case aRandom: break;
+    case aTies: {
+        const int n = 1 + at(rng) % 9;
+        for (int i = 0; i < n; ++i)
+            l[at(rng)] = 100.f;
+        break;
+    }
+    case aAllEqual:
+        for (int v = 0; v < nv; ++v)
+            l[v] = 0.25f;
+        break;
+    case aAllNegInf:
+        for (int v = 0; v < nv; ++v)
+            l[v] = -kInf;
+        break;
+    case aAllNaN:
+        for (int v = 0; v < nv; ++v)
+            l[v] = kNaN;
+        break;
+    case aNaNMax:
+        for (int v = 0; v < nv; ++v)
+            if (at(rng) % 3 == 0)
+                l[v] = kNaN;
+        l[at(rng)] = 50.f;
+        l[at(rng)] = 50.f;
+        break;
+    case aPosInf:
+        for (int i = 0; i < 4; ++i)
+            l[at(rng)] = kInf;
+        break;
+    case aSignedZero:
+        for (int v = 0; v < nv; ++v)
+            l[v] = -std::fabs(l[v]) - 1.f;
+        for (int i = 0; i < 6; ++i)
+            l[at(rng)] = (i & 1) ? 0.0f : -0.0f;
+        break;
+    case aLast: l[nv - 1] = 1e30f; break;
+    case aFirst:
+        l[0] = 1e30f;
+        if (nv > 1)
+            l[nv - 1] = 1e30f;
+        break;
+    case aDenormal:
+        for (int v = 0; v < nv; ++v)
+            l[v] = (float) (at(rng) % 5) * 1e-42f - 1e-30f * (v & 1);
+        break;
+    case aTiesAcross: // the same maximum in several CTAs' and threads' ranges (8 x 1024 stride), plus -inf, NaN
+        for (int v = 0; v < nv; v += 1 + at(rng) % 9000)
+            l[v] = 7.f;
+        for (int v = 3; v < nv; v += 11)
+            l[v] = kNaN;
+        for (int v = 5; v < nv; v += 13)
+            l[v] = -kInf;
+        break;
     }
 }
 
 int run_argmax_case(int nv, int T, int pattern, std::mt19937& rng, bool verbose) {
     std::vector<float> l((size_t) nv * T);
-    for (int t = 0; t < T; ++t) fill_logits(l.data() + (size_t) t * nv, nv, t % 2 == 0 ? pattern : aRandom, rng);
+    for (int t = 0; t < T; ++t)
+        fill_logits(l.data() + (size_t) t * nv, nv, t % 2 == 0 ? pattern : aRandom, rng);
     Dev<float> d_l(l.size());
     Dev<int> d_new((size_t) T), d_old((size_t) T);
     d_l.put(l);
@@ -225,9 +294,12 @@ int run_argmax_case(int nv, int T, int pattern, std::mt19937& rng, bool verbose)
         const float* r = l.data() + (size_t) t * nv;
         int hb = -1;
         for (int v = 0; v < nv; ++v)
-            if (r[v] > -kInf && (hb < 0 || r[v] > r[hb])) hb = v;
-        if (hb < 0) hb = 0;
-        if (a[(size_t) t] != b[(size_t) t] || a[(size_t) t] != hb) ++bad;
+            if (r[v] > -kInf && (hb < 0 || r[v] > r[hb]))
+                hb = v;
+        if (hb < 0)
+            hb = 0;
+        if (a[(size_t) t] != b[(size_t) t] || a[(size_t) t] != hb)
+            ++bad;
     }
     if (bad || verbose)
         std::printf("%s argmax nv %6d T %d %-11s: %d rows differ (new %d, old %d)\n", bad ? "FAIL" : "ok  ", nv, T,
@@ -244,7 +316,7 @@ int run_graph_case(std::mt19937& rng) {
     Dev<float> d_sc((size_t) (nq * max_blocks)), d_l((size_t) nv * nq);
     Dev<int32_t> d_st((size_t) nq * k::kStepCount), d_new((size_t) (nq * cap)), d_old((size_t) (nq * cap));
     Dev<int> a_new((size_t) nq), a_old((size_t) nq);
-    ck(cudaMemset(d_new.p, 0, d_new.n * 4), "memset");   // the entries past a row's width: written by neither
+    ck(cudaMemset(d_new.p, 0, d_new.n * 4), "memset"); // the entries past a row's width: written by neither
     ck(cudaMemset(d_old.p, 0, d_old.n * 4), "memset");
     cudaStream_t cs;
     ck(cudaStreamCreateWithFlags(&cs, cudaStreamNonBlocking), "stream");
@@ -254,12 +326,16 @@ int run_graph_case(std::mt19937& rng) {
     const bool l1 = k::qsa_block_topk_cluster(d_sc.p, d_st.p, nq, max_blocks, cap, s, d_new.p, cs);
     const bool l2 = k::sample_greedy_cluster(d_l.p, nq, nv, a_new.p, cs);
     ck(cudaStreamEndCapture(cs, &g), "end capture");
-    if (!l1 && !l2) {   // no cluster code here (a card or a build below sm_90): nothing to compare
-        if (g) cudaGraphDestroy(g);
+    if (!l1 && !l2) { // no cluster code here (a card or a build below sm_90): nothing to compare
+        if (g)
+            cudaGraphDestroy(g);
         cudaStreamDestroy(cs);
         return -1;
     }
-    if (!l1 || !l2) { std::printf("FAIL graph: one cluster kernel did not run\n"); return 1; }
+    if (!l1 || !l2) {
+        std::printf("FAIL graph: one cluster kernel did not run\n");
+        return 1;
+    }
     ck(cudaGraphInstantiate(&ge, g, 0), "instantiate");
     int fails = 0;
     for (int rep = 0; rep < 6; ++rep) {
@@ -288,9 +364,12 @@ int run_graph_case(std::mt19937& rng) {
         const auto x = d_new.get(), y = d_old.get();
         const auto u = a_new.get(), v = a_old.get();
         int64_t d1 = 0, d2 = 0;
-        for (size_t i = 0; i < x.size(); ++i) d1 += x[i] != y[i];
-        for (size_t i = 0; i < u.size(); ++i) d2 += u[i] != v[i];
-        if (d1 || d2) ++fails;
+        for (size_t i = 0; i < x.size(); ++i)
+            d1 += x[i] != y[i];
+        for (size_t i = 0; i < u.size(); ++i)
+            d2 += u[i] != v[i];
+        if (d1 || d2)
+            ++fails;
         std::printf("%s graph replay %d (ctx %lld): %lld ids, %lld tokens differ\n", d1 || d2 ? "FAIL" : "ok  ", rep,
                     (long long) ctx, (long long) d1, (long long) d2);
     }
@@ -305,9 +384,11 @@ template <typename F> float time_us(cudaStream_t cs, F&& f, int reps = 300) {
     cudaEvent_t a, b;
     cudaEventCreate(&a);
     cudaEventCreate(&b);
-    for (int i = 0; i < 5; ++i) f();
+    for (int i = 0; i < 5; ++i)
+        f();
     cudaEventRecord(a, cs);
-    for (int i = 0; i < reps; ++i) f();
+    for (int i = 0; i < reps; ++i)
+        f();
     cudaEventRecord(b, cs);
     ck(cudaEventSynchronize(b), "time");
     float ms = 0.f;
@@ -347,7 +428,8 @@ int bench() {
             int32_t* ids = d_ids.p;
             const float t_old = time_us(cs, [&] { k::qsa_block_topk(sp, st, nq, max_blocks, cap, s, ids, cs); });
             const float t_ref = time_us(cs, [&] { k::qsa_block_topk_ref(sp, st, nq, max_blocks, cap, s, ids, cs); });
-            const float t_new = time_us(cs, [&] { k::qsa_block_topk_cluster(sp, st, nq, max_blocks, cap, s, ids, cs); });
+            const float t_new =
+                time_us(cs, [&] { k::qsa_block_topk_cluster(sp, st, nq, max_blocks, cap, s, ids, cs); });
             std::printf("  ctx %6lld nq %d: one-CTA dispatch %7.1f  (ref %7.1f)  cluster %6.1f  -> %.1fx\n",
                         (long long) ctx, nq, t_old, t_ref, t_new, t_old / t_new);
         }
@@ -356,7 +438,8 @@ int bench() {
     for (const int nv : {248320, 32768}) {
         for (const int T : {1, 5}) {
             std::vector<float> l((size_t) nv * T);
-            for (int t = 0; t < T; ++t) fill_logits(l.data() + (size_t) t * nv, nv, aRandom, rng);
+            for (int t = 0; t < T; ++t)
+                fill_logits(l.data() + (size_t) t * nv, nv, aRandom, rng);
             Dev<float> d_l(l.size());
             Dev<int> d_o((size_t) T);
             d_l.put(l);
@@ -372,10 +455,10 @@ int bench() {
     return 0;
 }
 
-}  // namespace
+} // namespace
 
 int main(int argc, char** argv) {
-    set_env("GUILD_QSA_CLUSTER", "0");     // the dispatchers: the one-CTA kernels (the cluster ones called directly)
+    set_env("GUILD_QSA_CLUSTER", "0"); // the dispatchers: the one-CTA kernels (the cluster ones called directly)
     set_env("GUILD_ARGMAX_MULTI", "0");
     const bool do_bench = argc > 1 && std::strcmp(argv[1], "--bench") == 0;
     const bool verbose = argc > 2 && std::strcmp(argv[2], "-v") == 0;
@@ -390,18 +473,21 @@ int main(int argc, char** argv) {
         std::printf("SKIP: no thread-block clusters on this card / build (compute capability %d)\n", major);
         return 0;
     }
-    if (do_bench) return bench();
+    if (do_bench)
+        return bench();
     int fails = 0, cases = 0;
     // contexts: below the width (identity), at it, just past it, odd tails, the register kernel's range, past it
     // (block_topk_kernel), up to 262,144; capacities: tight (the speed runs) and 262,144 (a long --max-context)
-    const int64_t ctxs[] = {7, 2050, 2051, 2052, 2053, 2054, 2055, 3001, 9000, 32768, 32769, 65538, 100003,
-                            131072, 135170, 135171, 200001, 262142, 262143, 262144};
+    const int64_t ctxs[] = {7,     2050,  2051,   2052,   2053,   2054,   2055,   3001,   9000,   32768,
+                            32769, 65538, 100003, 131072, 135170, 135171, 200001, 262142, 262143, 262144};
     for (const int64_t ctx : ctxs) {
         for (const int64_t capacity : {ctx + 272, (int64_t) 262144 + 272}) {
-            if (capacity < ctx) continue;
+            if (capacity < ctx)
+                continue;
             for (int p = 0; p < kPatterns; ++p) {
                 const int nq = (p % 3 == 0) ? 1 : (p % 3 == 1 ? 5 : 16);
-                if (nq > ctx) continue;
+                if (nq > ctx)
+                    continue;
                 fails += run_topk_case({ctx, capacity, nq, p}, rng, verbose);
                 ++cases;
             }

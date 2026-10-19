@@ -16,7 +16,7 @@ int main(int argc, char** argv) {
     uint64_t layers = 2;
     int threads = 8;
     uint64_t chunk = 16ull << 20;
-    uint64_t blob_bytes = 1382400;      // architecture §3.2, asserted by tools/pack_layer.py
+    uint64_t blob_bytes = 1382400; // architecture §3.2, asserted by tools/pack_layer.py
     uint64_t blobs_per_layer = 512;
     bool pin = true;
     bool stream = false;
@@ -24,15 +24,24 @@ int main(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         auto val = [&]() -> const char* {
-            if (i + 1 >= argc) { std::fprintf(stderr, "%s needs a value\n", a.c_str()); std::exit(2); }
+            if (i + 1 >= argc) {
+                std::fprintf(stderr, "%s needs a value\n", a.c_str());
+                std::exit(2);
+            }
             return argv[++i];
         };
-        if (a == "--file") path = val();
-        else if (a == "--layers") layers = std::strtoull(val(), nullptr, 10);
-        else if (a == "--threads") threads = std::atoi(val());
-        else if (a == "--chunk-mb") chunk = std::strtoull(val(), nullptr, 10) << 20;
-        else if (a == "--no-pin") pin = false;
-        else if (a == "--stream") stream = true;
+        if (a == "--file")
+            path = val();
+        else if (a == "--layers")
+            layers = std::strtoull(val(), nullptr, 10);
+        else if (a == "--threads")
+            threads = std::atoi(val());
+        else if (a == "--chunk-mb")
+            chunk = std::strtoull(val(), nullptr, 10) << 20;
+        else if (a == "--no-pin")
+            pin = false;
+        else if (a == "--stream")
+            stream = true;
         else if (a == "--help" || a == "-h") {
             std::printf("usage: guild-load --file experts.bin [--layers N] [--threads N] [--chunk-mb N]\n"
                         "                   [--no-pin]\n");
@@ -42,7 +51,10 @@ int main(int argc, char** argv) {
             return 2;
         }
     }
-    if (path.empty()) { std::fprintf(stderr, "--file is required\n"); return 2; }
+    if (path.empty()) {
+        std::fprintf(stderr, "--file is required\n");
+        return 2;
+    }
 
     const uint64_t bytes = layers * blobs_per_layer * blob_bytes;
     std::printf("expert arena: %llu layers x %llu blobs x %llu B = %.3f GiB\n", (unsigned long long) layers,
@@ -55,11 +67,17 @@ int main(int argc, char** argv) {
         // constructed in place so the note from the constructor can be printed before the load
         new (&arena) guild::core::PinnedArena(bytes);
         std::printf("backing: %s\n", arena.note.c_str());
-        if (!arena.valid()) { std::fprintf(stderr, "arena allocation failed\n"); return 1; }
+        if (!arena.valid()) {
+            std::fprintf(stderr, "arena allocation failed\n");
+            return 1;
+        }
         dst = arena.data();
     } else {
         dst = (uint8_t*) std::malloc((size_t) bytes);
-        if (!dst) { std::fprintf(stderr, "malloc failed\n"); return 1; }
+        if (!dst) {
+            std::fprintf(stderr, "malloc failed\n");
+            return 1;
+        }
         std::printf("backing: malloc, NOT pinned (--no-pin)\n");
     }
 
@@ -71,8 +89,8 @@ int main(int argc, char** argv) {
     }
 
     std::printf("loaded %.3f GiB in %.3f s with %d threads and %llu MiB chunks  ->  %.2f GiB/s\n",
-                (double) st.bytes / (1024.0 * 1024 * 1024), st.seconds, threads,
-                (unsigned long long) (chunk >> 20), st.gib_per_second());
+                (double) st.bytes / (1024.0 * 1024 * 1024), st.seconds, threads, (unsigned long long) (chunk >> 20),
+                st.gib_per_second());
     std::printf("per-layer checksums (FNV-1a 64):\n");
     for (size_t i = 0; i < st.layer_checksums.size() && i < 4; ++i) {
         std::printf("  layer %zu  %016llx\n", i, (unsigned long long) st.layer_checksums[i]);
@@ -88,17 +106,17 @@ int main(int argc, char** argv) {
         const char* names[] = {"1 blob (1.38 MB)", "16 blobs (22 MB)", "1 layer (707 MB)", "whole arena"};
         for (int i = 0; i < 4; ++i) {
             const uint64_t g = granularities[i];
-            if (g > bytes) continue;
+            if (g > bytes)
+                continue;
             const int iters = (int) (g >= bytes ? 3 : (bytes / g >= 8 ? 8 : 3));
-            const guild::core::StreamStats ss =
-                guild::core::stream_bandwidth(dst, (bytes / g) * g, g, iters);
-            if (ss.seconds < 0) continue;
-            std::printf("  %-18s chunk %8.2f MB  %6.2f GB/s  (%.3f GiB in %.3f s)\n", names[i],
-                        (double) g / 1e6, ss.gib_per_second() * 1.073741824,
-                        (double) ss.bytes / (1024.0 * 1024 * 1024), ss.seconds);
+            const guild::core::StreamStats ss = guild::core::stream_bandwidth(dst, (bytes / g) * g, g, iters);
+            if (ss.seconds < 0)
+                continue;
+            std::printf("  %-18s chunk %8.2f MB  %6.2f GB/s  (%.3f GiB in %.3f s)\n", names[i], (double) g / 1e6,
+                        ss.gib_per_second() * 1.073741824, (double) ss.bytes / (1024.0 * 1024 * 1024), ss.seconds);
         }
         // And what it means, using the design's own constants, stated with the assumption attached.
-        const double best = 60.0;    // GB/s, replaced below by the measured best if it is larger
+        const double best = 60.0; // GB/s, replaced below by the measured best if it is larger
         (void) best;
         std::printf("\nper-token expert stream at E = 663.6 MB and hit rate h (VRAM-resident fraction):\n");
         std::printf("  %-8s %-14s %-14s %s\n", "h", "miss MB/token", "ms at 1 blob", "tok/s ceiling");

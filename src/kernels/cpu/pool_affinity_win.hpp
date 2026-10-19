@@ -15,12 +15,16 @@ namespace guild::kernels::cpu::detail {
 // Hard affinity is only for pool-owned threads, which terminate with the pool. A caller's implicit
 // all-group affinity cannot be restored from PreviousGroupAffinity, so the host uses CPU Sets below.
 inline bool set_thread_group_affinity(int core, int worker) {
-    if (core < 0) return false;
+    if (core < 0)
+        return false;
     GROUP_AFFINITY target{};
     target.Group = (WORD) (core / 64);
     target.Mask = KAFFINITY(1) << (core & 63);
-    if (SetThreadGroupAffinity(GetCurrentThread(), &target, nullptr)) return true;
-    std::fprintf(stderr, "guild cpu pool: SetThreadGroupAffinity for worker %d (group %u, mask 0x%llx) failed: %lu; previous affinity kept\n",
+    if (SetThreadGroupAffinity(GetCurrentThread(), &target, nullptr))
+        return true;
+    std::fprintf(stderr,
+                 "guild cpu pool: SetThreadGroupAffinity for worker %d (group %u, mask 0x%llx) failed: %lu; previous "
+                 "affinity kept\n",
                  worker, (unsigned) target.Group, (unsigned long long) target.Mask, (unsigned long) GetLastError());
     return false;
 }
@@ -28,10 +32,13 @@ inline bool set_thread_group_affinity(int core, int worker) {
 inline bool get_thread_cpu_sets(std::vector<ULONG>& ids) {
     ULONG count = 0;
     if (!GetThreadSelectedCpuSets(GetCurrentThread(), nullptr, 0, &count) &&
-        GetLastError() != ERROR_INSUFFICIENT_BUFFER) return false;
+        GetLastError() != ERROR_INSUFFICIENT_BUFFER)
+        return false;
     ids.resize(count);
-    if (count == 0) return true;
-    if (!GetThreadSelectedCpuSets(GetCurrentThread(), ids.data(), count, &count)) return false;
+    if (count == 0)
+        return true;
+    if (!GetThreadSelectedCpuSets(GetCurrentThread(), ids.data(), count, &count))
+        return false;
     ids.resize(count);
     return true;
 }
@@ -40,16 +47,19 @@ inline bool get_thread_cpu_sets(std::vector<ULONG>& ids) {
 inline bool cpu_set_for_core(int core, ULONG& id) {
     ULONG bytes = 0;
     if (!GetSystemCpuSetInformation(nullptr, 0, &bytes, GetCurrentProcess(), 0) &&
-        GetLastError() != ERROR_INSUFFICIENT_BUFFER) return false;
+        GetLastError() != ERROR_INSUFFICIENT_BUFFER)
+        return false;
     std::vector<unsigned char> buffer(bytes);
-    if (bytes && !GetSystemCpuSetInformation(reinterpret_cast<PSYSTEM_CPU_SET_INFORMATION>(buffer.data()),
-                                            bytes, &bytes, GetCurrentProcess(), 0)) return false;
+    if (bytes && !GetSystemCpuSetInformation(reinterpret_cast<PSYSTEM_CPU_SET_INFORMATION>(buffer.data()), bytes,
+                                             &bytes, GetCurrentProcess(), 0))
+        return false;
     constexpr size_t header_size = offsetof(SYSTEM_CPU_SET_INFORMATION, CpuSet);
     for (size_t offset = 0; offset + header_size <= bytes;) {
         const auto* info = reinterpret_cast<const SYSTEM_CPU_SET_INFORMATION*>(buffer.data() + offset);
-        if (info->Size < header_size || info->Size > bytes - offset) break;
-        if (info->Type == CpuSetInformation && info->Size >= sizeof(SYSTEM_CPU_SET_INFORMATION) && info->CpuSet.Group == core / 64 &&
-            info->CpuSet.LogicalProcessorIndex == (core & 63) &&
+        if (info->Size < header_size || info->Size > bytes - offset)
+            break;
+        if (info->Type == CpuSetInformation && info->Size >= sizeof(SYSTEM_CPU_SET_INFORMATION) &&
+            info->CpuSet.Group == core / 64 && info->CpuSet.LogicalProcessorIndex == (core & 63) &&
             (!info->CpuSet.Allocated || info->CpuSet.AllocatedToTargetProcess)) {
             id = info->CpuSet.Id;
             return true;
@@ -60,5 +70,5 @@ inline bool cpu_set_for_core(int core, ULONG& id) {
     return false;
 }
 
-}  // namespace guild::kernels::cpu::detail
+} // namespace guild::kernels::cpu::detail
 #endif

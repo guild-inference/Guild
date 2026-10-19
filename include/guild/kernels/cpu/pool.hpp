@@ -47,11 +47,11 @@ namespace guild::kernels::cpu {
 /// One expert evaluation.  `act` is SHARED and read-only across the whole batch - that sharing is the point
 /// of `s2_expert_vnni_q` and it is what saves 480 redundant activation conversions per token.
 struct ExpertJob {
-    const uint8_t* blob = nullptr;   ///< one 1,382,400-byte expert
-    const ActQ* act = nullptr;       ///< the layer's quantized activation, shared
-    float* out = nullptr;            ///< H floats, written by exactly one worker
-    float weight = 1.0f;             ///< the router weight; applied by the HOST, not here
-    int slot = -1;                   ///< the job's index, for diagnostics
+    const uint8_t* blob = nullptr; ///< one 1,382,400-byte expert
+    const ActQ* act = nullptr;     ///< the layer's quantized activation, shared
+    float* out = nullptr;          ///< H floats, written by exactly one worker
+    float weight = 1.0f;           ///< the router weight; applied by the HOST, not here
+    int slot = -1;                 ///< the job's index, for diagnostics
 };
 
 /// Plan v0.3 P6: one expert for the `nt` tokens of a verify window that were routed to it.  Every token's output
@@ -73,18 +73,18 @@ inline constexpr int kMaxMultiExt = 8;
 /// How worker threads are allocated across physical/logical CPU cores (#272).  `All` is the layout the pool has
 /// always used and the default; the hybrid-aware ones are opt-in (--pool-affinity auto|p-cores).
 enum class PoolAffinity {
-    Auto,      ///< Hybrid: prioritize physical P-cores, then SMT, then E-cores (defaults to P-core count)
-    PCores,    ///< Restrict workers strictly to Performance cores and their SMT siblings
-    All,       ///< The default: one worker per physical core in the OS's order, without hybrid distinction
+    Auto,   ///< Hybrid: prioritize physical P-cores, then SMT, then E-cores (defaults to P-core count)
+    PCores, ///< Restrict workers strictly to Performance cores and their SMT siblings
+    All,    ///< The default: one worker per physical core in the OS's order, without hybrid distinction
 };
 
 struct CpuTopology {
     bool is_hybrid = false;
-    int p_cores = 0;                ///< Physical performance cores
-    int p_threads = 0;              ///< Total logical threads on performance cores
-    int e_cores = 0;                ///< Efficient cores
-    std::vector<int> worker_cores;  ///< Ordered CPU IDs; on Windows, group * 64 + processor within the group
-    int host_core = -1;             ///< Logical core reserved for host thread
+    int p_cores = 0;               ///< Physical performance cores
+    int p_threads = 0;             ///< Total logical threads on performance cores
+    int e_cores = 0;               ///< Efficient cores
+    std::vector<int> worker_cores; ///< Ordered CPU IDs; on Windows, group * 64 + processor within the group
+    int host_core = -1;            ///< Logical core reserved for host thread
 };
 
 CpuTopology detect_cpu_topology(bool skip_first, PoolAffinity affinity = PoolAffinity::All);
@@ -152,31 +152,59 @@ public:
     ExpertPool(const ExpertPool&) = delete;
     ExpertPool& operator=(const ExpertPool&) = delete;
 
-    int workers() const { return n_; }
-    // Called while workers are parked, before this model publishes its first job.
-    void bind_native_kernels(const guild_cpu_expert_ext_v1_t& table) { native_table_ = table; }
-    void bind_backend_kernels(const guild_cpu_backend_ext_v2_t& table) {
-        const auto baseline_swiglu=backend_table_.swiglu;
-        backend_table_=table;native_table_=table.native;
-        if(!backend_table_.swiglu)backend_table_.swiglu=baseline_swiglu;
+    int workers() const {
+        return n_;
     }
-    void set_fused_pipeline(bool enabled) noexcept { fused_pipeline_ = enabled; }
-    bool fused_pipeline() const noexcept { return fused_pipeline_; }
+    // Called while workers are parked, before this model publishes its first job.
+    void bind_native_kernels(const guild_cpu_expert_ext_v1_t& table) {
+        native_table_ = table;
+    }
+    void bind_backend_kernels(const guild_cpu_backend_ext_v2_t& table) {
+        const auto baseline_swiglu = backend_table_.swiglu;
+        backend_table_ = table;
+        native_table_ = table.native;
+        if (!backend_table_.swiglu)
+            backend_table_.swiglu = baseline_swiglu;
+    }
+    void set_fused_pipeline(bool enabled) noexcept {
+        fused_pipeline_ = enabled;
+    }
+    bool fused_pipeline() const noexcept {
+        return fused_pipeline_;
+    }
     bool last_run_all_finite() const noexcept {
         return last_run_verified_finite_ && !last_run_nonfinite_.load(std::memory_order_relaxed);
     }
-    void quantize_planar(const float* x,int n,ActQ& out) { act_quant_any(x,n,out); }
-    void quantize_native(const NativeFmt& f,const float* x,void* out) { native_table_.quant_act(&f,x,out); }
-    int host_core() const { return topo_.host_core; }
+    void quantize_planar(const float* x, int n, ActQ& out) {
+        act_quant_any(x, n, out);
+    }
+    void quantize_native(const NativeFmt& f, const float* x, void* out) {
+        native_table_.quant_act(&f, x, out);
+    }
+    int host_core() const {
+        return topo_.host_core;
+    }
     /// Whether the host thread also drains.  Reported at startup, because "the engine adapts to the machine it
     /// is on" is only true if the engine says which adaptation it took.
-    bool host_works() const { return host_works_; }
+    bool host_works() const {
+        return host_works_;
+    }
 
-    bool is_hybrid() const { return topo_.is_hybrid; }
-    int p_cores() const { return topo_.p_cores; }
-    int p_threads() const { return topo_.p_threads; }
-    int e_cores() const { return topo_.e_cores; }
-    PoolAffinity affinity() const { return affinity_; }
+    bool is_hybrid() const {
+        return topo_.is_hybrid;
+    }
+    int p_cores() const {
+        return topo_.p_cores;
+    }
+    int p_threads() const {
+        return topo_.p_threads;
+    }
+    int e_cores() const {
+        return topo_.e_cores;
+    }
+    PoolAffinity affinity() const {
+        return affinity_;
+    }
 
     /// Publish `n` jobs, then block until every one has been claimed AND every worker has parked.
     /// `jobs` must outlive the call (it does, and the workers never touch it afterwards).
@@ -207,7 +235,9 @@ public:
     /// Total `_mm_pause` iterations spent waiting, over all workers, is no longer counted - see the note on the
     /// atomics below.  It was a LOCKED read-modify-write in the park loop, so measuring the contention added to
     /// it.
-    long long pauses() const { return 0; }
+    long long pauses() const {
+        return 0;
+    }
 
     /// **WHERE `run()` SPENDS ITS TIME, in milliseconds accumulated over its lifetime.**  Three phases per
     /// layer - wait for every worker to be parked, wait for the drain, wait for them to re-park - and until now
@@ -236,50 +266,94 @@ public:
 
 private:
     guild_cpu_backend_ext_v2_t backend_table_{};
-    void swiglu(const float* gate,const float* up,float* out,int count){
-        if(backend_table_.swiglu)backend_table_.swiglu(gate,up,out,count);else cpu::swiglu(gate,up,out,count);
+    void swiglu(const float* gate, const float* up, float* out, int count) {
+        if (backend_table_.swiglu)
+            backend_table_.swiglu(gate, up, out, count);
+        else
+            cpu::swiglu(gate, up, out, count);
     }
-    void act_quant_any(const float* x,int n,ActQ& a) {
-        if(backend_table_.quant_planar)backend_table_.quant_planar(x,n,&a);else cpu::act_quant_any(x,n,a);
+    void act_quant_any(const float* x, int n, ActQ& a) {
+        if (backend_table_.quant_planar)
+            backend_table_.quant_planar(x, n, &a);
+        else
+            cpu::act_quant_any(x, n, a);
     }
-    void act_quant_q8_1(const float* x,int n,ActQ& a) {
-        if(backend_table_.quant_planar)backend_table_.quant_planar(x,n,&a);else cpu::act_quant_q8_1(x,n,a);
+    void act_quant_q8_1(const float* x, int n, ActQ& a) {
+        if (backend_table_.quant_planar)
+            backend_table_.quant_planar(x, n, &a);
+        else
+            cpu::act_quant_q8_1(x, n, a);
     }
-    void q2_rows_any(const uint8_t* w,size_t bytes,int blocks,const ActQ* const* a,int n,float* const* y,int r0,int r1) {
-        if(backend_table_.q2_gguf_rows)backend_table_.q2_gguf_rows(w,bytes,blocks,a,n,y,r0,r1);
-        else cpu::q2_rows_any(w,bytes,blocks,a,n,y,r0,r1);
+    void q2_rows_any(const uint8_t* w, size_t bytes, int blocks, const ActQ* const* a, int n, float* const* y, int r0,
+                     int r1) {
+        if (backend_table_.q2_gguf_rows)
+            backend_table_.q2_gguf_rows(w, bytes, blocks, a, n, y, r0, r1);
+        else
+            cpu::q2_rows_any(w, bytes, blocks, a, n, y, r0, r1);
     }
-    void s2_expert_gu_rows_multi(const uint8_t* b,const ActQ* const* a,int n,float* const* y,int r0,int r1) {
-        if(backend_table_.canonical_gate_up)backend_table_.canonical_gate_up(b,a,n,y,r0,r1);
-        else cpu::s2_expert_gu_rows_multi(b,a,n,y,r0,r1);
+    void s2_expert_gu_rows_multi(const uint8_t* b, const ActQ* const* a, int n, float* const* y, int r0, int r1) {
+        if (backend_table_.canonical_gate_up)
+            backend_table_.canonical_gate_up(b, a, n, y, r0, r1);
+        else
+            cpu::s2_expert_gu_rows_multi(b, a, n, y, r0, r1);
     }
-    void s2_expert_down_rows_multi(const uint8_t* b,const ActQ* const* a,int n,float* const* y,int r0,int r1) {
-        if(backend_table_.canonical_down)backend_table_.canonical_down(b,a,n,y,r0,r1);
-        else cpu::s2_expert_down_rows_multi(b,a,n,y,r0,r1);
+    void s2_expert_down_rows_multi(const uint8_t* b, const ActQ* const* a, int n, float* const* y, int r0, int r1) {
+        if (backend_table_.canonical_down)
+            backend_table_.canonical_down(b, a, n, y, r0, r1);
+        else
+            cpu::s2_expert_down_rows_multi(b, a, n, y, r0, r1);
     }
-    void s2_expert_gu_rows(const uint8_t* b,const ActQ& a,float* y,int r0,int r1) {
-        if(backend_table_.canonical_gate_up){const ActQ* inputs[]={&a};float* outputs[]={y};backend_table_.canonical_gate_up(b,inputs,1,outputs,r0,r1);}
-        else cpu::s2_expert_gu_rows(b,a,y,r0,r1);
+    void s2_expert_gu_rows(const uint8_t* b, const ActQ& a, float* y, int r0, int r1) {
+        if (backend_table_.canonical_gate_up) {
+            const ActQ* inputs[] = {&a};
+            float* outputs[] = {y};
+            backend_table_.canonical_gate_up(b, inputs, 1, outputs, r0, r1);
+        } else
+            cpu::s2_expert_gu_rows(b, a, y, r0, r1);
     }
-    void s2_expert_down_rows(const uint8_t* b,const ActQ& a,float* y,int r0,int r1) {
-        if(backend_table_.canonical_down){const ActQ* inputs[]={&a};float* outputs[]={y};backend_table_.canonical_down(b,inputs,1,outputs,r0,r1);}
-        else cpu::s2_expert_down_rows(b,a,y,r0,r1);
+    void s2_expert_down_rows(const uint8_t* b, const ActQ& a, float* y, int r0, int r1) {
+        if (backend_table_.canonical_down) {
+            const ActQ* inputs[] = {&a};
+            float* outputs[] = {y};
+            backend_table_.canonical_down(b, inputs, 1, outputs, r0, r1);
+        } else
+            cpu::s2_expert_down_rows(b, a, y, r0, r1);
     }
-    void s2_expert_vnni_q(const uint8_t* b,const ActQ& a,float* y,ExpertScratch& ws) {
-        if(!backend_table_.canonical_gate_up){cpu::s2_expert_vnni_q(b,a,y,ws);return;}
-        s2_expert_gu_rows(b,a,ws.ff,0,FF);act_quant_q8_1(ws.ff,FF,ws.a2);s2_expert_down_rows(b,ws.a2,y,0,H);
+    void s2_expert_vnni_q(const uint8_t* b, const ActQ& a, float* y, ExpertScratch& ws) {
+        if (!backend_table_.canonical_gate_up) {
+            cpu::s2_expert_vnni_q(b, a, y, ws);
+            return;
+        }
+        s2_expert_gu_rows(b, a, ws.ff, 0, FF);
+        act_quant_q8_1(ws.ff, FF, ws.a2);
+        s2_expert_down_rows(b, ws.a2, y, 0, H);
     }
     guild_cpu_expert_ext_v1_t native_table_ = {
-        sizeof(guild_cpu_expert_ext_v1_t), GUILD_CPU_EXPERT_TAG_V1, 1,
-        +[](const NativeFmt* f,const float* x,void* out) { cpu::native_quant_act(*f,x,out); },
-        +[](const NativeFmt* f,const float* x,void* out) { cpu::native_quant_h(*f,x,out); },
-        +[](const NativeFmt* f,const uint8_t* b,const void* const* x,int n,float* const* y,int a,int z) { cpu::native_gu_rows(*f,b,x,n,y,a,z); },
-        +[](const NativeFmt* f,const uint8_t* b,const void* const* x,int n,float* const* y,int a,int z) { cpu::native_down_rows(*f,b,x,n,y,a,z); }
-    };
-    void native_quant_act(const NativeFmt& f,const float* x,void* out) { native_table_.quant_act(&f,x,out); }
-    void native_quant_h(const NativeFmt& f,const float* x,void* out) { native_table_.quant_h(&f,x,out); }
-    void native_gu_rows(const NativeFmt& f,const uint8_t* b,const void* const* x,int n,float* const* y,int a,int z) { native_table_.gate_up(&f,b,x,n,y,a,z); }
-    void native_down_rows(const NativeFmt& f,const uint8_t* b,const void* const* x,int n,float* const* y,int a,int z) { native_table_.down(&f,b,x,n,y,a,z); }
+        sizeof(guild_cpu_expert_ext_v1_t),
+        GUILD_CPU_EXPERT_TAG_V1,
+        1,
+        +[](const NativeFmt* f, const float* x, void* out) { cpu::native_quant_act(*f, x, out); },
+        +[](const NativeFmt* f, const float* x, void* out) { cpu::native_quant_h(*f, x, out); },
+        +[](const NativeFmt* f, const uint8_t* b, const void* const* x, int n, float* const* y, int a, int z) {
+            cpu::native_gu_rows(*f, b, x, n, y, a, z);
+        },
+        +[](const NativeFmt* f, const uint8_t* b, const void* const* x, int n, float* const* y, int a, int z) {
+            cpu::native_down_rows(*f, b, x, n, y, a, z);
+        }};
+    void native_quant_act(const NativeFmt& f, const float* x, void* out) {
+        native_table_.quant_act(&f, x, out);
+    }
+    void native_quant_h(const NativeFmt& f, const float* x, void* out) {
+        native_table_.quant_h(&f, x, out);
+    }
+    void native_gu_rows(const NativeFmt& f, const uint8_t* b, const void* const* x, int n, float* const* y, int a,
+                        int z) {
+        native_table_.gate_up(&f, b, x, n, y, a, z);
+    }
+    void native_down_rows(const NativeFmt& f, const uint8_t* b, const void* const* x, int n, float* const* y, int a,
+                          int z) {
+        native_table_.down(&f, b, x, n, y, a, z);
+    }
     void worker(int id);
     void drain(int id, ExpertScratch& scratch, uint32_t epoch);
     void run_phase(int mode, int n_tasks);
@@ -292,9 +366,11 @@ private:
     void wait_done(int n);
     /// Bump `epoch_`, and wake the workers that went to sleep.  Every publish goes through here.
     void publish();
-    void report_profile(std::chrono::steady_clock::time_point start, const NativeFmt& f,
-                        ExpertJobMulti* jobs, int n, bool whole);
-    struct alignas(64) ProfileTimes { double gu = 0, quant = 0, down = 0; };
+    void report_profile(std::chrono::steady_clock::time_point start, const NativeFmt& f, ExpertJobMulti* jobs, int n,
+                        bool whole);
+    struct alignas(64) ProfileTimes {
+        double gu = 0, quant = 0, down = 0;
+    };
     std::vector<ProfileTimes> profile_times_;
     std::FILE* profile_file_ = nullptr;
 
@@ -328,7 +404,7 @@ private:
     std::unique_ptr<std::atomic<int32_t>[]> wstate_;
     std::atomic<int32_t> hstate_{kIdle};
     std::atomic<int64_t> hstate_ms_{0};
-    alignas(64) std::atomic<uint64_t> head_{0};   // epoch << 32 | njobs << 16 | next index (issue #29)
+    alignas(64) std::atomic<uint64_t> head_{0}; // epoch << 32 | njobs << 16 | next index (issue #29)
     alignas(64) std::atomic<uint32_t> done_{0};
     alignas(64) std::atomic<uint32_t> parked_{0};
     alignas(64) std::atomic<uint32_t> epoch_{0};
@@ -340,7 +416,7 @@ private:
     std::condition_variable sleep_cv_;
     std::chrono::microseconds spin_before_sleep_{kSpinBeforeSleep};
     std::vector<std::thread> threads_;
-    std::vector<ExpertScratch> scratch_;   // one per worker: no allocation, no false sharing of the hot data
+    std::vector<ExpertScratch> scratch_; // one per worker: no allocation, no false sharing of the hot data
     // run_split state: mode 0 = whole experts, 1 = gate/up row parts, 2 = down row parts
     int mode_ = 0;
     int parts_a_ = 1, parts_b_ = 1;
@@ -351,12 +427,12 @@ private:
     std::vector<SplitBuf> split_;
     // run_split_multi state: mode 3 = gate/up row parts, 4 = down row parts
     ExpertJobMulti* mjobs_ = nullptr;
-    int64_t mrows_ = 0;     // rows of the current multi phase across all its experts (n * FF, then n * H)
-    int mtasks_ = 1;        // equal row ranges the phase is cut into
+    int64_t mrows_ = 0; // rows of the current multi phase across all its experts (n * FF, then n * H)
+    int mtasks_ = 1;    // equal row ranges the phase is cut into
     struct SplitBufMulti {
         alignas(64) float ff[MAXT][FF];
         ActQ a2[MAXT];
-        alignas(64) uint8_t hq[MAXT][kNativeHBytes];   // plan v0.3 P6: native down activations
+        alignas(64) uint8_t hq[MAXT][kNativeHBytes]; // plan v0.3 P6: native down activations
         alignas(64) std::atomic<int32_t> gu_rem{0};
         alignas(64) std::atomic<int32_t> hq_ready{0};
         SplitBufMulti() = default;
@@ -398,4 +474,4 @@ private:
     CpuTopology topo_;
 };
 
-}  // namespace guild::kernels::cpu
+} // namespace guild::kernels::cpu

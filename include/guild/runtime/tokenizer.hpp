@@ -47,16 +47,15 @@ public:
     // Serializes loaded tokenizer into deterministic GBT1 binary format
     bool serialize_binary(std::vector<uint8_t>& out, std::string& err_msg) const;
 
-    bool is_loaded() const { return loaded_; }
+    bool is_loaded() const {
+        return loaded_;
+    }
 
     // Tokenizes raw text into token IDs (defaults to allow_special = false)
     std::vector<int32_t> tokenize(const std::string& text) const;
 
     // Full encoding with control/special token handling and error reporting
-    bool encode(const std::string& text,
-                std::vector<int32_t>& ids,
-                bool allow_special,
-                std::string& err_msg) const;
+    bool encode(const std::string& text, std::vector<int32_t>& ids, bool allow_special, std::string& err_msg) const;
 
     // Decodes single token ID into UTF-8 text string
     std::string decode(int32_t token_id, bool skip_special_tokens = true) const;
@@ -67,11 +66,19 @@ public:
     // Creates an incremental stateful decoder for streaming SSE
     std::unique_ptr<IncrementalDecoder> create_incremental_decoder(bool skip_special_tokens = true) const;
 
-    const ChatTemplate& chat_template() const { return chat_template_; }
+    const ChatTemplate& chat_template() const {
+        return chat_template_;
+    }
 
-    int32_t eos_token_id() const { return eos_token_id_; }
-    const std::vector<int32_t>& eos_token_ids() const { return eos_token_ids_; }
-    size_t vocab_size() const { return vocab_tokens_.size(); }
+    int32_t eos_token_id() const {
+        return eos_token_id_;
+    }
+    const std::vector<int32_t>& eos_token_ids() const {
+        return eos_token_ids_;
+    }
+    size_t vocab_size() const {
+        return vocab_tokens_.size();
+    }
 
     bool is_special(int32_t token_id) const;
 

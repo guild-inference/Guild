@@ -16,8 +16,9 @@ __device__ __forceinline__ int signed_byte(uint32_t word, int lane) {
 
 // CUDA's signed __dp4a: four signed byte products accumulated modulo 2^32.
 __device__ __forceinline__ int dp4a(int a, int b, int c) {
-#if (defined(__gfx1100__) || defined(__gfx1101__) || defined(__gfx1102__) || defined(__gfx1200__) || \
-     defined(__gfx1201__)) && __has_builtin(__builtin_amdgcn_sudot4)
+#if (defined(__gfx1100__) || defined(__gfx1101__) || defined(__gfx1102__) || defined(__gfx1200__) ||                   \
+     defined(__gfx1201__)) &&                                                                                          \
+    __has_builtin(__builtin_amdgcn_sudot4)
     // RDNA3 and RDNA4 expose the signed/unsigned dot4 form (v_dot4_i32_iu8). Mark
     // both packed operands signed to preserve CUDA __dp4a semantics; keep the
     // portable path for other HIP compilers/targets.
@@ -39,7 +40,8 @@ __device__ __forceinline__ int dp4a(int a, int b, int c) {
         "v_mul_i32_i24 %2, sext(%3), sext(%4) dst_sel:DWORD dst_unused:UNUSED_PAD src0_sel:BYTE_3 src1_sel:BYTE_3\n"
         "v_add3_u32 %0, %1, %2, %0\n"
         // c changes before the high-byte reads; it must not alias a or b.
-        : "+&v"(c), "=&v"(lo), "=&v"(hi) : "v"(a), "v"(b));
+        : "+&v"(c), "=&v"(lo), "=&v"(hi)
+        : "v"(a), "v"(b));
     return c;
 #else
     const uint32_t ua = static_cast<uint32_t>(a);
@@ -97,7 +99,8 @@ __device__ __forceinline__ int vcmpne4(int a, int b) {
 // CUDA's mask argument describes participating lanes. The current kernel set uses full
 // wave32 masks; reject future partial-mask use instead of silently dropping its semantics.
 __device__ __forceinline__ void require_full_wave_mask(uint32_t mask) {
-    if (mask != 0xffffffffu) __builtin_trap();
+    if (mask != 0xffffffffu)
+        __builtin_trap();
 }
 
 // Older HIP has no __syncwarp. A wave barrier alone does not order memory.
@@ -129,8 +132,7 @@ __device__ __forceinline__ T shfl_up_sync(uint32_t mask, T value, unsigned delta
     return __shfl_up(value, delta, width);
 }
 
-template <typename T>
-__device__ __forceinline__ T shfl_sync(uint32_t mask, T value, int source_lane, int width = 32) {
+template <typename T> __device__ __forceinline__ T shfl_sync(uint32_t mask, T value, int source_lane, int width = 32) {
     require_full_wave_mask(mask);
     return __shfl(value, source_lane, width);
 }
@@ -140,7 +142,7 @@ __device__ __forceinline__ unsigned ballot_sync(uint32_t mask, int predicate) {
     return static_cast<unsigned>(__ballot(predicate));
 }
 
-}  // namespace guild::hip_compat
+} // namespace guild::hip_compat
 
 #define __dp4a(a, b, c) (::guild::hip_compat::dp4a((a), (b), (c)))
 #define __byte_perm(x, y, s) (::guild::hip_compat::byte_perm((x), (y), (s)))
@@ -159,4 +161,4 @@ __device__ __forceinline__ unsigned ballot_sync(uint32_t mask, int predicate) {
 // backoff hint, so use its smallest portable delay independently of CUDA cycle counts.
 #define __nanosleep(cycles) __builtin_amdgcn_s_sleep(1)
 
-#endif  // defined(__HIPCC__)
+#endif // defined(__HIPCC__)

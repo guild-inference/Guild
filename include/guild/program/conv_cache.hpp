@@ -33,11 +33,13 @@ namespace guild::program::conv_cache {
 /// are the items' last-use stamps; the caller owns the chain and erases the returned index.  Pure and
 /// deterministic so conv_cache_test.cpp can walk the scenarios by hand.
 inline size_t eviction_victim(const uint64_t* stamps, size_t n, int64_t cap) {
-    if (cap < 2 || n < 2) return 0;   // no room for root and leaf: the pin is off, the oldest leaves
-    size_t v = 1;                     // the root (0) is pinned; least recent use among the rest
+    if (cap < 2 || n < 2)
+        return 0; // no room for root and leaf: the pin is off, the oldest leaves
+    size_t v = 1; // the root (0) is pinned; least recent use among the rest
     for (size_t i = 2; i < n; ++i)
-        if (stamps[i] < stamps[v]) v = i;
+        if (stamps[i] < stamps[v])
+            v = i;
     return v;
 }
 
-}  // namespace guild::program::conv_cache
+} // namespace guild::program::conv_cache

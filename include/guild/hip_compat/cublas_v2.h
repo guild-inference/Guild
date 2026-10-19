@@ -26,18 +26,17 @@
 inline rocblas_status cublasSetMathMode(rocblas_handle h, int mode) {
     // This API has only its default arithmetic; GEMM below explicitly selects
     // FP32 accumulation. Reject any request for a different math mode.
-    if (!h) return rocblas_status_invalid_handle;
+    if (!h)
+        return rocblas_status_invalid_handle;
     return mode == CUBLAS_DEFAULT_MATH ? rocblas_status_success : rocblas_status_invalid_value;
 }
-inline rocblas_status cublasGemmEx(rocblas_handle h, rocblas_operation trans_a,
-    rocblas_operation trans_b, int m, int n, int k, const void* alpha,
-    const void* a, rocblas_datatype a_type, int lda,
-    const void* b, rocblas_datatype b_type, int ldb, const void* beta,
-    void* c, rocblas_datatype c_type, int ldc,
-    rocblas_datatype compute_type, rocblas_gemm_algo algo) {
-    return rocblas_gemm_ex(h, trans_a, trans_b, m, n, k, alpha,
-        a, a_type, lda, b, b_type, ldb, beta, c, c_type, ldc,
-        c, c_type, ldc, compute_type, algo, 0, 0);
+inline rocblas_status cublasGemmEx(rocblas_handle h, rocblas_operation trans_a, rocblas_operation trans_b, int m, int n,
+                                   int k, const void* alpha, const void* a, rocblas_datatype a_type, int lda,
+                                   const void* b, rocblas_datatype b_type, int ldb, const void* beta, void* c,
+                                   rocblas_datatype c_type, int ldc, rocblas_datatype compute_type,
+                                   rocblas_gemm_algo algo) {
+    return rocblas_gemm_ex(h, trans_a, trans_b, m, n, k, alpha, a, a_type, lda, b, b_type, ldb, beta, c, c_type, ldc, c,
+                           c_type, ldc, compute_type, algo, 0, 0);
 }
 #else
 #define CUBLAS_COMPUTE_32F HIPBLAS_COMPUTE_32F

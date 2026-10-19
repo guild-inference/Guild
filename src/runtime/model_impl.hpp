@@ -80,9 +80,9 @@ inline void drive_pool_multi(void* user, const float* x_f, const int32_t* ids, i
     guild::core::expert_pool_dispatch_multi(t->d, x_f, ids, n_tok, k, out);
     const auto validation_output_begin = Clock::now();
     if (t->d.failed) {
-        throw std::runtime_error(std::string(t->d.fail ? t->d.fail : "expert dispatch failed") +
-                                 " (layer " + std::to_string(t->d.fail_layer) +
-                                 ", expert " + std::to_string(t->d.fail_expert) + ")");
+        throw std::runtime_error(std::string(t->d.fail ? t->d.fail : "expert dispatch failed") + " (layer " +
+                                 std::to_string(t->d.fail_layer) + ", expert " + std::to_string(t->d.fail_expert) +
+                                 ")");
     }
     // GPU-planned rows are not written into the CPU output buffer: the captured
     // copy/combine kernels zero those rows and add the GPU result separately.
@@ -94,11 +94,13 @@ inline void drive_pool_multi(void* user, const float* x_f, const int32_t* ids, i
             const auto& plan = *t->d.plan;
             for (int32_t i = 0; i < plan.counts[1]; ++i) {
                 const int32_t row = plan.dst[i];
-                if (row >= 0 && row < rows) gpu_rows[size_t(row)] = true;
+                if (row >= 0 && row < rows)
+                    gpu_rows[size_t(row)] = true;
             }
         }
         for (int64_t row = 0; row < rows; ++row) {
-            if (row < int64_t(gpu_rows.size()) && gpu_rows[size_t(row)]) continue;
+            if (row < int64_t(gpu_rows.size()) && gpu_rows[size_t(row)])
+                continue;
             if (!core::validate_finite(out + row * t->d.n_embd, size_t(t->d.n_embd), "expert output", error)) {
                 t->d.failed = true;
                 throw std::runtime_error(error);
@@ -170,34 +172,61 @@ struct GuildModel::Impl {
 
     ~Impl() {
         std::optional<kernels::ScopedCudaDense> dense_scope;
-        if (cuda_dense) dense_scope.emplace(*cuda_dense);
+        if (cuda_dense)
+            dense_scope.emplace(*cuda_dense);
         std::optional<kernels::ScopedCudaAttn> attn_scope;
-        if (cuda_attn) attn_scope.emplace(*cuda_attn);
+        if (cuda_attn)
+            attn_scope.emplace(*cuda_attn);
         std::optional<kernels::ScopedCudaMoE> moe_scope;
-        if (cuda_moe) moe_scope.emplace(*cuda_moe);
-        if (prefill) prefill.reset();
-        if (batched_prefill) batched_prefill.reset();
-        if (ver) ver.reset();
-        if (mtp) mtp.reset();
-        if (pool) pool.reset();
-        if (main_stream) cudaStreamSynchronize(main_stream);
+        if (cuda_moe)
+            moe_scope.emplace(*cuda_moe);
+        if (prefill)
+            prefill.reset();
+        if (batched_prefill)
+            batched_prefill.reset();
+        if (ver)
+            ver.reset();
+        if (mtp)
+            mtp.reset();
+        if (pool)
+            pool.reset();
+        if (main_stream)
+            cudaStreamSynchronize(main_stream);
         moe_scope.reset();
         attn_scope.reset();
         dense_scope.reset();
-        if (ple_emb_dev) cudaFree(ple_emb_dev);
-        if (ple_scratch) cudaFree(ple_scratch);
+        if (ple_emb_dev)
+            cudaFree(ple_emb_dev);
+        if (ple_scratch)
+            cudaFree(ple_scratch);
         core::session_release(ss);
         for (int64_t j = 0; ss.qsa_states && j < ss.qsa_alloc; ++j) {
             core::qsa_state_release_host(ss.qsa_states[ss.qsa_ord0 + j]);
         }
         delete[] ss.qsa_states;
         ss.qsa_states = nullptr;
-        if (core::native_embed() == &native_embed) core::set_native_embed(nullptr);
-        if (sbuf) { cudaFree(sbuf); sbuf = nullptr; }
-        if (d_res) { cudaFree(d_res); d_res = nullptr; }
-        if (arena) { cudaFree(arena); arena = nullptr; }
-        if (d_mrope) { cudaFree(d_mrope); d_mrope = nullptr; }
-        if (window_R) { cudaFree(window_R); window_R = nullptr; }
+        if (core::native_embed() == &native_embed)
+            core::set_native_embed(nullptr);
+        if (sbuf) {
+            cudaFree(sbuf);
+            sbuf = nullptr;
+        }
+        if (d_res) {
+            cudaFree(d_res);
+            d_res = nullptr;
+        }
+        if (arena) {
+            cudaFree(arena);
+            arena = nullptr;
+        }
+        if (d_mrope) {
+            cudaFree(d_mrope);
+            d_mrope = nullptr;
+        }
+        if (window_R) {
+            cudaFree(window_R);
+            window_R = nullptr;
+        }
         core::doorbell_free(db);
         if (main_stream) {
             cudaStreamSynchronize(main_stream);

@@ -47,8 +47,12 @@ void check(cudaError_t e, const char* what) {
 // using-declarations rather than renames at the call sites, so the body below is untouched by the swap.
 using guild::kernels::f16_from_f32;
 using guild::kernels::f32_from_f16;
-inline uint16_t f32_to_f16(float f) { return f16_from_f32(f); }
-inline float f16_to_f32(uint16_t h) { return f32_from_f16(h); }
+inline uint16_t f32_to_f16(float f) {
+    return f16_from_f32(f);
+}
+inline float f16_to_f32(uint16_t h) {
+    return f32_from_f16(h);
+}
 
 // The S2 decode used from the host: one code per element, group 64, bias -1.
 // Normalised L1 difference, used by the moe_combine checks.  (The shared-expert checks above report worst
@@ -73,39 +77,47 @@ double q8_0_host(const std::vector<uint8_t>& x, long long i) {
     return (double) guild::kernels::f32_from_f16(db) * (double) q;
 }
 
-float s2_weight(const std::vector<uint8_t>& codes, const std::vector<float>& scales, long long row,                long long n_in, long long i) {
+float s2_weight(const std::vector<uint8_t>& codes, const std::vector<float>& scales, long long row, long long n_in,
+                long long i) {
     const uint8_t byte = codes[(size_t) (row * (n_in / 4) + i / 4)];
     const int code = (byte >> ((i % 4) * 2)) & 3;
     return (float) (code - 1) * scales[(size_t) (row * (n_in / 64) + i / 64)];
 }
 
-}  // namespace
+} // namespace
 
 int main(int argc, char** argv) {
     bool selftest = false;
     for (int i = 1; i < argc; ++i) {
-        if (std::string(argv[i]) == "--selftest") selftest = true;
-        else { std::fprintf(stderr, "usage: shared_expert_parity [--selftest]\n"); return 2; }
+        if (std::string(argv[i]) == "--selftest")
+            selftest = true;
+        else {
+            std::fprintf(stderr, "usage: shared_expert_parity [--selftest]\n");
+            return 2;
+        }
     }
 
-    const long long n_embd = 256, n_ff = 64;      // small, so the host reference can be a plain loop
+    const long long n_embd = 256, n_ff = 64; // small, so the host reference can be a plain loop
     const int tpr = 32;
     std::mt19937 rng(77);
     std::normal_distribution<float> gauss(0.0f, 1.0f);
 
     // POSITIVE activations, so the sign of each projection is set by the sign of its weights.
     std::vector<float> fx((size_t) n_embd);
-    for (auto& v : fx) v = std::fabs(gauss(rng)) + 0.5f;
+    for (auto& v : fx)
+        v = std::fabs(gauss(rng)) + 0.5f;
     std::vector<uint16_t> hx((size_t) n_embd);
-    std::vector<uint8_t> hx0;   // filled below, once the Q8_0 image exists; the reference reads it
-    for (long long i = 0; i < n_embd; ++i) hx[(size_t) i] = f32_to_f16(fx[(size_t) i]);
+    std::vector<uint8_t> hx0; // filled below, once the Q8_0 image exists; the reference reads it
+    for (long long i = 0; i < n_embd; ++i)
+        hx[(size_t) i] = f32_to_f16(fx[(size_t) i]);
 
     // GATE CODES ALL 3 (+2d) AND UP CODES ALL 0 (-d): with positive scales and positive activations the gate
     // projection is strongly POSITIVE and the up projection strongly NEGATIVE, which is the configuration where
     // `silu(g)*u` and `silu(u)*g` differ by orders of magnitude rather than by percent.
     std::vector<uint8_t> gc((size_t) n_ff * n_embd / 4, 0xFF), uc((size_t) n_ff * n_embd / 4, 0x00),
         dc((size_t) n_embd * n_ff / 4);
-    for (auto& v : dc) v = (uint8_t) (rng() & 0xFF);
+    for (auto& v : dc)
+        v = (uint8_t) (rng() & 0xFF);
     std::vector<float> gs((size_t) n_ff * (n_embd / 64)), us((size_t) n_ff * (n_embd / 64)),
         ds((size_t) n_embd * (n_ff / 64));
     // GATE/UP SCALES ARE 10x SMALLER THAN THE DOWN SCALES, and that asymmetry is load-bearing.
@@ -119,13 +131,20 @@ int main(int argc, char** argv) {
     //
     // Keeping the DOWN scales large preserves the conditioning the raise was for; the gate/up pair only sets
     // the intermediate's magnitude, and `assert h stays in range` below now guards it.
-    auto fill_gu = [&](std::vector<float>& v) { for (auto& s : v) s = 0.02f + 0.001f * (float) (rng() % 50); };
-    auto fill_d = [&](std::vector<float>& v) { for (auto& s : v) s = 0.2f + 0.01f * (float) (rng() % 50); };
+    auto fill_gu = [&](std::vector<float>& v) {
+        for (auto& s : v)
+            s = 0.02f + 0.001f * (float) (rng() % 50);
+    };
+    auto fill_d = [&](std::vector<float>& v) {
+        for (auto& s : v)
+            s = 0.2f + 0.01f * (float) (rng() % 50);
+    };
     fill_gu(gs);
     fill_gu(us);
     fill_d(ds);
     std::vector<float> ginp((size_t) n_embd);
-    for (auto& v : ginp) v = gauss(rng) * 0.05f;
+    for (auto& v : ginp)
+        v = gauss(rng) * 0.05f;
 
     // THE SCALAR GATE'S TWO OPERANDS ARE BF16, because `ffn_gate_inp_shexp` is a BF16 weight and ggml converts
     // the activation to the weight's `vec_dot_type`.  The reference therefore dots the bf16 IMAGES of both, not
@@ -164,7 +183,8 @@ int main(int argc, char** argv) {
         for (long long b = 0; b < n_ff; b += 32) {
             const long long e = (b + 32 < n_ff) ? b + 32 : n_ff;
             double amax = 0;
-            for (long long r = b; r < e; ++r) amax = std::fmax(amax, std::fabs((double) h[(size_t) r]));
+            for (long long r = b; r < e; ++r)
+                amax = std::fmax(amax, std::fabs((double) h[(size_t) r]));
             const double dd = amax / 127.0;
             const double id = dd > 0 ? 1.0 / dd : 0.0;
             for (long long r = b; r < e; ++r) {
@@ -176,23 +196,25 @@ int main(int argc, char** argv) {
         std::vector<float> out((size_t) n_embd, 0.0f);
         for (long long o = 0; o < n_embd; ++o) {
             double a = 0;
-            for (long long r = 0; r < n_ff; ++r) a += (double) h16[(size_t) r] * (double) s2_weight(dc, ds, o, n_ff, r);
+            for (long long r = 0; r < n_ff; ++r)
+                a += (double) h16[(size_t) r] * (double) s2_weight(dc, ds, o, n_ff, r);
             out[(size_t) o] = (float) a;
         }
         double dot = 0;
         for (long long i = 0; i < n_embd; ++i)
-            dot += (double) guild::kernels::f32_from_bf16(hx_bf16[(size_t) i]) * (double) guild::kernels::f32_from_bf16(hginp_bf16[(size_t) i]);
+            dot += (double) guild::kernels::f32_from_bf16(hx_bf16[(size_t) i]) *
+                   (double) guild::kernels::f32_from_bf16(hginp_bf16[(size_t) i]);
         const double sg = 1.0 / (1.0 + std::exp(-dot));
         for (long long o = 0; o < n_embd; ++o) {
-            out[(size_t) o] = elementwise_gate ? (float) ((double) out[(size_t) o] * sg)
-                                               : (float) ((double) out[(size_t) o] * sg);
+            out[(size_t) o] =
+                elementwise_gate ? (float) ((double) out[(size_t) o] * sg) : (float) ((double) out[(size_t) o] * sg);
         }
         return out;
     };
 
     // ---- device side
     uint16_t* d_x = nullptr;
-    uint8_t* d_x_used = nullptr;   // the Q8_0 image the kernel now takes
+    uint8_t* d_x_used = nullptr; // the Q8_0 image the kernel now takes
     uint16_t *d_xb = nullptr, *d_ginpb = nullptr;
     uint8_t *d_gc = nullptr, *d_uc = nullptr, *d_dc = nullptr;
     float *d_gs = nullptr, *d_us = nullptr, *d_ds = nullptr, *d_ginp = nullptr, *d_out = nullptr;
@@ -241,8 +263,8 @@ int main(int argc, char** argv) {
     // layer does, so the test exercises the real contract instead of a private one.
     float* d_scratch = nullptr;
     check(cudaMalloc(&d_scratch, guild::kernels::shared_expert_scratch_bytes(n_ff)), "m scratch");
-    guild::kernels::shared_expert(d_x_used, nullptr, d_xb, f, d_gc, d_gs, nullptr, f, d_uc, d_us, nullptr, f,
-                                   d_dc, d_ds, nullptr, d_ginpb, d_scratch, d_out, n_embd, n_ff, tpr, nullptr);
+    guild::kernels::shared_expert(d_x_used, nullptr, d_xb, f, d_gc, d_gs, nullptr, f, d_uc, d_us, nullptr, f, d_dc,
+                                  d_ds, nullptr, d_ginpb, d_scratch, d_out, n_embd, n_ff, tpr, nullptr);
     std::vector<float> got((size_t) n_embd);
     check(cudaMemcpy(got.data(), d_out, got.size() * sizeof(float), cudaMemcpyDeviceToHost), "c out");
 
@@ -267,7 +289,8 @@ int main(int argc, char** argv) {
     // is FALSE for NaN and therefore counted no failure.  The test reported "0 failures" with a NaN fixture -
     // a test that lies about the one thing it exists to check.  A comparison written `x <= t` is a check that
     // NaN silently passes, and this project writes them by habit.
-    if (!(rel_wrong > 0.5)) ++bad;
+    if (!(rel_wrong > 0.5))
+        ++bad;
 
     // ---- the kernel against the correct reference
     double worst = 0, sum = 0;
@@ -275,16 +298,18 @@ int main(int argc, char** argv) {
     for (long long o = 0; o < n_embd; ++o) {
         const double a = want[(size_t) o], b = got[(size_t) o];
         sum += std::fabs(a);
-        if (!std::isfinite(a) || !std::isfinite(b)) ++nonfinite;
+        if (!std::isfinite(a) || !std::isfinite(b))
+            ++nonfinite;
         const double rel = std::fabs(a - b) / (std::fabs(a) > 1e-30 ? std::fabs(a) : 1e-30);
         // `!(rel <= worst)` rather than `rel > worst`: with NaN, `rel > worst` never fires, `worst` stays at
         // its initial 0, and the summary line reports **worst rel 0.000e+00** for a fixture that is entirely
         // NaN.  That is how this check reported a clean pass while computing nothing.
-        if (!(rel <= worst)) worst = rel;
+        if (!(rel <= worst))
+            worst = rel;
     }
     if (nonfinite) {
-        std::printf("    *** %lld of %lld outputs are NOT FINITE - the fixture is out of range and every\n",
-                    nonfinite, n_embd);
+        std::printf("    *** %lld of %lld outputs are NOT FINITE - the fixture is out of range and every\n", nonfinite,
+                    n_embd);
         std::printf("        comparison below is meaningless ***\n");
         ++bad;
     }
@@ -296,8 +321,8 @@ int main(int argc, char** argv) {
     //
     // The tolerance is left loose ON PURPOSE: this test is for the STRUCTURE, and a tight bound here would be
     // asserting the summation order of a 64-term dot.  The number that matters is printed next to it.
-    std::printf("  %-40s worst rel %.3e over %lld outputs (mean |ref| %.4f)\n", "structure vs reference",
-                worst, n_embd, sum / (double) n_embd);
+    std::printf("  %-40s worst rel %.3e over %lld outputs (mean |ref| %.4f)\n", "structure vs reference", worst, n_embd,
+                sum / (double) n_embd);
     if (!(worst <= 1e-2)) {
         std::printf("    *** over 1e-2 - that is beyond the activation-format floor, so it is structural ***\n");
         ++bad;
@@ -326,7 +351,8 @@ int main(int argc, char** argv) {
         const bool in_range = hmax < 65504.0 && std::isfinite(hmax);
         std::printf("  %-40s %s (max |h| %.1f, fp16 max 65504)\n", "the fixture's SwiGLU stays in fp16 range",
                     in_range ? "yes" : "*** NO ***", hmax);
-        if (!in_range) ++bad;
+        if (!in_range)
+            ++bad;
     }
 
     // Isolate the BF16 scalar gate: keep the quantized expert inputs fixed and vary only its F32/BF16
@@ -341,28 +367,41 @@ int main(int argc, char** argv) {
         witness_bf16[0] = bf16_from_f32(witness[0]);
         float* d_witness = nullptr;
         check(cudaMalloc(&d_witness, witness.size() * sizeof(float)), "native shared x");
-        check(cudaMemcpy(d_witness, witness.data(), witness.size() * sizeof(float), cudaMemcpyHostToDevice), "native shared upload x");
+        check(cudaMemcpy(d_witness, witness.data(), witness.size() * sizeof(float), cudaMemcpyHostToDevice),
+              "native shared upload x");
         auto run = [&](void* stream, const float* x_float = nullptr) {
-            shared_expert(d_x_used, nullptr, d_xb, f, d_gc, d_gs, nullptr, f, d_uc, d_us, nullptr, f,
-                          d_dc, d_ds, nullptr, d_ginpb, d_scratch, d_out, n_embd, n_ff, tpr, stream, x_float);
+            shared_expert(d_x_used, nullptr, d_xb, f, d_gc, d_gs, nullptr, f, d_uc, d_us, nullptr, f, d_dc, d_ds,
+                          nullptr, d_ginpb, d_scratch, d_out, n_embd, n_ff, tpr, stream, x_float);
         };
-        check(cudaMemcpy(d_ginpb, zeros.data(), zeros.size() * sizeof(uint16_t), cudaMemcpyHostToDevice), "zero shared gate");
+        check(cudaMemcpy(d_ginpb, zeros.data(), zeros.size() * sizeof(uint16_t), cudaMemcpyHostToDevice),
+              "zero shared gate");
         run(nullptr);
-        std::vector<float> half_output((size_t) n_embd), legacy((size_t) n_embd), native((size_t) n_embd), replay((size_t) n_embd);
-        check(cudaMemcpy(half_output.data(), d_out, half_output.size() * sizeof(float), cudaMemcpyDeviceToHost), "half shared output");
-        check(cudaMemcpy(d_ginpb, basis.data(), basis.size() * sizeof(uint16_t), cudaMemcpyHostToDevice), "basis shared gate");
-        check(cudaMemcpy(d_xb, witness_bf16.data(), witness_bf16.size() * sizeof(uint16_t), cudaMemcpyHostToDevice), "witness shared bf16");
+        std::vector<float> half_output((size_t) n_embd), legacy((size_t) n_embd), native((size_t) n_embd),
+            replay((size_t) n_embd);
+        check(cudaMemcpy(half_output.data(), d_out, half_output.size() * sizeof(float), cudaMemcpyDeviceToHost),
+              "half shared output");
+        check(cudaMemcpy(d_ginpb, basis.data(), basis.size() * sizeof(uint16_t), cudaMemcpyHostToDevice),
+              "basis shared gate");
+        check(cudaMemcpy(d_xb, witness_bf16.data(), witness_bf16.size() * sizeof(uint16_t), cudaMemcpyHostToDevice),
+              "witness shared bf16");
         run(nullptr);
-        check(cudaMemcpy(legacy.data(), d_out, legacy.size() * sizeof(float), cudaMemcpyDeviceToHost), "legacy witness output");
+        check(cudaMemcpy(legacy.data(), d_out, legacy.size() * sizeof(float), cudaMemcpyDeviceToHost),
+              "legacy witness output");
         shared_expert_set_native_bf16(true);
         bool refused_missing = false;
-        try { run(nullptr); } catch (const std::invalid_argument&) { refused_missing = true; }
-        if (!refused_missing) ++bad;
+        try {
+            run(nullptr);
+        } catch (const std::invalid_argument&) {
+            refused_missing = true;
+        }
+        if (!refused_missing)
+            ++bad;
         cudaStream_t stream;
         check(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking), "native shared stream");
         run(stream, d_witness);
         check(cudaStreamSynchronize(stream), "native shared sync");
-        check(cudaMemcpy(native.data(), d_out, native.size() * sizeof(float), cudaMemcpyDeviceToHost), "native witness output");
+        check(cudaMemcpy(native.data(), d_out, native.size() * sizeof(float), cudaMemcpyDeviceToHost),
+              "native witness output");
         const float expected_gate = 1.0f / (1.0f + std::exp(-witness[0]));
         double error = 0.0, magnitude = 0.0;
         for (size_t i = 0; i < native.size(); ++i) {
@@ -375,7 +414,8 @@ int main(int argc, char** argv) {
         const bool correct = std::isfinite(rel) && rel < 2e-6 && visible > 1e-5 && refused_missing;
         std::printf("  native shared scalar gate: %s (ref rel %.3e, BF16 separation %.3e, missing input %s)\n",
                     correct ? "pass" : "FAIL", rel, visible, refused_missing ? "refused" : "FAIL");
-        if (!correct) ++bad;
+        if (!correct)
+            ++bad;
         cudaGraph_t graph;
         cudaGraphExec_t executable;
         check(cudaStreamBeginCapture(stream, cudaStreamCaptureModeThreadLocal), "native shared capture");
@@ -385,20 +425,26 @@ int main(int argc, char** argv) {
         shared_expert_set_native_bf16(false);
         check(cudaGraphLaunch(executable, stream), "native shared graph replay");
         check(cudaStreamSynchronize(stream), "native shared graph sync");
-        check(cudaMemcpy(replay.data(), d_out, replay.size() * sizeof(float), cudaMemcpyDeviceToHost), "native shared graph read");
+        check(cudaMemcpy(replay.data(), d_out, replay.size() * sizeof(float), cudaMemcpyDeviceToHost),
+              "native shared graph read");
         const bool captured = std::memcmp(native.data(), replay.data(), native.size() * sizeof(float)) == 0;
         std::printf("  native shared captured selection: %s\n", captured ? "byte-identical" : "FAIL");
-        if (!captured) ++bad;
+        if (!captured)
+            ++bad;
         check(cudaGraphExecDestroy(executable), "native shared graph exec destroy");
         check(cudaGraphDestroy(graph), "native shared graph destroy");
         check(cudaStreamDestroy(stream), "native shared stream destroy");
-        check(cudaMemcpy(d_ginpb, hginp_bf16.data(), hginp_bf16.size() * sizeof(uint16_t), cudaMemcpyHostToDevice), "restore shared gate");
-        check(cudaMemcpy(d_xb, hx_bf16.data(), hx_bf16.size() * sizeof(uint16_t), cudaMemcpyHostToDevice), "restore shared bf16");
+        check(cudaMemcpy(d_ginpb, hginp_bf16.data(), hginp_bf16.size() * sizeof(uint16_t), cudaMemcpyHostToDevice),
+              "restore shared gate");
+        check(cudaMemcpy(d_xb, hx_bf16.data(), hx_bf16.size() * sizeof(uint16_t), cudaMemcpyHostToDevice),
+              "restore shared bf16");
         run(nullptr);
-        check(cudaMemcpy(replay.data(), d_out, replay.size() * sizeof(float), cudaMemcpyDeviceToHost), "restored shared output");
+        check(cudaMemcpy(replay.data(), d_out, replay.size() * sizeof(float), cudaMemcpyDeviceToHost),
+              "restored shared output");
         const bool restored = std::memcmp(got.data(), replay.data(), got.size() * sizeof(float)) == 0;
         std::printf("  restored shared default: %s\n", restored ? "byte-identical" : "FAIL");
-        if (!restored) ++bad;
+        if (!restored)
+            ++bad;
         cudaFree(d_witness);
     }
 
@@ -417,13 +463,19 @@ int main(int argc, char** argv) {
         std::mt19937 rng2(31337);
         std::normal_distribution<float> g2(0.0f, 1.0f);
         std::vector<float> parts((size_t) (k2 * n_embd2)), w((size_t) k2), shared((size_t) n_embd2);
-        for (auto& v : parts) v = g2(rng2);
+        for (auto& v : parts)
+            v = g2(rng2);
         // Weights that genuinely VARY, and genuinely miss 1/k: with uniform weights the unweighted reading
         // would coincide with the weighted one and the fixture could not see reading A.
         double wsum = 0;
-        for (auto& v : w) { v = std::fabs(g2(rng2)) + 0.05f; wsum += v; }
-        for (auto& v : w) v = (float) (v / wsum);            // already renormalised, as router_top10 emits
-        for (auto& v : shared) v = g2(rng2) * 3.0f;
+        for (auto& v : w) {
+            v = std::fabs(g2(rng2)) + 0.05f;
+            wsum += v;
+        }
+        for (auto& v : w)
+            v = (float) (v / wsum); // already renormalised, as router_top10 emits
+        for (auto& v : shared)
+            v = g2(rng2) * 3.0f;
 
         auto ref = [&](bool weight_routed, bool weight_shared) {
             std::vector<float> y((size_t) n_embd2, 0.0f);
@@ -454,30 +506,40 @@ int main(int argc, char** argv) {
             const std::vector<float> wrong = ref(trap.first, trap.second);
             const double rel = rel_l1(want, wrong);
             const char* what = (!trap.first && !trap.second) ? "routed sum left UNWEIGHTED is observable"
-                              : "shared output router-WEIGHTED is observable";
+                                                             : "shared output router-WEIGHTED is observable";
             const bool visible = rel > 0.05;
             std::printf("  %-42s %-4s (%.2f%% apart)\n", what, visible ? "yes" : "*** NO ***", rel * 100);
-            if (!visible) ++bad;
+            if (!visible)
+                ++bad;
         }
 
         const double rel_k = rel_l1(want, got);
         std::printf("  %-42s rel %.3e\n", "moe_combine vs reference", rel_k);
         // Both sides accumulate in double over the same k terms, so this is order-only.
-        if (!(rel_k <= 1e-6)) { std::printf("    *** over 1e-6 ***\n"); ++bad; }
+        if (!(rel_k <= 1e-6)) {
+            std::printf("    *** over 1e-6 ***\n");
+            ++bad;
+        }
 
         // a null `shared` must mean "no shared expert", not "add nothing but leave it undefined"
         guild::kernels::moe_combine(d_p, d_w, nullptr, d_y, n_embd2, k2, nullptr);
         check(cudaMemcpy(got.data(), d_y, got.size() * 4, cudaMemcpyDeviceToHost), "mc cy2");
         const double rel_no_shared = rel_l1(want, got);
         const bool differs = rel_no_shared > 0.05;
-        std::printf("  %-42s %s (%.2f%% apart - null shared really omits it)\n",
-                    "a null `shared` is observable", differs ? "yes" : "*** NO ***", rel_no_shared * 100);
-        if (!differs) ++bad;
-        cudaFree(d_p); cudaFree(d_w); cudaFree(d_s); cudaFree(d_y);
+        std::printf("  %-42s %s (%.2f%% apart - null shared really omits it)\n", "a null `shared` is observable",
+                    differs ? "yes" : "*** NO ***", rel_no_shared * 100);
+        if (!differs)
+            ++bad;
+        cudaFree(d_p);
+        cudaFree(d_w);
+        cudaFree(d_s);
+        cudaFree(d_y);
     }
 
     std::printf("\nshared_expert: %d failures\n", bad);
-    if (bad) return 1;
-    if (selftest) std::printf("shared_expert_parity OK\n");
+    if (bad)
+        return 1;
+    if (selftest)
+        std::printf("shared_expert_parity OK\n");
     return 0;
 }

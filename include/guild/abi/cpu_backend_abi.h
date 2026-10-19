@@ -32,15 +32,14 @@ typedef struct guild_cpu_backend_ext_v2_s {
     guild_cpu_expert_ext_v1_t native; // original CPE1 prefix; struct_size = sizeof(v2)
     uint32_t backend_version;
     uint32_t reserved;
-    guild_status_t (*format)(int32_t, int32_t, int64_t, int64_t,
-                             guild_cpu_expert_format_v1_t*, guild_error_info_t*);
+    guild_status_t (*format)(int32_t, int32_t, int64_t, int64_t, guild_cpu_expert_format_v1_t*, guild_error_info_t*);
     void (*quant_planar)(const float*, int32_t, guild_cpu_planar_act_v1_t*);
-    void (*canonical_gate_up)(const uint8_t*, const guild_cpu_planar_act_v1_t* const*, int32_t,
-                              float* const*, int32_t, int32_t);
-    void (*canonical_down)(const uint8_t*, const guild_cpu_planar_act_v1_t* const*, int32_t,
-                           float* const*, int32_t, int32_t);
-    void (*q2_gguf_rows)(const uint8_t*, uint64_t, int32_t,
-                         const guild_cpu_planar_act_v1_t* const*, int32_t, float* const*, int32_t, int32_t);
+    void (*canonical_gate_up)(const uint8_t*, const guild_cpu_planar_act_v1_t* const*, int32_t, float* const*, int32_t,
+                              int32_t);
+    void (*canonical_down)(const uint8_t*, const guild_cpu_planar_act_v1_t* const*, int32_t, float* const*, int32_t,
+                           int32_t);
+    void (*q2_gguf_rows)(const uint8_t*, uint64_t, int32_t, const guild_cpu_planar_act_v1_t* const*, int32_t,
+                         float* const*, int32_t, int32_t);
     void (*router_bf16)(const uint16_t*, int32_t, int32_t, const float*, int32_t, float*);
     // Ordered fused multiply-add in routed-expert order; returns NONFINITE_OUTPUT
     // on non-finite expert values. No fallback is attempted on numerical failure.
@@ -51,6 +50,6 @@ typedef struct guild_cpu_backend_ext_v2_s {
 
 #ifdef __cplusplus
 }
-static_assert(sizeof(guild_cpu_planar_act_v1_t)==3584,"canonical activation layout must remain frozen");
+static_assert(sizeof(guild_cpu_planar_act_v1_t) == 3584, "canonical activation layout must remain frozen");
 #endif
 #undef GUILD_CPU_ALIGN64

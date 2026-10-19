@@ -41,7 +41,8 @@ int main(int argc, char** argv) {
             max_abs = std::max(max_abs, (double) std::fabs(got[i] - want[i]));
     }
     uint32_t rows[16];
-    for (int i = 0; i < 16; ++i) rows[i] = probes[i % 5];
+    for (int i = 0; i < 16; ++i)
+        rows[i] = probes[i % 5];
     float batch[16 * 160];
     if (!table.issue(rows) || !table.collect(batch, err)) {
         std::fprintf(stderr, "collect: %s\n", err.c_str());

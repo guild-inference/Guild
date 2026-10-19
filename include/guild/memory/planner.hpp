@@ -27,19 +27,15 @@ struct PlannerOptions {
 
 class MemoryPlanner {
 public:
-    static ExecutionPlan plan(
-        const model::ModelDescriptor& desc,
-        const hardware::HardwareInfo& hw,
-        const PlannerOptions& options = {});
+    static ExecutionPlan plan(const model::ModelDescriptor& desc, const hardware::HardwareInfo& hw,
+                              const PlannerOptions& options = {});
 
-    static PlanValidation validate(
-        const ExecutionPlan& plan,
-        const hardware::HardwareInfo& hw,
-        const model::ModelDescriptor& desc);
+    static PlanValidation validate(const ExecutionPlan& plan, const hardware::HardwareInfo& hw,
+                                   const model::ModelDescriptor& desc);
 
     static uint64_t estimate_dense_gpu_bytes(const model::ModelDescriptor& desc);
     static uint64_t calculate_prompt_scratch_bytes(const model::ModelDescriptor& desc, int64_t prefill_chunk);
     static uint64_t calculate_safety_reserve_bytes(const hardware::HardwareInfo& hw);
 };
 
-}  // namespace guild::memory
+} // namespace guild::memory

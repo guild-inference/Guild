@@ -40,12 +40,22 @@ public:
     void stop();
 
     // Async-signal-safe request to stop
-    void request_stop() { running_.store(false); }
+    void request_stop() {
+        running_.store(false);
+    }
 
-    bool is_running() const { return running_.load(); }
-    int bound_port() const { return bound_port_; }
-    const ServerOptions& options() const { return options_; }
-    Telemetry& telemetry() { return telemetry_; }
+    bool is_running() const {
+        return running_.load();
+    }
+    int bound_port() const {
+        return bound_port_;
+    }
+    const ServerOptions& options() const {
+        return options_;
+    }
+    Telemetry& telemetry() {
+        return telemetry_;
+    }
 
 private:
     std::shared_ptr<IInferenceEngine> engine_;

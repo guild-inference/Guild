@@ -5,9 +5,10 @@
 namespace guild::memory {
 
 uint64_t calculate_routed_expert_footprint(const model::ModelDescriptor& desc) {
-    const bool is_indexed_ple = (desc.runner_model && (desc.runner_model->requires_ple != 0 || desc.runner_model->indexed_attention != 0)) ||
-                                desc.attn.mechanism == model::AttentionMechanism::IndexedSparse ||
-                                desc.archetype == model::ModelArchetype::Qwen4Exp || desc.arch_name == "qwen4exp";
+    const bool is_indexed_ple =
+        (desc.runner_model && (desc.runner_model->requires_ple != 0 || desc.runner_model->indexed_attention != 0)) ||
+        desc.attn.mechanism == model::AttentionMechanism::IndexedSparse ||
+        desc.archetype == model::ModelArchetype::Qwen4Exp || desc.arch_name == "qwen4exp";
     int64_t total_experts = desc.moe.total_routed_experts(desc.attn.n_layers);
     if (total_experts <= 0) {
         if (is_indexed_ple) {
@@ -35,13 +36,10 @@ uint64_t calculate_routed_expert_footprint(const model::ModelDescriptor& desc) {
     return (uint64_t) total_experts * approx_bytes_per_expert;
 }
 
-ExpertTierDistribution calculate_expert_distribution(
-    const model::ModelDescriptor& desc,
-    uint64_t available_ram_bytes,
-    uint64_t free_vram_for_cache,
-    std::optional<uint64_t> explicit_ram_budget_bytes,
-    std::optional<int64_t> explicit_gpu_slots)
-{
+ExpertTierDistribution calculate_expert_distribution(const model::ModelDescriptor& desc, uint64_t available_ram_bytes,
+                                                     uint64_t free_vram_for_cache,
+                                                     std::optional<uint64_t> explicit_ram_budget_bytes,
+                                                     std::optional<int64_t> explicit_gpu_slots) {
     ExpertTierDistribution dist;
     dist.total_experts = desc.moe.total_routed_experts(desc.attn.n_layers);
     if (dist.total_experts <= 0) {
@@ -50,7 +48,8 @@ ExpertTierDistribution calculate_expert_distribution(
 
     dist.total_bytes = calculate_routed_expert_footprint(desc);
     dist.bytes_per_expert = dist.total_bytes / (uint64_t) dist.total_experts;
-    if (dist.bytes_per_expert == 0) dist.bytes_per_expert = 1;
+    if (dist.bytes_per_expert == 0)
+        dist.bytes_per_expert = 1;
 
     // 1. GPU Cache allocation
     if (explicit_gpu_slots.has_value()) {
@@ -72,9 +71,8 @@ ExpertTierDistribution calculate_expert_distribution(
     const int64_t remaining_experts = dist.total_experts - dist.gpu_cache_slots;
 
     // 2. RAM Tier allocation
-    uint64_t ram_budget = explicit_ram_budget_bytes.has_value()
-                              ? explicit_ram_budget_bytes.value()
-                              : available_ram_bytes;
+    uint64_t ram_budget =
+        explicit_ram_budget_bytes.has_value() ? explicit_ram_budget_bytes.value() : available_ram_bytes;
 
     uint64_t ram_slots = ram_budget / dist.bytes_per_expert;
     dist.ram_resident_slots = std::min<int64_t>((int64_t) ram_slots, remaining_experts);
@@ -87,4 +85,4 @@ ExpertTierDistribution calculate_expert_distribution(
     return dist;
 }
 
-}  // namespace guild::memory
+} // namespace guild::memory

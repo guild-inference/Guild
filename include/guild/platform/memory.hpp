@@ -13,8 +13,8 @@ namespace guild::platform {
 
 struct LockResult {
     bool ok = false;
-    uint64_t locked_bytes = 0;   ///< may be less than requested; the rest stays pageable
-    std::string note;            ///< what was done or why it failed, for the startup print
+    uint64_t locked_bytes = 0; ///< may be less than requested; the rest stays pageable
+    std::string note;          ///< what was done or why it failed, for the startup print
 };
 
 /// Lock [p, p + bytes) into physical memory. Partial success is reported, not hidden.
@@ -37,10 +37,9 @@ uint64_t total_physical_memory();
 /// bytes of RAM available.  The file tier passes only the expert bytes it really reads from the files (the experts
 /// outside its resident RAM copy) and the RAM that copy really holds - not every shard's bytes and the requested
 /// budget, which on a 96 GB PC (#577) made the file tier read unbuffered when the cache could keep its reads.
-inline bool file_cache_keeps(uint64_t avail, uint64_t arena_bytes, uint64_t read_bytes,
-                             uint64_t margin = 4ull << 30) {
+inline bool file_cache_keeps(uint64_t avail, uint64_t arena_bytes, uint64_t read_bytes, uint64_t margin = 4ull << 30) {
     const uint64_t room = avail > arena_bytes + margin ? avail - arena_bytes - margin : 0;
     return room >= read_bytes;
 }
 
-}  // namespace guild::platform
+} // namespace guild::platform

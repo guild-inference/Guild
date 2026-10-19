@@ -25,19 +25,25 @@ public:
     void reset();
     /// Add tokens to the history (the prompt, then every accepted token).
     void append(const int32_t* tokens, size_t n);
-    void append(int32_t token) { append(&token, 1); }
+    void append(int32_t token) {
+        append(&token, 1);
+    }
 
     /// Write up to `max_k` proposed next tokens to `out`; returns how many (0 = no match of at least min_match).
     int propose(int max_k, int32_t* out);
 
     /// Length of the match behind the last proposal (0 if none).
-    int last_match() const { return last_match_; }
-    size_t size() const { return hist_.size(); }
+    int last_match() const {
+        return last_match_;
+    }
+    size_t size() const {
+        return hist_.size();
+    }
 
 private:
     struct Slot {
-        uint64_t key = 0;             // trigram hash + 1 (0 = empty)
-        uint32_t pos[WAYS] = {};      // end positions, most recent first
+        uint64_t key = 0;        // trigram hash + 1 (0 = empty)
+        uint32_t pos[WAYS] = {}; // end positions, most recent first
         uint8_t n = 0;
     };
     Slot* find_slot(uint64_t key, bool insert);
@@ -50,4 +56,4 @@ private:
     int last_match_ = 0;
 };
 
-}  // namespace guild::spec
+} // namespace guild::spec

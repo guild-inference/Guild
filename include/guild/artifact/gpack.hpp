@@ -20,32 +20,32 @@ inline constexpr uint16_t kGPackVersionV1 = 1u;
 inline constexpr uint32_t kGPackTokenizerMagic = 0x31544247u; // "GBT1"
 
 enum GPackFlags : uint32_t {
-    GUILD_GPACK_FLAG_LITTLE_ENDIAN    = 1u << 0,
-    GUILD_GPACK_FLAG_HAS_DENSE_PACK   = 1u << 1,
+    GUILD_GPACK_FLAG_LITTLE_ENDIAN = 1u << 0,
+    GUILD_GPACK_FLAG_HAS_DENSE_PACK = 1u << 1,
     GUILD_GPACK_FLAG_HAS_NATIVE_DENSE = 1u << 2,
     GUILD_GPACK_FLAG_HAS_EXPERT_BLOBS = 1u << 3,
     GUILD_GPACK_FLAG_HAS_TOKENIZER_BIN = 1u << 4,
-    GUILD_GPACK_FLAG_HAS_MTP          = 1u << 5,
-    GUILD_GPACK_FLAG_HAS_PLE          = 1u << 6,
+    GUILD_GPACK_FLAG_HAS_MTP = 1u << 5,
+    GUILD_GPACK_FLAG_HAS_PLE = 1u << 6,
     GUILD_GPACK_FLAG_EXTERNAL_EXPERTS = 1u << 7,
 };
 
 enum class GPackSectionKind : uint32_t {
-    ManifestJson        = 1,
-    MetadataKvBin       = 2,
-    TensorIndexBin      = 3,
-    DenseIndexBin       = 4,
-    DensePackBlob       = 5,
+    ManifestJson = 1,
+    MetadataKvBin = 2,
+    TensorIndexBin = 3,
+    DenseIndexBin = 4,
+    DensePackBlob = 5,
     NativeDenseIndexBin = 6,
-    NativeDenseBlob     = 7,
-    ExpertLayoutBin     = 8,
-    ExpertBlobs         = 9,
-    EmbedBlob           = 10,
-    HeadBlob            = 11,
-    PleBlob             = 12,
-    TokenizerBin        = 13,
-    TokenizerAssets     = 14,
-    MtpBlob             = 15,
+    NativeDenseBlob = 7,
+    ExpertLayoutBin = 8,
+    ExpertBlobs = 9,
+    EmbedBlob = 10,
+    HeadBlob = 11,
+    PleBlob = 12,
+    TokenizerBin = 13,
+    TokenizerAssets = 14,
+    MtpBlob = 15,
 };
 
 #pragma pack(push, 1)
@@ -174,24 +174,46 @@ public:
     bool open(const std::string& path, std::string& err, bool verify_all_hashes = false);
     void close();
 
-    bool is_open() const { return base_ != nullptr; }
-    const std::string& path() const { return path_; }
-    uint64_t file_size() const { return file_size_; }
-    const GPackHeaderV1& header() const { return header_; }
-    const GPackFooterV1& footer() const { return footer_; }
-    const std::vector<GPackSectionEntryV1>& sections() const { return sections_; }
-    const std::string& manifest_json() const { return manifest_json_; }
+    bool is_open() const {
+        return base_ != nullptr;
+    }
+    const std::string& path() const {
+        return path_;
+    }
+    uint64_t file_size() const {
+        return file_size_;
+    }
+    const GPackHeaderV1& header() const {
+        return header_;
+    }
+    const GPackFooterV1& footer() const {
+        return footer_;
+    }
+    const std::vector<GPackSectionEntryV1>& sections() const {
+        return sections_;
+    }
+    const std::string& manifest_json() const {
+        return manifest_json_;
+    }
     std::string manifest_sha256_hex() const;
 
-    const model::ModelDescriptor& descriptor() const { return desc_; }
-    const GPackExecutionMetadata& execution_metadata() const { return exec_meta_; }
-    const std::map<std::string, MetaValue>& metadata_kv() const { return metadata_kv_; }
+    const model::ModelDescriptor& descriptor() const {
+        return desc_;
+    }
+    const GPackExecutionMetadata& execution_metadata() const {
+        return exec_meta_;
+    }
+    const std::map<std::string, MetaValue>& metadata_kv() const {
+        return metadata_kv_;
+    }
     const MetaValue* get_meta(const std::string& key) const {
         auto it = metadata_kv_.find(key);
         return it != metadata_kv_.end() ? &it->second : nullptr;
     }
 
-    const std::vector<TensorInfo>& tensors() const { return tensors_; }
+    const std::vector<TensorInfo>& tensors() const {
+        return tensors_;
+    }
     const TensorInfo* find_tensor(const std::string& name) const {
         auto it = tensor_by_name_.find(name);
         return it != tensor_by_name_.end() ? &tensors_[it->second] : nullptr;
@@ -201,59 +223,99 @@ public:
     const GPackSectionEntryV1* find_section(GPackSectionKind kind) const {
         const uint32_t k = static_cast<uint32_t>(kind);
         for (const auto& s : sections_) {
-            if (s.kind == k) return &s;
+            if (s.kind == k)
+                return &s;
         }
         return nullptr;
     }
 
     // Precomputed dense weight pack
-    bool has_dense_pack() const { return (header_.flags & GUILD_GPACK_FLAG_HAS_DENSE_PACK) != 0; }
-    uint64_t dense_pool_bytes() const { return dense_pool_bytes_; }
-    uint64_t dense_compacted_pool_bytes() const { return dense_compacted_pool_bytes_; }
-    const std::vector<GPackDenseRowV1>& dense_rows() const { return dense_rows_; }
-    const std::set<std::string>& precomputed_skip_set() const { return precomputed_skip_set_; }
+    bool has_dense_pack() const {
+        return (header_.flags & GUILD_GPACK_FLAG_HAS_DENSE_PACK) != 0;
+    }
+    uint64_t dense_pool_bytes() const {
+        return dense_pool_bytes_;
+    }
+    uint64_t dense_compacted_pool_bytes() const {
+        return dense_compacted_pool_bytes_;
+    }
+    const std::vector<GPackDenseRowV1>& dense_rows() const {
+        return dense_rows_;
+    }
+    const std::set<std::string>& precomputed_skip_set() const {
+        return precomputed_skip_set_;
+    }
     const uint8_t* dense_pack_data(uint64_t* out_size = nullptr) const {
         const auto* sec = find_section(GPackSectionKind::DensePackBlob);
-        if (!sec || !base_) return nullptr;
-        if (out_size) *out_size = sec->size;
+        if (!sec || !base_)
+            return nullptr;
+        if (out_size)
+            *out_size = sec->size;
         return base_ + sec->offset;
     }
 
     // Precomputed native dense quantized projections
-    bool has_native_dense() const { return (header_.flags & GUILD_GPACK_FLAG_HAS_NATIVE_DENSE) != 0; }
-    uint64_t native_dense_arena_bytes() const { return native_dense_arena_bytes_; }
-    const std::vector<GPackNativeDenseRowV1>& native_dense_rows() const { return native_dense_rows_; }
+    bool has_native_dense() const {
+        return (header_.flags & GUILD_GPACK_FLAG_HAS_NATIVE_DENSE) != 0;
+    }
+    uint64_t native_dense_arena_bytes() const {
+        return native_dense_arena_bytes_;
+    }
+    const std::vector<GPackNativeDenseRowV1>& native_dense_rows() const {
+        return native_dense_rows_;
+    }
     const uint8_t* native_dense_data(uint64_t* out_size = nullptr) const {
         const auto* sec = find_section(GPackSectionKind::NativeDenseBlob);
-        if (!sec || !base_) return nullptr;
-        if (out_size) *out_size = sec->size;
+        if (!sec || !base_)
+            return nullptr;
+        if (out_size)
+            *out_size = sec->size;
         return base_ + sec->offset;
     }
 
     // Precomputed expert layout & contiguous expert blobs
-    bool has_expert_layout() const { return !expert_layers_.empty(); }
-    bool has_embedded_experts() const { return (header_.flags & GUILD_GPACK_FLAG_HAS_EXPERT_BLOBS) != 0; }
-    bool has_external_experts() const { return (header_.flags & GUILD_GPACK_FLAG_EXTERNAL_EXPERTS) != 0; }
-    bool expert_native_format() const { return expert_native_; }
-    int64_t expert_count_per_layer() const { return expert_n_expert_; }
-    uint64_t total_expert_bytes() const { return expert_total_bytes_; }
-    const std::vector<GPackExpertLayerRowV1>& expert_layers() const { return expert_layers_; }
+    bool has_expert_layout() const {
+        return !expert_layers_.empty();
+    }
+    bool has_embedded_experts() const {
+        return (header_.flags & GUILD_GPACK_FLAG_HAS_EXPERT_BLOBS) != 0;
+    }
+    bool has_external_experts() const {
+        return (header_.flags & GUILD_GPACK_FLAG_EXTERNAL_EXPERTS) != 0;
+    }
+    bool expert_native_format() const {
+        return expert_native_;
+    }
+    int64_t expert_count_per_layer() const {
+        return expert_n_expert_;
+    }
+    uint64_t total_expert_bytes() const {
+        return expert_total_bytes_;
+    }
+    const std::vector<GPackExpertLayerRowV1>& expert_layers() const {
+        return expert_layers_;
+    }
     const uint8_t* expert_blobs_data(uint64_t* out_size = nullptr, uint64_t* out_file_offset = nullptr) const {
         const auto* sec = find_section(GPackSectionKind::ExpertBlobs);
-        if (!sec || !base_) return nullptr;
-        if (out_size) *out_size = sec->size;
-        if (out_file_offset) *out_file_offset = sec->offset;
+        if (!sec || !base_)
+            return nullptr;
+        if (out_size)
+            *out_size = sec->size;
+        if (out_file_offset)
+            *out_file_offset = sec->offset;
         return base_ + sec->offset;
     }
-    std::string external_expert_primary_gguf() const { return external_expert_gguf_; }
+    std::string external_expert_primary_gguf() const {
+        return external_expert_gguf_;
+    }
 
     // Pre-validated single tensors (Embedding, Output Head, PLE Table)
     bool embed_tensor(GPackSingleTensorHeaderV1& out_hdr, const uint8_t*& out_data) const {
         const auto* sec = find_section(GPackSectionKind::EmbedBlob);
-        if (!sec || !base_ || sec->size < sizeof(GPackSingleTensorHeaderV1)) return false;
+        if (!sec || !base_ || sec->size < sizeof(GPackSingleTensorHeaderV1))
+            return false;
         std::memcpy(&out_hdr, base_ + sec->offset, sizeof(out_hdr));
-        if (out_hdr.data_offset < sizeof(GPackSingleTensorHeaderV1) ||
-            out_hdr.data_offset > sec->size ||
+        if (out_hdr.data_offset < sizeof(GPackSingleTensorHeaderV1) || out_hdr.data_offset > sec->size ||
             out_hdr.byte_size > sec->size - out_hdr.data_offset) {
             return false;
         }
@@ -262,46 +324,56 @@ public:
     }
     bool head_tensor(GPackSingleTensorHeaderV1& out_hdr, const uint8_t*& out_data) const {
         const auto* sec = find_section(GPackSectionKind::HeadBlob);
-        if (!sec || !base_ || sec->size < sizeof(GPackSingleTensorHeaderV1)) return false;
+        if (!sec || !base_ || sec->size < sizeof(GPackSingleTensorHeaderV1))
+            return false;
         std::memcpy(&out_hdr, base_ + sec->offset, sizeof(out_hdr));
-        if (out_hdr.data_offset < sizeof(GPackSingleTensorHeaderV1) ||
-            out_hdr.data_offset > sec->size ||
+        if (out_hdr.data_offset < sizeof(GPackSingleTensorHeaderV1) || out_hdr.data_offset > sec->size ||
             out_hdr.byte_size > sec->size - out_hdr.data_offset) {
             return false;
         }
         out_data = base_ + sec->offset + out_hdr.data_offset;
         return true;
     }
-    bool ple_tensor(GPackSingleTensorHeaderV1& out_hdr, const uint8_t*& out_data, uint64_t* out_file_offset = nullptr) const {
+    bool ple_tensor(GPackSingleTensorHeaderV1& out_hdr, const uint8_t*& out_data,
+                    uint64_t* out_file_offset = nullptr) const {
         const auto* sec = find_section(GPackSectionKind::PleBlob);
-        if (!sec || !base_ || sec->size < sizeof(GPackSingleTensorHeaderV1)) return false;
+        if (!sec || !base_ || sec->size < sizeof(GPackSingleTensorHeaderV1))
+            return false;
         std::memcpy(&out_hdr, base_ + sec->offset, sizeof(out_hdr));
-        if (out_hdr.data_offset < sizeof(GPackSingleTensorHeaderV1) ||
-            out_hdr.data_offset > sec->size ||
+        if (out_hdr.data_offset < sizeof(GPackSingleTensorHeaderV1) || out_hdr.data_offset > sec->size ||
             out_hdr.byte_size > sec->size - out_hdr.data_offset) {
             return false;
         }
         out_data = base_ + sec->offset + out_hdr.data_offset;
-        if (out_file_offset) *out_file_offset = sec->offset + out_hdr.data_offset;
+        if (out_file_offset)
+            *out_file_offset = sec->offset + out_hdr.data_offset;
         return true;
     }
 
     // Precomputed binary tokenizer (GBT1) & raw assets
-    bool has_tokenizer_bin() const { return (header_.flags & GUILD_GPACK_FLAG_HAS_TOKENIZER_BIN) != 0; }
+    bool has_tokenizer_bin() const {
+        return (header_.flags & GUILD_GPACK_FLAG_HAS_TOKENIZER_BIN) != 0;
+    }
     const uint8_t* tokenizer_bin_data(uint64_t* out_size = nullptr) const {
         const auto* sec = find_section(GPackSectionKind::TokenizerBin);
-        if (!sec || !base_) return nullptr;
-        if (out_size) *out_size = sec->size;
+        if (!sec || !base_)
+            return nullptr;
+        if (out_size)
+            *out_size = sec->size;
         return base_ + sec->offset;
     }
     bool extract_tokenizer_assets(const std::string& dst_dir, std::string& err) const;
 
     // Optional MTP draft model payload
-    bool has_mtp() const { return (header_.flags & GUILD_GPACK_FLAG_HAS_MTP) != 0; }
+    bool has_mtp() const {
+        return (header_.flags & GUILD_GPACK_FLAG_HAS_MTP) != 0;
+    }
     const uint8_t* mtp_blob_data(uint64_t* out_size = nullptr) const {
         const auto* sec = find_section(GPackSectionKind::MtpBlob);
-        if (!sec || !base_) return nullptr;
-        if (out_size) *out_size = sec->size;
+        if (!sec || !base_)
+            return nullptr;
+        if (out_size)
+            *out_size = sec->size;
         return base_ + sec->offset;
     }
 

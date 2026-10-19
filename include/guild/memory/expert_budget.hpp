@@ -24,11 +24,9 @@ struct ExpertTierDistribution {
 
 uint64_t calculate_routed_expert_footprint(const model::ModelDescriptor& desc);
 
-ExpertTierDistribution calculate_expert_distribution(
-    const model::ModelDescriptor& desc,
-    uint64_t available_ram_bytes,
-    uint64_t free_vram_for_cache,
-    std::optional<uint64_t> explicit_ram_budget_bytes = std::nullopt,
-    std::optional<int64_t> explicit_gpu_slots = std::nullopt);
+ExpertTierDistribution calculate_expert_distribution(const model::ModelDescriptor& desc, uint64_t available_ram_bytes,
+                                                     uint64_t free_vram_for_cache,
+                                                     std::optional<uint64_t> explicit_ram_budget_bytes = std::nullopt,
+                                                     std::optional<int64_t> explicit_gpu_slots = std::nullopt);
 
-}  // namespace guild::memory
+} // namespace guild::memory

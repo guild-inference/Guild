@@ -25,14 +25,18 @@ public:
     bool load(const std::string& path_or_dir, std::string& err_msg);
     bool load_from_string(const std::string& content, std::string& err_msg);
 
-    bool is_loaded() const { return loaded_; }
-    TemplateType type() const { return type_; }
-    const std::string& source() const { return source_; }
+    bool is_loaded() const {
+        return loaded_;
+    }
+    TemplateType type() const {
+        return type_;
+    }
+    const std::string& source() const {
+        return source_;
+    }
 
     // Renders messages according to the loaded template
-    bool render(const std::vector<ChatMessage>& messages,
-                bool add_generation_prompt,
-                std::string& rendered,
+    bool render(const std::vector<ChatMessage>& messages, bool add_generation_prompt, std::string& rendered,
                 std::string& err_msg) const;
 
 private:
@@ -40,15 +44,11 @@ private:
     TemplateType type_ = TemplateType::Unknown;
     std::string source_;
 
-    bool render_qwen(const std::vector<ChatMessage>& messages,
-                     bool add_generation_prompt,
-                     std::string& rendered,
+    bool render_qwen(const std::vector<ChatMessage>& messages, bool add_generation_prompt, std::string& rendered,
                      std::string& err_msg) const;
 
-    bool render_ornith(const std::vector<ChatMessage>& messages,
-                      bool add_generation_prompt,
-                      std::string& rendered,
-                      std::string& err_msg) const;
+    bool render_ornith(const std::vector<ChatMessage>& messages, bool add_generation_prompt, std::string& rendered,
+                       std::string& err_msg) const;
 };
 
 } // namespace guild::runtime

@@ -16,7 +16,8 @@ public:
     ~ScopedCudaAttn();
     ScopedCudaAttn(const ScopedCudaAttn&) = delete;
     ScopedCudaAttn& operator=(const ScopedCudaAttn&) = delete;
+
 private:
     const guild_cuda_attn_ext_v1_t* previous_;
 };
-}
+} // namespace guild::kernels

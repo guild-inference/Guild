@@ -3,8 +3,8 @@
 
 namespace guild::server {
 
-NativeInferenceEngine::NativeInferenceEngine(NativeInferenceEngineOptions options)
-    : options_(std::move(options)) {}
+NativeInferenceEngine::NativeInferenceEngine(NativeInferenceEngineOptions options) : options_(std::move(options)) {
+}
 
 NativeInferenceEngine::~NativeInferenceEngine() {
     stop();
@@ -43,8 +43,7 @@ bool NativeInferenceEngine::generate(const InferenceRequest& req, GenerationResu
     return generate_stream(req, nullptr, result);
 }
 
-bool NativeInferenceEngine::generate_stream(const InferenceRequest& req,
-                                            StreamCallback on_token,
+bool NativeInferenceEngine::generate_stream(const InferenceRequest& req, StreamCallback on_token,
                                             GenerationResult& result) {
     result = GenerationResult{};
     if (!is_ready()) {
@@ -109,7 +108,8 @@ bool NativeInferenceEngine::generate_stream(const InferenceRequest& req,
     result.gpu_cache_hits = telem.gpu_cache_hits;
     result.file_mb = double(telem.file_read_bytes) / 1e6;
 
-    if (!ok || telem.finish_reason == "error") return result.fail(gen_err);
+    if (!ok || telem.finish_reason == "error")
+        return result.fail(gen_err);
     return true;
 }
 
@@ -130,12 +130,14 @@ bool NativeInferenceEngine::decode(const std::vector<int32_t>& tokens, std::stri
 }
 
 const guild::runtime::ChatTemplate* NativeInferenceEngine::chat_template() const {
-    if (!model_ || !model_->tokenizer().is_loaded()) return nullptr;
+    if (!model_ || !model_->tokenizer().is_loaded())
+        return nullptr;
     return &model_->tokenizer().chat_template();
 }
 
 const guild::runtime::Tokenizer* NativeInferenceEngine::tokenizer() const {
-    if (!model_ || !model_->tokenizer().is_loaded()) return nullptr;
+    if (!model_ || !model_->tokenizer().is_loaded())
+        return nullptr;
     return &model_->tokenizer();
 }
 

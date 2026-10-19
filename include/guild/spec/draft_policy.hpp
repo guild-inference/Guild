@@ -28,15 +28,15 @@ public:
 
     struct Pick {
         bool lookup = false;
-        int t = 1;                      // window size (1 + drafts)
+        int t = 1; // window size (1 + drafts)
     };
     /// `t_mtp`: the MTP's window; `lookup_k`: the lookup proposal's length (0 = none); `match`: its match length.
     Pick choose(int t_mtp, int lookup_k, int match) const;
     /// After the round: the window it used, the drafts accepted, and the round's time (verify + commit + draft).
     void observe(bool lookup, int t, int accepted, int match, double round_ms);
 
-    double lookup_rate(int match) const;   // current q for a match length
-    double cost_ms(int t) const;           // measured or scaled round time of a window of t tokens
+    double lookup_rate(int match) const; // current q for a match length
+    double cost_ms(int t) const;         // measured or scaled round time of a window of t tokens
 
 private:
     static int bucket(int match);
@@ -44,9 +44,9 @@ private:
 
     int max_t_;
     double margin_;
-    std::array<double, kMaxT + 1> cost_{}, cost_n_{};      // round ms by window size
-    std::array<double, kMaxT + 1> mtp_tok_{}, mtp_n_{};    // tokens committed by MTP windows of that size
-    std::array<double, kBuckets> ok_{}, bad_{};            // lookup drafts accepted / windows cut short, decayed
+    std::array<double, kMaxT + 1> cost_{}, cost_n_{};   // round ms by window size
+    std::array<double, kMaxT + 1> mtp_tok_{}, mtp_n_{}; // tokens committed by MTP windows of that size
+    std::array<double, kBuckets> ok_{}, bad_{};         // lookup drafts accepted / windows cut short, decayed
 };
 
-}  // namespace guild::spec
+} // namespace guild::spec

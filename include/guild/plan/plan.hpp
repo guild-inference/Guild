@@ -42,9 +42,9 @@ struct Geometry {
     /// Round 194 "fixed" this by reading `indexer.head_count = 4` out of the metadata and multiplying by it -
     /// right about the metadata, wrong about what was being counted.  **A head count in the metadata does not
     /// say WHICH tensor it counts.**
-    int indexer_q_heads = 4;    // query heads: they multiply the SCORES, and cost no cache at all
-    int indexer_key_heads = 1;  // k_proj is [n_embd, 128]: ONE shared key head
-    int indexer_key_dim = 128;  // the key width, and the width of the thing that IS cached
+    int indexer_q_heads = 4;   // query heads: they multiply the SCORES, and cost no cache at all
+    int indexer_key_heads = 1; // k_proj is [n_embd, 128]: ONE shared key head
+    int indexer_key_dim = 128; // the key width, and the width of the thing that IS cached
 
     /// GDN geometry.  `docs/semantics.md`: `ssm.state_size = 128`, `ssm.time_step_rank = 48` (the v heads),
     /// `ssm.conv_kernel = 4`, and `n_embd_r() = (d_conv-1) * (ssm_d_inner + 2*n_group*d_state) = 3 * 10240`.
@@ -55,7 +55,9 @@ struct Geometry {
 
     /// 36 of the 48 layers are GDN; the rest are QSA.  Declared as a derivation rather than a third constant,
     /// because a `n_gdn_layers = 36` alongside `n_layers` and `n_qsa_layers` is a third thing to keep in step.
-    int n_gdn_layers() const { return n_layers - n_qsa_layers; }
+    int n_gdn_layers() const {
+        return n_layers - n_qsa_layers;
+    }
 };
 
 // ---- byte costs ------------------------------------------------------------
@@ -81,22 +83,21 @@ struct Costs {
 // evicted to make room for an expert.  A planner that omits it returns a plan it cannot honour, which is the
 // failure `DoesNotClose` exists to prevent.
 inline uint64_t state_bytes(const Geometry& g) {
-    const uint64_t per_layer = (uint64_t) g.ssm_state_size * (uint64_t) g.ssm_v_heads *
-                                   (uint64_t) g.ssm_state_size * sizeof(float) +
-                               (uint64_t) (g.ssm_d_conv - 1) * (uint64_t) g.ssm_conv_channels * sizeof(float);
+    const uint64_t per_layer =
+        (uint64_t) g.ssm_state_size * (uint64_t) g.ssm_v_heads * (uint64_t) g.ssm_state_size * sizeof(float) +
+        (uint64_t) (g.ssm_d_conv - 1) * (uint64_t) g.ssm_conv_channels * sizeof(float);
     return (uint64_t) g.n_gdn_layers() * per_layer;
 }
 
 // INT8 KV + indexer keys, bytes per token.  Both terms come from the geometry above and nothing else.
 inline uint64_t kv_bytes_per_token(const Geometry& g) {
-    const uint64_t kv_elems = 2ull * g.n_kv_heads * g.head_dim;       // K and V
-    const uint64_t kv_scales = (kv_elems / (uint64_t)g.kv_group) * 2; // fp16 scale per group
-    const uint64_t per_layer = kv_elems * 1 + kv_scales;              // INT8: one byte per element
+    const uint64_t kv_elems = 2ull * g.n_kv_heads * g.head_dim;        // K and V
+    const uint64_t kv_scales = (kv_elems / (uint64_t) g.kv_group) * 2; // fp16 scale per group
+    const uint64_t per_layer = kv_elems * 1 + kv_scales;               // INT8: one byte per element
     // indexer: ONE cached key per block, `idx_dim` wide, SHARED across the query heads.  See the note on
     // `indexer_key_heads` above - this term has been wrong in both directions and the derivation is why.
-    const uint64_t idx_layer =
-        (uint64_t) g.indexer_key_heads * (uint64_t) g.indexer_key_dim / (uint64_t) g.qsa_block;
-    return (uint64_t)g.n_qsa_layers * (per_layer + idx_layer);
+    const uint64_t idx_layer = (uint64_t) g.indexer_key_heads * (uint64_t) g.indexer_key_dim / (uint64_t) g.qsa_block;
+    return (uint64_t) g.n_qsa_layers * (per_layer + idx_layer);
 }
 
 // ---- the plan --------------------------------------------------------------
@@ -116,7 +117,8 @@ struct Plan {
 // cannot honour is worse than one that fails, because the failure then happens at token 4000 instead of at
 // startup.
 struct DoesNotClose : std::runtime_error {
-    explicit DoesNotClose(const std::string& w) : std::runtime_error(w) {}
+    explicit DoesNotClose(const std::string& w) : std::runtime_error(w) {
+    }
 };
 
 // The VRAM budget that the KV cache and the expert cache share.  This is the one number taken from
@@ -126,8 +128,7 @@ inline uint64_t vram_pool_bytes() {
     return 5943000000ull;
 }
 
-inline Plan make_plan(uint64_t max_context, const Geometry& g, const Costs& c,
-                      uint64_t pool = vram_pool_bytes()) {
+inline Plan make_plan(uint64_t max_context, const Geometry& g, const Costs& c, uint64_t pool = vram_pool_bytes()) {
     Plan p;
     p.max_context = max_context;
     p.vram_budget = pool;
@@ -145,8 +146,7 @@ inline Plan make_plan(uint64_t max_context, const Geometry& g, const Costs& c,
     p.cache_slots = p.cache_bytes / c.expert_blob;
     p.vram_used = pool - p.cache_bytes % c.expert_blob; // slot remainder is unusable, not free
     if (p.cache_slots == 0) {
-        throw DoesNotClose("no room for even one expert cache slot at max-context " +
-                           std::to_string(max_context));
+        throw DoesNotClose("no room for even one expert cache slot at max-context " + std::to_string(max_context));
     }
     return p;
 }
@@ -161,7 +161,8 @@ inline std::string to_string(const Plan& p) {
          " slots of 1,382,400 B)\n";
     s += "  VRAM pool           " + gb(p.vram_budget) + " GB\n";
     s += "  expert arena (DRAM) " + gb(p.dram_experts) + " GB\n";
-    for (const std::string& n : p.notes) s += "  note: " + n + "\n";
+    for (const std::string& n : p.notes)
+        s += "  note: " + n + "\n";
     return s;
 }
 

@@ -25,11 +25,7 @@ int64_t get_kv_cell_bytes(KvPrecision prec, const model::ModelDescriptor& desc);
 int64_t get_kv_draft_cell_bytes(KvPrecision prec, const model::ModelDescriptor& desc);
 int64_t get_staging_cells(const model::ModelDescriptor& desc);
 
-KvBudget calculate_kv_budget(
-    const model::ModelDescriptor& desc,
-    int64_t context_tokens,
-    KvPrecision precision,
-    KvMode mode,
-    int64_t resident_window_tokens = 0);
+KvBudget calculate_kv_budget(const model::ModelDescriptor& desc, int64_t context_tokens, KvPrecision precision,
+                             KvMode mode, int64_t resident_window_tokens = 0);
 
-}  // namespace guild::memory
+} // namespace guild::memory

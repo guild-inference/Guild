@@ -9,9 +9,9 @@
 namespace guild::memory {
 
 enum class KvMode {
-    Resident,    ///< Full KV resident in GPU VRAM
-    Streaming,   ///< GPU resident sliding window with host RAM backing
-    HostOnly     ///< Full KV in pinned host RAM, bounded GPU staging pool
+    Resident,  ///< Full KV resident in GPU VRAM
+    Streaming, ///< GPU resident sliding window with host RAM backing
+    HostOnly   ///< Full KV in pinned host RAM, bounded GPU staging pool
 };
 
 inline const char* kv_mode_to_string(KvMode mode) {
@@ -24,9 +24,12 @@ inline const char* kv_mode_to_string(KvMode mode) {
 }
 
 inline KvMode kv_mode_from_string(const std::string& str) {
-    if (str == "resident") return KvMode::Resident;
-    if (str == "streaming") return KvMode::Streaming;
-    if (str == "host-only" || str == "host_only") return KvMode::HostOnly;
+    if (str == "resident")
+        return KvMode::Resident;
+    if (str == "streaming")
+        return KvMode::Streaming;
+    if (str == "host-only" || str == "host_only")
+        return KvMode::HostOnly;
     return KvMode::HostOnly;
 }
 
@@ -48,10 +51,14 @@ inline const char* kv_precision_to_string(KvPrecision prec) {
 }
 
 inline KvPrecision kv_precision_from_string(const std::string& str) {
-    if (str == "fp16" || str == "FP16") return KvPrecision::FP16;
-    if (str == "int8" || str == "INT8" || str == "q8_0") return KvPrecision::INT8;
-    if (str == "q4_0" || str == "Q4_0") return KvPrecision::Q4_0;
-    if (str == "k8v4" || str == "K8V4") return KvPrecision::K8V4;
+    if (str == "fp16" || str == "FP16")
+        return KvPrecision::FP16;
+    if (str == "int8" || str == "INT8" || str == "q8_0")
+        return KvPrecision::INT8;
+    if (str == "q4_0" || str == "Q4_0")
+        return KvPrecision::Q4_0;
+    if (str == "k8v4" || str == "K8V4")
+        return KvPrecision::K8V4;
     return KvPrecision::FP16;
 }
 
@@ -60,7 +67,9 @@ struct PlanValidation {
     std::vector<std::string> errors;
     std::vector<std::string> warnings;
 
-    bool ok() const { return valid && errors.empty(); }
+    bool ok() const {
+        return valid && errors.empty();
+    }
 };
 
 struct ExecutionPlan {
@@ -124,4 +133,4 @@ struct ExecutionPlan {
     std::string to_json_string() const;
 };
 
-}  // namespace guild::memory
+} // namespace guild::memory

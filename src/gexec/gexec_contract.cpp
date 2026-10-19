@@ -39,26 +39,26 @@ using namespace guild::server::json;
 namespace {
 void erase_json_key(JsonValue& obj, const std::string& key) {
     obj.obj_val.erase(
-        std::remove_if(obj.obj_val.begin(), obj.obj_val.end(),
-                       [&](const auto& kv) { return kv.first == key; }),
+        std::remove_if(obj.obj_val.begin(), obj.obj_val.end(), [&](const auto& kv) { return kv.first == key; }),
         obj.obj_val.end());
 }
 } // namespace
 
 const char* invalidation_reason_to_string(GExecInvalidationReason reason) noexcept {
     switch (reason) {
-        case GExecInvalidationReason::None: return "valid";
-        case GExecInvalidationReason::MagicOrVersionMismatch: return "magic or format version mismatch";
-        case GExecInvalidationReason::CorruptedDigest: return "corrupted cache digest";
-        case GExecInvalidationReason::GPackIdentityMismatch: return "model GPACK manifest SHA-256 mismatch";
-        case GExecInvalidationReason::CoreAbiMismatch: return "Guild Core or Module ABI version mismatch";
-        case GExecInvalidationReason::ModuleOrKernelDigestMismatch: return "bound kernel or module package digest mismatch";
-        case GExecInvalidationReason::RunnerIdentityMismatch: return "model runner identity or version mismatch";
-        case GExecInvalidationReason::CpuIsaMismatch: return "CPU vendor or ISA feature flags mismatch";
-        case GExecInvalidationReason::NumaTopologyMismatch: return "NUMA node count or CPU core topology mismatch";
-        case GExecInvalidationReason::GpuArchitectureMismatch: return "GPU device architecture or VRAM capacity mismatch";
-        case GExecInvalidationReason::CudaRuntimeOrDriverMismatch: return "CUDA runtime or driver version mismatch";
-        case GExecInvalidationReason::ExecutionPlanMismatch: return "execution plan context/KV/batch/spec configuration mismatch";
+    case GExecInvalidationReason::None: return "valid";
+    case GExecInvalidationReason::MagicOrVersionMismatch: return "magic or format version mismatch";
+    case GExecInvalidationReason::CorruptedDigest: return "corrupted cache digest";
+    case GExecInvalidationReason::GPackIdentityMismatch: return "model GPACK manifest SHA-256 mismatch";
+    case GExecInvalidationReason::CoreAbiMismatch: return "Guild Core or Module ABI version mismatch";
+    case GExecInvalidationReason::ModuleOrKernelDigestMismatch: return "bound kernel or module package digest mismatch";
+    case GExecInvalidationReason::RunnerIdentityMismatch: return "model runner identity or version mismatch";
+    case GExecInvalidationReason::CpuIsaMismatch: return "CPU vendor or ISA feature flags mismatch";
+    case GExecInvalidationReason::NumaTopologyMismatch: return "NUMA node count or CPU core topology mismatch";
+    case GExecInvalidationReason::GpuArchitectureMismatch: return "GPU device architecture or VRAM capacity mismatch";
+    case GExecInvalidationReason::CudaRuntimeOrDriverMismatch: return "CUDA runtime or driver version mismatch";
+    case GExecInvalidationReason::ExecutionPlanMismatch:
+        return "execution plan context/KV/batch/spec configuration mismatch";
     }
     return "unknown invalidation reason";
 }
@@ -80,8 +80,8 @@ GExecHardwareFingerprint GExecHardwareFingerprint::detect() {
         if (thp.is_open()) {
             std::string line;
             std::getline(thp, line);
-            fp.thp_madvise_available = (line.find("[always]") != std::string::npos ||
-                                        line.find("[madvise]") != std::string::npos);
+            fp.thp_madvise_available =
+                (line.find("[always]") != std::string::npos || line.find("[madvise]") != std::string::npos);
         }
     }
 
@@ -93,8 +93,10 @@ GExecHardwareFingerprint GExecHardwareFingerprint::detect() {
 
 #if defined(GUILD_ENABLE_CUDA)
     int rt_ver = 0, drv_ver = 0;
-    if (cudaRuntimeGetVersion(&rt_ver) == cudaSuccess) fp.cuda_runtime_version = rt_ver;
-    if (cudaDriverGetVersion(&drv_ver) == cudaSuccess) fp.cuda_driver_version = drv_ver;
+    if (cudaRuntimeGetVersion(&rt_ver) == cudaSuccess)
+        fp.cuda_runtime_version = rt_ver;
+    if (cudaDriverGetVersion(&drv_ver) == cudaSuccess)
+        fp.cuda_driver_version = drv_ver;
     int dev_count = 0;
     if (cudaGetDeviceCount(&dev_count) == cudaSuccess && dev_count > 0) {
         fp.gpu_count = dev_count;
@@ -145,10 +147,9 @@ std::string GExecArtifactIdentity::to_json() const {
     root["runner_version"] = static_cast<int64_t>(runner_version);
 
     std::vector<GExecBoundPackageDigest> sorted_pkgs = bound_packages;
-    std::sort(sorted_pkgs.begin(), sorted_pkgs.end(),
-              [](const GExecBoundPackageDigest& a, const GExecBoundPackageDigest& b) {
-                  return a.package_id < b.package_id;
-              });
+    std::sort(
+        sorted_pkgs.begin(), sorted_pkgs.end(),
+        [](const GExecBoundPackageDigest& a, const GExecBoundPackageDigest& b) { return a.package_id < b.package_id; });
     JsonValue pkgs_arr(std::vector<JsonValue>{});
     for (const auto& p : sorted_pkgs) {
         JsonValue po;
@@ -179,7 +180,8 @@ std::string GExecArtifactIdentity::compute_cache_key() const {
 bool GExecArtifactIdentity::from_json(const std::string& json_str, GExecArtifactIdentity& out, std::string& err) {
     JsonValue root;
     if (!JsonValue::parse(json_str, root, err) || !root.is_object()) {
-        if (err.empty()) err = "GExecArtifactIdentity JSON must be an object";
+        if (err.empty())
+            err = "GExecArtifactIdentity JSON must be an object";
         return false;
     }
     out = GExecArtifactIdentity{};
@@ -192,7 +194,8 @@ bool GExecArtifactIdentity::from_json(const std::string& json_str, GExecArtifact
 
     if (root.contains("bound_packages") && root["bound_packages"].is_array()) {
         for (const auto& item : root["bound_packages"].arr_val) {
-            if (!item.is_object()) continue;
+            if (!item.is_object())
+                continue;
             GExecBoundPackageDigest d;
             d.package_id = item["package_id"].as_string();
             d.version = item["version"].as_string();
@@ -226,10 +229,8 @@ bool GExecArtifactIdentity::from_json(const std::string& json_str, GExecArtifact
     return true;
 }
 
-GExecInvalidationReason GExecArtifactIdentity::validate(
-    const GExecArtifactIdentity& cached,
-    const GExecArtifactIdentity& current,
-    std::string& reason_msg) {
+GExecInvalidationReason GExecArtifactIdentity::validate(const GExecArtifactIdentity& cached,
+                                                        const GExecArtifactIdentity& current, std::string& reason_msg) {
     if (cached.format_version != kGExecVersionV1 || cached.format_version != current.format_version) {
         reason_msg = invalidation_reason_to_string(GExecInvalidationReason::MagicOrVersionMismatch);
         return GExecInvalidationReason::MagicOrVersionMismatch;
@@ -258,8 +259,7 @@ GExecInvalidationReason GExecArtifactIdentity::validate(
         return GExecInvalidationReason::ModuleOrKernelDigestMismatch;
     }
     for (size_t i = 0; i < p_cached.size(); ++i) {
-        if (p_cached[i].package_id != p_curr[i].package_id ||
-            p_cached[i].version != p_curr[i].version ||
+        if (p_cached[i].package_id != p_curr[i].package_id || p_cached[i].version != p_curr[i].version ||
             p_cached[i].payload_sha256 != p_curr[i].payload_sha256) {
             reason_msg = invalidation_reason_to_string(GExecInvalidationReason::ModuleOrKernelDigestMismatch);
             return GExecInvalidationReason::ModuleOrKernelDigestMismatch;
@@ -288,10 +288,8 @@ GExecInvalidationReason GExecArtifactIdentity::validate(
         reason_msg = invalidation_reason_to_string(GExecInvalidationReason::CudaRuntimeOrDriverMismatch);
         return GExecInvalidationReason::CudaRuntimeOrDriverMismatch;
     }
-    if (cached.kv_format != current.kv_format ||
-        cached.kv_mode != current.kv_mode ||
-        cached.max_context != current.max_context ||
-        cached.prefill_batch != current.prefill_batch ||
+    if (cached.kv_format != current.kv_format || cached.kv_mode != current.kv_mode ||
+        cached.max_context != current.max_context || cached.prefill_batch != current.prefill_batch ||
         cached.mtp_spec_tokens != current.mtp_spec_tokens) {
         reason_msg = invalidation_reason_to_string(GExecInvalidationReason::ExecutionPlanMismatch);
         return GExecInvalidationReason::ExecutionPlanMismatch;
@@ -300,13 +298,8 @@ GExecInvalidationReason GExecArtifactIdentity::validate(
     return GExecInvalidationReason::None;
 }
 
-void pack_expert_gate_up_interleaved(
-    const uint8_t* src_blob,
-    uint8_t* dst_blob,
-    size_t n_ff,
-    size_t gate_row_bytes,
-    size_t up_row_bytes,
-    size_t down_bytes) {
+void pack_expert_gate_up_interleaved(const uint8_t* src_blob, uint8_t* dst_blob, size_t n_ff, size_t gate_row_bytes,
+                                     size_t up_row_bytes, size_t down_bytes) {
     const uint8_t* gate_base = src_blob;
     const uint8_t* up_base = src_blob + n_ff * gate_row_bytes;
     const uint8_t* down_base = up_base + n_ff * up_row_bytes;
@@ -322,13 +315,8 @@ void pack_expert_gate_up_interleaved(
     }
 }
 
-void unpack_expert_gate_up_interleaved(
-    const uint8_t* packed_blob,
-    uint8_t* dst_blob,
-    size_t n_ff,
-    size_t gate_row_bytes,
-    size_t up_row_bytes,
-    size_t down_bytes) {
+void unpack_expert_gate_up_interleaved(const uint8_t* packed_blob, uint8_t* dst_blob, size_t n_ff,
+                                       size_t gate_row_bytes, size_t up_row_bytes, size_t down_bytes) {
     uint8_t* gate_base = dst_blob;
     uint8_t* up_base = dst_blob + n_ff * gate_row_bytes;
     uint8_t* down_base = up_base + n_ff * up_row_bytes;
@@ -344,18 +332,12 @@ void unpack_expert_gate_up_interleaved(
     }
 }
 
-const GExecKernelTuneRecord* GExecAutotuneTable::find(
-    uint32_t op_kind,
-    const std::string& operation_name,
-    GExecWorkloadPhase phase,
-    int32_t quant_type,
-    int64_t m_tokens) const {
+const GExecKernelTuneRecord* GExecAutotuneTable::find(uint32_t op_kind, const std::string& operation_name,
+                                                      GExecWorkloadPhase phase, int32_t quant_type,
+                                                      int64_t m_tokens) const {
     for (const auto& rec : records) {
-        if (rec.op_kind == op_kind &&
-            rec.operation_name == operation_name &&
-            rec.phase == phase &&
-            rec.quant_type == quant_type &&
-            rec.m_tokens == m_tokens) {
+        if (rec.op_kind == op_kind && rec.operation_name == operation_name && rec.phase == phase &&
+            rec.quant_type == quant_type && rec.m_tokens == m_tokens) {
             return &rec;
         }
     }
@@ -396,7 +378,8 @@ std::string GExecAutotuneTable::to_json() const {
 bool GExecAutotuneTable::from_json(const std::string& json_str, GExecAutotuneTable& out, std::string& err) {
     JsonValue root;
     if (!JsonValue::parse(json_str, root, err) || !root.is_object()) {
-        if (err.empty()) err = "malformed GExecAutotuneTable JSON";
+        if (err.empty())
+            err = "malformed GExecAutotuneTable JSON";
         return false;
     }
     if (!root.contains("identity") || !root.contains("records") || !root.contains("digest")) {
@@ -417,7 +400,8 @@ bool GExecAutotuneTable::from_json(const std::string& json_str, GExecAutotuneTab
     }
     if (root["records"].is_array()) {
         for (const auto& item : root["records"].arr_val) {
-            if (!item.is_object()) continue;
+            if (!item.is_object())
+                continue;
             GExecKernelTuneRecord r;
             r.op_kind = static_cast<uint32_t>(item["op_kind"].as_int(0));
             r.operation_name = item["operation_name"].as_string();
@@ -454,11 +438,13 @@ std::string GExecHeterogeneousPlan::to_json() const {
     root["expert_cache_slots"] = static_cast<int64_t>(expert_cache_slots);
 
     JsonValue gl(std::vector<JsonValue>{});
-    for (uint8_t v : gpu_layers) gl.arr_val.push_back(JsonValue(static_cast<int64_t>(v)));
+    for (uint8_t v : gpu_layers)
+        gl.arr_val.push_back(JsonValue(static_cast<int64_t>(v)));
     root["gpu_layers"] = std::move(gl);
 
     JsonValue pn(std::vector<JsonValue>{});
-    for (int32_t v : pcie_numerators) pn.arr_val.push_back(JsonValue(static_cast<int64_t>(v)));
+    for (int32_t v : pcie_numerators)
+        pn.arr_val.push_back(JsonValue(static_cast<int64_t>(v)));
     root["pcie_numerators"] = std::move(pn);
 
     root["digest"] = models::Sha256::hash_string(root.dump());
@@ -468,7 +454,8 @@ std::string GExecHeterogeneousPlan::to_json() const {
 bool GExecHeterogeneousPlan::from_json(const std::string& json_str, GExecHeterogeneousPlan& out, std::string& err) {
     JsonValue root;
     if (!JsonValue::parse(json_str, root, err) || !root.is_object()) {
-        if (err.empty()) err = "malformed GExecHeterogeneousPlan JSON";
+        if (err.empty())
+            err = "malformed GExecHeterogeneousPlan JSON";
         return false;
     }
     if (!root.contains("identity") || !root.contains("digest")) {
@@ -510,10 +497,8 @@ bool GExecHeterogeneousPlan::from_json(const std::string& json_str, GExecHeterog
 
 std::string GExecCompilationKey::compute_key() const {
     std::ostringstream oss;
-    oss << "cuda_rt=" << cuda_runtime_version
-        << ";cuda_drv=" << cuda_driver_version
-        << ";sm=" << gpu_cc_major << "." << gpu_cc_minor
-        << ";pkg=" << kernel_package_sha256;
+    oss << "cuda_rt=" << cuda_runtime_version << ";cuda_drv=" << cuda_driver_version << ";sm=" << gpu_cc_major << "."
+        << gpu_cc_minor << ";pkg=" << kernel_package_sha256;
     return models::Sha256::hash_string(oss.str());
 }
 
@@ -527,7 +512,8 @@ std::string GExecWorkspaceRecipe::to_json() const {
     root["prefill_arena_bytes"] = static_cast<int64_t>(prefill_arena_bytes);
     root["capture_commit_graph"] = capture_commit_graph;
     JsonValue cw(std::vector<JsonValue>{});
-    for (int32_t w : capture_window_tokens) cw.arr_val.push_back(JsonValue(static_cast<int64_t>(w)));
+    for (int32_t w : capture_window_tokens)
+        cw.arr_val.push_back(JsonValue(static_cast<int64_t>(w)));
     root["capture_window_tokens"] = std::move(cw);
     root["digest"] = models::Sha256::hash_string(root.dump());
     return root.dump_pretty();
@@ -536,7 +522,8 @@ std::string GExecWorkspaceRecipe::to_json() const {
 bool GExecWorkspaceRecipe::from_json(const std::string& json_str, GExecWorkspaceRecipe& out, std::string& err) {
     JsonValue root;
     if (!JsonValue::parse(json_str, root, err) || !root.is_object()) {
-        if (err.empty()) err = "malformed GExecWorkspaceRecipe JSON";
+        if (err.empty())
+            err = "malformed GExecWorkspaceRecipe JSON";
         return false;
     }
     if (!root.contains("digest")) {
@@ -586,10 +573,12 @@ std::string GExecCompilationProvenance::to_json() const {
     return root.dump_pretty();
 }
 
-bool GExecCompilationProvenance::from_json(const std::string& json_str, GExecCompilationProvenance& out, std::string& err) {
+bool GExecCompilationProvenance::from_json(const std::string& json_str, GExecCompilationProvenance& out,
+                                           std::string& err) {
     JsonValue root;
     if (!JsonValue::parse(json_str, root, err) || !root.is_object()) {
-        if (err.empty()) err = "malformed GExecCompilationProvenance JSON";
+        if (err.empty())
+            err = "malformed GExecCompilationProvenance JSON";
         return false;
     }
     if (!root.contains("digest")) {
@@ -648,7 +637,8 @@ std::string GExecExpertPackMeta::to_json() const {
 bool GExecExpertPackMeta::from_json(const std::string& json_str, GExecExpertPackMeta& out, std::string& err) {
     JsonValue root;
     if (!JsonValue::parse(json_str, root, err) || !root.is_object()) {
-        if (err.empty()) err = "malformed GExecExpertPackMeta JSON";
+        if (err.empty())
+            err = "malformed GExecExpertPackMeta JSON";
         return false;
     }
     if (!root.contains("digest")) {
@@ -671,7 +661,8 @@ bool GExecExpertPackMeta::from_json(const std::string& json_str, GExecExpertPack
     out.total_expert_bytes = static_cast<uint64_t>(root["total_expert_bytes"].as_int(0));
     if (root.contains("layer_specs") && root["layer_specs"].is_array()) {
         for (const auto& item : root["layer_specs"].arr_val) {
-            if (!item.is_object()) continue;
+            if (!item.is_object())
+                continue;
             GExecExpertPackSpec s;
             s.layout_kind = static_cast<ExpertPackLayoutKind>(item["layout_kind"].as_int(0));
             s.gu_type = static_cast<int32_t>(item["gu_type"].as_int(-1));
@@ -693,7 +684,8 @@ std::string GExecDiagnosticLog::to_json() const {
     root["break_even_tokens"] = break_even_tokens;
 
     JsonValue notes_arr(std::vector<JsonValue>{});
-    for (const auto& n : notes) notes_arr.arr_val.push_back(JsonValue(n));
+    for (const auto& n : notes)
+        notes_arr.arr_val.push_back(JsonValue(n));
     root["notes"] = std::move(notes_arr);
 
     JsonValue rej_arr(std::vector<JsonValue>{});
@@ -716,7 +708,8 @@ std::string GExecDiagnosticLog::to_json() const {
 bool GExecDiagnosticLog::from_json(const std::string& json_str, GExecDiagnosticLog& out, std::string& err) {
     JsonValue root;
     if (!JsonValue::parse(json_str, root, err) || !root.is_object()) {
-        if (err.empty()) err = "malformed GExecDiagnosticLog JSON";
+        if (err.empty())
+            err = "malformed GExecDiagnosticLog JSON";
         return false;
     }
     if (!root.contains("digest")) {
@@ -736,11 +729,13 @@ bool GExecDiagnosticLog::from_json(const std::string& json_str, GExecDiagnosticL
     out.speedup_ratio = root["speedup_ratio"].as_double(1.0);
     out.break_even_tokens = root["break_even_tokens"].as_double(0.0);
     if (root.contains("notes") && root["notes"].is_array()) {
-        for (const auto& n : root["notes"].arr_val) out.notes.push_back(n.as_string());
+        for (const auto& n : root["notes"].arr_val)
+            out.notes.push_back(n.as_string());
     }
     if (root.contains("rejected_candidates") && root["rejected_candidates"].is_array()) {
         for (const auto& item : root["rejected_candidates"].arr_val) {
-            if (!item.is_object()) continue;
+            if (!item.is_object())
+                continue;
             GExecCandidateRejection r;
             r.op_kind = static_cast<uint32_t>(item["op_kind"].as_int(0));
             r.operation_name = item["operation_name"].as_string();
@@ -757,32 +752,37 @@ bool GExecDiagnosticLog::from_json(const std::string& json_str, GExecDiagnosticL
 
 const char* section_kind_to_string(GExecSectionKind kind) noexcept {
     switch (kind) {
-        case GExecSectionKind::IdentityAndManifest: return "IdentityAndManifest";
-        case GExecSectionKind::AutotuneTable: return "AutotuneTable";
-        case GExecSectionKind::HeterogeneousPlan: return "HeterogeneousPlan";
-        case GExecSectionKind::WorkspaceRecipe: return "WorkspaceRecipe";
-        case GExecSectionKind::CompilationProvenance: return "CompilationProvenance";
-        case GExecSectionKind::ExpertPackMeta: return "ExpertPackMeta";
-        case GExecSectionKind::PackedExpertsBlob: return "PackedExpertsBlob";
-        case GExecSectionKind::DiagnosticLog: return "DiagnosticLog";
-        default: return "Invalid";
+    case GExecSectionKind::IdentityAndManifest: return "IdentityAndManifest";
+    case GExecSectionKind::AutotuneTable: return "AutotuneTable";
+    case GExecSectionKind::HeterogeneousPlan: return "HeterogeneousPlan";
+    case GExecSectionKind::WorkspaceRecipe: return "WorkspaceRecipe";
+    case GExecSectionKind::CompilationProvenance: return "CompilationProvenance";
+    case GExecSectionKind::ExpertPackMeta: return "ExpertPackMeta";
+    case GExecSectionKind::PackedExpertsBlob: return "PackedExpertsBlob";
+    case GExecSectionKind::DiagnosticLog: return "DiagnosticLog";
+    default: return "Invalid";
     }
 }
 
 namespace {
 
 bool hex_to_raw_sha256(const std::string& hex, uint8_t out[32]) noexcept {
-    if (hex.size() != 64) return false;
+    if (hex.size() != 64)
+        return false;
     for (size_t i = 0; i < 32; ++i) {
         auto nyb = [](char c) -> int {
-            if (c >= '0' && c <= '9') return c - '0';
-            if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-            if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+            if (c >= '0' && c <= '9')
+                return c - '0';
+            if (c >= 'a' && c <= 'f')
+                return c - 'a' + 10;
+            if (c >= 'A' && c <= 'F')
+                return c - 'A' + 10;
             return -1;
         };
         const int hi = nyb(hex[2 * i]);
         const int lo = nyb(hex[2 * i + 1]);
-        if (hi < 0 || lo < 0) return false;
+        if (hi < 0 || lo < 0)
+            return false;
         out[i] = static_cast<uint8_t>((hi << 4) | lo);
     }
     return true;
@@ -804,9 +804,7 @@ void compute_raw_sha256(const void* data, size_t len, uint8_t out[32]) {
     hex_to_raw_sha256(hasher.finalize_hex(), out);
 }
 
-void compute_header_and_table_sha256(const GExecFileHeader& hdr,
-                                     const GExecSectionEntry* entries,
-                                     size_t count,
+void compute_header_and_table_sha256(const GExecFileHeader& hdr, const GExecSectionEntry* entries, size_t count,
                                      uint8_t out[32]) {
     models::Sha256 hasher;
     hasher.update(&hdr, offsetof(GExecFileHeader, header_and_table_sha256));
@@ -821,7 +819,8 @@ bool is_power_of_two_u64(uint64_t x) noexcept {
 }
 
 uint64_t align_up_u64(uint64_t v, uint64_t a) noexcept {
-    if (a <= 1) return v;
+    if (a <= 1)
+        return v;
     return (v + a - 1) & ~(a - 1);
 }
 
@@ -836,7 +835,8 @@ GExecReader::GExecReader(GExecReader&& other) noexcept {
 }
 
 GExecReader& GExecReader::operator=(GExecReader&& other) noexcept {
-    if (this == &other) return *this;
+    if (this == &other)
+        return *this;
     close();
     path_ = std::move(other.path_);
     mapped_base_ = other.mapped_base_;
@@ -860,7 +860,8 @@ GExecReader& GExecReader::operator=(GExecReader&& other) noexcept {
 
 void GExecReader::close() {
 #if defined(_WIN32)
-    if (mapped_base_) UnmapViewOfFile(mapped_base_);
+    if (mapped_base_)
+        UnmapViewOfFile(mapped_base_);
 #else
     if (mapped_base_ != nullptr) {
         munmap(const_cast<uint8_t*>(mapped_base_), static_cast<size_t>(mapped_bytes_));
@@ -884,13 +885,12 @@ void GExecReader::close() {
     diag_log_ = GExecDiagnosticLog{};
 }
 
-bool GExecReader::open(const std::string& path,
-                       std::string& err,
-                       GExecInvalidationReason* out_reason,
+bool GExecReader::open(const std::string& path, std::string& err, GExecInvalidationReason* out_reason,
                        bool verify_expert_blob_digest) {
     close();
     auto fail = [&](GExecInvalidationReason r, const std::string& msg) {
-        if (out_reason) *out_reason = r;
+        if (out_reason)
+            *out_reason = r;
         err = msg;
         close();
         return false;
@@ -899,10 +899,9 @@ bool GExecReader::open(const std::string& path,
 #if !defined(_WIN32)
     const int fd = ::open(path.c_str(), O_RDONLY);
     if (fd < 0) {
-        return fail(GExecInvalidationReason::MagicOrVersionMismatch,
-                    "cannot open GEXEC file: " + path);
+        return fail(GExecInvalidationReason::MagicOrVersionMismatch, "cannot open GEXEC file: " + path);
     }
-    struct stat st{};
+    struct stat st {};
     if (fstat(fd, &st) != 0 || st.st_size < static_cast<off_t>(sizeof(GExecFileHeader))) {
         ::close(fd);
         return fail(GExecInvalidationReason::CorruptedDigest,
@@ -912,16 +911,15 @@ bool GExecReader::open(const std::string& path,
     void* view = mmap(nullptr, static_cast<size_t>(fsize), PROT_READ, MAP_SHARED, fd, 0);
     if (view == MAP_FAILED) {
         ::close(fd);
-        return fail(GExecInvalidationReason::MagicOrVersionMismatch,
-                    "mmap failed on GEXEC file: " + path);
+        return fail(GExecInvalidationReason::MagicOrVersionMismatch, "mmap failed on GEXEC file: " + path);
     }
     fd_ = fd;
     mapped_base_ = static_cast<const uint8_t*>(view);
     mapped_bytes_ = fsize;
 #else
     const auto wide_path = std::filesystem::u8path(path).wstring();
-    HANDLE file = CreateFileW(wide_path.c_str(), GENERIC_READ,
-        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    HANDLE file = CreateFileW(wide_path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                              nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (file == INVALID_HANDLE_VALUE)
         return fail(GExecInvalidationReason::MagicOrVersionMismatch, "cannot open GEXEC file: " + path);
     LARGE_INTEGER size{};
@@ -932,9 +930,11 @@ bool GExecReader::open(const std::string& path,
     }
     HANDLE mapping = CreateFileMappingW(file, nullptr, PAGE_READONLY, 0, 0, nullptr);
     const void* view = mapping ? MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, 0) : nullptr;
-    if (mapping) CloseHandle(mapping);
+    if (mapping)
+        CloseHandle(mapping);
     CloseHandle(file);
-    if (!view) return fail(GExecInvalidationReason::MagicOrVersionMismatch, "cannot map GEXEC file: " + path);
+    if (!view)
+        return fail(GExecInvalidationReason::MagicOrVersionMismatch, "cannot map GEXEC file: " + path);
     mapped_base_ = static_cast<const uint8_t*>(view);
     mapped_bytes_ = static_cast<uint64_t>(size.QuadPart);
 #endif
@@ -942,8 +942,7 @@ bool GExecReader::open(const std::string& path,
     path_ = path;
     std::memcpy(&header_, mapped_base_, sizeof(GExecFileHeader));
 
-    if (header_.magic != kGExecMagic ||
-        header_.format_version != kGExecVersionV1 ||
+    if (header_.magic != kGExecMagic || header_.format_version != kGExecVersionV1 ||
         header_.endianness_tag != kGExecLittleEndianTag) {
         return fail(GExecInvalidationReason::MagicOrVersionMismatch,
                     invalidation_reason_to_string(GExecInvalidationReason::MagicOrVersionMismatch));
@@ -953,27 +952,22 @@ bool GExecReader::open(const std::string& path,
                     "GEXEC file size does not match header total_file_bytes (truncated or modified)");
     }
     if (header_.section_count == 0 || header_.section_count > 64) {
-        return fail(GExecInvalidationReason::CorruptedDigest,
-                    "GEXEC header has invalid section_count");
+        return fail(GExecInvalidationReason::CorruptedDigest, "GEXEC header has invalid section_count");
     }
     const uint64_t table_bytes = static_cast<uint64_t>(header_.section_count) * sizeof(GExecSectionEntry);
-    if (header_.section_table_offset < sizeof(GExecFileHeader) ||
-        header_.section_table_offset > mapped_bytes_ ||
+    if (header_.section_table_offset < sizeof(GExecFileHeader) || header_.section_table_offset > mapped_bytes_ ||
         table_bytes > mapped_bytes_ - header_.section_table_offset) {
-        return fail(GExecInvalidationReason::CorruptedDigest,
-                    "GEXEC section directory extends past end of file");
+        return fail(GExecInvalidationReason::CorruptedDigest, "GEXEC section directory extends past end of file");
     }
 
     sections_.resize(header_.section_count);
-    std::memcpy(sections_.data(),
-                mapped_base_ + static_cast<size_t>(header_.section_table_offset),
-                 static_cast<size_t>(table_bytes));
+    std::memcpy(sections_.data(), mapped_base_ + static_cast<size_t>(header_.section_table_offset),
+                static_cast<size_t>(table_bytes));
 
     uint8_t expected_hdr_hash[32] = {};
     compute_header_and_table_sha256(header_, sections_.data(), sections_.size(), expected_hdr_hash);
     if (std::memcmp(expected_hdr_hash, header_.header_and_table_sha256, 32) != 0) {
-        return fail(GExecInvalidationReason::CorruptedDigest,
-                    "GEXEC header/section-table SHA-256 mismatch");
+        return fail(GExecInvalidationReason::CorruptedDigest, "GEXEC header/section-table SHA-256 mismatch");
     }
 
     const uint64_t min_data_offset = header_.section_table_offset + table_bytes;
@@ -985,17 +979,14 @@ bool GExecReader::open(const std::string& path,
                         "GEXEC section directory contains unknown section kind");
         }
         if (!is_power_of_two_u64(s.alignment) || (s.offset % s.alignment) != 0) {
-            return fail(GExecInvalidationReason::CorruptedDigest,
-                        "GEXEC section violates declared alignment");
+            return fail(GExecInvalidationReason::CorruptedDigest, "GEXEC section violates declared alignment");
         }
         if ((s.flags & kGExecSectionFlagPageAligned) != 0 && (s.offset % 4096u) != 0) {
             return fail(GExecInvalidationReason::CorruptedDigest,
                         "GEXEC page-aligned section is not 4096-byte aligned");
         }
-        if (s.offset < min_data_offset || s.offset > mapped_bytes_ ||
-            s.byte_size > mapped_bytes_ - s.offset) {
-            return fail(GExecInvalidationReason::CorruptedDigest,
-                        "GEXEC section payload extends out of file bounds");
+        if (s.offset < min_data_offset || s.offset > mapped_bytes_ || s.byte_size > mapped_bytes_ - s.offset) {
+            return fail(GExecInvalidationReason::CorruptedDigest, "GEXEC section payload extends out of file bounds");
         }
         for (size_t j = 0; j < i; ++j) {
             if (sections_[j].kind == s.kind) {
@@ -1005,8 +996,7 @@ bool GExecReader::open(const std::string& path,
             const uint64_t a0 = sections_[j].offset, a1 = a0 + sections_[j].byte_size;
             const uint64_t b0 = s.offset, b1 = b0 + s.byte_size;
             if (std::max(a0, b0) < std::min(a1, b1)) {
-                return fail(GExecInvalidationReason::CorruptedDigest,
-                            "GEXEC sections overlap in file");
+                return fail(GExecInvalidationReason::CorruptedDigest, "GEXEC sections overlap in file");
             }
         }
         const auto skind = static_cast<GExecSectionKind>(s.kind);
@@ -1014,8 +1004,7 @@ bool GExecReader::open(const std::string& path,
             return fail(GExecInvalidationReason::CorruptedDigest, "GEXEC metadata section exceeds 16 MiB");
         if (skind != GExecSectionKind::PackedExpertsBlob || verify_expert_blob_digest) {
             uint8_t actual_sha[32] = {};
-            compute_raw_sha256(mapped_base_ + static_cast<size_t>(s.offset),
-                               static_cast<size_t>(s.byte_size),
+            compute_raw_sha256(mapped_base_ + static_cast<size_t>(s.offset), static_cast<size_t>(s.byte_size),
                                actual_sha);
             if (std::memcmp(actual_sha, s.sha256, 32) != 0) {
                 return fail(GExecInvalidationReason::CorruptedDigest,
@@ -1032,7 +1021,8 @@ bool GExecReader::open(const std::string& path,
     auto read_str = [&](GExecSectionKind k) -> std::string {
         uint64_t sz = 0;
         const uint8_t* ptr = section_data(k, &sz);
-        if (!ptr || sz == 0) return {};
+        if (!ptr || sz == 0)
+            return {};
         return std::string(reinterpret_cast<const char*>(ptr), static_cast<size_t>(sz));
     };
 
@@ -1053,7 +1043,8 @@ bool GExecReader::open(const std::string& path,
         return fail(GExecInvalidationReason::CorruptedDigest, "invalid WorkspaceRecipe: " + parse_err);
     }
     if (has_section(GExecSectionKind::CompilationProvenance) &&
-        !GExecCompilationProvenance::from_json(read_str(GExecSectionKind::CompilationProvenance), provenance_, parse_err)) {
+        !GExecCompilationProvenance::from_json(read_str(GExecSectionKind::CompilationProvenance), provenance_,
+                                               parse_err)) {
         return fail(GExecInvalidationReason::CorruptedDigest, "invalid CompilationProvenance: " + parse_err);
     }
     if (has_section(GExecSectionKind::ExpertPackMeta) &&
@@ -1078,21 +1069,23 @@ bool GExecReader::open(const std::string& path,
     if (pack_meta_.embedded_blob_present && !blob)
         return fail(GExecInvalidationReason::CorruptedDigest, "GEXEC embedded experts section is missing");
 
-    if (out_reason) *out_reason = GExecInvalidationReason::None;
+    if (out_reason)
+        *out_reason = GExecInvalidationReason::None;
     err.clear();
     return true;
 }
 
-bool GExecReader::validate_against(const GExecArtifactIdentity& current_identity,
-                                   std::string& reason_msg,
+bool GExecReader::validate_against(const GExecArtifactIdentity& current_identity, std::string& reason_msg,
                                    GExecInvalidationReason* out_reason) const {
     if (!is_open()) {
         reason_msg = "GEXEC reader is not open";
-        if (out_reason) *out_reason = GExecInvalidationReason::MagicOrVersionMismatch;
+        if (out_reason)
+            *out_reason = GExecInvalidationReason::MagicOrVersionMismatch;
         return false;
     }
     const auto r = GExecArtifactIdentity::validate(identity_, current_identity, reason_msg);
-    if (out_reason) *out_reason = r;
+    if (out_reason)
+        *out_reason = r;
     return r == GExecInvalidationReason::None;
 }
 
@@ -1107,8 +1100,7 @@ bool GExecReader::verify_section_digest(GExecSectionKind kind, std::string& err)
         return false;
     }
     uint8_t actual_sha[32] = {};
-    compute_raw_sha256(mapped_base_ + static_cast<size_t>(sec->offset),
-                       static_cast<size_t>(sec->byte_size),
+    compute_raw_sha256(mapped_base_ + static_cast<size_t>(sec->offset), static_cast<size_t>(sec->byte_size),
                        actual_sha);
     if (std::memcmp(actual_sha, sec->sha256, 32) != 0) {
         err = std::string("SHA-256 digest mismatch in section ") + section_kind_to_string(kind);
@@ -1124,7 +1116,8 @@ bool GExecReader::verify_all_digests(std::string& err) const {
         return false;
     }
     for (const auto& s : sections_) {
-        if (!verify_section_digest(static_cast<GExecSectionKind>(s.kind), err)) return false;
+        if (!verify_section_digest(static_cast<GExecSectionKind>(s.kind), err))
+            return false;
     }
     err.clear();
     return true;
@@ -1137,16 +1130,20 @@ bool GExecReader::has_section(GExecSectionKind kind) const noexcept {
 const GExecSectionEntry* GExecReader::find_section(GExecSectionKind kind) const noexcept {
     const uint32_t k = static_cast<uint32_t>(kind);
     for (const auto& s : sections_) {
-        if (s.kind == k) return &s;
+        if (s.kind == k)
+            return &s;
     }
     return nullptr;
 }
 
 const uint8_t* GExecReader::section_data(GExecSectionKind kind, uint64_t* out_size) const noexcept {
-    if (!is_open()) return nullptr;
+    if (!is_open())
+        return nullptr;
     const auto* sec = find_section(kind);
-    if (!sec) return nullptr;
-    if (out_size) *out_size = sec->byte_size;
+    if (!sec)
+        return nullptr;
+    if (out_size)
+        *out_size = sec->byte_size;
     return mapped_base_ + static_cast<size_t>(sec->offset);
 }
 
@@ -1182,19 +1179,27 @@ std::string GExecReader::inspect_json() const {
     std::string perr;
     auto embed_json = [&](const char* key, const std::string& jstr) {
         JsonValue v;
-        if (JsonValue::parse(jstr, v, perr)) root[key] = std::move(v);
+        if (JsonValue::parse(jstr, v, perr))
+            root[key] = std::move(v);
     };
     embed_json("identity", identity_.to_json());
-    if (has_section(GExecSectionKind::AutotuneTable)) embed_json("autotune_table", autotune_.to_json());
-    if (has_section(GExecSectionKind::HeterogeneousPlan)) embed_json("heterogeneous_plan", hplan_.to_json());
-    if (has_section(GExecSectionKind::WorkspaceRecipe)) embed_json("workspace_recipe", workspace_.to_json());
-    if (has_section(GExecSectionKind::CompilationProvenance)) embed_json("provenance", provenance_.to_json());
-    if (has_section(GExecSectionKind::ExpertPackMeta)) embed_json("expert_pack_meta", pack_meta_.to_json());
-    if (has_section(GExecSectionKind::DiagnosticLog)) embed_json("diagnostic_log", diag_log_.to_json());
+    if (has_section(GExecSectionKind::AutotuneTable))
+        embed_json("autotune_table", autotune_.to_json());
+    if (has_section(GExecSectionKind::HeterogeneousPlan))
+        embed_json("heterogeneous_plan", hplan_.to_json());
+    if (has_section(GExecSectionKind::WorkspaceRecipe))
+        embed_json("workspace_recipe", workspace_.to_json());
+    if (has_section(GExecSectionKind::CompilationProvenance))
+        embed_json("provenance", provenance_.to_json());
+    if (has_section(GExecSectionKind::ExpertPackMeta))
+        embed_json("expert_pack_meta", pack_meta_.to_json());
+    if (has_section(GExecSectionKind::DiagnosticLog))
+        embed_json("diagnostic_log", diag_log_.to_json());
     return root.dump_pretty();
 }
 
-void GExecBuilder::upsert_section(GExecSectionKind kind, uint32_t flags, uint64_t alignment, std::vector<uint8_t> data) {
+void GExecBuilder::upsert_section(GExecSectionKind kind, uint32_t flags, uint64_t alignment,
+                                  std::vector<uint8_t> data) {
     for (auto& s : sections_) {
         if (s.kind == kind) {
             s.flags = flags;
@@ -1215,68 +1220,54 @@ void GExecBuilder::upsert_section(GExecSectionKind kind, uint32_t flags, uint64_
 
 void GExecBuilder::set_identity(const GExecArtifactIdentity& id) {
     const std::string s = id.to_json();
-    upsert_section(GExecSectionKind::IdentityAndManifest,
-                   kGExecSectionFlagRequired,
-                   64,
+    upsert_section(GExecSectionKind::IdentityAndManifest, kGExecSectionFlagRequired, 64,
                    std::vector<uint8_t>(s.begin(), s.end()));
 }
 
 void GExecBuilder::set_autotune_table(const GExecAutotuneTable& table) {
     const std::string s = table.to_json();
-    upsert_section(GExecSectionKind::AutotuneTable,
-                   kGExecSectionFlagNone,
-                   64,
+    upsert_section(GExecSectionKind::AutotuneTable, kGExecSectionFlagNone, 64,
                    std::vector<uint8_t>(s.begin(), s.end()));
 }
 
 void GExecBuilder::set_heterogeneous_plan(const GExecHeterogeneousPlan& plan) {
     const std::string s = plan.to_json();
-    upsert_section(GExecSectionKind::HeterogeneousPlan,
-                   kGExecSectionFlagNone,
-                   64,
+    upsert_section(GExecSectionKind::HeterogeneousPlan, kGExecSectionFlagNone, 64,
                    std::vector<uint8_t>(s.begin(), s.end()));
 }
 
 void GExecBuilder::set_workspace_recipe(const GExecWorkspaceRecipe& recipe) {
     const std::string s = recipe.to_json();
-    upsert_section(GExecSectionKind::WorkspaceRecipe,
-                   kGExecSectionFlagNone,
-                   64,
+    upsert_section(GExecSectionKind::WorkspaceRecipe, kGExecSectionFlagNone, 64,
                    std::vector<uint8_t>(s.begin(), s.end()));
 }
 
 void GExecBuilder::set_provenance(const GExecCompilationProvenance& prov) {
     const std::string s = prov.to_json();
-    upsert_section(GExecSectionKind::CompilationProvenance,
-                   kGExecSectionFlagNone,
-                   64,
+    upsert_section(GExecSectionKind::CompilationProvenance, kGExecSectionFlagNone, 64,
                    std::vector<uint8_t>(s.begin(), s.end()));
 }
 
 void GExecBuilder::set_expert_pack_meta(const GExecExpertPackMeta& meta) {
     const std::string s = meta.to_json();
-    if (meta.fused_single_barrier_pipeline) flags_ |= kGExecFlagFusedPipeline;
-    else flags_ &= ~kGExecFlagFusedPipeline;
-    upsert_section(GExecSectionKind::ExpertPackMeta,
-                   kGExecSectionFlagNone,
-                   64,
+    if (meta.fused_single_barrier_pipeline)
+        flags_ |= kGExecFlagFusedPipeline;
+    else
+        flags_ &= ~kGExecFlagFusedPipeline;
+    upsert_section(GExecSectionKind::ExpertPackMeta, kGExecSectionFlagNone, 64,
                    std::vector<uint8_t>(s.begin(), s.end()));
 }
 
 void GExecBuilder::set_diagnostic_log(const GExecDiagnosticLog& log) {
     const std::string s = log.to_json();
-    upsert_section(GExecSectionKind::DiagnosticLog,
-                   kGExecSectionFlagNone,
-                   64,
+    upsert_section(GExecSectionKind::DiagnosticLog, kGExecSectionFlagNone, 64,
                    std::vector<uint8_t>(s.begin(), s.end()));
 }
 
 void GExecBuilder::set_packed_experts_blob(std::vector<uint8_t> blob, uint64_t alignment) {
     flags_ |= kGExecFlagHasEmbeddedExperts;
-    upsert_section(GExecSectionKind::PackedExpertsBlob,
-                   kGExecSectionFlagPageAligned,
-                   std::max<uint64_t>(4096, alignment),
-                   std::move(blob));
+    upsert_section(GExecSectionKind::PackedExpertsBlob, kGExecSectionFlagPageAligned,
+                   std::max<uint64_t>(4096, alignment), std::move(blob));
 }
 
 bool GExecBuilder::import_from(const GExecReader& reader, std::string& err, bool stream_experts) {
@@ -1330,7 +1321,8 @@ bool GExecBuilder::write_file(const std::string& dest_path, std::string& err, ui
     }
     bool has_identity = false;
     for (const auto& s : sections_) {
-        if (s.kind == GExecSectionKind::IdentityAndManifest) has_identity = true;
+        if (s.kind == GExecSectionKind::IdentityAndManifest)
+            has_identity = true;
     }
     if (!has_identity) {
         err = "GEXEC container requires IdentityAndManifest section";
@@ -1340,11 +1332,13 @@ bool GExecBuilder::write_file(const std::string& dest_path, std::string& err, ui
     // Order sections deterministically by kind (PackedExpertsBlob last so metadata is compact at the front)
     std::vector<const PendingSection*> ordered;
     ordered.reserve(sections_.size());
-    for (const auto& s : sections_) ordered.push_back(&s);
+    for (const auto& s : sections_)
+        ordered.push_back(&s);
     std::sort(ordered.begin(), ordered.end(), [](const PendingSection* a, const PendingSection* b) {
         const bool a_blob = (a->kind == GExecSectionKind::PackedExpertsBlob);
         const bool b_blob = (b->kind == GExecSectionKind::PackedExpertsBlob);
-        if (a_blob != b_blob) return !a_blob;
+        if (a_blob != b_blob)
+            return !a_blob;
         return static_cast<uint32_t>(a->kind) < static_cast<uint32_t>(b->kind);
     });
 
@@ -1380,13 +1374,16 @@ bool GExecBuilder::write_file(const std::string& dest_path, std::string& err, ui
         if (ps->read) {
             models::Sha256 digest;
             for (uint64_t offset = 0; offset < ps->stream_bytes;) {
-                const auto count = static_cast<size_t>(std::min<uint64_t>(stream_buffer.size(), ps->stream_bytes - offset));
-                if (!ps->read(offset, stream_buffer.data(), count, err)) return false;
+                const auto count =
+                    static_cast<size_t>(std::min<uint64_t>(stream_buffer.size(), ps->stream_bytes - offset));
+                if (!ps->read(offset, stream_buffer.data(), count, err))
+                    return false;
                 digest.update(stream_buffer.data(), count);
                 offset += count;
             }
             hex_to_raw_sha256(digest.finalize_hex(), entries[i].sha256);
-        } else compute_raw_sha256(ps->data.data(), ps->data.size(), entries[i].sha256);
+        } else
+            compute_raw_sha256(ps->data.data(), ps->data.size(), entries[i].sha256);
     }
     hdr.total_file_bytes = cursor;
     compute_header_and_table_sha256(hdr, entries.data(), entries.size(), hdr.header_and_table_sha256);
@@ -1396,7 +1393,8 @@ bool GExecBuilder::write_file(const std::string& dest_path, std::string& err, ui
     if (target.has_parent_path()) {
         std::filesystem::create_directories(target.parent_path(), ec);
     }
-    const auto space = std::filesystem::space(target.has_parent_path() ? target.parent_path() : std::filesystem::path("."), ec);
+    const auto space =
+        std::filesystem::space(target.has_parent_path() ? target.parent_path() : std::filesystem::path("."), ec);
     if (ec || space.available < hdr.total_file_bytes) {
         err = "insufficient free disk space for atomic GEXEC installation";
         return false;
@@ -1421,8 +1419,10 @@ bool GExecBuilder::write_file(const std::string& dest_path, std::string& err, ui
         size_t rem = len;
         while (rem > 0) {
             const ssize_t nw = ::write(fd, p, std::min<size_t>(rem, 1ull << 26));
-            if (nw < 0 && errno == EINTR) continue;
-            if (nw <= 0) return false;
+            if (nw < 0 && errno == EINTR)
+                continue;
+            if (nw <= 0)
+                return false;
             p += nw;
             rem -= static_cast<size_t>(nw);
         }
@@ -1439,15 +1439,15 @@ bool GExecBuilder::write_file(const std::string& dest_path, std::string& err, ui
         const auto* p = static_cast<const uint8_t*>(buf);
         while (len) {
             DWORD n = 0;
-            if (!WriteFile(fd, p, static_cast<DWORD>(std::min<size_t>(len, 1ull << 26)), &n, nullptr) || !n) return false;
+            if (!WriteFile(fd, p, static_cast<DWORD>(std::min<size_t>(len, 1ull << 26)), &n, nullptr) || !n)
+                return false;
             p += n;
             len -= n;
         }
         return true;
     };
 #endif
-    bool ok = write_all(&hdr, sizeof(hdr)) &&
-              write_all(entries.data(), entries.size() * sizeof(GExecSectionEntry));
+    bool ok = write_all(&hdr, sizeof(hdr)) && write_all(entries.data(), entries.size() * sizeof(GExecSectionEntry));
     uint64_t written = sizeof(hdr) + entries.size() * sizeof(GExecSectionEntry);
     std::vector<uint8_t> zeros(4096, 0);
     for (size_t i = 0; ok && i < ordered.size(); ++i) {
@@ -1459,26 +1459,34 @@ bool GExecBuilder::write_file(const std::string& dest_path, std::string& err, ui
         if (ok && ordered[i]->read) {
             models::Sha256 digest;
             for (uint64_t offset = 0; ok && offset < ordered[i]->stream_bytes;) {
-                const auto count = static_cast<size_t>(std::min<uint64_t>(stream_buffer.size(), ordered[i]->stream_bytes - offset));
-                ok = ordered[i]->read(offset, stream_buffer.data(), count, err) && write_all(stream_buffer.data(), count);
-                if (ok) digest.update(stream_buffer.data(), count);
+                const auto count =
+                    static_cast<size_t>(std::min<uint64_t>(stream_buffer.size(), ordered[i]->stream_bytes - offset));
+                ok = ordered[i]->read(offset, stream_buffer.data(), count, err) &&
+                     write_all(stream_buffer.data(), count);
+                if (ok)
+                    digest.update(stream_buffer.data(), count);
                 offset += count;
                 written += count;
             }
             uint8_t actual[32];
             hex_to_raw_sha256(digest.finalize_hex(), actual);
-            if (std::memcmp(actual, entries[i].sha256, 32) != 0) ok = false;
+            if (std::memcmp(actual, entries[i].sha256, 32) != 0)
+                ok = false;
         } else if (ok && !ordered[i]->data.empty()) {
             ok = write_all(ordered[i]->data.data(), ordered[i]->data.size());
             written += ordered[i]->data.size();
         }
     }
 #if defined(_WIN32)
-    if (ok && !FlushFileBuffers(fd)) ok = false;
-    if (!CloseHandle(fd)) ok = false;
+    if (ok && !FlushFileBuffers(fd))
+        ok = false;
+    if (!CloseHandle(fd))
+        ok = false;
 #else
-    if (ok && ::fsync(fd) != 0) ok = false;
-    if (::close(fd) != 0) ok = false;
+    if (ok && ::fsync(fd) != 0)
+        ok = false;
+    if (::close(fd) != 0)
+        ok = false;
 #endif
     if (!ok) {
         std::filesystem::remove(tmp_path, ec);
@@ -1487,7 +1495,8 @@ bool GExecBuilder::write_file(const std::string& dest_path, std::string& err, ui
     }
 #if defined(_WIN32)
     const auto wide_dest = std::filesystem::u8path(dest_path).wstring();
-    const bool renamed = MoveFileExW(wide_tmp.c_str(), wide_dest.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
+    const bool renamed =
+        MoveFileExW(wide_tmp.c_str(), wide_dest.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
 #else
     const bool renamed = ::rename(tmp_path.c_str(), dest_path.c_str()) == 0;
 #endif

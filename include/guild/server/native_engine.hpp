@@ -26,14 +26,18 @@ public:
 
     bool init(std::string& error_msg);
 
-    std::string model_name() const override { return options_.model_name; }
-    int64_t max_context() const override { return options_.plan.context_length; }
-    bool is_ready() const override { return ready_ && model_ != nullptr && model_->is_ready() && session_ != nullptr; }
+    std::string model_name() const override {
+        return options_.model_name;
+    }
+    int64_t max_context() const override {
+        return options_.plan.context_length;
+    }
+    bool is_ready() const override {
+        return ready_ && model_ != nullptr && model_->is_ready() && session_ != nullptr;
+    }
 
     bool generate(const InferenceRequest& req, GenerationResult& result) override;
-    bool generate_stream(const InferenceRequest& req,
-                         StreamCallback on_token,
-                         GenerationResult& result) override;
+    bool generate_stream(const InferenceRequest& req, StreamCallback on_token, GenerationResult& result) override;
     void stop() override;
 
     bool encode(const std::string& text, std::vector<int32_t>& tokens, std::string& err) override;
@@ -41,10 +45,18 @@ public:
     const runtime::ChatTemplate* chat_template() const override;
     const runtime::Tokenizer* tokenizer() const override;
 
-    guild::runtime::GuildModel* model() { return model_.get(); }
-    const guild::runtime::GuildModel* model() const { return model_.get(); }
-    guild::runtime::GuildSession* session() { return session_.get(); }
-    const guild::runtime::GuildSession* session() const { return session_.get(); }
+    guild::runtime::GuildModel* model() {
+        return model_.get();
+    }
+    const guild::runtime::GuildModel* model() const {
+        return model_.get();
+    }
+    guild::runtime::GuildSession* session() {
+        return session_.get();
+    }
+    const guild::runtime::GuildSession* session() const {
+        return session_.get();
+    }
 
 private:
     NativeInferenceEngineOptions options_;

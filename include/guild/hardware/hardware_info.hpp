@@ -56,4 +56,4 @@ struct HardwareInfo {
 
 HardwareInfo detect_hardware();
 
-}  // namespace guild::hardware
+} // namespace guild::hardware

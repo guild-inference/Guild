@@ -27,36 +27,52 @@ public:
     ConversationBuffer(const ConversationBuffer&) = default;
     ConversationBuffer& operator=(const ConversationBuffer&) = default;
     ConversationBuffer(ConversationBuffer&& other) noexcept
-        : segments_(std::move(other.segments_)), size_(std::exchange(other.size_, 0)) {}
+        : segments_(std::move(other.segments_)),
+          size_(std::exchange(other.size_, 0)) {
+    }
     ConversationBuffer& operator=(ConversationBuffer&& other) noexcept {
-        if (this == &other) return *this;
+        if (this == &other)
+            return *this;
         segments_ = std::move(other.segments_);
         size_ = std::exchange(other.size_, 0);
         return *this;
     }
 
-    size_t size() const { return size_; }
-    bool empty() const { return size_ == 0; }
+    size_t size() const {
+        return size_;
+    }
+    bool empty() const {
+        return size_ == 0;
+    }
     size_t bytes() const {
         size_t n = segments_.capacity() * sizeof(Segment);
-        for (const auto& segment : segments_) n += segment.capacity();
+        for (const auto& segment : segments_)
+            n += segment.capacity();
         return n;
     }
     // Includes the old directory while reserve allocates its replacement.
     // Saturation makes an overflowing estimate fail admission before resize.
     size_t allocation_peak(size_t n) const {
         size_t total = bytes();
-        if (n <= size_) return total;
+        if (n <= size_)
+            return total;
         const size_t spare = segments_.empty() ? 0 : segments_.back().capacity() - segments_.back().size();
         const size_t extra = n - size_ - std::min(n - size_, spare);
         const size_t full = extra / segment_bytes, tail = extra % segment_bytes;
-        if (!add(total, full * segment_bytes)) return SIZE_MAX;
-        if (tail && !add(total, segment_capacity(tail, full ? segment_bytes :
-                segments_.empty() ? 0 : segments_.back().capacity(), size_ != 0))) return SIZE_MAX;
+        if (!add(total, full * segment_bytes))
+            return SIZE_MAX;
+        if (tail && !add(total, segment_capacity(tail,
+                                                 full                ? segment_bytes
+                                                 : segments_.empty() ? 0
+                                                                     : segments_.back().capacity(),
+                                                 size_ != 0)))
+            return SIZE_MAX;
         size_t count = segments_.size();
-        if (!add(count, full + (tail != 0))) return SIZE_MAX;
+        if (!add(count, full + (tail != 0)))
+            return SIZE_MAX;
         if (count > segments_.capacity() &&
-            (count > SIZE_MAX / sizeof(Segment) || !add(total, count * sizeof(Segment)))) return SIZE_MAX;
+            (count > SIZE_MAX / sizeof(Segment) || !add(total, count * sizeof(Segment))))
+            return SIZE_MAX;
         return total;
     }
     void resize(size_t n, uint8_t value = 0) {
@@ -84,17 +100,20 @@ public:
                 size_ -= segments_.back().size();
                 segments_.pop_back();
             }
-            if (size_ > n) segments_.back().resize(segments_.back().size() - (size_ - n));
+            if (size_ > n)
+                segments_.back().resize(segments_.back().size() - (size_ - n));
             size_ = n;
         }
     }
-    void pop_back() { resize(size_ - 1); }
+    void pop_back() {
+        resize(size_ - 1);
+    }
 
     // fn(pointer, count, absolute_offset); false aborts a transfer immediately.
-    template<class Fn> bool visit(size_t offset, size_t count, Fn fn) {
+    template <class Fn> bool visit(size_t offset, size_t count, Fn fn) {
         return visit_impl(*this, offset, count, fn);
     }
-    template<class Fn> bool visit(size_t offset, size_t count, Fn fn) const {
+    template <class Fn> bool visit(size_t offset, size_t count, Fn fn) const {
         return visit_impl(*this, offset, count, fn);
     }
     bool read(void* target, size_t offset, size_t count) const {
@@ -104,16 +123,25 @@ public:
         });
     }
     bool operator==(const ConversationBuffer& other) const {
-        if (size_ != other.size_) return false;
+        if (size_ != other.size_)
+            return false;
         size_t a = 0, b = 0, x = 0, y = 0;
         while (a < segments_.size() && b < other.segments_.size()) {
             const auto& left = segments_[a];
             const auto& right = other.segments_[b];
             const size_t n = std::min(left.size() - x, right.size() - y);
-            if (std::memcmp(left.data() + x, right.data() + y, n)) return false;
-            x += n; y += n;
-            if (x == left.size()) { ++a; x = 0; }
-            if (y == right.size()) { ++b; y = 0; }
+            if (std::memcmp(left.data() + x, right.data() + y, n))
+                return false;
+            x += n;
+            y += n;
+            if (x == left.size()) {
+                ++a;
+                x = 0;
+            }
+            if (y == right.size()) {
+                ++b;
+                y = 0;
+            }
         }
         return true;
     }
@@ -124,24 +152,31 @@ private:
     // geometrically growing segments, bounded by 16 MiB. Small chat turns then
     // extend the final allocation instead of adding one transfer per turn.
     static size_t segment_capacity(size_t count, size_t previous, bool growing) {
-        if (!growing) return count;
-        return std::max(count, std::min(segment_bytes, std::max<size_t>(65536, std::min(previous, segment_bytes/2)*2)));
+        if (!growing)
+            return count;
+        return std::max(count,
+                        std::min(segment_bytes, std::max<size_t>(65536, std::min(previous, segment_bytes / 2) * 2)));
     }
     static bool add(size_t& n, size_t extra) {
-        if (extra > SIZE_MAX - n) return false;
+        if (extra > SIZE_MAX - n)
+            return false;
         n += extra;
         return true;
     }
-    template<class Self, class Fn> static bool visit_impl(Self& self, size_t offset, size_t count, Fn fn) {
-        if (offset > self.size_ || count > self.size_ - offset) return false;
+    template <class Self, class Fn> static bool visit_impl(Self& self, size_t offset, size_t count, Fn fn) {
+        if (offset > self.size_ || count > self.size_ - offset)
+            return false;
         size_t begin = 0;
         for (auto& segment : self.segments_) {
-            if (!count) break;
+            if (!count)
+                break;
             const size_t end = begin + segment.size();
             if (offset < end) {
                 const size_t n = std::min(count, end - offset);
-                if (!fn(segment.data() + offset - begin, n, offset)) return false;
-                offset += n; count -= n;
+                if (!fn(segment.data() + offset - begin, n, offset))
+                    return false;
+                offset += n;
+                count -= n;
             }
             begin = end;
         }

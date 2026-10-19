@@ -29,10 +29,14 @@ namespace guild::kernels {
 namespace {
 /// The A/B arm.  Host-token-path only, so it needs no atomics; see the note on `ple_prefetch_enable`.
 bool g_ple_prefetch = true;
-}  // namespace
+} // namespace
 
-void ple_prefetch_enable(bool on) { g_ple_prefetch = on; }
-bool ple_prefetch_enabled() { return g_ple_prefetch; }
+void ple_prefetch_enable(bool on) {
+    g_ple_prefetch = on;
+}
+bool ple_prefetch_enabled() {
+    return g_ple_prefetch;
+}
 
 PleConsts ple_artifact_consts() {
     // docs/gguf-dump-shard1.txt, verbatim.  Written once here rather than derived, because `head_offsets` is
@@ -42,12 +46,12 @@ PleConsts ple_artifact_consts() {
     c.mult[0] = 23703573157769ull;
     c.mult[1] = 20109073645365ull;
     c.mult[2] = 8052911324071ull;
-    const uint64_t vocab[PLE_N_HEADS] = {
-        20000003, 20000023, 20000033, 20000047, 20000059, 20000063, 20000069, 20000077,
-        20000081, 20000093, 20000107, 20000147, 20000153, 20000159, 20000161, 20000171};
-    const uint64_t offset[PLE_N_HEADS] = {
-        0,        20000003, 40000026, 60000059, 80000106, 100000165, 120000228, 140000297,
-        160000374, 180000455, 200000548, 220000655, 240000802, 260000955, 280001114, 300001275};
+    const uint64_t vocab[PLE_N_HEADS] = {20000003, 20000023, 20000033, 20000047, 20000059, 20000063,
+                                         20000069, 20000077, 20000081, 20000093, 20000107, 20000147,
+                                         20000153, 20000159, 20000161, 20000171};
+    const uint64_t offset[PLE_N_HEADS] = {0,         20000003,  40000026,  60000059,  80000106,  100000165,
+                                          120000228, 140000297, 160000374, 180000455, 200000548, 220000655,
+                                          240000802, 260000955, 280001114, 300001275};
     for (int i = 0; i < PLE_N_HEADS; ++i) {
         c.vocab[i] = vocab[i];
         c.offset[i] = offset[i];
@@ -60,7 +64,8 @@ uint64_t ngram_mixed(const int64_t* ctx, const uint64_t* mult, int n) {
     // (`uint64_t mixed = ctx[0]*m[0]; for j=1.. mixed ^= ctx[j]*m[j];`).  Every product wraps mod 2^64,
     // which is what the `(uint64_t)` casts in the source make explicit.
     uint64_t mixed = (uint64_t) ctx[0] * mult[0];
-    for (int j = 1; j < n; ++j) mixed ^= (uint64_t) ctx[j] * mult[j];
+    for (int j = 1; j < n; ++j)
+        mixed ^= (uint64_t) ctx[j] * mult[j];
     return mixed;
 }
 
@@ -96,7 +101,9 @@ namespace {
 const int8_t kIq4Nl[16] = {-127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113};
 }
 
-int iq4nl_code(int code) { return kIq4Nl[code & 15]; }
+int iq4nl_code(int code) {
+    return kIq4Nl[code & 15];
+}
 
 void iq4nl_dequant_row(const uint8_t* row, float* out160) {
     for (int b = 0; b < PLE_HEAD_DIM / 32; ++b) {
@@ -120,18 +127,22 @@ struct Fp8Table {
         for (int x = 0; x < 256; ++x) {
             const int s = x >> 7, e = (x >> 3) & 15, m = x & 7;
             float f;
-            if (e == 15 && m == 7) f = 0.0f;                     // NaN in e4m3fn; never in a real table, read as 0
-            else if (e == 0) f = std::ldexp((float) m / 8.0f, -6);
-            else f = std::ldexp(1.0f + (float) m / 8.0f, e - 7);
+            if (e == 15 && m == 7)
+                f = 0.0f; // NaN in e4m3fn; never in a real table, read as 0
+            else if (e == 0)
+                f = std::ldexp((float) m / 8.0f, -6);
+            else
+                f = std::ldexp(1.0f + (float) m / 8.0f, e - 7);
             v[x] = s ? -f : f;
         }
     }
 };
 const Fp8Table kFp8;
-}  // namespace
+} // namespace
 
 void fp8_e4m3_dequant_row(const uint8_t* row, float scale, float* out160) {
-    for (int j = 0; j < PLE_HEAD_DIM; ++j) out160[j] = kFp8.v[row[j]] * scale;
+    for (int j = 0; j < PLE_HEAD_DIM; ++j)
+        out160[j] = kFp8.v[row[j]] * scale;
 }
 
 // ---------------------------------------------------------------------------------------------------
@@ -139,7 +150,7 @@ struct PleTable::Impl {
     GgufFile* file = nullptr;
     const uint8_t* data = nullptr;
     uint64_t n_rows = 0;
-    bool q5_0 = false;                // #296: Q5_0 rows (110 B), the mapped reader only
+    bool q5_0 = false; // #296: Q5_0 rows (110 B), the mapped reader only
     mutable uint64_t bytes_read = 0;
     // Direct mode (plan v0.3 P2): the mapping above is released after the header parse and every row comes
     // from an unbuffered SSD read into `raw`.
@@ -155,19 +166,26 @@ struct PleTable::Impl {
     guild::ngram::PleReader::Ticket prefetch_tickets[kMaxPrefetch] = {};
     uint32_t prefetch_keys[kMaxPrefetch][PLE_N_HEADS] = {};
     uint8_t prefetch_raw[kMaxPrefetch][PLE_N_HEADS * PLE_ROW_BYTES_MAX] = {};
-    bool fp8 = false;                 // F8_E4M3 rows (tools/ple_fp8_pack.py); else IQ4_NL
-    float scale = 1.0f;               // the FP8 table's one scale
-    uint32_t rb = PLE_ROW_BYTES;      // bytes per row
+    bool fp8 = false;            // F8_E4M3 rows (tools/ple_fp8_pack.py); else IQ4_NL
+    float scale = 1.0f;          // the FP8 table's one scale
+    uint32_t rb = PLE_ROW_BYTES; // bytes per row
     void decode(const uint8_t* row, float* out160) const {
-        if (fp8) fp8_e4m3_dequant_row(row, scale, out160);
+        if (fp8)
+            fp8_e4m3_dequant_row(row, scale, out160);
         else if (q5_0)
-            for (int b = 0; b < PLE_HEAD_DIM / 32; ++b) guild::dequantize_q5_0(row + (size_t) b * 22, out160 + b * 32);
-        else iq4nl_dequant_row(row, out160);
+            for (int b = 0; b < PLE_HEAD_DIM / 32; ++b)
+                guild::dequantize_q5_0(row + (size_t) b * 22, out160 + b * 32);
+        else
+            iq4nl_dequant_row(row, out160);
     }
 };
 
-PleTable::PleTable() : impl_(new Impl) {}
-PleTable::~PleTable() { close(); delete impl_; }
+PleTable::PleTable() : impl_(new Impl) {
+}
+PleTable::~PleTable() {
+    close();
+    delete impl_;
+}
 
 bool PleTable::open(const std::string& gguf_path, std::string& err) {
     return open(gguf_path, err, PleIoOptions{});
@@ -275,7 +293,8 @@ bool PleTable::open(const std::string& gguf_path, std::string& err, const PleIoO
             std::fprintf(stderr, "guild: PLE table mlock failed (%s; raise `ulimit -l`): touching its pages instead\n",
                          std::strerror(errno));
             volatile uint8_t sink = 0;
-            for (uintptr_t p = a0; p < a1; p += page) sink = sink + *(const volatile uint8_t*) p;
+            for (uintptr_t p = a0; p < a1; p += page)
+                sink = sink + *(const volatile uint8_t*) p;
             (void) sink;
         }
 #endif
@@ -285,12 +304,11 @@ bool PleTable::open(const std::string& gguf_path, std::string& err, const PleIoO
 }
 
 bool PleTable::open_raw(const std::string& file_path, uint64_t file_offset, const uint8_t* mapped_data,
-                        int32_t ggml_type, uint64_t n_rows, float fp8_scale, std::string& err,
-                        const PleIoOptions& io) {
+                        int32_t ggml_type, uint64_t n_rows, float fp8_scale, std::string& err, const PleIoOptions& io) {
     close();
     impl_->fp8 = false;
     impl_->q5_0 = (ggml_type == 6); // Q5_0
-    if (ggml_type == 24) { // I8 (FP8 E4M3)
+    if (ggml_type == 24) {          // I8 (FP8 E4M3)
         if (!(fp8_scale > 0.0f)) {
             err = "PLE table FP8 scale must be positive";
             return false;
@@ -322,20 +340,25 @@ bool PleTable::open_raw(const std::string& file_path, uint64_t file_offset, cons
 }
 
 void PleTable::wait_prefetches() {
-    if (impl_->n_prefetch == 0) return;
+    if (impl_->n_prefetch == 0)
+        return;
     std::string dummy;
-    for (size_t i = 0; i < impl_->n_prefetch; ++i) (void) impl_->reader.collect(impl_->prefetch_tickets[i], dummy);
+    for (size_t i = 0; i < impl_->n_prefetch; ++i)
+        (void) impl_->reader.collect(impl_->prefetch_tickets[i], dummy);
     impl_->n_prefetch = 0;
 }
 
 void PleTable::prefetch_rows(const uint32_t* rows16) {
     if (impl_->mode == PleIo::Direct && impl_->reader.is_open()) {
         for (size_t i = 0; i < impl_->n_prefetch; ++i)
-            if (std::memcmp(impl_->prefetch_keys[i], rows16, sizeof(uint32_t) * PLE_N_HEADS) == 0) return;
-        if (impl_->n_prefetch >= Impl::kMaxPrefetch) wait_prefetches();
+            if (std::memcmp(impl_->prefetch_keys[i], rows16, sizeof(uint32_t) * PLE_N_HEADS) == 0)
+                return;
+        if (impl_->n_prefetch >= Impl::kMaxPrefetch)
+            wait_prefetches();
         const size_t slot = impl_->n_prefetch++;
         std::memcpy(impl_->prefetch_keys[slot], rows16, sizeof(uint32_t) * PLE_N_HEADS);
-        impl_->prefetch_tickets[slot] = impl_->reader.issue(impl_->prefetch_keys[slot], PLE_N_HEADS, impl_->prefetch_raw[slot]);
+        impl_->prefetch_tickets[slot] =
+            impl_->reader.issue(impl_->prefetch_keys[slot], PLE_N_HEADS, impl_->prefetch_raw[slot]);
         return;
     }
 #if defined(_WIN32)
@@ -343,12 +366,14 @@ void PleTable::prefetch_rows(const uint32_t* rows16) {
         WIN32_MEMORY_RANGE_ENTRY ranges[PLE_N_HEADS];
         ULONG_PTR n = 0;
         for (int h = 0; h < PLE_N_HEADS; ++h) {
-            if (rows16[h] >= impl_->n_rows) continue;
+            if (rows16[h] >= impl_->n_rows)
+                continue;
             ranges[n].VirtualAddress = (PVOID) (impl_->data + (size_t) rows16[h] * impl_->rb);
             ranges[n].NumberOfBytes = impl_->rb;
             ++n;
         }
-        if (n > 0) (void) PrefetchVirtualMemory(GetCurrentProcess(), n, ranges, 0);
+        if (n > 0)
+            (void) PrefetchVirtualMemory(GetCurrentProcess(), n, ranges, 0);
     }
 #endif
 }
@@ -357,7 +382,7 @@ void PleTable::close() {
     wait_prefetches();
     impl_->reader.close();
     impl_->pending = false;
-    impl_->locked = false;   // the unmap below releases the lock
+    impl_->locked = false; // the unmap below releases the lock
     impl_->mode = PleIo::Mmap;
     delete impl_->file;
     impl_->file = nullptr;
@@ -368,12 +393,24 @@ void PleTable::close() {
     impl_->fp8 = false;
 }
 
-bool PleTable::is_open() const { return impl_->data != nullptr || impl_->reader.is_open(); }
-bool PleTable::locked() const { return impl_->locked; }
-const char* PleTable::format() const { return impl_->fp8 ? "F8_E4M3" : impl_->q5_0 ? "Q5_0" : "IQ4_NL"; }
-PleIo PleTable::mode() const { return impl_->mode; }
-uint64_t PleTable::rows() const { return impl_->n_rows; }
-uint64_t PleTable::bytes_read() const { return impl_->bytes_read; }
+bool PleTable::is_open() const {
+    return impl_->data != nullptr || impl_->reader.is_open();
+}
+bool PleTable::locked() const {
+    return impl_->locked;
+}
+const char* PleTable::format() const {
+    return impl_->fp8 ? "F8_E4M3" : impl_->q5_0 ? "Q5_0" : "IQ4_NL";
+}
+PleIo PleTable::mode() const {
+    return impl_->mode;
+}
+uint64_t PleTable::rows() const {
+    return impl_->n_rows;
+}
+uint64_t PleTable::bytes_read() const {
+    return impl_->bytes_read;
+}
 
 void PleTable::read_row(uint32_t row, float* out160) const {
     if (impl_->mode == PleIo::Direct && impl_->reader.is_open()) {
@@ -400,7 +437,8 @@ bool PleTable::issue(const uint32_t* rows16) {
     wait_prefetches();
     std::memcpy(impl_->rows, rows16, sizeof impl_->rows);
     if (impl_->mode == PleIo::Direct) {
-        if (impl_->pending) return false;              // one token in flight per table
+        if (impl_->pending)
+            return false; // one token in flight per table
         impl_->ticket = impl_->reader.issue(impl_->rows, PLE_N_HEADS, impl_->raw);
         impl_->pending = true;
         return true;
@@ -410,12 +448,14 @@ bool PleTable::issue(const uint32_t* rows16) {
         WIN32_MEMORY_RANGE_ENTRY ranges[PLE_N_HEADS];
         ULONG_PTR n = 0;
         for (int h = 0; h < PLE_N_HEADS; ++h) {
-            if (rows16[h] >= impl_->n_rows) continue;
+            if (rows16[h] >= impl_->n_rows)
+                continue;
             ranges[n].VirtualAddress = (PVOID) (impl_->data + (size_t) rows16[h] * impl_->rb);
             ranges[n].NumberOfBytes = impl_->rb;
             ++n;
         }
-        if (n > 0) (void) PrefetchVirtualMemory(GetCurrentProcess(), n, ranges, 0);
+        if (n > 0)
+            (void) PrefetchVirtualMemory(GetCurrentProcess(), n, ranges, 0);
     }
 #endif
     impl_->pending = true;
@@ -423,21 +463,29 @@ bool PleTable::issue(const uint32_t* rows16) {
 }
 
 bool PleTable::collect(float* out2560, std::string& err) {
-    if (!impl_->pending) { err = "PleTable::collect without issue"; return false; }
+    if (!impl_->pending) {
+        err = "PleTable::collect without issue";
+        return false;
+    }
     impl_->pending = false;
     if (impl_->mode == PleIo::Direct) {
-        if (!impl_->reader.collect(impl_->ticket, err)) return false;
+        if (!impl_->reader.collect(impl_->ticket, err))
+            return false;
         for (int h = 0; h < PLE_N_HEADS; ++h)
             impl_->decode(impl_->raw + (size_t) h * impl_->rb, out2560 + (size_t) h * PLE_HEAD_DIM);
         impl_->bytes_read += (uint64_t) PLE_N_HEADS * impl_->rb;
         return true;
     }
-    for (int h = 0; h < PLE_N_HEADS; ++h) read_row(impl_->rows[h], out2560 + (size_t) h * PLE_HEAD_DIM);
+    for (int h = 0; h < PLE_N_HEADS; ++h)
+        read_row(impl_->rows[h], out2560 + (size_t) h * PLE_HEAD_DIM);
     return true;
 }
 
 bool PleTable::gather_batch(const uint32_t* rows, size_t n_tokens, float* out, std::string& err) {
-    if (impl_->pending) { err = "PleTable::gather_batch while a token is in flight"; return false; }
+    if (impl_->pending) {
+        err = "PleTable::gather_batch while a token is in flight";
+        return false;
+    }
     const size_t n = n_tokens * (size_t) PLE_N_HEADS;
     if (impl_->mode == PleIo::Direct) {
         // Fast path: if all requested tokens match our in-flight/completed prefetch slots, collect them directly
@@ -471,29 +519,36 @@ bool PleTable::gather_batch(const uint32_t* rows, size_t n_tokens, float* out, s
         wait_prefetches();
         std::vector<uint8_t> raw(n * impl_->rb);
         const auto ticket = impl_->reader.issue(rows, n, raw.data());
-        if (!impl_->reader.collect(ticket, err)) return false;
-        for (size_t i = 0; i < n; ++i) impl_->decode(raw.data() + i * impl_->rb, out + i * PLE_HEAD_DIM);
+        if (!impl_->reader.collect(ticket, err))
+            return false;
+        for (size_t i = 0; i < n; ++i)
+            impl_->decode(raw.data() + i * impl_->rb, out + i * PLE_HEAD_DIM);
         impl_->bytes_read += (uint64_t) n * impl_->rb;
         return true;
     }
     wait_prefetches();
-    for (size_t i = 0; i < n; ++i) read_row(rows[i], out + i * PLE_HEAD_DIM);
+    for (size_t i = 0; i < n; ++i)
+        read_row(rows[i], out + i * PLE_HEAD_DIM);
     return true;
 }
 
-void PleTable::set_injected_delay_us(double us) { impl_->reader.set_injected_delay_us(us); }
+void PleTable::set_injected_delay_us(double us) {
+    impl_->reader.set_injected_delay_us(us);
+}
 
 std::string PleTable::io_report() const {
-    if (impl_->mode != PleIo::Direct || !impl_->reader.is_open()) return {};
+    if (impl_->mode != PleIo::Direct || !impl_->reader.is_open())
+        return {};
     const guild::ngram::ReaderStats s = impl_->reader.snapshot();
     char buf[400];
-    int n = std::snprintf(buf, sizeof buf,
-                  "ple io: %llu rows, %.1f%% row-cache hits, %llu SSD reads (%.1f MB), read p50 %.0f us p99 %.0f us, "
-                  "blocked %.3f ms total (submit %.3f ms), cache %llu/%llu rows",
-                  (unsigned long long) s.requests, s.requests ? 100.0 * (double) s.cache_hits / (double) s.requests : 0.0,
-                  (unsigned long long) s.reads, (double) s.bytes / 1e6, s.percentile(0.5), s.percentile(0.99),
-                  s.wait_us / 1000.0, s.submit_us / 1000.0, (unsigned long long) impl_->reader.cache_size(),
-                  (unsigned long long) impl_->reader.cache_capacity());
+    int n = std::snprintf(
+        buf, sizeof buf,
+        "ple io: %llu rows, %.1f%% row-cache hits, %llu SSD reads (%.1f MB), read p50 %.0f us p99 %.0f us, "
+        "blocked %.3f ms total (submit %.3f ms), cache %llu/%llu rows",
+        (unsigned long long) s.requests, s.requests ? 100.0 * (double) s.cache_hits / (double) s.requests : 0.0,
+        (unsigned long long) s.reads, (double) s.bytes / 1e6, s.percentile(0.5), s.percentile(0.99), s.wait_us / 1000.0,
+        s.submit_us / 1000.0, (unsigned long long) impl_->reader.cache_size(),
+        (unsigned long long) impl_->reader.cache_capacity());
     if (s.keepalive_reads > 0 && n > 0 && n < (int) sizeof buf)
         std::snprintf(buf + n, sizeof buf - (size_t) n, ", SSD kept awake by %llu reads (slowest %.1f ms)",
                       (unsigned long long) s.keepalive_reads, s.keepalive_us_max / 1000.0);
@@ -530,18 +585,21 @@ void PleTable::gather(const uint32_t* rows16, float* out2560) const {
         ULONG_PTR n = 0;
         for (int h = 0; h < PLE_N_HEADS; ++h) {
             // Out-of-range rows are handled by `read_row` as zeros and have no address to prefetch.
-            if (rows16[h] >= impl_->n_rows) continue;
+            if (rows16[h] >= impl_->n_rows)
+                continue;
             ranges[n].VirtualAddress = (PVOID) (impl_->data + (size_t) rows16[h] * impl_->rb);
             ranges[n].NumberOfBytes = impl_->rb;
             ++n;
         }
-        if (n > 0) (void) PrefetchVirtualMemory(GetCurrentProcess(), n, ranges, 0);
+        if (n > 0)
+            (void) PrefetchVirtualMemory(GetCurrentProcess(), n, ranges, 0);
     }
 #endif
     // HEAD-SLOWEST, which is what `ggml_get_rows` does and what the source's own comment says: head h's 160
     // values occupy [h*160, (h+1)*160).  A head-fastest layout would put element (d, h) at d*16 + h and needs
     // a real transpose - a reshape of the same flat buffer compares equal and would make the check vacuous.
-    for (int h = 0; h < PLE_N_HEADS; ++h) read_row(rows16[h], out2560 + (size_t) h * PLE_HEAD_DIM);
+    for (int h = 0; h < PLE_N_HEADS; ++h)
+        read_row(rows16[h], out2560 + (size_t) h * PLE_HEAD_DIM);
 }
 
-}  // namespace guild::kernels
+} // namespace guild::kernels

@@ -13,12 +13,17 @@
 namespace guild::core {
 
 NativeHead::~NativeHead() {
-    if (scratch_) cudaFree(scratch_);
-    if (weights_) cudaFree(weights_);
+    if (scratch_)
+        cudaFree(scratch_);
+    if (weights_)
+        cudaFree(weights_);
 }
 
 bool NativeHead::load(const std::vector<std::string>& shards, int64_t n_in, int64_t n_out, std::string& err) {
-    if (loaded()) { err = "native head is already loaded"; return false; }
+    if (loaded()) {
+        err = "native head is already loaded";
+        return false;
+    }
     if (n_in <= 0 || n_out <= 0 || n_in > INT_MAX || n_out > INT_MAX || n_in % 256) {
         err = "native head requires positive int32 dimensions and whole 256-value rows";
         return false;
@@ -28,7 +33,8 @@ bool NativeHead::load(const std::vector<std::string>& shards, int64_t n_in, int6
         // of Unsloth's UD-Q4_K_XL, whose shard 1 holds no tensor).  GgufModel refuses a duplicate across shards.
         const guild::GgufModel model(shards);
         err = guild::check_architecture(model.meta());
-        if (!err.empty()) return false;
+        if (!err.empty())
+            return false;
         size_t at = 0;
         const guild::TensorInfo* tensor = model.find("output.weight", &at);
         const guild::GgufFile& gguf = model.shard(at);
@@ -51,8 +57,10 @@ bool NativeHead::load(const std::vector<std::string>& shards, int64_t n_in, int6
         if (status == cudaSuccess)
             status = cudaMemcpy(weights, gguf.tensor_data(*tensor), bytes, cudaMemcpyHostToDevice);
         if (status != cudaSuccess) {
-            if (scratch) cudaFree(scratch);
-            if (weights) cudaFree(weights);
+            if (scratch)
+                cudaFree(scratch);
+            if (weights)
+                cudaFree(weights);
             err = std::string("native head upload: ") + cudaGetErrorString(status);
             return false;
         }
@@ -70,7 +78,10 @@ bool NativeHead::load(const std::vector<std::string>& shards, int64_t n_in, int6
 }
 
 bool NativeHead::load_gpack(const guild::artifact::GPackReader& gpack, int64_t n_in, int64_t n_out, std::string& err) {
-    if (loaded()) { err = "native head is already loaded"; return false; }
+    if (loaded()) {
+        err = "native head is already loaded";
+        return false;
+    }
     if (n_in <= 0 || n_out <= 0 || n_in > INT_MAX || n_out > INT_MAX || n_in % 256) {
         err = "native head requires positive int32 dimensions and whole 256-value rows";
         return false;
@@ -114,8 +125,10 @@ bool NativeHead::load_gpack(const guild::artifact::GPackReader& gpack, int64_t n
         }
     }
     if (status != cudaSuccess) {
-        if (scratch) cudaFree(scratch);
-        if (weights) cudaFree(weights);
+        if (scratch)
+            cudaFree(scratch);
+        if (weights)
+            cudaFree(weights);
         err = std::string("native head GPACK upload: ") + cudaGetErrorString(status);
         return false;
     }
@@ -157,12 +170,18 @@ bool NativeHead::run(const float* mixed, float* logits, void* stream, std::strin
 namespace {
 const NativeEmbed* g_embed = nullptr;
 }
-void set_native_embed(const NativeEmbed* e) { g_embed = e; }
-const NativeEmbed* native_embed() { return g_embed; }
+void set_native_embed(const NativeEmbed* e) {
+    g_embed = e;
+}
+const NativeEmbed* native_embed() {
+    return g_embed;
+}
 
 NativeEmbed::~NativeEmbed() {
-    if (host_) cudaFreeHost(host_);
-    else if (dev_) cudaFree(const_cast<void*>(dev_));   // the VRAM fallback below
+    if (host_)
+        cudaFreeHost(host_);
+    else if (dev_)
+        cudaFree(const_cast<void*>(dev_)); // the VRAM fallback below
 }
 
 bool NativeEmbed::load(const std::vector<std::string>& shards, int64_t n_embd, int64_t n_vocab, std::string& err) {
@@ -170,8 +189,13 @@ bool NativeEmbed::load(const std::vector<std::string>& shards, int64_t n_embd, i
         const guild::GgufModel model(shards);
         // --embd-gguf's one-tensor file (tools/embd_bf16_pack.py) says "guild-embd": only its tensor is checked
         const guild::MetaValue* arch = model.meta().get("general.architecture");
-        err = arch != nullptr && (arch->s == "guild-embd" || arch->s == "strata-embd") ? std::string() : guild::check_architecture(model.meta());
-        if (!err.empty()) { err = "native embedding: " + err; return false; }
+        err = arch != nullptr && (arch->s == "guild-embd" || arch->s == "strata-embd")
+                  ? std::string()
+                  : guild::check_architecture(model.meta());
+        if (!err.empty()) {
+            err = "native embedding: " + err;
+            return false;
+        }
         size_t at = 0;
         const guild::TensorInfo* t = model.find("token_embd.weight", &at);
         const guild::GgufFile& gguf = model.shard(at);
@@ -199,7 +223,8 @@ bool NativeEmbed::load(const std::vector<std::string>& shards, int64_t n_embd, i
             void* d = nullptr;
             if (cudaMalloc(&d, bytes_) != cudaSuccess ||
                 cudaMemcpy(d, gguf.tensor_data(*t), bytes_, cudaMemcpyHostToDevice) != cudaSuccess) {
-                if (d) cudaFree(d);
+                if (d)
+                    cudaFree(d);
                 cudaGetLastError();
                 err = "native embedding: cannot pin " + std::to_string(bytes_ >> 20) + " MiB, nor place it in VRAM";
                 return false;
@@ -220,12 +245,13 @@ bool NativeEmbed::load(const std::vector<std::string>& shards, int64_t n_embd, i
                 d = nullptr;
                 if (cudaMalloc(&d, bytes_) != cudaSuccess ||
                     cudaMemcpy(d, gguf.tensor_data(*t), bytes_, cudaMemcpyHostToDevice) != cudaSuccess) {
-                    if (d) cudaFree(d);
+                    if (d)
+                        cudaFree(d);
                     cudaGetLastError();
                     err = "native embedding: no device alias for the mapped table, and no VRAM to copy it into";
                     return false;
                 }
-                cudaFreeHost(host_);   // the destructor frees dev_ when host_ is null
+                cudaFreeHost(host_); // the destructor frees dev_ when host_ is null
                 host_ = nullptr;
                 std::fprintf(stderr, "guild: native embedding: no device alias for the mapped table, kept in VRAM\n");
             }
@@ -247,14 +273,16 @@ bool NativeEmbed::load(const std::vector<std::string>& shards, int64_t n_embd, i
     }
 }
 
-bool NativeEmbed::load_gpack(const guild::artifact::GPackReader& gpack, int64_t n_embd, int64_t n_vocab, std::string& err) {
+bool NativeEmbed::load_gpack(const guild::artifact::GPackReader& gpack, int64_t n_embd, int64_t n_vocab,
+                             std::string& err) {
     guild::artifact::GPackSingleTensorHeaderV1 hdr{};
     const uint8_t* data = nullptr;
     if (!gpack.embed_tensor(hdr, data) || !data) {
         err = "native embedding: GPACK has no EmbedBlob section";
         return false;
     }
-    if (hdr.ne0 != n_embd || hdr.ne1 != n_vocab || !guild::kernels::embed_type_supported(hdr.ggml_type) || (n_embd % 256) != 0) {
+    if (hdr.ne0 != n_embd || hdr.ne1 != n_vocab || !guild::kernels::embed_type_supported(hdr.ggml_type) ||
+        (n_embd % 256) != 0) {
         err = "native embedding: GPACK EmbedBlob shape or type mismatch";
         return false;
     }
@@ -271,7 +299,8 @@ bool NativeEmbed::load_gpack(const guild::artifact::GPackReader& gpack, int64_t 
         void* d = nullptr;
         if (cudaMalloc(&d, bytes_) != cudaSuccess ||
             cudaMemcpy(d, data, bytes_, cudaMemcpyHostToDevice) != cudaSuccess) {
-            if (d) cudaFree(d);
+            if (d)
+                cudaFree(d);
             cudaGetLastError();
             err = "native embedding: cannot pin " + std::to_string(bytes_ >> 20) + " MiB, nor place it in VRAM";
             return false;
@@ -300,4 +329,4 @@ void NativeEmbed::gather_one(int64_t token, float* out, void* stream) const {
     guild::kernels::iq_dequant_f32(type_, (const uint8_t*) dev_ + (size_t) token * row_, n_embd_, out, stream);
 }
 
-}  // namespace guild::core
+} // namespace guild::core

@@ -29,11 +29,11 @@ int64_t get_kv_cell_bytes(KvPrecision prec, const model::ModelDescriptor& desc) 
     case KvPrecision::K8V4: {
         // INT8 K half + Q4_0 V half
         const int64_t k_bytes = kv_heads * head_dim + (kv_heads * head_dim / 64) * 2;
-        const int64_t v_bytes = (head_dim == 256) ? (kv_heads * 144) : (kv_heads * head_dim / 2 + (kv_heads * head_dim / 32) * 2);
+        const int64_t v_bytes =
+            (head_dim == 256) ? (kv_heads * 144) : (kv_heads * head_dim / 2 + (kv_heads * head_dim / 32) * 2);
         return k_bytes + v_bytes;
     }
-    default:
-        return 2 * kv_heads * head_dim * 2;
+    default: return 2 * kv_heads * head_dim * 2;
     }
 }
 
@@ -51,13 +51,8 @@ int64_t get_staging_cells(const model::ModelDescriptor& /*desc*/) {
     return 8 * (2051 / 4 + 2) * 4;
 }
 
-KvBudget calculate_kv_budget(
-    const model::ModelDescriptor& desc,
-    int64_t context_tokens,
-    KvPrecision precision,
-    KvMode mode,
-    int64_t resident_window_tokens)
-{
+KvBudget calculate_kv_budget(const model::ModelDescriptor& desc, int64_t context_tokens, KvPrecision precision,
+                             KvMode mode, int64_t resident_window_tokens) {
     KvBudget b;
     b.precision = precision;
     b.mode = mode;
@@ -87,4 +82,4 @@ KvBudget calculate_kv_budget(
     return b;
 }
 
-}  // namespace guild::memory
+} // namespace guild::memory

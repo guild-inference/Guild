@@ -75,8 +75,9 @@ void* reserve(uint64_t bytes, PageBacking& got, std::string& note, const std::st
             tp.PrivilegeCount = 1;
             if (LookupPrivilegeValueW(nullptr, L"SeLockMemoryPrivilege", &tp.Privileges[0].Luid)) {
                 tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
-                if (!AdjustTokenPrivileges(tok, FALSE, &tp, 0, nullptr, nullptr) && GetLastError() != ERROR_NOT_ALL_ASSIGNED)
-                    (void) 0;   // nothing actionable: the large-page attempt below reports the outcome
+                if (!AdjustTokenPrivileges(tok, FALSE, &tp, 0, nullptr, nullptr) &&
+                    GetLastError() != ERROR_NOT_ALL_ASSIGNED)
+                    (void) 0; // nothing actionable: the large-page attempt below reports the outcome
             }
             CloseHandle(tok);
         }
@@ -90,8 +91,7 @@ void* reserve(uint64_t bytes, PageBacking& got, std::string& note, const std::st
         // anything else is ERROR_INVALID_PARAMETER (87), which reads like a privilege problem but is not.
         // Round up: the slack is under 2 MB and the tail stays unused.
         const SIZE_T lbytes = (SIZE_T) (((SIZE_T) bytes + large - 1) / large * large);
-        void* p = VirtualAlloc(nullptr, lbytes, MEM_RESERVE | MEM_COMMIT | MEM_LARGE_PAGES,
-                               PAGE_READWRITE);
+        void* p = VirtualAlloc(nullptr, lbytes, MEM_RESERVE | MEM_COMMIT | MEM_LARGE_PAGES, PAGE_READWRITE);
         if (p) {
             got = PageBacking::LargePages;
             note = "large pages (" + std::to_string((unsigned long long) large) + " B)";
@@ -99,8 +99,8 @@ void* reserve(uint64_t bytes, PageBacking& got, std::string& note, const std::st
         }
         // 1450 (ERROR_NO_SYSTEM_RESOURCES) is the large-page pool saying no, 87 is a size that is not a
         // multiple of the minimum, 1314 is the privilege: without the byte count the three read as one bug.
-        note = "large pages refused for " + std::to_string((unsigned long long) lbytes) + " B (GetLargePageMinimum=" +
-               std::to_string((unsigned long long) large) + ", VirtualAlloc error " +
+        note = "large pages refused for " + std::to_string((unsigned long long) lbytes) +
+               " B (GetLargePageMinimum=" + std::to_string((unsigned long long) large) + ", VirtualAlloc error " +
                std::to_string((unsigned long long) GetLastError()) + "); using 4 KB pages";
     } else if (std::getenv("GUILD_NO_LARGEPAGES") != nullptr) {
         note = "large pages skipped (GUILD_NO_LARGEPAGES); using 4 KB pages";
@@ -126,7 +126,7 @@ void* reserve(uint64_t bytes, PageBacking& got, std::string& note, const std::st
             note = "cannot open shared arena " + shared_file + ": " + std::strerror(errno);
             return nullptr;
         }
-        struct stat st{};
+        struct stat st {};
         if (fstat(fd, &st) != 0) {
             const int e = errno;
             close(fd);
@@ -159,16 +159,15 @@ void* reserve(uint64_t bytes, PageBacking& got, std::string& note, const std::st
         } else {
             if (st.st_size < 0 || (uint64_t) st.st_size != file_bytes) {
                 close(fd);
-                note = "shared arena " + shared_file + " is " +
-                       std::to_string((unsigned long long) st.st_size) + " B, expected " +
-                       std::to_string((unsigned long long) file_bytes) + " B including its header";
+                note = "shared arena " + shared_file + " is " + std::to_string((unsigned long long) st.st_size) +
+                       " B, expected " + std::to_string((unsigned long long) file_bytes) + " B including its header";
                 return nullptr;
             }
             SharedArenaHeader hdr{};
             const ssize_t got_header = pread(fd, &hdr, sizeof hdr, 0);
             if (got_header != (ssize_t) sizeof hdr ||
-                std::memcmp(hdr.magic, kSharedArenaMagic, sizeof hdr.magic) != 0 ||
-                hdr.version != 1 || hdr.header_bytes != kSharedArenaHeaderBytes || hdr.arena_bytes != bytes) {
+                std::memcmp(hdr.magic, kSharedArenaMagic, sizeof hdr.magic) != 0 || hdr.version != 1 ||
+                hdr.header_bytes != kSharedArenaHeaderBytes || hdr.arena_bytes != bytes) {
                 close(fd);
                 note = "shared arena " + shared_file + " has an incompatible or missing header";
                 return nullptr;
@@ -176,8 +175,7 @@ void* reserve(uint64_t bytes, PageBacking& got, std::string& note, const std::st
             if (hdr.pack_hash != shared_pack_hash) {
                 close(fd);
                 char b[256];
-                std::snprintf(b, sizeof b,
-                              "shared arena %s was written for pack hash %016llx, expected %016llx",
+                std::snprintf(b, sizeof b, "shared arena %s was written for pack hash %016llx, expected %016llx",
                               shared_file.c_str(), (unsigned long long) hdr.pack_hash,
                               (unsigned long long) shared_pack_hash);
                 note = b;
@@ -204,8 +202,8 @@ void* reserve(uint64_t bytes, PageBacking& got, std::string& note, const std::st
     if (std::getenv("GUILD_NO_LARGEPAGES") != nullptr) {
         note = "large pages skipped (GUILD_NO_LARGEPAGES); using 4 KB pages";
     } else {
-        void* p = mmap(nullptr, bytes, PROT_READ | PROT_WRITE,
-                       MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB | MAP_HUGE_2MB, -1, 0);
+        void* p = mmap(nullptr, bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB | MAP_HUGE_2MB,
+                       -1, 0);
         if (p != MAP_FAILED) {
             got = PageBacking::LargePages;
             note = "hugetlb 2 MB pages";
@@ -221,8 +219,9 @@ void* reserve(uint64_t bytes, PageBacking& got, std::string& note, const std::st
             have_pool = std::fscanf(f, "%llu", &pool) == 1;
             std::fclose(f);
         }
-        note = "MAP_HUGETLB unavailable (needed " + std::to_string(need) + " 2 MiB pages, vm.nr_hugepages=" +
-               (have_pool ? std::to_string(pool) : std::string("?")) + "); using 4 KB pages";
+        note = "MAP_HUGETLB unavailable (needed " + std::to_string(need) +
+               " 2 MiB pages, vm.nr_hugepages=" + (have_pool ? std::to_string(pool) : std::string("?")) +
+               "); using 4 KB pages";
     }
     // No hugetlb mapping: a 2 MiB-aligned anonymous mapping with MADV_HUGEPAGE, so transparent huge pages back
     // it where THP is "madvise" (the common distro default). The CPU expert pool streams whole experts out of
@@ -231,12 +230,15 @@ void* reserve(uint64_t bytes, PageBacking& got, std::string& note, const std::st
     const uint64_t padded = bytes + kAlign;
     void* raw = mmap(nullptr, padded, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     got = PageBacking::NormalPages;
-    if (raw == MAP_FAILED) return nullptr;
+    if (raw == MAP_FAILED)
+        return nullptr;
     const uintptr_t start = (uintptr_t) raw;
     const uintptr_t aligned = (start + kAlign - 1) & ~(uintptr_t) (kAlign - 1);
-    if (aligned > start) munmap(raw, aligned - start);
+    if (aligned > start)
+        munmap(raw, aligned - start);
     const uintptr_t end = aligned + bytes, raw_end = start + padded;
-    if (raw_end > end) munmap((void*) end, raw_end - end);
+    if (raw_end > end)
+        munmap((void*) end, raw_end - end);
     void* p = (void*) aligned;
     if (std::getenv("GUILD_NO_LARGEPAGES") == nullptr && madvise(p, bytes, MADV_HUGEPAGE) == 0) {
         const std::string four_k = "; using 4 KB pages";
@@ -249,7 +251,8 @@ void* reserve(uint64_t bytes, PageBacking& got, std::string& note, const std::st
 }
 
 void release(void* p, uint64_t bytes) {
-    if (!p) return;
+    if (!p)
+        return;
 #ifdef _WIN32
     (void) bytes;
     VirtualFree(p, 0, MEM_RELEASE);
@@ -258,7 +261,7 @@ void release(void* p, uint64_t bytes) {
 #endif
 }
 
-}  // namespace
+} // namespace
 
 uint64_t fnv1a64(const uint8_t* p, uint64_t n, uint64_t seed) {
     uint64_t h = seed;
@@ -270,13 +273,18 @@ uint64_t fnv1a64(const uint8_t* p, uint64_t n, uint64_t seed) {
 }
 
 namespace {
-bool clear_error() { (void) cudaGetLastError(); return true; }
-}  // namespace
+bool clear_error() {
+    (void) cudaGetLastError();
+    return true;
+}
+} // namespace
 
 int arena_pin_cap_gib() {
     const char* e = std::getenv("GUILD_ARENA_PIN_GIB");
-    if (e == nullptr || *e == '\0') return -1;
-    if (std::string(e) == "auto") return -2;   // #243: the Windows shared-memory budget sets the sliced pin's cap
+    if (e == nullptr || *e == '\0')
+        return -1;
+    if (std::string(e) == "auto")
+        return -2; // #243: the Windows shared-memory budget sets the sliced pin's cap
     const int v = std::atoi(e);
     return v < 0 ? -1 : v;
 }
@@ -305,33 +313,39 @@ bool sliced_pin_limit(uint64_t& limit, std::string& why) {
     }
     (void) cudaGetLastError();
     const uint64_t ram = guild::platform::total_physical_memory();
-    if (ram == 0) return false;
+    if (ram == 0)
+        return false;
     limit = ram / 2 > 8 * GiB ? ram / 2 - 8 * GiB : 0;
     std::snprintf(buf, sizeof buf, "%s: RAM/2 - 8 GiB of %.1f GiB", err.c_str(), (double) ram / GiB);
     why = buf;
     return true;
 }
 #endif
-}  // namespace
+} // namespace
 
 namespace {
 std::vector<uint64_t> uniform_bounds(uint64_t bytes, uint64_t slice) {
     std::vector<uint64_t> b;
-    if (slice == 0) return b;
-    for (uint64_t off = 0; off + slice <= bytes; off += slice) b.push_back(off);
-    if (!b.empty()) b.push_back(b.back() + slice);
+    if (slice == 0)
+        return b;
+    for (uint64_t off = 0; off + slice <= bytes; off += slice)
+        b.push_back(off);
+    if (!b.empty())
+        b.push_back(b.back() + slice);
     return b;
 }
-}  // namespace
+} // namespace
 
 PinnedArena::PinnedArena(uint64_t bytes, uint64_t slice) : PinnedArena(bytes, uniform_bounds(bytes, slice)) {
-    if (slice_bytes) slice_bytes = slice;   // sliced registration: record the uniform size
+    if (slice_bytes)
+        slice_bytes = slice; // sliced registration: record the uniform size
 }
 
-PinnedArena::PinnedArena(uint64_t bytes, const std::vector<uint64_t>& bounds,
-                         uint64_t max_pinned_bytes, const std::string& shared_file,
-                         uint64_t shared_pack_hash) : capacity(bytes) {
-    if (bytes == 0) return;
+PinnedArena::PinnedArena(uint64_t bytes, const std::vector<uint64_t>& bounds, uint64_t max_pinned_bytes,
+                         const std::string& shared_file, uint64_t shared_pack_hash)
+    : capacity(bytes) {
+    if (bytes == 0)
+        return;
     base = reserve(bytes, backing, note, shared_file, shared_pack_hash, mapping_base, mapping_bytes);
     if (base != nullptr && mapping_base == nullptr) {
         mapping_base = base;
@@ -350,15 +364,16 @@ PinnedArena::PinnedArena(uint64_t bytes, const std::vector<uint64_t>& bounds,
             cap_why = "by GUILD_ARENA_PIN_GIB";
         }
         const bool capped = cap > 0 && cap < bytes && bounds.size() >= 2;
-        const cudaError_t e = capped ? cudaSuccess :
-            cudaHostRegister(base, (size_t) bytes, cudaHostRegisterPortable | cudaHostRegisterMapped);
+        const cudaError_t e =
+            capped ? cudaSuccess
+                   : cudaHostRegister(base, (size_t) bytes, cudaHostRegisterPortable | cudaHostRegisterMapped);
         if (!capped && e == cudaSuccess) {
             note = "cudaHostRegister PORTABLE ok; " + note;
             registered_bytes = bytes;
         } else if (bounds.size() >= 2 && (capped || clear_error())) {
             // Plan v0.3 P5: the whole range is refused, so pin it slice by slice from the start.  The rest stays
             // resident through the working-set lock below.  (P6: slices may differ in size, one per layer.)
-            slice_bytes = 1;   // sliced; the uniform constructor records the size
+            slice_bytes = 1; // sliced; the uniform constructor records the size
             bool limited = capped;
             uint64_t limit = cap;
             std::string limit_why;
@@ -366,12 +381,15 @@ PinnedArena::PinnedArena(uint64_t bytes, const std::vector<uint64_t>& bounds,
             // #243 (opt-in, GUILD_ARENA_PIN_GIB=auto): not up to the driver's refusal but below the shared-memory
             // budget, for a PC where the full sliced pin leaves WDDM refusing later allocations.  Not the default: a
             // 64 GB PC pins 30 GiB past that budget without trouble, and capping it at 26 cost ~20% prompt speed.
-            if (!capped && env_gib == -2) limited = sliced_pin_limit(limit, limit_why);
+            if (!capped && env_gib == -2)
+                limited = sliced_pin_limit(limit, limit_why);
 #endif
             for (size_t i = 0; i + 1 < bounds.size(); ++i) {
                 const uint64_t off = bounds[i], n = bounds[i + 1] - bounds[i];
-                if (limited && (off > limit || n > limit - off)) break;
-                if (cudaHostRegister((uint8_t*) base + off, (size_t) n, cudaHostRegisterPortable | cudaHostRegisterMapped) != cudaSuccess) {
+                if (limited && (off > limit || n > limit - off))
+                    break;
+                if (cudaHostRegister((uint8_t*) base + off, (size_t) n,
+                                     cudaHostRegisterPortable | cudaHostRegisterMapped) != cudaSuccess) {
                     (void) cudaGetLastError();
                     break;
                 }
@@ -381,12 +399,14 @@ PinnedArena::PinnedArena(uint64_t bytes, const std::vector<uint64_t>& bounds,
             }
             char gib[32];
             std::snprintf(gib, sizeof gib, "%.1f", (double) limit / (double) (1ull << 30));
-            note = (capped ? "cudaHostRegister limited to " + std::to_string(cap >> 30) + " GiB " + cap_why + "; " :
-                             "cudaHostRegister of the whole arena FAILED (" + std::string(cudaGetErrorString(e)) + "); " +
-                             (limited ? "slices capped at " + std::string(gib) + " GiB (" + limit_why +
-                                        "; GUILD_ARENA_PIN_GIB=auto; N sets a cap; #243); " : std::string())) +
-                   std::to_string(registered_slices) + " slices pinned (" + std::to_string(registered_bytes >> 30) +
-                   " GiB); " + note;
+            note =
+                (capped ? "cudaHostRegister limited to " + std::to_string(cap >> 30) + " GiB " + cap_why + "; "
+                        : "cudaHostRegister of the whole arena FAILED (" + std::string(cudaGetErrorString(e)) + "); " +
+                              (limited ? "slices capped at " + std::string(gib) + " GiB (" + limit_why +
+                                             "; GUILD_ARENA_PIN_GIB=auto; N sets a cap; #243); "
+                                       : std::string())) +
+                std::to_string(registered_slices) + " slices pinned (" + std::to_string(registered_bytes >> 30) +
+                " GiB); " + note;
             if (registered_bytes < bytes) {
                 const char* env = std::getenv("GUILD_ARENA_LOCK");
                 if (env == nullptr || std::string(env) != "0") {
@@ -428,9 +448,11 @@ PinnedArena::PinnedArena(uint64_t bytes, const std::vector<uint64_t>& bounds,
 
 PinnedArena::~PinnedArena() {
     if (base) {
-        if (locked_bytes) guild::platform::unlock_resident((uint8_t*) base + (slice_bytes ? registered_bytes : 0), locked_bytes);
+        if (locked_bytes)
+            guild::platform::unlock_resident((uint8_t*) base + (slice_bytes ? registered_bytes : 0), locked_bytes);
         if (slice_bytes) {
-            for (uint64_t off : slice_starts) cudaHostUnregister((uint8_t*) base + off);
+            for (uint64_t off : slice_starts)
+                cudaHostUnregister((uint8_t*) base + off);
         } else {
             cudaHostUnregister(base);
         }
@@ -444,7 +466,8 @@ PinnedArena::~PinnedArena() {
 LoadStats load_experts(const std::string& path, uint8_t* dst, uint64_t blob_bytes, uint64_t blobs_per_layer,
                        uint64_t layers, int threads, uint64_t chunk) {
     std::vector<uint64_t> off((size_t) layers), n((size_t) layers, blobs_per_layer * blob_bytes);
-    for (uint64_t L = 0; L < layers; ++L) off[(size_t) L] = L * blobs_per_layer * blob_bytes;
+    for (uint64_t L = 0; L < layers; ++L)
+        off[(size_t) L] = L * blobs_per_layer * blob_bytes;
     return load_experts_ranges(path, dst, off, n, threads, chunk);
 }
 
@@ -454,37 +477,45 @@ LoadStats load_experts_direct(const std::string& path, uint8_t* dst, const std::
     st.ok = false;
 #ifdef _WIN32
     constexpr uint64_t kAlign = 4096;
-    if (((uintptr_t) dst % kAlign) != 0 || chunk == 0 || chunk % kAlign != 0) return st;
-    struct Piece { uint64_t off, n; };
+    if (((uintptr_t) dst % kAlign) != 0 || chunk == 0 || chunk % kAlign != 0)
+        return st;
+    struct Piece {
+        uint64_t off, n;
+    };
     std::vector<Piece> pieces;
     uint64_t bytes = 0;
     for (size_t L = 0; L < layer_off.size(); ++L) {
-        if (layer_off[L] % kAlign != 0 || layer_bytes[L] % kAlign != 0) return st;
+        if (layer_off[L] % kAlign != 0 || layer_bytes[L] % kAlign != 0)
+            return st;
         for (uint64_t p = 0; p < layer_bytes[L]; p += chunk)
             pieces.push_back({layer_off[L] + p, std::min<uint64_t>(chunk, layer_bytes[L] - p)});
         bytes += layer_bytes[L];
     }
-    if (threads < 1) threads = 1;
+    if (threads < 1)
+        threads = 1;
     const auto t0 = std::chrono::steady_clock::now();
     std::atomic<size_t> next{0};
     std::mutex err_mu;
     std::string err;
     const int wide = MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, nullptr, 0);
     std::vector<wchar_t> wpath((size_t) (std::max)(wide, 1), L'\0');
-    if (wide > 0) MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, wpath.data(), wide);
+    if (wide > 0)
+        MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, wpath.data(), wide);
     auto worker = [&]() {
         HANDLE h = CreateFileW(wpath.data(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
                                FILE_FLAG_NO_BUFFERING | FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
         if (h == INVALID_HANDLE_VALUE) {
             std::lock_guard<std::mutex> g(err_mu);
             if (err.empty())
-                err = "cannot open " + path + " unbuffered (error " + std::to_string((unsigned long long) GetLastError()) + ")";
+                err = "cannot open " + path + " unbuffered (error " +
+                      std::to_string((unsigned long long) GetLastError()) + ")";
             next = pieces.size();
             return;
         }
         for (;;) {
             const size_t i = next.fetch_add(1);
-            if (i >= pieces.size()) break;
+            if (i >= pieces.size())
+                break;
             OVERLAPPED ov{};
             ov.Offset = (DWORD) pieces[i].off;
             ov.OffsetHigh = (DWORD) (pieces[i].off >> 32);
@@ -492,8 +523,8 @@ LoadStats load_experts_direct(const std::string& path, uint8_t* dst, const std::
             if (!ReadFile(h, dst + pieces[i].off, (DWORD) pieces[i].n, &got, &ov) || got != pieces[i].n) {
                 std::lock_guard<std::mutex> g(err_mu);
                 if (err.empty())
-                    err = "short unbuffered read at offset " + std::to_string(pieces[i].off) + ": got " + std::to_string(got) +
-                          " of " + std::to_string(pieces[i].n) + " B (error " +
+                    err = "short unbuffered read at offset " + std::to_string(pieces[i].off) + ": got " +
+                          std::to_string(got) + " of " + std::to_string(pieces[i].n) + " B (error " +
                           std::to_string((unsigned long long) GetLastError()) + ")";
                 next = pieces.size();
                 break;
@@ -502,9 +533,11 @@ LoadStats load_experts_direct(const std::string& path, uint8_t* dst, const std::
         CloseHandle(h);
     };
     std::vector<std::thread> pool;
-    for (int i = 1; i < threads; ++i) pool.emplace_back(worker);
+    for (int i = 1; i < threads; ++i)
+        pool.emplace_back(worker);
     worker();
-    for (auto& t : pool) t.join();
+    for (auto& t : pool)
+        t.join();
     st.layers = layer_off.size();
     if (!err.empty()) {
         st.seconds = -1.0;
@@ -515,7 +548,12 @@ LoadStats load_experts_direct(const std::string& path, uint8_t* dst, const std::
     st.bytes = bytes;
     st.seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
 #else
-    (void) path; (void) dst; (void) layer_off; (void) layer_bytes; (void) threads; (void) chunk;
+    (void) path;
+    (void) dst;
+    (void) layer_off;
+    (void) layer_bytes;
+    (void) threads;
+    (void) chunk;
 #endif
     return st;
 }
@@ -539,10 +577,12 @@ bool experts_unbuffered(const std::vector<std::string>& files, uint64_t arena_by
     for (const std::string& f : files) {
         const int wide = MultiByteToWideChar(CP_UTF8, 0, f.c_str(), -1, nullptr, 0);
         std::vector<wchar_t> w((size_t) (std::max)(wide, 1), L'\0');
-        if (wide > 0) MultiByteToWideChar(CP_UTF8, 0, f.c_str(), -1, w.data(), wide);
+        if (wide > 0)
+            MultiByteToWideChar(CP_UTF8, 0, f.c_str(), -1, w.data(), wide);
         HANDLE h = CreateFileW(w.data(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_FLAG_RANDOM_ACCESS,
                                nullptr);
-        if (h == INVALID_HANDLE_VALUE) continue;
+        if (h == INVALID_HANDLE_VALUE)
+            continue;
         LARGE_INTEGER size{};
         GetFileSizeEx(h, &size);
         total_bytes += (uint64_t) size.QuadPart;
@@ -557,7 +597,8 @@ bool experts_unbuffered(const std::vector<std::string>& files, uint64_t arena_by
             QueryPerformanceCounter(&a);
             const BOOL ok = ReadFile(h, buf.data(), kRead, &got, &ov);
             QueryPerformanceCounter(&b);
-            if (!ok) continue;
+            if (!ok)
+                continue;
             ++n;
             fast += (double) (b.QuadPart - a.QuadPart) * 1e6 / (double) freq.QuadPart < 30.0;
         }
@@ -573,17 +614,22 @@ bool experts_unbuffered(const std::vector<std::string>& files, uint64_t arena_by
     const bool keepable = guild::platform::file_cache_keeps(avail, arena_bytes, need);
     char msg[256];
     if (read_bytes == kAllFileBytes)
-        std::snprintf(msg, sizeof msg, "%d of %d probe reads from the file cache; %.1f GiB available, %.1f GiB of files",
-                      fast, n, (double) avail / (1ull << 30), (double) total_bytes / (1ull << 30));
+        std::snprintf(msg, sizeof msg,
+                      "%d of %d probe reads from the file cache; %.1f GiB available, %.1f GiB of files", fast, n,
+                      (double) avail / (1ull << 30), (double) total_bytes / (1ull << 30));
     else
-        std::snprintf(msg, sizeof msg, "%.1f GiB available, %.1f GiB of it still to be taken by the RAM copy, %.1f GiB "
+        std::snprintf(msg, sizeof msg,
+                      "%.1f GiB available, %.1f GiB of it still to be taken by the RAM copy, %.1f GiB "
                       "of experts read from the files: the file cache %s keep them",
                       (double) avail / (1ull << 30), (double) arena_bytes / (1ull << 30), (double) need / (1ull << 30),
                       keepable ? "can" : "cannot");
     why = msg;
     return (!cached || !cache_counts) && !keepable;
 #else
-    (void) files; (void) arena_bytes; (void) cache_counts; (void) read_bytes;
+    (void) files;
+    (void) arena_bytes;
+    (void) cache_counts;
+    (void) read_bytes;
     why = "buffered (not Windows)";
     return false;
 #endif
@@ -595,13 +641,15 @@ LoadStats load_experts_ranges(const std::string& path, uint8_t* dst, const std::
     const uint64_t layers = (uint64_t) layer_off.size();
     st.layers = layers;
     st.bytes = 0;
-    for (uint64_t b : layer_bytes) st.bytes += b;
-    if (threads < 1) threads = 1;
+    for (uint64_t b : layer_bytes)
+        st.bytes += b;
+    if (threads < 1)
+        threads = 1;
 
     const auto t0 = std::chrono::steady_clock::now();
     std::vector<uint64_t> layer_hash((size_t) layers, 1469598103934665603ull);
     std::atomic<uint64_t> next_layer{0};
-    std::atomic<uint64_t> read_ns_sum{0};   // summed over the threads: see LoadStats::read_seconds
+    std::atomic<uint64_t> read_ns_sum{0}; // summed over the threads: see LoadStats::read_seconds
     std::atomic<uint64_t> copy_ns_sum{0};
     std::mutex err_mu;
     std::string err;
@@ -625,12 +673,16 @@ LoadStats load_experts_ranges(const std::string& path, uint8_t* dst, const std::
         // short-read failures), so the guard is what keeps the closing correct on every path.
         struct Closer {
             FILE* f;
-            ~Closer() { if (f != nullptr) std::fclose(f); }
+            ~Closer() {
+                if (f != nullptr)
+                    std::fclose(f);
+            }
         } closer{f};
         uint64_t read_ns = 0, copy_ns = 0;
         for (;;) {
             const uint64_t L = next_layer.fetch_add(1);
-            if (L >= layers) break;
+            if (L >= layers)
+                break;
             const uint64_t off = layer_off[(size_t) L];
             uint64_t remaining = layer_bytes[(size_t) L];
             uint64_t pos = 0;
@@ -646,21 +698,23 @@ LoadStats load_experts_ranges(const std::string& path, uint8_t* dst, const std::
                 const auto t_read = std::chrono::steady_clock::now();
                 const size_t got = std::fread(buf.data(), 1, (size_t) n, f);
                 read_ns += (uint64_t) std::chrono::duration_cast<std::chrono::nanoseconds>(
-                               std::chrono::steady_clock::now() - t_read).count();
+                               std::chrono::steady_clock::now() - t_read)
+                               .count();
                 // A short read is EOF or an I/O error, never a silent zero fill: say WHERE and HOW SHORT, and
                 // keep going no further - the caller turns this into a refused load, not a wrong answer.
                 if (got != (size_t) n) {
                     std::lock_guard<std::mutex> g(err_mu);
-                    err = "short read in layer " + std::to_string(L) + ": got " + std::to_string(got) + " of "
-                          + std::to_string(n) + " B at offset " + std::to_string(off + pos)
-                          + (std::ferror(f) != 0 ? " (ferror set)" : "");
+                    err = "short read in layer " + std::to_string(L) + ": got " + std::to_string(got) + " of " +
+                          std::to_string(n) + " B at offset " + std::to_string(off + pos) +
+                          (std::ferror(f) != 0 ? " (ferror set)" : "");
                     return;
                 }
                 const auto t_copy = std::chrono::steady_clock::now();
                 std::memcpy(dst + off + pos, buf.data(), (size_t) n);
                 h = fnv1a64(buf.data(), n, h);
                 copy_ns += (uint64_t) std::chrono::duration_cast<std::chrono::nanoseconds>(
-                               std::chrono::steady_clock::now() - t_copy).count();
+                               std::chrono::steady_clock::now() - t_copy)
+                               .count();
                 pos += n;
                 remaining -= n;
             }
@@ -671,9 +725,11 @@ LoadStats load_experts_ranges(const std::string& path, uint8_t* dst, const std::
     };
 
     std::vector<std::thread> pool;
-    for (int i = 1; i < threads; ++i) pool.emplace_back(worker);
+    for (int i = 1; i < threads; ++i)
+        pool.emplace_back(worker);
     worker();
-    for (auto& t : pool) t.join();
+    for (auto& t : pool)
+        t.join();
 
     if (!err.empty()) {
         std::fprintf(stderr, "load_experts: %s\n", err.c_str());
@@ -722,4 +778,4 @@ StreamStats stream_bandwidth(const uint8_t* src, uint64_t bytes, uint64_t chunk,
     return st;
 }
 
-}  // namespace guild::core
+} // namespace guild::core

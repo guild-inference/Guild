@@ -34,11 +34,14 @@
 
 namespace {
 
-bool parse_prefill_batch(const char* value,int64_t& batch) {
+bool parse_prefill_batch(const char* value, int64_t& batch) {
     try {
-        size_t used=0;batch=std::stoll(value,&used);
-        return used==std::strlen(value) && batch>=0 && batch<=512;
-    } catch (...) { return false; }
+        size_t used = 0;
+        batch = std::stoll(value, &used);
+        return used == std::strlen(value) && batch >= 0 && batch <= 512;
+    } catch (...) {
+        return false;
+    }
 }
 
 bool resolve_model_descriptor(const std::string& path_or_name, guild::model::ModelDescriptor& desc) {
@@ -63,11 +66,16 @@ bool resolve_model_descriptor(const std::string& path_or_name, guild::model::Mod
         auto arch = guild::model::archetype_from_string(path_or_name);
         if (arch == guild::model::ModelArchetype::Unknown) {
             std::string lower = path_or_name;
-            for (char& c : lower) c = (char) std::tolower(c);
-            if (lower.find("qwen") != std::string::npos || lower.empty()) arch = guild::model::ModelArchetype::Qwen4Exp;
-            else if (lower.find("glm") != std::string::npos) arch = guild::model::ModelArchetype::GLM;
-            else if (lower.find("deepseek") != std::string::npos) arch = guild::model::ModelArchetype::DeepSeek;
-            else if (lower.find("mixtral") != std::string::npos) arch = guild::model::ModelArchetype::Mixtral;
+            for (char& c : lower)
+                c = (char) std::tolower(c);
+            if (lower.find("qwen") != std::string::npos || lower.empty())
+                arch = guild::model::ModelArchetype::Qwen4Exp;
+            else if (lower.find("glm") != std::string::npos)
+                arch = guild::model::ModelArchetype::GLM;
+            else if (lower.find("deepseek") != std::string::npos)
+                arch = guild::model::ModelArchetype::DeepSeek;
+            else if (lower.find("mixtral") != std::string::npos)
+                arch = guild::model::ModelArchetype::Mixtral;
         }
 
         if (arch == guild::model::ModelArchetype::Qwen4Exp) {
@@ -105,36 +113,52 @@ void print_usage() {
               << "  " << cyan() << "run" << reset() << " <model>       Run a model and start interactive conversation\n"
               << "  " << cyan() << "pull" << reset() << " <model>      Download and install a model into local store\n"
               << "  " << cyan() << "list" << reset() << "              List locally installed models in Guild store\n"
-              << "  " << cyan() << "show" << reset() << " <model>      Show model manifest, geometry, and execution plan\n"
-              << "  " << cyan() << "rm" << reset() << " <model>        Safely remove a model and its unreferenced blobs\n"
-              << "  " << cyan() << "import" << reset() << " <path>     Import existing model directory/files into store without copying\n"
+              << "  " << cyan() << "show" << reset()
+              << " <model>      Show model manifest, geometry, and execution plan\n"
+              << "  " << cyan() << "rm" << reset()
+              << " <model>        Safely remove a model and its unreferenced blobs\n"
+              << "  " << cyan() << "import" << reset()
+              << " <path>     Import existing model directory/files into store without copying\n"
               << "  " << cyan() << "serve" << reset() << " [model]     Start OpenAI-compatible HTTP inference server\n"
-              << "  " << cyan() << "inspect" << reset() << " <model>   Inspect model GGUF/GPACK/GEXEC architecture, metadata, and MoE layout\n"
+              << "  " << cyan() << "inspect" << reset()
+              << " <model>   Inspect model GGUF/GPACK/GEXEC architecture, metadata, and MoE layout\n"
               << "                      [--plan] [--json] to compute native execution memory plan\n"
-              << "  " << cyan() << "convert" << reset() << " <in>      Convert GGUF/pack or safetensors into portable .gpack container\n"
-              << "  " << cyan() << "optimize" << reset() << " <gpack>  Compile hardware-specialized .gexec execution artifact from .gpack\n"
-              << "  " << cyan() << "verify" << reset() << " <file>     Verify .gpack or .gexec container structure and SHA-256 digests\n"
-              << "  " << cyan() << "cache-clean" << reset() << "       Clean obsolete, invalidated, or all .gexec optimization artifacts\n"
+              << "  " << cyan() << "convert" << reset()
+              << " <in>      Convert GGUF/pack or safetensors into portable .gpack container\n"
+              << "  " << cyan() << "optimize" << reset()
+              << " <gpack>  Compile hardware-specialized .gexec execution artifact from .gpack\n"
+              << "  " << cyan() << "verify" << reset()
+              << " <file>     Verify .gpack or .gexec container structure and SHA-256 digests\n"
+              << "  " << cyan() << "cache-clean" << reset()
+              << "       Clean obsolete, invalidated, or all .gexec optimization artifacts\n"
               << "  " << cyan() << "kernel" << reset() << " <subcmd>   Manage .gkernel/.gkmodule packages\n"
-              << "  " << cyan() << "bench" << reset() << " <model>     Run performance benchmark suite on target model\n"
-              << "  " << cyan() << "ps" << reset() << "                List running Guild model instances and memory status\n"
-              << "  " << cyan() << "version" << reset() << "           Show Guild version and platform build configuration\n\n"
+              << "  " << cyan() << "bench" << reset()
+              << " <model>     Run performance benchmark suite on target model\n"
+              << "  " << cyan() << "ps" << reset()
+              << "                List running Guild model instances and memory status\n"
+              << "  " << cyan() << "version" << reset()
+              << "           Show Guild version and platform build configuration\n\n"
               << bold() << "Options:" << reset() << "\n"
               << "  -h, --help        Show help for command\n"
               << "  -v, --version     Show Guild version\n";
 }
 
 int cmd_version(int argc, char** argv) {
-    bool json=false;
-    for(int i=2;i<argc;++i) {
-        if(std::string(argv[i])=="--json")json=true;
-        else {std::cerr<<"Usage: guild --version [--json]\n";return 2;}
+    bool json = false;
+    for (int i = 2; i < argc; ++i) {
+        if (std::string(argv[i]) == "--json")
+            json = true;
+        else {
+            std::cerr << "Usage: guild --version [--json]\n";
+            return 2;
+        }
     }
-    std::string output,error;
-    const bool ok=guild::runtime::version_report(json,output,error);
-    std::cout<<output;
-    if(!ok && output.empty())std::cerr<<error<<'\n';
-    return ok?0:1;
+    std::string output, error;
+    const bool ok = guild::runtime::version_report(json, output, error);
+    std::cout << output;
+    if (!ok && output.empty())
+        std::cerr << error << '\n';
+    return ok ? 0 : 1;
 }
 
 int cmd_inspect(int argc, char** argv) {
@@ -146,9 +170,12 @@ int cmd_inspect(int argc, char** argv) {
 
     for (int i = 2; i < argc; ++i) {
         std::string arg = argv[i];
-        if (arg == "--plan") show_plan = true;
-        else if (arg == "--json") json_mode = true;
-        else if (arg[0] != '-' && path.empty()) path = arg;
+        if (arg == "--plan")
+            show_plan = true;
+        else if (arg == "--json")
+            json_mode = true;
+        else if (arg[0] != '-' && path.empty())
+            path = arg;
     }
 
     if (path.empty()) {
@@ -176,36 +203,40 @@ int cmd_inspect(int argc, char** argv) {
                   << "File Size     " << greader.header().total_file_bytes << " B\n"
                   << "Cache Key     " << greader.identity().compute_cache_key() << "\n"
                   << "GPACK SHA256  " << greader.identity().gpack_manifest_sha256 << "\n"
-                  << "Runner        " << greader.identity().runner_id << " (v" << greader.identity().runner_version << ")\n"
+                  << "Runner        " << greader.identity().runner_id << " (v" << greader.identity().runner_version
+                  << ")\n"
                   << "CPU           " << greader.identity().hardware.cpu_brand << " ("
                   << greader.identity().hardware.cpu_physical_cores << "C/"
-                  << greader.identity().hardware.cpu_logical_threads << "T, NUMA="
-                  << greader.identity().hardware.numa_nodes << ")\n"
+                  << greader.identity().hardware.cpu_logical_threads
+                  << "T, NUMA=" << greader.identity().hardware.numa_nodes << ")\n"
                   << "GPU           " << greader.identity().hardware.gpu_name << " (sm_"
                   << greader.identity().hardware.gpu_cc_major << greader.identity().hardware.gpu_cc_minor << ")\n"
                   << "Sections      " << greader.sections().size() << "\n";
         for (const auto& s : greader.sections()) {
             std::cout << "  - " << std::left << std::setw(24)
                       << guild::gexec::section_kind_to_string(static_cast<guild::gexec::GExecSectionKind>(s.kind))
-                      << " offset=" << std::setw(10) << s.offset
-                      << " size=" << std::setw(10) << s.byte_size
+                      << " offset=" << std::setw(10) << s.offset << " size=" << std::setw(10) << s.byte_size
                       << " align=" << s.alignment << "\n";
         }
         if (greader.has_section(guild::gexec::GExecSectionKind::AutotuneTable)) {
             std::cout << "\n" << bold() << "Locked Kernel Implementations:" << reset() << "\n";
             for (const auto& r : greader.autotune_table().records) {
-                std::cout << "  - " << r.operation_name << " (quant=" << r.quant_type << ", m=" << r.m_tokens << "): "
-                          << cyan() << r.selected_impl_id << reset()
-                          << " (" << std::fixed << std::setprecision(1) << r.median_latency_us << " us)\n";
+                std::cout << "  - " << r.operation_name << " (quant=" << r.quant_type << ", m=" << r.m_tokens
+                          << "): " << cyan() << r.selected_impl_id << reset() << " (" << std::fixed
+                          << std::setprecision(1) << r.median_latency_us << " us)\n";
             }
         }
         if (greader.has_section(guild::gexec::GExecSectionKind::DiagnosticLog)) {
             const auto& dlog = greader.diagnostic_log();
-            std::cout << "\n" << bold() << "Optimization Diagnostics:" << reset() << "\n"
-                      << "  Baseline Decode  " << std::fixed << std::setprecision(2) << dlog.baseline_decode_ms << " ms/tok\n"
-                      << "  Optimized Decode " << std::fixed << std::setprecision(2) << dlog.optimized_decode_ms << " ms/tok\n"
+            std::cout << "\n"
+                      << bold() << "Optimization Diagnostics:" << reset() << "\n"
+                      << "  Baseline Decode  " << std::fixed << std::setprecision(2) << dlog.baseline_decode_ms
+                      << " ms/tok\n"
+                      << "  Optimized Decode " << std::fixed << std::setprecision(2) << dlog.optimized_decode_ms
+                      << " ms/tok\n"
                       << "  Speedup Ratio    " << std::fixed << std::setprecision(3) << dlog.speedup_ratio << "x\n"
-                      << "  Break-Even       " << std::fixed << std::setprecision(1) << dlog.break_even_tokens << " tokens\n"
+                      << "  Break-Even       " << std::fixed << std::setprecision(1) << dlog.break_even_tokens
+                      << " tokens\n"
                       << "  Rejected Cands   " << dlog.rejected_candidates.size() << "\n";
         }
         return 0;
@@ -246,18 +277,20 @@ int cmd_inspect(int argc, char** argv) {
               << "────────────────────────────────────────\n"
               << "Model         " << bold() << desc.name << reset() << "\n"
               << "File          " << desc.file_path << "\n"
-              << "Architecture  " << cyan() << desc.arch_name << reset()
-              << " (" << guild::model::archetype_to_string(desc.archetype) << ")\n"
+              << "Architecture  " << cyan() << desc.arch_name << reset() << " ("
+              << guild::model::archetype_to_string(desc.archetype) << ")\n"
               << "Pattern       " << guild::model::attention_pattern_to_string(desc.attn.pattern) << "\n\n"
               << bold() << "Attention & Recurrence" << reset() << "\n"
               << "Context       " << desc.attn.context_length << " tokens\n"
               << "Embedding Dim " << desc.attn.n_embd << "\n"
               << "Total Layers  " << desc.attn.n_layers << "\n"
-              << "Attn Heads    " << desc.attn.n_heads << " query / " << desc.attn.n_kv_heads << " kv (dim " << desc.attn.head_dim << ")\n"
-              << "Attn Interval " << desc.attn.full_attn_interval << " (" << desc.attn.n_full_attn_layers() << " full attention, "
-              << desc.attn.n_recurrent_layers() << " recurrent)\n\n"
+              << "Attn Heads    " << desc.attn.n_heads << " query / " << desc.attn.n_kv_heads << " kv (dim "
+              << desc.attn.head_dim << ")\n"
+              << "Attn Interval " << desc.attn.full_attn_interval << " (" << desc.attn.n_full_attn_layers()
+              << " full attention, " << desc.attn.n_recurrent_layers() << " recurrent)\n\n"
               << bold() << "Mixture-of-Experts" << reset() << "\n"
-              << "Routed Experts " << desc.moe.n_routed_experts << " (" << desc.moe.k_active_experts << " active per token)\n"
+              << "Routed Experts " << desc.moe.n_routed_experts << " (" << desc.moe.k_active_experts
+              << " active per token)\n"
               << "Total Experts  " << desc.moe.total_routed_experts(desc.attn.n_layers) << " across model\n"
               << "Expert FF Dim  " << desc.moe.expert_dim_ff << "\n"
               << "Shared Experts " << desc.moe.n_shared_experts << " (dim " << desc.moe.shared_dim_ff << ")\n\n"
@@ -299,27 +332,36 @@ int cmd_serve(int argc, char** argv) {
 
     for (int i = 2; i < argc; ++i) {
         const std::string arg = argv[i];
-        if (arg == "--port" && i + 1 < argc) port = std::atoi(argv[++i]);
-        else if (arg == "--host" && i + 1 < argc) host = argv[++i];
-        else if (arg == "--model" && i + 1 < argc) model = argv[++i];
-        else if (arg == "--data-dir" && i + 1 < argc) data_dir = argv[++i];
-        else if (arg == "--gexec" && i + 1 < argc) gexec_path = argv[++i];
-        else if (arg == "--optimize-mode" && i + 1 < argc) optimize_mode_str = argv[++i];
-        else if (arg == "--verbose") verbose = true;
-        else if (arg == "--quiet") quiet = true;
-        else if (arg == "--json") json_mode = true;
-        else if (arg == "--no-tui") no_tui = true;
-        else if (arg == "--mock") force_mock = true;
+        if (arg == "--port" && i + 1 < argc)
+            port = std::atoi(argv[++i]);
+        else if (arg == "--host" && i + 1 < argc)
+            host = argv[++i];
+        else if (arg == "--model" && i + 1 < argc)
+            model = argv[++i];
+        else if (arg == "--data-dir" && i + 1 < argc)
+            data_dir = argv[++i];
+        else if (arg == "--gexec" && i + 1 < argc)
+            gexec_path = argv[++i];
+        else if (arg == "--optimize-mode" && i + 1 < argc)
+            optimize_mode_str = argv[++i];
+        else if (arg == "--verbose")
+            verbose = true;
+        else if (arg == "--quiet")
+            quiet = true;
+        else if (arg == "--json")
+            json_mode = true;
+        else if (arg == "--no-tui")
+            no_tui = true;
+        else if (arg == "--mock")
+            force_mock = true;
         else if (arg == "--prefill-batch") {
-            if (i+1>=argc || !parse_prefill_batch(argv[++i],prefill_batch)) {
-                std::cerr<<"--prefill-batch requires 0(auto) or an integer in 1..512\n";
+            if (i + 1 >= argc || !parse_prefill_batch(argv[++i], prefill_batch)) {
+                std::cerr << "--prefill-batch requires 0(auto) or an integer in 1..512\n";
                 return 2;
             }
-        }
-        else if (arg[0] != '-' && model == "Qwen3.8-Flash-Next") {
+        } else if (arg[0] != '-' && model == "Qwen3.8-Flash-Next") {
             model = arg;
-        }
-        else if (arg == "-h" || arg == "--help") {
+        } else if (arg == "-h" || arg == "--help") {
             std::cout << "Usage: guild serve [model] [options]\n"
                       << "  --port <port>   Port to listen on (default: 11434)\n"
                       << "  --host <host>   Host to bind to (default: 127.0.0.1)\n"
@@ -369,14 +411,17 @@ int cmd_serve(int argc, char** argv) {
     std::string native_model;
     if (manifest_opt.has_value()) {
         const auto* prim = manifest_opt->find_file_by_role("primary");
-        if (!prim) prim = manifest_opt->find_file_by_role("shard");
+        if (!prim)
+            prim = manifest_opt->find_file_by_role("shard");
         if (prim && !prim->local_path.empty()) {
             native_model = prim->local_path;
         }
     }
     if (native_model.empty() && manifest_opt && manifest_opt->name == "qwen3.8-flash-next" &&
-        std::filesystem::exists("/mnt/models-ssd/Strata-data/models/unsloth-UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf")) {
-        native_model = "/mnt/models-ssd/Strata-data/models/unsloth-UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf";
+        std::filesystem::exists(
+            "/mnt/models-ssd/Strata-data/models/unsloth-UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf")) {
+        native_model =
+            "/mnt/models-ssd/Strata-data/models/unsloth-UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf";
     }
 
     std::string pack_dir = "/mnt/models-ssd/Strata-data/packs/unsloth-ud-iq4_xs";
@@ -411,8 +456,8 @@ int cmd_serve(int argc, char** argv) {
         native_model = model;
     }
     const bool is_gpack_model = guild::artifact::GPackReader::is_gpack_file(native_model);
-    bool real_weights_available = is_gpack_model ||
-                                  (std::filesystem::exists(pack_dir) && std::filesystem::exists(native_model));
+    bool real_weights_available =
+        is_gpack_model || (std::filesystem::exists(pack_dir) && std::filesystem::exists(native_model));
 
     if (!force_mock && real_weights_available) {
         guild::server::NativeInferenceEngineOptions n_opts;
@@ -435,7 +480,8 @@ int cmd_serve(int argc, char** argv) {
                 oopts.max_context = plan.context_length;
                 oopts.prefill_batch = plan.prefill_batch > 0 ? plan.prefill_batch : 64;
                 auto ores = guild::gexec::optimize_gpack(oopts);
-                if (ores.ok && !ores.skipped) n_opts.paths.gexec_path = ores.output_path;
+                if (ores.ok && !ores.skipped)
+                    n_opts.paths.gexec_path = ores.output_path;
             }
         }
 
@@ -499,20 +545,19 @@ int cmd_serve(int argc, char** argv) {
         std::cout << bold() << "Guild " << GUILD_VERSION << reset() << "\n"
                   << "────────────────────────────────────────────\n"
                   << "Model         " << bold() << desc.name << reset() << "\n"
-                  << "Architecture  " << cyan() << desc.arch_name << " · MoE "
-                  << desc.moe.n_routed_experts << "x" << desc.moe.k_active_experts << reset() << "\n"
+                  << "Architecture  " << cyan() << desc.arch_name << " · MoE " << desc.moe.n_routed_experts << "x"
+                  << desc.moe.k_active_experts << reset() << "\n"
                   << "Context       " << plan.context_length << " · "
                   << guild::memory::kv_precision_to_string(plan.kv_format) << " · "
                   << guild::memory::kv_mode_to_string(plan.kv_mode) << "\n\n"
                   << "GPU           " << hw.summary_gpu() << "\n"
-                  << "CPU           " << hw.summary_cpu() << " · "
-                  << hw.cpu_physical_cores << "C / " << hw.cpu_logical_threads << "T\n"
+                  << "CPU           " << hw.summary_cpu() << " · " << hw.cpu_physical_cores << "C / "
+                  << hw.cpu_logical_threads << "T\n"
                   << "RAM           " << hw.summary_ram() << "\n\n"
                   << bold() << "Experts" << reset() << "\n"
                   << "GPU           " << plan.routed_experts_in_gpu << "\n"
                   << "RAM           " << plan.routed_experts_in_ram << " / "
-                  << (desc.moe.n_routed_experts * desc.attn.n_layers) << " · "
-                  << std::fixed << std::setprecision(2)
+                  << (desc.moe.n_routed_experts * desc.attn.n_layers) << " · " << std::fixed << std::setprecision(2)
                   << (plan.routed_expert_total_bytes / (1024.0 * 1024.0 * 1024.0)) << " GiB\n"
                   << "File          " << plan.routed_experts_on_file << "\n\n"
                   << bold() << "KV" << reset() << "\n"
@@ -521,10 +566,12 @@ int cmd_serve(int argc, char** argv) {
                   << "GPU staging   " << std::fixed << std::setprecision(1)
                   << (plan.kv_staging_bytes / (1024.0 * 1024.0)) << " MiB\n\n"
                   << bold() << "Decode" << reset() << "\n"
-                  << "MTP           " << (plan.mtp_spec_tokens > 0 ? ("spec " + std::to_string(plan.mtp_spec_tokens)) : "disabled") << "\n"
+                  << "MTP           "
+                  << (plan.mtp_spec_tokens > 0 ? ("spec " + std::to_string(plan.mtp_spec_tokens)) : "disabled") << "\n"
                   << "Prefill       " << plan.prefill_chunk << "\n\n"
                   << "Endpoint      " << cyan() << "http://" << host << ":" << port << reset() << "\n"
-                  << "────────────────────────────────────────────\n" << std::flush;
+                  << "────────────────────────────────────────────\n"
+                  << std::flush;
     }
 
     server->run();
@@ -532,7 +579,6 @@ int cmd_serve(int argc, char** argv) {
     g_active_server.store(nullptr);
     return 0;
 }
-
 
 int cmd_pull(int argc, char** argv) {
     using namespace guild::cli::ansi;
@@ -543,10 +589,14 @@ int cmd_pull(int argc, char** argv) {
 
     for (int i = 2; i < argc; ++i) {
         std::string arg = argv[i];
-        if (arg == "--force") force = true;
-        else if (arg == "--json") json_mode = true;
-        else if (arg == "--data-dir" && i + 1 < argc) data_dir = argv[++i];
-        else if (arg[0] != '-' && model_name.empty()) model_name = arg;
+        if (arg == "--force")
+            force = true;
+        else if (arg == "--json")
+            json_mode = true;
+        else if (arg == "--data-dir" && i + 1 < argc)
+            data_dir = argv[++i];
+        else if (arg[0] != '-' && model_name.empty())
+            model_name = arg;
         else if (arg == "-h" || arg == "--help") {
             std::cout << "Usage: guild pull <model> [options]\n"
                       << "  --force          Re-download and overwrite existing files\n"
@@ -606,13 +656,11 @@ int cmd_pull(int argc, char** argv) {
     d_opts.progress_cb = [&](const guild::models::DownloadProgress& p) -> bool {
         if (json_mode) {
             std::cout << "{\"status\":\"downloading\",\"file\":\"" << p.current_file_name
-                      << "\",\"file_index\":" << p.current_file_index
-                      << ",\"total_files\":" << p.total_files
-                      << ",\"file_downloaded\":" << p.file_downloaded_bytes
-                      << ",\"file_total\":" << p.file_total_bytes
+                      << "\",\"file_index\":" << p.current_file_index << ",\"total_files\":" << p.total_files
+                      << ",\"file_downloaded\":" << p.file_downloaded_bytes << ",\"file_total\":" << p.file_total_bytes
                       << ",\"total_downloaded\":" << p.total_downloaded_bytes
-                      << ",\"total_expected\":" << p.total_expected_bytes
-                      << ",\"speed\":" << p.speed_bytes_sec << "}" << std::endl;
+                      << ",\"total_expected\":" << p.total_expected_bytes << ",\"speed\":" << p.speed_bytes_sec << "}"
+                      << std::endl;
             return true;
         }
 
@@ -625,14 +673,13 @@ int cmd_pull(int argc, char** argv) {
             std::string file_tot = guild::models::Downloader::format_bytes(p.file_total_bytes);
 
             if (is_interactive) {
-                std::cout << "\r" << std::left << std::setw(16) << p.current_file_name.substr(0, 15)
-                          << " " << std::right << std::setw(16) << (file_cur + " / " + file_tot)
-                          << "   " << std::setw(11) << speed_str
-                          << "   (" << std::fixed << std::setprecision(1) << p.percentage << "%)"
+                std::cout << "\r" << std::left << std::setw(16) << p.current_file_name.substr(0, 15) << " "
+                          << std::right << std::setw(16) << (file_cur + " / " + file_tot) << "   " << std::setw(11)
+                          << speed_str << "   (" << std::fixed << std::setprecision(1) << p.percentage << "%)"
                           << std::flush;
             } else {
-                std::cout << p.current_file_name << ": " << file_cur << " / " << file_tot
-                          << " (" << speed_str << ")\n" << std::flush;
+                std::cout << p.current_file_name << ": " << file_cur << " / " << file_tot << " (" << speed_str << ")\n"
+                          << std::flush;
             }
         }
         return true;
@@ -641,7 +688,8 @@ int cmd_pull(int argc, char** argv) {
     std::string err_msg;
     bool success = downloader.download_model(manifest, store, d_opts, err_msg);
     if (!success) {
-        if (!json_mode) std::cout << "\n";
+        if (!json_mode)
+            std::cout << "\n";
         std::cerr << "guild pull failed: " << err_msg << "\n";
         return 1;
     }
@@ -650,7 +698,10 @@ int cmd_pull(int argc, char** argv) {
         std::cout << "\n\n"
                   << "downloaded      " << guild::models::Downloader::format_bytes(manifest.expected_size_bytes)
                   << " / " << guild::models::Downloader::format_bytes(manifest.expected_size_bytes) << "\n"
-                  << "disk free       " << guild::models::Downloader::format_bytes(guild::models::Downloader::get_available_disk_space(store.models_dir())) << "\n";
+                  << "disk free       "
+                  << guild::models::Downloader::format_bytes(
+                         guild::models::Downloader::get_available_disk_space(store.models_dir()))
+                  << "\n";
     }
 
     return 0;
@@ -663,8 +714,10 @@ int cmd_list(int argc, char** argv) {
 
     for (int i = 2; i < argc; ++i) {
         std::string arg = argv[i];
-        if (arg == "--json") json_mode = true;
-        else if (arg == "--data-dir" && i + 1 < argc) data_dir = argv[++i];
+        if (arg == "--json")
+            json_mode = true;
+        else if (arg == "--data-dir" && i + 1 < argc)
+            data_dir = argv[++i];
         else if (arg == "-h" || arg == "--help") {
             std::cout << "Usage: guild list [--json] [--data-dir PATH]\n";
             return 0;
@@ -703,18 +756,12 @@ int cmd_list(int argc, char** argv) {
         return 0;
     }
 
-    std::cout << bold() << std::left
-              << std::setw(25) << "NAME"
-              << std::setw(14) << "ARCH"
-              << std::setw(14) << "QUANT"
+    std::cout << bold() << std::left << std::setw(25) << "NAME" << std::setw(14) << "ARCH" << std::setw(14) << "QUANT"
               << "SIZE" << reset() << "\n";
 
     for (const auto& m : manifests) {
-        std::cout << std::left
-                  << std::setw(25) << m.name
-                  << std::setw(14) << m.architecture
-                  << std::setw(14) << m.quantization
-                  << guild::models::Downloader::format_bytes(m.total_size_bytes()) << "\n";
+        std::cout << std::left << std::setw(25) << m.name << std::setw(14) << m.architecture << std::setw(14)
+                  << m.quantization << guild::models::Downloader::format_bytes(m.total_size_bytes()) << "\n";
     }
     return 0;
 }
@@ -728,10 +775,14 @@ int cmd_show(int argc, char** argv) {
 
     for (int i = 2; i < argc; ++i) {
         std::string arg = argv[i];
-        if (arg == "--plan") show_plan = true;
-        else if (arg == "--json") json_mode = true;
-        else if (arg == "--data-dir" && i + 1 < argc) data_dir = argv[++i];
-        else if (arg[0] != '-' && model_name.empty()) model_name = arg;
+        if (arg == "--plan")
+            show_plan = true;
+        else if (arg == "--json")
+            json_mode = true;
+        else if (arg == "--data-dir" && i + 1 < argc)
+            data_dir = argv[++i];
+        else if (arg[0] != '-' && model_name.empty())
+            model_name = arg;
         else if (arg == "-h" || arg == "--help") {
             std::cout << "Usage: guild show <model> [--plan] [--json] [--data-dir PATH]\n";
             return 0;
@@ -786,18 +837,19 @@ int cmd_show(int argc, char** argv) {
               << "Context       " << m.context_length << " tokens\n";
 
     if (m.n_routed_experts > 0) {
-        std::cout << "\n" << bold() << "Mixture-of-Experts" << reset() << "\n"
+        std::cout << "\n"
+                  << bold() << "Mixture-of-Experts" << reset() << "\n"
                   << "Routed Experts " << m.n_routed_experts << " (" << m.k_active_experts << " active per token)\n"
                   << "Total Experts  " << (m.n_routed_experts * m.n_layers) << "\n"
                   << "Routed Size    ~" << std::fixed << std::setprecision(2)
-                  << (desc.moe.expert_blob_bytes * m.n_routed_experts * m.n_layers / (1024.0 * 1024.0 * 1024.0)) << " GiB\n";
+                  << (desc.moe.expert_blob_bytes * m.n_routed_experts * m.n_layers / (1024.0 * 1024.0 * 1024.0))
+                  << " GiB\n";
     }
 
     std::cout << "\n" << bold() << "Files" << reset() << "\n";
     for (const auto& f : m.files) {
-        std::cout << "  " << std::left << std::setw(36) << f.name
-                  << "  " << std::right << std::setw(10) << guild::models::Downloader::format_bytes(f.size_bytes)
-                  << "  [" << f.role << "]\n";
+        std::cout << "  " << std::left << std::setw(36) << f.name << "  " << std::right << std::setw(10)
+                  << guild::models::Downloader::format_bytes(f.size_bytes) << "  [" << f.role << "]\n";
         if (!f.local_path.empty()) {
             std::cout << "    path: " << f.local_path << "\n";
         }
@@ -812,8 +864,10 @@ int cmd_rm(int argc, char** argv) {
 
     for (int i = 2; i < argc; ++i) {
         std::string arg = argv[i];
-        if (arg == "--data-dir" && i + 1 < argc) data_dir = argv[++i];
-        else if (arg[0] != '-' && model_name.empty()) model_name = arg;
+        if (arg == "--data-dir" && i + 1 < argc)
+            data_dir = argv[++i];
+        else if (arg[0] != '-' && model_name.empty())
+            model_name = arg;
         else if (arg == "-h" || arg == "--help") {
             std::cout << "Usage: guild rm <model> [--data-dir PATH]\n";
             return 0;
@@ -842,8 +896,8 @@ int cmd_rm(int argc, char** argv) {
         return 1;
     }
 
-    std::cout << "Removed model '" << model_name << "' (freed "
-              << guild::models::Downloader::format_bytes(freed_bytes) << ").\n";
+    std::cout << "Removed model '" << model_name << "' (freed " << guild::models::Downloader::format_bytes(freed_bytes)
+              << ").\n";
     return 0;
 }
 
@@ -856,10 +910,14 @@ int cmd_import(int argc, char** argv) {
 
     for (int i = 2; i < argc; ++i) {
         std::string arg = argv[i];
-        if (arg == "--name" && i + 1 < argc) name = argv[++i];
-        else if (arg == "--data-dir" && i + 1 < argc) data_dir = argv[++i];
-        else if (arg == "--copy") copy_mode = true;
-        else if (arg[0] != '-' && path.empty()) path = arg;
+        if (arg == "--name" && i + 1 < argc)
+            name = argv[++i];
+        else if (arg == "--data-dir" && i + 1 < argc)
+            data_dir = argv[++i];
+        else if (arg == "--copy")
+            copy_mode = true;
+        else if (arg[0] != '-' && path.empty())
+            path = arg;
         else if (arg == "-h" || arg == "--help") {
             std::cout << "Usage: guild import <path> [--name <name>] [--copy] [--data-dir PATH]\n"
                       << "  <path>         Directory or GGUF file to import\n"
@@ -885,7 +943,8 @@ int cmd_import(int argc, char** argv) {
     }
     if (!base_manifest.has_value()) {
         for (const auto& b : guild::models::ModelRegistry::instance().list_available()) {
-            if (path.find("unsloth") != std::string::npos || path.find("UD-IQ4_XS") != std::string::npos || path.find("Qwen") != std::string::npos) {
+            if (path.find("unsloth") != std::string::npos || path.find("UD-IQ4_XS") != std::string::npos ||
+                path.find("Qwen") != std::string::npos) {
                 base_manifest = b;
                 break;
             }
@@ -913,7 +972,8 @@ int cmd_import(int argc, char** argv) {
         const auto& d = reader.descriptor();
         guild::models::ModelManifest gm;
         gm.name = name.empty() ? d.name : name;
-        if (gm.name.empty()) gm.name = fs::path(path).stem().string();
+        if (gm.name.empty())
+            gm.name = fs::path(path).stem().string();
         gm.architecture = d.arch_name;
         gm.quantization = "gpack.v1";
         gm.source = "local-gpack";
@@ -986,20 +1046,22 @@ int cmd_run(int argc, char** argv) {
 
     for (int i = 2; i < argc; ++i) {
         const std::string arg = argv[i];
-        if (arg == "--mock") force_mock = true;
-        else if (arg == "--gexec" && i + 1 < argc) gexec_path = argv[++i];
-        else if (arg == "--optimize-mode" && i + 1 < argc) optimize_mode_str = argv[++i];
+        if (arg == "--mock")
+            force_mock = true;
+        else if (arg == "--gexec" && i + 1 < argc)
+            gexec_path = argv[++i];
+        else if (arg == "--optimize-mode" && i + 1 < argc)
+            optimize_mode_str = argv[++i];
         else if (arg == "--prefill-batch") {
-            if (i+1>=argc || !parse_prefill_batch(argv[++i],prefill_batch)) {
-                std::cerr<<"--prefill-batch requires 0(auto) or an integer in 1..512\n";
+            if (i + 1 >= argc || !parse_prefill_batch(argv[++i], prefill_batch)) {
+                std::cerr << "--prefill-batch requires 0(auto) or an integer in 1..512\n";
                 return 2;
             }
-        }
-        else if (arg == "--data-dir" && i + 1 < argc) data_dir = argv[++i];
+        } else if (arg == "--data-dir" && i + 1 < argc)
+            data_dir = argv[++i];
         else if (arg[0] != '-' && (model == "qwen3.8-flash-next" || model.empty())) {
             model = arg;
-        }
-        else if (arg == "-h" || arg == "--help") {
+        } else if (arg == "-h" || arg == "--help") {
             std::cout << "Usage: guild run [model] [options]\n"
                       << "  --mock          Run with mock inference engine for testing\n"
                       << "  --data-dir PATH Custom data directory for Guild model store\n";
@@ -1051,7 +1113,8 @@ int cmd_run(int argc, char** argv) {
     auto val = guild::memory::MemoryPlanner::validate(plan, hw, desc);
     if (!force_mock && !val.valid) {
         std::cerr << "guild run: execution plan validation failed:\n";
-        for (const auto& err : val.errors) std::cerr << "  - " << err << "\n";
+        for (const auto& err : val.errors)
+            std::cerr << "  - " << err << "\n";
         return 1;
     }
 
@@ -1060,18 +1123,22 @@ int cmd_run(int argc, char** argv) {
 
     std::string native_model;
     const auto* prim = manifest.find_file_by_role("primary");
-    if (!prim) prim = manifest.find_file_by_role("shard");
+    if (!prim)
+        prim = manifest.find_file_by_role("shard");
     if (prim && !prim->local_path.empty()) {
         native_model = prim->local_path;
     }
     if (native_model.empty() && manifest.name == "qwen3.8-flash-next" &&
-        std::filesystem::exists("/mnt/models-ssd/Strata-data/models/unsloth-UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf")) {
-        native_model = "/mnt/models-ssd/Strata-data/models/unsloth-UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf";
+        std::filesystem::exists(
+            "/mnt/models-ssd/Strata-data/models/unsloth-UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf")) {
+        native_model =
+            "/mnt/models-ssd/Strata-data/models/unsloth-UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf";
     }
 
     std::string pack_dir = "/mnt/models-ssd/Strata-data/packs/unsloth-ud-iq4_xs";
     std::string profile_bin = "/home/ubuntu/Guild/data/expert-profile.bin";
-    if (!std::filesystem::exists(profile_bin)) profile_bin = "/home/ubuntu/Strata/data/expert-profile.bin";
+    if (!std::filesystem::exists(profile_bin))
+        profile_bin = "/home/ubuntu/Strata/data/expert-profile.bin";
     std::string mtp_dir = "/mnt/models-ssd/Strata-data/mtp/rt";
 
     if (manifest.metadata.count("pack_dir")) {
@@ -1097,8 +1164,8 @@ int cmd_run(int argc, char** argv) {
         native_model = model;
     }
     const bool is_gpack_model = guild::artifact::GPackReader::is_gpack_file(native_model);
-    bool real_weights_available = is_gpack_model ||
-                                  (std::filesystem::exists(pack_dir) && std::filesystem::exists(native_model));
+    bool real_weights_available =
+        is_gpack_model || (std::filesystem::exists(pack_dir) && std::filesystem::exists(native_model));
 
     if (!force_mock && real_weights_available) {
         guild::server::NativeInferenceEngineOptions n_opts;
@@ -1121,7 +1188,8 @@ int cmd_run(int argc, char** argv) {
                 oopts.max_context = plan.context_length;
                 oopts.prefill_batch = plan.prefill_batch > 0 ? plan.prefill_batch : 64;
                 auto ores = guild::gexec::optimize_gpack(oopts);
-                if (ores.ok && !ores.skipped) n_opts.paths.gexec_path = ores.output_path;
+                if (ores.ok && !ores.skipped)
+                    n_opts.paths.gexec_path = ores.output_path;
             }
         }
 
@@ -1145,16 +1213,18 @@ int cmd_run(int argc, char** argv) {
     }
 
     std::cout << bold() << "Guild · " << manifest.name << reset() << "\n"
-              << (plan.context_length / 1024) << "K context · "
-              << guild::memory::kv_precision_to_string(plan.kv_format) << " "
-              << guild::memory::kv_mode_to_string(plan.kv_mode) << "\n\n";
+              << (plan.context_length / 1024) << "K context · " << guild::memory::kv_precision_to_string(plan.kv_format)
+              << " " << guild::memory::kv_mode_to_string(plan.kv_mode) << "\n\n";
 
     std::string line;
     while (true) {
         std::cout << bold() << ">>> " << reset() << std::flush;
-        if (!std::getline(std::cin, line)) break;
-        if (line.empty()) continue;
-        if (line == "/quit" || line == "/exit" || line == "exit") break;
+        if (!std::getline(std::cin, line))
+            break;
+        if (line.empty())
+            continue;
+        if (line == "/quit" || line == "/exit" || line == "exit")
+            break;
 
         guild::server::InferenceRequest req;
         req.model = manifest.name;
@@ -1180,7 +1250,8 @@ int cmd_run(int argc, char** argv) {
 
         guild::server::GenerationResult gen_res;
         auto stream_cb = [](const guild::server::TokenOutput& tok) -> bool {
-            if (tok.is_special) return true;
+            if (tok.is_special)
+                return true;
             std::cout << tok.text << std::flush;
             return true;
         };
@@ -1245,16 +1316,26 @@ int cmd_kernel(int argc, char** argv) {
 
     for (int i = 3; i < argc; ++i) {
         const std::string arg = argv[i];
-        if (arg == "--data-dir" && i + 1 < argc) data_dir = argv[++i];
-        else if (arg == "--key-id" && i + 1 < argc) key_id = argv[++i];
-        else if (arg == "--seed" && i + 1 < argc) seed_hex = argv[++i];
-        else if (arg == "--seed-file" && i + 1 < argc) seed_file = argv[++i];
-        else if (arg == "--pubkey" && i + 1 < argc) pubkey_hex = argv[++i];
-        else if (arg == "--publisher" && i + 1 < argc) publisher_id = argv[++i];
-        else if (arg == "--bundle" && i + 1 < argc) bundle_out = argv[++i];
-        else if (arg == "--no-enable") enable_now = false;
-        else if (arg == "--allow-unsigned-dev") allow_unsigned_dev = true;
-        else if (arg == "--json") json_mode = true;
+        if (arg == "--data-dir" && i + 1 < argc)
+            data_dir = argv[++i];
+        else if (arg == "--key-id" && i + 1 < argc)
+            key_id = argv[++i];
+        else if (arg == "--seed" && i + 1 < argc)
+            seed_hex = argv[++i];
+        else if (arg == "--seed-file" && i + 1 < argc)
+            seed_file = argv[++i];
+        else if (arg == "--pubkey" && i + 1 < argc)
+            pubkey_hex = argv[++i];
+        else if (arg == "--publisher" && i + 1 < argc)
+            publisher_id = argv[++i];
+        else if (arg == "--bundle" && i + 1 < argc)
+            bundle_out = argv[++i];
+        else if (arg == "--no-enable")
+            enable_now = false;
+        else if (arg == "--allow-unsigned-dev")
+            allow_unsigned_dev = true;
+        else if (arg == "--json")
+            json_mode = true;
         else if (arg == "-h" || arg == "--help") {
             print_kernel_help();
             return 0;
@@ -1264,9 +1345,12 @@ int cmd_kernel(int argc, char** argv) {
     }
 
     if (!seed_file.empty()) {
-        if (!seed_hex.empty()) { std::cerr << "choose --seed or --seed-file\n"; return 1; }
+        if (!seed_hex.empty()) {
+            std::cerr << "choose --seed or --seed-file\n";
+            return 1;
+        }
         std::ifstream in(seed_file);
-        if (!(in >> seed_hex) || seed_hex.size()!=64) {
+        if (!(in >> seed_hex) || seed_hex.size() != 64) {
             std::cerr << "invalid signing seed file\n";
             return 1;
         }
@@ -1342,8 +1426,8 @@ int cmd_kernel(int argc, char** argv) {
                 return 1;
             }
         }
-        std::cout << "Signed package '" << meta.package_id << "@" << meta.version
-                  << "' with key '" << key_id << "' (payload_sha256=" << meta.signature.payload_sha256 << ").\n";
+        std::cout << "Signed package '" << meta.package_id << "@" << meta.version << "' with key '" << key_id
+                  << "' (payload_sha256=" << meta.signature.payload_sha256 << ").\n";
         return 0;
     }
 
@@ -1355,13 +1439,15 @@ int cmd_kernel(int argc, char** argv) {
         return 1;
     }
     if (allow_unsigned_dev) {
-        std::cerr << "[WARNING] --allow-unsigned-dev enabled: bypassing Ed25519 signature check for local development\n";
+        std::cerr
+            << "[WARNING] --allow-unsigned-dev enabled: bypassing Ed25519 signature check for local development\n";
         mgr.security_policy().allow_unsigned_dev = true;
     }
 
     if (sub == "trust-key") {
         if (publisher_id.empty() || key_id.empty() || pubkey_hex.size() != 64) {
-            std::cerr << "Usage: guild kernel trust-key --publisher <pub_id> --key-id <id> --pubkey <64-hex> [--data-dir PATH]\n";
+            std::cerr << "Usage: guild kernel trust-key --publisher <pub_id> --key-id <id> --pubkey <64-hex> "
+                         "[--data-dir PATH]\n";
             return 1;
         }
         mgr.security_policy().trust_publisher_key(publisher_id, key_id, pubkey_hex);
@@ -1409,7 +1495,8 @@ int cmd_kernel(int argc, char** argv) {
         }
         const guild_status_t st = mgr.install_package(target, enable_now, err);
         if (st != GUILD_STATUS_OK) {
-            std::cerr << "guild kernel install failed (" << guild::kernels::status_to_string(st) << "): " << err << "\n";
+            std::cerr << "guild kernel install failed (" << guild::kernels::status_to_string(st) << "): " << err
+                      << "\n";
             return 1;
         }
         auto pkgs = mgr.list_packages();
@@ -1447,20 +1534,13 @@ int cmd_kernel(int argc, char** argv) {
             std::cout << "No external extension packages installed.\n";
             return 0;
         }
-        std::cout << bold() << std::left
-                  << std::setw(32) << "PACKAGE_ID"
-                  << std::setw(12) << "VERSION"
-                  << std::setw(12) << "PREV"
-                  << std::setw(15) << "SCOPE"
-                  << std::setw(22) << "PUBLISHER"
+        std::cout << bold() << std::left << std::setw(32) << "PACKAGE_ID" << std::setw(12) << "VERSION" << std::setw(12)
+                  << "PREV" << std::setw(15) << "SCOPE" << std::setw(22) << "PUBLISHER"
                   << "STATUS" << reset() << "\n";
         for (const auto& p : pkgs) {
-            std::cout << std::left
-                      << std::setw(32) << p.package_id
-                      << std::setw(12) << p.active_version
-                      << std::setw(12) << (p.previous_version.empty() ? "-" : p.previous_version)
-                      << std::setw(15) << p.metadata.scope
-                      << std::setw(22) << p.metadata.publisher_id
+            std::cout << std::left << std::setw(32) << p.package_id << std::setw(12) << p.active_version
+                      << std::setw(12) << (p.previous_version.empty() ? "-" : p.previous_version) << std::setw(15)
+                      << p.metadata.scope << std::setw(22) << p.metadata.publisher_id
                       << (p.enabled ? "enabled" : "disabled") << "\n";
         }
         return 0;
@@ -1483,7 +1563,8 @@ int cmd_kernel(int argc, char** argv) {
                           << "Status:        " << (rec.enabled ? "enabled" : "disabled") << "\n"
                           << "Scope:         " << rec.metadata.scope << "\n"
                           << "Publisher:     " << rec.metadata.publisher_id << "\n"
-                          << "Signing Key:   " << rec.metadata.signature.key_id << " (" << rec.metadata.signature.algorithm << ")\n"
+                          << "Signing Key:   " << rec.metadata.signature.key_id << " ("
+                          << rec.metadata.signature.algorithm << ")\n"
                           << "Staged Dir:    " << rec.staged_dir << "\n";
             }
             return 0;
@@ -1578,34 +1659,31 @@ int cmd_kernel(int argc, char** argv) {
             for (size_t i = 0; i < runners.size(); ++i) {
                 const auto& r = runners[i];
                 std::cout << "    {\"runner_id\":\"" << r.runner_id << "\",\"arch_id\":\"" << r.arch_id
-                          << "\",\"package_id\":\"" << r.package_id << "\",\"enabled\":" << (r.enabled ? "true" : "false")
-                          << "}" << (i + 1 < runners.size() ? "," : "") << "\n";
+                          << "\",\"package_id\":\"" << r.package_id
+                          << "\",\"enabled\":" << (r.enabled ? "true" : "false") << "}"
+                          << (i + 1 < runners.size() ? "," : "") << "\n";
             }
             std::cout << "  ],\n  \"kernels\": [\n";
             for (size_t i = 0; i < ops.size(); ++i) {
                 const auto& o = ops[i];
                 std::cout << "    {\"op_name\":\"" << o.op_name << "\",\"impl_id\":\"" << o.impl_id
                           << "\",\"package_id\":\"" << o.package_id << "\",\"priority\":" << o.priority
-                          << ",\"enabled\":" << (o.enabled ? "true" : "false")
-                          << "}" << (i + 1 < ops.size() ? "," : "") << "\n";
+                          << ",\"enabled\":" << (o.enabled ? "true" : "false") << "}" << (i + 1 < ops.size() ? "," : "")
+                          << "\n";
             }
             std::cout << "  ]\n}\n";
             return 0;
         }
         std::cout << bold() << "Active Model Runners (" << runners.size() << "):" << reset() << "\n";
         for (const auto& r : runners) {
-            std::cout << "  " << std::left << std::setw(28) << r.runner_id
-                      << std::setw(16) << r.arch_id
-                      << std::setw(32) << r.package_id
-                      << (r.enabled ? "enabled" : "disabled") << "\n";
+            std::cout << "  " << std::left << std::setw(28) << r.runner_id << std::setw(16) << r.arch_id
+                      << std::setw(32) << r.package_id << (r.enabled ? "enabled" : "disabled") << "\n";
         }
         std::cout << "\n" << bold() << "Registered Hardware Kernels (" << ops.size() << "):" << reset() << "\n";
         for (const auto& o : ops) {
-            std::cout << "  " << std::left << std::setw(24) << o.op_name
-                      << std::setw(38) << o.impl_id
-                      << std::setw(32) << o.package_id
-                      << "prio=" << std::setw(6) << o.priority
-                      << (o.enabled ? "enabled" : "disabled") << "\n";
+            std::cout << "  " << std::left << std::setw(24) << o.op_name << std::setw(38) << o.impl_id << std::setw(32)
+                      << o.package_id << "prio=" << std::setw(6) << o.priority << (o.enabled ? "enabled" : "disabled")
+                      << "\n";
         }
         return 0;
     }
@@ -1622,16 +1700,26 @@ int cmd_convert(int argc, char** argv) {
 
     for (int i = 2; i < argc; ++i) {
         std::string arg = argv[i];
-        if ((arg == "-o" || arg == "--output") && i + 1 < argc) opts.output_path = argv[++i];
-        else if (arg == "--pack-dir" && i + 1 < argc) opts.pack_dir = argv[++i];
-        else if (arg == "--tokenizer-dir" && i + 1 < argc) opts.tokenizer_dir = argv[++i];
-        else if (arg == "--mtp-dir" && i + 1 < argc) opts.mtp_dir = argv[++i];
-        else if (arg == "--ple-gguf" && i + 1 < argc) opts.ple_gguf = argv[++i];
-        else if (arg == "--name" && i + 1 < argc) opts.model_name = argv[++i];
-        else if (arg == "--shard" && i + 1 < argc) opts.additional_shards.push_back(argv[++i]);
-        else if (arg == "--external-experts") opts.embed_experts = false;
-        else if (arg == "--no-verify") opts.verify_after_write = false;
-        else if (arg == "--json") json_mode = true;
+        if ((arg == "-o" || arg == "--output") && i + 1 < argc)
+            opts.output_path = argv[++i];
+        else if (arg == "--pack-dir" && i + 1 < argc)
+            opts.pack_dir = argv[++i];
+        else if (arg == "--tokenizer-dir" && i + 1 < argc)
+            opts.tokenizer_dir = argv[++i];
+        else if (arg == "--mtp-dir" && i + 1 < argc)
+            opts.mtp_dir = argv[++i];
+        else if (arg == "--ple-gguf" && i + 1 < argc)
+            opts.ple_gguf = argv[++i];
+        else if (arg == "--name" && i + 1 < argc)
+            opts.model_name = argv[++i];
+        else if (arg == "--shard" && i + 1 < argc)
+            opts.additional_shards.push_back(argv[++i]);
+        else if (arg == "--external-experts")
+            opts.embed_experts = false;
+        else if (arg == "--no-verify")
+            opts.verify_after_write = false;
+        else if (arg == "--json")
+            json_mode = true;
         else if (arg == "-h" || arg == "--help") {
             std::cout << "Usage: guild convert <input_gguf_or_safetensors> -o <output.gpack> [options]\n"
                       << "  -o, --output <path>       Output .gpack path\n"
@@ -1648,7 +1736,8 @@ int cmd_convert(int argc, char** argv) {
     }
 
     if (opts.primary_input_path.empty() || opts.output_path.empty()) {
-        std::cerr << "Usage: guild convert <input> -o <output.gpack> [--pack-dir <dir>] [--external-experts] [--json]\n";
+        std::cerr
+            << "Usage: guild convert <input> -o <output.gpack> [--pack-dir <dir>] [--external-experts] [--json]\n";
         return 1;
     }
 
@@ -1693,9 +1782,12 @@ int cmd_verify(int argc, char** argv) {
 
     for (int i = 2; i < argc; ++i) {
         std::string arg = argv[i];
-        if (arg == "--json") json_mode = true;
-        else if (arg == "--quick") quick_mode = true;
-        else if (arg == "--gpack" && i + 1 < argc) gpack_path = argv[++i];
+        if (arg == "--json")
+            json_mode = true;
+        else if (arg == "--quick")
+            quick_mode = true;
+        else if (arg == "--gpack" && i + 1 < argc)
+            gpack_path = argv[++i];
         else if (arg == "-h" || arg == "--help") {
             std::cout << "Usage: guild verify <model.gpack|model.gexec> [--gpack <model.gpack>] [--quick] [--json]\n";
             return 0;
@@ -1730,9 +1822,8 @@ int cmd_verify(int argc, char** argv) {
                 return 1;
             }
             const auto cur_id = guild::gexec::build_current_gexec_identity(
-                gpack, greader.identity().kv_format, greader.identity().kv_mode,
-                greader.identity().max_context, greader.identity().prefill_batch,
-                greader.identity().mtp_spec_tokens);
+                gpack, greader.identity().kv_format, greader.identity().kv_mode, greader.identity().max_context,
+                greader.identity().prefill_batch, greader.identity().mtp_spec_tokens);
             if (!greader.validate_against(cur_id, err, &reason)) {
                 if (json_mode) {
                     std::cout << "{\"valid\":false,\"reason\":\"" << guild::gexec::invalidation_reason_to_string(reason)
@@ -1757,9 +1848,8 @@ int cmd_verify(int argc, char** argv) {
                       << "  \"verify_ms\": " << ms << "\n"
                       << "}\n";
         } else {
-            std::cout << "GEXEC container verified: " << greader.path() << " ("
-                      << greader.sections().size() << " sections, cache_key "
-                      << greader.identity().compute_cache_key().substr(0, 16) << "..., "
+            std::cout << "GEXEC container verified: " << greader.path() << " (" << greader.sections().size()
+                      << " sections, cache_key " << greader.identity().compute_cache_key().substr(0, 16) << "..., "
                       << std::fixed << std::setprecision(1) << ms << " ms)\n";
         }
         return 0;
@@ -1788,11 +1878,9 @@ int cmd_verify(int argc, char** argv) {
                   << "  \"verify_ms\": " << ms << "\n"
                   << "}\n";
     } else {
-        std::cout << "GPACK container verified: " << reader.path() << " ("
-                  << reader.sections().size() << " sections, "
-                  << reader.tensors().size() << " tensors, manifest "
-                  << reader.manifest_sha256_hex().substr(0, 16) << "..., "
-                  << std::fixed << std::setprecision(1) << ms << " ms)\n";
+        std::cout << "GPACK container verified: " << reader.path() << " (" << reader.sections().size() << " sections, "
+                  << reader.tensors().size() << " tensors, manifest " << reader.manifest_sha256_hex().substr(0, 16)
+                  << "..., " << std::fixed << std::setprecision(1) << ms << " ms)\n";
     }
     return 0;
 }
@@ -1805,26 +1893,39 @@ int cmd_optimize(int argc, char** argv) {
 
     for (int i = 2; i < argc; ++i) {
         const std::string arg = argv[i];
-        if ((arg == "-o" || arg == "--output") && i + 1 < argc) opts.output_gexec_path = argv[++i];
-        else if (arg == "--cache-dir" && i + 1 < argc) opts.cache_dir = argv[++i];
+        if ((arg == "-o" || arg == "--output") && i + 1 < argc)
+            opts.output_gexec_path = argv[++i];
+        else if (arg == "--cache-dir" && i + 1 < argc)
+            opts.cache_dir = argv[++i];
         else if (arg == "--mode" && i + 1 < argc) {
             if (!guild::gexec::parse_opt_mode(argv[++i], opts.mode)) {
                 std::cerr << "guild optimize: invalid --mode (expected skip|quick|auto|exhaustive)\n";
                 return 2;
             }
-        }
-        else if (arg == "--max-time" && i + 1 < argc) opts.budget.max_time_seconds = std::atof(argv[++i]);
-        else if (arg == "--max-memory" && i + 1 < argc) opts.budget.max_memory_bytes = static_cast<uint64_t>(std::atoll(argv[++i]));
-        else if (arg == "--max-disk" && i + 1 < argc) opts.budget.max_disk_bytes = static_cast<uint64_t>(std::atoll(argv[++i]));
-        else if (arg == "--embed-experts") opts.budget.embed_packed_experts = true;
-        else if (arg == "--no-resume") opts.budget.resume_interrupted = false;
-        else if (arg == "--context" && i + 1 < argc) opts.max_context = std::atoll(argv[++i]);
-        else if (arg == "--prefill-batch" && i + 1 < argc) opts.prefill_batch = std::atoll(argv[++i]);
-        else if (arg == "--spec" && i + 1 < argc) opts.mtp_spec_tokens = std::atoi(argv[++i]);
-        else if (arg == "--kv-format" && i + 1 < argc) opts.kv_format = argv[++i];
-        else if (arg == "--kv-mode" && i + 1 < argc) opts.kv_mode = argv[++i];
-        else if (arg == "--section" && i + 1 < argc) regen_section_str = argv[++i];
-        else if (arg == "--json") json_mode = true;
+        } else if (arg == "--max-time" && i + 1 < argc)
+            opts.budget.max_time_seconds = std::atof(argv[++i]);
+        else if (arg == "--max-memory" && i + 1 < argc)
+            opts.budget.max_memory_bytes = static_cast<uint64_t>(std::atoll(argv[++i]));
+        else if (arg == "--max-disk" && i + 1 < argc)
+            opts.budget.max_disk_bytes = static_cast<uint64_t>(std::atoll(argv[++i]));
+        else if (arg == "--embed-experts")
+            opts.budget.embed_packed_experts = true;
+        else if (arg == "--no-resume")
+            opts.budget.resume_interrupted = false;
+        else if (arg == "--context" && i + 1 < argc)
+            opts.max_context = std::atoll(argv[++i]);
+        else if (arg == "--prefill-batch" && i + 1 < argc)
+            opts.prefill_batch = std::atoll(argv[++i]);
+        else if (arg == "--spec" && i + 1 < argc)
+            opts.mtp_spec_tokens = std::atoi(argv[++i]);
+        else if (arg == "--kv-format" && i + 1 < argc)
+            opts.kv_format = argv[++i];
+        else if (arg == "--kv-mode" && i + 1 < argc)
+            opts.kv_mode = argv[++i];
+        else if (arg == "--section" && i + 1 < argc)
+            regen_section_str = argv[++i];
+        else if (arg == "--json")
+            json_mode = true;
         else if (arg == "-h" || arg == "--help") {
             std::cout << "Usage: guild optimize <model.gpack> [options]\n"
                       << "  -o, --output <path.gexec>   Explicit output .gexec path\n"
@@ -1848,7 +1949,8 @@ int cmd_optimize(int argc, char** argv) {
     }
 
     if (opts.gpack_path.empty()) {
-        std::cerr << "Usage: guild optimize <model.gpack> [--mode skip|quick|auto|exhaustive] [-o <out.gexec>] [--json]\n";
+        std::cerr
+            << "Usage: guild optimize <model.gpack> [--mode skip|quick|auto|exhaustive] [-o <out.gexec>] [--json]\n";
         return 1;
     }
 
@@ -1858,26 +1960,32 @@ int cmd_optimize(int argc, char** argv) {
             return 1;
         }
         guild::gexec::GExecSectionKind skind = guild::gexec::GExecSectionKind::Invalid;
-        if (regen_section_str == "AutotuneTable" || regen_section_str == "autotune") skind = guild::gexec::GExecSectionKind::AutotuneTable;
-        else if (regen_section_str == "HeterogeneousPlan" || regen_section_str == "plan") skind = guild::gexec::GExecSectionKind::HeterogeneousPlan;
-        else if (regen_section_str == "WorkspaceRecipe" || regen_section_str == "workspace") skind = guild::gexec::GExecSectionKind::WorkspaceRecipe;
-        else if (regen_section_str == "CompilationProvenance" || regen_section_str == "provenance") skind = guild::gexec::GExecSectionKind::CompilationProvenance;
+        if (regen_section_str == "AutotuneTable" || regen_section_str == "autotune")
+            skind = guild::gexec::GExecSectionKind::AutotuneTable;
+        else if (regen_section_str == "HeterogeneousPlan" || regen_section_str == "plan")
+            skind = guild::gexec::GExecSectionKind::HeterogeneousPlan;
+        else if (regen_section_str == "WorkspaceRecipe" || regen_section_str == "workspace")
+            skind = guild::gexec::GExecSectionKind::WorkspaceRecipe;
+        else if (regen_section_str == "CompilationProvenance" || regen_section_str == "provenance")
+            skind = guild::gexec::GExecSectionKind::CompilationProvenance;
         std::string err;
         if (!guild::gexec::regenerate_gexec_section(opts.output_gexec_path, opts.gpack_path, skind, err, opts.budget)) {
             std::cerr << "guild optimize --section failed: " << err << "\n";
             return 1;
         }
         if (json_mode) {
-            std::cout << "{\"status\":\"ok\",\"regenerated_section\":\"" << regen_section_str
-                      << "\",\"output_path\":\"" << opts.output_gexec_path << "\"}\n";
+            std::cout << "{\"status\":\"ok\",\"regenerated_section\":\"" << regen_section_str << "\",\"output_path\":\""
+                      << opts.output_gexec_path << "\"}\n";
         } else {
-            std::cout << "Regenerated GEXEC section '" << regen_section_str << "' in " << opts.output_gexec_path << "\n";
+            std::cout << "Regenerated GEXEC section '" << regen_section_str << "' in " << opts.output_gexec_path
+                      << "\n";
         }
         return 0;
     }
 
     auto res = guild::gexec::optimize_gpack(opts, [&](const std::string& msg) {
-        if (!json_mode) std::cerr << "[gexec] " << msg << "\n";
+        if (!json_mode)
+            std::cerr << "[gexec] " << msg << "\n";
     });
     if (!res.ok) {
         if (json_mode) {
@@ -1890,14 +1998,20 @@ int cmd_optimize(int argc, char** argv) {
 
     if (json_mode) {
         std::cout << "{\n"
-                  << "  \"status\": \"" << (res.skipped ? "skipped" : (res.partial_artifact ? "partial" : "ok")) << "\",\n"
+                  << "  \"status\": \"" << (res.skipped ? "skipped" : (res.partial_artifact ? "partial" : "ok"))
+                  << "\",\n"
                   << "  \"output_path\": \"" << res.output_path << "\",\n"
                   << "  \"cache_key\": \"" << res.cache_key << "\",\n"
                   << "  \"resumed_from_checkpoint\": " << (res.resumed_from_checkpoint ? "true" : "false") << ",\n"
                   << "  \"partial_artifact\": " << (res.partial_artifact ? "true" : "false") << ",\n"
                   << "  \"selected_cpu_expert_impl_id\": \"" << res.selected_cpu_expert_impl_id << "\",\n"
-                  << "  \"expert_layout_kind\": \"" << (res.expert_layout_kind == guild::gexec::ExpertPackLayoutKind::GateUpRowInterleaved ? "GateUpRowInterleaved" : "PortableContiguous") << "\",\n"
-                  << "  \"fused_single_barrier_pipeline\": " << (res.fused_single_barrier_pipeline ? "true" : "false") << ",\n"
+                  << "  \"expert_layout_kind\": \""
+                  << (res.expert_layout_kind == guild::gexec::ExpertPackLayoutKind::GateUpRowInterleaved
+                          ? "GateUpRowInterleaved"
+                          : "PortableContiguous")
+                  << "\",\n"
+                  << "  \"fused_single_barrier_pipeline\": " << (res.fused_single_barrier_pipeline ? "true" : "false")
+                  << ",\n"
                   << "  \"optimization_wall_ms\": " << res.optimization_wall_ms << ",\n"
                   << "  \"baseline_decode_ms\": " << res.baseline_decode_ms << ",\n"
                   << "  \"optimized_decode_ms\": " << res.optimized_decode_ms << ",\n"
@@ -1913,12 +2027,17 @@ int cmd_optimize(int argc, char** argv) {
                   << "  Size           " << guild::models::Downloader::format_bytes(res.artifact_bytes) << "\n"
                   << "  Cache Key      " << res.cache_key.substr(0, 16) << "...\n"
                   << "  CPU Expert Op  " << cyan() << res.selected_cpu_expert_impl_id << reset() << "\n"
-                  << "  Expert Layout  " << (res.expert_layout_kind == guild::gexec::ExpertPackLayoutKind::GateUpRowInterleaved ? "GateUpRowInterleaved" : "PortableContiguous") << "\n"
-                  << "  Pool Pipeline  " << (res.fused_single_barrier_pipeline ? "Single-Barrier Fused" : "Two-Barrier Standard") << "\n"
+                  << "  Expert Layout  "
+                  << (res.expert_layout_kind == guild::gexec::ExpertPackLayoutKind::GateUpRowInterleaved
+                          ? "GateUpRowInterleaved"
+                          : "PortableContiguous")
+                  << "\n"
+                  << "  Pool Pipeline  "
+                  << (res.fused_single_barrier_pipeline ? "Single-Barrier Fused" : "Two-Barrier Standard") << "\n"
                   << "  Compile Time   " << std::fixed << std::setprecision(1) << res.optimization_wall_ms << " ms\n"
                   << "  Pool Speedup   " << std::fixed << std::setprecision(3) << res.speedup_ratio << "x ("
-                  << std::setprecision(2) << res.baseline_decode_ms << " -> " << res.optimized_decode_ms << " ms/tok, break-even "
-                  << std::setprecision(1) << res.break_even_tokens << " tokens)\n";
+                  << std::setprecision(2) << res.baseline_decode_ms << " -> " << res.optimized_decode_ms
+                  << " ms/tok, break-even " << std::setprecision(1) << res.break_even_tokens << " tokens)\n";
     }
     return 0;
 }
@@ -1931,10 +2050,14 @@ int cmd_cache_clean(int argc, char** argv) {
 
     for (int i = 2; i < argc; ++i) {
         const std::string arg = argv[i];
-        if (arg == "--dir" && i + 1 < argc) cache_dir = argv[++i];
-        else if (arg == "--model" && i + 1 < argc) gpack_path = argv[++i];
-        else if (arg == "--all") remove_all = true;
-        else if (arg == "--json") json_mode = true;
+        if (arg == "--dir" && i + 1 < argc)
+            cache_dir = argv[++i];
+        else if (arg == "--model" && i + 1 < argc)
+            gpack_path = argv[++i];
+        else if (arg == "--all")
+            remove_all = true;
+        else if (arg == "--json")
+            json_mode = true;
         else if (arg == "-h" || arg == "--help") {
             std::cout << "Usage: guild cache-clean [--dir <cache_dir>] [--model <model.gpack>] [--all] [--json]\n";
             return 0;
@@ -1951,7 +2074,8 @@ int cmd_cache_clean(int argc, char** argv) {
         }
         if (cache_dir.empty()) {
             const std::filesystem::path gp(gpack_path);
-            cache_dir = ((gp.has_parent_path() ? gp.parent_path() : std::filesystem::path(".")) / ".gexec_cache").string();
+            cache_dir =
+                ((gp.has_parent_path() ? gp.parent_path() : std::filesystem::path(".")) / ".gexec_cache").string();
         }
     }
     if (cache_dir.empty()) {
@@ -1975,14 +2099,14 @@ int cmd_cache_clean(int argc, char** argv) {
                   << "  \"reclaimed_bytes\": " << res.reclaimed_bytes << "\n"
                   << "}\n";
     } else {
-        std::cout << "Cleaned GEXEC cache '" << cache_dir << "': removed " << res.removed_files
-                  << " file(s), kept " << res.kept_files << " file(s), reclaimed "
+        std::cout << "Cleaned GEXEC cache '" << cache_dir << "': removed " << res.removed_files << " file(s), kept "
+                  << res.kept_files << " file(s), reclaimed "
                   << guild::models::Downloader::format_bytes(res.reclaimed_bytes) << ".\n";
     }
     return 0;
 }
 
-}  // namespace
+} // namespace
 
 int main(int argc, char** argv) {
     if (argc < 2) {

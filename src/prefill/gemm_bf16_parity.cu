@@ -25,7 +25,7 @@
 
 namespace {
 
-uint16_t to_bf16(float f) {   // round to nearest even
+uint16_t to_bf16(float f) { // round to nearest even
     uint32_t u;
     std::memcpy(&u, &f, 4);
     u += 0x7fffu + ((u >> 16) & 1u);
@@ -33,7 +33,8 @@ uint16_t to_bf16(float f) {   // round to nearest even
 }
 
 bool ok_or(cudaError_t e, const char* what) {
-    if (e != cudaSuccess) std::printf("FAIL: %s: %s\n", what, cudaGetErrorString(e));
+    if (e != cudaSuccess)
+        std::printf("FAIL: %s: %s\n", what, cudaGetErrorString(e));
     return e == cudaSuccess;
 }
 
@@ -42,7 +43,7 @@ struct Shape {
     const char* what;
 };
 
-}  // namespace
+} // namespace
 
 int main(int argc, char** argv) {
     const bool bench = argc > 1 && std::string(argv[1]) == "--bench";
@@ -53,12 +54,19 @@ int main(int argc, char** argv) {
     std::printf("gemm_bf16_parity: compute capability %d.%d\n", maj, min);
 
     cudaStream_t st = nullptr;
-    if (!ok_or(cudaStreamCreate(&st), "stream")) return 1;
+    if (!ok_or(cudaStreamCreate(&st), "stream"))
+        return 1;
     guild::prefill::Gemm gemm;
     std::string err;
-    if (!gemm.init(st, 0, err)) { std::printf("FAIL: %s\n", err.c_str()); return 1; }
+    if (!gemm.init(st, 0, err)) {
+        std::printf("FAIL: %s\n", err.c_str());
+        return 1;
+    }
     cublasHandle_t h = nullptr;
-    if (cublasCreate(&h) != CUBLAS_STATUS_SUCCESS) { std::printf("FAIL: cublasCreate\n"); return 1; }
+    if (cublasCreate(&h) != CUBLAS_STATUS_SUCCESS) {
+        std::printf("FAIL: cublasCreate\n");
+        return 1;
+    }
     cublasSetStream(h, st);
 
     const Shape shapes[] = {
@@ -77,18 +85,21 @@ int main(int argc, char** argv) {
         const int64_t ldy = s.ldy > 0 ? s.ldy : s.N;
         std::vector<uint16_t> x((size_t) (s.T * s.K)), xlo(x.size()), w((size_t) (s.N * s.K));
         for (size_t i = 0; i < x.size(); ++i) {
-            const float v = 3.0f * nd(rng);          // activations: normalized, a few units
+            const float v = 3.0f * nd(rng); // activations: normalized, a few units
             x[i] = to_bf16(v);
-            xlo[i] = to_bf16(1e-3f * nd(rng));       // a bf16x2 low part
+            xlo[i] = to_bf16(1e-3f * nd(rng)); // a bf16x2 low part
         }
-        for (auto& v : w) v = to_bf16(0.02f * nd(rng));
+        for (auto& v : w)
+            v = to_bf16(0.02f * nd(rng));
         uint16_t *dx = nullptr, *dxlo = nullptr, *dw = nullptr;
         float *dy = nullptr, *dr = nullptr;
         const size_t ybytes = (size_t) (s.T * ldy) * 4;
-        bool ok = ok_or(cudaMalloc((void**) &dx, x.size() * 2), "x") && ok_or(cudaMalloc((void**) &dxlo, x.size() * 2), "xlo") &&
+        bool ok = ok_or(cudaMalloc((void**) &dx, x.size() * 2), "x") &&
+                  ok_or(cudaMalloc((void**) &dxlo, x.size() * 2), "xlo") &&
                   ok_or(cudaMalloc((void**) &dw, w.size() * 2), "w") && ok_or(cudaMalloc((void**) &dy, ybytes), "y") &&
                   ok_or(cudaMalloc((void**) &dr, ybytes), "ref");
-        if (!ok) return 1;
+        if (!ok)
+            return 1;
         cudaMemcpy(dx, x.data(), x.size() * 2, cudaMemcpyHostToDevice);
         cudaMemcpy(dxlo, xlo.data(), xlo.size() * 2, cudaMemcpyHostToDevice);
         cudaMemcpy(dw, w.data(), w.size() * 2, cudaMemcpyHostToDevice);
@@ -109,7 +120,8 @@ int main(int argc, char** argv) {
             std::printf("FAIL: reference cublasGemmEx\n");
             return 1;
         }
-        if (!ok_or(cudaStreamSynchronize(st), "sync")) return 1;
+        if (!ok_or(cudaStreamSynchronize(st), "sync"))
+            return 1;
         std::vector<float> y((size_t) (s.T * ldy)), r(y.size());
         cudaMemcpy(y.data(), dy, ybytes, cudaMemcpyDeviceToHost);
         cudaMemcpy(r.data(), dr, ybytes, cudaMemcpyDeviceToHost);
@@ -118,26 +130,31 @@ int main(int argc, char** argv) {
         for (int64_t t = 0; t < s.T; ++t)
             for (int64_t c = 0; c < s.N; ++c) {
                 const float a = y[(size_t) (t * ldy + c)], b = r[(size_t) (t * ldy + c)];
-                if (!std::isfinite(a)) ++bad;
+                if (!std::isfinite(a))
+                    ++bad;
                 worst = std::max(worst, (double) std::fabs(a - b));
                 mag = std::max(mag, (double) std::fabs(b));
             }
         // the untouched columns of a wider row stride stay as they were
         for (int64_t t = 0; t < s.T && ldy > s.N; ++t)
             for (int64_t c = s.N; c < ldy; ++c)
-                if (y[(size_t) (t * ldy + c)] != 0.0f) ++bad;
+                if (y[(size_t) (t * ldy + c)] != 0.0f)
+                    ++bad;
         const bool pass = bad == 0 && worst <= 1e-4 * mag;
-        if (!pass) ++failures;
+        if (!pass)
+            ++failures;
         std::printf("  %-32s T %5lld N %5lld K %5lld ldy %5lld: worst |diff| %.3e of max |ref| %.3e (rel %.2e) %s\n",
                     s.what, (long long) s.T, (long long) s.N, (long long) s.K, (long long) ldy, worst, mag, worst / mag,
                     pass ? "pass" : "FAIL");
 
         if (bench) {
             auto time = [&](auto&& f) {
-                for (int i = 0; i < 3; ++i) f();
+                for (int i = 0; i < 3; ++i)
+                    f();
                 cudaStreamSynchronize(st);
                 const auto t0 = std::chrono::steady_clock::now();
-                for (int i = 0; i < 20; ++i) f();
+                for (int i = 0; i < 20; ++i)
+                    f();
                 cudaStreamSynchronize(st);
                 return std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t0).count() / 20;
             };
@@ -146,7 +163,11 @@ int main(int argc, char** argv) {
             std::printf("      bench: Gemm::bf16 %9.1f us   cuBLAS BF16 %9.1f us   (%.2fx)\n", us_gemm, us_ref,
                         us_ref / us_gemm);
         }
-        cudaFree(dx); cudaFree(dxlo); cudaFree(dw); cudaFree(dy); cudaFree(dr);
+        cudaFree(dx);
+        cudaFree(dxlo);
+        cudaFree(dw);
+        cudaFree(dy);
+        cudaFree(dr);
     }
     cublasDestroy(h);
     cudaStreamDestroy(st);

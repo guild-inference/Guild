@@ -56,7 +56,9 @@ uint32_t decode_utf8_codepoint(const char* s, size_t len, size_t& bytes_read) {
 // ============================================================================
 
 IncrementalDecoder::IncrementalDecoder(const Tokenizer* tokenizer, bool skip_special_tokens)
-    : tokenizer_(tokenizer), skip_special_tokens_(skip_special_tokens) {}
+    : tokenizer_(tokenizer),
+      skip_special_tokens_(skip_special_tokens) {
+}
 
 IncrementalDecoder::~IncrementalDecoder() = default;
 
@@ -65,7 +67,8 @@ void IncrementalDecoder::reset() {
 }
 
 std::string IncrementalDecoder::add(int32_t token_id) {
-    if (!tokenizer_) return "";
+    if (!tokenizer_)
+        return "";
 
     if (skip_special_tokens_ && tokenizer_->is_special(token_id)) {
         return "";
@@ -128,7 +131,8 @@ std::string IncrementalDecoder::add(int32_t token_id) {
 }
 
 std::string IncrementalDecoder::flush() {
-    if (pending_.empty()) return "";
+    if (pending_.empty())
+        return "";
     std::string res;
     // For any remaining incomplete bytes, emit U+FFFD replacement
     size_t cursor = 0;
@@ -159,9 +163,12 @@ Tokenizer::~Tokenizer() = default;
 
 void Tokenizer::init_byte_encoder() {
     std::vector<int> bs;
-    for (int b = 0x21; b <= 0x7E; ++b) bs.push_back(b);
-    for (int b = 0xA1; b <= 0xAC; ++b) bs.push_back(b);
-    for (int b = 0xAE; b <= 0xFF; ++b) bs.push_back(b);
+    for (int b = 0x21; b <= 0x7E; ++b)
+        bs.push_back(b);
+    for (int b = 0xA1; b <= 0xAC; ++b)
+        bs.push_back(b);
+    for (int b = 0xAE; b <= 0xFF; ++b)
+        bs.push_back(b);
     std::vector<int> cs = bs;
     int n = 0;
     for (int b = 0; b < 256; ++b) {
@@ -329,20 +336,23 @@ bool Tokenizer::load(const std::string& tokenizer_dir, std::string& err_msg) {
     std::string line;
     int32_t rank = 0;
     while (std::getline(mf, line)) {
-        if (!line.empty() && line.back() == '\r') line.pop_back();
-        if (line.empty()) continue;
+        if (!line.empty() && line.back() == '\r')
+            line.pop_back();
+        if (line.empty())
+            continue;
         size_t sp = line.find(' ');
-        if (sp == std::string::npos) continue;
+        if (sp == std::string::npos)
+            continue;
         std::string first = line.substr(0, sp);
         std::string second = line.substr(sp + 1);
         auto it1 = token_to_id_.find(first);
         auto it2 = token_to_id_.find(second);
         auto itm = token_to_id_.find(first + second);
         if (it1 != token_to_id_.end() && it2 != token_to_id_.end() && itm != token_to_id_.end()) {
-            const uint64_t key = (static_cast<uint64_t>(static_cast<uint32_t>(it1->second)) << 32) |
-                                 static_cast<uint32_t>(it2->second);
-            const uint64_t val = (static_cast<uint64_t>(static_cast<uint32_t>(rank)) << 32) |
-                                 static_cast<uint32_t>(itm->second);
+            const uint64_t key =
+                (static_cast<uint64_t>(static_cast<uint32_t>(it1->second)) << 32) | static_cast<uint32_t>(it2->second);
+            const uint64_t val =
+                (static_cast<uint64_t>(static_cast<uint32_t>(rank)) << 32) | static_cast<uint32_t>(itm->second);
             id_merges_.emplace(key, val);
             merge_id_pairs_.emplace_back(it1->second, it2->second);
         } else {
@@ -361,17 +371,20 @@ bool Tokenizer::load(const std::string& tokenizer_dir, std::string& err_msg) {
         merges_.clear();
         merges_.reserve(static_cast<size_t>(expected_merges) * 2);
         while (std::getline(mf, line)) {
-            if (!line.empty() && line.back() == '\r') line.pop_back();
-            if (line.empty()) continue;
+            if (!line.empty() && line.back() == '\r')
+                line.pop_back();
+            if (line.empty())
+                continue;
             size_t sp = line.find(' ');
-            if (sp == std::string::npos) continue;
+            if (sp == std::string::npos)
+                continue;
             merges_[std::make_pair(line.substr(0, sp), line.substr(sp + 1))] = r2++;
         }
     }
 
     if (static_cast<int64_t>(rank) != expected_merges) {
-        err_msg = "merges.txt count (" + std::to_string(rank) +
-                  ") does not match expected n_merges (" + std::to_string(expected_merges) + ")";
+        err_msg = "merges.txt count (" + std::to_string(rank) + ") does not match expected n_merges (" +
+                  std::to_string(expected_merges) + ")";
         return false;
     }
 
@@ -452,7 +465,8 @@ bool Tokenizer::serialize_binary(std::vector<uint8_t>& out, std::string& err_msg
     hdr.flags = id_merges_complete_ ? 1u : 0u;
 
     uint64_t str_bytes = 0;
-    for (const auto& s : vocab_tokens_) str_bytes += s.size();
+    for (const auto& s : vocab_tokens_)
+        str_bytes += s.size();
     hdr.vocab_blob_bytes = str_bytes;
     const std::string& chat_src = chat_template_.source();
     hdr.chat_template_bytes = chat_src.size();
@@ -465,12 +479,9 @@ bool Tokenizer::serialize_binary(std::vector<uint8_t>& out, std::string& err_msg
     // int32_t merge_triples[n_merges * 3] (id1, id2, merged_id)
     // char chat_template[chat_template_bytes]
     const size_t total_size =
-        sizeof(GbtHeaderV1) +
-        static_cast<size_t>(hdr.vocab_size + 1) * sizeof(uint32_t) +
-        static_cast<size_t>(hdr.vocab_size) * sizeof(uint8_t) +
-        static_cast<size_t>(hdr.vocab_blob_bytes) +
-        static_cast<size_t>(hdr.n_merges) * 3 * sizeof(int32_t) +
-        static_cast<size_t>(hdr.chat_template_bytes);
+        sizeof(GbtHeaderV1) + static_cast<size_t>(hdr.vocab_size + 1) * sizeof(uint32_t) +
+        static_cast<size_t>(hdr.vocab_size) * sizeof(uint8_t) + static_cast<size_t>(hdr.vocab_blob_bytes) +
+        static_cast<size_t>(hdr.n_merges) * 3 * sizeof(int32_t) + static_cast<size_t>(hdr.chat_template_bytes);
 
     out.assign(total_size, 0);
     size_t cursor = 0;
@@ -498,8 +509,7 @@ bool Tokenizer::serialize_binary(std::vector<uint8_t>& out, std::string& err_msg
 
     for (int32_t r = 0; r < hdr.n_merges; ++r) {
         const auto [id1, id2] = merge_id_pairs_[static_cast<size_t>(r)];
-        const uint64_t key = (static_cast<uint64_t>(static_cast<uint32_t>(id1)) << 32) |
-                             static_cast<uint32_t>(id2);
+        const uint64_t key = (static_cast<uint64_t>(static_cast<uint32_t>(id1)) << 32) | static_cast<uint32_t>(id2);
         auto it = id_merges_.find(key);
         if (it == id_merges_.end()) {
             err_msg = "internal error: missing merge key during serialization";
@@ -546,13 +556,9 @@ bool Tokenizer::load_binary(const uint8_t* data, size_t size, std::string& err_m
         err_msg = "invalid GBT1 vocab_size or n_merges";
         return false;
     }
-    const uint64_t expected_size =
-        sizeof(GbtHeaderV1) +
-        static_cast<uint64_t>(hdr.vocab_size + 1) * sizeof(uint32_t) +
-        static_cast<uint64_t>(hdr.vocab_size) * sizeof(uint8_t) +
-        hdr.vocab_blob_bytes +
-        static_cast<uint64_t>(hdr.n_merges) * 3 * sizeof(int32_t) +
-        hdr.chat_template_bytes;
+    const uint64_t expected_size = sizeof(GbtHeaderV1) + static_cast<uint64_t>(hdr.vocab_size + 1) * sizeof(uint32_t) +
+                                   static_cast<uint64_t>(hdr.vocab_size) * sizeof(uint8_t) + hdr.vocab_blob_bytes +
+                                   static_cast<uint64_t>(hdr.n_merges) * 3 * sizeof(int32_t) + hdr.chat_template_bytes;
     if (expected_size != size) {
         err_msg = "GBT1 binary tokenizer size mismatch";
         return false;
@@ -611,17 +617,15 @@ bool Tokenizer::load_binary(const uint8_t* data, size_t size, std::string& err_m
         int32_t triple[3];
         std::memcpy(triple, data + cursor, sizeof(triple));
         cursor += sizeof(triple);
-        if (triple[0] < 0 || triple[0] >= hdr.vocab_size ||
-            triple[1] < 0 || triple[1] >= hdr.vocab_size ||
+        if (triple[0] < 0 || triple[0] >= hdr.vocab_size || triple[1] < 0 || triple[1] >= hdr.vocab_size ||
             triple[2] < 0 || triple[2] >= hdr.vocab_size) {
             err_msg = "GBT1 merge token ID out of bounds";
             return false;
         }
         merge_id_pairs_[static_cast<size_t>(r)] = {triple[0], triple[1]};
-        const uint64_t key = (static_cast<uint64_t>(static_cast<uint32_t>(triple[0])) << 32) |
-                             static_cast<uint32_t>(triple[1]);
-        const uint64_t val = (static_cast<uint64_t>(static_cast<uint32_t>(r)) << 32) |
-                             static_cast<uint32_t>(triple[2]);
+        const uint64_t key =
+            (static_cast<uint64_t>(static_cast<uint32_t>(triple[0])) << 32) | static_cast<uint32_t>(triple[1]);
+        const uint64_t val = (static_cast<uint64_t>(static_cast<uint32_t>(r)) << 32) | static_cast<uint32_t>(triple[2]);
         id_merges_.emplace(key, val);
     }
     id_merges_complete_ = all_bytes && ((hdr.flags & 1u) != 0);
@@ -629,9 +633,8 @@ bool Tokenizer::load_binary(const uint8_t* data, size_t size, std::string& err_m
         merges_.reserve(static_cast<size_t>(hdr.n_merges) * 2);
         for (int32_t r = 0; r < hdr.n_merges; ++r) {
             const auto [id1, id2] = merge_id_pairs_[static_cast<size_t>(r)];
-            merges_.emplace(std::make_pair(vocab_tokens_[static_cast<size_t>(id1)],
-                                           vocab_tokens_[static_cast<size_t>(id2)]),
-                            r);
+            merges_.emplace(
+                std::make_pair(vocab_tokens_[static_cast<size_t>(id1)], vocab_tokens_[static_cast<size_t>(id2)]), r);
         }
     }
 
@@ -672,14 +675,15 @@ std::vector<std::string> Tokenizer::pre_tokenize_qwen(const std::string& text) c
             bool matched = false;
             if (i + 1 < n) {
                 char c1 = text[i + 1];
-                if (c1 == 's' || c1 == 'S' || c1 == 't' || c1 == 'T' ||
-                    c1 == 'm' || c1 == 'M' || c1 == 'd' || c1 == 'D') {
+                if (c1 == 's' || c1 == 'S' || c1 == 't' || c1 == 'T' || c1 == 'm' || c1 == 'M' || c1 == 'd' ||
+                    c1 == 'D') {
                     tokens.push_back(text.substr(i, 2));
                     i += 2;
                     matched = true;
                 }
             }
-            if (matched) continue;
+            if (matched)
+                continue;
             if (i + 2 < n) {
                 char c1 = text[i + 1];
                 char c2 = text[i + 2];
@@ -697,7 +701,8 @@ std::vector<std::string> Tokenizer::pre_tokenize_qwen(const std::string& text) c
                     matched = true;
                 }
             }
-            if (matched) continue;
+            if (matched)
+                continue;
         }
 
         size_t b_read = 0;
@@ -714,7 +719,8 @@ std::vector<std::string> Tokenizer::pre_tokenize_qwen(const std::string& text) c
                     while (i < n) {
                         size_t cr = 0;
                         uint32_t c = decode_utf8_codepoint(text.data() + i, n - i, cr);
-                        if (!unicode::is_letter(c) && !unicode::is_mark(c)) break;
+                        if (!unicode::is_letter(c) && !unicode::is_mark(c))
+                            break;
                         i += cr;
                     }
                     tokens.push_back(text.substr(start, i - start));
@@ -728,7 +734,8 @@ std::vector<std::string> Tokenizer::pre_tokenize_qwen(const std::string& text) c
             while (i < n) {
                 size_t cr = 0;
                 uint32_t c = decode_utf8_codepoint(text.data() + i, n - i, cr);
-                if (!unicode::is_letter(c) && !unicode::is_mark(c)) break;
+                if (!unicode::is_letter(c) && !unicode::is_mark(c))
+                    break;
                 i += cr;
             }
             tokens.push_back(text.substr(start, i - start));
@@ -747,15 +754,16 @@ std::vector<std::string> Tokenizer::pre_tokenize_qwen(const std::string& text) c
             size_t next_read = 0;
             if (i + 1 < n) {
                 uint32_t next_cp = decode_utf8_codepoint(text.data() + i + 1, n - (i + 1), next_read);
-                if (!unicode::is_whitespace(next_cp) && !unicode::is_letter(next_cp) &&
-                    !unicode::is_mark(next_cp) && !unicode::is_number(next_cp)) {
+                if (!unicode::is_whitespace(next_cp) && !unicode::is_letter(next_cp) && !unicode::is_mark(next_cp) &&
+                    !unicode::is_number(next_cp)) {
                     size_t start = i;
                     i += 1;
                     while (i < n) {
                         size_t cr = 0;
                         uint32_t c = decode_utf8_codepoint(text.data() + i, n - i, cr);
-                        if (unicode::is_whitespace(c) || unicode::is_letter(c) ||
-                            unicode::is_mark(c) || unicode::is_number(c)) break;
+                        if (unicode::is_whitespace(c) || unicode::is_letter(c) || unicode::is_mark(c) ||
+                            unicode::is_number(c))
+                            break;
                         i += cr;
                     }
                     while (i < n && (text[i] == '\r' || text[i] == '\n')) {
@@ -765,15 +773,15 @@ std::vector<std::string> Tokenizer::pre_tokenize_qwen(const std::string& text) c
                     continue;
                 }
             }
-        } else if (!unicode::is_whitespace(cp) && !unicode::is_letter(cp) &&
-                   !unicode::is_mark(cp) && !unicode::is_number(cp)) {
+        } else if (!unicode::is_whitespace(cp) && !unicode::is_letter(cp) && !unicode::is_mark(cp) &&
+                   !unicode::is_number(cp)) {
             size_t start = i;
             i += b_read;
             while (i < n) {
                 size_t cr = 0;
                 uint32_t c = decode_utf8_codepoint(text.data() + i, n - i, cr);
-                if (unicode::is_whitespace(c) || unicode::is_letter(c) ||
-                    unicode::is_mark(c) || unicode::is_number(c)) break;
+                if (unicode::is_whitespace(c) || unicode::is_letter(c) || unicode::is_mark(c) || unicode::is_number(c))
+                    break;
                 i += cr;
             }
             while (i < n && (text[i] == '\r' || text[i] == '\n')) {
@@ -790,7 +798,8 @@ std::vector<std::string> Tokenizer::pre_tokenize_qwen(const std::string& text) c
             while (k < n) {
                 size_t cr = 0;
                 uint32_t c = decode_utf8_codepoint(text.data() + k, n - k, cr);
-                if (!unicode::is_whitespace(c)) break;
+                if (!unicode::is_whitespace(c))
+                    break;
                 if (text[k] == '\r' || text[k] == '\n') {
                     last_nl = k;
                 }
@@ -809,7 +818,8 @@ std::vector<std::string> Tokenizer::pre_tokenize_qwen(const std::string& text) c
             while (k < n) {
                 size_t cr = 0;
                 uint32_t c = decode_utf8_codepoint(text.data() + k, n - k, cr);
-                if (!unicode::is_whitespace(c)) break;
+                if (!unicode::is_whitespace(c))
+                    break;
                 k += cr;
             }
             if (k == n) {
@@ -830,7 +840,8 @@ std::vector<std::string> Tokenizer::pre_tokenize_qwen(const std::string& text) c
             while (i < n) {
                 size_t cr = 0;
                 uint32_t c = decode_utf8_codepoint(text.data() + i, n - i, cr);
-                if (!unicode::is_whitespace(c)) break;
+                if (!unicode::is_whitespace(c))
+                    break;
                 i += cr;
             }
             tokens.push_back(text.substr(start, i - start));
@@ -846,7 +857,8 @@ std::vector<std::string> Tokenizer::pre_tokenize_qwen(const std::string& text) c
 }
 
 std::vector<int32_t> Tokenizer::bpe_merge_word(const std::string& word) const {
-    if (word.empty()) return {};
+    if (word.empty())
+        return {};
 
     if (id_merges_complete_) {
         std::vector<int32_t> ids;
@@ -858,8 +870,8 @@ std::vector<int32_t> Tokenizer::bpe_merge_word(const std::string& word) const {
             uint32_t best_rank = UINT32_MAX;
             int32_t best_a = -1, best_b = -1, best_merged = -1;
             for (size_t i = 0; i + 1 < ids.size(); ++i) {
-                const uint64_t key = (static_cast<uint64_t>(static_cast<uint32_t>(ids[i])) << 32) |
-                                     static_cast<uint32_t>(ids[i + 1]);
+                const uint64_t key =
+                    (static_cast<uint64_t>(static_cast<uint32_t>(ids[i])) << 32) | static_cast<uint32_t>(ids[i + 1]);
                 auto it = id_merges_.find(key);
                 if (it != id_merges_.end()) {
                     const uint32_t rank = static_cast<uint32_t>(it->second >> 32);
@@ -871,7 +883,8 @@ std::vector<int32_t> Tokenizer::bpe_merge_word(const std::string& word) const {
                     }
                 }
             }
-            if (best_rank == UINT32_MAX) break;
+            if (best_rank == UINT32_MAX)
+                break;
             size_t write_idx = 0;
             size_t read_idx = 0;
             while (read_idx < ids.size()) {
@@ -914,13 +927,15 @@ std::vector<int32_t> Tokenizer::bpe_merge_word(const std::string& word) const {
             }
         }
 
-        if (min_rank == -1) break;
+        if (min_rank == -1)
+            break;
 
         std::vector<std::string> next_tokens;
         next_tokens.reserve(word_tokens.size());
         size_t i = 0;
         while (i < word_tokens.size()) {
-            if (i < word_tokens.size() - 1 && word_tokens[i] == best_pair.first && word_tokens[i + 1] == best_pair.second) {
+            if (i < word_tokens.size() - 1 && word_tokens[i] == best_pair.first &&
+                word_tokens[i + 1] == best_pair.second) {
                 next_tokens.push_back(best_pair.first + best_pair.second);
                 i += 2;
             } else {
@@ -950,14 +965,13 @@ std::vector<int32_t> Tokenizer::tokenize(const std::string& text) const {
     return ids;
 }
 
-bool Tokenizer::encode(const std::string& text,
-                       std::vector<int32_t>& ids,
-                       bool allow_special,
+bool Tokenizer::encode(const std::string& text, std::vector<int32_t>& ids, bool allow_special,
                        std::string& err_msg) const {
     ids.clear();
     err_msg.clear();
 
-    if (text.empty()) return true;
+    if (text.empty())
+        return true;
 
     if (!loaded_) {
         err_msg = "tokenizer is not loaded";
@@ -1018,7 +1032,8 @@ std::string Tokenizer::decode_raw_bytes(int32_t token_id) const {
         return "";
     }
     const std::string& s = vocab_tokens_[static_cast<size_t>(token_id)];
-    if (s.empty()) return "";
+    if (s.empty())
+        return "";
 
     // Fast path: pure ASCII without byte encoding characters
     bool all_ascii = true;
@@ -1028,7 +1043,8 @@ std::string Tokenizer::decode_raw_bytes(int32_t token_id) const {
             break;
         }
     }
-    if (all_ascii) return s;
+    if (all_ascii)
+        return s;
 
     // Convert byte-level Unicode characters back to raw bytes
     std::string out;
@@ -1039,8 +1055,7 @@ std::string Tokenizer::decode_raw_bytes(int32_t token_id) const {
         if ((c & 0xE0) == 0xC0 && i < s.size()) {
             codepoint = ((c & 0x1F) << 6) | (static_cast<unsigned char>(s[i++]) & 0x3F);
         } else if ((c & 0xF0) == 0xE0 && i + 1 < s.size()) {
-            codepoint = ((c & 0x0F) << 12) |
-                        ((static_cast<unsigned char>(s[i]) & 0x3F) << 6) |
+            codepoint = ((c & 0x0F) << 12) | ((static_cast<unsigned char>(s[i]) & 0x3F) << 6) |
                         (static_cast<unsigned char>(s[i + 1]) & 0x3F);
             i += 2;
         }

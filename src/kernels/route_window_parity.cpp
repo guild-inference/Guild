@@ -17,10 +17,17 @@
 
 namespace {
 void ck(cudaError_t e, const char* what) {
-    if (e != cudaSuccess) { std::fprintf(stderr, "%s: %s\n", what, cudaGetErrorString(e)); std::exit(2); }
+    if (e != cudaSuccess) {
+        std::fprintf(stderr, "%s: %s\n", what, cudaGetErrorString(e));
+        std::exit(2);
+    }
 }
-uint16_t bf16(float f) { uint32_t i; std::memcpy(&i, &f, 4); return (uint16_t) ((i + ((i >> 16) & 1u) + 0x7FFFu) >> 16); }
-}  // namespace
+uint16_t bf16(float f) {
+    uint32_t i;
+    std::memcpy(&i, &f, 4);
+    return (uint16_t) ((i + ((i >> 16) & 1u) + 0x7FFFu) >> 16);
+}
+} // namespace
 
 int main() {
     const int N = 2560, E = 256, K = 10;
@@ -31,15 +38,21 @@ int main() {
         for (int T : {2, 3, 4, 6}) {
             std::vector<uint16_t> w((size_t) n_out * N);
             std::vector<float> x((size_t) T * N);
-            for (auto& v : w) v = bf16(nd(rng) * 0.05f);
-            for (auto& v : x) v = nd(rng);
-            uint16_t* dw; float *dx, *dy1, *dyn;
-            ck(cudaMalloc(&dw, w.size() * 2), "w"); ck(cudaMalloc(&dx, x.size() * 4), "x");
-            ck(cudaMalloc(&dy1, (size_t) T * n_out * 4), "y1"); ck(cudaMalloc(&dyn, (size_t) T * n_out * 4), "yn");
+            for (auto& v : w)
+                v = bf16(nd(rng) * 0.05f);
+            for (auto& v : x)
+                v = nd(rng);
+            uint16_t* dw;
+            float *dx, *dy1, *dyn;
+            ck(cudaMalloc(&dw, w.size() * 2), "w");
+            ck(cudaMalloc(&dx, x.size() * 4), "x");
+            ck(cudaMalloc(&dy1, (size_t) T * n_out * 4), "y1");
+            ck(cudaMalloc(&dyn, (size_t) T * n_out * 4), "yn");
             ck(cudaMemcpy(dw, w.data(), w.size() * 2, cudaMemcpyHostToDevice), "up w");
             ck(cudaMemcpy(dx, x.data(), x.size() * 4, cudaMemcpyHostToDevice), "up x");
             for (int t = 0; t < T; ++t)
-                guild::kernels::bf16_gemv_fp32_mmvf(dx + (size_t) t * N, dw, dy1 + (size_t) t * n_out, N, n_out, nullptr);
+                guild::kernels::bf16_gemv_fp32_mmvf(dx + (size_t) t * N, dw, dy1 + (size_t) t * n_out, N, n_out,
+                                                    nullptr);
             guild::kernels::bf16_gemv_fp32_mmvf_cols(dx, dw, dyn, N, n_out, T, nullptr);
             ck(cudaDeviceSynchronize(), "sync");
             std::vector<float> y1((size_t) T * n_out), yn((size_t) T * n_out);
@@ -47,11 +60,15 @@ int main() {
             ck(cudaMemcpy(yn.data(), dyn, yn.size() * 4, cudaMemcpyDeviceToHost), "down n");
             const bool same = std::memcmp(y1.data(), yn.data(), y1.size() * 4) == 0;
             std::printf("  mmvf cols  n_out %3d  T %d  %s\n", n_out, T, same ? "bit-identical" : "*** DIFFERS ***");
-            if (!same) ++bad;
+            if (!same)
+                ++bad;
             if (n_out == E) {
-                int *i1, *in_; float *w1, *wn;
-                ck(cudaMalloc(&i1, (size_t) T * K * 4), "i1"); ck(cudaMalloc(&in_, (size_t) T * K * 4), "in");
-                ck(cudaMalloc(&w1, (size_t) T * K * 4), "w1"); ck(cudaMalloc(&wn, (size_t) T * K * 4), "wn");
+                int *i1, *in_;
+                float *w1, *wn;
+                ck(cudaMalloc(&i1, (size_t) T * K * 4), "i1");
+                ck(cudaMalloc(&in_, (size_t) T * K * 4), "in");
+                ck(cudaMalloc(&w1, (size_t) T * K * 4), "w1");
+                ck(cudaMalloc(&wn, (size_t) T * K * 4), "wn");
                 for (int t = 0; t < T; ++t)
                     guild::kernels::router_top10(dy1 + (size_t) t * E, 1, E, K, i1 + t * K, w1 + t * K, nullptr);
                 guild::kernels::router_top10(dy1, T, E, K, in_, wn, nullptr);
@@ -64,10 +81,17 @@ int main() {
                 ck(cudaMemcpy(fb.data(), wn, fb.size() * 4, cudaMemcpyDeviceToHost), "wn");
                 const bool s2 = a == b && std::memcmp(fa.data(), fb.data(), fa.size() * 4) == 0;
                 std::printf("  top10 n    T %d            %s\n", T, s2 ? "bit-identical" : "*** DIFFERS ***");
-                if (!s2) ++bad;
-                cudaFree(i1); cudaFree(in_); cudaFree(w1); cudaFree(wn);
+                if (!s2)
+                    ++bad;
+                cudaFree(i1);
+                cudaFree(in_);
+                cudaFree(w1);
+                cudaFree(wn);
             }
-            cudaFree(dw); cudaFree(dx); cudaFree(dy1); cudaFree(dyn);
+            cudaFree(dw);
+            cudaFree(dx);
+            cudaFree(dy1);
+            cudaFree(dyn);
         }
     }
     std::printf(bad ? "route_window_parity: %d FAILURES\n" : "route_window_parity OK\n", bad);

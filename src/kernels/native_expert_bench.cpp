@@ -29,7 +29,9 @@ namespace K = guild::kernels;
 int main(int argc, char** argv) {
     setvbuf(stdout, nullptr, _IONBF, 0);
     if (argc < 7) {
-        std::fprintf(stderr, "usage: native_expert_bench <shard1.gguf> <layer[,layer]> <groups> <tokens> <ref mode> <mode> [iters]\n");
+        std::fprintf(
+            stderr,
+            "usage: native_expert_bench <shard1.gguf> <layer[,layer]> <groups> <tokens> <ref mode> <mode> [iters]\n");
         return 2;
     }
     guild::GgufFile gguf(argv[1]);
@@ -37,13 +39,17 @@ int main(int argc, char** argv) {
     {
         std::stringstream ss(argv[2]);
         std::string t;
-        while (std::getline(ss, t, ',')) layers.push_back(std::atoi(t.c_str()));
+        while (std::getline(ss, t, ','))
+            layers.push_back(std::atoi(t.c_str()));
     }
     const int G = std::atoi(argv[3]), T = std::atoi(argv[4]), mref = std::atoi(argv[5]), mode = std::atoi(argv[6]);
     const int iters = argc > 7 ? std::atoi(argv[7]) : 200;
     const int NTOK = 8;
-    if (T < 1 || T > NTOK || G < 1) { std::fprintf(stderr, "tokens 1..8, groups >= 1\n"); return 2; }
-    const int64_t H = 2560, FF_FULL = 640, FF = FF_FULL;   // Flash-Next's expert geometry
+    if (T < 1 || T > NTOK || G < 1) {
+        std::fprintf(stderr, "tokens 1..8, groups >= 1\n");
+        return 2;
+    }
+    const int64_t H = 2560, FF_FULL = 640, FF = FF_FULL; // Flash-Next's expert geometry
     int failures = 0;
     cudaStream_t s;
     cudaStreamCreate(&s);
@@ -55,16 +61,25 @@ int main(int argc, char** argv) {
         const char* roles[3] = {"gate", "up", "down"};
         for (const auto& ti : gguf.tensors())
             for (int r = 0; r < 3; ++r)
-                if (ti.name == "blk." + std::to_string(l) + ".ffn_" + roles[r] + "_exps.weight") t[r] = &ti;
-        if (!t[0] || !t[1] || !t[2]) { std::printf("layer %d: no expert tensors\n", l); ++failures; continue; }
+                if (ti.name == "blk." + std::to_string(l) + ".ffn_" + roles[r] + "_exps.weight")
+                    t[r] = &ti;
+        if (!t[0] || !t[1] || !t[2]) {
+            std::printf("layer %d: no expert tensors\n", l);
+            ++failures;
+            continue;
+        }
         cpu::NativeFmt f;
         std::string err;
         if (!cpu::native_fmt((int) t[0]->type, (int) t[2]->type, H, FF, f, err)) {
-            std::printf("layer %d: %s\n", l, err.c_str()); ++failures; continue;
+            std::printf("layer %d: %s\n", l, err.c_str());
+            ++failures;
+            continue;
         }
-        cpu::NativeFmt ff;    // the full expert's geometry, for strides into the GGUF
+        cpu::NativeFmt ff; // the full expert's geometry, for strides into the GGUF
         if (!cpu::native_fmt((int) t[0]->type, (int) t[2]->type, H, FF_FULL, ff, err)) {
-            std::printf("layer %d: %s\n", l, err.c_str()); ++failures; continue;
+            std::printf("layer %d: %s\n", l, err.c_str());
+            ++failures;
+            continue;
         }
         const size_t dsz = f.bytes - f.down_off, dsz_full = ff.bytes - ff.down_off;
         const size_t drow = dsz / H, drow_full = dsz_full / H;
@@ -80,7 +95,8 @@ int main(int argc, char** argv) {
         std::mt19937 rng(17 + l);
         std::normal_distribution<float> nd(0.f, 1.f);
         std::vector<float> x((size_t) NTOK * H);
-        for (auto& v : x) v = nd(rng);
+        for (auto& v : x)
+            v = nd(rng);
         const int NE = G * T;
         std::vector<unsigned long long> ptr(G);
         std::vector<int32_t> start(G + 1), dst(NE), tok(NE);
@@ -128,7 +144,10 @@ int main(int argc, char** argv) {
         cudaMemsetAsync(dout, 0xff, got.size() * 4, s);
         run(mode, 0);
         cudaMemcpyAsync(got.data(), dout, got.size() * 4, cudaMemcpyDeviceToHost, s);
-        if (cudaStreamSynchronize(s) != cudaSuccess) { std::printf("layer %d: CUDA error\n", l); return 1; }
+        if (cudaStreamSynchronize(s) != cudaSuccess) {
+            std::printf("layer %d: CUDA error\n", l);
+            return 1;
+        }
         size_t ndiff = 0;
         double worst = 0;
         for (size_t i = 0; i < ref.size(); ++i)
@@ -137,9 +156,11 @@ int main(int argc, char** argv) {
                 worst = std::fmax(worst, std::fabs((double) ref[i] - got[i]) / (std::fabs((double) ref[i]) + 1e-6));
             }
         auto time = [&](int m, int phase) {
-            for (int i = 0; i < 10; ++i) run(m, phase);
+            for (int i = 0; i < 10; ++i)
+                run(m, phase);
             cudaEventRecord(e0, s);
-            for (int i = 0; i < iters; ++i) run(m, phase);
+            for (int i = 0; i < iters; ++i)
+                run(m, phase);
             cudaEventRecord(e1, s);
             cudaEventSynchronize(e1);
             float ms = 0;
@@ -148,22 +169,31 @@ int main(int argc, char** argv) {
         };
         const double gu_b = (double) G * 2 * f.up_off, d_b = (double) G * dsz;
         double us[2][3] = {{1e30, 1e30, 1e30}, {1e30, 1e30, 1e30}};
-        for (int round = 0; round < 3; ++round)   // interleaved, the minimum: the clocks wander between runs
+        for (int round = 0; round < 3; ++round) // interleaved, the minimum: the clocks wander between runs
             for (int k = 0; k < 2; ++k)
-                for (int p = 0; p < 3; ++p) us[k][p] = std::fmin(us[k][p], time(k ? mode : mref, p));
-        std::printf("layer %2d %-7s/%-6s G %d T %d | mode %d: all %7.1f us  gu %7.1f us (%3.0f GB/s)  down %6.1f us (%3.0f GB/s)"
+                for (int p = 0; p < 3; ++p)
+                    us[k][p] = std::fmin(us[k][p], time(k ? mode : mref, p));
+        std::printf("layer %2d %-7s/%-6s G %d T %d | mode %d: all %7.1f us  gu %7.1f us (%3.0f GB/s)  down %6.1f us "
+                    "(%3.0f GB/s)"
                     " | mode %d: all %7.1f us  gu %7.1f us (%3.0f GB/s)  down %6.1f us (%3.0f GB/s) | %s\n",
-                    l, ggml_type_name((ggml_type) f.gu_type), ggml_type_name((ggml_type) f.d_type), G, T,
-                    mref, us[0][0], us[0][1], gu_b / us[0][1] / 1e3, us[0][2], d_b / us[0][2] / 1e3,
-                    mode, us[1][0], us[1][1], gu_b / us[1][1] / 1e3, us[1][2], d_b / us[1][2] / 1e3,
-                    ndiff ? "DIFFERS" : "bitwise equal");
+                    l, ggml_type_name((ggml_type) f.gu_type), ggml_type_name((ggml_type) f.d_type), G, T, mref,
+                    us[0][0], us[0][1], gu_b / us[0][1] / 1e3, us[0][2], d_b / us[0][2] / 1e3, mode, us[1][0], us[1][1],
+                    gu_b / us[1][1] / 1e3, us[1][2], d_b / us[1][2] / 1e3, ndiff ? "DIFFERS" : "bitwise equal");
         if (ndiff) {
             std::printf("          %zu of %zu outputs differ, worst rel %.2e\n", ndiff, ref.size(), worst);
             ++failures;
         }
         K::native_expert_set_mode(-1, 0);
-        cudaFree(dblob); cudaFree(dx); cudaFree(dxq); cudaFree(dscr); cudaFree(dout); cudaFree(dptr);
-        cudaFree(dstart); cudaFree(dn); cudaFree(ddst); cudaFree(dtok);
+        cudaFree(dblob);
+        cudaFree(dx);
+        cudaFree(dxq);
+        cudaFree(dscr);
+        cudaFree(dout);
+        cudaFree(dptr);
+        cudaFree(dstart);
+        cudaFree(dn);
+        cudaFree(ddst);
+        cudaFree(dtok);
     }
     std::printf("native_expert_bench: %d differing\n", failures);
     return failures ? 1 : 0;

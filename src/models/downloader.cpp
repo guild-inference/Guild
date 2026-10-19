@@ -28,7 +28,8 @@ struct CurlProgressContext {
 
 int curl_xfer_cb(void* clientp, curl_off_t dltotal, curl_off_t dlnow, curl_off_t, curl_off_t) {
     auto* ctx = static_cast<CurlProgressContext*>(clientp);
-    if (!ctx || !ctx->downloader) return 0;
+    if (!ctx || !ctx->downloader)
+        return 0;
 
     if (ctx->downloader->is_cancelled()) {
         return 1; // Abort transfer
@@ -42,7 +43,8 @@ int curl_xfer_cb(void* clientp, curl_off_t dltotal, curl_off_t dlnow, curl_off_t
         ctx->progress->file_total_bytes = ctx->resume_offset + static_cast<uint64_t>(dltotal);
         if (ctx->progress->file_total_bytes > 0) {
             ctx->progress->percentage = (static_cast<double>(ctx->progress->file_downloaded_bytes) /
-                                         static_cast<double>(ctx->progress->file_total_bytes)) * 100.0;
+                                         static_cast<double>(ctx->progress->file_total_bytes)) *
+                                        100.0;
         }
     }
 
@@ -113,17 +115,14 @@ uint64_t Downloader::get_available_disk_space(const std::string& path) {
         p = p.parent_path();
     }
     auto space = fs::space(p, ec);
-    if (ec) return 0;
+    if (ec)
+        return 0;
     return space.available;
 }
 
-bool Downloader::download_file(const std::string& url,
-                              const std::string& destination_path,
-                              uint64_t expected_size,
-                              const std::string& expected_sha256,
-                              const DownloadOptions& options,
-                              DownloadProgress& progress,
-                              std::string& err_msg) {
+bool Downloader::download_file(const std::string& url, const std::string& destination_path, uint64_t expected_size,
+                               const std::string& expected_sha256, const DownloadOptions& options,
+                               DownloadProgress& progress, std::string& err_msg) {
     fs::path dest(destination_path);
     std::error_code ec;
     fs::create_directories(dest.parent_path(), ec);
@@ -178,7 +177,8 @@ bool Downloader::download_file(const std::string& url,
 
         progress.is_resumed = (resume_offset > 0);
         progress.file_downloaded_bytes = resume_offset;
-        if (expected_size > 0) progress.file_total_bytes = expected_size;
+        if (expected_size > 0)
+            progress.file_total_bytes = expected_size;
 
         FILE* fp = std::fopen(part_path.c_str(), resume_offset > 0 ? "ab" : "wb");
         if (!fp) {
@@ -230,8 +230,8 @@ bool Downloader::download_file(const std::string& url,
             // Validate downloaded size
             uint64_t actual_size = fs::file_size(part, ec);
             if (expected_size > 0 && actual_size != expected_size) {
-                err_msg = "Download incomplete: expected " + std::to_string(expected_size) +
-                          " bytes, got " + std::to_string(actual_size) + " bytes";
+                err_msg = "Download incomplete: expected " + std::to_string(expected_size) + " bytes, got " +
+                          std::to_string(actual_size) + " bytes";
                 retries++;
                 std::this_thread::sleep_for(std::chrono::seconds(1 << retries));
                 continue;
@@ -241,8 +241,8 @@ bool Downloader::download_file(const std::string& url,
             if (options.verify_hash && !expected_sha256.empty()) {
                 std::string hash = Sha256::hash_file(part_path);
                 if (hash != expected_sha256) {
-                    err_msg = "SHA-256 hash mismatch for " + dest.filename().string() +
-                              ": expected " + expected_sha256 + ", got " + hash;
+                    err_msg = "SHA-256 hash mismatch for " + dest.filename().string() + ": expected " +
+                              expected_sha256 + ", got " + hash;
                     // Hash corrupted: remove part file and retry
                     fs::remove(part, ec);
                     retries++;
@@ -275,9 +275,7 @@ bool Downloader::download_file(const std::string& url,
     return false;
 }
 
-bool Downloader::download_model(const ModelManifest& manifest,
-                                ModelStore& store,
-                                const DownloadOptions& options,
+bool Downloader::download_model(const ModelManifest& manifest, ModelStore& store, const DownloadOptions& options,
                                 std::string& err_msg) {
     store.init();
     cancel_requested_.store(false);
@@ -286,8 +284,8 @@ bool Downloader::download_model(const ModelManifest& manifest,
     uint64_t needed = manifest.expected_size_bytes;
     uint64_t free_space = get_available_disk_space(store.models_dir());
     if (free_space > 0 && needed > 0 && free_space < needed) {
-        err_msg = "Insufficient disk space: need " + format_bytes(needed) +
-                  ", but only " + format_bytes(free_space) + " available";
+        err_msg = "Insufficient disk space: need " + format_bytes(needed) + ", but only " + format_bytes(free_space) +
+                  " available";
         return false;
     }
 

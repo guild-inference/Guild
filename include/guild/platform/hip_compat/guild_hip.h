@@ -109,7 +109,8 @@ inline hipError_t guild_device_get_attribute(int* v, hipDeviceAttribute_t a, int
 // On AMD that needs FINE-GRAINED (coherent) memory - coarse-grained host memory may sit in the GPU's L2 for the
 // whole kernel and the spin never sees the other side.  So every mapped allocation is made coherent here.
 inline hipError_t guild_host_alloc(void** p, size_t bytes, unsigned int flags) {
-    if (flags & hipHostMallocMapped) flags |= hipHostMallocCoherent;
+    if (flags & hipHostMallocMapped)
+        flags |= hipHostMallocCoherent;
     return hipHostMalloc(p, bytes, flags);
 }
 template <typename T> inline hipError_t guild_host_alloc(T** p, size_t bytes, unsigned int flags) {
@@ -150,7 +151,10 @@ template <typename T> inline hipError_t guild_host_alloc(T** p, size_t bytes, un
 #define cudaGraphNodeTypeMemset hipGraphNodeTypeMemset
 #define cudaKernelNodeParams hipKernelNodeParams
 #define cudaGraphKernelNodeGetParams hipGraphKernelNodeGetParams
-inline hipError_t cudaFuncGetName(const char** name, const void*) { *name = nullptr; return hipErrorNotSupported; }
+inline hipError_t cudaFuncGetName(const char** name, const void*) {
+    *name = nullptr;
+    return hipErrorNotSupported;
+}
 #define cudaFuncSetAttribute(fn, attr, val) hipFuncSetAttribute(reinterpret_cast<const void*>(fn), attr, val)
 #define cudaMemcpyToSymbol(sym, src, ...) hipMemcpyToSymbol(HIP_SYMBOL(sym), src, __VA_ARGS__)
 
@@ -159,8 +163,8 @@ inline hipError_t cudaFuncGetName(const char** name, const void*) { *name = null
 inline hipError_t cudaGraphInstantiate(hipGraphExec_t* exec, hipGraph_t graph, unsigned long long flags) {
     return hipGraphInstantiateWithFlags(exec, graph, flags);
 }
-inline hipError_t cudaGraphInstantiate(hipGraphExec_t* exec, hipGraph_t graph, hipGraphNode_t* err_node,
-                                       char* log, size_t log_size) {
+inline hipError_t cudaGraphInstantiate(hipGraphExec_t* exec, hipGraph_t graph, hipGraphNode_t* err_node, char* log,
+                                       size_t log_size) {
     return hipGraphInstantiate(exec, graph, err_node, log, log_size);
 }
 // cudaInitDevice(dev, deviceFlags, flags): initialise a device and its scheduling flags WITHOUT making it the
@@ -169,10 +173,13 @@ inline hipError_t cudaGraphInstantiate(hipGraphExec_t* exec, hipGraph_t graph, h
 inline hipError_t cudaInitDevice(int device, unsigned int device_flags, unsigned int /*flags*/) {
     int prev = 0;
     hipError_t e = hipGetDevice(&prev);
-    if (e != hipSuccess) return e;
+    if (e != hipSuccess)
+        return e;
     e = hipSetDevice(device);
-    if (e != hipSuccess) return e;
-    if (hipSetDeviceFlags(device_flags) != hipSuccess) (void) hipGetLastError();   // context already active
+    if (e != hipSuccess)
+        return e;
+    if (hipSetDeviceFlags(device_flags) != hipSuccess)
+        (void) hipGetLastError(); // context already active
     return hipSetDevice(prev);
 }
 
@@ -209,15 +216,18 @@ static __device__ __forceinline__ void guild_syncwarp() {
 // __nanosleep(ns): s_sleep counts 64 clocks per unit (~40 ns at the 1.7 GHz shader clock); a spin loop only
 // needs "back off a little", not an exact time.
 static __device__ __forceinline__ void guild_nanosleep(unsigned int ns) {
-    if (ns >= 400) __builtin_amdgcn_s_sleep(8);
-    else __builtin_amdgcn_s_sleep(1);
+    if (ns >= 400)
+        __builtin_amdgcn_s_sleep(8);
+    else
+        __builtin_amdgcn_s_sleep(1);
 }
 #define __nanosleep(ns) guild_nanosleep(ns)
 #define __trap() __builtin_trap()
 
 // __dp4a(a, b, c): signed 8-bit dot product plus accumulator; gfx906 has v_dot4_i32_i8.
 static __device__ __forceinline__ int guild_dp4a(int a, int b, int c) {
-#if defined(__gfx906__) || defined(__gfx908__) || defined(__gfx90a__) || defined(__gfx942__) || defined(__GFX11__) || defined(__GFX12__)
+#if defined(__gfx906__) || defined(__gfx908__) || defined(__gfx90a__) || defined(__gfx942__) || defined(__GFX11__) ||  \
+    defined(__GFX12__)
     return __builtin_amdgcn_sdot4(a, b, c, false);
 #else
     const int8_t* va = reinterpret_cast<const int8_t*>(&a);
@@ -250,7 +260,8 @@ static __device__ __forceinline__ unsigned int guild_vcmpeq4(unsigned int a, uns
     const guild_u8x4 vb = __builtin_bit_cast(guild_u8x4, b);
     guild_u8x4 c;
 #pragma unroll
-    for (int i = 0; i < 4; ++i) c[i] = va[i] == vb[i] ? 0xff : 0x00;
+    for (int i = 0; i < 4; ++i)
+        c[i] = va[i] == vb[i] ? 0xff : 0x00;
     return __builtin_bit_cast(unsigned int, c);
 }
 static __device__ __forceinline__ unsigned int guild_vcmpne4(unsigned int a, unsigned int b) {
@@ -260,7 +271,6 @@ static __device__ __forceinline__ unsigned int guild_vcmpne4(unsigned int a, uns
 #define __vsubss4(a, b) guild_vsubss4((int) (a), (int) (b))
 #define __vcmpeq4(a, b) guild_vcmpeq4((unsigned int) (a), (unsigned int) (b))
 #define __vcmpne4(a, b) guild_vcmpne4((unsigned int) (a), (unsigned int) (b))
-
 
 // __fmul_rn / __fadd_rn / __fsub_rn: on NVIDIA these are never contracted into an FMA (that is their point - the
 // engine uses them where a result must match a reference bit for bit).  HIP spells them as plain operators, which
@@ -281,7 +291,6 @@ static __device__ __forceinline__ float guild_fsub_rn(float a, float b) {
 #define __fadd_rn(a, b) guild_fadd_rn((a), (b))
 #define __fsub_rn(a, b) guild_fsub_rn((a), (b))
 
-
 // __byte_perm(x, y, s): HIP's own version builds an 8-byte array and indexes it - the array lands in SCRATCH
 // memory, and every IQ4 codebook lookup went through it (a 0.9 MB IQ4_NL GEMV took 290 us, ~3 GB/s).  gfx906 has
 // v_perm_b32, which selects bytes of {src0:src1} (src1 low) by byte selectors 0-7: the same operation, one
@@ -292,4 +301,4 @@ static __device__ __forceinline__ unsigned int guild_byte_perm(unsigned int x, u
 }
 #define __byte_perm(x, y, s) guild_byte_perm((unsigned int) (x), (unsigned int) (y), (unsigned int) (s))
 
-#endif  // device side
+#endif // device side

@@ -21,7 +21,8 @@ void check(cudaError_t e, const char* what) {
 // Phase 1 harnesses kept catching.
 __global__ void poison_kernel(float* p, uint64_t n_floats) {
     const uint64_t i = (uint64_t) blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < n_floats) p[i] = __int_as_float(0x7fc00000);
+    if (i < n_floats)
+        p[i] = __int_as_float(0x7fc00000);
 }
 
 #if defined(GUILD_USE_HIP)
@@ -32,7 +33,8 @@ __global__ void poison_kernel(float* p, uint64_t n_floats) {
 std::string base_arch(const char* gcn_arch_name) {
     std::string arch(gcn_arch_name);
     const size_t colon = arch.find(':');
-    if (colon != std::string::npos) arch.resize(colon);
+    if (colon != std::string::npos)
+        arch.resize(colon);
     return arch;
 }
 
@@ -41,8 +43,10 @@ bool compiled_for(const std::string& arch) {
     size_t a = 0;
     while (a <= list.size()) {
         size_t b = list.find(',', a);
-        if (b == std::string::npos) b = list.size();
-        if (!arch.empty() && list.compare(a, b - a, arch) == 0 && b - a == arch.size()) return true;
+        if (b == std::string::npos)
+            b = list.size();
+        if (!arch.empty() && list.compare(a, b - a, arch) == 0 && b - a == arch.size())
+            return true;
         a = b + 1;
     }
     return false;
@@ -63,7 +67,7 @@ std::string arch_problem(const cudaDeviceProp& p, int ordinal) {
 }
 #endif
 
-}  // namespace
+} // namespace
 
 const char* compiled_gpu_archs() {
 #if defined(GUILD_USE_HIP)
@@ -75,7 +79,7 @@ const char* compiled_gpu_archs() {
 
 int device_count() {
     int count = 0;
-    if (cudaGetDeviceCount(&count) != cudaSuccess) {   // HIP without a usable device reports an error, not 0
+    if (cudaGetDeviceCount(&count) != cudaSuccess) { // HIP without a usable device reports an error, not 0
         cudaGetLastError();
         return 0;
     }
@@ -101,7 +105,7 @@ bool device_summary(int ordinal, std::string& name, std::string& detail) {
     return true;
 }
 
-}  // namespace guild::core
+} // namespace guild::core
 
 #if defined(GUILD_USE_HIP) && defined(_WIN32)
 // The free VRAM figure on Windows HIP (include/guild/hip_compat/cuda_runtime.h maps cudaMemGetInfo here).
@@ -136,9 +140,11 @@ IDXGIAdapter3* budget_adapter(int device) {
     static std::mutex mu;
     static IDXGIAdapter3* adapters[kMaxDevices] = {};
     static bool tried[kMaxDevices] = {};
-    if (device < 0 || device >= kMaxDevices) return nullptr;
+    if (device < 0 || device >= kMaxDevices)
+        return nullptr;
     std::lock_guard<std::mutex> lock(mu);
-    if (tried[device]) return adapters[device];
+    if (tried[device])
+        return adapters[device];
     tried[device] = true;
     hipDeviceProp_t p{};
     if (hipGetDeviceProperties(&p, device) != hipSuccess) {
@@ -148,17 +154,19 @@ IDXGIAdapter3* budget_adapter(int device) {
     LUID luid{};
     std::memcpy(&luid, p.luid, sizeof luid);
     using CreateFactory = HRESULT(WINAPI*)(REFIID, void**);
-    static HMODULE dxgi = LoadLibraryW(L"dxgi.dll");   // kept for the process' lifetime, like the adapters
+    static HMODULE dxgi = LoadLibraryW(L"dxgi.dll"); // kept for the process' lifetime, like the adapters
     const auto create = dxgi ? (CreateFactory) (void*) GetProcAddress(dxgi, "CreateDXGIFactory1") : nullptr;
     IDXGIFactory4* factory = nullptr;
-    if (create == nullptr || FAILED(create(__uuidof(IDXGIFactory4), (void**) &factory))) return nullptr;
+    if (create == nullptr || FAILED(create(__uuidof(IDXGIFactory4), (void**) &factory)))
+        return nullptr;
     IDXGIAdapter3* adapter = nullptr;
-    if (FAILED(factory->EnumAdapterByLuid(luid, __uuidof(IDXGIAdapter3), (void**) &adapter))) adapter = nullptr;
+    if (FAILED(factory->EnumAdapterByLuid(luid, __uuidof(IDXGIAdapter3), (void**) &adapter)))
+        adapter = nullptr;
     factory->Release();
     adapters[device] = adapter;
     return adapter;
 }
-}  // namespace
+} // namespace
 
 hipError_t mem_get_info(size_t* free_bytes, size_t* total_bytes) {
     const hipError_t e = hipMemGetInfo(free_bytes, total_bytes);
@@ -166,7 +174,8 @@ hipError_t mem_get_info(size_t* free_bytes, size_t* total_bytes) {
         const char* v = std::getenv("GUILD_WDDM_BUDGET");
         return v != nullptr && std::atoi(v) == 0;
     }();
-    if (e != hipSuccess || off || free_bytes == nullptr || total_bytes == nullptr) return e;
+    if (e != hipSuccess || off || free_bytes == nullptr || total_bytes == nullptr)
+        return e;
     int device = 0;
     if (hipGetDevice(&device) != hipSuccess) {
         (void) hipGetLastError();
@@ -177,17 +186,18 @@ hipError_t mem_get_info(size_t* free_bytes, size_t* total_bytes) {
     if (adapter == nullptr || FAILED(adapter->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &local)) ||
         local.Budget == 0 || local.Budget >= *total_bytes)
         return e;
-    const size_t withheld = *total_bytes - (size_t) local.Budget;   // the desktop's and other programs' share
+    const size_t withheld = *total_bytes - (size_t) local.Budget; // the desktop's and other programs' share
     static std::atomic<bool> said{false};
     if (!said.exchange(true)) {
-        std::fprintf(stderr, "guild: Windows budgets %llu of this card's %llu MiB for this process; free VRAM is "
-                             "counted within that (GUILD_WDDM_BUDGET=0: off)\n",
+        std::fprintf(stderr,
+                     "guild: Windows budgets %llu of this card's %llu MiB for this process; free VRAM is "
+                     "counted within that (GUILD_WDDM_BUDGET=0: off)\n",
                      (unsigned long long) (local.Budget >> 20), (unsigned long long) (*total_bytes >> 20));
     }
     *free_bytes = *free_bytes > withheld ? *free_bytes - withheld : 0;
     return e;
 }
-}  // namespace guild::hip_compat
+} // namespace guild::hip_compat
 #endif
 
 namespace guild::core {
@@ -213,12 +223,13 @@ std::string gpu_arch_problem(int ordinal) {
 
 std::string device_code_error() {
 #if defined(GUILD_USE_HIP) || defined(GUILD_HIP_GFX906)
-    return "";   // gpu_arch_problem() checks the HIP architectures against GUILD_HIP_ARCHS, before this point
+    return ""; // gpu_arch_problem() checks the HIP architectures against GUILD_HIP_ARCHS, before this point
 #else
     // every .cu of the engine is compiled for the same CMAKE_CUDA_ARCHITECTURES, so this kernel stands for all
     cudaFuncAttributes a{};
     const cudaError_t e = cudaFuncGetAttributes(&a, poison_kernel);
-    if (e == cudaSuccess) return {};
+    if (e == cudaSuccess)
+        return {};
     cudaGetLastError();
     return cudaGetErrorString(e);
 #endif
@@ -235,9 +246,8 @@ DeviceInfo device_info(int ordinal) {
 #endif
     }
     if (ordinal < 0 || ordinal >= count) {
-        throw CudaError("device ordinal " + std::to_string(ordinal) + " is out of range (have " +
-                            std::to_string(count) + ")",
-                        -1);
+        throw CudaError(
+            "device ordinal " + std::to_string(ordinal) + " is out of range (have " + std::to_string(count) + ")", -1);
     }
     DeviceInfo d;
     d.ordinal = ordinal;
@@ -269,13 +279,16 @@ DeviceInfo device_info(int ordinal) {
     // hipErrorInvalidDeviceFunction.  gcnArchName says which it is.
     {
         std::string arch(p.gcnArchName);
-        if (const size_t colon = arch.find(':'); colon != std::string::npos) arch.resize(colon);
+        if (const size_t colon = arch.find(':'); colon != std::string::npos)
+            arch.resize(colon);
         d.arch = arch;
     }
-    if (p.gcnArchName[0] != 0) d.name += std::string(" (") + p.gcnArchName + ")";
+    if (p.gcnArchName[0] != 0)
+        d.name += std::string(" (") + p.gcnArchName + ")";
 #elif defined(GUILD_USE_HIP)
     d.arch = base_arch(p.gcnArchName);
-    if (const std::string why = arch_problem(p, ordinal); !why.empty()) throw CudaError(why, -1);
+    if (const std::string why = arch_problem(p, ordinal); !why.empty())
+        throw CudaError(why, -1);
 #else
     // #236: the experimental build (-DGUILD_EXPERIMENTAL_SM60=ON: Pascal sm_60, Volta sm_70) runs on the cards it
     // was built for - refusing them below 7.5 there made the flag useless; the release engine keeps 7.5
@@ -287,8 +300,8 @@ DeviceInfo device_info(int ordinal) {
     const char* const kNeed = "7.5 or newer (RTX 20 / 30 / 40 / 50 series)";
 #endif
     if (d.cc_major * 10 + d.cc_minor < kMinCc) {
-        throw CudaError("device " + d.name + " reports compute capability " + std::to_string(d.cc_major) +
-                            "." + std::to_string(d.cc_minor) + "; Guild needs compute capability " + kNeed,
+        throw CudaError("device " + d.name + " reports compute capability " + std::to_string(d.cc_major) + "." +
+                            std::to_string(d.cc_minor) + "; Guild needs compute capability " + kNeed,
                         -1);
     }
 #endif
@@ -296,8 +309,11 @@ DeviceInfo device_info(int ordinal) {
 }
 
 DeviceArena::DeviceArena(uint64_t bytes, int ordinal, bool poison)
-    : capacity_(bytes), ordinal_(ordinal), poison_(poison) {
-    if (bytes == 0) throw CudaError("DeviceArena of 0 bytes", -1);
+    : capacity_(bytes),
+      ordinal_(ordinal),
+      poison_(poison) {
+    if (bytes == 0)
+        throw CudaError("DeviceArena of 0 bytes", -1);
     check(cudaSetDevice(ordinal), "cudaSetDevice");
     // One allocation for the whole region.  cudaMalloc of a large block is the thing that can fail late, so it
     // happens once, here, before anything depends on it.
@@ -319,11 +335,13 @@ DeviceArena::DeviceArena(uint64_t bytes, int ordinal, bool poison)
 }
 
 DeviceArena::~DeviceArena() {
-    if (base_) cudaFree(base_);          // best effort: a destructor must not throw
+    if (base_)
+        cudaFree(base_); // best effort: a destructor must not throw
 }
 
 void* DeviceArena::alloc(uint64_t bytes, uint64_t align) {
-    if (bytes == 0) return nullptr;
+    if (bytes == 0)
+        return nullptr;
     if (align == 0 || (align & (align - 1)) != 0) {
         throw CudaError("DeviceArena::alloc alignment must be a power of two", -1);
     }
@@ -341,4 +359,4 @@ void* DeviceArena::alloc(uint64_t bytes, uint64_t align) {
     return (char*) base_ + start;
 }
 
-}  // namespace guild::core
+} // namespace guild::core
