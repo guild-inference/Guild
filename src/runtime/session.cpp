@@ -414,8 +414,11 @@ bool GuildSession::generate(
                      (use_mtp ? m_impl->mtp->ms_draft - draft_before : 0) / denominator,
                      static_cast<long long>(m_impl->drive.d.pcie_experts - pcie_before),
                      telemetry.drafts_accepted, telemetry.drafts_offered,
-                     (m_impl->ver->ms_logit_validation - logits_validation_before) / denominator,
-                     static_cast<unsigned long long>(m_impl->ver->logits_readback_bytes - logits_bytes_before));
+                      (m_impl->ver->ms_logit_validation - logits_validation_before) / denominator,
+                      static_cast<unsigned long long>(m_impl->ver->logits_readback_bytes - logits_bytes_before));
+    }
+    if (const std::string prof = m_impl->ver->profile_report(); !prof.empty()) {
+        std::fprintf(stderr, "guild verify profile:%s\n", prof.c_str());
     }
 
     if (client_aborted) {

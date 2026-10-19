@@ -581,7 +581,7 @@ struct Qwen4ExpGuard {
 inline std::string check_architecture(const GgufFile& g, const Qwen4ExpGuard& want = {}) {
     const MetaValue* arch = g.get("general.architecture");
     if (!arch) return "missing general.architecture";
-    if (arch->s != "qwen4exp" && arch->s != "qwen35moe")
+    if (arch->s != "qwen4exp" && arch->s != "qwen35moe" && arch->s != "qwen2moe" && arch->s != "ornith")
         return "architecture is '" + arch->s + "', this engine supports 'qwen4exp' and 'qwen35moe'";
 
     if (arch->s == "qwen4exp") {
@@ -603,16 +603,18 @@ inline std::string check_architecture(const GgufFile& g, const Qwen4ExpGuard& wa
             if (r.want && v->u != r.want)
                 return std::string(r.key) + " = " + std::to_string(v->u) + ", expected " + std::to_string(r.want);
         }
-    } else if (arch->s == "qwen35moe") {
-        const char* reqs[] = {
-            "qwen35moe.block_count",
-            "qwen35moe.embedding_length",
-            "qwen35moe.expert_count",
-            "qwen35moe.expert_used_count",
-            "qwen35moe.attention.head_count",
-            "qwen35moe.attention.head_count_kv"
+    } else {
+        const std::string pfx = g.get(arch->s + ".block_count") ? arch->s : "qwen35moe";
+        const char* suffixes[] = {
+            ".block_count",
+            ".embedding_length",
+            ".expert_count",
+            ".expert_used_count",
+            ".attention.head_count",
+            ".attention.head_count_kv"
         };
-        for (const char* k : reqs) {
+        for (const char* s : suffixes) {
+            const std::string k = pfx + s;
             if (!g.get(k)) return std::string("missing ") + k;
         }
     }

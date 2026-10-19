@@ -123,8 +123,11 @@ std::string ExecutionPlan::to_json_string() const {
 }
 
 uint64_t MemoryPlanner::estimate_dense_gpu_bytes(const model::ModelDescriptor& desc) {
-    if (desc.archetype == model::ModelArchetype::Qwen4Exp || desc.arch_name == "qwen4exp") {
-        // Qwen3.8-Flash-Next dense weights (projections, recurrent conv, attention, embed, head, router, PLE)
+    const bool is_indexed_ple = (desc.runner_model && (desc.runner_model->requires_ple != 0 || desc.runner_model->indexed_attention != 0)) ||
+                                desc.attn.mechanism == model::AttentionMechanism::IndexedSparse ||
+                                desc.archetype == model::ModelArchetype::Qwen4Exp || desc.arch_name == "qwen4exp";
+    if (is_indexed_ple) {
+        // 4-stream indexed-attention PLE dense weights (projections, recurrent conv, attention, embed, head, router, PLE)
         // Measured footprint: ~3.75 GiB (4,026,531,840 bytes)
         return 4026531840ULL;
     }

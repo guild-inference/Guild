@@ -1,0 +1,374 @@
+{
+  "512": {
+    "preserved": {
+      "samples": 2,
+      "prefill_tps": 240.17498646349998,
+      "decode_tps": 43.5417144946,
+      "cpu_gu_ms": 533.094826627,
+      "cpu_quant_ms": 10.49473002775,
+      "cpu_down_ms": 284.229127845,
+      "host_wait_ms": 1192.5664995,
+      "prefill_tps_vs_builtin": {
+        "median_percent": 0.5329972877752276,
+        "bootstrap_95_percent": [
+          0.028757736095452735,
+          1.0372368394550024
+        ],
+        "pairs": 2
+      },
+      "decode_tps_vs_builtin": {
+        "median_percent": -6.964910659714341,
+        "bootstrap_95_percent": [
+          -7.289240885092497,
+          -6.640580434336185
+        ],
+        "pairs": 2
+      }
+    },
+    "builtin": {
+      "samples": 2,
+      "prefill_tps": 238.899758519,
+      "decode_tps": 46.8020653068,
+      "cpu_gu_ms": 537.3071306165,
+      "cpu_quant_ms": 9.612362181005,
+      "cpu_down_ms": 287.8600467025,
+      "host_wait_ms": 1191.2118970000001,
+      "prefill_tps_vs_preserved": {
+        "median_percent": -0.5276690759199454,
+        "bootstrap_95_percent": [
+          -1.0265886834406879,
+          -0.028749468399213995
+        ],
+        "pairs": 2
+      },
+      "decode_tps_vs_preserved": {
+        "median_percent": 7.487632911089381,
+        "bootstrap_95_percent": [
+          7.11291958029534,
+          7.8623462418834
+        ],
+        "pairs": 2
+      }
+    },
+    "all": {
+      "samples": 2,
+      "prefill_tps": 239.10512802699998,
+      "decode_tps": 46.6267725832,
+      "cpu_gu_ms": 527.8674454014999,
+      "cpu_quant_ms": 10.292384451850001,
+      "cpu_down_ms": 291.319442147,
+      "host_wait_ms": 1197.284529,
+      "prefill_tps_vs_preserved": {
+        "median_percent": -0.4428629517715166,
+        "bootstrap_95_percent": [
+          -0.8352623220210686,
+          -0.050463581521953405
+        ],
+        "pairs": 2
+      },
+      "decode_tps_vs_preserved": {
+        "median_percent": 7.0851210861766045,
+        "bootstrap_95_percent": [
+          6.823009673785485,
+          7.347232498567702
+        ],
+        "pairs": 2
+      },
+      "prefill_tps_vs_builtin": {
+        "median_percent": 0.08579525565688417,
+        "bootstrap_95_percent": [
+          -0.021720357610088836,
+          0.19331086892384608
+        ],
+        "pairs": 2
+      },
+      "decode_tps_vs_builtin": {
+        "median_percent": -0.3741120338570769,
+        "bootstrap_95_percent": [
+          -0.4775658617331868,
+          -0.270658205980967
+        ],
+        "pairs": 2
+      }
+    }
+  },
+  "4096": {
+    "preserved": {
+      "samples": 2,
+      "prefill_tps": 219.8182418775,
+      "decode_tps": 33.02510364625,
+      "cpu_gu_ms": 4343.446286715,
+      "cpu_quant_ms": 83.41158580035,
+      "cpu_down_ms": 2230.201705485,
+      "host_wait_ms": 11037.902006,
+      "prefill_tps_vs_builtin": {
+        "median_percent": -0.941063525915331,
+        "bootstrap_95_percent": [
+          -1.2604392687365906,
+          -0.6216877830940715
+        ],
+        "pairs": 2
+      },
+      "decode_tps_vs_builtin": {
+        "median_percent": -26.381094007047558,
+        "bootstrap_95_percent": [
+          -26.468867505286465,
+          -26.29332050880866
+        ],
+        "pairs": 2
+      }
+    },
+    "builtin": {
+      "samples": 2,
+      "prefill_tps": 221.903678695,
+      "decode_tps": 44.85957428135001,
+      "cpu_gu_ms": 4310.5630999,
+      "cpu_quant_ms": 77.8270310529,
+      "cpu_down_ms": 2254.404703545,
+      "host_wait_ms": 10882.3858915,
+      "prefill_tps_vs_preserved": {
+        "median_percent": 0.9510530308527443,
+        "bootstrap_95_percent": [
+          0.6255769183694415,
+          1.2765291433360693
+        ],
+        "pairs": 2
+      },
+      "decode_tps_vs_preserved": {
+        "median_percent": 35.834865788658334,
+        "bootstrap_95_percent": [
+          35.67291416506011,
+          35.99681741225653
+        ],
+        "pairs": 2
+      }
+    },
+    "all": {
+      "samples": 2,
+      "prefill_tps": 222.2862619205,
+      "decode_tps": 44.8105245301,
+      "cpu_gu_ms": 4272.2902137050005,
+      "cpu_quant_ms": 83.4699105215,
+      "cpu_down_ms": 2253.918056775,
+      "host_wait_ms": 10921.0563635,
+      "prefill_tps_vs_preserved": {
+        "median_percent": 1.1310677422258664,
+        "bootstrap_95_percent": [
+          -0.02350688802914558,
+          2.2856423724808783
+        ],
+        "pairs": 2
+      },
+      "decode_tps_vs_preserved": {
+        "median_percent": 35.68641433083397,
+        "bootstrap_95_percent": [
+          35.40140940013272,
+          35.971419261535246
+        ],
+        "pairs": 2
+      },
+      "prefill_tps_vs_builtin": {
+        "median_percent": 0.17567271903324855,
+        "bootstrap_95_percent": [
+          -0.6450485316721544,
+          0.9963939697386515
+        ],
+        "pairs": 2
+      },
+      "decode_tps_vs_builtin": {
+        "median_percent": -0.10939634737321402,
+        "bootstrap_95_percent": [
+          -0.2001171468883456,
+          -0.018675547858082453
+        ],
+        "pairs": 2
+      }
+    }
+  },
+  "8192": {
+    "preserved": {
+      "samples": 2,
+      "prefill_tps": 199.4365386335,
+      "decode_tps": 26.122842307,
+      "cpu_gu_ms": 8702.097078125,
+      "cpu_quant_ms": 170.8641191735,
+      "cpu_down_ms": 4539.5412127,
+      "host_wait_ms": 25894.047242499997,
+      "prefill_tps_vs_builtin": {
+        "median_percent": -0.3326479187681475,
+        "bootstrap_95_percent": [
+          -0.8724563558090259,
+          0.20716051827271986
+        ],
+        "pairs": 2
+      },
+      "decode_tps_vs_builtin": {
+        "median_percent": -39.69460547423891,
+        "bootstrap_95_percent": [
+          -39.84012380432767,
+          -39.549087144150164
+        ],
+        "pairs": 2
+      }
+    },
+    "builtin": {
+      "samples": 2,
+      "prefill_tps": 200.1168893355,
+      "decode_tps": 43.31763086695,
+      "cpu_gu_ms": 8798.353461475,
+      "cpu_quant_ms": 158.0757739195,
+      "cpu_down_ms": 4559.837223605,
+      "host_wait_ms": 25411.904272,
+      "prefill_tps_vs_preserved": {
+        "median_percent": 0.3367014501008736,
+        "bootstrap_95_percent": [
+          -0.2067322506707825,
+          0.8801351508725297
+        ],
+        "pairs": 2
+      },
+      "decode_tps_vs_preserved": {
+        "median_percent": 65.82361007335908,
+        "bootstrap_95_percent": [
+          65.42347381661251,
+          66.22374633010566
+        ],
+        "pairs": 2
+      }
+    },
+    "all": {
+      "samples": 2,
+      "prefill_tps": 198.929578666,
+      "decode_tps": 43.05348956035,
+      "cpu_gu_ms": 8821.977829014999,
+      "cpu_quant_ms": 172.20373695,
+      "cpu_down_ms": 4555.969660535,
+      "host_wait_ms": 25689.617033000002,
+      "prefill_tps_vs_preserved": {
+        "median_percent": -0.24961147781432658,
+        "bootstrap_95_percent": [
+          -0.8113844379567192,
+          0.31216148232806606
+        ],
+        "pairs": 2
+      },
+      "decode_tps_vs_preserved": {
+        "median_percent": 64.81366343407282,
+        "bootstrap_95_percent": [
+          63.8121982786557,
+          65.81512858948994
+        ],
+        "pairs": 2
+      },
+      "prefill_tps_vs_builtin": {
+        "median_percent": -0.578396571360662,
+        "bootstrap_95_percent": [
+          -1.6767618186667388,
+          0.5199686759454147
+        ],
+        "pairs": 2
+      },
+      "decode_tps_vs_builtin": {
+        "median_percent": -0.6099273490929313,
+        "bootstrap_95_percent": [
+          -0.9740307713178908,
+          -0.24582392686797183
+        ],
+        "pairs": 2
+      }
+    }
+  },
+  "16384": {
+    "preserved": {
+      "samples": 2,
+      "prefill_tps": 170.380427214,
+      "decode_tps": 17.85307295865,
+      "cpu_gu_ms": 18238.434416800003,
+      "cpu_quant_ms": 359.311929939,
+      "cpu_down_ms": 9512.596484285,
+      "host_wait_ms": 64142.994152,
+      "prefill_tps_vs_builtin": {
+        "median_percent": -1.569324756775381,
+        "bootstrap_95_percent": [
+          -1.9017858929955889,
+          -1.236863620555162
+        ],
+        "pairs": 2
+      },
+      "decode_tps_vs_builtin": {
+        "median_percent": -55.06481848845889,
+        "bootstrap_95_percent": [
+          -55.13218093349994,
+          -54.997456043417834
+        ],
+        "pairs": 2
+      }
+    },
+    "builtin": {
+      "samples": 2,
+      "prefill_tps": 173.09761477,
+      "decode_tps": 39.7306966659,
+      "cpu_gu_ms": 18047.198730199998,
+      "cpu_quant_ms": 331.336483886,
+      "cpu_down_ms": 9482.13573887,
+      "host_wait_ms": 62688.7238815,
+      "prefill_tps_vs_preserved": {
+        "median_percent": 1.5955042426226251,
+        "bootstrap_95_percent": [
+          1.252353525715466,
+          1.9386549595297842
+        ],
+        "pairs": 2
+      },
+      "decode_tps_vs_preserved": {
+        "median_percent": 122.54327537469862,
+        "bootstrap_95_percent": [
+          122.20966018383007,
+          122.87689056556714
+        ],
+        "pairs": 2
+      }
+    },
+    "all": {
+      "samples": 2,
+      "prefill_tps": 174.0454815115,
+      "decode_tps": 39.5444785368,
+      "cpu_gu_ms": 18134.428413499998,
+      "cpu_quant_ms": 353.9614819605,
+      "cpu_down_ms": 9370.097942005,
+      "host_wait_ms": 62552.792538,
+      "prefill_tps_vs_preserved": {
+        "median_percent": 2.1511761651004324,
+        "bootstrap_95_percent": [
+          2.1155033615969376,
+          2.186848968603927
+        ],
+        "pairs": 2
+      },
+      "decode_tps_vs_preserved": {
+        "median_percent": 121.50199048666215,
+        "bootstrap_95_percent": [
+          120.26240981976537,
+          122.74157115355888
+        ],
+        "pairs": 2
+      },
+      "prefill_tps_vs_builtin": {
+        "median_percent": 0.5479738699964098,
+        "bootstrap_95_percent": [
+          0.2434738904222966,
+          0.8524738495705453
+        ],
+        "pairs": 2
+      },
+      "decode_tps_vs_builtin": {
+        "median_percent": -0.46851353498731374,
+        "bootstrap_95_percent": [
+          -0.8763122010329139,
+          -0.06071486894172473
+        ],
+        "pairs": 2
+      }
+    }
+  }
+}

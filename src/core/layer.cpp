@@ -600,13 +600,14 @@ void qsa_state_release_host(QsaState& st) {
     st.host = guild::kernels::KvHostPools{};
 }
 
-uint64_t qsa_state_bytes(const ModelGeometry& g, int64_t max_cells, bool with_rope, int64_t ring_cells) {
+uint64_t qsa_state_bytes(const ModelGeometry& g, int64_t max_cells, bool with_rope, int64_t ring_cells,
+                         bool own_staging) {
     const QsaShapes s = qsa_shapes(g);
     const KvPlan p = kv_plan(s, max_cells, ring_cells, g.is_dense_attention());
     uint64_t n = 0;
-    if (p.mode != 3 || with_rope)
+    if (p.mode != 3 || with_rope || own_staging)
         n += kv_pool_bytes(s, p.slots, g_kv_hybrid && ring_cells <= 0,
-                           g_kv_int8 || g_kv_hybrid) + 4 * 16;   // one shared host-only staging pool
+                           g_kv_int8 || g_kv_hybrid) + 4 * 16;   // host-only staging pool (shared or per-layer)
     n += (uint64_t) p.pages * 4;                                               // page_table
     if (p.mode == 1 || p.mode == 3) n += guild::kernels::kv_stream_map_bytes(p.slots) + 6 * 16;
     n += (uint64_t) (s.idx_block - 1) * s.idx_dim * 4;                         // tail
@@ -620,7 +621,7 @@ uint64_t qsa_state_bytes(const ModelGeometry& g, int64_t max_cells, bool with_ro
 }
 
 uint64_t qsa_state_init(const ModelGeometry& g, int64_t max_cells, void* base, QsaState& st,
-                        const QsaState* share_rope, int64_t ring_cells) {
+                        const QsaState* share_rope, int64_t ring_cells, bool own_staging) {
     const QsaShapes s = qsa_shapes(g);
     const KvPlan p = kv_plan(s, max_cells, ring_cells, g.is_dense_attention());
     const int64_t pages = p.pages;
@@ -643,9 +644,11 @@ uint64_t qsa_state_init(const ModelGeometry& g, int64_t max_cells, void* base, Q
     st.n_slots = p.slots;
     const uint64_t rows = (uint64_t) p.slots * s.n_head_kv * s.page_size;   // VRAM rows: the slots
     const uint64_t q4_row = guild::kernels::kv_q4_bytes_per_head((int) s.head_dim);
-    if (p.mode == 3 && share_rope != nullptr) {
+    st.shares_staging = (p.mode == 3 && share_rope != nullptr && !own_staging);
+    if (st.shares_staging) {
         // Layers on a session's stream execute attention in order. Each resolve reloads this scratch from the
         // layer's own authoritative host copy, so sharing it never shares KV history between layers.
+        const_cast<QsaState*>(share_rope)->shares_staging = true;
         st.k_pool = share_rope->k_pool; st.v_pool = share_rope->v_pool;
         st.k_q = share_rope->k_q; st.v_q = share_rope->v_q;
         st.k_scale = share_rope->k_scale; st.v_scale = share_rope->v_scale;
@@ -811,7 +814,7 @@ guild::kernels::QsaAttnPools qsa_attn_pools(const QsaState& st) {
 void qsa_kv_resolve(const QsaState& st, const ModelGeometry& g, const int32_t* ids, const int32_t* steps, int64_t n_q,
                     int64_t cap, void* stream) {
     if (st.kv_mode != 1 && st.kv_mode != 3) return;
-    if (st.kv_mode == 3) guild::kernels::kv_stream_invalidate(st.map, stream);
+    if (st.kv_mode == 3 && st.shares_staging) guild::kernels::kv_stream_invalidate(st.map, stream);
     guild::kernels::kv_stream_resolve(st.map, qsa_attn_pools(st), st.host, qsa_kv_format(st), ids, steps, n_q, cap,
                                        qsa_shapes(g), stream);
 }

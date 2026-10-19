@@ -15,24 +15,34 @@ bool bind_required_ple(GuildModel::Impl& m, const std::vector<std::string>& shar
         const std::string ple_key_name = m.runner ? m.runner->tensor_map().ple_key_tensor : "blk.1.ple_key.weight";
         const auto* table = artifact.find(ple_table_name, &shard);
         const bool required = table != nullptr || m.wt.find(ple_key_name) != nullptr ||
-                              (m.runner ? m.runner_exec.requires_ple : m.desc.archetype == model::ModelArchetype::Qwen4Exp);
+                              (m.runner ? m.runner_exec.requires_ple
+                                        : (m.desc.runner_model ? (m.desc.runner_model->requires_ple != 0)
+                                                               : m.desc.archetype == model::ModelArchetype::Qwen4Exp));
         m.ple_required = required;
         if (!required) return true;
         if (!table && table_path.empty()) {
-            err = "required PLE table per_layer_token_embd.weight is absent";
+            err = "required PLE table " + ple_table_name + " is absent";
             return false;
         }
         if (table_path.empty()) table_path = artifact.shard(shard).path();
+        std::string arch_prefix = m.runner ? m.runner->arch_id() : m.desc.arch_name;
+        if (arch_prefix.empty()) {
+            if (const auto* av = artifact.meta().get("general.architecture")) {
+                if (av->type == MetaType::STRING) arch_prefix = av->s;
+            }
+        }
+        if (arch_prefix.empty()) arch_prefix = "qwen4exp";
+        const std::string ple_prefix = arch_prefix + ".ple.";
         const auto constants = ple_artifact_consts();
         auto scalar = [&](const char* suffix, uint64_t want) {
-            const std::string name = "qwen4exp.ple." + std::string(suffix);
+            const std::string name = ple_prefix + std::string(suffix);
             const auto* v = artifact.meta().get(name);
             if (v && v->is_num() && v->u == want) return true;
             err = "required PLE metadata differs from the supported contract: " + name;
             return false;
         };
         auto array = [&](const char* suffix, const uint64_t* want, size_t count) {
-            const std::string name = "qwen4exp.ple." + std::string(suffix);
+            const std::string name = ple_prefix + std::string(suffix);
             const auto* v = artifact.meta().get(name);
             if (!v || v->type != MetaType::ARRAY || v->count != count || v->items.size() != count) {
                 err = "required PLE metadata is missing or malformed: " + name;

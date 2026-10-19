@@ -1,17 +1,24 @@
 # CUDA backend ownership and extraction gates
 
-## Current boundary (Phase 2C, 2026-10-18)
+## Current boundary (Phase 2D, 2026-10-19)
 
-`guild-kernels-cuda` 1.3.0 owns the dense, attention/recurrent and MoE/device
-primitive groups formerly under Core's `src/kernels/cuda/`, plus the two remote
-expert device kernels. Core builds these groups from the immutable revision in
-`backends.lock.json` or binds their independently built `.gkernel` callbacks.
-SDK 1.4.0 exposes CDD1, CDA1 and CDM1; Kernel ABI remains v1.0.0.
+`guild-kernels-cuda` 1.4.0 owns the dense, attention/recurrent, MoE/device, and
+prefill GEMM/MMQ/fused-MoE primitive groups formerly under Core's
+`src/kernels/cuda/` and `src/prefill/` (`gemm.cu`, `kernels.cu`, `moe_fused.cu`,
+`moe_fused_iq.cu`, `moe_mmq.cu`, `ggml_cuda_host.cu`, and `hipblaslt_tuning.hpp`).
+Core builds these groups from `guild-kernels-cuda` (`cmake/CUDABackend.cmake` and
+`cmake/GuildCUDAPrefillSources.cmake`) or binds their independently built
+`.gkernel` callbacks. SDK 1.4.0 exposes CDD1, CDA1 and CDM1; Kernel ABI remains
+v1.0.0.
 
-Ornith-1.5-35B prefill/decode passed with all three bundled groups disabled.
-That is an external-only **Ornith arithmetic path**. Core still contains legacy
-GEMM/MMQ and Qwen4Exp prefill CUDA under `src/prefill/`; complete CUDA source
-extraction across all architectures remains a Phase 2D task.
+Only four `.cu` files remain under Core's `src/`
+([`bench/results/phase2d-decode-scaling/ownership/ownership.json`](../../bench/results/phase2d-decode-scaling/ownership/ownership.json)):
+`src/core/device.cu` and `src/core/pinned.cu` (device allocation/mapping
+orchestration) and the two standalone parity test programs
+`src/prefill/{gdn_rec_parity,gemm_bf16_parity}.cu` (down from 55 `.cu` files and
+297 device kernels in Stage A, and 10 `.cu` files and 62 device kernels after
+Phase 2C). Both Ornith-1.5-35B and Qwen3.8-Flash-Next (`UD-IQ4_XS`) pass bitwise
+first-token logit and greedy continuation parity.
 
 See the [bug audit](../quality/PHASE2C_CUDA_AUDIT.md) and
 [paired measurements](../performance/PHASE2C_CUDA_VALIDATION.md).

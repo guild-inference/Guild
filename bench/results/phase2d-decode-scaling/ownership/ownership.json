@@ -1,0 +1,179 @@
+{
+  "core_commit": "2953e4f431c1920ab0afaa128b4dbce1e380f641",
+  "cuda_units": 4,
+  "device_kernel_definitions": 13,
+  "units": [
+    {
+      "source": "src/core/device.cu",
+      "sha256": "ded9dee5b2e19c1fad426fe86d48380405ab065dc0f2e87718b6baf8a66e2567",
+      "category": "C/D",
+      "destination": "Core device allocation and diagnostic poison kernel",
+      "group": "device/memory",
+      "lines": 344,
+      "includes": [
+        "guild/core/device.hpp",
+        "cuda_runtime.h",
+        "cstdio",
+        "cstring",
+        "windows.h",
+        "dxgi1_4.h",
+        "atomic",
+        "cstdlib",
+        "mutex"
+      ],
+      "device_kernels": [
+        {
+          "name": "poison_kernel",
+          "line": 22
+        }
+      ],
+      "host_definitions": [
+        "check",
+        "compiled_for",
+        "device_count",
+        "device_summary"
+      ]
+    },
+    {
+      "source": "src/core/pinned.cu",
+      "sha256": "3124863f57d6fc32d699efa1583e123ee57aa7b5fa1803b90a177df38679137a",
+      "category": "C",
+      "destination": "Core pinned allocation, mapping and lifetime",
+      "group": "host/memory",
+      "lines": 725,
+      "includes": [
+        "guild/core/pinned.hpp",
+        "guild/platform/memory.hpp",
+        "cuda_runtime.h",
+        "atomic",
+        "cerrno",
+        "cstdlib",
+        "cstdio",
+        "cstring",
+        "fstream",
+        "mutex",
+        "thread",
+        "windows.h",
+        "fcntl.h",
+        "sys/mman.h",
+        "sys/stat.h",
+        "unistd.h",
+        "linux/mman.h"
+      ],
+      "device_kernels": [],
+      "host_definitions": [
+        "arena_pin_cap_gib",
+        "clear_error",
+        "experts_unbuffered",
+        "fnv1a64",
+        "release",
+        "sliced_pin_limit"
+      ]
+    },
+    {
+      "source": "src/prefill/gdn_rec_parity.cu",
+      "sha256": "b4dda56324395846986a85c9b1ee9c54d4a26e4855490769ad20c2b70f057cc3",
+      "category": "D",
+      "destination": "Core test retained; standalone backend test consumer",
+      "group": "tests",
+      "lines": 886,
+      "includes": [
+        "cuda_fp16.h",
+        "cuda_runtime.h",
+        "algorithm",
+        "cstdint",
+        "cstdio",
+        "cstdlib",
+        "cstring",
+        "map",
+        "vector"
+      ],
+      "device_kernels": [
+        {
+          "name": "__launch_bounds__",
+          "line": 53
+        },
+        {
+          "name": "__launch_bounds__",
+          "line": 150
+        },
+        {
+          "name": "__launch_bounds__",
+          "line": 245
+        },
+        {
+          "name": "__launch_bounds__",
+          "line": 262
+        },
+        {
+          "name": "fill_gauss",
+          "line": 289
+        },
+        {
+          "name": "l2_rows",
+          "line": 294
+        },
+        {
+          "name": "fill_gates",
+          "line": 304
+        },
+        {
+          "name": "count_diff",
+          "line": 311
+        },
+        {
+          "name": "hold_sm",
+          "line": 341
+        },
+        {
+          "name": "wait_sitting",
+          "line": 353
+        },
+        {
+          "name": "release_sms",
+          "line": 360
+        },
+        {
+          "name": "land",
+          "line": 364
+        }
+      ],
+      "host_definitions": [
+        "bench",
+        "check_bits",
+        "ck",
+        "fewer_sms",
+        "main",
+        "run_rec",
+        "scale"
+      ]
+    },
+    {
+      "source": "src/prefill/gemm_bf16_parity.cu",
+      "sha256": "35cdb378ae0313c8ad448bbb5f5e40abded16a00b94886925e5d16d41a1a3132",
+      "category": "D",
+      "destination": "Core test retained; standalone backend test consumer",
+      "group": "tests",
+      "lines": 155,
+      "includes": [
+        "guild/prefill/gemm.hpp",
+        "cublas_v2.h",
+        "cuda_runtime.h",
+        "algorithm",
+        "chrono",
+        "cmath",
+        "cstdint",
+        "cstdio",
+        "cstring",
+        "random",
+        "string",
+        "vector"
+      ],
+      "device_kernels": [],
+      "host_definitions": [
+        "main",
+        "ok_or"
+      ]
+    }
+  ]
+}

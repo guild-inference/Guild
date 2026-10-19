@@ -140,3 +140,58 @@ and CUDA toolkit EULA/copyright).
 `127.0.0.1` against `build-workflow-tools/distribution-fixture.json` (`ornith:35b`,
 context 32,768, prefill batch 256, 16 greedy tokens) and verified an exact match
 to the maintained greedy completion golden.
+
+## Phase 2D long-context decode optimization (`bench/results/phase2d-decode-scaling/`)
+
+GPU stage profiling (`GUILD_VERIFY_PROFILE=1 GUILD_DECODE_TIMING=1`) on Ornith-1.5-35B
+at 512 vs 16,384 prompt tokens attributed 97% of the 512→16K decode slowdown
+(`20.89 ms/tok` → `53.46 ms/tok`) to two operations in the 10 QSA layers:
+
+1. `kv-resolve` (`1.09 ms/tok` → `29.09 ms/tok`, +`28.00 ms/tok`): `SessionState`
+   shared a single 64 MiB VRAM staging pool across all QSA layers in `kv_mode == 3`
+   (`HostOnly`), forcing `qsa_kv_resolve` to call `kv_stream_invalidate` on every
+   layer and re-copy all `[0..pos]` KV blocks (320 MiB/token at 16K context) over
+   PCIe 3.0 x16 on every decode token.
+2. `attention` (`0.93 ms/tok` → `4.53 ms/tok`, +`3.60 ms/tok`): inside the captured
+   CUDA graph, `attn_merge_kernel` scanned all `n_chunks = 512` chunks even when
+   `step[kStepWidth]` had fewer active chunks, and `resolve_kernel` wrote
+   `slot_stamp`/`slot_ref` on every hit even when `n_slots >= n_blocks`.
+
+### Optimizations implemented
+
+- **Per-layer VRAM staging pools in `SessionState` (`src/core/session.cpp`, `src/core/layer.cpp`)**:
+  Each QSA layer in a session allocates its own bounded VRAM staging pool (`own_staging = true`
+  unless `GUILD_KV_SHARE_STAGING=1`, while preserving shared staging when `qsa_state_init`
+  is called with `own_staging = false` as in `kv_host_only_test`). `qsa_kv_resolve` only
+  calls `kv_stream_invalidate` when `st.shares_staging` is true. Because `kv_append_step`
+  writes both `st.host` and resident `st.k_pool`/`st.v_pool` pages, all previously
+  resolved KV pages stay resident across prefill chunks and decode tokens (`kv-resolve`
+  at 16K drops from `29.09 ms/tok` to `0.21 ms/tok`).
+- **Direct-map fast path and zero-spill `copy_kernel` (`guild-kernels-cuda/src/attention/kv_stream.cu`)**:
+  When `m.n_slots >= m.n_blocks`, `resolve_kernel` maps block `b` directly to slot `b`
+  without global `slot_stamp`/`slot_ref` writes on hits or clock-sweep scans on misses,
+  and `copy_kernel` exits immediately when `need <= 0` with `#pragma unroll` on the
+  pool-run loop (`STACK:88` → `STACK:0`).
+- **Active-chunk bound in `qsa_decode_attn` (`guild-kernels-cuda/src/attention/qsa_decode_attn.cu`)**:
+  `attn_merge_kernel` reads `n_ids = __ldg(step + blockIdx.y * kStepCount + kStepWidth)`
+  and bounds its reduction loops to `active_chunks = min(n_chunks, (n_ids + CHUNK - 1) / CHUNK)`,
+  while `attn_chunk_kernel` and `attn_chunk_kernel_pre75` exit immediately when `n_here <= 0`
+  (`attention` at 16K drops from `4.53 ms/tok` to `3.29 ms/tok`).
+
+### Counterbalanced paired results (`bench/results/phase2d-decode-scaling/`)
+
+This follow-up used **two rounds**, not the ten-round Phase 2C experiment above.
+It resumed after tool timeouts at 8K and 16K. The 32K row is one profiled run,
+without a paired baseline or full-shaped warmup. These are exploratory measurements;
+the two-sample bootstrap intervals do not establish population-level confidence.
+The benchmark's `kv_staging_bytes` field reports one pool, not the sum of the ten
+per-layer pools (approximately 640 MiB total). `GUILD_KV_SHARE_STAGING` currently
+selects sharing by presence, including a value of `0`.
+
+| Prompt | Preserved Phase 1 (prefill / decode tok/s) | Phase 2D `builtin` (`1.4.0`) | Phase 2D `all` external (`.gkernel`) | Decode speedup (`builtin` vs `preserved`) |
+|---:|---:|---:|---:|---:|
+| 512 | 240.175 / 43.542 | 238.900 / 46.802 | 239.105 / 46.627 | **+7.49%** (`1.075x`) |
+| 4096 | 219.818 / 33.025 | 221.904 / 44.860 | 222.286 / 44.811 | **+35.83%** (`1.358x`) |
+| 8192 | 199.437 / 26.123 | 200.117 / 43.318 | 198.930 / 43.053 | **+65.82%** (`1.658x`) |
+| 16384 | 170.380 / 17.853 | 173.098 / 39.731 | 174.045 / 39.544 | **+122.54%** (`2.225x`) |
+| 32640 (32K full ctx) | — | 141.696 / 35.154 | — | `kv-resolve` `0.37 ms/tok`, `attention` `6.53 ms/tok` |

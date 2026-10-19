@@ -529,7 +529,8 @@ if(GUILD_ENABLE_CUDA OR GUILD_ENABLE_HIP)
   # what composes them into a token.  No tokenizer - the prompt arrives as ids - because Gate C1 compares logits
   # against llama.cpp on the SAME ids and a tokenizer on one side of that comparison is a second variable.
   # plan v0.3 P5: batched prompt processing (tensor-core GEMMs through cuBLAS).
-  add_library(guild_prefill STATIC src/prefill/gemm.cu src/prefill/kernels.cu src/prefill/prefill.cpp)
+  add_library(guild_prefill STATIC src/prefill/prefill.cpp)
+  guild_cuda_attach_prefill(guild_prefill)
   target_include_directories(guild_prefill PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include ${_guild_gpu_include_directories})
   target_link_libraries(guild_prefill PUBLIC guild_engine ${_guild_gpu_blas_target} ${_guild_gpu_runtime_target})
   if(GUILD_ENABLE_HIP AND GUILD_HIPBLASLT_AVAILABLE)
@@ -601,7 +602,7 @@ if(GUILD_ENABLE_CUDA OR GUILD_ENABLE_HIP)
     list(APPEND _guild_hip_tests hip_prompt_attn_wmma)
     if(GUILD_HIPBLASLT_AVAILABLE AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/hip/prefill_hipblaslt_gemm.cpp")
       add_executable(hip_prefill_hipblaslt_gemm tests/hip/prefill_hipblaslt_gemm.cpp)
-      target_include_directories(hip_prefill_hipblaslt_gemm PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/prefill")
+      target_include_directories(hip_prefill_hipblaslt_gemm PRIVATE "${_guild_cuda_source}/src/prefill")
       target_link_libraries(hip_prefill_hipblaslt_gemm PRIVATE guild_prefill guild_hip_runtime roc::hipblaslt roc::hipblas)
       add_test(NAME hip_prefill_hipblaslt_gemm COMMAND hip_prefill_hipblaslt_gemm)
       set_tests_properties(hip_prefill_hipblaslt_gemm PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77)
@@ -1058,7 +1059,12 @@ else()
   target_link_libraries(guild_runtime PUBLIC guild_model guild_memory guild_warnings ${CMAKE_DL_LIBS})
 endif()
 
-if(NOT GUILD_BUILTIN_QWEN_RUNNERS)
+include(cmake/QwenRunnersBackend.cmake)
+guild_resolve_qwen_runners_backend()
+if(GUILD_BUILTIN_QWEN_RUNNERS)
+  target_sources(guild_runtime PRIVATE ${GUILD_QWEN_RUNNERS_BACKEND_SOURCES})
+  target_compile_definitions(guild_runtime PRIVATE GUILD_BUNDLED_QWEN_RUNNERS=1)
+else()
   target_compile_definitions(guild_runtime PRIVATE GUILD_NO_BUILTIN_QWEN_RUNNERS=1)
 endif()
 if(NOT GUILD_BUILTIN_NATIVE_CPU)
@@ -1387,8 +1393,7 @@ if(GUILD_NATIVE_EXPERTS)
     set(_guild_mmq ${_guild_gg}/src/ggml-cuda)
     # #136: the Q2_0 pack's prompt experts on Guild's own int8 kernels (moe_fused.cu, opt-in GUILD_PF_FUSED=1; CUDA
     # only: the HIP branch below keeps MMQ, and an sm_75 device or an sm_75-only build reports them unavailable)
-    add_library(guild_mmq STATIC src/prefill/moe_mmq.cu src/prefill/moe_fused.cu src/prefill/moe_fused_iq.cu
-                src/prefill/ggml_cuda_host.cu ${_guild_mmq}/quantize.cu)
+    add_library(guild_mmq STATIC ${GUILD_CUDA_PREFILL_MMQ_CUDA_SOURCES} ${_guild_mmq}/quantize.cu)
     # q8_0: the drafter's matrices (E-9); GUILD_ORCA_Q4KS_MMQ adds q5_0 (#296, in _guild_mmq_types), and
     # GUILD_MMQ_KQUANTS q4_k q5_k q5_1, the experts of Unsloth's UD-Q4_K_XL (docs/UNSLOTH_Q4.md; the dispatch
     # follows eddoursul/Guild 7706c1b)
@@ -1446,8 +1451,7 @@ if(GUILD_NATIVE_EXPERTS)
       message(FATAL_ERROR "The selected GGML source is missing the ggml-cuda MMQ sources: ${_guild_mmq}")
     endif()
     set(_guild_mmq_sources
-      src/prefill/moe_mmq.cu
-      src/prefill/ggml_cuda_host.cu
+      ${GUILD_CUDA_PREFILL_MMQ_HIP_SOURCES}
       "${_guild_mmq}/quantize.cu")
     foreach(_t IN LISTS _guild_mmq_types)
       list(APPEND _guild_mmq_sources "${_guild_mmq}/template-instances/mmq-instance-${_t}.cu")

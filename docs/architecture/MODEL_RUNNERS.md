@@ -1,13 +1,20 @@
 # Model Architecture Runners
 
-SDK 1.1 now supplies the `RMD1` model-description extension in
+SDK 1.1+ supplies the `RMD1` model-description extension in
 `include/guild/abi/runner_abi.h`. The independent
 [guild-runners-qwen](https://github.com/guild-inference/guild-runners-qwen)
-repository uses typed metadata/tensor callbacks and copied C geometry values
-instead of delegating description to Core's archetype registry. Real Ornith
-inference has passed parity with built-in runner registration disabled.
-Qwen4Exp external inference and complete transfer of tensor/topology policy
-remain open; see [EXTERNAL_BACKENDS.md](EXTERNAL_BACKENDS.md).
+repository (`v1.1.0`) owns the Qwen-family architecture runners (`qwen35moe`,
+`qwen4exp`, `qwen2moe`, and `ornith`), using typed metadata/tensor callbacks,
+copied C geometry values (`guild_runner_model_v1_t`), PLE metadata/tensor contract
+validation, and vectorized `check_finite` instead of C++ runner subclasses inside
+Core. When `GUILD_BUILTIN_QWEN_RUNNERS=ON` (default), `cmake/QwenRunnersBackend.cmake`
+compiles `guild-runners-qwen` with `GUILD_BUNDLED_QWEN_RUNNERS=1` and registers
+`runner.qwen4exp.v1` and `runner.qwen35moe.v1` through `AbiModelRunnerAdapter`.
+When `GUILD_BUILTIN_QWEN_RUNNERS=OFF`, Core contains no built-in Qwen runners and
+loads the signed `org.guild.runners.qwen` `.gkernel` package at runtime.
+Ornith-1.5-35B passed bundled/external parity. Qwen3.8-Flash-Next (`UD-IQ4_XS`)
+passed bundled-runner parity against the preserved engine; that test did not
+establish external-only Qwen4Exp execution.
 
 Headers & Implementation:
 - [`include/guild/model/runner.hpp`](../../include/guild/model/runner.hpp)

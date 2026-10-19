@@ -5,9 +5,12 @@
 namespace guild::memory {
 
 uint64_t calculate_routed_expert_footprint(const model::ModelDescriptor& desc) {
+    const bool is_indexed_ple = (desc.runner_model && (desc.runner_model->requires_ple != 0 || desc.runner_model->indexed_attention != 0)) ||
+                                desc.attn.mechanism == model::AttentionMechanism::IndexedSparse ||
+                                desc.archetype == model::ModelArchetype::Qwen4Exp || desc.arch_name == "qwen4exp";
     int64_t total_experts = desc.moe.total_routed_experts(desc.attn.n_layers);
     if (total_experts <= 0) {
-        if (desc.archetype == model::ModelArchetype::Qwen4Exp || desc.arch_name == "qwen4exp") {
+        if (is_indexed_ple) {
             total_experts = 48 * 512;
         } else {
             total_experts = 1;
@@ -18,8 +21,8 @@ uint64_t calculate_routed_expert_footprint(const model::ModelDescriptor& desc) {
         return (uint64_t) total_experts * (uint64_t) desc.moe.expert_blob_bytes;
     }
 
-    // Default expert blob sizing for known archetypes
-    if (desc.archetype == model::ModelArchetype::Qwen4Exp || desc.arch_name == "qwen4exp") {
+    // Default expert blob sizing for 4-stream indexed-attention PLE MoE topology
+    if (is_indexed_ple) {
         // UD-IQ4_XS footprint: ~55.43 GiB (59,518,476,288 bytes across 24,576 experts = 2,421,813 bytes/expert)
         return (uint64_t) total_experts * 2421813ULL;
     }
