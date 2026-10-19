@@ -1,3 +1,19 @@
+// The HTTP front end: a hand-rolled HTTP/1.1 server (one poll-driven listener thread, one worker thread per
+// connection) that speaks the OpenAI and Anthropic wire formats on top of `IInferenceEngine`.
+//
+// It deliberately keeps no model logic: routing parses the request into `InferenceRequest`, calls the engine, and
+// serializes the result or the SSE stream back.  The engine is chosen by the CLI (`--native` vs a subprocess
+// engine), and both are used through the same interface, so the streaming path is identical for either.
+//
+// Concurrency contract: the listener thread and the per-connection workers only share the engine, and the engine's
+// generation is serialized internally (the runtime's model-wide generation mutex), so multiple in-flight HTTP
+// requests queue rather than run in parallel.  A client that disconnects mid-stream stops the callback, which
+// cancels the generation; that is what keeps a killed `curl` from holding the model busy.
+//
+// Security default: the listener binds to `127.0.0.1` unless the caller passes another `--host`, and there is no
+// authentication here at all.  The Python server in `serve/` is the one that refuses a non-loopback bind without an
+// API key and checks that key on every request; exposing this binary directly is a deliberate act.
+
 #include "guild/server/server.hpp"
 #include "guild/server/openai.hpp"
 #include "guild/runtime/chat_template.hpp"

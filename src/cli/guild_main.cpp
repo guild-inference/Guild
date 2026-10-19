@@ -1,3 +1,17 @@
+// The `guild` command line: one dispatcher at the bottom of the file, one function per subcommand above it.
+//
+// Commands fall into four groups, and the grouping is worth knowing because they have very different startup cost:
+//
+//   * model management  - pull, list, show, rm, import, verify, inspect, convert/gpack: they parse containers but
+//     do not load weights.
+//   * kernel management - kernel/plugin/pkg: thin wrappers over the package manager in guild/abi.
+//   * optimization      - optimize/gexec, cache-clean: the GEXEC optimizer and the artifact cache.
+//   * execution         - run, bench, serve, ps: these load the model (through the same
+//     runtime::GuildModel::load the server uses) and then drive sessions or the HTTP server.
+//
+// The dispatcher only maps a command word to its function; every subcommand validates its own arguments and prints
+// its own usage, so `guild <cmd> --help` never depends on the shared dispatcher.
+
 #include "guild/abi/gkernel_package.hpp"
 #include "guild/artifact/gpack.hpp"
 #include "guild/cli/ansi.hpp"

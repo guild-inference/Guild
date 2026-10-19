@@ -68,6 +68,17 @@ def missing_prefixes(prefixes: list[str]) -> list[str]:
     return [p for p in prefixes if not tracked_sources([p])]
 
 
+def normalise_prefixes(paths: list[str]) -> list[str]:
+    """Turn the command line into match prefixes: a directory gets a trailing slash, a file does not."""
+    out = []
+    for raw in paths:
+        path = raw.strip().strip("/")
+        if not path or path == ".":
+            continue
+        out.append(path + "/" if (ROOT / path).is_dir() else path)
+    return out
+
+
 def format_one(binary: str, path: Path) -> tuple[Path, bytes, bytes]:
     """Return (path, current bytes, formatted bytes)."""
     current = path.read_bytes()
@@ -83,7 +94,7 @@ def main() -> int:
     ap.add_argument("--jobs", type=int, default=0, help="parallel clang-format processes (default: CPU count)")
     args = ap.parse_args()
 
-    prefixes = [p.strip("./") + "/" if p != "." else "" for p in args.paths]
+    prefixes = normalise_prefixes(args.paths)
     unknown = missing_prefixes(prefixes)
     if unknown:
         sys.exit(f"no tracked C/C++ sources under: {', '.join(unknown)}")
@@ -118,12 +129,14 @@ def main() -> int:
         if args.check and not args.diff:
             for path in unformatted:
                 print(path.relative_to(ROOT))
-        print(f"{len(unformatted)} of {len(files)} files {what} by clang-format {'.'.join(map(str, version))}")
+        files_word = "file" if len(files) == 1 else "files"
+        print(f"{len(unformatted)} of {len(files)} {files_word} {what} by clang-format {'.'.join(map(str, version))}")
         if args.check:
             print("run `python tools/format_code.py` and commit the result (see docs/quality/CODE_STYLE.md)")
             return 1
     else:
-        print(f"all {len(files)} files are formatted (clang-format {'.'.join(map(str, version))})")
+        files_word = "file" if len(files) == 1 else "files"
+        print(f"all {len(files)} {files_word} are formatted (clang-format {'.'.join(map(str, version))})")
     return 0
 
 

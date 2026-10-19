@@ -1,3 +1,21 @@
+// The GEXEC ahead-of-time optimizer: measures the model on this host, writes the results into a `.gexec` artifact,
+// and hands the runtime a plan that can be replayed without re-tuning.
+//
+// The pipeline is staged and resumable on purpose, because a full optimization pass is minutes long:
+//
+//   measure -> heterogeneous plan -> autotune -> packed experts -> workspace recipe -> provenance
+//
+// Each stage writes its section when it completes and the progress file records which stages are done, so an
+// interrupted run resumes instead of starting over, and `regenerate_gexec_section` can redo one stage without
+// touching the others.  A cache-directory lock (`ScopedAdvisoryLock`) keeps two optimizers from writing the same
+// artifact at once, and every file is written through a temporary and renamed, so a killed optimizer leaves either
+// the old artifact or the complete new one.
+//
+// What makes the result trustworthy is that the artifact stores *measurements* rather than assumptions: the
+// autotune table records which implementation was measured fastest for each shape together with its numeric check,
+// and the identity (see gexec_contract.cpp) pins the artifact to the model, the ABI versions and the host it was
+// measured on.  A replay on another host falls back to the portable path instead of using numbers that do not apply.
+
 // Copyright (c) Guild Inference Contributors. MIT License.
 // Phase 5: GEXEC Ahead-of-Time Hardware-Specialized Optimization Compiler & Cache Manager.
 

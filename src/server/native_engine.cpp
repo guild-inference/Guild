@@ -1,3 +1,14 @@
+// The in-process engine: loads the model in this process and serves it through one long-lived session, converting
+// between the server's wire types and the runtime's `GenerationRequest`/`TokenEvent`.
+//
+// It exists so that `guild serve` does not need a second process holding a second copy of the weights, and so a
+// streaming response can be produced token by token without IPC.  The trade-off is that a crash in the engine
+// takes the HTTP server with it, which is why the subprocess engine remains the default for unattended serving.
+//
+// `stop()` deliberately cancels the in-flight generation instead of destroying the model: the model is torn down
+// only when the engine object dies, after the server has stopped accepting connections, because `GuildSession`
+// and the CUDA bridges it pinned are not safe to destroy while another thread is reading their callbacks.
+
 #include "guild/server/native_engine.hpp"
 #include <exception>
 

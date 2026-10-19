@@ -1,3 +1,11 @@
+// The planner turns a model descriptor plus the measured hardware into an ExecutionPlan: how much KV lives on the
+// device, how many routed experts fit in VRAM, how much RAM the rest may take, and which scratch space prefill
+// needs.  Everything it produces is an estimate made from block-layout tables and per-architecture constants; the
+// runtime re-checks it against live memory (the automatic expert cache is sized after the fixed allocations exist,
+// and the model loader re-tries KV staging under pressure), so a slightly optimistic plan degrades instead of
+// failing.  `validate()` is the last gate and separates the two outcomes: errors mean the plan cannot run at all,
+// warnings mean it runs with a known risk (OS swapping, no speculation).
+
 #include "guild/memory/planner.hpp"
 
 #include <algorithm>
@@ -138,7 +146,9 @@ uint64_t MemoryPlanner::estimate_dense_gpu_bytes(const model::ModelDescriptor& d
         desc.archetype == model::ModelArchetype::Qwen4Exp || desc.arch_name == "qwen4exp";
     if (is_indexed_ple) {
         // 4-stream indexed-attention PLE dense weights (projections, recurrent conv, attention, embed, head, router,
-        // PLE) Measured footprint: ~3.75 GiB (4,026,531,840 bytes)
+        // PLE) Measured footprint: ~3.75 GiB (4,026,531,840 bytes).  A measured total is used instead of a formula
+        // here because the PLE layout is an architecture of its own; the formula below covers the classic
+        // embedding/layer projections, and guessing for PLE has been wrong in both directions.
         return 4026531840ULL;
     }
 
@@ -223,7 +233,11 @@ ExecutionPlan MemoryPlanner::plan(const model::ModelDescriptor& desc, const hard
         }
     }
 
-    // 4. Iterative degradation on tight VRAM (Rules 5, 6, 7)
+    // 4. Iterative degradation on tight VRAM (Rules 5, 6, 7).  The ladder trades away the cheapest capability
+    // first and stops as soon as the plan fits: prompt scratch is never given up (prefill cannot run without it),
+    // then the prefill chunk (fewer tokens per pass on long prompts), then speculation (decode speed), and only
+    // then KV residency (decode speed on long contexts).  Every step appends a warning, so the user sees which
+    // capability was traded and why.
     KvBudget kv_b = calculate_kv_budget(desc, ctx, kv_prec, kv_mode);
     uint64_t total_gpu = dense_gpu_bytes + mtp_bytes + kv_b.persistent_gpu_bytes + kv_b.staging_gpu_bytes +
                          prompt_scratch + safety_reserve;
@@ -265,7 +279,9 @@ ExecutionPlan MemoryPlanner::plan(const model::ModelDescriptor& desc, const hard
     // Size GPU expert cache only from genuinely free VRAM
     uint64_t free_vram_for_cache = free_vram;
     if (!options.gpu_cache_slots.has_value()) {
-        // All automatic caches are finalized against live free memory, after fixed allocations.
+        // All automatic caches are finalized against live free memory, after fixed allocations: the loader sizes
+        // the cache from what the device actually has left, so the planner must not hand it an estimate computed
+        // before dense weights and KV buffers exist.
         free_vram_for_cache = 0;
     }
 
@@ -331,6 +347,9 @@ PlanValidation MemoryPlanner::validate(const ExecutionPlan& plan, const hardware
                                        const model::ModelDescriptor& /*desc*/) {
     PlanValidation val;
 
+    // The only hard error is "the plan cannot allocate what it must allocate": context, worst-case VRAM, and the
+    // prompt scratch that prefill needs on top of the fixed allocations.  Host RAM overcommit is a warning - the
+    // experts are file-backed and reclaimable, so the plan still runs, it may just swap.
     if (plan.context_length <= 0) {
         val.valid = false;
         val.errors.push_back("Context length must be greater than 0.");

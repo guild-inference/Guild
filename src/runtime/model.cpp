@@ -25,6 +25,28 @@
 #include <set>
 #include <vector>
 
+// GuildModel::load is the whole startup sequence.  Everything below runs once per process, in the order below, and
+// every stage may only rely on what the stages above it have already put in place.  A failure returns nullptr with
+// `error_msg` set; the function never throws to its caller (the CUDA/HIP entry points are C ABI).
+//
+// The stages are also what the StartupProfile in `sp` reports, so the timing JSON of a load reads in this order:
+//
+//  1. device runtime policy, then the enabled `.gkmetadata` kernel packages.  Both must exist before any code
+//     from a package is called.
+//  2. the container: an explicit `.gpack` path (which must open, or the load fails) or the GGUF shards, with an
+//     optional `model.gpack` sidecar that is a fallback, not a hard requirement.
+//  3. the runner resolved from the container metadata, then the model geometry and its capability checks.
+//  4. process-wide kernel settings (RoPE scaling, KV precision, shared-layer mode, KV-Resident size).  The kernels
+//     module holds them as globals, so they have to be set before any weight is touched.
+//  5. long-lived resources: the CPU expert pool (installs worker affinity before the workers touch expert pages),
+//     the main CUDA stream, and the kernel lease that keeps the resolved providers loaded.
+//  6. `.gexec` resolution.  It never fails the load: an unusable artifact falls back to the GPACK layout with the
+//     reason recorded in the startup profile.
+//  7. weights: dense weights and the output head, the expert tiers, the calibrated performance profile, the GPU
+//     expert cache, and finally the RAM-resident complement (pinned or NUMA-interleaved).
+//  8. state shared by every session: device KV staging, PLE tables, MTP drafter, verifier, prefill engine, and the
+//     tokenizer.  After this point the model is ready and sessions can be created.
+
 namespace guild::runtime {
 
 GuildModel::GuildModel() : impl_(std::make_shared<Impl>()) {
@@ -43,6 +65,8 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
         return std::chrono::duration<double, std::milli>(Clock::now() - t).count();
     };
     StartupProfile sp;
+    // Device runtime policy first (CUDA scheduling flags, driver-level knobs): every later allocation and stream
+    // creation happens under it, and it cannot be changed while allocations are live.
     const auto cuda_init_t0 = Clock::now();
     platform::configure_device_runtime_policy();
     sp.cuda_init_ms += ms_since(cuda_init_t0);
@@ -61,6 +85,9 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
         sp.package_load_ms += ms_since(pkg_t0);
     }
 
+    // Container selection.  An explicitly named `.gpack` must open - silently running the GGUF path next to a
+    // container the user asked for would hide a corrupt download.  A `model.gpack` found next to the pack
+    // directory is a convenience: if it is damaged the load continues from the GGUF shards.
     auto has_gpack_ext = [](const std::string& p) {
         return p.size() >= 6 && p.compare(p.size() - 6, 6, ".gpack") == 0;
     };
@@ -186,6 +213,10 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
     }
     sp.runner_and_plan_ms += ms_since(geom_t0);
 
+    // Process-wide kernel settings, read back by the kernels module through globals.  They are set here, before any
+    // weight is touched, because the kernels consult them while preparing quantized layouts and KV buffers; setting
+    // them later would leave already-prepared state on the old values.
+    //
     // RoPE scaling
     kernels::RopeScaling rope_cfg;
     if (desc.rope.freq_base > 0)
@@ -215,6 +246,11 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
     core::qsa_set_kv_resident(impl->config.kv_resident);
     core::layer_set_shared_early(true);
 
+    // Long-lived resources, in dependency order: the CPU expert pool first (its workers install the thread
+    // affinity that decides where the expert pages they later touch physically land), then the main CUDA stream,
+    // then the kernel lease.  The lease holds the resolved providers open for the life of the model, so a package
+    // cannot be disabled or swapped while a session is executing against the artifacts it was compiled for.
+    //
     // CPU expert pool
     const auto kprov_t0 = Clock::now();
     int n_workers = impl->config.pool_workers;
@@ -238,7 +274,11 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
     impl->kernel_lease = kernels::SessionKernelLease(&kernels::KernelRegistry::instance(),
                                                      impl->runner_exec.resolved_package_ids, impl->main_stream);
 
-    // Phase 5 GEXEC ahead-of-time optimization resolution & validation
+    // GEXEC ahead-of-time optimization resolution & validation.  The identity is rebuilt from the live container,
+    // the requested KV/prefill/spec settings and this host; an artifact that does not match is *not* used (the
+    // reason lands in `gexec_fallback_reason` and, for an explicitly requested artifact, on stderr).  With an
+    // artifact the kernel selection below comes from what it recorded at tune time, which is what makes an
+    // optimized run reproducible without re-tuning.
     if (use_gpack) {
         const auto cur_gexec_id = gexec::build_current_gexec_identity(
             *impl->gpack, impl->config.kv_format, impl->config.kv_host_only ? "host_only" : "resident",
@@ -588,6 +628,11 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
 
     // Open expert source (FileExpertSource over GEXEC PackedExpertsBlob, GPACK ExpertBlobs, or pack directory / GGUF
     // shards)
+    // Expert tiers, highest priority first: the GEXEC packed blob (already interleaved and fused, so it is used
+    // as-is), a GPACK with the expert bytes embedded, a GPACK whose experts live in the pack directory, and
+    // finally the raw GGUF shards.  Every branch leaves `src` with the same interface, so the calibration, cache
+    // and pinning stages below do not care which one supplied the bytes; the interleave flag is the only
+    // difference that survives.
     const auto esrc_t0 = Clock::now();
     if (impl->gexec && impl->gexec->has_section(gexec::GExecSectionKind::PackedExpertsBlob)) {
         uint64_t exp_bytes = 0;
@@ -624,6 +669,10 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
     impl->srcp = &impl->src;
     sp.expert_source_open_ms += ms_since(esrc_t0);
 
+    // Expert placement calibration: measures CPU vs GPU vs copy cost per layer, which is what decides how many
+    // experts of each layer the GPU cache holds and which layers stay fully on the CPU.  When the container is a
+    // GEXEC artifact whose heterogeneous plan was measured on this same fingerprint, that plan is reused instead of
+    // re-measuring, so an optimized start is a load, not a benchmark run.
     const auto cal1_t0 = Clock::now();
     if (impl->gexec && impl->gexec->has_section(gexec::GExecSectionKind::HeterogeneousPlan) &&
         impl->gexec->heterogeneous_plan().measured_formats > 0 && plan.pcie_expert_fraction <= 0.0) {
@@ -720,6 +769,12 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
     sp.expert_cache_init_ms += ms_since(xcache_t0);
 
     // Pin RAM expert complement (all remaining experts resident in RAM)
+    // RAM-resident complement.  Experts that did not fit the GPU cache stay in RAM: either zero-copy out of the
+    // mapped GPACK (no copy at all, cheapest, but only without a GPU-side pinned requirement), or copied into the
+    // resident set.  Page-locking and NUMA interleaving are alternatives, not partners: locked pages are what
+    // async H2D copies want, interleaved pages are what a dual-socket host wants, and `pin_cache_complement`
+    // decides which one the budget and the requested PCIe offload allow.  The budget passed here is bounded on
+    // purpose - retrying with an unbounded one would discard the caller's cap.
     if (impl->config.resident_budget_gib > 0) {
         const auto pin_t0 = Clock::now();
         const uint64_t budget = ram_budget;
@@ -753,6 +808,10 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
     }
 
     // Session state initialization (with resource-aware QSA staging fallback under tight VRAM)
+    // Shared session state.  The device staging buffer is sized for the full context and shared by all sessions;
+    // under a tight VRAM budget the first sizing is given up and re-tried with the resource-aware variant that
+    // keeps only the resident KV on the device.  It is zeroed here rather than per session so that a fresh
+    // session always starts from a known-clean V state without paying for it per request.
     const auto kv_t0 = Clock::now();
     core::session_set_kv_share_staging(-1);
     uint64_t sbytes = core::session_bytes(impl->g, impl->config.max_context, impl->K);
@@ -968,6 +1027,9 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
     impl->drive.d.cache_blob = static_cast<int64_t>(kernels::cpu::expert_layout().max_blob);
     impl->drive.d.cache_slot_off = slots > 0 ? impl->xcache.slot_offsets() : nullptr;
     impl->drive.d.host_res = impl->host_res.data();
+    // Second calibration pass, after pinning and cache sizing have settled: the PCIe split the planner asked for is
+    // planned against the memory that actually exists (pinned complement and/or a GPU expert cache), and the
+    // pre-pinning measurement cannot know that yet.  Without either, the split is zeroed rather than guessed.
     const auto cal2_t0 = Clock::now();
     const bool need_post_calibrate =
         (plan.pcie_expert_fraction != 0.0) && (impl->src.pinned_bytes() > 0 || impl->xcache.slots() > 0);

@@ -14,6 +14,17 @@
 #include <mutex>
 #include <vector>
 
+// GuildSession is the per-request handle.  What is per-session lives in Impl below (the speculative drafting state,
+// the cancellation flag); everything else - weights, expert tiers, KV staging, the verifier, the prefill engine - is
+// owned by the model and shared.  Generation is serialized by the model-wide `generation_mutex`, so a process runs
+// one generation at a time and a session only selects which state that generation uses.
+//
+// Two invariants hold for every entry point:
+//   * `model_impl->ready` is fail-closed.  Starting a generation clears and re-checks it, and any inference-time
+//     failure leaves it false so later requests are refused instead of running on a half-valid model.
+//   * Session lifetime pins what it uses.  The runner and kernel leases taken in the constructor keep the packages
+//     the model was loaded with from being disabled or unloaded while this session exists.
+
 namespace guild::runtime {
 
 struct GuildSession::Impl {
@@ -35,6 +46,8 @@ GuildSession::GuildSession(GuildModel* model, int64_t max_context)
     impl_->model_impl = model ? model->impl_ : nullptr;
     auto* m_impl = impl_->model_impl.get();
     impl_->max_context = max_context > 0 ? max_context : (m_impl ? m_impl->config.max_context : 262144);
+    // Speculative state is sized for this session's context; the leases are re-taken here (not inherited) so that
+    // a session created after the model was loaded is just as protected against a package swap as the model is.
     impl_->sfx = std::make_unique<spec::SuffixDrafter>(3, 64, (size_t) impl_->max_context + 4096);
     impl_->policy = std::make_unique<spec::DraftPolicy>(m_impl ? m_impl->config.spec : 2);
     impl_->runner_lease = model::SessionRunnerLease(
@@ -50,6 +63,8 @@ void GuildSession::reset() {
     if (!impl_ || !impl_->model_impl)
         return;
     auto* m_impl = impl_->model_impl.get();
+    // The model-wide generation lock: reset rewrites state (KV, MTP, cache counters) that an in-flight generation
+    // on another session would be reading.
     std::lock_guard<std::mutex> lock(m_impl->generation_mutex);
     if (!m_impl->ready || !m_impl->ready->load())
         return;
@@ -71,12 +86,18 @@ void GuildSession::reset() {
         m_impl->ready->store(false);
 }
 
+// Lock-free on purpose: cancel is called from a signal handler path and from the server's shutdown thread while a
+// generation is blocked inside the prefill/decode loops, which poll this flag.
 void GuildSession::cancel() {
     if (impl_) {
         impl_->cancelled.store(true);
     }
 }
 
+// One generation, start to finish.  The shape is: validate the request against the model's real limits, take the
+// scopes that pin the CUDA bridges for the duration, reset the KV/MTP state, run prefill, then decode until EOS,
+// `max_new_tokens`, cancellation or a runtime failure.  Any failure after the first device work marks the model
+// not-ready (see `runtime_failure`) - continuing on a model whose commit path already failed would produce garbage.
 bool GuildSession::generate(const GenerationRequest& req, TokenStreamCallback on_token, RuntimeTelemetry& telemetry,
                             std::string& error_msg, PrefillProgressCallback on_prefill) try {
     telemetry = RuntimeTelemetry{};
@@ -151,6 +172,9 @@ bool GuildSession::generate(const GenerationRequest& req, TokenStreamCallback on
             kernels::cpu::restore_thread_affinity(previous);
         }
     } affinity;
+    // Pin the calling thread to the pool's host core for the duration of the request (GUILD_HOST_AFFINITY=0 opts
+    // out).  The expert workers run on dedicated cores; leaving the request thread free to migrate between sockets
+    // makes the host-side marshalling unpredictable and steals cycles from the pool.
     const char* host_affinity = std::getenv("GUILD_HOST_AFFINITY");
     if (!host_affinity || std::atoi(host_affinity) != 0)
         affinity.previous = kernels::cpu::pin_current_thread_if_allowed(m_impl->pool->host_core());

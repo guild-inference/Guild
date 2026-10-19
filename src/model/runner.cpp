@@ -1,3 +1,18 @@
+// Runner resolution: given a container's metadata, pick the model::ModelRunner that can execute it, plus the
+// tensor-name map and the geometry it implies.
+//
+// Resolution is metadata-first and explicit.  The container names an architecture string; the registry of built-in
+// runners is consulted for it, then for `.gkmodule`-supplied runners whose declared `supports_architecture` matches,
+// and a match is only accepted if the container's tensors and hyperparameters satisfy the runner's declared
+// requirements.  A runner that merely *claims* support but cannot find its tensors is reported as a mismatch with
+// the missing names in the error, rather than being used and failing during the first forward pass - a load-time
+// refusal is what makes "the model I loaded is the model I asked for" checkable.
+//
+// The name map matters as much as the runner: GGUF conversions in the wild disagree on tensor names (`token_embd`
+// vs `tok_embeddings`, per-layer PLE keys, sharded `output.weight`), so the map is data - a table of aliases and
+// required tensors - not a pile of `if`s, and a mismatch can be resolved without recompiling.
+
+// Copyright (c) Guild Inference Contributors. MIT License.
 // src/model/runner.cpp - Modular Model Architecture Runners & Registry
 #include "guild/model/runner.hpp"
 #include "guild/abi/lifecycle.hpp"

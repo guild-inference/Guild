@@ -1,4 +1,20 @@
-// src/kernels/registry.cpp - Hardware Kernel Operation Registry & Selection
+// The kernel registry: the single place that knows which implementation of each operation exists, whether it may
+// run on this machine, and which one the model should use.
+//
+// Two kinds of implementation meet here.  Built-ins are registered by `register_builtin_kernels()` from the compiled
+// CPU/CUDA code and carry their own capability checks (ISA, SM architecture, dtype support).  Package providers come
+// from `.gkmodule`/`.gkernel` shared libraries through the C ABI in guild/abi, and are validated on the way in:
+// descriptor sizes are checked before any field is read, so a provider built against another ABI version is
+// rejected instead of misread.
+//
+// Selection is deterministic and recorded.  A binding carries the provider, the version, the capability result and
+// whether a numeric check was performed; the GEXEC optimizer measures them and the runtime then replays the recorded
+// choice, which is why the ordering here must not depend on hash-map iteration order - ties are broken by explicit
+// priority and stable ids.
+//
+// Leases (`acquire_session_lease`, `acquire_package_lease`) are what keep this safe while it is in use: a package
+// cannot be disabled or unloaded, and its streams cannot be torn down, while any session or model still holds one.
+
 #include "guild/kernels/registry.hpp"
 #include "guild/abi/lifecycle.hpp"
 #include "guild/artifact/gguf_reader.hpp"

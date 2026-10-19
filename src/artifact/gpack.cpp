@@ -1,3 +1,15 @@
+// The `.gpack` reader: a read-only, memory-mapped container (header, sections, payload, footer).  Two things are
+// worth knowing before reading the code:
+//
+//  * Every section is checksummed three ways - the SHA-256 in the footer's directory, in the section entry, and in
+//    the header prefix - so `open()` can detect a container that was edited, truncated or reassembled by comparing
+//    the three instead of trusting any single one.  `verify_all_hashes` controls whether the payload is re-hashed
+//    on open: production paths leave it off (a full re-hash on every start would dominate load time and the pack
+//    was verified when it was written), while tools and tests that handle a file from elsewhere turn it on.
+//  * The mapping *is* the model.  `base_` points into the file for the life of the reader: tensors, the expert blob
+//    and the tokenizer bytes are all views, never copies, which is why `close()` must not run while a session is
+//    executing (the kernel lease in the runtime is what guarantees that ordering).
+
 #include "guild/artifact/gpack.hpp"
 #include "guild/artifact/gguf_split.hpp"
 #include "guild/model/archetype.hpp"

@@ -1,3 +1,23 @@
+// The `.gexec` container and its identity rules.
+//
+// A GEXEC artifact is a sectioned, memory-mappable file (same discipline as GPACK): a header with a section
+// directory, the sections themselves, and a footer whose directory is checked against the header on open.  Every
+// section carries a SHA-256 in both directories, so a truncated or hand-edited artifact is detected before any
+// section is trusted.
+//
+// The part that decides *whether* an artifact may be used at all is `GExecArtifactIdentity`: it is built from the
+// model container's manifest hash, the core/module ABI versions, the runner and every bound package digest, the
+// execution plan's KV/prefill/spec settings, and a hardware fingerprint (CPU features, core counts, NUMA layout,
+// GPU architecture, CUDA runtime/driver).  `validate()` compares an artifact's stored identity against the live
+// one and returns the first reason it cannot be used - the enumerated `GExecInvalidationReason`, which is what the
+// CLI prints and what the runtime records in the startup profile, so a fallback is never silent.
+//
+// Two rules keep this honest:
+//   * The identity is the cache key (`compute_cache_key`), so two hosts with different fingerprints cannot collide
+//     on the same artifact path.
+//   * A missing section is not corruption.  Artifacts are written incrementally (the optimizer can regenerate a
+//     single section), and readers ask for the sections they need.
+
 #include "guild/gexec/gexec_contract.hpp"
 #include "guild/cli/hardware.hpp"
 #include "guild/kernels/registry.hpp"

@@ -1,4 +1,17 @@
-// src/abi/gkernel_package.cpp - Declarative .gkmetadata Parser, Ed25519 Verifier, Archive Stager & Package Manager
+// The package manager: parses `.gkmetadata`, verifies signatures and trust, stages archives, and owns the install
+// directory.  Three contracts hold across the whole file and are easy to break by accident:
+//
+//  1. Store mutations are crash-durable and ordered.  Files are written to a staging path, fsynced
+//     (`write_file_durable`, `sync_directory_durable`), then `rename`d into place, and the registry JSON is
+//     written last with the same discipline: a reader either sees the previous package set or the complete new
+//     one, never a half-installed library the registry already points at.  (The fault-injection points exist to
+//     test exactly that boundary.)
+//  2. Metadata is hostile input.  Every identifier, relative path and hash that reaches the filesystem goes through the
+//     validators in the anonymous namespace first - a package can name its own files, so path traversal and absolute
+//     paths are rejected before any staging directory is created, not after.
+//  3. Enabled packages are loaded at init and never unloaded while a lease is held (see `SessionKernelLease`); the
+//     disable/uninstall paths therefore have to fail rather than force an unload under a running session.
+
 #include "guild/abi/gkernel_package.hpp"
 #include "guild/abi/module_abi.h"
 #include "guild/abi/lifecycle.hpp"
