@@ -641,6 +641,7 @@ void FileExpertSource::close() {
     fd_ = -1;
 #endif
     external_view_ = false;
+    interleave_on_copy_ = false;
     base_ = nullptr;
     blobs_ = 0;
     n_layers_ = 0;
@@ -649,6 +650,14 @@ void FileExpertSource::close() {
     layer_offsets_.clear();
     layer_blob_bytes_.clear();
     reads_ = 0;
+}
+
+void FileExpertSource::set_gate_up_interleaved(bool interleave_on_copy) {
+    interleave_on_copy_ = interleave_on_copy;
+    if (interleave_on_copy_) {
+        std::lock_guard<std::mutex> lk(stage_mu_);
+        for (uint64_t b : layer_blob_bytes_) stage_blob_ = std::max(stage_blob_, b);
+    }
 }
 
 
@@ -746,11 +755,26 @@ bool FileExpertSource::open_gguf(std::string& err) {
 
 bool FileExpertSource::copy_from_files(int64_t layer, int64_t expert, uint8_t* dst) const {
     if (dst == nullptr || layer < 0 || expert < 0 || layer >= n_layers_ || expert >= n_expert_) return false;
-    if (!direct_.empty()) {   // #286: from the drive; a failed read falls back to the mapping below
+    if (!direct_.empty() && !interleave_on_copy_) {   // #286: from the drive; a failed read falls back to the mapping below
         const Fill f{0, layer, expert, dst};
         if (read_direct(&f, 1)) return true;
     }
+    const auto& lay = guild::kernels::cpu::expert_layout();
     if (!role_ptr_.empty()) {
+        if (interleave_on_copy_ && lay.native && (size_t) layer < lay.fmt.size()) {
+            const auto& fm = lay.fmt[(size_t) layer];
+            const size_t gu_row = (size_t) fm.gu_row;
+            const int64_t n_ff = fm.n_ff;
+            const uint8_t* g_src = role_ptr_[(size_t) (3 * layer + 0)] + (size_t) ((uint64_t) expert * role_bytes_[(size_t) (3 * layer + 0)]);
+            const uint8_t* u_src = role_ptr_[(size_t) (3 * layer + 1)] + (size_t) ((uint64_t) expert * role_bytes_[(size_t) (3 * layer + 1)]);
+            const uint8_t* d_src = role_ptr_[(size_t) (3 * layer + 2)] + (size_t) ((uint64_t) expert * role_bytes_[(size_t) (3 * layer + 2)]);
+            for (int64_t r = 0; r < n_ff; ++r) {
+                std::memcpy(dst + (size_t) (2 * r + 0) * gu_row, g_src + (size_t) r * gu_row, gu_row);
+                std::memcpy(dst + (size_t) (2 * r + 1) * gu_row, u_src + (size_t) r * gu_row, gu_row);
+            }
+            std::memcpy(dst + (size_t) fm.down_off, d_src, (size_t) role_bytes_[(size_t) (3 * layer + 2)]);
+            return true;
+        }
         uint64_t at = 0;
         for (int r = 0; r < 3; ++r) {
             const size_t i = (size_t) (3 * layer + r);
@@ -762,6 +786,20 @@ bool FileExpertSource::copy_from_files(int64_t layer, int64_t expert, uint8_t* d
     }
     const uint8_t* b = mapped_blob(layer, expert);
     if (b == nullptr) return false;
+    if (interleave_on_copy_ && lay.native && (size_t) layer < lay.fmt.size()) {
+        const auto& fm = lay.fmt[(size_t) layer];
+        const size_t gu_row = (size_t) fm.gu_row;
+        const int64_t n_ff = fm.n_ff;
+        const uint8_t* g_src = b;
+        const uint8_t* u_src = b + (size_t) fm.up_off;
+        const uint8_t* d_src = b + (size_t) fm.down_off;
+        for (int64_t r = 0; r < n_ff; ++r) {
+            std::memcpy(dst + (size_t) (2 * r + 0) * gu_row, g_src + (size_t) r * gu_row, gu_row);
+            std::memcpy(dst + (size_t) (2 * r + 1) * gu_row, u_src + (size_t) r * gu_row, gu_row);
+        }
+        std::memcpy(dst + (size_t) fm.down_off, d_src, (size_t) (layer_blob_bytes_[(size_t) layer] - fm.down_off));
+        return true;
+    }
     std::memcpy(dst, b, (size_t) layer_blob_bytes_[(size_t) layer]);
     return true;
 }

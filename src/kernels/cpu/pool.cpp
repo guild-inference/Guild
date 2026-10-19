@@ -32,6 +32,34 @@ namespace {
 constexpr uint64_t pack_head(uint32_t epoch, uint32_t n, uint32_t i) {
     return ((uint64_t) epoch << 32) | ((uint64_t) n << 16) | (uint64_t) i;
 }
+#if defined(__GNUC__) || defined(__clang__)
+__attribute__((target("avx2")))
+#endif
+bool slice_all_finite_avx2(const float* values, int count) noexcept {
+    const __m256i exp_mask = _mm256_set1_epi32(0x7f800000);
+    __m256i bad = _mm256_setzero_si256();
+    int i = 0;
+    for (; i + 8 <= count; i += 8) {
+        const __m256i v = _mm256_loadu_si256((const __m256i*) (values + i));
+        bad = _mm256_or_si256(bad, _mm256_cmpeq_epi32(_mm256_and_si256(v, exp_mask), exp_mask));
+    }
+    if (_mm256_movemask_epi8(bad) != 0) return false;
+    for (; i < count; ++i) {
+        uint32_t bits;
+        std::memcpy(&bits, values + i, sizeof(bits));
+        if ((bits & 0x7f800000u) == 0x7f800000u) return false;
+    }
+    return true;
+}
+inline bool slice_all_finite(const float* values, int count) noexcept {
+    if (cpu_avx2_ok()) return slice_all_finite_avx2(values, count);
+    for (int i = 0; i < count; ++i) {
+        uint32_t bits;
+        std::memcpy(&bits, values + i, sizeof(bits));
+        if ((bits & 0x7f800000u) == 0x7f800000u) return false;
+    }
+    return true;
+}
 double thread_cpu_ms() {
 #if defined(__linux__)
     timespec value{};
@@ -689,6 +717,90 @@ void ExpertPool::drain(int id, ExpertScratch& scratch, uint32_t epoch) {
                 p.quant += cpu_b - cpu_a;
                 p.down += thread_cpu_ms() - cpu_b;
             }
+        } else if (mode_ == 11) {
+            // Phase 5 GEXEC single-barrier fused per-expert pipeline:
+            // Tasks [0, fused_gu_tasks_) compute gate/up slices; the worker finishing the last
+            // gate/up slice of expert e immediately quantizes ff -> hq in L2/L3 cache and unlocks
+            // expert e's down tasks [fused_gu_tasks_, fused_gu_tasks_ + nb * fused_down_parts_).
+            const bool time_phases = (id < 0);
+            if (i < fused_gu_tasks_) {
+                const int e = (int) i / fused_gu_parts_;
+                const int part = (int) i % fused_gu_parts_;
+                const int n_ff = (int) nfmt_->n_ff;
+                const int ff_q = n_ff / 4;
+                const int r0 = (ff_q >= fused_gu_parts_) ? ((ff_q * part / fused_gu_parts_) * 4) : (n_ff * part / fused_gu_parts_);
+                const int r1 = (part + 1 == fused_gu_parts_) ? n_ff : ((ff_q >= fused_gu_parts_) ? ((ff_q * (part + 1) / fused_gu_parts_) * 4) : (n_ff * (part + 1) / fused_gu_parts_));
+                SplitBufMulti& sb = split_multi_[(size_t) e];
+                std::chrono::steady_clock::time_point t_a, t_b, t_c;
+                if (time_phases) t_a = std::chrono::steady_clock::now();
+                if (r0 < r1) {
+                    if (q2_native_kernels(nfmt_->gu_type)) {
+                        thread_local float gbuf[MAXT][FF], ubuf[MAXT][FF];
+                        float* gp[MAXT];
+                        float* up[MAXT];
+                        for (int t = 0; t < mjobs_[e].nt; ++t) { gp[t] = gbuf[t]; up[t] = ubuf[t]; }
+                        const int nbk = (int) (nfmt_->n_embd / 64);
+                        q2_rows_any(mjobs_[e].blob, nfmt_->gu_row, nbk, mjobs_[e].act, mjobs_[e].nt, gp, r0, r1);
+                        q2_rows_any(mjobs_[e].blob + nfmt_->up_off, nfmt_->gu_row, nbk, mjobs_[e].act, mjobs_[e].nt, up, r0, r1);
+                        for (int t = 0; t < mjobs_[e].nt; ++t)
+                            swiglu(gbuf[t] + r0, ubuf[t] + r0, sb.ff[t] + r0, r1 - r0);
+                    } else {
+                        float* ff[MAXT];
+                        for (int t = 0; t < mjobs_[e].nt; ++t) ff[t] = sb.ff[t];
+                        native_gu_rows(*nfmt_, mjobs_[e].blob, mjobs_[e].nact, mjobs_[e].nt, ff, r0, r1);
+                    }
+                }
+                if (time_phases) {
+                    t_b = std::chrono::steady_clock::now();
+                    host_gu_ms_ += std::chrono::duration<double, std::milli>(t_b - t_a).count();
+                }
+                if (sb.gu_rem.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+                    for (int t = 0; t < mjobs_[e].nt; ++t) {
+                        if (q2_native_kernels(nfmt_->d_type)) act_quant_any(sb.ff[t], n_ff, sb.a2[t]);
+                        else native_quant_h(*nfmt_, sb.ff[t], sb.hq[t]);
+                    }
+                    sb.hq_ready.store(1, std::memory_order_release);
+                    if (time_phases) {
+                        t_c = std::chrono::steady_clock::now();
+                        host_q_ms_ += std::chrono::duration<double, std::milli>(t_c - t_b).count();
+                    }
+                }
+            } else {
+                const int di = (int) i - fused_gu_tasks_;
+                const int e = di / fused_down_parts_;
+                const int part = di % fused_down_parts_;
+                const int n_embd = (int) nfmt_->n_embd;
+                const int emb_q = n_embd / 4;
+                const int r0 = (emb_q >= fused_down_parts_) ? ((emb_q * part / fused_down_parts_) * 4) : (n_embd * part / fused_down_parts_);
+                const int r1 = (part + 1 == fused_down_parts_) ? n_embd : ((emb_q >= fused_down_parts_) ? ((emb_q * (part + 1) / fused_down_parts_) * 4) : (n_embd * (part + 1) / fused_down_parts_));
+                SplitBufMulti& sb = split_multi_[(size_t) e];
+                while (sb.hq_ready.load(std::memory_order_acquire) == 0) {
+                    _mm_pause();
+                }
+                std::chrono::steady_clock::time_point t_c, t_d;
+                if (time_phases) t_c = std::chrono::steady_clock::now();
+                if (r0 < r1) {
+                    if (q2_native_kernels(nfmt_->d_type)) {
+                        const ActQ* a2[MAXT];
+                        for (int t = 0; t < mjobs_[e].nt; ++t) a2[t] = &sb.a2[t];
+                        q2_rows_any(mjobs_[e].blob + nfmt_->down_off, nfmt_->d_row, (int) (nfmt_->n_ff / 64), a2,
+                                    mjobs_[e].nt, mjobs_[e].out, r0, r1);
+                    } else {
+                        const void* hq[MAXT];
+                        for (int t = 0; t < mjobs_[e].nt; ++t) hq[t] = sb.hq[t];
+                        native_down_rows(*nfmt_, mjobs_[e].blob, hq, mjobs_[e].nt, mjobs_[e].out, r0, r1);
+                    }
+                    for (int t = 0; t < mjobs_[e].nt; ++t) {
+                        if (!slice_all_finite(mjobs_[e].out[t] + r0, r1 - r0)) {
+                            last_run_nonfinite_.store(true, std::memory_order_relaxed);
+                        }
+                    }
+                }
+                if (time_phases) {
+                    t_d = std::chrono::steady_clock::now();
+                    host_down_ms_ += std::chrono::duration<double, std::milli>(t_d - t_c).count();
+                }
+            }
         } else if (mode_ == 7) {
             // One independent expert intermediate per task, no cross-task writes.
             auto& sb=split_multi_[i];
@@ -858,6 +970,7 @@ bool ExpertPool::combine_multi_native(const float* parts, const float* weights, 
 }
 
 void ExpertPool::run_split_multi_native(const NativeFmt& f, ExpertJobMulti* jobs, int n, bool parallel_quant) {
+    last_run_verified_finite_ = false;
     if (n <= 0) return;
     const auto t0 = std::chrono::steady_clock::now();
     if (profile_file_) std::fill(profile_times_.begin(), profile_times_.end(), ProfileTimes{});
@@ -889,6 +1002,45 @@ void ExpertPool::run_split_multi_native(const NativeFmt& f, ExpertJobMulti* jobs
         mode_ = 0;
         ms_drain_ += std::chrono::duration<double, std::milli>(d - t0).count();
         if (profile_file_) report_profile(t0, f, jobs, n, true);
+        return;
+    }
+    if (fused_pipeline_ && threads > 1) {
+        last_run_nonfinite_.store(false, std::memory_order_relaxed);
+        for (int b0 = 0; b0 < n; b0 += kMaxSplitMulti) {
+            const int nb = (std::min)(kMaxSplitMulti, n - b0);
+            mjobs_ = jobs + b0;
+            nfmt_ = &f;
+            fused_gu_parts_ = (std::max)(1, (2 * threads + nb - 1) / nb);
+            fused_down_parts_ = (std::max)(1, (3 * threads + nb - 1) / nb);
+            fused_gu_tasks_ = nb * fused_gu_parts_;
+            const int total_tasks = fused_gu_tasks_ + nb * fused_down_parts_;
+            for (int e = 0; e < nb; ++e) {
+                split_multi_[(size_t) e].gu_rem.store(fused_gu_parts_, std::memory_order_relaxed);
+                split_multi_[(size_t) e].hq_ready.store(0, std::memory_order_relaxed);
+            }
+            host_gu_ms_ = 0.0;
+            host_q_ms_ = 0.0;
+            host_down_ms_ = 0.0;
+            const auto a = std::chrono::steady_clock::now();
+            run_phase(11, total_tasks);
+            const auto d = std::chrono::steady_clock::now();
+            const double wall = std::chrono::duration<double, std::milli>(d - a).count();
+            const double hsum = host_gu_ms_ + host_q_ms_ + host_down_ms_;
+            if (hsum > 0.0) {
+                ms_multi_gu += wall * (host_gu_ms_ / hsum);
+                ms_multi_q += wall * (host_q_ms_ / hsum);
+                ms_multi_down += wall * (host_down_ms_ / hsum);
+            } else {
+                ms_multi_gu += wall * 0.60;
+                ms_multi_q += wall * 0.02;
+                ms_multi_down += wall * 0.38;
+            }
+        }
+        last_run_verified_finite_ = true;
+        multi_bytes += (int64_t) n * (int64_t) f.bytes;
+        mode_ = 0;
+        ms_drain_ += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        if (profile_file_) report_profile(t0, f, jobs, n, false);
         return;
     }
     // more distinct experts than buffers: run them in batches

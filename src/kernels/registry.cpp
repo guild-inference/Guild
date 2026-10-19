@@ -6,6 +6,7 @@
 #include "guild/abi/runner_abi.h"
 #include "guild/abi/cpu_expert_abi.h"
 #include "guild/abi/cpu_backend_abi.h"
+#include "guild/kernels/cpu/gexec_expert.hpp"
 #include "operation_internal.hpp"
 
 #if defined(GUILD_ENABLE_CUDA) || defined(GUILD_ENABLE_HIP)
@@ -1613,6 +1614,46 @@ void KernelRegistry::register_builtin_kernels() {
 #if defined(GUILD_NATIVE_EXPERTS)
         d.next_ext=guild_cpu_backend_table_v2();
 #endif
+        register_op(d, ignore_err);
+    }
+    {
+        auto d = make_base(GUILD_OP_BATCHED_EXPERT_EXEC, kernels::cpu::kGExecFusedAvx512ImplId, "builtin.guild-kernels-cpu", GUILD_BACKEND_CPU, 98);
+        d.impl_version = kernels::cpu::kGExecExpertImplVersion;
+        d.required_cpu_isa = GUILD_ISA_AVX2 | GUILD_ISA_FMA | GUILD_ISA_F16C | GUILD_ISA_AVX512F | GUILD_ISA_AVX512BW | GUILD_ISA_AVX512DQ | GUILD_ISA_AVX512VL;
+        d.max_batch_rows = 512;
+        d.max_dim_n = 2560;
+        d.max_dim_k = 2560;
+        d.next_ext = kernels::cpu::guild_cpu_gexec_fused_avx512_table_v2();
+        register_op(d, ignore_err);
+    }
+    {
+        auto d = make_base(GUILD_OP_BATCHED_EXPERT_EXEC, kernels::cpu::kGExecInterleavedAvx512ImplId, "builtin.guild-kernels-cpu", GUILD_BACKEND_CPU, 97);
+        d.impl_version = kernels::cpu::kGExecExpertImplVersion;
+        d.required_cpu_isa = GUILD_ISA_AVX2 | GUILD_ISA_FMA | GUILD_ISA_F16C | GUILD_ISA_AVX512F | GUILD_ISA_AVX512BW | GUILD_ISA_AVX512DQ | GUILD_ISA_AVX512VL;
+        d.max_batch_rows = 512;
+        d.max_dim_n = 2560;
+        d.max_dim_k = 2560;
+        d.next_ext = kernels::cpu::guild_cpu_gexec_interleaved_avx512_table_v2();
+        register_op(d, ignore_err);
+    }
+    {
+        auto d = make_base(GUILD_OP_BATCHED_EXPERT_EXEC, kernels::cpu::kGExecFusedAvx2ImplId, "builtin.guild-kernels-cpu", GUILD_BACKEND_CPU, 96);
+        d.impl_version = kernels::cpu::kGExecExpertImplVersion;
+        d.required_cpu_isa = GUILD_ISA_AVX2 | GUILD_ISA_FMA | GUILD_ISA_F16C;
+        d.max_batch_rows = 512;
+        d.max_dim_n = 2560;
+        d.max_dim_k = 2560;
+        d.next_ext = kernels::cpu::guild_cpu_gexec_fused_avx2_table_v2();
+        register_op(d, ignore_err);
+    }
+    {
+        auto d = make_base(GUILD_OP_BATCHED_EXPERT_EXEC, kernels::cpu::kGExecInterleavedAvx2ImplId, "builtin.guild-kernels-cpu", GUILD_BACKEND_CPU, 95);
+        d.impl_version = kernels::cpu::kGExecExpertImplVersion;
+        d.required_cpu_isa = GUILD_ISA_AVX2 | GUILD_ISA_FMA | GUILD_ISA_F16C;
+        d.max_batch_rows = 512;
+        d.max_dim_n = 2560;
+        d.max_dim_k = 2560;
+        d.next_ext = kernels::cpu::guild_cpu_gexec_interleaved_avx2_table_v2();
         register_op(d, ignore_err);
     }
     {

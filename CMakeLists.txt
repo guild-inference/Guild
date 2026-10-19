@@ -975,6 +975,7 @@ add_library(guild_kernels_cpu STATIC src/kernels/cpu/pool.cpp src/kernels/cpu/pa
 target_include_directories(guild_kernels_cpu PUBLIC include)
 guild_cpu_attach_base(guild_kernels_cpu ${GUILD_BUILTIN_CPU})
 if(GUILD_BUILTIN_CPU)
+  target_sources(guild_kernels_cpu PRIVATE src/kernels/cpu/gexec_expert.cpp)
   target_compile_definitions(guild_kernels_cpu PUBLIC GUILD_BUNDLED_CPU_ARITHMETIC=1)
 else()
   target_sources(guild_kernels_cpu PRIVATE src/kernels/cpu/external_only.cpp)
@@ -1026,6 +1027,7 @@ install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/include/guild/abi/kernel_abi.h
         DESTINATION include/guild/abi)
 install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/schemas/gkmetadata.v1.schema.json
               ${CMAKE_CURRENT_SOURCE_DIR}/schemas/gpack.v1.schema.json
+              ${CMAKE_CURRENT_SOURCE_DIR}/schemas/gexec.v1.schema.json
         DESTINATION share/guild/schemas)
 install(FILES ${CMAKE_CURRENT_BINARY_DIR}/GuildKernelSDKConfig.cmake
               ${CMAKE_CURRENT_BINARY_DIR}/GuildKernelSDKConfigVersion.cmake
@@ -1038,6 +1040,7 @@ if(GUILD_ENABLE_CUDA OR GUILD_ENABLE_HIP)
     src/abi/gkernel_package.cpp
     src/artifact/gpack.cpp
     src/gexec/gexec_contract.cpp
+    src/gexec/gexec_optimizer.cpp
     src/kernels/registry.cpp
     src/model/runner.cpp
     src/runtime/model.cpp
@@ -1055,6 +1058,7 @@ else()
     src/abi/gkernel_package.cpp
     src/artifact/gpack.cpp
     src/gexec/gexec_contract.cpp
+    src/gexec/gexec_optimizer.cpp
     src/kernels/registry.cpp
     src/model/runner.cpp
     src/runtime/model_stub.cpp
@@ -1177,6 +1181,11 @@ if(GUILD_BUILD_TESTS)
   target_link_libraries(gexec_contract_test PRIVATE guild_runtime guild_models guild_cli)
   add_test(NAME gexec_contract_test COMMAND gexec_contract_test)
   set_tests_properties(gexec_contract_test PROPERTIES TIMEOUT 60)
+
+  add_executable(gexec_optimizer_test tests/core/gexec_optimizer_test.cpp)
+  target_link_libraries(gexec_optimizer_test PRIVATE guild_runtime guild_models guild_cli)
+  add_test(NAME gexec_optimizer_test COMMAND gexec_optimizer_test)
+  set_tests_properties(gexec_optimizer_test PROPERTIES TIMEOUT 90)
 
   # External .gkernel plugins built strictly against the public Guild::KernelSDK interface target
   enable_language(C)

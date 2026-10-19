@@ -33,6 +33,7 @@
 
 #include <atomic>
 #include <cstdio>
+#include <cstring>
 #include <memory>
 #include <chrono>
 #include <condition_variable>
@@ -158,6 +159,11 @@ public:
         const auto baseline_swiglu=backend_table_.swiglu;
         backend_table_=table;native_table_=table.native;
         if(!backend_table_.swiglu)backend_table_.swiglu=baseline_swiglu;
+    }
+    void set_fused_pipeline(bool enabled) noexcept { fused_pipeline_ = enabled; }
+    bool fused_pipeline() const noexcept { return fused_pipeline_; }
+    bool last_run_all_finite() const noexcept {
+        return last_run_verified_finite_ && !last_run_nonfinite_.load(std::memory_order_relaxed);
     }
     void quantize_planar(const float* x,int n,ActQ& out) { act_quant_any(x,n,out); }
     void quantize_native(const NativeFmt& f,const float* x,void* out) { native_table_.quant_act(&f,x,out); }
@@ -351,6 +357,26 @@ private:
         alignas(64) float ff[MAXT][FF];
         ActQ a2[MAXT];
         alignas(64) uint8_t hq[MAXT][kNativeHBytes];   // plan v0.3 P6: native down activations
+        alignas(64) std::atomic<int32_t> gu_rem{0};
+        alignas(64) std::atomic<int32_t> hq_ready{0};
+        SplitBufMulti() = default;
+        SplitBufMulti(const SplitBufMulti& o) {
+            std::memcpy(ff, o.ff, sizeof(ff));
+            std::memcpy(a2, o.a2, sizeof(a2));
+            std::memcpy(hq, o.hq, sizeof(hq));
+            gu_rem.store(o.gu_rem.load(std::memory_order_relaxed), std::memory_order_relaxed);
+            hq_ready.store(o.hq_ready.load(std::memory_order_relaxed), std::memory_order_relaxed);
+        }
+        SplitBufMulti& operator=(const SplitBufMulti& o) {
+            if (this != &o) {
+                std::memcpy(ff, o.ff, sizeof(ff));
+                std::memcpy(a2, o.a2, sizeof(a2));
+                std::memcpy(hq, o.hq, sizeof(hq));
+                gu_rem.store(o.gu_rem.load(std::memory_order_relaxed), std::memory_order_relaxed);
+                hq_ready.store(o.hq_ready.load(std::memory_order_relaxed), std::memory_order_relaxed);
+            }
+            return *this;
+        }
     };
     const NativeFmt* nfmt_ = nullptr;
     const float* qact_x_ = nullptr;
@@ -361,6 +387,12 @@ private:
     int comb_k_ = 0;
     int comb_n_embd_ = 0;
     std::atomic<bool> comb_nonfinite_{false};
+    bool fused_pipeline_ = false;
+    bool last_run_verified_finite_ = false;
+    alignas(64) std::atomic<bool> last_run_nonfinite_{false};
+    int fused_gu_parts_ = 1;
+    int fused_down_parts_ = 1;
+    int fused_gu_tasks_ = 0;
     std::vector<SplitBufMulti> split_multi_;
     PoolAffinity affinity_ = PoolAffinity::All;
     CpuTopology topo_;

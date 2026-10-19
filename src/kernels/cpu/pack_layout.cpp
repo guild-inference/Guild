@@ -9,6 +9,7 @@
 namespace guild::kernels::cpu {
 namespace { ExpertLayout layout; }
 const ExpertLayout& expert_layout(){return layout;}
+void expert_layout_set_gate_up_interleaved(bool interleaved) noexcept { layout.gate_up_interleaved = interleaved; }
 
 #if !defined(GUILD_NATIVE_EXPERTS)
 bool native_experts_available() noexcept{return false;}

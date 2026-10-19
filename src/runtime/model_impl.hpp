@@ -7,6 +7,8 @@
 
 #include "guild/artifact/gguf_split.hpp"
 #include "guild/artifact/gpack.hpp"
+#include "guild/gexec/gexec_optimizer.hpp"
+#include "guild/kernels/cpu/gexec_expert.hpp"
 #include "guild/core/device.hpp"
 #include "guild/core/expert_cache.hpp"
 #include "guild/core/expert_source.hpp"
@@ -85,20 +87,22 @@ inline void drive_pool_multi(void* user, const float* x_f, const int32_t* ids, i
     // GPU-planned rows are not written into the CPU output buffer: the captured
     // copy/combine kernels zero those rows and add the GPU result separately.
     // Validate every CPU result, rather than scanning stale GPU-owned host rows.
-    std::array<bool, 128> gpu_rows{};
-    const int64_t rows = n_tok * k;
-    if (t->d.plan && rows <= int64_t(gpu_rows.size()) && rows <= t->d.plan->cap) {
-        const auto& plan = *t->d.plan;
-        for (int32_t i = 0; i < plan.counts[1]; ++i) {
-            const int32_t row = plan.dst[i];
-            if (row >= 0 && row < rows) gpu_rows[size_t(row)] = true;
+    if (!t->d.pool || !t->d.pool->last_run_all_finite()) {
+        std::array<bool, 128> gpu_rows{};
+        const int64_t rows = n_tok * k;
+        if (t->d.plan && rows <= int64_t(gpu_rows.size()) && rows <= t->d.plan->cap) {
+            const auto& plan = *t->d.plan;
+            for (int32_t i = 0; i < plan.counts[1]; ++i) {
+                const int32_t row = plan.dst[i];
+                if (row >= 0 && row < rows) gpu_rows[size_t(row)] = true;
+            }
         }
-    }
-    for (int64_t row = 0; row < rows; ++row) {
-        if (row < int64_t(gpu_rows.size()) && gpu_rows[size_t(row)]) continue;
-        if (!core::validate_finite(out + row * t->d.n_embd, size_t(t->d.n_embd), "expert output", error)) {
-            t->d.failed = true;
-            throw std::runtime_error(error);
+        for (int64_t row = 0; row < rows; ++row) {
+            if (row < int64_t(gpu_rows.size()) && gpu_rows[size_t(row)]) continue;
+            if (!core::validate_finite(out + row * t->d.n_embd, size_t(t->d.n_embd), "expert output", error)) {
+                t->d.failed = true;
+                throw std::runtime_error(error);
+            }
         }
     }
     const auto done = Clock::now();
@@ -114,6 +118,7 @@ struct GuildModel::Impl {
     RuntimeConfig config;
     StartupProfile startup_profile;
     std::unique_ptr<artifact::GPackReader> gpack;
+    std::unique_ptr<gexec::GExecReader> gexec;
     std::shared_ptr<Tokenizer> tokenizer;
     std::shared_ptr<std::atomic<bool>> ready;
     ExpertPerformance expert_performance;

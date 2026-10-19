@@ -20,6 +20,7 @@ namespace guild::kernels::cpu {
 
 struct ExpertLayout {
     bool native = false;
+    bool gate_up_interleaved = false;
     int64_t n_layers = 0, n_expert = NE;
     std::vector<NativeFmt> fmt;           ///< per layer (native packs)
     std::vector<uint64_t> offset, bytes;  ///< per layer: where its 512 blobs start, bytes per blob
@@ -74,6 +75,7 @@ void act_quant_any(const float* x, int n, ActQ& a);
 
 /// The process-wide layout (canonical Q2_0 until `expert_layout_load` finds a native pack).
 const ExpertLayout& expert_layout();
+void expert_layout_set_gate_up_interleaved(bool interleaved) noexcept;
 /// Reads `<pack_dir>/native_experts.txt` when it exists (a native pack), else sets the canonical layout.
 /// Versions up to kExpertLayoutVersion are read; a newer one is refused (a newer packer wrote it).
 bool expert_layout_load(const std::string& pack_dir, int64_t n_layers, int64_t n_expert, std::string& err,

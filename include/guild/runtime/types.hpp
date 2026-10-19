@@ -17,6 +17,7 @@ struct ModelPaths {
     std::string mtp_dir;
     std::string tokenizer_dir;
     std::string ple_gguf;
+    std::string gexec_path;
 };
 
 struct RuntimeConfig {
@@ -152,6 +153,14 @@ struct StartupProfile {
     bool expert_zero_copy = false;
     bool expert_numa_interleaved = false;
     bool expert_page_locked = false;
+
+    // Phase 5 GEXEC ahead-of-time optimization telemetry
+    bool gexec_active = false;
+    std::string gexec_path;
+    std::string gexec_cache_key;
+    std::string gexec_cpu_expert_impl;
+    std::string gexec_expert_layout = "PortableContiguous";
+    std::string gexec_fallback_reason;
 };
 
 } // namespace guild::runtime

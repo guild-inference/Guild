@@ -1,0 +1,153 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://guild.local/schemas/gexec.v1.schema.json",
+  "title": "Guild GEXEC Container Metadata v1",
+  "type": "object",
+  "required": [
+    "magic",
+    "format_version",
+    "flags",
+    "is_partial",
+    "total_file_bytes",
+    "header_and_table_sha256",
+    "cache_key",
+    "sections",
+    "identity"
+  ],
+  "properties": {
+    "magic": {
+      "type": "string",
+      "const": "GEXC"
+    },
+    "format_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "flags": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "is_partial": {
+      "type": "boolean"
+    },
+    "total_file_bytes": {
+      "type": "integer",
+      "minimum": 64
+    },
+    "header_and_table_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "cache_key": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "sections": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["kind", "name", "flags", "offset", "byte_size", "alignment", "sha256"],
+        "properties": {
+          "kind": { "type": "integer", "minimum": 1, "maximum": 8 },
+          "name": { "type": "string" },
+          "flags": { "type": "integer", "minimum": 0 },
+          "offset": { "type": "integer", "minimum": 128 },
+          "byte_size": { "type": "integer", "minimum": 0 },
+          "alignment": { "type": "integer", "minimum": 1 },
+          "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+        }
+      }
+    },
+    "identity": {
+      "type": "object",
+      "required": [
+        "format_version",
+        "gpack_manifest_sha256",
+        "core_abi_version",
+        "module_abi_version",
+        "runner_id",
+        "runner_version",
+        "bound_packages",
+        "hardware",
+        "kv_format",
+        "kv_mode",
+        "max_context",
+        "prefill_batch",
+        "mtp_spec_tokens"
+      ]
+    },
+    "autotune_table": {
+      "type": "object",
+      "required": ["identity", "records", "digest"]
+    },
+    "heterogeneous_plan": {
+      "type": "object",
+      "required": [
+        "identity",
+        "numa_policy",
+        "use_thp_hugepages",
+        "measured_formats",
+        "calibrated_cpu_ms",
+        "calibrated_gpu_ms",
+        "calibrated_copy_ms",
+        "expert_cache_slots",
+        "gpu_layers",
+        "pcie_numerators",
+        "digest"
+      ]
+    },
+    "workspace_recipe": {
+      "type": "object",
+      "required": [
+        "dense_arena_bytes",
+        "native_dense_arena_bytes",
+        "session_device_bytes",
+        "session_host_kv_bytes",
+        "verifier_arena_bytes",
+        "prefill_arena_bytes",
+        "capture_window_tokens",
+        "capture_commit_graph",
+        "digest"
+      ]
+    },
+    "provenance": {
+      "type": "object",
+      "required": [
+        "key",
+        "compiler_id",
+        "guild_version",
+        "git_commit",
+        "created_unix_seconds",
+        "optimization_mode",
+        "optimization_wall_ms",
+        "digest"
+      ]
+    },
+    "expert_pack_meta": {
+      "type": "object",
+      "required": [
+        "layout_kind",
+        "embedded_blob_present",
+        "fused_single_barrier_pipeline",
+        "n_layers",
+        "n_expert",
+        "total_expert_bytes",
+        "layer_specs",
+        "digest"
+      ]
+    },
+    "diagnostic_log": {
+      "type": "object",
+      "required": [
+        "baseline_decode_ms",
+        "optimized_decode_ms",
+        "speedup_ratio",
+        "break_even_tokens",
+        "notes",
+        "rejected_candidates",
+        "digest"
+      ]
+    }
+  }
+}

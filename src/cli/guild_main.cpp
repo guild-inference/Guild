@@ -3,6 +3,7 @@
 #include "guild/cli/ansi.hpp"
 #include "guild/cli/hardware.hpp"
 #include "guild/gexec/gexec_contract.hpp"
+#include "guild/gexec/gexec_optimizer.hpp"
 #include "guild/kernels/registry.hpp"
 #include "guild/memory/planner.hpp"
 #include "guild/model/archetype.hpp"
@@ -108,10 +109,12 @@ void print_usage() {
               << "  " << cyan() << "rm" << reset() << " <model>        Safely remove a model and its unreferenced blobs\n"
               << "  " << cyan() << "import" << reset() << " <path>     Import existing model directory/files into store without copying\n"
               << "  " << cyan() << "serve" << reset() << " [model]     Start OpenAI-compatible HTTP inference server\n"
-              << "  " << cyan() << "inspect" << reset() << " <model>   Inspect model GGUF/GPACK architecture, metadata, and MoE layout\n"
+              << "  " << cyan() << "inspect" << reset() << " <model>   Inspect model GGUF/GPACK/GEXEC architecture, metadata, and MoE layout\n"
               << "                      [--plan] [--json] to compute native execution memory plan\n"
               << "  " << cyan() << "convert" << reset() << " <in>      Convert GGUF/pack or safetensors into portable .gpack container\n"
-              << "  " << cyan() << "verify" << reset() << " <gpack>    Verify .gpack container structure and SHA-256 section digests\n"
+              << "  " << cyan() << "optimize" << reset() << " <gpack>  Compile hardware-specialized .gexec execution artifact from .gpack\n"
+              << "  " << cyan() << "verify" << reset() << " <file>     Verify .gpack or .gexec container structure and SHA-256 digests\n"
+              << "  " << cyan() << "cache-clean" << reset() << "       Clean obsolete, invalidated, or all .gexec optimization artifacts\n"
               << "  " << cyan() << "kernel" << reset() << " <subcmd>   Manage .gkernel/.gkmodule packages\n"
               << "  " << cyan() << "bench" << reset() << " <model>     Run performance benchmark suite on target model\n"
               << "  " << cyan() << "ps" << reset() << "                List running Guild model instances and memory status\n"
@@ -149,8 +152,63 @@ int cmd_inspect(int argc, char** argv) {
     }
 
     if (path.empty()) {
-        std::cerr << "Usage: guild inspect <model_path> [--plan] [--json]\n";
+        std::cerr << "Usage: guild inspect <model_path|gexec_path> [--plan] [--json]\n";
         return 1;
+    }
+
+    // Check if target is a .gexec container
+    if (path.size() >= 6 && path.compare(path.size() - 6, 6, ".gexec") == 0) {
+        guild::gexec::GExecReader greader;
+        std::string gerr;
+        if (!greader.open(path, gerr)) {
+            std::cerr << "guild inspect: invalid GEXEC container '" << path << "': " << gerr << "\n";
+            return 1;
+        }
+        if (json_mode) {
+            std::cout << greader.inspect_json() << "\n";
+            return 0;
+        }
+        std::cout << bold() << "Guild GEXEC v1 Container Inspector" << reset() << "\n"
+                  << "────────────────────────────────────────\n"
+                  << "Path          " << greader.path() << "\n"
+                  << "Format Ver    " << greader.header().format_version << " ("
+                  << (greader.is_partial() ? "PARTIAL" : "COMPLETE") << ")\n"
+                  << "File Size     " << greader.header().total_file_bytes << " B\n"
+                  << "Cache Key     " << greader.identity().compute_cache_key() << "\n"
+                  << "GPACK SHA256  " << greader.identity().gpack_manifest_sha256 << "\n"
+                  << "Runner        " << greader.identity().runner_id << " (v" << greader.identity().runner_version << ")\n"
+                  << "CPU           " << greader.identity().hardware.cpu_brand << " ("
+                  << greader.identity().hardware.cpu_physical_cores << "C/"
+                  << greader.identity().hardware.cpu_logical_threads << "T, NUMA="
+                  << greader.identity().hardware.numa_nodes << ")\n"
+                  << "GPU           " << greader.identity().hardware.gpu_name << " (sm_"
+                  << greader.identity().hardware.gpu_cc_major << greader.identity().hardware.gpu_cc_minor << ")\n"
+                  << "Sections      " << greader.sections().size() << "\n";
+        for (const auto& s : greader.sections()) {
+            std::cout << "  - " << std::left << std::setw(24)
+                      << guild::gexec::section_kind_to_string(static_cast<guild::gexec::GExecSectionKind>(s.kind))
+                      << " offset=" << std::setw(10) << s.offset
+                      << " size=" << std::setw(10) << s.byte_size
+                      << " align=" << s.alignment << "\n";
+        }
+        if (greader.has_section(guild::gexec::GExecSectionKind::AutotuneTable)) {
+            std::cout << "\n" << bold() << "Locked Kernel Implementations:" << reset() << "\n";
+            for (const auto& r : greader.autotune_table().records) {
+                std::cout << "  - " << r.operation_name << " (quant=" << r.quant_type << ", m=" << r.m_tokens << "): "
+                          << cyan() << r.selected_impl_id << reset()
+                          << " (" << std::fixed << std::setprecision(1) << r.median_latency_us << " us)\n";
+            }
+        }
+        if (greader.has_section(guild::gexec::GExecSectionKind::DiagnosticLog)) {
+            const auto& dlog = greader.diagnostic_log();
+            std::cout << "\n" << bold() << "Optimization Diagnostics:" << reset() << "\n"
+                      << "  Baseline Decode  " << std::fixed << std::setprecision(2) << dlog.baseline_decode_ms << " ms/tok\n"
+                      << "  Optimized Decode " << std::fixed << std::setprecision(2) << dlog.optimized_decode_ms << " ms/tok\n"
+                      << "  Speedup Ratio    " << std::fixed << std::setprecision(3) << dlog.speedup_ratio << "x\n"
+                      << "  Break-Even       " << std::fixed << std::setprecision(1) << dlog.break_even_tokens << " tokens\n"
+                      << "  Rejected Cands   " << dlog.rejected_candidates.size() << "\n";
+        }
+        return 0;
     }
 
     guild::model::ModelDescriptor desc;
@@ -234,6 +292,8 @@ int cmd_serve(int argc, char** argv) {
     bool json_mode = false;
     bool no_tui = false;
     bool force_mock = false;
+    std::string gexec_path;
+    std::string optimize_mode_str;
 
     int64_t prefill_batch = 0;
 
@@ -243,6 +303,8 @@ int cmd_serve(int argc, char** argv) {
         else if (arg == "--host" && i + 1 < argc) host = argv[++i];
         else if (arg == "--model" && i + 1 < argc) model = argv[++i];
         else if (arg == "--data-dir" && i + 1 < argc) data_dir = argv[++i];
+        else if (arg == "--gexec" && i + 1 < argc) gexec_path = argv[++i];
+        else if (arg == "--optimize-mode" && i + 1 < argc) optimize_mode_str = argv[++i];
         else if (arg == "--verbose") verbose = true;
         else if (arg == "--quiet") quiet = true;
         else if (arg == "--json") json_mode = true;
@@ -362,6 +424,20 @@ int cmd_serve(int argc, char** argv) {
         n_opts.paths.expert_profile_path = profile_bin;
         n_opts.paths.mtp_dir = mtp_dir;
         n_opts.paths.tokenizer_dir = tokenizer_dir;
+        n_opts.paths.gexec_path = gexec_path;
+        if (is_gpack_model && !optimize_mode_str.empty()) {
+            guild::gexec::GExecOptMode omode = guild::gexec::GExecOptMode::Auto;
+            if (guild::gexec::parse_opt_mode(optimize_mode_str, omode) && omode != guild::gexec::GExecOptMode::Skip) {
+                guild::gexec::GExecOptimizeOptions oopts;
+                oopts.gpack_path = native_model;
+                oopts.output_gexec_path = gexec_path;
+                oopts.mode = omode;
+                oopts.max_context = plan.context_length;
+                oopts.prefill_batch = plan.prefill_batch > 0 ? plan.prefill_batch : 64;
+                auto ores = guild::gexec::optimize_gpack(oopts);
+                if (ores.ok && !ores.skipped) n_opts.paths.gexec_path = ores.output_path;
+            }
+        }
 
         auto native_engine = std::make_shared<guild::server::NativeInferenceEngine>(std::move(n_opts));
         std::string n_err;
@@ -903,12 +979,16 @@ int cmd_run(int argc, char** argv) {
     using namespace guild::cli::ansi;
     std::string model = "qwen3.8-flash-next";
     std::string data_dir;
+    std::string gexec_path;
+    std::string optimize_mode_str;
     bool force_mock = false;
     int64_t prefill_batch = 0;
 
     for (int i = 2; i < argc; ++i) {
         const std::string arg = argv[i];
         if (arg == "--mock") force_mock = true;
+        else if (arg == "--gexec" && i + 1 < argc) gexec_path = argv[++i];
+        else if (arg == "--optimize-mode" && i + 1 < argc) optimize_mode_str = argv[++i];
         else if (arg == "--prefill-batch") {
             if (i+1>=argc || !parse_prefill_batch(argv[++i],prefill_batch)) {
                 std::cerr<<"--prefill-batch requires 0(auto) or an integer in 1..512\n";
@@ -1030,6 +1110,20 @@ int cmd_run(int argc, char** argv) {
         n_opts.paths.expert_profile_path = profile_bin;
         n_opts.paths.mtp_dir = mtp_dir;
         n_opts.paths.tokenizer_dir = tokenizer_dir;
+        n_opts.paths.gexec_path = gexec_path;
+        if (is_gpack_model && !optimize_mode_str.empty()) {
+            guild::gexec::GExecOptMode omode = guild::gexec::GExecOptMode::Auto;
+            if (guild::gexec::parse_opt_mode(optimize_mode_str, omode) && omode != guild::gexec::GExecOptMode::Skip) {
+                guild::gexec::GExecOptimizeOptions oopts;
+                oopts.gpack_path = native_model;
+                oopts.output_gexec_path = gexec_path;
+                oopts.mode = omode;
+                oopts.max_context = plan.context_length;
+                oopts.prefill_batch = plan.prefill_batch > 0 ? plan.prefill_batch : 64;
+                auto ores = guild::gexec::optimize_gpack(oopts);
+                if (ores.ok && !ores.skipped) n_opts.paths.gexec_path = ores.output_path;
+            }
+        }
 
         auto native_engine = std::make_shared<guild::server::NativeInferenceEngine>(std::move(n_opts));
         std::string n_err;
@@ -1593,6 +1687,7 @@ int cmd_convert(int argc, char** argv) {
 
 int cmd_verify(int argc, char** argv) {
     std::string path;
+    std::string gpack_path;
     bool json_mode = false;
     bool quick_mode = false;
 
@@ -1600,8 +1695,9 @@ int cmd_verify(int argc, char** argv) {
         std::string arg = argv[i];
         if (arg == "--json") json_mode = true;
         else if (arg == "--quick") quick_mode = true;
+        else if (arg == "--gpack" && i + 1 < argc) gpack_path = argv[++i];
         else if (arg == "-h" || arg == "--help") {
-            std::cout << "Usage: guild verify <model.gpack> [--quick] [--json]\n";
+            std::cout << "Usage: guild verify <model.gpack|model.gexec> [--gpack <model.gpack>] [--quick] [--json]\n";
             return 0;
         } else if (!arg.empty() && arg[0] != '-' && path.empty()) {
             path = arg;
@@ -1609,11 +1705,66 @@ int cmd_verify(int argc, char** argv) {
     }
 
     if (path.empty()) {
-        std::cerr << "Usage: guild verify <model.gpack> [--quick] [--json]\n";
+        std::cerr << "Usage: guild verify <model.gpack|model.gexec> [--gpack <model.gpack>] [--quick] [--json]\n";
         return 1;
     }
 
     const auto t0 = std::chrono::steady_clock::now();
+    if (path.size() >= 6 && path.compare(path.size() - 6, 6, ".gexec") == 0) {
+        guild::gexec::GExecReader greader;
+        std::string err;
+        guild::gexec::GExecInvalidationReason reason = guild::gexec::GExecInvalidationReason::None;
+        if (!greader.open(path, err, &reason, !quick_mode)) {
+            if (json_mode) {
+                std::cout << "{\"valid\":false,\"reason\":\"" << guild::gexec::invalidation_reason_to_string(reason)
+                          << "\",\"error\":\"" << err << "\"}\n";
+            } else {
+                std::cerr << "guild verify failed: " << err << "\n";
+            }
+            return 1;
+        }
+        if (!gpack_path.empty()) {
+            guild::artifact::GPackReader gpack;
+            if (!gpack.open(gpack_path, err, false)) {
+                std::cerr << "guild verify: cannot open reference GPACK: " << err << "\n";
+                return 1;
+            }
+            const auto cur_id = guild::gexec::build_current_gexec_identity(
+                gpack, greader.identity().kv_format, greader.identity().kv_mode,
+                greader.identity().max_context, greader.identity().prefill_batch,
+                greader.identity().mtp_spec_tokens);
+            if (!greader.validate_against(cur_id, err, &reason)) {
+                if (json_mode) {
+                    std::cout << "{\"valid\":false,\"reason\":\"" << guild::gexec::invalidation_reason_to_string(reason)
+                              << "\",\"error\":\"" << err << "\"}\n";
+                } else {
+                    std::cerr << "guild verify failed compatibility check: " << err << "\n";
+                }
+                return 1;
+            }
+        }
+        const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        if (json_mode) {
+            std::cout << "{\n"
+                      << "  \"valid\": true,\n"
+                      << "  \"path\": \"" << greader.path() << "\",\n"
+                      << "  \"format_version\": " << greader.header().format_version << ",\n"
+                      << "  \"is_partial\": " << (greader.is_partial() ? "true" : "false") << ",\n"
+                      << "  \"cache_key\": \"" << greader.identity().compute_cache_key() << "\",\n"
+                      << "  \"gpack_manifest_sha256\": \"" << greader.identity().gpack_manifest_sha256 << "\",\n"
+                      << "  \"file_size\": " << greader.header().total_file_bytes << ",\n"
+                      << "  \"sections\": " << greader.sections().size() << ",\n"
+                      << "  \"verify_ms\": " << ms << "\n"
+                      << "}\n";
+        } else {
+            std::cout << "GEXEC container verified: " << greader.path() << " ("
+                      << greader.sections().size() << " sections, cache_key "
+                      << greader.identity().compute_cache_key().substr(0, 16) << "..., "
+                      << std::fixed << std::setprecision(1) << ms << " ms)\n";
+        }
+        return 0;
+    }
+
     guild::artifact::GPackReader reader;
     std::string err;
     if (!reader.open(path, err, !quick_mode)) {
@@ -1642,6 +1793,191 @@ int cmd_verify(int argc, char** argv) {
                   << reader.tensors().size() << " tensors, manifest "
                   << reader.manifest_sha256_hex().substr(0, 16) << "..., "
                   << std::fixed << std::setprecision(1) << ms << " ms)\n";
+    }
+    return 0;
+}
+
+int cmd_optimize(int argc, char** argv) {
+    using namespace guild::cli::ansi;
+    guild::gexec::GExecOptimizeOptions opts;
+    bool json_mode = false;
+    std::string regen_section_str;
+
+    for (int i = 2; i < argc; ++i) {
+        const std::string arg = argv[i];
+        if ((arg == "-o" || arg == "--output") && i + 1 < argc) opts.output_gexec_path = argv[++i];
+        else if (arg == "--cache-dir" && i + 1 < argc) opts.cache_dir = argv[++i];
+        else if (arg == "--mode" && i + 1 < argc) {
+            if (!guild::gexec::parse_opt_mode(argv[++i], opts.mode)) {
+                std::cerr << "guild optimize: invalid --mode (expected skip|quick|auto|exhaustive)\n";
+                return 2;
+            }
+        }
+        else if (arg == "--max-time" && i + 1 < argc) opts.budget.max_time_seconds = std::atof(argv[++i]);
+        else if (arg == "--max-memory" && i + 1 < argc) opts.budget.max_memory_bytes = static_cast<uint64_t>(std::atoll(argv[++i]));
+        else if (arg == "--max-disk" && i + 1 < argc) opts.budget.max_disk_bytes = static_cast<uint64_t>(std::atoll(argv[++i]));
+        else if (arg == "--embed-experts") opts.budget.embed_packed_experts = true;
+        else if (arg == "--no-resume") opts.budget.resume_interrupted = false;
+        else if (arg == "--context" && i + 1 < argc) opts.max_context = std::atoll(argv[++i]);
+        else if (arg == "--prefill-batch" && i + 1 < argc) opts.prefill_batch = std::atoll(argv[++i]);
+        else if (arg == "--spec" && i + 1 < argc) opts.mtp_spec_tokens = std::atoi(argv[++i]);
+        else if (arg == "--kv-format" && i + 1 < argc) opts.kv_format = argv[++i];
+        else if (arg == "--kv-mode" && i + 1 < argc) opts.kv_mode = argv[++i];
+        else if (arg == "--section" && i + 1 < argc) regen_section_str = argv[++i];
+        else if (arg == "--json") json_mode = true;
+        else if (arg == "-h" || arg == "--help") {
+            std::cout << "Usage: guild optimize <model.gpack> [options]\n"
+                      << "  -o, --output <path.gexec>   Explicit output .gexec path\n"
+                      << "  --cache-dir <dir>           GEXEC cache directory\n"
+                      << "  --mode <mode>               Optimization mode: skip|quick|auto|exhaustive (default: auto)\n"
+                      << "  --max-time <seconds>        Wall-clock time budget in seconds (default: 300)\n"
+                      << "  --max-memory <bytes>        Maximum RAM budget in bytes\n"
+                      << "  --max-disk <bytes>          Maximum disk budget in bytes\n"
+                      << "  --embed-experts             Embed pre-interleaved PackedExpertsBlob section inside .gexec\n"
+                      << "  --section <name>            Selectively regenerate one section in existing .gexec\n"
+                      << "  --context <tokens>          Target context length (default: 2048)\n"
+                      << "  --prefill-batch <tokens>    Target prefill batch size (default: 64)\n"
+                      << "  --spec <tokens>             Target MTP speculative tokens\n"
+                      << "  --kv-format <format>        Target KV precision (default: fp16)\n"
+                      << "  --kv-mode <mode>            Target KV placement (default: host_only)\n"
+                      << "  --json                      Output machine-readable JSON optimization report\n";
+            return 0;
+        } else if (!arg.empty() && arg[0] != '-' && opts.gpack_path.empty()) {
+            opts.gpack_path = arg;
+        }
+    }
+
+    if (opts.gpack_path.empty()) {
+        std::cerr << "Usage: guild optimize <model.gpack> [--mode skip|quick|auto|exhaustive] [-o <out.gexec>] [--json]\n";
+        return 1;
+    }
+
+    if (!regen_section_str.empty()) {
+        if (opts.output_gexec_path.empty()) {
+            std::cerr << "guild optimize --section requires -o <existing.gexec>\n";
+            return 1;
+        }
+        guild::gexec::GExecSectionKind skind = guild::gexec::GExecSectionKind::Invalid;
+        if (regen_section_str == "AutotuneTable" || regen_section_str == "autotune") skind = guild::gexec::GExecSectionKind::AutotuneTable;
+        else if (regen_section_str == "HeterogeneousPlan" || regen_section_str == "plan") skind = guild::gexec::GExecSectionKind::HeterogeneousPlan;
+        else if (regen_section_str == "WorkspaceRecipe" || regen_section_str == "workspace") skind = guild::gexec::GExecSectionKind::WorkspaceRecipe;
+        else if (regen_section_str == "CompilationProvenance" || regen_section_str == "provenance") skind = guild::gexec::GExecSectionKind::CompilationProvenance;
+        std::string err;
+        if (!guild::gexec::regenerate_gexec_section(opts.output_gexec_path, opts.gpack_path, skind, err, opts.budget)) {
+            std::cerr << "guild optimize --section failed: " << err << "\n";
+            return 1;
+        }
+        if (json_mode) {
+            std::cout << "{\"status\":\"ok\",\"regenerated_section\":\"" << regen_section_str
+                      << "\",\"output_path\":\"" << opts.output_gexec_path << "\"}\n";
+        } else {
+            std::cout << "Regenerated GEXEC section '" << regen_section_str << "' in " << opts.output_gexec_path << "\n";
+        }
+        return 0;
+    }
+
+    auto res = guild::gexec::optimize_gpack(opts, [&](const std::string& msg) {
+        if (!json_mode) std::cerr << "[gexec] " << msg << "\n";
+    });
+    if (!res.ok) {
+        if (json_mode) {
+            std::cout << "{\"status\":\"error\",\"error\":\"" << res.error << "\"}\n";
+        } else {
+            std::cerr << "guild optimize failed: " << res.error << "\n";
+        }
+        return 1;
+    }
+
+    if (json_mode) {
+        std::cout << "{\n"
+                  << "  \"status\": \"" << (res.skipped ? "skipped" : (res.partial_artifact ? "partial" : "ok")) << "\",\n"
+                  << "  \"output_path\": \"" << res.output_path << "\",\n"
+                  << "  \"cache_key\": \"" << res.cache_key << "\",\n"
+                  << "  \"resumed_from_checkpoint\": " << (res.resumed_from_checkpoint ? "true" : "false") << ",\n"
+                  << "  \"partial_artifact\": " << (res.partial_artifact ? "true" : "false") << ",\n"
+                  << "  \"selected_cpu_expert_impl_id\": \"" << res.selected_cpu_expert_impl_id << "\",\n"
+                  << "  \"expert_layout_kind\": \"" << (res.expert_layout_kind == guild::gexec::ExpertPackLayoutKind::GateUpRowInterleaved ? "GateUpRowInterleaved" : "PortableContiguous") << "\",\n"
+                  << "  \"fused_single_barrier_pipeline\": " << (res.fused_single_barrier_pipeline ? "true" : "false") << ",\n"
+                  << "  \"optimization_wall_ms\": " << res.optimization_wall_ms << ",\n"
+                  << "  \"baseline_decode_ms\": " << res.baseline_decode_ms << ",\n"
+                  << "  \"optimized_decode_ms\": " << res.optimized_decode_ms << ",\n"
+                  << "  \"speedup_ratio\": " << res.speedup_ratio << ",\n"
+                  << "  \"break_even_tokens\": " << res.break_even_tokens << ",\n"
+                  << "  \"artifact_bytes\": " << res.artifact_bytes << "\n"
+                  << "}\n";
+    } else if (res.skipped) {
+        std::cout << "GEXEC optimization skipped (--mode skip).\n";
+    } else {
+        std::cout << bold() << "Built GEXEC v1 Execution Artifact" << reset() << "\n"
+                  << "  Output         " << res.output_path << "\n"
+                  << "  Size           " << guild::models::Downloader::format_bytes(res.artifact_bytes) << "\n"
+                  << "  Cache Key      " << res.cache_key.substr(0, 16) << "...\n"
+                  << "  CPU Expert Op  " << cyan() << res.selected_cpu_expert_impl_id << reset() << "\n"
+                  << "  Expert Layout  " << (res.expert_layout_kind == guild::gexec::ExpertPackLayoutKind::GateUpRowInterleaved ? "GateUpRowInterleaved" : "PortableContiguous") << "\n"
+                  << "  Pool Pipeline  " << (res.fused_single_barrier_pipeline ? "Single-Barrier Fused" : "Two-Barrier Standard") << "\n"
+                  << "  Compile Time   " << std::fixed << std::setprecision(1) << res.optimization_wall_ms << " ms\n"
+                  << "  Pool Speedup   " << std::fixed << std::setprecision(3) << res.speedup_ratio << "x ("
+                  << std::setprecision(2) << res.baseline_decode_ms << " -> " << res.optimized_decode_ms << " ms/tok, break-even "
+                  << std::setprecision(1) << res.break_even_tokens << " tokens)\n";
+    }
+    return 0;
+}
+
+int cmd_cache_clean(int argc, char** argv) {
+    std::string cache_dir;
+    std::string gpack_path;
+    bool remove_all = false;
+    bool json_mode = false;
+
+    for (int i = 2; i < argc; ++i) {
+        const std::string arg = argv[i];
+        if (arg == "--dir" && i + 1 < argc) cache_dir = argv[++i];
+        else if (arg == "--model" && i + 1 < argc) gpack_path = argv[++i];
+        else if (arg == "--all") remove_all = true;
+        else if (arg == "--json") json_mode = true;
+        else if (arg == "-h" || arg == "--help") {
+            std::cout << "Usage: guild cache-clean [--dir <cache_dir>] [--model <model.gpack>] [--all] [--json]\n";
+            return 0;
+        }
+    }
+
+    std::unique_ptr<guild::gexec::GExecArtifactIdentity> keep_id;
+    if (!gpack_path.empty()) {
+        guild::artifact::GPackReader gpack;
+        std::string gerr;
+        if (gpack.open(gpack_path, gerr, false)) {
+            keep_id = std::make_unique<guild::gexec::GExecArtifactIdentity>(
+                guild::gexec::build_current_gexec_identity(gpack));
+        }
+        if (cache_dir.empty()) {
+            const std::filesystem::path gp(gpack_path);
+            cache_dir = ((gp.has_parent_path() ? gp.parent_path() : std::filesystem::path(".")) / ".gexec_cache").string();
+        }
+    }
+    if (cache_dir.empty()) {
+        if (const char* env_dir = std::getenv("GUILD_GEXEC_CACHE_DIR"); env_dir && env_dir[0] != '\0') {
+            cache_dir = env_dir;
+        } else {
+            cache_dir = ".gexec_cache";
+        }
+    }
+
+    const auto res = guild::gexec::clean_gexec_cache(cache_dir, remove_all, keep_id.get());
+    if (!res.ok) {
+        std::cerr << "guild cache-clean failed: " << res.error << "\n";
+        return 1;
+    }
+    if (json_mode) {
+        std::cout << "{\n"
+                  << "  \"status\": \"ok\",\n"
+                  << "  \"removed_files\": " << res.removed_files << ",\n"
+                  << "  \"kept_files\": " << res.kept_files << ",\n"
+                  << "  \"reclaimed_bytes\": " << res.reclaimed_bytes << "\n"
+                  << "}\n";
+    } else {
+        std::cout << "Cleaned GEXEC cache '" << cache_dir << "': removed " << res.removed_files
+                  << " file(s), kept " << res.kept_files << " file(s), reclaimed "
+                  << guild::models::Downloader::format_bytes(res.reclaimed_bytes) << ".\n";
     }
     return 0;
 }
@@ -1685,6 +2021,12 @@ int main(int argc, char** argv) {
     }
     if (cmd == "convert" || cmd == "gpack") {
         return cmd_convert(argc, argv);
+    }
+    if (cmd == "optimize" || cmd == "gexec") {
+        return cmd_optimize(argc, argv);
+    }
+    if (cmd == "cache-clean") {
+        return cmd_cache_clean(argc, argv);
     }
     if (cmd == "verify") {
         return cmd_verify(argc, argv);

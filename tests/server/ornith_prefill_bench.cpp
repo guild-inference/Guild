@@ -31,9 +31,9 @@ double percentile(std::vector<double> v, double p) {
 int main(int argc,char**argv) try {
     int prompt=512,generated=128,runs=3,context=32768,only_batch=0,n_sessions=1,spec_tokens=0;
     double pcie_frac=-1.0;
-    std::string csv,write_ids,dump,activity,json_summary,startup_json,model_arg="ornith:35b",gpack_path;
+    std::string csv,write_ids,dump,activity,json_summary,startup_json,model_arg="ornith:35b",gpack_path,gexec_path;
     std::string activity_library="./build-cuda12/libguild_activity.so";
-    bool sequential=false,full_warmup=false,concurrent_pkg_ops=false,ignore_eos=false;
+    bool sequential=false,full_warmup=false,concurrent_pkg_ops=false,ignore_eos=false,disable_gexec=false;
     for(int i=1;i<argc;++i) {
         const std::string a=argv[i];auto value=[&](){if(i+1>=argc)throw std::invalid_argument("missing argument");return std::string(argv[++i]);};
         if(a=="--prompt")prompt=std::stoi(value());else if(a=="--generate")generated=std::stoi(value());
@@ -48,6 +48,8 @@ int main(int argc,char**argv) try {
         else if(a=="--startup-json")startup_json=value();
         else if(a=="--model")model_arg=value();
         else if(a=="--gpack")gpack_path=value();
+        else if(a=="--gexec")gexec_path=value();
+        else if(a=="--disable-gexec")disable_gexec=true;
         else if(a=="--activity")activity=value();else if(a=="--activity-library")activity_library=value();
         else if(a=="--full-warmup")full_warmup=true;
         else if(a=="--csv")csv=value();else if(a=="--write-ids")write_ids=value();else if(a=="--dump")dump=value();
@@ -60,6 +62,8 @@ int main(int argc,char**argv) try {
     if(default_primary.empty() && manifest->name == "qwen3.8-flash-next")
         default_primary = "/mnt/models-ssd/Strata-data/models/unsloth-UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf";
     paths.primary_model_path=gpack_path.empty()?default_primary:gpack_path;
+    paths.gexec_path=gexec_path;
+    if(disable_gexec)setenv("GUILD_DISABLE_GEXEC","1",1);else unsetenv("GUILD_DISABLE_GEXEC");
     paths.pack_dir=manifest->metadata.count("pack_dir")?manifest->metadata.at("pack_dir"):"/mnt/models-ssd/Strata-data/packs/unsloth-ud-iq4_xs";
     paths.tokenizer_dir=paths.pack_dir+"/tokenizer";
     if(manifest->metadata.count("expert_profile"))paths.expert_profile_path=manifest->metadata.at("expert_profile");
@@ -186,7 +190,13 @@ int main(int argc,char**argv) try {
                        << "    \"kv_device_bytes\": " << sp.kv_device_bytes << ",\n"
                        << "    \"expert_zero_copy\": " << (sp.expert_zero_copy ? "true" : "false") << ",\n"
                        << "    \"expert_numa_interleaved\": " << (sp.expert_numa_interleaved ? "true" : "false") << ",\n"
-                       << "    \"expert_page_locked\": " << (sp.expert_page_locked ? "true" : "false") << "\n"
+                       << "    \"expert_page_locked\": " << (sp.expert_page_locked ? "true" : "false") << ",\n"
+                       << "    \"gexec_active\": " << (sp.gexec_active ? "true" : "false") << ",\n"
+                       << "    \"gexec_path\": \"" << sp.gexec_path << "\",\n"
+                       << "    \"gexec_cache_key\": \"" << sp.gexec_cache_key << "\",\n"
+                       << "    \"gexec_cpu_expert_impl\": \"" << sp.gexec_cpu_expert_impl << "\",\n"
+                       << "    \"gexec_expert_layout\": \"" << sp.gexec_expert_layout << "\",\n"
+                       << "    \"gexec_fallback_reason\": \"" << sp.gexec_fallback_reason << "\"\n"
                        << "  },\n"
                        << "  \"first_inference\": {\n"
                        << "    \"prompt_ms\": " << warm_t.prompt_ms << ",\n"

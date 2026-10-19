@@ -508,6 +508,10 @@ public:
     double file_ms() const { return (double) file_us_.load(std::memory_order_relaxed) / 1000.0; }
     /// Threads `prefetch` reads the GGUF with (GUILD_FETCH_THREADS, default 8).
     void set_fetch_threads(int n) { fetch_threads_ = n < 1 ? 1 : n; }
+    /// Phase 5 GEXEC: interleave gate and up rows [gate_0, up_0, gate_1, up_1, ...] on the fly when copying from
+    /// split source files into the resident arena or stage buffers (zero extra pass).
+    void set_gate_up_interleaved(bool interleave_on_copy);
+    bool gate_up_interleaved() const { return interleave_on_copy_; }
     /// #286 (Windows): read the experts straight from the drive (FILE_FLAG_NO_BUFFERING, overlapped) instead of
     /// through the mapped files - the GGUF in place, or a pack's experts.bin - when the file cache could not keep them
     /// beside `ram_bytes` (the RAM budget), cached now or not (their mapped pages would land in the working set); see
@@ -567,8 +571,8 @@ private:
     std::vector<std::string> paths_;          ///< the mapped files, as maps_
     std::vector<void*> direct_;               ///< #286: per file, an unbuffered overlapped handle (Windows)
     std::vector<int> role_file_;              ///< 3 x n_layers: index into maps_ / direct_
-    /// blobs assembled in the stage buffers (`blob` hands those out): the GGUF in place, or any unbuffered source
-    bool staged() const { return !role_ptr_.empty() || !direct_.empty(); }
+    /// blobs assembled in the stage buffers (`blob` hands those out): the GGUF in place, any unbuffered source, or on-copy interleaving
+    bool staged() const { return !role_ptr_.empty() || !direct_.empty() || interleave_on_copy_; }
     static constexpr uint64_t kNoComplement = detail::kNoCacheComplement;
     // ---- CS-T: the GGUF shards in place
     std::string gguf_;
@@ -606,6 +610,7 @@ private:
     int64_t last_layer_ = -1;
     bool stage_grew_ = false;
     bool external_view_ = false;
+    bool interleave_on_copy_ = false;
     std::atomic<int64_t> ram_reads_{0};
     std::atomic<uint64_t> file_read_bytes_{0};
     const uint8_t* base_ = nullptr;

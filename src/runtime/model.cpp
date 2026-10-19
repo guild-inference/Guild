@@ -230,12 +230,91 @@ std::unique_ptr<GuildModel> GuildModel::load(
     impl->kernel_lease = kernels::SessionKernelLease(&kernels::KernelRegistry::instance(),
                                                       impl->runner_exec.resolved_package_ids,
                                                       impl->main_stream);
+
+    // Phase 5 GEXEC ahead-of-time optimization resolution & validation
+    if (use_gpack) {
+        const auto cur_gexec_id = gexec::build_current_gexec_identity(
+            *impl->gpack,
+            impl->config.kv_format,
+            impl->config.kv_host_only ? "host_only" : "resident",
+            impl->config.max_context,
+            plan.prefill_batch > 0 ? plan.prefill_batch : impl->config.prefill_chunk,
+            plan.mtp_spec_tokens);
+        auto greader = std::make_unique<gexec::GExecReader>();
+        std::string gexec_fallback;
+        gexec::GExecInvalidationReason gexec_reason = gexec::GExecInvalidationReason::None;
+        if (gexec::resolve_gexec_for_gpack(
+                gpack_candidate_path, paths.gexec_path, cur_gexec_id, *greader, gexec_fallback, &gexec_reason) &&
+            !greader->is_partial()) {
+            impl->gexec = std::move(greader);
+            sp.container_format = "gpack.v1+gexec.v1";
+            sp.gexec_active = true;
+            sp.gexec_path = impl->gexec->path();
+            sp.gexec_cache_key = impl->gexec->identity().compute_cache_key();
+        } else {
+            sp.gexec_active = false;
+            sp.gexec_fallback_reason = gexec_fallback;
+            if (!paths.gexec_path.empty() || gexec_reason != gexec::GExecInvalidationReason::None) {
+                std::fprintf(stderr, "guild runtime: GEXEC fallback to GPACK (%s)\n", gexec_fallback.c_str());
+            }
+        }
+    }
+
     {
         kernels::KernelSelectionQuery query;
         query.op_kind=GUILD_OP_BATCHED_EXPERT_EXEC; query.allowed_backends=GUILD_BACKEND_CPU;
+        if (impl->gexec && impl->gexec->has_section(gexec::GExecSectionKind::AutotuneTable)) {
+            const auto& at = impl->gexec->autotune_table();
+            for (const auto& rec : at.records) {
+                if (rec.op_kind == GUILD_OP_BATCHED_EXPERT_EXEC && !rec.selected_impl_id.empty()) {
+                    query.frozen_impl_id = rec.selected_impl_id;
+                    query.frozen_impl_version = rec.selected_impl_version;
+                    break;
+                }
+            }
+            // GPU decode kernels need contiguous gate/up weights. A profile alone
+            // does not enable a GPU cache; its requested slot count does.
+            const char* zcopy_env = std::getenv("GUILD_EXPERT_MMAP");
+            const bool want_zero_copy = (zcopy_env != nullptr && std::atoi(zcopy_env) != 0) &&
+                                        impl->gpack->has_embedded_experts() &&
+                                        !impl->gexec->has_section(gexec::GExecSectionKind::PackedExpertsBlob);
+            const bool gpu_decode_experts = (plan.routed_experts_in_gpu != 0) ||
+                                            (plan.pcie_expert_fraction > 0.0);
+            if ((want_zero_copy || gpu_decode_experts || plan.pcie_expert_fraction < 0 || plan.expert_cache_auto) &&
+                kernels::cpu::is_gexec_interleaved_impl(query.frozen_impl_id.c_str())) {
+                sp.gexec_fallback_reason = "interleaved expert plan is incompatible with the requested mmap/GPU expert path";
+                std::fprintf(stderr, "guild runtime: GEXEC fallback to GPACK (%s)\n", sp.gexec_fallback_reason.c_str());
+                impl->gexec.reset();
+                sp.gexec_active = false;
+                sp.container_format = "gpack.v1";
+                query.frozen_impl_id.clear();
+                query.frozen_impl_version = 0;
+            }
+        }
         kernels::KernelBinding selected;
-        if (kernels::KernelRegistry::instance().select(query,host_caps,&selected,error_msg) != GUILD_STATUS_OK)
-            return nullptr;
+        if (kernels::KernelRegistry::instance().select(query,host_caps,&selected,error_msg) != GUILD_STATUS_OK) {
+            if (!query.frozen_impl_id.empty()) {
+                std::fprintf(stderr, "guild runtime: GEXEC frozen kernel '%s' unavailable (%s); falling back to default selection\n",
+                             query.frozen_impl_id.c_str(), error_msg.c_str());
+                sp.gexec_fallback_reason = error_msg;
+                impl->gexec.reset();
+                sp.gexec_active = false;
+                sp.container_format = "gpack.v1";
+                error_msg.clear();
+                query.frozen_impl_id.clear();
+                query.frozen_impl_version = 0;
+                if (kernels::KernelRegistry::instance().select(query,host_caps,&selected,error_msg) != GUILD_STATUS_OK)
+                    return nullptr;
+            } else {
+                return nullptr;
+            }
+        }
+        if (selected && selected->impl_id) {
+            sp.gexec_cpu_expert_impl = selected->impl_id;
+        }
+        if (impl->gexec) {
+            impl->pool->set_fused_pipeline(impl->gexec->expert_pack_meta().fused_single_barrier_pipeline);
+        }
         if (selected->next_ext) {
             impl->cpu_binding = selected;
             guild_cpu_expert_ext_v1_t table{};
@@ -335,6 +414,12 @@ std::unique_ptr<GuildModel> GuildModel::load(
             return nullptr;
         }
     }
+    const bool use_gexec_interleaved =
+        impl->gexec &&
+        kernels::cpu::is_gexec_interleaved_impl(sp.gexec_cpu_expert_impl.c_str()) &&
+        guild::kernels::cpu::expert_layout().native;
+    guild::kernels::cpu::expert_layout_set_gate_up_interleaved(use_gexec_interleaved);
+    sp.gexec_expert_layout = use_gexec_interleaved ? "GateUpRowInterleaved" : "PortableContiguous";
     sp.quant_layout_prep_ms += ms_since(qlay_t0);
     const bool native_pack = guild::kernels::cpu::expert_layout().native;
     const bool has_native_sources = use_gpack || !shards.empty();
@@ -488,19 +573,28 @@ std::unique_ptr<GuildModel> GuildModel::load(
         sp.dense_vram_bytes += impl->native_head.weight_bytes();
     }
 
-    // Open expert source (FileExpertSource over GPACK ExpertBlobs or pack directory / GGUF shards)
+    // Open expert source (FileExpertSource over GEXEC PackedExpertsBlob, GPACK ExpertBlobs, or pack directory / GGUF shards)
     const auto esrc_t0 = Clock::now();
-    if (use_gpack && impl->gpack->has_embedded_experts()) {
+    if (impl->gexec && impl->gexec->has_section(gexec::GExecSectionKind::PackedExpertsBlob)) {
+        uint64_t exp_bytes = 0;
+        const uint8_t* exp_ptr = impl->gexec->packed_experts_blob(&exp_bytes);
+        if (!impl->src.open_gpack(exp_ptr, exp_bytes, impl->g.n_layers, impl->g.n_expert, error_msg)) {
+            return nullptr;
+        }
+        impl->src.set_gate_up_interleaved(false); // Embedded .gexec blob is already interleaved
+    } else if (use_gpack && impl->gpack->has_embedded_experts()) {
         uint64_t exp_bytes = 0;
         const uint8_t* exp_ptr = impl->gpack->expert_blobs_data(&exp_bytes);
         if (!impl->src.open_gpack(exp_ptr, exp_bytes, impl->g.n_layers, impl->g.n_expert, error_msg)) {
             return nullptr;
         }
+        impl->src.set_gate_up_interleaved(use_gexec_interleaved);
     } else if (use_gpack && impl->gpack->has_external_experts()) {
         impl->src.set_gguf(impl->gpack->external_expert_primary_gguf());
         if (!impl->src.open(paths.pack_dir, impl->g.n_layers, impl->g.n_expert, error_msg)) {
             return nullptr;
         }
+        impl->src.set_gate_up_interleaved(use_gexec_interleaved);
         ++sp.container_opens;
     } else {
         if (!shards.empty()) {
@@ -509,14 +603,33 @@ std::unique_ptr<GuildModel> GuildModel::load(
         if (!impl->src.open(paths.pack_dir, impl->g.n_layers, impl->g.n_expert, error_msg)) {
             return nullptr;
         }
+        impl->src.set_gate_up_interleaved(use_gexec_interleaved);
         if (!shards.empty()) sp.container_opens += static_cast<int64_t>(shards.size());
     }
     impl->srcp = &impl->src;
     sp.expert_source_open_ms += ms_since(esrc_t0);
 
     const auto cal1_t0 = Clock::now();
-    if (!calibrate_experts(layout, impl->src, *impl->pool, 0, impl->main_stream,
-                           impl->expert_performance, error_msg)) return nullptr;
+    if (impl->gexec && impl->gexec->has_section(gexec::GExecSectionKind::HeterogeneousPlan) &&
+        impl->gexec->heterogeneous_plan().measured_formats > 0 &&
+        plan.pcie_expert_fraction <= 0.0) {
+        const auto& hp = impl->gexec->heterogeneous_plan();
+        impl->expert_performance.gpu_layers = hp.gpu_layers;
+        if (impl->expert_performance.gpu_layers.size() != static_cast<size_t>(impl->g.n_layers)) {
+            impl->expert_performance.gpu_layers.assign(static_cast<size_t>(impl->g.n_layers), 1u);
+        }
+        impl->expert_performance.pcie_numerators = hp.pcie_numerators;
+        if (impl->expert_performance.pcie_numerators.size() != static_cast<size_t>(impl->g.n_layers)) {
+            impl->expert_performance.pcie_numerators.assign(static_cast<size_t>(impl->g.n_layers), 0);
+        }
+        impl->expert_performance.measured_formats = hp.measured_formats;
+        impl->expert_performance.cpu_ms = hp.calibrated_cpu_ms;
+        impl->expert_performance.gpu_ms = hp.calibrated_gpu_ms;
+        impl->expert_performance.copy_ms = hp.calibrated_copy_ms;
+    } else {
+        if (!calibrate_experts(layout, impl->src, *impl->pool, 0, impl->main_stream,
+                               impl->expert_performance, error_msg)) return nullptr;
+    }
     if (!native_pack) {
         const bool supported = impl->g.n_embd == kernels::cpu::H && impl->g.n_ff == kernels::cpu::FF;
         impl->expert_performance.gpu_layers.assign(size_t(impl->g.n_layers), supported);

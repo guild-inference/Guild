@@ -8,7 +8,8 @@ resolve/scratch/execute/release service. Runners can consume specialized operati
 without adding model-specific operation enums to Core. Signed CPU and CUDA scan
 modules exercise actual invocation, concurrent unload protection and graph/stream
 lifetimes. Current RMD1 execution topology is unchanged; new complete model runners,
-GPACK, GEXEC and audio pipelines are later work.
+GPACK and GEXEC are described in [GPACK_FORMAT.md](GPACK_FORMAT.md) and
+[GEXEC_CONTRACT.md](GEXEC_CONTRACT.md). Audio pipelines are later work.
 
 ## Phase 2 status
 
