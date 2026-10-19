@@ -11,4 +11,4 @@ namespace guild {
 inline sycl::queue* q_of(const void* stream) {
     return stream ? (sycl::queue*) stream : &dpct::get_in_order_queue();
 }
-}  // namespace guild
+} // namespace guild

@@ -26,7 +26,7 @@ namespace {
 
 constexpr int QK = 64;
 
-void check(dpct::err0 e, const char *what) {
+void check(dpct::err0 e, const char* what) {
 }
 
 // FP16 patterns, and they are deliberately NOT all powers of two.
@@ -39,30 +39,36 @@ void check(dpct::err0 e, const char *what) {
 //
 // The added patterns have full 11-bit mantissas, so products round and the two implementations'
 // rounding/contraction behaviour actually matters.
-const uint16_t kScales[] = {
-    0x3C00, 0x3800, 0x3400, 0x3000, 0x2C00, 0x2800, 0x2000,          // 1, 0.5, 0.25, ... powers of two
-    0xBC00, 0xB800, 0xB400, 0xB000, 0xAC00, 0x1800, 0x1400,
-    0x3E00, 0x3555, 0x3C01, 0x4248, 0x4123, 0x2AAA, 0x4A2B,          // 1.75, 0.333.., 1.0009765625, ...
-    0xBE00, 0xB555, 0xC248, 0x2AAB, 0x4A2C, 0x2AAB};
+const uint16_t kScales[] = {0x3C00, 0x3800, 0x3400, 0x3000, 0x2C00, 0x2800, 0x2000, // 1, 0.5, 0.25, ... powers of two
+                            0xBC00, 0xB800, 0xB400, 0xB000, 0xAC00, 0x1800, 0x1400,
+                            0x3E00, 0x3555, 0x3C01, 0x4248, 0x4123, 0x2AAA, 0x4A2B, // 1.75, 0.333.., 1.0009765625, ...
+                            0xBE00, 0xB555, 0xC248, 0x2AAB, 0x4A2C, 0x2AAB};
 
-}  // namespace
+} // namespace
 
 int main(int argc, char** argv) {
-    long long n_in = 2560;          // the real n_embd, so the row length is the engine's
-    long long n_out = 640;          // the real expert intermediate width
+    long long n_in = 2560; // the real n_embd, so the row length is the engine's
+    long long n_out = 640; // the real expert intermediate width
     double tol = 1e-5;
     bool selftest = false;
     for (int i = 1; i < argc; ++i) {
-        if (std::strcmp(argv[i], "--selftest") == 0) selftest = true;
-        else if (std::strcmp(argv[i], "--n-in") == 0 && i + 1 < argc) n_in = std::atoll(argv[++i]);
-        else if (std::strcmp(argv[i], "--n-out") == 0 && i + 1 < argc) n_out = std::atoll(argv[++i]);
-        else if (std::strcmp(argv[i], "--tol") == 0 && i + 1 < argc) tol = std::atof(argv[++i]);
+        if (std::strcmp(argv[i], "--selftest") == 0)
+            selftest = true;
+        else if (std::strcmp(argv[i], "--n-in") == 0 && i + 1 < argc)
+            n_in = std::atoll(argv[++i]);
+        else if (std::strcmp(argv[i], "--n-out") == 0 && i + 1 < argc)
+            n_out = std::atoll(argv[++i]);
+        else if (std::strcmp(argv[i], "--tol") == 0 && i + 1 < argc)
+            tol = std::atof(argv[++i]);
         else {
             std::fprintf(stderr, "usage: s2_gemv_parity [--selftest] [--n-in N] [--n-out N] [--tol T]\n");
             return 2;
         }
     }
-    if (n_in % QK != 0) { std::fprintf(stderr, "--n-in must be a multiple of %d\n", QK); return 2; }
+    if (n_in % QK != 0) {
+        std::fprintf(stderr, "--n-in must be a multiple of %d\n", QK);
+        return 2;
+    }
     const long long nb = n_in / QK;
 
     std::mt19937 rng(999);
@@ -71,12 +77,14 @@ int main(int argc, char** argv) {
     // FP16 activations.  Patterns are drawn from the same finite/exact table as the decode test, because a
     // random 16-bit pattern can be NaN and a NaN makes the comparison fail for the wrong reason.
     std::vector<uint16_t> x((size_t) n_in);
-    for (long long i = 0; i < n_in; ++i) x[(size_t) i] = kScales[rng() % n_scales];
+    for (long long i = 0; i < n_in; ++i)
+        x[(size_t) i] = kScales[rng() % n_scales];
 
     // S2 weight planes for an [n_in, n_out] matrix: row o occupies a contiguous run of nb blocks.
     std::vector<uint8_t> codes((size_t) n_out * nb * 16);
     std::vector<float> scales((size_t) n_out * nb);
-    for (size_t i = 0; i < codes.size(); ++i) codes[i] = (uint8_t) (rng() & 0xFF);
+    for (size_t i = 0; i < codes.size(); ++i)
+        codes[i] = (uint8_t) (rng() & 0xFF);
     for (size_t i = 0; i < scales.size(); ++i) {
         scales[i] = guild::fp16_to_fp32(kScales[rng() % n_scales]);
     }
@@ -92,12 +100,14 @@ int main(int argc, char** argv) {
             const float d = scales[(size_t) (o * nb + b)];
             // write `d` back as the fp16 pattern the plane came from: the plane stores a WIDENED fp16, so
             // re-narrowing is exact and the scalar decoder sees the same value the kernel does
-            const uint16_t d_bits = (uint16_t) [&] {
+            const uint16_t d_bits = (uint16_t)[&] {
                 for (uint16_t c : kScales) {
-                    if (guild::fp16_to_fp32(c) == d) return c;
+                    if (guild::fp16_to_fp32(c) == d)
+                        return c;
                 }
                 return (uint16_t) 0x3C00;
-            }();
+            }
+            ();
             raw[0] = (uint8_t) (d_bits & 0xFF);
             raw[1] = (uint8_t) (d_bits >> 8);
             std::memcpy(&raw[2], &codes[(size_t) ((o * nb + b) * 16)], 16);
@@ -112,17 +122,12 @@ int main(int argc, char** argv) {
     uint16_t* d_x = nullptr;
     uint8_t* d_codes = nullptr;
     float *d_scales = nullptr, *d_y = nullptr;
-    check(DPCT_CHECK_ERROR(d_x = sycl::malloc_device<uint16_t>(
-                               x.size(), dpct::get_in_order_queue())),
-          "cudaMalloc x");
-    check(DPCT_CHECK_ERROR(d_codes = (uint8_t *)sycl::malloc_device(
-                               codes.size(), dpct::get_in_order_queue())),
+    check(DPCT_CHECK_ERROR(d_x = sycl::malloc_device<uint16_t>(x.size(), dpct::get_in_order_queue())), "cudaMalloc x");
+    check(DPCT_CHECK_ERROR(d_codes = (uint8_t*) sycl::malloc_device(codes.size(), dpct::get_in_order_queue())),
           "cudaMalloc codes");
-    check(DPCT_CHECK_ERROR(d_scales = sycl::malloc_device<float>(
-                               scales.size(), dpct::get_in_order_queue())),
+    check(DPCT_CHECK_ERROR(d_scales = sycl::malloc_device<float>(scales.size(), dpct::get_in_order_queue())),
           "cudaMalloc scales");
-    check(DPCT_CHECK_ERROR(d_y = sycl::malloc_device<float>(
-                               (size_t)n_out, dpct::get_in_order_queue())),
+    check(DPCT_CHECK_ERROR(d_y = sycl::malloc_device<float>((size_t) n_out, dpct::get_in_order_queue())),
           "cudaMalloc y");
     /*
     DPCT1114: cudaMemcpy is migrated to asynchronization memcpy, assuming in
@@ -130,8 +135,9 @@ int main(int argc, char** argv) {
     is not pageable, call wait() on event return by memcpy API to ensure
     synchronization behavior.
     */
-    check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(
-              d_x, x.data(), x.size() * sizeof(uint16_t)).wait()),
+    check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
+                               .memcpy(d_x, x.data(), x.size() * sizeof(uint16_t))
+                               .wait()),
           "copy x");
     /*
     DPCT1114: cudaMemcpy is migrated to asynchronization memcpy, assuming in
@@ -139,8 +145,9 @@ int main(int argc, char** argv) {
     is not pageable, call wait() on event return by memcpy API to ensure
     synchronization behavior.
     */
-    check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(
-              d_codes, codes.data(), codes.size()).wait()),
+    check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
+                               .memcpy(d_codes, codes.data(), codes.size())
+                               .wait()),
           "copy codes");
     /*
     DPCT1114: cudaMemcpy is migrated to asynchronization memcpy, assuming in
@@ -148,17 +155,17 @@ int main(int argc, char** argv) {
     is not pageable, call wait() on event return by memcpy API to ensure
     synchronization behavior.
     */
-    check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(
-              d_scales, scales.data(), scales.size() * sizeof(float)).wait()),
+    check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
+                               .memcpy(d_scales, scales.data(), scales.size() * sizeof(float))
+                               .wait()),
           "copy scales");
 
     guild::kernels::s2_gemv(d_x, d_codes, d_scales, d_y, n_in, n_out);
 
     std::vector<float> got((size_t) n_out);
-    check(DPCT_CHECK_ERROR(
-              (dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
-                  .memcpy(got.data(), d_y, got.size() * sizeof(float))
-                  .wait()),
+    check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
+                               .memcpy(got.data(), d_y, got.size() * sizeof(float))
+                               .wait()),
           "copy back");
 
     long long bad = 0, first_bad = -1;
@@ -167,9 +174,11 @@ int main(int argc, char** argv) {
         const double a = ref[(size_t) o], b = got[(size_t) o];
         const double denom = std::fabs(a) > 1e-30 ? std::fabs(a) : 1e-30;
         const double rel = std::fabs(a - b) / denom;
-        if (!(rel <= worst)) worst = rel;
+        if (!(rel <= worst))
+            worst = rel;
         if (!(rel <= tol)) {
-            if (first_bad < 0) first_bad = o;
+            if (first_bad < 0)
+                first_bad = o;
             ++bad;
         }
     }
@@ -182,8 +191,8 @@ int main(int argc, char** argv) {
         hi = std::fmax(hi, v);
     }
     const double spread = hi - lo;
-    std::printf("s2_gemv: n_in %lld, n_out %lld, %lld rows over tolerance, worst rel %.3e (tol %.1e)\n", n_in,
-                n_out, bad, worst, tol);
+    std::printf("s2_gemv: n_in %lld, n_out %lld, %lld rows over tolerance, worst rel %.3e (tol %.1e)\n", n_in, n_out,
+                bad, worst, tol);
     std::printf("  reference spread [%.4g, %.4g]\n", lo, hi);
     if (spread <= 0.0) {
         std::fprintf(stderr, "VACUOUS: the reference is constant, so agreement proves nothing\n");
@@ -195,7 +204,8 @@ int main(int argc, char** argv) {
         return 1;
     }
     std::printf("  agrees with the scalar decode that dequant_xcheck proved equal to ggml\n");
-    if (selftest) std::printf("s2_gemv_parity OK\n");
+    if (selftest)
+        std::printf("s2_gemv_parity OK\n");
 
     sycl::free(d_x, dpct::get_in_order_queue());
     sycl::free(d_codes, dpct::get_in_order_queue());

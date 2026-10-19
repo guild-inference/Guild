@@ -11,7 +11,7 @@ namespace guild::core {
 
 namespace {
 
-void check(dpct::err0 e, const char *what) {
+void check(dpct::err0 e, const char* what) {
     /*
     DPCT1000: Error handling if-stmt was detected but could not be
     rewritten.
@@ -25,20 +25,18 @@ void check(dpct::err0 e, const char *what) {
         /*
         DPCT1001: The statement could not be removed.
         */
-        throw CudaError(
-            std::string(what) + ": " + dpct::get_error_string_dummy(e), (int)e);
+        throw CudaError(std::string(what) + ": " + dpct::get_error_string_dummy(e), (int) e);
     }
 }
 
 // A NaN pattern, not zero.  Zeros read from uninitialised memory are indistinguishable from real zeros in a
 // dequantized weight or a masked attention score, which is exactly the kind of wrong-but-plausible value the
 // Phase 1 harnesses kept catching.
-__dpct_inline__ void poison_kernel(float *p, uint64_t n_floats) {
+__dpct_inline__ void poison_kernel(float* p, uint64_t n_floats) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
-    const uint64_t i =
-        (uint64_t)item_ct1.get_group(2) * item_ct1.get_local_range(2) +
-        item_ct1.get_local_id(2);
-    if (i < n_floats) p[i] = sycl::bit_cast<float>(0x7fc00000);
+    const uint64_t i = (uint64_t) item_ct1.get_group(2) * item_ct1.get_local_range(2) + item_ct1.get_local_id(2);
+    if (i < n_floats)
+        p[i] = sycl::bit_cast<float>(0x7fc00000);
 }
 
 #if defined(GUILD_USE_HIP)
@@ -49,7 +47,8 @@ __dpct_inline__ void poison_kernel(float *p, uint64_t n_floats) {
 std::string base_arch(const char* gcn_arch_name) {
     std::string arch(gcn_arch_name);
     const size_t colon = arch.find(':');
-    if (colon != std::string::npos) arch.resize(colon);
+    if (colon != std::string::npos)
+        arch.resize(colon);
     return arch;
 }
 
@@ -58,8 +57,10 @@ bool compiled_for(const std::string& arch) {
     size_t a = 0;
     while (a <= list.size()) {
         size_t b = list.find(',', a);
-        if (b == std::string::npos) b = list.size();
-        if (!arch.empty() && list.compare(a, b - a, arch) == 0 && b - a == arch.size()) return true;
+        if (b == std::string::npos)
+            b = list.size();
+        if (!arch.empty() && list.compare(a, b - a, arch) == 0 && b - a == arch.size())
+            return true;
         a = b + 1;
     }
     return false;
@@ -80,7 +81,7 @@ std::string arch_problem(const cudaDeviceProp& p, int ordinal) {
 }
 #endif
 
-}  // namespace
+} // namespace
 
 const char* compiled_gpu_archs() {
 #if defined(GUILD_USE_HIP)
@@ -92,8 +93,7 @@ const char* compiled_gpu_archs() {
 
 int device_count() try {
     int count = 0;
-    if (DPCT_CHECK_ERROR(count = dpct::device_count()) !=
-        0) { // HIP without a usable device reports an error, not 0
+    if (DPCT_CHECK_ERROR(count = dpct::device_count()) != 0) { // HIP without a usable device reports an error, not 0
         /*
         DPCT1026: The call to cudaGetLastError was removed because this
         functionality is redundant in SYCL.
@@ -101,14 +101,12 @@ int device_count() try {
         return 0;
     }
     return count < 0 ? 0 : count;
-}
-catch (sycl::exception const &exc) {
-  std::cerr << exc.what() << "Exception caught at file:" << __FILE__
-            << ", line:" << __LINE__ << std::endl;
-  std::exit(1);
+} catch (sycl::exception const& exc) {
+    std::cerr << exc.what() << "Exception caught at file:" << __FILE__ << ", line:" << __LINE__ << std::endl;
+    std::exit(1);
 }
 
-bool device_summary(int ordinal, std::string &name, std::string &detail) try {
+bool device_summary(int ordinal, std::string& name, std::string& detail) try {
     dpct::device_info p{};
     if (ordinal < 0 || ordinal >= device_count() ||
         DPCT_CHECK_ERROR(dpct::get_device(ordinal).get_device_info(p)) != 0) {
@@ -127,21 +125,18 @@ bool device_summary(int ordinal, std::string &name, std::string &detail) try {
     DPCT1005: The SYCL device version is different from CUDA Compute
     Compatibility. You may need to rewrite this code.
     */
-    std::snprintf(buf, sizeof(buf), "compute capability %d.%d, %.1f GiB",
-                  p.get_major_version(), p.get_minor_version(),
-                  (double)p.get_global_mem_size() / (1024.0 * 1024 * 1024));
+    std::snprintf(buf, sizeof(buf), "compute capability %d.%d, %.1f GiB", p.get_major_version(), p.get_minor_version(),
+                  (double) p.get_global_mem_size() / (1024.0 * 1024 * 1024));
 #endif
     name = p.get_name();
     detail = buf;
     return true;
-}
-catch (sycl::exception const &exc) {
-  std::cerr << exc.what() << "Exception caught at file:" << __FILE__
-            << ", line:" << __LINE__ << std::endl;
-  std::exit(1);
+} catch (sycl::exception const& exc) {
+    std::cerr << exc.what() << "Exception caught at file:" << __FILE__ << ", line:" << __LINE__ << std::endl;
+    std::exit(1);
 }
 
-}  // namespace guild::core
+} // namespace guild::core
 
 #if defined(GUILD_USE_HIP) && defined(_WIN32)
 // The free VRAM figure on Windows HIP (include/guild/hip_compat/cuda_runtime.h maps cudaMemGetInfo here).
@@ -176,9 +171,11 @@ IDXGIAdapter3* budget_adapter(int device) {
     static std::mutex mu;
     static IDXGIAdapter3* adapters[kMaxDevices] = {};
     static bool tried[kMaxDevices] = {};
-    if (device < 0 || device >= kMaxDevices) return nullptr;
+    if (device < 0 || device >= kMaxDevices)
+        return nullptr;
     std::lock_guard<std::mutex> lock(mu);
-    if (tried[device]) return adapters[device];
+    if (tried[device])
+        return adapters[device];
     tried[device] = true;
     hipDeviceProp_t p{};
     if (hipGetDeviceProperties(&p, device) != hipSuccess) {
@@ -188,17 +185,19 @@ IDXGIAdapter3* budget_adapter(int device) {
     LUID luid{};
     std::memcpy(&luid, p.luid, sizeof luid);
     using CreateFactory = HRESULT(WINAPI*)(REFIID, void**);
-    static HMODULE dxgi = LoadLibraryW(L"dxgi.dll");   // kept for the process' lifetime, like the adapters
+    static HMODULE dxgi = LoadLibraryW(L"dxgi.dll"); // kept for the process' lifetime, like the adapters
     const auto create = dxgi ? (CreateFactory) (void*) GetProcAddress(dxgi, "CreateDXGIFactory1") : nullptr;
     IDXGIFactory4* factory = nullptr;
-    if (create == nullptr || FAILED(create(__uuidof(IDXGIFactory4), (void**) &factory))) return nullptr;
+    if (create == nullptr || FAILED(create(__uuidof(IDXGIFactory4), (void**) &factory)))
+        return nullptr;
     IDXGIAdapter3* adapter = nullptr;
-    if (FAILED(factory->EnumAdapterByLuid(luid, __uuidof(IDXGIAdapter3), (void**) &adapter))) adapter = nullptr;
+    if (FAILED(factory->EnumAdapterByLuid(luid, __uuidof(IDXGIAdapter3), (void**) &adapter)))
+        adapter = nullptr;
     factory->Release();
     adapters[device] = adapter;
     return adapter;
 }
-}  // namespace
+} // namespace
 
 hipError_t mem_get_info(size_t* free_bytes, size_t* total_bytes) {
     const hipError_t e = hipMemGetInfo(free_bytes, total_bytes);
@@ -206,7 +205,8 @@ hipError_t mem_get_info(size_t* free_bytes, size_t* total_bytes) {
         const char* v = std::getenv("GUILD_WDDM_BUDGET");
         return v != nullptr && std::atoi(v) == 0;
     }();
-    if (e != hipSuccess || off || free_bytes == nullptr || total_bytes == nullptr) return e;
+    if (e != hipSuccess || off || free_bytes == nullptr || total_bytes == nullptr)
+        return e;
     int device = 0;
     if (hipGetDevice(&device) != hipSuccess) {
         (void) hipGetLastError();
@@ -217,17 +217,18 @@ hipError_t mem_get_info(size_t* free_bytes, size_t* total_bytes) {
     if (adapter == nullptr || FAILED(adapter->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &local)) ||
         local.Budget == 0 || local.Budget >= *total_bytes)
         return e;
-    const size_t withheld = *total_bytes - (size_t) local.Budget;   // the desktop's and other programs' share
+    const size_t withheld = *total_bytes - (size_t) local.Budget; // the desktop's and other programs' share
     static std::atomic<bool> said{false};
     if (!said.exchange(true)) {
-        std::fprintf(stderr, "guild: Windows budgets %llu of this card's %llu MiB for this process; free VRAM is "
-                             "counted within that (GUILD_WDDM_BUDGET=0: off)\n",
+        std::fprintf(stderr,
+                     "guild: Windows budgets %llu of this card's %llu MiB for this process; free VRAM is "
+                     "counted within that (GUILD_WDDM_BUDGET=0: off)\n",
                      (unsigned long long) (local.Budget >> 20), (unsigned long long) (*total_bytes >> 20));
     }
     *free_bytes = *free_bytes > withheld ? *free_bytes - withheld : 0;
     return e;
 }
-}  // namespace guild::hip_compat
+} // namespace guild::hip_compat
 #endif
 
 namespace guild::core {
@@ -253,13 +254,13 @@ std::string gpu_arch_problem(int ordinal) {
 
 std::string device_code_error() try {
 #if defined(GUILD_USE_HIP)
-    return "";   // gpu_arch_problem() checks the HIP architectures against GUILD_HIP_ARCHS, before this point
+    return ""; // gpu_arch_problem() checks the HIP architectures against GUILD_HIP_ARCHS, before this point
 #else
     // every .cu of the engine is compiled for the same CMAKE_CUDA_ARCHITECTURES, so this kernel stands for all
     dpct::kernel_function_info a{};
-    const dpct::err0 e = DPCT_CHECK_ERROR(
-        dpct::get_kernel_function_info(&a, (const void *)poison_kernel));
-    if (e == 0) return {};
+    const dpct::err0 e = DPCT_CHECK_ERROR(dpct::get_kernel_function_info(&a, (const void*) poison_kernel));
+    if (e == 0)
+        return {};
     /*
     DPCT1026: The call to cudaGetLastError was removed because this
     functionality is redundant in SYCL.
@@ -271,11 +272,9 @@ std::string device_code_error() try {
     */
     return dpct::get_error_string_dummy(e);
 #endif
-}
-catch (sycl::exception const &exc) {
-  std::cerr << exc.what() << "Exception caught at file:" << __FILE__
-            << ", line:" << __LINE__ << std::endl;
-  std::exit(1);
+} catch (sycl::exception const& exc) {
+    std::cerr << exc.what() << "Exception caught at file:" << __FILE__ << ", line:" << __LINE__ << std::endl;
+    std::exit(1);
 }
 
 DeviceInfo device_info(int ordinal) {
@@ -289,9 +288,8 @@ DeviceInfo device_info(int ordinal) {
 #endif
     }
     if (ordinal < 0 || ordinal >= count) {
-        throw CudaError("device ordinal " + std::to_string(ordinal) + " is out of range (have " +
-                            std::to_string(count) + ")",
-                        -1);
+        throw CudaError(
+            "device ordinal " + std::to_string(ordinal) + " is out of range (have " + std::to_string(count) + ")", -1);
     }
     DeviceInfo d;
     d.ordinal = ordinal;
@@ -302,8 +300,7 @@ DeviceInfo device_info(int ordinal) {
     check(DPCT_CHECK_ERROR(dpct::select_device(ordinal)), "cudaSetDevice");
 
     dpct::device_info p{};
-    check(DPCT_CHECK_ERROR(dpct::get_device(ordinal).get_device_info(p)),
-          "cudaGetDeviceProperties");
+    check(DPCT_CHECK_ERROR(dpct::get_device(ordinal).get_device_info(p)), "cudaGetDeviceProperties");
     d.name = p.get_name();
     /*
     DPCT1005: The SYCL device version is different from CUDA Compute
@@ -323,9 +320,7 @@ DeviceInfo device_info(int ordinal) {
     device information which may not be supported by all compilers or runtimes.
     You may need to adjust the code.
     */
-    check(DPCT_CHECK_ERROR(
-              dpct::get_current_device().get_memory_info(free_b, total_b)),
-          "cudaMemGetInfo");
+    check(DPCT_CHECK_ERROR(dpct::get_current_device().get_memory_info(free_b, total_b)), "cudaMemGetInfo");
     d.free_bytes = free_b;
     d.total_bytes = total_b;
 
@@ -333,15 +328,13 @@ DeviceInfo device_info(int ordinal) {
     DPCT1043: The version-related API is different in SYCL. An initial code
     was generated, but you need to adjust it.
     */
-    check(DPCT_CHECK_ERROR(d.driver_version = dpct::get_major_version(
-                               dpct::get_current_device())),
+    check(DPCT_CHECK_ERROR(d.driver_version = dpct::get_major_version(dpct::get_current_device())),
           "cudaDriverGetVersion");
     /*
     DPCT1043: The version-related API is different in SYCL. An initial code
     was generated, but you need to adjust it.
     */
-    check(DPCT_CHECK_ERROR(d.runtime_version = dpct::get_major_version(
-                               dpct::get_current_device())),
+    check(DPCT_CHECK_ERROR(d.runtime_version = dpct::get_major_version(dpct::get_current_device())),
           "cudaRuntimeGetVersion");
 
     // The engine supports compute capability 7.5 and newer (Turing: the QSA scorer's tf32 mma has a portable
@@ -351,7 +344,8 @@ DeviceInfo device_info(int ordinal) {
     // backend checks the card against the architectures the binary was compiled for (and wave32).
 #if defined(GUILD_USE_HIP)
     d.arch = base_arch(p.gcnArchName);
-    if (const std::string why = arch_problem(p, ordinal); !why.empty()) throw CudaError(why, -1);
+    if (const std::string why = arch_problem(p, ordinal); !why.empty())
+        throw CudaError(why, -1);
 #else
     // #236: the experimental build (-DGUILD_EXPERIMENTAL_SM60=ON: Pascal sm_60, Volta sm_70) runs on the cards it
     // was built for - refusing them below 7.5 there made the flag useless; the release engine keeps 7.5
@@ -363,8 +357,8 @@ DeviceInfo device_info(int ordinal) {
     const char* const kNeed = "7.5 or newer (RTX 20 / 30 / 40 / 50 series)";
 #endif
     if (d.cc_major * 10 + d.cc_minor < kMinCc) {
-        throw CudaError("device " + d.name + " reports compute capability " + std::to_string(d.cc_major) +
-                            "." + std::to_string(d.cc_minor) + "; Guild needs compute capability " + kNeed,
+        throw CudaError("device " + d.name + " reports compute capability " + std::to_string(d.cc_major) + "." +
+                            std::to_string(d.cc_minor) + "; Guild needs compute capability " + kNeed,
                         -1);
     }
 #endif
@@ -372,8 +366,11 @@ DeviceInfo device_info(int ordinal) {
 }
 
 DeviceArena::DeviceArena(uint64_t bytes, int ordinal, bool poison)
-    : capacity_(bytes), ordinal_(ordinal), poison_(poison) {
-    if (bytes == 0) throw CudaError("DeviceArena of 0 bytes", -1);
+    : capacity_(bytes),
+      ordinal_(ordinal),
+      poison_(poison) {
+    if (bytes == 0)
+        throw CudaError("DeviceArena of 0 bytes", -1);
     /*
     DPCT1093: The "ordinal" device may be not the one intended for use.
     Adjust the selected device if needed.
@@ -381,8 +378,7 @@ DeviceArena::DeviceArena(uint64_t bytes, int ordinal, bool poison)
     check(DPCT_CHECK_ERROR(dpct::select_device(ordinal)), "cudaSetDevice");
     // One allocation for the whole region.  cudaMalloc of a large block is the thing that can fail late, so it
     // happens once, here, before anything depends on it.
-    check(DPCT_CHECK_ERROR(base_ = (void *)sycl::malloc_device(
-                               (size_t)bytes, dpct::get_in_order_queue())),
+    check(DPCT_CHECK_ERROR(base_ = (void*) sycl::malloc_device((size_t) bytes, dpct::get_in_order_queue())),
           "cudaMalloc");
     if (poison_) {
         const int threads = 256;
@@ -394,23 +390,18 @@ DeviceArena::DeviceArena(uint64_t bytes, int ordinal, bool poison)
         for (uint64_t b = 0; b < blocks; b += max_blocks) {
             const uint64_t chunk = (blocks - b < max_blocks) ? (blocks - b) : max_blocks;
             {
-                auto exp_props = sycl::ext::oneapi::experimental::properties{
-                    sycl::ext::oneapi::experimental::use_root_sync};
+                auto exp_props =
+                    sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::use_root_sync};
 
-                dpct::get_in_order_queue().submit([&](sycl::handler &cgh) {
-                    auto float_base__b_threads_ct0 =
-                        (float *)base_ + b * threads;
+                dpct::get_in_order_queue().submit([&](sycl::handler& cgh) {
+                    auto float_base__b_threads_ct0 = (float*) base_ + b * threads;
                     auto n_b_threads_ct1 = n - b * threads;
 
-                    cgh.parallel_for<
-                        dpct_kernel_name<class poison_kernel_58fc0a>>(
-                        sycl::nd_range<3>(sycl::range(1, 1, (unsigned)chunk) *
-                                              sycl::range(1, 1, threads),
+                    cgh.parallel_for<dpct_kernel_name<class poison_kernel_58fc0a>>(
+                        sycl::nd_range<3>(sycl::range(1, 1, (unsigned) chunk) * sycl::range(1, 1, threads),
                                           sycl::range(1, 1, threads)),
-                        exp_props, [=](sycl::nd_item<3> item_ct1) {
-                            poison_kernel(float_base__b_threads_ct0,
-                                          n_b_threads_ct1);
-                        });
+                        exp_props,
+                        [=](sycl::nd_item<3> item_ct1) { poison_kernel(float_base__b_threads_ct0, n_b_threads_ct1); });
                 });
             }
             /*
@@ -420,20 +411,19 @@ DeviceArena::DeviceArena(uint64_t bytes, int ordinal, bool poison)
             */
             check(0, "poison_kernel");
         }
-        check(DPCT_CHECK_ERROR(
-                  dpct::get_current_device().queues_wait_and_throw()),
-              "poison sync");
+        check(DPCT_CHECK_ERROR(dpct::get_current_device().queues_wait_and_throw()), "poison sync");
     }
 }
 
 DeviceArena::~DeviceArena() {
-    if (base_) sycl::free(
-        base_,
-        dpct::get_in_order_queue()); // best effort: a destructor must not throw
+    if (base_)
+        sycl::free(base_,
+                   dpct::get_in_order_queue()); // best effort: a destructor must not throw
 }
 
 void* DeviceArena::alloc(uint64_t bytes, uint64_t align) {
-    if (bytes == 0) return nullptr;
+    if (bytes == 0)
+        return nullptr;
     if (align == 0 || (align & (align - 1)) != 0) {
         throw CudaError("DeviceArena::alloc alignment must be a power of two", -1);
     }
@@ -451,4 +441,4 @@ void* DeviceArena::alloc(uint64_t bytes, uint64_t align) {
     return (char*) base_ + start;
 }
 
-}  // namespace guild::core
+} // namespace guild::core

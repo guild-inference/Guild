@@ -30,77 +30,68 @@ std::size_t native_q8_1_bytes(int n_in, int ncols = 1);
 // single-column call. Set before
 // graph capture; captured graphs keep the kernels they captured.
 void native_mmvq_set_multi_exact(bool exact);
-void native_mmvq_set_q6k_wide(bool on);   // SYCL port: the 16-byte-load Q6_K kernel (default on)
+void native_mmvq_set_q6k_wide(bool on); // SYCL port: the 16-byte-load Q6_K kernel (default on)
 void native_q6_k_mmvq_stride224(const void* weights, const void* x_q8_1, float* y, int n_in, int n_out, int ncols,
-                                void* stream);   // SYCL port: experiment, Q6_K blocks at a 224-byte stride
+                                void* stream); // SYCL port: experiment, Q6_K blocks at a 224-byte stride
 bool native_mmvq_multi_exact();
 
 // One quantization may serve multiple weight matrices sharing the same input.
 // Q8_1 stores FP16 scale and FP16 warp sum of the ORIGINAL float inputs; it does
 // not reconstruct that sum from the quantized integers.
-void native_quantize_q8_1(const float* x, void* x_q8_1, int n_in, int ncols,
-                          void* stream);
+void native_quantize_q8_1(const float* x, void* x_q8_1, int n_in, int ncols, void* stream);
 
-void native_q5_k_mmvq(const void* weights, const void* x_q8_1, float* y,
-                      int n_in, int n_out, int ncols, void* stream);
+void native_q5_k_mmvq(const void* weights, const void* x_q8_1, float* y, int n_in, int n_out, int ncols, void* stream);
 
 // Convenience composition: caller owns scratch sized by native_q8_1_bytes.
-void native_q5_k_f32(const void* weights, const float* x, void* scratch_q8_1,
-                     float* y, int n_in, int n_out, int ncols, void* stream);
+void native_q5_k_f32(const void* weights, const float* x, void* scratch_q8_1, float* y, int n_in, int n_out, int ncols,
+                     void* stream);
 
-void native_q2_0_mmvq(const void* weights, const void* x_q8_1, float* y,
-                      int n_in, int n_out, int ncols, void* stream);
+void native_q2_0_mmvq(const void* weights, const void* x_q8_1, float* y, int n_in, int n_out, int ncols, void* stream);
 
-void native_q2_0_f32(const void* weights, const float* x, void* scratch_q8_1,
-                     float* y, int n_in, int n_out, int ncols, void* stream);
+void native_q2_0_f32(const void* weights, const float* x, void* scratch_q8_1, float* y, int n_in, int n_out, int ncols,
+                     void* stream);
 
-void native_q3_k_mmvq(const void* weights, const void* x_q8_1, float* y,
-                      int n_in, int n_out, int ncols, void* stream);
+void native_q3_k_mmvq(const void* weights, const void* x_q8_1, float* y, int n_in, int n_out, int ncols, void* stream);
 
-void native_q3_k_f32(const void* weights, const float* x, void* scratch_q8_1,
-                     float* y, int n_in, int n_out, int ncols, void* stream);
+void native_q3_k_f32(const void* weights, const float* x, void* scratch_q8_1, float* y, int n_in, int n_out, int ncols,
+                     void* stream);
 
-void native_iq4_xs_mmvq(const void* weights, const void* x_q8_1, float* y,
-                       int n_in, int n_out, int ncols, void* stream);
+void native_iq4_xs_mmvq(const void* weights, const void* x_q8_1, float* y, int n_in, int n_out, int ncols,
+                        void* stream);
 
-void native_iq4_xs_f32(const void* weights, const float* x, void* scratch_q8_1,
-                      float* y, int n_in, int n_out, int ncols, void* stream);
+void native_iq4_xs_f32(const void* weights, const float* x, void* scratch_q8_1, float* y, int n_in, int n_out,
+                       int ncols, void* stream);
 
-void native_q4_k_mmvq(const void* weights, const void* x_q8_1, float* y,
-                      int n_in, int n_out, int ncols, void* stream);
+void native_q4_k_mmvq(const void* weights, const void* x_q8_1, float* y, int n_in, int n_out, int ncols, void* stream);
 
-void native_q4_k_f32(const void* weights, const float* x, void* scratch_q8_1,
-                     float* y, int n_in, int n_out, int ncols, void* stream);
+void native_q4_k_f32(const void* weights, const float* x, void* scratch_q8_1, float* y, int n_in, int n_out, int ncols,
+                     void* stream);
 
-void native_q6_k_mmvq(const void* weights, const void* x_q8_1, float* y,
-                      int n_in, int n_out, int ncols, void* stream);
+void native_q6_k_mmvq(const void* weights, const void* x_q8_1, float* y, int n_in, int n_out, int ncols, void* stream);
 
-void native_q6_k_f32(const void* weights, const float* x, void* scratch_q8_1,
-                     float* y, int n_in, int n_out, int ncols, void* stream);
+void native_q6_k_f32(const void* weights, const float* x, void* scratch_q8_1, float* y, int n_in, int n_out, int ncols,
+                     void* stream);
 
-void native_q4_0_mmvq(const void* weights, const void* x_q8_1, float* y,
-                       int n_in, int n_out, int ncols, void* stream);
+void native_q4_0_mmvq(const void* weights, const void* x_q8_1, float* y, int n_in, int n_out, int ncols, void* stream);
 
-void native_q4_0_f32(const void* weights, const float* x, void* scratch_q8_1,
-                      float* y, int n_in, int n_out, int ncols, void* stream);
+void native_q4_0_f32(const void* weights, const float* x, void* scratch_q8_1, float* y, int n_in, int n_out, int ncols,
+                     void* stream);
 
-void native_q5_0_mmvq(const void* weights, const void* x_q8_1, float* y,
-                       int n_in, int n_out, int ncols, void* stream);
+void native_q5_0_mmvq(const void* weights, const void* x_q8_1, float* y, int n_in, int n_out, int ncols, void* stream);
 
-void native_q5_0_f32(const void* weights, const float* x, void* scratch_q8_1,
-                      float* y, int n_in, int n_out, int ncols, void* stream);
+void native_q5_0_f32(const void* weights, const float* x, void* scratch_q8_1, float* y, int n_in, int n_out, int ncols,
+                     void* stream);
 
-void native_q8_0_mmvq(const void* weights, const void* x_q8_1, float* y,
-                       int n_in, int n_out, int ncols, void* stream);
+void native_q8_0_mmvq(const void* weights, const void* x_q8_1, float* y, int n_in, int n_out, int ncols, void* stream);
 
-void native_q8_0_f32(const void* weights, const float* x, void* scratch_q8_1,
-                      float* y, int n_in, int n_out, int ncols, void* stream);
+void native_q8_0_f32(const void* weights, const float* x, void* scratch_q8_1, float* y, int n_in, int n_out, int ncols,
+                     void* stream);
 
-void native_iq4_nl_mmvq(const void* weights, const void* x_q8_1, float* y,
-                       int n_in, int n_out, int ncols, void* stream);
+void native_iq4_nl_mmvq(const void* weights, const void* x_q8_1, float* y, int n_in, int n_out, int ncols,
+                        void* stream);
 
-void native_iq4_nl_f32(const void* weights, const float* x, void* scratch_q8_1,
-                      float* y, int n_in, int n_out, int ncols, void* stream);
+void native_iq4_nl_f32(const void* weights, const float* x, void* scratch_q8_1, float* y, int n_in, int n_out,
+                       int ncols, void* stream);
 
 // Storage/dispatch helpers take stable GGML type IDs, avoiding a ggml runtime
 // dependency in the engine: Q4_0=2, Q5_0=6, Q8_0=8, Q3_K=11, Q4_K=12, Q5_K=13,
@@ -109,7 +100,7 @@ void native_iq4_nl_f32(const void* weights, const float* x, void* scratch_q8_1,
 // capability query returns false.
 bool native_mmvq_supported(int ggml_type) noexcept;
 std::size_t native_mmvq_weight_bytes(int ggml_type, int n_in, int n_out);
-void native_mmvq(int ggml_type, const void* weights, const void* x_q8_1, float* y,
-                 int n_in, int n_out, int ncols, void* stream);
+void native_mmvq(int ggml_type, const void* weights, const void* x_q8_1, float* y, int n_in, int n_out, int ncols,
+                 void* stream);
 
 } // namespace guild::kernels

@@ -9,12 +9,18 @@ namespace guild::core {
 
 namespace {
 std::atomic<bool> g_portable{false};
-}  // namespace
+} // namespace
 
-void set_peer_portable(bool on) { g_portable.store(on); }
-bool peer_portable() { return g_portable.load(); }
+void set_peer_portable(bool on) {
+    g_portable.store(on);
+}
+bool peer_portable() {
+    return g_portable.load();
+}
 
-PeerExperts::~PeerExperts() { close(); }
+PeerExperts::~PeerExperts() {
+    close();
+}
 
 bool PeerExperts::open(int, const std::vector<std::pair<int32_t, int32_t>>&, const ExpertCache&, ExpertSource&, int64_t,
                        int64_t, int, int64_t, std::string& err) {
@@ -22,7 +28,9 @@ bool PeerExperts::open(int, const std::vector<std::pair<int32_t, int32_t>>&, con
     return false;
 }
 
-void PeerExperts::close() { device_ = -1; }
+void PeerExperts::close() {
+    device_ = -1;
+}
 
 bool PeerExperts::launch(int64_t, const float*, const int32_t*, int64_t, int64_t, const int32_t*, std::string& err,
                          float*) {
@@ -35,7 +43,10 @@ bool PeerExperts::finish(float*, std::string& err) {
     return false;
 }
 
-bool PeerExperts::adapt(const float*, const int32_t*, int, std::string&) { return true; }
-void PeerExperts::apply_pending(bool) {}
+bool PeerExperts::adapt(const float*, const int32_t*, int, std::string&) {
+    return true;
+}
+void PeerExperts::apply_pending(bool) {
+}
 
-}  // namespace guild::core
+} // namespace guild::core

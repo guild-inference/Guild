@@ -24,15 +24,12 @@ namespace {
 
 int g_fail = 0;
 
-void ck(dpct::err0 e, const char *w) {
+void ck(dpct::err0 e, const char* w) {
 }
 
-template <typename T>
-T* dalloc(size_t n) {
+template <typename T> T* dalloc(size_t n) {
     T* p = nullptr;
-    ck(DPCT_CHECK_ERROR(p = (T *)sycl::malloc_device(
-                            n * sizeof(T), dpct::get_in_order_queue())),
-       "malloc");
+    ck(DPCT_CHECK_ERROR(p = (T*) sycl::malloc_device(n * sizeof(T), dpct::get_in_order_queue())), "malloc");
     return p;
 }
 
@@ -43,13 +40,13 @@ original code the source host memory is pageable memory. If the memory is not
 pageable, call wait() on event return by memcpy API to ensure synchronization
 behavior.
 */
-void up(T *d, const std::vector<T> &h) {
-    ck(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(
-           d, h.data(), h.size() * sizeof(T)).wait()),
+void up(T* d, const std::vector<T>& h) {
+    ck(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
+                            .memcpy(d, h.data(), h.size() * sizeof(T))
+                            .wait()),
        "up");
 }
-template <typename T>
-std::vector<T> down(const T* d, size_t n) {
+template <typename T> std::vector<T> down(const T* d, size_t n) {
     std::vector<T> h(n);
     ck(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
                             .memcpy(h.data(), d, n * sizeof(T))
@@ -60,14 +57,15 @@ std::vector<T> down(const T* d, size_t n) {
 
 void check(bool ok, const char* what) {
     std::printf("  %-66s %s\n", what, ok ? "ok" : "FAIL");
-    if (!ok) ++g_fail;
+    if (!ok)
+        ++g_fail;
 }
 
-}  // namespace
+} // namespace
 
 int main() {
     constexpr int64_t L = 48, N = 2560, HC = 4, LR = 320, T = 5, D = HC * N;
-    constexpr int64_t kLayer = 7, kOff = 3;   // steered / not steered
+    constexpr int64_t kLayer = 7, kOff = 3; // steered / not steered
     std::mt19937 rng(1234);
     std::normal_distribution<float> nd(0.0f, 1.0f);
 
@@ -76,19 +74,30 @@ int main() {
     {
         double nrm = 0.0;
         std::vector<float> v((size_t) N);
-        for (auto& x : v) { x = nd(rng); nrm += (double) x * x; }
+        for (auto& x : v) {
+            x = nd(rng);
+            nrm += (double) x * x;
+        }
         nrm = std::sqrt(nrm);
-        for (int64_t j = 0; j < N; ++j) dir[(size_t) (kLayer * N + j)] = (float) (v[(size_t) j] / nrm);
+        for (int64_t j = 0; j < N; ++j)
+            dir[(size_t) (kLayer * N + j)] = (float) (v[(size_t) j] / nrm);
         s[(size_t) kLayer] = 2.0f;
     }
     std::string err;
-    if (!k::cvec_upload(dir, s, /*project*/ 0, 4, 44, N, HC, err)) { std::fprintf(stderr, "%s\n", err.c_str()); return 2; }
-    check(k::cvec().covers(kLayer) && !k::cvec().covers(kOff) && !k::cvec().covers(45), "covers(): steered layers only");
+    if (!k::cvec_upload(dir, s, /*project*/ 0, 4, 44, N, HC, err)) {
+        std::fprintf(stderr, "%s\n", err.c_str());
+        return 2;
+    }
+    check(k::cvec().covers(kLayer) && !k::cvec().covers(kOff) && !k::cvec().covers(45),
+          "covers(): steered layers only");
 
     std::vector<float> R((size_t) (T * D)), bo((size_t) (T * N)), inj((size_t) (T * HC));
-    for (auto& x : R) x = nd(rng) * 3.0f;
-    for (auto& x : bo) x = nd(rng);
-    for (auto& x : inj) x = nd(rng);
+    for (auto& x : R)
+        x = nd(rng) * 3.0f;
+    for (auto& x : bo)
+        x = nd(rng);
+    for (auto& x : inj)
+        x = nd(rng);
     float* dR = dalloc<float>(R.size());
     float* dbo = dalloc<float>(bo.size());
     float* dinj = dalloc<float>(inj.size());
@@ -99,8 +108,7 @@ int main() {
     std::printf("project\n");
     up(dR, R);
     k::cvec_apply(dR, kLayer, T, D, nullptr, 0, nullptr, 0, false, nullptr);
-    ck(DPCT_CHECK_ERROR(dpct::get_current_device().queues_wait_and_throw()),
-       "project");
+    ck(DPCT_CHECK_ERROR(dpct::get_current_device().queues_wait_and_throw()), "project");
     {
         const auto got = down(dR, R.size());
         double worst = 0.0, worst_dot = 0.0;
@@ -109,7 +117,8 @@ int main() {
                 const float* h = R.data() + t * D + c * N;
                 const float* v = dir.data() + kLayer * N;
                 double dot = 0.0;
-                for (int64_t j = 0; j < N; ++j) dot += (double) h[j] * v[j];
+                for (int64_t j = 0; j < N; ++j)
+                    dot += (double) h[j] * v[j];
                 double after = 0.0;
                 for (int64_t j = 0; j < N; ++j) {
                     const double want = h[j] - 2.0 * dot * v[j];
@@ -126,18 +135,19 @@ int main() {
     }
     // s = 1 removes it
     s[(size_t) kLayer] = 1.0f;
-    if (!k::cvec_upload(dir, s, 0, 4, 44, N, HC, err)) return 2;
+    if (!k::cvec_upload(dir, s, 0, 4, 44, N, HC, err))
+        return 2;
     up(dR, R);
     k::cvec_apply(dR, kLayer, T, D, nullptr, 0, nullptr, 0, false, nullptr);
-    ck(DPCT_CHECK_ERROR(dpct::get_current_device().queues_wait_and_throw()),
-       "project s=1");
+    ck(DPCT_CHECK_ERROR(dpct::get_current_device().queues_wait_and_throw()), "project s=1");
     {
         const auto got = down(dR, R.size());
         double worst = 0.0;
         for (int64_t t = 0; t < T; ++t)
             for (int64_t c = 0; c < HC; ++c) {
                 double after = 0.0;
-                for (int64_t j = 0; j < N; ++j) after += (double) got[(size_t) (t * D + c * N + j)] * dir[(size_t) (kLayer * N + j)];
+                for (int64_t j = 0; j < N; ++j)
+                    after += (double) got[(size_t) (t * D + c * N + j)] * dir[(size_t) (kLayer * N + j)];
                 worst = std::fmax(worst, std::fabs(after));
             }
         std::printf("    max |h'.v| %.3g\n", worst);
@@ -147,9 +157,9 @@ int main() {
     // ---- 4. a layer without a direction
     up(dR, R);
     k::cvec_apply(dR, kOff, T, D, nullptr, 0, nullptr, 0, false, nullptr);
-    ck(DPCT_CHECK_ERROR(dpct::get_current_device().queues_wait_and_throw()),
-       "off layer");
-    check(std::memcmp(down(dR, R.size()).data(), R.data(), R.size() * 4) == 0, "a layer without a direction is untouched");
+    ck(DPCT_CHECK_ERROR(dpct::get_current_device().queues_wait_and_throw()), "off layer");
+    check(std::memcmp(down(dR, R.size()).data(), R.data(), R.size() * 4) == 0,
+          "a layer without a direction is untouched");
 
     // ---- 3. switched off
     std::printf("switched off\n");
@@ -157,23 +167,33 @@ int main() {
     check(!k::cvec_enabled(), "cvec_enabled() follows the switch");
     up(dR, R);
     k::cvec_apply(dR, kLayer, T, D, nullptr, 0, nullptr, 0, false, nullptr);
-    ck(DPCT_CHECK_ERROR(dpct::get_current_device().queues_wait_and_throw()),
-       "off");
+    ck(DPCT_CHECK_ERROR(dpct::get_current_device().queues_wait_and_throw()), "off");
     check(std::memcmp(down(dR, R.size()).data(), R.data(), R.size() * 4) == 0, "off, no pending write: R unchanged");
     {
         // the fused read's folded write, one token at a time, against the kernel's write-only pass
         std::vector<uint16_t> wd((size_t) (LR * D)), wu((size_t) (D * LR)), wi((size_t) (HC * D));
         std::vector<float> wn((size_t) D);
-        auto bf = [&](float x) { uint32_t u; std::memcpy(&u, &x, 4); return (uint16_t) (u >> 16); };
-        for (auto& x : wd) x = bf(nd(rng) * 0.02f);
-        for (auto& x : wu) x = bf(nd(rng) * 0.02f);
-        for (auto& x : wi) x = bf(nd(rng) * 0.02f);
-        for (auto& x : wn) x = 1.0f + 0.1f * nd(rng);
+        auto bf = [&](float x) {
+            uint32_t u;
+            std::memcpy(&u, &x, 4);
+            return (uint16_t) (u >> 16);
+        };
+        for (auto& x : wd)
+            x = bf(nd(rng) * 0.02f);
+        for (auto& x : wu)
+            x = bf(nd(rng) * 0.02f);
+        for (auto& x : wi)
+            x = bf(nd(rng) * 0.02f);
+        for (auto& x : wn)
+            x = 1.0f + 0.1f * nd(rng);
         uint16_t* dwd = dalloc<uint16_t>(wd.size());
         uint16_t* dwu = dalloc<uint16_t>(wu.size());
         uint16_t* dwi = dalloc<uint16_t>(wi.size());
         float* dwn = dalloc<float>(wn.size());
-        up(dwd, wd); up(dwu, wu); up(dwi, wi); up(dwn, wn);
+        up(dwd, wd);
+        up(dwu, wu);
+        up(dwi, wi);
+        up(dwn, wn);
         float* lo = dalloc<float>(LR);
         float* rs = dalloc<float>(HC);
         float* inj_out = dalloc<float>(HC);
@@ -182,16 +202,24 @@ int main() {
         up(dF, R);
         for (int64_t t = 0; t < T; ++t) {
             k::FusedGrArgs a;
-            a.R = dF + t * D; a.R_out = dF + t * D; a.apply = true;
-            a.bo_prev = dbo + t * N; a.inj_prev = dinj + t * HC;
-            a.w_norm = dwn; a.w_down = dwd; a.w_up = dwu; a.w_inject = dwi;
-            a.lo = lo; a.rs = rs; a.inject_out = inj_out; a.mixed = mixed;
+            a.R = dF + t * D;
+            a.R_out = dF + t * D;
+            a.apply = true;
+            a.bo_prev = dbo + t * N;
+            a.inj_prev = dinj + t * HC;
+            a.w_norm = dwn;
+            a.w_down = dwd;
+            a.w_up = dwu;
+            a.w_inject = dwi;
+            a.lo = lo;
+            a.rs = rs;
+            a.inject_out = inj_out;
+            a.mixed = mixed;
             k::fused_gr_read(a, nullptr);
         }
         up(dR, R);
         k::cvec_apply(dR, kLayer, T, D, dbo, N, dinj, HC, true, nullptr);
-        ck(DPCT_CHECK_ERROR(dpct::get_current_device().queues_wait_and_throw()),
-           "write only");
+        ck(DPCT_CHECK_ERROR(dpct::get_current_device().queues_wait_and_throw()), "write only");
         const auto fused = down(dF, R.size()), mine = down(dR, R.size());
         check(std::memcmp(fused.data(), mine.data(), R.size() * 4) == 0,
               "off, pending write: bitwise the fused read's folded write");
@@ -199,8 +227,7 @@ int main() {
         // on, with the write: the write, then the projection (reference from the fused result)
         up(dR, R);
         k::cvec_apply(dR, kLayer, T, D, dbo, N, dinj, HC, true, nullptr);
-        ck(DPCT_CHECK_ERROR(dpct::get_current_device().queues_wait_and_throw()),
-           "write+project");
+        ck(DPCT_CHECK_ERROR(dpct::get_current_device().queues_wait_and_throw()), "write+project");
         const auto both = down(dR, R.size());
         double worst = 0.0;
         for (int64_t t = 0; t < T; ++t)
@@ -208,7 +235,8 @@ int main() {
                 const float* h = fused.data() + t * D + c * N;
                 const float* v = dir.data() + kLayer * N;
                 double dot = 0.0;
-                for (int64_t j = 0; j < N; ++j) dot += (double) h[j] * v[j];
+                for (int64_t j = 0; j < N; ++j)
+                    dot += (double) h[j] * v[j];
                 for (int64_t j = 0; j < N; ++j)
                     worst = std::fmax(worst, std::fabs(both[(size_t) (t * D + c * N + j)] - (h[j] - dot * v[j])));
             }
@@ -218,13 +246,14 @@ int main() {
 
     // ---- 2. add
     std::printf("add\n");
-    for (int64_t j = 0; j < N; ++j) dir[(size_t) (kLayer * N + j)] *= 0.1f;   // d = 0.1 v, s = 1
+    for (int64_t j = 0; j < N; ++j)
+        dir[(size_t) (kLayer * N + j)] *= 0.1f; // d = 0.1 v, s = 1
     s[(size_t) kLayer] = 1.0f;
-    if (!k::cvec_upload(dir, s, /*add*/ 1, 4, 44, N, HC, err)) return 2;
+    if (!k::cvec_upload(dir, s, /*add*/ 1, 4, 44, N, HC, err))
+        return 2;
     up(dR, R);
     k::cvec_apply(dR, kLayer, T, D, nullptr, 0, nullptr, 0, false, nullptr);
-    ck(DPCT_CHECK_ERROR(dpct::get_current_device().queues_wait_and_throw()),
-       "add");
+    ck(DPCT_CHECK_ERROR(dpct::get_current_device().queues_wait_and_throw()), "add");
     {
         const auto got = down(dR, R.size());
         bool same = true;

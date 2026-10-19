@@ -42,10 +42,14 @@ namespace {
 // The process's rope config (rope_scaling.hpp).  One writer - the engine's startup thread, before
 // session_init builds any table or captures any graph - and readers after it.
 RopeScaling g_rope_scaling;
-}  // namespace
+} // namespace
 
-void rope_scaling_set(const RopeScaling& scaling) { g_rope_scaling = scaling; }
-const RopeScaling& rope_scaling() { return g_rope_scaling; }
+void rope_scaling_set(const RopeScaling& scaling) {
+    g_rope_scaling = scaling;
+}
+const RopeScaling& rope_scaling() {
+    return g_rope_scaling;
+}
 
 void build_rope_table(int n_rot, double theta, int max_pos, float* cos_tab, float* sin_tab) {
     const int half = n_rot / 2;
@@ -62,7 +66,7 @@ void build_rope_table(int n_rot, double theta, int max_pos, float* cos_tab, floa
 
 void build_rope_table(int n_rot, const RopeScaling& sc, int max_pos, float* cos_tab, float* sin_tab) {
     if (sc.type == RopeScalingType::None) {
-        build_rope_table(n_rot, sc.freq_base, max_pos, cos_tab, sin_tab);   // the original loop, verbatim
+        build_rope_table(n_rot, sc.freq_base, max_pos, cos_tab, sin_tab); // the original loop, verbatim
         return;
     }
     const int half = n_rot / 2;
@@ -70,12 +74,12 @@ void build_rope_table(int n_rot, const RopeScaling& sc, int max_pos, float* cos_
     const double ms = sc.mscale();
     double cd[2];
     sc.corr_dims(n_rot, cd);
-    const bool correct = sc.ext_factor != 0;   // ggml: the correction rides on ext_factor, not the type
+    const bool correct = sc.ext_factor != 0; // ggml: the correction rides on ext_factor, not the type
     for (int p = 0; p < max_pos; ++p) {
         for (int i = 0; i < half; ++i) {
             const double inv = std::pow(sc.freq_base, -2.0 * (double) i / (double) n_rot);
-            const double extrap = (double) p * inv;    // the trained angle, ggml's theta_extrap
-            const double interp = fs * extrap;         // ggml's theta_interp
+            const double extrap = (double) p * inv; // the trained angle, ggml's theta_extrap
+            const double interp = fs * extrap;      // ggml's theta_interp
             double ang = interp;
             if (correct) {
                 const double ramp = (double) rope_yarn_ramp((float) cd[0], (float) cd[1], i) * sc.ext_factor;
@@ -96,18 +100,14 @@ namespace {
 //
 // A row is head_dim floats (256 here) and there are batch x heads of them, so one thread per row is a
 // handful of threads for a token and removes the ordering question entirely rather than synchronising it.
-__dpct_inline__ void rope_neox_kernel(const float *__restrict__ x,
-                                      float *__restrict__ out, long long rows,
-                                      int head_dim, int n_rot,
-                                      const float *__restrict__ cos_tab,
-                                      const float *__restrict__ sin_tab,
-                                      const int *__restrict__ pos,
-                                      const int32_t *__restrict__ mtab) {
+__dpct_inline__ void rope_neox_kernel(const float* __restrict__ x, float* __restrict__ out, long long rows,
+                                      int head_dim, int n_rot, const float* __restrict__ cos_tab,
+                                      const float* __restrict__ sin_tab, const int* __restrict__ pos,
+                                      const int32_t* __restrict__ mtab) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
-    const long long r =
-        (long long)item_ct1.get_group(2) * item_ct1.get_local_range(2) +
-        item_ct1.get_local_id(2);
-    if (r >= rows) return;
+    const long long r = (long long) item_ct1.get_group(2) * item_ct1.get_local_range(2) + item_ct1.get_local_id(2);
+    if (r >= rows)
+        return;
     const int half = n_rot / 2;
     const float* xr = x + r * head_dim;
     float* orow = out + r * head_dim;
@@ -116,17 +116,18 @@ __dpct_inline__ void rope_neox_kernel(const float *__restrict__ x,
     for (int d = n_rot; d < head_dim; ++d)
         orow[d] = xr[d]; // the PARTIAL rotation's untouched tail
     for (int i = 0; i < half; ++i) {
-        const size_t toff = (size_t) mrope_pos(mtab, pos[r], i) * half;   // the image path's per-pair position
+        const size_t toff = (size_t) mrope_pos(mtab, pos[r], i) * half; // the image path's per-pair position
         // THE PAIRING AND THE SIGNS COME FROM `rope_neox_pair`, shared with the indexer's pooling kernel.
         rope_neox_pair(xr[i], xr[half + i], cos_tab[toff + i], sin_tab[toff + i], orow[i], orow[half + i]);
     }
 }
 
-}  // namespace
+} // namespace
 
 void rope_neox_apply(const float* x, float* out, int64_t rows, int head_dim, int n_rot, const float* cos_tab,
                      const float* sin_tab, const int* pos, void* stream) {
-    if (rows <= 0 || n_rot <= 0) return;
+    if (rows <= 0 || n_rot <= 0)
+        return;
     if (n_rot % 2 != 0 || n_rot > head_dim) {
         std::fprintf(stderr, "rope_neox_apply: n_rot %d must be even and <= head_dim %d\n", n_rot, head_dim);
         std::exit(1);
@@ -134,23 +135,17 @@ void rope_neox_apply(const float* x, float* out, int64_t rows, int head_dim, int
     const int threads = 128;
     const unsigned grid = (unsigned) ((rows + threads - 1) / threads);
     {
-        auto exp_props = sycl::ext::oneapi::experimental::properties{
-            sycl::ext::oneapi::experimental::use_root_sync};
+        auto exp_props = sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::use_root_sync};
 
-        guild::q_of(stream)
-            ->submit([&](sycl::handler &cgh) {
-                auto mrope_table_ct8 = mrope_table();
+        guild::q_of(stream)->submit([&](sycl::handler& cgh) {
+            auto mrope_table_ct8 = mrope_table();
 
-                cgh.parallel_for<
-                    dpct_kernel_name<class rope_neox_kernel_e291c2>>(
-                    sycl::nd_range<3>(sycl::range(1, 1, grid) *
-                                          sycl::range(1, 1, threads),
-                                      sycl::range(1, 1, threads)),
-                    exp_props, [=](sycl::nd_item<3> item_ct1) {
-                        rope_neox_kernel(x, out, rows, head_dim, n_rot, cos_tab,
-                                         sin_tab, pos, mrope_table_ct8);
-                    });
-            });
+            cgh.parallel_for<dpct_kernel_name<class rope_neox_kernel_e291c2>>(
+                sycl::nd_range<3>(sycl::range(1, 1, grid) * sycl::range(1, 1, threads), sycl::range(1, 1, threads)),
+                exp_props, [=](sycl::nd_item<3> item_ct1) {
+                    rope_neox_kernel(x, out, rows, head_dim, n_rot, cos_tab, sin_tab, pos, mrope_table_ct8);
+                });
+        });
     }
     /*
     DPCT1010: SYCL uses exceptions to report errors and does not use the
@@ -159,7 +154,8 @@ void rope_neox_apply(const float* x, float* out, int64_t rows, int head_dim, int
     */
     const dpct::err0 e = 0;
 
-    if (stream == nullptr) dpct::get_current_device().queues_wait_and_throw();
+    if (stream == nullptr)
+        dpct::get_current_device().queues_wait_and_throw();
 }
 
-}  // namespace guild::kernels
+} // namespace guild::kernels

@@ -46,20 +46,30 @@ public:
     bool load(const std::string& rt_dir, const ModelGeometry& g, SessionState& ss, int max_t, std::string& err,
               int64_t window = 32768);
     /// The prompt's length: prefill() skips the cells the attention window can never reach again.
-    void set_prompt_len(int64_t n) { prompt_len_ = n; }
+    void set_prompt_len(int64_t n) {
+        prompt_len_ = n;
+    }
     /// At most this many drafts per round (below max_t - 1): a window longer than the MTP's comes from elsewhere.
-    void set_max_drafts(int k) { max_drafts_ = k; }
+    void set_max_drafts(int k) {
+        max_drafts_ = k;
+    }
     /// SYCL port: capture the round, step and prompt graphs at load rather than on first use (see Verifier::warm)
     bool warm(std::string& err) {
         for (int T = 1; T <= max_t_; ++T)
-            if (!capture_round(T, false, err) || !capture_prefill(T, err)) return false;
+            if (!capture_round(T, false, err) || !capture_prefill(T, err))
+                return false;
         for (int j = 1; j < std::min(max_t_ - 1, max_drafts_); ++j)
-            if (!capture_step(j, false, err)) return false;
+            if (!capture_step(j, false, err))
+                return false;
         return true;
     }
-    uint64_t vram_bytes() const { return vram_; }
+    uint64_t vram_bytes() const {
+        return vram_;
+    }
     /// The draft layer's K/V state (read-only: --serve's GUILD_STATE_HASH check hashes it)
-    const QsaState& kv_state() const { return st_; }
+    const QsaState& kv_state() const {
+        return st_;
+    }
     /// KV streaming: refill the ring of the drafter's window from its host copy for a sequence that continues at
     /// `upto` (a conversation-cache resume). No-op unless the drafter's K/V is a ring.
     void kv_restore(int64_t upto);
@@ -91,36 +101,48 @@ public:
     /// Coupled mode with penalties: the history the next draft() chain starts from - what the session holds after the
     /// window's commit (`tail`) and the window's pick at its last accepted row (`next`, the next window's row 0).
     void set_draft_history(const int32_t* tail, int64_t n_tail, int32_t next);
-    bool coupled() const { return coupled_active_; }
+    bool coupled() const {
+        return coupled_active_;
+    }
 
     double ms_draft = 0, ms_prefill = 0;
     int64_t rounds = 0;
 
     /// E-9: the prompt path computes this layer's prompt K/V in batches (Prefill::draft_kv): its tensors, its K/V
     /// state, the first cell a round can still read, its device, and a wait for its own stream.
-    const float* tensor_f32(const char* name) const { return f32(name); }
-    const uint16_t* tensor_bf16(const char* name) const { return bf16(name); }
-    const void* tensor_q8(const char* name) const { return q8(name); }
-    QsaState& kv_state_rw() { return st_; }
-    int64_t first_needed() const { return (window_ > 0 && prompt_len_ > 0) ? prompt_len_ - window_ - 64 : 0; }
-    int device() const { return device_; }
-    bool idle(std::string &err) try {
+    const float* tensor_f32(const char* name) const {
+        return f32(name);
+    }
+    const uint16_t* tensor_bf16(const char* name) const {
+        return bf16(name);
+    }
+    const void* tensor_q8(const char* name) const {
+        return q8(name);
+    }
+    QsaState& kv_state_rw() {
+        return st_;
+    }
+    int64_t first_needed() const {
+        return (window_ > 0 && prompt_len_ > 0) ? prompt_len_ - window_ - 64 : 0;
+    }
+    int device() const {
+        return device_;
+    }
+    bool idle(std::string& err) try {
         if (cs_ && DPCT_CHECK_ERROR(cs_->wait()) != 0) {
-            err = "mtp: its stream failed"; return false;
+            err = "mtp: its stream failed";
+            return false;
         }
         return true;
-    }
-    catch (sycl::exception const &exc) {
-      std::cerr << exc.what() << "Exception caught at file:" << __FILE__
-                << ", line:" << __LINE__ << std::endl;
-      std::exit(1);
+    } catch (sycl::exception const& exc) {
+        std::cerr << exc.what() << "Exception caught at file:" << __FILE__ << ", line:" << __LINE__ << std::endl;
+        std::exit(1);
     }
 
 private:
-    bool record_forward(int T, int step_row0, dpct::queue_ptr cs,
-                        std::string &err);
+    bool record_forward(int T, int step_row0, dpct::queue_ptr cs, std::string& err);
     bool capture_prefill(int T, std::string& err);
-    bool capture_prefill_dev(int T, std::string& err);   ///< E-4: without the mapped staging (inputs copied on device)
+    bool capture_prefill_dev(int T, std::string& err); ///< E-4: without the mapped staging (inputs copied on device)
     bool capture_round(int T, bool coupled, std::string& err);
     bool capture_step(int j, bool coupled, std::string& err);
     dpct::experimental::command_graph_exec_ptr step_exec_[9] = {};
@@ -130,7 +152,7 @@ private:
     dpct::experimental::command_graph_exec_ptr round_exec_c_[9] = {};
     dpct::experimental::command_graph_exec_ptr step_exec_c_[9] = {};
     bool coupled_ok_ = false, coupled_active_ = false;
-    bool coupled_rec_ = false;   ///< record_forward: the full layer ends in the coupled sampler (draft coupled_j_)
+    bool coupled_rec_ = false; ///< record_forward: the full layer ends in the coupled sampler (draft coupled_j_)
     int coupled_j_ = 0;
     guild::kernels::SamplerParams *h_cparams_ = nullptr, *m_cparams_ = nullptr, *cparams_ = nullptr;
     int32_t *h_chist_ = nullptr, *m_chist_ = nullptr, *cring_ = nullptr, *dinv_ = nullptr;
@@ -145,18 +167,22 @@ private:
     const NativeHead* head_ = nullptr;
     const float* window_R_ = nullptr;
     int max_t_ = 0;
-    int device_ = -1;   ///< the device `load` ran on: the public calls switch to it (layer split)
+    int device_ = -1; ///< the device `load` ran on: the public calls switch to it (layer split)
     int max_drafts_ = 1 << 30;
     int64_t n_vocab_ = 0;
     uint64_t vram_ = 0;
     dpct::queue_ptr cs_ = &dpct::get_in_order_queue();
     dpct::experimental::command_graph_exec_ptr prefill_exec_[9] = {};
     dpct::experimental::command_graph_exec_ptr prefill_dev_exec_[9] = {};
-    int32_t* pf_dev_ = nullptr;   ///< E-4: a prompt's rows' token / step / position records, uploaded at once
-    int64_t pf_cap_ = 0;          ///< its capacity in ints
+    int32_t* pf_dev_ = nullptr; ///< E-4: a prompt's rows' token / step / position records, uploaded at once
+    int64_t pf_cap_ = 0;        ///< its capacity in ints
     dpct::experimental::command_graph_exec_ptr round_exec_[9] = {};
 
-    struct Tensor { std::string name, kind; int64_t rows = 0, cols = 0; uint64_t off = 0, bytes = 0; };
+    struct Tensor {
+        std::string name, kind;
+        int64_t rows = 0, cols = 0;
+        uint64_t off = 0, bytes = 0;
+    };
     std::vector<Tensor> tensors_;
     uint8_t* dense_ = nullptr;
     uint8_t* experts_ = nullptr;
@@ -169,18 +195,19 @@ private:
     int32_t *h_tok_ = nullptr, *m_tok_ = nullptr, *h_step_ = nullptr, *m_step_ = nullptr;
     int32_t *h_pos_ = nullptr, *m_pos_ = nullptr, *h_row_ = nullptr, *m_row_ = nullptr;
     int32_t *h_out_ = nullptr, *m_out_ = nullptr;
-    float *h_prob_ = nullptr, *m_prob_ = nullptr;   // each draft's probability under the draft layer
+    float *h_prob_ = nullptr, *m_prob_ = nullptr; // each draft's probability under the draft layer
     // the draft head: the main head's rows for a token subset (rt/draft_vocab.bin), or the whole head
     uint8_t* dhead_ = nullptr;
     int32_t* dvocab_ = nullptr;
     int64_t n_dvocab_ = 0;
     std::string rt_dir_;
-    int64_t window_ = 0;        // attention over the last window_ cells (0 = every cell)
+    int64_t window_ = 0; // attention over the last window_ cells (0 = every cell)
     int64_t prompt_len_ = 0;
     float* probs_ = nullptr;
     // device
     int32_t *tok_ = nullptr, *step_ = nullptr, *pos_ = nullptr, *row_ = nullptr, *ident_ = nullptr;
-    float *Rin_ = nullptr, *R_ = nullptr, *emb_ = nullptr, *en_ = nullptr, *e2_ = nullptr, *hn_ = nullptr, *h2_ = nullptr;
+    float *Rin_ = nullptr, *R_ = nullptr, *emb_ = nullptr, *en_ = nullptr, *e2_ = nullptr, *hn_ = nullptr,
+          *h2_ = nullptr;
     float *mixed_ = nullptr, *inj_ = nullptr, *inj2_ = nullptr, *lo_ = nullptr, *rs_ = nullptr, *bo_ = nullptr;
     float* xn_ = nullptr;
     uint8_t* xq_ = nullptr;
@@ -200,4 +227,4 @@ private:
     int64_t cap_ = 0, attn_scratch_floats_ = 0;
 };
 
-}  // namespace guild::core
+} // namespace guild::core

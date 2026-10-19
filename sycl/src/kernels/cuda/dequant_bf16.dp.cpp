@@ -15,34 +15,43 @@
 namespace guild::kernels {
 namespace {
 
-__dpct_inline__ float h2f(const uint8_t *p) {
-    return sycl::vec<sycl::half, 1>(sycl::bit_cast<sycl::half, unsigned short>(
-                                        (uint16_t)(p[0] | (p[1] << 8))))
+__dpct_inline__ float h2f(const uint8_t* p) {
+    return sycl::vec<sycl::half, 1>(sycl::bit_cast<sycl::half, unsigned short>((uint16_t) (p[0] | (p[1] << 8))))
         .convert<float, sycl::rounding_mode::automatic>()[0];
 }
 __dpct_inline__ uint16_t f2bf(float f) {
     uint32_t u = sycl::bit_cast<unsigned int>(f);
     // a NaN (a NaN scale in the block) stays a quiet NaN, as in ggml_compute_fp32_to_bf16 and `bf16_from_f32`:
     // the rounding add below would carry it into -0 or inf
-    if ((u & 0x7fffffffu) > 0x7f800000u) return (uint16_t) ((u >> 16) | 64u);
-    u += 0x7fffu + ((u >> 16) & 1u);          // round to nearest even
+    if ((u & 0x7fffffffu) > 0x7f800000u)
+        return (uint16_t) ((u >> 16) | 64u);
+    u += 0x7fffu + ((u >> 16) & 1u); // round to nearest even
     return (uint16_t) (u >> 16);
 }
-__dpct_inline__ void put(uint16_t *o, int i, float v) { o[i] = f2bf(v); }
-struct H16 { uint16_t v; };
-__dpct_inline__ void put(H16 *o, int i, float v) {
-    o[i].v = sycl::bit_cast<unsigned short, sycl::half>(
-        sycl::vec<float, 1>(v)
-            .convert<sycl::half, sycl::rounding_mode::rte>()[0]);
+__dpct_inline__ void put(uint16_t* o, int i, float v) {
+    o[i] = f2bf(v);
 }
-__dpct_inline__ void put(float *o, int i, float v) { o[i] = v; }
+struct H16 {
+    uint16_t v;
+};
+__dpct_inline__ void put(H16* o, int i, float v) {
+    o[i].v = sycl::bit_cast<unsigned short, sycl::half>(
+        sycl::vec<float, 1>(v).convert<sycl::half, sycl::rounding_mode::rte>()[0]);
+}
+__dpct_inline__ void put(float* o, int i, float v) {
+    o[i] = v;
+}
 
-const int8_t kv_iq4nl[16] = {-127, -104, -83, -65, -49, -35, -22, -10,
-                             1,    13,   25,  38,  53,  69,  89,  113};
+const int8_t kv_iq4nl[16] = {-127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113};
 
-__dpct_inline__ void scale_min_k4(int j, const uint8_t *q, int &d, int &m) {
-    if (j < 4) { d = q[j] & 63; m = q[j + 4] & 63; }
-    else { d = (q[j + 4] & 0xF) | ((q[j - 4] >> 6) << 4); m = (q[j + 4] >> 4) | ((q[j] >> 6) << 4); }
+__dpct_inline__ void scale_min_k4(int j, const uint8_t* q, int& d, int& m) {
+    if (j < 4) {
+        d = q[j] & 63;
+        m = q[j + 4] & 63;
+    } else {
+        d = (q[j + 4] & 0xF) | ((q[j - 4] >> 6) << 4);
+        m = (q[j + 4] >> 4) | ((q[j] >> 6) << 4);
+    }
 }
 
 // One 32-element group `g` (row-major over the whole slice); `out` points at that group's 32 outputs.
@@ -53,8 +62,8 @@ exceeds 128 bytes and may cause high register pressure. Consult with your
 hardware vendor to find the total register size available and adjust the code,
 or use smaller sub-group size to avoid high register pressure.
 */
-__dpct_inline__ void group32(const uint8_t *row_blocks, int gi_in_row, T *out) {
-    if constexpr (TYPE == 42) {                                   // Q2_0: 64 per block of 18 B
+__dpct_inline__ void group32(const uint8_t* row_blocks, int gi_in_row, T* out) {
+    if constexpr (TYPE == 42) { // Q2_0: 64 per block of 18 B
         const uint8_t* b = row_blocks + (size_t) (gi_in_row / 2) * 18;
         const float d = h2f(b);
         const int e0 = (gi_in_row % 2) * 32;
@@ -64,7 +73,7 @@ __dpct_inline__ void group32(const uint8_t *row_blocks, int gi_in_row, T *out) {
             const int q = (b[2 + e / 4] >> ((e % 4) * 2)) & 3;
             put(out, j, (float) (q - 1) * d);
         }
-    } else if constexpr (TYPE == 2) {                              // Q4_0
+    } else if constexpr (TYPE == 2) { // Q4_0
         const uint8_t* b = row_blocks + (size_t) gi_in_row * 18;
         const float d = h2f(b);
 #pragma unroll
@@ -72,33 +81,35 @@ __dpct_inline__ void group32(const uint8_t *row_blocks, int gi_in_row, T *out) {
             put(out, j, (float) ((b[2 + j] & 0x0F) - 8) * d);
             put(out, j + 16, (float) ((b[2 + j] >> 4) - 8) * d);
         }
-    } else if constexpr (TYPE == 6) {                              // Q5_0
+    } else if constexpr (TYPE == 6) { // Q5_0
         const uint8_t* b = row_blocks + (size_t) gi_in_row * 22;
         const float d = h2f(b);
-        const uint32_t qh = (uint32_t) b[2] | ((uint32_t) b[3] << 8) | ((uint32_t) b[4] << 16) | ((uint32_t) b[5] << 24);
+        const uint32_t qh =
+            (uint32_t) b[2] | ((uint32_t) b[3] << 8) | ((uint32_t) b[4] << 16) | ((uint32_t) b[5] << 24);
         for (int j = 0; j < 16; ++j) {
             const int xh0 = ((qh >> j) << 4) & 0x10;
             const int xh1 = (qh >> (j + 12)) & 0x10;
             put(out, j, (float) (((b[6 + j] & 0x0F) | xh0) - 16) * d);
             put(out, j + 16, (float) (((b[6 + j] >> 4) | xh1) - 16) * d);
         }
-    } else if constexpr (TYPE == 7) {                              // Q5_1
+    } else if constexpr (TYPE == 7) { // Q5_1
         const uint8_t* b = row_blocks + (size_t) gi_in_row * 24;
         const float d = h2f(b), m = h2f(b + 2);
-        const uint32_t qh = (uint32_t) b[4] | ((uint32_t) b[5] << 8) |
-                            ((uint32_t) b[6] << 16) | ((uint32_t) b[7] << 24);
+        const uint32_t qh =
+            (uint32_t) b[4] | ((uint32_t) b[5] << 8) | ((uint32_t) b[6] << 16) | ((uint32_t) b[7] << 24);
         for (int j = 0; j < 16; ++j) {
             const int xh0 = ((qh >> j) & 1) << 4;
             const int xh1 = ((qh >> (j + 16)) & 1) << 4;
             put(out, j, (float) ((b[8 + j] & 15) | xh0) * d + m);
             put(out, j + 16, (float) ((b[8 + j] >> 4) | xh1) * d + m);
         }
-    } else if constexpr (TYPE == 8) {                              // Q8_0
+    } else if constexpr (TYPE == 8) { // Q8_0
         const uint8_t* b = row_blocks + (size_t) gi_in_row * 34;
         const float d = h2f(b);
 #pragma unroll
-        for (int j = 0; j < 32; ++j) put(out, j, (float)(int8_t)b[2 + j] * d);
-    } else if constexpr (TYPE == 20) {                             // IQ4_NL
+        for (int j = 0; j < 32; ++j)
+            put(out, j, (float) (int8_t) b[2 + j] * d);
+    } else if constexpr (TYPE == 20) { // IQ4_NL
         const uint8_t* b = row_blocks + (size_t) gi_in_row * 18;
         const float d = h2f(b);
 #pragma unroll
@@ -106,7 +117,7 @@ __dpct_inline__ void group32(const uint8_t *row_blocks, int gi_in_row, T *out) {
             put(out, j, d * (float) kv_iq4nl[b[2 + j] & 0xf]);
             put(out, j + 16, d * (float) kv_iq4nl[b[2 + j] >> 4]);
         }
-    } else if constexpr (TYPE == 11) {                             // Q3_K: hmask[32] qs[64] scales[12] d
+    } else if constexpr (TYPE == 11) { // Q3_K: hmask[32] qs[64] scales[12] d
         const uint8_t* b = row_blocks + (size_t) (gi_in_row / 8) * 110;
         const int gi = gi_in_row % 8, n = gi / 4, jj = gi % 4;
         const uint8_t* hm = b;
@@ -128,7 +139,7 @@ __dpct_inline__ void group32(const uint8_t *row_blocks, int gi_in_row, T *out) {
             const float dl = d_all * (float) (scales[is] - 32);
             put(out, t, dl * (float) ((int) ((q[t] >> shift) & 3) - ((hm[t] & m) ? 0 : 4)));
         }
-    } else if constexpr (TYPE == 12) {                             // Q4_K: d dmin scales[12] qs[128]
+    } else if constexpr (TYPE == 12) { // Q4_K: d dmin scales[12] qs[128]
         const uint8_t* b = row_blocks + (size_t) (gi_in_row / 8) * 144;
         const int gi = gi_in_row % 8, j64 = gi / 2, hi = gi % 2;
         const float d = h2f(b), dmin = h2f(b + 2);
@@ -138,8 +149,8 @@ __dpct_inline__ void group32(const uint8_t *row_blocks, int gi_in_row, T *out) {
         const uint8_t* q = b + 16 + 32 * j64;
 #pragma unroll
         for (int l = 0; l < 32; ++l)
-            put(out, l, d1 * (float)(hi ? (q[l] >> 4) : (q[l] & 0xF)) - m1);
-    } else if constexpr (TYPE == 13) {                             // Q5_K: d dmin scales[12] qh[32] qs[128]
+            put(out, l, d1 * (float) (hi ? (q[l] >> 4) : (q[l] & 0xF)) - m1);
+    } else if constexpr (TYPE == 13) { // Q5_K: d dmin scales[12] qh[32] qs[128]
         const uint8_t* b = row_blocks + (size_t) (gi_in_row / 8) * 176;
         const int gi = gi_in_row % 8, j64 = gi / 2, hi = gi % 2;
         const float d = h2f(b), dmin = h2f(b + 2);
@@ -153,7 +164,7 @@ __dpct_inline__ void group32(const uint8_t *row_blocks, int gi_in_row, T *out) {
             const int nib = hi ? (ql[l] >> 4) : (ql[l] & 0xF);
             put(out, l, d1 * (float) (nib + ((qh[l] & u) ? 16 : 0)) - m1);
         }
-    } else if constexpr (TYPE == 14) {                             // Q6_K: ql[128] qh[64] scales[16] d
+    } else if constexpr (TYPE == 14) { // Q6_K: ql[128] qh[64] scales[16] d
         const uint8_t* b = row_blocks + (size_t) (gi_in_row / 8) * 210;
         const int gi = gi_in_row % 8, n = gi / 4, qu = gi % 4;
         const uint8_t* ql = b + 64 * n;
@@ -163,13 +174,17 @@ __dpct_inline__ void group32(const uint8_t *row_blocks, int gi_in_row, T *out) {
         for (int l = 0; l < 32; ++l) {
             const int is = l / 16;
             int q;
-            if (qu == 0) q = (ql[l] & 0xF) | (((qh[l] >> 0) & 3) << 4);
-            else if (qu == 1) q = (ql[l + 32] & 0xF) | (((qh[l] >> 2) & 3) << 4);
-            else if (qu == 2) q = (ql[l] >> 4) | (((qh[l] >> 4) & 3) << 4);
-            else q = (ql[l + 32] >> 4) | (((qh[l] >> 6) & 3) << 4);
+            if (qu == 0)
+                q = (ql[l] & 0xF) | (((qh[l] >> 0) & 3) << 4);
+            else if (qu == 1)
+                q = (ql[l + 32] & 0xF) | (((qh[l] >> 2) & 3) << 4);
+            else if (qu == 2)
+                q = (ql[l] >> 4) | (((qh[l] >> 4) & 3) << 4);
+            else
+                q = (ql[l + 32] >> 4) | (((qh[l] >> 6) & 3) << 4);
             put(out, l, d * (float) sc[is + 2 * qu] * (float) (q - 32));
         }
-    } else if constexpr (TYPE == 23) {                             // IQ4_XS: d scales_h scales_l[4] qs[128]
+    } else if constexpr (TYPE == 23) { // IQ4_XS: d scales_h scales_l[4] qs[128]
         const uint8_t* b = row_blocks + (size_t) (gi_in_row / 8) * 136;
         const int ib = gi_in_row % 8;
         const float d = h2f(b);
@@ -186,32 +201,62 @@ __dpct_inline__ void group32(const uint8_t *row_blocks, int gi_in_row, T *out) {
 }
 
 template <int TYPE, typename T>
-__dpct_inline__ void dequant_kernel(const uint8_t *__restrict__ blocks,
-                                    int64_t row_bytes, int64_t row0,
-                                    int64_t rows, int64_t groups_per_row,
-                                    T *__restrict__ out) {
+__dpct_inline__ void dequant_kernel(const uint8_t* __restrict__ blocks, int64_t row_bytes, int64_t row0, int64_t rows,
+                                    int64_t groups_per_row, T* __restrict__ out) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
-    const int64_t g =
-        (int64_t)item_ct1.get_group(2) * item_ct1.get_local_range(2) +
-        item_ct1.get_local_id(2);
-    if (g >= rows * groups_per_row) return;
+    const int64_t g = (int64_t) item_ct1.get_group(2) * item_ct1.get_local_range(2) + item_ct1.get_local_id(2);
+    if (g >= rows * groups_per_row)
+        return;
     const int64_t r = g / groups_per_row, gi = g % groups_per_row;
     group32<TYPE>(blocks + (row0 + r) * row_bytes, (int) gi, out + r * groups_per_row * 32 + gi * 32);
 }
 
 bool geometry(int type, int& block_elems, int& block_bytes) {
     switch (type) {
-    case 2: block_elems = 32; block_bytes = 18; return true;
-    case 6: block_elems = 32; block_bytes = 22; return true;
-    case 7: block_elems = 32; block_bytes = 24; return true;
-    case 8: block_elems = 32; block_bytes = 34; return true;
-    case 20: block_elems = 32; block_bytes = 18; return true;
-    case 11: block_elems = 256; block_bytes = 110; return true;
-    case 12: block_elems = 256; block_bytes = 144; return true;
-    case 13: block_elems = 256; block_bytes = 176; return true;
-    case 14: block_elems = 256; block_bytes = 210; return true;
-    case 23: block_elems = 256; block_bytes = 136; return true;
-    case 42: block_elems = 64; block_bytes = 18; return true;
+    case 2:
+        block_elems = 32;
+        block_bytes = 18;
+        return true;
+    case 6:
+        block_elems = 32;
+        block_bytes = 22;
+        return true;
+    case 7:
+        block_elems = 32;
+        block_bytes = 24;
+        return true;
+    case 8:
+        block_elems = 32;
+        block_bytes = 34;
+        return true;
+    case 20:
+        block_elems = 32;
+        block_bytes = 18;
+        return true;
+    case 11:
+        block_elems = 256;
+        block_bytes = 110;
+        return true;
+    case 12:
+        block_elems = 256;
+        block_bytes = 144;
+        return true;
+    case 13:
+        block_elems = 256;
+        block_bytes = 176;
+        return true;
+    case 14:
+        block_elems = 256;
+        block_bytes = 210;
+        return true;
+    case 23:
+        block_elems = 256;
+        block_bytes = 136;
+        return true;
+    case 42:
+        block_elems = 64;
+        block_bytes = 18;
+        return true;
     default: return false;
     }
 }
@@ -228,30 +273,26 @@ void launch(int type, const void* blocks, int64_t row0, int64_t rows, int64_t co
     const unsigned grid = (unsigned) ((total + 255) / 256);
     const uint8_t* p = (const uint8_t*) blocks;
     dpct::queue_ptr st = guild::q_of(stream);
-#define GUILD_DQ(TY)                                                          \
-    {                                                                          \
-        auto exp_props = sycl::ext::oneapi::experimental::properties{          \
-            sycl::ext::oneapi::experimental::use_root_sync};                   \
-                                                                               \
-        st->submit([&](sycl::handler &cgh) {                                   \
-            auto p_ct0 = p;                                                    \
-            auto row_bytes_ct1 = row_bytes;                                    \
-            auto row0_ct2 = row0;                                              \
-            auto rows_ct3 = rows;                                              \
-            auto gpr_ct4 = gpr;                                                \
-            auto out_ct5 = out;                                                \
-                                                                               \
-            cgh.parallel_for<dpct_kernel_name<class dequant_kernel_ec9311,     \
-                                              dpct_kernel_scalar<TY>, T>>(     \
-                sycl::nd_range<3>(sycl::range(1, 1, grid) *                    \
-                                      sycl::range(1, 1, 256),                  \
-                                  sycl::range(1, 1, 256)),                     \
-                exp_props, [=](sycl::nd_item<3> item_ct1) {                    \
-                    dequant_kernel<TY, T>(p_ct0, row_bytes_ct1, row0_ct2,      \
-                                          rows_ct3, gpr_ct4, out_ct5);         \
-                });                                                            \
-        });                                                                    \
-    } break
+#define GUILD_DQ(TY)                                                                                                   \
+    {                                                                                                                  \
+        auto exp_props = sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::use_root_sync};  \
+                                                                                                                       \
+        st->submit([&](sycl::handler& cgh) {                                                                           \
+            auto p_ct0 = p;                                                                                            \
+            auto row_bytes_ct1 = row_bytes;                                                                            \
+            auto row0_ct2 = row0;                                                                                      \
+            auto rows_ct3 = rows;                                                                                      \
+            auto gpr_ct4 = gpr;                                                                                        \
+            auto out_ct5 = out;                                                                                        \
+                                                                                                                       \
+            cgh.parallel_for<dpct_kernel_name<class dequant_kernel_ec9311, dpct_kernel_scalar<TY>, T>>(                \
+                sycl::nd_range<3>(sycl::range(1, 1, grid) * sycl::range(1, 1, 256), sycl::range(1, 1, 256)),           \
+                exp_props, [=](sycl::nd_item<3> item_ct1) {                                                            \
+                    dequant_kernel<TY, T>(p_ct0, row_bytes_ct1, row0_ct2, rows_ct3, gpr_ct4, out_ct5);                 \
+                });                                                                                                    \
+        });                                                                                                            \
+    }                                                                                                                  \
+    break
     switch (type) {
     case 2: GUILD_DQ(2);
     case 6: GUILD_DQ(6);
@@ -279,7 +320,7 @@ void launch(int type, const void* blocks, int64_t row0, int64_t rows, int64_t co
     */
 }
 
-}  // namespace
+} // namespace
 
 bool dequant_bf16_supported(int ggml_type) noexcept {
     int a, b;
@@ -288,8 +329,10 @@ bool dequant_bf16_supported(int ggml_type) noexcept {
 
 namespace {
 // plan v0.3 P6: the i-quant formats (llama.cpp's dequantizers, iq_kernels.cu)
-bool iq_only(int t) { return t == 16 || t == 17 || t == 18 || t == 21 || t == 22 || t == 29; }
-}  // namespace
+bool iq_only(int t) {
+    return t == 16 || t == 17 || t == 18 || t == 21 || t == 22 || t == 29;
+}
+} // namespace
 
 void dequant_bf16(int ggml_type, const void* blocks, int64_t row0, int64_t rows, int64_t cols, uint16_t* out,
                   void* stream) {
@@ -306,7 +349,8 @@ void dequant_f16(int ggml_type, const void* blocks, int64_t row0, int64_t rows, 
     launch<H16>(ggml_type, blocks, row0, rows, cols, reinterpret_cast<H16*>(out), stream);
 }
 
-void dequant_f32(int ggml_type, const void* blocks, int64_t row0, int64_t rows, int64_t cols, float* out, void* stream) {
+void dequant_f32(int ggml_type, const void* blocks, int64_t row0, int64_t rows, int64_t cols, float* out,
+                 void* stream) {
     if (iq_only(ggml_type)) {
         iq_dequant_f32(ggml_type, (const uint8_t*) blocks + (size_t) row0 * iq_row_bytes(ggml_type, cols), rows * cols,
                        out, stream);
@@ -315,4 +359,4 @@ void dequant_f32(int ggml_type, const void* blocks, int64_t row0, int64_t rows, 
     launch<float>(ggml_type, blocks, row0, rows, cols, out, stream);
 }
 
-}  // namespace guild::kernels
+} // namespace guild::kernels

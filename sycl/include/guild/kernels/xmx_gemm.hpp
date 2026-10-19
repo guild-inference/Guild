@@ -8,4 +8,4 @@ namespace guild::kernels {
 /// not handled (the caller keeps its dequant + oneMKL path).
 bool xmx_gemm_iq(int ty, const void* gate, const void* up, int64_t K, int n_out, const uint16_t* X, int M, float* Y,
                  int64_t ldy, void* stream);
-}
+} // namespace guild::kernels

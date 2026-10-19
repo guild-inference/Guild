@@ -7,4 +7,4 @@ namespace guild::kernels {
 /// addresses, 0 = none) as planned: the expert kernels read it from that address, over PCIe. `d_res` is the residency
 /// table whose per-layer slices resident_plan receives, so the layer of a call is found from its pointer.
 void resident_plan_set_mirror(const int32_t* d_res, const unsigned long long* mirror_table);
-}
+} // namespace guild::kernels

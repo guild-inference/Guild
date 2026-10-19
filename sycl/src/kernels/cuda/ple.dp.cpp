@@ -40,21 +40,21 @@ bool native_bf16 = false;
 bool native_postops = false;
 
 bool overlap(const void* a, size_t a_bytes, const void* b, size_t b_bytes) {
-    if (a == nullptr || b == nullptr || a_bytes == 0 || b_bytes == 0) return false;
+    if (a == nullptr || b == nullptr || a_bytes == 0 || b_bytes == 0)
+        return false;
     const uintptr_t aa = reinterpret_cast<uintptr_t>(a), bb = reinterpret_cast<uintptr_t>(b);
     return aa < bb ? bb - aa < a_bytes : aa - bb < b_bytes;
 }
 
-__dpct_inline__ void
-history_advance_kernel(float *__restrict__ history,
-                       const float *__restrict__ normalized) {
+__dpct_inline__ void history_advance_kernel(float* __restrict__ history, const float* __restrict__ normalized) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
-    const int channel = item_ct1.get_group(2) * item_ct1.get_local_range(2) +
-                        item_ct1.get_local_id(2);
-    if (channel >= NG_HC_DIM) return;
+    const int channel = item_ct1.get_group(2) * item_ct1.get_local_range(2) + item_ct1.get_local_id(2);
+    if (channel >= NG_HC_DIM)
+        return;
     float* column = history + (size_t) channel * NG_HIST;
 #pragma unroll
-    for (int row = 0; row + 1 < NG_HIST; ++row) column[row] = column[row + 1];
+    for (int row = 0; row + 1 < NG_HIST; ++row)
+        column[row] = column[row + 1];
     column[NG_HIST - 1] = normalized[channel];
 }
 
@@ -80,7 +80,7 @@ __dpct_inline__ float silu_f(float x) {
 /// read out of `scratch[0]` and a later call reuses the array, so without a barrier a fast thread can
 /// overwrite it before a slow one has read it - invisible in most runs and a slightly different norm when it
 /// fires.
-inline double block_sum(double v, double *scratch) {
+inline double block_sum(double v, double* scratch) {
     /*
     DPCT1065: Consider replacing sycl::nd_item::barrier() with
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
@@ -88,8 +88,7 @@ inline double block_sum(double v, double *scratch) {
     */
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
     item_ct1.barrier();
-    const int lane = item_ct1.get_local_id(2) & 31,
-              warp = item_ct1.get_local_id(2) >> 5;
+    const int lane = item_ct1.get_local_id(2) & 31, warp = item_ct1.get_local_id(2) >> 5;
     /*
 DPCT1108: '__shfl_down_sync' was migrated with the experimental feature
 masked sub_group function which may not be supported by all compilers or
@@ -100,36 +99,35 @@ DPCT1121: Make sure that the "v" which is used in the SYCL group
 function/algorithm is initialized.
 */
 #pragma unroll
-    for (int off = 16; off > 0; off >>= 1) v +=
-        dpct::experimental::shift_sub_group_left(
-            0xFFFFFFFFu, sycl::ext::oneapi::this_work_item::get_sub_group(), v,
-            off);
-    if (lane == 0) scratch[warp] = v;
+    for (int off = 16; off > 0; off >>= 1)
+        v += dpct::experimental::shift_sub_group_left(0xFFFFFFFFu, sycl::ext::oneapi::this_work_item::get_sub_group(),
+                                                      v, off);
+    if (lane == 0)
+        scratch[warp] = v;
     /*
     DPCT1065: Consider replacing sycl::nd_item::barrier() with
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
     item_ct1.barrier();
-    const int nw = ((int)item_ct1.get_local_range(2) + 31) >> 5;
-    v = (item_ct1.get_local_id(2) < nw) ? scratch[item_ct1.get_local_id(2)]
-                                        : 0.0;
+    const int nw = ((int) item_ct1.get_local_range(2) + 31) >> 5;
+    v = (item_ct1.get_local_id(2) < nw) ? scratch[item_ct1.get_local_id(2)] : 0.0;
     if (warp == 0)
-        /*
+    /*
 DPCT1108: '__shfl_down_sync' was migrated with the experimental feature
 masked sub_group function which may not be supported by all compilers or
 runtimes. You may need to adjust the code.
 */
-        /*
+    /*
 DPCT1121: Make sure that the "v" which is used in the SYCL group
 function/algorithm is initialized.
 */
 #pragma unroll
-        for (int off = 16; off > 0; off >>= 1) v +=
-            dpct::experimental::shift_sub_group_left(
-                0xFFFFFFFFu, sycl::ext::oneapi::this_work_item::get_sub_group(),
-                v, off);
-    if (item_ct1.get_local_id(2) == 0) scratch[0] = v;
+        for (int off = 16; off > 0; off >>= 1)
+            v += dpct::experimental::shift_sub_group_left(0xFFFFFFFFu,
+                                                          sycl::ext::oneapi::this_work_item::get_sub_group(), v, off);
+    if (item_ct1.get_local_id(2) == 0)
+        scratch[0] = v;
     /*
     DPCT1065: Consider replacing sycl::nd_item::barrier() with
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
@@ -142,21 +140,18 @@ function/algorithm is initialized.
 /// `grouped_norm`, ONE BLOCK PER STREAM.  The ggml form is `reshape_3d(x, n_embd, hc, T)` then
 /// `rms_norm(..., eps) * w`, so ne0 = n_embd is the reduction axis and each hc stream is normalised on its
 /// own.  In the flat ggml layout (ne0 fastest) stream c occupies [c*n_embd, (c+1)*n_embd).
-__dpct_inline__ void gnorm_kernel(const float *__restrict__ x,
-                                  const float *__restrict__ w,
-                                  float *__restrict__ y, int n_embd,
-                                  float eps) {
+__dpct_inline__ void gnorm_kernel(const float* __restrict__ x, const float* __restrict__ w, float* __restrict__ y,
+                                  int n_embd, float eps) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
-auto &scratch = *sycl::ext::oneapi::group_local_memory_for_overwrite<double[8]>(
-    sycl::ext::oneapi::this_work_item::get_work_group<3>());
+    auto& scratch = *sycl::ext::oneapi::group_local_memory_for_overwrite<double[8]>(
+        sycl::ext::oneapi::this_work_item::get_work_group<3>());
     const int c = item_ct1.get_group(2);
     const float* xc = x + (size_t) c * n_embd;
     const float* wc = w + (size_t) c * n_embd;
     float* yc = y + (size_t) c * n_embd;
 
     double acc = 0.0;
-    for (int d = item_ct1.get_local_id(2); d < n_embd;
-         d += item_ct1.get_local_range(2)) {
+    for (int d = item_ct1.get_local_id(2); d < n_embd; d += item_ct1.get_local_range(2)) {
         // The PRODUCT is rounded in f32 before it is widened - `(ggml_float)(x[i00]*x[i00])`.
         const float sq = xc[d] * xc[d];
         acc += (double) sq;
@@ -164,44 +159,40 @@ auto &scratch = *sycl::ext::oneapi::group_local_memory_for_overwrite<double[8]>(
     const float mean = (float) (block_sum(acc, scratch) / (double) n_embd);
     const float scale = 1.0f / sycl::sqrt(mean + eps);
 #pragma unroll
-    for (int d = item_ct1.get_local_id(2); d < n_embd;
-         d += item_ct1.get_local_range(2)) yc[d] = xc[d] * scale * wc[d];
+    for (int d = item_ct1.get_local_id(2); d < n_embd; d += item_ct1.get_local_range(2))
+        yc[d] = xc[d] * scale * wc[d];
 }
 
 /// `s[c] = sum_d key[c][d]*query[c][d] / sqrt(n_embd)`, then the signed square root and the sigmoid.
 ///
 /// `mag = sqrt(clamp(|s|, 1e-6, inf))` and `gate = sigmoid(sgn(s) * mag)`.  The clamp is a floor on |s|, so
 /// it only bites near zero; the SIGN is carried separately, which is what keeps the gate symmetric about 0.5.
-__dpct_inline__ void gate_kernel(const float *__restrict__ key,
-                                 const float *__restrict__ query,
-                                 float *__restrict__ gate, int n_embd,
-                                 float inv_sqrt_n) {
+__dpct_inline__ void gate_kernel(const float* __restrict__ key, const float* __restrict__ query,
+                                 float* __restrict__ gate, int n_embd, float inv_sqrt_n) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
-auto &scratch = *sycl::ext::oneapi::group_local_memory_for_overwrite<double[8]>(
-    sycl::ext::oneapi::this_work_item::get_work_group<3>());
+    auto& scratch = *sycl::ext::oneapi::group_local_memory_for_overwrite<double[8]>(
+        sycl::ext::oneapi::this_work_item::get_work_group<3>());
     const int c = item_ct1.get_group(2);
     const float* kc = key + (size_t) c * n_embd;
     const float* qc = query + (size_t) c * n_embd;
     double acc = 0.0;
 #pragma unroll
-    for (int d = item_ct1.get_local_id(2); d < n_embd;
-         d += item_ct1.get_local_range(2)) acc += (double)(kc[d] * qc[d]);
+    for (int d = item_ct1.get_local_id(2); d < n_embd; d += item_ct1.get_local_range(2))
+        acc += (double) (kc[d] * qc[d]);
     const float s = (float) (block_sum(acc, scratch) / (double) 1.0) * inv_sqrt_n;
     const float mag = sycl::sqrt(sycl::fmax(sycl::fabs(s), 1e-6f));
     const float sgn = (s > 0.0f) ? 1.0f : ((s < 0.0f) ? -1.0f : 0.0f);
-    if (item_ct1.get_local_id(2) == 0) gate[c] =
-        1.0f / (1.0f + sycl::native::exp(-(sgn * mag)));
+    if (item_ct1.get_local_id(2) == 0)
+        gate[c] = 1.0f / (1.0f + sycl::native::exp(-(sgn * mag)));
 }
 
 /// `gated[c][d] = value[d] * gate[c]` - the value broadcast across the hc streams.
-__dpct_inline__ void bcast_kernel(const float *__restrict__ value,
-                                  const float *__restrict__ gate,
-                                  float *__restrict__ gated, int n_embd,
-                                  int hc) {
+__dpct_inline__ void bcast_kernel(const float* __restrict__ value, const float* __restrict__ gate,
+                                  float* __restrict__ gated, int n_embd, int hc) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
-    const int i = item_ct1.get_group(2) * item_ct1.get_local_range(2) +
-                  item_ct1.get_local_id(2);
-    if (i >= n_embd * hc) return;
+    const int i = item_ct1.get_group(2) * item_ct1.get_local_range(2) + item_ct1.get_local_id(2);
+    if (i >= n_embd * hc)
+        return;
     gated[i] = value[i % n_embd] * gate[i / n_embd];
 }
 
@@ -215,18 +206,16 @@ __dpct_inline__ void bcast_kernel(const float *__restrict__ value,
 /// `kW` IS GGML-NATIVE: `kW[k + kern*c]`.  The manifest's shape is [4, 10240] with ne0 = 4 fast, and
 /// `ref/ngram.py`'s (4, 10240) numpy `kernel[k][c]` is the TRANSPOSE of that.  The source's own view
 /// (`ggml_view_2d(model.layers[il].ple_conv1d, 1, hc_dim, nb[1], k*nb[0])`) settles which one is meant.
-__dpct_inline__ void conv_kernel(const float *__restrict__ hist,
-                                 const float *__restrict__ norm,
-                                 const uint16_t *__restrict__ kW,
-                                 float *__restrict__ out, int hc_dim, int kern,
+__dpct_inline__ void conv_kernel(const float* __restrict__ hist, const float* __restrict__ norm,
+                                 const uint16_t* __restrict__ kW, float* __restrict__ out, int hc_dim, int kern,
                                  int dil, int nhist) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
-    const int c = item_ct1.get_group(2) * item_ct1.get_local_range(2) +
-                  item_ct1.get_local_id(2);
-    if (c >= hc_dim) return;
+    const int c = item_ct1.get_group(2) * item_ct1.get_local_range(2) + item_ct1.get_local_id(2);
+    if (c >= hc_dim)
+        return;
     float acc = 0.0f;
     for (int k = 0; k < kern; ++k) {
-        const int row = nhist - (kern - 1 - k) * dil;      // tap 0 reads the FURTHEST back
+        const int row = nhist - (kern - 1 - k) * dil; // tap 0 reads the FURTHEST back
         // ROW-FASTEST: `hist[row + nhist*c]`.  The conv state is `ggml_reshape_3d(state, d_conv-1,
         // conv_channels, n_seqs)`, so ne0 = hist varies fastest and the flat index is row + hist*channel.
         // Channel-slowest (`row*hc_dim + c`) is the natural thing to write and would read a transposed state -
@@ -238,72 +227,65 @@ __dpct_inline__ void conv_kernel(const float *__restrict__ hist,
 }
 
 /// `result = hidden + gated + conv`, elementwise over hc_dim.
-__dpct_inline__ void add3_kernel(const float *__restrict__ hidden,
-                                 const float *__restrict__ gated,
-                                 const float *__restrict__ conv,
-                                 float *__restrict__ result, int n) {
+__dpct_inline__ void add3_kernel(const float* __restrict__ hidden, const float* __restrict__ gated,
+                                 const float* __restrict__ conv, float* __restrict__ result, int n) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
-    const int i = item_ct1.get_group(2) * item_ct1.get_local_range(2) +
-                  item_ct1.get_local_id(2);
-    if (i < n) result[i] = hidden[i] + gated[i] + conv[i];
+    const int i = item_ct1.get_group(2) * item_ct1.get_local_range(2) + item_ct1.get_local_id(2);
+    if (i < n)
+        result[i] = hidden[i] + gated[i] + conv[i];
 }
 
 /// `y[o] = sum_i bf16(x[i]) * bf16(w[o*n_in + i])`.  The weight is BF16 and so is the ACTIVATION, which is
 /// the contract for a BF16 tensor (`docs/activation-contract.md`); with both sides bf16 the products are
 /// exact in f32 and only the summation order differs from ggml's.
-__dpct_inline__ void bf16_gemv_kernel(const uint16_t *__restrict__ x,
-                                      const uint16_t *__restrict__ w,
-                                      float *__restrict__ y, int n_in,
-                                      int n_out) {
+__dpct_inline__ void bf16_gemv_kernel(const uint16_t* __restrict__ x, const uint16_t* __restrict__ w,
+                                      float* __restrict__ y, int n_in, int n_out) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
-    const int o = item_ct1.get_group(2) * item_ct1.get_local_range(2) +
-                  item_ct1.get_local_id(2);
-    if (o >= n_out) return;
+    const int o = item_ct1.get_group(2) * item_ct1.get_local_range(2) + item_ct1.get_local_id(2);
+    if (o >= n_out)
+        return;
     const uint16_t* row = w + (size_t) o * n_in;
     double acc = 0.0;
 #pragma unroll
-    for (int i = 0; i < n_in; ++i) acc +=
-        (double)bf16_float(x[i]) * (double)bf16_float(row[i]);
+    for (int i = 0; i < n_in; ++i)
+        acc += (double) bf16_float(x[i]) * (double) bf16_float(row[i]);
     y[o] = (float) acc;
 }
 
-__dpct_inline__ void to_bf16_kernel(const float *__restrict__ x,
-                                    uint16_t *__restrict__ y, int n) {
+__dpct_inline__ void to_bf16_kernel(const float* __restrict__ x, uint16_t* __restrict__ y, int n) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
-    const int i = item_ct1.get_group(2) * item_ct1.get_local_range(2) +
-                  item_ct1.get_local_id(2);
-    if (i < n) y[i] = bf16_bits(x[i]);
+    const int i = item_ct1.get_group(2) * item_ct1.get_local_range(2) + item_ct1.get_local_id(2);
+    if (i < n)
+        y[i] = bf16_bits(x[i]);
 }
 
-void ck(dpct::err0 e, const char *what) {
+void ck(dpct::err0 e, const char* what) {
 }
 
-}  // namespace
+} // namespace
 
-void ple_set_native_bf16(bool enabled) { native_bf16 = enabled; }
-void ple_set_native_postops(bool enabled) { native_postops = enabled; }
-bool ple_native_postops_enabled() { return native_postops; }
+void ple_set_native_bf16(bool enabled) {
+    native_bf16 = enabled;
+}
+void ple_set_native_postops(bool enabled) {
+    native_postops = enabled;
+}
+bool ple_native_postops_enabled() {
+    return native_postops;
+}
 
 void ple_history_advance(float* hist, const float* normalized, void* stream) {
     if (hist == nullptr || normalized == nullptr)
         throw std::invalid_argument("ple_history_advance: null history or normalized input");
-    if (overlap(hist, (size_t) NG_HIST * NG_HC_DIM * sizeof(float),
-                normalized, (size_t) NG_HC_DIM * sizeof(float)))
+    if (overlap(hist, (size_t) NG_HIST * NG_HC_DIM * sizeof(float), normalized, (size_t) NG_HC_DIM * sizeof(float)))
         throw std::invalid_argument("ple_history_advance: history and normalized input overlap");
     {
-        auto exp_props = sycl::ext::oneapi::experimental::properties{
-            sycl::ext::oneapi::experimental::use_root_sync};
+        auto exp_props = sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::use_root_sync};
 
-        guild::q_of(stream)
-            ->parallel_for<
-                dpct_kernel_name<class history_advance_kernel_204159>>(
-                sycl::nd_range<3>(
-                    sycl::range(1, 1, (NG_HC_DIM + THREADS - 1) / THREADS) *
-                        sycl::range(1, 1, THREADS),
-                    sycl::range(1, 1, THREADS)),
-                exp_props, [=](sycl::nd_item<3> item_ct1) {
-                    history_advance_kernel(hist, normalized);
-                });
+        guild::q_of(stream)->parallel_for<dpct_kernel_name<class history_advance_kernel_204159>>(
+            sycl::nd_range<3>(sycl::range(1, 1, (NG_HC_DIM + THREADS - 1) / THREADS) * sycl::range(1, 1, THREADS),
+                              sycl::range(1, 1, THREADS)),
+            exp_props, [=](sycl::nd_item<3> item_ct1) { history_advance_kernel(hist, normalized); });
     }
     /*
     DPCT1010: SYCL uses exceptions to report errors and does not use the
@@ -316,11 +298,9 @@ void ple_history_advance(float* hist, const float* normalized, void* stream) {
 bool ple_block_available() try {
     int n = 0;
     return DPCT_CHECK_ERROR(n = dpct::device_count()) == 0 && n > 0;
-}
-catch (sycl::exception const &exc) {
-  std::cerr << exc.what() << "Exception caught at file:" << __FILE__
-            << ", line:" << __LINE__ << std::endl;
-  std::exit(1);
+} catch (sycl::exception const& exc) {
+    std::cerr << exc.what() << "Exception caught at file:" << __FILE__ << ", line:" << __LINE__ << std::endl;
+    std::exit(1);
 }
 
 uint64_t ple_block_scratch_bytes() {
@@ -332,15 +312,16 @@ uint64_t ple_block_scratch_bytes() {
     return ((f + 15) & ~(size_t) 15) + ((q + 15) & ~(size_t) 15) + e + 256;
 }
 
-void ple_block(const float* emb, const float* hidden, const float* hist_rows, const PleWeights& w,
-               PleOut& out, void* scratch, void* stream) {
+void ple_block(const float* emb, const float* hidden, const float* hist_rows, const PleWeights& w, PleOut& out,
+               void* scratch, void* stream) {
     const bool native_key = w.key_native_data != nullptr && w.key_bf16 == nullptr;
-    if (native_key && (!emb || !hidden || !hist_rows || !out.result || !scratch || !stream ||
-                       !w.key_native_q8_1 ||
-                       (w.key_native_type != 42 && w.key_native_type != 18 && w.key_native_type != 23 &&
-                        w.key_native_type != 8)))
-        throw std::invalid_argument("ple_block: native key requires Q2_0, IQ3_XXS, IQ4_XS or Q8_0 weights, input/output, private scratch and explicit stream");
-    if (emb == nullptr || hidden == nullptr || hist_rows == nullptr || out.result == nullptr) return;
+    if (native_key &&
+        (!emb || !hidden || !hist_rows || !out.result || !scratch || !stream || !w.key_native_q8_1 ||
+         (w.key_native_type != 42 && w.key_native_type != 18 && w.key_native_type != 23 && w.key_native_type != 8)))
+        throw std::invalid_argument("ple_block: native key requires Q2_0, IQ3_XXS, IQ4_XS or Q8_0 weights, "
+                                    "input/output, private scratch and explicit stream");
+    if (emb == nullptr || hidden == nullptr || hist_rows == nullptr || out.result == nullptr)
+        return;
     const int n_embd = NG_N_EMBD, hc = NG_HC, hc_dim = NG_HC_DIM;
     static_assert(NG_N_EMBD == 2560 && NG_HC_DIM == 10240, "native PLE key geometry changed");
     const size_t float_bytes = (size_t) (5 * hc_dim + n_embd + hc) * sizeof(float);
@@ -367,12 +348,17 @@ void ple_block(const float* emb, const float* hidden, const float* hist_rows, co
         std::fprintf(stderr, "ple_block: scratch is null; the caller owns it (see ple_block_scratch_bytes)\n");
         std::exit(1);
     }
-    const struct Export { const float* pointer; size_t count; const char* name; } exports[] = {
-        {out.key, (size_t) hc_dim, "key"}, {out.value, (size_t) n_embd, "value"},
-        {out.gate, (size_t) hc, "gate"}, {out.gated, (size_t) hc_dim, "gated"},
-        {out.normalized, (size_t) hc_dim, "normalized"}, {out.conv, (size_t) hc_dim, "conv"},
-        {out.result, (size_t) hc_dim, "result"}
-    };
+    const struct Export {
+        const float* pointer;
+        size_t count;
+        const char* name;
+    } exports[] = {{out.key, (size_t) hc_dim, "key"},
+                   {out.value, (size_t) n_embd, "value"},
+                   {out.gate, (size_t) hc, "gate"},
+                   {out.gated, (size_t) hc_dim, "gated"},
+                   {out.normalized, (size_t) hc_dim, "normalized"},
+                   {out.conv, (size_t) hc_dim, "conv"},
+                   {out.result, (size_t) hc_dim, "result"}};
     for (const auto& item : exports) {
         if (overlap(item.pointer, item.count * sizeof(float), scratch, (size_t) ple_block_scratch_bytes()))
             throw std::invalid_argument(std::string("ple_block: output ") + item.name + " overlaps scratch");
@@ -383,13 +369,19 @@ void ple_block(const float* emb, const float* hidden, const float* hist_rows, co
         if ((reinterpret_cast<uintptr_t>(w.key_native_data) & 3u) ||
             (reinterpret_cast<uintptr_t>(w.key_native_q8_1) & 3u))
             throw std::invalid_argument("ple_block: native key buffers require four-byte alignment");
-        const struct Region { const void* pointer; size_t bytes; } regions[] = {
-            {scratch, (size_t) ple_block_scratch_bytes()}, {emb, (size_t) n_embd * 4},
-            {hidden, (size_t) hc_dim * 4}, {hist_rows, (size_t) NG_HIST * hc_dim * 4},
-            {w.key_native_data, weight_bytes}, {w.value_bf16, (size_t) n_embd * n_embd * 2},
-            {w.norm_key, (size_t) hc_dim * 4}, {w.norm_query, (size_t) hc_dim * 4},
-            {w.norm_conv, (size_t) hc_dim * 4}, {w.conv1d_f16, (size_t) PLE_CONV_KERNEL * hc_dim * 2}
-        };
+        const struct Region {
+            const void* pointer;
+            size_t bytes;
+        } regions[] = {{scratch, (size_t) ple_block_scratch_bytes()},
+                       {emb, (size_t) n_embd * 4},
+                       {hidden, (size_t) hc_dim * 4},
+                       {hist_rows, (size_t) NG_HIST * hc_dim * 4},
+                       {w.key_native_data, weight_bytes},
+                       {w.value_bf16, (size_t) n_embd * n_embd * 2},
+                       {w.norm_key, (size_t) hc_dim * 4},
+                       {w.norm_query, (size_t) hc_dim * 4},
+                       {w.norm_conv, (size_t) hc_dim * 4},
+                       {w.conv1d_f16, (size_t) PLE_CONV_KERNEL * hc_dim * 2}};
         for (const auto& region : regions)
             if (overlap(w.key_native_q8_1, native_bytes, region.pointer, region.bytes))
                 throw std::invalid_argument("ple_block: native key scratch overlaps workspace, input or weight");
@@ -415,53 +407,40 @@ void ple_block(const float* emb, const float* hidden, const float* hist_rows, co
         bf16_gemv_fp32_mmvf(emb, w.key_bf16, d_key, n_embd, hc_dim, stream);
     } else if (native_key) {
         native_quantize_q8_1(emb, w.key_native_q8_1, n_embd, 1, stream);
-        native_mmvq(w.key_native_type, w.key_native_data, w.key_native_q8_1,
-                    d_key, n_embd, hc_dim, 1, stream);
+        native_mmvq(w.key_native_type, w.key_native_data, w.key_native_q8_1, d_key, n_embd, hc_dim, 1, stream);
     } else {
         quantize_q8_0(emb, d_act, n_embd, st);
         s2_gemv_q8(d_act, w.key_codes, w.key_scales, d_key, n_embd, hc_dim, 8, st);
     }
     if (!native_postops) {
         {
-            auto exp_props = sycl::ext::oneapi::experimental::properties{
-                sycl::ext::oneapi::experimental::use_root_sync};
-            dpct::has_capability_or_fail(st->get_device(),
-                                         {sycl::aspect::fp64});
+            auto exp_props =
+                sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::use_root_sync};
+            dpct::has_capability_or_fail(st->get_device(), {sycl::aspect::fp64});
 
-            st->submit([&](sycl::handler &cgh) {
+            st->submit([&](sycl::handler& cgh) {
                 auto NG_RMS_EPS_ct4 = NG_RMS_EPS;
 
                 cgh.parallel_for<dpct_kernel_name<class gnorm_kernel_2584bb>>(
-                    sycl::nd_range<3>(sycl::range(1, 1, hc) *
-                                          sycl::range(1, 1, THREADS),
-                                      sycl::range(1, 1, THREADS)),
-                    exp_props,
-                    [=](sycl::nd_item<3> item_ct1)
-                        [[sycl::reqd_sub_group_size(32)]] {
-                            gnorm_kernel(d_key, w.norm_key, d_key, n_embd,
-                                         NG_RMS_EPS_ct4);
-                        });
+                    sycl::nd_range<3>(sycl::range(1, 1, hc) * sycl::range(1, 1, THREADS), sycl::range(1, 1, THREADS)),
+                    exp_props, [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(32)]] {
+                        gnorm_kernel(d_key, w.norm_key, d_key, n_embd, NG_RMS_EPS_ct4);
+                    });
             });
         }
         {
-            auto exp_props = sycl::ext::oneapi::experimental::properties{
-                sycl::ext::oneapi::experimental::use_root_sync};
-            dpct::has_capability_or_fail(st->get_device(),
-                                         {sycl::aspect::fp64});
+            auto exp_props =
+                sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::use_root_sync};
+            dpct::has_capability_or_fail(st->get_device(), {sycl::aspect::fp64});
 
-            st->submit([&](sycl::handler &cgh) {
+            st->submit([&](sycl::handler& cgh) {
                 auto NG_RMS_EPS_ct4 = NG_RMS_EPS;
 
                 cgh.parallel_for<dpct_kernel_name<class gnorm_kernel_e3be1c>>(
-                    sycl::nd_range<3>(sycl::range(1, 1, hc) *
-                                          sycl::range(1, 1, THREADS),
-                                      sycl::range(1, 1, THREADS)),
-                    exp_props,
-                    [=](sycl::nd_item<3> item_ct1)
-                        [[sycl::reqd_sub_group_size(32)]] {
-                            gnorm_kernel(hidden, w.norm_query, d_query, n_embd,
-                                         NG_RMS_EPS_ct4);
-                        });
+                    sycl::nd_range<3>(sycl::range(1, 1, hc) * sycl::range(1, 1, THREADS), sycl::range(1, 1, THREADS)),
+                    exp_props, [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(32)]] {
+                        gnorm_kernel(hidden, w.norm_query, d_query, n_embd, NG_RMS_EPS_ct4);
+                    });
             });
         }
     }
@@ -471,33 +450,24 @@ void ple_block(const float* emb, const float* hidden, const float* hist_rows, co
         bf16_gemv_fp32_mmvf(emb, w.value_bf16, d_value, n_embd, n_embd, stream);
     } else {
         {
-            auto exp_props = sycl::ext::oneapi::experimental::properties{
-                sycl::ext::oneapi::experimental::use_root_sync};
+            auto exp_props =
+                sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::use_root_sync};
 
             st->parallel_for<dpct_kernel_name<class to_bf16_kernel_ab93ff>>(
-                sycl::nd_range<3>(
-                    sycl::range(1, 1, (n_embd + THREADS - 1) / THREADS) *
-                        sycl::range(1, 1, THREADS),
-                    sycl::range(1, 1, THREADS)),
-                exp_props, [=](sycl::nd_item<3> item_ct1) {
-                    to_bf16_kernel(emb, d_emb16, n_embd);
-                });
+                sycl::nd_range<3>(sycl::range(1, 1, (n_embd + THREADS - 1) / THREADS) * sycl::range(1, 1, THREADS),
+                                  sycl::range(1, 1, THREADS)),
+                exp_props, [=](sycl::nd_item<3> item_ct1) { to_bf16_kernel(emb, d_emb16, n_embd); });
         }
         {
-            auto exp_props = sycl::ext::oneapi::experimental::properties{
-                sycl::ext::oneapi::experimental::use_root_sync};
-            dpct::has_capability_or_fail(st->get_device(),
-                                         {sycl::aspect::fp64});
+            auto exp_props =
+                sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::use_root_sync};
+            dpct::has_capability_or_fail(st->get_device(), {sycl::aspect::fp64});
 
             st->parallel_for<dpct_kernel_name<class bf16_gemv_kernel_47d04d>>(
-                sycl::nd_range<3>(
-                    sycl::range(1, 1, (n_embd + THREADS - 1) / THREADS) *
-                        sycl::range(1, 1, THREADS),
-                    sycl::range(1, 1, THREADS)),
-                exp_props, [=](sycl::nd_item<3> item_ct1) {
-                    bf16_gemv_kernel(d_emb16, w.value_bf16, d_value, n_embd,
-                                     n_embd);
-                });
+                sycl::nd_range<3>(sycl::range(1, 1, (n_embd + THREADS - 1) / THREADS) * sycl::range(1, 1, THREADS),
+                                  sycl::range(1, 1, THREADS)),
+                exp_props,
+                [=](sycl::nd_item<3> item_ct1) { bf16_gemv_kernel(d_emb16, w.value_bf16, d_value, n_embd, n_embd); });
         }
     }
 
@@ -505,98 +475,76 @@ void ple_block(const float* emb, const float* hidden, const float* hist_rows, co
     if (native_postops) {
         // The key norm has a distinct destination; temporary query storage can
         // be reused for normalized gated values after the gate consumes it.
-        NativePlePostopsBuffers buffers{d_query,d_norm,d_gate,d_gated,d_norm,d_conv,out.result};
-        native_ple_postops(d_key,hidden,d_value,hist_rows,w,buffers,stream);
+        NativePlePostopsBuffers buffers{d_query, d_norm, d_gate, d_gated, d_norm, d_conv, out.result};
+        native_ple_postops(d_key, hidden, d_value, hist_rows, w, buffers, stream);
         normalized_key = d_query;
     } else {
         {
-            auto exp_props = sycl::ext::oneapi::experimental::properties{
-                sycl::ext::oneapi::experimental::use_root_sync};
-            dpct::has_capability_or_fail(st->get_device(),
-                                         {sycl::aspect::fp64});
+            auto exp_props =
+                sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::use_root_sync};
+            dpct::has_capability_or_fail(st->get_device(), {sycl::aspect::fp64});
 
-            st->submit([&](sycl::handler &cgh) {
-                auto sqrtf_float_n_embd_ct4 = 1.0f / sqrtf((float)n_embd);
+            st->submit([&](sycl::handler& cgh) {
+                auto sqrtf_float_n_embd_ct4 = 1.0f / sqrtf((float) n_embd);
 
                 cgh.parallel_for<dpct_kernel_name<class gate_kernel_ce83eb>>(
-                    sycl::nd_range<3>(sycl::range(1, 1, hc) *
-                                          sycl::range(1, 1, THREADS),
-                                      sycl::range(1, 1, THREADS)),
-                    exp_props,
-                    [=](sycl::nd_item<3> item_ct1)
-                        [[sycl::reqd_sub_group_size(32)]] {
-                            gate_kernel(d_key, d_query, d_gate, n_embd,
-                                        sqrtf_float_n_embd_ct4);
-                        });
+                    sycl::nd_range<3>(sycl::range(1, 1, hc) * sycl::range(1, 1, THREADS), sycl::range(1, 1, THREADS)),
+                    exp_props, [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(32)]] {
+                        gate_kernel(d_key, d_query, d_gate, n_embd, sqrtf_float_n_embd_ct4);
+                    });
             });
         }
         {
-            auto exp_props = sycl::ext::oneapi::experimental::properties{
-                sycl::ext::oneapi::experimental::use_root_sync};
+            auto exp_props =
+                sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::use_root_sync};
 
             st->parallel_for<dpct_kernel_name<class bcast_kernel_79d1c2>>(
-                sycl::nd_range<3>(
-                    sycl::range(1, 1, (hc_dim + THREADS - 1) / THREADS) *
-                        sycl::range(1, 1, THREADS),
-                    sycl::range(1, 1, THREADS)),
-                exp_props, [=](sycl::nd_item<3> item_ct1) {
-                    bcast_kernel(d_value, d_gate, d_gated, n_embd, hc);
-                });
+                sycl::nd_range<3>(sycl::range(1, 1, (hc_dim + THREADS - 1) / THREADS) * sycl::range(1, 1, THREADS),
+                                  sycl::range(1, 1, THREADS)),
+                exp_props, [=](sycl::nd_item<3> item_ct1) { bcast_kernel(d_value, d_gate, d_gated, n_embd, hc); });
         }
         {
-            auto exp_props = sycl::ext::oneapi::experimental::properties{
-                sycl::ext::oneapi::experimental::use_root_sync};
-            dpct::has_capability_or_fail(st->get_device(),
-                                         {sycl::aspect::fp64});
+            auto exp_props =
+                sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::use_root_sync};
+            dpct::has_capability_or_fail(st->get_device(), {sycl::aspect::fp64});
 
-            st->submit([&](sycl::handler &cgh) {
+            st->submit([&](sycl::handler& cgh) {
                 auto NG_RMS_EPS_ct4 = NG_RMS_EPS;
 
                 cgh.parallel_for<dpct_kernel_name<class gnorm_kernel_cb94da>>(
-                    sycl::nd_range<3>(sycl::range(1, 1, hc) *
-                                          sycl::range(1, 1, THREADS),
-                                      sycl::range(1, 1, THREADS)),
-                    exp_props,
-                    [=](sycl::nd_item<3> item_ct1)
-                        [[sycl::reqd_sub_group_size(32)]] {
-                            gnorm_kernel(d_gated, w.norm_conv, d_norm, n_embd,
-                                         NG_RMS_EPS_ct4);
-                        });
+                    sycl::nd_range<3>(sycl::range(1, 1, hc) * sycl::range(1, 1, THREADS), sycl::range(1, 1, THREADS)),
+                    exp_props, [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(32)]] {
+                        gnorm_kernel(d_gated, w.norm_conv, d_norm, n_embd, NG_RMS_EPS_ct4);
+                    });
             });
         }
         {
-            auto exp_props = sycl::ext::oneapi::experimental::properties{
-                sycl::ext::oneapi::experimental::use_root_sync};
+            auto exp_props =
+                sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::use_root_sync};
 
-            st->submit([&](sycl::handler &cgh) {
+            st->submit([&](sycl::handler& cgh) {
                 auto PLE_CONV_KERNEL_ct5 = PLE_CONV_KERNEL;
                 auto NGRAM_SIZE_ct6 = NGRAM_SIZE;
                 auto NG_HIST_ct7 = NG_HIST;
 
                 cgh.parallel_for<dpct_kernel_name<class conv_kernel_f83a85>>(
-                    sycl::nd_range<3>(
-                        sycl::range(1, 1, (hc_dim + THREADS - 1) / THREADS) *
-                            sycl::range(1, 1, THREADS),
-                        sycl::range(1, 1, THREADS)),
+                    sycl::nd_range<3>(sycl::range(1, 1, (hc_dim + THREADS - 1) / THREADS) * sycl::range(1, 1, THREADS),
+                                      sycl::range(1, 1, THREADS)),
                     exp_props, [=](sycl::nd_item<3> item_ct1) {
-                        conv_kernel(hist_rows, d_norm, w.conv1d_f16, d_conv,
-                                    hc_dim, PLE_CONV_KERNEL_ct5, NGRAM_SIZE_ct6,
-                                    NG_HIST_ct7);
+                        conv_kernel(hist_rows, d_norm, w.conv1d_f16, d_conv, hc_dim, PLE_CONV_KERNEL_ct5,
+                                    NGRAM_SIZE_ct6, NG_HIST_ct7);
                     });
             });
         }
         {
-            auto exp_props = sycl::ext::oneapi::experimental::properties{
-                sycl::ext::oneapi::experimental::use_root_sync};
+            auto exp_props =
+                sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::use_root_sync};
 
             st->parallel_for<dpct_kernel_name<class add3_kernel_26c4c6>>(
-                sycl::nd_range<3>(
-                    sycl::range(1, 1, (hc_dim + THREADS - 1) / THREADS) *
-                        sycl::range(1, 1, THREADS),
-                    sycl::range(1, 1, THREADS)),
-                exp_props, [=](sycl::nd_item<3> item_ct1) {
-                    add3_kernel(hidden, d_gated, d_conv, out.result, hc_dim);
-                });
+                sycl::nd_range<3>(sycl::range(1, 1, (hc_dim + THREADS - 1) / THREADS) * sycl::range(1, 1, THREADS),
+                                  sycl::range(1, 1, THREADS)),
+                exp_props,
+                [=](sycl::nd_item<3> item_ct1) { add3_kernel(hidden, d_gated, d_conv, out.result, hc_dim); });
         }
     }
 
@@ -609,9 +557,8 @@ void ple_block(const float* emb, const float* hidden, const float* hist_rows, co
     memory, so you may need to call wait() on event return by memcpy API to
     ensure synchronization behavior.
     */
-    if (out.key) ck(DPCT_CHECK_ERROR(st->memcpy(out.key, normalized_key,
-                                                hc_dim * sizeof(float))),
-                    "key");
+    if (out.key)
+        ck(DPCT_CHECK_ERROR(st->memcpy(out.key, normalized_key, hc_dim * sizeof(float))), "key");
     if (out.value)
         /*
         DPCT1124: cudaMemcpyAsync is migrated to asynchronous memcpy API.
@@ -619,9 +566,7 @@ void ple_block(const float* emb, const float* hidden, const float* hist_rows, co
         operand memory, so you may need to call wait() on event return by memcpy
         API to ensure synchronization behavior.
         */
-        ck(DPCT_CHECK_ERROR(
-               st->memcpy(out.value, d_value, n_embd * sizeof(float))),
-           "value");
+        ck(DPCT_CHECK_ERROR(st->memcpy(out.value, d_value, n_embd * sizeof(float))), "value");
     /*
     DPCT1124: cudaMemcpyAsync is migrated to asynchronous memcpy API. While
     the origin API might be synchronous, it depends on the type of operand
@@ -629,8 +574,7 @@ void ple_block(const float* emb, const float* hidden, const float* hist_rows, co
     ensure synchronization behavior.
     */
     if (out.gate)
-        ck(DPCT_CHECK_ERROR(st->memcpy(out.gate, d_gate, hc * sizeof(float))),
-           "gate");
+        ck(DPCT_CHECK_ERROR(st->memcpy(out.gate, d_gate, hc * sizeof(float))), "gate");
     if (out.gated)
         /*
         DPCT1124: cudaMemcpyAsync is migrated to asynchronous memcpy API.
@@ -638,9 +582,7 @@ void ple_block(const float* emb, const float* hidden, const float* hist_rows, co
         operand memory, so you may need to call wait() on event return by memcpy
         API to ensure synchronization behavior.
         */
-        ck(DPCT_CHECK_ERROR(
-               st->memcpy(out.gated, d_gated, hc_dim * sizeof(float))),
-           "gated");
+        ck(DPCT_CHECK_ERROR(st->memcpy(out.gated, d_gated, hc_dim * sizeof(float))), "gated");
     if (out.normalized)
         /*
         DPCT1124: cudaMemcpyAsync is migrated to asynchronous memcpy API.
@@ -648,9 +590,7 @@ void ple_block(const float* emb, const float* hidden, const float* hist_rows, co
         operand memory, so you may need to call wait() on event return by memcpy
         API to ensure synchronization behavior.
         */
-        ck(DPCT_CHECK_ERROR(
-               st->memcpy(out.normalized, d_norm, hc_dim * sizeof(float))),
-           "norm");
+        ck(DPCT_CHECK_ERROR(st->memcpy(out.normalized, d_norm, hc_dim * sizeof(float))), "norm");
     if (out.conv)
         /*
         DPCT1124: cudaMemcpyAsync is migrated to asynchronous memcpy API.
@@ -658,9 +598,7 @@ void ple_block(const float* emb, const float* hidden, const float* hist_rows, co
         operand memory, so you may need to call wait() on event return by memcpy
         API to ensure synchronization behavior.
         */
-        ck(DPCT_CHECK_ERROR(
-               st->memcpy(out.conv, d_conv, hc_dim * sizeof(float))),
-           "conv");
+        ck(DPCT_CHECK_ERROR(st->memcpy(out.conv, d_conv, hc_dim * sizeof(float))), "conv");
 
     /*
     DPCT1010: SYCL uses exceptions to report errors and does not use the
@@ -673,4 +611,4 @@ void ple_block(const float* emb, const float* hidden, const float* hist_rows, co
     // itself, and the engine's caller does not want that at all.
 }
 
-}  // namespace guild::kernels
+} // namespace guild::kernels

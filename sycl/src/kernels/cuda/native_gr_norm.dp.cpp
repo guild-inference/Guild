@@ -46,17 +46,14 @@ __dpct_inline__ float norm_warp_sum(float value) {
         compilers or runtimes. You may need to adjust the code.
         */
         value += dpct::experimental::permute_sub_group_by_xor(
-            0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(),
-            value, offset);
+            0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(), value, offset);
     }
     return value;
 }
 
 template <int BlockSize>
-__dpct_inline__ void weighted_rms_norm(const float *__restrict__ input,
-                                       const float *__restrict__ gamma,
-                                       float *__restrict__ output, int n_cols,
-                                       float epsilon) {
+__dpct_inline__ void weighted_rms_norm(const float* __restrict__ input, const float* __restrict__ gamma,
+                                       float* __restrict__ output, int n_cols, float epsilon) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
     const int tid = item_ct1.get_local_id(2);
     const std::size_t row_offset = std::size_t(item_ct1.get_group(2)) * n_cols;
@@ -71,15 +68,16 @@ __dpct_inline__ void weighted_rms_norm(const float *__restrict__ input,
 
     // Pinned block_reduce<SUM,BlockSize>: every warp repeats the final XOR
     // reduction. There is no warp-0-only broadcast or downward-shuffle tree.
-    auto &sums =
-        *sycl::ext::oneapi::group_local_memory_for_overwrite<float[32]>(
-            sycl::ext::oneapi::this_work_item::get_work_group<3>());
+    auto& sums = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[32]>(
+        sycl::ext::oneapi::this_work_item::get_work_group<3>());
     partial = norm_warp_sum(partial);
     const int lane = tid % 32;
-    if (lane == 0) sums[tid / 32] = partial;
+    if (lane == 0)
+        sums[tid / 32] = partial;
     item_ct1.barrier(sycl::access::fence_space::local_space);
     partial = 0.0f;
-    if (lane < BlockSize / 32) partial = sums[lane];
+    if (lane < BlockSize / 32)
+        partial = sums[lane];
     partial = norm_warp_sum(partial);
 
     const float mean = partial / n_cols;
@@ -97,26 +95,20 @@ void check_pointer(const void* p) {
 
 } // namespace
 
-void native_gr_rms_norm_weighted(const float* input, const float* gamma, float* output,
-                                 int n_cols, int n_rows, float epsilon, void* stream) {
+void native_gr_rms_norm_weighted(const float* input, const float* gamma, float* output, int n_cols, int n_rows,
+                                 float epsilon, void* stream) {
     if (n_cols <= 0 || n_rows <= 0 || !std::isfinite(epsilon) || epsilon < 0.0f)
         throw std::invalid_argument("native GR RMSNorm requires positive dimensions and finite nonnegative epsilon");
     check_pointer(input);
     check_pointer(gamma);
     check_pointer(output);
     const auto cuda_stream = guild::q_of(stream);
-    if (n_cols < 1024)
-    {
-        auto exp_props = sycl::ext::oneapi::experimental::properties{
-            sycl::ext::oneapi::experimental::use_root_sync};
+    if (n_cols < 1024) {
+        auto exp_props = sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::use_root_sync};
 
-        cuda_stream->parallel_for<dpct_kernel_name<
-            class weighted_rms_norm_46d94c, dpct_kernel_scalar<256>>>(
-            sycl::nd_range<3>(sycl::range(1, 1, unsigned(n_rows)) *
-                                  sycl::range(1, 1, 256),
-                              sycl::range(1, 1, 256)),
-            exp_props,
-            [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(32)]] {
+        cuda_stream->parallel_for<dpct_kernel_name<class weighted_rms_norm_46d94c, dpct_kernel_scalar<256>>>(
+            sycl::nd_range<3>(sycl::range(1, 1, unsigned(n_rows)) * sycl::range(1, 1, 256), sycl::range(1, 1, 256)),
+            exp_props, [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(32)]] {
                 weighted_rms_norm<256>(input, gamma, output, n_cols, epsilon);
             });
     } else
@@ -126,16 +118,11 @@ void native_gr_rms_norm_weighted(const float* input, const float* gamma, float* 
     info::device::max_work_group_size. Adjust the work-group size if needed.
     */
     {
-        auto exp_props = sycl::ext::oneapi::experimental::properties{
-            sycl::ext::oneapi::experimental::use_root_sync};
+        auto exp_props = sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::use_root_sync};
 
-        cuda_stream->parallel_for<dpct_kernel_name<
-            class weighted_rms_norm_11a6fe, dpct_kernel_scalar<1024>>>(
-            sycl::nd_range<3>(sycl::range(1, 1, unsigned(n_rows)) *
-                                  sycl::range(1, 1, 1024),
-                              sycl::range(1, 1, 1024)),
-            exp_props,
-            [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(32)]] {
+        cuda_stream->parallel_for<dpct_kernel_name<class weighted_rms_norm_11a6fe, dpct_kernel_scalar<1024>>>(
+            sycl::nd_range<3>(sycl::range(1, 1, unsigned(n_rows)) * sycl::range(1, 1, 1024), sycl::range(1, 1, 1024)),
+            exp_props, [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(32)]] {
                 weighted_rms_norm<1024>(input, gamma, output, n_cols, epsilon);
             });
     }
@@ -158,8 +145,7 @@ void native_gr_rms_norm_weighted(const float* input, const float* gamma, float* 
         /*
         DPCT1001: The statement could not be removed.
         */
-        throw std::runtime_error(std::string("native GR RMSNorm launch: ") +
-                                 dpct::get_error_string_dummy(error));
+        throw std::runtime_error(std::string("native GR RMSNorm launch: ") + dpct::get_error_string_dummy(error));
 }
 
 } // namespace guild::kernels

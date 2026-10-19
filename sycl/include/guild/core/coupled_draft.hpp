@@ -70,10 +70,14 @@ inline void set_coupled_draft(bool on) {
 }
 
 /// The MTP cell of chain step j after a window at `p` with `a` drafts accepted (draft() runs step j there).
-GUILD_COUPLED_HD inline int64_t coupled_draft_cell(int64_t p, int a, int j) { return p + a + j; }
+GUILD_COUPLED_HD inline int64_t coupled_draft_cell(int64_t p, int a, int j) {
+    return p + a + j;
+}
 
 /// The Philox counter the verify window will draw for the row that checks the draft made at MTP cell `cell`.
-GUILD_COUPLED_HD inline uint64_t coupled_draft_counter(int64_t cell) { return (uint64_t) (cell + 1); }
+GUILD_COUPLED_HD inline uint64_t coupled_draft_counter(int64_t cell) {
+    return (uint64_t) (cell + 1);
+}
 
 /// The penalty window the draft layer and the target use: min(penalty_last_n, cap), 0 when penalties are off.
 GUILD_COUPLED_HD inline int coupled_hist_len(int penalty_last_n, int cap) {
@@ -81,13 +85,16 @@ GUILD_COUPLED_HD inline int coupled_hist_len(int penalty_last_n, int cap) {
 }
 
 /// Where draft j's penalty window starts in the ring (base in [cap - h, cap), draft i at cap + i).
-GUILD_COUPLED_HD inline int coupled_hist_start(int cap, int j, int h) { return cap + j - h; }
+GUILD_COUPLED_HD inline int coupled_hist_start(int cap, int j, int h) {
+    return cap + j - h;
+}
 
 /// The ring's base on the host: the last `h` tokens of (tail[0..n_tail), next), -1 padded in front, into
 /// out[0..h) - row 0 of `penalty_rows` for the one-token window [next].
 inline void coupled_hist_base(const int32_t* tail, int64_t n_tail, int32_t next, int h, int32_t* out) {
-    if (h <= 0) return;
+    if (h <= 0)
+        return;
     guild::kernels::penalty_rows(tail, n_tail, &next, 1, h, out);
 }
 
-}  // namespace guild::core
+} // namespace guild::core

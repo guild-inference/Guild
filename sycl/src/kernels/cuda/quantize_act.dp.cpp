@@ -45,20 +45,19 @@ constexpr int QK8_0 = 32;
 // inf, and this file's fixture is O(1) throughout, so it passed.  A numpy-generated oracle caught it on its
 // first run.  Three copies of a converter whose failure mode is silent wrong bits was two copies too many.
 
-__dpct_inline__ void quantize_q8_0_kernel(const float *__restrict__ x,
-                                          uint8_t *__restrict__ blocks,
+__dpct_inline__ void quantize_q8_0_kernel(const float* __restrict__ x, uint8_t* __restrict__ blocks,
                                           long long n_blocks) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
-    const long long b =
-        (long long)item_ct1.get_group(2) * item_ct1.get_local_range(2) +
-        item_ct1.get_local_id(2);
-    if (b >= n_blocks) return;
+    const long long b = (long long) item_ct1.get_group(2) * item_ct1.get_local_range(2) + item_ct1.get_local_id(2);
+    if (b >= n_blocks)
+        return;
     const float* xb = x + b * QK8_0;
-    uint8_t* out = blocks + b * 34;                 // { fp16 d ; int8 qs[32] }
+    uint8_t* out = blocks + b * 34; // { fp16 d ; int8 qs[32] }
 
     float amax = 0.0f;
 #pragma unroll
-    for (int i = 0; i < QK8_0; ++i) amax = sycl::fmax(amax, sycl::fabs(xb[i]));
+    for (int i = 0; i < QK8_0; ++i)
+        amax = sycl::fmax(amax, sycl::fabs(xb[i]));
     if (amax == 0.0f) {
         // ggml leaves the block zeroed: d = 0 and every q = 0.  Writing the fp16 zero explicitly rather than
         // skipping keeps the block layout deterministic for the byte comparison.
@@ -66,7 +65,8 @@ __dpct_inline__ void quantize_q8_0_kernel(const float *__restrict__ x,
         out[0] = (uint8_t) (zb & 0xFF);
         out[1] = (uint8_t) (zb >> 8);
 #pragma unroll
-        for (int i = 0; i < QK8_0; ++i) out[2 + i] = 0;
+        for (int i = 0; i < QK8_0; ++i)
+            out[2 + i] = 0;
         return;
     }
     const float d32 = amax / 127.0f;
@@ -76,9 +76,11 @@ __dpct_inline__ void quantize_q8_0_kernel(const float *__restrict__ x,
 
     // double division, matching the reference exactly (subtlety 2)
     for (int i = 0; i < QK8_0; ++i) {
-        double q = sycl::rint((double)xb[i] / (double)d32);
-        if (q > 127.0) q = 127.0;
-        if (q < -128.0) q = -128.0;
+        double q = sycl::rint((double) xb[i] / (double) d32);
+        if (q > 127.0)
+            q = 127.0;
+        if (q < -128.0)
+            q = -128.0;
         out[2 + i] = (uint8_t) (int8_t) q;
     }
 }
@@ -104,21 +106,19 @@ __dpct_inline__ void quantize_q8_0_kernel(const float *__restrict__ x,
 /// `moe_hit_parity`.  This function's job is different: it must match **this engine's own CPU reference**,
 /// because a hit and a miss for the same expert on the same layer have to produce the same number.  The CPU
 /// path is the reference - C1 passes on it - so the hit path is brought to it, not the reverse.
-__dpct_inline__ void quantize_q8_0_scaled_kernel(const float *__restrict__ x,
-                                                 uint8_t *__restrict__ blocks,
-                                                 float *__restrict__ scales,
-                                                 long long n_blocks) {
+__dpct_inline__ void quantize_q8_0_scaled_kernel(const float* __restrict__ x, uint8_t* __restrict__ blocks,
+                                                 float* __restrict__ scales, long long n_blocks) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
-    const long long b =
-        (long long)item_ct1.get_group(2) * item_ct1.get_local_range(2) +
-        item_ct1.get_local_id(2);
-    if (b >= n_blocks) return;
+    const long long b = (long long) item_ct1.get_group(2) * item_ct1.get_local_range(2) + item_ct1.get_local_id(2);
+    if (b >= n_blocks)
+        return;
     const float* xb = x + b * QK8_0;
     uint8_t* out = blocks + b * 34;
 
     float amax = 0.0f;
 #pragma unroll
-    for (int i = 0; i < QK8_0; ++i) amax = sycl::fmax(amax, sycl::fabs(xb[i]));
+    for (int i = 0; i < QK8_0; ++i)
+        amax = sycl::fmax(amax, sycl::fabs(xb[i]));
     // VERBATIM from `cpu/expert.cpp:144-145`, including the `amax > 0` guard, so the fp32 value written here
     // is bit-identical to the `s` the CPU path used.
     const float s = amax > 0.f ? amax / 127.f : 0.f;
@@ -139,20 +139,19 @@ __dpct_inline__ void quantize_q8_0_scaled_kernel(const float *__restrict__ x,
     }
 }
 
-__dpct_inline__ void dequant_q8_0_kernel(const uint8_t *__restrict__ blocks,
-                                         float *__restrict__ x,
+__dpct_inline__ void dequant_q8_0_kernel(const uint8_t* __restrict__ blocks, float* __restrict__ x,
                                          long long n_blocks) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
-    const long long b =
-        (long long)item_ct1.get_group(2) * item_ct1.get_local_range(2) +
-        item_ct1.get_local_id(2);
-    if (b >= n_blocks) return;
+    const long long b = (long long) item_ct1.get_group(2) * item_ct1.get_local_range(2) + item_ct1.get_local_id(2);
+    if (b >= n_blocks)
+        return;
     const uint8_t* blk = blocks + b * 34;
     const uint16_t dbits = (uint16_t) (blk[0] | (blk[1] << 8));
     const float d = f32_from_f16(dbits);
     float* out = x + b * QK8_0;
 #pragma unroll
-    for (int i = 0; i < QK8_0; ++i) out[i] = (float)(int8_t)blk[2 + i] * d;
+    for (int i = 0; i < QK8_0; ++i)
+        out[i] = (float) (int8_t) blk[2 + i] * d;
 }
 
 // ===================== Q8_K =====================
@@ -176,14 +175,12 @@ __dpct_inline__ int nearest_int_dev(float fval) {
     return (i & 0x007fffff) - 0x00400000;
 }
 
-__dpct_inline__ void quantize_q8_K_kernel(const float *__restrict__ x,
-                                          uint8_t *__restrict__ blocks,
+__dpct_inline__ void quantize_q8_K_kernel(const float* __restrict__ x, uint8_t* __restrict__ blocks,
                                           long long n_blocks) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
-    const long long b =
-        (long long)item_ct1.get_group(2) * item_ct1.get_local_range(2) +
-        item_ct1.get_local_id(2);
-    if (b >= n_blocks) return;
+    const long long b = (long long) item_ct1.get_group(2) * item_ct1.get_local_range(2) + item_ct1.get_local_id(2);
+    if (b >= n_blocks)
+        return;
     const float* xb = x + b * QK_K;
     uint8_t* out = blocks + b * Q8K_BYTES;
     float* d = (float*) out;
@@ -207,12 +204,14 @@ __dpct_inline__ void quantize_q8_K_kernel(const float *__restrict__ x,
         // deliberate divergence from the letter of the source.
         *d = 0.0f;
 #pragma unroll
-        for (int j = 0; j < QK_K; ++j) qs[j] = 0;
+        for (int j = 0; j < QK_K; ++j)
+            qs[j] = 0;
 #pragma unroll
-        for (int j = 0; j < QK_K / 16; ++j) bsums[j] = 0;
+        for (int j = 0; j < QK_K / 16; ++j)
+            bsums[j] = 0;
         return;
     }
-    const float iscale = -127.0f / max;          // -127, NOT -128; see the header
+    const float iscale = -127.0f / max; // -127, NOT -128; see the header
     for (int j = 0; j < QK_K; ++j) {
         // `__fmul_rn`, NOT `iscale * xb[j]`.  ggml computes the product, ROUNDS IT TO F32, and then adds
         // 12582912.0f inside `nearest_int`.  Written as a plain expression, nvcc CONTRACTS the multiply into
@@ -227,39 +226,39 @@ __dpct_inline__ void quantize_q8_K_kernel(const float *__restrict__ x,
         OpenCL C 1.2 standard.
         */
         const int v = nearest_int_dev(iscale * xb[j]);
-        qs[j] = (int8_t)sycl::min(
-            127, v); // MIN only - the source has no lower clamp
+        qs[j] = (int8_t) sycl::min(127, v); // MIN only - the source has no lower clamp
     }
     for (int j = 0; j < QK_K / 16; ++j) {
         int sum = 0;
 #pragma unroll
-        for (int ii = 0; ii < 16; ++ii) sum += qs[j * 16 + ii];
+        for (int ii = 0; ii < 16; ++ii)
+            sum += qs[j * 16 + ii];
         bsums[j] = (int16_t) sum;
     }
     *d = 1.0f / iscale;
 }
 
-__dpct_inline__ void dequant_q8_K_kernel(const uint8_t *__restrict__ blocks,
-                                         float *__restrict__ x,
+__dpct_inline__ void dequant_q8_K_kernel(const uint8_t* __restrict__ blocks, float* __restrict__ x,
                                          long long n_blocks) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
-    const long long b =
-        (long long)item_ct1.get_group(2) * item_ct1.get_local_range(2) +
-        item_ct1.get_local_id(2);
-    if (b >= n_blocks) return;
+    const long long b = (long long) item_ct1.get_group(2) * item_ct1.get_local_range(2) + item_ct1.get_local_id(2);
+    if (b >= n_blocks)
+        return;
     const uint8_t* blk = blocks + b * Q8K_BYTES;
     float d;
     memcpy(&d, blk, 4);
     const int8_t* qs = (const int8_t*) (blk + 4);
     float* out = x + b * QK_K;
 #pragma unroll
-    for (int i = 0; i < QK_K; ++i) out[i] = (float)qs[i] * d;
+    for (int i = 0; i < QK_K; ++i)
+        out[i] = (float) qs[i] * d;
 }
 
-}  // namespace
+} // namespace
 
 void quantize_q8_0(const float* x, uint8_t* blocks, int64_t n, void* stream) {
-    if (n <= 0) return;
+    if (n <= 0)
+        return;
     if (n % QK8_0 != 0) {
         std::fprintf(stderr, "quantize_q8_0: n %lld is not a multiple of %d\n", (long long) n, QK8_0);
         std::exit(1);
@@ -268,20 +267,12 @@ void quantize_q8_0(const float* x, uint8_t* blocks, int64_t n, void* stream) {
     const int threads = 128;
     const unsigned grid = (unsigned) ((nb + threads - 1) / threads);
     {
-        auto exp_props = sycl::ext::oneapi::experimental::properties{
-            sycl::ext::oneapi::experimental::use_root_sync};
-        dpct::has_capability_or_fail(
-            guild::q_of(stream)->get_device(),
-            {sycl::aspect::fp64});
+        auto exp_props = sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::use_root_sync};
+        dpct::has_capability_or_fail(guild::q_of(stream)->get_device(), {sycl::aspect::fp64});
 
-        guild::q_of(stream)
-            ->parallel_for<dpct_kernel_name<class quantize_q8_0_kernel_5451b9>>(
-                sycl::nd_range<3>(sycl::range(1, 1, grid) *
-                                      sycl::range(1, 1, threads),
-                                  sycl::range(1, 1, threads)),
-                exp_props, [=](sycl::nd_item<3> item_ct1) {
-                    quantize_q8_0_kernel(x, blocks, nb);
-                });
+        guild::q_of(stream)->parallel_for<dpct_kernel_name<class quantize_q8_0_kernel_5451b9>>(
+            sycl::nd_range<3>(sycl::range(1, 1, grid) * sycl::range(1, 1, threads), sycl::range(1, 1, threads)),
+            exp_props, [=](sycl::nd_item<3> item_ct1) { quantize_q8_0_kernel(x, blocks, nb); });
     }
     /*
     DPCT1010: SYCL uses exceptions to report errors and does not use the
@@ -290,14 +281,16 @@ void quantize_q8_0(const float* x, uint8_t* blocks, int64_t n, void* stream) {
     */
     const dpct::err0 e = 0;
 
-    if (stream == nullptr) dpct::get_current_device().queues_wait_and_throw();
+    if (stream == nullptr)
+        dpct::get_current_device().queues_wait_and_throw();
 }
 
 /// See `quantize_q8_0_scaled_kernel`.  Writes the same 34-byte `block_q8_0` layout as `quantize_q8_0`, plus
 /// `scales[n/32]` carrying the fp32 `s` the CPU path used - so a hit can be computed with the CPU's
 /// multiplier instead of the block's fp16 `d`.  `scales` must not be null.
 void quantize_q8_0_scaled(const float* x, uint8_t* blocks, float* scales, int64_t n, void* stream) {
-    if (n <= 0) return;
+    if (n <= 0)
+        return;
     if (n % QK8_0 != 0) {
         std::fprintf(stderr, "quantize_q8_0_scaled: n %lld is not a multiple of %d\n", (long long) n, QK8_0);
         std::exit(1);
@@ -310,18 +303,11 @@ void quantize_q8_0_scaled(const float* x, uint8_t* blocks, float* scales, int64_
     const int threads = 128;
     const unsigned grid = (unsigned) ((nb + threads - 1) / threads);
     {
-        auto exp_props = sycl::ext::oneapi::experimental::properties{
-            sycl::ext::oneapi::experimental::use_root_sync};
+        auto exp_props = sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::use_root_sync};
 
-        guild::q_of(stream)
-            ->parallel_for<
-                dpct_kernel_name<class quantize_q8_0_scaled_kernel_caf6f4>>(
-                sycl::nd_range<3>(sycl::range(1, 1, grid) *
-                                      sycl::range(1, 1, threads),
-                                  sycl::range(1, 1, threads)),
-                exp_props, [=](sycl::nd_item<3> item_ct1) {
-                    quantize_q8_0_scaled_kernel(x, blocks, scales, nb);
-                });
+        guild::q_of(stream)->parallel_for<dpct_kernel_name<class quantize_q8_0_scaled_kernel_caf6f4>>(
+            sycl::nd_range<3>(sycl::range(1, 1, grid) * sycl::range(1, 1, threads), sycl::range(1, 1, threads)),
+            exp_props, [=](sycl::nd_item<3> item_ct1) { quantize_q8_0_scaled_kernel(x, blocks, scales, nb); });
     }
     /*
     DPCT1010: SYCL uses exceptions to report errors and does not use the
@@ -330,26 +316,22 @@ void quantize_q8_0_scaled(const float* x, uint8_t* blocks, float* scales, int64_
     */
     const dpct::err0 e = 0;
 
-    if (stream == nullptr) dpct::get_current_device().queues_wait_and_throw();
+    if (stream == nullptr)
+        dpct::get_current_device().queues_wait_and_throw();
 }
 
 void dequant_q8_0(const uint8_t* blocks, float* x, int64_t n, void* stream) {
-    if (n <= 0) return;
+    if (n <= 0)
+        return;
     const long long nb = n / QK8_0;
     const int threads = 128;
     const unsigned grid = (unsigned) ((nb + threads - 1) / threads);
     {
-        auto exp_props = sycl::ext::oneapi::experimental::properties{
-            sycl::ext::oneapi::experimental::use_root_sync};
+        auto exp_props = sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::use_root_sync};
 
-        guild::q_of(stream)
-            ->parallel_for<dpct_kernel_name<class dequant_q8_0_kernel_154e61>>(
-                sycl::nd_range<3>(sycl::range(1, 1, grid) *
-                                      sycl::range(1, 1, threads),
-                                  sycl::range(1, 1, threads)),
-                exp_props, [=](sycl::nd_item<3> item_ct1) {
-                    dequant_q8_0_kernel(blocks, x, nb);
-                });
+        guild::q_of(stream)->parallel_for<dpct_kernel_name<class dequant_q8_0_kernel_154e61>>(
+            sycl::nd_range<3>(sycl::range(1, 1, grid) * sycl::range(1, 1, threads), sycl::range(1, 1, threads)),
+            exp_props, [=](sycl::nd_item<3> item_ct1) { dequant_q8_0_kernel(blocks, x, nb); });
     }
     /*
     DPCT1010: SYCL uses exceptions to report errors and does not use the
@@ -358,30 +340,26 @@ void dequant_q8_0(const uint8_t* blocks, float* x, int64_t n, void* stream) {
     */
     const dpct::err0 e = 0;
 
-    if (stream == nullptr) dpct::get_current_device().queues_wait_and_throw();
+    if (stream == nullptr)
+        dpct::get_current_device().queues_wait_and_throw();
 }
 
 void quantize_q8_K(const float* x, uint8_t* blocks, int64_t n, void* stream) {
-    if (n <= 0) return;
+    if (n <= 0)
+        return;
     if (n % QK_K != 0) {
         std::fprintf(stderr, "quantize_q8_K: n %lld is not a multiple of %d\n", (long long) n, QK_K);
         std::exit(1);
     }
     const long long nb = n / QK_K;
-    const int threads = 64;                       // one block per thread, and a block is 256 elements
+    const int threads = 64; // one block per thread, and a block is 256 elements
     const unsigned grid = (unsigned) ((nb + threads - 1) / threads);
     {
-        auto exp_props = sycl::ext::oneapi::experimental::properties{
-            sycl::ext::oneapi::experimental::use_root_sync};
+        auto exp_props = sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::use_root_sync};
 
-        guild::q_of(stream)
-            ->parallel_for<dpct_kernel_name<class quantize_q8_K_kernel_7aadb2>>(
-                sycl::nd_range<3>(sycl::range(1, 1, grid) *
-                                      sycl::range(1, 1, threads),
-                                  sycl::range(1, 1, threads)),
-                exp_props, [=](sycl::nd_item<3> item_ct1) {
-                    quantize_q8_K_kernel(x, blocks, nb);
-                });
+        guild::q_of(stream)->parallel_for<dpct_kernel_name<class quantize_q8_K_kernel_7aadb2>>(
+            sycl::nd_range<3>(sycl::range(1, 1, grid) * sycl::range(1, 1, threads), sycl::range(1, 1, threads)),
+            exp_props, [=](sycl::nd_item<3> item_ct1) { quantize_q8_K_kernel(x, blocks, nb); });
     }
     /*
     DPCT1010: SYCL uses exceptions to report errors and does not use the
@@ -390,26 +368,22 @@ void quantize_q8_K(const float* x, uint8_t* blocks, int64_t n, void* stream) {
     */
     const dpct::err0 e = 0;
 
-    if (stream == nullptr) dpct::get_current_device().queues_wait_and_throw();
+    if (stream == nullptr)
+        dpct::get_current_device().queues_wait_and_throw();
 }
 
 void dequant_q8_K(const uint8_t* blocks, float* x, int64_t n, void* stream) {
-    if (n <= 0) return;
+    if (n <= 0)
+        return;
     const long long nb = n / QK_K;
     const int threads = 64;
     const unsigned grid = (unsigned) ((nb + threads - 1) / threads);
     {
-        auto exp_props = sycl::ext::oneapi::experimental::properties{
-            sycl::ext::oneapi::experimental::use_root_sync};
+        auto exp_props = sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::use_root_sync};
 
-        guild::q_of(stream)
-            ->parallel_for<dpct_kernel_name<class dequant_q8_K_kernel_e03426>>(
-                sycl::nd_range<3>(sycl::range(1, 1, grid) *
-                                      sycl::range(1, 1, threads),
-                                  sycl::range(1, 1, threads)),
-                exp_props, [=](sycl::nd_item<3> item_ct1) {
-                    dequant_q8_K_kernel(blocks, x, nb);
-                });
+        guild::q_of(stream)->parallel_for<dpct_kernel_name<class dequant_q8_K_kernel_e03426>>(
+            sycl::nd_range<3>(sycl::range(1, 1, grid) * sycl::range(1, 1, threads), sycl::range(1, 1, threads)),
+            exp_props, [=](sycl::nd_item<3> item_ct1) { dequant_q8_K_kernel(blocks, x, nb); });
     }
     /*
     DPCT1010: SYCL uses exceptions to report errors and does not use the
@@ -418,7 +392,8 @@ void dequant_q8_K(const uint8_t* blocks, float* x, int64_t n, void* stream) {
     */
     const dpct::err0 e = 0;
 
-    if (stream == nullptr) dpct::get_current_device().queues_wait_and_throw();
+    if (stream == nullptr)
+        dpct::get_current_device().queues_wait_and_throw();
 }
 
-}  // namespace guild::kernels
+} // namespace guild::kernels

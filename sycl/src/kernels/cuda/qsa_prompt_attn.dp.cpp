@@ -21,21 +21,21 @@
 namespace guild::kernels {
 namespace {
 
-constexpr int HD = 256;           // head_dim
-constexpr int G = 12;             // query heads per KV head
+constexpr int HD = 256; // head_dim
+constexpr int G = 12;   // query heads per KV head
 #ifndef D1_CH
 #define D1_CH 32
 #endif
-constexpr int CH = D1_CH;         // cells per chunk
-constexpr int THREADS = 128;      // 4 warps: scores by cell (8 each), p.v by dimension (64 each = one int8 scale group)
-constexpr int QS = HD + 8;        // q row stride in halves (bank-conflict-free fragment loads)
+constexpr int CH = D1_CH;    // cells per chunk
+constexpr int THREADS = 128; // 4 warps: scores by cell (8 each), p.v by dimension (64 each = one int8 scale group)
+constexpr int QS = HD + 8;   // q row stride in halves (bank-conflict-free fragment loads)
 
 // The MMA below needs sm_75 or newer (Turing runs it as two k=8 steps); cp.async needs sm_80. Builds for pre-sm_75
 // cards compile the MMA to a trap; qsa_prompt_attn_batch refuses such a device at run time, so the old kernel runs
 // there.  Turing compiles cp_async16 to a trap as well and takes the v1 kernel instead of launch_i8.
-#if defined(__HIPCC__)          // AMD: no mma.sync / cp.async; the host keeps the old kernel (below)
+#if defined(__HIPCC__) // AMD: no mma.sync / cp.async; the host keeps the old kernel (below)
 #define GUILD_PA_SM80 0
-#elif 0   // SYCL: inline PTX (mma/ldmatrix/cp.async) - the XMX port is pending; see tools/fixups.py
+#elif 0 // SYCL: inline PTX (mma/ldmatrix/cp.async) - the XMX port is pending; see tools/fixups.py
 #define GUILD_PA_SM80 1
 #else
 #define GUILD_PA_SM80 0
@@ -46,12 +46,11 @@ constexpr int QS = HD + 8;        // q row stride in halves (bank-conflict-free 
 // 2*tig..2*tig+1 (b[0]'s k rows), a[2]/a[3] the same rows at k columns 2*tig+8..2*tig+9 (b[1]'s k rows).  The
 // products then add into the same FP32 C registers in the order hi-part-0, hi-part-1, which is the order the k16
 // instruction accumulates in as well - but the sum now rounds twice, so the two paths do not agree bit for bit.
-__dpct_inline__ void mma16816(float *c, const uint32_t *a, const uint32_t *b) {
-#if !GUILD_PA_SM80 &&                                                         \
-    (defined(__HIPCC__) || !defined(DPCT_COMPATIBILITY_TEMP) ||                \
-     DPCT_COMPATIBILITY_TEMP < 750)
-    /* unreachable on SYCL: the launcher refuses this device */   // AMD and pre-Turing builds: no mma.sync (the host keeps the old kernel there)
-#elif 0   // SYCL: Turing's m16n8k8 PTX (unreachable: the launcher refuses this device)
+__dpct_inline__ void mma16816(float* c, const uint32_t* a, const uint32_t* b) {
+#if !GUILD_PA_SM80 && (defined(__HIPCC__) || !defined(DPCT_COMPATIBILITY_TEMP) || DPCT_COMPATIBILITY_TEMP < 750)
+    /* unreachable on SYCL: the launcher refuses this device */ // AMD and pre-Turing builds: no mma.sync (the host
+                                                                // keeps the old kernel there)
+#elif 0 // SYCL: Turing's m16n8k8 PTX (unreachable: the launcher refuses this device)
     asm volatile("mma.sync.aligned.m16n8k8.row.col.f32.f16.f16.f32 {%0,%1,%2,%3}, {%4,%5}, {%6}, {%0,%1,%2,%3};\n"
                  : "+f"(c[0]), "+f"(c[1]), "+f"(c[2]), "+f"(c[3])
                  : "r"(a[0]), "r"(a[1]), "r"(b[0]));
@@ -64,17 +63,15 @@ __dpct_inline__ void mma16816(float *c, const uint32_t *a, const uint32_t *b) {
                  "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, "
                  "{%0,%1,%2,%3};\n"
                  : "+f"(c[0]), "+f"(c[1]), "+f"(c[2]), "+f"(c[3])
-                 : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b[0]),
-                   "r"(b[1]));
+                 : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b[0]), "r"(b[1]));
 #else
     {
-        volatile void *d_mat_frag_ct1[4] = {&c[0], &c[1], &c[2], &c[3]};
+        volatile void* d_mat_frag_ct1[4] = {&c[0], &c[1], &c[2], &c[3]};
         sycl::vec<uint32_t, 4> a_mat_frag_ct1(a[0], a[1], a[2], a[3]);
         sycl::vec<uint32_t, 2> b_mat_frag_ct1(b[0], b[1]);
         sycl::vec<float, 4> c_mat_frag_ct1(c[0], c[1], c[2], c[3]);
         dpct::experimental::matrix::mma<16, 8, 16, sycl::half, float>(
-            reinterpret_cast<volatile void **>(d_mat_frag_ct1), &a_mat_frag_ct1,
-            &b_mat_frag_ct1, &c_mat_frag_ct1);
+            reinterpret_cast<volatile void**>(d_mat_frag_ct1), &a_mat_frag_ct1, &b_mat_frag_ct1, &c_mat_frag_ct1);
     }
 #endif
 #endif
@@ -84,19 +81,15 @@ __dpct_inline__ void mma16816(float *c, const uint32_t *a, const uint32_t *b) {
 __dpct_inline__ uint32_t i8x2_to_h2(uint32_t x) {
     uint32_t y = ((x & 0xffu) | ((x & 0xff00u) << 8)) ^ 0x00800080u;
     y |= 0x64006400u;
-    sycl::half2 h = *reinterpret_cast<sycl::half2 *>(&y);
-    h = h - sycl::half2(
-                sycl::vec<float, 1>(1152.f)
-                    .convert<sycl::half, sycl::rounding_mode::automatic>()[0],
-                sycl::vec<float, 1>(1152.f)
-                    .convert<sycl::half, sycl::rounding_mode::automatic>()[0]);
+    sycl::half2 h = *reinterpret_cast<sycl::half2*>(&y);
+    h = h - sycl::half2(sycl::vec<float, 1>(1152.f).convert<sycl::half, sycl::rounding_mode::automatic>()[0],
+                        sycl::vec<float, 1>(1152.f).convert<sycl::half, sycl::rounding_mode::automatic>()[0]);
     return *reinterpret_cast<uint32_t*>(&h);
 }
 
 __dpct_inline__ uint32_t pack_h2(float lo_k,
                                  float hi_k) { // element k in the low half
-    sycl::half2 h = sycl::float2(lo_k, hi_k)
-                        .convert<sycl::half, sycl::rounding_mode::rte>();
+    sycl::half2 h = sycl::float2(lo_k, hi_k).convert<sycl::half, sycl::rounding_mode::rte>();
     return *reinterpret_cast<uint32_t*>(&h);
 }
 
@@ -106,15 +99,12 @@ __dpct_inline__ uint32_t pack_h2(float lo_k,
 // KV_MODE 4 (Q4_0 K and V, `--kv q4_0`): mode 1 with a scale per 32 values - each q4_0 block's codes enter as exact
 // int8 (code - 8) and its fp16 scale is applied in FP32, as mode 1's are; the caller rotates q and un-rotates the
 // output (kv_q4.hpp).
-template <int KV_MODE>
-struct Smem {
-    using KElem =
-        typename std::conditional<KV_MODE == 0, sycl::half, int8_t>::type;
-    using VElem = typename std::conditional<KV_MODE == 1 || KV_MODE == 4,
-                                            int8_t, sycl::half>::type;
-    static constexpr int KROW = KV_MODE == 0 ? HD + 8 : HD + 16;   // elements; 16-byte aligned rows, banks spread
+template <int KV_MODE> struct Smem {
+    using KElem = typename std::conditional<KV_MODE == 0, sycl::half, int8_t>::type;
+    using VElem = typename std::conditional<KV_MODE == 1 || KV_MODE == 4, int8_t, sycl::half>::type;
+    static constexpr int KROW = KV_MODE == 0 ? HD + 8 : HD + 16; // elements; 16-byte aligned rows, banks spread
     static constexpr int VROW = (KV_MODE == 1 || KV_MODE == 4) ? HD + 16 : HD + 8;
-    static constexpr int NG = KV_MODE == 4 ? HD / QK4_0 : 4;      // scale groups per row (q4_0: 8 of 32, else 4 of 64)
+    static constexpr int NG = KV_MODE == 4 ? HD / QK4_0 : 4; // scale groups per row (q4_0: 8 of 32, else 4 of 64)
     sycl::half qh[16][QS];
     sycl::half ql[16][QS];
     KElem k[CH][KROW];
@@ -136,14 +126,11 @@ prompt_attn_kernel exceeds 128 bytes and may cause high register pressure.
 Consult with your hardware vendor to find the total register size available and
 adjust the code, or use smaller sub-group size to avoid high register pressure.
 */
-__dpct_inline__ void
-prompt_attn_kernel(const float *__restrict__ q, QsaAttnPools p,
-                   const int32_t *__restrict__ ids,
-                   const int32_t *__restrict__ steps, int n_kv_heads,
-                   int page_size, float scale_log2, float *__restrict__ attn,
-                   int cap, uint8_t *dpct_local) {
+__dpct_inline__ void prompt_attn_kernel(const float* __restrict__ q, QsaAttnPools p, const int32_t* __restrict__ ids,
+                                        const int32_t* __restrict__ steps, int n_kv_heads, int page_size,
+                                        float scale_log2, float* __restrict__ attn, int cap, uint8_t* dpct_local) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
-    auto smem_raw = (unsigned char *)dpct_local;
+    auto smem_raw = (unsigned char*) dpct_local;
     Smem<KV_MODE>& S = *reinterpret_cast<Smem<KV_MODE>*>(smem_raw);
     const int qi = item_ct1.get_group(2), kvh = item_ct1.get_group(1);
     const int n_head = n_kv_heads * G;
@@ -155,7 +142,7 @@ prompt_attn_kernel(const float *__restrict__ q, QsaAttnPools p,
     two expressions do not provide the exact same functionality. Check the
     generated code for potential precision and/or performance issues.
     */
-    const int n = *(steps + (size_t)qi * kStepCount + kStepWidth);
+    const int n = *(steps + (size_t) qi * kStepCount + kStepWidth);
     const int t = item_ct1.get_local_id(2), lane = t & 31, warp = t >> 5;
     const int gid = lane >> 2, tig = lane & 3;
 
@@ -171,49 +158,46 @@ prompt_attn_kernel(const float *__restrict__ q, QsaAttnPools p,
     masked sub_group function which may not be supported by all compilers or
     runtimes. You may need to adjust the code.
     */
-    for (int o = 16; o > 0; o >>= 1) qm = sycl::fmax(
-        qm, dpct::experimental::permute_sub_group_by_xor(
-                0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(),
-                qm, o));
-    if (lane == 0) S.qmax[warp] = qm;
+    for (int o = 16; o > 0; o >>= 1)
+        qm = sycl::fmax(qm, dpct::experimental::permute_sub_group_by_xor(
+                                0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(), qm, o));
+    if (lane == 0)
+        S.qmax[warp] = qm;
     /*
     DPCT1065: Consider replacing sycl::nd_item::barrier() with
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
     item_ct1.barrier();
-    qm = sycl::fmax(sycl::fmax(S.qmax[0], S.qmax[1]),
-                    sycl::fmax(S.qmax[2], S.qmax[3]));
+    qm = sycl::fmax(sycl::fmax(S.qmax[0], S.qmax[1]), sycl::fmax(S.qmax[2], S.qmax[3]));
     int qe = 0;
     /*
     DPCT1017: The sycl::frexp call is used instead of the frexpf call. These
     two calls do not provide exactly the same functionality. Check the potential
     precision and/or performance issues for the generated code.
     */
-    if (qm > 0.0f) sycl::frexp(
-        qm, sycl::address_space_cast<sycl::access::address_space::generic_space,
-                                     sycl::access::decorated::yes>(
-                &qe)); // qm < 2^qe
-    const float qup = sycl::ldexp(1.0f, 14 - qe),
-                qdown = sycl::ldexp(scale_log2, qe - 14);
+    if (qm > 0.0f)
+        sycl::frexp(qm, sycl::address_space_cast<sycl::access::address_space::generic_space,
+                                                 sycl::access::decorated::yes>(&qe)); // qm < 2^qe
+    const float qup = sycl::ldexp(1.0f, 14 - qe), qdown = sycl::ldexp(scale_log2, qe - 14);
     for (int i = t; i < 16 * HD; i += THREADS) {
         const int h = i / HD, d = i % HD;
         const float x = h < G ? q[(size_t) h * HD + d] * qup : 0.0f;
-        const sycl::half hi =
-            sycl::vec<float, 1>(x)
-                .convert<sycl::half, sycl::rounding_mode::rte>()[0];
+        const sycl::half hi = sycl::vec<float, 1>(x).convert<sycl::half, sycl::rounding_mode::rte>()[0];
         S.qh[h][d] = hi;
         S.ql[h][d] =
-            sycl::vec<float, 1>(
-                x - sycl::vec<sycl::half, 1>(hi)
-                        .convert<float, sycl::rounding_mode::automatic>()[0])
+            sycl::vec<float, 1>(x - sycl::vec<sycl::half, 1>(hi).convert<float, sycl::rounding_mode::automatic>()[0])
                 .convert<sycl::half, sycl::rounding_mode::rte>()[0];
     }
-    if (t < 16) { S.mrow[t] = -INFINITY; S.lsum[t] = 0.0f; }
+    if (t < 16) {
+        S.mrow[t] = -INFINITY;
+        S.lsum[t] = 0.0f;
+    }
 
     float acc[8][4];
 #pragma unroll
-    for (int j = 0; j < 8; ++j) acc[j][0] = acc[j][1] = acc[j][2] = acc[j][3] = 0.0f;
+    for (int j = 0; j < 8; ++j)
+        acc[j][0] = acc[j][1] = acc[j][2] = acc[j][3] = 0.0f;
 
     for (int c0 = 0; c0 < n; c0 += CH) {
         const int nh = sycl::min(CH, n - c0);
@@ -248,21 +232,19 @@ prompt_attn_kernel(const float *__restrict__ q, QsaAttnPools p,
             for (int i = t; i < 2 * CH * BLKS; i += THREADS) {
                 const int kv = i / (CH * BLKS), rem = i % (CH * BLKS), c = rem / BLKS, b = rem % BLKS;
                 const long long r = S.row[c];
-                sycl::uint4 lo = sycl::uint4(0, 0, 0, 0),
-                            hi = sycl::uint4(0, 0, 0, 0);
+                sycl::uint4 lo = sycl::uint4(0, 0, 0, 0), hi = sycl::uint4(0, 0, 0, 0);
                 float d = 0.0f;
                 if (r >= 0) {
-                    const block_q4_0* blk = reinterpret_cast<const block_q4_0*>((kv == 0 ? p.k_q4 : p.v_q4) + r * BYTES) + b;
+                    const block_q4_0* blk =
+                        reinterpret_cast<const block_q4_0*>((kv == 0 ? p.k_q4 : p.v_q4) + r * BYTES) + b;
                     /*
                     DPCT1098: The '*' expression is used instead of the
                     __ldg call. These two expressions do not provide the exact
                     same functionality. Check the generated code for potential
                     precision and/or performance issues.
                     */
-                    d = sycl::vec<sycl::half, 1>(
-                            sycl::bit_cast<sycl::half, unsigned short>(blk->d))
-                            .convert<float,
-                                     sycl::rounding_mode::automatic>()[0];
+                    d = sycl::vec<sycl::half, 1>(sycl::bit_cast<sycl::half, unsigned short>(blk->d))
+                            .convert<float, sycl::rounding_mode::automatic>()[0];
                     const uint16_t* q16 = reinterpret_cast<const uint16_t*>(blk->qs);
                     uint32_t w[4];
 #pragma unroll
@@ -273,38 +255,26 @@ prompt_attn_kernel(const float *__restrict__ q, QsaAttnPools p,
                         exact same functionality. Check the generated code for
                         potential precision and/or performance issues.
                         */
-                        w[j] = (uint32_t)*(q16 + 2 * j) |
-                               ((uint32_t)*(q16 + 2 * j + 1) << 16);
+                        w[j] = (uint32_t) * (q16 + 2 * j) | ((uint32_t) * (q16 + 2 * j + 1) << 16);
                     // per byte: the low nibble minus 8 is element j, the high one minus 8 element j + 16
                     lo = sycl::uint4(
-                        dpct::vectorized_binary<sycl::uchar4>(
-                            w[0] & 0x0F0F0F0Fu, 0x08080808u, std::minus<>()),
-                        dpct::vectorized_binary<sycl::uchar4>(
-                            w[1] & 0x0F0F0F0Fu, 0x08080808u, std::minus<>()),
-                        dpct::vectorized_binary<sycl::uchar4>(
-                            w[2] & 0x0F0F0F0Fu, 0x08080808u, std::minus<>()),
-                        dpct::vectorized_binary<sycl::uchar4>(
-                            w[3] & 0x0F0F0F0Fu, 0x08080808u, std::minus<>()));
-                    hi = sycl::uint4(dpct::vectorized_binary<sycl::uchar4>(
-                                         (w[0] >> 4) & 0x0F0F0F0Fu, 0x08080808u,
-                                         std::minus<>()),
-                                     dpct::vectorized_binary<sycl::uchar4>(
-                                         (w[1] >> 4) & 0x0F0F0F0Fu, 0x08080808u,
-                                         std::minus<>()),
-                                     dpct::vectorized_binary<sycl::uchar4>(
-                                         (w[2] >> 4) & 0x0F0F0F0Fu, 0x08080808u,
-                                         std::minus<>()),
-                                     dpct::vectorized_binary<sycl::uchar4>(
-                                         (w[3] >> 4) & 0x0F0F0F0Fu, 0x08080808u,
-                                         std::minus<>()));
+                        dpct::vectorized_binary<sycl::uchar4>(w[0] & 0x0F0F0F0Fu, 0x08080808u, std::minus<>()),
+                        dpct::vectorized_binary<sycl::uchar4>(w[1] & 0x0F0F0F0Fu, 0x08080808u, std::minus<>()),
+                        dpct::vectorized_binary<sycl::uchar4>(w[2] & 0x0F0F0F0Fu, 0x08080808u, std::minus<>()),
+                        dpct::vectorized_binary<sycl::uchar4>(w[3] & 0x0F0F0F0Fu, 0x08080808u, std::minus<>()));
+                    hi = sycl::uint4(
+                        dpct::vectorized_binary<sycl::uchar4>((w[0] >> 4) & 0x0F0F0F0Fu, 0x08080808u, std::minus<>()),
+                        dpct::vectorized_binary<sycl::uchar4>((w[1] >> 4) & 0x0F0F0F0Fu, 0x08080808u, std::minus<>()),
+                        dpct::vectorized_binary<sycl::uchar4>((w[2] >> 4) & 0x0F0F0F0Fu, 0x08080808u, std::minus<>()),
+                        dpct::vectorized_binary<sycl::uchar4>((w[3] >> 4) & 0x0F0F0F0Fu, 0x08080808u, std::minus<>()));
                 }
                 int8_t* dst = kv == 0 ? &S.k[c][b * QK4_0] : &S.v[c][b * QK4_0];
-                reinterpret_cast<sycl::uint4 *>(dst)[0] = lo;
-                reinterpret_cast<sycl::uint4 *>(dst)[1] = hi;
+                reinterpret_cast<sycl::uint4*>(dst)[0] = lo;
+                reinterpret_cast<sycl::uint4*>(dst)[1] = hi;
                 (kv == 0 ? S.ks : S.vs)[c][b] = d;
             }
         } else {
-            constexpr int KPIECES = HD * (int) sizeof(typename Smem<KV_MODE>::KElem) / 16;   // per K row
+            constexpr int KPIECES = HD * (int) sizeof(typename Smem<KV_MODE>::KElem) / 16; // per K row
             for (int i = t; i < CH * KPIECES; i += THREADS) {
                 const int c = i / KPIECES, pc = i % KPIECES;
                 const long long r = S.row[c];
@@ -317,25 +287,19 @@ prompt_attn_kernel(const float *__restrict__ q, QsaAttnPools p,
                         exact same functionality. Check the generated code for
                         potential precision and/or performance issues.
                         */
-                        kx = *(reinterpret_cast<const sycl::uint4 *>(p.k_pool +
-                                                                     r * HD) +
-                               pc);
-                    else   // modes 1 and 3: the K side is INT8
+                        kx = *(reinterpret_cast<const sycl::uint4*>(p.k_pool + r * HD) + pc);
+                    else // modes 1 and 3: the K side is INT8
                         /*
                         DPCT1098: The '*' expression is used instead of the
                         __ldg call. These two expressions do not provide the
                         exact same functionality. Check the generated code for
                         potential precision and/or performance issues.
                         */
-                        kx = *(reinterpret_cast<const sycl::uint4 *>(p.k_q +
-                                                                     r * HD) +
-                               pc);
+                        kx = *(reinterpret_cast<const sycl::uint4*>(p.k_q + r * HD) + pc);
                 }
-                *reinterpret_cast<sycl::uint4 *>(
-                    reinterpret_cast<unsigned char *>(&S.k[c][0]) + pc * 16) =
-                    kx;
+                *reinterpret_cast<sycl::uint4*>(reinterpret_cast<unsigned char*>(&S.k[c][0]) + pc * 16) = kx;
             }
-            if constexpr (KV_MODE == 3) {   // V: dequantize the row's q4_0 blocks straight into the fp16 V row
+            if constexpr (KV_MODE == 3) { // V: dequantize the row's q4_0 blocks straight into the fp16 V row
                 constexpr int BLKS = HD / QK4_0;
                 constexpr int BYTES = BLKS * (int) sizeof(block_q4_0);
                 for (int i = t; i < CH * BLKS; i += THREADS) {
@@ -346,29 +310,20 @@ prompt_attn_kernel(const float *__restrict__ q, QsaAttnPools p,
                         S.v[c][b * QK4_0 + j] = sycl::half(0);
                     if (r >= 0) {
                         const block_q4_0* blk = reinterpret_cast<const block_q4_0*>(p.v_q4 + r * BYTES) + b;
-                        const float d =
-                            sycl::vec<sycl::half, 1>(
-                                sycl::bit_cast<sycl::half, unsigned short>(
-                                    blk->d))
-                                .convert<float,
-                                         sycl::rounding_mode::automatic>()[0];
+                        const float d = sycl::vec<sycl::half, 1>(sycl::bit_cast<sycl::half, unsigned short>(blk->d))
+                                            .convert<float, sycl::rounding_mode::automatic>()[0];
 #pragma unroll
                         for (int j = 0; j < QK4_0 / 2; ++j) {
-                            S.v[c][b * QK4_0 + j] =
-                                sycl::vec<float, 1>(
-                                    (float)((int)(blk->qs[j] & 0x0F) - 8) * d)
-                                    .convert<sycl::half,
-                                             sycl::rounding_mode::rte>()[0];
+                            S.v[c][b * QK4_0 + j] = sycl::vec<float, 1>((float) ((int) (blk->qs[j] & 0x0F) - 8) * d)
+                                                        .convert<sycl::half, sycl::rounding_mode::rte>()[0];
                             S.v[c][b * QK4_0 + j + QK4_0 / 2] =
-                                sycl::vec<float, 1>(
-                                    (float)((int)(blk->qs[j] >> 4) - 8) * d)
-                                    .convert<sycl::half,
-                                             sycl::rounding_mode::rte>()[0];
+                                sycl::vec<float, 1>((float) ((int) (blk->qs[j] >> 4) - 8) * d)
+                                    .convert<sycl::half, sycl::rounding_mode::rte>()[0];
                         }
                     }
                 }
             } else {
-                constexpr int VPIECES = HD * (int) sizeof(typename Smem<KV_MODE>::VElem) / 16;   // per V row
+                constexpr int VPIECES = HD * (int) sizeof(typename Smem<KV_MODE>::VElem) / 16; // per V row
                 for (int i = t; i < CH * VPIECES; i += THREADS) {
                     const int c = i / VPIECES, pc = i % VPIECES;
                     const long long r = S.row[c];
@@ -382,9 +337,7 @@ prompt_attn_kernel(const float *__restrict__ q, QsaAttnPools p,
                             code for potential precision and/or performance
                             issues.
                             */
-                            vx = *(reinterpret_cast<const sycl::uint4 *>(
-                                       p.v_q + r * HD) +
-                                   pc);
+                            vx = *(reinterpret_cast<const sycl::uint4*>(p.v_q + r * HD) + pc);
                         else
                             /*
                             DPCT1098: The '*' expression is used instead of
@@ -393,13 +346,9 @@ prompt_attn_kernel(const float *__restrict__ q, QsaAttnPools p,
                             code for potential precision and/or performance
                             issues.
                             */
-                            vx = *(reinterpret_cast<const sycl::uint4 *>(
-                                       p.v_pool + r * HD) +
-                                   pc);
+                            vx = *(reinterpret_cast<const sycl::uint4*>(p.v_pool + r * HD) + pc);
                     }
-                    *reinterpret_cast<sycl::uint4 *>(
-                        reinterpret_cast<unsigned char *>(&S.v[c][0]) +
-                        pc * 16) = vx;
+                    *reinterpret_cast<sycl::uint4*>(reinterpret_cast<unsigned char*>(&S.v[c][0]) + pc * 16) = vx;
                 }
             }
             for (int i = t; i < CH * 4; i += THREADS) {
@@ -409,21 +358,15 @@ prompt_attn_kernel(const float *__restrict__ q, QsaAttnPools p,
                 if (r >= 0) {
                     if constexpr (KV_MODE == 1) {
                         a = sycl::vec<sycl::half, 1>(
-                                sycl::bit_cast<sycl::half, unsigned short>(
-                                    p.k_scale[r * (HD / KV_Q8_GROUP) + g]))
-                                .convert<float,
-                                         sycl::rounding_mode::automatic>()[0];
+                                sycl::bit_cast<sycl::half, unsigned short>(p.k_scale[r * (HD / KV_Q8_GROUP) + g]))
+                                .convert<float, sycl::rounding_mode::automatic>()[0];
                         b = sycl::vec<sycl::half, 1>(
-                                sycl::bit_cast<sycl::half, unsigned short>(
-                                    p.v_scale[r * (HD / KV_Q8_GROUP) + g]))
-                                .convert<float,
-                                         sycl::rounding_mode::automatic>()[0];
-                    } else if constexpr (KV_MODE == 3) {   // K as int8, V dequantized to fp16 (scale 1)
+                                sycl::bit_cast<sycl::half, unsigned short>(p.v_scale[r * (HD / KV_Q8_GROUP) + g]))
+                                .convert<float, sycl::rounding_mode::automatic>()[0];
+                    } else if constexpr (KV_MODE == 3) { // K as int8, V dequantized to fp16 (scale 1)
                         a = sycl::vec<sycl::half, 1>(
-                                sycl::bit_cast<sycl::half, unsigned short>(
-                                    p.k_scale[r * (HD / KV_Q8_GROUP) + g]))
-                                .convert<float,
-                                         sycl::rounding_mode::automatic>()[0];
+                                sycl::bit_cast<sycl::half, unsigned short>(p.k_scale[r * (HD / KV_Q8_GROUP) + g]))
+                                .convert<float, sycl::rounding_mode::automatic>()[0];
                         b = 1.0f;
                     } else {
                         a = b = 1.0f;
@@ -444,7 +387,7 @@ prompt_attn_kernel(const float *__restrict__ q, QsaAttnPools p,
         */
         item_ct1.barrier();
         // scores: warp w takes cells 8w..8w+7 (one n-tile) over all 256 dims, per scale group (64 dims; q4_0's 32)
-        constexpr int NG = Smem<KV_MODE>::NG, KPG = HD / 16 / NG;   // groups per row, 16-dim MMA steps per group
+        constexpr int NG = Smem<KV_MODE>::NG, KPG = HD / 16 / NG; // groups per row, 16-dim MMA steps per group
 #pragma unroll
         for (int nt = 0; nt < CH / 32; ++nt) {
             const int cb = (warp + 4 * nt) * 8;
@@ -464,7 +407,7 @@ prompt_attn_kernel(const float *__restrict__ q, QsaAttnPools p,
                     al[1] = *reinterpret_cast<const uint32_t*>(&S.ql[gid + 8][k0 + 2 * tig]);
                     al[2] = *reinterpret_cast<const uint32_t*>(&S.ql[gid][k0 + 2 * tig + 8]);
                     al[3] = *reinterpret_cast<const uint32_t*>(&S.ql[gid + 8][k0 + 2 * tig + 8]);
-                    if constexpr (KV_MODE != 0) {   // modes 1 and 3: the K side is INT8 codes
+                    if constexpr (KV_MODE != 0) { // modes 1 and 3: the K side is INT8 codes
                         b[0] = i8x2_to_h2(*reinterpret_cast<const uint16_t*>(&S.k[cb + gid][k0 + 2 * tig]));
                         b[1] = i8x2_to_h2(*reinterpret_cast<const uint16_t*>(&S.k[cb + gid][k0 + 2 * tig + 8]));
                     } else {
@@ -477,10 +420,10 @@ prompt_attn_kernel(const float *__restrict__ q, QsaAttnPools p,
 #endif
                 }
                 const float s0 = S.ks[cb + 2 * tig][g], s1 = S.ks[cb + 2 * tig + 1][g];
-                sc[0] = sycl::fma(tg[0], (float)s0, sc[0]);
-                sc[1] = sycl::fma(tg[1], (float)s1, sc[1]);
-                sc[2] = sycl::fma(tg[2], (float)s0, sc[2]);
-                sc[3] = sycl::fma(tg[3], (float)s1, sc[3]);
+                sc[0] = sycl::fma(tg[0], (float) s0, sc[0]);
+                sc[1] = sycl::fma(tg[1], (float) s1, sc[1]);
+                sc[2] = sycl::fma(tg[2], (float) s0, sc[2]);
+                sc[3] = sycl::fma(tg[3], (float) s1, sc[3]);
             }
             const int c = cb + 2 * tig;
             S.s[gid][c] = c < nh ? sc[0] * qdown : -INFINITY;
@@ -505,7 +448,8 @@ prompt_attn_kernel(const float *__restrict__ q, QsaAttnPools p,
             float x[PER], mx = -INFINITY;
 #pragma unroll
             for (int j = 0; j < PER; ++j) {
-                x[j] = S.s[r][sub * PER + j]; mx = sycl::fmax(mx, x[j]);
+                x[j] = S.s[r][sub * PER + j];
+                mx = sycl::fmax(mx, x[j]);
             }
 #pragma unroll
             /*
@@ -513,18 +457,15 @@ prompt_attn_kernel(const float *__restrict__ q, QsaAttnPools p,
             feature masked sub_group function which may not be supported by all
             compilers or runtimes. You may need to adjust the code.
             */
-            for (int o = 1; o < 8; o <<= 1) mx = sycl::fmax(
-                mx,
-                dpct::experimental::permute_sub_group_by_xor(
-                    0xffffffffu,
-                    sycl::ext::oneapi::this_work_item::get_sub_group(), mx, o));
+            for (int o = 1; o < 8; o <<= 1)
+                mx = sycl::fmax(mx, dpct::experimental::permute_sub_group_by_xor(
+                                        0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(), mx, o));
             const float m_old = S.mrow[r];
             const float m_new = sycl::fmax(m_old, mx);
             float sum = 0.0f;
 #pragma unroll
             for (int j = 0; j < PER; ++j) {
-                const float e =
-                    x[j] == -INFINITY ? 0.0f : sycl::exp2(x[j] - m_new);
+                const float e = x[j] == -INFINITY ? 0.0f : sycl::exp2(x[j] - m_new);
                 S.s[r][sub * PER + j] = e;
                 sum += e;
             }
@@ -534,17 +475,14 @@ prompt_attn_kernel(const float *__restrict__ q, QsaAttnPools p,
             feature masked sub_group function which may not be supported by all
             compilers or runtimes. You may need to adjust the code.
             */
-            for (int o = 1; o < 8; o <<= 1) sum +=
-                dpct::experimental::permute_sub_group_by_xor(
-                    0xffffffffu,
-                    sycl::ext::oneapi::this_work_item::get_sub_group(), sum, o);
-            sycl::group_barrier(
-                sycl::ext::oneapi::this_work_item::get_sub_group());
+            for (int o = 1; o < 8; o <<= 1)
+                sum += dpct::experimental::permute_sub_group_by_xor(
+                    0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(), sum, o);
+            sycl::group_barrier(sycl::ext::oneapi::this_work_item::get_sub_group());
             if (sub == 0) {
-                const float a =
-                    m_old == -INFINITY ? 0.0f : sycl::exp2(m_old - m_new);
+                const float a = m_old == -INFINITY ? 0.0f : sycl::exp2(m_old - m_new);
                 S.alpha[r] = a;
-                S.lsum[r] = sycl::fma(S.lsum[r], (float)a, sum);
+                S.lsum[r] = sycl::fma(S.lsum[r], (float) a, sum);
                 S.mrow[r] = m_new;
             }
         }
@@ -563,95 +501,88 @@ prompt_attn_kernel(const float *__restrict__ q, QsaAttnPools p,
         // ggml's d = max / -8), times 2^14 (|p'| <= 2^14: inside FP16's range, its lo half out of the subnormals); the
         // chunk's sum is then added to the running one in FP32 with the factor taken back out
         {
-            constexpr int GPW = NG / 4, JPG = 8 / GPW;   // scale groups per warp, n-tiles per group
+            constexpr int GPW = NG / 4, JPG = 8 / GPW; // scale groups per warp, n-tiles per group
             float vdown_g[GPW];
             float tmp[8][4];
 #pragma unroll
-            for (int j = 0; j < 8; ++j) tmp[j][0] = tmp[j][1] = tmp[j][2] = tmp[j][3] = 0.0f;
+            for (int j = 0; j < 8; ++j)
+                tmp[j][0] = tmp[j][1] = tmp[j][2] = tmp[j][3] = 0.0f;
 #pragma unroll
             for (int gi = 0; gi < GPW; ++gi) {
-            const int vg = warp * GPW + gi;
-            float vmax = 0.0f;
+                const int vg = warp * GPW + gi;
+                float vmax = 0.0f;
 #pragma unroll
-            for (int c = lane; c < CH; c += 32)
-                vmax = sycl::fmax(vmax, sycl::fabs(S.vs[c][vg]));
+                for (int c = lane; c < CH; c += 32)
+                    vmax = sycl::fmax(vmax, sycl::fabs(S.vs[c][vg]));
 #pragma unroll
-            /*
-            DPCT1108: '__shfl_xor_sync' was migrated with the experimental
-            feature masked sub_group function which may not be supported by all
-            compilers or runtimes. You may need to adjust the code.
-            */
-            for (int o = 16; o > 0; o >>= 1) vmax = sycl::fmax(
-                vmax, dpct::experimental::permute_sub_group_by_xor(
-                          0xffffffffu,
-                          sycl::ext::oneapi::this_work_item::get_sub_group(),
-                          vmax, o));
-            const float vup = vmax > 0.0f ? 16384.0f / vmax : 0.0f;
-            vdown_g[gi] = vmax * (1.0f / 16384.0f);
+                /*
+                DPCT1108: '__shfl_xor_sync' was migrated with the experimental
+                feature masked sub_group function which may not be supported by all
+                compilers or runtimes. You may need to adjust the code.
+                */
+                for (int o = 16; o > 0; o >>= 1)
+                    vmax =
+                        sycl::fmax(vmax, dpct::experimental::permute_sub_group_by_xor(
+                                             0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(), vmax, o));
+                const float vup = vmax > 0.0f ? 16384.0f / vmax : 0.0f;
+                vdown_g[gi] = vmax * (1.0f / 16384.0f);
 #pragma unroll
-            for (int ks = 0; ks < CH / 16; ++ks) {
-                const int cA = ks * 16 + 2 * tig, cB = cA + 8;
-                const float w0 = S.vs[cA][vg] * vup, w1 = S.vs[cA + 1][vg] * vup, w2 = S.vs[cB][vg] * vup,
-                            w3 = S.vs[cB + 1][vg] * vup;
-                const float p00 = S.s[gid][cA] * w0, p01 = S.s[gid][cA + 1] * w1;
-                const float p10 = S.s[gid + 8][cA] * w0, p11 = S.s[gid + 8][cA + 1] * w1;
-                const float p02 = S.s[gid][cB] * w2, p03 = S.s[gid][cB + 1] * w3;
-                const float p12 = S.s[gid + 8][cB] * w2, p13 = S.s[gid + 8][cB + 1] * w3;
-                uint32_t ah[4], al[4];
-                ah[0] = pack_h2(p00, p01);
-                ah[1] = pack_h2(p10, p11);
-                ah[2] = pack_h2(p02, p03);
-                ah[3] = pack_h2(p12, p13);
-                {
-                    const sycl::half2 *h =
-                        reinterpret_cast<const sycl::half2 *>(ah);
-                    sycl::float2 f;
-                    f = h[0].template convert<float,
-                                              sycl::rounding_mode::automatic>();
+                for (int ks = 0; ks < CH / 16; ++ks) {
+                    const int cA = ks * 16 + 2 * tig, cB = cA + 8;
+                    const float w0 = S.vs[cA][vg] * vup, w1 = S.vs[cA + 1][vg] * vup, w2 = S.vs[cB][vg] * vup,
+                                w3 = S.vs[cB + 1][vg] * vup;
+                    const float p00 = S.s[gid][cA] * w0, p01 = S.s[gid][cA + 1] * w1;
+                    const float p10 = S.s[gid + 8][cA] * w0, p11 = S.s[gid + 8][cA + 1] * w1;
+                    const float p02 = S.s[gid][cB] * w2, p03 = S.s[gid][cB + 1] * w3;
+                    const float p12 = S.s[gid + 8][cB] * w2, p13 = S.s[gid + 8][cB + 1] * w3;
+                    uint32_t ah[4], al[4];
+                    ah[0] = pack_h2(p00, p01);
+                    ah[1] = pack_h2(p10, p11);
+                    ah[2] = pack_h2(p02, p03);
+                    ah[3] = pack_h2(p12, p13);
+                    {
+                        const sycl::half2* h = reinterpret_cast<const sycl::half2*>(ah);
+                        sycl::float2 f;
+                        f = h[0].template convert<float, sycl::rounding_mode::automatic>();
                         al[0] = pack_h2(p00 - f.x(), p01 - f.y());
-                    f = h[1].template convert<float,
-                                              sycl::rounding_mode::automatic>();
+                        f = h[1].template convert<float, sycl::rounding_mode::automatic>();
                         al[1] = pack_h2(p10 - f.x(), p11 - f.y());
-                    f = h[2].template convert<float,
-                                              sycl::rounding_mode::automatic>();
+                        f = h[2].template convert<float, sycl::rounding_mode::automatic>();
                         al[2] = pack_h2(p02 - f.x(), p03 - f.y());
-                    f = h[3].template convert<float,
-                                              sycl::rounding_mode::automatic>();
+                        f = h[3].template convert<float, sycl::rounding_mode::automatic>();
                         al[3] = pack_h2(p12 - f.x(), p13 - f.y());
-                }
-#pragma unroll
-                for (int jj = 0; jj < JPG; ++jj) {
-                    const int j = gi * JPG + jj;
-                    const int d = warp * 64 + j * 8 + gid;
-                    uint32_t b[2];
-                    if constexpr (KV_MODE == 1 || KV_MODE == 4) {
-                        const uint32_t x0 = (uint8_t) S.v[cA][d] | ((uint32_t) (uint8_t) S.v[cA + 1][d] << 8);
-                        const uint32_t x1 = (uint8_t) S.v[cB][d] | ((uint32_t) (uint8_t) S.v[cB + 1][d] << 8);
-                        b[0] = i8x2_to_h2(x0);
-                        b[1] = i8x2_to_h2(x1);
-                    } else {
-                        const sycl::half2 h0 =
-                            sycl::half2(S.v[cA][d], S.v[cA + 1][d]);
-                        const sycl::half2 h1 =
-                            sycl::half2(S.v[cB][d], S.v[cB + 1][d]);
-                        b[0] = *reinterpret_cast<const uint32_t*>(&h0);
-                        b[1] = *reinterpret_cast<const uint32_t*>(&h1);
                     }
-                    mma16816(tmp[j], ah, b);
+#pragma unroll
+                    for (int jj = 0; jj < JPG; ++jj) {
+                        const int j = gi * JPG + jj;
+                        const int d = warp * 64 + j * 8 + gid;
+                        uint32_t b[2];
+                        if constexpr (KV_MODE == 1 || KV_MODE == 4) {
+                            const uint32_t x0 = (uint8_t) S.v[cA][d] | ((uint32_t) (uint8_t) S.v[cA + 1][d] << 8);
+                            const uint32_t x1 = (uint8_t) S.v[cB][d] | ((uint32_t) (uint8_t) S.v[cB + 1][d] << 8);
+                            b[0] = i8x2_to_h2(x0);
+                            b[1] = i8x2_to_h2(x1);
+                        } else {
+                            const sycl::half2 h0 = sycl::half2(S.v[cA][d], S.v[cA + 1][d]);
+                            const sycl::half2 h1 = sycl::half2(S.v[cB][d], S.v[cB + 1][d]);
+                            b[0] = *reinterpret_cast<const uint32_t*>(&h0);
+                            b[1] = *reinterpret_cast<const uint32_t*>(&h1);
+                        }
+                        mma16816(tmp[j], ah, b);
 #ifndef D1_NO_PLO
-                    mma16816(tmp[j], al, b);
+                        mma16816(tmp[j], al, b);
 #endif
+                    }
                 }
-            }
             }
             const float a0 = S.alpha[gid], a1 = S.alpha[gid + 8];
 #pragma unroll
             for (int j = 0; j < 8; ++j) {
                 const float vdown = vdown_g[j / JPG];
-                acc[j][0] = sycl::fma(acc[j][0], (float)a0, tmp[j][0] * vdown);
-                acc[j][1] = sycl::fma(acc[j][1], (float)a0, tmp[j][1] * vdown);
-                acc[j][2] = sycl::fma(acc[j][2], (float)a1, tmp[j][2] * vdown);
-                acc[j][3] = sycl::fma(acc[j][3], (float)a1, tmp[j][3] * vdown);
+                acc[j][0] = sycl::fma(acc[j][0], (float) a0, tmp[j][0] * vdown);
+                acc[j][1] = sycl::fma(acc[j][1], (float) a0, tmp[j][1] * vdown);
+                acc[j][2] = sycl::fma(acc[j][2], (float) a1, tmp[j][2] * vdown);
+                acc[j][3] = sycl::fma(acc[j][3], (float) a1, tmp[j][3] * vdown);
             }
         }
     }
@@ -666,11 +597,9 @@ prompt_attn_kernel(const float *__restrict__ q, QsaAttnPools p,
 #pragma unroll
     for (int j = 0; j < 8; ++j) {
         const int d = warp * 64 + j * 8 + 2 * tig;
-        *reinterpret_cast<sycl::float2 *>(attn + (size_t)gid * HD + d) =
-            sycl::float2(acc[j][0] * i0, acc[j][1] * i0);
+        *reinterpret_cast<sycl::float2*>(attn + (size_t) gid * HD + d) = sycl::float2(acc[j][0] * i0, acc[j][1] * i0);
         if (gid + 8 < G)
-            *reinterpret_cast<sycl::float2 *>(attn + (size_t)(gid + 8) * HD +
-                                              d) =
+            *reinterpret_cast<sycl::float2*>(attn + (size_t) (gid + 8) * HD + d) =
                 sycl::float2(acc[j][2] * i1, acc[j][3] * i1);
     }
 }
@@ -682,9 +611,9 @@ prompt_attn_kernel(const float *__restrict__ q, QsaAttnPools p,
 constexpr int CH2 = 32;
 
 struct Smem2 {
-    int8_t kv[2][4][2][CH2][64];   // stage, warp, K/V, cell, 64 dims in 16-byte pieces XOR-swizzled by the cell
-    float sc[2][4][2][CH2];        // stage, warp, K/V scale of the cell for the warp's group
-    float part[4][16][CH2 + 1];    // q.k per dim group
+    int8_t kv[2][4][2][CH2][64]; // stage, warp, K/V, cell, 64 dims in 16-byte pieces XOR-swizzled by the cell
+    float sc[2][4][2][CH2];      // stage, warp, K/V scale of the cell for the warp's group
+    float part[4][16][CH2 + 1];  // q.k per dim group
     float p[16][CH2 + 1];
     float qmax[4];
     float alpha[16];
@@ -692,11 +621,10 @@ struct Smem2 {
     float mrow[16];
 };
 
-__dpct_inline__ int
-swz(int cell, int byte) { // byte offset of (cell, byte) in a stage slice
+__dpct_inline__ int swz(int cell, int byte) { // byte offset of (cell, byte) in a stage slice
     return cell * 64 + ((((byte >> 4) ^ (cell >> 1)) & 3) << 4) + (byte & 15);
 }
-__dpct_inline__ void cp_async16(void *smem, const void *gmem, bool valid) {
+__dpct_inline__ void cp_async16(void* smem, const void* gmem, bool valid) {
 #if !GUILD_PA_SM80
     /* unreachable on SYCL: the launcher refuses this device */
 #else
@@ -704,8 +632,7 @@ __dpct_inline__ void cp_async16(void *smem, const void *gmem, bool valid) {
     /*
     DPCT1053: Migration of device assembly code is not supported.
     */
-    asm volatile("cp.async.cg.shared.global [%0], [%1], 16, %2;\n" ::"r"(sa),
-                 "l"(gmem), "r"(valid ? 16 : 0));
+    asm volatile("cp.async.cg.shared.global [%0], [%1], 16, %2;\n" ::"r"(sa), "l"(gmem), "r"(valid ? 16 : 0));
 #endif
 }
 __dpct_inline__ void cp_async_commit() {
@@ -733,14 +660,11 @@ prompt_attn_i8_kernel exceeds 128 bytes and may cause high register pressure.
 Consult with your hardware vendor to find the total register size available and
 adjust the code, or use smaller sub-group size to avoid high register pressure.
 */
-__dpct_inline__ void
-prompt_attn_i8_kernel(const float *__restrict__ q, QsaAttnPools p,
-                      const int32_t *__restrict__ ids,
-                      const int32_t *__restrict__ steps, int n_kv_heads,
-                      int page_size, float scale_log2, float *__restrict__ attn,
-                      int cap, uint8_t *dpct_local) {
+__dpct_inline__ void prompt_attn_i8_kernel(const float* __restrict__ q, QsaAttnPools p, const int32_t* __restrict__ ids,
+                                           const int32_t* __restrict__ steps, int n_kv_heads, int page_size,
+                                           float scale_log2, float* __restrict__ attn, int cap, uint8_t* dpct_local) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
-    auto smem_raw = (unsigned char *)dpct_local;
+    auto smem_raw = (unsigned char*) dpct_local;
     Smem2& S = *reinterpret_cast<Smem2*>(smem_raw);
     const int qi = item_ct1.get_group(2), kvh = item_ct1.get_group(1);
     const int n_head = n_kv_heads * G;
@@ -752,7 +676,7 @@ prompt_attn_i8_kernel(const float *__restrict__ q, QsaAttnPools p,
     two expressions do not provide the exact same functionality. Check the
     generated code for potential precision and/or performance issues.
     */
-    const int n = *(steps + (size_t)qi * kStepCount + kStepWidth);
+    const int n = *(steps + (size_t) qi * kStepCount + kStepWidth);
     const int t = item_ct1.get_local_id(2), lane = t & 31, warp = t >> 5;
     const int gid = lane >> 2, tig = lane & 3;
     const int dim0 = warp * 64;
@@ -768,31 +692,33 @@ prompt_attn_i8_kernel(const float *__restrict__ q, QsaAttnPools p,
     masked sub_group function which may not be supported by all compilers or
     runtimes. You may need to adjust the code.
     */
-    for (int o = 16; o > 0; o >>= 1) qm = sycl::fmax(
-        qm, dpct::experimental::permute_sub_group_by_xor(
-                0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(),
-                qm, o));
-    if (lane == 0) S.qmax[warp] = qm;
-    if (t < 16) { S.mrow[t] = -INFINITY; S.lsum[t] = 0.0f; }
+    for (int o = 16; o > 0; o >>= 1)
+        qm = sycl::fmax(qm, dpct::experimental::permute_sub_group_by_xor(
+                                0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(), qm, o));
+    if (lane == 0)
+        S.qmax[warp] = qm;
+    if (t < 16) {
+        S.mrow[t] = -INFINITY;
+        S.lsum[t] = 0.0f;
+    }
     /*
     DPCT1065: Consider replacing sycl::nd_item::barrier() with
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
     item_ct1.barrier();
-    qm = sycl::fmax(sycl::fmax(S.qmax[0], S.qmax[1]),
-                    sycl::fmax(S.qmax[2], S.qmax[3]));
+    qm = sycl::fmax(sycl::fmax(S.qmax[0], S.qmax[1]), sycl::fmax(S.qmax[2], S.qmax[3]));
     int qe = 0;
     /*
     DPCT1017: The sycl::frexp call is used instead of the frexpf call. These
     two calls do not provide exactly the same functionality. Check the potential
     precision and/or performance issues for the generated code.
     */
-    if (qm > 0.0f) sycl::frexp(
-        qm, sycl::address_space_cast<sycl::access::address_space::generic_space,
-                                     sycl::access::decorated::yes>(&qe));
-    const float qup = sycl::ldexp(1.0f, 14 - qe),
-                qdown = sycl::ldexp(scale_log2, qe - 14);
+    if (qm > 0.0f)
+        sycl::frexp(
+            qm,
+            sycl::address_space_cast<sycl::access::address_space::generic_space, sycl::access::decorated::yes>(&qe));
+    const float qup = sycl::ldexp(1.0f, 14 - qe), qdown = sycl::ldexp(scale_log2, qe - 14);
     uint32_t qh[4][4], ql[4][4];
 #pragma unroll
     for (int kk = 0; kk < 4; ++kk) {
@@ -800,18 +726,14 @@ prompt_attn_i8_kernel(const float *__restrict__ q, QsaAttnPools p,
         for (int r = 0; r < 4; ++r) {
             const int row = gid + (r & 1) * 8, col = dim0 + kk * 16 + 2 * tig + (r >> 1) * 8;
             sycl::float2 x = sycl::float2(0.f, 0.f);
-            if (row < G) x = *reinterpret_cast<const sycl::float2 *>(
-                q + (size_t)row * HD + col);
+            if (row < G)
+                x = *reinterpret_cast<const sycl::float2*>(q + (size_t) row * HD + col);
             x.x() *= qup;
             x.y() *= qup;
-            const sycl::half2 hi =
-                sycl::float2(x.x(), x.y())
-                    .convert<sycl::half, sycl::rounding_mode::rte>();
-            const sycl::float2 hf =
-                hi.template convert<float, sycl::rounding_mode::automatic>();
+            const sycl::half2 hi = sycl::float2(x.x(), x.y()).convert<sycl::half, sycl::rounding_mode::rte>();
+            const sycl::float2 hf = hi.template convert<float, sycl::rounding_mode::automatic>();
             const sycl::half2 lo =
-                sycl::float2(x.x() - hf.x(), x.y() - hf.y())
-                    .convert<sycl::half, sycl::rounding_mode::rte>();
+                sycl::float2(x.x() - hf.x(), x.y() - hf.y()).convert<sycl::half, sycl::rounding_mode::rte>();
             qh[kk][r] = *reinterpret_cast<const uint32_t*>(&hi);
             ql[kk][r] = *reinterpret_cast<const uint32_t*>(&lo);
         }
@@ -824,17 +746,16 @@ prompt_attn_i8_kernel(const float *__restrict__ q, QsaAttnPools p,
     two expressions do not provide the exact same functionality. Check the
     generated code for potential precision and/or performance issues.
     */
-    auto cell_of = [&](int c) -> int {
-                                       return c < n ? *(ids + c) : -1;
-    };
+    auto cell_of = [&](int c) -> int { return c < n ? *(ids + c) : -1; };
     auto row_of = [&](int cell) -> long long {
-        if (cell < 0) return -1;
+        if (cell < 0)
+            return -1;
         /*
         DPCT1098: The '*' expression is used instead of the __ldg call.
         These two expressions do not provide the exact same functionality. Check
         the generated code for potential precision and/or performance issues.
         */
-        const long long page = (long long)*(p.page_table + cell / page_size);
+        const long long page = (long long) *(p.page_table + cell / page_size);
         return (page * n_kv_heads + kvh) * page_size + (cell % page_size);
     };
     auto issue = [&](long long r, int st, float& ksr, float& vsr) {
@@ -851,8 +772,7 @@ prompt_attn_i8_kernel(const float *__restrict__ q, QsaAttnPools p,
             function/algorithm is initialized.
             */
             const long long rr = dpct::experimental::select_from_sub_group(
-                0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(),
-                r, cell);
+                0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(), r, cell);
             const bool ok = rr >= 0;
             const size_t off = ok ? (size_t) rr * HD + dim0 + pc * 16 : 0;
             cp_async16(&S.kv[st][warp][0][0][0] + swz(cell, pc * 16), p.k_q + off, ok);
@@ -864,8 +784,7 @@ prompt_attn_i8_kernel(const float *__restrict__ q, QsaAttnPools p,
         the generated code for potential precision and/or performance issues.
         */
         ksr = r >= 0 ? sycl::vec<sycl::half, 1>(
-                           sycl::bit_cast<sycl::half, unsigned short>(
-                               *(p.k_scale + r * (HD / KV_Q8_GROUP) + warp)))
+                           sycl::bit_cast<sycl::half, unsigned short>(*(p.k_scale + r * (HD / KV_Q8_GROUP) + warp)))
                            .convert<float, sycl::rounding_mode::automatic>()[0]
                      : 0.0f;
         /*
@@ -874,8 +793,7 @@ prompt_attn_i8_kernel(const float *__restrict__ q, QsaAttnPools p,
         the generated code for potential precision and/or performance issues.
         */
         vsr = r >= 0 ? sycl::vec<sycl::half, 1>(
-                           sycl::bit_cast<sycl::half, unsigned short>(
-                               *(p.v_scale + r * (HD / KV_Q8_GROUP) + warp)))
+                           sycl::bit_cast<sycl::half, unsigned short>(*(p.v_scale + r * (HD / KV_Q8_GROUP) + warp)))
                            .convert<float, sycl::rounding_mode::automatic>()[0]
                      : 0.0f;
     };
@@ -889,12 +807,14 @@ prompt_attn_i8_kernel(const float *__restrict__ q, QsaAttnPools p,
 
     float acc[8][4];
 #pragma unroll
-    for (int j = 0; j < 8; ++j) acc[j][0] = acc[j][1] = acc[j][2] = acc[j][3] = 0.0f;
+    for (int j = 0; j < 8; ++j)
+        acc[j][0] = acc[j][1] = acc[j][2] = acc[j][3] = 0.0f;
 
     for (int ci = 0; ci < n_chunks; ++ci) {
         const int st = ci & 1, c0 = ci * CH2;
         const bool more = ci + 1 < n_chunks;
-        if (more) issue(r_next, st ^ 1, ksn, vsn);
+        if (more)
+            issue(r_next, st ^ 1, ksn, vsn);
         cp_async_commit();
         r_next = row_of(cell_next2);
         cell_next2 = cell_of((ci + 3) * CH2 + lane);
@@ -949,18 +869,15 @@ prompt_attn_i8_kernel(const float *__restrict__ q, QsaAttnPools p,
             feature masked sub_group function which may not be supported by all
             compilers or runtimes. You may need to adjust the code.
             */
-            for (int o = 1; o < 8; o <<= 1) mx = sycl::fmax(
-                mx,
-                dpct::experimental::permute_sub_group_by_xor(
-                    0xffffffffu,
-                    sycl::ext::oneapi::this_work_item::get_sub_group(), mx, o));
+            for (int o = 1; o < 8; o <<= 1)
+                mx = sycl::fmax(mx, dpct::experimental::permute_sub_group_by_xor(
+                                        0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(), mx, o));
             const float m_old = S.mrow[r];
             const float m_new = sycl::fmax(m_old, mx);
             float sum = 0.0f;
 #pragma unroll
             for (int j = 0; j < 4; ++j) {
-                const float e =
-                    x[j] == -INFINITY ? 0.0f : sycl::exp2(x[j] - m_new);
+                const float e = x[j] == -INFINITY ? 0.0f : sycl::exp2(x[j] - m_new);
                 S.p[r][sub * 4 + j] = e;
                 sum += e;
             }
@@ -970,17 +887,14 @@ prompt_attn_i8_kernel(const float *__restrict__ q, QsaAttnPools p,
             feature masked sub_group function which may not be supported by all
             compilers or runtimes. You may need to adjust the code.
             */
-            for (int o = 1; o < 8; o <<= 1) sum +=
-                dpct::experimental::permute_sub_group_by_xor(
-                    0xffffffffu,
-                    sycl::ext::oneapi::this_work_item::get_sub_group(), sum, o);
-            sycl::group_barrier(
-                sycl::ext::oneapi::this_work_item::get_sub_group());
+            for (int o = 1; o < 8; o <<= 1)
+                sum += dpct::experimental::permute_sub_group_by_xor(
+                    0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(), sum, o);
+            sycl::group_barrier(sycl::ext::oneapi::this_work_item::get_sub_group());
             if (sub == 0) {
-                const float a =
-                    m_old == -INFINITY ? 0.0f : sycl::exp2(m_old - m_new);
+                const float a = m_old == -INFINITY ? 0.0f : sycl::exp2(m_old - m_new);
                 S.alpha[r] = a;
-                S.lsum[r] = sycl::fma(S.lsum[r], (float)a, sum);
+                S.lsum[r] = sycl::fma(S.lsum[r], (float) a, sum);
                 S.mrow[r] = m_new;
             }
         }
@@ -1003,15 +917,14 @@ prompt_attn_i8_kernel(const float *__restrict__ q, QsaAttnPools p,
             feature masked sub_group function which may not be supported by all
             compilers or runtimes. You may need to adjust the code.
             */
-            for (int o = 16; o > 0; o >>= 1) vmax = sycl::fmax(
-                vmax, dpct::experimental::permute_sub_group_by_xor(
-                          0xffffffffu,
-                          sycl::ext::oneapi::this_work_item::get_sub_group(),
-                          vmax, o));
+            for (int o = 16; o > 0; o >>= 1)
+                vmax = sycl::fmax(vmax, dpct::experimental::permute_sub_group_by_xor(
+                                            0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(), vmax, o));
             const float vup = vmax > 0.0f ? 16384.0f / vmax : 0.0f, vdown = vmax * (1.0f / 16384.0f);
             float tmp[8][4];
 #pragma unroll
-            for (int j = 0; j < 8; ++j) tmp[j][0] = tmp[j][1] = tmp[j][2] = tmp[j][3] = 0.0f;
+            for (int j = 0; j < 8; ++j)
+                tmp[j][0] = tmp[j][1] = tmp[j][2] = tmp[j][3] = 0.0f;
 #pragma unroll
             for (int ks = 0; ks < CH2 / 16; ++ks) {
                 const int cA = ks * 16 + 2 * tig, cB = cA + 8;
@@ -1027,21 +940,16 @@ prompt_attn_i8_kernel(const float *__restrict__ q, QsaAttnPools p,
                 ah[2] = pack_h2(p02, p03);
                 ah[3] = pack_h2(p12, p13);
                 {
-                    const sycl::half2 *h =
-                        reinterpret_cast<const sycl::half2 *>(ah);
+                    const sycl::half2* h = reinterpret_cast<const sycl::half2*>(ah);
                     sycl::float2 f;
-                    f = h[0].template convert<float,
-                                              sycl::rounding_mode::automatic>();
-                        al[0] = pack_h2(p00 - f.x(), p01 - f.y());
-                    f = h[1].template convert<float,
-                                              sycl::rounding_mode::automatic>();
-                        al[1] = pack_h2(p10 - f.x(), p11 - f.y());
-                    f = h[2].template convert<float,
-                                              sycl::rounding_mode::automatic>();
-                        al[2] = pack_h2(p02 - f.x(), p03 - f.y());
-                    f = h[3].template convert<float,
-                                              sycl::rounding_mode::automatic>();
-                        al[3] = pack_h2(p12 - f.x(), p13 - f.y());
+                    f = h[0].template convert<float, sycl::rounding_mode::automatic>();
+                    al[0] = pack_h2(p00 - f.x(), p01 - f.y());
+                    f = h[1].template convert<float, sycl::rounding_mode::automatic>();
+                    al[1] = pack_h2(p10 - f.x(), p11 - f.y());
+                    f = h[2].template convert<float, sycl::rounding_mode::automatic>();
+                    al[2] = pack_h2(p02 - f.x(), p03 - f.y());
+                    f = h[3].template convert<float, sycl::rounding_mode::automatic>();
+                    al[3] = pack_h2(p12 - f.x(), p13 - f.y());
                 }
 #pragma unroll
                 for (int j = 0; j < 8; ++j) {
@@ -1058,10 +966,10 @@ prompt_attn_i8_kernel(const float *__restrict__ q, QsaAttnPools p,
             const float a0 = S.alpha[gid], a1 = S.alpha[gid + 8];
 #pragma unroll
             for (int j = 0; j < 8; ++j) {
-                acc[j][0] = sycl::fma(acc[j][0], (float)a0, tmp[j][0] * vdown);
-                acc[j][1] = sycl::fma(acc[j][1], (float)a0, tmp[j][1] * vdown);
-                acc[j][2] = sycl::fma(acc[j][2], (float)a1, tmp[j][2] * vdown);
-                acc[j][3] = sycl::fma(acc[j][3], (float)a1, tmp[j][3] * vdown);
+                acc[j][0] = sycl::fma(acc[j][0], (float) a0, tmp[j][0] * vdown);
+                acc[j][1] = sycl::fma(acc[j][1], (float) a0, tmp[j][1] * vdown);
+                acc[j][2] = sycl::fma(acc[j][2], (float) a1, tmp[j][2] * vdown);
+                acc[j][3] = sycl::fma(acc[j][3], (float) a1, tmp[j][3] * vdown);
             }
         }
         if (more) {
@@ -1081,19 +989,16 @@ prompt_attn_i8_kernel(const float *__restrict__ q, QsaAttnPools p,
 #pragma unroll
     for (int j = 0; j < 8; ++j) {
         const int d = dim0 + j * 8 + 2 * tig;
-        *reinterpret_cast<sycl::float2 *>(attn + (size_t)gid * HD + d) =
-            sycl::float2(acc[j][0] * i0, acc[j][1] * i0);
+        *reinterpret_cast<sycl::float2*>(attn + (size_t) gid * HD + d) = sycl::float2(acc[j][0] * i0, acc[j][1] * i0);
         if (gid + 8 < G)
-            *reinterpret_cast<sycl::float2 *>(attn + (size_t)(gid + 8) * HD +
-                                              d) =
+            *reinterpret_cast<sycl::float2*>(attn + (size_t) (gid + 8) * HD + d) =
                 sycl::float2(acc[j][2] * i1, acc[j][3] * i1);
     }
 }
 
-bool launch_i8(const float *q, const QsaAttnPools &pools, const int32_t *ids,
-               const int32_t *steps, int64_t cap, const QsaShapes &s,
-               float *attn, int64_t n_q, dpct::queue_ptr st) try {
-    static bool attr[64] = {};   // the shared-memory opt-in is per device (a layer split runs this on several)
+bool launch_i8(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps, int64_t cap,
+               const QsaShapes& s, float* attn, int64_t n_q, dpct::queue_ptr st) try {
+    static bool attr[64] = {}; // the shared-memory opt-in is per device (a layer split runs this on several)
     int dev = 0;
     dev = dpct::get_current_device_id();
     /*
@@ -1101,8 +1006,9 @@ bool launch_i8(const float *q, const QsaAttnPools &pools, const int32_t *ids,
     from the original code. Check that the allocated memory size in the migrated
     code is correct.
     */
-    const int bytes = (int)sizeof(Smem2);
-    if (dev < 0 || dev >= 64) return false;
+    const int bytes = (int) sizeof(Smem2);
+    if (dev < 0 || dev >= 64)
+        return false;
     if (!attr[dev]) {
         /*
         DPCT1027: The call to cudaFuncSetAttribute was replaced with 0
@@ -1121,37 +1027,27 @@ bool launch_i8(const float *q, const QsaAttnPools &pools, const int32_t *ids,
     for (int64_t q0 = 0; q0 < n_q; q0 += 65535) {
         const int64_t nb = n_q - q0 < 65535 ? n_q - q0 : 65535;
         {
-            auto exp_props = sycl::ext::oneapi::experimental::properties{
-                sycl::ext::oneapi::experimental::use_root_sync};
-            dpct::has_capability_or_fail(st->get_device(),
-                                         {sycl::aspect::fp16});
+            auto exp_props =
+                sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::use_root_sync};
+            dpct::has_capability_or_fail(st->get_device(), {sycl::aspect::fp16});
 
-            st->submit([&](sycl::handler &cgh) {
-                sycl::local_accessor<uint8_t, 1> dpct_local_acc_ct1(
-                    sycl::range(bytes), cgh);
+            st->submit([&](sycl::handler& cgh) {
+                sycl::local_accessor<uint8_t, 1> dpct_local_acc_ct1(sycl::range(bytes), cgh);
 
                 auto q_q0_s_n_head_HD_ct0 = q + q0 * s.n_head * HD;
                 auto ids_q0_cap_ct2 = ids + q0 * cap;
                 auto steps_q0_kStepCount_ct3 = steps + q0 * kStepCount;
                 auto attn_q0_s_n_head_HD_ct7 = attn + q0 * s.n_head * HD;
 
-                cgh.parallel_for<
-                    dpct_kernel_name<class prompt_attn_i8_kernel_c3d463>>(
-                    sycl::nd_range<3>(
-                        sycl::range(1, (unsigned)s.n_head_kv, (unsigned)nb) *
-                            sycl::range(1, 1, THREADS),
-                        sycl::range(1, 1, THREADS)),
-                    exp_props,
-                    [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(
-                        32)]] {
-                        prompt_attn_i8_kernel(
-                            q_q0_s_n_head_HD_ct0, pools, ids_q0_cap_ct2,
-                            steps_q0_kStepCount_ct3, (int)s.n_head_kv,
-                            (int)s.page_size, scale_log2,
-                            attn_q0_s_n_head_HD_ct7, (int)cap,
-                            dpct_local_acc_ct1
-                                .get_multi_ptr<sycl::access::decorated::no>()
-                                .get());
+                cgh.parallel_for<dpct_kernel_name<class prompt_attn_i8_kernel_c3d463>>(
+                    sycl::nd_range<3>(sycl::range(1, (unsigned) s.n_head_kv, (unsigned) nb) *
+                                          sycl::range(1, 1, THREADS),
+                                      sycl::range(1, 1, THREADS)),
+                    exp_props, [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(32)]] {
+                        prompt_attn_i8_kernel(q_q0_s_n_head_HD_ct0, pools, ids_q0_cap_ct2, steps_q0_kStepCount_ct3,
+                                              (int) s.n_head_kv, (int) s.page_size, scale_log2, attn_q0_s_n_head_HD_ct7,
+                                              (int) cap,
+                                              dpct_local_acc_ct1.get_multi_ptr<sycl::access::decorated::no>().get());
                     });
             });
         }
@@ -1164,18 +1060,15 @@ bool launch_i8(const float *q, const QsaAttnPools &pools, const int32_t *ids,
     const dpct::err0 e = 0;
 
     return true;
-}
-catch (sycl::exception const &exc) {
-  std::cerr << exc.what() << "Exception caught at file:" << __FILE__
-            << ", line:" << __LINE__ << std::endl;
-  std::exit(1);
+} catch (sycl::exception const& exc) {
+    std::cerr << exc.what() << "Exception caught at file:" << __FILE__ << ", line:" << __LINE__ << std::endl;
+    std::exit(1);
 }
 
 template <int KV_MODE>
-bool launch(const float *q, const QsaAttnPools &pools, const int32_t *ids,
-            const int32_t *steps, int64_t cap, const QsaShapes &s, float *attn,
-            int64_t n_q, dpct::queue_ptr st) try {
-    static bool attr[64] = {};   // per device, as above
+bool launch(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps, int64_t cap,
+            const QsaShapes& s, float* attn, int64_t n_q, dpct::queue_ptr st) try {
+    static bool attr[64] = {}; // per device, as above
     int dev = 0;
     dev = dpct::get_current_device_id();
     /*
@@ -1183,8 +1076,9 @@ bool launch(const float *q, const QsaAttnPools &pools, const int32_t *ids,
     from the original code. Check that the allocated memory size in the migrated
     code is correct.
     */
-    const int bytes = (int)sizeof(Smem<KV_MODE>);
-    if (dev < 0 || dev >= 64) return false;
+    const int bytes = (int) sizeof(Smem<KV_MODE>);
+    if (dev < 0 || dev >= 64)
+        return false;
     if (!attr[dev]) {
         /*
         DPCT1027: The call to cudaFuncSetAttribute was replaced with 0
@@ -1203,38 +1097,27 @@ bool launch(const float *q, const QsaAttnPools &pools, const int32_t *ids,
     for (int64_t q0 = 0; q0 < n_q; q0 += 65535) {
         const int64_t nb = n_q - q0 < 65535 ? n_q - q0 : 65535;
         {
-            auto exp_props = sycl::ext::oneapi::experimental::properties{
-                sycl::ext::oneapi::experimental::use_root_sync};
-            dpct::has_capability_or_fail(st->get_device(),
-                                         {sycl::aspect::fp16});
+            auto exp_props =
+                sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::use_root_sync};
+            dpct::has_capability_or_fail(st->get_device(), {sycl::aspect::fp16});
 
-            st->submit([&](sycl::handler &cgh) {
-                sycl::local_accessor<uint8_t, 1> dpct_local_acc_ct1(
-                    sycl::range(bytes), cgh);
+            st->submit([&](sycl::handler& cgh) {
+                sycl::local_accessor<uint8_t, 1> dpct_local_acc_ct1(sycl::range(bytes), cgh);
 
                 auto q_q0_s_n_head_HD_ct0 = q + q0 * s.n_head * HD;
                 auto ids_q0_cap_ct2 = ids + q0 * cap;
                 auto steps_q0_kStepCount_ct3 = steps + q0 * kStepCount;
                 auto attn_q0_s_n_head_HD_ct7 = attn + q0 * s.n_head * HD;
 
-                cgh.parallel_for<
-                    dpct_kernel_name<class prompt_attn_kernel_e09b15,
-                                     dpct_kernel_scalar<KV_MODE>>>(
-                    sycl::nd_range<3>(
-                        sycl::range(1, (unsigned)s.n_head_kv, (unsigned)nb) *
-                            sycl::range(1, 1, THREADS),
-                        sycl::range(1, 1, THREADS)),
-                    exp_props,
-                    [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(
-                        32)]] {
+                cgh.parallel_for<dpct_kernel_name<class prompt_attn_kernel_e09b15, dpct_kernel_scalar<KV_MODE>>>(
+                    sycl::nd_range<3>(sycl::range(1, (unsigned) s.n_head_kv, (unsigned) nb) *
+                                          sycl::range(1, 1, THREADS),
+                                      sycl::range(1, 1, THREADS)),
+                    exp_props, [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(32)]] {
                         prompt_attn_kernel<KV_MODE>(
-                            q_q0_s_n_head_HD_ct0, pools, ids_q0_cap_ct2,
-                            steps_q0_kStepCount_ct3, (int)s.n_head_kv,
-                            (int)s.page_size, scale_log2,
-                            attn_q0_s_n_head_HD_ct7, (int)cap,
-                            dpct_local_acc_ct1
-                                .get_multi_ptr<sycl::access::decorated::no>()
-                                .get());
+                            q_q0_s_n_head_HD_ct0, pools, ids_q0_cap_ct2, steps_q0_kStepCount_ct3, (int) s.n_head_kv,
+                            (int) s.page_size, scale_log2, attn_q0_s_n_head_HD_ct7, (int) cap,
+                            dpct_local_acc_ct1.get_multi_ptr<sycl::access::decorated::no>().get());
                     });
             });
         }
@@ -1247,11 +1130,9 @@ bool launch(const float *q, const QsaAttnPools &pools, const int32_t *ids,
     const dpct::err0 e = 0;
 
     return true;
-}
-catch (sycl::exception const &exc) {
-  std::cerr << exc.what() << "Exception caught at file:" << __FILE__
-            << ", line:" << __LINE__ << std::endl;
-  std::exit(1);
+} catch (sycl::exception const& exc) {
+    std::cerr << exc.what() << "Exception caught at file:" << __FILE__ << ", line:" << __LINE__ << std::endl;
+    std::exit(1);
 }
 
 #if defined(__HIPCC__)
@@ -1269,14 +1150,14 @@ catch (sycl::exception const &exc) {
 #endif
 typedef _Float16 wh8 __attribute__((ext_vector_type(8)));
 typedef float wf8 __attribute__((ext_vector_type(8)));
-constexpr int WCH = 32;          // cells per chunk (two 16-cell tiles)
-constexpr int WVS = 80;          // staged V row stride in bytes (64 codes, 16-byte aligned, banks spread)
+constexpr int WCH = 32; // cells per chunk (two 16-cell tiles)
+constexpr int WVS = 80; // staged V row stride in bytes (64 codes, 16-byte aligned, banks spread)
 struct alignas(16) SmemW {
-    float part[4][16][WCH + 1];  // q.k per dim group
+    float part[4][16][WCH + 1]; // q.k per dim group
     float p[16][WCH + 1];
-    float vs[4][WCH];            // V scale per (group, cell)
-    int valid[WCH];              // the cell has a resident pool row
-    uint8_t v[4][WCH][WVS];      // per wave: the chunk's V codes of its group, one row per cell
+    float vs[4][WCH];       // V scale per (group, cell)
+    int valid[WCH];         // the cell has a resident pool row
+    uint8_t v[4][WCH][WVS]; // per wave: the chunk's V codes of its group, one row per cell
     float qmax[4];
     float alpha[16];
     float lsum[16];
@@ -1292,7 +1173,7 @@ __device__ __forceinline__ wf8 wmma_f16(wh8 a, wh8 b, wf8 c) {
 #endif
 }
 
-__device__ __forceinline__ wh8 i8x8_to_h8(uint2 x) {   // exact: |code| <= 128
+__device__ __forceinline__ wh8 i8x8_to_h8(uint2 x) { // exact: |code| <= 128
     wh8 h;
 #pragma unroll
     for (int i = 0; i < 4; ++i) {
@@ -1302,11 +1183,10 @@ __device__ __forceinline__ wh8 i8x8_to_h8(uint2 x) {   // exact: |code| <= 128
     return h;
 }
 
-__global__ void __launch_bounds__(THREADS) prompt_attn_wmma_kernel(const float* __restrict__ q, QsaAttnPools p,
-                                                                   const int32_t* __restrict__ ids,
-                                                                   const int32_t* __restrict__ steps, int n_kv_heads,
-                                                                   int page_size, float scale_log2,
-                                                                   float* __restrict__ attn, int cap) {
+__global__ void __launch_bounds__(THREADS)
+    prompt_attn_wmma_kernel(const float* __restrict__ q, QsaAttnPools p, const int32_t* __restrict__ ids,
+                            const int32_t* __restrict__ steps, int n_kv_heads, int page_size, float scale_log2,
+                            float* __restrict__ attn, int cap) {
 #if GUILD_PA_WMMA
     __shared__ SmemW S;
     const int qi = blockIdx.x, kvh = blockIdx.y;
@@ -1316,19 +1196,26 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_wmma_kernel(const float* 
     ids += (size_t) qi * cap;
     const int n = __ldg(steps + (size_t) qi * kStepCount + kStepWidth);
     const int t = threadIdx.x, lane = t & 31, warp = t >> 5;
-    const int col = lane & 15, half = lane >> 4;   // fragment column / k half
+    const int col = lane & 15, half = lane >> 4; // fragment column / k half
     const int dim0 = warp * 64;
 
     float qm = 0.0f;
-    for (int i = t; i < G * HD; i += THREADS) qm = fmaxf(qm, fabsf(q[i]));
+    for (int i = t; i < G * HD; i += THREADS)
+        qm = fmaxf(qm, fabsf(q[i]));
 #pragma unroll
-    for (int o = 16; o > 0; o >>= 1) qm = fmaxf(qm, __shfl_xor_sync(0xffffffffu, qm, o));
-    if (lane == 0) S.qmax[warp] = qm;
-    if (t < 16) { S.mrow[t] = -INFINITY; S.lsum[t] = 0.0f; }
+    for (int o = 16; o > 0; o >>= 1)
+        qm = fmaxf(qm, __shfl_xor_sync(0xffffffffu, qm, o));
+    if (lane == 0)
+        S.qmax[warp] = qm;
+    if (t < 16) {
+        S.mrow[t] = -INFINITY;
+        S.lsum[t] = 0.0f;
+    }
     __syncthreads();
     qm = fmaxf(fmaxf(S.qmax[0], S.qmax[1]), fmaxf(S.qmax[2], S.qmax[3]));
     int qe = 0;
-    if (qm > 0.0f) frexpf(qm, &qe);
+    if (qm > 0.0f)
+        frexpf(qm, &qe);
     const float qup = ldexpf(1.0f, 14 - qe), qdown = ldexpf(scale_log2, qe - 14);
     // q A fragments of this wave's 64 dims: row = col (heads 12..15 zero), k = dim0 + kk*16 + half*8 + i
     wh8 qh[4], ql[4];
@@ -1338,10 +1225,18 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_wmma_kernel(const float* 
         if (col < G) {
             const float4* src = reinterpret_cast<const float4*>(q + (size_t) col * HD + dim0 + kk * 16 + half * 8);
             const float4 a = src[0], b = src[1];
-            x[0] = a.x; x[1] = a.y; x[2] = a.z; x[3] = a.w; x[4] = b.x; x[5] = b.y; x[6] = b.z; x[7] = b.w;
+            x[0] = a.x;
+            x[1] = a.y;
+            x[2] = a.z;
+            x[3] = a.w;
+            x[4] = b.x;
+            x[5] = b.y;
+            x[6] = b.z;
+            x[7] = b.w;
         } else {
 #pragma unroll
-            for (int i = 0; i < 8; ++i) x[i] = 0.0f;
+            for (int i = 0; i < 8; ++i)
+                x[i] = 0.0f;
         }
 #pragma unroll
         for (int i = 0; i < 8; ++i) {
@@ -1354,7 +1249,8 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_wmma_kernel(const float* 
 
     wf8 acc[4];
 #pragma unroll
-    for (int j = 0; j < 4; ++j) acc[j] = wf8{0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f};
+    for (int j = 0; j < 4; ++j)
+        acc[j] = wf8{0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f};
 
     const int n_chunks = (n + WCH - 1) / WCH;
     for (int ci = 0; ci < n_chunks; ++ci) {
@@ -1365,7 +1261,8 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_wmma_kernel(const float* 
         if (c0 + lane < n) {
             const int cell = __ldg(ids + c0 + lane);
             const long long page = (long long) __ldg(p.page_table + cell / page_size);
-            if (page >= 0) myrow = (page * n_kv_heads + kvh) * page_size + (cell % page_size);
+            if (page >= 0)
+                myrow = (page * n_kv_heads + kvh) * page_size + (cell % page_size);
         }
         // stage this wave's V slice of the chunk (64 bytes of each row) and the V scale; the K fragments come straight
         // from global memory (8 consecutive codes per lane)
@@ -1374,13 +1271,20 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_wmma_kernel(const float* 
             float vsc = 0.0f;
             if (myrow >= 0) {
                 const uint4* src = reinterpret_cast<const uint4*>(p.v_q + myrow * HD + dim0);
-                v0 = __ldg(src); v1 = __ldg(src + 1); v2 = __ldg(src + 2); v3 = __ldg(src + 3);
+                v0 = __ldg(src);
+                v1 = __ldg(src + 1);
+                v2 = __ldg(src + 2);
+                v3 = __ldg(src + 3);
                 vsc = __half2float(__ushort_as_half(__ldg(p.v_scale + myrow * (HD / KV_Q8_GROUP) + warp)));
             }
             uint4* dst = reinterpret_cast<uint4*>(&S.v[warp][lane][0]);
-            dst[0] = v0; dst[1] = v1; dst[2] = v2; dst[3] = v3;
+            dst[0] = v0;
+            dst[1] = v1;
+            dst[2] = v2;
+            dst[3] = v3;
             S.vs[warp][lane] = vsc;
-            if (warp == 0) S.valid[lane] = myrow >= 0;
+            if (warp == 0)
+                S.valid[lane] = myrow >= 0;
         }
         // q.k over this wave's 64 dims for two 16-cell tiles, times the cell's K scale for this group
 #pragma unroll
@@ -1388,17 +1292,20 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_wmma_kernel(const float* 
             const long long rr = __shfl(myrow, nt * 16 + col);
             wf8 s = wf8{0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f};
             float ksc = 0.0f;
-            if (rr >= 0) ksc = __half2float(__ushort_as_half(__ldg(p.k_scale + rr * (HD / KV_Q8_GROUP) + warp)));
+            if (rr >= 0)
+                ksc = __half2float(__ushort_as_half(__ldg(p.k_scale + rr * (HD / KV_Q8_GROUP) + warp)));
 #pragma unroll
             for (int kk = 0; kk < 4; ++kk) {
                 uint2 kx = make_uint2(0, 0);
-                if (rr >= 0) kx = __ldg(reinterpret_cast<const uint2*>(p.k_q + rr * HD + dim0 + kk * 16 + half * 8));
+                if (rr >= 0)
+                    kx = __ldg(reinterpret_cast<const uint2*>(p.k_q + rr * HD + dim0 + kk * 16 + half * 8));
                 const wh8 b = i8x8_to_h8(kx);
                 s = wmma_f16(qh[kk], b, s);
                 s = wmma_f16(ql[kk], b, s);
             }
 #pragma unroll
-            for (int i = 0; i < 8; ++i) S.part[warp][half * 8 + i][nt * 16 + col] = s[i] * ksc;
+            for (int i = 0; i < 8; ++i)
+                S.part[warp][half * 8 + i][nt * 16 + col] = s[i] * ksc;
         }
         __syncthreads();
         // online softmax over the four groups' sum (fixed order): row t/8, 4 cells per thread
@@ -1414,7 +1321,8 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_wmma_kernel(const float* 
                 mx = fmaxf(mx, x[j]);
             }
 #pragma unroll
-            for (int o = 1; o < 8; o <<= 1) mx = fmaxf(mx, __shfl_xor_sync(0xffffffffu, mx, o));
+            for (int o = 1; o < 8; o <<= 1)
+                mx = fmaxf(mx, __shfl_xor_sync(0xffffffffu, mx, o));
             const float m_old = S.mrow[r];
             const float m_new = fmaxf(m_old, mx);
             float sum = 0.0f;
@@ -1425,7 +1333,8 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_wmma_kernel(const float* 
                 sum += e;
             }
 #pragma unroll
-            for (int o = 1; o < 8; o <<= 1) sum += __shfl_xor_sync(0xffffffffu, sum, o);
+            for (int o = 1; o < 8; o <<= 1)
+                sum += __shfl_xor_sync(0xffffffffu, sum, o);
             if (sub == 0) {
                 const float a = m_old == -INFINITY ? 0.0f : exp2f(m_old - m_new);
                 S.alpha[r] = a;
@@ -1438,14 +1347,16 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_wmma_kernel(const float* 
         {
             float vmax = S.vs[warp][lane];
 #pragma unroll
-            for (int o = 16; o > 0; o >>= 1) vmax = fmaxf(vmax, __shfl_xor_sync(0xffffffffu, vmax, o));
+            for (int o = 16; o > 0; o >>= 1)
+                vmax = fmaxf(vmax, __shfl_xor_sync(0xffffffffu, vmax, o));
             const float vup = vmax > 0.0f ? 16384.0f / vmax : 0.0f, vdown = vmax * (1.0f / 16384.0f);
             wf8 tmp[4];
 #pragma unroll
-            for (int j = 0; j < 4; ++j) tmp[j] = wf8{0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f};
+            for (int j = 0; j < 4; ++j)
+                tmp[j] = wf8{0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f};
 #pragma unroll
             for (int ks = 0; ks < 2; ++ks) {
-                const int cb = ks * 16 + half * 8;   // this lane's 8 cells
+                const int cb = ks * 16 + half * 8; // this lane's 8 cells
                 wh8 ah, al;
 #pragma unroll
                 for (int i = 0; i < 8; ++i) {
@@ -1459,18 +1370,21 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_wmma_kernel(const float* 
                     const int d = j * 16 + col;
                     wh8 b;
 #pragma unroll
-                    for (int i = 0; i < 8; ++i) b[i] = (_Float16) (int) (int8_t) S.v[warp][cb + i][d];
+                    for (int i = 0; i < 8; ++i)
+                        b[i] = (_Float16) (int) (int8_t) S.v[warp][cb + i][d];
                     tmp[j] = wmma_f16(ah, b, tmp[j]);
                     tmp[j] = wmma_f16(al, b, tmp[j]);
                 }
             }
             float a[8];
 #pragma unroll
-            for (int i = 0; i < 8; ++i) a[i] = S.alpha[half * 8 + i];
+            for (int i = 0; i < 8; ++i)
+                a[i] = S.alpha[half * 8 + i];
 #pragma unroll
             for (int j = 0; j < 4; ++j)
 #pragma unroll
-                for (int i = 0; i < 8; ++i) acc[j][i] = fmaf(acc[j][i], a[i], tmp[j][i] * vdown);
+                for (int i = 0; i < 8; ++i)
+                    acc[j][i] = fmaf(acc[j][i], a[i], tmp[j][i] * vdown);
         }
         // no barrier here: `v`/`vs` are this wave's own, and `p`/`alpha`/`valid` are rewritten only after the next
         // chunk's first barrier (which every wave reaches after its p.v)
@@ -1486,7 +1400,8 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_wmma_kernel(const float* 
 #pragma unroll
         for (int i = 0; i < 8; ++i) {
             const int row = half * 8 + i;
-            if (row < G) attn[(size_t) row * HD + dim0 + j * 16 + col] = acc[j][i] * inv[i];
+            if (row < G)
+                attn[(size_t) row * HD + dim0 + j * 16 + col] = acc[j][i] * inv[i];
         }
 #else
     __builtin_trap();
@@ -1499,13 +1414,20 @@ bool hip_wmma_usable() {
         const char* e = std::getenv("GUILD_HIP_WMMA");
         return e != nullptr && e[0] == '1';
     }();
-    if (!want) return false;
-    static int arch[64] = {};   // 0 unknown, 1 gfx12, 2 other
+    if (!want)
+        return false;
+    static int arch[64] = {}; // 0 unknown, 1 gfx12, 2 other
     int dev = 0;
-    if (hipGetDevice(&dev) != hipSuccess || dev < 0 || dev >= 64) { (void) hipGetLastError(); return false; }
+    if (hipGetDevice(&dev) != hipSuccess || dev < 0 || dev >= 64) {
+        (void) hipGetLastError();
+        return false;
+    }
     if (arch[dev] == 0) {
         hipDeviceProp_t prop{};
-        if (hipGetDeviceProperties(&prop, dev) != hipSuccess) { (void) hipGetLastError(); return false; }
+        if (hipGetDeviceProperties(&prop, dev) != hipSuccess) {
+            (void) hipGetLastError();
+            return false;
+        }
         arch[dev] = std::strncmp(prop.gcnArchName, "gfx12", 5) == 0 ? 1 : 2;
         static bool told = false;
         if (!told) {
@@ -1535,13 +1457,14 @@ bool launch_wmma(const float* q, const QsaAttnPools& pools, const int32_t* ids, 
 }
 #endif
 
-}  // namespace
+} // namespace
 
 bool qsa_prompt_attn_batch(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps,
                            int64_t cap, const QsaShapes& s, float* attn, int64_t n_q, void* stream) {
-    if (n_q <= 0) return true;
-    bool turing = false;   // per call, from the CURRENT device (a layer split can mix Turing with newer cards)
-    {   // sm_75 or newer: the MMA above compiles for both.  sm_80+ runs the cp.async kernel (launch_i8); Turing has
+    if (n_q <= 0)
+        return true;
+    bool turing = false; // per call, from the CURRENT device (a layer split can mix Turing with newer cards)
+    { // sm_75 or newer: the MMA above compiles for both.  sm_80+ runs the cp.async kernel (launch_i8); Turing has
         // no cp.async, so it runs the v1 kernel (launch<1>, same accuracy, another summation order).  An older card
         // keeps the old kernel.
         // #371: the compute capability with its minor - sm_70 (V100) has no m16n8k8 (the kernels trap below sm_75)
@@ -1551,16 +1474,14 @@ bool qsa_prompt_attn_batch(const float* q, const QsaAttnPools& pools, const int3
         DPCT1026: The call to cudaGetLastError was removed because this
         functionality is redundant in SYCL.
         */
-        if (DPCT_CHECK_ERROR(dev = dpct::get_current_device_id()) != 0 ||
-            dev < 0 || dev >= 64) {
-            ; return false;
+        if (DPCT_CHECK_ERROR(dev = dpct::get_current_device_id()) != 0 || dev < 0 || dev >= 64) {
+            ;
+            return false;
         }
         if (cc[dev] == 0) {
             int major = 0, minor = 0;
-            if (DPCT_CHECK_ERROR(
-                    major = dpct::get_device(dev).get_major_version()) != 0 ||
-                DPCT_CHECK_ERROR(
-                    minor = dpct::get_device(dev).get_minor_version()) != 0) {
+            if (DPCT_CHECK_ERROR(major = dpct::get_device(dev).get_major_version()) != 0 ||
+                DPCT_CHECK_ERROR(minor = dpct::get_device(dev).get_minor_version()) != 0) {
                 /*
                 DPCT1026: The call to cudaGetLastError was removed because
                 this functionality is redundant in SYCL.
@@ -1569,14 +1490,16 @@ bool qsa_prompt_attn_batch(const float* q, const QsaAttnPools& pools, const int3
             }
             // GUILD_QSA_WARP=1|attn (an A/B arm): the pre-sm_80 kernels on any card, as RTX 20 runs them
             const char* w = std::getenv("GUILD_QSA_WARP");
-            cc[dev] = w && (!std::strcmp(w, "1") || !std::strcmp(w, "attn")) ? 75
-                      : 10 * guild::cc_major_of(major) + guild::cc_minor_of(minor);
+            cc[dev] = w && (!std::strcmp(w, "1") || !std::strcmp(w, "attn"))
+                          ? 75
+                          : 10 * guild::cc_major_of(major) + guild::cc_minor_of(minor);
         }
         (void) cc[dev];
         // SYCL: the mma.sync kernel below is not ported (upstream's Turing/sm_80 split - `turing` - does not
         // apply); its XMX port takes the same arguments
-        if (qsa_prompt_attn_xmx(q, pools, ids, steps, cap, s, attn, n_q, stream)) return true;
-        return false;   // the caller takes the older kernel
+        if (qsa_prompt_attn_xmx(q, pools, ids, steps, cap, s, attn, n_q, stream))
+            return true;
+        return false; // the caller takes the older kernel
     }
 #if defined(__HIPCC__)
     // the tensor-core kernels are compiled out on AMD (its major version is not a CUDA sm); RDNA4 has its own int8-KV
@@ -1591,30 +1514,35 @@ bool qsa_prompt_attn_batch(const float* q, const QsaAttnPools& pools, const int3
     if (s.head_dim != HD || s.n_head != (int64_t) G * s.n_head_kv || cap <= 0 || !ids || !steps || !pools.page_table)
         return false;
     dpct::queue_ptr st = guild::q_of(stream);
-    if (pools.k_q4 != nullptr) {   // Q4_0 K and V (--kv q4_0): mode 4.  GUILD_PROMPT_ATTN_Q4=0: the old kernel (A/B)
+    if (pools.k_q4 != nullptr) { // Q4_0 K and V (--kv q4_0): mode 4.  GUILD_PROMPT_ATTN_Q4=0: the old kernel (A/B)
         static const bool q4_off = [] {
             const char* v = std::getenv("GUILD_PROMPT_ATTN_Q4");
             return v != nullptr && v[0] == '0';
         }();
         // sm_80+ only: on Turing mode 4 would run as pairs of m16n8k8 MMAs, which no parity run has checked yet
-        if (q4_off || turing || pools.v_q4 == nullptr) return false;
+        if (q4_off || turing || pools.v_q4 == nullptr)
+            return false;
         return launch<4>(q, pools, ids, steps, cap, s, attn, n_q, st);
     }
-    if (pools.k_q != nullptr && pools.v_q4 != nullptr) {   // hybrid K8V4: int8 K + dequantized-q4 V
-        if (!pools.k_scale) return false;
+    if (pools.k_q != nullptr && pools.v_q4 != nullptr) { // hybrid K8V4: int8 K + dequantized-q4 V
+        if (!pools.k_scale)
+            return false;
         return launch<3>(q, pools, ids, steps, cap, s, attn, n_q, st);
     }
     if (pools.k_q != nullptr) {
-        if (!pools.v_q || !pools.k_scale || !pools.v_scale) return false;
+        if (!pools.v_q || !pools.k_scale || !pools.v_scale)
+            return false;
         // GUILD_PROMPT_ATTN_V1=1 (debug): the first version, same accuracy, another summation order - the control
         // for how far the model amplifies an FP32-level change.  Turing always takes it: v2's cp.async does not
         // exist before sm_80.
         static const bool v1 = std::getenv("GUILD_PROMPT_ATTN_V1") != nullptr;
-        if (v1 || turing) return launch<1>(q, pools, ids, steps, cap, s, attn, n_q, st);
+        if (v1 || turing)
+            return launch<1>(q, pools, ids, steps, cap, s, attn, n_q, st);
         return launch_i8(q, pools, ids, steps, cap, s, attn, n_q, st);
     }
-    if (!pools.k_pool || !pools.v_pool) return false;
+    if (!pools.k_pool || !pools.v_pool)
+        return false;
     return launch<0>(q, pools, ids, steps, cap, s, attn, n_q, st);
 }
 
-}  // namespace guild::kernels
+} // namespace guild::kernels

@@ -51,24 +51,21 @@ __dpct_inline__ float scale_zero_bias(float x, float scale) {
     */
     return sycl::fma(scale, x, 0.0f);
 }
-__dpct_inline__ void down_silu(float *lo, int count, float scale) {
+__dpct_inline__ void down_silu(float* lo, int count, float scale) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
-    const std::size_t i =
-        std::size_t(item_ct1.get_group(2)) * item_ct1.get_local_range(2) +
-        item_ct1.get_local_id(2);
-    if (i >= std::size_t(count)) return;
+    const std::size_t i = std::size_t(item_ct1.get_group(2)) * item_ct1.get_local_range(2) + item_ct1.get_local_id(2);
+    if (i >= std::size_t(count))
+        return;
     const float x = scale_zero_bias(lo[i], scale);
     lo[i] = x / (1.0f + sycl::native::exp(-x));
 }
 template <bool Fused>
-__dpct_inline__ void
-pre_gated(const float *__restrict__ xn, float *__restrict__ gate,
-          float *__restrict__ mixed, int n_embd, int hc, float scale) {
+__dpct_inline__ void pre_gated(const float* __restrict__ xn, float* __restrict__ gate, float* __restrict__ mixed,
+                               int n_embd, int hc, float scale) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
-    const std::size_t d =
-        std::size_t(item_ct1.get_group(2)) * item_ct1.get_local_range(2) +
-        item_ct1.get_local_id(2);
-    if (d >= std::size_t(n_embd)) return;
+    const std::size_t d = std::size_t(item_ct1.get_group(2)) * item_ct1.get_local_range(2) + item_ct1.get_local_id(2);
+    if (d >= std::size_t(n_embd))
+        return;
     float sum = 0.0f;
     for (int c = 0; c < hc; ++c) {
         const std::size_t i = std::size_t(c) * n_embd + d;
@@ -87,27 +84,28 @@ pre_gated(const float *__restrict__ xn, float *__restrict__ gate,
         correctness. SYCL math built-in function rounding mode is aligned with
         OpenCL C 1.2 standard.
         */
-        if constexpr (Fused) sum = sycl::fma(x, w, sum);
+        if constexpr (Fused)
+            sum = sycl::fma(x, w, sum);
         /*
         DPCT1013: The rounding mode could not be specified and the generated
         code may have different accuracy than the original code. Verify the
         correctness. SYCL math built-in function rounding mode is aligned with
         OpenCL C 1.2 standard.
         */
-        else sum = c == 0 ? product : sum + product;
+        else
+            sum = c == 0 ? product : sum + product;
     }
-    if constexpr (Fused) mixed[d] = scale * sum;
-    else mixed[d] = scale_zero_bias(sum, scale);
+    if constexpr (Fused)
+        mixed[d] = scale * sum;
+    else
+        mixed[d] = scale_zero_bias(sum, scale);
 }
-__dpct_inline__ void post(const float *residual,
-                          const float *__restrict__ block_out,
-                          const float *__restrict__ inject, float *output,
-                          int n_embd, int hc, float scale) {
+__dpct_inline__ void post(const float* residual, const float* __restrict__ block_out, const float* __restrict__ inject,
+                          float* output, int n_embd, int hc, float scale) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
-    const std::size_t i =
-        std::size_t(item_ct1.get_group(2)) * item_ct1.get_local_range(2) +
-        item_ct1.get_local_id(2);
-    if (i >= std::size_t(n_embd) * hc) return;
+    const std::size_t i = std::size_t(item_ct1.get_group(2)) * item_ct1.get_local_range(2) + item_ct1.get_local_id(2);
+    if (i >= std::size_t(n_embd) * hc)
+        return;
     const int c = int(i / n_embd), d = int(i % n_embd);
     const float weight = scale_zero_bias(sigmoid(scale_zero_bias(inject[c], scale)), 2.0f);
     // Exact residual/output alias is supported; no other thread reads residual[i].
@@ -127,7 +125,9 @@ void check_shape(int n, int hc) {
     if (n <= 0 || hc <= 0 || std::uint64_t(n) * hc > std::uint64_t(std::numeric_limits<int>::max()))
         throw std::invalid_argument("native GR postops require positive bounded dimensions");
 }
-unsigned blocks(std::size_t n) { return unsigned((n + THREADS - 1) / THREADS); }
+unsigned blocks(std::size_t n) {
+    return unsigned((n + THREADS - 1) / THREADS);
+}
 void check_launch() {
     /*
     DPCT1010: SYCL uses exceptions to report errors and does not use the
@@ -148,8 +148,7 @@ void check_launch() {
         /*
         DPCT1001: The statement could not be removed.
         */
-        throw std::runtime_error(std::string("native GR postops launch: ") +
-                                 dpct::get_error_string_dummy(error));
+        throw std::runtime_error(std::string("native GR postops launch: ") + dpct::get_error_string_dummy(error));
 }
 } // namespace
 
@@ -157,90 +156,72 @@ void native_gr_down_silu(float* lo, int hc_lr, int hc, void* stream) {
     check_shape(hc_lr, hc);
     check_pointer(lo);
     {
-        auto exp_props = sycl::ext::oneapi::experimental::properties{
-            sycl::ext::oneapi::experimental::use_root_sync};
+        auto exp_props = sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::use_root_sync};
 
-        ((sycl::queue *)(guild::q_of(stream)))
-            ->submit([&](sycl::handler &cgh) {
-                auto float_hc_ct2 = 1.0f / float(hc);
+        ((sycl::queue*) (guild::q_of(stream)))->submit([&](sycl::handler& cgh) {
+            auto float_hc_ct2 = 1.0f / float(hc);
 
-                cgh.parallel_for<dpct_kernel_name<class down_silu_24f4fb>>(
-                    sycl::nd_range<3>(sycl::range(1, 1, blocks(hc_lr)) *
-                                          sycl::range(1, 1, THREADS),
-                                      sycl::range(1, 1, THREADS)),
-                    exp_props, [=](sycl::nd_item<3> item_ct1) {
-                        down_silu(lo, hc_lr, float_hc_ct2);
-                    });
-            });
+            cgh.parallel_for<dpct_kernel_name<class down_silu_24f4fb>>(
+                sycl::nd_range<3>(sycl::range(1, 1, blocks(hc_lr)) * sycl::range(1, 1, THREADS),
+                                  sycl::range(1, 1, THREADS)),
+                exp_props, [=](sycl::nd_item<3> item_ct1) { down_silu(lo, hc_lr, float_hc_ct2); });
+        });
     }
     check_launch();
 }
-void native_gr_pre_gated(const float* xn, float* gate, float* mixed,
-                         int n_embd, int hc, bool fused_layer, void* stream) {
+void native_gr_pre_gated(const float* xn, float* gate, float* mixed, int n_embd, int hc, bool fused_layer,
+                         void* stream) {
     check_shape(n_embd, hc);
-    check_pointer(xn); check_pointer(gate); check_pointer(mixed);
-    if (fused_layer)
-    {
-        auto exp_props = sycl::ext::oneapi::experimental::properties{
-            sycl::ext::oneapi::experimental::use_root_sync};
+    check_pointer(xn);
+    check_pointer(gate);
+    check_pointer(mixed);
+    if (fused_layer) {
+        auto exp_props = sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::use_root_sync};
 
-        ((sycl::queue *)(guild::q_of(stream)))
-            ->submit([&](sycl::handler &cgh) {
-                auto float_hc_ct5 = 1.0f / float(hc);
+        ((sycl::queue*) (guild::q_of(stream)))->submit([&](sycl::handler& cgh) {
+            auto float_hc_ct5 = 1.0f / float(hc);
 
-                cgh.parallel_for<dpct_kernel_name<class pre_gated_7b64ea,
-                                                  dpct_kernel_scalar<true>>>(
-                    sycl::nd_range<3>(sycl::range(1, 1, blocks(n_embd)) *
-                                          sycl::range(1, 1, THREADS),
-                                      sycl::range(1, 1, THREADS)),
-                    exp_props, [=](sycl::nd_item<3> item_ct1) {
-                        pre_gated<true>(xn, gate, mixed, n_embd, hc,
-                                        float_hc_ct5);
-                    });
-            });
+            cgh.parallel_for<dpct_kernel_name<class pre_gated_7b64ea, dpct_kernel_scalar<true>>>(
+                sycl::nd_range<3>(sycl::range(1, 1, blocks(n_embd)) * sycl::range(1, 1, THREADS),
+                                  sycl::range(1, 1, THREADS)),
+                exp_props,
+                [=](sycl::nd_item<3> item_ct1) { pre_gated<true>(xn, gate, mixed, n_embd, hc, float_hc_ct5); });
+        });
     } else {
-        auto exp_props = sycl::ext::oneapi::experimental::properties{
-            sycl::ext::oneapi::experimental::use_root_sync};
+        auto exp_props = sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::use_root_sync};
 
-        ((sycl::queue *)(guild::q_of(stream)))
-            ->submit([&](sycl::handler &cgh) {
-                auto float_hc_ct5 = 1.0f / float(hc);
+        ((sycl::queue*) (guild::q_of(stream)))->submit([&](sycl::handler& cgh) {
+            auto float_hc_ct5 = 1.0f / float(hc);
 
-                cgh.parallel_for<dpct_kernel_name<class pre_gated_4a043d,
-                                                  dpct_kernel_scalar<false>>>(
-                    sycl::nd_range<3>(sycl::range(1, 1, blocks(n_embd)) *
-                                          sycl::range(1, 1, THREADS),
-                                      sycl::range(1, 1, THREADS)),
-                    exp_props, [=](sycl::nd_item<3> item_ct1) {
-                        pre_gated<false>(xn, gate, mixed, n_embd, hc,
-                                         float_hc_ct5);
-                    });
-            });
+            cgh.parallel_for<dpct_kernel_name<class pre_gated_4a043d, dpct_kernel_scalar<false>>>(
+                sycl::nd_range<3>(sycl::range(1, 1, blocks(n_embd)) * sycl::range(1, 1, THREADS),
+                                  sycl::range(1, 1, THREADS)),
+                exp_props,
+                [=](sycl::nd_item<3> item_ct1) { pre_gated<false>(xn, gate, mixed, n_embd, hc, float_hc_ct5); });
+        });
     }
     check_launch();
 }
-void native_gr_post(const float* residual, const float* block_out, const float* inject,
-                    float* output, int n_embd, int hc, void* stream) {
+void native_gr_post(const float* residual, const float* block_out, const float* inject, float* output, int n_embd,
+                    int hc, void* stream) {
     check_shape(n_embd, hc);
-    check_pointer(residual); check_pointer(block_out); check_pointer(inject); check_pointer(output);
+    check_pointer(residual);
+    check_pointer(block_out);
+    check_pointer(inject);
+    check_pointer(output);
     {
-        auto exp_props = sycl::ext::oneapi::experimental::properties{
-            sycl::ext::oneapi::experimental::use_root_sync};
+        auto exp_props = sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::use_root_sync};
 
-        ((sycl::queue *)(guild::q_of(stream)))
-            ->submit([&](sycl::handler &cgh) {
-                auto float_hc_ct6 = 1.0f / float(hc);
+        ((sycl::queue*) (guild::q_of(stream)))->submit([&](sycl::handler& cgh) {
+            auto float_hc_ct6 = 1.0f / float(hc);
 
-                cgh.parallel_for<dpct_kernel_name<class post_a7f844>>(
-                    sycl::nd_range<3>(
-                        sycl::range(1, 1, blocks(std::size_t(n_embd) * hc)) *
-                            sycl::range(1, 1, THREADS),
-                        sycl::range(1, 1, THREADS)),
-                    exp_props, [=](sycl::nd_item<3> item_ct1) {
-                        post(residual, block_out, inject, output, n_embd, hc,
-                             float_hc_ct6);
-                    });
-            });
+            cgh.parallel_for<dpct_kernel_name<class post_a7f844>>(
+                sycl::nd_range<3>(sycl::range(1, 1, blocks(std::size_t(n_embd) * hc)) * sycl::range(1, 1, THREADS),
+                                  sycl::range(1, 1, THREADS)),
+                exp_props, [=](sycl::nd_item<3> item_ct1) {
+                    post(residual, block_out, inject, output, n_embd, hc, float_hc_ct6);
+                });
+        });
     }
     check_launch();
 }

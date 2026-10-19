@@ -26,28 +26,28 @@
 
 namespace {
 
-using guild::kernels::SForm;
 using guild::kernels::Codebook;
+using guild::kernels::SForm;
 
-void check(dpct::err0 e, const char *what) {
+void check(dpct::err0 e, const char* what) {
 }
 
 /// The host decode, transcribed from `docs/pack-format.md`'s rule: `value = cb[code] * scale + offset`, with
 /// the integer bias applied INSIDE the integer domain before the one multiply.
 const signed char kIq4Nl[16] = {-127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113};
 
-double weight_at(const std::vector<uint8_t>& codes, const std::vector<float>& scales,
-                 const std::vector<float>& offset, const SForm& f, long long n_in, long long o, long long i) {
+double weight_at(const std::vector<uint8_t>& codes, const std::vector<float>& scales, const std::vector<float>& offset,
+                 const SForm& f, long long n_in, long long o, long long i) {
     const int per_byte = 8 / f.code_bits;
     const long long codes_per_row = n_in / per_byte;
     const long long n_groups = n_in / f.group_elems;
     const uint8_t* c = codes.data() + o * codes_per_row;
     const int code = (c[i / per_byte] >> ((int) (i % per_byte) * f.code_bits)) & ((1 << f.code_bits) - 1);
-    const double v = (f.codebook == Codebook::Iq4Nl) ? (double) kIq4Nl[code & 0x0F]
-                                                     : (double) (code + f.code_bias);
+    const double v = (f.codebook == Codebook::Iq4Nl) ? (double) kIq4Nl[code & 0x0F] : (double) (code + f.code_bias);
     const long long g = i / f.group_elems;
     double w = v * (double) scales[(size_t) (o * n_groups + g)];
-    if (f.has_offset) w += (double) offset[(size_t) (o * n_groups + g)];
+    if (f.has_offset)
+        w += (double) offset[(size_t) (o * n_groups + g)];
     return w;
 }
 
@@ -81,7 +81,8 @@ int ragged_rows(const Case& cs, long long n_out) {
     std::mt19937 rng(77 + (unsigned) n_out);
     std::normal_distribution<float> g(0.0f, 1.0f);
     std::vector<float> xf((size_t) n_in);
-    for (auto& v : xf) v = g(rng);
+    for (auto& v : xf)
+        v = g(rng);
     SForm f;
     f.code_bits = cs.bits;
     f.code_bias = cs.bias;
@@ -90,46 +91,40 @@ int ragged_rows(const Case& cs, long long n_out) {
     f.has_offset = cs.has_offset;
     const int per_byte = 8 / cs.bits;
     std::vector<uint8_t> codes((size_t) (n_out * n_in / per_byte));
-    for (auto& v : codes) v = (uint8_t) (rng() & 0xFF);
+    for (auto& v : codes)
+        v = (uint8_t) (rng() & 0xFF);
     const long long n_groups = n_in / cs.group;
     std::vector<float> scales((size_t) (n_out * n_groups)), offs((size_t) (n_out * n_groups));
-    for (auto& v : scales) v = 0.01f + 0.001f * (float) (rng() % 20);
-    for (auto& v : offs) v = 0.2f * g(rng);
+    for (auto& v : scales)
+        v = 0.01f + 0.001f * (float) (rng() % 20);
+    for (auto& v : offs)
+        v = 0.2f * g(rng);
 
     float* d_xf = nullptr;
     uint8_t *d_xk = nullptr, *d_x0 = nullptr, *d_codes = nullptr;
     float *d_scales = nullptr, *d_offs = nullptr, *d_y = nullptr;
     std::vector<uint8_t> xk((size_t) (n_in / 256) * 292), x0((size_t) (n_in / 32) * 34);
-    check(DPCT_CHECK_ERROR(d_xf = (float *)sycl::malloc_device(
-                               (size_t)n_in * 4, dpct::get_in_order_queue())),
-          "rxf");
-    check(DPCT_CHECK_ERROR(d_xk = (uint8_t *)sycl::malloc_device(
-                               xk.size(), dpct::get_in_order_queue())),
-          "rxk");
-    check(DPCT_CHECK_ERROR(d_x0 = (uint8_t *)sycl::malloc_device(
-                               x0.size(), dpct::get_in_order_queue())),
-          "rx0");
-    check(DPCT_CHECK_ERROR(d_codes = (uint8_t *)sycl::malloc_device(
-                               codes.size(), dpct::get_in_order_queue())),
+    check(DPCT_CHECK_ERROR(d_xf = (float*) sycl::malloc_device((size_t) n_in * 4, dpct::get_in_order_queue())), "rxf");
+    check(DPCT_CHECK_ERROR(d_xk = (uint8_t*) sycl::malloc_device(xk.size(), dpct::get_in_order_queue())), "rxk");
+    check(DPCT_CHECK_ERROR(d_x0 = (uint8_t*) sycl::malloc_device(x0.size(), dpct::get_in_order_queue())), "rx0");
+    check(DPCT_CHECK_ERROR(d_codes = (uint8_t*) sycl::malloc_device(codes.size(), dpct::get_in_order_queue())),
           "rcodes");
-    check(DPCT_CHECK_ERROR(d_scales = (float *)sycl::malloc_device(
-                               scales.size() * 4, dpct::get_in_order_queue())),
+    check(DPCT_CHECK_ERROR(d_scales = (float*) sycl::malloc_device(scales.size() * 4, dpct::get_in_order_queue())),
           "rscales");
-    check(DPCT_CHECK_ERROR(d_offs = (float *)sycl::malloc_device(
-                               offs.size() * 4, dpct::get_in_order_queue())),
+    check(DPCT_CHECK_ERROR(d_offs = (float*) sycl::malloc_device(offs.size() * 4, dpct::get_in_order_queue())),
           "roffs");
-    check(DPCT_CHECK_ERROR(
-              d_y = (float *)sycl::malloc_device((size_t)(n_out + guard) * 4,
-                                                 dpct::get_in_order_queue())),
-          "ry");
+    check(
+        DPCT_CHECK_ERROR(d_y = (float*) sycl::malloc_device((size_t) (n_out + guard) * 4, dpct::get_in_order_queue())),
+        "ry");
     /*
     DPCT1114: cudaMemcpy is migrated to asynchronization memcpy, assuming in
     the original code the source host memory is pageable memory. If the memory
     is not pageable, call wait() on event return by memcpy API to ensure
     synchronization behavior.
     */
-    check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(d_xf, xf.data(),
-                                                             (size_t)n_in * 4).wait()),
+    check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
+                               .memcpy(d_xf, xf.data(), (size_t) n_in * 4)
+                               .wait()),
           "rcxf");
     /*
     DPCT1114: cudaMemcpy is migrated to asynchronization memcpy, assuming in
@@ -137,8 +132,9 @@ int ragged_rows(const Case& cs, long long n_out) {
     is not pageable, call wait() on event return by memcpy API to ensure
     synchronization behavior.
     */
-    check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(
-              d_codes, codes.data(), codes.size()).wait()),
+    check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
+                               .memcpy(d_codes, codes.data(), codes.size())
+                               .wait()),
           "rcc");
     /*
     DPCT1114: cudaMemcpy is migrated to asynchronization memcpy, assuming in
@@ -146,8 +142,9 @@ int ragged_rows(const Case& cs, long long n_out) {
     is not pageable, call wait() on event return by memcpy API to ensure
     synchronization behavior.
     */
-    check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(
-              d_scales, scales.data(), scales.size() * 4).wait()),
+    check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
+                               .memcpy(d_scales, scales.data(), scales.size() * 4)
+                               .wait()),
           "rcs");
     /*
     DPCT1114: cudaMemcpy is migrated to asynchronization memcpy, assuming in
@@ -155,8 +152,9 @@ int ragged_rows(const Case& cs, long long n_out) {
     is not pageable, call wait() on event return by memcpy API to ensure
     synchronization behavior.
     */
-    check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(
-              d_offs, offs.data(), offs.size() * 4).wait()),
+    check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
+                               .memcpy(d_offs, offs.data(), offs.size() * 4)
+                               .wait()),
           "rco");
     guild::kernels::quantize_q8_K(d_xf, d_xk, n_in, nullptr);
     guild::kernels::quantize_q8_0(d_xf, d_x0, n_in, nullptr);
@@ -170,10 +168,10 @@ int ragged_rows(const Case& cs, long long n_out) {
           "rcx0");
 
     int bad = 0;
-    for (int kind = 0; kind < 2; ++kind) {           // 0: Q8_K activation, 1: Q8_0 activation
+    for (int kind = 0; kind < 2; ++kind) { // 0: Q8_K activation, 1: Q8_0 activation
         std::vector<float> want((size_t) n_out);
-        std::vector<double> mag((size_t) n_out);   // sum |w_i a_i| per row: a row whose sum cancels near 0
-        for (long long o = 0; o < n_out; ++o) {    // must not turn f32 rounding into a relative failure
+        std::vector<double> mag((size_t) n_out); // sum |w_i a_i| per row: a row whose sum cancels near 0
+        for (long long o = 0; o < n_out; ++o) {  // must not turn f32 rounding into a relative failure
             double acc = 0, am = 0;
             for (long long i = 0; i < n_in; ++i) {
                 double a;
@@ -200,23 +198,21 @@ int ragged_rows(const Case& cs, long long n_out) {
         If the memory is not pageable, call wait() on event return by memcpy API
         to ensure synchronization behavior.
         */
-        check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(
-                  d_y, sentinel.data(), sentinel.size() * 4).wait()),
+        check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
+                                   .memcpy(d_y, sentinel.data(), sentinel.size() * 4)
+                                   .wait()),
               "rsent");
         if (kind == 0)
             guild::kernels::s_gemv_q8k_split(d_xk, d_codes, d_scales, cs.has_offset ? d_offs : nullptr, d_y, n_in,
-                                              n_out, f, nullptr);
+                                             n_out, f, nullptr);
         else
             guild::kernels::s_gemv_q8_0_split(d_x0, d_codes, d_scales, cs.has_offset ? d_offs : nullptr, d_y, n_in,
-                                               n_out, f, nullptr);
-        check(DPCT_CHECK_ERROR(
-                  dpct::get_current_device().queues_wait_and_throw()),
-              "ragged split");
+                                              n_out, f, nullptr);
+        check(DPCT_CHECK_ERROR(dpct::get_current_device().queues_wait_and_throw()), "ragged split");
         std::vector<uint32_t> got_bits(sentinel.size());
-        check(DPCT_CHECK_ERROR(
-                  (dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
-                      .memcpy(got_bits.data(), d_y, got_bits.size() * 4)
-                      .wait()),
+        check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
+                                   .memcpy(got_bits.data(), d_y, got_bits.size() * 4)
+                                   .wait()),
               "rcy");
         double m = 0, d = 0;
         for (long long o = 0; o < n_out; ++o) {
@@ -226,30 +222,36 @@ int ragged_rows(const Case& cs, long long n_out) {
             d += std::fabs((double) want[(size_t) o] - (double) v);
         }
         long long touched = 0;
-        for (long long o = n_out; o < n_out + guard; ++o) touched += got_bits[(size_t) o] != 0x7FC0DEADu;
+        for (long long o = n_out; o < n_out + guard; ++o)
+            touched += got_bits[(size_t) o] != 0x7FC0DEADu;
         const double rel = d / (m > 1e-30 ? m : 1e-30);
         const bool ok = rel <= 1e-5 && touched == 0;
         std::printf("  %-28s %s n_out %3lld: rel %.3e, guard words written %lld  %s\n", cs.what,
                     kind == 0 ? "Q8_K" : "Q8_0", n_out, rel, touched, ok ? "ok" : "*** WRONG ***");
-        if (!ok) ++bad;
+        if (!ok)
+            ++bad;
     }
     sycl::free(d_xf, dpct::get_in_order_queue());
-        sycl::free(d_xk, dpct::get_in_order_queue());
-        sycl::free(d_x0, dpct::get_in_order_queue());
-        sycl::free(d_codes, dpct::get_in_order_queue());
-        sycl::free(d_scales, dpct::get_in_order_queue());
-        sycl::free(d_offs, dpct::get_in_order_queue());
+    sycl::free(d_xk, dpct::get_in_order_queue());
+    sycl::free(d_x0, dpct::get_in_order_queue());
+    sycl::free(d_codes, dpct::get_in_order_queue());
+    sycl::free(d_scales, dpct::get_in_order_queue());
+    sycl::free(d_offs, dpct::get_in_order_queue());
     sycl::free(d_y, dpct::get_in_order_queue());
     return bad;
 }
 
-}  // namespace
+} // namespace
 
 int main(int argc, char** argv) {
     bool selftest = false;
     for (int i = 1; i < argc; ++i) {
-        if (std::string(argv[i]) == "--selftest") selftest = true;
-        else { std::fprintf(stderr, "usage: s_gemv_q8k_parity [--selftest]\n"); return 2; }
+        if (std::string(argv[i]) == "--selftest")
+            selftest = true;
+        else {
+            std::fprintf(stderr, "usage: s_gemv_q8k_parity [--selftest]\n");
+            return 2;
+        }
     }
     int bad = 0;
 
@@ -264,11 +266,12 @@ int main(int argc, char** argv) {
     };
 
     for (const Case& cs : cases) {
-        const long long n_in = 512, n_out = 64;   // 2 Q8_K blocks wide, small enough for a host reference
+        const long long n_in = 512, n_out = 64; // 2 Q8_K blocks wide, small enough for a host reference
         std::mt19937 rng(2024);
         std::normal_distribution<float> g(0.0f, 1.0f);
         std::vector<float> xf((size_t) n_in);
-        for (auto& v : xf) v = g(rng);
+        for (auto& v : xf)
+            v = g(rng);
 
         SForm f;
         f.code_bits = cs.bits;
@@ -279,31 +282,31 @@ int main(int argc, char** argv) {
 
         const int per_byte = 8 / cs.bits;
         std::vector<uint8_t> codes((size_t) (n_out * n_in / per_byte));
-        for (auto& v : codes) v = (uint8_t) (rng() & 0xFF);
+        for (auto& v : codes)
+            v = (uint8_t) (rng() & 0xFF);
         const long long n_groups = n_in / cs.group;
         std::vector<float> scales((size_t) (n_out * n_groups)), offs((size_t) (n_out * n_groups));
-        for (auto& v : scales) v = 0.01f + 0.001f * (float) (rng() % 20);
-        for (auto& v : offs) v = 0.2f * g(rng);
+        for (auto& v : scales)
+            v = 0.01f + 0.001f * (float) (rng() % 20);
+        for (auto& v : offs)
+            v = 0.2f * g(rng);
 
         // ---- the activation, from the REAL quantizer
         std::vector<uint8_t> xq8k((size_t) (n_in / 256) * 292);
         float* d_xf = nullptr;
         uint8_t* d_xq = nullptr;
-        check(
-            DPCT_CHECK_ERROR(d_xf = (float *)sycl::malloc_device(
-                                 (size_t)n_in * 4, dpct::get_in_order_queue())),
-            "xf");
-        check(DPCT_CHECK_ERROR(d_xq = (uint8_t *)sycl::malloc_device(
-                                   xq8k.size(), dpct::get_in_order_queue())),
-              "xq");
+        check(DPCT_CHECK_ERROR(d_xf = (float*) sycl::malloc_device((size_t) n_in * 4, dpct::get_in_order_queue())),
+              "xf");
+        check(DPCT_CHECK_ERROR(d_xq = (uint8_t*) sycl::malloc_device(xq8k.size(), dpct::get_in_order_queue())), "xq");
         /*
         DPCT1114: cudaMemcpy is migrated to asynchronization memcpy,
         assuming in the original code the source host memory is pageable memory.
         If the memory is not pageable, call wait() on event return by memcpy API
         to ensure synchronization behavior.
         */
-        check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(
-                  d_xf, xf.data(), (size_t)n_in * 4).wait()),
+        check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
+                                   .memcpy(d_xf, xf.data(), (size_t) n_in * 4)
+                                   .wait()),
               "cxf");
         guild::kernels::quantize_q8_K(d_xf, d_xq, n_in, nullptr);
         check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
@@ -323,20 +326,13 @@ int main(int argc, char** argv) {
         // ---- device
         uint8_t* d_codes = nullptr;
         float *d_scales = nullptr, *d_offs = nullptr, *d_y = nullptr;
-        check(DPCT_CHECK_ERROR(d_codes = (uint8_t *)sycl::malloc_device(
-                                   codes.size(), dpct::get_in_order_queue())),
+        check(DPCT_CHECK_ERROR(d_codes = (uint8_t*) sycl::malloc_device(codes.size(), dpct::get_in_order_queue())),
               "codes");
-        check(DPCT_CHECK_ERROR(
-                  d_scales = (float *)sycl::malloc_device(
-                      scales.size() * 4, dpct::get_in_order_queue())),
+        check(DPCT_CHECK_ERROR(d_scales = (float*) sycl::malloc_device(scales.size() * 4, dpct::get_in_order_queue())),
               "scales");
-        check(
-            DPCT_CHECK_ERROR(d_offs = (float *)sycl::malloc_device(
-                                 offs.size() * 4, dpct::get_in_order_queue())),
-            "offs");
-        check(DPCT_CHECK_ERROR(
-                  d_y = (float *)sycl::malloc_device(
-                      (size_t)n_out * 4, dpct::get_in_order_queue())),
+        check(DPCT_CHECK_ERROR(d_offs = (float*) sycl::malloc_device(offs.size() * 4, dpct::get_in_order_queue())),
+              "offs");
+        check(DPCT_CHECK_ERROR(d_y = (float*) sycl::malloc_device((size_t) n_out * 4, dpct::get_in_order_queue())),
               "y");
         /*
         DPCT1114: cudaMemcpy is migrated to asynchronization memcpy,
@@ -344,8 +340,9 @@ int main(int argc, char** argv) {
         If the memory is not pageable, call wait() on event return by memcpy API
         to ensure synchronization behavior.
         */
-        check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(
-                  d_codes, codes.data(), codes.size()).wait()),
+        check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
+                                   .memcpy(d_codes, codes.data(), codes.size())
+                                   .wait()),
               "cc");
         /*
         DPCT1114: cudaMemcpy is migrated to asynchronization memcpy,
@@ -353,8 +350,9 @@ int main(int argc, char** argv) {
         If the memory is not pageable, call wait() on event return by memcpy API
         to ensure synchronization behavior.
         */
-        check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(
-                  d_scales, scales.data(), scales.size() * 4).wait()),
+        check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
+                                   .memcpy(d_scales, scales.data(), scales.size() * 4)
+                                   .wait()),
               "cs");
         /*
         DPCT1114: cudaMemcpy is migrated to asynchronization memcpy,
@@ -362,21 +360,22 @@ int main(int argc, char** argv) {
         If the memory is not pageable, call wait() on event return by memcpy API
         to ensure synchronization behavior.
         */
-        check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(
-                  d_offs, offs.data(), offs.size() * 4).wait()),
+        check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
+                                   .memcpy(d_offs, offs.data(), offs.size() * 4)
+                                   .wait()),
               "co");
 
         std::vector<float> naive((size_t) n_out), warp((size_t) n_out);
-        guild::kernels::s_gemv_q8k(d_xq, d_codes, d_scales, cs.has_offset ? d_offs : nullptr, d_y, n_in, n_out,
-                                    f, nullptr);
+        guild::kernels::s_gemv_q8k(d_xq, d_codes, d_scales, cs.has_offset ? d_offs : nullptr, d_y, n_in, n_out, f,
+                                   nullptr);
         check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
-                                   .memcpy(naive.data(), d_y, (size_t)n_out * 4)
+                                   .memcpy(naive.data(), d_y, (size_t) n_out * 4)
                                    .wait()),
               "cy1");
-        guild::kernels::s_gemv_q8k_split(d_xq, d_codes, d_scales, cs.has_offset ? d_offs : nullptr, d_y, n_in,
-                                          n_out, f, nullptr);
+        guild::kernels::s_gemv_q8k_split(d_xq, d_codes, d_scales, cs.has_offset ? d_offs : nullptr, d_y, n_in, n_out, f,
+                                         nullptr);
         check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
-                                   .memcpy(warp.data(), d_y, (size_t)n_out * 4)
+                                   .memcpy(warp.data(), d_y, (size_t) n_out * 4)
                                    .wait()),
               "cy2");
 
@@ -389,7 +388,10 @@ int main(int argc, char** argv) {
         std::printf("  %-28s naive %.3e   warp %.3e\n", cs.what, d1 / mag, d2 / mag);
         // The kernel accumulates in f32, the reference in f64, over 512 terms with values of similar size.
         // 1e-5 is the arithmetic's floor, not a structural allowance.
-        if (!(d1 / mag <= 1e-5 && d2 / mag <= 1e-5)) { std::printf("    *** over 1e-5 ***\n"); ++bad; }
+        if (!(d1 / mag <= 1e-5 && d2 / mag <= 1e-5)) {
+            std::printf("    *** over 1e-5 ***\n");
+            ++bad;
+        }
 
         // ---- 2b. THE Q8_0 ACTIVATION, on the SAME weight planes.  `s_gemv_q8_0_split` exists because the
         // legacy block formats want Q8_0 and `ffn_down_shexp` cannot use Q8_K at all (n_in = 640 is not a
@@ -398,8 +400,7 @@ int main(int argc, char** argv) {
         {
             std::vector<uint8_t> xq0((size_t) (n_in / 32) * 34);
             uint8_t* d_x0 = nullptr;
-            check(DPCT_CHECK_ERROR(d_x0 = (uint8_t *)sycl::malloc_device(
-                                       xq0.size(), dpct::get_in_order_queue())),
+            check(DPCT_CHECK_ERROR(d_x0 = (uint8_t*) sycl::malloc_device(xq0.size(), dpct::get_in_order_queue())),
                   "x0");
             guild::kernels::quantize_q8_0(d_xf, d_x0, n_in, nullptr);
             check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
@@ -421,13 +422,12 @@ int main(int argc, char** argv) {
                 }
                 want0[(size_t) o] = (float) acc;
             }
-            guild::kernels::s_gemv_q8_0_split(d_x0, d_codes, d_scales, cs.has_offset ? d_offs : nullptr, d_y,
-                                               n_in, n_out, f, nullptr);
+            guild::kernels::s_gemv_q8_0_split(d_x0, d_codes, d_scales, cs.has_offset ? d_offs : nullptr, d_y, n_in,
+                                              n_out, f, nullptr);
             std::vector<float> got0((size_t) n_out);
-            check(DPCT_CHECK_ERROR(
-                      (dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
-                          .memcpy(got0.data(), d_y, (size_t)n_out * 4)
-                          .wait()),
+            check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
+                                       .memcpy(got0.data(), d_y, (size_t) n_out * 4)
+                                       .wait()),
                   "cy0");
             double m0 = 0, dd0 = 0;
             for (long long o = 0; o < n_out; ++o) {
@@ -439,19 +439,17 @@ int main(int argc, char** argv) {
                 std::printf("    *** the Q8_0 activation loader is WRONG ***\n");
                 ++bad;
             }
-            check(
-                DPCT_CHECK_ERROR(sycl::free(d_x0, dpct::get_in_order_queue())),
-                "fx0");
+            check(DPCT_CHECK_ERROR(sycl::free(d_x0, dpct::get_in_order_queue())), "fx0");
         }
 
         // ---- 3. THE Q8_K vs FP16 GAP, on a K-quant weight - the case the contract decision needs
         {
             std::vector<uint16_t> x16((size_t) n_in);
-            for (long long i = 0; i < n_in; ++i) x16[(size_t) i] = guild::kernels::f16_from_f32(xf[(size_t) i]);
+            for (long long i = 0; i < n_in; ++i)
+                x16[(size_t) i] = guild::kernels::f16_from_f32(xf[(size_t) i]);
             uint16_t* d_x16 = nullptr;
-            check(DPCT_CHECK_ERROR(
-                      d_x16 = (uint16_t *)sycl::malloc_device(
-                          (size_t)n_in * 2, dpct::get_in_order_queue())),
+            check(DPCT_CHECK_ERROR(d_x16 =
+                                       (uint16_t*) sycl::malloc_device((size_t) n_in * 2, dpct::get_in_order_queue())),
                   "x16");
             /*
             DPCT1114: cudaMemcpy is migrated to asynchronization memcpy,
@@ -459,16 +457,15 @@ int main(int argc, char** argv) {
             memory. If the memory is not pageable, call wait() on event return
             by memcpy API to ensure synchronization behavior.
             */
-            check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(
-                      d_x16, x16.data(), (size_t)n_in * 2).wait()),
+            check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
+                                       .memcpy(d_x16, x16.data(), (size_t) n_in * 2)
+                                       .wait()),
                   "cx16");
             std::vector<float> fp16out((size_t) n_out);
-            guild::kernels::s_gemv(d_x16, d_codes, d_scales, cs.has_offset ? d_offs : nullptr, d_y, n_in, n_out,
-                                    f);
-            check(DPCT_CHECK_ERROR(
-                      (dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
-                          .memcpy(fp16out.data(), d_y, (size_t)n_out * 4)
-                          .wait()),
+            guild::kernels::s_gemv(d_x16, d_codes, d_scales, cs.has_offset ? d_offs : nullptr, d_y, n_in, n_out, f);
+            check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
+                                       .memcpy(fp16out.data(), d_y, (size_t) n_out * 4)
+                                       .wait()),
                   "cy3");
             double dd = 0;
             for (long long o = 0; o < n_out; ++o)
@@ -477,24 +474,28 @@ int main(int argc, char** argv) {
             const bool visible = rel > 1e-3;
             std::printf("      %-24s %s (%.4f%% apart, tolerance 0.1%%)\n", "Q8_K vs fp16 activation",
                         visible ? "yes" : "*** NO ***", rel * 100);
-            if (!visible) ++bad;
+            if (!visible)
+                ++bad;
             sycl::free(d_x16, dpct::get_in_order_queue());
         }
         sycl::free(d_xf, dpct::get_in_order_queue());
-            sycl::free(d_xq, dpct::get_in_order_queue());
-            sycl::free(d_codes, dpct::get_in_order_queue());
-            sycl::free(d_scales, dpct::get_in_order_queue());
-            sycl::free(d_offs, dpct::get_in_order_queue());
-            sycl::free(d_y, dpct::get_in_order_queue());
+        sycl::free(d_xq, dpct::get_in_order_queue());
+        sycl::free(d_codes, dpct::get_in_order_queue());
+        sycl::free(d_scales, dpct::get_in_order_queue());
+        sycl::free(d_offs, dpct::get_in_order_queue());
+        sycl::free(d_y, dpct::get_in_order_queue());
     }
 
     // ---- 4. output widths that are NOT a multiple of the eight rows per block
     std::printf("\n");
     for (const Case& cs : cases)
-        for (long long n_out : {1LL, 7LL, 9LL, 61LL}) bad += ragged_rows(cs, n_out);
+        for (long long n_out : {1LL, 7LL, 9LL, 61LL})
+            bad += ragged_rows(cs, n_out);
 
     std::printf("\ns_gemv_q8k: %d failures\n", bad);
-    if (bad) return 1;
-    if (selftest) std::printf("s_gemv_q8k_parity OK\n");
+    if (bad)
+        return 1;
+    if (selftest)
+        std::printf("s_gemv_q8k_parity OK\n");
     return 0;
 }

@@ -22,7 +22,7 @@ namespace {
 
 constexpr int QK = 64;
 
-void check(dpct::err0 e, const char *what) {
+void check(dpct::err0 e, const char* what) {
 }
 
 // fp16 patterns that are finite, normal and exactly representable.  Random 16-bit patterns would include NaN
@@ -31,20 +31,25 @@ void check(dpct::err0 e, const char *what) {
 const uint16_t kScales[] = {0x3C00, 0x3800, 0x3400, 0x3000, 0x2C00, 0x2800, 0x2000,
                             0xBC00, 0xB800, 0xB400, 0xB000, 0xAC00, 0x1800, 0x1400};
 
-}  // namespace
+} // namespace
 
 int main(int argc, char** argv) {
     long long n_blocks = 200000;
     bool selftest = false;
     for (int i = 1; i < argc; ++i) {
-        if (std::strcmp(argv[i], "--selftest") == 0) selftest = true;
-        else if (std::strcmp(argv[i], "--blocks") == 0 && i + 1 < argc) n_blocks = std::atoll(argv[++i]);
+        if (std::strcmp(argv[i], "--selftest") == 0)
+            selftest = true;
+        else if (std::strcmp(argv[i], "--blocks") == 0 && i + 1 < argc)
+            n_blocks = std::atoll(argv[++i]);
         else {
             std::fprintf(stderr, "usage: dequant_s2_parity [--selftest] [--blocks N]\n");
             return 2;
         }
     }
-    if (n_blocks <= 0) { std::fprintf(stderr, "--blocks must be positive\n"); return 2; }
+    if (n_blocks <= 0) {
+        std::fprintf(stderr, "--blocks must be positive\n");
+        return 2;
+    }
 
     std::mt19937 rng(12345);
     const int n_scales = (int) (sizeof(kScales) / sizeof(kScales[0]));
@@ -55,7 +60,8 @@ int main(int argc, char** argv) {
         const uint16_t d = kScales[rng() % n_scales];
         raw[(size_t) b * 18 + 0] = (uint8_t) (d & 0xFF);
         raw[(size_t) b * 18 + 1] = (uint8_t) (d >> 8);
-        for (int t = 0; t < 16; ++t) raw[(size_t) b * 18 + 2 + t] = (uint8_t) (rng() & 0xFF);
+        for (int t = 0; t < 16; ++t)
+            raw[(size_t) b * 18 + 2 + t] = (uint8_t) (rng() & 0xFF);
     }
 
     // the CPU reference, over the RAW blocks
@@ -77,14 +83,11 @@ int main(int argc, char** argv) {
 
     uint8_t* d_codes = nullptr;
     float *d_scales = nullptr, *d_out = nullptr;
-    check(DPCT_CHECK_ERROR(d_codes = (uint8_t *)sycl::malloc_device(
-                               codes.size(), dpct::get_in_order_queue())),
+    check(DPCT_CHECK_ERROR(d_codes = (uint8_t*) sycl::malloc_device(codes.size(), dpct::get_in_order_queue())),
           "cudaMalloc codes");
-    check(DPCT_CHECK_ERROR(d_scales = sycl::malloc_device<float>(
-                               scales.size(), dpct::get_in_order_queue())),
+    check(DPCT_CHECK_ERROR(d_scales = sycl::malloc_device<float>(scales.size(), dpct::get_in_order_queue())),
           "cudaMalloc scales");
-    check(DPCT_CHECK_ERROR(d_out = sycl::malloc_device<float>(
-                               cpu.size(), dpct::get_in_order_queue())),
+    check(DPCT_CHECK_ERROR(d_out = sycl::malloc_device<float>(cpu.size(), dpct::get_in_order_queue())),
           "cudaMalloc out");
     /*
     DPCT1114: cudaMemcpy is migrated to asynchronization memcpy, assuming in
@@ -92,8 +95,9 @@ int main(int argc, char** argv) {
     is not pageable, call wait() on event return by memcpy API to ensure
     synchronization behavior.
     */
-    check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(
-              d_codes, codes.data(), codes.size()).wait()),
+    check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
+                               .memcpy(d_codes, codes.data(), codes.size())
+                               .wait()),
           "copy codes");
     /*
     DPCT1114: cudaMemcpy is migrated to asynchronization memcpy, assuming in
@@ -101,17 +105,17 @@ int main(int argc, char** argv) {
     is not pageable, call wait() on event return by memcpy API to ensure
     synchronization behavior.
     */
-    check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(
-              d_scales, scales.data(), scales.size() * sizeof(float)).wait()),
+    check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
+                               .memcpy(d_scales, scales.data(), scales.size() * sizeof(float))
+                               .wait()),
           "copy scales");
 
     guild::kernels::dequant_s2(d_codes, d_scales, d_out, n_blocks);
 
     std::vector<float> gpu(cpu.size());
-    check(DPCT_CHECK_ERROR(
-              (dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
-                  .memcpy(gpu.data(), d_out, gpu.size() * sizeof(float))
-                  .wait()),
+    check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
+                               .memcpy(gpu.data(), d_out, gpu.size() * sizeof(float))
+                               .wait()),
           "copy back");
 
     long long bad = 0, first_bad = -1;
@@ -119,7 +123,8 @@ int main(int argc, char** argv) {
         // bit comparison, not a tolerance: S2's decode is exact integer-to-float arithmetic, so ANY
         // difference is a bug and a tolerance would only hide which one
         if (std::memcmp(&cpu[i], &gpu[i], sizeof(float)) != 0) {
-            if (first_bad < 0) first_bad = (long long) i;
+            if (first_bad < 0)
+                first_bad = (long long) i;
             ++bad;
         }
     }
@@ -130,15 +135,19 @@ int main(int argc, char** argv) {
     // an S2 decode that only ever saw one code would agree while being unable to tell -1 from +2.
     bool seen[4] = {false, false, false, false};
     for (size_t i = 0; i < codes.size(); ++i) {
-        for (int t = 0; t < 4; ++t) seen[(codes[i] >> (2 * t)) & 3] = true;
+        for (int t = 0; t < 4; ++t)
+            seen[(codes[i] >> (2 * t)) & 3] = true;
     }
     int distinct = 0;
-    for (bool s : seen) distinct += s ? 1 : 0;
+    for (bool s : seen)
+        distinct += s ? 1 : 0;
     long long distinct_vals = 0;
     for (size_t i = 0; i < cpu.size() && distinct_vals < 8; ++i) {
         bool dup = false;
-        for (size_t j = 0; j < i && !dup; ++j) dup = (cpu[j] == cpu[i]);
-        if (!dup) ++distinct_vals;
+        for (size_t j = 0; j < i && !dup; ++j)
+            dup = (cpu[j] == cpu[i]);
+        if (!dup)
+            ++distinct_vals;
     }
     std::printf("  non-vacuity: %d of 4 codes present, %lld distinct values in the first elements\n", distinct,
                 distinct_vals);
@@ -147,8 +156,7 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    std::printf("dequant_s2: %lld blocks, %lld elements, %lld mismatched\n", n_blocks, (long long) cpu.size(),
-                bad);
+    std::printf("dequant_s2: %lld blocks, %lld elements, %lld mismatched\n", n_blocks, (long long) cpu.size(), bad);
     if (bad) {
         std::printf("  first mismatch at element %lld (block %lld, offset %d): cpu %.9g gpu %.9g\n",
                     (long long) first_bad, (long long) (first_bad / QK), (int) (first_bad % QK),
@@ -156,7 +164,8 @@ int main(int argc, char** argv) {
         return 1;
     }
     std::printf("  bit-exact against the scalar dequantizer that dequant_xcheck proved equal to ggml\n");
-    if (selftest) std::printf("dequant_s2_parity OK\n");
+    if (selftest)
+        std::printf("dequant_s2_parity OK\n");
 
     sycl::free(d_codes, dpct::get_in_order_queue());
     sycl::free(d_scales, dpct::get_in_order_queue());

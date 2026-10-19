@@ -51,14 +51,22 @@ bool native_mmvf = false;
 /// routine written for one and reused for the other is wrong in a way that still produces numbers.
 ///
 /// The local names are kept as thin wrappers so the body below is untouched by the swap.
-__dpct_inline__ uint16_t f32_to_bf16_bits(float f) { return bf16_from_f32(f); }
-__dpct_inline__ float bf16_bits_to_f32(uint16_t h) { return f32_from_bf16(h); }
-__dpct_inline__ float activation_f32(float x) { return x; }
-__dpct_inline__ float activation_f32(uint16_t x) { return bf16_bits_to_f32(x); }
-__dpct_inline__ void store_activation(float *dst, int i, float x) {
+__dpct_inline__ uint16_t f32_to_bf16_bits(float f) {
+    return bf16_from_f32(f);
+}
+__dpct_inline__ float bf16_bits_to_f32(uint16_t h) {
+    return f32_from_bf16(h);
+}
+__dpct_inline__ float activation_f32(float x) {
+    return x;
+}
+__dpct_inline__ float activation_f32(uint16_t x) {
+    return bf16_bits_to_f32(x);
+}
+__dpct_inline__ void store_activation(float* dst, int i, float x) {
     dst[i] = x;
 }
-__dpct_inline__ void store_activation(uint16_t *dst, int i, float x) {
+__dpct_inline__ void store_activation(uint16_t* dst, int i, float x) {
     dst[i] = f32_to_bf16_bits(x);
 }
 
@@ -85,10 +93,9 @@ DPCT1121: Make sure that the "v" which is used in the SYCL group
 function/algorithm is initialized.
 */
 #pragma unroll
-    for (int off = 16; off > 0; off >>= 1) v +=
-        dpct::experimental::shift_sub_group_left(
-            0xFFFFFFFFu, sycl::ext::oneapi::this_work_item::get_sub_group(), v,
-            off);
+    for (int off = 16; off > 0; off >>= 1)
+        v += dpct::experimental::shift_sub_group_left(0xFFFFFFFFu, sycl::ext::oneapi::this_work_item::get_sub_group(),
+                                                      v, off);
     /*
     DPCT1108: '__shfl_sync' was migrated with the experimental feature masked
     sub_group function which may not be supported by all compilers or runtimes.
@@ -98,8 +105,8 @@ function/algorithm is initialized.
     DPCT1121: Make sure that the "v" which is used in the SYCL group
     function/algorithm is initialized.
     */
-    return dpct::experimental::select_from_sub_group(
-        0xFFFFFFFFu, sycl::ext::oneapi::this_work_item::get_sub_group(), v, 0);
+    return dpct::experimental::select_from_sub_group(0xFFFFFFFFu, sycl::ext::oneapi::this_work_item::get_sub_group(), v,
+                                                     0);
 }
 
 __dpct_inline__ float warp_sumf(float v) {
@@ -113,10 +120,9 @@ DPCT1121: Make sure that the "v" which is used in the SYCL group
 function/algorithm is initialized.
 */
 #pragma unroll
-    for (int off = 16; off > 0; off >>= 1) v +=
-        dpct::experimental::shift_sub_group_left(
-            0xFFFFFFFFu, sycl::ext::oneapi::this_work_item::get_sub_group(), v,
-            off);
+    for (int off = 16; off > 0; off >>= 1)
+        v += dpct::experimental::shift_sub_group_left(0xFFFFFFFFu, sycl::ext::oneapi::this_work_item::get_sub_group(),
+                                                      v, off);
     /*
     DPCT1108: '__shfl_sync' was migrated with the experimental feature masked
     sub_group function which may not be supported by all compilers or runtimes.
@@ -126,8 +132,8 @@ function/algorithm is initialized.
     DPCT1121: Make sure that the "v" which is used in the SYCL group
     function/algorithm is initialized.
     */
-    return dpct::experimental::select_from_sub_group(
-        0xFFFFFFFFu, sycl::ext::oneapi::this_work_item::get_sub_group(), v, 0);
+    return dpct::experimental::select_from_sub_group(0xFFFFFFFFu, sycl::ext::oneapi::this_work_item::get_sub_group(), v,
+                                                     0);
 }
 
 /// The FP32 block-wide sum, for the reason the review's G5 states: this is a GeForce part and FP64 runs at a
@@ -136,9 +142,9 @@ function/algorithm is initialized.
 /// The scratch is taken as `double*` and reinterpreted as `float*` rather than changing the callers' shared
 /// arrays, because `double scratch[8]` is 64 bytes and so is at least as large as the `float[8]` this needs -
 /// the cast cannot overrun, and it keeps the change to one function instead of one per caller.
-inline float block_sumf(float v, double *scratch_raw) {
+inline float block_sumf(float v, double* scratch_raw) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
-    float *scratch = (float *)scratch_raw;
+    float* scratch = (float*) scratch_raw;
     // The leading barrier is not decoration - see the note on `block_sum` above: the result is read straight out
     // of `scratch[0]` by every thread and a later call reuses the array, so without it a fast thread can
     // overwrite `scratch[0]` before a slow one has read the previous result.
@@ -148,21 +154,22 @@ inline float block_sumf(float v, double *scratch_raw) {
     performance if there is no access to global memory.
     */
     item_ct1.barrier();
-    const int lane = item_ct1.get_local_id(2) & 31,
-              warp = item_ct1.get_local_id(2) >> 5;
+    const int lane = item_ct1.get_local_id(2) & 31, warp = item_ct1.get_local_id(2) >> 5;
     v = warp_sumf(v);
-    if (lane == 0) scratch[warp] = v;
+    if (lane == 0)
+        scratch[warp] = v;
     /*
     DPCT1065: Consider replacing sycl::nd_item::barrier() with
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
     item_ct1.barrier();
-    const int nw = ((int)item_ct1.get_local_range(2) + 31) >> 5;
-    v = (item_ct1.get_local_id(2) < nw) ? scratch[item_ct1.get_local_id(2)]
-                                        : 0.0f;
-    if (warp == 0) v = warp_sumf(v);
-    if (item_ct1.get_local_id(2) == 0) scratch[0] = v;
+    const int nw = ((int) item_ct1.get_local_range(2) + 31) >> 5;
+    v = (item_ct1.get_local_id(2) < nw) ? scratch[item_ct1.get_local_id(2)] : 0.0f;
+    if (warp == 0)
+        v = warp_sumf(v);
+    if (item_ct1.get_local_id(2) == 0)
+        scratch[0] = v;
     /*
     DPCT1065: Consider replacing sycl::nd_item::barrier() with
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
@@ -189,21 +196,22 @@ double block_sum(double v, double* scratch) {
     */
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
     item_ct1.barrier();
-    const int lane = item_ct1.get_local_id(2) & 31,
-              warp = item_ct1.get_local_id(2) >> 5;
+    const int lane = item_ct1.get_local_id(2) & 31, warp = item_ct1.get_local_id(2) >> 5;
     v = warp_sum(v);
-    if (lane == 0) scratch[warp] = v;
+    if (lane == 0)
+        scratch[warp] = v;
     /*
     DPCT1065: Consider replacing sycl::nd_item::barrier() with
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
     item_ct1.barrier();
-    const int nw = ((int)item_ct1.get_local_range(2) + 31) >> 5;
-    v = (item_ct1.get_local_id(2) < nw) ? scratch[item_ct1.get_local_id(2)]
-                                        : 0.0;
-    if (warp == 0) v = warp_sum(v);
-    if (item_ct1.get_local_id(2) == 0) scratch[0] = v;
+    const int nw = ((int) item_ct1.get_local_range(2) + 31) >> 5;
+    v = (item_ct1.get_local_id(2) < nw) ? scratch[item_ct1.get_local_id(2)] : 0.0;
+    if (warp == 0)
+        v = warp_sum(v);
+    if (item_ct1.get_local_id(2) == 0)
+        scratch[0] = v;
     /*
     DPCT1065: Consider replacing sycl::nd_item::barrier() with
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
@@ -223,13 +231,11 @@ double block_sum(double v, double* scratch) {
 /// normalise by its own square.  That mistake is silent - it produces a plausible vector of the right shape -
 /// and it is what `gr_parity`'s `mixed vs reference` caught at 2.0e+01 in round 196.
 template <bool FP32_ACT>
-__dpct_inline__ void gr_norm_kernel(const float *__restrict__ R,
-                                    const float *__restrict__ w_norm, float eps,
-                                    int n_embd, float *__restrict__ xn,
-                                    uint16_t *__restrict__ xq) {
+__dpct_inline__ void gr_norm_kernel(const float* __restrict__ R, const float* __restrict__ w_norm, float eps,
+                                    int n_embd, float* __restrict__ xn, uint16_t* __restrict__ xq) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
-auto &scratch = *sycl::ext::oneapi::group_local_memory_for_overwrite<double[8]>(
-    sycl::ext::oneapi::this_work_item::get_work_group<3>());
+    auto& scratch = *sycl::ext::oneapi::group_local_memory_for_overwrite<double[8]>(
+        sycl::ext::oneapi::this_work_item::get_work_group<3>());
     const int c = item_ct1.get_group(2);
     const float* Rc = R + (size_t) c * n_embd;
     float* xnc = xn + (size_t) c * n_embd;
@@ -241,34 +247,31 @@ auto &scratch = *sycl::ext::oneapi::group_local_memory_for_overwrite<double[8]>(
     // 12 of the FP64 sites the review's G5 counted in this file, and the rule it states ("no FP64 on any decode
     // or prefill path") is worth being able to check mechanically rather than case by case.
     float ss = 0.0f;
-    for (int d = item_ct1.get_local_id(2); d < n_embd;
-         d += item_ct1.get_local_range(2)) {
+    for (int d = item_ct1.get_local_id(2); d < n_embd; d += item_ct1.get_local_range(2)) {
         const float v = Rc[d];
         ss += v * v;
     }
     const float ms = block_sumf(ss, scratch) / (float) n_embd;
     const float rs = sycl::rsqrt(ms + eps);
-    for (int d = item_ct1.get_local_id(2); d < n_embd;
-         d += item_ct1.get_local_range(2)) {
+    for (int d = item_ct1.get_local_id(2); d < n_embd; d += item_ct1.get_local_range(2)) {
         const float x = Rc[d] * rs * w_norm[(size_t) c * n_embd + d];
         xnc[d] = x;
-        if constexpr (!FP32_ACT) xqc[d] = f32_to_bf16_bits(x);
+        if constexpr (!FP32_ACT)
+            xqc[d] = f32_to_bf16_bits(x);
     }
 }
 
 /// `lo = silu((bf16(xn) @ w_down.T) / hc)`, ONE BLOCK PER OUTPUT ROW with its warps splitting the reduction.
 template <typename Activation>
-__dpct_inline__ void gr_down_kernel(const Activation *__restrict__ xq,
-                                    const uint16_t *__restrict__ w_down,
-                                    int hc_dim, int hc_lr, int hc,
-                                    Activation *__restrict__ lq) {
+__dpct_inline__ void gr_down_kernel(const Activation* __restrict__ xq, const uint16_t* __restrict__ w_down, int hc_dim,
+                                    int hc_lr, int hc, Activation* __restrict__ lq) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
     const int k = item_ct1.get_group(2);
-    if (k >= hc_lr) return;
+    if (k >= hc_lr)
+        return;
     const int lane = item_ct1.get_local_id(2) & 31;
     const int warp = item_ct1.get_local_id(2) >> 5;
-    const int nw = (int)(item_ct1.get_local_range(2) >>
-                         5); // warps per row == warps per block
+    const int nw = (int) (item_ct1.get_local_range(2) >> 5); // warps per row == warps per block
     const uint16_t* row = w_down + (size_t) k * hc_dim;
     // **THE OCCUPANCY HERE IS 10% AND IT IS REAL, BUT FIXING IT DOES NOT PAY.**  `hc_lr` is 320, one warp per
     // row, 8 warps per block, so this launches 40 blocks = 320 warps: **6.7 warps per SM out of the 64 a
@@ -317,10 +320,10 @@ __dpct_inline__ void gr_down_kernel(const Activation *__restrict__ xq,
         acc += activation_f32(xq[i]) * bf16_bits_to_f32(row[i]);
     acc = warp_sumf(acc);
 
-    auto &part =
-        *sycl::ext::oneapi::group_local_memory_for_overwrite<float[WARPS]>(
-            sycl::ext::oneapi::this_work_item::get_work_group<3>());
-    if (lane == 0) part[warp] = acc;
+    auto& part = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[WARPS]>(
+        sycl::ext::oneapi::this_work_item::get_work_group<3>());
+    if (lane == 0)
+        part[warp] = acc;
     item_ct1.barrier(sycl::access::fence_space::local_space);
     if (warp == 0) {
         float t = (lane < nw) ? part[lane] : 0.0f;
@@ -328,20 +331,19 @@ __dpct_inline__ void gr_down_kernel(const Activation *__restrict__ xq,
         // NOTE: the reduction order differs from the one-warp version, so this is a NUMERICS CHANGE.  C1 is the
         // gate that judges it - not this comment, and not `gr_parity`, which compares against the reference on
         // a fixture that a changed summation order can still pass.
-        if (lane == 0) store_activation(lq, k, silu_f(t / (float) hc));
+        if (lane == 0)
+            store_activation(lq, k, silu_f(t / (float) hc));
     }
 }
 
 /// `gated[i] = xn[i] * sigmoid(bf16(lo) @ w_up.T)`, one warp per output row, lanes striding hc_lr.
 template <typename Activation>
-__dpct_inline__ void gr_gate_kernel(const Activation *__restrict__ lq,
-                                    const uint16_t *__restrict__ w_up,
-                                    const float *__restrict__ xn, int hc_dim,
-                                    int hc_lr, float *__restrict__ gated) {
+__dpct_inline__ void gr_gate_kernel(const Activation* __restrict__ lq, const uint16_t* __restrict__ w_up,
+                                    const float* __restrict__ xn, int hc_dim, int hc_lr, float* __restrict__ gated) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
-    const int i =
-        item_ct1.get_group(2) * WARPS + (item_ct1.get_local_id(2) >> 5);
-    if (i >= hc_dim) return;
+    const int i = item_ct1.get_group(2) * WARPS + (item_ct1.get_local_id(2) >> 5);
+    if (i >= hc_dim)
+        return;
     const int lane = item_ct1.get_local_id(2) & 31;
     const uint16_t* row = w_up + (size_t) i * hc_lr;
     float acc = 0.0f;
@@ -351,20 +353,21 @@ __dpct_inline__ void gr_gate_kernel(const Activation *__restrict__ lq,
     acc = warp_sumf(acc);
     // Every lane computes the sigmoid (the shuffle broadcasts acc), so there is no second sync point and no
     // branch; lane 0 stores.
-    if (lane == 0) gated[i] = xn[i] * sigmoid_f(acc);
+    if (lane == 0)
+        gated[i] = xn[i] * sigmoid_f(acc);
 }
 
 /// `mixed[d] = mean over c of gated[c][d]`.  Flat elementwise: the mean is over the streams, which are
 /// strided by n_embd, so no cross-thread reduction is needed at all.
-__dpct_inline__ void gr_mean_kernel(const float *__restrict__ gated, int n_embd,
-                                    int hc, float *__restrict__ mixed) {
+__dpct_inline__ void gr_mean_kernel(const float* __restrict__ gated, int n_embd, int hc, float* __restrict__ mixed) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
-    const int d = item_ct1.get_group(2) * item_ct1.get_local_range(2) +
-                  item_ct1.get_local_id(2);
-    if (d >= n_embd) return;
+    const int d = item_ct1.get_group(2) * item_ct1.get_local_range(2) + item_ct1.get_local_id(2);
+    if (d >= n_embd)
+        return;
     float m = 0.0f;
 #pragma unroll
-    for (int c = 0; c < hc; ++c) m += gated[(size_t)c * n_embd + d];
+    for (int c = 0; c < hc; ++c)
+        m += gated[(size_t) c * n_embd + d];
     mixed[d] = m / (float) hc;
 }
 
@@ -375,13 +378,12 @@ __dpct_inline__ void gr_mean_kernel(const float *__restrict__ gated, int n_embd,
 /// work; a warp per stream is the same shape as the down projection and reuses its pattern exactly.  The
 /// whole kernel is one block of `32*hc` threads, which is small - and it is a 4-value output, so it is.
 template <typename Activation>
-__dpct_inline__ void gr_inject_kernel(const Activation *__restrict__ xq,
-                                      const uint16_t *__restrict__ w_inject,
-                                      int hc_dim, int hc,
-                                      float *__restrict__ inject) {
+__dpct_inline__ void gr_inject_kernel(const Activation* __restrict__ xq, const uint16_t* __restrict__ w_inject,
+                                      int hc_dim, int hc, float* __restrict__ inject) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
     const int c = item_ct1.get_local_id(2) >> 5;
-    if (c >= hc) return;
+    if (c >= hc)
+        return;
     const int lane = item_ct1.get_local_id(2) & 31;
     const uint16_t* row = w_inject + (size_t) c * hc_dim;
     // FP32, for the same reason as `gr_down_kernel` - and this one is worse.  A ONE-BLOCK kernel doing four
@@ -393,38 +395,37 @@ __dpct_inline__ void gr_inject_kernel(const Activation *__restrict__ xq,
     for (int i = lane; i < hc_dim; i += 32)
         acc += activation_f32(xq[i]) * bf16_bits_to_f32(row[i]);
     acc = warp_sumf(acc);
-    if (lane == 0) inject[c] = acc;
+    if (lane == 0)
+        inject[c] = acc;
 }
 
-__dpct_inline__ void gr_write_kernel(const float *__restrict__ R,
-                                     const float *__restrict__ block_out,
-                                     const float *__restrict__ inject,
-                                     int n_embd, int hc,
-                                     float *__restrict__ out,
-                                     uint8_t *dpct_local) {
+__dpct_inline__ void gr_write_kernel(const float* __restrict__ R, const float* __restrict__ block_out,
+                                     const float* __restrict__ inject, int n_embd, int hc, float* __restrict__ out,
+                                     uint8_t* dpct_local) {
     // w = 2*sigmoid(inject/hc), computed once per stream in shared rather than per element.
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
-    auto smem_raw = (unsigned char *)dpct_local;
+    auto smem_raw = (unsigned char*) dpct_local;
     float* w = (float*) smem_raw;
-    if ((int)item_ct1.get_local_id(2) < hc) w[item_ct1.get_local_id(2)] =
-        2.0f * sigmoid_f(inject[item_ct1.get_local_id(2)] / (float)hc);
+    if ((int) item_ct1.get_local_id(2) < hc)
+        w[item_ct1.get_local_id(2)] = 2.0f * sigmoid_f(inject[item_ct1.get_local_id(2)] / (float) hc);
     item_ct1.barrier(sycl::access::fence_space::local_space);
     const long long n = (long long) hc * n_embd;
-    for (long long i =
-             (long long)item_ct1.get_group(2) * item_ct1.get_local_range(2) +
-             item_ct1.get_local_id(2);
-         i < n; i += (long long)item_ct1.get_group_range(2) *
-                     item_ct1.get_local_range(2)) {
+    for (long long i = (long long) item_ct1.get_group(2) * item_ct1.get_local_range(2) + item_ct1.get_local_id(2);
+         i < n; i += (long long) item_ct1.get_group_range(2) * item_ct1.get_local_range(2)) {
         const int c = (int) (i / n_embd), d = (int) (i % n_embd);
         // every stream adds the SAME block output; only the weight differs per stream
         out[i] = R[i] + block_out[d] * w[c];
     }
 }
 
-}  // namespace
+} // namespace
 
-void gr_set_fp32_activations(bool enabled) { fp32_activations = enabled; }
-void gr_set_native_mmvf(bool enabled) { native_mmvf = enabled; }
+void gr_set_fp32_activations(bool enabled) {
+    fp32_activations = enabled;
+}
+void gr_set_native_mmvf(bool enabled) {
+    native_mmvf = enabled;
+}
 
 size_t gr_workspace_init(const GrShapes& s, void* base, GrWorkspace& out) {
     const size_t hc_dim = (size_t) s.hc * (size_t) s.n_embd;
@@ -438,11 +439,11 @@ size_t gr_workspace_init(const GrShapes& s, void* base, GrWorkspace& out) {
     // exactly is not a coincidence to investigate - it means the reduction is not where the bug is, and the
     // inputs are.  Chasing the reduction instead cost most of a round.
     const size_t sz[5] = {
-        hc_dim * sizeof(float),                // 0: xn
-        hc_dim * sizeof(uint16_t),             // 1: xq
-        (size_t) s.hc_lr * sizeof(uint16_t),   // 2: lq
-        hc_dim * sizeof(float),                // 3: gated
-        (size_t) s.hc_lr * sizeof(float),        // 4: lo (FP32 activation experiment)
+        hc_dim * sizeof(float),              // 0: xn
+        hc_dim * sizeof(uint16_t),           // 1: xq
+        (size_t) s.hc_lr * sizeof(uint16_t), // 2: lq
+        hc_dim * sizeof(float),              // 3: gated
+        (size_t) s.hc_lr * sizeof(float),    // 4: lo (FP32 activation experiment)
     };
     size_t al[5], bytes = 0;
     for (int k = 0; k < 5; ++k) {
@@ -466,18 +467,18 @@ size_t gr_workspace_init(const GrShapes& s, void* base, GrWorkspace& out) {
     return bytes;
 }
 
-void gr_read(const float *R, const float *w_norm, const uint16_t *w_down,
-             const uint16_t *w_up, const uint16_t *w_inject, float eps,
-             const GrShapes &s, const GrWorkspace &ws, float *mixed,
-             float *inject, void *stream) try {
-    if (s.n_embd <= 0 || s.hc <= 0 || s.hc_lr <= 0) return;
+void gr_read(const float* R, const float* w_norm, const uint16_t* w_down, const uint16_t* w_up,
+             const uint16_t* w_inject, float eps, const GrShapes& s, const GrWorkspace& ws, float* mixed, float* inject,
+             void* stream) try {
+    if (s.n_embd <= 0 || s.hc <= 0 || s.hc_lr <= 0)
+        return;
     if (ws.xn == nullptr || ws.xq == nullptr || ws.lq == nullptr || ws.gated == nullptr || ws.lo == nullptr) {
         std::fprintf(stderr, "gr_read: GrWorkspace is not initialised (see gr_workspace_init)\n");
         std::exit(1);
     }
     if (ws.bytes < gr_workspace_bytes(s)) {
-        std::fprintf(stderr, "gr_read: GrWorkspace is %zu bytes but this geometry needs %zu\n",
-                     ws.bytes, gr_workspace_bytes(s));
+        std::fprintf(stderr, "gr_read: GrWorkspace is %zu bytes but this geometry needs %zu\n", ws.bytes,
+                     gr_workspace_bytes(s));
         std::exit(1);
     }
     const int n_embd = (int) s.n_embd, hc = (int) s.hc, hc_lr = (int) s.hc_lr;
@@ -499,122 +500,78 @@ void gr_read(const float *R, const float *w_norm, const uint16_t *w_down,
         native_gr_pre_gated(ws.xn, ws.gated, mixed, n_embd, hc, w_inject != nullptr, stream);
     } else if (use_fp32) {
         {
-            auto exp_props = sycl::ext::oneapi::experimental::properties{
-                sycl::ext::oneapi::experimental::use_root_sync};
-            dpct::has_capability_or_fail(st->get_device(),
-                                         {sycl::aspect::fp64});
+            auto exp_props =
+                sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::use_root_sync};
+            dpct::has_capability_or_fail(st->get_device(), {sycl::aspect::fp64});
 
-            st->parallel_for<dpct_kernel_name<class gr_norm_kernel_8a2029,
-                                              dpct_kernel_scalar<true>>>(
-                sycl::nd_range<3>(sycl::range(1, 1, hc) *
-                                      sycl::range(1, 1, THREADS),
-                                  sycl::range(1, 1, THREADS)),
-                exp_props,
-                [=](sycl::nd_item<3> item_ct1)
-                    [[sycl::reqd_sub_group_size(32)]] {
-                        gr_norm_kernel<true>(R, w_norm, eps, n_embd, ws.xn,
-                                             ws.xq);
-                    });
+            st->parallel_for<dpct_kernel_name<class gr_norm_kernel_8a2029, dpct_kernel_scalar<true>>>(
+                sycl::nd_range<3>(sycl::range(1, 1, hc) * sycl::range(1, 1, THREADS), sycl::range(1, 1, THREADS)),
+                exp_props, [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(32)]] {
+                    gr_norm_kernel<true>(R, w_norm, eps, n_embd, ws.xn, ws.xq);
+                });
         }
         {
-            auto exp_props = sycl::ext::oneapi::experimental::properties{
-                sycl::ext::oneapi::experimental::use_root_sync};
+            auto exp_props =
+                sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::use_root_sync};
 
-            st->parallel_for<
-                dpct_kernel_name<class gr_down_kernel_f016b0, float>>(
-                sycl::nd_range<3>(sycl::range(1, 1, hc_lr) *
-                                      sycl::range(1, 1, THREADS),
-                                  sycl::range(1, 1, THREADS)),
-                exp_props,
-                [=](sycl::nd_item<3> item_ct1)
-                    [[sycl::reqd_sub_group_size(32)]] {
-                        gr_down_kernel<float>(ws.xn, w_down, hc_dim, hc_lr, hc,
-                                              ws.lo);
-                    });
+            st->parallel_for<dpct_kernel_name<class gr_down_kernel_f016b0, float>>(
+                sycl::nd_range<3>(sycl::range(1, 1, hc_lr) * sycl::range(1, 1, THREADS), sycl::range(1, 1, THREADS)),
+                exp_props, [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(32)]] {
+                    gr_down_kernel<float>(ws.xn, w_down, hc_dim, hc_lr, hc, ws.lo);
+                });
         }
         {
-            auto exp_props = sycl::ext::oneapi::experimental::properties{
-                sycl::ext::oneapi::experimental::use_root_sync};
+            auto exp_props =
+                sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::use_root_sync};
 
-            st->parallel_for<
-                dpct_kernel_name<class gr_gate_kernel_4b823d, float>>(
-                sycl::nd_range<3>(
-                    sycl::range(1, 1, (hc_dim + WARPS - 1) / WARPS) *
-                        sycl::range(1, 1, THREADS),
-                    sycl::range(1, 1, THREADS)),
-                exp_props,
-                [=](sycl::nd_item<3> item_ct1)
-                    [[sycl::reqd_sub_group_size(32)]] {
-                        gr_gate_kernel<float>(ws.lo, w_up, ws.xn, hc_dim, hc_lr,
-                                              ws.gated);
-                    });
+            st->parallel_for<dpct_kernel_name<class gr_gate_kernel_4b823d, float>>(
+                sycl::nd_range<3>(sycl::range(1, 1, (hc_dim + WARPS - 1) / WARPS) * sycl::range(1, 1, THREADS),
+                                  sycl::range(1, 1, THREADS)),
+                exp_props, [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(32)]] {
+                    gr_gate_kernel<float>(ws.lo, w_up, ws.xn, hc_dim, hc_lr, ws.gated);
+                });
         }
     } else {
         {
-            auto exp_props = sycl::ext::oneapi::experimental::properties{
-                sycl::ext::oneapi::experimental::use_root_sync};
-            dpct::has_capability_or_fail(st->get_device(),
-                                         {sycl::aspect::fp64});
+            auto exp_props =
+                sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::use_root_sync};
+            dpct::has_capability_or_fail(st->get_device(), {sycl::aspect::fp64});
 
-            st->parallel_for<dpct_kernel_name<class gr_norm_kernel_f7b23c,
-                                              dpct_kernel_scalar<false>>>(
-                sycl::nd_range<3>(sycl::range(1, 1, hc) *
-                                      sycl::range(1, 1, THREADS),
-                                  sycl::range(1, 1, THREADS)),
-                exp_props,
-                [=](sycl::nd_item<3> item_ct1)
-                    [[sycl::reqd_sub_group_size(32)]] {
-                        gr_norm_kernel<false>(R, w_norm, eps, n_embd, ws.xn,
-                                              ws.xq);
-                    });
+            st->parallel_for<dpct_kernel_name<class gr_norm_kernel_f7b23c, dpct_kernel_scalar<false>>>(
+                sycl::nd_range<3>(sycl::range(1, 1, hc) * sycl::range(1, 1, THREADS), sycl::range(1, 1, THREADS)),
+                exp_props, [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(32)]] {
+                    gr_norm_kernel<false>(R, w_norm, eps, n_embd, ws.xn, ws.xq);
+                });
         }
         {
-            auto exp_props = sycl::ext::oneapi::experimental::properties{
-                sycl::ext::oneapi::experimental::use_root_sync};
+            auto exp_props =
+                sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::use_root_sync};
 
-            st->parallel_for<
-                dpct_kernel_name<class gr_down_kernel_cbf49c, uint16_t>>(
-                sycl::nd_range<3>(sycl::range(1, 1, hc_lr) *
-                                      sycl::range(1, 1, THREADS),
-                                  sycl::range(1, 1, THREADS)),
-                exp_props,
-                [=](sycl::nd_item<3> item_ct1)
-                    [[sycl::reqd_sub_group_size(32)]] {
-                        gr_down_kernel<uint16_t>(ws.xq, w_down, hc_dim, hc_lr,
-                                                 hc, ws.lq);
-                    });
+            st->parallel_for<dpct_kernel_name<class gr_down_kernel_cbf49c, uint16_t>>(
+                sycl::nd_range<3>(sycl::range(1, 1, hc_lr) * sycl::range(1, 1, THREADS), sycl::range(1, 1, THREADS)),
+                exp_props, [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(32)]] {
+                    gr_down_kernel<uint16_t>(ws.xq, w_down, hc_dim, hc_lr, hc, ws.lq);
+                });
         }
         {
-            auto exp_props = sycl::ext::oneapi::experimental::properties{
-                sycl::ext::oneapi::experimental::use_root_sync};
+            auto exp_props =
+                sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::use_root_sync};
 
-            st->parallel_for<
-                dpct_kernel_name<class gr_gate_kernel_75fce5, uint16_t>>(
-                sycl::nd_range<3>(
-                    sycl::range(1, 1, (hc_dim + WARPS - 1) / WARPS) *
-                        sycl::range(1, 1, THREADS),
-                    sycl::range(1, 1, THREADS)),
-                exp_props,
-                [=](sycl::nd_item<3> item_ct1)
-                    [[sycl::reqd_sub_group_size(32)]] {
-                        gr_gate_kernel<uint16_t>(ws.lq, w_up, ws.xn, hc_dim,
-                                                 hc_lr, ws.gated);
-                    });
+            st->parallel_for<dpct_kernel_name<class gr_gate_kernel_75fce5, uint16_t>>(
+                sycl::nd_range<3>(sycl::range(1, 1, (hc_dim + WARPS - 1) / WARPS) * sycl::range(1, 1, THREADS),
+                                  sycl::range(1, 1, THREADS)),
+                exp_props, [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(32)]] {
+                    gr_gate_kernel<uint16_t>(ws.lq, w_up, ws.xn, hc_dim, hc_lr, ws.gated);
+                });
         }
     }
-    if (!use_native)
-    {
-        auto exp_props = sycl::ext::oneapi::experimental::properties{
-            sycl::ext::oneapi::experimental::use_root_sync};
+    if (!use_native) {
+        auto exp_props = sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::use_root_sync};
 
         st->parallel_for<dpct_kernel_name<class gr_mean_kernel_f4c4e8>>(
-            sycl::nd_range<3>(
-                sycl::range(1, 1, (n_embd + THREADS - 1) / THREADS) *
-                    sycl::range(1, 1, THREADS),
-                sycl::range(1, 1, THREADS)),
-            exp_props, [=](sycl::nd_item<3> item_ct1) {
-                gr_mean_kernel(ws.gated, n_embd, hc, mixed);
-            });
+            sycl::nd_range<3>(sycl::range(1, 1, (n_embd + THREADS - 1) / THREADS) * sycl::range(1, 1, THREADS),
+                              sycl::range(1, 1, THREADS)),
+            exp_props, [=](sycl::nd_item<3> item_ct1) { gr_mean_kernel(ws.gated, n_embd, hc, mixed); });
     }
     // Absent for the final mixer, and then nothing is written - computing an injection nobody reads would be
     // a claim, not a convenience.
@@ -623,26 +580,21 @@ void gr_read(const float *R, const float *w_norm, const uint16_t *w_down,
         if (use_native)
             bf16_gemv_fp32_mmvf(ws.xn, w_inject, inject, hc_dim, hc, stream);
         else if (use_fp32)
-            /*
-            DPCT1049: The work-group size passed to the SYCL kernel may
-            exceed the limit. To get the device limit, query
-            info::device::max_work_group_size. Adjust the work-group size if
-            needed.
-            */
+        /*
+        DPCT1049: The work-group size passed to the SYCL kernel may
+        exceed the limit. To get the device limit, query
+        info::device::max_work_group_size. Adjust the work-group size if
+        needed.
+        */
         {
-            auto exp_props = sycl::ext::oneapi::experimental::properties{
-                sycl::ext::oneapi::experimental::use_root_sync};
+            auto exp_props =
+                sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::use_root_sync};
 
-            st->parallel_for<
-                dpct_kernel_name<class gr_inject_kernel_182d54, float>>(
-                sycl::nd_range<3>(sycl::range(1, 1, nthreads),
-                                  sycl::range(1, 1, nthreads)),
-                exp_props,
-                [=](sycl::nd_item<3> item_ct1)
-                    [[sycl::reqd_sub_group_size(32)]] {
-                        gr_inject_kernel<float>(ws.xn, w_inject, hc_dim, hc,
-                                                inject);
-                    });
+            st->parallel_for<dpct_kernel_name<class gr_inject_kernel_182d54, float>>(
+                sycl::nd_range<3>(sycl::range(1, 1, nthreads), sycl::range(1, 1, nthreads)), exp_props,
+                [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(32)]] {
+                    gr_inject_kernel<float>(ws.xn, w_inject, hc_dim, hc, inject);
+                });
         } else
         /*
         DPCT1049: The work-group size passed to the SYCL kernel may
@@ -651,19 +603,14 @@ void gr_read(const float *R, const float *w_norm, const uint16_t *w_down,
         needed.
         */
         {
-            auto exp_props = sycl::ext::oneapi::experimental::properties{
-                sycl::ext::oneapi::experimental::use_root_sync};
+            auto exp_props =
+                sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::use_root_sync};
 
-            st->parallel_for<
-                dpct_kernel_name<class gr_inject_kernel_500b2a, uint16_t>>(
-                sycl::nd_range<3>(sycl::range(1, 1, nthreads),
-                                  sycl::range(1, 1, nthreads)),
-                exp_props,
-                [=](sycl::nd_item<3> item_ct1)
-                    [[sycl::reqd_sub_group_size(32)]] {
-                        gr_inject_kernel<uint16_t>(ws.xq, w_inject, hc_dim, hc,
-                                                   inject);
-                    });
+            st->parallel_for<dpct_kernel_name<class gr_inject_kernel_500b2a, uint16_t>>(
+                sycl::nd_range<3>(sycl::range(1, 1, nthreads), sycl::range(1, 1, nthreads)), exp_props,
+                [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(32)]] {
+                    gr_inject_kernel<uint16_t>(ws.xq, w_inject, hc_dim, hc, inject);
+                });
         }
     }
 
@@ -675,61 +622,46 @@ void gr_read(const float *R, const float *w_norm, const uint16_t *w_down,
     const dpct::err0 e = 0;
 
     if (stream == nullptr) {
-        const dpct::err0 se = DPCT_CHECK_ERROR(
-            dpct::get_current_device().queues_wait_and_throw());
+        const dpct::err0 se = DPCT_CHECK_ERROR(dpct::get_current_device().queues_wait_and_throw());
     }
-}
-catch (sycl::exception const &exc) {
-  std::cerr << exc.what() << "Exception caught at file:" << __FILE__
-            << ", line:" << __LINE__ << std::endl;
-  std::exit(1);
+} catch (sycl::exception const& exc) {
+    std::cerr << exc.what() << "Exception caught at file:" << __FILE__ << ", line:" << __LINE__ << std::endl;
+    std::exit(1);
 }
 
-void gr_write(const float *R, const float *block_out, const float *inject,
-              const GrShapes &s, float *R_out, void *stream) try {
-    if (s.n_embd <= 0 || s.hc <= 0) return;
+void gr_write(const float* R, const float* block_out, const float* inject, const GrShapes& s, float* R_out,
+              void* stream) try {
+    if (s.n_embd <= 0 || s.hc <= 0)
+        return;
     const long long n = (long long) s.hc * s.n_embd;
     const int blocks = (int) ((n + THREADS - 1) / THREADS);
     if (native_mmvf)
         native_gr_post(R, block_out, inject, R_out, (int) s.n_embd, (int) s.hc, stream);
     else {
-        auto exp_props = sycl::ext::oneapi::experimental::properties{
-            sycl::ext::oneapi::experimental::use_root_sync};
+        auto exp_props = sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::use_root_sync};
 
-        guild::q_of(stream)
-            ->submit([&](sycl::handler &cgh) {
-                /*
-                DPCT1083: The size of local memory in the migrated code may
-                be different from the original code. Check that the allocated
-                memory size in the migrated code is correct.
-                */
-                sycl::local_accessor<uint8_t, 1> dpct_local_acc_ct1(
-                    sycl::range((size_t)s.hc * sizeof(float)), cgh);
+        guild::q_of(stream)->submit([&](sycl::handler& cgh) {
+            /*
+            DPCT1083: The size of local memory in the migrated code may
+            be different from the original code. Check that the allocated
+            memory size in the migrated code is correct.
+            */
+            sycl::local_accessor<uint8_t, 1> dpct_local_acc_ct1(sycl::range((size_t) s.hc * sizeof(float)), cgh);
 
-                cgh.parallel_for<
-                    dpct_kernel_name<class gr_write_kernel_bd7975>>(
-                    sycl::nd_range<3>(sycl::range(1, 1, blocks) *
-                                          sycl::range(1, 1, THREADS),
-                                      sycl::range(1, 1, THREADS)),
-                    exp_props, [=](sycl::nd_item<3> item_ct1) {
-                        gr_write_kernel(
-                            R, block_out, inject, (int)s.n_embd, (int)s.hc,
-                            R_out,
-                            dpct_local_acc_ct1
-                                .get_multi_ptr<sycl::access::decorated::no>()
-                                .get());
-                    });
-            });
+            cgh.parallel_for<dpct_kernel_name<class gr_write_kernel_bd7975>>(
+                sycl::nd_range<3>(sycl::range(1, 1, blocks) * sycl::range(1, 1, THREADS), sycl::range(1, 1, THREADS)),
+                exp_props, [=](sycl::nd_item<3> item_ct1) {
+                    gr_write_kernel(R, block_out, inject, (int) s.n_embd, (int) s.hc, R_out,
+                                    dpct_local_acc_ct1.get_multi_ptr<sycl::access::decorated::no>().get());
+                });
+        });
     }
     if (stream == nullptr) {
-        const dpct::err0 e = DPCT_CHECK_ERROR(
-            dpct::get_current_device().queues_wait_and_throw());
+        const dpct::err0 e = DPCT_CHECK_ERROR(dpct::get_current_device().queues_wait_and_throw());
     }
-}
-catch (sycl::exception const &exc) {
-  std::cerr << exc.what() << "Exception caught at file:" << __FILE__
-            << ", line:" << __LINE__ << std::endl;
-  std::exit(1);
+} catch (sycl::exception const& exc) {
+    std::cerr << exc.what() << "Exception caught at file:" << __FILE__ << ", line:" << __LINE__ << std::endl;
+    std::exit(1);
 }
 
-}  // namespace guild::kernels
+} // namespace guild::kernels

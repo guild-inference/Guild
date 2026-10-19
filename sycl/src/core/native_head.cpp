@@ -14,13 +14,17 @@
 namespace guild::core {
 
 NativeHead::~NativeHead() {
-    if (scratch_) sycl::free(scratch_, dpct::get_in_order_queue());
-    if (weights_) sycl::free(weights_, dpct::get_in_order_queue());
+    if (scratch_)
+        sycl::free(scratch_, dpct::get_in_order_queue());
+    if (weights_)
+        sycl::free(weights_, dpct::get_in_order_queue());
 }
 
-bool NativeHead::load(const std::vector<std::string> &shards, int64_t n_in,
-                      int64_t n_out, std::string &err) try {
-    if (loaded()) { err = "native head is already loaded"; return false; }
+bool NativeHead::load(const std::vector<std::string>& shards, int64_t n_in, int64_t n_out, std::string& err) try {
+    if (loaded()) {
+        err = "native head is already loaded";
+        return false;
+    }
     if (n_in <= 0 || n_out <= 0 || n_in > INT_MAX || n_out > INT_MAX || n_in % 256) {
         err = "native head requires positive int32 dimensions and whole 256-value rows";
         return false;
@@ -30,7 +34,8 @@ bool NativeHead::load(const std::vector<std::string> &shards, int64_t n_in,
         // of Unsloth's UD-Q4_K_XL, whose shard 1 holds no tensor).  GgufModel refuses a duplicate across shards.
         const guild::GgufModel model(shards);
         err = guild::check_architecture(model.meta());
-        if (!err.empty()) return false;
+        if (!err.empty())
+            return false;
         size_t at = 0;
         const guild::TensorInfo* tensor = model.find("output.weight", &at);
         const guild::GgufFile& gguf = model.shard(at);
@@ -47,26 +52,23 @@ bool NativeHead::load(const std::vector<std::string> &shards, int64_t n_in,
         }
         void* weights = nullptr;
         void* scratch = nullptr;
-        dpct::err0 status =
-            DPCT_CHECK_ERROR(weights = (void *)sycl::malloc_device(
-                                 bytes, dpct::get_in_order_queue()));
+        dpct::err0 status = DPCT_CHECK_ERROR(weights = (void*) sycl::malloc_device(bytes, dpct::get_in_order_queue()));
         if (status == 0)
-            status = DPCT_CHECK_ERROR(
-                scratch = (void *)sycl::malloc_device(
-                    guild::kernels::native_q8_1_bytes((int)n_in, 1),
-                    dpct::get_in_order_queue()));
+            status =
+                DPCT_CHECK_ERROR(scratch = (void*) sycl::malloc_device(guild::kernels::native_q8_1_bytes((int) n_in, 1),
+                                                                       dpct::get_in_order_queue()));
         if (status == 0)
-            status = DPCT_CHECK_ERROR(
-                dpct::get_in_order_queue()
-                    .memcpy(weights, gguf.tensor_data(*tensor), bytes)
-                    .wait());
+            status =
+                DPCT_CHECK_ERROR(dpct::get_in_order_queue().memcpy(weights, gguf.tensor_data(*tensor), bytes).wait());
         /*
         DPCT1000: Error handling if-stmt was detected but could not be
         rewritten.
         */
         if (status != 0) {
-            if (scratch) sycl::free(scratch, dpct::get_in_order_queue());
-            if (weights) sycl::free(weights, dpct::get_in_order_queue());
+            if (scratch)
+                sycl::free(scratch, dpct::get_in_order_queue());
+            if (weights)
+                sycl::free(weights, dpct::get_in_order_queue());
             /*
             DPCT1009: SYCL reports errors using exceptions and does not use
             error codes. Please replace the "get_error_string_dummy(...)" with a
@@ -75,8 +77,7 @@ bool NativeHead::load(const std::vector<std::string> &shards, int64_t n_in,
             /*
             DPCT1001: The statement could not be removed.
             */
-            err = std::string("native head upload: ") +
-                  dpct::get_error_string_dummy(status);
+            err = std::string("native head upload: ") + dpct::get_error_string_dummy(status);
             return false;
         }
         weights_ = weights;
@@ -90,15 +91,12 @@ bool NativeHead::load(const std::vector<std::string> &shards, int64_t n_in,
         err = std::string("native head: ") + error.what();
         return false;
     }
-}
-catch (sycl::exception const &exc) {
-  std::cerr << exc.what() << "Exception caught at file:" << __FILE__
-            << ", line:" << __LINE__ << std::endl;
-  std::exit(1);
+} catch (sycl::exception const& exc) {
+    std::cerr << exc.what() << "Exception caught at file:" << __FILE__ << ", line:" << __LINE__ << std::endl;
+    std::exit(1);
 }
 
-bool NativeHead::run(const float *mixed, float *logits, void *stream,
-                     std::string &err) const try {
+bool NativeHead::run(const float* mixed, float* logits, void* stream, std::string& err) const try {
     if (!loaded() || !mixed || !logits || !stream) {
         err = "native head requires loaded weights, device buffers and an explicit stream";
         return false;
@@ -133,16 +131,13 @@ bool NativeHead::run(const float *mixed, float *logits, void *stream,
         /*
         DPCT1001: The statement could not be removed.
         */
-        err = std::string("native head launch: ") +
-              dpct::get_error_string_dummy(status);
+        err = std::string("native head launch: ") + dpct::get_error_string_dummy(status);
         return false;
     }
     return true;
-}
-catch (sycl::exception const &exc) {
-  std::cerr << exc.what() << "Exception caught at file:" << __FILE__
-            << ", line:" << __LINE__ << std::endl;
-  std::exit(1);
+} catch (sycl::exception const& exc) {
+    std::cerr << exc.what() << "Exception caught at file:" << __FILE__ << ", line:" << __LINE__ << std::endl;
+    std::exit(1);
 }
 
 // ================================ plan v0.3 P6: THE NATIVE EMBEDDING ================================
@@ -150,23 +145,32 @@ catch (sycl::exception const &exc) {
 namespace {
 const NativeEmbed* g_embed = nullptr;
 }
-void set_native_embed(const NativeEmbed* e) { g_embed = e; }
-const NativeEmbed* native_embed() { return g_embed; }
-
-NativeEmbed::~NativeEmbed() {
-    if (host_) sycl::free(host_, dpct::get_in_order_queue());
-    else if (dev_)
-        sycl::free((void *) dev_, dpct::get_in_order_queue()); // the VRAM fallback below
+void set_native_embed(const NativeEmbed* e) {
+    g_embed = e;
+}
+const NativeEmbed* native_embed() {
+    return g_embed;
 }
 
-bool NativeEmbed::load(const std::vector<std::string> &shards, int64_t n_embd,
-                       int64_t n_vocab, std::string &err) try {
+NativeEmbed::~NativeEmbed() {
+    if (host_)
+        sycl::free(host_, dpct::get_in_order_queue());
+    else if (dev_)
+        sycl::free((void*) dev_, dpct::get_in_order_queue()); // the VRAM fallback below
+}
+
+bool NativeEmbed::load(const std::vector<std::string>& shards, int64_t n_embd, int64_t n_vocab, std::string& err) try {
     try {
         const guild::GgufModel model(shards);
         // --embd-gguf's one-tensor file (tools/embd_bf16_pack.py) says "guild-embd": only its tensor is checked
         const guild::MetaValue* arch = model.meta().get("general.architecture");
-        err = arch != nullptr && (arch->s == "guild-embd" || arch->s == "strata-embd") ? std::string() : guild::check_architecture(model.meta());
-        if (!err.empty()) { err = "native embedding: " + err; return false; }
+        err = arch != nullptr && (arch->s == "guild-embd" || arch->s == "strata-embd")
+                  ? std::string()
+                  : guild::check_architecture(model.meta());
+        if (!err.empty()) {
+            err = "native embedding: " + err;
+            return false;
+        }
         size_t at = 0;
         const guild::TensorInfo* t = model.find("token_embd.weight", &at);
         const guild::GgufFile& gguf = model.shard(at);
@@ -195,8 +199,7 @@ bool NativeEmbed::load(const std::vector<std::string> &shards, int64_t n_embd,
         in the migrated code and was removed or replaced with 0. You may need to
         check the migrated code.
         */
-        if (DPCT_CHECK_ERROR(host_ = (void *)sycl::malloc_host(
-                                 bytes_, dpct::get_in_order_queue())) != 0) {
+        if (DPCT_CHECK_ERROR(host_ = (void*) sycl::malloc_host(bytes_, dpct::get_in_order_queue())) != 0) {
             // Under WSL2 the driver's pinned/mapped host budget (~1 GiB) can be spent by the GPU contexts
             // themselves (three cards). The table is only gathered from, so keep it in the current device's VRAM
             // instead: it costs its size there and reads faster than over PCIe.
@@ -206,25 +209,21 @@ bool NativeEmbed::load(const std::vector<std::string> &shards, int64_t n_embd,
             */
             host_ = nullptr;
             void* d = nullptr;
-            if (DPCT_CHECK_ERROR(d = (void *)sycl::malloc_device(
-                                     bytes_, dpct::get_in_order_queue())) !=
-                    0 ||
+            if (DPCT_CHECK_ERROR(d = (void*) sycl::malloc_device(bytes_, dpct::get_in_order_queue())) != 0 ||
                 /*
                 DPCT1114: cudaMemcpy is migrated to asynchronization memcpy,
                 assuming in the original code the source host memory is pageable
                 memory. If the memory is not pageable, call wait() on event
                 return by memcpy API to ensure synchronization behavior.
                 */
-                DPCT_CHECK_ERROR(dpct::get_in_order_queue().memcpy(
-                    d, gguf.tensor_data(*t), bytes_).wait()) != 0) {
-                if (d) sycl::free(d, dpct::get_in_order_queue());
+                DPCT_CHECK_ERROR(dpct::get_in_order_queue().memcpy(d, gguf.tensor_data(*t), bytes_).wait()) != 0) {
+                if (d)
+                    sycl::free(d, dpct::get_in_order_queue());
                 /*
                 DPCT1026: The call to cudaGetLastError was removed because
                 this functionality is redundant in SYCL.
                 */
-                err = "native embedding: cannot pin " +
-                      std::to_string(bytes_ >> 20) +
-                      " MiB, nor place it in VRAM";
+                err = "native embedding: cannot pin " + std::to_string(bytes_ >> 20) + " MiB, nor place it in VRAM";
                 return false;
             }
             std::fprintf(stderr, "guild: native embedding: cannot pin %llu MiB, kept in VRAM instead\n",
@@ -243,17 +242,18 @@ bool NativeEmbed::load(const std::vector<std::string> &shards, int64_t n_embd,
                 d = nullptr;
                 if (cudaMalloc(&d, bytes_) != cudaSuccess ||
                     cudaMemcpy(d, gguf.tensor_data(*t), bytes_, cudaMemcpyHostToDevice) != cudaSuccess) {
-                    if (d) cudaFree(d);
+                    if (d)
+                        cudaFree(d);
                     cudaGetLastError();
                     err = "native embedding: no device alias for the mapped table, and no VRAM to copy it into";
                     return false;
                 }
-                cudaFreeHost(host_);   // the destructor frees dev_ when host_ is null
+                cudaFreeHost(host_); // the destructor frees dev_ when host_ is null
                 host_ = nullptr;
                 std::fprintf(stderr, "guild: native embedding: no device alias for the mapped table, kept in VRAM\n");
             }
 #else
-            if (DPCT_CHECK_ERROR(d = (void *)host_) != 0) {
+            if (DPCT_CHECK_ERROR(d = (void*) host_) != 0) {
                 err = "native embedding: no device alias for the mapped table";
                 return false;
             }
@@ -268,11 +268,9 @@ bool NativeEmbed::load(const std::vector<std::string> &shards, int64_t n_embd,
         err = std::string("native embedding: ") + e.what();
         return false;
     }
-}
-catch (sycl::exception const &exc) {
-  std::cerr << exc.what() << "Exception caught at file:" << __FILE__
-            << ", line:" << __LINE__ << std::endl;
-  std::exit(1);
+} catch (sycl::exception const& exc) {
+    std::cerr << exc.what() << "Exception caught at file:" << __FILE__ << ", line:" << __LINE__ << std::endl;
+    std::exit(1);
 }
 
 void NativeEmbed::gather_dev(const int32_t* tokens, int64_t n_tok, float* out, void* stream) const {
@@ -283,4 +281,4 @@ void NativeEmbed::gather_one(int64_t token, float* out, void* stream) const {
     guild::kernels::iq_dequant_f32(type_, (const uint8_t*) dev_ + (size_t) token * row_, n_embd_, out, stream);
 }
 
-}  // namespace guild::core
+} // namespace guild::core

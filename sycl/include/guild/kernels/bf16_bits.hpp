@@ -44,7 +44,8 @@ GUILD_BF16_HD inline uint16_t bf16_from_f32(float f) {
 #else
     std::memcpy(&i, &f, 4);
 #endif
-    if ((i & 0x7FFFFFFFu) > 0x7F800000u) return (uint16_t) ((i >> 16) | 64u);
+    if ((i & 0x7FFFFFFFu) > 0x7F800000u)
+        return (uint16_t) ((i >> 16) | 64u);
     i = (i + ((i >> 16) & 1u) + 0x7FFFu) & 0xFFFF0000u;
     return (uint16_t) (i >> 16);
 }
@@ -61,4 +62,4 @@ GUILD_BF16_HD inline float f32_from_bf16(uint16_t h) {
     return f;
 }
 
-}  // namespace guild::kernels
+} // namespace guild::kernels

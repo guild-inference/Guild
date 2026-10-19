@@ -35,7 +35,9 @@ namespace {
 
 constexpr uint64_t SESSION_STATE_ALIGN = 256;
 
-uint64_t align_up(uint64_t n, uint64_t a) { return (n + a - 1) / a * a; }
+uint64_t align_up(uint64_t n, uint64_t a) {
+    return (n + a - 1) / a * a;
+}
 
 /// The floats one GDN layer's recurrent + conv state needs.  `gdn_buffers_bytes` carves them for ONE layer and
 /// `GdnBuffers::state`/`conv_state` point INTO that carve, so a session with 36 GDN layers has to give each one
@@ -45,7 +47,7 @@ uint64_t gdn_state_floats(const ModelGeometry& g) {
            (uint64_t) g.ssm_conv_channels * (g.ssm_d_conv - 1);
 }
 
-}  // namespace
+} // namespace
 
 /// `NG_HIST` rows of `hc_dim` floats: the PLE conv's history, which is the ONLY PLE state that lives in the
 /// session arena.  The table and the weights are model-level and the caller owns them.
@@ -54,8 +56,10 @@ static uint64_t ple_hist_bytes() {
 }
 
 uint64_t session_bytes(const ModelGeometry& g, int64_t max_cells, int64_t k, int64_t layer_lo, int64_t layer_hi) {
-    if (layer_hi < 0 || layer_hi > g.n_layers) layer_hi = g.n_layers;
-    if (layer_lo < 0) layer_lo = 0;
+    if (layer_hi < 0 || layer_hi > g.n_layers)
+        layer_hi = g.n_layers;
+    if (layer_lo < 0)
+        layer_lo = 0;
     // QSA layers are `l % interval == interval-1`, so exactly `bound / interval` of them live below `bound`
     const int64_t I = std::max<int64_t>(g.qsa_interval, 1);
     const int64_t q_lo = layer_lo / I, q_hi = layer_hi / I;
@@ -70,14 +74,16 @@ uint64_t session_bytes(const ModelGeometry& g, int64_t max_cells, int64_t k, int
     n += qsa_buffers_bytes(g, max_cells);
     n += moe_buffers_bytes(g, k);
     n += block_buffers_bytes(g);
-    n += ple_hist_bytes();                       // the PLE's NG_HIST normalized history rows
+    n += ple_hist_bytes(); // the PLE's NG_HIST normalized history rows
     return align_up(n, SESSION_STATE_ALIGN) + 4096;
 }
 
 uint64_t session_init(const ModelGeometry& g, int64_t max_cells, int64_t k, void* base, SessionState& s,
                       int64_t layer_lo, int64_t layer_hi) {
-    if (layer_hi < 0 || layer_hi > g.n_layers) layer_hi = g.n_layers;
-    if (layer_lo < 0) layer_lo = 0;
+    if (layer_hi < 0 || layer_hi > g.n_layers)
+        layer_hi = g.n_layers;
+    if (layer_lo < 0)
+        layer_lo = 0;
     uint8_t* p = (uint8_t*) base;
     uint64_t used = 0;
     auto take = [&](uint64_t bytes) {
@@ -150,21 +156,21 @@ void session_zero(SessionState& s, const ModelGeometry& g, const float* R_init, 
             type of operand memory, so you may need to call wait() on event
             return by memcpy API to ensure synchronization behavior.
             */
-            cs->memcpy(s.block.R + (size_t)c * g.n_embd, R_init,
-                       (size_t)g.n_embd * 4);
+            cs->memcpy(s.block.R + (size_t) c * g.n_embd, R_init, (size_t) g.n_embd * 4);
     } else {
-        cs->memset(s.block.R, 0, (size_t)g.hc * g.n_embd * 4);
+        cs->memset(s.block.R, 0, (size_t) g.hc * g.n_embd * 4);
     }
     // every owned GDN layer's recurrence and conv history
-    cs->memset(s.gdn_state, 0, (size_t)s.gdn_alloc * gdn_state_floats(g) * 4);
+    cs->memset(s.gdn_state, 0, (size_t) s.gdn_alloc * gdn_state_floats(g) * 4);
     // and every owned QSA layer's cache and indexer
-    for (int64_t j = 0; j < s.qsa_alloc; ++j) qsa_state_zero(s.qsa_states[s.qsa_ord0 + j], g, stream);
+    for (int64_t j = 0; j < s.qsa_alloc; ++j)
+        qsa_state_zero(s.qsa_states[s.qsa_ord0 + j], g, stream);
     // **AND THE PLE'S CONV HISTORY AND TOKEN WINDOW.**  A sequence that started with a warm history would
     // convolve over rows belonging to a different sequence - the conv reads NG_HIST previous NORMALIZED rows,
     // so a stale one is a real contribution and not a zero.  The token window resets to `NG_HIST`-many nulls
     // for the same reason: `ngram_rows` treats a missing predecessor as the EOS cut, which is what a sequence
     // boundary IS.
-    cs->memset(s.ple_hist, 0, (size_t)ple_hist_bytes());
+    cs->memset(s.ple_hist, 0, (size_t) ple_hist_bytes());
     s.ple_prev[0] = -1;
     s.ple_prev[1] = -1;
     s.ple_token = -1;
@@ -173,9 +179,12 @@ void session_zero(SessionState& s, const ModelGeometry& g, const float* R_init, 
 /// Sets `s.gdn.state`/`conv_state` for `layer`, which is what makes one layer's GDN state its own.  Shared by
 /// the direct and captured paths so the two cannot disagree about which slice a layer owns.
 void gdn_point_at(const ModelGeometry& g, int64_t layer, SessionState& s) {
-    if (is_qsa_layer(g, layer)) return;
+    if (is_qsa_layer(g, layer))
+        return;
     int64_t gdn_index = 0;
-    for (int64_t l = 0; l < layer; ++l) if (!is_qsa_layer(g, l)) ++gdn_index;
+    for (int64_t l = 0; l < layer; ++l)
+        if (!is_qsa_layer(g, l))
+            ++gdn_index;
     s.gdn.state = s.gdn_state + (size_t) (gdn_index - s.gdn_ord0) * gdn_state_floats(g);
     s.gdn.conv_state = s.gdn.state + (uint64_t) g.ssm_state_size * g.ssm_v_heads * g.ssm_state_size;
 }
@@ -192,33 +201,34 @@ void stage_token(const ModelGeometry& g, int64_t pos, int32_t pos_base, SessionS
     for (int64_t j = 0; j < s.qsa_alloc; ++j) {
         QsaState& q = s.qsa_states[s.qsa_ord0 + j];
         qsa_step_fill(q.host_step, pos, sh);
-        for (int64_t h = 0; h < g.n_head; ++h) q.host_pos[h] = (int32_t) (pos_base + pos);
+        for (int64_t h = 0; h < g.n_head; ++h)
+            q.host_pos[h] = (int32_t) (pos_base + pos);
     }
 }
 
 bool session_capture(const WeightTable& tables, const ModelGeometry& g, SessionState& s, const float* parts,
                      SessionGraphs& gr, std::string& err, bool split, int64_t layer_lo, int64_t layer_hi) {
-    if (gr.captured) return true;
-    if (layer_hi < 0 || layer_hi > g.n_layers) layer_hi = g.n_layers;
-    if (layer_lo < 0) layer_lo = 0;
-    gr.execs =
-        new dpct::experimental::command_graph_exec_ptr[(size_t)g.n_layers]();
-    gr.posts =
-        new dpct::experimental::command_graph_exec_ptr[(size_t)g.n_layers]();
-    for (int64_t i = 0; i < g.n_layers; ++i) gr.posts[i] = nullptr;
+    if (gr.captured)
+        return true;
+    if (layer_hi < 0 || layer_hi > g.n_layers)
+        layer_hi = g.n_layers;
+    if (layer_lo < 0)
+        layer_lo = 0;
+    gr.execs = new dpct::experimental::command_graph_exec_ptr[(size_t) g.n_layers]();
+    gr.posts = new dpct::experimental::command_graph_exec_ptr[(size_t) g.n_layers]();
+    for (int64_t i = 0; i < g.n_layers; ++i)
+        gr.posts[i] = nullptr;
     if (split) {
-        gr.preA =
-            new dpct::experimental::command_graph_exec_ptr[(size_t)
-                                                               g.n_layers]();
-        gr.preB =
-            new dpct::experimental::command_graph_exec_ptr[(size_t)
-                                                               g.n_layers]();
-        for (int64_t i = 0; i < g.n_layers; ++i) { gr.preA[i] = nullptr; gr.preB[i] = nullptr; }
+        gr.preA = new dpct::experimental::command_graph_exec_ptr[(size_t) g.n_layers]();
+        gr.preB = new dpct::experimental::command_graph_exec_ptr[(size_t) g.n_layers]();
+        for (int64_t i = 0; i < g.n_layers; ++i) {
+            gr.preA[i] = nullptr;
+            gr.preB[i] = nullptr;
+        }
         for (int k = 0; k < 5; ++k) {
-            gr.preP[k] =
-                new dpct::experimental::command_graph_exec_ptr[(size_t)g
-                                                                   .n_layers]();
-            for (int64_t i = 0; i < g.n_layers; ++i) gr.preP[k][i] = nullptr;
+            gr.preP[k] = new dpct::experimental::command_graph_exec_ptr[(size_t) g.n_layers]();
+            for (int64_t i = 0; i < g.n_layers; ++i)
+                gr.preP[k][i] = nullptr;
         }
     }
     gr.split_captured = split;
@@ -234,81 +244,73 @@ bool session_capture(const WeightTable& tables, const ModelGeometry& g, SessionS
         // the CPU pool on what it published; `post` combines those experts with THIS layer's weights.  Capturing
         // them together is what the old single graph could not do, and the reason it could not is that
         // `moe_combine` needs the pool's answer and the pool needs the router's.
-        auto capture =
-            [&](bool post, dpct::experimental::command_graph_exec_ptr *out,
-                const char *what, int half = 0, int stage_prefix = 0) -> bool {
+        auto capture = [&](bool post, dpct::experimental::command_graph_exec_ptr* out, const char* what, int half = 0,
+                           int stage_prefix = 0) -> bool {
             try {
-                           dpct::queue_ptr cs = &dpct::get_in_order_queue();
-            if (DPCT_CHECK_ERROR(
-                    cs = dpct::get_current_device().create_queue(true)) != 0) {
-                err = std::string("session_capture: stream create failed");
-                return false;
-            }
-            if (DPCT_CHECK_ERROR(dpct::experimental::begin_recording(cs)) !=
-                0) {
-                err = "session_capture: begin failed at layer " + std::to_string(l);
-                return false;
-            }
-            err.clear();
-            // R0.9: `half` is 0 for every mode except the split capture, where it selects a prefix of the
-            // stages so the mixer and the FFN-front-plus-router can be timed separately.
-            const bool ok = post
-                                ? block_layer_post(tables, g, l, s.k, s.moe, s.block, parts, (void*) cs, err)
-                                : block_layer_pre(tables, g, l, 0, 0, s.gdn, qst, s.qsa_bufs, s.moe, s.k,
-                                                  s.block, (void*) cs, err, s.db, s.ple.ready() ? &s.ple : nullptr,
-                                                  half, stage_prefix);
-            if (!ok) {
-                err = "session_capture: " + std::string(what) + " layer " + std::to_string(l) + ": " + err;
-                return false;
-            }
-            dpct::experimental::command_graph_ptr graph = nullptr;
-            const dpct::err0 ce =
-                DPCT_CHECK_ERROR(dpct::experimental::end_recording(cs, &graph));
-            dpct::get_current_device().destroy_queue(cs);
-            /*
-            DPCT1000: Error handling if-stmt was detected but could not be
-            rewritten.
-            */
-            if (ce != 0) {
+                dpct::queue_ptr cs = &dpct::get_in_order_queue();
+                if (DPCT_CHECK_ERROR(cs = dpct::get_current_device().create_queue(true)) != 0) {
+                    err = std::string("session_capture: stream create failed");
+                    return false;
+                }
+                if (DPCT_CHECK_ERROR(dpct::experimental::begin_recording(cs)) != 0) {
+                    err = "session_capture: begin failed at layer " + std::to_string(l);
+                    return false;
+                }
+                err.clear();
+                // R0.9: `half` is 0 for every mode except the split capture, where it selects a prefix of the
+                // stages so the mixer and the FFN-front-plus-router can be timed separately.
+                const bool ok =
+                    post ? block_layer_post(tables, g, l, s.k, s.moe, s.block, parts, (void*) cs, err)
+                         : block_layer_pre(tables, g, l, 0, 0, s.gdn, qst, s.qsa_bufs, s.moe, s.k, s.block, (void*) cs,
+                                           err, s.db, s.ple.ready() ? &s.ple : nullptr, half, stage_prefix);
+                if (!ok) {
+                    err = "session_capture: " + std::string(what) + " layer " + std::to_string(l) + ": " + err;
+                    return false;
+                }
+                dpct::experimental::command_graph_ptr graph = nullptr;
+                const dpct::err0 ce = DPCT_CHECK_ERROR(dpct::experimental::end_recording(cs, &graph));
+                dpct::get_current_device().destroy_queue(cs);
                 /*
-                DPCT1001: The statement could not be removed.
+                DPCT1000: Error handling if-stmt was detected but could not be
+                rewritten.
                 */
-                err = "session_capture: " + std::string(what) + " layer " +
-                      std::to_string(l) + ": " +
-                      /*
-                      DPCT1009: SYCL reports errors using exceptions and
-                      does not use error codes. Please replace the
-                      "get_error_string_dummy(...)" with a real error-handling
-                      function.
-                      */
-                      dpct::get_error_string_dummy(ce) +
-                      " (a synchronous call in the layer?)";
-                return false;
+                if (ce != 0) {
+                    /*
+                    DPCT1001: The statement could not be removed.
+                    */
+                    err = "session_capture: " + std::string(what) + " layer " + std::to_string(l) + ": " +
+                          /*
+                          DPCT1009: SYCL reports errors using exceptions and
+                          does not use error codes. Please replace the
+                          "get_error_string_dummy(...)" with a real error-handling
+                          function.
+                          */
+                          dpct::get_error_string_dummy(ce) + " (a synchronous call in the layer?)";
+                    return false;
+                }
+                if (DPCT_CHECK_ERROR(*out = new sycl::ext::oneapi::experimental::command_graph<
+                                         sycl::ext::oneapi::experimental::graph_state::executable>(
+                                         graph->finalize())) != 0) {
+                    err = "session_capture: instantiate failed at layer " + std::to_string(l);
+                    return false;
+                }
+                delete (graph);
+                return true;
+            } catch (sycl::exception const& exc) {
+                std::cerr << exc.what() << "Exception caught at file:" << __FILE__ << ", line:" << __LINE__
+                          << std::endl;
+                std::exit(1);
             }
-            if (DPCT_CHECK_ERROR(
-                        *out =
-                            new sycl::ext::oneapi::experimental::command_graph<
-                                sycl::ext::oneapi::experimental::graph_state::
-                                    executable>(graph->finalize())) != 0) {
-                err = "session_capture: instantiate failed at layer " + std::to_string(l);
-                return false;
-            }
-            delete (graph);
-            return true;
-        }
-                           catch (sycl::exception const &exc) {
-                             std::cerr
-                                 << exc.what()
-                                 << "Exception caught at file:" << __FILE__
-                                 << ", line:" << __LINE__ << std::endl;
-                             std::exit(1);
-                           }
         };
-        if (!capture(/*post=*/false, &gr.execs[l], "pre")) return false;
-        if (!capture(/*post=*/true, &gr.posts[l], "post")) return false;
+        if (!capture(/*post=*/false, &gr.execs[l], "pre"))
+            return false;
+        if (!capture(/*post=*/true, &gr.posts[l], "post"))
+            return false;
         if (split) {
-            if (!capture(/*post=*/false, &gr.preA[l], "preA", /*half=*/1)) return false;
-            if (!capture(/*post=*/false, &gr.preB[l], "preB", /*half=*/2)) return false;
+            if (!capture(/*post=*/false, &gr.preA[l], "preA", /*half=*/1))
+                return false;
+            if (!capture(/*post=*/false, &gr.preB[l], "preB", /*half=*/2))
+                return false;
             // Prefixes 1..5, ALL through the new parameter - including the fifth, so that it and the fourth
             // differ only in the one stage between them and not in how many nodes their graphs carry.
             for (int k = 1; k <= 5; ++k)
@@ -316,22 +318,24 @@ bool session_capture(const WeightTable& tables, const ModelGeometry& g, SessionS
                     return false;
         }
         ++gr.n;
-        if (qsa) ++qsa_index;
+        if (qsa)
+            ++qsa_index;
     }
     gr.captured = true;
-    gr.parts_dev = const_cast<float*>(parts);   // the address the graphs baked in; the loop copies here
+    gr.parts_dev = const_cast<float*>(parts); // the address the graphs baked in; the loop copies here
     return true;
 }
 
-bool session_replay(const ModelGeometry &g, int64_t pos, int32_t pos_base,
-                    SessionState &s, SessionGraphs &gr, void *stream,
-                    std::string &err) try {
-    if (!gr.captured || gr.n != g.n_layers) { err = "session_replay: not captured"; return false; }
+bool session_replay(const ModelGeometry& g, int64_t pos, int32_t pos_base, SessionState& s, SessionGraphs& gr,
+                    void* stream, std::string& err) try {
+    if (!gr.captured || gr.n != g.n_layers) {
+        err = "session_replay: not captured";
+        return false;
+    }
     dpct::queue_ptr cs = guild::q_of(stream);
     stage_token(g, pos, pos_base, s);
     for (int64_t l = 0; l < g.n_layers; ++l) {
-        const dpct::err0 e =
-            DPCT_CHECK_ERROR(cs->ext_oneapi_graph(*gr.execs[l]));
+        const dpct::err0 e = DPCT_CHECK_ERROR(cs->ext_oneapi_graph(*gr.execs[l]));
         /*
         DPCT1000: Error handling if-stmt was detected but could not be
         rewritten.
@@ -345,22 +349,18 @@ bool session_replay(const ModelGeometry &g, int64_t pos, int32_t pos_base,
             /*
             DPCT1001: The statement could not be removed.
             */
-            err = "session_replay: layer " + std::to_string(l) + ": " +
-                  dpct::get_error_string_dummy(e);
+            err = "session_replay: layer " + std::to_string(l) + ": " + dpct::get_error_string_dummy(e);
             return false;
         }
     }
     return true;
-}
-catch (sycl::exception const &exc) {
-  std::cerr << exc.what() << "Exception caught at file:" << __FILE__
-            << ", line:" << __LINE__ << std::endl;
-  std::exit(1);
+} catch (sycl::exception const& exc) {
+    std::cerr << exc.what() << "Exception caught at file:" << __FILE__ << ", line:" << __LINE__ << std::endl;
+    std::exit(1);
 }
 
-bool session_replay_full(const ModelGeometry &g, int64_t pos, int32_t pos_base,
-                         SessionState &s, SessionGraphs &gr, void *stream,
-                         std::string &err) try {
+bool session_replay_full(const ModelGeometry& g, int64_t pos, int32_t pos_base, SessionState& s, SessionGraphs& gr,
+                         void* stream, std::string& err) try {
     if (!gr.captured || gr.n != g.n_layers || gr.posts == nullptr) {
         err = "session_replay_full: not captured with post graphs";
         return false;
@@ -384,8 +384,7 @@ bool session_replay_full(const ModelGeometry &g, int64_t pos, int32_t pos_base,
             /*
             DPCT1001: The statement could not be removed.
             */
-            err = "session_replay_full: pre[" + std::to_string(l) +
-                  "]: " + dpct::get_error_string_dummy(e);
+            err = "session_replay_full: pre[" + std::to_string(l) + "]: " + dpct::get_error_string_dummy(e);
             return false;
         }
         e = DPCT_CHECK_ERROR(cs->ext_oneapi_graph(*gr.posts[l]));
@@ -402,17 +401,14 @@ bool session_replay_full(const ModelGeometry &g, int64_t pos, int32_t pos_base,
             /*
             DPCT1001: The statement could not be removed.
             */
-            err = "session_replay_full: post[" + std::to_string(l) +
-                  "]: " + dpct::get_error_string_dummy(e);
+            err = "session_replay_full: post[" + std::to_string(l) + "]: " + dpct::get_error_string_dummy(e);
             return false;
         }
     }
     return true;
-}
-catch (sycl::exception const &exc) {
-  std::cerr << exc.what() << "Exception caught at file:" << __FILE__
-            << ", line:" << __LINE__ << std::endl;
-  std::exit(1);
+} catch (sycl::exception const& exc) {
+    std::cerr << exc.what() << "Exception caught at file:" << __FILE__ << ", line:" << __LINE__ << std::endl;
+    std::exit(1);
 }
 
 bool session_replay_stages_per_layer(const ModelGeometry& g, int64_t pos, int32_t pos_base, SessionState& s,
@@ -429,99 +425,97 @@ bool session_replay_stages_per_layer(const ModelGeometry& g, int64_t pos, int32_
     // every layer to read them before the next launch overwrote them, and a per-layer sync would report the
     // serialised time rather than the graph's.
     const int64_t n = g.n_layers;
-    std::vector<dpct::event_ptr> ev((size_t)(n * 4));
+    std::vector<dpct::event_ptr> ev((size_t) (n * 4));
     for (auto& e : ev) {
         if (DPCT_CHECK_ERROR(e = new sycl::event()) != 0) {
-            err = "session_replay_stages: event create"; return false;
+            err = "session_replay_stages: event create";
+            return false;
         }
     }
     struct Free {
-        std::vector<dpct::event_ptr> *v;
-        ~Free() { for (auto &e : *v) DPCT_CHECK_ERROR(dpct::destroy_event(e)); }
+        std::vector<dpct::event_ptr>* v;
+        ~Free() {
+            for (auto& e : *v)
+                DPCT_CHECK_ERROR(dpct::destroy_event(e));
+        }
     } frees{&ev};
 
     for (int64_t l = 0; l < n; ++l) {
-        dpct::sync_barrier(ev[(size_t)(l * 4 + 0)], cs);
+        dpct::sync_barrier(ev[(size_t) (l * 4 + 0)], cs);
         if (DPCT_CHECK_ERROR(cs->ext_oneapi_graph(*gr.preA[l])) != 0) {
-            err = "stages: preA"; return false;
+            err = "stages: preA";
+            return false;
         }
-        dpct::sync_barrier(ev[(size_t)(l * 4 + 1)], cs);
+        dpct::sync_barrier(ev[(size_t) (l * 4 + 1)], cs);
         if (DPCT_CHECK_ERROR(cs->ext_oneapi_graph(*gr.preB[l])) != 0) {
-            err = "stages: preB"; return false;
+            err = "stages: preB";
+            return false;
         }
-        dpct::sync_barrier(ev[(size_t)(l * 4 + 2)], cs);
+        dpct::sync_barrier(ev[(size_t) (l * 4 + 2)], cs);
         if (DPCT_CHECK_ERROR(cs->ext_oneapi_graph(*gr.posts[l])) != 0) {
-            err = "stages: post"; return false;
+            err = "stages: post";
+            return false;
         }
-        dpct::sync_barrier(ev[(size_t)(l * 4 + 3)], cs);
+        dpct::sync_barrier(ev[(size_t) (l * 4 + 3)], cs);
     }
     if (DPCT_CHECK_ERROR(cs->wait()) != 0) {
-        err = "stages: final sync"; return false;
+        err = "stages: final sync";
+        return false;
     }
 
     mixer_per_layer.assign((size_t) n, 0.0);
-    ms_ffn = 0; ms_post = 0;
+    ms_ffn = 0;
+    ms_post = 0;
     for (int64_t l = 0; l < n; ++l) {
         float a = 0, b = 0, c = 0;
-        a = (ev[(size_t)(l * 4 + 1)]
-                 ->get_profiling_info<
-                     sycl::info::event_profiling::command_end>() -
-             ev[(size_t)(l * 4 + 0)]
-                 ->get_profiling_info<
-                     sycl::info::event_profiling::command_start>()) /
+        a = (ev[(size_t) (l * 4 + 1)]->get_profiling_info<sycl::info::event_profiling::command_end>() -
+             ev[(size_t) (l * 4 + 0)]->get_profiling_info<sycl::info::event_profiling::command_start>()) /
             1000000.0f;
-        b = (ev[(size_t)(l * 4 + 2)]
-                 ->get_profiling_info<
-                     sycl::info::event_profiling::command_end>() -
-             ev[(size_t)(l * 4 + 1)]
-                 ->get_profiling_info<
-                     sycl::info::event_profiling::command_start>()) /
+        b = (ev[(size_t) (l * 4 + 2)]->get_profiling_info<sycl::info::event_profiling::command_end>() -
+             ev[(size_t) (l * 4 + 1)]->get_profiling_info<sycl::info::event_profiling::command_start>()) /
             1000000.0f;
-        c = (ev[(size_t)(l * 4 + 3)]
-                 ->get_profiling_info<
-                     sycl::info::event_profiling::command_end>() -
-             ev[(size_t)(l * 4 + 2)]
-                 ->get_profiling_info<
-                     sycl::info::event_profiling::command_start>()) /
+        c = (ev[(size_t) (l * 4 + 3)]->get_profiling_info<sycl::info::event_profiling::command_end>() -
+             ev[(size_t) (l * 4 + 2)]->get_profiling_info<sycl::info::event_profiling::command_start>()) /
             1000000.0f;
         mixer_per_layer[(size_t) l] = (double) a;
-        ms_ffn += b; ms_post += c;
+        ms_ffn += b;
+        ms_post += c;
     }
     return true;
 }
 
-bool session_replay_stages(const ModelGeometry& g, int64_t pos, int32_t pos_base, SessionState& s,
-                           SessionGraphs& gr, void* stream, double& ms_mixer, double& ms_ffn, double& ms_post,
-                           std::string& err) {
+bool session_replay_stages(const ModelGeometry& g, int64_t pos, int32_t pos_base, SessionState& s, SessionGraphs& gr,
+                           void* stream, double& ms_mixer, double& ms_ffn, double& ms_post, std::string& err) {
     std::vector<double> per;
-    if (!session_replay_stages_per_layer(g, pos, pos_base, s, gr, stream, per, ms_ffn, ms_post, err)) return false;
+    if (!session_replay_stages_per_layer(g, pos, pos_base, s, gr, stream, per, ms_ffn, ms_post, err))
+        return false;
     ms_mixer = 0;
-    for (double v : per) ms_mixer += v;
+    for (double v : per)
+        ms_mixer += v;
     return true;
 }
 
-bool session_replay_stage_sweep(const ModelGeometry &g, int64_t pos,
-                                int32_t pos_base, SessionState &s,
-                                SessionGraphs &gr, void *stream, int k,
-                                double &ms, std::string &err) try {
+bool session_replay_stage_sweep(const ModelGeometry& g, int64_t pos, int32_t pos_base, SessionState& s,
+                                SessionGraphs& gr, void* stream, int k, double& ms, std::string& err) try {
     if (!gr.split_captured || gr.preP[0] == nullptr) {
         err = "session_replay_stage_sweep: not captured with the split";
         return false;
     }
-    if (k < 1 || k > 5) { err = "session_replay_stage_sweep: k must be 1..5"; return false; }
+    if (k < 1 || k > 5) {
+        err = "session_replay_stage_sweep: k must be 1..5";
+        return false;
+    }
     dpct::queue_ptr cs = guild::q_of(stream);
     stage_token(g, pos, pos_base, s);
 
     dpct::event_ptr a, b;
-    if (DPCT_CHECK_ERROR(a = new sycl::event()) != 0 ||
-        DPCT_CHECK_ERROR(b = new sycl::event()) != 0) {
+    if (DPCT_CHECK_ERROR(a = new sycl::event()) != 0 || DPCT_CHECK_ERROR(b = new sycl::event()) != 0) {
         err = "session_replay_stage_sweep: event create";
         return false;
     }
     dpct::sync_barrier(a, cs);
     for (int64_t l = 0; l < g.n_layers; ++l) {
-        const dpct::err0 e =
-            DPCT_CHECK_ERROR(cs->ext_oneapi_graph(*gr.preP[k - 1][l]));
+        const dpct::err0 e = DPCT_CHECK_ERROR(cs->ext_oneapi_graph(*gr.preP[k - 1][l]));
         /*
         DPCT1000: Error handling if-stmt was detected but could not be
         rewritten.
@@ -537,8 +531,7 @@ bool session_replay_stage_sweep(const ModelGeometry &g, int64_t pos,
             error codes. Please replace the "get_error_string_dummy(...)" with a
             real error-handling function.
             */
-            err = std::string("session_replay_stage_sweep: launch: ") +
-                  dpct::get_error_string_dummy(e);
+            err = std::string("session_replay_stage_sweep: launch: ") + dpct::get_error_string_dummy(e);
             return false;
         }
     }
@@ -557,19 +550,14 @@ bool session_replay_stage_sweep(const ModelGeometry &g, int64_t pos,
     dpct::destroy_event(b);
     ms = (double) v;
     return true;
-}
-catch (sycl::exception const &exc) {
-  std::cerr << exc.what() << "Exception caught at file:" << __FILE__
-            << ", line:" << __LINE__ << std::endl;
-  std::exit(1);
+} catch (sycl::exception const& exc) {
+    std::cerr << exc.what() << "Exception caught at file:" << __FILE__ << ", line:" << __LINE__ << std::endl;
+    std::exit(1);
 }
 
-bool session_replay_stage_prefixes(const ModelGeometry &g, int64_t pos,
-                                   int32_t pos_base, SessionState &s,
-                                   SessionGraphs &gr, void *stream,
-                                   std::vector<double> &stage_ms,
-                                   std::vector<double> &mixer_per_layer,
-                                   std::string &err) try {
+bool session_replay_stage_prefixes(const ModelGeometry& g, int64_t pos, int32_t pos_base, SessionState& s,
+                                   SessionGraphs& gr, void* stream, std::vector<double>& stage_ms,
+                                   std::vector<double>& mixer_per_layer, std::string& err) try {
     if (!gr.split_captured || gr.preP[0] == nullptr) {
         err = "session_replay_stage_prefixes: not captured with the split";
         return false;
@@ -580,27 +568,30 @@ bool session_replay_stage_prefixes(const ModelGeometry &g, int64_t pos,
     const size_t r_floats = (size_t) g.hc * (size_t) g.n_embd;
 
     float* saved = nullptr;
-    if (DPCT_CHECK_ERROR(saved = sycl::malloc_device<float>(
-                             r_floats, dpct::get_in_order_queue())) != 0) {
+    if (DPCT_CHECK_ERROR(saved = sycl::malloc_device<float>(r_floats, dpct::get_in_order_queue())) != 0) {
         err = "session_replay_stage_prefixes: could not save the residual";
         return false;
     }
-    std::vector<dpct::event_ptr> ev((size_t)(n * 6));
+    std::vector<dpct::event_ptr> ev((size_t) (n * 6));
     bool ev_ok = true;
-    for (auto &e : ev) if (DPCT_CHECK_ERROR(e = new sycl::event()) != 0) {
-        ev_ok = false; break;
-    }
+    for (auto& e : ev)
+        if (DPCT_CHECK_ERROR(e = new sycl::event()) != 0) {
+            ev_ok = false;
+            break;
+        }
     if (!ev_ok) {
-        for (auto &e : ev) DPCT_CHECK_ERROR(dpct::destroy_event(e));
+        for (auto& e : ev)
+            DPCT_CHECK_ERROR(dpct::destroy_event(e));
         sycl::free(saved, dpct::get_in_order_queue());
         err = "session_replay_stage_prefixes: event create";
         return false;
     }
     struct Cleanup {
-        std::vector<dpct::event_ptr> *v;
+        std::vector<dpct::event_ptr>* v;
         float* p;
         ~Cleanup() {
-            for (auto &e : *v) DPCT_CHECK_ERROR(dpct::destroy_event(e));
+            for (auto& e : *v)
+                DPCT_CHECK_ERROR(dpct::destroy_event(e));
             sycl::free(p, dpct::get_in_order_queue());
         }
     } cleanup{&ev, saved};
@@ -623,10 +614,10 @@ bool session_replay_stage_prefixes(const ModelGeometry &g, int64_t pos,
             type of operand memory, so you may need to call wait() on event
             return by memcpy API to ensure synchronization behavior.
             */
-            if (k > 1) cs->memcpy(s.block.R, saved, r_floats * sizeof(float));
-            dpct::sync_barrier(ev[(size_t)(l * 6 + k - 1)], cs);
-            const dpct::experimental::command_graph_exec_ptr ge =
-                (k == 5) ? gr.execs[l] : gr.preP[k - 1][l];
+            if (k > 1)
+                cs->memcpy(s.block.R, saved, r_floats * sizeof(float));
+            dpct::sync_barrier(ev[(size_t) (l * 6 + k - 1)], cs);
+            const dpct::experimental::command_graph_exec_ptr ge = (k == 5) ? gr.execs[l] : gr.preP[k - 1][l];
             const dpct::err0 e = DPCT_CHECK_ERROR(cs->ext_oneapi_graph(*ge));
             /*
             DPCT1000: Error handling if-stmt was detected but could not be
@@ -636,9 +627,7 @@ bool session_replay_stage_prefixes(const ModelGeometry &g, int64_t pos,
                 /*
                 DPCT1001: The statement could not be removed.
                 */
-                err = std::string(
-                          "session_replay_stage_prefixes: launch prefix ") +
-                      std::to_string(k) + ": " +
+                err = std::string("session_replay_stage_prefixes: launch prefix ") + std::to_string(k) + ": " +
                       /*
                       DPCT1009: SYCL reports errors using exceptions and
                       does not use error codes. Please replace the
@@ -649,52 +638,37 @@ bool session_replay_stage_prefixes(const ModelGeometry &g, int64_t pos,
                 return false;
             }
         }
-        dpct::sync_barrier(ev[(size_t)(l * 6 + 5)], cs);
+        dpct::sync_barrier(ev[(size_t) (l * 6 + 5)], cs);
     }
     if (DPCT_CHECK_ERROR(cs->wait()) != 0) {
-        err = "prefixes: final sync"; return false;
+        err = "prefixes: final sync";
+        return false;
     }
 
     float t1 = 0, t2 = 0, t3 = 0, t4 = 0, t5 = 0;
     for (int64_t l = 0; l < n; ++l) {
         float a = 0, b = 0, c = 0, d = 0, e = 0;
-        a = (ev[(size_t)(l * 6 + 1)]
-                 ->get_profiling_info<
-                     sycl::info::event_profiling::command_end>() -
-             ev[(size_t)(l * 6 + 0)]
-                 ->get_profiling_info<
-                     sycl::info::event_profiling::command_start>()) /
+        a = (ev[(size_t) (l * 6 + 1)]->get_profiling_info<sycl::info::event_profiling::command_end>() -
+             ev[(size_t) (l * 6 + 0)]->get_profiling_info<sycl::info::event_profiling::command_start>()) /
             1000000.0f;
-        b = (ev[(size_t)(l * 6 + 2)]
-                 ->get_profiling_info<
-                     sycl::info::event_profiling::command_end>() -
-             ev[(size_t)(l * 6 + 1)]
-                 ->get_profiling_info<
-                     sycl::info::event_profiling::command_start>()) /
+        b = (ev[(size_t) (l * 6 + 2)]->get_profiling_info<sycl::info::event_profiling::command_end>() -
+             ev[(size_t) (l * 6 + 1)]->get_profiling_info<sycl::info::event_profiling::command_start>()) /
             1000000.0f;
-        c = (ev[(size_t)(l * 6 + 3)]
-                 ->get_profiling_info<
-                     sycl::info::event_profiling::command_end>() -
-             ev[(size_t)(l * 6 + 2)]
-                 ->get_profiling_info<
-                     sycl::info::event_profiling::command_start>()) /
+        c = (ev[(size_t) (l * 6 + 3)]->get_profiling_info<sycl::info::event_profiling::command_end>() -
+             ev[(size_t) (l * 6 + 2)]->get_profiling_info<sycl::info::event_profiling::command_start>()) /
             1000000.0f;
-        d = (ev[(size_t)(l * 6 + 4)]
-                 ->get_profiling_info<
-                     sycl::info::event_profiling::command_end>() -
-             ev[(size_t)(l * 6 + 3)]
-                 ->get_profiling_info<
-                     sycl::info::event_profiling::command_start>()) /
+        d = (ev[(size_t) (l * 6 + 4)]->get_profiling_info<sycl::info::event_profiling::command_end>() -
+             ev[(size_t) (l * 6 + 3)]->get_profiling_info<sycl::info::event_profiling::command_start>()) /
             1000000.0f;
-        e = (ev[(size_t)(l * 6 + 5)]
-                 ->get_profiling_info<
-                     sycl::info::event_profiling::command_end>() -
-             ev[(size_t)(l * 6 + 4)]
-                 ->get_profiling_info<
-                     sycl::info::event_profiling::command_start>()) /
+        e = (ev[(size_t) (l * 6 + 5)]->get_profiling_info<sycl::info::event_profiling::command_end>() -
+             ev[(size_t) (l * 6 + 4)]->get_profiling_info<sycl::info::event_profiling::command_start>()) /
             1000000.0f;
-        t1 += a; t2 += b; t3 += c; t4 += d; t5 += e;
-        mixer_per_layer[(size_t) l] = (double) c;   // prefix 3 IS the mixer: stages 0..2
+        t1 += a;
+        t2 += b;
+        t3 += c;
+        t4 += d;
+        t5 += e;
+        mixer_per_layer[(size_t) l] = (double) c; // prefix 3 IS the mixer: stages 0..2
     }
     t[0] = t1;
     t[1] = t2 - t1;
@@ -703,37 +677,41 @@ bool session_replay_stage_prefixes(const ModelGeometry &g, int64_t pos,
     t[4] = t5 - t4;
     stage_ms.assign(t, t + 5);
     return true;
-}
-catch (sycl::exception const &exc) {
-  std::cerr << exc.what() << "Exception caught at file:" << __FILE__
-            << ", line:" << __LINE__ << std::endl;
-  std::exit(1);
+} catch (sycl::exception const& exc) {
+    std::cerr << exc.what() << "Exception caught at file:" << __FILE__ << ", line:" << __LINE__ << std::endl;
+    std::exit(1);
 }
 
 void session_graphs_free(SessionGraphs& gr) {
     if (gr.execs) {
-        for (int64_t i = 0; i < gr.n; ++i) delete (gr.execs[i]);
+        for (int64_t i = 0; i < gr.n; ++i)
+            delete (gr.execs[i]);
         delete[] gr.execs;
     }
     if (gr.posts) {
         for (int64_t i = 0; i < gr.n; ++i)
-            if (gr.posts[i] != nullptr) delete (gr.posts[i]);
+            if (gr.posts[i] != nullptr)
+                delete (gr.posts[i]);
         delete[] gr.posts;
     }
     if (gr.preA) {
         for (int64_t i = 0; i < gr.n; ++i)
-            if (gr.preA[i] != nullptr) delete (gr.preA[i]);
+            if (gr.preA[i] != nullptr)
+                delete (gr.preA[i]);
         delete[] gr.preA;
     }
     if (gr.preB) {
         for (int64_t i = 0; i < gr.n; ++i)
-            if (gr.preB[i] != nullptr) delete (gr.preB[i]);
+            if (gr.preB[i] != nullptr)
+                delete (gr.preB[i]);
         delete[] gr.preB;
     }
     for (int k = 0; k < 5; ++k) {
-        if (gr.preP[k] == nullptr) continue;
+        if (gr.preP[k] == nullptr)
+            continue;
         for (int64_t i = 0; i < gr.n; ++i)
-            if (gr.preP[k][i] != nullptr) delete (gr.preP[k][i]);
+            if (gr.preP[k][i] != nullptr)
+                delete (gr.preP[k][i]);
         delete[] gr.preP[k];
         gr.preP[k] = nullptr;
     }
@@ -747,7 +725,7 @@ void session_graphs_free(SessionGraphs& gr) {
     gr.captured = false;
 }
 
-bool SessionLoopScratch::init(size_t parts_bytes_in, std::string &err) try {
+bool SessionLoopScratch::init(size_t parts_bytes_in, std::string& err) try {
     if (y_miss != nullptr || probe != nullptr) {
         err = "SessionLoopScratch::init: already initialised";
         return false;
@@ -764,8 +742,7 @@ bool SessionLoopScratch::init(size_t parts_bytes_in, std::string &err) try {
     the migrated code and was removed or replaced with 0. You may need to check
     the migrated code.
     */
-    if (DPCT_CHECK_ERROR(y_miss = (float *)sycl::malloc_host(
-                             parts_bytes, dpct::get_in_order_queue())) != 0) {
+    if (DPCT_CHECK_ERROR(y_miss = (float*) sycl::malloc_host(parts_bytes, dpct::get_in_order_queue())) != 0) {
         err = "SessionLoopScratch: cudaHostAlloc for the pool's staging failed";
         return false;
     }
@@ -787,11 +764,9 @@ bool SessionLoopScratch::init(size_t parts_bytes_in, std::string &err) try {
         pinned = true;
     }
     return true;
-}
-catch (sycl::exception const &exc) {
-  std::cerr << exc.what() << "Exception caught at file:" << __FILE__
-            << ", line:" << __LINE__ << std::endl;
-  std::exit(1);
+} catch (sycl::exception const& exc) {
+    std::cerr << exc.what() << "Exception caught at file:" << __FILE__ << ", line:" << __LINE__ << std::endl;
+    std::exit(1);
 }
 
 void SessionLoopScratch::free() {
@@ -802,20 +777,32 @@ void SessionLoopScratch::free() {
         pinned = false;
         pinned_core = -1;
     }
-    if (probe != nullptr) { dpct::destroy_event(probe); probe = nullptr; }
+    if (probe != nullptr) {
+        dpct::destroy_event(probe);
+        probe = nullptr;
+    }
     if (y_miss != nullptr) {
-        sycl::free(y_miss, dpct::get_in_order_queue()); y_miss = nullptr;
+        sycl::free(y_miss, dpct::get_in_order_queue());
+        y_miss = nullptr;
     }
     parts_bytes = 0;
 }
 
-bool session_loop(const ModelGeometry &g, int64_t pos, int32_t pos_base,
-                  SessionState &s, SessionGraphs &gr, PoolFn pool, HitFn hits,
-                  void *user, bool overlap, void *stream, std::string &err,
-                  float *dump_layers, SessionLoopScratch *scratch) try {
-    if (!gr.captured || gr.n != g.n_layers) { err = "session_loop: not captured"; return false; }
-    if (gr.parts_dev == nullptr) { err = "session_loop: the graphs were captured without a parts buffer"; return false; }
-    if (s.db == nullptr) { err = "session_loop: no doorbell; the loop has nothing to poll"; return false; }
+bool session_loop(const ModelGeometry& g, int64_t pos, int32_t pos_base, SessionState& s, SessionGraphs& gr,
+                  PoolFn pool, HitFn hits, void* user, bool overlap, void* stream, std::string& err, float* dump_layers,
+                  SessionLoopScratch* scratch) try {
+    if (!gr.captured || gr.n != g.n_layers) {
+        err = "session_loop: not captured";
+        return false;
+    }
+    if (gr.parts_dev == nullptr) {
+        err = "session_loop: the graphs were captured without a parts buffer";
+        return false;
+    }
+    if (s.db == nullptr) {
+        err = "session_loop: no doorbell; the loop has nothing to poll";
+        return false;
+    }
 
     dpct::queue_ptr cs = guild::q_of(stream);
     const int64_t k = s.k;
@@ -848,12 +835,16 @@ bool session_loop(const ModelGeometry &g, int64_t pos, int32_t pos_base,
     // local scratch and frees it on every exit path below, including the error returns.
     SessionLoopScratch local;
     if (scratch == nullptr) {
-        if (!local.init(parts_bytes, err)) return false;
+        if (!local.init(parts_bytes, err))
+            return false;
         scratch = &local;
     }
     struct LocalFree {
         SessionLoopScratch* p;
-        ~LocalFree() { if (p != nullptr) p->free(); }
+        ~LocalFree() {
+            if (p != nullptr)
+                p->free();
+        }
     } local_free{scratch == &local ? &local : nullptr};
     if (scratch->parts_bytes != parts_bytes) {
         err = "session_loop: the scratch was sized for a different k or n_embd";
@@ -899,8 +890,7 @@ bool session_loop(const ModelGeometry &g, int64_t pos, int32_t pos_base,
         operand memory, so you may need to call wait() on event return by memcpy
         API to ensure synchronization behavior.
         */
-        const dpct::err0 de =
-            DPCT_CHECK_ERROR(cs->memcpy(dump_layers, s.R, n * sizeof(float)));
+        const dpct::err0 de = DPCT_CHECK_ERROR(cs->memcpy(dump_layers, s.R, n * sizeof(float)));
         /*
         DPCT1000: Error handling if-stmt was detected but could not be
         rewritten.
@@ -914,15 +904,13 @@ bool session_loop(const ModelGeometry &g, int64_t pos, int32_t pos_base,
             /*
             DPCT1001: The statement could not be removed.
             */
-            err = "session_loop: dump the input residual: " +
-                  std::string(dpct::get_error_string_dummy(de));
+            err = "session_loop: dump the input residual: " + std::string(dpct::get_error_string_dummy(de));
             return false;
         }
     }
     {
         const auto t0 = std::chrono::steady_clock::now();
-        const dpct::err0 le =
-            DPCT_CHECK_ERROR(cs->ext_oneapi_graph(*gr.execs[0]));
+        const dpct::err0 le = DPCT_CHECK_ERROR(cs->ext_oneapi_graph(*gr.execs[0]));
         /*
         DPCT1000: Error handling if-stmt was detected but could not be
         rewritten.
@@ -936,8 +924,7 @@ bool session_loop(const ModelGeometry &g, int64_t pos, int32_t pos_base,
             /*
             DPCT1001: The statement could not be removed.
             */
-            err = "session_loop: launch pre[0]: " +
-                  std::string(dpct::get_error_string_dummy(le));
+            err = "session_loop: launch pre[0]: " + std::string(dpct::get_error_string_dummy(le));
             return false;
         }
         dpct::sync_barrier(probe, cs);
@@ -969,7 +956,8 @@ bool session_loop(const ModelGeometry &g, int64_t pos, int32_t pos_base,
                 rang = true;
                 mid_graph = (q != 0);
             }
-            if (q == 0) break; // the graph has ended
+            if (q == 0)
+                break; // the graph has ended
             if (q != 1) {
                 /*
                 DPCT1009: SYCL reports errors using exceptions and does not
@@ -977,14 +965,15 @@ bool session_loop(const ModelGeometry &g, int64_t pos, int32_t pos_base,
                 "get_error_string_dummy(...)" with a real error-handling
                 function.
                 */
-                err = "session_loop: query at layer " + std::to_string(l) +
-                      ": " + dpct::get_error_string_dummy(q);
+                err = "session_loop: query at layer " + std::to_string(l) + ": " + dpct::get_error_string_dummy(q);
                 return false;
             }
-            if (rang) break;                             // rung, and the graph is still running: the overlap
+            if (rang)
+                break; // rung, and the graph is still running: the overlap
             GUILD_SPIN_PAUSE();
         }
-        if (mid_graph) ++gr.rings_mid_graph;
+        if (mid_graph)
+            ++gr.rings_mid_graph;
         // the window, from just before the launch to the instant the ring was seen
         const auto t_ring = std::chrono::steady_clock::now();
         gr.ms_to_ring += std::chrono::duration<double, std::milli>(t_ring - t_launch).count();
@@ -998,10 +987,12 @@ bool session_loop(const ModelGeometry &g, int64_t pos, int32_t pos_base,
         // ---- **THE GPU'S HALF GOES FIRST, SO IT RUNS WHILE THE CPU DOES ITS HALF.**  `Launch` only enqueues:
         // the quantize and the grouped expert kernel land on `main_cs` and the GPU starts on them immediately,
         // while the host is still inside `pool` below.  Nothing here waits.
-        if (hits != nullptr) hits(user, cs, HitPhase::Launch, s.db->h_ids, k);
+        if (hits != nullptr)
+            hits(user, cs, HitPhase::Launch, s.db->h_ids, k);
 
         // ---- the pool, on the bytes the doorbell published.  **THESE ARE LAYER `l`'s EXPERTS.**
-        if (pool != nullptr) pool(user, s.db->h_x_f, s.db->h_ids, s.db->h_weights, g.n_embd, k, y_miss);
+        if (pool != nullptr)
+            pool(user, s.db->h_x_f, s.db->h_ids, s.db->h_weights, g.n_embd, k, y_miss);
 
         // ---- **AND THEY ARE COMBINED BY LAYER `l`, NOT BY LAYER `l+1`.**
         //
@@ -1021,10 +1012,10 @@ bool session_loop(const ModelGeometry &g, int64_t pos, int32_t pos_base,
         // ---- **AND THEN THE COMBINE.**  Stream-ordered after the copy above, so `hit_out` is added to misses
         // that are already in `parts`, and before `post[l]`, whose `moe_combine` reads the sum.  A no-op when
         // there is no VRAM tier or nothing is resident, which is every layer until the cache warms.
-        if (hits != nullptr) hits(user, cs, HitPhase::Combine, nullptr, 0);
+        if (hits != nullptr)
+            hits(user, cs, HitPhase::Combine, nullptr, 0);
         {
-            const dpct::err0 pe =
-                DPCT_CHECK_ERROR(cs->ext_oneapi_graph(*gr.posts[l]));
+            const dpct::err0 pe = DPCT_CHECK_ERROR(cs->ext_oneapi_graph(*gr.posts[l]));
             /*
             DPCT1000: Error handling if-stmt was detected but could not be
             rewritten.
@@ -1039,8 +1030,7 @@ bool session_loop(const ModelGeometry &g, int64_t pos, int32_t pos_base,
                 /*
                 DPCT1001: The statement could not be removed.
                 */
-                err = "session_loop: launch post[" + std::to_string(l) +
-                      "]: " + dpct::get_error_string_dummy(pe);
+                err = "session_loop: launch post[" + std::to_string(l) + "]: " + dpct::get_error_string_dummy(pe);
                 return false;
             }
         }
@@ -1056,8 +1046,8 @@ bool session_loop(const ModelGeometry &g, int64_t pos, int32_t pos_base,
             type of operand memory, so you may need to call wait() on event
             return by memcpy API to ensure synchronization behavior.
             */
-            const dpct::err0 de = DPCT_CHECK_ERROR(cs->memcpy(
-                dump_layers + (size_t)(l + 1) * n, s.R, n * sizeof(float)));
+            const dpct::err0 de =
+                DPCT_CHECK_ERROR(cs->memcpy(dump_layers + (size_t) (l + 1) * n, s.R, n * sizeof(float)));
             /*
             DPCT1000: Error handling if-stmt was detected but could not be
             rewritten.
@@ -1072,8 +1062,7 @@ bool session_loop(const ModelGeometry &g, int64_t pos, int32_t pos_base,
                 /*
                 DPCT1001: The statement could not be removed.
                 */
-                err = "session_loop: dump layer " + std::to_string(l) + ": " +
-                      dpct::get_error_string_dummy(de);
+                err = "session_loop: dump layer " + std::to_string(l) + ": " + dpct::get_error_string_dummy(de);
                 return false;
             }
         }
@@ -1089,8 +1078,7 @@ bool session_loop(const ModelGeometry &g, int64_t pos, int32_t pos_base,
         // the two are ordered on one stream and `pre[l+1]`'s first use of `bb.mixed`/`bb.inject` is its own
         // `gr_read`, which comes after `post[l]` has consumed them.
         if (l + 1 < g.n_layers) {
-            const dpct::err0 ne =
-                DPCT_CHECK_ERROR(cs->ext_oneapi_graph(*gr.execs[l + 1]));
+            const dpct::err0 ne = DPCT_CHECK_ERROR(cs->ext_oneapi_graph(*gr.execs[l + 1]));
             /*
             DPCT1000: Error handling if-stmt was detected but could not be
             rewritten.
@@ -1105,8 +1093,7 @@ bool session_loop(const ModelGeometry &g, int64_t pos, int32_t pos_base,
                 /*
                 DPCT1001: The statement could not be removed.
                 */
-                err = "session_loop: launch pre[" + std::to_string(l + 1) +
-                      "]: " + dpct::get_error_string_dummy(ne);
+                err = "session_loop: launch pre[" + std::to_string(l + 1) + "]: " + dpct::get_error_string_dummy(ne);
                 return false;
             }
             dpct::sync_barrier(probe, cs);
@@ -1123,20 +1110,17 @@ bool session_loop(const ModelGeometry &g, int64_t pos, int32_t pos_base,
         gr.ms_host += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t_ring).count();
     }
     if (DPCT_CHECK_ERROR(cs->wait()) != 0) {
-        err = "session_loop: final sync"; return false;
+        err = "session_loop: final sync";
+        return false;
     }
     return true;
-}
-catch (sycl::exception const &exc) {
-  std::cerr << exc.what() << "Exception caught at file:" << __FILE__
-            << ", line:" << __LINE__ << std::endl;
-  std::exit(1);
+} catch (sycl::exception const& exc) {
+    std::cerr << exc.what() << "Exception caught at file:" << __FILE__ << ", line:" << __LINE__ << std::endl;
+    std::exit(1);
 }
 
-bool session_token(const WeightTable &tables, const ModelGeometry &g,
-                   int64_t pos, int32_t pos_base, SessionState &s,
-                   const float *parts, void *stream, bool sync_every_layer,
-                   std::string &err) try {
+bool session_token(const WeightTable& tables, const ModelGeometry& g, int64_t pos, int32_t pos_base, SessionState& s,
+                   const float* parts, void* stream, bool sync_every_layer, std::string& err) try {
     dpct::queue_ptr cs = guild::q_of(stream);
     int64_t qsa_index = 0;
     int64_t gdn_index = 0;
@@ -1152,16 +1136,18 @@ bool session_token(const WeightTable &tables, const ModelGeometry &g,
         }
 
         err.clear();
-        const bool ok = is_qsa_layer(g, l)
-            ? block_layer(tables, g, l, pos, pos_base, s.gdn, s.qsa_states[qsa_index], s.qsa_bufs, s.moe, s.k,
-                          s.block, parts, stream, err, nullptr, s.ple.ready() ? &s.ple : nullptr)
-            : block_layer(tables, g, l, pos, pos_base, s.gdn, s.qsa_states[0], s.qsa_bufs, s.moe, s.k,
-                          s.block, parts, stream, err, nullptr, s.ple.ready() ? &s.ple : nullptr);
+        const bool ok =
+            is_qsa_layer(g, l)
+                ? block_layer(tables, g, l, pos, pos_base, s.gdn, s.qsa_states[qsa_index], s.qsa_bufs, s.moe, s.k,
+                              s.block, parts, stream, err, nullptr, s.ple.ready() ? &s.ple : nullptr)
+                : block_layer(tables, g, l, pos, pos_base, s.gdn, s.qsa_states[0], s.qsa_bufs, s.moe, s.k, s.block,
+                              parts, stream, err, nullptr, s.ple.ready() ? &s.ple : nullptr);
         if (!ok) {
             err = "layer " + std::to_string(l) + ": " + err;
             return false;
         }
-        if (is_qsa_layer(g, l)) ++qsa_index;
+        if (is_qsa_layer(g, l))
+            ++qsa_index;
 
         if (sync_every_layer) {
             // THE DEBUG MODE, and its cost is the point: it is a real synchronisation after every layer, which
@@ -1183,31 +1169,30 @@ bool session_token(const WeightTable &tables, const ModelGeometry &g,
                 /*
                 DPCT1001: The statement could not be removed.
                 */
-                err = "layer " + std::to_string(l) + ": " +
-                      dpct::get_error_string_dummy(e);
+                err = "layer " + std::to_string(l) + ": " + dpct::get_error_string_dummy(e);
                 return false;
             }
         }
     }
     return true;
-}
-catch (sycl::exception const &exc) {
-  std::cerr << exc.what() << "Exception caught at file:" << __FILE__
-            << ", line:" << __LINE__ << std::endl;
-  std::exit(1);
+} catch (sycl::exception const& exc) {
+    std::cerr << exc.what() << "Exception caught at file:" << __FILE__ << ", line:" << __LINE__ << std::endl;
+    std::exit(1);
 }
 
-}  // namespace guild::core
+} // namespace guild::core
 
 namespace guild::core {
 
-bool session_capture_token(const WeightTable &tables, const ModelGeometry &g,
-                           SessionState &s, float *parts_dev,
-                           const float *y_miss_host, size_t parts_bytes,
-                           TokenGraph &tg, std::string &err,
-                           const TokenHits *hits) try {
-    if (hits != nullptr && !hits->on()) { err = "session_capture_token: incomplete hit configuration"; return false; }
-    if (tg.captured) return true;
+bool session_capture_token(const WeightTable& tables, const ModelGeometry& g, SessionState& s, float* parts_dev,
+                           const float* y_miss_host, size_t parts_bytes, TokenGraph& tg, std::string& err,
+                           const TokenHits* hits) try {
+    if (hits != nullptr && !hits->on()) {
+        err = "session_capture_token: incomplete hit configuration";
+        return false;
+    }
+    if (tg.captured)
+        return true;
     if (s.db == nullptr || s.db->d_flag == nullptr || s.db->d_seq == nullptr) {
         err = "session_capture_token: the doorbell has no flag";
         return false;
@@ -1217,16 +1202,14 @@ bool session_capture_token(const WeightTable &tables, const ModelGeometry &g,
         return false;
     }
     float* y_dev = nullptr;
-    if (DPCT_CHECK_ERROR(*(void **)&y_dev =
-                             (float *)const_cast<float *>(y_miss_host)) != 0 ||
-        !y_dev) {
+    if (DPCT_CHECK_ERROR(*(void**) & y_dev = (float*) const_cast<float*>(y_miss_host)) != 0 || !y_dev) {
         err = "session_capture_token: the parts staging is not mapped pinned memory";
         return false;
     }
     dpct::queue_ptr cs = &dpct::get_in_order_queue();
-    if (DPCT_CHECK_ERROR(cs = dpct::get_current_device().create_queue(true)) !=
-        0) {
-        err = "session_capture_token: stream create failed"; return false;
+    if (DPCT_CHECK_ERROR(cs = dpct::get_current_device().create_queue(true)) != 0) {
+        err = "session_capture_token: stream create failed";
+        return false;
     }
     if (DPCT_CHECK_ERROR(dpct::experimental::begin_recording(cs)) != 0) {
         dpct::get_current_device().destroy_queue(cs);
@@ -1242,30 +1225,41 @@ bool session_capture_token(const WeightTable &tables, const ModelGeometry &g,
         err.clear();
         ok = block_layer_pre(tables, g, l, 0, 0, s.gdn, qst, s.qsa_bufs, s.moe, s.k, s.block, (void*) cs, err, s.db,
                              s.ple.ready() ? &s.ple : nullptr);
-        if (!ok) { err = "session_capture_token: pre layer " + std::to_string(l) + ": " + err; break; }
+        if (!ok) {
+            err = "session_capture_token: pre layer " + std::to_string(l) + ": " + err;
+            break;
+        }
         if (hits != nullptr) {
             // After the ring (and the shared expert): the GPU's experts run while the CPU computes the misses.
-            guild::kernels::moe_hit_select(s.moe.ids, hits->d_res + l * hits->n_expert, (int) s.k,
-                                            (int) hits->n_expert, hits->d_slot, hits->d_dst, hits->d_count, (void*) cs);
+            guild::kernels::moe_hit_select(s.moe.ids, hits->d_res + l * hits->n_expert, (int) s.k, (int) hits->n_expert,
+                                           hits->d_slot, hits->d_dst, hits->d_count, (void*) cs);
             guild::kernels::quantize_q8_0_scaled(s.block.mixed, hits->x_q8, hits->x_scale, g.n_embd, (void*) cs);
             guild::kernels::moe_hit_grouped_s2_dev(hits->cache_base, hits->d_slot, hits->d_dst, hits->d_count, s.k,
-                                                    hits->blob, hits->x_q8, hits->scratch, hits->hit_out, (void*) cs,
-                                                    hits->x_scale);
+                                                   hits->blob, hits->x_q8, hits->scratch, hits->hit_out, (void*) cs,
+                                                   hits->x_scale);
         }
         guild::kernels::doorbell_wait(s.db->d_flag, s.db->d_seq, (void*) cs);
         // A kernel, not a memcpy node: a copy-engine node splits the WDDM submission (measured 67 flushes/token).
         guild::kernels::copy_from_mapped(parts_dev, y_dev, (int64_t) (parts_bytes / sizeof(float)), (void*) cs);
         if (hits != nullptr)
-            guild::kernels::moe_hit_add(parts_dev, hits->hit_out, hits->d_dst, hits->d_count, s.k, g.n_embd, (void*) cs);
+            guild::kernels::moe_hit_add(parts_dev, hits->hit_out, hits->d_dst, hits->d_count, s.k, g.n_embd,
+                                        (void*) cs);
         ok = block_layer_post(tables, g, l, s.k, s.moe, s.block, parts_dev, (void*) cs, err);
-        if (!ok) { err = "session_capture_token: post layer " + std::to_string(l) + ": " + err; break; }
-        if (qsa) ++qsa_index;
+        if (!ok) {
+            err = "session_capture_token: post layer " + std::to_string(l) + ": " + err;
+            break;
+        }
+        if (qsa)
+            ++qsa_index;
     }
     dpct::experimental::command_graph_ptr graph = nullptr;
-    const dpct::err0 ce =
-        DPCT_CHECK_ERROR(dpct::experimental::end_recording(cs, &graph));
+    const dpct::err0 ce = DPCT_CHECK_ERROR(dpct::experimental::end_recording(cs, &graph));
     dpct::get_current_device().destroy_queue(cs);
-    if (!ok) { if (graph) delete (graph); return false; }
+    if (!ok) {
+        if (graph)
+            delete (graph);
+        return false;
+    }
     /*
     DPCT1000: Error handling if-stmt was detected but could not be
     rewritten.
@@ -1279,14 +1273,12 @@ bool session_capture_token(const WeightTable &tables, const ModelGeometry &g,
         /*
         DPCT1001: The statement could not be removed.
         */
-        err = std::string("session_capture_token: end capture: ") +
-              dpct::get_error_string_dummy(ce);
+        err = std::string("session_capture_token: end capture: ") + dpct::get_error_string_dummy(ce);
         return false;
     }
-    const dpct::err0 ie = DPCT_CHECK_ERROR(
-        tg.exec = new sycl::ext::oneapi::experimental::command_graph<
-            sycl::ext::oneapi::experimental::graph_state::executable>(
-            graph->finalize()));
+    const dpct::err0 ie =
+        DPCT_CHECK_ERROR(tg.exec = new sycl::ext::oneapi::experimental::command_graph<
+                             sycl::ext::oneapi::experimental::graph_state::executable>(graph->finalize()));
     delete (graph);
     /*
     DPCT1000: Error handling if-stmt was detected but could not be
@@ -1301,8 +1293,7 @@ bool session_capture_token(const WeightTable &tables, const ModelGeometry &g,
         /*
         DPCT1001: The statement could not be removed.
         */
-        err = std::string("session_capture_token: instantiate: ") +
-              dpct::get_error_string_dummy(ie);
+        err = std::string("session_capture_token: instantiate: ") + dpct::get_error_string_dummy(ie);
         return false;
     }
     tg.captured = true;
@@ -1310,18 +1301,21 @@ bool session_capture_token(const WeightTable &tables, const ModelGeometry &g,
     tg.y_src = y_miss_host;
     tg.parts_bytes = parts_bytes;
     return true;
-}
-catch (sycl::exception const &exc) {
-  std::cerr << exc.what() << "Exception caught at file:" << __FILE__
-            << ", line:" << __LINE__ << std::endl;
-  std::exit(1);
+} catch (sycl::exception const& exc) {
+    std::cerr << exc.what() << "Exception caught at file:" << __FILE__ << ", line:" << __LINE__ << std::endl;
+    std::exit(1);
 }
 
-bool session_run_token(const ModelGeometry &g, int64_t pos, int32_t pos_base,
-                       SessionState &s, TokenGraph &tg, PoolFn pool, void *user,
-                       float *y_miss_host, void *stream, std::string &err) try {
-    if (!tg.captured) { err = "session_run_token: not captured"; return false; }
-    if (y_miss_host != tg.y_src) { err = "session_run_token: the staging buffer is not the captured one"; return false; }
+bool session_run_token(const ModelGeometry& g, int64_t pos, int32_t pos_base, SessionState& s, TokenGraph& tg,
+                       PoolFn pool, void* user, float* y_miss_host, void* stream, std::string& err) try {
+    if (!tg.captured) {
+        err = "session_run_token: not captured";
+        return false;
+    }
+    if (y_miss_host != tg.y_src) {
+        err = "session_run_token: the staging buffer is not the captured one";
+        return false;
+    }
     dpct::queue_ptr cs = guild::q_of(stream);
     ++tg.calls;
     stage_token(g, pos, pos_base, s);
@@ -1340,15 +1334,13 @@ bool session_run_token(const ModelGeometry &g, int64_t pos, int32_t pos_base,
     rewritten.
     */
     if (le != 0) {
-        err = std::string("session_run_token: launch: ") +
-              dpct::get_error_string_dummy(le);
+        err = std::string("session_run_token: launch: ") + dpct::get_error_string_dummy(le);
         return false;
     }
-    (void)DPCT_CHECK_ERROR(
-        (cs->ext_oneapi_empty())); // one flush, so WDDM submits the graph now
+    (void) DPCT_CHECK_ERROR((cs->ext_oneapi_empty())); // one flush, so WDDM submits the graph now
     static const int flush_us = [] {
         const char* e = std::getenv("GUILD_TG_FLUSH_US");
-        return e ? std::atoi(e) : 2000;   // 24 Sep: 0 flushes run as fast as 5 us ones; this only notices faults
+        return e ? std::atoi(e) : 2000; // 24 Sep: 0 flushes run as fast as 5 us ones; this only notices faults
     }();
     volatile uint32_t* const seq = s.db->h_seq;
     volatile uint32_t* const flag = s.db->h_flag;
@@ -1361,7 +1353,8 @@ bool session_run_token(const ModelGeometry &g, int64_t pos, int32_t pos_base,
         progress_at("token: waiting for the GPU to reach layer", l);
         while (*seq < want) {
             GUILD_SPIN_PAUSE();
-            if ((++spins & 1023u) != 0) continue;
+            if ((++spins & 1023u) != 0)
+                continue;
             const auto now = Clock::now();
             if (now - last_flush > std::chrono::microseconds(flush_us)) {
                 // A slow ring: flush the submission queue once more, and notice a fault or a finished graph.
@@ -1369,18 +1362,14 @@ bool session_run_token(const ModelGeometry &g, int64_t pos, int32_t pos_base,
                 ++tg.flushes;
                 const dpct::err0 q = DPCT_CHECK_ERROR((cs->ext_oneapi_empty()));
                 if (q != 1 && *seq < want) {
-                    err = "session_run_token: layer " + std::to_string(l) +
-                          " never rang (" +
+                    err = "session_run_token: layer " + std::to_string(l) + " never rang (" +
                           /*
                           DPCT1009: SYCL reports errors using exceptions
                           and does not use error codes. Please replace the
                           "get_error_string_dummy(...)" with a real
                           error-handling function.
                           */
-                          (q == 0
-                               ? std::string("graph finished")
-                               : std::string(dpct::get_error_string_dummy(q))) +
-                          ")";
+                          (q == 0 ? std::string("graph finished") : std::string(dpct::get_error_string_dummy(q))) + ")";
                     return false;
                 }
             }
@@ -1391,7 +1380,8 @@ bool session_run_token(const ModelGeometry &g, int64_t pos, int32_t pos_base,
         }
         const auto t1 = Clock::now();
         progress_at("token: the CPU experts of layer", l);
-        if (pool != nullptr) pool(user, s.db->h_x_f, s.db->h_ids, s.db->h_weights, g.n_embd, s.k, y_miss_host);
+        if (pool != nullptr)
+            pool(user, s.db->h_x_f, s.db->h_ids, s.db->h_weights, g.n_embd, s.k, y_miss_host);
         std::atomic_thread_fence(std::memory_order_seq_cst);
         _mm_sfence();
         *flag = want;
@@ -1414,23 +1404,21 @@ bool session_run_token(const ModelGeometry &g, int64_t pos, int32_t pos_base,
     rewritten.
     */
     if (se != 0) {
-        err = std::string("session_run_token: ") +
-              dpct::get_error_string_dummy(se);
+        err = std::string("session_run_token: ") + dpct::get_error_string_dummy(se);
         return false;
     }
     progress_at("decode");
     progress_beat();
     return true;
-}
-catch (sycl::exception const &exc) {
-  std::cerr << exc.what() << "Exception caught at file:" << __FILE__
-            << ", line:" << __LINE__ << std::endl;
-  std::exit(1);
+} catch (sycl::exception const& exc) {
+    std::cerr << exc.what() << "Exception caught at file:" << __FILE__ << ", line:" << __LINE__ << std::endl;
+    std::exit(1);
 }
 
 void token_graph_free(TokenGraph& tg) {
-    if (tg.exec) delete (tg.exec);
+    if (tg.exec)
+        delete (tg.exec);
     tg = TokenGraph{};
 }
 
-}  // namespace guild::core
+} // namespace guild::core

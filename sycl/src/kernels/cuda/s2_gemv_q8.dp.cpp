@@ -31,34 +31,30 @@ namespace {
 constexpr int QK_S2 = 64;
 constexpr int QK8_0 = 32;
 
-__dpct_inline__ void s2_gemv_q8_kernel(const uint8_t *__restrict__ act,
-                                       const uint8_t *__restrict__ codes,
-                                       const float *__restrict__ scales,
-                                       float *__restrict__ y, long long n_in,
-                                       long long n_out, int threads_per_row,
-                                       uint8_t *dpct_local) {
+__dpct_inline__ void s2_gemv_q8_kernel(const uint8_t* __restrict__ act, const uint8_t* __restrict__ codes,
+                                       const float* __restrict__ scales, float* __restrict__ y, long long n_in,
+                                       long long n_out, int threads_per_row, uint8_t* dpct_local) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
-    auto partial = (float *)dpct_local;
+    auto partial = (float*) dpct_local;
     const long long o = item_ct1.get_group(2);
-    if (o >= n_out) return;
+    if (o >= n_out)
+        return;
     const int tid = item_ct1.get_local_id(2);
 
     const long long n_quads = n_in / 4;
-    const uint8_t* c = codes + o * n_quads;             // one code byte per quad
+    const uint8_t* c = codes + o * n_quads; // one code byte per quad
     const float* s = scales + o * (n_in / QK_S2);
 
     float a0 = 0.0f, a1 = 0.0f, a2 = 0.0f, a3 = 0.0f;
     for (long long q = tid; q < n_quads; q += threads_per_row) {
         const uint8_t byte = c[q];
-        const float d = s[q >> 4];                      // (q*4) >> 6, the S2 group index as a shift
+        const float d = s[q >> 4]; // (q*4) >> 6, the S2 group index as a shift
         // the activation quad: four int8 in one 32-element block, so one block scale
         const long long ablk = (q * 4) / QK8_0;
         const uint8_t* blk = act + ablk * 34;
         const uint16_t dbits = (uint16_t) (blk[0] | (blk[1] << 8));
-        const float dx =
-            sycl::vec<sycl::half, 1>(
-                sycl::bit_cast<sycl::half, unsigned short>(dbits))
-                .convert<float, sycl::rounding_mode::automatic>()[0];
+        const float dx = sycl::vec<sycl::half, 1>(sycl::bit_cast<sycl::half, unsigned short>(dbits))
+                             .convert<float, sycl::rounding_mode::automatic>()[0];
         const int8_t* xq = reinterpret_cast<const int8_t*>(blk + 2);
         const int off = (int) ((q * 4) % QK8_0);
 
@@ -75,21 +71,24 @@ __dpct_inline__ void s2_gemv_q8_kernel(const uint8_t *__restrict__ act,
     item_ct1.barrier(sycl::access::fence_space::local_space);
 #pragma unroll
     for (int step = threads_per_row / 2; step > 0; step >>= 1) {
-        if (tid < step) partial[tid] += partial[tid + step];
+        if (tid < step)
+            partial[tid] += partial[tid + step];
         /*
         DPCT1118: SYCL group functions and algorithms must be encountered in
         converged control flow. You may need to adjust the code.
         */
         item_ct1.barrier(sycl::access::fence_space::local_space);
     }
-    if (tid == 0) y[o] = partial[0];
+    if (tid == 0)
+        y[o] = partial[0];
 }
 
-}  // namespace
+} // namespace
 
-void s2_gemv_q8(const uint8_t* act, const uint8_t* codes, const float* scales, float* y, int64_t n_in,
-                int64_t n_out, int threads_per_row, void* stream) {
-    if (n_in <= 0 || n_out <= 0) return;
+void s2_gemv_q8(const uint8_t* act, const uint8_t* codes, const float* scales, float* y, int64_t n_in, int64_t n_out,
+                int threads_per_row, void* stream) {
+    if (n_in <= 0 || n_out <= 0)
+        return;
     if (n_in % QK8_0 != 0 || n_in % QK_S2 != 0) {
         std::fprintf(stderr, "s2_gemv_q8: n_in %lld must be a multiple of %d\n", (long long) n_in, QK_S2);
         std::exit(1);
@@ -99,34 +98,26 @@ void s2_gemv_q8(const uint8_t* act, const uint8_t* codes, const float* scales, f
     from the original code. Check that the allocated memory size in the migrated
     code is correct.
     */
-    const size_t smem = (size_t)threads_per_row * sizeof(float);
+    const size_t smem = (size_t) threads_per_row * sizeof(float);
     /*
     DPCT1049: The work-group size passed to the SYCL kernel may exceed the
     limit. To get the device limit, query info::device::max_work_group_size.
     Adjust the work-group size if needed.
     */
     {
-        auto exp_props = sycl::ext::oneapi::experimental::properties{
-            sycl::ext::oneapi::experimental::use_root_sync};
+        auto exp_props = sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::use_root_sync};
 
-        guild::q_of(stream)
-            ->submit([&](sycl::handler &cgh) {
-                sycl::local_accessor<uint8_t, 1> dpct_local_acc_ct1(
-                    sycl::range(smem), cgh);
+        guild::q_of(stream)->submit([&](sycl::handler& cgh) {
+            sycl::local_accessor<uint8_t, 1> dpct_local_acc_ct1(sycl::range(smem), cgh);
 
-                cgh.parallel_for<
-                    dpct_kernel_name<class s2_gemv_q8_kernel_b9a814>>(
-                    sycl::nd_range<3>(sycl::range(1, 1, (unsigned)n_out) *
-                                          sycl::range(1, 1, threads_per_row),
-                                      sycl::range(1, 1, threads_per_row)),
-                    exp_props, [=](sycl::nd_item<3> item_ct1) {
-                        s2_gemv_q8_kernel(
-                            act, codes, scales, y, n_in, n_out, threads_per_row,
-                            dpct_local_acc_ct1
-                                .get_multi_ptr<sycl::access::decorated::no>()
-                                .get());
-                    });
-            });
+            cgh.parallel_for<dpct_kernel_name<class s2_gemv_q8_kernel_b9a814>>(
+                sycl::nd_range<3>(sycl::range(1, 1, (unsigned) n_out) * sycl::range(1, 1, threads_per_row),
+                                  sycl::range(1, 1, threads_per_row)),
+                exp_props, [=](sycl::nd_item<3> item_ct1) {
+                    s2_gemv_q8_kernel(act, codes, scales, y, n_in, n_out, threads_per_row,
+                                      dpct_local_acc_ct1.get_multi_ptr<sycl::access::decorated::no>().get());
+                });
+        });
     }
     /*
     DPCT1010: SYCL uses exceptions to report errors and does not use the
@@ -135,7 +126,8 @@ void s2_gemv_q8(const uint8_t* act, const uint8_t* codes, const float* scales, f
     */
     const dpct::err0 e = 0;
 
-    if (stream == nullptr) dpct::get_current_device().queues_wait_and_throw();
+    if (stream == nullptr)
+        dpct::get_current_device().queues_wait_and_throw();
 }
 
-}  // namespace guild::kernels
+} // namespace guild::kernels

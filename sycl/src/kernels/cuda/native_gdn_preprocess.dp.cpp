@@ -46,15 +46,15 @@ __dpct_inline__ float warp_sum(float value) {
         compilers or runtimes. You may need to adjust the code.
         */
         value += dpct::experimental::permute_sub_group_by_xor(
-            0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(),
-            value, offset);
+            0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(), value, offset);
     return value;
 }
-__dpct_inline__ float norm_sum(float value, float *sums) {
+__dpct_inline__ float norm_sum(float value, float* sums) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
     const int lane = item_ct1.get_local_id(2) % 32;
     value = warp_sum(value);
-    if (lane == 0) sums[item_ct1.get_local_id(2) / 32] = value;
+    if (lane == 0)
+        sums[item_ct1.get_local_id(2) / 32] = value;
     /*
     DPCT1065: Consider replacing sycl::nd_item::barrier() with
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
@@ -68,19 +68,18 @@ __dpct_inline__ float sigmoid(float value) {
     return 1.0f / (1.0f + sycl::native::exp(-value));
 }
 
-__dpct_inline__ void conv_silu(float *__restrict__ history,
-                               const float *__restrict__ input,
-                               const float *__restrict__ weights,
-                               float *__restrict__ raw_output,
-                               float *__restrict__ silu_output, int channels) {
+__dpct_inline__ void conv_silu(float* __restrict__ history, const float* __restrict__ input,
+                               const float* __restrict__ weights, float* __restrict__ raw_output,
+                               float* __restrict__ silu_output, int channels) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
-    const int c = item_ct1.get_group(2) * item_ct1.get_local_range(2) +
-                  item_ct1.get_local_id(2);
-    if (c >= channels) return;
+    const int c = item_ct1.get_group(2) * item_ct1.get_local_range(2) + item_ct1.get_local_id(2);
+    if (c >= channels)
+        return;
     float values[4] = {history[c * 3], history[c * 3 + 1], history[c * 3 + 2], input[c]};
     float sum = 0.0f;
 #pragma unroll
-    for (int tap = 0; tap < 4; ++tap) sum += values[tap] * weights[c * 4 + tap];
+    for (int tap = 0; tap < 4; ++tap)
+        sum += values[tap] * weights[c * 4 + tap];
     // The native SSM kernel adds its zero bias even when there is no bias input.
     /*
     DPCT1013: The rounding mode could not be specified and the generated
@@ -92,19 +91,20 @@ __dpct_inline__ void conv_silu(float *__restrict__ history,
     raw_output[c] = sum;
     silu_output[c] = sum / (1.0f + sycl::native::exp(-sum));
 #pragma unroll
-    for (int tap = 0; tap < 3; ++tap) history[c * 3 + tap] = values[tap + 1];
+    for (int tap = 0; tap < 3; ++tap)
+        history[c * 3 + tap] = values[tap + 1];
 }
 
-__dpct_inline__ void l2_norm(float *input, float epsilon, float scale_after) {
+__dpct_inline__ void l2_norm(float* input, float epsilon, float scale_after) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
     const int col = item_ct1.get_local_id(2);
     input += size_t(item_ct1.get_group(2)) * S;
     const float value = col < S ? input[col] : 0.0f;
     float partial = 0.0f;
-    if (col < S) partial += value * value;
-    auto &sums =
-        *sycl::ext::oneapi::group_local_memory_for_overwrite<float[32]>(
-            sycl::ext::oneapi::this_work_item::get_work_group<3>());
+    if (col < S)
+        partial += value * value;
+    auto& sums = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[32]>(
+        sycl::ext::oneapi::this_work_item::get_work_group<3>());
     partial = norm_sum(partial, sums);
     const float scale = sycl::rsqrt(partial / S + epsilon);
     if (col < S) {
@@ -126,20 +126,18 @@ __dpct_inline__ void l2_norm(float *input, float epsilon, float scale_after) {
     }
 }
 
-__dpct_inline__ void beta_sigmoid(float *beta, int count) {
+__dpct_inline__ void beta_sigmoid(float* beta, int count) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
-    const int i = item_ct1.get_group(2) * item_ct1.get_local_range(2) +
-                  item_ct1.get_local_id(2);
-    if (i < count) beta[i] = sigmoid(beta[i]);
+    const int i = item_ct1.get_group(2) * item_ct1.get_local_range(2) + item_ct1.get_local_id(2);
+    if (i < count)
+        beta[i] = sigmoid(beta[i]);
 }
-__dpct_inline__ void gate_softplus(const float *__restrict__ alpha,
-                                   const float *__restrict__ dt,
-                                   const float *__restrict__ ssm_a,
-                                   float *__restrict__ gate, int count) {
+__dpct_inline__ void gate_softplus(const float* __restrict__ alpha, const float* __restrict__ dt,
+                                   const float* __restrict__ ssm_a, float* __restrict__ gate, int count) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
-    const int i = item_ct1.get_group(2) * item_ct1.get_local_range(2) +
-                  item_ct1.get_local_id(2);
-    if (i >= count) return;
+    const int i = item_ct1.get_group(2) * item_ct1.get_local_range(2) + item_ct1.get_local_id(2);
+    if (i >= count)
+        return;
     /*
     DPCT1013: The rounding mode could not be specified and the generated
     code may have different accuracy than the original code. Verify the
@@ -147,26 +145,22 @@ __dpct_inline__ void gate_softplus(const float *__restrict__ alpha,
     OpenCL C 1.2 standard.
     */
     const float value = alpha[i] + dt[i];
-    const float softplus = value > 20.0f
-                               ? value
-                               : sycl::log1p(sycl::native::exp(
-                                     value)); // 1 + e^v loses e^v below ~1e-7
+    const float softplus =
+        value > 20.0f ? value : sycl::log1p(sycl::native::exp(value)); // 1 + e^v loses e^v below ~1e-7
     gate[i] = softplus * ssm_a[i];
 }
 
-__dpct_inline__ void out_norm(const float *__restrict__ input,
-                              const float *__restrict__ z,
-                              const float *__restrict__ gamma,
-                              float *__restrict__ output, float epsilon) {
+__dpct_inline__ void out_norm(const float* __restrict__ input, const float* __restrict__ z,
+                              const float* __restrict__ gamma, float* __restrict__ output, float epsilon) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
     const int col = item_ct1.get_local_id(2);
     const size_t offset = size_t(item_ct1.get_group(2)) * S;
     const float value = col < S ? input[offset + col] : 0.0f;
     float partial = 0.0f;
-    if (col < S) partial += value * value;
-    auto &sums =
-        *sycl::ext::oneapi::group_local_memory_for_overwrite<float[32]>(
-            sycl::ext::oneapi::this_work_item::get_work_group<3>());
+    if (col < S)
+        partial += value * value;
+    auto& sums = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[32]>(
+        sycl::ext::oneapi::this_work_item::get_work_group<3>());
     partial = norm_sum(partial, sums);
     const float scale = sycl::rsqrt(partial / S + epsilon);
     if (col < S) {
@@ -182,7 +176,10 @@ __dpct_inline__ void out_norm(const float *__restrict__ input,
     }
 }
 
-struct Span { const void* pointer; size_t bytes; };
+struct Span {
+    const void* pointer;
+    size_t bytes;
+};
 void valid(Span span) {
     const auto address = reinterpret_cast<uintptr_t>(span.pointer);
     if (!span.pointer || address % sizeof(float) || span.bytes > UINTPTR_MAX - address)
@@ -221,38 +218,38 @@ void check_launch() {
     DPCT1000: Error handling if-stmt was detected but could not be
     rewritten.
     */
-    if (error !=
-        0) throw std::runtime_error(dpct::get_error_string_dummy(error));
+    if (error != 0)
+        throw std::runtime_error(dpct::get_error_string_dummy(error));
 }
-}
+} // namespace
 
-void native_gdn_conv_silu(float* history, const float* input, const float* weights,
-                          float* raw_output, float* silu_output, int64_t channels,
-                          int64_t d_conv, void* stream) {
+void native_gdn_conv_silu(float* history, const float* input, const float* weights, float* raw_output,
+                          float* silu_output, int64_t channels, int64_t d_conv, void* stream) {
     count_and_stream(channels, stream);
-    if (d_conv != 4) throw std::invalid_argument("native GDN convolution requires four taps");
+    if (d_conv != 4)
+        throw std::invalid_argument("native GDN convolution requires four taps");
     const size_t bytes = size_t(channels) * sizeof(float);
     const Span writable[] = {{history, 3 * bytes}, {raw_output, bytes}, {silu_output, bytes}};
     const Span inputs[] = {{input, bytes}, {weights, 4 * bytes}};
-    for (auto span : writable) valid(span);
-    for (auto span : inputs) valid(span);
+    for (auto span : writable)
+        valid(span);
+    for (auto span : inputs)
+        valid(span);
     for (int i = 0; i < 3; ++i) {
-        for (int j = 0; j < i; ++j) disjoint(writable[i], writable[j]);
-        for (auto span : inputs) disjoint(writable[i], span);
+        for (int j = 0; j < i; ++j)
+            disjoint(writable[i], writable[j]);
+        for (auto span : inputs)
+            disjoint(writable[i], span);
     }
     {
-        auto exp_props = sycl::ext::oneapi::experimental::properties{
-            sycl::ext::oneapi::experimental::use_root_sync};
+        auto exp_props = sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::use_root_sync};
 
-        ((sycl::queue *)(guild::q_of(stream)))
+        ((sycl::queue*) (guild::q_of(stream)))
             ->parallel_for<dpct_kernel_name<class conv_silu_1ba4e6>>(
-                sycl::nd_range<3>(
-                    sycl::range(1, 1, unsigned((channels + 255) / 256)) *
-                        sycl::range(1, 1, 256),
-                    sycl::range(1, 1, 256)),
+                sycl::nd_range<3>(sycl::range(1, 1, unsigned((channels + 255) / 256)) * sycl::range(1, 1, 256),
+                                  sycl::range(1, 1, 256)),
                 exp_props, [=](sycl::nd_item<3> item_ct1) {
-                    conv_silu(history, input, weights, raw_output, silu_output,
-                              int(channels));
+                    conv_silu(history, input, weights, raw_output, silu_output, int(channels));
                 });
     }
     check_launch();
@@ -261,24 +258,18 @@ void native_gdn_l2_norm(float* input, int64_t rows, int64_t cols, float epsilon,
     norm_geometry(rows, cols, epsilon, stream);
     valid({input, size_t(rows) * S * sizeof(float)});
     {
-        auto exp_props = sycl::ext::oneapi::experimental::properties{
-            sycl::ext::oneapi::experimental::use_root_sync};
+        auto exp_props = sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::use_root_sync};
 
-        ((sycl::queue *)(guild::q_of(stream)))
-            ->submit([&](sycl::handler &cgh) {
-                auto epsilon_S_ct1 = epsilon / S;
-                auto sqrtf_float_S_ct2 = 1.0f / sqrtf(float(S));
+        ((sycl::queue*) (guild::q_of(stream)))->submit([&](sycl::handler& cgh) {
+            auto epsilon_S_ct1 = epsilon / S;
+            auto sqrtf_float_S_ct2 = 1.0f / sqrtf(float(S));
 
-                cgh.parallel_for<dpct_kernel_name<class l2_norm_bcf2af>>(
-                    sycl::nd_range<3>(sycl::range(1, 1, unsigned(rows)) *
-                                          sycl::range(1, 1, 256),
-                                      sycl::range(1, 1, 256)),
-                    exp_props,
-                    [=](sycl::nd_item<3> item_ct1)
-                        [[sycl::reqd_sub_group_size(32)]] {
-                            l2_norm(input, epsilon_S_ct1, sqrtf_float_S_ct2);
-                        });
-            });
+            cgh.parallel_for<dpct_kernel_name<class l2_norm_bcf2af>>(
+                sycl::nd_range<3>(sycl::range(1, 1, unsigned(rows)) * sycl::range(1, 1, 256), sycl::range(1, 1, 256)),
+                exp_props, [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(32)]] {
+                    l2_norm(input, epsilon_S_ct1, sqrtf_float_S_ct2);
+                });
+        });
     }
     check_launch();
 }
@@ -286,23 +277,18 @@ void native_gdn_beta_gate(float* beta, int64_t heads, void* stream) {
     count_and_stream(heads, stream);
     valid({beta, size_t(heads) * sizeof(float)});
     {
-        auto exp_props = sycl::ext::oneapi::experimental::properties{
-            sycl::ext::oneapi::experimental::use_root_sync};
+        auto exp_props = sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::use_root_sync};
 
-        ((sycl::queue *)(guild::q_of(stream)))
+        ((sycl::queue*) (guild::q_of(stream)))
             ->parallel_for<dpct_kernel_name<class beta_sigmoid_fcf68f>>(
-                sycl::nd_range<3>(
-                    sycl::range(1, 1, unsigned((heads + 255) / 256)) *
-                        sycl::range(1, 1, 256),
-                    sycl::range(1, 1, 256)),
-                exp_props, [=](sycl::nd_item<3> item_ct1) {
-                    beta_sigmoid(beta, int(heads));
-                });
+                sycl::nd_range<3>(sycl::range(1, 1, unsigned((heads + 255) / 256)) * sycl::range(1, 1, 256),
+                                  sycl::range(1, 1, 256)),
+                exp_props, [=](sycl::nd_item<3> item_ct1) { beta_sigmoid(beta, int(heads)); });
     }
     check_launch();
 }
-void native_gdn_gate(const float* alpha, const float* dt, const float* ssm_a,
-                     float* gate, int64_t heads, void* stream) {
+void native_gdn_gate(const float* alpha, const float* dt, const float* ssm_a, float* gate, int64_t heads,
+                     void* stream) {
     count_and_stream(heads, stream);
     const size_t bytes = size_t(heads) * sizeof(float);
     const Span output{gate, bytes};
@@ -312,24 +298,18 @@ void native_gdn_gate(const float* alpha, const float* dt, const float* ssm_a,
         disjoint(output, input);
     }
     {
-        auto exp_props = sycl::ext::oneapi::experimental::properties{
-            sycl::ext::oneapi::experimental::use_root_sync};
+        auto exp_props = sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::use_root_sync};
 
-        ((sycl::queue *)(guild::q_of(stream)))
+        ((sycl::queue*) (guild::q_of(stream)))
             ->parallel_for<dpct_kernel_name<class gate_softplus_a95cee>>(
-                sycl::nd_range<3>(
-                    sycl::range(1, 1, unsigned((heads + 255) / 256)) *
-                        sycl::range(1, 1, 256),
-                    sycl::range(1, 1, 256)),
-                exp_props, [=](sycl::nd_item<3> item_ct1) {
-                    gate_softplus(alpha, dt, ssm_a, gate, int(heads));
-                });
+                sycl::nd_range<3>(sycl::range(1, 1, unsigned((heads + 255) / 256)) * sycl::range(1, 1, 256),
+                                  sycl::range(1, 1, 256)),
+                exp_props, [=](sycl::nd_item<3> item_ct1) { gate_softplus(alpha, dt, ssm_a, gate, int(heads)); });
     }
     check_launch();
 }
-void native_gdn_out_norm(const float* output, const float* z, const float* gamma,
-                         float* destination, int64_t heads, int64_t cols,
-                         float epsilon, void* stream) {
+void native_gdn_out_norm(const float* output, const float* z, const float* gamma, float* destination, int64_t heads,
+                         int64_t cols, float epsilon, void* stream) {
     norm_geometry(heads, cols, epsilon, stream);
     const size_t bytes = size_t(heads) * S * sizeof(float);
     const Span writable{destination, bytes};
@@ -339,19 +319,14 @@ void native_gdn_out_norm(const float* output, const float* z, const float* gamma
         disjoint(writable, input);
     }
     {
-        auto exp_props = sycl::ext::oneapi::experimental::properties{
-            sycl::ext::oneapi::experimental::use_root_sync};
+        auto exp_props = sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::use_root_sync};
 
-        ((sycl::queue *)(guild::q_of(stream)))
+        ((sycl::queue*) (guild::q_of(stream)))
             ->parallel_for<dpct_kernel_name<class out_norm_a49e35>>(
-                sycl::nd_range<3>(sycl::range(1, 1, unsigned(heads)) *
-                                      sycl::range(1, 1, 256),
-                                  sycl::range(1, 1, 256)),
-                exp_props,
-                [=](sycl::nd_item<3> item_ct1)
-                    [[sycl::reqd_sub_group_size(32)]] {
-                        out_norm(output, z, gamma, destination, epsilon);
-                    });
+                sycl::nd_range<3>(sycl::range(1, 1, unsigned(heads)) * sycl::range(1, 1, 256), sycl::range(1, 1, 256)),
+                exp_props, [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(32)]] {
+                    out_norm(output, z, gamma, destination, epsilon);
+                });
     }
     check_launch();
 }

@@ -14,17 +14,17 @@
 namespace guild::kernels {
 
 struct SamplerParams {
-    int top_k = 20;              // sampled path: 1..64 as given; 0 (off) or more than 64 keep the widest list, 64
-    float top_p = 0.95f;         // 1.0 disables the filter
-    float min_p = 0.0f;          // 0 disables; keeps tokens with p >= min_p * p_max (a prefix of the top_k list)
-    float temperature = 1.0f;    // <= 0 means greedy
-    int min_keep = 1;            // top_p keeps at least this many
-    int penalty_last_n = 0;      // 0 disables; the window over `history` to count occurrences in
+    int top_k = 20;           // sampled path: 1..64 as given; 0 (off) or more than 64 keep the widest list, 64
+    float top_p = 0.95f;      // 1.0 disables the filter
+    float min_p = 0.0f;       // 0 disables; keeps tokens with p >= min_p * p_max (a prefix of the top_k list)
+    float temperature = 1.0f; // <= 0 means greedy
+    int min_keep = 1;         // top_p keeps at least this many
+    int penalty_last_n = 0;   // 0 disables; the window over `history` to count occurrences in
     float penalty_repeat = 1.0f;
     float penalty_freq = 0.0f;
     float penalty_present = 0.0f;
-    uint64_t seed = 0;           // drives Philox, which is counter-based on (seed, token index)
-    uint64_t counter = 0;        // absolute draw index of row 0; advance across decode calls
+    uint64_t seed = 0;    // drives Philox, which is counter-based on (seed, token index)
+    uint64_t counter = 0; // absolute draw index of row 0; advance across decode calls
     bool greedy = false;
 };
 
@@ -74,14 +74,14 @@ void coupled_draft_sample(float* logits, int nv, const int32_t* sub_to_id, const
 inline void penalty_rows(const int32_t* tail, int64_t n_tail, const int32_t* window, int T, int h, int32_t* out) {
     for (int t = 0; t < T; ++t) {
         int32_t* row = out + (size_t) t * (size_t) h;
-        const int64_t avail = n_tail + t + 1;                      // tail + window[0..t]
+        const int64_t avail = n_tail + t + 1; // tail + window[0..t]
         const int take = (int) std::min<int64_t>(h, avail);
         std::fill(row, row + (h - take), -1);
         for (int j = 0; j < take; ++j) {
-            const int64_t i = avail - take + j;                     // index into (tail, window)
+            const int64_t i = avail - take + j; // index into (tail, window)
             row[h - take + j] = i < n_tail ? tail[i] : window[i - n_tail];
         }
     }
 }
 
-}  // namespace guild::kernels
+} // namespace guild::kernels

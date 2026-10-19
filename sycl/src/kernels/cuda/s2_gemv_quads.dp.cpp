@@ -30,32 +30,29 @@ namespace {
 constexpr int QK_S2 = 64;
 constexpr int CODES_PER_BYTE_S2 = 4;
 
-__dpct_inline__ void s2_gemv_quads_kernel(const uint16_t *__restrict__ x,
-                                          const uint8_t *__restrict__ codes,
-                                          const float *__restrict__ scales,
-                                          float *__restrict__ y, long long n_in,
-                                          long long n_out, int threads_per_row,
-                                          uint8_t *dpct_local) {
+__dpct_inline__ void s2_gemv_quads_kernel(const uint16_t* __restrict__ x, const uint8_t* __restrict__ codes,
+                                          const float* __restrict__ scales, float* __restrict__ y, long long n_in,
+                                          long long n_out, int threads_per_row, uint8_t* dpct_local) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
-    auto partial = (float *)dpct_local;
+    auto partial = (float*) dpct_local;
     const long long o = item_ct1.get_group(2);
-    if (o >= n_out) return;
+    if (o >= n_out)
+        return;
     const int tid = item_ct1.get_local_id(2);
 
     const long long n_quads = n_in / 4;
-    const uint8_t* c = codes + o * n_quads;             // exactly one code byte per quad
+    const uint8_t* c = codes + o * n_quads; // exactly one code byte per quad
     const float* s = scales + o * (n_in / QK_S2);
 
     float a0 = 0.0f, a1 = 0.0f, a2 = 0.0f, a3 = 0.0f;
     for (long long q = tid; q < n_quads; q += threads_per_row) {
-        const uint8_t byte = c[q];                      // ONE load for four codes
-        const float d = s[q >> 4];                      // (q*4) >> 6, the group index as a shift
+        const uint8_t byte = c[q]; // ONE load for four codes
+        const float d = s[q >> 4]; // (q*4) >> 6, the group index as a shift
         // ONE 64-bit load for four halves.  `x` is 256-byte aligned and four halves are eight bytes, so
         // this is an aligned uint2 - if it were not, the misaligned access would fault rather than be slow.
-        const sycl::uint2 xw =
-            *reinterpret_cast<const sycl::uint2 *>(x + q * 4);
-        const sycl::half2 h01 = *reinterpret_cast<const sycl::half2 *>(&xw.x());
-        const sycl::half2 h23 = *reinterpret_cast<const sycl::half2 *>(&xw.y());
+        const sycl::uint2 xw = *reinterpret_cast<const sycl::uint2*>(x + q * 4);
+        const sycl::half2 h01 = *reinterpret_cast<const sycl::half2*>(&xw.x());
+        const sycl::half2 h23 = *reinterpret_cast<const sycl::half2*>(&xw.y());
         // the four codes, each carrying the -1 bias in the INTEGER domain; the scale is applied once per
         // element here rather than once per group, which is the same expression the generic kernel uses
         const float w0 = (float) ((int) (byte & 3) - 1) * d;
@@ -71,22 +68,24 @@ __dpct_inline__ void s2_gemv_quads_kernel(const uint16_t *__restrict__ x,
     item_ct1.barrier(sycl::access::fence_space::local_space);
 #pragma unroll
     for (int step = threads_per_row / 2; step > 0; step >>= 1) {
-        if (tid < step) partial[tid] += partial[tid + step];
+        if (tid < step)
+            partial[tid] += partial[tid + step];
         /*
         DPCT1118: SYCL group functions and algorithms must be encountered in
         converged control flow. You may need to adjust the code.
         */
         item_ct1.barrier(sycl::access::fence_space::local_space);
     }
-    if (tid == 0) y[o] = partial[0];
+    if (tid == 0)
+        y[o] = partial[0];
 }
 
-}  // namespace
+} // namespace
 
-void s2_gemv_quads(const uint16_t *x, const uint8_t *codes, const float *scales,
-                   float *y, int64_t n_in, int64_t n_out,
+void s2_gemv_quads(const uint16_t* x, const uint8_t* codes, const float* scales, float* y, int64_t n_in, int64_t n_out,
                    int threads_per_row) try {
-    if (n_in <= 0 || n_out <= 0) return;
+    if (n_in <= 0 || n_out <= 0)
+        return;
     if (n_in % 4 != 0) {
         std::fprintf(stderr, "s2_gemv_quads: n_in %lld is not a multiple of 4\n", (long long) n_in);
         std::exit(1);
@@ -96,43 +95,32 @@ void s2_gemv_quads(const uint16_t *x, const uint8_t *codes, const float *scales,
     from the original code. Check that the allocated memory size in the migrated
     code is correct.
     */
-    const size_t smem = (size_t)threads_per_row * sizeof(float);
+    const size_t smem = (size_t) threads_per_row * sizeof(float);
     /*
     DPCT1049: The work-group size passed to the SYCL kernel may exceed the
     limit. To get the device limit, query info::device::max_work_group_size.
     Adjust the work-group size if needed.
     */
     {
-        auto exp_props = sycl::ext::oneapi::experimental::properties{
-            sycl::ext::oneapi::experimental::use_root_sync};
-        dpct::has_capability_or_fail(dpct::get_in_order_queue().get_device(),
-                                     {sycl::aspect::fp16});
+        auto exp_props = sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::use_root_sync};
+        dpct::has_capability_or_fail(dpct::get_in_order_queue().get_device(), {sycl::aspect::fp16});
 
-        dpct::get_in_order_queue().submit([&](sycl::handler &cgh) {
-            sycl::local_accessor<uint8_t, 1> dpct_local_acc_ct1(
-                sycl::range(smem), cgh);
+        dpct::get_in_order_queue().submit([&](sycl::handler& cgh) {
+            sycl::local_accessor<uint8_t, 1> dpct_local_acc_ct1(sycl::range(smem), cgh);
 
-            cgh.parallel_for<
-                dpct_kernel_name<class s2_gemv_quads_kernel_5797f4>>(
-                sycl::nd_range<3>(sycl::range(1, 1, (unsigned)n_out) *
-                                      sycl::range(1, 1, threads_per_row),
+            cgh.parallel_for<dpct_kernel_name<class s2_gemv_quads_kernel_5797f4>>(
+                sycl::nd_range<3>(sycl::range(1, 1, (unsigned) n_out) * sycl::range(1, 1, threads_per_row),
                                   sycl::range(1, 1, threads_per_row)),
                 exp_props, [=](sycl::nd_item<3> item_ct1) {
-                    s2_gemv_quads_kernel(
-                        x, codes, scales, y, n_in, n_out, threads_per_row,
-                        dpct_local_acc_ct1
-                            .get_multi_ptr<sycl::access::decorated::no>()
-                            .get());
+                    s2_gemv_quads_kernel(x, codes, scales, y, n_in, n_out, threads_per_row,
+                                         dpct_local_acc_ct1.get_multi_ptr<sycl::access::decorated::no>().get());
                 });
         });
     }
-    const dpct::err0 e =
-        DPCT_CHECK_ERROR(dpct::get_current_device().queues_wait_and_throw());
-}
-catch (sycl::exception const &exc) {
-  std::cerr << exc.what() << "Exception caught at file:" << __FILE__
-            << ", line:" << __LINE__ << std::endl;
-  std::exit(1);
+    const dpct::err0 e = DPCT_CHECK_ERROR(dpct::get_current_device().queues_wait_and_throw());
+} catch (sycl::exception const& exc) {
+    std::cerr << exc.what() << "Exception caught at file:" << __FILE__ << ", line:" << __LINE__ << std::endl;
+    std::exit(1);
 }
 
-}  // namespace guild::kernels
+} // namespace guild::kernels

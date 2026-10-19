@@ -47,28 +47,28 @@ __dpct_inline__ float warp_sum(float value) {
         compilers or runtimes. You may need to adjust the code.
         */
         value += dpct::experimental::permute_sub_group_by_xor(
-            0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(),
-            value, offset);
+            0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(), value, offset);
     return value;
 }
 template <int BlockSize>
-__dpct_inline__ void norm(const float *input, const float *__restrict__ gamma,
-                          float *output, int n_cols, float epsilon) {
+__dpct_inline__ void norm(const float* input, const float* __restrict__ gamma, float* output, int n_cols,
+                          float epsilon) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
     const int tid = item_ct1.get_local_id(2);
     const std::size_t row_offset = std::size_t(item_ct1.get_group(2)) * n_cols;
-    input += row_offset; output += row_offset;
+    input += row_offset;
+    output += row_offset;
     float partial = 0.0f;
     for (std::size_t col = tid; col < std::size_t(n_cols); col += BlockSize) {
         const float x = input[col];
         partial += x * x;
     }
-    auto &sums =
-        *sycl::ext::oneapi::group_local_memory_for_overwrite<float[32]>(
-            sycl::ext::oneapi::this_work_item::get_work_group<3>());
+    auto& sums = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[32]>(
+        sycl::ext::oneapi::this_work_item::get_work_group<3>());
     partial = warp_sum(partial);
     const int lane = tid % 32;
-    if (lane == 0) sums[tid / 32] = partial;
+    if (lane == 0)
+        sums[tid / 32] = partial;
     // All reads of input for the reduction precede this barrier. Afterwards,
     // each thread reads/writes only its own elements, allowing exact in-place use.
     item_ct1.barrier(sycl::access::fence_space::local_space);
@@ -80,13 +80,12 @@ __dpct_inline__ void norm(const float *input, const float *__restrict__ gamma,
     for (std::size_t col = tid; col < std::size_t(n_cols); col += BlockSize)
         output[col] = scale * input[col] * gamma[col];
 }
-__dpct_inline__ void gate(const float *attn, const float *__restrict__ q_full,
-                          float *output, int n_head, int head_dim) {
+__dpct_inline__ void gate(const float* attn, const float* __restrict__ q_full, float* output, int n_head,
+                          int head_dim) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
-    const std::size_t i =
-        std::size_t(item_ct1.get_group(2)) * item_ct1.get_local_range(2) +
-        item_ct1.get_local_id(2);
-    if (i >= std::size_t(n_head) * head_dim) return;
+    const std::size_t i = std::size_t(item_ct1.get_group(2)) * item_ct1.get_local_range(2) + item_ct1.get_local_id(2);
+    if (i >= std::size_t(n_head) * head_dim)
+        return;
     const std::size_t head = i / head_dim, channel = i % head_dim;
     const float raw = q_full[head * 2 * head_dim + head_dim + channel];
     const float sigmoid = 1.0f / (1.0f + sycl::native::exp(-raw));
@@ -105,12 +104,13 @@ bool overlap(const void* a, std::size_t an, const void* b, std::size_t bn) {
     const auto ap = reinterpret_cast<std::uintptr_t>(a), bp = reinterpret_cast<std::uintptr_t>(b);
     return ap < bp + bn && bp < ap + an;
 }
-void buffers(const float* input, std::size_t in_bytes, const float* weight, std::size_t weight_bytes,
-             float* output, void* stream) {
+void buffers(const float* input, std::size_t in_bytes, const float* weight, std::size_t weight_bytes, float* output,
+             void* stream) {
     if (!stream || !valid(input, in_bytes) || !valid(weight, weight_bytes) || !valid(output, in_bytes) ||
         overlap(input, in_bytes, weight, weight_bytes) || overlap(output, in_bytes, weight, weight_bytes) ||
         (input != output && overlap(input, in_bytes, output, in_bytes)))
-        throw std::invalid_argument("native QSA requires a stream, aligned spans, and disjoint buffers or exact input/output alias");
+        throw std::invalid_argument(
+            "native QSA requires a stream, aligned spans, and disjoint buffers or exact input/output alias");
 }
 void check_launch() {
     /*
@@ -132,36 +132,32 @@ void check_launch() {
         /*
         DPCT1001: The statement could not be removed.
         */
-        throw std::runtime_error(std::string("native QSA launch: ") +
-                                 dpct::get_error_string_dummy(result));
+        throw std::runtime_error(std::string("native QSA launch: ") + dpct::get_error_string_dummy(result));
 }
 } // namespace
 
-void native_qsa_set_enabled(bool value) { enabled.store(value, std::memory_order_relaxed); }
-bool native_qsa_enabled() { return enabled.load(std::memory_order_relaxed); }
+void native_qsa_set_enabled(bool value) {
+    enabled.store(value, std::memory_order_relaxed);
+}
+bool native_qsa_enabled() {
+    return enabled.load(std::memory_order_relaxed);
+}
 
-void native_qsa_rms_norm_weighted(const float* input, const float* gamma, float* output,
-                                  int n_cols, int n_rows, float epsilon, void* stream) {
+void native_qsa_rms_norm_weighted(const float* input, const float* gamma, float* output, int n_cols, int n_rows,
+                                  float epsilon, void* stream) {
     const auto count = elements(n_cols, n_rows);
     if (!std::isfinite(epsilon) || epsilon < 0.0f)
         throw std::invalid_argument("native QSA requires finite nonnegative epsilon");
     buffers(input, count * 4, gamma, std::size_t(n_cols) * 4, output, stream);
-    if (n_cols < 1024)
-    {
-        auto exp_props = sycl::ext::oneapi::experimental::properties{
-            sycl::ext::oneapi::experimental::use_root_sync};
+    if (n_cols < 1024) {
+        auto exp_props = sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::use_root_sync};
 
-        ((sycl::queue *)(guild::q_of(stream)))
-            ->parallel_for<
-                dpct_kernel_name<class norm_bffbae, dpct_kernel_scalar<256>>>(
-                sycl::nd_range<3>(sycl::range(1, 1, unsigned(n_rows)) *
-                                      sycl::range(1, 1, 256),
-                                  sycl::range(1, 1, 256)),
-                exp_props,
-                [=](sycl::nd_item<3> item_ct1)
-                    [[sycl::reqd_sub_group_size(32)]] {
-                        norm<256>(input, gamma, output, n_cols, epsilon);
-                    });
+        ((sycl::queue*) (guild::q_of(stream)))
+            ->parallel_for<dpct_kernel_name<class norm_bffbae, dpct_kernel_scalar<256>>>(
+                sycl::nd_range<3>(sycl::range(1, 1, unsigned(n_rows)) * sycl::range(1, 1, 256), sycl::range(1, 1, 256)),
+                exp_props, [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(32)]] {
+                    norm<256>(input, gamma, output, n_cols, epsilon);
+                });
     } else
     /*
     DPCT1049: The work-group size passed to the SYCL kernel may exceed
@@ -169,40 +165,30 @@ void native_qsa_rms_norm_weighted(const float* input, const float* gamma, float*
     info::device::max_work_group_size. Adjust the work-group size if needed.
     */
     {
-        auto exp_props = sycl::ext::oneapi::experimental::properties{
-            sycl::ext::oneapi::experimental::use_root_sync};
+        auto exp_props = sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::use_root_sync};
 
-        ((sycl::queue *)(guild::q_of(stream)))
-            ->parallel_for<
-                dpct_kernel_name<class norm_de4c8c, dpct_kernel_scalar<1024>>>(
-                sycl::nd_range<3>(sycl::range(1, 1, unsigned(n_rows)) *
-                                      sycl::range(1, 1, 1024),
+        ((sycl::queue*) (guild::q_of(stream)))
+            ->parallel_for<dpct_kernel_name<class norm_de4c8c, dpct_kernel_scalar<1024>>>(
+                sycl::nd_range<3>(sycl::range(1, 1, unsigned(n_rows)) * sycl::range(1, 1, 1024),
                                   sycl::range(1, 1, 1024)),
-                exp_props,
-                [=](sycl::nd_item<3> item_ct1)
-                    [[sycl::reqd_sub_group_size(32)]] {
-                        norm<1024>(input, gamma, output, n_cols, epsilon);
-                    });
+                exp_props, [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(32)]] {
+                    norm<1024>(input, gamma, output, n_cols, epsilon);
+                });
     }
     check_launch();
 }
-void native_qsa_gate_apply(const float* attn, const float* q_full, float* output,
-                           int n_head, int head_dim, void* stream) {
+void native_qsa_gate_apply(const float* attn, const float* q_full, float* output, int n_head, int head_dim,
+                           void* stream) {
     const auto count = elements(head_dim, n_head);
     buffers(attn, count * 4, q_full, count * 8, output, stream);
     {
-        auto exp_props = sycl::ext::oneapi::experimental::properties{
-            sycl::ext::oneapi::experimental::use_root_sync};
+        auto exp_props = sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::use_root_sync};
 
-        ((sycl::queue *)(guild::q_of(stream)))
+        ((sycl::queue*) (guild::q_of(stream)))
             ->parallel_for<dpct_kernel_name<class gate_148967>>(
-                sycl::nd_range<3>(
-                    sycl::range(1, 1, unsigned((count + 255) / 256)) *
-                        sycl::range(1, 1, 256),
-                    sycl::range(1, 1, 256)),
-                exp_props, [=](sycl::nd_item<3> item_ct1) {
-                    gate(attn, q_full, output, n_head, head_dim);
-                });
+                sycl::nd_range<3>(sycl::range(1, 1, unsigned((count + 255) / 256)) * sycl::range(1, 1, 256),
+                                  sycl::range(1, 1, 256)),
+                exp_props, [=](sycl::nd_item<3> item_ct1) { gate(attn, q_full, output, n_head, head_dim); });
     }
     check_launch();
 }

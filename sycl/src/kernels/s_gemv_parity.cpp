@@ -35,7 +35,7 @@
 
 namespace {
 
-void check(dpct::err0 e, const char *what) {
+void check(dpct::err0 e, const char* what) {
 }
 
 // Finite, exactly representable fp16 patterns WITH full mantissas.  Not powers of two: with only powers of
@@ -47,7 +47,7 @@ const uint16_t kScales[] = {0x3E00, 0x3555, 0x3C01, 0x4248, 0x4123, 0x2AAA, 0x4A
 struct Case {
     const char* name;
     guild::kernels::SForm form;
-    int raw_bytes;        // one block
+    int raw_bytes; // one block
     // Reconstruct the raw GGUF block for one group from the canonical codes/scales, and return the number of
     // elements the block decodes to (which may exceed group_elems: Q8_0's block IS one group, Q2_0's too).
     int (*to_raw)(const uint8_t* codes, size_t code_off, const uint16_t* scale_bits, size_t scale_off, uint8_t* raw);
@@ -80,7 +80,8 @@ int q4_0_to_raw(const uint8_t* codes, size_t co, const uint16_t* scale_bits, siz
     const uint16_t d = scale_bits[so];
     raw[0] = (uint8_t) (d & 0xFF);
     raw[1] = (uint8_t) (d >> 8);
-    for (int j = 0; j < 16; ++j) raw[2 + j] = (uint8_t) ((codes[co + j] & 0x0F) | (codes[co + 16 + j] << 4));
+    for (int j = 0; j < 16; ++j)
+        raw[2 + j] = (uint8_t) ((codes[co + j] & 0x0F) | (codes[co + 16 + j] << 4));
     return 32;
 }
 double q4_0_deq(const uint8_t* raw, float* out) {
@@ -109,7 +110,8 @@ int q8_0_to_raw(const uint8_t* codes, size_t co, const uint16_t* scale_bits, siz
     // `c ^ 0x80` - a SIGN-BIT FLIP, not the identity.  Assuming identity is the same family of mistake as the
     // round-154 Q8_0 bug that the pack found, and it is why this reconstruction is written out rather than
     // memcpy'd.
-    for (int j = 0; j < 32; ++j) raw[2 + j] = (uint8_t) (codes[co + j] ^ 0x80);
+    for (int j = 0; j < 32; ++j)
+        raw[2 + j] = (uint8_t) (codes[co + j] ^ 0x80);
     return 32;
 }
 double q8_0_deq(const uint8_t* raw, float* out) {
@@ -135,10 +137,12 @@ void test_q4k(long long n_in, long long n_out, double tol, int* total_bad) {
     const long long codes_per_row = n_in / 2;
 
     std::vector<uint16_t> x((size_t) n_in);
-    for (long long i = 0; i < n_in; ++i) x[(size_t) i] = kScales[rng() % n_scales];
+    for (long long i = 0; i < n_in; ++i)
+        x[(size_t) i] = kScales[rng() % n_scales];
 
     std::vector<uint8_t> codes_el((size_t) n_out * n_in);
-    for (size_t i = 0; i < codes_el.size(); ++i) codes_el[i] = (uint8_t) (rng() & 0x0F);
+    for (size_t i = 0; i < codes_el.size(); ++i)
+        codes_el[i] = (uint8_t) (rng() & 0x0F);
     std::vector<uint8_t> codes((size_t) n_out * codes_per_row, 0);
     for (size_t i = 0; i < codes_el.size(); ++i) {
         const size_t o = i / (size_t) n_in, k = i % (size_t) n_in;
@@ -167,7 +171,7 @@ void test_q4k(long long n_in, long long n_out, double tol, int* total_bad) {
 
     std::vector<float> ref((size_t) n_out, 0.0f);
     std::vector<double> cond((size_t) n_out, 0.0);
-    double worst_plane_ref = 0.0;   // max |planes - raw block| over every element, on the CPU alone
+    double worst_plane_ref = 0.0; // max |planes - raw block| over every element, on the CPU alone
     std::vector<uint8_t> blk(144);
     std::vector<float> dec(256);
     // A Q4_K raw block covers 256 elements, so a 2560-element row is TEN superblocks, each with its own
@@ -177,8 +181,8 @@ void test_q4k(long long n_in, long long n_out, double tol, int* total_bad) {
     for (long long o = 0; o < n_out; ++o) {
         const Row& r = rows[(size_t) o];
         float acc = 0.0f;
-        double sum_abs = 0.0;      // the natural scale of this row's dot product (see the metric below)
-        double plane_ref_diff = 0.0;   // (a) vs (b): planes against the raw block, both on the CPU
+        double sum_abs = 0.0;        // the natural scale of this row's dot product (see the metric below)
+        double plane_ref_diff = 0.0; // (a) vs (b): planes against the raw block, both on the CPU
         for (long long sb = 0; sb < n_in / 256; ++sb) {
             // ONE 144-byte block per 256-element SUPERBLOCK, with all four steps' qs bytes filled BEFORE the
             // decode.  The previous version decoded a fresh block per STEP and then read all 256 elements
@@ -190,24 +194,23 @@ void test_q4k(long long n_in, long long n_out, double tol, int* total_bad) {
             blk[1] = (uint8_t) (r.d >> 8);
             blk[2] = (uint8_t) (r.dmin & 0xFF);
             blk[3] = (uint8_t) (r.dmin >> 8);
-            for (int j = 0; j < 4; ++j) {          // the exact inverse of get_scale_min_k4
+            for (int j = 0; j < 4; ++j) { // the exact inverse of get_scale_min_k4
                 blk[4 + j] = (uint8_t) ((r.sc[j] & 0x3F) | ((r.sc[j + 4] >> 4) << 6));
                 blk[8 + j] = (uint8_t) ((r.m[j] & 0x3F) | ((r.m[j + 4] >> 4) << 6));
                 blk[12 + j] = (uint8_t) ((r.sc[j + 4] & 0x0F) | ((r.m[j + 4] & 0x0F) << 4));
             }
             for (int step = 0; step < 4; ++step) {
-                for (int l = 0; l < 32; ++l) {     // elements 0..31 LOW nibbles, 32..63 HIGH
+                for (int l = 0; l < 32; ++l) { // elements 0..31 LOW nibbles, 32..63 HIGH
                     const long long e0 = o * n_in + sb * 256 + step * 64 + l;
                     const long long e1 = e0 + 32;
-                    blk[16 + step * 32 + l] =
-                        (uint8_t) ((codes_el[(size_t) e0] & 0x0F) | (codes_el[(size_t) e1] << 4));
+                    blk[16 + step * 32 + l] = (uint8_t) ((codes_el[(size_t) e0] & 0x0F) | (codes_el[(size_t) e1] << 4));
                 }
             }
             guild::dequantize_q4_K(blk.data(), dec.data());
             for (int j = 0; j < 256; ++j) {
                 const float term = dec[(size_t) j] * guild::fp16_to_fp32(x[(size_t) (sb * 256 + j)]);
                 acc += term;
-                sum_abs += std::fabs((double) term);      // the CONDITION of this dot product
+                sum_abs += std::fabs((double) term); // the CONDITION of this dot product
 
                 // THE THIRD DECODE.  (a) the raw block through the scalar dequantizer, (b) the canonical
                 // PLANES through `code*scale + offset`, (c) the GPU.  If (a) != (b) then this test built
@@ -216,8 +219,8 @@ void test_q4k(long long n_in, long long n_out, double tol, int* total_bad) {
                 const long long elem = sb * 256 + j;
                 const long long g = elem / 32;
                 const int code = (int) codes_el[(size_t) (o * n_in + elem)];
-                const float b_dec = (float) code * scales[(size_t) (o * n_groups + g)] +
-                                    offsets[(size_t) (o * n_groups + g)];
+                const float b_dec =
+                    (float) code * scales[(size_t) (o * n_groups + g)] + offsets[(size_t) (o * n_groups + g)];
                 if (std::fabs((double) (b_dec - dec[(size_t) j])) > plane_ref_diff) {
                     plane_ref_diff = std::fabs((double) (b_dec - dec[(size_t) j]));
                 }
@@ -225,26 +228,21 @@ void test_q4k(long long n_in, long long n_out, double tol, int* total_bad) {
         }
         ref[(size_t) o] = acc;
         cond[(size_t) o] = sum_abs;
-        if (!(plane_ref_diff <= worst_plane_ref)) worst_plane_ref = plane_ref_diff;
+        if (!(plane_ref_diff <= worst_plane_ref))
+            worst_plane_ref = plane_ref_diff;
     }
 
     uint16_t* d_x = nullptr;
     uint8_t* d_codes = nullptr;
     float *d_scales = nullptr, *d_offsets = nullptr, *d_y = nullptr;
-    check(DPCT_CHECK_ERROR(d_x = sycl::malloc_device<uint16_t>(
-                               x.size(), dpct::get_in_order_queue())),
-          "cudaMalloc x");
-    check(DPCT_CHECK_ERROR(d_codes = (uint8_t *)sycl::malloc_device(
-                               codes.size(), dpct::get_in_order_queue())),
+    check(DPCT_CHECK_ERROR(d_x = sycl::malloc_device<uint16_t>(x.size(), dpct::get_in_order_queue())), "cudaMalloc x");
+    check(DPCT_CHECK_ERROR(d_codes = (uint8_t*) sycl::malloc_device(codes.size(), dpct::get_in_order_queue())),
           "cudaMalloc codes");
-    check(DPCT_CHECK_ERROR(d_scales = sycl::malloc_device<float>(
-                               scales.size(), dpct::get_in_order_queue())),
+    check(DPCT_CHECK_ERROR(d_scales = sycl::malloc_device<float>(scales.size(), dpct::get_in_order_queue())),
           "cudaMalloc scales");
-    check(DPCT_CHECK_ERROR(d_offsets = sycl::malloc_device<float>(
-                               offsets.size(), dpct::get_in_order_queue())),
+    check(DPCT_CHECK_ERROR(d_offsets = sycl::malloc_device<float>(offsets.size(), dpct::get_in_order_queue())),
           "cudaMalloc offsets");
-    check(DPCT_CHECK_ERROR(d_y = sycl::malloc_device<float>(
-                               (size_t)n_out, dpct::get_in_order_queue())),
+    check(DPCT_CHECK_ERROR(d_y = sycl::malloc_device<float>((size_t) n_out, dpct::get_in_order_queue())),
           "cudaMalloc y");
     /*
     DPCT1114: cudaMemcpy is migrated to asynchronization memcpy, assuming
@@ -252,8 +250,9 @@ void test_q4k(long long n_in, long long n_out, double tol, int* total_bad) {
     memory is not pageable, call wait() on event return by memcpy API to ensure
     synchronization behavior.
     */
-    check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(
-              d_x, x.data(), x.size() * sizeof(uint16_t)).wait()),
+    check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
+                               .memcpy(d_x, x.data(), x.size() * sizeof(uint16_t))
+                               .wait()),
           "copy x");
     /*
     DPCT1114: cudaMemcpy is migrated to asynchronization memcpy, assuming
@@ -261,8 +260,9 @@ void test_q4k(long long n_in, long long n_out, double tol, int* total_bad) {
     memory is not pageable, call wait() on event return by memcpy API to ensure
     synchronization behavior.
     */
-    check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(
-              d_codes, codes.data(), codes.size()).wait()),
+    check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
+                               .memcpy(d_codes, codes.data(), codes.size())
+                               .wait()),
           "copy codes");
     /*
     DPCT1114: cudaMemcpy is migrated to asynchronization memcpy, assuming
@@ -270,8 +270,9 @@ void test_q4k(long long n_in, long long n_out, double tol, int* total_bad) {
     memory is not pageable, call wait() on event return by memcpy API to ensure
     synchronization behavior.
     */
-    check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(
-              d_scales, scales.data(), scales.size() * sizeof(float)).wait()),
+    check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
+                               .memcpy(d_scales, scales.data(), scales.size() * sizeof(float))
+                               .wait()),
           "copy scales");
     /*
     DPCT1114: cudaMemcpy is migrated to asynchronization memcpy, assuming
@@ -279,15 +280,15 @@ void test_q4k(long long n_in, long long n_out, double tol, int* total_bad) {
     memory is not pageable, call wait() on event return by memcpy API to ensure
     synchronization behavior.
     */
-    check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(
-              d_offsets, offsets.data(), offsets.size() * sizeof(float)).wait()),
+    check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
+                               .memcpy(d_offsets, offsets.data(), offsets.size() * sizeof(float))
+                               .wait()),
           "copy offsets");
     guild::kernels::s_gemv(d_x, d_codes, d_scales, d_offsets, d_y, n_in, n_out, form);
     std::vector<float> got((size_t) n_out);
-    check(DPCT_CHECK_ERROR(
-              (dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
-                  .memcpy(got.data(), d_y, got.size() * sizeof(float))
-                  .wait()),
+    check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
+                               .memcpy(got.data(), d_y, got.size() * sizeof(float))
+                               .wait()),
           "copy back");
 
     // THE ERROR IS MEASURED AGAINST sum|term|, NOT AGAINST THE RESULT.  A dot product of 2560 signed terms
@@ -302,17 +303,20 @@ void test_q4k(long long n_in, long long n_out, double tol, int* total_bad) {
         const double scale = cond[(size_t) o] > 1e-30 ? cond[(size_t) o] : 1e-30;
         const double rel = std::fabs(a - b) / scale;
         const double rel_res = std::fabs(a - b) / (std::fabs(a) > 1e-30 ? std::fabs(a) : 1e-30);
-        if (!(rel <= worst)) worst = rel;
-        if (!(rel_res <= worst_res)) worst_res = rel_res;
-        if (!(rel <= tol)) ++bad;
+        if (!(rel <= worst))
+            worst = rel;
+        if (!(rel_res <= worst_res))
+            worst_res = rel_res;
+        if (!(rel <= tol))
+            ++bad;
     }
     double lo = ref[0], hi = ref[0];
     for (float v : ref) {
         lo = std::fmin(lo, v);
         hi = std::fmax(hi, v);
     }
-    std::printf("  %-10s %lld rows, %lld over tol, worst rel-to-terms %.3e (rel-to-result %.3e)\n",
-                "S4/Q4_K", n_out, bad, worst, worst_res);
+    std::printf("  %-10s %lld rows, %lld over tol, worst rel-to-terms %.3e (rel-to-result %.3e)\n", "S4/Q4_K", n_out,
+                bad, worst, worst_res);
     std::printf("             ref spread [%.4g, %.4g], condition (sum|term|) up to %.4g\n", lo, hi,
                 *std::max_element(cond.begin(), cond.end()));
     std::printf("             CPU planes vs CPU raw block: max |diff| = %.3e -> %s\n", worst_plane_ref,
@@ -331,8 +335,7 @@ void test_q4k(long long n_in, long long n_out, double tol, int* total_bad) {
     sycl::free(d_y, dpct::get_in_order_queue());
 }
 
-}  // namespace
-
+} // namespace
 
 // ------------------------------------------------------------------ benchmark
 //
@@ -349,31 +352,26 @@ void bench_s2_gemv(long long n_in, long long n_out, int iters, int* split_bad) {
 
     std::vector<uint8_t> codes((size_t) n_out * codes_per_row, 0xA5);
     std::vector<float> scales((size_t) n_out * n_groups, 0.001f);
-    std::vector<uint16_t> x((size_t) n_in, 0x3C00);            // 1.0 in fp16
+    std::vector<uint16_t> x((size_t) n_in, 0x3C00); // 1.0 in fp16
 
     uint16_t* d_x = nullptr;
     uint8_t* d_codes = nullptr;
     float *d_scales = nullptr, *d_y = nullptr;
-    check(DPCT_CHECK_ERROR(d_x = sycl::malloc_device<uint16_t>(
-                               x.size(), dpct::get_in_order_queue())),
-          "bench x");
-    check(DPCT_CHECK_ERROR(d_codes = (uint8_t *)sycl::malloc_device(
-                               codes.size(), dpct::get_in_order_queue())),
+    check(DPCT_CHECK_ERROR(d_x = sycl::malloc_device<uint16_t>(x.size(), dpct::get_in_order_queue())), "bench x");
+    check(DPCT_CHECK_ERROR(d_codes = (uint8_t*) sycl::malloc_device(codes.size(), dpct::get_in_order_queue())),
           "bench codes");
-    check(DPCT_CHECK_ERROR(d_scales = sycl::malloc_device<float>(
-                               scales.size(), dpct::get_in_order_queue())),
+    check(DPCT_CHECK_ERROR(d_scales = sycl::malloc_device<float>(scales.size(), dpct::get_in_order_queue())),
           "bench scales");
-    check(DPCT_CHECK_ERROR(d_y = sycl::malloc_device<float>(
-                               (size_t)n_out, dpct::get_in_order_queue())),
-          "bench y");
+    check(DPCT_CHECK_ERROR(d_y = sycl::malloc_device<float>((size_t) n_out, dpct::get_in_order_queue())), "bench y");
     /*
     DPCT1114: cudaMemcpy is migrated to asynchronization memcpy, assuming
     in the original code the source host memory is pageable memory. If the
     memory is not pageable, call wait() on event return by memcpy API to ensure
     synchronization behavior.
     */
-    check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(
-              d_x, x.data(), x.size() * sizeof(uint16_t)).wait()),
+    check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
+                               .memcpy(d_x, x.data(), x.size() * sizeof(uint16_t))
+                               .wait()),
           "bench copy x");
     /*
     DPCT1114: cudaMemcpy is migrated to asynchronization memcpy, assuming
@@ -381,8 +379,9 @@ void bench_s2_gemv(long long n_in, long long n_out, int iters, int* split_bad) {
     memory is not pageable, call wait() on event return by memcpy API to ensure
     synchronization behavior.
     */
-    check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(
-              d_codes, codes.data(), codes.size()).wait()),
+    check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
+                               .memcpy(d_codes, codes.data(), codes.size())
+                               .wait()),
           "bench copy codes");
     /*
     DPCT1114: cudaMemcpy is migrated to asynchronization memcpy, assuming
@@ -390,11 +389,13 @@ void bench_s2_gemv(long long n_in, long long n_out, int iters, int* split_bad) {
     memory is not pageable, call wait() on event return by memcpy API to ensure
     synchronization behavior.
     */
-    check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(
-              d_scales, scales.data(), scales.size() * sizeof(float)).wait()),
+    check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
+                               .memcpy(d_scales, scales.data(), scales.size() * sizeof(float))
+                               .wait()),
           "bench copy scales");
 
-    for (int i = 0; i < 3; ++i) guild::kernels::s_gemv(d_x, d_codes, d_scales, nullptr, d_y, n_in, n_out, form);
+    for (int i = 0; i < 3; ++i)
+        guild::kernels::s_gemv(d_x, d_codes, d_scales, nullptr, d_y, n_in, n_out, form);
 
     std::vector<double> ms;
     for (int i = 0; i < iters; ++i) {
@@ -405,7 +406,8 @@ void bench_s2_gemv(long long n_in, long long n_out, int iters, int* split_bad) {
     }
     std::sort(ms.begin(), ms.end());
     double mean = 0;
-    for (double v : ms) mean += v;
+    for (double v : ms)
+        mean += v;
     mean /= (double) ms.size();
 
     const double weights = (double) n_in * (double) n_out;
@@ -420,8 +422,8 @@ void bench_s2_gemv(long long n_in, long long n_out, int iters, int* split_bad) {
     // the KV/attention work are separate and are NOT included.
     const double roles_per_token = 48.0 * 10.0 * 3.0;
     const double tok_ms = roles_per_token * ms.front();
-    std::printf("  per token: %.0f roles x %.4f ms = %.1f ms  ->  %.1f tok/s (expert matvec only)\n",
-                roles_per_token, ms.front(), tok_ms, tok_ms > 0 ? 1000.0 / tok_ms : 0.0);
+    std::printf("  per token: %.0f roles x %.4f ms = %.1f ms  ->  %.1f tok/s (expert matvec only)\n", roles_per_token,
+                ms.front(), tok_ms, tok_ms > 0 ? 1000.0 / tok_ms : 0.0);
     std::printf("  NOTE: expert matvec ONLY. No attention, no KV, no norm, no router, no sampling, and it\n"
                 "        assumes every expert is already resident in VRAM at zero cost.\n");
 
@@ -431,15 +433,15 @@ void bench_s2_gemv(long long n_in, long long n_out, int iters, int* split_bad) {
     guild::kernels::s_gemv(d_x, d_codes, d_scales, nullptr, d_y, n_in, n_out, form);
     std::vector<float> ref_naive((size_t) n_out);
     check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
-                               .memcpy(ref_naive.data(), d_y,
-                                       ref_naive.size() * sizeof(float))
+                               .memcpy(ref_naive.data(), d_y, ref_naive.size() * sizeof(float))
                                .wait()),
           "copy naive reference");
 
     // ---- the row-split variant, same planes, same process -------------------
     // Swept rather than guessed: more threads per row buys parallelism and costs a deeper reduction.
     for (int tpr : {32, 64, 128, 256}) {
-        if (tpr > n_in) continue;
+        if (tpr > n_in)
+            continue;
         for (int i = 0; i < 3; ++i) {
             guild::kernels::s_gemv_split(d_x, d_codes, d_scales, nullptr, d_y, n_in, n_out, form, tpr);
         }
@@ -447,29 +449,29 @@ void bench_s2_gemv(long long n_in, long long n_out, int iters, int* split_bad) {
         for (int i = 0; i < iters; ++i) {
             const auto t0 = std::chrono::steady_clock::now();
             guild::kernels::s_gemv_split(d_x, d_codes, d_scales, nullptr, d_y, n_in, n_out, form, tpr);
-            sms.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0)
-                              .count());
+            sms.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
         }
         std::sort(sms.begin(), sms.end());
 
         // correctness of the thing being timed
         std::vector<float> got((size_t) n_out);
-        check(DPCT_CHECK_ERROR(
-                  (dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
-                      .memcpy(got.data(), d_y, got.size() * sizeof(float))
-                      .wait()),
+        check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
+                                   .memcpy(got.data(), d_y, got.size() * sizeof(float))
+                                   .wait()),
               "copy split result");
         long long bad = 0;
         double worst = 0.0;
         for (long long o = 0; o < n_out; ++o) {
             const double a = ref_naive[(size_t) o], b = got[(size_t) o];
             const double rel = std::fabs(a - b) / (std::fabs(a) > 1e-30 ? std::fabs(a) : 1e-30);
-            if (!(rel <= worst)) worst = rel;
-            if (!(rel <= 1e-4)) ++bad;
+            if (!(rel <= worst))
+                worst = rel;
+            if (!(rel <= 1e-4))
+                ++bad;
         }
         if (bad) {
-            std::printf("  split tpr=%-4d *** WRONG *** %lld of %lld rows differ, worst rel %.3e\n", tpr,
-                        bad, n_out, worst);
+            std::printf("  split tpr=%-4d *** WRONG *** %lld of %lld rows differ, worst rel %.3e\n", tpr, bad, n_out,
+                        worst);
             *split_bad += (int) bad;
         }
 
@@ -484,13 +486,12 @@ void bench_s2_gemv(long long n_in, long long n_out, int iters, int* split_bad) {
                 for (int i = 0; i < iters; ++i) {
                     const auto q0 = std::chrono::steady_clock::now();
                     guild::kernels::s2_gemv_quads(d_x, d_codes, d_scales, d_y, n_in, n_out, t2);
-                    qms.push_back(std::chrono::duration<double, std::milli>(
-                                      std::chrono::steady_clock::now() - q0).count());
+                    qms.push_back(
+                        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - q0).count());
                 }
                 std::sort(qms.begin(), qms.end());
                 check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
-                                           .memcpy(got.data(), d_y,
-                                                   got.size() * sizeof(float))
+                                           .memcpy(got.data(), d_y, got.size() * sizeof(float))
                                            .wait()),
                       "copy quads result");
                 long long qbad = 0;
@@ -498,10 +499,13 @@ void bench_s2_gemv(long long n_in, long long n_out, int iters, int* split_bad) {
                 for (long long o = 0; o < n_out; ++o) {
                     const double a = ref_naive[(size_t) o], b = got[(size_t) o];
                     const double rel = std::fabs(a - b) / (std::fabs(a) > 1e-30 ? std::fabs(a) : 1e-30);
-                    if (rel > qworst) qworst = rel;
-                    if (!(rel <= 1e-4)) ++qbad;
+                    if (rel > qworst)
+                        qworst = rel;
+                    if (!(rel <= 1e-4))
+                        ++qbad;
                 }
-                if (qbad) *split_bad += (int) qbad;
+                if (qbad)
+                    *split_bad += (int) qbad;
                 std::printf("  quads tpr=%-4d min %.4f ms  -> %6.1f G weights/s   vs naive %.2fx   %s\n", t2,
                             qms.front(), weights / qms.front() / 1e6, ms.front() / qms.front(),
                             qbad ? "*** WRONG ***" : "checked ok");
@@ -519,34 +523,34 @@ void bench_s2_gemv(long long n_in, long long n_out, int iters, int* split_bad) {
                     for (int i = 0; i < iters; ++i) {
                         const auto q0 = std::chrono::steady_clock::now();
                         guild::kernels::s2_gemv_fast(d_x, d_codes, d_scales, d_y, n_in, n_out, t3, staged != 0);
-                        fms.push_back(std::chrono::duration<double, std::milli>(
-                                          std::chrono::steady_clock::now() - q0).count());
+                        fms.push_back(
+                            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - q0).count());
                     }
                     std::sort(fms.begin(), fms.end());
-                    check(
-                        DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
-                                             .memcpy(got.data(), d_y,
-                                                     got.size() * sizeof(float))
-                                             .wait()),
-                        "copy fast result");
+                    check(DPCT_CHECK_ERROR(
+                              (dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
+                                  .memcpy(got.data(), d_y, got.size() * sizeof(float))
+                                  .wait()),
+                          "copy fast result");
                     long long fbad = 0;
                     for (long long o = 0; o < n_out; ++o) {
                         const double a = ref_naive[(size_t) o], b = got[(size_t) o];
                         const double rel = std::fabs(a - b) / (std::fabs(a) > 1e-30 ? std::fabs(a) : 1e-30);
-                        if (!(rel <= 1e-4)) ++fbad;
+                        if (!(rel <= 1e-4))
+                            ++fbad;
                     }
-                    if (fbad) *split_bad += (int) fbad;
+                    if (fbad)
+                        *split_bad += (int) fbad;
                     std::printf("  fast %s tpr=%-4d min %.4f ms  -> %6.1f G weights/s   vs naive %.2fx   %s\n",
-                                staged ? "staged" : "global", t3, fms.front(),
-                                weights / fms.front() / 1e6, ms.front() / fms.front(),
-                                fbad ? "*** WRONG ***" : "checked ok");
+                                staged ? "staged" : "global", t3, fms.front(), weights / fms.front() / 1e6,
+                                ms.front() / fms.front(), fbad ? "*** WRONG ***" : "checked ok");
                 }
             }
         }
 
         const double sp = ms.front() / sms.front();
-        std::printf("  split tpr=%-4d min %.4f ms  -> %6.1f G weights/s   speedup vs naive %.2fx\n", tpr,
-                    sms.front(), weights / sms.front() / 1e6, sp);
+        std::printf("  split tpr=%-4d min %.4f ms  -> %6.1f G weights/s   speedup vs naive %.2fx\n", tpr, sms.front(),
+                    weights / sms.front() / 1e6, sp);
     }
 
     sycl::free(d_x, dpct::get_in_order_queue());
@@ -567,11 +571,16 @@ int main(int argc, char** argv) {
     int iters = 200;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
-        if (a == "--selftest") selftest = true;
-        else if (a == "--bench") bench = true;
-        else if (a == "--iters" && i + 1 < argc) iters = std::atoi(argv[++i]);
-        else if (a == "--n-in" && i + 1 < argc) n_in = std::atoll(argv[++i]);
-        else if (a == "--n-out" && i + 1 < argc) n_out = std::atoll(argv[++i]);
+        if (a == "--selftest")
+            selftest = true;
+        else if (a == "--bench")
+            bench = true;
+        else if (a == "--iters" && i + 1 < argc)
+            iters = std::atoi(argv[++i]);
+        else if (a == "--n-in" && i + 1 < argc)
+            n_in = std::atoll(argv[++i]);
+        else if (a == "--n-out" && i + 1 < argc)
+            n_out = std::atoll(argv[++i]);
         else {
             std::fprintf(stderr, "usage: s_gemv_parity [--selftest] [--n-in N] [--n-out N]\n");
             return 2;
@@ -599,7 +608,8 @@ int main(int argc, char** argv) {
 
         // activations
         std::vector<uint16_t> x((size_t) n_in);
-        for (long long i = 0; i < n_in; ++i) x[(size_t) i] = kScales[rng() % n_scales];
+        for (long long i = 0; i < n_in; ++i)
+            x[(size_t) i] = kScales[rng() % n_scales];
 
         // Codes are generated ONE PER ELEMENT and then packed into the plane the kernel reads.
         //
@@ -610,13 +620,13 @@ int main(int argc, char** argv) {
         // one random array as both happened to agree - and that coincidence is exactly what a test must not
         // depend on.
         std::vector<uint8_t> codes_el((size_t) n_out * n_in);
-        for (size_t i = 0; i < codes_el.size(); ++i) codes_el[i] = (uint8_t) (rng() & ((1u << bits) - 1));
+        for (size_t i = 0; i < codes_el.size(); ++i)
+            codes_el[i] = (uint8_t) (rng() & ((1u << bits) - 1));
         std::vector<uint8_t> codes((size_t) n_out * codes_per_row, 0);
         for (long long o = 0; o < n_out; ++o) {
             for (long long i = 0; i < n_in; ++i) {
                 const long long byi = o * codes_per_row + i / per_byte;
-                codes[(size_t) byi] |= (uint8_t) (codes_el[(size_t) (o * n_in + i)]
-                                                  << ((i % per_byte) * bits));
+                codes[(size_t) byi] |= (uint8_t) (codes_el[(size_t) (o * n_in + i)] << ((i % per_byte) * bits));
             }
         }
         std::vector<float> scales((size_t) n_out * n_groups);
@@ -633,7 +643,7 @@ int main(int argc, char** argv) {
         for (long long o = 0; o < n_out; ++o) {
             float acc = 0.0f;
             for (long long g = 0; g < n_groups; ++g) {
-                const size_t co = (size_t) o * n_in + (size_t) g * G;   // the UNPACKED code array
+                const size_t co = (size_t) o * n_in + (size_t) g * G; // the UNPACKED code array
                 const size_t so = (size_t) o * n_groups + (size_t) g;
                 // The raw block carries the scale as fp16 and the canonical plane carries it widened, so the
                 // block is rebuilt from the PATTERN the plane came from.  No float-to-fp16 conversion is
@@ -651,17 +661,13 @@ int main(int argc, char** argv) {
         uint16_t* d_x = nullptr;
         uint8_t* d_codes = nullptr;
         float *d_scales = nullptr, *d_y = nullptr;
-        check(DPCT_CHECK_ERROR(d_x = sycl::malloc_device<uint16_t>(
-                                   x.size(), dpct::get_in_order_queue())),
+        check(DPCT_CHECK_ERROR(d_x = sycl::malloc_device<uint16_t>(x.size(), dpct::get_in_order_queue())),
               "cudaMalloc x");
-        check(DPCT_CHECK_ERROR(d_codes = (uint8_t *)sycl::malloc_device(
-                                   codes.size(), dpct::get_in_order_queue())),
+        check(DPCT_CHECK_ERROR(d_codes = (uint8_t*) sycl::malloc_device(codes.size(), dpct::get_in_order_queue())),
               "cudaMalloc codes");
-        check(DPCT_CHECK_ERROR(d_scales = sycl::malloc_device<float>(
-                                   scales.size(), dpct::get_in_order_queue())),
+        check(DPCT_CHECK_ERROR(d_scales = sycl::malloc_device<float>(scales.size(), dpct::get_in_order_queue())),
               "cudaMalloc scales");
-        check(DPCT_CHECK_ERROR(d_y = sycl::malloc_device<float>(
-                                   (size_t)n_out, dpct::get_in_order_queue())),
+        check(DPCT_CHECK_ERROR(d_y = sycl::malloc_device<float>((size_t) n_out, dpct::get_in_order_queue())),
               "cudaMalloc y");
         /*
         DPCT1114: cudaMemcpy is migrated to asynchronization memcpy,
@@ -669,8 +675,9 @@ int main(int argc, char** argv) {
         If the memory is not pageable, call wait() on event return by memcpy API
         to ensure synchronization behavior.
         */
-        check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(
-                  d_x, x.data(), x.size() * sizeof(uint16_t)).wait()),
+        check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
+                                   .memcpy(d_x, x.data(), x.size() * sizeof(uint16_t))
+                                   .wait()),
               "copy x");
         /*
         DPCT1114: cudaMemcpy is migrated to asynchronization memcpy,
@@ -678,8 +685,9 @@ int main(int argc, char** argv) {
         If the memory is not pageable, call wait() on event return by memcpy API
         to ensure synchronization behavior.
         */
-        check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(
-                  d_codes, codes.data(), codes.size()).wait()),
+        check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
+                                   .memcpy(d_codes, codes.data(), codes.size())
+                                   .wait()),
               "copy codes");
         /*
         DPCT1114: cudaMemcpy is migrated to asynchronization memcpy,
@@ -687,15 +695,15 @@ int main(int argc, char** argv) {
         If the memory is not pageable, call wait() on event return by memcpy API
         to ensure synchronization behavior.
         */
-        check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(
-                  d_scales, scales.data(), scales.size() * sizeof(float)).wait()),
+        check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
+                                   .memcpy(d_scales, scales.data(), scales.size() * sizeof(float))
+                                   .wait()),
               "copy scales");
         guild::kernels::s_gemv(d_x, d_codes, d_scales, nullptr, d_y, n_in, n_out, tc.form);
         std::vector<float> got((size_t) n_out);
-        check(DPCT_CHECK_ERROR(
-                  (dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
-                      .memcpy(got.data(), d_y, got.size() * sizeof(float))
-                      .wait()),
+        check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
+                                   .memcpy(got.data(), d_y, got.size() * sizeof(float))
+                                   .wait()),
               "copy back");
 
         long long bad = 0;
@@ -703,16 +711,18 @@ int main(int argc, char** argv) {
         for (long long o = 0; o < n_out; ++o) {
             const double a = ref[(size_t) o], b = got[(size_t) o];
             const double rel = std::fabs(a - b) / (std::fabs(a) > 1e-30 ? std::fabs(a) : 1e-30);
-            if (!(rel <= worst)) worst = rel;
-            if (!(rel <= tol)) ++bad;
+            if (!(rel <= worst))
+                worst = rel;
+            if (!(rel <= tol))
+                ++bad;
         }
         double lo = ref[0], hi = ref[0];
         for (float v : ref) {
             lo = std::fmin(lo, v);
             hi = std::fmax(hi, v);
         }
-        std::printf("  %-10s %lld rows, %lld over tol, worst rel %.3e   ref spread [%.4g, %.4g]\n", tc.name,
-                    n_out, bad, worst, lo, hi);
+        std::printf("  %-10s %lld rows, %lld over tol, worst rel %.3e   ref spread [%.4g, %.4g]\n", tc.name, n_out, bad,
+                    worst, lo, hi);
         if (hi - lo <= 0.0) {
             std::fprintf(stderr, "VACUOUS: %s reference is constant\n", tc.name);
             return 1;
@@ -748,7 +758,9 @@ int main(int argc, char** argv) {
         // benchmarked but never compared is an unverified kernel being quoted for performance.
         total_bad += split_bad;
     }
-    if (total_bad) return 1;
-    if (selftest) std::printf("s_gemv_parity OK\n");
+    if (total_bad)
+        return 1;
+    if (selftest)
+        std::printf("s_gemv_parity OK\n");
     return 0;
 }

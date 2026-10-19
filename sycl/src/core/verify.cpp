@@ -57,9 +57,17 @@ namespace {
 
 constexpr float EPS = 1e-6f;
 using Clock = std::chrono::steady_clock;
-double ms_since(Clock::time_point t) { return std::chrono::duration<double, std::milli>(Clock::now() - t).count(); }
+double ms_since(Clock::time_point t) {
+    return std::chrono::duration<double, std::milli>(Clock::now() - t).count();
+}
 const bool g_dbg = std::getenv("GUILD_VERIFY_DEBUG") != nullptr;
-#define VDBG(...) do { if (g_dbg) { std::fprintf(stderr, "verify dbg: " __VA_ARGS__); std::fflush(stderr); } } while (0)
+#define VDBG(...)                                                                                                      \
+    do {                                                                                                               \
+        if (g_dbg) {                                                                                                   \
+            std::fprintf(stderr, "verify dbg: " __VA_ARGS__);                                                          \
+            std::fflush(stderr);                                                                                       \
+        }                                                                                                              \
+    } while (0)
 
 struct Bump {
     uint8_t* base = nullptr;
@@ -84,22 +92,19 @@ const bool g_doorbell_store = env_on("GUILD_DOORBELL_STORE");
 #endif
 const bool g_trace = env_on("GUILD_VERIFY_TRACE");
 
-bool mapped(size_t bytes, void **h, void **d) try {
+bool mapped(size_t bytes, void** h, void** d) try {
     /*
     DPCT1048: The original value cudaHostAllocMapped is not meaningful in the
     migrated code and was removed or replaced with 0. You may need to check the
     migrated code.
     */
-    if (DPCT_CHECK_ERROR(*h = (void *)sycl::malloc_host(
-                             bytes, dpct::get_in_order_queue())) !=
-        0) return false;
+    if (DPCT_CHECK_ERROR(*h = (void*) sycl::malloc_host(bytes, dpct::get_in_order_queue())) != 0)
+        return false;
     std::memset(*h, 0, bytes);
-    return DPCT_CHECK_ERROR(*d = (void *)*h) == 0;
-}
-catch (sycl::exception const &exc) {
-  std::cerr << exc.what() << "Exception caught at file:" << __FILE__
-            << ", line:" << __LINE__ << std::endl;
-  std::exit(1);
+    return DPCT_CHECK_ERROR(*d = (void*) *h) == 0;
+} catch (sycl::exception const& exc) {
+    std::cerr << exc.what() << "Exception caught at file:" << __FILE__ << ", line:" << __LINE__ << std::endl;
+    std::exit(1);
 }
 
 guild::kernels::QsaShapes shapes_of(const ModelGeometry& g) {
@@ -114,12 +119,14 @@ guild::kernels::QsaShapes shapes_of(const ModelGeometry& g) {
 
 const WeightRef* need(const LayerView& v, const char* suffix, std::string& err) {
     const WeightRef* r = v.get(suffix);
-    if (r == nullptr && err.empty()) err = v.name(suffix) + " is missing";
+    if (r == nullptr && err.empty())
+        err = v.name(suffix) + " is missing";
     return r;
 }
 
 bool native_of(const WeightRef* w, const std::string& name, std::string& err) {
-    if (w == nullptr) return false;
+    if (w == nullptr)
+        return false;
     if (w->native_data == nullptr) {
         err = "verify: " + name + " is not served natively (run with --native)";
         return false;
@@ -127,12 +134,13 @@ bool native_of(const WeightRef* w, const std::string& name, std::string& err) {
     return true;
 }
 
-}  // namespace
+} // namespace
 
 namespace {
 std::atomic<const Verifier*> g_diag_verifier{nullptr};
 void diag_active_verifier(std::FILE* f) {
-    if (const Verifier* v = g_diag_verifier.load()) v->diag(f);
+    if (const Verifier* v = g_diag_verifier.load())
+        v->diag(f);
 }
 // #267: every live verifier (a layer split has one per stage), for the release before the engine ends
 constexpr int kLiveMax = 16;
@@ -147,7 +155,8 @@ void release_live_verifiers(std::FILE* f) {
                              done ? ("finished in " + std::to_string((long long) ms_since(t0)) + " ms").c_str()
                                   : "did not finish within 5 s");
         }
-    if (f != nullptr) std::fflush(f);
+    if (f != nullptr)
+        std::fflush(f);
 }
 // #649: the host side of GUILD_VERIFY_TRACE - a ring of the last kTraceN handshake events of every verifier
 struct TraceEv {
@@ -173,7 +182,7 @@ const int64_t g_test_stall = [] {
     const char* e = std::getenv("GUILD_TEST_VERIFY_STALL");
     return e != nullptr ? (int64_t) std::atoll(e) : (int64_t) 0;
 }();
-}  // namespace
+} // namespace
 
 bool Verifier::release_gpu_waits(int timeout_ms) try {
     released_.store(true);
@@ -182,14 +191,16 @@ bool Verifier::release_gpu_waits(int timeout_ms) try {
     // reaches them with no API call; UINT32_MAX is past every ring.  (E-6's skip words are device memory, but
     // wait_flag_ge_or also returns on its flag.)  A host function raising flag B later only raises.
     for (uint32_t* p : {h_flag_, h_flagA_, h_flagB_})
-        if (p != nullptr) *(volatile uint32_t*) p = UINT32_MAX;
+        if (p != nullptr)
+            *(volatile uint32_t*) p = UINT32_MAX;
     std::atomic_thread_fence(std::memory_order_seq_cst);
     _mm_sfence();
     const OnDevice on_device(device_);
     const Clock::time_point t0 = Clock::now();
     // SYCL port: no cudaStreamQuery; a queue with nothing left to run reports ext_oneapi_empty()
     for (dpct::queue_ptr q : {cs_, copy_}) {
-        if (q == nullptr) continue;
+        if (q == nullptr)
+            continue;
         while (!q->ext_oneapi_empty()) {
             if (ms_since(t0) > timeout_ms) {
                 trace_ev("RELEASE-NOT-DRAINED", -1, -1, (int64_t) ms_since(t0));
@@ -198,43 +209,53 @@ bool Verifier::release_gpu_waits(int timeout_ms) try {
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
     }
-    trace_ev("RELEASE-DRAINED", -1, -1, (int64_t) ms_since(t0));   // aux: ms the GPU took to finish once released
+    trace_ev("RELEASE-DRAINED", -1, -1, (int64_t) ms_since(t0)); // aux: ms the GPU took to finish once released
     return true;
 } catch (...) {
-    return false;   // the runtime may already be tearing down (the watchdog's path ends the engine)
+    return false; // the runtime may already be tearing down (the watchdog's path ends the engine)
 }
 
 void Verifier::trace_ev(const char* what, int64_t step, int64_t layer, int64_t aux) const {
-    if (!g_trace) return;
+    if (!g_trace)
+        return;
     auto rd = [](const uint32_t* p) { return p ? *(const volatile uint32_t*) p : 0u; };
     TraceEv& e = g_trace_ring[g_trace_next.fetch_add(1) % kTraceN];
     e = {trace_now_ns(), this, windows, step, layer, aux, rd(h_seq_), rd(h_flag_), rd(h_flagA_), rd(h_flagB_), what};
 }
 
 void Verifier::trace_dump(std::FILE* f) const {
-    if (!g_trace || f == nullptr) return;
-    static const char* names[kProfPer] = {"pre", "hc-read0", "qkv gemv", "conv", "ab", "z", "rec", "kv-idx",
-                                          "k/v rope", "kv append", "q", "scores+topk", "kv-resolve", "attention",
-                                          "gate", "", "out-proj", "router+ring", "shared", "waitA", "VRAM hits", "waitB",
-                                          "PCIe grp", "waitCPU", "combine", "", "head", "", "", "", "", "", ""};
+    if (!g_trace || f == nullptr)
+        return;
+    static const char* names[kProfPer] = {
+        "pre",        "hc-read0",  "qkv gemv",  "conv",      "ab",       "z",
+        "rec",        "kv-idx",    "k/v rope",  "kv append", "q",        "scores+topk",
+        "kv-resolve", "attention", "gate",      "",          "out-proj", "router+ring",
+        "shared",     "waitA",     "VRAM hits", "waitB",     "PCIe grp", "waitCPU",
+        "combine",    "",          "head",      "",          "",         "",
+        "",           "",          ""};
     const uint64_t end = g_trace_next.load();
     const uint64_t n = end < 160 ? end : 160;
-    std::fprintf(f, "guild verify trace (#649): the last %llu handshake events (host clock, us before the last; "
-                    "words: seq = GPU rang, flag = CPU served, A = plan, B = copies)\n", (unsigned long long) n);
+    std::fprintf(f,
+                 "guild verify trace (#649): the last %llu handshake events (host clock, us before the last; "
+                 "words: seq = GPU rang, flag = CPU served, A = plan, B = copies)\n",
+                 (unsigned long long) n);
     const int64_t t_last = n ? g_trace_ring[(end - 1) % kTraceN].t_ns : 0;
     for (uint64_t i = end - n; i < end; ++i) {
         const TraceEv& e = g_trace_ring[i % kTraceN];
-        if (e.what == nullptr) continue;
+        if (e.what == nullptr)
+            continue;
         std::fprintf(f, "  %10.1f %-20s v%p window %lld step %lld layer %lld aux %lld | seq %u flag %u A %u B %u\n",
                      (double) (t_last - e.t_ns) / 1000.0, e.what, e.who, (long long) e.window, (long long) e.step,
                      (long long) e.layer, (long long) e.aux, e.seq, e.flag, e.a, e.b);
     }
-    if (trace_h_ == nullptr || g_ == nullptr) return;
+    if (trace_h_ == nullptr || g_ == nullptr)
+        return;
     // the breadcrumbs: every stamp point the GPU passed in this window (ns of the GPU clock after the window's first)
     unsigned long long t0 = ~0ull;
     for (size_t i = 0; i < trace_n_; ++i) {
         const unsigned long long t = *(const volatile unsigned long long*) (trace_h_ + i);
-        if (t != 0 && t < t0) t0 = t;
+        if (t != 0 && t < t0)
+            t0 = t;
     }
     if (t0 == ~0ull) {
         std::fprintf(f, "guild verify trace: no GPU breadcrumb in this window (the GPU never started it)\n");
@@ -244,16 +265,20 @@ void Verifier::trace_dump(std::FILE* f) const {
     for (int64_t l = 0; l <= g_->n_layers; ++l)
         for (int i = 0; i < kProfPer; ++i)
             for (int grp = 0; grp < 2; ++grp)
-                if (trace_h_[(size_t) ((l * kProfPer + i) * 2 + grp)] != 0) last_l = l;
-    std::fprintf(f, "guild verify trace: GPU breadcrumbs (us after the window's first), the GPU got as far as layer "
-                    "%lld:\n", (long long) last_l);
+                if (trace_h_[(size_t) ((l * kProfPer + i) * 2 + grp)] != 0)
+                    last_l = l;
+    std::fprintf(f,
+                 "guild verify trace: GPU breadcrumbs (us after the window's first), the GPU got as far as layer "
+                 "%lld:\n",
+                 (long long) last_l);
     for (int64_t l = std::max<int64_t>(0, last_l - 2); l <= std::min<int64_t>(g_->n_layers, last_l + 1); ++l)
         for (int grp = 0; grp < 2; ++grp) {
             std::string line;
             char b[64];
             for (int i = 0; i < kProfPer; ++i) {
                 const unsigned long long t = trace_h_[(size_t) ((l * kProfPer + i) * 2 + grp)];
-                if (t == 0) continue;
+                if (t == 0)
+                    continue;
                 std::snprintf(b, sizeof b, " %s(%d)=%.1f", names[i], i, (double) (t - t0) / 1000.0);
                 line += b;
             }
@@ -268,10 +293,12 @@ void Verifier::diag(std::FILE* f) const {
     // #251: outside a verify stage these are the LAST window's numbers (it finished), not the stalled work's
     const char* where = progress().where.load();
     const bool current = where != nullptr && std::strncmp(where, "verify window", 13) == 0;
-    std::fprintf(f, "  verify window%s: %d tokens at position %lld, host at layer step %u; the GPU rang %u; flags: "
-                    "served %u, plan (A) %u, copies (B) %u\n", current ? "" : " (last window, not the current stage)",
-                 last_t_, (long long) last_pos0_, cur_layer_ + 1, rd(h_seq_), rd(h_flag_), rd(h_flagA_), rd(h_flagB_));
-    trace_dump(f);   // #649: GUILD_VERIFY_TRACE=1 only
+    std::fprintf(f,
+                 "  verify window%s: %d tokens at position %lld, host at layer step %u; the GPU rang %u; flags: "
+                 "served %u, plan (A) %u, copies (B) %u\n",
+                 current ? "" : " (last window, not the current stage)", last_t_, (long long) last_pos0_,
+                 cur_layer_ + 1, rd(h_seq_), rd(h_flag_), rd(h_flagA_), rd(h_flagB_));
+    trace_dump(f); // #649: GUILD_VERIFY_TRACE=1 only
 }
 
 Verifier::~Verifier() try {
@@ -283,44 +310,49 @@ Verifier::~Verifier() try {
         Verifier* me = this;
         slot.compare_exchange_strong(me, nullptr);
     }
-    if (cs_) cs_->wait();
+    if (cs_)
+        cs_->wait();
     for (auto& e : exec_)
-        if (e) delete (e);
-    if (commit_exec_) delete (commit_exec_);
-    if (cs_) dpct::get_current_device().destroy_queue(cs_);
+        if (e)
+            delete (e);
+    if (commit_exec_)
+        delete (commit_exec_);
+    if (cs_)
+        dpct::get_current_device().destroy_queue(cs_);
     if (copy_) {
-        copy_->wait(); dpct::get_current_device().destroy_queue(copy_);
+        copy_->wait();
+        dpct::get_current_device().destroy_queue(copy_);
     }
-    if (arena_) sycl::free(arena_, dpct::get_in_order_queue());
-    void* hosts[] = {h_tok_, h_step_, h_pos_, h_commit_, h_ple_, h_out_, h_x_, h_ids_, h_w_, h_seq_, h_flag_, h_ymiss_,
-                     h_flagA_, h_plan_, h_flagB_};
+    if (arena_)
+        sycl::free(arena_, dpct::get_in_order_queue());
+    void* hosts[] = {h_tok_, h_step_, h_pos_,  h_commit_, h_ple_,   h_out_,  h_x_,    h_ids_,
+                     h_w_,   h_seq_,  h_flag_, h_ymiss_,  h_flagA_, h_plan_, h_flagB_};
     for (void* h : hosts)
-        if (h) sycl::free(h, dpct::get_in_order_queue());
-} catch (...) {
-}
+        if (h)
+            sycl::free(h, dpct::get_in_order_queue());
+} catch (...) {}
 
-
-bool Verifier::init(const WeightTable &wt, const ModelGeometry &g,
-                    SessionState &ss, const VerifyHits &hits,
-                    const NativeHead *head, int max_t, std::string &err) try {
+bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState& ss, const VerifyHits& hits,
+                    const NativeHead* head, int max_t, std::string& err) try {
     g_diag_verifier.store(this);
     diag_verify_fn().store(&diag_active_verifier);
     for (auto& slot : g_live) {
         Verifier* none = nullptr;
-        if (slot.load() == this || slot.compare_exchange_strong(none, this)) break;
+        if (slot.load() == this || slot.compare_exchange_strong(none, this))
+            break;
     }
     release_gpu_fn().store(&release_live_verifiers);
     device_ = dpct::get_current_device_id(); // a layer split's stage on another
                                              // GPU: its streams, graphs and
                                              // buffers live there
-    guild::kernels::fused_gr_check();   // once per card: which bitwise-equal hyper-connection read runs there
+    guild::kernels::fused_gr_check();        // once per card: which bitwise-equal hyper-connection read runs there
     wt_ = &wt;
     g_ = &g;
     ss_ = &ss;
     hits_ = hits;
     head_ = head;
     max_t_ = max_t;
-    sampling_.greedy = true;      // a fresh verifier samples greedily until set_sampling says otherwise
+    sampling_.greedy = true; // a fresh verifier samples greedily until set_sampling says otherwise
     sampling_.temperature = 0.0f;
     if (max_t < 2 || max_t > guild::kernels::kVerifyMaxT || max_t > guild::kernels::cpu::MAXT) {
         err = "verify: the window must hold 2.." + std::to_string(guild::kernels::kVerifyMaxT) + " tokens";
@@ -343,14 +375,18 @@ bool Verifier::init(const WeightTable &wt, const ModelGeometry &g,
         err = "verify: geometry differs from the artifact's";
         return false;
     }
-    if (le_ < 0) le_ = g.n_layers;
+    if (le_ < 0)
+        le_ = g.n_layers;
     if (lb_ < 0 || lb_ >= le_ || le_ > g.n_layers || (lb_ > 0 && hand_in_ == nullptr) ||
         (le_ < g.n_layers && hand_out_ == nullptr)) {
         err = "verify: the stage's layer range or its hand-off buffers are wrong";
         return false;
     }
     const WeightRef* wo = wt.find("output.weight");
-    if (wo == nullptr) { err = "verify: output.weight is missing"; return false; }
+    if (wo == nullptr) {
+        err = "verify: output.weight is missing";
+        return false;
+    }
     n_vocab_ = wo->ne1;
 
     const guild::kernels::QsaShapes s = shapes_of(g);
@@ -368,21 +404,21 @@ bool Verifier::init(const WeightTable &wt, const ModelGeometry &g,
     const int max_in = (int) std::max<uint64_t>(std::max<uint64_t>(N, ZV), NH * HD);
 
     // ---- mapped staging
-    bool ok = mapped(T * 4, (void**) &h_tok_, (void**) &m_tok_) &&
-              mapped(T * guild::kernels::kStepCount * 4, (void**) &h_step_, (void**) &m_step_) &&
-              mapped(T * (NH + NKV + IQ) * 4, (void**) &h_pos_, (void**) &m_pos_) &&
-              mapped((2 + T) * 4 + 16, (void**) &h_commit_, (void**) &m_commit_) &&
-              mapped(T * N * 4, (void**) &h_ple_, (void**) &m_ple_) &&
-              mapped(T * 4 + 16, (void**) &h_out_, (void**) &m_out_) &&
-              mapped(T * N * 4, (void**) &h_x_, (void**) &m_x_) &&
-              mapped(T * K * 4, (void**) &h_ids_, (void**) &m_ids_) &&
-              mapped(T * K * 4, (void**) &h_w_, (void**) &m_w_) &&
-              mapped(64, (void**) &h_seq_, (void**) &m_seq_) &&
-              mapped(64, (void**) &h_flag_, (void**) &m_flag_) &&
-              mapped(64, (void**) &h_flagA_, (void**) &m_flagA_) &&
-              mapped(64, (void**) &h_flagB_, (void**) &m_flagB_) &&
-              mapped(T * K * N * 4, (void**) &h_ymiss_, (void**) &m_ymiss_);
-    if (!ok) { err = "verify: mapped staging allocation failed"; return false; }
+    bool ok =
+        mapped(T * 4, (void**) &h_tok_, (void**) &m_tok_) &&
+        mapped(T * guild::kernels::kStepCount * 4, (void**) &h_step_, (void**) &m_step_) &&
+        mapped(T * (NH + NKV + IQ) * 4, (void**) &h_pos_, (void**) &m_pos_) &&
+        mapped((2 + T) * 4 + 16, (void**) &h_commit_, (void**) &m_commit_) &&
+        mapped(T * N * 4, (void**) &h_ple_, (void**) &m_ple_) &&
+        mapped(T * 4 + 16, (void**) &h_out_, (void**) &m_out_) && mapped(T * N * 4, (void**) &h_x_, (void**) &m_x_) &&
+        mapped(T * K * 4, (void**) &h_ids_, (void**) &m_ids_) && mapped(T * K * 4, (void**) &h_w_, (void**) &m_w_) &&
+        mapped(64, (void**) &h_seq_, (void**) &m_seq_) && mapped(64, (void**) &h_flag_, (void**) &m_flag_) &&
+        mapped(64, (void**) &h_flagA_, (void**) &m_flagA_) && mapped(64, (void**) &h_flagB_, (void**) &m_flagB_) &&
+        mapped(T * K * N * 4, (void**) &h_ymiss_, (void**) &m_ymiss_);
+    if (!ok) {
+        err = "verify: mapped staging allocation failed";
+        return false;
+    }
     // the GPU plan: counts(4) | start(cap+1) | dst(cap) | tok(cap) | pad | ptr(cap u64) | ptr2(cap u64) | start2(cap+1)
     {
         const int64_t cap = (int64_t) (T * K);
@@ -408,57 +444,85 @@ bool Verifier::init(const WeightTable &wt, const ModelGeometry &g,
 
     // ---- the device arena: the same sequence counted, then carved
     auto carve = [&](Bump& b) {
-        tok_ = b.take<int32_t>(T); step_ = b.take<int32_t>(T * guild::kernels::kStepCount);
-        pos_ = b.take<int32_t>(T * (NH + NKV + IQ)); commit_ = b.take<int32_t>(2 + T);
-        ple_ = b.take<float>(T * N); emb_ = b.take<float>(T * N); R_ = b.take<float>(T * HC * N);
-        mixed_ = b.take<float>(T * N); bo_ = b.take<float>(T * N);
-        inj_ = b.take<float>(T * HC); inj2_ = b.take<float>(T * HC);
-        lo_ = b.take<float>(T * (uint64_t) g.hc_lr); rs_ = b.take<float>(T * HC); xn_ = b.take<float>(T * HC * N);
+        tok_ = b.take<int32_t>(T);
+        step_ = b.take<int32_t>(T * guild::kernels::kStepCount);
+        pos_ = b.take<int32_t>(T * (NH + NKV + IQ));
+        commit_ = b.take<int32_t>(2 + T);
+        ple_ = b.take<float>(T * N);
+        emb_ = b.take<float>(T * N);
+        R_ = b.take<float>(T * HC * N);
+        mixed_ = b.take<float>(T * N);
+        bo_ = b.take<float>(T * N);
+        inj_ = b.take<float>(T * HC);
+        inj2_ = b.take<float>(T * HC);
+        lo_ = b.take<float>(T * (uint64_t) g.hc_lr);
+        rs_ = b.take<float>(T * HC);
+        xn_ = b.take<float>(T * HC * N);
         xq_ = b.take<uint8_t>(guild::kernels::native_q8_1_bytes(max_in, (int) T));
-        qkv_L_ = b.take<float>(nG * T * C); h_L_ = b.take<float>(nG * T * C);
-        gate_L_ = b.take<float>(nG * T * HV); beta_L_ = b.take<float>(nG * T * HV);
-        z_ = b.take<float>(T * ZV); y_ = b.take<float>(T * ZV); y_dummy_ = b.take<float>(T * ZV);
-        qfull_ = b.take<float>(T * NH * 2 * HD); qcur_ = b.take<float>(T * NH * HD);
-        kcur_ = b.take<float>(T * NKV * HD); vcur_ = b.take<float>(T * NKV * HD);
-        idx_raw_L_ = b.take<float>(nQ * T * ID); qidx_ = b.take<float>(T * IQ * ID);
-        scores_ = b.take<float>(T * (uint64_t) max_blocks_); sel_ = b.take<int32_t>(T * (uint64_t) cap_);
-        attn_ = b.take<float>(T * NH * HD); attn32_ = b.take<float>(T * NH * HD);
+        qkv_L_ = b.take<float>(nG * T * C);
+        h_L_ = b.take<float>(nG * T * C);
+        gate_L_ = b.take<float>(nG * T * HV);
+        beta_L_ = b.take<float>(nG * T * HV);
+        z_ = b.take<float>(T * ZV);
+        y_ = b.take<float>(T * ZV);
+        y_dummy_ = b.take<float>(T * ZV);
+        qfull_ = b.take<float>(T * NH * 2 * HD);
+        qcur_ = b.take<float>(T * NH * HD);
+        kcur_ = b.take<float>(T * NKV * HD);
+        vcur_ = b.take<float>(T * NKV * HD);
+        idx_raw_L_ = b.take<float>(nQ * T * ID);
+        qidx_ = b.take<float>(T * IQ * ID);
+        scores_ = b.take<float>(T * (uint64_t) max_blocks_);
+        sel_ = b.take<int32_t>(T * (uint64_t) cap_);
+        attn_ = b.take<float>(T * NH * HD);
+        attn32_ = b.take<float>(T * NH * HD);
         attn_scratch_ = b.take<float>(T * (uint64_t) attn_scratch_floats_);
         tail_snap_ = b.take<float>(nQ * TS);
-        logits_ = b.take<float>(T * (uint64_t) g.n_expert); w_ = b.take<float>(T * K); ids_ = b.take<int32_t>(T * K);
-        shared_ = b.take<float>(T * N); parts_ = b.take<float>(T * K * N); hit_out_ = b.take<float>(T * K * N);
-        hit_slot_ = b.take<int32_t>(T * K); hit_dst_ = b.take<int32_t>(T * K); hit_count_ = b.take<int32_t>(4);
+        logits_ = b.take<float>(T * (uint64_t) g.n_expert);
+        w_ = b.take<float>(T * K);
+        ids_ = b.take<int32_t>(T * K);
+        shared_ = b.take<float>(T * N);
+        parts_ = b.take<float>(T * K * N);
+        hit_out_ = b.take<float>(T * K * N);
+        hit_slot_ = b.take<int32_t>(T * K);
+        hit_dst_ = b.take<int32_t>(T * K);
+        hit_count_ = b.take<int32_t>(4);
         plan_ = b.take<int32_t>(2 * ((uint64_t) plan_i32_ + 16));
         staging_ = b.take<uint8_t>((uint64_t) kStagingBlobs * guild::kernels::cpu::expert_layout().max_blob);
-        hit_xq_ = b.take<uint8_t>(T * (N / 32) * 34); hit_xs_ = b.take<float>(T * (N / 32));
+        hit_xq_ = b.take<uint8_t>(T * (N / 32) * 34);
+        hit_xs_ = b.take<float>(T * (N / 32));
         nat_xq_ = b.take<uint8_t>(T * (N / 32) * 36);
-        hit_scratch_ = b.take<uint8_t>(std::max<uint64_t>(
-            guild::kernels::moe_hit_grouped_scratch_bytes((int64_t) (T * K), g.n_embd, g.n_ff),
-            guild::kernels::native_expert_scratch_bytes((int64_t) (T * K), g.n_ff)));
-        head_mixed_ = b.take<float>(T * N); head_inj_ = b.take<float>(HC);
-        sh_bf16_ = b.take<uint16_t>(T * N); sh_gate_ = b.take<float>(T * (uint64_t) g.n_ff);
-        sh_up_ = b.take<float>(T * (uint64_t) g.n_ff); sh_g_ = b.take<float>(T + 4);
+        hit_scratch_ = b.take<uint8_t>(
+            std::max<uint64_t>(guild::kernels::moe_hit_grouped_scratch_bytes((int64_t) (T * K), g.n_embd, g.n_ff),
+                               guild::kernels::native_expert_scratch_bytes((int64_t) (T * K), g.n_ff)));
+        head_mixed_ = b.take<float>(T * N);
+        head_inj_ = b.take<float>(HC);
+        sh_bf16_ = b.take<uint16_t>(T * N);
+        sh_gate_ = b.take<float>(T * (uint64_t) g.n_ff);
+        sh_up_ = b.take<float>(T * (uint64_t) g.n_ff);
+        sh_g_ = b.take<float>(T + 4);
         head_logits_ = b.take<float>(T * (uint64_t) n_vocab_);
         hist_snap_ = b.take<float>(T * HS);
     };
     Bump count;
     carve(count);
-    if (DPCT_CHECK_ERROR(arena_ = (void *)sycl::malloc_device(
-                             count.used, dpct::get_in_order_queue())) != 0) {
+    if (DPCT_CHECK_ERROR(arena_ = (void*) sycl::malloc_device(count.used, dpct::get_in_order_queue())) != 0) {
         err = "verify: the device arena (" + std::to_string(count.used >> 20) + " MiB) does not fit";
         return false;
     }
     dpct::get_in_order_queue().memset(arena_, 0, count.used).wait();
-    if (g_trace && trace_h_ == nullptr) {   // #649: the breadcrumbs, mapped so they read while the GPU hangs
+    if (g_trace && trace_h_ == nullptr) { // #649: the breadcrumbs, mapped so they read while the GPU hangs
         trace_n_ = (size_t) (g.n_layers + 1) * kProfPer * 2;
         if (!mapped(trace_n_ * 8, (void**) &trace_h_, (void**) &trace_m_)) {
             trace_h_ = trace_m_ = nullptr;
             trace_n_ = 0;
         }
 #if defined(GUILD_USE_HIP)
-        std::fprintf(stderr, "guild verify trace (#649): on; coherent words %s, doorbell %s, HIP_HOST_COHERENT=%s "
-                             "HSA_ENABLE_SDMA=%s GPU_MAX_HW_QUEUES=%s\n", g_coherent ? "explicit" : "default",
-                     g_doorbell_store ? "stored" : "incremented", std::getenv("HIP_HOST_COHERENT") ? std::getenv("HIP_HOST_COHERENT") : "-",
+        std::fprintf(stderr,
+                     "guild verify trace (#649): on; coherent words %s, doorbell %s, HIP_HOST_COHERENT=%s "
+                     "HSA_ENABLE_SDMA=%s GPU_MAX_HW_QUEUES=%s\n",
+                     g_coherent ? "explicit" : "default", g_doorbell_store ? "stored" : "incremented",
+                     std::getenv("HIP_HOST_COHERENT") ? std::getenv("HIP_HOST_COHERENT") : "-",
                      std::getenv("HSA_ENABLE_SDMA") ? std::getenv("HSA_ENABLE_SDMA") : "-",
                      std::getenv("GPU_MAX_HW_QUEUES") ? std::getenv("GPU_MAX_HW_QUEUES") : "-");
 #else
@@ -472,9 +536,10 @@ bool Verifier::init(const WeightTable &wt, const ModelGeometry &g,
         DPCT1026: The call to cudaGetLastError was removed because this
         functionality is redundant in SYCL.
         */
-        if (DPCT_CHECK_ERROR(prof_ = (unsigned long long *)sycl::malloc_device(
-                                 np * 8, dpct::get_in_order_queue())) != 0) {
-            prof_on_ = false; prof_ = nullptr;
+        if (DPCT_CHECK_ERROR(prof_ = (unsigned long long*) sycl::malloc_device(np * 8, dpct::get_in_order_queue())) !=
+            0) {
+            prof_on_ = false;
+            prof_ = nullptr;
         } else {
             dpct::get_in_order_queue().memset(prof_, 0, np * 8).wait();
             prof_h_.assign(np, 0);
@@ -490,8 +555,7 @@ bool Verifier::init(const WeightTable &wt, const ModelGeometry &g,
     DPCT1025: The SYCL queue is created ignoring the flag and priority
     options.
     */
-    if (DPCT_CHECK_ERROR(
-            copy_ = dpct::get_current_device().create_queue(true)) != 0) {
+    if (DPCT_CHECK_ERROR(copy_ = dpct::get_current_device().create_queue(true)) != 0) {
         err = "verify: copy stream create failed";
         return false;
     }
@@ -499,8 +563,7 @@ bool Verifier::init(const WeightTable &wt, const ModelGeometry &g,
     DPCT1025: The SYCL queue is created ignoring the flag and priority
     options.
     */
-    if (DPCT_CHECK_ERROR(cs_ = dpct::get_current_device().create_queue(true)) !=
-        0) {
+    if (DPCT_CHECK_ERROR(cs_ = dpct::get_current_device().create_queue(true)) != 0) {
         err = "verify: stream create failed";
         return false;
     }
@@ -511,43 +574,40 @@ bool Verifier::init(const WeightTable &wt, const ModelGeometry &g,
         device_plan_ = v != nullptr && std::atoi(v) != 0;
     }
     if (device_plan_) {
-        bool ok2 =
-            DPCT_CHECK_ERROR(skip_ = (uint32_t *)sycl::malloc_device(
-                                 64, dpct::get_in_order_queue())) == 0 &&
-            DPCT_CHECK_ERROR(
-                dpct::get_in_order_queue().memset(skip_, 0, 64).wait()) == 0;
+        bool ok2 = DPCT_CHECK_ERROR(skip_ = (uint32_t*) sycl::malloc_device(64, dpct::get_in_order_queue())) == 0 &&
+                   DPCT_CHECK_ERROR(dpct::get_in_order_queue().memset(skip_, 0, 64).wait()) == 0;
         if (ok2 && hits.slot_off != nullptr && hits.n_slots > 0) {
-            ok2 = DPCT_CHECK_ERROR(
-                      slot_off_d_ = sycl::malloc_device<unsigned long long>(
-                          (size_t)hits.n_slots, dpct::get_in_order_queue())) ==
-                      0 &&
-                  DPCT_CHECK_ERROR(dpct::get_in_order_queue()
-                                       .memcpy(slot_off_d_, hits.slot_off,
-                                               (size_t)hits.n_slots *
-                                                   sizeof(unsigned long long))
-                                       .wait()) == 0;
+            ok2 = DPCT_CHECK_ERROR(slot_off_d_ = sycl::malloc_device<unsigned long long>(
+                                       (size_t) hits.n_slots, dpct::get_in_order_queue())) == 0 &&
+                  DPCT_CHECK_ERROR(
+                      dpct::get_in_order_queue()
+                          .memcpy(slot_off_d_, hits.slot_off, (size_t) hits.n_slots * sizeof(unsigned long long))
+                          .wait()) == 0;
         }
         /*
         DPCT1026: The call to cudaGetLastError was removed because this
         functionality is redundant in SYCL.
         */
-        if (!ok2) {; device_plan_ = false; }
+        if (!ok2) {
+            ;
+            device_plan_ = false;
+        }
     }
-    if (std::getenv("GUILD_VERIFY_DEBUG") != nullptr) {   // SYCL port: the per-layer residual ladder (token 0)
+    if (std::getenv("GUILD_VERIFY_DEBUG") != nullptr) { // SYCL port: the per-layer residual ladder (token 0)
         dbgR_ = (float*) sycl::malloc_device((size_t) g.n_layers * g.n_embd * 4, dpct::get_in_order_queue());
         dbgM_ = (float*) sycl::malloc_device((size_t) g.n_layers * g.n_embd * 4, dpct::get_in_order_queue());
     }
     std::fprintf(stderr, "guild verify: window up to %d tokens, %.1f MiB of device buffers\n", max_t,
                  (double) count.used / 1048576.0);
     return true;
-}
-catch (sycl::exception const &exc) {
-  std::cerr << exc.what() << "Exception caught at file:" << __FILE__
-            << ", line:" << __LINE__ << std::endl;
-  std::exit(1);
+} catch (sycl::exception const& exc) {
+    std::cerr << exc.what() << "Exception caught at file:" << __FILE__ << ", line:" << __LINE__ << std::endl;
+    std::exit(1);
 }
 
-const float* Verifier::final_R(int t) const { return R_ + (size_t) t * (size_t) (g_->hc * g_->n_embd); }
+const float* Verifier::final_R(int t) const {
+    return R_ + (size_t) t * (size_t) (g_->hc * g_->n_embd);
+}
 
 // ================================ THE WINDOW, AS CAPTURED ================================
 //
@@ -559,7 +619,7 @@ const float* Verifier::final_R(int t) const { return R_ + (size_t) t * (size_t) 
 // so the CPU computes A's experts of layer l while the GPU runs B's mixer and router of layer l, and B's experts
 // while the GPU combines A and runs A's layer l+1.  B's mixer only needs A's mixer of the same layer (K/V, GDN
 // state), never A's experts, so nothing waits that did not wait before.  Every token's arithmetic is unchanged.
-bool Verifier::record_window(int T, dpct::queue_ptr cs, std::string &err) {
+bool Verifier::record_window(int T, dpct::queue_ptr cs, std::string& err) {
     using namespace guild::kernels;
     const ModelGeometry& g = *g_;
     const WeightTable& wt = *wt_;
@@ -576,15 +636,24 @@ bool Verifier::record_window(int T, dpct::queue_ptr cs, std::string &err) {
     const bool ple_on = ss.ple.ready() && ple_stage();
     auto Rt = [&](int t) { return R_ + (size_t) t * HC * N; };
     const int G = (split_ && T >= 2) ? 2 : 1;
-    static const bool dec_batch = [] { const char* v = std::getenv("GUILD_DEC_BATCH"); return v == nullptr || std::atoi(v) != 0; }();
+    static const bool dec_batch = [] {
+        const char* v = std::getenv("GUILD_DEC_BATCH");
+        return v == nullptr || std::atoi(v) != 0;
+    }();
     // SYCL port, GUILD_VERIFY_EAGER=1: the window runs on the queue instead of as a graph, and each stage stamp is
     // a host-side wait + clock (there is no %globaltimer here), so the existing stage profiler reports ms per stage.
     static const bool eager = std::getenv("GUILD_VERIFY_EAGER") != nullptr;
     auto stamp = [&](int64_t l, int i, int grp) {
-        if (trace_m_ != nullptr) gpu_stamp(trace_m_, (int) ((l * kProfPer + i) * 2 + grp), cs);   // #649
-        if (!prof_on_ || grp != 0) return;
-        if (eager) { cs->wait(); prof_h_[(size_t) (l * kProfPer + i)] = (unsigned long long) std::chrono::steady_clock::now().time_since_epoch().count(); }
-        else gpu_stamp(prof_, (int) (l * kProfPer + i), cs);
+        if (trace_m_ != nullptr)
+            gpu_stamp(trace_m_, (int) ((l * kProfPer + i) * 2 + grp), cs); // #649
+        if (!prof_on_ || grp != 0)
+            return;
+        if (eager) {
+            cs->wait();
+            prof_h_[(size_t) (l * kProfPer + i)] =
+                (unsigned long long) std::chrono::steady_clock::now().time_since_epoch().count();
+        } else
+            gpu_stamp(prof_, (int) (l * kProfPer + i), cs);
     };
     const int tb_[2] = {0, (T + 1) / 2}, te_[2] = {G == 2 ? (T + 1) / 2 : T, T};
     groups_[T] = G;
@@ -596,7 +665,8 @@ bool Verifier::record_window(int T, dpct::queue_ptr cs, std::string &err) {
     // per-ROW positions of the K rows [t][NKV] and the indexer query rows [t][IQ] (for batched RoPE)
     const int32_t* pos_k = pos_ + MT * NH;
     const int32_t* pos_i = pos_ + MT * (NH + NKV);
-    if (ple_on) copy_from_mapped(ple_, m_ple_, (int64_t) T * N, cs);
+    if (ple_on)
+        copy_from_mapped(ple_, m_ple_, (int64_t) T * N, cs);
 
     // ---- the embeddings, broadcast to the hc streams - or, in a later stage of a layer split, the previous stage's
     // residual, pending write and inject (see set_stage)
@@ -607,7 +677,7 @@ bool Verifier::record_window(int T, dpct::queue_ptr cs, std::string &err) {
             copy_from_mapped(bo_ + (size_t) t * N, hand_in_ + (size_t) t * HB + HC * N, N, cs);
             copy_from_mapped(inj2_ + (size_t) t * HC, hand_in_ + (size_t) t * HB + HC * N + N, HC, cs);
         }
-    } else if (const NativeEmbed* ne = native_embed()) {       // plan v0.3 P6: the GGUF-form table
+    } else if (const NativeEmbed* ne = native_embed()) { // plan v0.3 P6: the GGUF-form table
         ne->gather_dev(tok_, T, emb_, cs);
         broadcast_streams(emb_, R_, N, (int) HC, T, cs);
     } else {
@@ -631,8 +701,10 @@ bool Verifier::record_window(int T, dpct::queue_ptr cs, std::string &err) {
     {
         int64_t qi = 0, gi = 0;
         for (int64_t l = 0; l < g.n_layers; ++l) {
-            if (is_qsa_layer(g, l)) qsa_idx[(size_t) l] = qi++;
-            else gdn_idx[(size_t) l] = gi++;
+            if (is_qsa_layer(g, l))
+                qsa_idx[(size_t) l] = qi++;
+            else
+                gdn_idx[(size_t) l] = gi++;
         }
     }
 
@@ -648,7 +720,8 @@ bool Verifier::record_window(int T, dpct::queue_ptr cs, std::string &err) {
             wd[h] = need(v, (std::string(pfx[h]) + "down.weight").c_str(), err);
             wu[h] = need(v, (std::string(pfx[h]) + "up.weight").c_str(), err);
             wi[h] = need(v, (std::string(pfx[h]) + "inject.weight").c_str(), err);
-            if (!wn[h] || !wd[h] || !wu[h] || !wi[h]) return false;
+            if (!wn[h] || !wd[h] || !wu[h] || !wi[h])
+                return false;
         }
         // the previous layer's FFN write, folded into this layer's first read (a control vector after it has
         // already applied it)
@@ -675,12 +748,20 @@ bool Verifier::record_window(int T, dpct::queue_ptr cs, std::string &err) {
             FusedGrArgs fa[kFusedGrMaxT];
             for (int t = tb; t < te; ++t) {
                 FusedGrArgs& a = fa[t - tb];
-                a.R = Rt(t); a.R_out = Rt(t); a.apply = apply;
-                a.bo_prev = bo_ + t * N; a.inj_prev = inj_prev + t * HC;
-                a.w_norm = (const float*) wn[half]->data; a.w_down = (const uint16_t*) wd[half]->data;
-                a.w_up = (const uint16_t*) wu[half]->data; a.w_inject = (const uint16_t*) wi[half]->data;
-                a.eps = EPS; a.lo = lo_ + t * g.hc_lr; a.rs = rs_ + t * HC;
-                a.inject_out = inj_out + t * HC; a.mixed = mixed_ + t * N;
+                a.R = Rt(t);
+                a.R_out = Rt(t);
+                a.apply = apply;
+                a.bo_prev = bo_ + t * N;
+                a.inj_prev = inj_prev + t * HC;
+                a.w_norm = (const float*) wn[half]->data;
+                a.w_down = (const uint16_t*) wd[half]->data;
+                a.w_up = (const uint16_t*) wu[half]->data;
+                a.w_inject = (const uint16_t*) wi[half]->data;
+                a.eps = EPS;
+                a.lo = lo_ + t * g.hc_lr;
+                a.rs = rs_ + t * HC;
+                a.inject_out = inj_out + t * HC;
+                a.mixed = mixed_ + t * N;
             }
             fused_gr_read_multi(fa, n, xn_ + (size_t) tb * HC * N, cs, (prof_on_ && grp == 0) ? prof_ : nullptr,
                                 (int) (l * kProfPer + (half == 0 ? 27 : 30)));
@@ -696,9 +777,10 @@ bool Verifier::record_window(int T, dpct::queue_ptr cs, std::string &err) {
                                 *wb = need(v, "ssm_beta.weight", err), *wc = need(v, "ssm_conv1d.weight", err),
                                 *wnm = need(v, "ssm_norm.weight", err), *wdt = need(v, "ssm_dt.bias", err),
                                 *wsa = need(v, "ssm_a", err);
-                if (!wqkv || !wg || !wout || !wa || !wb || !wc || !wnm || !wdt || !wsa) return false;
-                if (!native_of(wqkv, v.name("attn_qkv.weight"), err) || !native_of(wg, v.name("attn_gate.weight"), err) ||
-                    !native_of(wout, v.name("ssm_out.weight"), err))
+                if (!wqkv || !wg || !wout || !wa || !wb || !wc || !wnm || !wdt || !wsa)
+                    return false;
+                if (!native_of(wqkv, v.name("attn_qkv.weight"), err) ||
+                    !native_of(wg, v.name("attn_gate.weight"), err) || !native_of(wout, v.name("ssm_out.weight"), err))
                     return false;
                 const int64_t gi = gdn_idx[(size_t) l];
                 float* state = ss.gdn_state + (size_t) (gi - ss.gdn_ord0) * gdn_floats;
@@ -713,8 +795,8 @@ bool Verifier::record_window(int T, dpct::queue_ptr cs, std::string &err) {
                 gdn_conv_l2_multi(conv, qkv, (const float*) wc->data, hb, (int) C, (int) (2 * HK), EPS, n, cs, tb);
                 stamp(l, 3, grp);
                 gdn_ab_multi(xm, (const uint16_t*) wa->data, (const uint16_t*) wb->data, (const float*) wdt->data,
-                             (const float*) wsa->data, gate + (size_t) tb * HV, beta + (size_t) tb * HV, (int) N, (int) HV,
-                             n, cs);
+                             (const float*) wsa->data, gate + (size_t) tb * HV, beta + (size_t) tb * HV, (int) N,
+                             (int) HV, n, cs);
                 stamp(l, 4, grp);
                 native_mmvq(wg->native_type, wg->native_data, xq_, z_ + (size_t) tb * ZV, (int) N, (int) ZV, n, cs);
                 stamp(l, 5, grp);
@@ -732,41 +814,57 @@ bool Verifier::record_window(int T, dpct::queue_ptr cs, std::string &err) {
                                 *wk = need(v, "attn_k.weight", err), *wv = need(v, "attn_v.weight", err),
                                 *wo = need(v, "attn_output.weight", err), *wiq = need(v, "indexer.q_proj.weight", err),
                                 *wqn = need(v, "attn_q_norm.weight", err), *wkn = need(v, "attn_k_norm.weight", err),
-                                *wiqn = need(v, "indexer.q_norm.weight", err), *wikn = need(v, "indexer.k_norm.weight", err);
-                if (!wik || !wq || !wk || !wv || !wo || !wiq || !wqn || !wkn || !wiqn || !wikn) return false;
+                                *wiqn = need(v, "indexer.q_norm.weight", err),
+                                *wikn = need(v, "indexer.k_norm.weight", err);
+                if (!wik || !wq || !wk || !wv || !wo || !wiq || !wqn || !wkn || !wiqn || !wikn)
+                    return false;
                 if (!native_of(wq, v.name("attn_q.weight"), err) || !native_of(wk, v.name("attn_k.weight"), err) ||
                     !native_of(wv, v.name("attn_v.weight"), err) || !native_of(wo, v.name("attn_output.weight"), err))
                     return false;
                 auto norm_rope = [&](float* data, const WeightRef* norm, int rows, int cols, const int32_t* pos) {
-                    if (native_qsa_enabled()) native_qsa_rms_norm_weighted(data, (const float*) norm->data, data, cols, rows, EPS, cs);
-                    else rms_norm_weighted(data, (const float*) norm->data, rows, cols, EPS, cs);
-                    if (native_rope_enabled()) native_rope_apply(data, data, rows, cols, (int) s.n_rot, rope_scaling(), pos, cs);
-                    else rope_neox_apply(data, data, rows, cols, (int) s.n_rot, st.cos_tab, st.sin_tab, pos, cs);
+                    if (native_qsa_enabled())
+                        native_qsa_rms_norm_weighted(data, (const float*) norm->data, data, cols, rows, EPS, cs);
+                    else
+                        rms_norm_weighted(data, (const float*) norm->data, rows, cols, EPS, cs);
+                    if (native_rope_enabled())
+                        native_rope_apply(data, data, rows, cols, (int) s.n_rot, rope_scaling(), pos, cs);
+                    else
+                        rope_neox_apply(data, data, rows, cols, (int) s.n_rot, st.cos_tab, st.sin_tab, pos, cs);
                 };
                 float* idx_raw = idx_raw_L_ + (size_t) qi * MT * ID;
                 // the per-token GEMVs / norms / RoPEs / copies of this layer as one launch over the
                 // window's rows each - row-wise identical arithmetic (GUILD_DEC_BATCH=0: token by token)
                 const bool qb = dec_batch && n > 1 && native_qsa_enabled() && native_rope_enabled() && !st.kv_q4;
                 native_quantize_q8_1(xm, xq_, (int) N, n, cs);
-                if (qb) bf16_gemv_fp32_mmvf_multi(mixed_ + tb * N, N, (const uint16_t*) wik->data, idx_raw + tb * ID, ID, N, ID, n, cs);
-                else for (int t = tb; t < te; ++t)
-                    bf16_gemv_fp32_mmvf(mixed_ + t * N, (const uint16_t*) wik->data, idx_raw + t * ID, (int) N, (int) ID, cs);
+                if (qb)
+                    bf16_gemv_fp32_mmvf_multi(mixed_ + tb * N, N, (const uint16_t*) wik->data, idx_raw + tb * ID, ID, N,
+                                              ID, n, cs);
+                else
+                    for (int t = tb; t < te; ++t)
+                        bf16_gemv_fp32_mmvf(mixed_ + t * N, (const uint16_t*) wik->data, idx_raw + t * ID, (int) N,
+                                            (int) ID, cs);
                 stamp(l, 7, grp);
-                native_mmvq(wk->native_type, wk->native_data, xq_, kcur_ + tb * NKV * HD, (int) N, (int) (NKV * HD), n, cs);
-                native_mmvq(wv->native_type, wv->native_data, xq_, vcur_ + tb * NKV * HD, (int) N, (int) (NKV * HD), n, cs);
-                if (qb) norm_rope(kcur_ + tb * NKV * HD, wkn, (int) (n * NKV), (int) HD, pos_k + tb * NKV);
-                else for (int t = tb; t < te; ++t) norm_rope(kcur_ + t * NKV * HD, wkn, (int) NKV, (int) HD, pos_ + t * NH);
-                if (st.kv_rot) {   // K and V rotated before they are stored (kv_q4.hpp)
+                native_mmvq(wk->native_type, wk->native_data, xq_, kcur_ + tb * NKV * HD, (int) N, (int) (NKV * HD), n,
+                            cs);
+                native_mmvq(wv->native_type, wv->native_data, xq_, vcur_ + tb * NKV * HD, (int) N, (int) (NKV * HD), n,
+                            cs);
+                if (qb)
+                    norm_rope(kcur_ + tb * NKV * HD, wkn, (int) (n * NKV), (int) HD, pos_k + tb * NKV);
+                else
+                    for (int t = tb; t < te; ++t)
+                        norm_rope(kcur_ + t * NKV * HD, wkn, (int) NKV, (int) HD, pos_ + t * NH);
+                if (st.kv_rot) { // K and V rotated before they are stored (kv_q4.hpp)
                     fwht256_inplace_cuda(kcur_ + tb * NKV * HD, (int64_t) n * NKV, cs);
                     fwht256_inplace_cuda(vcur_ + tb * NKV * HD, (int64_t) n * NKV, cs);
-                } else if (st.kv_hybrid) {   // K8V4: only V is rotated
+                } else if (st.kv_hybrid) { // K8V4: only V is rotated
                     fwht256_inplace_cuda(vcur_ + tb * NKV * HD, (int64_t) n * NKV, cs);
                 }
                 stamp(l, 8, grp);
-                if (grp == 0) copy_from_mapped(tail_snap_ + (size_t) qi * TS, st.idx_tail, TS, cs);
+                if (grp == 0)
+                    copy_from_mapped(tail_snap_ + (size_t) qi * TS, st.idx_tail, TS, cs);
                 for (int t = tb; t < te; ++t) {
                     const int32_t* step_t = step_ + t * kStepCount;
-                    if (st.kv_hybrid) {   // K8V4: the unused half's lanes folded onto the used pool (layer.cpp)
+                    if (st.kv_hybrid) { // K8V4: the unused half's lanes folded onto the used pool (layer.cpp)
                         kv_append_q8_step(st.k_q, st.k_q, st.k_scale, st.k_scale, st.page_table, step_t,
                                           kcur_ + t * NKV * HD, kcur_ + t * NKV * HD, s, cs, nullptr);
                         kv_append_q4_step(st.v_q4, st.v_q4, st.page_table, step_t, vcur_ + t * NKV * HD,
@@ -784,11 +882,10 @@ bool Verifier::record_window(int T, dpct::queue_ptr cs, std::string &err) {
                 const QsaIndexerBuffers ib{st.idx_tail, st.idx_dead, st.idx_pooled, st.idx_block_pos};
                 for (int t = tb; t < te; ++t)
                     native_qsa_indexer_append(idx_raw + t * ID, step_ + t * kStepCount + kStepPos, 0,
-                                              (const float*) wikn->data, EPS, ib, s, st.max_cells,
-                                              rope_scaling(), cs);
+                                              (const float*) wikn->data, EPS, ib, s, st.max_cells, rope_scaling(), cs);
                 stamp(l, 9, grp);
-                native_mmvq(wq->native_type, wq->native_data, xq_, qfull_ + tb * NH * 2 * HD, (int) N, (int) (NH * 2 * HD),
-                            n, cs);
+                native_mmvq(wq->native_type, wq->native_data, xq_, qfull_ + tb * NH * 2 * HD, (int) N,
+                            (int) (NH * 2 * HD), n, cs);
                 if (qb) {
                     /*
                     DPCT1124: cudaMemcpy2DAsync is migrated to asynchronous
@@ -798,47 +895,47 @@ bool Verifier::record_window(int T, dpct::queue_ptr cs, std::string &err) {
                     synchronization behavior.
                     */
                     if (DPCT_CHECK_ERROR(dpct::async_dpct_memcpy(
-                            qcur_ + tb * NH * HD, (size_t)HD * 4,
-                            qfull_ + tb * NH * 2 * HD, (size_t)HD * 2 * 4,
-                            (size_t)HD * 4, (size_t)(n * NH),
-                            dpct::device_to_device, *cs)) != 0) {
+                            qcur_ + tb * NH * HD, (size_t) HD * 4, qfull_ + tb * NH * 2 * HD, (size_t) HD * 2 * 4,
+                            (size_t) HD * 4, (size_t) (n * NH), dpct::device_to_device, *cs)) != 0) {
                         err = "verify: the q/gate split failed";
                         return false;
                     }
                     norm_rope(qcur_ + tb * NH * HD, wqn, (int) (n * NH), (int) HD, pos_ + tb * NH);
-                    if (st.kv_rot) fwht256_inplace_cuda(qcur_ + tb * NH * HD, (int64_t) n * NH, cs);   // <Hq, Hk> = <q, k>
-                    bf16_gemv_fp32_mmvf_multi(mixed_ + tb * N, N, (const uint16_t*) wiq->data, qidx_ + tb * IQ * ID, IQ * ID,
-                                              N, IQ * ID, n, cs);
+                    if (st.kv_rot)
+                        fwht256_inplace_cuda(qcur_ + tb * NH * HD, (int64_t) n * NH, cs); // <Hq, Hk> = <q, k>
+                    bf16_gemv_fp32_mmvf_multi(mixed_ + tb * N, N, (const uint16_t*) wiq->data, qidx_ + tb * IQ * ID,
+                                              IQ * ID, N, IQ * ID, n, cs);
                     norm_rope(qidx_ + tb * IQ * ID, wiqn, (int) (n * IQ), (int) ID, pos_i + tb * IQ);
                 } else {
-                for (int t = tb; t < te; ++t) {
-                    float* qc = qcur_ + t * NH * HD;
-                    /*
-                    DPCT1124: cudaMemcpy2DAsync is migrated to asynchronous
-                    memcpy API. While the origin API might be synchronous, it
-                    depends on the type of operand memory, so you may need to
-                    call wait() on event return by memcpy API to ensure
-                    synchronization behavior.
-                    */
-                    if (DPCT_CHECK_ERROR(dpct::async_dpct_memcpy(
-                            qc, (size_t)HD * 4, qfull_ + t * NH * 2 * HD,
-                            (size_t)HD * 2 * 4, (size_t)HD * 4, (size_t)NH,
-                            dpct::device_to_device, *cs)) != 0) {
-                        err = "verify: the q/gate split failed";
-                        return false;
+                    for (int t = tb; t < te; ++t) {
+                        float* qc = qcur_ + t * NH * HD;
+                        /*
+                        DPCT1124: cudaMemcpy2DAsync is migrated to asynchronous
+                        memcpy API. While the origin API might be synchronous, it
+                        depends on the type of operand memory, so you may need to
+                        call wait() on event return by memcpy API to ensure
+                        synchronization behavior.
+                        */
+                        if (DPCT_CHECK_ERROR(dpct::async_dpct_memcpy(qc, (size_t) HD * 4, qfull_ + t * NH * 2 * HD,
+                                                                     (size_t) HD * 2 * 4, (size_t) HD * 4, (size_t) NH,
+                                                                     dpct::device_to_device, *cs)) != 0) {
+                            err = "verify: the q/gate split failed";
+                            return false;
+                        }
+                        norm_rope(qc, wqn, (int) NH, (int) HD, pos_ + t * NH);
+                        if (st.kv_rot)
+                            fwht256_inplace_cuda(qc, NH, cs); // <Hq, Hk> = <q, k>
                     }
-                    norm_rope(qc, wqn, (int) NH, (int) HD, pos_ + t * NH);
-                    if (st.kv_rot) fwht256_inplace_cuda(qc, NH, cs);   // <Hq, Hk> = <q, k>
-                }
-                for (int t = tb; t < te; ++t) {
-                    float* qx = qidx_ + t * IQ * ID;
-                    bf16_gemv_fp32_mmvf(mixed_ + t * N, (const uint16_t*) wiq->data, qx, (int) N, (int) (IQ * ID), cs);
-                    norm_rope(qx, wiqn, (int) IQ, (int) ID, pos_ + t * NH);
-                }
+                    for (int t = tb; t < te; ++t) {
+                        float* qx = qidx_ + t * IQ * ID;
+                        bf16_gemv_fp32_mmvf(mixed_ + t * N, (const uint16_t*) wiq->data, qx, (int) N, (int) (IQ * ID),
+                                            cs);
+                        norm_rope(qx, wiqn, (int) IQ, (int) ID, pos_ + t * NH);
+                    }
                 }
                 stamp(l, 10, grp);
-                qsa_block_scores(st.idx_pooled, st.idx_dead, qidx_ + tb * IQ * ID, step_ + tb * kStepCount, n, max_blocks_,
-                                 s, scores_ + (size_t) tb * max_blocks_, cs);
+                qsa_block_scores(st.idx_pooled, st.idx_dead, qidx_ + tb * IQ * ID, step_ + tb * kStepCount, n,
+                                 max_blocks_, s, scores_ + (size_t) tb * max_blocks_, cs);
                 qsa_block_topk(scores_ + (size_t) tb * max_blocks_, step_ + tb * kStepCount, n, max_blocks_, cap_, s,
                                sel_ + (size_t) tb * cap_, cs);
                 stamp(l, 11, grp);
@@ -846,20 +943,24 @@ bool Verifier::record_window(int T, dpct::queue_ptr cs, std::string &err) {
                 qsa_kv_resolve(st, *g_, sel_ + (size_t) tb * cap_, step_ + tb * kStepCount, n, cap_, cs);
                 stamp(l, 12, grp);
                 const QsaAttnPools pools = qsa_attn_pools(st);
-                qsa_decode_attn_batch(qcur_ + tb * NH * HD, pools, sel_ + (size_t) tb * cap_, step_ + tb * kStepCount, cap_,
-                                      s, attn_scratch_ + (size_t) tb * attn_scratch_floats_, attn_ + tb * NH * HD, n, cs);
+                qsa_decode_attn_batch(qcur_ + tb * NH * HD, pools, sel_ + (size_t) tb * cap_, step_ + tb * kStepCount,
+                                      cap_, s, attn_scratch_ + (size_t) tb * attn_scratch_floats_, attn_ + tb * NH * HD,
+                                      n, cs);
                 stamp(l, 13, grp);
-                if (st.kv_rot || st.kv_hybrid) fwht256_inplace_cuda(attn_ + tb * NH * HD, (int64_t) n * NH, cs);   // back: H^-1 = H
-                if (qb) native_qsa_gate_apply(attn_ + tb * NH * HD, qfull_ + tb * NH * 2 * HD, attn32_ + tb * NH * HD,
-                                              (int) (n * NH), (int) HD, cs);
+                if (st.kv_rot || st.kv_hybrid)
+                    fwht256_inplace_cuda(attn_ + tb * NH * HD, (int64_t) n * NH, cs); // back: H^-1 = H
+                if (qb)
+                    native_qsa_gate_apply(attn_ + tb * NH * HD, qfull_ + tb * NH * 2 * HD, attn32_ + tb * NH * HD,
+                                          (int) (n * NH), (int) HD, cs);
                 else
-                for (int t = tb; t < te; ++t) {
-                    if (native_qsa_enabled())
-                        native_qsa_gate_apply(attn_ + t * NH * HD, qfull_ + t * NH * 2 * HD, attn32_ + t * NH * HD,
-                                              (int) NH, (int) HD, cs);
-                    else
-                        qsa_gate_apply_f32(attn_ + t * NH * HD, qfull_ + t * NH * 2 * HD, s, attn32_ + t * NH * HD, cs);
-                }
+                    for (int t = tb; t < te; ++t) {
+                        if (native_qsa_enabled())
+                            native_qsa_gate_apply(attn_ + t * NH * HD, qfull_ + t * NH * 2 * HD, attn32_ + t * NH * HD,
+                                                  (int) NH, (int) HD, cs);
+                        else
+                            qsa_gate_apply_f32(attn_ + t * NH * HD, qfull_ + t * NH * 2 * HD, s, attn32_ + t * NH * HD,
+                                               cs);
+                    }
                 stamp(l, 14, grp);
                 native_quantize_q8_1(attn32_ + tb * NH * HD, xq_, (int) (NH * HD), n, cs);
                 native_mmvq(wo->native_type, wo->native_data, xq_, bo_ + tb * N, (int) (NH * HD), (int) N, n, cs);
@@ -873,49 +974,66 @@ bool Verifier::record_window(int T, dpct::queue_ptr cs, std::string &err) {
         // the window's rows routed in 2 launches (one router GEMV reading the weight once, one
         // top-10) instead of 2 per token; every row's arithmetic is the single-token call's (GUILD_DEC_BATCH=0: old)
         const WeightRef* w_router = v.get("ffn_gate_inp.weight");
-        if (dec_batch && n > 1 && w_router != nullptr && native_router_enabled() && (NE == 512 || NE == 256) && K == 10) {
-            try {   // SYCL port: the fused multi-token router for 256 experts as well (it was 512-only)
-                bf16_gemv_fp32_mmvf_multi(mixed_ + tb * N, N, (const uint16_t*) w_router->data, logits_ + tb * NE, NE, N,
-                                          NE, n, cs);
+        if (dec_batch && n > 1 && w_router != nullptr && native_router_enabled() && (NE == 512 || NE == 256) &&
+            K == 10) {
+            try { // SYCL port: the fused multi-token router for 256 experts as well (it was 512-only)
+                bf16_gemv_fp32_mmvf_multi(mixed_ + tb * N, N, (const uint16_t*) w_router->data, logits_ + tb * NE, NE,
+                                          N, NE, n, cs);
                 native_router_top10_multi_ne(logits_ + tb * NE, ids_ + tb * K, w_ + tb * K, n, (int) NE, cs);
-            } catch (const std::exception& e) { err = "verify router: " + std::string(e.what()); return false; }
+            } catch (const std::exception& e) {
+                err = "verify router: " + std::string(e.what());
+                return false;
+            }
         } else
-        for (int t = tb; t < te; ++t) {
-            MoEBuffers mb = ss.moe;
-            mb.logits = logits_ + t * NE; mb.ids = ids_ + t * K; mb.weights = w_ + t * K;
-            if (!moe_route(wt, g, l, K, mb, mixed_ + t * N, cs, err, nullptr)) return false;
-        }
-        if (device_plan_)   // E-6: every routed expert resident: this group's plan without the host
+            for (int t = tb; t < te; ++t) {
+                MoEBuffers mb = ss.moe;
+                mb.logits = logits_ + t * NE;
+                mb.ids = ids_ + t * K;
+                mb.weights = w_ + t * K;
+                if (!moe_route(wt, g, l, K, mb, mixed_ + t * N, cs, err, nullptr))
+                    return false;
+            }
+        if (device_plan_) // E-6: every routed expert resident: this group's plan without the host
             resident_plan(ids_ + tb * K, n * (int) K, (int) K, hits_.d_res + l * g.n_expert, (int) g.n_expert,
                           hits_.cache_base, slot_off_d_, (long long) hits_.blob,
                           plan_ + (size_t) grp * (size_t) (plan_i32_ + 16), (long long) max_t_ * K, skip_ + grp,
                           (uint32_t) ((l - lb_) * G + grp + 1), cs);
 #if defined(GUILD_USE_HIP)
-        if (g_doorbell_store)   // #649 A/B: the step's ring stored, not incremented over PCIe
+        if (g_doorbell_store) // #649 A/B: the step's ring stored, not incremented over PCIe
             doorbell_publish_value(xm, ids_ + tb * K, w_ + tb * K, (int64_t) n * N, (int64_t) n * K, m_x_ + tb * N,
                                    m_ids_ + tb * K, m_w_ + tb * K, m_seq_, (uint32_t) ((l - lb_) * G + grp + 1), cs);
         else
 #endif
-        doorbell_publish(xm, ids_ + tb * K, w_ + tb * K, (int64_t) n * N, (int64_t) n * K, m_x_ + tb * N,
-                         m_ids_ + tb * K, m_w_ + tb * K, m_seq_, cs);
+            doorbell_publish(xm, ids_ + tb * K, w_ + tb * K, (int64_t) n * N, (int64_t) n * K, m_x_ + tb * N,
+                             m_ids_ + tb * K, m_w_ + tb * K, m_seq_, cs);
         stamp(l, 17, grp);
         {
-            const WeightRef *wgi = need(v, "ffn_gate_inp_shexp.weight", err), *wsg = need(v, "ffn_gate_shexp.weight", err),
-                            *wsu = need(v, "ffn_up_shexp.weight", err), *wsd = need(v, "ffn_down_shexp.weight", err);
-            if (!wgi || !wsg || !wsu || !wsd) return false;
-            if (!native_of(wsg, v.name("ffn_gate_shexp.weight"), err) || !native_of(wsu, v.name("ffn_up_shexp.weight"), err) ||
+            const WeightRef *wgi = need(v, "ffn_gate_inp_shexp.weight", err),
+                            *wsg = need(v, "ffn_gate_shexp.weight", err), *wsu = need(v, "ffn_up_shexp.weight", err),
+                            *wsd = need(v, "ffn_down_shexp.weight", err);
+            if (!wgi || !wsg || !wsu || !wsd)
+                return false;
+            if (!native_of(wsg, v.name("ffn_gate_shexp.weight"), err) ||
+                !native_of(wsu, v.name("ffn_up_shexp.weight"), err) ||
                 !native_of(wsd, v.name("ffn_down_shexp.weight"), err))
                 return false;
             NativeSharedWeights nsw;
-            nsw.gate_type = wsg->native_type; nsw.gate_data = wsg->native_data;
-            nsw.up_type = wsu->native_type; nsw.up_data = wsu->native_data;
-            nsw.down_type = wsd->native_type; nsw.down_data = wsd->native_data;
+            nsw.gate_type = wsg->native_type;
+            nsw.gate_data = wsg->native_data;
+            nsw.up_type = wsu->native_type;
+            nsw.up_data = wsu->native_data;
+            nsw.down_type = wsd->native_type;
+            nsw.down_data = wsd->native_data;
             nsw.q8_1 = xq_;
-            if (dec_batch) f32_to_bf16_bulk(mixed_ + tb * N, sh_bf16_ + tb * N, (int64_t) n * N, cs);   // contiguous rows
-            else for (int t = tb; t < te; ++t) f32_to_bf16_bulk(mixed_ + t * N, sh_bf16_ + t * N, N, cs);
+            if (dec_batch)
+                f32_to_bf16_bulk(mixed_ + tb * N, sh_bf16_ + tb * N, (int64_t) n * N, cs); // contiguous rows
+            else
+                for (int t = tb; t < te; ++t)
+                    f32_to_bf16_bulk(mixed_ + t * N, sh_bf16_ + t * N, N, cs);
             try {
-                shared_expert_multi(n, xm, sh_bf16_ + tb * N, nsw, (const uint16_t*) wgi->data, sh_gate_ + (size_t) tb * g.n_ff,
-                                    sh_up_ + (size_t) tb * g.n_ff, sh_g_ + tb, shared_ + tb * N, N, g.n_ff, cs);
+                shared_expert_multi(n, xm, sh_bf16_ + tb * N, nsw, (const uint16_t*) wgi->data,
+                                    sh_gate_ + (size_t) tb * g.n_ff, sh_up_ + (size_t) tb * g.n_ff, sh_g_ + tb,
+                                    shared_ + tb * N, N, g.n_ff, cs);
             } catch (const std::exception& e) {
                 err = std::string("verify shared expert: ") + e.what();
                 return false;
@@ -924,7 +1042,8 @@ bool Verifier::record_window(int T, dpct::queue_ptr cs, std::string &err) {
         if (guild::kernels::cpu::expert_layout().native)
             quantize_q8_1_rows(xm, n, N, nat_xq_ + (size_t) tb * (N / 32) * 36, cs);
         else
-            quantize_q8_0_scaled(xm, hit_xq_ + (size_t) tb * (N / 32) * 34, hit_xs_ + (size_t) tb * (N / 32), (int64_t) n * N, cs);
+            quantize_q8_0_scaled(xm, hit_xq_ + (size_t) tb * (N / 32) * 34, hit_xs_ + (size_t) tb * (N / 32),
+                                 (int64_t) n * N, cs);
         stamp(l, 18, grp);
         return true;
     };
@@ -935,11 +1054,12 @@ bool Verifier::record_window(int T, dpct::queue_ptr cs, std::string &err) {
         const uint32_t ring = (uint32_t) ((l - lb_) * G + grp + 1);
         const int64_t cap = (int64_t) n * K, capx = (int64_t) max_t_ * K;
         int32_t* pl = plan_ + (size_t) grp * (size_t) (plan_i32_ + 16);
-        if (device_plan_) {   // E-6: skipped when the device planned this group (all its experts resident)
+        if (device_plan_) { // E-6: skipped when the device planned this group (all its experts resident)
             wait_flag_ge_or(m_flagA_, ring, skip_ + grp, cs);
-            copy_i32_from_mapped_unless(pl, m_plan_ + (size_t) grp * (size_t) plan_i32_, plan_i32_, skip_ + grp, ring, cs);
+            copy_i32_from_mapped_unless(pl, m_plan_ + (size_t) grp * (size_t) plan_i32_, plan_i32_, skip_ + grp, ring,
+                                        cs);
         } else {
-            wait_flag_ge(m_flagA_, ring, cs);                  // the pool published this group's GPU plan
+            wait_flag_ge(m_flagA_, ring, cs); // the pool published this group's GPU plan
             copy_i32_from_mapped(pl, m_plan_ + (size_t) grp * (size_t) plan_i32_, plan_i32_, cs);
         }
         stamp(l, 19, grp);
@@ -960,8 +1080,8 @@ bool Verifier::record_window(int T, dpct::queue_ptr cs, std::string &err) {
                 // the layer's GGUF formats (i-quant gate/up, Q2_0 / IQ4_NL down)
                 const auto& f = lay.fmt[(size_t) l];
                 const NativeExpertLayout L = native_expert_layout(f.gu_type, f.d_type, f.n_embd, f.n_ff);
-                native_expert_grouped(L, gp, gs, gn, p_dst, p_tok, cap, cap,
-                                      nat_xq_ + (size_t) tb * (N / 32) * 36, hit_scratch_, hit_out, cs, gy);
+                native_expert_grouped(L, gp, gs, gn, p_dst, p_tok, cap, cap, nat_xq_ + (size_t) tb * (N / 32) * 36,
+                                      hit_scratch_, hit_out, cs, gy);
             } else {
                 moe_grouped_s2(gp, gs, gn, p_dst, p_tok, cap, cap, hit_xq_ + (size_t) tb * (N / 32) * 34,
                                hit_xs_ + (size_t) tb * (N / 32), hit_scratch_, hit_out, cs);
@@ -969,9 +1089,11 @@ bool Verifier::record_window(int T, dpct::queue_ptr cs, std::string &err) {
         };
         grouped(p_ptr, p_start, p_counts, 0);
         stamp(l, 20, grp);
-        if (device_plan_) wait_flag_ge_or(m_flagB_, ring, skip_ + grp, cs);
-        else wait_flag_ge(m_flagB_, ring, cs);                 // the PCIe share is in staging (DMA) or mapped
-        if (sink_.pcie_mode == 2) {                            // stage it with a copy kernel, then point at staging
+        if (device_plan_)
+            wait_flag_ge_or(m_flagB_, ring, skip_ + grp, cs);
+        else
+            wait_flag_ge(m_flagB_, ring, cs); // the PCIe share is in staging (DMA) or mapped
+        if (sink_.pcie_mode == 2) {           // stage it with a copy kernel, then point at staging
             const int64_t per = G == 2 ? kStagingBlobs / 2 : kStagingBlobs;
             uint8_t* stage = staging_ + (size_t) (grp * per) * lay.max_blob;
             fetch_blobs(p_ptr2, p_counts + 2, stage, (int64_t) lay.blob_bytes(l), (int) per, cs);
@@ -982,34 +1104,42 @@ bool Verifier::record_window(int T, dpct::queue_ptr cs, std::string &err) {
         // pcie_frac 0), so its launch is kPcieGroupRows block rows striding over the groups, not cap of them
         grouped(p_ptr2, p_start2, p_counts + 2, kPcieGroupRows);
         stamp(l, 22, grp);
-        if (device_plan_) {   // no CPU share when the device planned the group: its rows are zeros
+        if (device_plan_) { // no CPU share when the device planned the group: its rows are zeros
             wait_flag_ge_or(m_flag_, ring, skip_ + grp, cs);
-            copy_or_zero_from_mapped(parts_ + (size_t) tb * K * N, m_ymiss_ + (size_t) tb * K * N, (long long) n * K * N,
-                                     skip_ + grp, ring, cs);
+            copy_or_zero_from_mapped(parts_ + (size_t) tb * K * N, m_ymiss_ + (size_t) tb * K * N,
+                                     (long long) n * K * N, skip_ + grp, ring, cs);
         } else {
-            wait_flag_ge(m_flag_, ring, cs);               // the CPU's share is in the mapped rows
+            wait_flag_ge(m_flag_, ring, cs); // the CPU's share is in the mapped rows
             stamp(l, 23, grp);
-            if (dec_batch)   // only the CPU rows cross PCIe (p_dst[0, counts[1]) = the GPU's own rows)
+            if (dec_batch) // only the CPU rows cross PCIe (p_dst[0, counts[1]) = the GPU's own rows)
                 copy_rows_from_mapped(parts_ + (size_t) tb * K * N, m_ymiss_ + (size_t) tb * K * N, (int64_t) n * K, N,
                                       p_dst, p_counts + 1, cs);
             else
                 copy_from_mapped(parts_ + (size_t) tb * K * N, m_ymiss_ + (size_t) tb * K * N, (int64_t) n * K * N, cs);
         }
         moe_hit_add(parts_ + (size_t) tb * K * N, hit_out, p_dst, p_counts + 1, cap, N, cs);
-        if (dec_batch && n > 1 && native_moe_combine_enabled()) {   // one launch for the window's rows
+        if (dec_batch && n > 1 && native_moe_combine_enabled()) { // one launch for the window's rows
             try {
-                native_moe_combine_multi(parts_ + (size_t) tb * K * N, w_ + tb * K, shared_ + tb * N, bo_ + tb * N, N, K, n, cs);
-            } catch (const std::exception& e) { err = "verify combine: " + std::string(e.what()); return false; }
+                native_moe_combine_multi(parts_ + (size_t) tb * K * N, w_ + tb * K, shared_ + tb * N, bo_ + tb * N, N,
+                                         K, n, cs);
+            } catch (const std::exception& e) {
+                err = "verify combine: " + std::string(e.what());
+                return false;
+            }
         } else
-        for (int t = tb; t < te; ++t) {
-            MoEBuffers mb = ss.moe;
-            mb.weights = w_ + t * K; mb.shared = shared_ + t * N;
-            if (!moe_combine_parts(g, l, K, mb, parts_ + (size_t) t * K * N, bo_ + t * N, cs, err)) return false;
-        }
+            for (int t = tb; t < te; ++t) {
+                MoEBuffers mb = ss.moe;
+                mb.weights = w_ + t * K;
+                mb.shared = shared_ + t * N;
+                if (!moe_combine_parts(g, l, K, mb, parts_ + (size_t) t * K * N, bo_ + t * N, cs, err))
+                    return false;
+            }
         stamp(l, 24, grp);
         if (l == g.n_layers - 1) {
-            for (int t = tb; t < te; ++t) gr_write(Rt(t), bo_ + t * N, inj2_ + t * HC, gs, Rt(t), cs);
-            if (cvec().covers(l)) cvec_apply(Rt(tb), l, n, HC * N, nullptr, 0, nullptr, 0, false, cs);
+            for (int t = tb; t < te; ++t)
+                gr_write(Rt(t), bo_ + t * N, inj2_ + t * HC, gs, Rt(t), cs);
+            if (cvec().covers(l))
+                cvec_apply(Rt(tb), l, n, HC * N, nullptr, 0, nullptr, 0, false, cs);
         } else if (cvec().covers(l)) {
             cvec_apply(Rt(tb), l, n, HC * N, bo_ + tb * N, N, inj2_ + tb * HC, HC, true, cs);
         }
@@ -1017,17 +1147,20 @@ bool Verifier::record_window(int T, dpct::queue_ptr cs, std::string &err) {
     };
 
     for (int grp = 0; grp < G; ++grp)
-        if (!pre(lb_, grp)) return false;
+        if (!pre(lb_, grp))
+            return false;
     for (int64_t l = lb_; l < le_; ++l)
         for (int grp = 0; grp < G; ++grp) {
-            if (!post(l, grp)) return false;
-            if (dbgR_ && grp == 0) {   // recorded into the window graph as memcpy nodes
+            if (!post(l, grp))
+                return false;
+            if (dbgR_ && grp == 0) { // recorded into the window graph as memcpy nodes
                 cs->memcpy(dbgR_ + (size_t) l * N, Rt(0), (size_t) N * 4);
                 cs->memcpy(dbgM_ + (size_t) l * N, mixed_, (size_t) N * 4);
             }
-            if (l + 1 < le_ && !pre(l + 1, grp)) return false;
+            if (l + 1 < le_ && !pre(l + 1, grp))
+                return false;
         }
-    if (le_ < g.n_layers) {   // a layer split's earlier stage: hand the residual on, no head
+    if (le_ < g.n_layers) { // a layer split's earlier stage: hand the residual on, no head
         for (int t = 0; t < T; ++t) {
             copy_from_mapped(hand_out_ + (size_t) t * HB, Rt(t), HC * N, cs);
             copy_from_mapped(hand_out_ + (size_t) t * HB + HC * N, bo_ + (size_t) t * N, N, cs);
@@ -1041,13 +1174,17 @@ bool Verifier::record_window(int T, dpct::queue_ptr cs, std::string &err) {
     {
         const WeightRef *hn = wt.find("output_hc_norm.weight"), *hd = wt.find("output_hc_down.weight"),
                         *hu = wt.find("output_hc_up.weight");
-        if (!hn || !hd || !hu) { err = "verify: an output_hc_* weight is missing"; return false; }
+        if (!hn || !hd || !hu) {
+            err = "verify: an output_hc_* weight is missing";
+            return false;
+        }
         for (int t = 0; t < T; ++t) {
             BlockBuffers bb = ss.block;
             bb.R = Rt(t);
             bb.mixed = head_mixed_ + t * N;
             if (head_ != nullptr && head_->loaded()) {
-                if (!lm_head_mix(wt, g, bb, cs, err)) return false;
+                if (!lm_head_mix(wt, g, bb, cs, err))
+                    return false;
             } else if (!lm_head(wt, g, bb, head_logits_ + (size_t) t * n_vocab_, cs, err)) {
                 return false;
             }
@@ -1074,34 +1211,69 @@ bool Verifier::record_window(int T, dpct::queue_ptr cs, std::string &err) {
 }
 
 std::string Verifier::profile_report() {
-    if (!prof_on_ || prof_windows_ == 0) return std::string();
-    static const char* names[kProfPer] = {"-", "hc-read0", "q8+qkv/q-idx gemv", "conv", "ab", "z", "rec", "q8+kv-idx",
-                                          "k/v+norm-rope", "kv+idx append", "q+q-idx", "scores+topk", "kv-resolve",
-                                          "attention", "gate", "", "out-proj", "hc-read1+router", "shared+quant",
-                                          "waitA", "VRAM hits", "waitB", "PCIe grp", "waitCPU", "copy+combine",
-                                          "(gap)", "head", "  hc0 norm", "  hc0 down", "  hc0 up", "", "", ""};
+    if (!prof_on_ || prof_windows_ == 0)
+        return std::string();
+    static const char* names[kProfPer] = {"-",
+                                          "hc-read0",
+                                          "q8+qkv/q-idx gemv",
+                                          "conv",
+                                          "ab",
+                                          "z",
+                                          "rec",
+                                          "q8+kv-idx",
+                                          "k/v+norm-rope",
+                                          "kv+idx append",
+                                          "q+q-idx",
+                                          "scores+topk",
+                                          "kv-resolve",
+                                          "attention",
+                                          "gate",
+                                          "",
+                                          "out-proj",
+                                          "hc-read1+router",
+                                          "shared+quant",
+                                          "waitA",
+                                          "VRAM hits",
+                                          "waitB",
+                                          "PCIe grp",
+                                          "waitCPU",
+                                          "copy+combine",
+                                          "(gap)",
+                                          "head",
+                                          "  hc0 norm",
+                                          "  hc0 down",
+                                          "  hc0 up",
+                                          "",
+                                          "",
+                                          ""};
     std::string out;
     char b[80];
     double total = 0;
     for (int k = 0; k < 2; ++k) {
         out += k == 0 ? " GDN layers:" : " | QSA layers:";
         for (int i = 0; i < kProfPer; ++i) {
-            if (prof_sum_[k][i] <= 0) continue;
+            if (prof_sum_[k][i] <= 0)
+                continue;
             total += prof_sum_[k][i];
             std::snprintf(b, sizeof b, " %s %.2f", names[i], prof_sum_[k][i] / 1e6 / (double) prof_windows_);
             out += b;
         }
     }
-    std::snprintf(b, sizeof b, " | total %.2f ms/window over %lld windows", total / 1e6 / (double) prof_windows_, (long long) prof_windows_);
+    std::snprintf(b, sizeof b, " | total %.2f ms/window over %lld windows", total / 1e6 / (double) prof_windows_,
+                  (long long) prof_windows_);
     out += b;
-    for (auto& r : prof_sum_) for (double& d : r) d = 0;
+    for (auto& r : prof_sum_)
+        for (double& d : r)
+            d = 0;
     prof_windows_ = 0;
     return out;
 }
 
-bool Verifier::capture(int T, std::string &err) try {
-    if (exec_[T] != nullptr) return true;
-    if (std::getenv("GUILD_VERIFY_EAGER") != nullptr) return true;   // SYCL port: no graph, run() replays the body
+bool Verifier::capture(int T, std::string& err) try {
+    if (exec_[T] != nullptr)
+        return true;
+    if (std::getenv("GUILD_VERIFY_EAGER") != nullptr)
+        return true; // SYCL port: no graph, run() replays the body
     if (DPCT_CHECK_ERROR(dpct::experimental::begin_recording(cs_)) != 0) {
         err = "verify: begin capture failed";
         return false;
@@ -1109,10 +1281,10 @@ bool Verifier::capture(int T, std::string &err) try {
     std::string rerr;
     const bool ok = record_window(T, cs_, rerr);
     dpct::experimental::command_graph_ptr graph = nullptr;
-    const dpct::err0 ce =
-        DPCT_CHECK_ERROR(dpct::experimental::end_recording(cs_, &graph));
+    const dpct::err0 ce = DPCT_CHECK_ERROR(dpct::experimental::end_recording(cs_, &graph));
     if (!ok) {
-        if (graph) delete (graph);
+        if (graph)
+            delete (graph);
         err = rerr;
         return false;
     }
@@ -1128,11 +1300,10 @@ bool Verifier::capture(int T, std::string &err) try {
         /*
         DPCT1001: The statement could not be removed.
         */
-        err = std::string("verify: end capture: ") +
-              dpct::get_error_string_dummy(ce);
+        err = std::string("verify: end capture: ") + dpct::get_error_string_dummy(ce);
         return false;
     }
-    if (std::getenv("GUILD_VERIFY_NODES") != nullptr) {   // what the window graph holds
+    if (std::getenv("GUILD_VERIFY_NODES") != nullptr) { // what the window graph holds
         size_t nn = 0;
         dpct::experimental::get_nodes(graph, nullptr, &nn);
         std::vector<dpct::experimental::node_ptr> nodes(nn);
@@ -1143,7 +1314,7 @@ bool Verifier::capture(int T, std::string &err) try {
             ty = nd->get_type();
             std::string name = "type" + std::to_string((int) ty);
             if (ty == sycl::ext::oneapi::experimental::node_type::kernel) {
-                name = "kernel";   // SYCL: no kernel-name introspection on graph nodes
+                name = "kernel"; // SYCL: no kernel-name introspection on graph nodes
             } else if (ty == sycl::ext::oneapi::experimental::node_type::memcpy)
                 name = "memcpy";
             else if (ty == sycl::ext::oneapi::experimental::node_type::memset)
@@ -1151,16 +1322,17 @@ bool Verifier::capture(int T, std::string &err) try {
             ++kinds[name];
         }
         std::vector<std::pair<int, std::string>> v;
-        for (auto& [k2, c] : kinds) v.push_back({c, k2});
+        for (auto& [k2, c] : kinds)
+            v.push_back({c, k2});
         std::sort(v.rbegin(), v.rend());
         std::fprintf(stderr, "guild verify: the %d-token window graph has %zu nodes:", T, nn);
-        for (size_t i = 0; i < v.size() && i < 40; ++i) std::fprintf(stderr, " %d x %.60s;", v[i].first, v[i].second.c_str());
+        for (size_t i = 0; i < v.size() && i < 40; ++i)
+            std::fprintf(stderr, " %d x %.60s;", v[i].first, v[i].second.c_str());
         std::fprintf(stderr, "\n");
     }
-    const dpct::err0 ie = DPCT_CHECK_ERROR(
-        exec_[T] = new sycl::ext::oneapi::experimental::command_graph<
-            sycl::ext::oneapi::experimental::graph_state::executable>(
-            graph->finalize()));
+    const dpct::err0 ie =
+        DPCT_CHECK_ERROR(exec_[T] = new sycl::ext::oneapi::experimental::command_graph<
+                             sycl::ext::oneapi::experimental::graph_state::executable>(graph->finalize()));
     delete (graph);
     /*
     DPCT1000: Error handling if-stmt was detected but could not be rewritten.
@@ -1174,34 +1346,30 @@ bool Verifier::capture(int T, std::string &err) try {
         /*
         DPCT1001: The statement could not be removed.
         */
-        err = std::string("verify: instantiate: ") +
-              dpct::get_error_string_dummy(ie);
+        err = std::string("verify: instantiate: ") + dpct::get_error_string_dummy(ie);
         return false;
     }
     /*
     DPCT1007: Migration of cudaGraphUpload is not supported.
     */
-    const dpct::err0 ue = 0;   // no cudaGraphUpload on SYCL: a finalized command_graph is already resident
+    const dpct::err0 ue = 0; // no cudaGraphUpload on SYCL: a finalized command_graph is already resident
     const dpct::err0 us = DPCT_CHECK_ERROR(cs_->wait());
-    std::fprintf(
-        stderr,
-        "guild verify: captured the %d-token window (upload %s, sync %s)\n", T,
-        /*
-        DPCT1009: SYCL reports errors using exceptions and does not use error
-        codes. Please replace the "get_error_string_dummy(...)" with a real
-        error-handling function.
-        */
-        dpct::get_error_string_dummy(ue), dpct::get_error_string_dummy(us));
+    std::fprintf(stderr, "guild verify: captured the %d-token window (upload %s, sync %s)\n", T,
+                 /*
+                 DPCT1009: SYCL reports errors using exceptions and does not use error
+                 codes. Please replace the "get_error_string_dummy(...)" with a real
+                 error-handling function.
+                 */
+                 dpct::get_error_string_dummy(ue), dpct::get_error_string_dummy(us));
     return true;
-}
-catch (sycl::exception const &exc) {
-  std::cerr << exc.what() << "Exception caught at file:" << __FILE__
-            << ", line:" << __LINE__ << std::endl;
-  std::exit(1);
+} catch (sycl::exception const& exc) {
+    std::cerr << exc.what() << "Exception caught at file:" << __FILE__ << ", line:" << __LINE__ << std::endl;
+    std::exit(1);
 }
 
-bool Verifier::capture_commit(std::string &err) try {
-    if (commit_exec_ != nullptr) return true;
+bool Verifier::capture_commit(std::string& err) try {
+    if (commit_exec_ != nullptr)
+        return true;
     using namespace guild::kernels;
     const ModelGeometry& g = *g_;
     SessionState& ss = *ss_;
@@ -1219,90 +1387,107 @@ bool Verifier::capture_commit(std::string &err) try {
     try {
         copy_i32_from_mapped(commit_, m_commit_, 2 + MT, cs_);
         int64_t qsa_index = 0, gdn_index = 0;
-        for (int64_t l = 0; l < lb_; ++l) (is_qsa_layer(g, l) ? qsa_index : gdn_index) += 1;
+        for (int64_t l = 0; l < lb_; ++l)
+            (is_qsa_layer(g, l) ? qsa_index : gdn_index) += 1;
         for (int64_t l = lb_; l < le_ && ok; ++l) {
             const LayerView v(*wt_, l);
             if (!is_qsa_layer(g, l)) {
                 const WeightRef* wnm = need(v, "ssm_norm.weight", err);
-                if (!wnm) { ok = false; break; }
+                if (!wnm) {
+                    ok = false;
+                    break;
+                }
                 float* state = ss.gdn_state + (size_t) (gdn_index - ss.gdn_ord0) * gdn_floats;
                 float* conv = state + (uint64_t) g.ssm_state_size * g.ssm_v_heads * g.ssm_state_size;
                 const float* qkv = qkv_L_ + (size_t) gdn_index * MT * C;
                 gdn_conv_commit(conv, qkv, (int) C, commit_, cs_);
-                gdn_step_norm_multi(state, h_L_ + (size_t) gdn_index * MT * C, (int) C, gate_L_ + (size_t) gdn_index * MT * HV,
-                                    beta_L_ + (size_t) gdn_index * MT * HV, z_, (const float*) wnm->data, EPS, y_dummy_,
-                                    (int) g.ssm_k_heads, (int) HV, (int) MT, commit_, cs_);
+                gdn_step_norm_multi(state, h_L_ + (size_t) gdn_index * MT * C, (int) C,
+                                    gate_L_ + (size_t) gdn_index * MT * HV, beta_L_ + (size_t) gdn_index * MT * HV, z_,
+                                    (const float*) wnm->data, EPS, y_dummy_, (int) g.ssm_k_heads, (int) HV, (int) MT,
+                                    commit_, cs_);
                 ++gdn_index;
             } else {
                 const QsaState& st = ss.qsa_states[qsa_index];
                 const WeightRef* wikn = need(v, "indexer.k_norm.weight", err);
-                if (!wikn) { ok = false; break; }
+                if (!wikn) {
+                    ok = false;
+                    break;
+                }
                 copy_from_mapped(st.idx_tail, tail_snap_ + (size_t) qsa_index * TS, TS, cs_);
                 const QsaIndexerBuffers ib{st.idx_tail, st.idx_dead, st.idx_pooled, st.idx_block_pos};
                 for (int64_t t = 0; t < MT; ++t)
                     native_qsa_indexer_append(idx_raw_L_ + (size_t) (qsa_index * MT + t) * ID, commit_ + 2 + t, 0,
-                                              (const float*) wikn->data, EPS, ib, s, st.max_cells,
-                                              rope_scaling(), cs_);
+                                              (const float*) wikn->data, EPS, ib, s, st.max_cells, rope_scaling(), cs_);
                 ++qsa_index;
             }
         }
-        if (ok && ss.ple.ready() && ple_stage()) copy_indexed(ss.ple.hist, hist_snap_, HS, commit_ + 1, HS, cs_);
+        if (ok && ss.ple.ready() && ple_stage())
+            copy_indexed(ss.ple.hist, hist_snap_, HS, commit_ + 1, HS, cs_);
     } catch (const std::exception& e) {
         err = std::string("verify commit: ") + e.what();
         ok = false;
     }
     dpct::experimental::command_graph_ptr graph = nullptr;
-    const dpct::err0 ce =
-        DPCT_CHECK_ERROR(dpct::experimental::end_recording(cs_, &graph));
+    const dpct::err0 ce = DPCT_CHECK_ERROR(dpct::experimental::end_recording(cs_, &graph));
     if (!ok) {
-        if (graph) delete (graph);
+        if (graph)
+            delete (graph);
         return false;
     }
     if (ce != 0 ||
-        DPCT_CHECK_ERROR(
-            commit_exec_ = new sycl::ext::oneapi::experimental::command_graph<
-                sycl::ext::oneapi::experimental::graph_state::executable>(
-                graph->finalize())) != 0) {
-        if (graph) delete (graph);
+        DPCT_CHECK_ERROR(commit_exec_ = new sycl::ext::oneapi::experimental::command_graph<
+                             sycl::ext::oneapi::experimental::graph_state::executable>(graph->finalize())) != 0) {
+        if (graph)
+            delete (graph);
         /*
         DPCT1009: SYCL reports errors using exceptions and does not use error
         codes. Please replace the "get_error_string_dummy(...)" with a real
         error-handling function.
         */
-        err = std::string("verify: commit capture: ") +
-              dpct::get_error_string_dummy(ce);
+        err = std::string("verify: commit capture: ") + dpct::get_error_string_dummy(ce);
         return false;
     }
     delete (graph);
     return true;
-}
-catch (sycl::exception const &exc) {
-  std::cerr << exc.what() << "Exception caught at file:" << __FILE__
-            << ", line:" << __LINE__ << std::endl;
-  std::exit(1);
+} catch (sycl::exception const& exc) {
+    std::cerr << exc.what() << "Exception caught at file:" << __FILE__ << ", line:" << __LINE__ << std::endl;
+    std::exit(1);
 }
 
-bool Verifier::run(int T, const int32_t *tokens, int64_t pos0, PoolMultiFn pool,
-                   void *user, int32_t *out, std::string &err) try {
+bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool, void* user, int32_t* out,
+                   std::string& err) try {
     using namespace guild::kernels;
     const OnDevice on_device(device_);
-    if (T < 1 || T > max_t_) { err = "verify: window size out of range"; return false; }
+    if (T < 1 || T > max_t_) {
+        err = "verify: window size out of range";
+        return false;
+    }
     const ModelGeometry& g = *g_;
     SessionState& ss = *ss_;
-    if (released_.load()) { err = "verify: an earlier window never finished on the GPU (#267); restart the engine"; return false; }
-    if (pos0 + T > ss.qsa_states[ss.qsa_primary()].max_cells) { err = "verify: the window runs past the context"; return false; }
-    if (!capture(T, err) || !capture_commit(err)) return false;
+    if (released_.load()) {
+        err = "verify: an earlier window never finished on the GPU (#267); restart the engine";
+        return false;
+    }
+    if (pos0 + T > ss.qsa_states[ss.qsa_primary()].max_cells) {
+        err = "verify: the window runs past the context";
+        return false;
+    }
+    if (!capture(T, err) || !capture_commit(err))
+        return false;
     VDBG("captured; staging\n");
     const Clock::time_point t0 = Clock::now();
     const QsaShapes s = shapes_of(g);
     for (int t = 0; t < T; ++t) {
         h_tok_[t] = tokens[t];
         qsa_step_fill(h_step_ + t * kStepCount, pos0 + t, s);
-        for (int64_t h = 0; h < g.n_head; ++h) h_pos_[t * g.n_head + h] = (int32_t) (pos0 + t);
+        for (int64_t h = 0; h < g.n_head; ++h)
+            h_pos_[t * g.n_head + h] = (int32_t) (pos0 + t);
         int32_t* pk = h_pos_ + (size_t) max_t_ * g.n_head;
         int32_t* pi = pk + (size_t) max_t_ * g.n_head_kv;
-        for (int64_t h = 0; h < g.n_head_kv; ++h) pk[t * g.n_head_kv + h] = (int32_t) (pos0 + t);
-        for (int64_t h = 0; h < g.idx_q_heads; ++h) pi[t * g.idx_q_heads + h] = (int32_t) (pos0 + t);
+        for (int64_t h = 0; h < g.n_head_kv; ++h)
+            pk[t * g.n_head_kv + h] = (int32_t) (pos0 + t);
+        for (int64_t h = 0; h < g.idx_q_heads; ++h)
+            pi[t * g.idx_q_heads + h] = (int32_t) (pos0 + t);
     }
     if (ss.ple.ready() && ple_stage()) {
         uint32_t rows[kVerifyMaxT * PLE_N_HEADS];
@@ -1312,24 +1497,27 @@ bool Verifier::run(int T, const int32_t *tokens, int64_t pos0, PoolMultiFn pool,
             prev[0] = prev[1];
             prev[1] = tokens[t];
         }
-        if (!ss.ple.table->gather_batch(rows, (size_t) T, h_ple_, err)) return false;
+        if (!ss.ple.table->gather_batch(rows, (size_t) T, h_ple_, err))
+            return false;
     }
     *(volatile uint32_t*) h_seq_ = 0;
     *(volatile uint32_t*) h_flag_ = 0;
     *(volatile uint32_t*) h_flagA_ = 0;
     *(volatile uint32_t*) h_flagB_ = 0;
-    if (trace_h_ != nullptr) std::memset(trace_h_, 0, trace_n_ * 8);   // #649: this window's breadcrumbs only
+    if (trace_h_ != nullptr)
+        std::memset(trace_h_, 0, trace_n_ * 8); // #649: this window's breadcrumbs only
     std::atomic_thread_fence(std::memory_order_seq_cst);
     trace_ev("WINDOW", -1, -1, pos0 * 16 + T);
     last_t_ = T;
     last_pos0_ = pos0;
-    for (int t = 0; t < T; ++t) last_tokens_[t] = tokens[t];
+    for (int t = 0; t < T; ++t)
+        last_tokens_[t] = tokens[t];
     ms_host += ms_since(t0);
     VDBG("staged; launching\n");
-    static Clock::time_point t_prev_end;   // SYCL port timing: where does a round's wall clock go?
+    static Clock::time_point t_prev_end; // SYCL port timing: where does a round's wall clock go?
     const Clock::time_point t_launch = Clock::now();
     const dpct::err0 le = (std::getenv("GUILD_VERIFY_EAGER") != nullptr)
-                              ? (record_window(T, cs_, err) ? 0 : 1)   // SYCL port: eager replay of the window body
+                              ? (record_window(T, cs_, err) ? 0 : 1) // SYCL port: eager replay of the window body
                               : DPCT_CHECK_ERROR((cs_)->ext_oneapi_graph(*exec_[T]));
     /*
     DPCT1009: SYCL reports errors using exceptions and does not use error
@@ -1344,11 +1532,10 @@ bool Verifier::run(int T, const int32_t *tokens, int64_t pos0, PoolMultiFn pool,
     */
     trace_ev("LAUNCHED", -1, -1, (int64_t) le);
     if (le != 0) {
-        err =
-            std::string("verify: launch: ") + dpct::get_error_string_dummy(le);
+        err = std::string("verify: launch: ") + dpct::get_error_string_dummy(le);
         return false;
     }
-    (void)DPCT_CHECK_ERROR(((cs_)->ext_oneapi_empty()));
+    (void) DPCT_CHECK_ERROR(((cs_)->ext_oneapi_empty()));
     VDBG("launched\n");
     volatile uint32_t* const seq = h_seq_;
     volatile uint32_t* const flag = h_flag_;
@@ -1361,7 +1548,7 @@ bool Verifier::run(int T, const int32_t *tokens, int64_t pos0, PoolMultiFn pool,
     // an all-resident cache: a missed expert would leave the GPU waiting for a plan that never comes.
     static const bool no_host = std::getenv("GUILD_VERIFY_NO_HOST") != nullptr;
     const int64_t steps = (le_ - lb_) * G;
-    const bool test_stall = g_test_stall > 0 && windows + 1 == g_test_stall;   // #267 test hook (off: false)
+    const bool test_stall = g_test_stall > 0 && windows + 1 == g_test_stall; // #267 test hook (off: false)
     for (int64_t k = 0; !no_host && k < steps; ++k) {
         const int64_t l = lb_ + k / G;
         const int grp = (int) (k % G);
@@ -1372,37 +1559,33 @@ bool Verifier::run(int T, const int32_t *tokens, int64_t pos0, PoolMultiFn pool,
         progress_at("verify window: waiting for the GPU to reach layer", l);
         while (*seq < want) {
             _mm_pause();
-            if ((++spins & 1023u) != 0) continue;
+            if ((++spins & 1023u) != 0)
+                continue;
             const auto now = Clock::now();
             if (now - last_flush > std::chrono::microseconds(2000)) {
                 last_flush = now;
-                const dpct::err0 q =
-                    DPCT_CHECK_ERROR(((cs_)->ext_oneapi_empty()));
+                const dpct::err0 q = DPCT_CHECK_ERROR(((cs_)->ext_oneapi_empty()));
                 if (q != 1 && *seq < want) {
                     trace_ev("NEVER-RANG", k, l, (int64_t) q);
                     trace_dump(stderr);
-                    err = "verify: layer " + std::to_string(l) +
-                          " never rang (" +
+                    err = "verify: layer " + std::to_string(l) + " never rang (" +
                           /*
                           DPCT1009: SYCL reports errors using exceptions and
                           does not use error codes. Please replace the
                           "get_error_string_dummy(...)" with a real
                           error-handling function.
                           */
-                          (q == 0
-                               ? std::string("graph finished")
-                               : std::string(dpct::get_error_string_dummy(q))) +
-                          ")";
+                          (q == 0 ? std::string("graph finished") : std::string(dpct::get_error_string_dummy(q))) + ")";
                     return false;
                 }
             }
             if (now - a > std::chrono::seconds(20)) {
                 // #267: the caller ends the engine; no spin kernel may outlive it
-                trace_ev("TIMEOUT", k, l, (int64_t) !cs_->ext_oneapi_empty());   // SYCL port: 1 = still running
+                trace_ev("TIMEOUT", k, l, (int64_t) !cs_->ext_oneapi_empty()); // SYCL port: 1 = still running
                 if (g_trace) {
-                    diag(stderr);   // the words and the breadcrumbs before the release ...
+                    diag(stderr); // the words and the breadcrumbs before the release ...
                     const bool drained = release_gpu_waits(5000);
-                    trace_dump(stderr);   // ... and after it: did the GPU move once its waits were raised?
+                    trace_dump(stderr); // ... and after it: did the GPU move once its waits were raised?
                     err = "verify: timed out at layer " + std::to_string(l) + released_note(drained);
                     return false;
                 }
@@ -1411,7 +1594,8 @@ bool Verifier::run(int T, const int32_t *tokens, int64_t pos0, PoolMultiFn pool,
             }
         }
         const Clock::time_point b = Clock::now();
-        if (g_trace) trace_ev("RANG", k, l, (int64_t) std::chrono::duration_cast<std::chrono::microseconds>(b - a).count());
+        if (g_trace)
+            trace_ev("RANG", k, l, (int64_t) std::chrono::duration_cast<std::chrono::microseconds>(b - a).count());
         VDBG("layer %lld rang\n", (long long) l);
         cur_layer_ = want - 1;
         set_plan_slot(grp);
@@ -1421,12 +1605,13 @@ bool Verifier::run(int T, const int32_t *tokens, int64_t pos0, PoolMultiFn pool,
             pool(user, h_x_ + (size_t) tb * g.n_embd, h_ids_ + (size_t) tb * ss.k, n, ss.k,
                  h_ymiss_ + (size_t) tb * ss.k * g.n_embd, l);
         VDBG("layer %lld served\n", (long long) l);
-        if (g_trace) trace_ev(*(volatile uint32_t*) h_flagA_ == want ? "SERVED" : "SERVED-NO-PLAN-YET", k, l,
-                              (int64_t) ms_since(b));   // aux: ms the CPU experts took
+        if (g_trace)
+            trace_ev(*(volatile uint32_t*) h_flagA_ == want ? "SERVED" : "SERVED-NO-PLAN-YET", k, l,
+                     (int64_t) ms_since(b)); // aux: ms the CPU experts took
         progress_tick();
         std::atomic_thread_fence(std::memory_order_seq_cst);
         _mm_sfence();
-        if (*(volatile uint32_t*) h_flagA_ != want) {        // the pool did not publish a plan: an empty one
+        if (*(volatile uint32_t*) h_flagA_ != want) { // the pool did not publish a plan: an empty one
             sink_.counts[0] = 0;
             sink_.counts[1] = 0;
             sink_.counts[2] = 0;
@@ -1436,7 +1621,8 @@ bool Verifier::run(int T, const int32_t *tokens, int64_t pos0, PoolMultiFn pool,
             *(volatile uint32_t*) h_flagA_ = want;
             raise_flag(h_flagB_, want);
         }
-        if (!(test_stall && k + 1 == steps)) *flag = want;
+        if (!(test_stall && k + 1 == steps))
+            *flag = want;
         ms_wait += std::chrono::duration<double, std::milli>(b - a).count();
         ms_pool += ms_since(b);
     }
@@ -1449,10 +1635,12 @@ bool Verifier::run(int T, const int32_t *tokens, int64_t pos0, PoolMultiFn pool,
     trace_ev("SYNCED", -1, -1, (int64_t) se);
     if (std::getenv("GUILD_VERIFY_DEBUG") != nullptr) {
         const Clock::time_point t_done = Clock::now();
-        std::fprintf(stderr, "verify dbg: T=%d window: since previous window %.1f ms, staging %.1f ms, gpu %.1f ms\n", T,
-                     t_prev_end.time_since_epoch().count() ? std::chrono::duration<double, std::milli>(t0 - t_prev_end).count() : 0.0,
-                     std::chrono::duration<double, std::milli>(t_launch - t0).count(),
-                     std::chrono::duration<double, std::milli>(t_done - t_launch).count());
+        std::fprintf(
+            stderr, "verify dbg: T=%d window: since previous window %.1f ms, staging %.1f ms, gpu %.1f ms\n", T,
+            t_prev_end.time_since_epoch().count() ? std::chrono::duration<double, std::milli>(t0 - t_prev_end).count()
+                                                  : 0.0,
+            std::chrono::duration<double, std::milli>(t_launch - t0).count(),
+            std::chrono::duration<double, std::milli>(t_done - t_launch).count());
         t_prev_end = t_done;
     }
     /*
@@ -1470,7 +1658,7 @@ bool Verifier::run(int T, const int32_t *tokens, int64_t pos0, PoolMultiFn pool,
         err = std::string("verify: ") + dpct::get_error_string_dummy(se);
         return false;
     }
-    if (no_host && std::getenv("GUILD_VERIFY_DEBUG") != nullptr) {   // SYCL port: what the window left behind
+    if (no_host && std::getenv("GUILD_VERIFY_DEBUG") != nullptr) { // SYCL port: what the window left behind
         const int Gd = groups_[T] > 0 ? groups_[T] : 1;
         std::vector<uint32_t> sk((size_t) Gd, 0);
         std::vector<int32_t> id0((size_t) ss.k, 0);
@@ -1478,26 +1666,38 @@ bool Verifier::run(int T, const int32_t *tokens, int64_t pos0, PoolMultiFn pool,
         cs_->memcpy(sk.data(), skip_, sk.size() * 4).wait();
         cs_->memcpy(id0.data(), ids_, id0.size() * 4).wait();
         cs_->memcpy(res0.data(), hits_.d_res, res0.size() * 4).wait();
-        std::fprintf(stderr, "verify dbg: window T=%d: host seq=%u (expected %lld), skip[]=", T, *(volatile uint32_t*) h_seq_,
-                     (long long) ((le_ - lb_) * Gd));
-        for (int i = 0; i < Gd; ++i) std::fprintf(stderr, " %u", sk[(size_t) i]);
+        std::fprintf(stderr, "verify dbg: window T=%d: host seq=%u (expected %lld), skip[]=", T,
+                     *(volatile uint32_t*) h_seq_, (long long) ((le_ - lb_) * Gd));
+        for (int i = 0; i < Gd; ++i)
+            std::fprintf(stderr, " %u", sk[(size_t) i]);
         std::vector<float> w0((size_t) ss.k, 0.f);
         cs_->memcpy(w0.data(), w_, w0.size() * 4).wait();
         std::fprintf(stderr, "; layer-0 weights:");
-        for (size_t i = 0; i < w0.size(); ++i) std::fprintf(stderr, " %.3g", w0[i]);
+        for (size_t i = 0; i < w0.size(); ++i)
+            std::fprintf(stderr, " %.3g", w0[i]);
         std::fprintf(stderr, "; layer-0 ids:");
-        for (size_t i = 0; i < id0.size(); ++i) std::fprintf(stderr, " %d", id0[i]);
+        for (size_t i = 0; i < id0.size(); ++i)
+            std::fprintf(stderr, " %d", id0[i]);
         std::fprintf(stderr, "; d_res[0..15]:");
-        for (size_t i = 0; i < res0.size(); ++i) std::fprintf(stderr, " %d", res0[i]);
-        std::fprintf(stderr, "; out[0..3]: %d %d %d %d\n", ((volatile int32_t*) h_out_)[0], ((volatile int32_t*) h_out_)[1],
-                     ((volatile int32_t*) h_out_)[2], ((volatile int32_t*) h_out_)[3]);
-        auto stat = [&](const char* what, const float* dev, size_t n) {   // token 0's vector: where do the zeros begin?
+        for (size_t i = 0; i < res0.size(); ++i)
+            std::fprintf(stderr, " %d", res0[i]);
+        std::fprintf(stderr, "; out[0..3]: %d %d %d %d\n", ((volatile int32_t*) h_out_)[0],
+                     ((volatile int32_t*) h_out_)[1], ((volatile int32_t*) h_out_)[2], ((volatile int32_t*) h_out_)[3]);
+        auto stat = [&](const char* what, const float* dev, size_t n) { // token 0's vector: where do the zeros begin?
             std::vector<float> v(n, 0.f);
             cs_->memcpy(v.data(), dev, n * 4).wait();
-            double sum = 0, mx = 0; size_t nonfinite = 0;
-            for (float x : v) { if (!std::isfinite(x)) { ++nonfinite; continue; } sum += std::fabs(x); mx = std::max(mx, (double) std::fabs(x)); }
-            std::fprintf(stderr, "verify dbg:   %-8s n=%zu mean|.|=%.4g max|.|=%.4g nonfinite=%zu first4=%g %g %g %g\n", what, n,
-                         sum / (double) n, mx, nonfinite, v[0], v[1], v[2], v[3]);
+            double sum = 0, mx = 0;
+            size_t nonfinite = 0;
+            for (float x : v) {
+                if (!std::isfinite(x)) {
+                    ++nonfinite;
+                    continue;
+                }
+                sum += std::fabs(x);
+                mx = std::max(mx, (double) std::fabs(x));
+            }
+            std::fprintf(stderr, "verify dbg:   %-8s n=%zu mean|.|=%.4g max|.|=%.4g nonfinite=%zu first4=%g %g %g %g\n",
+                         what, n, sum / (double) n, mx, nonfinite, v[0], v[1], v[2], v[3]);
         };
         if (dbgR_) {
             const size_t N = (size_t) g.n_embd;
@@ -1505,20 +1705,30 @@ bool Verifier::run(int T, const int32_t *tokens, int64_t pos0, PoolMultiFn pool,
             cs_->memcpy(r.data(), dbgR_, r.size() * 4).wait();
             cs_->memcpy(m.data(), dbgM_, m.size() * 4).wait();
             for (int64_t l = 0; l < g.n_layers; ++l) {
-                double sr = 0, sm = 0; size_t nr = 0, nm = 0;
+                double sr = 0, sm = 0;
+                size_t nr = 0, nm = 0;
                 for (size_t i = 0; i < N; ++i) {
                     const float x = r[(size_t) l * N + i], y = m[(size_t) l * N + i];
-                    if (std::isfinite(x)) sr += std::fabs(x); else ++nr;
-                    if (std::isfinite(y)) sm += std::fabs(y); else ++nm;
+                    if (std::isfinite(x))
+                        sr += std::fabs(x);
+                    else
+                        ++nr;
+                    if (std::isfinite(y))
+                        sm += std::fabs(y);
+                    else
+                        ++nm;
                 }
-                std::fprintf(stderr, "verify dbg:   layer %2lld %s  R mean|.|=%.4g nonfinite=%zu   mixed mean|.|=%.4g nonfinite=%zu\n",
-                             (long long) l, is_qsa_layer(g, l) ? "QSA" : "GDN", sr / N, nr, sm / N, nm);
+                std::fprintf(
+                    stderr,
+                    "verify dbg:   layer %2lld %s  R mean|.|=%.4g nonfinite=%zu   mixed mean|.|=%.4g nonfinite=%zu\n",
+                    (long long) l, is_qsa_layer(g, l) ? "QSA" : "GDN", sr / N, nr, sm / N, nm);
             }
         }
-        {   // the device plan of the last layer group and the MoE parts it produced (token 0)
+        { // the device plan of the last layer group and the MoE parts it produced (token 0)
             std::vector<int32_t> pc(4, 0);
             cs_->memcpy(pc.data(), plan_, 16).wait();
-            std::fprintf(stderr, "verify dbg:   plan (last layer, grp 0): groups=%d entries=%d pcie=%d\n", pc[0], pc[1], pc[2]);
+            std::fprintf(stderr, "verify dbg:   plan (last layer, grp 0): groups=%d entries=%d pcie=%d\n", pc[0], pc[1],
+                         pc[2]);
         }
         stat("parts_", parts_, (size_t) ss.k * g.n_embd);
         stat("hit_out_", hit_out_, (size_t) ss.k * g.n_embd);
@@ -1529,13 +1739,11 @@ bool Verifier::run(int T, const int32_t *tokens, int64_t pos0, PoolMultiFn pool,
         stat("mixed_", mixed_, (size_t) g.n_embd);
     }
     progress_at("verify window: waiting for the expert copies", (int64_t) T);
-    copy_->wait(); // no host function of this window may raise flag B in the
-                   // next one
-    if (prof_on_ && G == 1) {       // the window's GPU stage stamps
-        if (std::getenv("GUILD_VERIFY_EAGER") == nullptr)   // eager: prof_h_ already holds the host clocks
-            dpct::get_in_order_queue()
-                .memcpy(prof_h_.data(), prof_, prof_h_.size() * 8)
-                .wait();
+    copy_->wait();                                        // no host function of this window may raise flag B in the
+                                                          // next one
+    if (prof_on_ && G == 1) {                             // the window's GPU stage stamps
+        if (std::getenv("GUILD_VERIFY_EAGER") == nullptr) // eager: prof_h_ already holds the host clocks
+            dpct::get_in_order_queue().memcpy(prof_h_.data(), prof_, prof_h_.size() * 8).wait();
         const int64_t L = g.n_layers;
         auto at = [&](int64_t l, int i) { return prof_h_[(size_t) (l * kProfPer + i)]; };
         // D8: the derived columns below read stamps the hc-read kernels write themselves or the next
@@ -1550,29 +1758,31 @@ bool Verifier::run(int T, const int32_t *tokens, int64_t pos0, PoolMultiFn pool,
             unsigned long long prev = at(l, 0);
             for (int i = 1; i <= 24; ++i) {
                 const unsigned long long x = at(l, i);
-                if (x == 0 || x < prev) continue;
+                if (x == 0 || x < prev)
+                    continue;
                 prof_sum_[kind][i] += (double) (x - prev);
                 prev = x;
             }
-            if (l + 1 < L) prof_sum_[kind][25] += gap(at(l + 1, 0), at(l, 24));
+            if (l + 1 < L)
+                prof_sum_[kind][25] += gap(at(l + 1, 0), at(l, 24));
             const double dn = gap(at(l, 27), at(l, 0)), dd = gap(at(l, 28), at(l, 27)), du = gap(at(l, 1), at(l, 28));
-            if (dn > 0 && dd > 0 && du > 0) {   // the split exists: show it split, not twice
-                prof_sum_[kind][27] += dn;      // hc-read0: norm
-                prof_sum_[kind][28] += dd;      //           down
-                prof_sum_[kind][29] += du;      //           up (through both halves, as before)
-                prof_sum_[kind][1] -= gap(at(l, 1), at(l, 0));   // (hc-read0 shown split)
+            if (dn > 0 && dd > 0 && du > 0) {                  // the split exists: show it split, not twice
+                prof_sum_[kind][27] += dn;                     // hc-read0: norm
+                prof_sum_[kind][28] += dd;                     //           down
+                prof_sum_[kind][29] += du;                     //           up (through both halves, as before)
+                prof_sum_[kind][1] -= gap(at(l, 1), at(l, 0)); // (hc-read0 shown split)
             }
         }
         prof_sum_[0][26] += gap(at(L, 1), at(L, 0));
         ++prof_windows_;
-        if (std::getenv("GUILD_VERIFY_EAGER") != nullptr)   // SYCL port: the stage table per window, host-clocked
+        if (std::getenv("GUILD_VERIFY_EAGER") != nullptr) // SYCL port: the stage table per window, host-clocked
             std::fprintf(stderr, "verify stages T=%d (ms/window):%s\n", T, profile_report().c_str());
     }
     // ---- a sampled or penalized request: the head's sampling again, host-side so its parameters are this call's
     // own (a captured kernel would replay the same draws forever).  Row t's draw is Philox(seed, pos0 + t): tied to
     // the POSITION it samples, not to how the text was cut into windows, so a seed replays the same text whatever
     // the drafts were. Exact: a rejected row's draw is discarded, and no kept decision depends on a reused draw.
-    if (le_ < g.n_layers) {   // a layer split's earlier stage: the hand-off is written (synced above)
+    if (le_ < g.n_layers) { // a layer split's earlier stage: the hand-off is written (synced above)
         ++windows;
         return next_ == nullptr || next_->run(T, tokens, pos0, pool, next_user_, out, err);
     }
@@ -1581,27 +1791,28 @@ bool Verifier::run(int T, const int32_t *tokens, int64_t pos0, PoolMultiFn pool,
         SamplerParams sp = sampling_;
         sp.counter = (uint64_t) pos0;
         sample_tokens(head_logits_, T, (int) n_vocab_, hist_d_, hist_len_, sp, m_out_, cs_);
-        if (DPCT_CHECK_ERROR(cs_->wait()) !=
-            0) { // m_out_ is the mapped h_out_: synced, it is readable
+        if (DPCT_CHECK_ERROR(cs_->wait()) != 0) { // m_out_ is the mapped h_out_: synced, it is readable
             err = "verify: the head sampling failed";
             return false;
         }
     }
-    for (int t = 0; t < T; ++t) out[t] = ((volatile int32_t*) h_out_)[t];
-    if (static const bool dbg = std::getenv("GUILD_DBG_NAN") != nullptr; dbg) {   // debug: the first non-finite head
+    for (int t = 0; t < T; ++t)
+        out[t] = ((volatile int32_t*) h_out_)[t];
+    if (static const bool dbg = std::getenv("GUILD_DBG_NAN") != nullptr; dbg) { // debug: the first non-finite head
         static bool reported = false;
         if (!reported) {
             std::vector<float> h((size_t) T * (size_t) n_vocab_);
-            dpct::get_in_order_queue()
-                .memcpy(h.data(), head_logits_, h.size() * 4)
-                .wait();
+            dpct::get_in_order_queue().memcpy(h.data(), head_logits_, h.size() * 4).wait();
             for (int t = 0; t < T && !reported; ++t) {
                 int64_t bad = 0;
-                for (int64_t v = 0; v < n_vocab_; ++v) bad += !std::isfinite(h[(size_t) t * n_vocab_ + v]);
+                for (int64_t v = 0; v < n_vocab_; ++v)
+                    bad += !std::isfinite(h[(size_t) t * n_vocab_ + v]);
                 if (bad) {
                     reported = true;
-                    std::fprintf(stderr, "guild dbg: verify window at position %lld, row %d: %lld of %lld logits non-finite "
-                                         "(token out %d)\n", (long long) pos0, t, (long long) bad, (long long) n_vocab_, out[t]);
+                    std::fprintf(stderr,
+                                 "guild dbg: verify window at position %lld, row %d: %lld of %lld logits non-finite "
+                                 "(token out %d)\n",
+                                 (long long) pos0, t, (long long) bad, (long long) n_vocab_, out[t]);
                 }
             }
         }
@@ -1611,11 +1822,9 @@ bool Verifier::run(int T, const int32_t *tokens, int64_t pos0, PoolMultiFn pool,
     progress_at("decode");
     progress_beat();
     return true;
-}
-catch (sycl::exception const &exc) {
-  std::cerr << exc.what() << "Exception caught at file:" << __FILE__
-            << ", line:" << __LINE__ << std::endl;
-  std::exit(1);
+} catch (sycl::exception const& exc) {
+    std::cerr << exc.what() << "Exception caught at file:" << __FILE__ << ", line:" << __LINE__ << std::endl;
+    std::exit(1);
 }
 
 void Verifier::set_plan_slot(int grp) {
@@ -1632,7 +1841,8 @@ void Verifier::set_plan_slot(int grp) {
     sink_.start2 = base + ptr_off + 4 * cap;
     const int G = groups_[last_t_] > 0 ? groups_[last_t_] : 1;
     const int64_t per = G == 2 ? kStagingBlobs / 2 : kStagingBlobs;
-    sink_.staging = (unsigned long long) (staging_ + (size_t) (grp * per) * guild::kernels::cpu::expert_layout().max_blob);
+    sink_.staging =
+        (unsigned long long) (staging_ + (size_t) (grp * per) * guild::kernels::cpu::expert_layout().max_blob);
     sink_.staging_cap = per;
 }
 
@@ -1643,12 +1853,14 @@ void Verifier::raise_flag(uint32_t* flag, uint32_t value) {
     long cur = *f;
     while ((uint32_t) cur < value) {
         const long prev = _InterlockedCompareExchange(f, (long) value, cur);
-        if (prev == cur) break;
+        if (prev == cur)
+            break;
         cur = prev;
     }
 #else
     uint32_t cur = __atomic_load_n((uint32_t*) flag, __ATOMIC_SEQ_CST);
-    while (cur < value && !__atomic_compare_exchange_n((uint32_t*) flag, &cur, value, false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST)) {}
+    while (cur < value &&
+           !__atomic_compare_exchange_n((uint32_t*) flag, &cur, value, false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST)) {}
 #endif
 }
 
@@ -1658,8 +1870,11 @@ void Verifier::raise_flag(uint32_t* flag, uint32_t value) {
 void Verifier::fetch_dma(void* ctx, const uint8_t* const* src, int n, size_t bytes) {
     Verifier* v = (Verifier*) ctx;
     const uint32_t want = v->cur_layer_ + 1;
-    if (n <= 0) { raise_flag(v->h_flagB_, want); return; }
-    uint8_t* stage = (uint8_t*) v->sink_.staging;                  // this group's half in a split window
+    if (n <= 0) {
+        raise_flag(v->h_flagB_, want);
+        return;
+    }
+    uint8_t* stage = (uint8_t*) v->sink_.staging; // this group's half in a split window
     /*
     DPCT1124: cudaMemcpyAsync is migrated to asynchronous memcpy API. While
     the origin API might be synchronous, it depends on the type of operand
@@ -1667,14 +1882,12 @@ void Verifier::fetch_dma(void* ctx, const uint8_t* const* src, int n, size_t byt
     ensure synchronization behavior.
     */
     for (int i = 0; i < n; ++i)
-        v->copy_->memcpy(stage + (size_t)i * bytes, src[i], bytes);
+        v->copy_->memcpy(stage + (size_t) i * bytes, src[i], bytes);
     FlagSet& fs = v->flag_sets_[v->cur_layer_ % (sizeof v->flag_sets_ / sizeof v->flag_sets_[0])];
     fs.flag = v->h_flagB_;
     fs.value = want;
-  FlagSet* fsp = &fs;
-  v->copy_->submit([&](sycl::handler &cgh) {
-    cgh.host_task([=]() { raise_flag(fsp->flag, fsp->value); });
-  });
+    FlagSet* fsp = &fs;
+    v->copy_->submit([&](sycl::handler& cgh) { cgh.host_task([=]() { raise_flag(fsp->flag, fsp->value); }); });
 }
 
 void Verifier::publish_plan(void* ctx) {
@@ -1685,7 +1898,8 @@ void Verifier::publish_plan(void* ctx) {
 
 bool Verifier::window_logprobs(const int32_t* targets, int T, int64_t pos0, int32_t extra_id, std::FILE* out,
                                std::string& err) try {
-    if (next_ != nullptr) return next_->window_logprobs(targets, T, pos0, extra_id, out, err);
+    if (next_ != nullptr)
+        return next_->window_logprobs(targets, T, pos0, extra_id, out, err);
     const OnDevice on_device(device_);
     if (head_logits_ == nullptr || n_vocab_ <= 0 || T <= 0 || targets == nullptr || out == nullptr) {
         err = "window_logprobs: no head logits for this window";
@@ -1697,22 +1911,26 @@ bool Verifier::window_logprobs(const int32_t* targets, int T, int64_t pos0, int3
     for (int t = 0; t < T; ++t) {
         const float* row = h.data() + (size_t) t * (size_t) n_vocab_;
         const int32_t tgt = targets[t];
-        if (tgt < 0 || (int64_t) tgt >= n_vocab_) continue;
+        if (tgt < 0 || (int64_t) tgt >= n_vocab_)
+            continue;
         int64_t top = 0;
         for (int64_t v = 1; v < n_vocab_; ++v)
-            if (row[v] > row[top]) top = v;
+            if (row[v] > row[top])
+                top = v;
         const double maxv = row[top];
         const bool has_extra = extra_id >= 0 && (int64_t) extra_id < n_vocab_;
-        double sum = 0.0, sum_without = 0.0;   // the second skips extra_id: no cancellation when it holds ~all mass
+        double sum = 0.0, sum_without = 0.0; // the second skips extra_id: no cancellation when it holds ~all mass
         for (int64_t v = 0; v < n_vocab_; ++v) {
             const double e = std::exp((double) row[v] - maxv);
             sum += e;
-            if (v != (int64_t) extra_id) sum_without += e;
+            if (v != (int64_t) extra_id)
+                sum_without += e;
         }
         const double lse = maxv + std::log(sum);
         const double extra = has_extra ? (double) row[extra_id] - lse : NAN;
         const double without = has_extra && tgt != extra_id && sum_without > 0.0
-                                   ? (double) row[tgt] - (maxv + std::log(sum_without)) : NAN;
+                                   ? (double) row[tgt] - (maxv + std::log(sum_without))
+                                   : NAN;
         std::fprintf(out, "%lld\t%d\t%.9f\t%lld\t%.9f\t%d\t%.9f\t%.9f", (long long) (pos0 + t), (int) tgt,
                      (double) row[tgt] - lse, (long long) top, maxv - lse, (int) (top == (int64_t) tgt), extra,
                      without);
@@ -1724,7 +1942,8 @@ bool Verifier::window_logprobs(const int32_t* targets, int T, int64_t pos0, int3
         }();
         if (topk > 0) {
             std::vector<int32_t> order((size_t) n_vocab_);
-            for (int64_t v = 0; v < n_vocab_; ++v) order[(size_t) v] = (int32_t) v;
+            for (int64_t v = 0; v < n_vocab_; ++v)
+                order[(size_t) v] = (int32_t) v;
             std::partial_sort(order.begin(), order.begin() + topk, order.end(),
                               [&](int32_t a, int32_t b) { return row[a] > row[b]; });
             for (int j = 0; j < topk; ++j)
@@ -1742,20 +1961,28 @@ bool Verifier::window_logprobs(const int32_t* targets, int T, int64_t pos0, int3
 // Upstream's set_commit_async/wait_commit (0.1.32) on the port's own deferred commit: commit(n, err, false) leaves
 // the graph running and commit_finish() collects it (it also advances ss.ple_prev, so a pending commit must be
 // finished before the next window). The flag is kept for the API; the port decides per call site (generate.cpp).
-namespace { bool g_commit_async = false; }
-void Verifier::set_commit_async(bool on) { g_commit_async = on && std::getenv("GUILD_COMMIT_SYNC") == nullptr; }
+namespace {
+bool g_commit_async = false;
+}
+void Verifier::set_commit_async(bool on) {
+    g_commit_async = on && std::getenv("GUILD_COMMIT_SYNC") == nullptr;
+}
 
-bool Verifier::commit(int n_keep, std::string &err, bool wait) try {
+bool Verifier::commit(int n_keep, std::string& err, bool wait) try {
     const OnDevice on_device(device_);
-    if (n_keep < 1 || n_keep > last_t_) { err = "verify: commit count out of range"; return false; }
-    if (pending_commit_ != 0 && !commit_finish(err)) return false;
+    if (n_keep < 1 || n_keep > last_t_) {
+        err = "verify: commit count out of range";
+        return false;
+    }
+    if (pending_commit_ != 0 && !commit_finish(err))
+        return false;
     const Clock::time_point t0 = Clock::now();
     h_commit_[0] = n_keep;
     h_commit_[1] = n_keep - 1;
-    for (int t = 0; t < max_t_; ++t) h_commit_[2 + t] = t < n_keep ? (int32_t) (last_pos0_ + t) : -1;
+    for (int t = 0; t < max_t_; ++t)
+        h_commit_[2 + t] = t < n_keep ? (int32_t) (last_pos0_ + t) : -1;
     std::atomic_thread_fence(std::memory_order_seq_cst);
-    const dpct::err0 le =
-        DPCT_CHECK_ERROR((cs_)->ext_oneapi_graph(*commit_exec_));
+    const dpct::err0 le = DPCT_CHECK_ERROR((cs_)->ext_oneapi_graph(*commit_exec_));
     /*
     DPCT1009: SYCL reports errors using exceptions and does not use error
     codes. Please replace the "get_error_string_dummy(...)" with a real
@@ -1768,34 +1995,34 @@ bool Verifier::commit(int n_keep, std::string &err, bool wait) try {
     DPCT1000: Error handling if-stmt was detected but could not be rewritten.
     */
     if (le != 0) {
-        err = std::string("verify: commit launch: ") +
-              dpct::get_error_string_dummy(le);
+        err = std::string("verify: commit launch: ") + dpct::get_error_string_dummy(le);
         return false;
     }
-    if (!wait && next_ == nullptr) {   // left running: commit_finish() collects it (the drafter overlaps it)
+    if (!wait && next_ == nullptr) { // left running: commit_finish() collects it (the drafter overlaps it)
         pending_commit_ = n_keep;
         pending_commit_t0_ = t0;
         return true;
     }
     pending_commit_ = n_keep;
     pending_commit_t0_ = t0;
-    if (!commit_finish(err)) return false;
+    if (!commit_finish(err))
+        return false;
     return next_ == nullptr || next_->commit(n_keep, err);
-}
-catch (sycl::exception const &exc) {
-  std::cerr << exc.what() << "Exception caught at file:" << __FILE__
-            << ", line:" << __LINE__ << std::endl;
-  std::exit(1);
+} catch (sycl::exception const& exc) {
+    std::cerr << exc.what() << "Exception caught at file:" << __FILE__ << ", line:" << __LINE__ << std::endl;
+    std::exit(1);
 }
 
-bool Verifier::warm(std::string &err) {
+bool Verifier::warm(std::string& err) {
     for (int T = 1; T <= max_t_; ++T)
-        if (!capture(T, err)) return false;
+        if (!capture(T, err))
+            return false;
     return true;
 }
 
-bool Verifier::commit_finish(std::string &err) try {
-    if (pending_commit_ == 0) return true;
+bool Verifier::commit_finish(std::string& err) try {
+    if (pending_commit_ == 0)
+        return true;
     const OnDevice on_device(device_);
     const int n_keep = pending_commit_;
     pending_commit_ = 0;
@@ -1804,28 +2031,29 @@ bool Verifier::commit_finish(std::string &err) try {
         err = std::string("verify: commit: ") + dpct::get_error_string_dummy(se);
         return false;
     }
-    if (ple_stage())   // stages that share one session must advance it once
+    if (ple_stage()) // stages that share one session must advance it once
         for (int t = 0; t < n_keep; ++t) {
             ss_->ple_prev[0] = ss_->ple_prev[1];
             ss_->ple_prev[1] = last_tokens_[t];
         }
     ms_commit += ms_since(pending_commit_t0_);
     return true;
-}
-catch (sycl::exception const &exc) {
-  std::cerr << exc.what() << "Exception caught at file:" << __FILE__
-            << ", line:" << __LINE__ << std::endl;
-  std::exit(1);
+} catch (sycl::exception const& exc) {
+    std::cerr << exc.what() << "Exception caught at file:" << __FILE__ << ", line:" << __LINE__ << std::endl;
+    std::exit(1);
 }
 
 bool Verifier::wait_commit(std::string& err) {
-    if (!commit_finish(err)) return false;
+    if (!commit_finish(err))
+        return false;
     return next_ == nullptr || next_->wait_commit(err);
 }
 
 bool Verifier::copy_logits(int t, float* host) const {
-    if (next_ != nullptr) return next_->copy_logits(t, host);   // a layer split: the head is on the last stage
-    if (head_logits_ == nullptr || host == nullptr || t < 0 || n_vocab_ <= 0) return false;
+    if (next_ != nullptr)
+        return next_->copy_logits(t, host); // a layer split: the head is on the last stage
+    if (head_logits_ == nullptr || host == nullptr || t < 0 || n_vocab_ <= 0)
+        return false;
     try {
         cs_->memcpy(host, head_logits_ + (size_t) t * (size_t) n_vocab_, (size_t) n_vocab_ * sizeof(float)).wait();
     } catch (sycl::exception const&) {
@@ -1834,4 +2062,4 @@ bool Verifier::copy_logits(int t, float* host) const {
     return true;
 }
 
-}  // namespace guild::core
+} // namespace guild::core

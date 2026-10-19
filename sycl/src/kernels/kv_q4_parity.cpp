@@ -27,17 +27,15 @@ namespace {
 
 int g_fail = 0;
 
-void ck(dpct::err0 e, const char *w) {
+void ck(dpct::err0 e, const char* w) {
 }
 
-template <typename T>
-T* dalloc(size_t n) {
+template <typename T> T* dalloc(size_t n) {
     T* p = nullptr;
-    ck(DPCT_CHECK_ERROR(p = (T *)sycl::malloc_device(
-                            n * sizeof(T) + 64, dpct::get_in_order_queue())),
-       "malloc");
-    ck(DPCT_CHECK_ERROR(
-           (dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memset(p, 0, n * sizeof(T) + 64).wait()),
+    ck(DPCT_CHECK_ERROR(p = (T*) sycl::malloc_device(n * sizeof(T) + 64, dpct::get_in_order_queue())), "malloc");
+    ck(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
+                            .memset(p, 0, n * sizeof(T) + 64)
+                            .wait()),
        "memset");
     return p;
 }
@@ -51,7 +49,7 @@ void fwht256_host_reference(float* x) {
             for (int j = 0; j < s; ++j) {
                 const float u = x[i + j];
                 const float v = x[i + j + s];
-                x[i + j]     = u + v;
+                x[i + j] = u + v;
                 x[i + j + s] = u - v;
             }
         }
@@ -121,25 +119,25 @@ int main() {
     memory is not pageable, call wait() on event return by memcpy API to ensure
     synchronization behavior.
     */
-    ck(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(
-           d_src, h_in.data(), h_in.size() * sizeof(float)).wait()),
+    ck(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
+                            .memcpy(d_src, h_in.data(), h_in.size() * sizeof(float))
+                            .wait()),
        "memcpy H2D");
 
     k::fwht256_cuda(d_src, d_dst, n_vectors, nullptr);
-    ck(DPCT_CHECK_ERROR(dpct::get_current_device().queues_wait_and_throw()),
-       "fwht256_cuda");
+    ck(DPCT_CHECK_ERROR(dpct::get_current_device().queues_wait_and_throw()), "fwht256_cuda");
 
     std::vector<float> h_out(n_vectors * 256);
-    ck(DPCT_CHECK_ERROR(
-           (dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
-               .memcpy(h_out.data(), d_dst, h_out.size() * sizeof(float))
-               .wait()),
+    ck(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
+                            .memcpy(h_out.data(), d_dst, h_out.size() * sizeof(float))
+                            .wait()),
        "memcpy D2H");
 
     double max_fwht_diff = 0.0;
     for (size_t i = 0; i < h_out.size(); ++i) {
         double diff = std::fabs(h_out[i] - h_ref[i]);
-        if (diff > max_fwht_diff) max_fwht_diff = diff;
+        if (diff > max_fwht_diff)
+            max_fwht_diff = diff;
     }
     if (max_fwht_diff > 1e-5) {
         std::fprintf(stderr, "FAIL: FWHT-256 GPU output differs from host reference (max diff = %e)\n", max_fwht_diff);
@@ -150,18 +148,17 @@ int main() {
 
     // Self-inverse property: H * (H * x) == x
     k::fwht256_inplace_cuda(d_dst, n_vectors, nullptr);
-    ck(DPCT_CHECK_ERROR(dpct::get_current_device().queues_wait_and_throw()),
-       "fwht256_inplace_cuda");
-    ck(DPCT_CHECK_ERROR(
-           (dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
-               .memcpy(h_out.data(), d_dst, h_out.size() * sizeof(float))
-               .wait()),
+    ck(DPCT_CHECK_ERROR(dpct::get_current_device().queues_wait_and_throw()), "fwht256_inplace_cuda");
+    ck(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
+                            .memcpy(h_out.data(), d_dst, h_out.size() * sizeof(float))
+                            .wait()),
        "memcpy D2H");
 
     double max_inv_diff = 0.0;
     for (size_t i = 0; i < h_out.size(); ++i) {
         double diff = std::fabs(h_out[i] - h_in[i]);
-        if (diff > max_inv_diff) max_inv_diff = diff;
+        if (diff > max_inv_diff)
+            max_inv_diff = diff;
     }
     if (max_inv_diff > 1e-5) {
         std::fprintf(stderr, "FAIL: FWHT-256 self-inverse property failed (max diff = %e)\n", max_inv_diff);
@@ -188,7 +185,8 @@ int main() {
             dot_rot += (double) hq[i] * (double) hk[i];
         }
         double d = std::fabs(dot_raw - dot_rot);
-        if (d > max_dot_diff) max_dot_diff = d;
+        if (d > max_dot_diff)
+            max_dot_diff = d;
     }
     if (max_dot_diff > 1e-5) {
         std::fprintf(stderr, "FAIL: Rotated dot product differs from original (max diff = %e)\n", max_dot_diff);
@@ -204,13 +202,14 @@ int main() {
     k::QsaShapes s = k::qsa_real_shapes();
     s.page_size = 64;
     const int H = (int) s.n_head_kv; // 2
-    const int D = (int) s.head_dim;   // 256
-    const int P = (int) s.page_size;  // 64
+    const int D = (int) s.head_dim;  // 256
+    const int P = (int) s.page_size; // 64
     const int pages = 8;
     const int cells = pages * P;
 
     std::vector<int32_t> table(pages);
-    for (int i = 0; i < pages; ++i) table[i] = (i * 3 + 5) % pages; // permutation
+    for (int i = 0; i < pages; ++i)
+        table[i] = (i * 3 + 5) % pages; // permutation
     int32_t* d_table = dalloc<int32_t>(pages);
     /*
     DPCT1114: cudaMemcpy is migrated to asynchronization memcpy, assuming
@@ -218,8 +217,9 @@ int main() {
     memory is not pageable, call wait() on event return by memcpy API to ensure
     synchronization behavior.
     */
-    ck(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(
-           d_table, table.data(), pages * sizeof(int32_t)).wait()),
+    ck(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
+                            .memcpy(d_table, table.data(), pages * sizeof(int32_t))
+                            .wait()),
        "memcpy table");
 
     const size_t pool_bytes = (size_t) pages * H * P * k::kv_q4_bytes_per_head(D);
@@ -231,15 +231,18 @@ int main() {
 
     std::vector<std::vector<float>> host_k(cells), host_v(cells);
     std::vector<int> positions(cells);
-    for (int i = 0; i < cells; ++i) positions[i] = i;
+    for (int i = 0; i < cells; ++i)
+        positions[i] = i;
     std::shuffle(positions.begin(), positions.end(), rng);
 
     const int n_fill = cells - 25; // leave some cells empty
     for (int n = 0; n < n_fill; ++n) {
         const int pos = positions[n];
         std::vector<float> kv(H * D), vv(H * D);
-        for (auto& x : kv) x = nd(rng) * 2.0f;
-        for (auto& x : vv) x = nd(rng) * 2.0f;
+        for (auto& x : kv)
+            x = nd(rng) * 2.0f;
+        for (auto& x : vv)
+            x = nd(rng) * 2.0f;
 
         // Apply FWHT before append
         for (int h = 0; h < H; ++h) {
@@ -256,8 +259,9 @@ int main() {
         If the memory is not pageable, call wait() on event return by memcpy API
         to ensure synchronization behavior.
         */
-        ck(DPCT_CHECK_ERROR(
-               (dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(d_step, hstep, sizeof(hstep)).wait()),
+        ck(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
+                                .memcpy(d_step, hstep, sizeof(hstep))
+                                .wait()),
            "memcpy step");
         /*
         DPCT1114: cudaMemcpy is migrated to asynchronization memcpy,
@@ -265,8 +269,9 @@ int main() {
         If the memory is not pageable, call wait() on event return by memcpy API
         to ensure synchronization behavior.
         */
-        ck(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(
-               d_kcur, kv.data(), kv.size() * sizeof(float)).wait()),
+        ck(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
+                                .memcpy(d_kcur, kv.data(), kv.size() * sizeof(float))
+                                .wait()),
            "memcpy k");
         /*
         DPCT1114: cudaMemcpy is migrated to asynchronization memcpy,
@@ -274,13 +279,13 @@ int main() {
         If the memory is not pageable, call wait() on event return by memcpy API
         to ensure synchronization behavior.
         */
-        ck(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(
-               d_vcur, vv.data(), vv.size() * sizeof(float)).wait()),
+        ck(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
+                                .memcpy(d_vcur, vv.data(), vv.size() * sizeof(float))
+                                .wait()),
            "memcpy v");
 
         k::kv_append_q4_step(d_k_q4, d_v_q4, d_table, d_step, d_kcur, d_vcur, s, nullptr);
-        ck(DPCT_CHECK_ERROR(dpct::get_current_device().queues_wait_and_throw()),
-           "kv_append_q4_step");
+        ck(DPCT_CHECK_ERROR(dpct::get_current_device().queues_wait_and_throw()), "kv_append_q4_step");
     }
 
     // Verify written Q4_0 blocks bitwise against host quantizer
@@ -295,7 +300,7 @@ int main() {
        "memcpy d2h v_q4");
 
     long bad_blocks = 0;
-    const int blocks_per_head = D / k::QK4_0; // 8
+    const int blocks_per_head = D / k::QK4_0;                           // 8
     const int bytes_per_head = blocks_per_head * sizeof(k::block_q4_0); // 144
 
     for (int n = 0; n < n_fill; ++n) {
@@ -315,13 +320,14 @@ int main() {
                     if (std::memcmp(&host_blk, gpu_blk, sizeof(k::block_q4_0)) != 0) {
                         if (bad_blocks == 0) {
                             std::printf("MISMATCH at n=%d, pos=%d, is_v=%d, h=%d, b=%d\n", n, pos, is_v, h, b);
-                            std::printf("  host blk.d = 0x%04x (%f), gpu blk.d = 0x%04x (%f)\n",
-                                        host_blk.d, k::f32_from_f16(host_blk.d),
-                                        gpu_blk->d, k::f32_from_f16(gpu_blk->d));
+                            std::printf("  host blk.d = 0x%04x (%f), gpu blk.d = 0x%04x (%f)\n", host_blk.d,
+                                        k::f32_from_f16(host_blk.d), gpu_blk->d, k::f32_from_f16(gpu_blk->d));
                             std::printf("  host qs: ");
-                            for (int i = 0; i < 16; ++i) std::printf("%02x ", host_blk.qs[i]);
+                            for (int i = 0; i < 16; ++i)
+                                std::printf("%02x ", host_blk.qs[i]);
                             std::printf("\n  gpu  qs: ");
-                            for (int i = 0; i < 16; ++i) std::printf("%02x ", gpu_blk->qs[i]);
+                            for (int i = 0; i < 16; ++i)
+                                std::printf("%02x ", gpu_blk->qs[i]);
                             std::printf("\n");
                         }
                         ++bad_blocks;
@@ -356,8 +362,9 @@ int main() {
     memory is not pageable, call wait() on event return by memcpy API to ensure
     synchronization behavior.
     */
-    ck(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(
-           d_ids, ids.data(), max_ids * sizeof(int32_t)).wait()),
+    ck(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
+                            .memcpy(d_ids, ids.data(), max_ids * sizeof(int32_t))
+                            .wait()),
        "memcpy ids");
 
     int32_t hstep[k::kStepCount] = {0, 0, 0, max_ids};
@@ -367,24 +374,22 @@ int main() {
     memory is not pageable, call wait() on event return by memcpy API to ensure
     synchronization behavior.
     */
-    ck(DPCT_CHECK_ERROR(
-           (dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(d_step, hstep, sizeof(hstep)).wait()),
+    ck(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
+                            .memcpy(d_step, hstep, sizeof(hstep))
+                            .wait()),
        "memcpy step");
 
     k::kv_gather_q4_step(d_k_q4, d_v_q4, d_table, d_ids, d_step, max_ids, s, d_k_scratch, d_v_scratch, nullptr);
-    ck(DPCT_CHECK_ERROR(dpct::get_current_device().queues_wait_and_throw()),
-       "kv_gather_q4_step");
+    ck(DPCT_CHECK_ERROR(dpct::get_current_device().queues_wait_and_throw()), "kv_gather_q4_step");
 
     std::vector<uint16_t> h_k_scratch((size_t) max_ids * H * D);
     std::vector<uint16_t> h_v_scratch((size_t) max_ids * H * D);
     ck(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
-                            .memcpy(h_k_scratch.data(), d_k_scratch,
-                                    h_k_scratch.size() * sizeof(uint16_t))
+                            .memcpy(h_k_scratch.data(), d_k_scratch, h_k_scratch.size() * sizeof(uint16_t))
                             .wait()),
        "memcpy d2h k_scratch");
     ck(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
-                            .memcpy(h_v_scratch.data(), d_v_scratch,
-                                    h_v_scratch.size() * sizeof(uint16_t))
+                            .memcpy(h_v_scratch.data(), d_v_scratch, h_v_scratch.size() * sizeof(uint16_t))
                             .wait()),
        "memcpy d2h v_scratch");
 
@@ -400,7 +405,8 @@ int main() {
                     float deq = k::f32_from_f16(gathered[d]);
                     float raw = orig[d];
                     double err = std::fabs(deq - raw);
-                    if (err > worst_quant_err) worst_quant_err = err;
+                    if (err > worst_quant_err)
+                        worst_quant_err = err;
                 }
             }
         }

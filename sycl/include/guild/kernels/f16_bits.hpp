@@ -54,20 +54,25 @@ GUILD_HD inline uint16_t f16_from_f32(float f) {
     // and therefore returns a NaN for every overflowing finite value - which their own fixtures cannot see,
     // because all of their values are O(1).  Round 198's numpy oracle caught it here on the first run (1e30,
     // 65536, 1e45: numpy says inf, the conflated test said NaN).
-    if (rawexp == 0xFFu) return (uint16_t) (sign | 0x7C00u | (man ? 0x200u : 0u));   // inf, or a quiet/NaN
-    if (exp >= 31) return (uint16_t) (sign | 0x7C00u);                             // finite overflow -> inf
+    if (rawexp == 0xFFu)
+        return (uint16_t) (sign | 0x7C00u | (man ? 0x200u : 0u)); // inf, or a quiet/NaN
+    if (exp >= 31)
+        return (uint16_t) (sign | 0x7C00u); // finite overflow -> inf
     if (exp <= 0) {
-        if (exp < -10) return (uint16_t) sign;                                // underflows to a signed zero
-        man |= 0x800000u;                                                     // restore the implicit 1
+        if (exp < -10)
+            return (uint16_t) sign; // underflows to a signed zero
+        man |= 0x800000u;           // restore the implicit 1
         const uint32_t sh = (uint32_t) (14 - exp);
         uint32_t h = (man >> sh) & 0x3FFu;
         const uint32_t rem = man & ((1u << sh) - 1u);
-        if (rem > (1u << (sh - 1)) || (rem == (1u << (sh - 1)) && (h & 1u))) ++h;
+        if (rem > (1u << (sh - 1)) || (rem == (1u << (sh - 1)) && (h & 1u)))
+            ++h;
         return (uint16_t) (sign | h);
     }
     uint16_t h = (uint16_t) (sign | ((uint32_t) exp << 10) | (man >> 13));
     const uint32_t rem = man & 0x1FFFu;
-    if (rem > 0x1000u || (rem == 0x1000u && (h & 1u))) ++h;                   // the carry may bump the exponent
+    if (rem > 0x1000u || (rem == 0x1000u && (h & 1u)))
+        ++h; // the carry may bump the exponent
     return h;
 }
 
@@ -87,7 +92,10 @@ GUILD_HD inline float f32_from_f16(uint16_t h) {
         } else {
             uint32_t m = man;
             int s = 0;
-            while ((m & 0x400u) == 0) { m <<= 1; ++s; }
+            while ((m & 0x400u) == 0) {
+                m <<= 1;
+                ++s;
+            }
             out = sign | ((uint32_t) (113 - s) << 23) | ((m & 0x3FFu) << 13);
         }
     } else if (ex == 31) {
@@ -104,4 +112,4 @@ GUILD_HD inline float f32_from_f16(uint16_t h) {
     return f;
 }
 
-}  // namespace guild::kernels
+} // namespace guild::kernels

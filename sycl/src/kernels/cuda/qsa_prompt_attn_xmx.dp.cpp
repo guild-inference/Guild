@@ -2,16 +2,16 @@
 //
 // One work-group per (query position, KV head): 16 query rows (the group's 12 heads + 4 zero rows) against the
 // position's selected cells, CH cells per chunk. Scores S = Q K^T and the update O += P V run on joint_matrix (FP16 x
-// FP16 -> FP32, 16x16x16, sub-group 16). Q and P are split into hi + lo FP16 halves exactly as the CUDA kernel does, and
-// the per-64-dim INT8 scales of K and V are applied outside the products the same way (K's after each scale group's
+// FP16 -> FP32, 16x16x16, sub-group 16). Q and P are split into hi + lo FP16 halves exactly as the CUDA kernel does,
+// and the per-64-dim INT8 scales of K and V are applied outside the products the same way (K's after each scale group's
 // product, V's folded into P relative to the chunk's largest). KV modes: 0 FP16 K/V, 1 INT8 K/V with scales, 3 hybrid
 // K8V4 (INT8 K + Q4_0 V dequantized to FP16).
 //
 // v1 (16 cells per chunk) was correct but 3x slower than the FP32 fallback: its time went to staging (2-byte scattered
 // stores into the packed B layouts) and to 5 barriers + a softmax pass + an accumulator read-modify-write per 16 cells.
 // v2: 64-cell chunks (a quarter of the per-cell overhead), V packed two cells at a time as 32-byte contiguous stores,
-// K^T packed as 4-byte pairs with INT8 converted on the load, hi and lo halves of Q accumulated into one accumulator per
-// scale group, and one accumulator update per chunk after the whole P.V product has run in registers.
+// K^T packed as 4-byte pairs with INT8 converted on the load, hi and lo halves of Q accumulated into one accumulator
+// per scale group, and one accumulator update per chunk after the whole P.V product has run in registers.
 #include "guild/kernels/qsa_prompt_attn_xmx.hpp"
 #include "guild/kernels/qsa_decode_attn.hpp"
 #include "guild/kernels/qsa.hpp"
@@ -30,30 +30,31 @@ namespace {
 namespace jm = sycl::ext::oneapi::experimental::matrix;
 constexpr int HD = 256, G = 12, SG = 16, NSG = 8, THREADS = SG * NSG, QS = HD + 8;
 constexpr int QK4_0 = 32;
-struct q4_0_block { uint16_t d; uint8_t qs[QK4_0 / 2]; };
+struct q4_0_block {
+    uint16_t d;
+    uint8_t qs[QK4_0 / 2];
+};
 
 // local memory layout for CH cells per chunk; the P tiles reuse the K^T region (K is done once the scores are)
-template <int CH>
-struct Layout {
-    static constexpr int PS = CH + 8;                        // P / score row stride
-    static constexpr int NT = CH / 16;                       // cell tiles
-    static constexpr int UNITS = NT * 4;                     // (cell tile, scale group) score units
-    static constexpr size_t q = 2 * 16 * QS * 2;             // Q hi, Q lo (halves)
-    static constexpr size_t kp = (size_t) CH * HD * 2;       // packed K^T, then the P tiles
+template <int CH> struct Layout {
+    static constexpr int PS = CH + 8;                  // P / score row stride
+    static constexpr int NT = CH / 16;                 // cell tiles
+    static constexpr int UNITS = NT * 4;               // (cell tile, scale group) score units
+    static constexpr size_t q = 2 * 16 * QS * 2;       // Q hi, Q lo (halves)
+    static constexpr size_t kp = (size_t) CH * HD * 2; // packed K^T, then the P tiles
     static constexpr size_t pv = (size_t) 4 * 2 * 16 * PS * 2;
     static constexpr size_t kp_or_pv = kp > pv ? kp : pv;
-    static constexpr size_t vp = (size_t) CH * HD * 2;       // packed V
-    static constexpr size_t parts = (size_t) (UNITS > 16 ? UNITS : 16) * 256 * 4;   // score units, then P.V tiles
-    static constexpr size_t s = (size_t) 16 * PS * 4;        // probabilities
+    static constexpr size_t vp = (size_t) CH * HD * 2;                            // packed V
+    static constexpr size_t parts = (size_t) (UNITS > 16 ? UNITS : 16) * 256 * 4; // score units, then P.V tiles
+    static constexpr size_t s = (size_t) 16 * PS * 4;                             // probabilities
     static constexpr size_t acc = (size_t) 16 * HD * 4;
-    static constexpr size_t scal = (size_t) CH * 4 * 4 * 2;  // ks, vs
+    static constexpr size_t scal = (size_t) CH * 4 * 4 * 2; // ks, vs
     static constexpr size_t misc = 80 * 4;
     static constexpr size_t row = (size_t) CH * 8;
     static constexpr size_t bytes = q + kp_or_pv + vp + parts + s + acc + scal + misc + row + 16 * 12;
 };
 
-template <typename T>
-__dpct_inline__ auto lptr(T* p) {
+template <typename T> __dpct_inline__ auto lptr(T* p) {
     return sycl::address_space_cast<sycl::access::address_space::local_space, sycl::access::decorated::no>(p);
 }
 
@@ -66,11 +67,15 @@ void prompt_attn_xmx2(const float* __restrict__ q, QsaAttnPools p, const int32_t
     auto it = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
     auto sg = it.get_sub_group();
     uint8_t* at = smem;
-    auto take = [&](size_t b) { uint8_t* r = at; at += (b + 15) & ~(size_t) 15; return r; };
+    auto take = [&](size_t b) {
+        uint8_t* r = at;
+        at += (b + 15) & ~(size_t) 15;
+        return r;
+    };
     sycl::half* qh = (sycl::half*) take(L::q / 2);
     sycl::half* ql = (sycl::half*) take(L::q / 2);
     sycl::half* kp = (sycl::half*) take(L::kp_or_pv);
-    sycl::half* ptile = kp;                                   // [g][hi/lo][16][PS], after the scores
+    sycl::half* ptile = kp; // [g][hi/lo][16][PS], after the scores
     sycl::half* vp = (sycl::half*) take(L::vp);
     float* parts = (float*) take(L::parts);
     float* sp = (float*) take(L::s);
@@ -79,12 +84,12 @@ void prompt_attn_xmx2(const float* __restrict__ q, QsaAttnPools p, const int32_t
     float* vs = (float*) take(L::scal / 2);
     float* misc = (float*) take(L::misc);
     long long* rows = (long long*) take(L::row);
-    float* qmax = misc;            // [8]
-    float* mrow = misc + 8;        // [16]
-    float* lsum = misc + 24;       // [16]
-    float* alpha = misc + 40;      // [16]
-    float* vup = misc + 56;        // [4]
-    float* vdown = misc + 60;      // [4]
+    float* qmax = misc;       // [8]
+    float* mrow = misc + 8;   // [16]
+    float* lsum = misc + 24;  // [16]
+    float* alpha = misc + 40; // [16]
+    float* vup = misc + 56;   // [4]
+    float* vdown = misc + 60; // [4]
 
     const int qi = (int) it.get_group(2), kvh = (int) it.get_group(1);
     const int n_head = n_kv_heads * G;
@@ -96,14 +101,18 @@ void prompt_attn_xmx2(const float* __restrict__ q, QsaAttnPools p, const int32_t
 
     // q: scaled so its largest value sits near 2^14 (exact), split into hi + lo halves (as the CUDA kernel)
     float qm = 0.0f;
-    for (int i = t; i < G * HD; i += THREADS) qm = sycl::fmax(qm, sycl::fabs(q[i]));
+    for (int i = t; i < G * HD; i += THREADS)
+        qm = sycl::fmax(qm, sycl::fabs(q[i]));
     qm = sycl::reduce_over_group(sg, qm, sycl::maximum<float>());
-    if (lane == 0) qmax[sgid] = qm;
+    if (lane == 0)
+        qmax[sgid] = qm;
     it.barrier(sycl::access::fence_space::local_space);
     qm = 0.0f;
-    for (int i = 0; i < NSG; ++i) qm = sycl::fmax(qm, qmax[i]);
-    int qe = 0;   // frexp's exponent from the bits (qm < 2^qe); qm > 0 is a normal number here
-    if (qm > 0.0f) qe = (int) ((sycl::bit_cast<uint32_t>(qm) >> 23) & 0xFFu) - 126;
+    for (int i = 0; i < NSG; ++i)
+        qm = sycl::fmax(qm, qmax[i]);
+    int qe = 0; // frexp's exponent from the bits (qm < 2^qe); qm > 0 is a normal number here
+    if (qm > 0.0f)
+        qe = (int) ((sycl::bit_cast<uint32_t>(qm) >> 23) & 0xFFu) - 126;
     const float qup = sycl::ldexp(1.0f, 14 - qe), qdown = sycl::ldexp(scale_log2, qe - 14);
     for (int i = t; i < 16 * HD; i += THREADS) {
         const int h = i / HD, d = i % HD;
@@ -112,8 +121,12 @@ void prompt_attn_xmx2(const float* __restrict__ q, QsaAttnPools p, const int32_t
         qh[h * QS + d] = hi;
         ql[h * QS + d] = sycl::half(x - (float) hi);
     }
-    for (int i = t; i < 16 * HD; i += THREADS) acc[i] = 0.0f;
-    if (t < 16) { mrow[t] = -INFINITY; lsum[t] = 0.0f; }
+    for (int i = t; i < 16 * HD; i += THREADS)
+        acc[i] = 0.0f;
+    if (t < 16) {
+        mrow[t] = -INFINITY;
+        lsum[t] = 0.0f;
+    }
 
     for (int c0 = 0; c0 < n; c0 += CH) {
         const int nh = sycl::min(CH, n - c0);
@@ -127,7 +140,7 @@ void prompt_attn_xmx2(const float* __restrict__ q, QsaAttnPools p, const int32_t
             }
             rows[t] = r;
         }
-        it.barrier(sycl::access::fence_space::local_space);   // rows ready; the previous chunk is done with kp/vp/parts
+        it.barrier(sycl::access::fence_space::local_space); // rows ready; the previous chunk is done with kp/vp/parts
         // K rows -> packed K^T: element (dim k, cell c) at kp[(k/2)*(CH*2) + c*2 + (k&1)]; one item = 8 dims of a cell
         for (int i = t; i < CH * (HD / 8); i += THREADS) {
             const int c = i / (HD / 8), piece = i % (HD / 8);
@@ -135,10 +148,13 @@ void prompt_attn_xmx2(const float* __restrict__ q, QsaAttnPools p, const int32_t
             uint32_t w[4] = {0u, 0u, 0u, 0u};
             if (r >= 0) {
                 if constexpr (KV_MODE == 0) {
-                    const sycl::vec<uint32_t, 4> v = *reinterpret_cast<const sycl::vec<uint32_t, 4>*>(p.k_pool + r * HD + piece * 8);
-                    for (int j = 0; j < 4; ++j) w[j] = v[j];
+                    const sycl::vec<uint32_t, 4> v =
+                        *reinterpret_cast<const sycl::vec<uint32_t, 4>*>(p.k_pool + r * HD + piece * 8);
+                    for (int j = 0; j < 4; ++j)
+                        w[j] = v[j];
                 } else {
-                    const sycl::vec<int8_t, 8> v = *reinterpret_cast<const sycl::vec<int8_t, 8>*>(p.k_q + r * HD + piece * 8);
+                    const sycl::vec<int8_t, 8> v =
+                        *reinterpret_cast<const sycl::vec<int8_t, 8>*>(p.k_q + r * HD + piece * 8);
                     for (int j = 0; j < 4; ++j) {
                         const sycl::half2 h2((float) v[2 * j], (float) v[2 * j + 1]);
                         w[j] = sycl::bit_cast<uint32_t>(h2);
@@ -146,10 +162,11 @@ void prompt_attn_xmx2(const float* __restrict__ q, QsaAttnPools p, const int32_t
                 }
             }
             uint32_t* dst = reinterpret_cast<uint32_t*>(kp);
-            for (int j = 0; j < 4; ++j) dst[(size_t) (piece * 4 + j) * CH + c] = w[j];
+            for (int j = 0; j < 4; ++j)
+                dst[(size_t) (piece * 4 + j) * CH + c] = w[j];
         }
-        // V rows -> packed V: element (cell c, dim d) at vp[(c/2)*(HD*2) + d*2 + (c&1)]; one item = a cell pair x 8 dims,
-        // written as 8 contiguous uint32 (32 bytes)
+        // V rows -> packed V: element (cell c, dim d) at vp[(c/2)*(HD*2) + d*2 + (c&1)]; one item = a cell pair x 8
+        // dims, written as 8 contiguous uint32 (32 bytes)
         if constexpr (KV_MODE == 3) {
             constexpr int BLKS = HD / QK4_0;
             constexpr int BYTES = BLKS * (int) sizeof(q4_0_block);
@@ -159,7 +176,11 @@ void prompt_attn_xmx2(const float* __restrict__ q, QsaAttnPools p, const int32_t
                 for (int e = 0; e < 2; ++e) {
                     const long long r = rows[2 * cp + e];
                     float* v = e ? v1 : v0;
-                    if (r < 0) { for (int j = 0; j < QK4_0; ++j) v[j] = 0.0f; continue; }
+                    if (r < 0) {
+                        for (int j = 0; j < QK4_0; ++j)
+                            v[j] = 0.0f;
+                        continue;
+                    }
                     const q4_0_block* blk = reinterpret_cast<const q4_0_block*>(p.v_q4 + r * BYTES) + b;
                     const float d = (float) sycl::bit_cast<sycl::half>(blk->d);
                     for (int j = 0; j < QK4_0 / 2; ++j) {
@@ -170,7 +191,8 @@ void prompt_attn_xmx2(const float* __restrict__ q, QsaAttnPools p, const int32_t
                 uint32_t* dst = reinterpret_cast<uint32_t*>(vp) + (size_t) cp * HD + b * QK4_0;
                 for (int j = 0; j < QK4_0; j += 8) {
                     sycl::vec<uint32_t, 8> o;
-                    for (int u = 0; u < 8; ++u) o[u] = sycl::bit_cast<uint32_t>(sycl::half2(v0[j + u], v1[j + u]));
+                    for (int u = 0; u < 8; ++u)
+                        o[u] = sycl::bit_cast<uint32_t>(sycl::half2(v0[j + u], v1[j + u]));
                     *reinterpret_cast<sycl::vec<uint32_t, 8>*>(dst + j) = o;
                 }
             }
@@ -181,18 +203,28 @@ void prompt_attn_xmx2(const float* __restrict__ q, QsaAttnPools p, const int32_t
                 for (int e = 0; e < 2; ++e) {
                     const long long r = rows[2 * cp + e];
                     sycl::half* h = e ? h1 : h0;
-                    if (r < 0) { for (int j = 0; j < 8; ++j) h[j] = sycl::half(0.0f); continue; }
+                    if (r < 0) {
+                        for (int j = 0; j < 8; ++j)
+                            h[j] = sycl::half(0.0f);
+                        continue;
+                    }
                     if constexpr (KV_MODE == 1) {
-                        const sycl::vec<int8_t, 8> v = *reinterpret_cast<const sycl::vec<int8_t, 8>*>(p.v_q + r * HD + piece * 8);
-                        for (int j = 0; j < 8; ++j) h[j] = sycl::half((float) v[j]);
+                        const sycl::vec<int8_t, 8> v =
+                            *reinterpret_cast<const sycl::vec<int8_t, 8>*>(p.v_q + r * HD + piece * 8);
+                        for (int j = 0; j < 8; ++j)
+                            h[j] = sycl::half((float) v[j]);
                     } else {
-                        const sycl::vec<uint16_t, 8> v = *reinterpret_cast<const sycl::vec<uint16_t, 8>*>(p.v_pool + r * HD + piece * 8);
-                        for (int j = 0; j < 8; ++j) h[j] = sycl::bit_cast<sycl::half>(v[j]);
+                        const sycl::vec<uint16_t, 8> v =
+                            *reinterpret_cast<const sycl::vec<uint16_t, 8>*>(p.v_pool + r * HD + piece * 8);
+                        for (int j = 0; j < 8; ++j)
+                            h[j] = sycl::bit_cast<sycl::half>(v[j]);
                     }
                 }
                 sycl::vec<uint32_t, 8> o;
-                for (int j = 0; j < 8; ++j) o[j] = sycl::bit_cast<uint32_t>(sycl::half2(h0[j], h1[j]));
-                *reinterpret_cast<sycl::vec<uint32_t, 8>*>(reinterpret_cast<uint32_t*>(vp) + (size_t) cp * HD + piece * 8) = o;
+                for (int j = 0; j < 8; ++j)
+                    o[j] = sycl::bit_cast<uint32_t>(sycl::half2(h0[j], h1[j]));
+                *reinterpret_cast<sycl::vec<uint32_t, 8>*>(reinterpret_cast<uint32_t*>(vp) + (size_t) cp * HD +
+                                                           piece * 8) = o;
             }
         }
         for (int i = t; i < CH * 4; i += THREADS) {
@@ -234,7 +266,8 @@ void prompt_attn_xmx2(const float* __restrict__ q, QsaAttnPools p, const int32_t
         // the V scale per group, folded into P relative to the chunk's largest (times 2^14, as in CUDA)
         if (t < 4) {
             float vmax = 0.0f;
-            for (int c = 0; c < CH; ++c) vmax = sycl::fmax(vmax, vs[c * 4 + t]);
+            for (int c = 0; c < CH; ++c)
+                vmax = sycl::fmax(vmax, vs[c * 4 + t]);
             vup[t] = vmax > 0.0f ? 16384.0f / vmax : 0.0f;
             vdown[t] = vmax * (1.0f / 16384.0f);
         }
@@ -247,11 +280,13 @@ void prompt_attn_xmx2(const float* __restrict__ q, QsaAttnPools p, const int32_t
             for (int j = 0; j < PER; ++j) {
                 const int c = sub * PER + j, nt = c >> 4, cc = c & 15;
                 float v = 0.0f;
-                for (int g = 0; g < 4; ++g) v += parts[(size_t) (nt * 4 + g) * 256 + r * 16 + cc] * ks[c * 4 + g];
+                for (int g = 0; g < 4; ++g)
+                    v += parts[(size_t) (nt * 4 + g) * 256 + r * 16 + cc] * ks[c * 4 + g];
                 x[j] = c < nh ? v * qdown : -INFINITY;
                 mx = sycl::fmax(mx, x[j]);
             }
-            for (int o = 1; o < 8; o <<= 1) mx = sycl::fmax(mx, sycl::permute_group_by_xor(sg, mx, o));
+            for (int o = 1; o < 8; o <<= 1)
+                mx = sycl::fmax(mx, sycl::permute_group_by_xor(sg, mx, o));
             const float m_old = mrow[r];
             const float m_new = sycl::fmax(m_old, mx);
             float sum = 0.0f;
@@ -260,8 +295,9 @@ void prompt_attn_xmx2(const float* __restrict__ q, QsaAttnPools p, const int32_t
                 sp[r * PS + sub * PER + j] = e;
                 sum += e;
             }
-            for (int o = 1; o < 8; o <<= 1) sum += sycl::permute_group_by_xor(sg, sum, o);
-            sycl::group_barrier(sg);   // every lane of the row read m_old before lane 0 moves it
+            for (int o = 1; o < 8; o <<= 1)
+                sum += sycl::permute_group_by_xor(sg, sum, o);
+            sycl::group_barrier(sg); // every lane of the row read m_old before lane 0 moves it
             if (sub == 0) {
                 const float a = m_old == -INFINITY ? 0.0f : sycl::exp2(m_old - m_new);
                 alpha[r] = a;
@@ -282,8 +318,8 @@ void prompt_attn_xmx2(const float* __restrict__ q, QsaAttnPools p, const int32_t
                 sycl::half2(sycl::half(p0 - (float) h0), sycl::half(p1 - (float) h1));
         }
         it.barrier(sycl::access::fence_space::local_space);
-        // P.V: sub-group sg owns dims [32 sg, 32 sg + 32) (two B tiles) = V scale group sg / 2; the whole chunk's product
-        // in registers, then one update of its own accumulator columns
+        // P.V: sub-group sg owns dims [32 sg, 32 sg + 32) (two B tiles) = V scale group sg / 2; the whole chunk's
+        // product in registers, then one update of its own accumulator columns
         {
             const int g = sgid >> 1, gp = KV_MODE == 1 ? g : 0;
             const sycl::half* ah = ptile + (size_t) (gp * 2 + 0) * 16 * PS;
@@ -295,7 +331,8 @@ void prompt_attn_xmx2(const float* __restrict__ q, QsaAttnPools p, const int32_t
                 jm::joint_matrix_fill(sg, C, 0.0f);
                 for (int ks16 = 0; ks16 < CH; ks16 += 16) {
                     jm::joint_matrix<sycl::sub_group, sycl::half, jm::use::b, 16, 16, jm::layout::ext_intel_packed> B;
-                    jm::joint_matrix_load(sg, B, lptr(vp + (size_t) (ks16 >> 1) * (HD * 2) + d0 * 2), (size_t) (HD * 2));
+                    jm::joint_matrix_load(sg, B, lptr(vp + (size_t) (ks16 >> 1) * (HD * 2) + d0 * 2),
+                                          (size_t) (HD * 2));
                     jm::joint_matrix<sycl::sub_group, sycl::half, jm::use::a, 16, 16, jm::layout::row_major> A;
                     jm::joint_matrix_load(sg, A, lptr(ah + ks16), (size_t) PS);
                     jm::joint_matrix_mad(sg, C, A, B, C);
@@ -335,7 +372,8 @@ bool launch(const float* q, const QsaAttnPools& pools, const int32_t* ids, const
         const int nkv = (int) s.n_head_kv, ps = (int) s.page_size, capi = (int) cap;
         st->submit([&](sycl::handler& cgh) {
             sycl::local_accessor<uint8_t, 1> slm(sycl::range<1>(bytes), cgh);
-            cgh.parallel_for(sycl::nd_range<3>(sycl::range<3>(1, (size_t) nkv, (size_t) nb * THREADS), sycl::range<3>(1, 1, THREADS)),
+            cgh.parallel_for(sycl::nd_range<3>(sycl::range<3>(1, (size_t) nkv, (size_t) nb * THREADS),
+                                               sycl::range<3>(1, 1, THREADS)),
                              [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(16)]] {
                                  prompt_attn_xmx2<KV_MODE, CH>(qq, pools, idq, stq, nkv, ps, scale_log2, aq, capi,
                                                                slm.get_multi_ptr<sycl::access::decorated::no>().get());
@@ -349,25 +387,32 @@ template <int CH>
 bool dispatch(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps, int64_t cap,
               const QsaShapes& s, float* attn, int64_t n_q, dpct::queue_ptr st) {
     if (pools.k_q != nullptr && pools.v_q4 != nullptr) {
-        if (!pools.k_scale) return false;
+        if (!pools.k_scale)
+            return false;
         return launch<3, CH>(q, pools, ids, steps, cap, s, attn, n_q, st);
     }
     if (pools.k_q != nullptr) {
-        if (!pools.v_q || !pools.k_scale || !pools.v_scale) return false;
+        if (!pools.v_q || !pools.k_scale || !pools.v_scale)
+            return false;
         return launch<1, CH>(q, pools, ids, steps, cap, s, attn, n_q, st);
     }
-    if (!pools.k_pool || !pools.v_pool) return false;
+    if (!pools.k_pool || !pools.v_pool)
+        return false;
     return launch<0, CH>(q, pools, ids, steps, cap, s, attn, n_q, st);
 }
-}  // namespace
+} // namespace
 
-bool qsa_prompt_attn_xmx(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps, int64_t cap,
-                         const QsaShapes& s, float* attn, int64_t n_q, void* stream) {
+bool qsa_prompt_attn_xmx(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps,
+                         int64_t cap, const QsaShapes& s, float* attn, int64_t n_q, void* stream) {
     // GUILD_PROMPT_ATTN_XMX=1 (64-cell chunks) or =32 (32-cell chunks); unset or 0: the caller's fallback
-    static const int mode = [] { const char* v = std::getenv("GUILD_PROMPT_ATTN_XMX"); return v ? std::atoi(v) : 0; }();
-    if (mode == 0 || n_q <= 0) return false;
-    if (pools.k_q4 != nullptr || s.head_dim != HD || s.n_head != (int64_t) G * s.n_head_kv || cap <= 0 || !ids || !steps ||
-        !pools.page_table)
+    static const int mode = [] {
+        const char* v = std::getenv("GUILD_PROMPT_ATTN_XMX");
+        return v ? std::atoi(v) : 0;
+    }();
+    if (mode == 0 || n_q <= 0)
+        return false;
+    if (pools.k_q4 != nullptr || s.head_dim != HD || s.n_head != (int64_t) G * s.n_head_kv || cap <= 0 || !ids ||
+        !steps || !pools.page_table)
         return false;
     dpct::queue_ptr st = guild::q_of(stream);
     const size_t have = st->get_device().get_info<sycl::info::device::local_mem_size>();
@@ -378,8 +423,9 @@ bool qsa_prompt_attn_xmx(const float* q, const QsaAttnPools& pools, const int32_
         std::fprintf(stderr, "guild: prompt attention on XMX, %d-cell chunks (%zu of %zu bytes of local memory)\n",
                      ch64 ? 64 : 32, ch64 ? Layout<64>::bytes : Layout<32>::bytes, have);
     }
-    if (!ch64 && have < Layout<32>::bytes) return false;
+    if (!ch64 && have < Layout<32>::bytes)
+        return false;
     return ch64 ? dispatch<64>(q, pools, ids, steps, cap, s, attn, n_q, st)
                 : dispatch<32>(q, pools, ids, steps, cap, s, attn, n_q, st);
 }
-}  // namespace guild::kernels
+} // namespace guild::kernels

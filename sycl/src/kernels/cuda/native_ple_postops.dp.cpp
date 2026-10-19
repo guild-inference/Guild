@@ -42,14 +42,12 @@ sub_group function which may not be supported by all compilers or runtimes. You
 may need to adjust the code.
 */
 #pragma unroll
-    for (int offset = 16; offset; offset >>= 1) x +=
-        dpct::experimental::permute_sub_group_by_xor(
-            0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(), x,
-            offset);
+    for (int offset = 16; offset; offset >>= 1)
+        x += dpct::experimental::permute_sub_group_by_xor(
+            0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(), x, offset);
     return x;
 }
-__dpct_inline__ void gate_kernel(const float *key, const float *query,
-                                 float *gate, float scale) {
+__dpct_inline__ void gate_kernel(const float* key, const float* query, float* gate, float scale) {
     // SUM_ROWS selects 512 threads for four rows on the target GPU. Preserve
     // its eight partial lanes and materialized MUL rounding (never a dot FMA).
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
@@ -63,20 +61,19 @@ __dpct_inline__ void gate_kernel(const float *key, const float *query,
         correctness. SYCL math built-in function rounding mode is aligned with
         OpenCL C 1.2 standard.
         */
-        const float p = d < N ? key[item_ct1.get_group(2) * N + d] *
-                                    query[item_ct1.get_group(2) * N + d]
-                              : 0.0f;
+        const float p = d < N ? key[item_ct1.get_group(2) * N + d] * query[item_ct1.get_group(2) * N + d] : 0.0f;
         sums[j] += p;
     }
     float sum = 0;
 #pragma unroll
-    for (int j = 0; j < 8; ++j) sum += sums[j];
-    auto &partials =
-        *sycl::ext::oneapi::group_local_memory_for_overwrite<float[32]>(
-            sycl::ext::oneapi::this_work_item::get_work_group<3>());
+    for (int j = 0; j < 8; ++j)
+        sum += sums[j];
+    auto& partials = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[32]>(
+        sycl::ext::oneapi::this_work_item::get_work_group<3>());
     sum = warp_sum(sum);
     const int lane = item_ct1.get_local_id(2) % 32;
-    if (!lane) partials[item_ct1.get_local_id(2) / 32] = sum;
+    if (!lane)
+        partials[item_ct1.get_local_id(2) / 32] = sum;
     item_ct1.barrier(sycl::access::fence_space::local_space);
     sum = lane < 16 ? partials[lane] : 0.0f;
     sum = warp_sum(sum);
@@ -96,39 +93,33 @@ __dpct_inline__ void gate_kernel(const float *key, const float *query,
         correctness. SYCL math built-in function rounding mode is aligned with
         OpenCL C 1.2 standard.
         */
-        gate[item_ct1.get_group(2)] =
-            1.0f / (1.0f + sycl::native::exp(-sign * mag));
+        gate[item_ct1.get_group(2)] = 1.0f / (1.0f + sycl::native::exp(-sign * mag));
     }
 }
-__dpct_inline__ void broadcast_kernel(const float *value, const float *gate,
-                                      float *gated) {
+__dpct_inline__ void broadcast_kernel(const float* value, const float* gate, float* gated) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
-    const int i = item_ct1.get_group(2) * item_ct1.get_local_range(2) +
-                  item_ct1.get_local_id(2);
+    const int i = item_ct1.get_group(2) * item_ct1.get_local_range(2) + item_ct1.get_local_id(2);
     /*
     DPCT1013: The rounding mode could not be specified and the generated
     code may have different accuracy than the original code. Verify the
     correctness. SYCL math built-in function rounding mode is aligned with
     OpenCL C 1.2 standard.
     */
-    if (i < D) gated[i] = value[i % N] * gate[i / N];
+    if (i < D)
+        gated[i] = value[i % N] * gate[i / N];
 }
-__dpct_inline__ void
-conv_residual_kernel(const float *history, const float *normalized,
-                     const uint16_t *weights, const float *hidden,
-                     const float *gated, float *conv, float *result) {
+__dpct_inline__ void conv_residual_kernel(const float* history, const float* normalized, const uint16_t* weights,
+                                          const float* hidden, const float* gated, float* conv, float* result) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
-    const int c = item_ct1.get_group(2) * item_ct1.get_local_range(2) +
-                  item_ct1.get_local_id(2);
-    if (c >= D) return;
+    const int c = item_ct1.get_group(2) * item_ct1.get_local_range(2) + item_ct1.get_local_id(2);
+    if (c >= D)
+        return;
     float sum = 0;
 #pragma unroll
     for (int k = 0; k < 4; ++k) {
         const float x = k == 3 ? normalized[c] : history[c * HISTORY + 3 * k];
-        const float w =
-            sycl::vec<sycl::half, 1>(
-                sycl::bit_cast<sycl::half, unsigned short>(weights[c * 4 + k]))
-                .convert<float, sycl::rounding_mode::automatic>()[0];
+        const float w = sycl::vec<sycl::half, 1>(sycl::bit_cast<sycl::half, unsigned short>(weights[c * 4 + k]))
+                            .convert<float, sycl::rounding_mode::automatic>()[0];
         /*
         DPCT1013: The rounding mode could not be specified and the generated
         code may have different accuracy than the original code. Verify the
@@ -164,18 +155,15 @@ inline float norm_warp_sum(float value) {
     masked sub_group function which may not be supported by all compilers or
     runtimes. You may need to adjust the code.
     */
-    for (int offset = 16; offset > 0; offset >>= 1) value +=
-        dpct::experimental::permute_sub_group_by_xor(
-            0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(),
-            value, offset);
+    for (int offset = 16; offset > 0; offset >>= 1)
+        value += dpct::experimental::permute_sub_group_by_xor(
+            0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(), value, offset);
     return value;
 }
-__dpct_inline__ void rms_rep_kernel(const float *__restrict__ input,
-                                    const float *__restrict__ gamma,
-                                    float *__restrict__ output) {
+__dpct_inline__ void rms_rep_kernel(const float* __restrict__ input, const float* __restrict__ gamma,
+                                    float* __restrict__ output) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
-    constexpr int BlockSize =
-        1024; // native_gr_rms_norm_weighted's choice for 2560 columns
+    constexpr int BlockSize = 1024; // native_gr_rms_norm_weighted's choice for 2560 columns
     const int tid = item_ct1.get_local_id(2);
     const size_t row_offset = size_t(item_ct1.get_group(2)) * N;
     input += row_offset;
@@ -186,15 +174,16 @@ __dpct_inline__ void rms_rep_kernel(const float *__restrict__ input,
         const float value = input[col];
         partial += value * value;
     }
-    auto &sums =
-        *sycl::ext::oneapi::group_local_memory_for_overwrite<float[32]>(
-            sycl::ext::oneapi::this_work_item::get_work_group<3>());
+    auto& sums = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[32]>(
+        sycl::ext::oneapi::this_work_item::get_work_group<3>());
     partial = norm_warp_sum(partial);
     const int lane = tid % 32;
-    if (lane == 0) sums[tid / 32] = partial;
+    if (lane == 0)
+        sums[tid / 32] = partial;
     item_ct1.barrier(sycl::access::fence_space::local_space);
     partial = 0.0f;
-    if (lane < BlockSize / 32) partial = sums[lane];
+    if (lane < BlockSize / 32)
+        partial = sums[lane];
     partial = norm_warp_sum(partial);
     const float mean = partial / N;
     const float scale = sycl::rsqrt(mean + NG_RMS_EPS);
@@ -202,14 +191,11 @@ __dpct_inline__ void rms_rep_kernel(const float *__restrict__ input,
     for (int col = tid; col < N; col += BlockSize)
         output[col] = scale * input[col] * gamma[col];
 }
-__dpct_inline__ void broadcast_batch_kernel(const float *value,
-                                            const float *gate, float *gated,
-                                            int T) {
+__dpct_inline__ void broadcast_batch_kernel(const float* value, const float* gate, float* gated, int T) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
-    const size_t i =
-        size_t(item_ct1.get_group(2)) * item_ct1.get_local_range(2) +
-        item_ct1.get_local_id(2);
-    if (i >= size_t(T) * D) return;
+    const size_t i = size_t(item_ct1.get_group(2)) * item_ct1.get_local_range(2) + item_ct1.get_local_id(2);
+    if (i >= size_t(T) * D)
+        return;
     const size_t t = i / D, d = i % D;
     /*
     DPCT1013: The rounding mode could not be specified and the generated
@@ -220,26 +206,20 @@ __dpct_inline__ void broadcast_batch_kernel(const float *value,
     gated[i] = value[t * N + d % N] * gate[t * H + d / N];
 }
 // the dilated conv (taps 9, 6, 3 tokens back and this one) and the residual; a tap before the chunk reads the history
-__dpct_inline__ void conv_residual_batch_kernel(const float *history,
-                                                const float *normalized,
-                                                const uint16_t *weights,
-                                                float *hidden,
-                                                const float *gated, int T) {
+__dpct_inline__ void conv_residual_batch_kernel(const float* history, const float* normalized, const uint16_t* weights,
+                                                float* hidden, const float* gated, int T) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
-    const size_t i =
-        size_t(item_ct1.get_group(2)) * item_ct1.get_local_range(2) +
-        item_ct1.get_local_id(2);
-    if (i >= size_t(T) * D) return;
+    const size_t i = size_t(item_ct1.get_group(2)) * item_ct1.get_local_range(2) + item_ct1.get_local_id(2);
+    if (i >= size_t(T) * D)
+        return;
     const int t = int(i / D), c = int(i % D);
     float sum = 0;
 #pragma unroll
     for (int k = 0; k < 4; ++k) {
-        const int p = t - 9 + 3 * k;             // the token this tap reads (k == 3: this one)
+        const int p = t - 9 + 3 * k; // the token this tap reads (k == 3: this one)
         const float x = p >= 0 ? normalized[size_t(p) * D + c] : history[size_t(c) * HISTORY + (9 + p)];
-        const float wk =
-            sycl::vec<sycl::half, 1>(
-                sycl::bit_cast<sycl::half, unsigned short>(weights[c * 4 + k]))
-                .convert<float, sycl::rounding_mode::automatic>()[0];
+        const float wk = sycl::vec<sycl::half, 1>(sycl::bit_cast<sycl::half, unsigned short>(weights[c * 4 + k]))
+                             .convert<float, sycl::rounding_mode::automatic>()[0];
         /*
         DPCT1013: The rounding mode could not be specified and the generated
         code may have different accuracy than the original code. Verify the
@@ -265,12 +245,11 @@ __dpct_inline__ void conv_residual_batch_kernel(const float *history,
     hidden[i] = hidden[i] + gated[i] + activation;
 }
 // the history after the chunk: the last nine normalized rows (older ones from the history when T < 9)
-__dpct_inline__ void history_batch_kernel(float *history,
-                                          const float *normalized, int T) {
+__dpct_inline__ void history_batch_kernel(float* history, const float* normalized, int T) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
-    const int c = item_ct1.get_group(2) * item_ct1.get_local_range(2) +
-                  item_ct1.get_local_id(2);
-    if (c >= D) return;
+    const int c = item_ct1.get_group(2) * item_ct1.get_local_range(2) + item_ct1.get_local_id(2);
+    if (c >= D)
+        return;
     float h[HISTORY];
 #pragma unroll
     for (int r = 0; r < HISTORY; ++r) {
@@ -278,10 +257,15 @@ __dpct_inline__ void history_batch_kernel(float *history,
         h[r] = p >= 0 ? normalized[size_t(p) * D + c] : history[size_t(c) * HISTORY + (T + r)];
     }
 #pragma unroll
-    for (int r = 0; r < HISTORY; ++r) history[size_t(c) * HISTORY + r] = h[r];
+    for (int r = 0; r < HISTORY; ++r)
+        history[size_t(c) * HISTORY + r] = h[r];
 }
 
-struct Span { const void* p; size_t bytes; size_t alignment; };
+struct Span {
+    const void* p;
+    size_t bytes;
+    size_t alignment;
+};
 bool overlaps(Span a, Span b) {
     const auto x = reinterpret_cast<uintptr_t>(a.p), y = reinterpret_cast<uintptr_t>(b.p);
     return x < y + b.bytes && y < x + a.bytes;
@@ -310,23 +294,24 @@ void launch_check() {
     DPCT1000: Error handling if-stmt was detected but could not be
     rewritten.
     */
-    if (error !=
-        0) throw std::runtime_error(std::string("native PLE postops launch: ") +
-                                    dpct::get_error_string_dummy(error));
+    if (error != 0)
+        throw std::runtime_error(std::string("native PLE postops launch: ") + dpct::get_error_string_dummy(error));
 }
 } // namespace
 
-void native_ple_postops(const float* projected_key, const float* hidden,
-                        const float* value, const float* history,
+void native_ple_postops(const float* projected_key, const float* hidden, const float* value, const float* history,
                         const PleWeights& w, const NativePlePostopsBuffers& b, void* stream) {
-    if (!stream) throw std::invalid_argument("native PLE postops require an explicit stream");
-    const Span inputs[] = {{projected_key,D*4,4}, {hidden,D*4,4}, {value,N*4,4},
-        {history,HISTORY*D*4,4}, {w.norm_key,D*4,4}, {w.norm_query,D*4,4},
-        {w.norm_conv,D*4,4}, {w.conv1d_f16,4*D*2,2}};
-    const Span outputs[] = {{b.key,D*4,4}, {b.query,D*4,4}, {b.gate,H*4,4},
-        {b.gated,D*4,4}, {b.normalized,D*4,4}, {b.conv,D*4,4}, {b.result,D*4,4}};
-    for (const auto& span : inputs) validate(span);
-    for (const auto& span : outputs) validate(span);
+    if (!stream)
+        throw std::invalid_argument("native PLE postops require an explicit stream");
+    const Span inputs[] = {{projected_key, D * 4, 4},     {hidden, D * 4, 4},          {value, N * 4, 4},
+                           {history, HISTORY * D * 4, 4}, {w.norm_key, D * 4, 4},      {w.norm_query, D * 4, 4},
+                           {w.norm_conv, D * 4, 4},       {w.conv1d_f16, 4 * D * 2, 2}};
+    const Span outputs[] = {{b.key, D * 4, 4},        {b.query, D * 4, 4}, {b.gate, H * 4, 4},  {b.gated, D * 4, 4},
+                            {b.normalized, D * 4, 4}, {b.conv, D * 4, 4},  {b.result, D * 4, 4}};
+    for (const auto& span : inputs)
+        validate(span);
+    for (const auto& span : outputs)
+        validate(span);
     for (size_t i = 0; i < 7; ++i) {
         for (size_t j = 0; j < 8; ++j)
             if (!(i == 6 && j == 1 && b.result == hidden) && overlaps(outputs[i], inputs[j]))
@@ -335,8 +320,8 @@ void native_ple_postops(const float* projected_key, const float* hidden,
             if (!(i == 1 && j == 4 && b.query == b.normalized) && overlaps(outputs[i], outputs[j]))
                 throw std::invalid_argument("native PLE postops writable spans overlap");
     }
-    native_gr_rms_norm_weighted(projected_key,w.norm_key,b.key,N,H,NG_RMS_EPS,stream);
-    native_gr_rms_norm_weighted(hidden,w.norm_query,b.query,N,H,NG_RMS_EPS,stream);
+    native_gr_rms_norm_weighted(projected_key, w.norm_key, b.key, N, H, NG_RMS_EPS, stream);
+    native_gr_rms_norm_weighted(hidden, w.norm_query, b.query, N, H, NG_RMS_EPS, stream);
     auto st = guild::q_of(stream);
     /*
     DPCT1049: The work-group size passed to the SYCL kernel may exceed the
@@ -344,48 +329,33 @@ void native_ple_postops(const float* projected_key, const float* hidden,
     Adjust the work-group size if needed.
     */
     {
-        auto exp_props = sycl::ext::oneapi::experimental::properties{
-            sycl::ext::oneapi::experimental::use_root_sync};
+        auto exp_props = sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::use_root_sync};
 
-        st->submit([&](sycl::handler &cgh) {
+        st->submit([&](sycl::handler& cgh) {
             auto std_sqrt_float_N_ct3 = 1.0f / std::sqrt(float(N));
 
             cgh.parallel_for<dpct_kernel_name<class gate_kernel_f8e4fc>>(
-                sycl::nd_range<3>(sycl::range(1, 1, H) * sycl::range(1, 1, 512),
-                                  sycl::range(1, 1, 512)),
-                exp_props,
+                sycl::nd_range<3>(sycl::range(1, 1, H) * sycl::range(1, 1, 512), sycl::range(1, 1, 512)), exp_props,
                 [=](sycl::nd_item<3> item_ct1)
-                    [[sycl::reqd_sub_group_size(32)]] {
-                        gate_kernel(b.key, b.query, b.gate,
-                                    std_sqrt_float_N_ct3);
-                    });
+                    [[sycl::reqd_sub_group_size(32)]] { gate_kernel(b.key, b.query, b.gate, std_sqrt_float_N_ct3); });
         });
     }
     {
-        auto exp_props = sycl::ext::oneapi::experimental::properties{
-            sycl::ext::oneapi::experimental::use_root_sync};
+        auto exp_props = sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::use_root_sync};
 
         st->parallel_for<dpct_kernel_name<class broadcast_kernel_50d78d>>(
-            sycl::nd_range<3>(sycl::range(1, 1, D / 256) *
-                                  sycl::range(1, 1, 256),
-                              sycl::range(1, 1, 256)),
-            exp_props, [=](sycl::nd_item<3> item_ct1) {
-                broadcast_kernel(value, b.gate, b.gated);
-            });
+            sycl::nd_range<3>(sycl::range(1, 1, D / 256) * sycl::range(1, 1, 256), sycl::range(1, 1, 256)), exp_props,
+            [=](sycl::nd_item<3> item_ct1) { broadcast_kernel(value, b.gate, b.gated); });
     }
     launch_check();
-    native_gr_rms_norm_weighted(b.gated,w.norm_conv,b.normalized,N,H,NG_RMS_EPS,stream);
+    native_gr_rms_norm_weighted(b.gated, w.norm_conv, b.normalized, N, H, NG_RMS_EPS, stream);
     {
-        auto exp_props = sycl::ext::oneapi::experimental::properties{
-            sycl::ext::oneapi::experimental::use_root_sync};
+        auto exp_props = sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::use_root_sync};
 
         st->parallel_for<dpct_kernel_name<class conv_residual_kernel_6182eb>>(
-            sycl::nd_range<3>(sycl::range(1, 1, D / 256) *
-                                  sycl::range(1, 1, 256),
-                              sycl::range(1, 1, 256)),
-            exp_props, [=](sycl::nd_item<3> item_ct1) {
-                conv_residual_kernel(history, b.normalized, w.conv1d_f16,
-                                     hidden, b.gated, b.conv, b.result);
+            sycl::nd_range<3>(sycl::range(1, 1, D / 256) * sycl::range(1, 1, 256), sycl::range(1, 1, 256)), exp_props,
+            [=](sycl::nd_item<3> item_ct1) {
+                conv_residual_kernel(history, b.normalized, w.conv1d_f16, hidden, b.gated, b.conv, b.result);
             });
     }
     launch_check();
@@ -404,16 +374,11 @@ void native_ple_postops_batch(float* key, float* hidden, const float* value, flo
     Adjust the work-group size if needed.
     */
     {
-        auto exp_props = sycl::ext::oneapi::experimental::properties{
-            sycl::ext::oneapi::experimental::use_root_sync};
+        auto exp_props = sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::use_root_sync};
 
         st->parallel_for<dpct_kernel_name<class rms_rep_kernel_dde36c>>(
-            sycl::nd_range<3>(sycl::range(1, 1, rows) * sycl::range(1, 1, 1024),
-                              sycl::range(1, 1, 1024)),
-            exp_props,
-            [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(32)]] {
-                rms_rep_kernel(key, w.norm_key, key);
-            });
+            sycl::nd_range<3>(sycl::range(1, 1, rows) * sycl::range(1, 1, 1024), sycl::range(1, 1, 1024)), exp_props,
+            [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(32)]] { rms_rep_kernel(key, w.norm_key, key); });
     }
     /*
     DPCT1049: The work-group size passed to the SYCL kernel may exceed the
@@ -421,16 +386,12 @@ void native_ple_postops_batch(float* key, float* hidden, const float* value, flo
     Adjust the work-group size if needed.
     */
     {
-        auto exp_props = sycl::ext::oneapi::experimental::properties{
-            sycl::ext::oneapi::experimental::use_root_sync};
+        auto exp_props = sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::use_root_sync};
 
         st->parallel_for<dpct_kernel_name<class rms_rep_kernel_9b5d94>>(
-            sycl::nd_range<3>(sycl::range(1, 1, rows) * sycl::range(1, 1, 1024),
-                              sycl::range(1, 1, 1024)),
-            exp_props,
-            [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(32)]] {
-                rms_rep_kernel(hidden, w.norm_query, query_norm);
-            });
+            sycl::nd_range<3>(sycl::range(1, 1, rows) * sycl::range(1, 1, 1024), sycl::range(1, 1, 1024)), exp_props,
+            [=](sycl::nd_item<3> item_ct1)
+                [[sycl::reqd_sub_group_size(32)]] { rms_rep_kernel(hidden, w.norm_query, query_norm); });
     }
     /*
     DPCT1049: The work-group size passed to the SYCL kernel may exceed the
@@ -438,35 +399,23 @@ void native_ple_postops_batch(float* key, float* hidden, const float* value, flo
     Adjust the work-group size if needed.
     */
     {
-        auto exp_props = sycl::ext::oneapi::experimental::properties{
-            sycl::ext::oneapi::experimental::use_root_sync};
+        auto exp_props = sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::use_root_sync};
 
-        st->submit([&](sycl::handler &cgh) {
+        st->submit([&](sycl::handler& cgh) {
             auto std_sqrt_float_N_ct3 = 1.0f / std::sqrt(float(N));
 
             cgh.parallel_for<dpct_kernel_name<class gate_kernel_558e90>>(
-                sycl::nd_range<3>(sycl::range(1, 1, rows) *
-                                      sycl::range(1, 1, 512),
-                                  sycl::range(1, 1, 512)),
-                exp_props,
+                sycl::nd_range<3>(sycl::range(1, 1, rows) * sycl::range(1, 1, 512), sycl::range(1, 1, 512)), exp_props,
                 [=](sycl::nd_item<3> item_ct1)
-                    [[sycl::reqd_sub_group_size(32)]] {
-                        gate_kernel(key, query_norm, gate,
-                                    std_sqrt_float_N_ct3);
-                    });
+                    [[sycl::reqd_sub_group_size(32)]] { gate_kernel(key, query_norm, gate, std_sqrt_float_N_ct3); });
         });
     }
     {
-        auto exp_props = sycl::ext::oneapi::experimental::properties{
-            sycl::ext::oneapi::experimental::use_root_sync};
+        auto exp_props = sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::use_root_sync};
 
         st->parallel_for<dpct_kernel_name<class broadcast_batch_kernel_24ebaf>>(
-            sycl::nd_range<3>(sycl::range(1, 1, blocks) *
-                                  sycl::range(1, 1, 256),
-                              sycl::range(1, 1, 256)),
-            exp_props, [=](sycl::nd_item<3> item_ct1) {
-                broadcast_batch_kernel(value, gate, gated, T);
-            });
+            sycl::nd_range<3>(sycl::range(1, 1, blocks) * sycl::range(1, 1, 256), sycl::range(1, 1, 256)), exp_props,
+            [=](sycl::nd_item<3> item_ct1) { broadcast_batch_kernel(value, gate, gated, T); });
     }
     /*
     DPCT1049: The work-group size passed to the SYCL kernel may exceed the
@@ -474,42 +423,28 @@ void native_ple_postops_batch(float* key, float* hidden, const float* value, flo
     Adjust the work-group size if needed.
     */
     {
-        auto exp_props = sycl::ext::oneapi::experimental::properties{
-            sycl::ext::oneapi::experimental::use_root_sync};
+        auto exp_props = sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::use_root_sync};
 
         st->parallel_for<dpct_kernel_name<class rms_rep_kernel_e4e0bd>>(
-            sycl::nd_range<3>(sycl::range(1, 1, rows) * sycl::range(1, 1, 1024),
-                              sycl::range(1, 1, 1024)),
-            exp_props,
-            [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(32)]] {
-                rms_rep_kernel(gated, w.norm_conv, query_norm);
-            });
+            sycl::nd_range<3>(sycl::range(1, 1, rows) * sycl::range(1, 1, 1024), sycl::range(1, 1, 1024)), exp_props,
+            [=](sycl::nd_item<3> item_ct1)
+                [[sycl::reqd_sub_group_size(32)]] { rms_rep_kernel(gated, w.norm_conv, query_norm); });
     }
     {
-        auto exp_props = sycl::ext::oneapi::experimental::properties{
-            sycl::ext::oneapi::experimental::use_root_sync};
+        auto exp_props = sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::use_root_sync};
 
-        st->parallel_for<
-            dpct_kernel_name<class conv_residual_batch_kernel_3906fe>>(
-            sycl::nd_range<3>(sycl::range(1, 1, blocks) *
-                                  sycl::range(1, 1, 256),
-                              sycl::range(1, 1, 256)),
-            exp_props, [=](sycl::nd_item<3> item_ct1) {
-                conv_residual_batch_kernel(history, query_norm, w.conv1d_f16,
-                                           hidden, gated, T);
+        st->parallel_for<dpct_kernel_name<class conv_residual_batch_kernel_3906fe>>(
+            sycl::nd_range<3>(sycl::range(1, 1, blocks) * sycl::range(1, 1, 256), sycl::range(1, 1, 256)), exp_props,
+            [=](sycl::nd_item<3> item_ct1) {
+                conv_residual_batch_kernel(history, query_norm, w.conv1d_f16, hidden, gated, T);
             });
     }
     {
-        auto exp_props = sycl::ext::oneapi::experimental::properties{
-            sycl::ext::oneapi::experimental::use_root_sync};
+        auto exp_props = sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::use_root_sync};
 
         st->parallel_for<dpct_kernel_name<class history_batch_kernel_8243c6>>(
-            sycl::nd_range<3>(sycl::range(1, 1, D / 256) *
-                                  sycl::range(1, 1, 256),
-                              sycl::range(1, 1, 256)),
-            exp_props, [=](sycl::nd_item<3> item_ct1) {
-                history_batch_kernel(history, query_norm, T);
-            });
+            sycl::nd_range<3>(sycl::range(1, 1, D / 256) * sycl::range(1, 1, 256), sycl::range(1, 1, 256)), exp_props,
+            [=](sycl::nd_item<3> item_ct1) { history_batch_kernel(history, query_norm, T); });
     }
     launch_check();
 }

@@ -39,7 +39,8 @@ void* DirectFile::alloc_aligned(size_t bytes) {
 }
 
 void DirectFile::free_aligned(void* p) {
-    if (p == nullptr) return;
+    if (p == nullptr)
+        return;
 #if defined(_WIN32)
     VirtualFree(p, 0, MEM_RELEASE);
 #else
@@ -65,7 +66,7 @@ int io_threads(int dflt) {
     const int n = v ? std::atoi(v) : dflt;
     return std::clamp(n, 1, 64);
 }
-}  // namespace
+} // namespace
 
 #if defined(_WIN32)
 // ------------------------------------------------------------------------------------------------ Windows
@@ -76,17 +77,17 @@ struct Req {
     OVERLAPPED ov;
     uint64_t tag;
 };
-}  // namespace
+} // namespace
 
 struct DirectFile::Impl {
     HANDLE file = INVALID_HANDLE_VALUE;
     HANDLE port = nullptr;
     uint64_t size = 0;
-    std::mutex mu;                      // everything below
+    std::mutex mu; // everything below
     std::deque<Req*> free_reqs;
     std::vector<Req*> all_reqs;
-    std::deque<Completion> immediate;   // requests that completed without a port packet (EOF) or failed
-    std::deque<Pending> queue;          // submitted, not yet issued
+    std::deque<Completion> immediate; // requests that completed without a port packet (EOF) or failed
+    std::deque<Pending> queue;        // submitted, not yet issued
     std::condition_variable cv;
     bool stop = false;
     std::vector<std::thread> pool;
@@ -119,7 +120,7 @@ struct DirectFile::Impl {
                 free_reqs.push_back(r);
                 // at or past end of file: a zero-byte completion; anything else: a failed one
                 immediate.push_back(Completion{p.tag, 0, e == ERROR_HANDLE_EOF});
-                PostQueuedCompletionStatus(port, 0, 0, nullptr);   // wake a waiter to collect it
+                PostQueuedCompletionStatus(port, 0, 0, nullptr); // wake a waiter to collect it
             }
         }
     }
@@ -128,7 +129,8 @@ struct DirectFile::Impl {
         std::unique_lock<std::mutex> lk(mu);
         for (;;) {
             cv.wait(lk, [&] { return stop || !queue.empty(); });
-            if (stop && queue.empty()) return;
+            if (stop && queue.empty())
+                return;
             const Pending p = queue.front();
             queue.pop_front();
             lk.unlock();
@@ -143,16 +145,19 @@ struct DirectFile::Impl {
             stop = true;
         }
         cv.notify_all();
-        for (std::thread& t : pool) t.join();
+        for (std::thread& t : pool)
+            t.join();
         pool.clear();
         stop = false;
     }
 };
 
-DirectFile::DirectFile() : impl_(new Impl) {}
+DirectFile::DirectFile() : impl_(new Impl) {
+}
 DirectFile::~DirectFile() {
     close();
-    for (Req* r : impl_->all_reqs) delete r;
+    for (Req* r : impl_->all_reqs)
+        delete r;
     delete impl_;
 }
 
@@ -185,14 +190,17 @@ bool DirectFile::open(const std::string& path, std::string& err) {
     // Completions of reads that finish synchronously are still queued to the port, so every issued read
     // produces exactly one packet; `wait` is the only completion path.
     const int n = io_threads(4);
-    for (int i = 0; i < n; ++i) impl_->pool.emplace_back([this] { impl_->worker(); });
+    for (int i = 0; i < n; ++i)
+        impl_->pool.emplace_back([this] { impl_->worker(); });
     return true;
 }
 
 void DirectFile::close() {
     impl_->stop_pool();
-    if (impl_->port != nullptr) CloseHandle(impl_->port);
-    if (impl_->file != INVALID_HANDLE_VALUE) CloseHandle(impl_->file);
+    if (impl_->port != nullptr)
+        CloseHandle(impl_->port);
+    if (impl_->file != INVALID_HANDLE_VALUE)
+        CloseHandle(impl_->file);
     impl_->port = nullptr;
     impl_->file = INVALID_HANDLE_VALUE;
     impl_->size = 0;
@@ -200,11 +208,18 @@ void DirectFile::close() {
     impl_->queue.clear();
 }
 
-bool DirectFile::is_open() const { return impl_->file != INVALID_HANDLE_VALUE; }
-uint64_t DirectFile::size() const { return impl_->size; }
+bool DirectFile::is_open() const {
+    return impl_->file != INVALID_HANDLE_VALUE;
+}
+uint64_t DirectFile::size() const {
+    return impl_->size;
+}
 
 bool DirectFile::submit(uint64_t offset, void* buffer, uint32_t length, uint64_t tag, std::string& err) {
-    if (!is_open()) { err = "DirectFile: not open"; return false; }
+    if (!is_open()) {
+        err = "DirectFile: not open";
+        return false;
+    }
     if (offset % alignment() || length % alignment() || ((uintptr_t) buffer) % alignment() || length == 0) {
         err = "DirectFile: unaligned request";
         return false;
@@ -226,24 +241,27 @@ int DirectFile::wait(Completion* out, int max, int timeout_ms) {
             impl_->immediate.pop_front();
         }
     }
-    if (n == max || !is_open()) return n;
+    if (n == max || !is_open())
+        return n;
     OVERLAPPED_ENTRY entries[64];
     const ULONG want = (ULONG) (max - n < 64 ? max - n : 64);
     ULONG got = 0;
     const DWORD t = timeout_ms < 0 ? INFINITE : (DWORD) timeout_ms;
-    if (!GetQueuedCompletionStatusEx(impl_->port, entries, want, &got, n > 0 ? 0 : t, FALSE)) return n;
+    if (!GetQueuedCompletionStatusEx(impl_->port, entries, want, &got, n > 0 ? 0 : t, FALSE))
+        return n;
     std::lock_guard<std::mutex> lk(impl_->mu);
     for (ULONG i = 0; i < got; ++i) {
-        if (entries[i].lpOverlapped == nullptr) {          // a wake() packet (or an immediate completion's nudge)
+        if (entries[i].lpOverlapped == nullptr) { // a wake() packet (or an immediate completion's nudge)
             while (n < max && !impl_->immediate.empty()) {
                 out[n++] = impl_->immediate.front();
                 impl_->immediate.pop_front();
             }
-            if (n < max) out[n++] = Completion{WAKE_TAG, 0, true};
+            if (n < max)
+                out[n++] = Completion{WAKE_TAG, 0, true};
             continue;
         }
         Req* r = (Req*) entries[i].lpOverlapped;
-        const uint32_t status = (uint32_t) r->ov.Internal;   // an NTSTATUS
+        const uint32_t status = (uint32_t) r->ov.Internal; // an NTSTATUS
         Completion c;
         c.tag = r->tag;
         c.bytes = entries[i].dwNumberOfBytesTransferred;
@@ -256,7 +274,8 @@ int DirectFile::wait(Completion* out, int max, int timeout_ms) {
 }
 
 void DirectFile::wake() {
-    if (impl_->port != nullptr) PostQueuedCompletionStatus(impl_->port, 0, 0, nullptr);
+    if (impl_->port != nullptr)
+        PostQueuedCompletionStatus(impl_->port, 0, 0, nullptr);
 }
 
 #else
@@ -278,7 +297,8 @@ struct DirectFile::Impl {
         std::unique_lock<std::mutex> lk(mu);
         for (;;) {
             cv_work.wait(lk, [&] { return stop || !queue.empty(); });
-            if (stop && queue.empty()) return;
+            if (stop && queue.empty())
+                return;
             const Pending p = queue.front();
             queue.pop_front();
             lk.unlock();
@@ -295,41 +315,59 @@ struct DirectFile::Impl {
             stop = true;
         }
         cv_work.notify_all();
-        for (std::thread& t : pool) t.join();
+        for (std::thread& t : pool)
+            t.join();
         pool.clear();
         stop = false;
     }
 };
 
-DirectFile::DirectFile() : impl_(new Impl) {}
-DirectFile::~DirectFile() { close(); delete impl_; }
+DirectFile::DirectFile() : impl_(new Impl) {
+}
+DirectFile::~DirectFile() {
+    close();
+    delete impl_;
+}
 
 bool DirectFile::open(const std::string& path, std::string& err) {
     close();
     impl_->fd = ::open(path.c_str(), O_RDONLY | O_DIRECT);
-    if (impl_->fd < 0) { err = "DirectFile: cannot open " + path; return false; }
+    if (impl_->fd < 0) {
+        err = "DirectFile: cannot open " + path;
+        return false;
+    }
     struct stat st;
-    if (fstat(impl_->fd, &st) != 0) { err = "DirectFile: cannot size " + path; close(); return false; }
+    if (fstat(impl_->fd, &st) != 0) {
+        err = "DirectFile: cannot size " + path;
+        close();
+        return false;
+    }
     impl_->size = (uint64_t) st.st_size;
-    // SYCL port (the B70 box, 2026-09-30): the PLE rows of a 2,184-token prompt are ~27k random 4 KB O_DIRECT reads; with
-    // 16 threads they took 466 ms (p50 1.0 ms per read), with 64 332 ms (0.7 ms) - the drive wants a deeper queue than
-    // 16 blocking threads give it. GUILD_IO_THREADS still overrides.
+    // SYCL port (the B70 box, 2026-09-30): the PLE rows of a 2,184-token prompt are ~27k random 4 KB O_DIRECT reads;
+    // with 16 threads they took 466 ms (p50 1.0 ms per read), with 64 332 ms (0.7 ms) - the drive wants a deeper queue
+    // than 16 blocking threads give it. GUILD_IO_THREADS still overrides.
     const int n = io_threads(64);
-    for (int i = 0; i < n; ++i) impl_->pool.emplace_back([this] { impl_->worker(); });
+    for (int i = 0; i < n; ++i)
+        impl_->pool.emplace_back([this] { impl_->worker(); });
     return true;
 }
 
 void DirectFile::close() {
     impl_->stop_pool();
-    if (impl_->fd >= 0) ::close(impl_->fd);
+    if (impl_->fd >= 0)
+        ::close(impl_->fd);
     impl_->fd = -1;
     impl_->size = 0;
     impl_->done.clear();
     impl_->queue.clear();
 }
 
-bool DirectFile::is_open() const { return impl_->fd >= 0; }
-uint64_t DirectFile::size() const { return impl_->size; }
+bool DirectFile::is_open() const {
+    return impl_->fd >= 0;
+}
+uint64_t DirectFile::size() const {
+    return impl_->size;
+}
 
 bool DirectFile::submit(uint64_t offset, void* buffer, uint32_t length, uint64_t tag, std::string& err) {
     if (offset % alignment() || length % alignment() || ((uintptr_t) buffer) % alignment() || length == 0) {
@@ -354,8 +392,10 @@ int DirectFile::wait(Completion* out, int max, int timeout_ms) {
     std::unique_lock<std::mutex> lk(impl_->mu);
     if (impl_->done.empty() && timeout_ms != 0) {
         auto ready = [&] { return !impl_->done.empty(); };
-        if (timeout_ms < 0) impl_->cv_done.wait(lk, ready);
-        else impl_->cv_done.wait_for(lk, std::chrono::milliseconds(timeout_ms), ready);
+        if (timeout_ms < 0)
+            impl_->cv_done.wait(lk, ready);
+        else
+            impl_->cv_done.wait_for(lk, std::chrono::milliseconds(timeout_ms), ready);
     }
     int n = 0;
     while (n < max && !impl_->done.empty()) {
@@ -366,4 +406,4 @@ int DirectFile::wait(Completion* out, int max, int timeout_ms) {
 }
 #endif
 
-}  // namespace guild::platform
+} // namespace guild::platform

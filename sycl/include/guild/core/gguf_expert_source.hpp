@@ -37,9 +37,12 @@ public:
     const uint8_t* blob(int64_t layer, int64_t expert) override;
     /// The blob gathered straight into `dst` (bytes = the layer's blob size), from any thread: no ring slot, so the
     /// prompt path's stager threads read the streamed experts themselves instead of holding ring pointers that a
-    /// later blob() call overwrites (the 80k-token run of 2026-09-30 streamed ~1,900 blobs per chunk through 512 slots).
+    /// later blob() call overwrites (the 80k-token run of 2026-09-30 streamed ~1,900 blobs per chunk through 512
+    /// slots).
     bool read_into(int64_t layer, int64_t expert, uint8_t* dst, size_t bytes) const;
-    int64_t reads() const override { return reads_; }
+    int64_t reads() const override {
+        return reads_;
+    }
 
     /// SYCL port, plan item 2: the experts that did not fit the VRAM cache, read once into pinned host memory the
     /// GPU can address (USM host). They are then `pinned()` with a `device_alias()`: the verify window reads them over
@@ -52,27 +55,29 @@ public:
     /// unmirrored one answers that layer's first mirrored blob: the verify plan asks `device_alias(layer, 0)` only as
     /// "does this source have device-readable experts", and dereferences an alias only for `pinned()` experts.
     const uint8_t* device_alias(int64_t layer, int64_t expert) const override;
-    uint64_t mirrored_bytes() const { return mirror_bytes_; }
+    uint64_t mirrored_bytes() const {
+        return mirror_bytes_;
+    }
 
 private:
     int fd_of(int64_t layer, int role, std::string& err);
 
     std::string shard_;
     std::string dir_;
-    std::vector<int> fds_;              ///< per distinct file name, opened once
+    std::vector<int> fds_; ///< per distinct file name, opened once
     std::vector<std::string> names_;
-    std::vector<int> layer_fd_;         ///< per layer and role (3 * layer + role): index into fds_
+    std::vector<int> layer_fd_; ///< per layer and role (3 * layer + role): index into fds_
     std::vector<std::vector<uint8_t>> ring_;
-    std::vector<int64_t> ring_key_;                 ///< (layer << 20 | expert) held by each slot, -1 = empty
-    std::unordered_map<int64_t, size_t> where_;     ///< key -> slot
+    std::vector<int64_t> ring_key_;             ///< (layer << 20 | expert) held by each slot, -1 = empty
+    std::unordered_map<int64_t, size_t> where_; ///< key -> slot
     size_t ring_next_ = 0;
     std::mutex mu_;
     int64_t n_layers_ = 0, n_expert_ = 0;
     int64_t reads_ = 0;
-    uint8_t* mirror_ = nullptr;                    ///< USM host (pinned, device-readable)
+    uint8_t* mirror_ = nullptr; ///< USM host (pinned, device-readable)
     uint64_t mirror_bytes_ = 0;
-    std::vector<int64_t> mirror_off_;              ///< per (layer, expert): offset in mirror_, -1 = not mirrored
-    std::vector<int64_t> layer_first_;             ///< per layer: offset of its first mirrored blob, -1 = none
+    std::vector<int64_t> mirror_off_;  ///< per (layer, expert): offset in mirror_, -1 = not mirrored
+    std::vector<int64_t> layer_first_; ///< per layer: offset of its first mirrored blob, -1 = none
 };
 
-}  // namespace guild::core
+} // namespace guild::core

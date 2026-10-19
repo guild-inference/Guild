@@ -74,29 +74,25 @@ router_top10_kernel exceeds 128 bytes and may cause high register pressure.
 Consult with your hardware vendor to find the total register size available and
 adjust the code, or use smaller sub-group size to avoid high register pressure.
 */
-__dpct_inline__ void router_top10_kernel(const float *__restrict__ logits,
-                                         int n_tokens, int n_expert, int k,
-                                         int *__restrict__ ids,
-                                         float *__restrict__ weights,
-                                         uint8_t *dpct_local) {
+__dpct_inline__ void router_top10_kernel(const float* __restrict__ logits, int n_tokens, int n_expert, int k,
+                                         int* __restrict__ ids, float* __restrict__ weights, uint8_t* dpct_local) {
     // **`s_taken` IS FIRST SO THE OTHER TWO KEEP THEIR ALIGNMENT WITHOUT AN OFFSET PARAMETER**, and `s_p`'s
     // existing `s_ex + n_expert` stays correct because it is relative to `s_ex`.  One byte per expert.
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
-    auto s_raw = (unsigned char *)dpct_local;
+    auto s_raw = (unsigned char*) dpct_local;
     const size_t taken_bytes = ((size_t) n_expert + 15u) & ~(size_t) 15u;
     unsigned char* s_taken = s_raw;
     double* s_ex = (double*) (s_raw + taken_bytes);
-    auto &s_red = *sycl::ext::oneapi::group_local_memory_for_overwrite<
-        float[RT_MAX_THREADS / 32]>(
+    auto& s_red = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[RT_MAX_THREADS / 32]>(
         sycl::ext::oneapi::this_work_item::get_work_group<3>());
-    auto &s_rid = *sycl::ext::oneapi::group_local_memory_for_overwrite<
-        int[RT_MAX_THREADS / 32]>(
+    auto& s_rid = *sycl::ext::oneapi::group_local_memory_for_overwrite<int[RT_MAX_THREADS / 32]>(
         sycl::ext::oneapi::this_work_item::get_work_group<3>());
-    auto &s_sum = *sycl::ext::oneapi::group_local_memory_for_overwrite<double>(
+    auto& s_sum = *sycl::ext::oneapi::group_local_memory_for_overwrite<double>(
         sycl::ext::oneapi::this_work_item::get_work_group<3>());
 
     const int t = item_ct1.get_group(2);
-    if (t >= n_tokens) return;
+    if (t >= n_tokens)
+        return;
     const int tid = item_ct1.get_local_id(2);
     const int nt = item_ct1.get_local_range(2);
     const float* l = logits + (size_t) t * n_expert;
@@ -105,18 +101,19 @@ __dpct_inline__ void router_top10_kernel(const float *__restrict__ logits,
     // so this is bit-identical to the serial scan.
     float mx = -INFINITY;
 #pragma unroll
-    for (int e = tid; e < n_expert; e += nt) mx = sycl::fmax(mx, l[e]);
-    /*
-DPCT1108: '__shfl_down_sync' was migrated with the experimental feature
-masked sub_group function which may not be supported by all compilers or
-runtimes. You may need to adjust the code.
-*/
+    for (int e = tid; e < n_expert; e += nt)
+        mx = sycl::fmax(mx, l[e]);
+        /*
+    DPCT1108: '__shfl_down_sync' was migrated with the experimental feature
+    masked sub_group function which may not be supported by all compilers or
+    runtimes. You may need to adjust the code.
+    */
 #pragma unroll
-    for (int off = 16; off > 0; off >>= 1) mx = sycl::fmax(
-        mx, dpct::experimental::shift_sub_group_left(
-                0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(),
-                mx, off));
-    if ((tid & 31) == 0) s_red[tid >> 5] = mx;
+    for (int off = 16; off > 0; off >>= 1)
+        mx = sycl::fmax(mx, dpct::experimental::shift_sub_group_left(
+                                0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(), mx, off));
+    if ((tid & 31) == 0)
+        s_red[tid >> 5] = mx;
     /*
     DPCT1065: Consider replacing sycl::nd_item::barrier() with
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
@@ -132,11 +129,11 @@ masked sub_group function which may not be supported by all compilers or
 runtimes. You may need to adjust the code.
 */
 #pragma unroll
-        for (int off = 16; off > 0; off >>= 1) v = sycl::fmax(
-            v, dpct::experimental::shift_sub_group_left(
-                   0xffffffffu,
-                   sycl::ext::oneapi::this_work_item::get_sub_group(), v, off));
-        if (tid == 0) s_red[0] = v;
+        for (int off = 16; off > 0; off >>= 1)
+            v = sycl::fmax(v, dpct::experimental::shift_sub_group_left(
+                                  0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(), v, off));
+        if (tid == 0)
+            s_red[0] = v;
     }
     /*
     DPCT1065: Consider replacing sycl::nd_item::barrier() with
@@ -150,7 +147,7 @@ runtimes. You may need to adjust the code.
     // and was 5,632 serial calls before; it is 512 parallel ones now.
 #pragma unroll
     for (int e = tid; e < n_expert; e += nt)
-        s_ex[e] = sycl::exp((double)l[e] - (double)mx);
+        s_ex[e] = sycl::exp((double) l[e] - (double) mx);
     /*
     DPCT1065: Consider replacing sycl::nd_item::barrier() with
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
@@ -162,7 +159,8 @@ runtimes. You may need to adjust the code.
     if (tid == 0) {
         double sum = 0.0;
 #pragma unroll
-        for (int e = 0; e < n_expert; ++e) sum += s_ex[e];
+        for (int e = 0; e < n_expert; ++e)
+            sum += s_ex[e];
         s_sum = sum;
     }
     /*
@@ -184,7 +182,8 @@ runtimes. You may need to adjust the code.
     // of 513 times, and the comparisons then see exactly the same floats.
     float* s_p = (float*) (s_ex + n_expert);
 #pragma unroll
-    for (int e = tid; e < n_expert; e += nt) s_p[e] = (float)(s_ex[e] * inv);
+    for (int e = tid; e < n_expert; e += nt)
+        s_p[e] = (float) (s_ex[e] * inv);
     /*
     DPCT1065: Consider replacing sycl::nd_item::barrier() with
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
@@ -205,7 +204,8 @@ runtimes. You may need to adjust the code.
     // LOWEST index on a tie, which is exactly the rule the rank loop spelled out as
     // `else if (f < e && pf == pe) ++rank`.  A stable descending top-k, ties by index.
 #pragma unroll
-    for (int e = tid; e < n_expert; e += nt) s_taken[e] = 0;
+    for (int e = tid; e < n_expert; e += nt)
+        s_taken[e] = 0;
     /*
     DPCT1065: Consider replacing sycl::nd_item::barrier() with
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
@@ -215,11 +215,15 @@ runtimes. You may need to adjust the code.
 
     for (int i = 0; i < k; ++i) {
         float bv = -INFINITY;
-        int bi = n_expert;               // a sentinel that loses to every real index
+        int bi = n_expert; // a sentinel that loses to every real index
         for (int e = tid; e < n_expert; e += nt) {
-            if (s_taken[e]) continue;
+            if (s_taken[e])
+                continue;
             const float pe = s_p[e];
-            if (pe > bv) { bv = pe; bi = e; }
+            if (pe > bv) {
+                bv = pe;
+                bi = e;
+            }
         }
         for (int off = 16; off > 0; off >>= 1) {
             /*
@@ -228,19 +232,23 @@ runtimes. You may need to adjust the code.
             compilers or runtimes. You may need to adjust the code.
             */
             const float ov = dpct::experimental::shift_sub_group_left(
-                0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(),
-                bv, off);
+                0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(), bv, off);
             /*
             DPCT1108: '__shfl_down_sync' was migrated with the experimental
             feature masked sub_group function which may not be supported by all
             compilers or runtimes. You may need to adjust the code.
             */
             const int oi = dpct::experimental::shift_sub_group_left(
-                0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(),
-                bi, off);
-            if (ov > bv || (ov == bv && oi < bi)) { bv = ov; bi = oi; }
+                0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(), bi, off);
+            if (ov > bv || (ov == bv && oi < bi)) {
+                bv = ov;
+                bi = oi;
+            }
         }
-        if ((tid & 31) == 0) { s_red[tid >> 5] = bv; s_rid[tid >> 5] = bi; }
+        if ((tid & 31) == 0) {
+            s_red[tid >> 5] = bv;
+            s_rid[tid >> 5] = bi;
+        }
         /*
         DPCT1118: SYCL group functions and algorithms must be encountered in
         converged control flow. You may need to adjust the code.
@@ -263,8 +271,7 @@ runtimes. You may need to adjust the code.
                 the code.
                 */
                 const float ov = dpct::experimental::shift_sub_group_left(
-                    0xffffffffu,
-                    sycl::ext::oneapi::this_work_item::get_sub_group(), v, off);
+                    0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(), v, off);
                 /*
                 DPCT1108: '__shfl_down_sync' was migrated with the
                 experimental feature masked sub_group function which may not be
@@ -272,10 +279,11 @@ runtimes. You may need to adjust the code.
                 the code.
                 */
                 const int oi = dpct::experimental::shift_sub_group_left(
-                    0xffffffffu,
-                    sycl::ext::oneapi::this_work_item::get_sub_group(), ix,
-                    off);
-                if (ov > v || (ov == v && oi < ix)) { v = ov; ix = oi; }
+                    0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(), ix, off);
+                if (ov > v || (ov == v && oi < ix)) {
+                    v = ov;
+                    ix = oi;
+                }
             }
             if (tid == 0 && ix < n_expert) {
                 ids[(size_t) t * k + i] = ix;
@@ -305,7 +313,8 @@ runtimes. You may need to adjust the code.
     if (tid == 0) {
         double s = 0.0;
 #pragma unroll
-        for (int i = 0; i < k; ++i) s += (double)weights[(size_t)t * k + i];
+        for (int i = 0; i < k; ++i)
+            s += (double) weights[(size_t) t * k + i];
         const double sc = sycl::fmax(s, 6.103515625e-05); // 2**-14
 #pragma unroll
         for (int i = 0; i < k; ++i)
@@ -339,20 +348,26 @@ __global__ void router_top10_fast_kernel(const float* __restrict__ logits, int n
     __shared__ double s_dred[RT_MAX_THREADS / 32];
     __shared__ float s_inv;
     const int t = blockIdx.x;
-    if (t >= n_tokens) return;
+    if (t >= n_tokens)
+        return;
     const int tid = threadIdx.x, lane = tid & 31, warp = tid >> 5;
     const int nt = blockDim.x, nw = (nt + 31) >> 5;
     const float* l = logits + (size_t) t * n_expert;
     // the max: as router_top10_kernel (exact, order-independent)
     float mx = -INFINITY;
-    for (int e = tid; e < n_expert; e += nt) mx = fmaxf(mx, l[e]);
-    for (int off = 16; off > 0; off >>= 1) mx = fmaxf(mx, __shfl_down_sync(0xffffffffu, mx, off));
-    if (lane == 0) s_red[warp] = mx;
+    for (int e = tid; e < n_expert; e += nt)
+        mx = fmaxf(mx, l[e]);
+    for (int off = 16; off > 0; off >>= 1)
+        mx = fmaxf(mx, __shfl_down_sync(0xffffffffu, mx, off));
+    if (lane == 0)
+        s_red[warp] = mx;
     __syncthreads();
     if (tid < 32) {
         float v = (tid < nw) ? s_red[tid] : -INFINITY;
-        for (int off = 16; off > 0; off >>= 1) v = fmaxf(v, __shfl_down_sync(0xffffffffu, v, off));
-        if (tid == 0) s_red[0] = v;
+        for (int off = 16; off > 0; off >>= 1)
+            v = fmaxf(v, __shfl_down_sync(0xffffffffu, v, off));
+        if (tid == 0)
+            s_red[0] = v;
     }
     __syncthreads();
     mx = s_red[0];
@@ -363,26 +378,31 @@ __global__ void router_top10_fast_kernel(const float* __restrict__ logits, int n
         s_ex[e] = x;
         part += x;
     }
-    for (int off = 16; off > 0; off >>= 1) part += __shfl_xor_sync(0xffffffffu, part, off);
-    if (lane == 0) s_dred[warp] = part;
+    for (int off = 16; off > 0; off >>= 1)
+        part += __shfl_xor_sync(0xffffffffu, part, off);
+    if (lane == 0)
+        s_dred[warp] = part;
     __syncthreads();
     double tot = 0.0;
-    for (int w = 0; w < nw; ++w) tot += s_dred[w];
+    for (int w = 0; w < nw; ++w)
+        tot += s_dred[w];
     const double lo = tot * (1.0 - 0x1p-40), hi = tot * (1.0 + 0x1p-40);
     const float f_lo = (float) (1.0 / hi), f_hi = (float) (1.0 / lo);
     float inv;
     if (!FORCE_SERIAL && tot >= 1.0 && hi < 1e300 && f_lo == f_hi) {
         inv = f_lo;
-    } else {   // block-uniform (every thread computed the same tot): the serial sum, exactly as router_top10_kernel
+    } else { // block-uniform (every thread computed the same tot): the serial sum, exactly as router_top10_kernel
         if (tid == 0) {
             double sum = 0.0;
-            for (int e = 0; e < n_expert; ++e) sum += s_ex[e];
+            for (int e = 0; e < n_expert; ++e)
+                sum += s_ex[e];
             s_inv = (float) (1.0 / sum);
         }
         __syncthreads();
         inv = s_inv;
     }
-    if (warp != 0) return;
+    if (warp != 0)
+        return;
     // wave 0: lane holds experts lane + 32 j; p is router_top10_kernel's expression
     constexpr int PER = 16;
     float pv[PER];
@@ -391,40 +411,59 @@ __global__ void router_top10_fast_kernel(const float* __restrict__ logits, int n
     for (int j = 0; j < PER; ++j) {
         const int e = lane + 32 * j;
         pv[j] = -INFINITY;
-        if (e < n_expert) { pv[j] = (float) (s_ex[e] * inv); live |= 1u << j; }
+        if (e < n_expert) {
+            pv[j] = (float) (s_ex[e] * inv);
+            live |= 1u << j;
+        }
     }
     float my_w = 0.0f;
     int my_id = 0, nsel = 0;
     for (int i = 0; i < k; ++i) {
         float bv = -INFINITY;
-        int bi = n_expert;   // a sentinel that loses to every real index
+        int bi = n_expert; // a sentinel that loses to every real index
 #pragma unroll
         for (int j = 0; j < PER; ++j)
-            if (((live >> j) & 1u) && pv[j] > bv) { bv = pv[j]; bi = lane + 32 * j; }
+            if (((live >> j) & 1u) && pv[j] > bv) {
+                bv = pv[j];
+                bi = lane + 32 * j;
+            }
         for (int off = 16; off > 0; off >>= 1) {
             const float ov = __shfl_xor_sync(0xffffffffu, bv, off);
             const int oi = __shfl_xor_sync(0xffffffffu, bi, off);
-            if (ov > bv || (ov == bv && oi < bi)) { bv = ov; bi = oi; }
+            if (ov > bv || (ov == bv && oi < bi)) {
+                bv = ov;
+                bi = oi;
+            }
         }
-        if (bi >= n_expert) break;   // as router_top10_kernel: no rank i or later is written (every p left is NaN)
-        if ((bi & 31) == lane) live &= ~(1u << (bi >> 5));
-        if (lane == i) { my_w = bv; my_id = bi; }
+        if (bi >= n_expert)
+            break; // as router_top10_kernel: no rank i or later is written (every p left is NaN)
+        if ((bi & 31) == lane)
+            live &= ~(1u << (bi >> 5));
+        if (lane == i) {
+            my_w = bv;
+            my_id = bi;
+        }
         nsel = i + 1;
     }
     if (nsel == k) {
         double s = 0.0;
-        for (int i = 0; i < k; ++i) s += (double) __shfl_sync(0xffffffffu, my_w, i);
-        const double sc = fmax(s, 6.103515625e-05);       // 2**-14
+        for (int i = 0; i < k; ++i)
+            s += (double) __shfl_sync(0xffffffffu, my_w, i);
+        const double sc = fmax(s, 6.103515625e-05); // 2**-14
         if (lane < k) {
             ids[(size_t) t * k + lane] = my_id;
             weights[(size_t) t * k + lane] = (float) ((double) my_w / sc);
         }
-    } else {   // router_top10_kernel's tail exactly: unwritten ranks keep what the buffer held and are renormalised too
-        if (lane < nsel) { ids[(size_t) t * k + lane] = my_id; weights[(size_t) t * k + lane] = my_w; }
+    } else { // router_top10_kernel's tail exactly: unwritten ranks keep what the buffer held and are renormalised too
+        if (lane < nsel) {
+            ids[(size_t) t * k + lane] = my_id;
+            weights[(size_t) t * k + lane] = my_w;
+        }
         __threadfence();
         if (lane == 0) {
             double s = 0.0;
-            for (int i = 0; i < k; ++i) s += (double) weights[(size_t) t * k + i];
+            for (int i = 0; i < k; ++i)
+                s += (double) weights[(size_t) t * k + i];
             const double sc = fmax(s, 6.103515625e-05);
             for (int i = 0; i < k; ++i)
                 weights[(size_t) t * k + i] = (float) ((double) weights[(size_t) t * k + i] / sc);
@@ -433,7 +472,7 @@ __global__ void router_top10_fast_kernel(const float* __restrict__ logits, int n
 }
 
 void launch_generic(const float* logits, int n_tokens, int n_expert, int k, int* ids, float* weights, void* stream,
-                    int mode) {   // mode 0: router_top10_kernel, 1: the HIP fast kernel, 2: the fast kernel's serial path
+                    int mode) { // mode 0: router_top10_kernel, 1: the HIP fast kernel, 2: the fast kernel's serial path
     int threads = n_expert < RT_MAX_THREADS ? n_expert : RT_MAX_THREADS;
     threads = (threads + 31) & ~31;
     const size_t taken_bytes = ((size_t) n_expert + 15u) & ~(size_t) 15u;
@@ -448,29 +487,36 @@ void launch_generic(const float* logits, int n_tokens, int n_expert, int k, int*
             logits, n_tokens, n_expert, k, ids, weights);
         return;
     }
-    router_top10_kernel<<<(unsigned) n_tokens, threads, smem, (cudaStream_t) stream>>>(
-        logits, n_tokens, n_expert, k, ids, weights);
+    router_top10_kernel<<<(unsigned) n_tokens, threads, smem, (cudaStream_t) stream>>>(logits, n_tokens, n_expert, k,
+                                                                                       ids, weights);
 }
 #endif
 
-}  // namespace
+} // namespace
 
 bool router_top10_variant(const float* logits, int n_tokens, int n_expert, int k, int* ids, float* weights,
                           void* stream, int variant) {
 #if defined(__HIPCC__)
-    if (n_tokens <= 0 || n_expert <= 64 || n_expert > 512 || k <= 0 || k > 32) return false;
-    if (variant < 0 || variant > 2) return false;
+    if (n_tokens <= 0 || n_expert <= 64 || n_expert > 512 || k <= 0 || k > 32)
+        return false;
+    if (variant < 0 || variant > 2)
+        return false;
     launch_generic(logits, n_tokens, n_expert, k, ids, weights, stream, variant);
     return cudaGetLastError() == cudaSuccess;
 #else
-    (void) logits; (void) n_tokens; (void) n_expert; (void) k; (void) ids; (void) weights; (void) stream;
+    (void) logits;
+    (void) n_tokens;
+    (void) n_expert;
+    (void) k;
+    (void) ids;
+    (void) weights;
+    (void) stream;
     (void) variant;
     return false;
 #endif
 }
 
-void router_top10(const float *logits, int n_tokens, int n_expert, int k,
-                  int *ids, float *weights, void *stream) try {
+void router_top10(const float* logits, int n_tokens, int n_expert, int k, int* ids, float* weights, void* stream) try {
 #if defined(__HIPCC__)
     {
         static const bool old = std::getenv("GUILD_HIP_ROUTER_OLD") != nullptr;
@@ -492,18 +538,18 @@ void router_top10(const float *logits, int n_tokens, int n_expert, int k,
         }
     }
 #endif
-    if (n_tokens <= 0 || n_expert <= 0 || k <= 0) return;
+    if (n_tokens <= 0 || n_expert <= 0 || k <= 0)
+        return;
     if (k > 64) {
         std::fprintf(stderr, "router_top10: k %d exceeds the kernel's 64\n", k);
         std::exit(1);
     }
     if (n_expert > RT_MAX_THREADS * 64) {
-        std::fprintf(stderr, "router_top10: n_expert %d is past the kernel's %d\n", n_expert,
-                     RT_MAX_THREADS * 64);
+        std::fprintf(stderr, "router_top10: n_expert %d is past the kernel's %d\n", n_expert, RT_MAX_THREADS * 64);
         std::exit(1);
     }
     int threads = n_expert < RT_MAX_THREADS ? n_expert : RT_MAX_THREADS;
-    threads = (threads + 31) & ~31;                  // at least one full warp, for the reductions
+    threads = (threads + 31) & ~31; // at least one full warp, for the reductions
     // the selection's taken-mask, then n_expert doubles for the exponentials, then n_expert floats for the
     // probabilities.  The mask is first so the two aligned arrays need no offset parameter.
     const size_t taken_bytes = ((size_t) n_expert + 15u) & ~(size_t) 15u;
@@ -513,40 +559,27 @@ void router_top10(const float *logits, int n_tokens, int n_expert, int k,
         different from the original code. Check that the allocated memory size
         in the migrated code is correct.
         */
-        taken_bytes + (size_t)n_expert * sizeof(double) +
-        (size_t)n_expert * sizeof(float);
+        taken_bytes + (size_t) n_expert * sizeof(double) + (size_t) n_expert * sizeof(float);
     /*
     DPCT1049: The work-group size passed to the SYCL kernel may exceed the
     limit. To get the device limit, query info::device::max_work_group_size.
     Adjust the work-group size if needed.
     */
     {
-        auto exp_props = sycl::ext::oneapi::experimental::properties{
-            sycl::ext::oneapi::experimental::use_root_sync};
-        dpct::has_capability_or_fail(
-            guild::q_of(stream)->get_device(),
-            {sycl::aspect::fp64});
+        auto exp_props = sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::use_root_sync};
+        dpct::has_capability_or_fail(guild::q_of(stream)->get_device(), {sycl::aspect::fp64});
 
-        guild::q_of(stream)
-            ->submit([&](sycl::handler &cgh) {
-                sycl::local_accessor<uint8_t, 1> dpct_local_acc_ct1(
-                    sycl::range(smem), cgh);
+        guild::q_of(stream)->submit([&](sycl::handler& cgh) {
+            sycl::local_accessor<uint8_t, 1> dpct_local_acc_ct1(sycl::range(smem), cgh);
 
-                cgh.parallel_for<
-                    dpct_kernel_name<class router_top10_kernel_3e0655>>(
-                    sycl::nd_range<3>(sycl::range(1, 1, (unsigned)n_tokens) *
-                                          sycl::range(1, 1, threads),
-                                      sycl::range(1, 1, threads)),
-                    exp_props,
-                    [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(
-                        32)]] {
-                        router_top10_kernel(
-                            logits, n_tokens, n_expert, k, ids, weights,
-                            dpct_local_acc_ct1
-                                .get_multi_ptr<sycl::access::decorated::no>()
-                                .get());
-                    });
-            });
+            cgh.parallel_for<dpct_kernel_name<class router_top10_kernel_3e0655>>(
+                sycl::nd_range<3>(sycl::range(1, 1, (unsigned) n_tokens) * sycl::range(1, 1, threads),
+                                  sycl::range(1, 1, threads)),
+                exp_props, [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(32)]] {
+                    router_top10_kernel(logits, n_tokens, n_expert, k, ids, weights,
+                                        dpct_local_acc_ct1.get_multi_ptr<sycl::access::decorated::no>().get());
+                });
+        });
     }
     /*
     DPCT1010: SYCL uses exceptions to report errors and does not use the
@@ -556,14 +589,11 @@ void router_top10(const float *logits, int n_tokens, int n_expert, int k,
     const dpct::err0 e = 0;
 
     if (stream == nullptr) {
-        const dpct::err0 s = DPCT_CHECK_ERROR(
-            dpct::get_current_device().queues_wait_and_throw());
+        const dpct::err0 s = DPCT_CHECK_ERROR(dpct::get_current_device().queues_wait_and_throw());
     }
-}
-catch (sycl::exception const &exc) {
-  std::cerr << exc.what() << "Exception caught at file:" << __FILE__
-            << ", line:" << __LINE__ << std::endl;
-  std::exit(1);
+} catch (sycl::exception const& exc) {
+    std::cerr << exc.what() << "Exception caught at file:" << __FILE__ << ", line:" << __LINE__ << std::endl;
+    std::exit(1);
 }
 
-}  // namespace guild::kernels
+} // namespace guild::kernels

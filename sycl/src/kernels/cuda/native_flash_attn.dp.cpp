@@ -42,8 +42,7 @@ template <int Width> __dpct_inline__ float warp_sum(float x) {
         compilers or runtimes. You may need to adjust the code.
         */
         x += dpct::experimental::permute_sub_group_by_xor(
-            0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(), x,
-            offset, Width);
+            0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(), x, offset, Width);
     return x;
 }
 __dpct_inline__ float warp_max(float x) {
@@ -54,11 +53,8 @@ __dpct_inline__ float warp_max(float x) {
         feature masked sub_group function which may not be supported by all
         compilers or runtimes. You may need to adjust the code.
         */
-        x = sycl::fmax(x,
-                       dpct::experimental::permute_sub_group_by_xor(
-                           0xffffffffu,
-                           sycl::ext::oneapi::this_work_item::get_sub_group(),
-                           x, offset));
+        x = sycl::fmax(x, dpct::experimental::permute_sub_group_by_xor(
+                              0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(), x, offset));
     return x;
 }
 
@@ -71,18 +67,16 @@ exceeds 128 bytes and may cause high register pressure. Consult with your
 hardware vendor to find the total register size available and adjust the code,
 or use smaller sub-group size to avoid high register pressure.
 */
-__dpct_inline__ void
-attend(const float *__restrict__ q, const sycl::half *__restrict__ k,
-       const sycl::half *__restrict__ v, const int32_t *__restrict__ step,
-       int max_context, int padded_length, float scale, float *__restrict__ out,
-       int32_t *__restrict__ status, const sycl::half *__restrict__ mask) {
+__dpct_inline__ void attend(const float* __restrict__ q, const sycl::half* __restrict__ k,
+                            const sycl::half* __restrict__ v, const int32_t* __restrict__ step, int max_context,
+                            int padded_length, float scale, float* __restrict__ out, int32_t* __restrict__ status,
+                            const sycl::half* __restrict__ mask) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
-    const int lane = item_ct1.get_local_id(2), warp = item_ct1.get_local_id(1),
-              tid = warp * 32 + lane;
+    const int lane = item_ct1.get_local_id(2), warp = item_ct1.get_local_id(1), tid = warp * 32 + lane;
     const int head = item_ct1.get_group(2), kv = head / 12;
     const int width = step[kStepWidth], nkv = step[kStepNKv];
-    const bool valid = width >= 1 && width <= max_context && nkv == width &&
-                       step[kStepPos] == width - 1 && step[kStepNBid] == width / 4;
+    const bool valid = width >= 1 && width <= max_context && nkv == width && step[kStepPos] == width - 1 &&
+                       step[kStepNBid] == width / 4;
     if (head == 0 && tid == 0)
         *status = valid ? kNativeFlashAttnSuccess : kNativeFlashAttnUnsupportedStep;
     if (!valid) {
@@ -92,15 +86,12 @@ attend(const float *__restrict__ q, const sycl::half *__restrict__ k,
     }
     sycl::float2 qreg[16];
     sycl::float2 vkq[16] = {};
-    auto &tile = *sycl::ext::oneapi::group_local_memory_for_overwrite<
-        float[4 * 4 * 256]>(
+    auto& tile = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[4 * 4 * 256]>(
         sycl::ext::oneapi::this_work_item::get_work_group<3>());
-    auto &max_shared =
-        *sycl::ext::oneapi::group_local_memory_for_overwrite<float[32]>(
-            sycl::ext::oneapi::this_work_item::get_work_group<3>());
-    auto &sum_shared =
-        *sycl::ext::oneapi::group_local_memory_for_overwrite<float[32]>(
-            sycl::ext::oneapi::this_work_item::get_work_group<3>());
+    auto& max_shared = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[32]>(
+        sycl::ext::oneapi::this_work_item::get_work_group<3>());
+    auto& sum_shared = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[32]>(
+        sycl::ext::oneapi::this_work_item::get_work_group<3>());
     float maximum = -FLT_MAX / 2.0f, sum = 0.0f;
 #pragma unroll
     for (int i0 = 0; i0 < 128; i0 += 32) {
@@ -108,8 +99,7 @@ attend(const float *__restrict__ q, const sycl::half *__restrict__ k,
 #pragma unroll
         for (int j = 0; j < 4; ++j) {
             const int d = 2 * (i + j);
-            qreg[i0 / 8 + j] = sycl::float2(q[head * 256 + d] * scale,
-                                            q[head * 256 + d + 1] * scale);
+            qreg[i0 / 8 + j] = sycl::float2(q[head * 256 + d] * scale, q[head * 256 + d + 1] * scale);
         }
     }
     for (int base = 0; base < padded_length; base += 128) {
@@ -124,20 +114,12 @@ attend(const float *__restrict__ q, const sycl::half *__restrict__ k,
 #pragma unroll
                 for (int j = 0; j < 4; ++j) {
                     const int d = 2 * (i + j);
-                    const float a =
-                        cell < width
-                            ? sycl::vec<sycl::half, 1>(
-                                  k[(cell * 2 + kv) * 256 + d])
-                                  .convert<float,
-                                           sycl::rounding_mode::automatic>()[0]
-                            : 0.0f;
-                    const float b =
-                        cell < width
-                            ? sycl::vec<sycl::half, 1>(
-                                  k[(cell * 2 + kv) * 256 + d + 1])
-                                  .convert<float,
-                                           sycl::rounding_mode::automatic>()[0]
-                            : 0.0f;
+                    const float a = cell < width ? sycl::vec<sycl::half, 1>(k[(cell * 2 + kv) * 256 + d])
+                                                       .convert<float, sycl::rounding_mode::automatic>()[0]
+                                                 : 0.0f;
+                    const float b = cell < width ? sycl::vec<sycl::half, 1>(k[(cell * 2 + kv) * 256 + d + 1])
+                                                       .convert<float, sycl::rounding_mode::automatic>()[0]
+                                                 : 0.0f;
                     dot += a * qreg[i0 / 8 + j].x();
                     dot += b * qreg[i0 / 8 + j].y();
                 }
@@ -145,13 +127,12 @@ attend(const float *__restrict__ q, const sycl::half *__restrict__ k,
             dot = warp_sum<8>(dot);
             dot +=
                 cell < width
-                    ? (mask ? sycl::vec<sycl::half, 1>(mask[cell])
-                                  .convert<float,
-                                           sycl::rounding_mode::automatic>()[0]
+                    ? (mask ? sycl::vec<sycl::half, 1>(mask[cell]).convert<float, sycl::rounding_mode::automatic>()[0]
                             : 0.0f)
                     : sycl::bit_cast<float, int>(0xff800000u);
             next_max = sycl::fmax(next_max, dot + (3.0f * 0.6931f));
-            if (lane % 8 == row) score = dot;
+            if (lane % 8 == row)
+                score = dot;
         }
 #pragma unroll
         for (int offset = 8; offset < 32; offset <<= 1)
@@ -161,11 +142,8 @@ attend(const float *__restrict__ q, const sycl::half *__restrict__ k,
             compilers or runtimes. You may need to adjust the code.
             */
             next_max = sycl::fmax(
-                next_max,
-                dpct::experimental::permute_sub_group_by_xor(
-                    0xffffffffu,
-                    sycl::ext::oneapi::this_work_item::get_sub_group(),
-                    next_max, offset));
+                next_max, dpct::experimental::permute_sub_group_by_xor(
+                              0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(), next_max, offset));
         const float rescale = sycl::native::exp(maximum - next_max);
         maximum = next_max;
         score = sycl::native::exp(score - maximum);
@@ -182,20 +160,12 @@ attend(const float *__restrict__ q, const sycl::half *__restrict__ k,
 #pragma unroll
                 for (int j = 0; j < 4; ++j) {
                     const int d = 2 * (i + j);
-                    const float a =
-                        cell < width
-                            ? sycl::vec<sycl::half, 1>(
-                                  v[(cell * 2 + kv) * 256 + d])
-                                  .convert<float,
-                                           sycl::rounding_mode::automatic>()[0]
-                            : 0.0f;
-                    const float b =
-                        cell < width
-                            ? sycl::vec<sycl::half, 1>(
-                                  v[(cell * 2 + kv) * 256 + d + 1])
-                                  .convert<float,
-                                           sycl::rounding_mode::automatic>()[0]
-                            : 0.0f;
+                    const float a = cell < width ? sycl::vec<sycl::half, 1>(v[(cell * 2 + kv) * 256 + d])
+                                                       .convert<float, sycl::rounding_mode::automatic>()[0]
+                                                 : 0.0f;
+                    const float b = cell < width ? sycl::vec<sycl::half, 1>(v[(cell * 2 + kv) * 256 + d + 1])
+                                                       .convert<float, sycl::rounding_mode::automatic>()[0]
+                                                 : 0.0f;
                     // The pinned sm120a binary contracts the old-accumulator
                     // rescale with the FIRST addition: fma(rescale,old,round(V*w)).
                     // Later columns use fma(V,w,acc). Explicit intrinsics retain
@@ -208,8 +178,7 @@ attend(const float *__restrict__ q, const sycl::half *__restrict__ k,
                         built-in function rounding mode is aligned with OpenCL
                         C 1.2 standard.
                         */
-                        vkq[i0 / 8 + j].x() =
-                            sycl::fma(rescale, vkq[i0 / 8 + j].x(), a * weight);
+                        vkq[i0 / 8 + j].x() = sycl::fma(rescale, vkq[i0 / 8 + j].x(), a * weight);
                         /*
                         DPCT1013: The rounding mode could not be specified
                         and the generated code may have different accuracy than
@@ -217,8 +186,7 @@ attend(const float *__restrict__ q, const sycl::half *__restrict__ k,
                         built-in function rounding mode is aligned with OpenCL
                         C 1.2 standard.
                         */
-                        vkq[i0 / 8 + j].y() =
-                            sycl::fma(rescale, vkq[i0 / 8 + j].y(), b * weight);
+                        vkq[i0 / 8 + j].y() = sycl::fma(rescale, vkq[i0 / 8 + j].y(), b * weight);
                     } else {
                         /*
                         DPCT1013: The rounding mode could not be specified
@@ -227,8 +195,7 @@ attend(const float *__restrict__ q, const sycl::half *__restrict__ k,
                         built-in function rounding mode is aligned with OpenCL
                         C 1.2 standard.
                         */
-                        vkq[i0 / 8 + j].x() =
-                            sycl::fma(a, weight, vkq[i0 / 8 + j].x());
+                        vkq[i0 / 8 + j].x() = sycl::fma(a, weight, vkq[i0 / 8 + j].x());
                         /*
                         DPCT1013: The rounding mode could not be specified
                         and the generated code may have different accuracy than
@@ -236,21 +203,24 @@ attend(const float *__restrict__ q, const sycl::half *__restrict__ k,
                         built-in function rounding mode is aligned with OpenCL
                         C 1.2 standard.
                         */
-                        vkq[i0 / 8 + j].y() =
-                            sycl::fma(b, weight, vkq[i0 / 8 + j].y());
+                        vkq[i0 / 8 + j].y() = sycl::fma(b, weight, vkq[i0 / 8 + j].y());
                     }
                 }
             }
         }
     }
-    if (warp == 0) { max_shared[lane] = -FLT_MAX / 2.0f; sum_shared[lane] = 0.0f; }
+    if (warp == 0) {
+        max_shared[lane] = -FLT_MAX / 2.0f;
+        sum_shared[lane] = 0.0f;
+    }
     /*
     DPCT1065: Consider replacing sycl::nd_item::barrier() with
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
     item_ct1.barrier();
-    if (lane == 0) max_shared[warp] = maximum;
+    if (lane == 0)
+        max_shared[warp] = maximum;
     /*
     DPCT1065: Consider replacing sycl::nd_item::barrier() with
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
@@ -287,7 +257,8 @@ attend(const float *__restrict__ q, const sycl::half *__restrict__ k,
     }
     sum *= rescale;
     sum = warp_sum<32>(sum);
-    if (lane == 0) sum_shared[warp] = sum;
+    if (lane == 0)
+        sum_shared[warp] = sum;
     /*
     DPCT1065: Consider replacing sycl::nd_item::barrier() with
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
@@ -307,7 +278,10 @@ attend(const float *__restrict__ q, const sycl::half *__restrict__ k,
         out[head * 256 + i0 + tid] = result / sum;
     }
 }
-struct Span { const void* p; std::size_t n, alignment; };
+struct Span {
+    const void* p;
+    std::size_t n, alignment;
+};
 void validate_spans(const Span* spans, int count) {
     for (int i = 0; i < count; ++i) {
         const auto a = reinterpret_cast<std::uintptr_t>(spans[i].p);
@@ -322,40 +296,29 @@ void validate_spans(const Span* spans, int count) {
 }
 } // namespace
 
-void native_flash_attn_short_step(const float* q, const uint16_t* k, const uint16_t* v,
-                                  const int32_t* step, int64_t capacity, int max_context,
-                                  const QsaShapes& shapes, float* output, int32_t* status,
-                                  const uint16_t* mask, void* stream) {
-    if (!stream || shapes.n_head != 24 || shapes.n_head_kv != 2 || shapes.head_dim != 256 ||
-        shapes.idx_block != 4 || shapes.idx_top_k < 256 || capacity < 256 ||
-        uint64_t(capacity) > std::numeric_limits<std::size_t>::max() / 1024 ||
-        max_context < 1 || max_context > 256)
-        throw std::invalid_argument("native FlashAttention supports only Q24x256/KV2x256, capacity>=256 and context1..256 on an explicit stream");
+void native_flash_attn_short_step(const float* q, const uint16_t* k, const uint16_t* v, const int32_t* step,
+                                  int64_t capacity, int max_context, const QsaShapes& shapes, float* output,
+                                  int32_t* status, const uint16_t* mask, void* stream) {
+    if (!stream || shapes.n_head != 24 || shapes.n_head_kv != 2 || shapes.head_dim != 256 || shapes.idx_block != 4 ||
+        shapes.idx_top_k < 256 || capacity < 256 ||
+        uint64_t(capacity) > std::numeric_limits<std::size_t>::max() / 1024 || max_context < 1 || max_context > 256)
+        throw std::invalid_argument("native FlashAttention supports only Q24x256/KV2x256, capacity>=256 and "
+                                    "context1..256 on an explicit stream");
     const std::size_t kv_bytes = std::size_t(capacity) * 1024;
-    const Span spans[] = {{q, 24 * 256 * 4, 4}, {k, kv_bytes, 2}, {v, kv_bytes, 2},
-                          {step, kStepCount * 4, 4}, {output, 24 * 256 * 4, 4},
-                          {status, 4, 4}, {mask, 256 * 2, 2}};
+    const Span spans[] = {{q, 24 * 256 * 4, 4},      {k, kv_bytes, 2}, {v, kv_bytes, 2},  {step, kStepCount * 4, 4},
+                          {output, 24 * 256 * 4, 4}, {status, 4, 4},   {mask, 256 * 2, 2}};
     validate_spans(spans, mask ? 7 : 6);
     {
-        auto exp_props = sycl::ext::oneapi::experimental::properties{
-            sycl::ext::oneapi::experimental::use_root_sync};
-        dpct::has_capability_or_fail(
-            ((sycl::queue *)(guild::q_of(stream)))
-                ->get_device(),
-            {sycl::aspect::fp16});
+        auto exp_props = sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::use_root_sync};
+        dpct::has_capability_or_fail(((sycl::queue*) (guild::q_of(stream)))->get_device(), {sycl::aspect::fp16});
 
-        ((sycl::queue *)(guild::q_of(stream)))
+        ((sycl::queue*) (guild::q_of(stream)))
             ->parallel_for<dpct_kernel_name<class attend_9d5505>>(
-                sycl::nd_range<3>(sycl::range(1, 1, 24) * sycl::range(1, 4, 32),
-                                  sycl::range(1, 4, 32)),
-                exp_props,
-                [=](sycl::nd_item<3> item_ct1)
-                    [[sycl::reqd_sub_group_size(32)]] {
-                        attend(q, reinterpret_cast<const sycl::half *>(k),
-                               reinterpret_cast<const sycl::half *>(v), step,
-                               max_context, 256, 0.0625f, output, status,
-                               reinterpret_cast<const sycl::half *>(mask));
-                    });
+                sycl::nd_range<3>(sycl::range(1, 1, 24) * sycl::range(1, 4, 32), sycl::range(1, 4, 32)), exp_props,
+                [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(32)]] {
+                    attend(q, reinterpret_cast<const sycl::half*>(k), reinterpret_cast<const sycl::half*>(v), step,
+                           max_context, 256, 0.0625f, output, status, reinterpret_cast<const sycl::half*>(mask));
+                });
     }
     /*
     DPCT1010: SYCL uses exceptions to report errors and does not use the
@@ -376,7 +339,6 @@ void native_flash_attn_short_step(const float* q, const uint16_t* k, const uint1
         /*
         DPCT1001: The statement could not be removed.
         */
-        throw std::runtime_error(std::string("native FlashAttention launch: ") +
-                                 dpct::get_error_string_dummy(result));
+        throw std::runtime_error(std::string("native FlashAttention launch: ") + dpct::get_error_string_dummy(result));
 }
 } // namespace guild::kernels

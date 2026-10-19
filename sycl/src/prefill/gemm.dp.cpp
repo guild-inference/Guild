@@ -38,7 +38,7 @@
 namespace guild::prefill {
 namespace {
 
-void ck(int s, const char *what) {
+void ck(int s, const char* what) {
     if (s != 0) {
         std::fprintf(stderr, "prefill gemm: %s: cuBLAS status %d\n", what, (int) s);
         std::exit(1);
@@ -53,7 +53,8 @@ void ck(int s, const char *what) {
 #if defined(__HIPCC__) && defined(_WIN32)
 void absorb_hipblas_sticky(const char* what) {
     const hipError_t sticky = hipGetLastError();
-    if (sticky == hipSuccess || sticky == hipErrorInvalidValue) return;
+    if (sticky == hipSuccess || sticky == hipErrorInvalidValue)
+        return;
     std::fprintf(stderr, "prefill gemm: %s left %s\n", what, hipGetErrorString(sticky));
     std::exit(1);
 }
@@ -63,10 +64,9 @@ void absorb_hipblas_sticky(const char* what) {
 #endif
 
 // A setup call whose failure the engine survives (the handle keeps its defaults), as before #240 - but said.
-void note(int s, const char *what) {
-    if (s != 0) std::fprintf(
-        stderr, "prefill gemm: %s: cuBLAS status %d (continuing)\n", what,
-        (int)s);
+void note(int s, const char* what) {
+    if (s != 0)
+        std::fprintf(stderr, "prefill gemm: %s: cuBLAS status %d (continuing)\n", what, (int) s);
 }
 
 #if defined(__HIPCC__) && defined(GUILD_HIPBLASLT_AVAILABLE)
@@ -102,16 +102,18 @@ struct HipLtState {
 
     ~HipLtState() {
         if (std::getenv("GUILD_HIPBLASLT_VERBOSE")) {
-            std::fprintf(stderr, "prefill gemm: hipBLASLt summary launches=%llu fallbacks=%llu unique_fallback_shapes=%zu\n",
+            std::fprintf(stderr,
+                         "prefill gemm: hipBLASLt summary launches=%llu fallbacks=%llu unique_fallback_shapes=%zu\n",
                          (unsigned long long) lt_launches, (unsigned long long) fallbacks, fallback_shapes.size());
             for (const auto& shape : fallback_shapes) {
                 const auto type = std::get<0>(shape);
                 std::fprintf(stderr, "prefill gemm: fallback shape dtype=%s T=%d N=%d K=%d ldy=%d\n",
-                             type == guild::prefill::hipblaslt::InputType::bf16 ? "bf16" : "f16",
-                             std::get<1>(shape), std::get<2>(shape), std::get<3>(shape), std::get<4>(shape));
+                             type == guild::prefill::hipblaslt::InputType::bf16 ? "bf16" : "f16", std::get<1>(shape),
+                             std::get<2>(shape), std::get<3>(shape), std::get<4>(shape));
             }
         }
-        if (handle) hipblasLtDestroy(handle);
+        if (handle)
+            hipblasLtDestroy(handle);
     }
 };
 
@@ -122,10 +124,14 @@ struct HipLtDescriptors {
     hipblasLtMatrixLayout_t c = nullptr;
 
     ~HipLtDescriptors() {
-        if (op) hipblasLtMatmulDescDestroy(op);
-        if (a) hipblasLtMatrixLayoutDestroy(a);
-        if (b) hipblasLtMatrixLayoutDestroy(b);
-        if (c) hipblasLtMatrixLayoutDestroy(c);
+        if (op)
+            hipblasLtMatmulDescDestroy(op);
+        if (a)
+            hipblasLtMatrixLayoutDestroy(a);
+        if (b)
+            hipblasLtMatrixLayoutDestroy(b);
+        if (c)
+            hipblasLtMatrixLayoutDestroy(c);
     }
 
     bool init(hipDataType type, int t, int n, int k, int ldy) {
@@ -147,7 +153,8 @@ struct HipLtDescriptors {
 
 std::unique_ptr<HipLtState> create_hipblaslt_state(void* workspace, size_t workspace_bytes) {
     const char* path = std::getenv("GUILD_HIPBLASLT_TUNING");
-    if (!path || !*path) return nullptr;
+    if (!path || !*path)
+        return nullptr;
 
     auto state = std::make_unique<HipLtState>();
     state->workspace = workspace;
@@ -170,7 +177,8 @@ std::unique_ptr<HipLtState> create_hipblaslt_state(void* workspace, size_t works
     }
     std::string arch(properties.gcnArchName);
     const auto suffix = arch.find(':');
-    if (suffix != std::string::npos) arch.resize(suffix);
+    if (suffix != std::string::npos)
+        arch.resize(suffix);
 
     std::string error;
     if (!state->table.load(path, arch, version, error)) {
@@ -182,14 +190,15 @@ std::unique_ptr<HipLtState> create_hipblaslt_state(void* workspace, size_t works
     return state;
 }
 
-HipLtCachedAlgo resolve_hipblaslt_algo(HipLtState& state, guild::prefill::hipblaslt::InputType type, int t,
-                                       int n, int k, int ldy, float beta) {
+HipLtCachedAlgo resolve_hipblaslt_algo(HipLtState& state, guild::prefill::hipblaslt::InputType type, int t, int n,
+                                       int k, int ldy, float beta) {
     uint32_t beta_bits = 0;
     static_assert(sizeof(beta_bits) == sizeof(beta));
     std::memcpy(&beta_bits, &beta, sizeof(beta));
     const HipLtCallKey key{type, t, n, k, ldy, beta_bits};
     const auto cached = state.cache.find(key);
-    if (cached != state.cache.end()) return cached->second;
+    if (cached != state.cache.end())
+        return cached->second;
 
     HipLtCachedAlgo resolved;
     const bool verbose = std::getenv("GUILD_HIPBLASLT_VERBOSE") != nullptr;
@@ -223,10 +232,11 @@ HipLtCachedAlgo resolve_hipblaslt_algo(HipLtState& state, guild::prefill::hipbla
     const float alpha = 1.0f;
     size_t required_workspace = 0;
     auto algo = candidates.front().algo;
-    if (hipblaslt_ext::matmulIsAlgoSupported(state.handle, desc.op, &alpha, desc.a, desc.b, &beta, desc.c, desc.c,
-                                             algo, required_workspace) != HIPBLAS_STATUS_SUCCESS) {
+    if (hipblaslt_ext::matmulIsAlgoSupported(state.handle, desc.op, &alpha, desc.a, desc.b, &beta, desc.c, desc.c, algo,
+                                             required_workspace) != HIPBLAS_STATUS_SUCCESS) {
         if (verbose) {
-            std::fprintf(stderr, "prefill gemm: Lt fallback; solution %d rejects actual T=%d N=%d K=%d ldy=%d beta=%.9g\n",
+            std::fprintf(stderr,
+                         "prefill gemm: Lt fallback; solution %d rejects actual T=%d N=%d K=%d ldy=%d beta=%.9g\n",
                          row->solution_id, t, n, k, ldy, beta);
         }
         return state.cache.emplace(key, resolved).first->second;
@@ -236,20 +246,17 @@ HipLtCachedAlgo resolve_hipblaslt_algo(HipLtState& state, guild::prefill::hipbla
     resolved.algo = algo;
     resolved.workspace_bytes = required_workspace;
     if (verbose) {
-        std::fprintf(stderr,
-                     "prefill gemm: Lt solution=%d dtype=%s T=%d N=%d K=%d ldy=%d beta=%.9g workspace=%zu\n",
-                     row->solution_id, type == guild::prefill::hipblaslt::InputType::bf16 ? "bf16" : "f16", t, n,
-                     k, ldy, beta, required_workspace);
+        std::fprintf(stderr, "prefill gemm: Lt solution=%d dtype=%s T=%d N=%d K=%d ldy=%d beta=%.9g workspace=%zu\n",
+                     row->solution_id, type == guild::prefill::hipblaslt::InputType::bf16 ? "bf16" : "f16", t, n, k,
+                     ldy, beta, required_workspace);
     }
     return state.cache.emplace(key, resolved).first->second;
 }
 
-bool try_hipblaslt(void* opaque_state, guild::prefill::hipblaslt::InputType type, const uint16_t* x,
-                   const uint16_t* w, float* y, int64_t t, int64_t n, int64_t k, int64_t ldy, float beta,
-                   void* stream) {
+bool try_hipblaslt(void* opaque_state, guild::prefill::hipblaslt::InputType type, const uint16_t* x, const uint16_t* w,
+                   float* y, int64_t t, int64_t n, int64_t k, int64_t ldy, float beta, void* stream) {
     auto* state = static_cast<HipLtState*>(opaque_state);
-    if (!state || t <= 0 || n <= 0 || k <= 0 || t > INT_MAX || n > INT_MAX || k > INT_MAX || ldy > INT_MAX ||
-        ldy < n) {
+    if (!state || t <= 0 || n <= 0 || k <= 0 || t > INT_MAX || n > INT_MAX || k > INT_MAX || ldy > INT_MAX || ldy < n) {
         return false;
     }
     const auto resolved = resolve_hipblaslt_algo(*state, type, (int) t, (int) n, (int) k, (int) ldy, beta);
@@ -270,11 +277,12 @@ bool try_hipblaslt(void* opaque_state, guild::prefill::hipblaslt::InputType type
 
     HipLtDescriptors desc;
     const hipDataType input_type = type == guild::prefill::hipblaslt::InputType::bf16 ? HIP_R_16BF : HIP_R_16F;
-    if (!desc.init(input_type, (int) t, (int) n, (int) k, (int) ldy)) return false;
+    if (!desc.init(input_type, (int) t, (int) n, (int) k, (int) ldy))
+        return false;
     const float alpha = 1.0f;
-    const hipblasStatus_t status = hipblasLtMatmul(state->handle, desc.op, &alpha, w, desc.a, x, desc.b, &beta, y,
-                                                   desc.c, y, desc.c, &resolved.algo, state->workspace,
-                                                   state->workspace_bytes, (hipStream_t) stream);
+    const hipblasStatus_t status =
+        hipblasLtMatmul(state->handle, desc.op, &alpha, w, desc.a, x, desc.b, &beta, y, desc.c, y, desc.c,
+                        &resolved.algo, state->workspace, state->workspace_bytes, (hipStream_t) stream);
     if (status == HIPBLAS_STATUS_SUCCESS) {
         ++state->lt_launches;
         return true;
@@ -289,59 +297,57 @@ bool try_hipblaslt(void* opaque_state, guild::prefill::hipblaslt::InputType type
     uint32_t beta_bits = 0;
     std::memcpy(&beta_bits, &beta, sizeof(beta_bits));
     auto cached = mutable_state->cache.find(HipLtCallKey{type, (int) t, (int) n, (int) k, (int) ldy, beta_bits});
-    if (cached != mutable_state->cache.end()) cached->second.supported = false;
+    if (cached != mutable_state->cache.end())
+        cached->second.supported = false;
     ++mutable_state->fallbacks;
     mutable_state->fallback_shapes.emplace(type, (int) t, (int) n, (int) k, (int) ldy);
     return false;
 }
 #endif
 
-}  // namespace
+} // namespace
 
 Gemm::~Gemm() {
 #if defined(__HIPCC__) && defined(GUILD_HIPBLASLT_AVAILABLE)
     delete static_cast<HipLtState*>(hipblaslt_state_);
 #endif
-    if (handle_) delete ((dpct::blas::descriptor_ptr)handle_);
+    if (handle_)
+        delete ((dpct::blas::descriptor_ptr) handle_);
     if (!external_) {
-        if (scratch_) sycl::free(scratch_, dpct::get_in_order_queue());
-        if (workspace_) sycl::free(workspace_, dpct::get_in_order_queue());
+        if (scratch_)
+            sycl::free(scratch_, dpct::get_in_order_queue());
+        if (workspace_)
+            sycl::free(workspace_, dpct::get_in_order_queue());
     }
 }
 
-bool Gemm::init_external(void *stream, uint16_t *scratch, int64_t scratch_elems,
-                         void *workspace, size_t ws_bytes,
-                         std::string &err) try {
+bool Gemm::init_external(void* stream, uint16_t* scratch, int64_t scratch_elems, void* workspace, size_t ws_bytes,
+                         std::string& err) try {
     dpct::blas::descriptor_ptr h = nullptr;
-    if (const int s = DPCT_CHECK_ERROR(h = new dpct::blas::descriptor());
-        s != 0) {
+    if (const int s = DPCT_CHECK_ERROR(h = new dpct::blas::descriptor()); s != 0) {
         err = "prefill gemm: cublasCreate: cuBLAS status " + std::to_string((int) s);
         return false;
     }
     handle_ = h;
     stream_ = stream;
     external_ = true;
-    note(DPCT_CHECK_ERROR(h->set_queue(guild::q_of(stream))),
-         "cublasSetStream");
+    note(DPCT_CHECK_ERROR(h->set_queue(guild::q_of(stream))), "cublasSetStream");
     workspace_ = workspace;
     /*
     DPCT1027: The call to cublasSetWorkspace was replaced with 0 because
     this functionality is redundant in SYCL.
     */
     note(0, "cublasSetWorkspace");
-    note(DPCT_CHECK_ERROR(h->set_math_mode(dpct::blas::math_mode::mm_default)),
-         "cublasSetMathMode");
+    note(DPCT_CHECK_ERROR(h->set_math_mode(dpct::blas::math_mode::mm_default)), "cublasSetMathMode");
     scratch_ = scratch;
     scratch_elems_ = scratch_elems;
 #if defined(__HIPCC__) && defined(GUILD_HIPBLASLT_AVAILABLE)
     hipblaslt_state_ = create_hipblaslt_state(workspace_, ws_bytes).release();
 #endif
     return true;
-}
-catch (sycl::exception const &exc) {
-  std::cerr << exc.what() << "Exception caught at file:" << __FILE__
-            << ", line:" << __LINE__ << std::endl;
-  std::exit(1);
+} catch (sycl::exception const& exc) {
+    std::cerr << exc.what() << "Exception caught at file:" << __FILE__ << ", line:" << __LINE__ << std::endl;
+    std::exit(1);
 }
 
 void Gemm::rebind(uint16_t* scratch, int64_t scratch_elems, void* workspace, size_t ws_bytes) {
@@ -361,27 +367,23 @@ void Gemm::rebind(uint16_t* scratch, int64_t scratch_elems, void* workspace, siz
 #endif
 }
 
-bool Gemm::init(void *stream, int64_t scratch_elems, std::string &err) try {
+bool Gemm::init(void* stream, int64_t scratch_elems, std::string& err) try {
     // #240: every failure names the call and the real status, so "no VRAM" can be told from a broken install
     dpct::blas::descriptor_ptr h = nullptr;
-    if (const int s = DPCT_CHECK_ERROR(h = new dpct::blas::descriptor());
-        s != 0) {
+    if (const int s = DPCT_CHECK_ERROR(h = new dpct::blas::descriptor()); s != 0) {
         err = "prefill gemm: cublasCreate: cuBLAS status " + std::to_string((int) s);
         return false;
     }
     handle_ = h;
     stream_ = stream;
-    note(DPCT_CHECK_ERROR(h->set_queue(guild::q_of(stream))),
-         "cublasSetStream");
+    note(DPCT_CHECK_ERROR(h->set_queue(guild::q_of(stream))), "cublasSetStream");
     // A fixed workspace so the handle never allocates on the way (and graphs could capture it later).
     const size_t ws = 32u << 20;
     /*
     DPCT1000: Error handling if-stmt was detected but could not be
     rewritten.
     */
-    if (const dpct::err0 e =
-            DPCT_CHECK_ERROR(workspace_ = (void *)sycl::malloc_device(
-                                 ws, dpct::get_in_order_queue()));
+    if (const dpct::err0 e = DPCT_CHECK_ERROR(workspace_ = (void*) sycl::malloc_device(ws, dpct::get_in_order_queue()));
         e != 0) {
         /*
         DPCT1009: SYCL reports errors using exceptions and does not use
@@ -391,8 +393,7 @@ bool Gemm::init(void *stream, int64_t scratch_elems, std::string &err) try {
         /*
         DPCT1001: The statement could not be removed.
         */
-        err = std::string("prefill gemm: workspace of 32 MiB: ") +
-              dpct::get_error_string_dummy(e);
+        err = std::string("prefill gemm: workspace of 32 MiB: ") + dpct::get_error_string_dummy(e);
         return false;
     }
     /*
@@ -400,8 +401,7 @@ bool Gemm::init(void *stream, int64_t scratch_elems, std::string &err) try {
     this functionality is redundant in SYCL.
     */
     note(0, "cublasSetWorkspace");
-    note(DPCT_CHECK_ERROR(h->set_math_mode(dpct::blas::math_mode::mm_default)),
-         "cublasSetMathMode");
+    note(DPCT_CHECK_ERROR(h->set_math_mode(dpct::blas::math_mode::mm_default)), "cublasSetMathMode");
 #if defined(__HIPCC__) && defined(GUILD_HIPBLASLT_AVAILABLE)
     hipblaslt_state_ = create_hipblaslt_state(workspace_, ws).release();
 #endif
@@ -411,14 +411,12 @@ bool Gemm::init(void *stream, int64_t scratch_elems, std::string &err) try {
         rewritten.
         */
         if (const dpct::err0 e = DPCT_CHECK_ERROR(
-                scratch_ = (uint16_t *)sycl::malloc_device(
-                    (size_t)scratch_elems * 2, dpct::get_in_order_queue()));
+                scratch_ = (uint16_t*) sycl::malloc_device((size_t) scratch_elems * 2, dpct::get_in_order_queue()));
             e != 0) {
             /*
             DPCT1001: The statement could not be removed.
             */
-            err = "prefill gemm: dequant scratch of " +
-                  std::to_string(scratch_elems * 2 >> 20) + " MiB: " +
+            err = "prefill gemm: dequant scratch of " + std::to_string(scratch_elems * 2 >> 20) + " MiB: " +
                   /*
                   DPCT1009: SYCL reports errors using exceptions and does
                   not use error codes. Please replace the
@@ -431,56 +429,54 @@ bool Gemm::init(void *stream, int64_t scratch_elems, std::string &err) try {
     }
     scratch_elems_ = scratch_elems;
     return true;
-}
-catch (sycl::exception const &exc) {
-  std::cerr << exc.what() << "Exception caught at file:" << __FILE__
-            << ", line:" << __LINE__ << std::endl;
-  std::exit(1);
+} catch (sycl::exception const& exc) {
+    std::cerr << exc.what() << "Exception caught at file:" << __FILE__ << ", line:" << __LINE__ << std::endl;
+    std::exit(1);
 }
 
 void Gemm::bf16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64_t N, int64_t K, int64_t ldy,
                 float beta) {
-    if (T <= 0 || N <= 0) return;
-    if (ldy <= 0) ldy = N;
+    if (T <= 0 || N <= 0)
+        return;
+    if (ldy <= 0)
+        ldy = N;
     const float alpha = 1.0f;
 #if defined(__HIPCC__) && defined(GUILD_HIPBLASLT_AVAILABLE)
-    if (try_hipblaslt(hipblaslt_state_, guild::prefill::hipblaslt::InputType::bf16, X, W, Y, T, N, K, ldy,
-                      beta, stream_)) {
+    if (try_hipblaslt(hipblaslt_state_, guild::prefill::hipblaslt::InputType::bf16, X, W, Y, T, N, K, ldy, beta,
+                      stream_)) {
         GUILD_ABSORB_HIPBLAS_STICKY("hipBLASLt bf16");
         return;
     }
 #endif
     // Column-major view: Y^T[N, T] = W[N, K] (stored K x N col-major, transposed) . X^T[K, T].
-    ck(DPCT_CHECK_ERROR(dpct::blas::gemm(
-           (dpct::blas::descriptor_ptr)handle_, oneapi::mkl::transpose::trans,
-           oneapi::mkl::transpose::nontrans, (int)N, (int)T, (int)K, &alpha, W,
-           dpct::library_data_t::real_bfloat16, (int)K, X,
-           dpct::library_data_t::real_bfloat16, (int)K, &beta, Y,
-           dpct::library_data_t::real_float, (int)ldy,
-           dpct::compute_type::f32)),
+    ck(DPCT_CHECK_ERROR(dpct::blas::gemm((dpct::blas::descriptor_ptr) handle_, oneapi::mkl::transpose::trans,
+                                         oneapi::mkl::transpose::nontrans, (int) N, (int) T, (int) K, &alpha, W,
+                                         dpct::library_data_t::real_bfloat16, (int) K, X,
+                                         dpct::library_data_t::real_bfloat16, (int) K, &beta, Y,
+                                         dpct::library_data_t::real_float, (int) ldy, dpct::compute_type::f32)),
        "cublasGemmEx");
     GUILD_ABSORB_HIPBLAS_STICKY("cublasGemmEx");
 }
 
 void Gemm::f16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64_t N, int64_t K, int64_t ldy,
                float beta) {
-    if (T <= 0 || N <= 0) return;
-    if (ldy <= 0) ldy = N;
+    if (T <= 0 || N <= 0)
+        return;
+    if (ldy <= 0)
+        ldy = N;
     const float alpha = 1.0f;
 #if defined(__HIPCC__) && defined(GUILD_HIPBLASLT_AVAILABLE)
-    if (try_hipblaslt(hipblaslt_state_, guild::prefill::hipblaslt::InputType::f16, X, W, Y, T, N, K, ldy,
-                      beta, stream_)) {
+    if (try_hipblaslt(hipblaslt_state_, guild::prefill::hipblaslt::InputType::f16, X, W, Y, T, N, K, ldy, beta,
+                      stream_)) {
         GUILD_ABSORB_HIPBLAS_STICKY("hipBLASLt f16");
         return;
     }
 #endif
-    ck(DPCT_CHECK_ERROR(dpct::blas::gemm(
-           (dpct::blas::descriptor_ptr)handle_, oneapi::mkl::transpose::trans,
-           oneapi::mkl::transpose::nontrans, (int)N, (int)T, (int)K, &alpha, W,
-           dpct::library_data_t::real_half, (int)K, X,
-           dpct::library_data_t::real_half, (int)K, &beta, Y,
-           dpct::library_data_t::real_float, (int)ldy,
-           dpct::compute_type::f32)),
+    ck(DPCT_CHECK_ERROR(dpct::blas::gemm((dpct::blas::descriptor_ptr) handle_, oneapi::mkl::transpose::trans,
+                                         oneapi::mkl::transpose::nontrans, (int) N, (int) T, (int) K, &alpha, W,
+                                         dpct::library_data_t::real_half, (int) K, X, dpct::library_data_t::real_half,
+                                         (int) K, &beta, Y, dpct::library_data_t::real_float, (int) ldy,
+                                         dpct::compute_type::f32)),
        "cublasGemmEx f16");
     GUILD_ABSORB_HIPBLAS_STICKY("cublasGemmEx f16");
 }
@@ -490,8 +486,12 @@ void Gemm::native(const uint16_t* X, int ggml_type, const void* W_blocks, float*
     if (N * K > scratch_elems_) {
         // Too large for the scratch at once: in row slices.
         const int64_t rows = scratch_elems_ / K;
-        if (rows <= 0) { std::fprintf(stderr, "prefill gemm: scratch too small for K=%lld\n", (long long) K); std::exit(1); }
-        if (ldy <= 0) ldy = N;
+        if (rows <= 0) {
+            std::fprintf(stderr, "prefill gemm: scratch too small for K=%lld\n", (long long) K);
+            std::exit(1);
+        }
+        if (ldy <= 0)
+            ldy = N;
         for (int64_t r0 = 0; r0 < N; r0 += rows) {
             const int64_t n = (N - r0 < rows) ? N - r0 : rows;
             guild::kernels::dequant_f16(ggml_type, W_blocks, r0, n, K, scratch_, stream_);
@@ -503,4 +503,4 @@ void Gemm::native(const uint16_t* X, int ggml_type, const void* W_blocks, float*
     f16(X, scratch_, Y, T, N, K, ldy, beta);
 }
 
-}  // namespace guild::prefill
+} // namespace guild::prefill

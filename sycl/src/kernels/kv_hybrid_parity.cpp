@@ -30,7 +30,7 @@ namespace k = guild::kernels;
 
 namespace {
 int g_fail = 0;
-void ck(dpct::err0 e, const char *w) {
+void ck(dpct::err0 e, const char* w) {
     /*
     DPCT1009: SYCL reports errors using exceptions and does not use error
     codes. Please replace the "get_error_string_dummy(...)" with a real
@@ -39,11 +39,10 @@ void ck(dpct::err0 e, const char *w) {
 }
 template <typename T> T* dalloc(size_t n) {
     T* p = nullptr;
-    ck(DPCT_CHECK_ERROR(p = (T *)sycl::malloc_device(
-                            n * sizeof(T) + 64, dpct::get_in_order_queue())),
-       "malloc");
-    ck(DPCT_CHECK_ERROR(
-           (dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memset(p, 0, n * sizeof(T) + 64).wait()),
+    ck(DPCT_CHECK_ERROR(p = (T*) sycl::malloc_device(n * sizeof(T) + 64, dpct::get_in_order_queue())), "malloc");
+    ck(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
+                            .memset(p, 0, n * sizeof(T) + 64)
+                            .wait()),
        "memset");
     return p;
 }
@@ -56,19 +55,23 @@ void fwht256_host_reference(float* x) {
             for (int j = 0; j < s; ++j) {
                 const float u = x[i + j];
                 const float v = x[i + j + s];
-                x[i + j]     = u + v;
+                x[i + j] = u + v;
                 x[i + j + s] = u - v;
             }
         }
     }
     const float scale = 1.0f / 16.0f;
-    for (int i = 0; i < n; ++i) x[i] *= scale;
+    for (int i = 0; i < n; ++i)
+        x[i] *= scale;
 }
 void quantize_block_q4_0_host(const float* x, k::block_q4_0& blk) {
     float amax = 0.0f, max_val = 0.0f;
     for (int i = 0; i < 32; ++i) {
         const float v = x[i];
-        if (amax < std::fabs(v)) { amax = std::fabs(v); max_val = v; }
+        if (amax < std::fabs(v)) {
+            amax = std::fabs(v);
+            max_val = v;
+        }
     }
     const float d = max_val / -8.0f;
     const float id = d != 0.0f ? 1.0f / d : 0.0f;
@@ -81,7 +84,7 @@ void quantize_block_q4_0_host(const float* x, k::block_q4_0& blk) {
         blk.qs[i] = xi0 | (xi1 << 4);
     }
 }
-}  // namespace
+} // namespace
 
 int main() {
     // SYCL port: qsa_prompt_attn's tensor-core (mma.sync PTX) kernel is not ported; on SYCL the prompt attention this
@@ -92,13 +95,14 @@ int main() {
     k::QsaShapes s = k::qsa_real_shapes();
     s.page_size = 64;
     const int H = (int) s.n_head_kv, D = (int) s.head_dim, P = (int) s.page_size, G = D / k::KV_Q8_GROUP;
-    const int QH = (int) s.n_head, PER = QH / H;   // query heads per KV head
-    const int pages = 24, cells = pages * P;   // n_chunks >= n_head: the batched merge overlaps queries below that
+    const int QH = (int) s.n_head, PER = QH / H; // query heads per KV head
+    const int pages = 24, cells = pages * P;     // n_chunks >= n_head: the batched merge overlaps queries below that
     std::mt19937 rng(17);
     std::normal_distribution<float> nd(0.0f, 1.0f);
 
     std::vector<int32_t> table(pages);
-    for (int i = 0; i < pages; ++i) table[i] = (i * 5 + 3) % pages;
+    for (int i = 0; i < pages; ++i)
+        table[i] = (i * 5 + 3) % pages;
     int32_t* d_table = dalloc<int32_t>(pages);
     /*
     DPCT1114: cudaMemcpy is migrated to asynchronization memcpy, assuming in
@@ -106,13 +110,16 @@ int main() {
     is not pageable, call wait() on event return by memcpy API to ensure
     synchronization behavior.
     */
-    ck(DPCT_CHECK_ERROR(
-           (dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(d_table, table.data(), pages * 4).wait()),
+    ck(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
+                            .memcpy(d_table, table.data(), pages * 4)
+                            .wait()),
        "table");
 
     std::vector<float> K((size_t) cells * H * D), V((size_t) cells * H * D);
-    for (auto& x : K) x = nd(rng) * 0.5f;
-    for (auto& x : V) x = nd(rng) * 0.5f;
+    for (auto& x : K)
+        x = nd(rng) * 0.5f;
+    for (auto& x : V)
+        x = nd(rng) * 0.5f;
 
     // ---- host reference: K in INT8 (kv_q8.hpp), rotated V in Q4_0 (kv_q4.hpp)
     std::vector<int8_t> rk((size_t) cells * H * D);
@@ -128,7 +135,8 @@ int main() {
                 for (int t = 0; t < k::KV_Q8_GROUP; ++t) {
                     int q = 0;
                     if (sf > 0.0f) {
-                        q = (int) std::nearbyint(K[((size_t) c * H + h) * D + g * k::KV_Q8_GROUP + t] / sf);   // rn: ties to even, as the kernel
+                        q = (int) std::nearbyint(K[((size_t) c * H + h) * D + g * k::KV_Q8_GROUP + t] /
+                                                 sf); // rn: ties to even, as the kernel
                         q = std::max(-127, std::min(127, q));
                     }
                     rk[((size_t) c * H + h) * D + g * k::KV_Q8_GROUP + t] = (int8_t) q;
@@ -137,7 +145,8 @@ int main() {
             }
     std::vector<float> Vrot((size_t) cells * H * D);
     std::memcpy(Vrot.data(), V.data(), V.size() * 4);
-    for (int c = 0; c < cells * H; ++c) fwht256_host_reference(Vrot.data() + (size_t) c * D);
+    for (int c = 0; c < cells * H; ++c)
+        fwht256_host_reference(Vrot.data() + (size_t) c * D);
     std::vector<k::block_q4_0> rv4((size_t) cells * H * (D / 32));
     for (int c = 0; c < cells; ++c)
         for (int h = 0; h < H; ++h)
@@ -155,15 +164,13 @@ int main() {
 
     int append_bad = 0, gather_bad = 0;
     for (int c = 0; c < cells; ++c) {
-        ck(DPCT_CHECK_ERROR(
-               (dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
-                   .memcpy(d_kcur, &K[(size_t)c * H * D], (size_t)H * D * 4)
-                   .wait()),
+        ck(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
+                                .memcpy(d_kcur, &K[(size_t) c * H * D], (size_t) H * D * 4)
+                                .wait()),
            "kcur");
-        ck(DPCT_CHECK_ERROR(
-               (dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
-                   .memcpy(d_vcur, &V[(size_t)c * H * D], (size_t)H * D * 4)
-                   .wait()),
+        ck(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
+                                .memcpy(d_vcur, &V[(size_t) c * H * D], (size_t) H * D * 4)
+                                .wait()),
            "vcur");
         int32_t step[k::kStepCount];
         k::qsa_step_fill(step, c, s);
@@ -173,8 +180,9 @@ int main() {
         If the memory is not pageable, call wait() on event return by memcpy API
         to ensure synchronization behavior.
         */
-        ck(DPCT_CHECK_ERROR(
-               (dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(d_step, step, sizeof step).wait()),
+        ck(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
+                                .memcpy(d_step, step, sizeof step)
+                                .wait()),
            "step");
         // exactly what qsa_layer's hybrid branch does
         k::fwht256_inplace_cuda(d_vcur, H, nullptr);
@@ -187,8 +195,7 @@ int main() {
         */
         ck(0 != 0 ? 0 : 0, "append");
     }
-    ck(DPCT_CHECK_ERROR(dpct::get_current_device().queues_wait_and_throw()),
-       "append sync");
+    ck(DPCT_CHECK_ERROR(dpct::get_current_device().queues_wait_and_throw()), "append sync");
 
     std::vector<int8_t> hk((size_t) cells * H * D);
     std::vector<uint16_t> hks((size_t) cells * H * G);
@@ -212,22 +219,26 @@ int main() {
         for (int h = 0; h < H; ++h) {
             const long long r = (row + h) * P + c % P;
             for (int d = 0; d < D; ++d)
-                if (hk[(size_t) r * D + d] != rk[((size_t) c * H + h) * D + d]) ++append_bad;
+                if (hk[(size_t) r * D + d] != rk[((size_t) c * H + h) * D + d])
+                    ++append_bad;
             for (int g = 0; g < G; ++g)
-                if (hks[(size_t) r * G + g] != rk_s[((size_t) c * H + h) * G + g]) ++append_bad;
+                if (hks[(size_t) r * G + g] != rk_s[((size_t) c * H + h) * G + g])
+                    ++append_bad;
             for (int b = 0; b < D / 32; ++b) {
                 const k::block_q4_0& got = hv4b[(size_t) r * (D / 32) + b];
                 if (got.d != rv4[((size_t) c * H + h) * (D / 32) + b].d ||
-                    std::memcmp(got.qs, rv4[((size_t) c * H + h) * (D / 32) + b].qs, 16) != 0) ++append_bad;
+                    std::memcmp(got.qs, rv4[((size_t) c * H + h) * (D / 32) + b].qs, 16) != 0)
+                    ++append_bad;
             }
         }
     }
-    std::printf("[1/3] composed appends: %s (%d bad values of %zu K / %zu V)\n",
-                append_bad == 0 ? "PASS" : "FAIL", append_bad, hk.size(), rv4.size());
+    std::printf("[1/3] composed appends: %s (%d bad values of %zu K / %zu V)\n", append_bad == 0 ? "PASS" : "FAIL",
+                append_bad, hk.size(), rv4.size());
 
     // gather every cell (ids = all, ascending - the identity selection for width = cells)
     std::vector<int32_t> ids(cells);
-    for (int i = 0; i < cells; ++i) ids[i] = i;
+    for (int i = 0; i < cells; ++i)
+        ids[i] = i;
     int32_t* d_ids = dalloc<int32_t>(cells);
     /*
     DPCT1114: cudaMemcpy is migrated to asynchronization memcpy, assuming in
@@ -235,26 +246,27 @@ int main() {
     is not pageable, call wait() on event return by memcpy API to ensure
     synchronization behavior.
     */
-    ck(DPCT_CHECK_ERROR(
-           (dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(d_ids, ids.data(), cells * 4).wait()),
+    ck(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
+                            .memcpy(d_ids, ids.data(), cells * 4)
+                            .wait()),
        "ids");
     int32_t step[k::kStepCount];
     k::qsa_step_fill(step, cells - 1, s);
-    step[k::kStepWidth] = cells;   // select everything
+    step[k::kStepWidth] = cells; // select everything
     /*
     DPCT1114: cudaMemcpy is migrated to asynchronization memcpy, assuming in
     the original code the source host memory is pageable memory. If the memory
     is not pageable, call wait() on event return by memcpy API to ensure
     synchronization behavior.
     */
-    ck(DPCT_CHECK_ERROR(
-           (dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(d_step, step, sizeof step).wait()),
+    ck(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
+                            .memcpy(d_step, step, sizeof step)
+                            .wait()),
        "step2");
     uint16_t *d_ksc = dalloc<uint16_t>((size_t) cells * H * D), *d_vsc = dalloc<uint16_t>((size_t) cells * H * D);
     k::kv_gather_q8_step(d_kq, d_kq, d_ks, d_ks, d_table, d_ids, d_step, cells, s, d_ksc, d_ksc, nullptr);
     k::kv_gather_q4_step(d_v4, d_v4, d_table, d_ids, d_step, cells, s, d_vsc, d_vsc, nullptr);
-    ck(DPCT_CHECK_ERROR(dpct::get_current_device().queues_wait_and_throw()),
-       "gather sync");
+    ck(DPCT_CHECK_ERROR(dpct::get_current_device().queues_wait_and_throw()), "gather sync");
     std::vector<uint16_t> h_ksc((size_t) cells * H * D), h_vsc((size_t) cells * H * D);
     ck(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
                             .memcpy(h_ksc.data(), d_ksc, h_ksc.size() * 2)
@@ -267,20 +279,24 @@ int main() {
     for (int c = 0; c < cells; ++c)
         for (int h = 0; h < H; ++h)
             for (int d = 0; d < D; ++d) {
-                const float kref = k::f32_from_f16(k::f16_from_f32(
-                    (float) rk[((size_t) c * H + h) * D + d] * k::f32_from_f16(rk_s[((size_t) c * H + h) * G + d / k::KV_Q8_GROUP])));
-                if (k::f32_from_f16(h_ksc[((size_t) c * H + h) * D + d]) != kref) ++gather_bad;
+                const float kref = k::f32_from_f16(
+                    k::f16_from_f32((float) rk[((size_t) c * H + h) * D + d] *
+                                    k::f32_from_f16(rk_s[((size_t) c * H + h) * G + d / k::KV_Q8_GROUP])));
+                if (k::f32_from_f16(h_ksc[((size_t) c * H + h) * D + d]) != kref)
+                    ++gather_bad;
                 const k::block_q4_0& b = rv4[((size_t) c * H + h) * (D / 32) + d / 32];
                 const int nib = d % 32 < 16 ? (b.qs[d % 32] & 0x0F) - 8 : ((b.qs[d % 32 - 16] >> 4) - 8);
                 const float vref = k::f32_from_f16(k::f16_from_f32((float) nib * k::f32_from_f16(b.d)));
-                if (k::f32_from_f16(h_vsc[((size_t) c * H + h) * D + d]) != vref) ++gather_bad;
+                if (k::f32_from_f16(h_vsc[((size_t) c * H + h) * D + d]) != vref)
+                    ++gather_bad;
             }
-    std::printf("[2/3] composed gathers: %s (%d bad of %zu)\n",
-                gather_bad == 0 ? "PASS" : "FAIL", gather_bad, h_ksc.size());
+    std::printf("[2/3] composed gathers: %s (%d bad of %zu)\n", gather_bad == 0 ? "PASS" : "FAIL", gather_bad,
+                h_ksc.size());
 
     // ---- attention: qsa_decode_attn KV_MODE 3 over the hybrid pools + output fwht, vs fp32 references
     std::vector<float> q((size_t) QH * D);
-    for (auto& x : q) x = nd(rng);
+    for (auto& x : q)
+        x = nd(rng);
     float* d_q = dalloc<float>(q.size());
     /*
     DPCT1114: cudaMemcpy is migrated to asynchronization memcpy, assuming in
@@ -288,17 +304,20 @@ int main() {
     is not pageable, call wait() on event return by memcpy API to ensure
     synchronization behavior.
     */
-    ck(DPCT_CHECK_ERROR(
-           (dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(d_q, q.data(), q.size() * 4).wait()),
+    ck(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
+                            .memcpy(d_q, q.data(), q.size() * 4)
+                            .wait()),
        "q");
     k::QsaAttnPools pools;
-    pools.k_q = d_kq; pools.k_scale = d_ks; pools.v_q4 = d_v4; pools.page_table = d_table;
+    pools.k_q = d_kq;
+    pools.k_scale = d_ks;
+    pools.v_q4 = d_v4;
+    pools.page_table = d_table;
     float* d_scr = dalloc<float>(k::qsa_decode_attn_scratch_floats(cells, s) + 16);
     float* d_attn = dalloc<float>((size_t) QH * D);
     k::qsa_decode_attn_step(d_q, pools, d_ids, d_step, cells, s, d_scr, d_attn, nullptr);
-    k::fwht256_inplace_cuda(d_attn, QH, nullptr);   // the engine's inverse rotation of the output
-    ck(DPCT_CHECK_ERROR(dpct::get_current_device().queues_wait_and_throw()),
-       "attn sync");
+    k::fwht256_inplace_cuda(d_attn, QH, nullptr); // the engine's inverse rotation of the output
+    ck(DPCT_CHECK_ERROR(dpct::get_current_device().queues_wait_and_throw()), "attn sync");
     std::vector<float> h_attn((size_t) QH * D);
     ck(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
                             .memcpy(h_attn.data(), d_attn, h_attn.size() * 4)
@@ -321,9 +340,13 @@ int main() {
                 m = std::max(m, sc[c]);
             }
             float l = 0.0f;
-            for (int c = 0; c < cells; ++c) { sc[c] = std::exp(sc[c] - m); l += sc[c]; }
+            for (int c = 0; c < cells; ++c) {
+                sc[c] = std::exp(sc[c] - m);
+                l += sc[c];
+            }
             for (int c = 0; c < cells; ++c)
-                for (int t = 0; t < D; ++t) out[(size_t) h * D + t] += sc[c] / l * Veq[((size_t) c * H + kvh) * D + t];
+                for (int t = 0; t < D; ++t)
+                    out[(size_t) h * D + t] += sc[c] / l * Veq[((size_t) c * H + kvh) * D + t];
         }
     };
     std::vector<float> Kdq((size_t) cells * H * D), Vdq((size_t) cells * H * D);
@@ -331,7 +354,8 @@ int main() {
         for (int h = 0; h < H; ++h)
             for (int d = 0; d < D; ++d) {
                 Kdq[((size_t) c * H + h) * D + d] =
-                    (float) rk[((size_t) c * H + h) * D + d] * k::f32_from_f16(rk_s[((size_t) c * H + h) * G + d / k::KV_Q8_GROUP]);
+                    (float) rk[((size_t) c * H + h) * D + d] *
+                    k::f32_from_f16(rk_s[((size_t) c * H + h) * G + d / k::KV_Q8_GROUP]);
                 const k::block_q4_0& b = rv4[((size_t) c * H + h) * (D / 32) + d / 32];
                 const int nib = d % 32 < 16 ? (b.qs[d % 32] & 0x0F) - 8 : ((b.qs[d % 32 - 16] >> 4) - 8);
                 Vdq[((size_t) c * H + h) * D + d] = (float) nib * k::f32_from_f16(b.d);
@@ -339,13 +363,15 @@ int main() {
     // un-rotate the dequantized V (the kernel returns the output in the UNROTATED domain)
     std::vector<float> Vdq_un(Vdq.size());
     std::memcpy(Vdq_un.data(), Vdq.data(), Vdq.size() * 4);
-    for (int c = 0; c < cells * H; ++c) fwht256_host_reference(Vdq_un.data() + (size_t) c * D);
+    for (int c = 0; c < cells * H; ++c)
+        fwht256_host_reference(Vdq_un.data() + (size_t) c * D);
 
     // ---- batched form with TWO queries and per-query step arrays (the verify.cpp window's exact call)
     {
         const int nq = 2;
         std::vector<float> q2((size_t) nq * QH * D);
-        for (auto& x : q2) x = nd(rng);
+        for (auto& x : q2)
+            x = nd(rng);
         float* d_q2 = dalloc<float>(q2.size());
         /*
         DPCT1114: cudaMemcpy is migrated to asynchronization memcpy,
@@ -353,12 +379,15 @@ int main() {
         If the memory is not pageable, call wait() on event return by memcpy API
         to ensure synchronization behavior.
         */
-        ck(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(d_q2, q2.data(),
-                                                              q2.size() * 4).wait()),
+        ck(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
+                                .memcpy(d_q2, q2.data(), q2.size() * 4)
+                                .wait()),
            "q2");
         // the batched kernel indexes ids[z * cap + ...]: one FULL selection per query
         std::vector<int32_t> ids2((size_t) nq * cells);
-        for (int i = 0; i < nq; ++i) for (int c = 0; c < cells; ++c) ids2[(size_t) i * cells + c] = c;
+        for (int i = 0; i < nq; ++i)
+            for (int c = 0; c < cells; ++c)
+                ids2[(size_t) i * cells + c] = c;
         int32_t* d_ids2 = dalloc<int32_t>((size_t) nq * cells);
         /*
         DPCT1114: cudaMemcpy is migrated to asynchronization memcpy,
@@ -366,30 +395,31 @@ int main() {
         If the memory is not pageable, call wait() on event return by memcpy API
         to ensure synchronization behavior.
         */
-        ck(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(
-               d_ids2, ids2.data(), ids2.size() * 4).wait()),
+        ck(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
+                                .memcpy(d_ids2, ids2.data(), ids2.size() * 4)
+                                .wait()),
            "ids2");
         int32_t* d_steps2 = dalloc<int32_t>(nq * k::kStepCount);
         for (int i = 0; i < nq; ++i) {
             int32_t st2[k::kStepCount];
             k::qsa_step_fill(st2, cells - 1 - i, s);
-            st2[k::kStepWidth] = cells - i;   // slightly different widths, as verify's windows have
+            st2[k::kStepWidth] = cells - i; // slightly different widths, as verify's windows have
             /*
             DPCT1114: cudaMemcpy is migrated to asynchronization memcpy,
             assuming in the original code the source host memory is pageable
             memory. If the memory is not pageable, call wait() on event return
             by memcpy API to ensure synchronization behavior.
             */
-            ck(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(
-                   d_steps2 + i * k::kStepCount, st2, sizeof st2).wait()),
+            ck(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
+                                    .memcpy(d_steps2 + i * k::kStepCount, st2, sizeof st2)
+                                    .wait()),
                "steps2");
         }
         float* d_scr2 = dalloc<float>(k::qsa_decode_attn_scratch_floats(cells, s) * nq + 64);
         float* d_at2 = dalloc<float>((size_t) nq * QH * D);
         k::qsa_decode_attn_batch(d_q2, pools, d_ids2, d_steps2, cells, s, d_scr2, d_at2, nq, nullptr);
         k::fwht256_inplace_cuda(d_at2, (int64_t) nq * QH, nullptr);
-        ck(DPCT_CHECK_ERROR(dpct::get_current_device().queues_wait_and_throw()),
-           "attn2 sync");
+        ck(DPCT_CHECK_ERROR(dpct::get_current_device().queues_wait_and_throw()), "attn2 sync");
         std::vector<float> h_at2((size_t) nq * QH * D);
         ck(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
                                 .memcpy(h_at2.data(), d_at2, h_at2.size() * 4)
@@ -411,11 +441,14 @@ int main() {
                     m = std::max(m, sc[c]);
                 }
                 float l = 0.0f;
-                for (int c = 0; c < w; ++c) { sc[c] = std::exp(sc[c] - m); l += sc[c]; }
+                for (int c = 0; c < w; ++c) {
+                    sc[c] = std::exp(sc[c] - m);
+                    l += sc[c];
+                }
                 for (int d = 0; d < D; ++d) {
                     float acc = 0.0f;
                     for (int c = 0; c < w; ++c)
-                        acc += sc[c] / l * Vdq_un[((size_t) c * H + h / PER) * D + d];   // dim d only
+                        acc += sc[c] / l * Vdq_un[((size_t) c * H + h / PER) * D + d]; // dim d only
                     const double e = (double) std::fabs(h_at2[((size_t) i * QH + h) * D + d] - acc);
                     max_b = std::max(max_b, e);
                     per_q[i] = std::max(per_q[i], e);
@@ -423,9 +456,10 @@ int main() {
             }
         const bool bok = max_b < 5e-3;
         std::printf("       (per-query max: q0 %.2e, q1 %.2e)\n", per_q[0], per_q[1]);
-        std::printf("[4/4] mode-3 BATCHED attention (verify's form): %s (vs dequant ref %.2e)\n",
-                    bok ? "PASS" : "FAIL", max_b);
-        if (!bok) g_fail = 1;
+        std::printf("[4/4] mode-3 BATCHED attention (verify's form): %s (vs dequant ref %.2e)\n", bok ? "PASS" : "FAIL",
+                    max_b);
+        if (!bok)
+            g_fail = 1;
     }
 
     std::vector<float> ref_deq, ref_true;
@@ -453,14 +487,11 @@ int main() {
 #endif
         } else {
             k::fwht256_inplace_cuda(d_at4, QH, nullptr);
-            ck(DPCT_CHECK_ERROR(
-                   dpct::get_current_device().queues_wait_and_throw()),
-               "at4 sync");
+            ck(DPCT_CHECK_ERROR(dpct::get_current_device().queues_wait_and_throw()), "at4 sync");
             std::vector<float> h_at4((size_t) QH * D);
-            ck(DPCT_CHECK_ERROR(
-                   (dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
-                       .memcpy(h_at4.data(), d_at4, h_at4.size() * 4)
-                       .wait()),
+            ck(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
+                                    .memcpy(h_at4.data(), d_at4, h_at4.size() * 4)
+                                    .wait()),
                "at4");
             double max_p = 0.0;
             for (size_t i = 0; i < h_at4.size(); ++i)
@@ -468,11 +499,12 @@ int main() {
             const bool pok = max_p < 1e-2;
             std::printf("[5/5] qsa_prompt_attn mode 3 (tensor cores): %s (vs dequant ref %.2e)\n",
                         pok ? "PASS" : "FAIL", max_p);
-            if (!pok) g_fail = 1;
+            if (!pok)
+                g_fail = 1;
         }
     }
 
-    const bool attn_ok = max_deq < 5e-3;   // fp32 kernel math vs fp64-ish host accumulation
+    const bool attn_ok = max_deq < 5e-3; // fp32 kernel math vs fp64-ish host accumulation
     std::printf("[3/3] mode-3 attention + output fwht: %s (vs dequant ref %.2e, vs true fp32 %.2e)\n",
                 attn_ok ? "PASS" : "FAIL", max_deq, max_true);
 

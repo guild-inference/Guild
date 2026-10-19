@@ -45,7 +45,7 @@ float bf16_to_f32(uint16_t h) {
     return f;
 }
 
-}  // namespace
+} // namespace
 
 int main(int argc, char** argv) {
     if (argc < 2) {
@@ -58,33 +58,28 @@ int main(int argc, char** argv) {
         guild::GgufFile gguf(argv[a]);
         for (const auto& t : gguf.tensors()) {
             const int type = (int) t.type;
-            if (done.count(type) || !guild::kernels::dequant_bf16_supported(type) || t.shape.size() != 2) continue;
+            if (done.count(type) || !guild::kernels::dequant_bf16_supported(type) || t.shape.size() != 2)
+                continue;
             int be = 0, bb = 0;
-            if (!guild::block_geometry(t.type, be, bb)) continue;
+            if (!guild::block_geometry(t.type, be, bb))
+                continue;
             const int64_t cols = (int64_t) t.shape[0];
-            const int64_t rows = (std::min<int64_t>)(4, (int64_t) t.shape[1]);
+            const int64_t rows = (std::min<int64_t>) (4, (int64_t) t.shape[1]);
             const int64_t row_bytes = cols / be * bb;
             const uint8_t* host = (const uint8_t*) gguf.tensor_data(t);
             void* d_blocks = nullptr;
             float* d_f = nullptr;
             uint16_t* d_h = nullptr;
-            d_blocks = (void *)sycl::malloc_device((size_t)(rows * row_bytes),
-                                                   dpct::get_in_order_queue());
-            d_f = (float *)sycl::malloc_device((size_t)(rows * cols) * 4,
-                                               dpct::get_in_order_queue());
-            d_h = (uint16_t *)sycl::malloc_device((size_t)(rows * cols) * 2,
-                                                  dpct::get_in_order_queue());
-            dpct::get_in_order_queue()
-                .memcpy(d_blocks, host, (size_t)(rows * row_bytes))
-                .wait();
+            d_blocks = (void*) sycl::malloc_device((size_t) (rows * row_bytes), dpct::get_in_order_queue());
+            d_f = (float*) sycl::malloc_device((size_t) (rows * cols) * 4, dpct::get_in_order_queue());
+            d_h = (uint16_t*) sycl::malloc_device((size_t) (rows * cols) * 2, dpct::get_in_order_queue());
+            dpct::get_in_order_queue().memcpy(d_blocks, host, (size_t) (rows * row_bytes)).wait();
             guild::kernels::dequant_f32(type, d_blocks, 0, rows, cols, d_f, nullptr);
             guild::kernels::dequant_bf16(type, d_blocks, 0, rows, cols, d_h, nullptr);
             std::vector<float> gf((size_t) (rows * cols));
             std::vector<uint16_t> gh((size_t) (rows * cols));
             dpct::get_in_order_queue().memcpy(gf.data(), d_f, gf.size() * 4).wait();
-            dpct::get_in_order_queue()
-                .memcpy(gh.data(), d_h, gh.size() * 2)
-                .wait();
+            dpct::get_in_order_queue().memcpy(gh.data(), d_h, gh.size() * 2).wait();
             sycl::free(d_blocks, dpct::get_in_order_queue());
             sycl::free(d_f, dpct::get_in_order_queue());
             sycl::free(d_h, dpct::get_in_order_queue());
@@ -97,15 +92,18 @@ int main(int argc, char** argv) {
             for (size_t i = 0; i < ref.size(); ++i) {
                 const double e = std::fabs((double) gf[i] - ref[i]);
                 const double tol = 1e-6 * std::fabs((double) ref[i]) + 1e-30;
-                if (e > tol) ++bad_f;
+                if (e > tol)
+                    ++bad_f;
                 worst = (std::max)(worst, e / (std::fabs((double) ref[i]) + 1e-30));
                 const double eh = std::fabs((double) bf16_to_f32(gh[i]) - ref[i]);
-                if (eh > std::ldexp(std::fabs((double) ref[i]), -8) + 1e-30) ++bad_h;
+                if (eh > std::ldexp(std::fabs((double) ref[i]), -8) + 1e-30)
+                    ++bad_h;
             }
             ++checked;
             done[type] = true;
             const bool ok = bad_f == 0 && bad_h == 0;
-            if (!ok) ++fails;
+            if (!ok)
+                ++fails;
             std::printf("type %2d  %-40s %lld x %lld: f32 %s (%lld off, worst rel %.2e), bf16 %s (%lld off)\n", type,
                         t.name.c_str(), (long long) rows, (long long) cols, bad_f ? "FAIL" : "ok", (long long) bad_f,
                         worst, bad_h ? "FAIL" : "ok", (long long) bad_h);

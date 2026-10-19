@@ -44,42 +44,38 @@ inline float warp_sum(float x) {
         compilers or runtimes. You may need to adjust the code.
         */
         x += dpct::experimental::permute_sub_group_by_xor(
-            0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(), x,
-            offset);
+            0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(), x, offset);
     return x;
 }
 // TAB (#280, GUILD_ROPE_TABLE=1): the angles from the session's float64 table.  The host launches <false> whenever
 // no table applies - the default - so the default kernel is 0.1.31's code exactly (the table read is not in it;
 // with it merely skipped at run time, the compiled default path changed its results).
 template <bool TAB>
-__dpct_inline__ void
-append(const float *__restrict__ raw, const int32_t *__restrict__ pos_dev,
-       int pos_base, const float *__restrict__ gamma, float epsilon,
-       float *__restrict__ tail, float *__restrict__ dead,
-       float *__restrict__ pooled, int32_t *__restrict__ block_pos,
-       int max_cells, float theta_scale, float freq_scale, float corr_low,
-       float corr_high, float ext_factor, float mscale,
-       const int32_t *__restrict__ mtab, RopeTab rt) {
+__dpct_inline__ void append(const float* __restrict__ raw, const int32_t* __restrict__ pos_dev, int pos_base,
+                            const float* __restrict__ gamma, float epsilon, float* __restrict__ tail,
+                            float* __restrict__ dead, float* __restrict__ pooled, int32_t* __restrict__ block_pos,
+                            int max_cells, float theta_scale, float freq_scale, float corr_low, float corr_high,
+                            float ext_factor, float mscale, const int32_t* __restrict__ mtab, RopeTab rt) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
     const int pos = *pos_dev, d = item_ct1.get_local_id(2);
-    if (pos < 0 || pos >= max_cells) return;
+    if (pos < 0 || pos >= max_cells)
+        return;
     const int slot = pos % R;
     float incoming = 0.0f;
     if (d < D) {
         // SET_ROWS stores F16; GET_ROWS expands those exact values to F32.
-        incoming = sycl::vec<sycl::half, 1>(
-                       sycl::vec<float, 1>(raw[d])
-                           .convert<sycl::half, sycl::rounding_mode::rte>()[0])
-                       .convert<float, sycl::rounding_mode::automatic>()[0];
-        if (slot < R - 1) tail[slot * D + d] = incoming;
+        incoming =
+            sycl::vec<sycl::half, 1>(sycl::vec<float, 1>(raw[d]).convert<sycl::half, sycl::rounding_mode::rte>()[0])
+                .convert<float, sycl::rounding_mode::automatic>()[0];
+        if (slot < R - 1)
+            tail[slot * D + d] = incoming;
     }
-    if (pos != 0 && slot != R - 1) return;
-    auto &values =
-        *sycl::ext::oneapi::group_local_memory_for_overwrite<float[D]>(
-            sycl::ext::oneapi::this_work_item::get_work_group<3>());
-    auto &partials =
-        *sycl::ext::oneapi::group_local_memory_for_overwrite<float[32]>(
-            sycl::ext::oneapi::this_work_item::get_work_group<3>());
+    if (pos != 0 && slot != R - 1)
+        return;
+    auto& values = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[D]>(
+        sycl::ext::oneapi::this_work_item::get_work_group<3>());
+    auto& partials = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[32]>(
+        sycl::ext::oneapi::this_work_item::get_work_group<3>());
     float mean = 0.0f;
     if (d < D) {
         // The spare's four gather indices all name cell zero. Completed blocks
@@ -103,10 +99,12 @@ append(const float *__restrict__ raw, const int32_t *__restrict__ pos_dev,
         mean = sycl::fma(0.25f, sum, 0.0f); // SCALE includes a zero bias.
     }
     float square_sum = 0.0f;
-    if (d < D) square_sum += mean * mean;
+    if (d < D)
+        square_sum += mean * mean;
     square_sum = warp_sum(square_sum);
     const int lane = d % 32;
-    if (lane == 0) partials[d / 32] = square_sum;
+    if (lane == 0)
+        partials[d / 32] = square_sum;
     /*
     DPCT1065: Consider replacing sycl::nd_item::barrier() with
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
@@ -116,14 +114,16 @@ append(const float *__restrict__ raw, const int32_t *__restrict__ pos_dev,
     square_sum = lane < THREADS / 32 ? partials[lane] : 0.0f;
     square_sum = warp_sum(square_sum);
     const float scale = sycl::rsqrt(square_sum / D + epsilon);
-    if (d < D) values[d] = scale * mean * gamma[d];
+    if (d < D)
+        values[d] = scale * mean * gamma[d];
     /*
     DPCT1065: Consider replacing sycl::nd_item::barrier() with
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
     item_ct1.barrier();
-    if (d >= D) return;
+    if (d >= D)
+        return;
     const int b = pos / R;
     const int rope_pos = pos == 0 ? 0 : pos_base + R * b;
     float y = values[d];
@@ -134,17 +134,19 @@ append(const float *__restrict__ raw, const int32_t *__restrict__ pos_dev,
         float c, s;
         if (!(TAB && rope_tab_cs(rt, pos == 0 ? 0 : mrope_pos(mtab, rope_pos, pair), pair, c, s))) {
             const float theta_extrap =
-                (pos == 0 ? 0 : mrope_pos(mtab, rope_pos, pair)) *
-                dpct::pow(theta_scale, float(pair));
+                (pos == 0 ? 0 : mrope_pos(mtab, rope_pos, pair)) * dpct::pow(theta_scale, float(pair));
             rope_scaled_angle(theta_extrap, freq_scale, corr_low, corr_high, ext_factor, mscale, pair, c, s);
         }
         const float a = values[pair], z = values[pair + ROT / 2];
         y = d < ROT / 2 ? a * c - z * s : a * s + z * c;
     }
     pooled[std::size_t(b) * D + d] = y;
-    if (pos == 0) dead[d] = y;
-    else pooled[std::size_t(b + 1) * D + d] = dead[d];
-    if (d == 0 && pos != 0) *block_pos = rope_pos;
+    if (pos == 0)
+        dead[d] = y;
+    else
+        pooled[std::size_t(b + 1) * D + d] = dead[d];
+    if (d == 0 && pos != 0)
+        *block_pos = rope_pos;
 }
 // ---- C-2: the batched append.  The pooled key of a completed block b (its last cell pos = 4b+3), computed with
 // the single append's arithmetic: keys rounded through F16, summed tail[0]+tail[1]+tail[2]+incoming in that order,
@@ -152,11 +154,9 @@ append(const float *__restrict__ raw, const int32_t *__restrict__ pos_dev,
 // (cell >= p0) or the tail the previous batch left (cell < p0).  Only the batch's last completed block writes the
 // spare after it (every earlier one's is overwritten by the next block in order).
 template <bool TAB>
-__dpct_inline__ float
-pooled_value(const float *values, int d, int rope_pos, float theta_scale,
-             float freq_scale, float corr_low, float corr_high,
-             float ext_factor, float mscale, const int32_t *mtab, bool zero_pos,
-             const RopeTab &rt) {
+__dpct_inline__ float pooled_value(const float* values, int d, int rope_pos, float theta_scale, float freq_scale,
+                                   float corr_low, float corr_high, float ext_factor, float mscale, const int32_t* mtab,
+                                   bool zero_pos, const RopeTab& rt) {
     float y = values[d];
     if (d < ROT) {
         const int pair = d % (ROT / 2);
@@ -166,8 +166,7 @@ pooled_value(const float *values, int d, int rope_pos, float theta_scale,
         float c, s;
         if (!(TAB && rope_tab_cs(rt, zero_pos ? 0 : mrope_pos(mtab, rope_pos, pair), pair, c, s))) {
             const float theta_extrap =
-                (zero_pos ? 0 : mrope_pos(mtab, rope_pos, pair)) *
-                dpct::pow(theta_scale, float(pair));
+                (zero_pos ? 0 : mrope_pos(mtab, rope_pos, pair)) * dpct::pow(theta_scale, float(pair));
             rope_scaled_angle(theta_extrap, freq_scale, corr_low, corr_high, ext_factor, mscale, pair, c, s);
         }
         const float a = values[pair], z = values[pair + ROT / 2];
@@ -175,11 +174,12 @@ pooled_value(const float *values, int d, int rope_pos, float theta_scale,
     }
     return y;
 }
-__dpct_inline__ float norm_scale(float mean, float *partials, int d) {
+__dpct_inline__ float norm_scale(float mean, float* partials, int d) {
     float square_sum = d < D ? mean * mean : 0.0f;
     square_sum = warp_sum(square_sum);
     const int lane = d % 32;
-    if (lane == 0) partials[d / 32] = square_sum;
+    if (lane == 0)
+        partials[d / 32] = square_sum;
     /*
     DPCT1065: Consider replacing sycl::nd_item::barrier() with
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
@@ -192,26 +192,20 @@ __dpct_inline__ float norm_scale(float mean, float *partials, int d) {
 }
 // cell 0 of a sequence: the spare (every gather index names cell 0), written to pooled[0] and dead
 template <bool TAB>
-__dpct_inline__ void
-append_first(const float *__restrict__ raw, const float *__restrict__ gamma,
-             float epsilon, float *__restrict__ dead,
-             float *__restrict__ pooled, float theta_scale, float freq_scale,
-             float corr_low, float corr_high, float ext_factor, float mscale,
-             const int32_t *__restrict__ mtab, RopeTab rt) {
+__dpct_inline__ void append_first(const float* __restrict__ raw, const float* __restrict__ gamma, float epsilon,
+                                  float* __restrict__ dead, float* __restrict__ pooled, float theta_scale,
+                                  float freq_scale, float corr_low, float corr_high, float ext_factor, float mscale,
+                                  const int32_t* __restrict__ mtab, RopeTab rt) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
     const int d = item_ct1.get_local_id(2);
-    auto &values =
-        *sycl::ext::oneapi::group_local_memory_for_overwrite<float[D]>(
-            sycl::ext::oneapi::this_work_item::get_work_group<3>());
-    auto &partials =
-        *sycl::ext::oneapi::group_local_memory_for_overwrite<float[32]>(
-            sycl::ext::oneapi::this_work_item::get_work_group<3>());
+    auto& values = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[D]>(
+        sycl::ext::oneapi::this_work_item::get_work_group<3>());
+    auto& partials = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[32]>(
+        sycl::ext::oneapi::this_work_item::get_work_group<3>());
     float mean = 0.0f;
     if (d < D) {
         const float incoming =
-            sycl::vec<sycl::half, 1>(
-                sycl::vec<float, 1>(raw[d])
-                    .convert<sycl::half, sycl::rounding_mode::rte>()[0])
+            sycl::vec<sycl::half, 1>(sycl::vec<float, 1>(raw[d]).convert<sycl::half, sycl::rounding_mode::rte>()[0])
                 .convert<float, sycl::rounding_mode::automatic>()[0];
         float sum = incoming;
 #pragma unroll
@@ -221,7 +215,8 @@ append_first(const float *__restrict__ raw, const float *__restrict__ gamma,
         correctness. SYCL math built-in function rounding mode is aligned with
         OpenCL C 1.2 standard.
         */
-        for (int j = 1; j < R; ++j) sum = sum + incoming;
+        for (int j = 1; j < R; ++j)
+            sum = sum + incoming;
         /*
         DPCT1013: The rounding mode could not be specified and the generated
         code may have different accuracy than the original code. Verify the
@@ -232,50 +227,43 @@ append_first(const float *__restrict__ raw, const float *__restrict__ gamma,
     }
     const float square_sum = norm_scale(mean, partials, d);
     const float scale = sycl::rsqrt(square_sum / D + epsilon);
-    if (d < D) values[d] = scale * mean * gamma[d];
+    if (d < D)
+        values[d] = scale * mean * gamma[d];
     /*
     DPCT1065: Consider replacing sycl::nd_item::barrier() with
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
     item_ct1.barrier();
-    if (d >= D) return;
+    if (d >= D)
+        return;
     const float y = pooled_value<TAB>(values, d, 0, theta_scale, freq_scale, corr_low, corr_high, ext_factor, mscale,
-                                 mtab, true, rt);
+                                      mtab, true, rt);
     pooled[d] = y;
     dead[d] = y;
 }
 template <bool TAB>
-__dpct_inline__ void
-append_blocks(const float *__restrict__ raw, int64_t n, int64_t p0,
-              int pos_base, const float *__restrict__ gamma, float epsilon,
-              const float *__restrict__ tail, const float *__restrict__ dead,
-              float *__restrict__ pooled, int32_t *__restrict__ block_pos,
-              int64_t first_block, int64_t last_block, float theta_scale,
-              float freq_scale, float corr_low, float corr_high,
-              float ext_factor, float mscale, const int32_t *__restrict__ mtab,
-              RopeTab rt) {
+__dpct_inline__ void append_blocks(const float* __restrict__ raw, int64_t n, int64_t p0, int pos_base,
+                                   const float* __restrict__ gamma, float epsilon, const float* __restrict__ tail,
+                                   const float* __restrict__ dead, float* __restrict__ pooled,
+                                   int32_t* __restrict__ block_pos, int64_t first_block, int64_t last_block,
+                                   float theta_scale, float freq_scale, float corr_low, float corr_high,
+                                   float ext_factor, float mscale, const int32_t* __restrict__ mtab, RopeTab rt) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
     const int64_t b = first_block + item_ct1.get_group(2);
     const int d = item_ct1.get_local_id(2);
-    auto &values =
-        *sycl::ext::oneapi::group_local_memory_for_overwrite<float[D]>(
-            sycl::ext::oneapi::this_work_item::get_work_group<3>());
-    auto &partials =
-        *sycl::ext::oneapi::group_local_memory_for_overwrite<float[32]>(
-            sycl::ext::oneapi::this_work_item::get_work_group<3>());
+    auto& values = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[D]>(
+        sycl::ext::oneapi::this_work_item::get_work_group<3>());
+    auto& partials = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[32]>(
+        sycl::ext::oneapi::this_work_item::get_work_group<3>());
     float mean = 0.0f;
     if (d < D) {
         auto key = [&](int j) -> float {
             const int64_t cell = b * R + j;
-            return cell >= p0
-                       ? sycl::vec<sycl::half, 1>(
-                             sycl::vec<float, 1>(raw[(cell - p0) * D + d])
-                                 .convert<sycl::half,
-                                          sycl::rounding_mode::rte>()[0])
-                             .convert<float,
-                                      sycl::rounding_mode::automatic>()[0]
-                       : tail[j * D + d];
+            return cell >= p0 ? sycl::vec<sycl::half, 1>(sycl::vec<float, 1>(raw[(cell - p0) * D + d])
+                                                             .convert<sycl::half, sycl::rounding_mode::rte>()[0])
+                                    .convert<float, sycl::rounding_mode::automatic>()[0]
+                              : tail[j * D + d];
         };
         float sum = key(0);
 #pragma unroll
@@ -285,7 +273,8 @@ append_blocks(const float *__restrict__ raw, int64_t n, int64_t p0,
         correctness. SYCL math built-in function rounding mode is aligned with
         OpenCL C 1.2 standard.
         */
-        for (int j = 1; j < R; ++j) sum = sum + key(j);
+        for (int j = 1; j < R; ++j)
+            sum = sum + key(j);
         /*
         DPCT1013: The rounding mode could not be specified and the generated
         code may have different accuracy than the original code. Verify the
@@ -296,38 +285,44 @@ append_blocks(const float *__restrict__ raw, int64_t n, int64_t p0,
     }
     const float square_sum = norm_scale(mean, partials, d);
     const float scale = sycl::rsqrt(square_sum / D + epsilon);
-    if (d < D) values[d] = scale * mean * gamma[d];
+    if (d < D)
+        values[d] = scale * mean * gamma[d];
     /*
     DPCT1065: Consider replacing sycl::nd_item::barrier() with
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
     item_ct1.barrier();
-    if (d >= D) return;
+    if (d >= D)
+        return;
     const int rope_pos = pos_base + R * (int) b;
-    pooled[std::size_t(b) * D + d] = pooled_value<TAB>(values, d, rope_pos, theta_scale, freq_scale, corr_low, corr_high,
-                                                  ext_factor, mscale, mtab, false, rt);
+    pooled[std::size_t(b) * D + d] = pooled_value<TAB>(values, d, rope_pos, theta_scale, freq_scale, corr_low,
+                                                       corr_high, ext_factor, mscale, mtab, false, rt);
     if (b == last_block) {
         pooled[std::size_t(b + 1) * D + d] = dead[d];
-        if (d == 0) *block_pos = rope_pos;
+        if (d == 0)
+            *block_pos = rope_pos;
     }
 }
 // the tail after the batch: slot s holds the key of the batch's last cell with cell % 4 == s (s < 3), if any
-__dpct_inline__ void append_tail(const float *__restrict__ raw, int64_t n,
-                                 int64_t p0, float *__restrict__ tail) {
+__dpct_inline__ void append_tail(const float* __restrict__ raw, int64_t n, int64_t p0, float* __restrict__ tail) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
     const int s = item_ct1.get_group(2), d = item_ct1.get_local_id(2);
-    if (d >= D) return;
+    if (d >= D)
+        return;
     const int64_t last = p0 + n - 1;
-    int64_t cell = last - ((last % R) - s + R) % R;       // the last cell <= last with cell % 4 == s
-    if (cell < p0) return;
+    int64_t cell = last - ((last % R) - s + R) % R; // the last cell <= last with cell % 4 == s
+    if (cell < p0)
+        return;
     tail[s * D + d] =
         sycl::vec<sycl::half, 1>(
-            sycl::vec<float, 1>(raw[(cell - p0) * D + d])
-                .convert<sycl::half, sycl::rounding_mode::rte>()[0])
+            sycl::vec<float, 1>(raw[(cell - p0) * D + d]).convert<sycl::half, sycl::rounding_mode::rte>()[0])
             .convert<float, sycl::rounding_mode::automatic>()[0];
 }
-struct Span { const void* p; std::size_t n; };
+struct Span {
+    const void* p;
+    std::size_t n;
+};
 void validate(Span s) {
     const auto p = reinterpret_cast<std::uintptr_t>(s.p);
     if (!p || p % 4 || s.n > UINTPTR_MAX - p)
@@ -339,71 +334,61 @@ bool overlaps(Span a, Span b) {
 }
 } // namespace
 
-void native_qsa_indexer_set_enabled(bool value) { enabled.store(value, std::memory_order_relaxed); }
-bool native_qsa_indexer_enabled() { return enabled.load(std::memory_order_relaxed); }
+void native_qsa_indexer_set_enabled(bool value) {
+    enabled.store(value, std::memory_order_relaxed);
+}
+bool native_qsa_indexer_enabled() {
+    return enabled.load(std::memory_order_relaxed);
+}
 void native_qsa_indexer_append(const float* raw, const int32_t* relative_pos_device, int32_t pos_base,
-                               const float* gamma, float epsilon, const QsaIndexerBuffers& b,
-                               const QsaShapes& s, int64_t max_cells, const RopeScaling& scaling, void* stream) {
-    if (!stream || s.idx_dim != D || s.idx_block != R || s.n_rot != ROT ||
-        max_cells < 1 || max_cells > INT32_MAX || pos_base < 0 || pos_base % R ||
-        int64_t(pos_base) + max_cells > INT32_MAX || !std::isfinite(epsilon) || epsilon <= 0.0f ||
-        rope_scaling_invalid(scaling) != nullptr)
-        throw std::invalid_argument("native QSA indexer requires fixed geometry, aligned position base, positive capacity/epsilon, valid frequency/scaling and explicit stream");
-    const Span spans[] = {{raw,D*4},{relative_pos_device,4},{gamma,D*4},{b.tail,(R-1)*D*4},
-        {b.dead,D*4},{b.pooled,std::size_t(max_cells/R+1)*D*4},{b.block_pos,4}};
-    for (const auto& span : spans) validate(span);
-    for (int i = 0; i < 7; ++i) for (int j = i + 1; j < 7; ++j)
-        if (overlaps(spans[i], spans[j])) throw std::invalid_argument("native QSA indexer buffers overlap");
+                               const float* gamma, float epsilon, const QsaIndexerBuffers& b, const QsaShapes& s,
+                               int64_t max_cells, const RopeScaling& scaling, void* stream) {
+    if (!stream || s.idx_dim != D || s.idx_block != R || s.n_rot != ROT || max_cells < 1 || max_cells > INT32_MAX ||
+        pos_base < 0 || pos_base % R || int64_t(pos_base) + max_cells > INT32_MAX || !std::isfinite(epsilon) ||
+        epsilon <= 0.0f || rope_scaling_invalid(scaling) != nullptr)
+        throw std::invalid_argument("native QSA indexer requires fixed geometry, aligned position base, positive "
+                                    "capacity/epsilon, valid frequency/scaling and explicit stream");
+    const Span spans[] = {{raw, D * 4},    {relative_pos_device, 4},
+                          {gamma, D * 4},  {b.tail, (R - 1) * D * 4},
+                          {b.dead, D * 4}, {b.pooled, std::size_t(max_cells / R + 1) * D * 4},
+                          {b.block_pos, 4}};
+    for (const auto& span : spans)
+        validate(span);
+    for (int i = 0; i < 7; ++i)
+        for (int j = i + 1; j < 7; ++j)
+            if (overlaps(spans[i], spans[j]))
+                throw std::invalid_argument("native QSA indexer buffers overlap");
     const float theta_scale = powf((float) scaling.freq_base, -2.0f / ROT);
-    const RopeKernelArgs k = scaling.kernel_args(ROT);   // none: the identity constants
+    const RopeKernelArgs k = scaling.kernel_args(ROT); // none: the identity constants
     const RopeTab rt = rope_table_for(scaling);
-    if (rt.cos != nullptr)
-    {
-        auto exp_props = sycl::ext::oneapi::experimental::properties{
-            sycl::ext::oneapi::experimental::use_root_sync};
+    if (rt.cos != nullptr) {
+        auto exp_props = sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::use_root_sync};
 
-        ((sycl::queue *)(guild::q_of(stream)))
-            ->submit([&](sycl::handler &cgh) {
-                auto mrope_table_ct16 = mrope_table();
+        ((sycl::queue*) (guild::q_of(stream)))->submit([&](sycl::handler& cgh) {
+            auto mrope_table_ct16 = mrope_table();
 
-                cgh.parallel_for<dpct_kernel_name<class append_182f95,
-                                                  dpct_kernel_scalar<true>>>(
-                    sycl::nd_range<3>(sycl::range(1, 1, THREADS),
-                                      sycl::range(1, 1, THREADS)),
-                    exp_props,
-                    [=](sycl::nd_item<3> item_ct1)
-                        [[sycl::reqd_sub_group_size(32)]] {
-                            append<true>(raw, relative_pos_device, pos_base,
-                                         gamma, epsilon, b.tail, b.dead,
-                                         b.pooled, b.block_pos, int(max_cells),
-                                         theta_scale, k.freq_scale, k.corr_low,
-                                         k.corr_high, k.ext_factor,
-                                         k.attn_factor, mrope_table_ct16, rt);
-                        });
-            });
+            cgh.parallel_for<dpct_kernel_name<class append_182f95, dpct_kernel_scalar<true>>>(
+                sycl::nd_range<3>(sycl::range(1, 1, THREADS), sycl::range(1, 1, THREADS)), exp_props,
+                [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(32)]] {
+                    append<true>(raw, relative_pos_device, pos_base, gamma, epsilon, b.tail, b.dead, b.pooled,
+                                 b.block_pos, int(max_cells), theta_scale, k.freq_scale, k.corr_low, k.corr_high,
+                                 k.ext_factor, k.attn_factor, mrope_table_ct16, rt);
+                });
+        });
     } else {
-        auto exp_props = sycl::ext::oneapi::experimental::properties{
-            sycl::ext::oneapi::experimental::use_root_sync};
+        auto exp_props = sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::use_root_sync};
 
-        ((sycl::queue *)(guild::q_of(stream)))
-            ->submit([&](sycl::handler &cgh) {
-                auto mrope_table_ct16 = mrope_table();
+        ((sycl::queue*) (guild::q_of(stream)))->submit([&](sycl::handler& cgh) {
+            auto mrope_table_ct16 = mrope_table();
 
-                cgh.parallel_for<dpct_kernel_name<class append_182f95,
-                                                  dpct_kernel_scalar<false>>>(
-                    sycl::nd_range<3>(sycl::range(1, 1, THREADS),
-                                      sycl::range(1, 1, THREADS)),
-                    exp_props,
-                    [=](sycl::nd_item<3> item_ct1)
-                        [[sycl::reqd_sub_group_size(32)]] {
-                            append<false>(raw, relative_pos_device, pos_base,
-                                          gamma, epsilon, b.tail, b.dead,
-                                          b.pooled, b.block_pos, int(max_cells),
-                                          theta_scale, k.freq_scale, k.corr_low,
-                                          k.corr_high, k.ext_factor,
-                                          k.attn_factor, mrope_table_ct16, rt);
-                        });
-            });
+            cgh.parallel_for<dpct_kernel_name<class append_182f95, dpct_kernel_scalar<false>>>(
+                sycl::nd_range<3>(sycl::range(1, 1, THREADS), sycl::range(1, 1, THREADS)), exp_props,
+                [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(32)]] {
+                    append<false>(raw, relative_pos_device, pos_base, gamma, epsilon, b.tail, b.dead, b.pooled,
+                                  b.block_pos, int(max_cells), theta_scale, k.freq_scale, k.corr_low, k.corr_high,
+                                  k.ext_factor, k.attn_factor, mrope_table_ct16, rt);
+                });
+        });
     }
     /*
     DPCT1010: SYCL uses exceptions to report errors and does not use the
@@ -423,105 +408,77 @@ void native_qsa_indexer_append(const float* raw, const int32_t* relative_pos_dev
     DPCT1000: Error handling if-stmt was detected but could not be
     rewritten.
     */
-    if (error !=
-        0) throw std::runtime_error(dpct::get_error_string_dummy(error));
+    if (error != 0)
+        throw std::runtime_error(dpct::get_error_string_dummy(error));
 }
 void native_qsa_indexer_append_batch(const float* raw, int64_t n, int64_t p0, int32_t pos_base, const float* gamma,
                                      float epsilon, const QsaIndexerBuffers& b, const QsaShapes& s, int64_t max_cells,
                                      const RopeScaling& scaling, void* stream) {
-    if (n <= 0) return;
+    if (n <= 0)
+        return;
     if (!stream || s.idx_dim != D || s.idx_block != R || s.n_rot != ROT || p0 < 0 || p0 + n > max_cells ||
         max_cells > INT32_MAX || pos_base < 0 || pos_base % R || int64_t(pos_base) + max_cells > INT32_MAX ||
         !std::isfinite(epsilon) || epsilon <= 0.0f || rope_scaling_invalid(scaling) != nullptr)
         throw std::invalid_argument("native QSA indexer (batch): bad geometry, positions, parameters or scaling");
     const float theta_scale = powf((float) scaling.freq_base, -2.0f / ROT);
-    const RopeKernelArgs k = scaling.kernel_args(ROT);   // none: the identity constants
+    const RopeKernelArgs k = scaling.kernel_args(ROT); // none: the identity constants
     const float fsf = k.freq_scale, cl = k.corr_low, ch = k.corr_high, ef = k.ext_factor, ms = k.attn_factor;
     const dpct::queue_ptr st = guild::q_of(stream);
     const int32_t* mtab = mrope_table();
     const RopeTab rt = rope_table_for(scaling);
     if (p0 == 0) {
-        if (rt.cos != nullptr)
-        {
-            auto exp_props = sycl::ext::oneapi::experimental::properties{
-                sycl::ext::oneapi::experimental::use_root_sync};
+        if (rt.cos != nullptr) {
+            auto exp_props =
+                sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::use_root_sync};
 
-            st->parallel_for<dpct_kernel_name<class append_first_ea2d1f,
-                                              dpct_kernel_scalar<true>>>(
-                sycl::nd_range<3>(sycl::range(1, 1, THREADS),
-                                  sycl::range(1, 1, THREADS)),
-                exp_props,
-                [=](sycl::nd_item<3> item_ct1)
-                    [[sycl::reqd_sub_group_size(32)]] {
-                        append_first<true>(raw, gamma, epsilon, b.dead,
-                                           b.pooled, theta_scale, fsf, cl, ch,
-                                           ef, ms, mtab, rt);
-                    });
+            st->parallel_for<dpct_kernel_name<class append_first_ea2d1f, dpct_kernel_scalar<true>>>(
+                sycl::nd_range<3>(sycl::range(1, 1, THREADS), sycl::range(1, 1, THREADS)), exp_props,
+                [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(32)]] {
+                    append_first<true>(raw, gamma, epsilon, b.dead, b.pooled, theta_scale, fsf, cl, ch, ef, ms, mtab,
+                                       rt);
+                });
         } else {
-            auto exp_props = sycl::ext::oneapi::experimental::properties{
-                sycl::ext::oneapi::experimental::use_root_sync};
+            auto exp_props =
+                sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::use_root_sync};
 
-            st->parallel_for<dpct_kernel_name<class append_first_ea2d1f,
-                                              dpct_kernel_scalar<false>>>(
-                sycl::nd_range<3>(sycl::range(1, 1, THREADS),
-                                  sycl::range(1, 1, THREADS)),
-                exp_props,
-                [=](sycl::nd_item<3> item_ct1)
-                    [[sycl::reqd_sub_group_size(32)]] {
-                        append_first<false>(raw, gamma, epsilon, b.dead,
-                                            b.pooled, theta_scale, fsf, cl, ch,
-                                            ef, ms, mtab, rt);
-                    });
+            st->parallel_for<dpct_kernel_name<class append_first_ea2d1f, dpct_kernel_scalar<false>>>(
+                sycl::nd_range<3>(sycl::range(1, 1, THREADS), sycl::range(1, 1, THREADS)), exp_props,
+                [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(32)]] {
+                    append_first<false>(raw, gamma, epsilon, b.dead, b.pooled, theta_scale, fsf, cl, ch, ef, ms, mtab,
+                                        rt);
+                });
         }
     }
     // completed blocks: those whose last cell (4b+3) lies in [p0, p0 + n)
     const int64_t first = p0 <= R - 1 ? 0 : (p0 - (R - 1) + R - 1) / R;       // the smallest b with 4b+3 >= p0
-    const int64_t hi = p0 + n - 1 >= R - 1 ? (p0 + n - 1 - (R - 1)) / R : -1;   // the largest b with 4b+3 <= p0+n-1
-    if (hi >= first && rt.cos != nullptr)
-    {
-        auto exp_props = sycl::ext::oneapi::experimental::properties{
-            sycl::ext::oneapi::experimental::use_root_sync};
+    const int64_t hi = p0 + n - 1 >= R - 1 ? (p0 + n - 1 - (R - 1)) / R : -1; // the largest b with 4b+3 <= p0+n-1
+    if (hi >= first && rt.cos != nullptr) {
+        auto exp_props = sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::use_root_sync};
 
-        st->parallel_for<dpct_kernel_name<class append_blocks_a6c94e,
-                                          dpct_kernel_scalar<true>>>(
-            sycl::nd_range<3>(sycl::range(1, 1, (unsigned)(hi - first + 1)) *
-                                  sycl::range(1, 1, THREADS),
+        st->parallel_for<dpct_kernel_name<class append_blocks_a6c94e, dpct_kernel_scalar<true>>>(
+            sycl::nd_range<3>(sycl::range(1, 1, (unsigned) (hi - first + 1)) * sycl::range(1, 1, THREADS),
                               sycl::range(1, 1, THREADS)),
-            exp_props,
-            [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(32)]] {
-                append_blocks<true>(raw, n, p0, pos_base, gamma, epsilon,
-                                    b.tail, b.dead, b.pooled, b.block_pos,
-                                    first, hi, theta_scale, fsf, cl, ch, ef, ms,
-                                    mtab, rt);
+            exp_props, [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(32)]] {
+                append_blocks<true>(raw, n, p0, pos_base, gamma, epsilon, b.tail, b.dead, b.pooled, b.block_pos, first,
+                                    hi, theta_scale, fsf, cl, ch, ef, ms, mtab, rt);
             });
-    } else if (hi >= first)
-    {
-        auto exp_props = sycl::ext::oneapi::experimental::properties{
-            sycl::ext::oneapi::experimental::use_root_sync};
+    } else if (hi >= first) {
+        auto exp_props = sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::use_root_sync};
 
-        st->parallel_for<dpct_kernel_name<class append_blocks_a6c94e,
-                                          dpct_kernel_scalar<false>>>(
-            sycl::nd_range<3>(sycl::range(1, 1, (unsigned)(hi - first + 1)) *
-                                  sycl::range(1, 1, THREADS),
+        st->parallel_for<dpct_kernel_name<class append_blocks_a6c94e, dpct_kernel_scalar<false>>>(
+            sycl::nd_range<3>(sycl::range(1, 1, (unsigned) (hi - first + 1)) * sycl::range(1, 1, THREADS),
                               sycl::range(1, 1, THREADS)),
-            exp_props,
-            [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(32)]] {
-                append_blocks<false>(raw, n, p0, pos_base, gamma, epsilon,
-                                     b.tail, b.dead, b.pooled, b.block_pos,
-                                     first, hi, theta_scale, fsf, cl, ch, ef,
-                                     ms, mtab, rt);
+            exp_props, [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(32)]] {
+                append_blocks<false>(raw, n, p0, pos_base, gamma, epsilon, b.tail, b.dead, b.pooled, b.block_pos, first,
+                                     hi, theta_scale, fsf, cl, ch, ef, ms, mtab, rt);
             });
     }
     {
-        auto exp_props = sycl::ext::oneapi::experimental::properties{
-            sycl::ext::oneapi::experimental::use_root_sync};
+        auto exp_props = sycl::ext::oneapi::experimental::properties{sycl::ext::oneapi::experimental::use_root_sync};
 
         st->parallel_for<dpct_kernel_name<class append_tail_e0658e>>(
-            sycl::nd_range<3>(sycl::range(1, 1, R - 1) * sycl::range(1, 1, D),
-                              sycl::range(1, 1, D)),
-            exp_props, [=](sycl::nd_item<3> item_ct1) {
-                append_tail(raw, n, p0, b.tail);
-            });
+            sycl::nd_range<3>(sycl::range(1, 1, R - 1) * sycl::range(1, 1, D), sycl::range(1, 1, D)), exp_props,
+            [=](sycl::nd_item<3> item_ct1) { append_tail(raw, n, p0, b.tail); });
     }
     /*
     DPCT1010: SYCL uses exceptions to report errors and does not use the
@@ -541,7 +498,7 @@ void native_qsa_indexer_append_batch(const float* raw, int64_t n, int64_t p0, in
     DPCT1000: Error handling if-stmt was detected but could not be
     rewritten.
     */
-    if (error !=
-        0) throw std::runtime_error(dpct::get_error_string_dummy(error));
+    if (error != 0)
+        throw std::runtime_error(dpct::get_error_string_dummy(error));
 }
 } // namespace guild::kernels

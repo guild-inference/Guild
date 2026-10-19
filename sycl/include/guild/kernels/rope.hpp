@@ -64,4 +64,4 @@ void build_rope_table(int n_rot, const RopeScaling& scaling, int max_pos, float*
 void rope_neox_apply(const float* x, float* out, int64_t rows, int head_dim, int n_rot, const float* cos_tab,
                      const float* sin_tab, const int* pos, void* stream);
 
-}  // namespace guild::kernels
+} // namespace guild::kernels

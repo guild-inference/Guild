@@ -17,5 +17,6 @@ void native_router_top10(const float* logits, int32_t* ids, float* weights, void
 /// n_tok rows at once (logits [n,512], ids/weights [n,10]); each row exactly as the single call.
 void native_router_top10_multi(const float* logits, int32_t* ids, float* weights, int n_tok, void* stream);
 /// SYCL port: the same for 256 experts (the Coder) as well as 512; logits [n, n_expert].
-void native_router_top10_multi_ne(const float* logits, int32_t* ids, float* weights, int n_tok, int n_expert, void* stream);
-}
+void native_router_top10_multi_ne(const float* logits, int32_t* ids, float* weights, int n_tok, int n_expert,
+                                  void* stream);
+} // namespace guild::kernels

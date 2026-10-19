@@ -5,7 +5,8 @@
 #include <cstdint>
 namespace guild::kernels {
 /// The same contract as qsa_prompt_attn_batch; returns false (nothing launched) when the shape, pools or device are not
-/// handled, so the caller keeps its fallback. Off by default (slower than the fallback): GUILD_PROMPT_ATTN_XMX=1 enables it.
-bool qsa_prompt_attn_xmx(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps, int64_t cap,
-                         const QsaShapes& s, float* attn, int64_t n_q, void* stream);
-}
+/// handled, so the caller keeps its fallback. Off by default (slower than the fallback): GUILD_PROMPT_ATTN_XMX=1
+/// enables it.
+bool qsa_prompt_attn_xmx(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps,
+                         int64_t cap, const QsaShapes& s, float* attn, int64_t n_q, void* stream);
+} // namespace guild::kernels

@@ -18,24 +18,20 @@ namespace guild::kernels {
 constexpr float kHalfMax = 65504.0f;
 
 __dpct_inline__ float q8_1_finite(const float v) {
-    return sycl::fabs(v) > kHalfMax ? sycl::copysign((float)kHalfMax, (float)v)
-                                    : v;
+    return sycl::fabs(v) > kHalfMax ? sycl::copysign((float) kHalfMax, (float) v) : v;
 }
 
 /// The block's quantized value of `xi` for the (finite) scale `d`; `amax` = 0 is an all-zero block.
-__dpct_inline__ int8_t q8_1_quant(const float xi, const float d,
-                                  const float amax) {
-    if (amax == 0.0f) return 0;
+__dpct_inline__ int8_t q8_1_quant(const float xi, const float d, const float amax) {
+    if (amax == 0.0f)
+        return 0;
     const float q = sycl::round(xi / d);
     return (int8_t) (q > 127.0f ? 127.0f : q < -127.0f ? -127.0f : q);
 }
 
 __dpct_inline__ sycl::half2 q8_1_ds(const float d, const float sum) {
-    return sycl::half2(
-        sycl::vec<float, 1>(q8_1_finite(d))
-            .convert<sycl::half, sycl::rounding_mode::automatic>()[0],
-        sycl::vec<float, 1>(q8_1_finite(sum))
-            .convert<sycl::half, sycl::rounding_mode::automatic>()[0]);
+    return sycl::half2(sycl::vec<float, 1>(q8_1_finite(d)).convert<sycl::half, sycl::rounding_mode::automatic>()[0],
+                       sycl::vec<float, 1>(q8_1_finite(sum)).convert<sycl::half, sycl::rounding_mode::automatic>()[0]);
 }
 
-}  // namespace guild::kernels
+} // namespace guild::kernels

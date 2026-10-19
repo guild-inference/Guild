@@ -33,18 +33,20 @@
 
 namespace {
 
-void check(dpct::err0 e, const char *what) {
+void check(dpct::err0 e, const char* what) {
 }
 
-float sigmoid_f(float x) { return 1.0f / (1.0f + std::exp(-x)); }
+float sigmoid_f(float x) {
+    return 1.0f / (1.0f + std::exp(-x));
+}
 
 /// The reference's `gdn_step`, with switches for the rival readings.
 ///
 /// `state` is passed in the REFERENCE layout (S, S, h_v) - i.e. (i, j, h) - so that this function is a
 /// transcription of `ref/gdn.py` and not of the kernel.
 void ref_step(std::vector<double>& state, const std::vector<float>& q, const std::vector<float>& k,
-              const std::vector<float>& v, const std::vector<float>& gate, const std::vector<float>& beta,
-              int S, int h_k, int h_v, std::vector<float>& o, bool modulo_heads, bool decay_first) {
+              const std::vector<float>& v, const std::vector<float>& gate, const std::vector<float>& beta, int S,
+              int h_k, int h_v, std::vector<float>& o, bool modulo_heads, bool decay_first) {
     auto at = [&](int i, int j, int h) -> double& { return state[(size_t) (i * S + j) * h_v + h]; };
     std::vector<float> oo((size_t) h_v * S, 0.0f);
     for (int h = 0; h < h_v; ++h) {
@@ -52,14 +54,21 @@ void ref_step(std::vector<double>& state, const std::vector<float>& q, const std
         const double dec = std::exp((double) gate[(size_t) h]);
         const double b = (double) beta[(size_t) h];
         for (int j = 0; j < S; ++j) {
-            if (decay_first) for (int i = 0; i < S; ++i) at(i, j, h) *= dec;
+            if (decay_first)
+                for (int i = 0; i < S; ++i)
+                    at(i, j, h) *= dec;
             double sk = 0;
-            for (int i = 0; i < S; ++i) sk += at(i, j, h) * (double) k[(size_t) (src * S + i)];
+            for (int i = 0; i < S; ++i)
+                sk += at(i, j, h) * (double) k[(size_t) (src * S + i)];
             const double d = ((double) v[(size_t) (h * S + j)] - sk) * b;
-            for (int i = 0; i < S; ++i) at(i, j, h) += (double) k[(size_t) (src * S + i)] * d;
-            if (!decay_first) for (int i = 0; i < S; ++i) at(i, j, h) *= dec;
+            for (int i = 0; i < S; ++i)
+                at(i, j, h) += (double) k[(size_t) (src * S + i)] * d;
+            if (!decay_first)
+                for (int i = 0; i < S; ++i)
+                    at(i, j, h) *= dec;
             double dot = 0;
-            for (int i = 0; i < S; ++i) dot += at(i, j, h) * (double) q[(size_t) (src * S + i)];
+            for (int i = 0; i < S; ++i)
+                dot += at(i, j, h) * (double) q[(size_t) (src * S + i)];
             oo[(size_t) (h * S + j)] = (float) dot;
         }
     }
@@ -67,15 +76,17 @@ void ref_step(std::vector<double>& state, const std::vector<float>& q, const std
 }
 
 /// `ref/gdn.py::conv_step` in its own (d_conv, C) row-major orientation.
-void ref_conv(std::vector<float>& cs, const std::vector<float>& x, const std::vector<float>& kern, int C,
-              int dc, std::vector<float>& out) {
+void ref_conv(std::vector<float>& cs, const std::vector<float>& x, const std::vector<float>& kern, int C, int dc,
+              std::vector<float>& out) {
     out.assign((size_t) C, 0.0f);
     for (int c = 0; c < C; ++c) {
         double acc = 0;
-        for (int i = 0; i < dc - 1; ++i) acc += (double) cs[(size_t) (i * C + c)] * (double) kern[(size_t) (i * C + c)];
+        for (int i = 0; i < dc - 1; ++i)
+            acc += (double) cs[(size_t) (i * C + c)] * (double) kern[(size_t) (i * C + c)];
         acc += (double) x[(size_t) c] * (double) kern[(size_t) ((dc - 1) * C + c)];
         out[(size_t) c] = (float) acc;
-        for (int i = 0; i < dc - 2; ++i) cs[(size_t) (i * C + c)] = cs[(size_t) ((i + 1) * C + c)];
+        for (int i = 0; i < dc - 2; ++i)
+            cs[(size_t) (i * C + c)] = cs[(size_t) ((i + 1) * C + c)];
         cs[(size_t) ((dc - 2) * C + c)] = x[(size_t) c];
     }
 }
@@ -89,16 +100,20 @@ double rel_l1(const std::vector<float>& a, const std::vector<float>& b) {
     return d / (m > 1e-30 ? m : 1e-30);
 }
 
-}  // namespace
+} // namespace
 
 int main(int argc, char** argv) {
     bool selftest = false;
     for (int i = 1; i < argc; ++i) {
-        if (std::string(argv[i]) == "--selftest") selftest = true;
-        else { std::fprintf(stderr, "usage: gdn_parity [--selftest]\n"); return 2; }
+        if (std::string(argv[i]) == "--selftest")
+            selftest = true;
+        else {
+            std::fprintf(stderr, "usage: gdn_parity [--selftest]\n");
+            return 2;
+        }
     }
 
-    const int S = 128, h_k = 16, h_v = 48;      // the artifact's real geometry
+    const int S = 128, h_k = 16, h_v = 48; // the artifact's real geometry
     std::mt19937 rng(2024);
     std::normal_distribution<float> gauss(0.0f, 1.0f);
     int bad = 0;
@@ -114,16 +129,21 @@ int main(int argc, char** argv) {
                 for (int h = 0; h < h_v; ++h) {
                     const float val = (float) (0.001 * (i + 2 * j + 3 * h) - 1.0);
                     st_ref[(size_t) (i * S + j) * h_v + h] = val;
-                    st_dev[(size_t) (i * h_v + h) * S + j] = val;   // (S, h_v, S), j fastest
+                    st_dev[(size_t) (i * h_v + h) * S + j] = val; // (S, h_v, S), j fastest
                 }
 
         std::vector<float> q((size_t) h_k * S), k((size_t) h_k * S), v((size_t) h_v * S), gate((size_t) h_v),
             beta((size_t) h_v);
-        for (auto& x : q) x = gauss(rng) * 0.1f;
-        for (auto& x : k) x = gauss(rng) * 0.1f;
-        for (auto& x : v) x = gauss(rng);
-        for (auto& x : gate) x = -(2.0f + 4.0f * (float) (rng() % 100) / 100.0f);   // dec in (0.0025, 0.135]
-        for (auto& x : beta) x = (float) (rng() % 100) / 100.0f;
+        for (auto& x : q)
+            x = gauss(rng) * 0.1f;
+        for (auto& x : k)
+            x = gauss(rng) * 0.1f;
+        for (auto& x : v)
+            x = gauss(rng);
+        for (auto& x : gate)
+            x = -(2.0f + 4.0f * (float) (rng() % 100) / 100.0f); // dec in (0.0025, 0.135]
+        for (auto& x : beta)
+            x = (float) (rng() % 100) / 100.0f;
 
         std::vector<float> want_o;
         std::vector<double> st_mod = st_ref;
@@ -137,7 +157,8 @@ int main(int argc, char** argv) {
             const double rel = rel_l1(want_o, oo);
             std::printf("  %-42s %-4s (%.2f%% apart)\n", "modulo vs interleave head pairing",
                         rel > 0.05 ? "yes" : "*** NO ***", rel * 100);
-            if (!(rel > 0.05)) ++bad;
+            if (!(rel > 0.05))
+                ++bad;
         }
         {
             std::vector<double> a = st_ref;
@@ -151,36 +172,21 @@ int main(int argc, char** argv) {
             // gate in [-0.99, 0] - dec in [0.37, 1] - and managed 3.25%, which is a threshold the wrong
             // reading nearly clears.  Deep decay is also the realistic regime: `ssm_a = -exp(A_log) < 0` and
             // softplus is positive, so gate is comfortably negative in the real model.
-            if (!(rel > 0.05)) ++bad;
+            if (!(rel > 0.05))
+                ++bad;
         }
 
         // the kernel
         float *d_st = nullptr, *d_q = nullptr, *d_k = nullptr, *d_v = nullptr, *d_g = nullptr, *d_b = nullptr,
               *d_o = nullptr;
-        check(DPCT_CHECK_ERROR(
-                  d_st = (float *)sycl::malloc_device(
-                      st_dev.size() * 4, dpct::get_in_order_queue())),
+        check(DPCT_CHECK_ERROR(d_st = (float*) sycl::malloc_device(st_dev.size() * 4, dpct::get_in_order_queue())),
               "st");
-        check(DPCT_CHECK_ERROR(d_q = (float *)sycl::malloc_device(
-                                   q.size() * 4, dpct::get_in_order_queue())),
-              "q");
-        check(DPCT_CHECK_ERROR(d_k = (float *)sycl::malloc_device(
-                                   k.size() * 4, dpct::get_in_order_queue())),
-              "k");
-        check(DPCT_CHECK_ERROR(d_v = (float *)sycl::malloc_device(
-                                   v.size() * 4, dpct::get_in_order_queue())),
-              "v");
-        check(
-            DPCT_CHECK_ERROR(d_g = (float *)sycl::malloc_device(
-                                 gate.size() * 4, dpct::get_in_order_queue())),
-            "g");
-        check(
-            DPCT_CHECK_ERROR(d_b = (float *)sycl::malloc_device(
-                                 beta.size() * 4, dpct::get_in_order_queue())),
-            "b");
-        check(DPCT_CHECK_ERROR(
-                  d_o = (float *)sycl::malloc_device(
-                      (size_t)h_v * S * 4, dpct::get_in_order_queue())),
+        check(DPCT_CHECK_ERROR(d_q = (float*) sycl::malloc_device(q.size() * 4, dpct::get_in_order_queue())), "q");
+        check(DPCT_CHECK_ERROR(d_k = (float*) sycl::malloc_device(k.size() * 4, dpct::get_in_order_queue())), "k");
+        check(DPCT_CHECK_ERROR(d_v = (float*) sycl::malloc_device(v.size() * 4, dpct::get_in_order_queue())), "v");
+        check(DPCT_CHECK_ERROR(d_g = (float*) sycl::malloc_device(gate.size() * 4, dpct::get_in_order_queue())), "g");
+        check(DPCT_CHECK_ERROR(d_b = (float*) sycl::malloc_device(beta.size() * 4, dpct::get_in_order_queue())), "b");
+        check(DPCT_CHECK_ERROR(d_o = (float*) sycl::malloc_device((size_t) h_v * S * 4, dpct::get_in_order_queue())),
               "o");
         /*
         DPCT1114: cudaMemcpy is migrated to asynchronization memcpy,
@@ -188,8 +194,9 @@ int main(int argc, char** argv) {
         If the memory is not pageable, call wait() on event return by memcpy API
         to ensure synchronization behavior.
         */
-        check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(
-                  d_st, st_dev.data(), st_dev.size() * 4).wait()),
+        check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
+                                   .memcpy(d_st, st_dev.data(), st_dev.size() * 4)
+                                   .wait()),
               "cst");
         /*
         DPCT1114: cudaMemcpy is migrated to asynchronization memcpy,
@@ -197,8 +204,9 @@ int main(int argc, char** argv) {
         If the memory is not pageable, call wait() on event return by memcpy API
         to ensure synchronization behavior.
         */
-        check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(d_q, q.data(),
-                                                                 q.size() * 4).wait()),
+        check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
+                                   .memcpy(d_q, q.data(), q.size() * 4)
+                                   .wait()),
               "cq");
         /*
         DPCT1114: cudaMemcpy is migrated to asynchronization memcpy,
@@ -206,8 +214,9 @@ int main(int argc, char** argv) {
         If the memory is not pageable, call wait() on event return by memcpy API
         to ensure synchronization behavior.
         */
-        check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(d_k, k.data(),
-                                                                 k.size() * 4).wait()),
+        check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
+                                   .memcpy(d_k, k.data(), k.size() * 4)
+                                   .wait()),
               "ck");
         /*
         DPCT1114: cudaMemcpy is migrated to asynchronization memcpy,
@@ -215,8 +224,9 @@ int main(int argc, char** argv) {
         If the memory is not pageable, call wait() on event return by memcpy API
         to ensure synchronization behavior.
         */
-        check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(d_v, v.data(),
-                                                                 v.size() * 4).wait()),
+        check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
+                                   .memcpy(d_v, v.data(), v.size() * 4)
+                                   .wait()),
               "cv");
         /*
         DPCT1114: cudaMemcpy is migrated to asynchronization memcpy,
@@ -224,8 +234,9 @@ int main(int argc, char** argv) {
         If the memory is not pageable, call wait() on event return by memcpy API
         to ensure synchronization behavior.
         */
-        check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(
-                  d_g, gate.data(), gate.size() * 4).wait()),
+        check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
+                                   .memcpy(d_g, gate.data(), gate.size() * 4)
+                                   .wait()),
               "cg");
         /*
         DPCT1114: cudaMemcpy is migrated to asynchronization memcpy,
@@ -233,8 +244,9 @@ int main(int argc, char** argv) {
         If the memory is not pageable, call wait() on event return by memcpy API
         to ensure synchronization behavior.
         */
-        check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(
-                  d_b, beta.data(), beta.size() * 4).wait()),
+        check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
+                                   .memcpy(d_b, beta.data(), beta.size() * 4)
+                                   .wait()),
               "cb");
 
         guild::kernels::GdnShapes sh{S, h_k, h_v};
@@ -245,11 +257,10 @@ int main(int argc, char** argv) {
                                    .memcpy(got_o.data(), d_o, got_o.size() * 4)
                                    .wait()),
               "cgo");
-        check(
-            DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
-                                 .memcpy(got_st.data(), d_st, got_st.size() * 4)
-                                 .wait()),
-            "cgst");
+        check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
+                                   .memcpy(got_st.data(), d_st, got_st.size() * 4)
+                                   .wait()),
+              "cgst");
 
         // o, and the STATE read back through the declared layout
         const double rel_o = rel_l1(want_o, got_o);
@@ -267,8 +278,14 @@ int main(int argc, char** argv) {
         std::printf("  %-42s rel %.3e\n", "state (read via (S,h_v,S)) vs reference", rel_st);
         // The kernel accumulates in f32 and the reference in f64, and the state is a RECURRENCE over 128
         // terms, so 1e-5 is the arithmetic's floor here and not a structural allowance.
-        if (!(rel_o <= 1e-5)) { std::printf("    *** o over 1e-5 ***\n"); ++bad; }
-        if (!(rel_st <= 1e-5)) { std::printf("    *** state over 1e-5 ***\n"); ++bad; }
+        if (!(rel_o <= 1e-5)) {
+            std::printf("    *** o over 1e-5 ***\n");
+            ++bad;
+        }
+        if (!(rel_st <= 1e-5)) {
+            std::printf("    *** state over 1e-5 ***\n");
+            ++bad;
+        }
 
         // a zero state stays zero, and a zero gate/beta leaves the state untouched (the reference's
         // PROPERTY 4 setup) - a cheap independent invariant that no layout can fake
@@ -280,8 +297,9 @@ int main(int argc, char** argv) {
             memory. If the memory is not pageable, call wait() on event return
             by memcpy API to ensure synchronization behavior.
             */
-            check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(
-                      d_st, zero.data(), zero.size() * 4).wait()),
+            check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
+                                       .memcpy(d_st, zero.data(), zero.size() * 4)
+                                       .wait()),
                   "z0");
             /*
             DPCT1114: cudaMemcpy is migrated to asynchronization memcpy,
@@ -289,8 +307,9 @@ int main(int argc, char** argv) {
             memory. If the memory is not pageable, call wait() on event return
             by memcpy API to ensure synchronization behavior.
             */
-            check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(
-                      d_g, zg.data(), zg.size() * 4).wait()),
+            check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
+                                       .memcpy(d_g, zg.data(), zg.size() * 4)
+                                       .wait()),
                   "z1");
             /*
             DPCT1114: cudaMemcpy is migrated to asynchronization memcpy,
@@ -298,8 +317,9 @@ int main(int argc, char** argv) {
             memory. If the memory is not pageable, call wait() on event return
             by memcpy API to ensure synchronization behavior.
             */
-            check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(
-                      d_b, zb.data(), zb.size() * 4).wait()),
+            check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
+                                       .memcpy(d_b, zb.data(), zb.size() * 4)
+                                       .wait()),
                   "z2");
             guild::kernels::gdn_step(d_st, d_q, d_k, d_v, d_g, d_b, d_o, sh, nullptr);
             std::vector<float> zz(zero.size());
@@ -308,25 +328,27 @@ int main(int argc, char** argv) {
                                        .wait()),
                   "z3");
             double nz = 0;
-            for (float x : zz) nz += std::fabs(x);
+            for (float x : zz)
+                nz += std::fabs(x);
             const bool ok = nz == 0.0;
             std::printf("  %-42s %s\n", "gate=beta=0 from a zero state is a no-op", ok ? "yes" : "*** NO ***");
-            if (!ok) ++bad;
+            if (!ok)
+                ++bad;
         }
 
         // ephemeral state: unchanged when the state is untouched but beta=1 — the delta rule writing k*d
         sycl::free(d_st, dpct::get_in_order_queue());
-            sycl::free(d_q, dpct::get_in_order_queue());
-            sycl::free(d_k, dpct::get_in_order_queue());
-            sycl::free(d_v, dpct::get_in_order_queue());
-            sycl::free(d_g, dpct::get_in_order_queue());
-            sycl::free(d_b, dpct::get_in_order_queue());
-            sycl::free(d_o, dpct::get_in_order_queue());
+        sycl::free(d_q, dpct::get_in_order_queue());
+        sycl::free(d_k, dpct::get_in_order_queue());
+        sycl::free(d_v, dpct::get_in_order_queue());
+        sycl::free(d_g, dpct::get_in_order_queue());
+        sycl::free(d_b, dpct::get_in_order_queue());
+        sycl::free(d_o, dpct::get_in_order_queue());
     }
 
     // ================= 2. the conv =================
     {
-        const int C = 24, dc = 4;      // small, so the host reference is a plain loop
+        const int C = 24, dc = 4; // small, so the host reference is a plain loop
         // TWO DIFFERENT LAYOUTS MEET HERE, and this is where the first version of this test failed at 0.136.
         // `ref/gdn.py` carries the conv state as (d_conv-1, C) ROW-MAJOR - (i, c) at i*C + c - because it is
         // numpy.  The kernel carries it as (C, d_conv-1) with c fastest - c*(dc-1) + i - because that is
@@ -334,20 +356,25 @@ int main(int argc, char** argv) {
         // mapping between them is written out below rather than assumed, in both directions.
         std::vector<float> cs_ref((size_t) (dc - 1) * C), x((size_t) C), kern((size_t) dc * C);
         for (int i = 0; i < dc - 1; ++i)
-            for (int c = 0; c < C; ++c) cs_ref[(size_t) (i * C + c)] = (float) (10 * (i + 1) + c);  // labelled
-        for (int c = 0; c < C; ++c) x[(size_t) c] = (float) (100 + c);
-        for (size_t i = 0; i < kern.size(); ++i) kern[i] = gauss(rng);
+            for (int c = 0; c < C; ++c)
+                cs_ref[(size_t) (i * C + c)] = (float) (10 * (i + 1) + c); // labelled
+        for (int c = 0; c < C; ++c)
+            x[(size_t) c] = (float) (100 + c);
+        for (size_t i = 0; i < kern.size(); ++i)
+            kern[i] = gauss(rng);
 
         auto to_dev_layout = [&](const std::vector<float>& r) {
             std::vector<float> d(r.size());
             for (int i = 0; i < dc - 1; ++i)
-                for (int c = 0; c < C; ++c) d[(size_t) (c * (dc - 1) + i)] = r[(size_t) (i * C + c)];
+                for (int c = 0; c < C; ++c)
+                    d[(size_t) (c * (dc - 1) + i)] = r[(size_t) (i * C + c)];
             return d;
         };
         auto to_ref_layout = [&](const std::vector<float>& d) {
             std::vector<float> r(d.size());
             for (int i = 0; i < dc - 1; ++i)
-                for (int c = 0; c < C; ++c) r[(size_t) (i * C + c)] = d[(size_t) (c * (dc - 1) + i)];
+                for (int c = 0; c < C; ++c)
+                    r[(size_t) (i * C + c)] = d[(size_t) (c * (dc - 1) + i)];
             return r;
         };
 
@@ -362,47 +389,44 @@ int main(int argc, char** argv) {
         // below is the ONLY place the two meet.
         std::vector<float> kW((size_t) C * dc);
         for (int c = 0; c < C; ++c)
-            for (int i = 0; i < dc; ++i) kW[(size_t) (c * dc + i)] = kern[(size_t) (i * C + c)];
+            for (int i = 0; i < dc; ++i)
+                kW[(size_t) (c * dc + i)] = kern[(size_t) (i * C + c)];
         // and the rival reading, which must differ or the fixture cannot see a transposed weight
         std::vector<float> kW_wrong((size_t) C * dc);
-        for (size_t i = 0; i < kern.size(); ++i) kW_wrong[i] = kern[i];
+        for (size_t i = 0; i < kern.size(); ++i)
+            kW_wrong[i] = kern[i];
         {
             // apply the WRONG layout by hand: tap i of channel c is kW[c*dc+i] read as kW[i*C+c]
             std::vector<float> cs2 = cs;
             std::vector<float> out_bad((size_t) C, 0.0f);
             for (int c = 0; c < C; ++c) {
                 double a = 0;
-                for (int i = 0; i < dc - 1; ++i) a += (double) cs2[(size_t) (i * C + c)] * (double) kW_wrong[(size_t) (c * dc + i)];
+                for (int i = 0; i < dc - 1; ++i)
+                    a += (double) cs2[(size_t) (i * C + c)] * (double) kW_wrong[(size_t) (c * dc + i)];
                 a += (double) x[(size_t) c] * (double) kW_wrong[(size_t) (c * dc + dc - 1)];
                 out_bad[(size_t) c] = (float) a;
             }
             const double rel = rel_l1(want, out_bad);
             std::printf("\n  %-42s %-4s (%.1f%% apart)\n", "conv weight layout is observable",
                         rel > 0.05 ? "yes" : "*** NO ***", rel * 100);
-            if (!(rel > 0.05)) ++bad;
+            if (!(rel > 0.05))
+                ++bad;
         }
 
         float *d_cs = nullptr, *d_x = nullptr, *d_w = nullptr, *d_o = nullptr;
-        check(DPCT_CHECK_ERROR(d_cs = (float *)sycl::malloc_device(
-                                   cs.size() * 4, dpct::get_in_order_queue())),
-              "cs");
-        check(DPCT_CHECK_ERROR(d_x = (float *)sycl::malloc_device(
-                                   x.size() * 4, dpct::get_in_order_queue())),
-              "cx");
-        check(DPCT_CHECK_ERROR(d_w = (float *)sycl::malloc_device(
-                                   kW.size() * 4, dpct::get_in_order_queue())),
-              "cw");
-        check(DPCT_CHECK_ERROR(d_o = (float *)sycl::malloc_device(
-                                   (size_t)C * 4, dpct::get_in_order_queue())),
-              "co");
+        check(DPCT_CHECK_ERROR(d_cs = (float*) sycl::malloc_device(cs.size() * 4, dpct::get_in_order_queue())), "cs");
+        check(DPCT_CHECK_ERROR(d_x = (float*) sycl::malloc_device(x.size() * 4, dpct::get_in_order_queue())), "cx");
+        check(DPCT_CHECK_ERROR(d_w = (float*) sycl::malloc_device(kW.size() * 4, dpct::get_in_order_queue())), "cw");
+        check(DPCT_CHECK_ERROR(d_o = (float*) sycl::malloc_device((size_t) C * 4, dpct::get_in_order_queue())), "co");
         /*
         DPCT1114: cudaMemcpy is migrated to asynchronization memcpy,
         assuming in the original code the source host memory is pageable memory.
         If the memory is not pageable, call wait() on event return by memcpy API
         to ensure synchronization behavior.
         */
-        check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(
-                  d_cs, cs.data(), cs.size() * 4).wait()),
+        check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
+                                   .memcpy(d_cs, cs.data(), cs.size() * 4)
+                                   .wait()),
               "ccs");
         /*
         DPCT1114: cudaMemcpy is migrated to asynchronization memcpy,
@@ -410,8 +434,9 @@ int main(int argc, char** argv) {
         If the memory is not pageable, call wait() on event return by memcpy API
         to ensure synchronization behavior.
         */
-        check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(d_x, x.data(),
-                                                                 x.size() * 4).wait()),
+        check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
+                                   .memcpy(d_x, x.data(), x.size() * 4)
+                                   .wait()),
               "ccx");
         /*
         DPCT1114: cudaMemcpy is migrated to asynchronization memcpy,
@@ -419,8 +444,9 @@ int main(int argc, char** argv) {
         If the memory is not pageable, call wait() on event return by memcpy API
         to ensure synchronization behavior.
         */
-        check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(
-                  d_w, kW.data(), kW.size() * 4).wait()),
+        check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
+                                   .memcpy(d_w, kW.data(), kW.size() * 4)
+                                   .wait()),
               "ccw");
         guild::kernels::gdn_conv_step(d_cs, d_x, d_w, d_o, C, dc, nullptr);
         std::vector<float> got((size_t) C), got_cs(cs.size());
@@ -428,34 +454,42 @@ int main(int argc, char** argv) {
                                    .memcpy(got.data(), d_o, got.size() * 4)
                                    .wait()),
               "cgo");
-        check(
-            DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
-                                 .memcpy(got_cs.data(), d_cs, got_cs.size() * 4)
-                                 .wait()),
-            "cgs");
+        check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
+                                   .memcpy(got_cs.data(), d_cs, got_cs.size() * 4)
+                                   .wait()),
+              "cgs");
         const double rel_out = rel_l1(want, got), rel_cs = rel_l1(cs_want, got_cs);
         std::printf("  %-42s rel %.3e\n", "conv out vs reference", rel_out);
         std::printf("  %-42s rel %.3e\n", "conv state slide (mapped) vs reference", rel_cs);
-        if (!(rel_out <= 1e-6)) { std::printf("    *** conv out ***\n"); ++bad; }
-        if (!(rel_cs <= 1e-6)) { std::printf("    *** conv state ***\n"); ++bad; }
+        if (!(rel_out <= 1e-6)) {
+            std::printf("    *** conv out ***\n");
+            ++bad;
+        }
+        if (!(rel_cs <= 1e-6)) {
+            std::printf("    *** conv state ***\n");
+            ++bad;
+        }
         sycl::free(d_cs, dpct::get_in_order_queue());
-            sycl::free(d_x, dpct::get_in_order_queue());
-            sycl::free(d_w, dpct::get_in_order_queue());
-            sycl::free(d_o, dpct::get_in_order_queue());
+        sycl::free(d_x, dpct::get_in_order_queue());
+        sycl::free(d_w, dpct::get_in_order_queue());
+        sycl::free(d_o, dpct::get_in_order_queue());
     }
 
     // ================= 3. l2_norm =================
     {
         const int rows = 16, cols = 128;
         std::vector<float> x((size_t) rows * cols), x_ref;
-        for (auto& val : x) val = gauss(rng) * 3.0f;
+        for (auto& val : x)
+            val = gauss(rng) * 3.0f;
         x_ref = x;
         const float eps = 1e-6f;
         for (int r = 0; r < rows; ++r) {
             double acc = 0;
-            for (int i = 0; i < cols; ++i) acc += (double) x_ref[(size_t) (r * cols + i)] * (double) x_ref[(size_t) (r * cols + i)];
+            for (int i = 0; i < cols; ++i)
+                acc += (double) x_ref[(size_t) (r * cols + i)] * (double) x_ref[(size_t) (r * cols + i)];
             const float inv = (float) (1.0 / std::sqrt(acc + (double) eps));
-            for (int i = 0; i < cols; ++i) x_ref[(size_t) (r * cols + i)] *= inv;
+            for (int i = 0; i < cols; ++i)
+                x_ref[(size_t) (r * cols + i)] *= inv;
         }
         // The rival reading puts THE SAME eps on the MEAN instead of on the squared norm, which at
         // ||x||^2 ~ 1152 and cols = 128 changes the divisor from sqrt(1152) to sqrt(9) - a factor of 11.3, so
@@ -464,27 +498,29 @@ int main(int argc, char** argv) {
         std::vector<float> x_mean = x;
         for (int r = 0; r < rows; ++r) {
             double acc = 0;
-            for (int i = 0; i < cols; ++i) acc += (double) x_mean[(size_t) (r * cols + i)] * (double) x_mean[(size_t) (r * cols + i)];
+            for (int i = 0; i < cols; ++i)
+                acc += (double) x_mean[(size_t) (r * cols + i)] * (double) x_mean[(size_t) (r * cols + i)];
             const float inv = (float) (1.0 / std::sqrt(acc / cols + (double) eps));
-            for (int i = 0; i < cols; ++i) x_mean[(size_t) (r * cols + i)] *= inv;
+            for (int i = 0; i < cols; ++i)
+                x_mean[(size_t) (r * cols + i)] *= inv;
         }
         const double rel_trap = rel_l1(x_ref, x_mean);
         std::printf("\n  %-42s %-4s (%.1f%% apart)\n", "eps on sum vs on mean is observable",
                     rel_trap > 0.05 ? "yes" : "*** NO ***", rel_trap * 100);
-        if (!(rel_trap > 0.05)) ++bad;
+        if (!(rel_trap > 0.05))
+            ++bad;
 
         float* d_x = nullptr;
-        check(DPCT_CHECK_ERROR(d_x = (float *)sycl::malloc_device(
-                                   x.size() * 4, dpct::get_in_order_queue())),
-              "lx");
+        check(DPCT_CHECK_ERROR(d_x = (float*) sycl::malloc_device(x.size() * 4, dpct::get_in_order_queue())), "lx");
         /*
         DPCT1114: cudaMemcpy is migrated to asynchronization memcpy,
         assuming in the original code the source host memory is pageable memory.
         If the memory is not pageable, call wait() on event return by memcpy API
         to ensure synchronization behavior.
         */
-        check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(d_x, x.data(),
-                                                                 x.size() * 4).wait()),
+        check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
+                                   .memcpy(d_x, x.data(), x.size() * 4)
+                                   .wait()),
               "lcx");
         guild::kernels::gdn_l2_norm(d_x, rows, cols, eps, nullptr);
         std::vector<float> got(x.size());
@@ -494,7 +530,8 @@ int main(int argc, char** argv) {
               "lcg");
         const double rel = rel_l1(x_ref, got);
         std::printf("  %-42s rel %.3e\n", "l2_norm vs reference", rel);
-        if (!(rel <= 1e-6)) ++bad;
+        if (!(rel <= 1e-6))
+            ++bad;
         sycl::free(d_x, dpct::get_in_order_queue());
     }
 
@@ -502,40 +539,36 @@ int main(int argc, char** argv) {
     {
         const int S2 = 128, hv2 = 8;
         std::vector<float> o((size_t) hv2 * S2), z((size_t) hv2 * S2), sn((size_t) S2), y_ref((size_t) hv2 * S2);
-        for (auto& val : o) val = gauss(rng);
-        for (auto& val : z) val = gauss(rng);
-        for (auto& val : sn) val = 1.0f + 0.1f * gauss(rng);
+        for (auto& val : o)
+            val = gauss(rng);
+        for (auto& val : z)
+            val = gauss(rng);
+        for (auto& val : sn)
+            val = 1.0f + 0.1f * gauss(rng);
         const float eps = 1e-6f;
         for (int h = 0; h < hv2; ++h) {
             double acc = 0;
-            for (int i = 0; i < S2; ++i) acc += (double) o[(size_t) (h * S2 + i)] * (double) o[(size_t) (h * S2 + i)];
+            for (int i = 0; i < S2; ++i)
+                acc += (double) o[(size_t) (h * S2 + i)] * (double) o[(size_t) (h * S2 + i)];
             const float inv = (float) (1.0 / std::sqrt(acc / S2 + (double) eps));
             for (int i = 0; i < S2; ++i)
-                y_ref[(size_t) (h * S2 + i)] = o[(size_t) (h * S2 + i)] * inv * sn[(size_t) i] *
-                                              sigmoid_f(z[(size_t) (h * S2 + i)]);
+                y_ref[(size_t) (h * S2 + i)] =
+                    o[(size_t) (h * S2 + i)] * inv * sn[(size_t) i] * sigmoid_f(z[(size_t) (h * S2 + i)]);
         }
         float *d_o = nullptr, *d_z = nullptr, *d_sn = nullptr, *d_y = nullptr;
-        check(DPCT_CHECK_ERROR(d_o = (float *)sycl::malloc_device(
-                                   o.size() * 4, dpct::get_in_order_queue())),
-              "no");
-        check(DPCT_CHECK_ERROR(d_z = (float *)sycl::malloc_device(
-                                   z.size() * 4, dpct::get_in_order_queue())),
-              "nz");
-        check(DPCT_CHECK_ERROR(d_sn = (float *)sycl::malloc_device(
-                                   sn.size() * 4, dpct::get_in_order_queue())),
-              "ns");
-        check(
-            DPCT_CHECK_ERROR(d_y = (float *)sycl::malloc_device(
-                                 y_ref.size() * 4, dpct::get_in_order_queue())),
-            "ny");
+        check(DPCT_CHECK_ERROR(d_o = (float*) sycl::malloc_device(o.size() * 4, dpct::get_in_order_queue())), "no");
+        check(DPCT_CHECK_ERROR(d_z = (float*) sycl::malloc_device(z.size() * 4, dpct::get_in_order_queue())), "nz");
+        check(DPCT_CHECK_ERROR(d_sn = (float*) sycl::malloc_device(sn.size() * 4, dpct::get_in_order_queue())), "ns");
+        check(DPCT_CHECK_ERROR(d_y = (float*) sycl::malloc_device(y_ref.size() * 4, dpct::get_in_order_queue())), "ny");
         /*
         DPCT1114: cudaMemcpy is migrated to asynchronization memcpy,
         assuming in the original code the source host memory is pageable memory.
         If the memory is not pageable, call wait() on event return by memcpy API
         to ensure synchronization behavior.
         */
-        check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(d_o, o.data(),
-                                                                 o.size() * 4).wait()),
+        check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
+                                   .memcpy(d_o, o.data(), o.size() * 4)
+                                   .wait()),
               "nco");
         /*
         DPCT1114: cudaMemcpy is migrated to asynchronization memcpy,
@@ -543,8 +576,9 @@ int main(int argc, char** argv) {
         If the memory is not pageable, call wait() on event return by memcpy API
         to ensure synchronization behavior.
         */
-        check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(d_z, z.data(),
-                                                                 z.size() * 4).wait()),
+        check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
+                                   .memcpy(d_z, z.data(), z.size() * 4)
+                                   .wait()),
               "ncz");
         /*
         DPCT1114: cudaMemcpy is migrated to asynchronization memcpy,
@@ -552,8 +586,9 @@ int main(int argc, char** argv) {
         If the memory is not pageable, call wait() on event return by memcpy API
         to ensure synchronization behavior.
         */
-        check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(
-                  d_sn, sn.data(), sn.size() * 4).wait()),
+        check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
+                                   .memcpy(d_sn, sn.data(), sn.size() * 4)
+                                   .wait()),
               "ncs");
         guild::kernels::gdn_out_norm(d_o, d_z, d_sn, d_y, hv2, S2, eps, nullptr);
         std::vector<float> got(y_ref.size());
@@ -563,13 +598,15 @@ int main(int argc, char** argv) {
               "ncy");
         const double rel = rel_l1(y_ref, got);
         std::printf("\n  %-42s rel %.3e\n", "out norm (rms * ssm_norm * sigmoid z)", rel);
-        if (!(rel <= 1e-6)) ++bad;
+        if (!(rel <= 1e-6))
+            ++bad;
 
         // SiLU instead of sigmoid is the qwen3.5 reading; `ref/gdn.py` says this artifact does NOT use it
         std::vector<float> y_silu(y_ref.size());
         for (int h = 0; h < hv2; ++h) {
             double acc = 0;
-            for (int i = 0; i < S2; ++i) acc += (double) o[(size_t) (h * S2 + i)] * (double) o[(size_t) (h * S2 + i)];
+            for (int i = 0; i < S2; ++i)
+                acc += (double) o[(size_t) (h * S2 + i)] * (double) o[(size_t) (h * S2 + i)];
             const float inv = (float) (1.0 / std::sqrt(acc / S2 + (double) eps));
             for (int i = 0; i < S2; ++i) {
                 const float zz = z[(size_t) (h * S2 + i)];
@@ -580,15 +617,18 @@ int main(int argc, char** argv) {
         const double rel_silu = rel_l1(y_ref, y_silu);
         std::printf("  %-42s %-4s (%.2f%% apart)\n", "sigmoid vs SiLU on the gate is observable",
                     rel_silu > 0.05 ? "yes" : "*** NO ***", rel_silu * 100);
-        if (!(rel_silu > 0.05)) ++bad;
+        if (!(rel_silu > 0.05))
+            ++bad;
         sycl::free(d_o, dpct::get_in_order_queue());
-            sycl::free(d_z, dpct::get_in_order_queue());
-            sycl::free(d_sn, dpct::get_in_order_queue());
-            sycl::free(d_y, dpct::get_in_order_queue());
+        sycl::free(d_z, dpct::get_in_order_queue());
+        sycl::free(d_sn, dpct::get_in_order_queue());
+        sycl::free(d_y, dpct::get_in_order_queue());
     }
 
     std::printf("\ngdn: %d failures\n", bad);
-    if (bad) return 1;
-    if (selftest) std::printf("gdn_parity OK\n");
+    if (bad)
+        return 1;
+    if (selftest)
+        std::printf("gdn_parity OK\n");
     return 0;
 }
