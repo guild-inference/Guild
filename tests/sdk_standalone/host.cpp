@@ -1,4 +1,5 @@
 #include <guild/abi/cpu_backend_abi.h>
+#include <guild/abi/module_abi.h>
 #include <guild/abi/cuda_dense_abi.h>
 #include <guild/abi/cuda_attn_abi.h>
 #include <guild/abi/cuda_moe_abi.h>

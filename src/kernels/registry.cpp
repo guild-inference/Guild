@@ -6,6 +6,7 @@
 #include "guild/abi/runner_abi.h"
 #include "guild/abi/cpu_expert_abi.h"
 #include "guild/abi/cpu_backend_abi.h"
+#include "operation_internal.hpp"
 
 #if defined(GUILD_ENABLE_CUDA) || defined(GUILD_ENABLE_HIP)
 #include "guild/kernels/native_mmvq.hpp"
@@ -248,6 +249,7 @@ const char* op_kind_to_string(guild_op_kind_t kind) {
     case GUILD_OP_SPEC_VERIFY: return "spec_verify";
     case GUILD_OP_FINITE_CHECK: return "finite_check";
     case GUILD_OP_EMBEDDING_GATHER: return "embedding_gather";
+    case GUILD_OP_CUSTOM: return "custom";
     default: return "invalid_op";
     }
 }
@@ -275,6 +277,11 @@ guild_status_t validate_buffer_desc(const guild_buffer_desc_t& buf, guild_error_
     if (buf.ownership > GUILD_OWNERSHIP_TRANSIENT_COPY) {
         fill_err(err, GUILD_STATUS_ERR_BUFFER_LIFETIME, "buffer", "invalid buffer ownership kind");
         return GUILD_STATUS_ERR_BUFFER_LIFETIME;
+    }
+    if (buf.memory_space > GUILD_MEM_DEVICE_VRAM ||
+        (buf.alignment && (buf.alignment & (buf.alignment - 1)))) {
+        fill_err(err, GUILD_STATUS_ERR_INVALID_TENSOR, "buffer", "invalid memory space or non-power-of-two alignment");
+        return GUILD_STATUS_ERR_INVALID_TENSOR;
     }
     if (!buf.data || buf.byte_size == 0) {
         fill_err(err, GUILD_STATUS_ERR_INVALID_TENSOR, "buffer", "buffer pointer is null or byte_size is zero");
@@ -308,6 +315,11 @@ guild_status_t validate_tensor_desc(const guild_tensor_desc_t& tensor, guild_err
     }
     if (tensor.dims[0] <= 0 || (tensor.dims[0] % block_elems) != 0) {
         fill_err(err, GUILD_STATUS_ERR_INVALID_TENSOR, "tensor", "contiguous dimension dims[0] is not a positive multiple of block size");
+        return GUILD_STATUS_ERR_INVALID_TENSOR;
+    }
+    if (uint64_t(tensor.dims[0] / block_elems) > UINT64_MAX / uint64_t(block_bytes) ||
+        (tensor.strides_bytes[0] && tensor.strides_bytes[0] != uint64_t(block_bytes))) {
+        fill_err(err, GUILD_STATUS_ERR_INVALID_TENSOR, "tensor", "contiguous axis byte overflow or invalid block stride");
         return GUILD_STATUS_ERR_INVALID_TENSOR;
     }
     uint64_t required_bytes = uint64_t(tensor.dims[0] / block_elems) * uint64_t(block_bytes);
@@ -411,7 +423,7 @@ guild_status_t KernelRegistry::register_op(const guild_kernel_op_desc_v1_t& desc
         err = "kernel op descriptor ABI version is incompatible with host ABI v1";
         return GUILD_STATUS_ERR_ABI_MISMATCH;
     }
-    if (desc.op_kind <= GUILD_OP_INVALID || desc.op_kind >= GUILD_OP_COUNT ||
+    if ((desc.op_kind != GUILD_OP_CUSTOM && (desc.op_kind <= GUILD_OP_INVALID || desc.op_kind >= GUILD_OP_COUNT)) ||
         !desc.op_name || !desc.op_name[0] || !desc.impl_id || !desc.impl_id[0] ||
         !desc.package_id || !desc.package_id[0] || desc.backend == GUILD_BACKEND_NONE) {
         err = "kernel op descriptor has missing op_kind, impl_id, package_id, or backend";
@@ -440,6 +452,15 @@ guild_status_t KernelRegistry::register_op(const guild_kernel_op_desc_v1_t& desc
     stored->desc.op_name = stored->op_name.c_str();
     stored->desc.impl_id = stored->impl_id.c_str();
     stored->desc.package_id = stored->package_id.c_str();
+    if (desc.op_kind == GUILD_OP_CUSTOM) {
+        guild_operation_ext_v1_t ext{};
+        const auto st = copy_operation_extension(desc, ext, err);
+        if (st != GUILD_STATUS_OK) return st;
+        stored->owned_ext_bytes.resize(sizeof(ext));
+        stored->desc.struct_size = sizeof(stored->desc);
+        std::memcpy(stored->owned_ext_bytes.data(), &ext, sizeof(ext));
+        stored->desc.next_ext = stored->owned_ext_bytes.data();
+    }
     if (desc.required_op_deps && desc.n_required_op_deps > 0) {
         stored->dep_storage.reserve(desc.n_required_op_deps);
         for (size_t i = 0; i < desc.n_required_op_deps; ++i) {
@@ -600,6 +621,7 @@ guild_status_t KernelRegistry::register_plugin_transactional(
 
     struct StagingContext {
         KernelRegistry* self = nullptr;
+        bool registration_failed = false;
         std::string package_id;
         std::vector<guild_kernel_op_desc_v1_t> staged_ops;
         std::vector<std::string> staged_op_names;
@@ -623,6 +645,8 @@ guild_status_t KernelRegistry::register_plugin_transactional(
     staging.package_id = pkg_id;
 
     guild_host_api_v1_t host_api{};
+    const auto operations = operation_api();
+    host_api.operations = &operations;
     host_api.struct_size = sizeof(guild_host_api_v1_t);
     host_api.core_abi_version = GUILD_KERNEL_ABI_VERSION_V1;
     host_api.negotiate_abi = &negotiate_abi_version;
@@ -634,12 +658,16 @@ guild_status_t KernelRegistry::register_plugin_transactional(
     host_api.register_kernel_op = [](guild_core_host_t host, const guild_kernel_op_desc_v1_t* d, guild_error_info_t* e) -> guild_status_t {
         if (!host || !d) return GUILD_STATUS_ERR_INVALID_ARGUMENT;
         auto* ctx = reinterpret_cast<StagingContext*>(host);
+        struct Attempt {
+            bool& failed; bool success = false;
+            ~Attempt() { if (!success) failed = true; }
+        } attempt{ctx->registration_failed};
         if (d->struct_size < sizeof(guild_kernel_op_desc_v1_t) ||
             negotiate_abi_version(d->abi_version, nullptr) != GUILD_STATUS_OK) {
             fill_err(e, GUILD_STATUS_ERR_ABI_MISMATCH, "plugin", "kernel op descriptor ABI mismatch");
             return GUILD_STATUS_ERR_ABI_MISMATCH;
         }
-        if (d->op_kind <= GUILD_OP_INVALID || d->op_kind >= GUILD_OP_COUNT ||
+        if ((d->op_kind != GUILD_OP_CUSTOM && (d->op_kind <= GUILD_OP_INVALID || d->op_kind >= GUILD_OP_COUNT)) ||
             !d->op_name || !d->op_name[0] || !d->impl_id || !d->impl_id[0] ||
             !d->package_id || !d->package_id[0] || d->backend == GUILD_BACKEND_NONE ||
             d->max_batch_rows < 0 || d->min_sm_version < 0 || d->max_sm_version < 0 ||
@@ -662,6 +690,15 @@ guild_status_t KernelRegistry::register_plugin_transactional(
             if (existing_id == d->impl_id) {
                 fill_err(e, GUILD_STATUS_ERR_DUPLICATE_REGISTRATION, d->impl_id, "duplicate kernel impl_id in plugin transaction");
                 return GUILD_STATUS_ERR_DUPLICATE_REGISTRATION;
+            }
+        }
+        if (d->op_kind == GUILD_OP_CUSTOM) {
+            guild_operation_ext_v1_t ext{};
+            std::string error;
+            const auto st = copy_operation_extension(*d, ext, error);
+            if (st != GUILD_STATUS_OK) {
+                fill_err(e, st, "operation", error);
+                return st;
             }
         }
         ctx->staged_op_names.emplace_back(d->op_name);
@@ -687,6 +724,17 @@ guild_status_t KernelRegistry::register_plugin_transactional(
             ctx->staged_direct_tables.push_back(nullptr);
         }
         std::vector<uint8_t> ext_copy;
+        if (d->op_kind == GUILD_OP_CUSTOM) {
+            guild_operation_ext_v1_t ext{};
+            std::string error;
+            const auto st = copy_operation_extension(*d, ext, error);
+            if (st != GUILD_STATUS_OK) {
+                fill_err(e, st, "operation", error);
+                return st;
+            }
+            ext_copy.resize(sizeof(ext));
+            std::memcpy(ext_copy.data(), &ext, sizeof(ext));
+        }
         if (d->next_ext && d->op_kind == GUILD_OP_BATCHED_EXPERT_EXEC) {
             const size_t bytes=cpu_extension_size(d->next_ext);
             if(!bytes) return GUILD_STATUS_ERR_ABI_MISMATCH;
@@ -741,11 +789,16 @@ guild_status_t KernelRegistry::register_plugin_transactional(
         }
         ctx->staged_ext_bytes.push_back(std::move(ext_copy));
         ctx->staged_ops.push_back(*d);
+        attempt.success = true;
         return GUILD_STATUS_OK;
     };
     host_api.register_runner = [](guild_core_host_t host, const guild_runner_desc_v1_t* r, guild_error_info_t* e) -> guild_status_t {
         if (!host || !r) return GUILD_STATUS_ERR_INVALID_ARGUMENT;
         auto* ctx = reinterpret_cast<StagingContext*>(host);
+        struct Attempt {
+            bool& failed; bool success = false;
+            ~Attempt() { if (!success) failed = true; }
+        } attempt{ctx->registration_failed};
         if (r->struct_size < sizeof(guild_runner_desc_v1_t) ||
             negotiate_abi_version(r->abi_version, nullptr) != GUILD_STATUS_OK) {
             fill_err(e, GUILD_STATUS_ERR_ABI_MISMATCH, "plugin", "runner descriptor ABI mismatch");
@@ -814,13 +867,31 @@ guild_status_t KernelRegistry::register_plugin_transactional(
         }
         ctx->staged_runner_extensions.push_back(std::move(ext));
         ctx->staged_runners.push_back(*r);
+        attempt.success = true;
         return GUILD_STATUS_OK;
     };
 
     const guild_status_t init_st = pdesc.init(reinterpret_cast<guild_core_host_t>(&staging), &host_api, &einfo);
     if (init_st != GUILD_STATUS_OK) {
         err = einfo.message[0] ? einfo.message : status_to_string(init_st);
+        if (pdesc.shutdown) pdesc.shutdown(reinterpret_cast<guild_core_host_t>(this));
         return init_st;
+    }
+    if (staging.registration_failed) {
+        if (pdesc.shutdown) pdesc.shutdown(reinterpret_cast<guild_core_host_t>(this));
+        err = "plugin ignored a failed provider registration";
+        return GUILD_STATUS_ERR_INVALID_ARGUMENT;
+    }
+    for (const auto& deps : staging.staged_op_deps) {
+        for (const auto& id : deps) {
+            if (std::find(staging.staged_impl_ids.begin(), staging.staged_impl_ids.end(), id) != staging.staged_impl_ids.end()) continue;
+            const auto dependency = find_by_id(id);
+            if (!dependency || !is_package_enabled(dependency->package_id)) {
+                if (pdesc.shutdown) pdesc.shutdown(reinterpret_cast<guild_core_host_t>(this));
+                err = "plugin requires missing or disabled operation: " + id;
+                return GUILD_STATUS_ERR_DEPENDENCY_MISSING;
+            }
+        }
     }
 
     // Verify manifest-declared provided_ops and provided_runners match what the plugin registered
@@ -902,6 +973,7 @@ guild_status_t KernelRegistry::register_plugin_transactional(
             auto stored = std::make_shared<StoredOp>();
             stored->library_keepalive = library_keepalive;
             stored->desc = staging.staged_ops[i];
+            if (stored->desc.op_kind == GUILD_OP_CUSTOM) stored->desc.struct_size = sizeof(stored->desc);
             stored->op_name = std::move(staging.staged_op_names[i]);
             stored->impl_id = std::move(staging.staged_impl_ids[i]);
             stored->package_id = std::move(staging.staged_pkg_ids[i]);
@@ -939,12 +1011,32 @@ guild_status_t KernelRegistry::register_plugin_transactional(
     return GUILD_STATUS_OK;
 }
 
-guild_status_t KernelRegistry::unregister_package(const std::string& package_id, std::string& err) {
+guild_status_t KernelRegistry::can_unregister_package(const std::string& package_id, std::string& err) const {
     abi::ProviderTransaction transaction(abi::provider_lifecycle_mutex());
     if (active_package_leases(package_id) > 0) {
         err = "cannot unregister kernel package '" + package_id + "' while active sessions are running";
         return GUILD_STATUS_ERR_ACTIVE_SESSION_BUSY;
     }
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (const auto& consumer : ops_) {
+        if (consumer->package_id == package_id) continue;
+        for (const auto& id : consumer->dep_storage) {
+            for (const auto& provider : ops_) {
+                if (provider->package_id == package_id && provider->impl_id == id) {
+                    err = "registered operation '" + consumer->impl_id + "' depends on package '" + package_id + "'";
+                    return GUILD_STATUS_ERR_DEPENDENCY_MISSING;
+                }
+            }
+        }
+    }
+    err.clear();
+    return GUILD_STATUS_OK;
+}
+
+guild_status_t KernelRegistry::unregister_package(const std::string& package_id, std::string& err) {
+    abi::ProviderTransaction transaction(abi::provider_lifecycle_mutex());
+    const auto status = can_unregister_package(package_id, err);
+    if (status != GUILD_STATUS_OK) return status;
     synchronize_package_streams(package_id);
     std::vector<LoadedPlugin> unloaded_plugins;
     {
@@ -1079,7 +1171,12 @@ guild_status_t KernelRegistry::select(const KernelSelectionQuery& query,
                                       std::string& err) const {
     abi::ProviderTransaction transaction(abi::provider_lifecycle_mutex());
     if (out_desc) *out_desc = nullptr;
-    if (query.op_kind <= GUILD_OP_INVALID || query.op_kind >= GUILD_OP_COUNT) {
+    if (query.operation) {
+        const auto st = validate_operation_query(*query.operation, err);
+        if (st != GUILD_STATUS_OK) return st;
+    }
+    if ((query.op_kind != GUILD_OP_CUSTOM && (query.op_kind <= GUILD_OP_INVALID || query.op_kind >= GUILD_OP_COUNT)) ||
+        (query.op_kind == GUILD_OP_CUSTOM && (!query.operation || !query.operation->operation_id))) {
         err = "invalid operation kind in kernel selection query";
         return GUILD_STATUS_ERR_INVALID_ARGUMENT;
     }
@@ -1089,11 +1186,13 @@ guild_status_t KernelRegistry::select(const KernelSelectionQuery& query,
     bool failed_hw = false;
     bool failed_caps = false;
     bool failed_mem = false;
+    bool failed_dep = false;
 
     for (const auto& cand : ops_) {
         if (disabled_packages_.count(cand->package_id) > 0) continue;
         const auto& d = cand->desc;
         if (d.op_kind != query.op_kind) continue;
+        if (query.operation && cand->op_name != query.operation->operation_id) continue;
         if (!query.frozen_impl_id.empty()) {
             if (cand->impl_id != query.frozen_impl_id) continue;
             if (query.frozen_impl_version != 0 && d.impl_version != query.frozen_impl_version) {
@@ -1102,6 +1201,19 @@ guild_status_t KernelRegistry::select(const KernelSelectionQuery& query,
             }
         }
         saw_op_kind = true;
+
+        if (query.operation) {
+            guild_scratch_request_t scratch{};
+            std::string reason;
+            const auto st = match_operation(d, *query.operation, caps, scratch, reason);
+            if (st != GUILD_STATUS_OK) {
+                err = cand->impl_id + ": " + reason;
+                failed_hw |= st == GUILD_STATUS_ERR_UNSUPPORTED_HARDWARE;
+                failed_mem |= st == GUILD_STATUS_ERR_OUT_OF_MEMORY;
+                failed_caps |= st != GUILD_STATUS_ERR_UNSUPPORTED_HARDWARE && st != GUILD_STATUS_ERR_OUT_OF_MEMORY;
+                continue;
+            }
+        }
 
         // Check backend & hardware ISA / SM
         if ((d.backend & query.allowed_backends) == 0 || (d.backend & caps.available_backends) == 0) {
@@ -1167,7 +1279,7 @@ guild_status_t KernelRegistry::select(const KernelSelectionQuery& query,
         }
 
         // Check scratch memory if query_scratch is provided
-        if (d.query_scratch) {
+        if (d.query_scratch && !query.operation) {
             guild_scratch_request_t sreq{};
             sreq.struct_size = sizeof(sreq);
             if (d.query_scratch(nullptr, 0, nullptr, 0, &sreq, nullptr) == GUILD_STATUS_OK) {
@@ -1185,7 +1297,7 @@ guild_status_t KernelRegistry::select(const KernelSelectionQuery& query,
         bool deps_ok = true;
         for (const auto& dep_id : cand->dep_storage) {
             const bool dep_present = std::any_of(ops_.begin(), ops_.end(), [&](const std::shared_ptr<StoredOp>& o) {
-                return o->impl_id == dep_id;
+                return o->impl_id == dep_id && !disabled_packages_.count(o->package_id);
             });
             if (!dep_present) {
                 deps_ok = false;
@@ -1194,15 +1306,23 @@ guild_status_t KernelRegistry::select(const KernelSelectionQuery& query,
         }
         if (!deps_ok) {
             err = "candidate kernel '" + cand->impl_id + "' has unsatisfied operation dependency";
+            if (query.operation) { failed_dep = true; continue; }
             return GUILD_STATUS_ERR_DEPENDENCY_MISSING;
         }
 
-        if (!best || d.priority > best->desc.priority) {
+        if (!best || d.priority > best->desc.priority ||
+            (d.priority == best->desc.priority && cand->impl_id < best->impl_id)) {
             best = cand;
         }
     }
 
     if (!best) {
+        if (query.operation && saw_op_kind) {
+            if (failed_dep) return GUILD_STATUS_ERR_DEPENDENCY_MISSING;
+            if (failed_mem) return GUILD_STATUS_ERR_OUT_OF_MEMORY;
+            if (failed_hw && !failed_caps) return GUILD_STATUS_ERR_UNSUPPORTED_HARDWARE;
+            return GUILD_STATUS_ERR_CAPABILITY_MISMATCH;
+        }
         if (!saw_op_kind) {
             err = std::string("no registered kernel for operation '") + op_kind_to_string(query.op_kind) + "'";
             if (!query.frozen_impl_id.empty()) err += " (frozen impl_id '" + query.frozen_impl_id + "')";

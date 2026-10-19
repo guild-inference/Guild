@@ -2,6 +2,7 @@
 #pragma once
 
 #include "guild/abi/kernel_abi.h"
+#include "guild/abi/module_abi.h"
 #include "guild/hardware/hardware_info.hpp"
 #include "guild/kernels/cuda_attn.hpp"
 #include "guild/kernels/cuda_dense.hpp"
@@ -59,6 +60,8 @@ struct KernelSelectionQuery {
     // Optional GEXEC lock: if non-empty, only this exact implementation ID (and optional version) may match.
     std::string frozen_impl_id;
     uint32_t frozen_impl_version = 0;
+    // Optional namespaced operation negotiation. Borrowed only during select().
+    const guild_operation_query_v1_t* operation = nullptr;
 };
 
 /// Frozen seven-pointer payload for guild_kernel_op_desc_v1_t::direct_fn_table.
@@ -177,6 +180,9 @@ public:
     /// Fails with GUILD_STATUS_ERR_ACTIVE_SESSION_BUSY if any session lease is active.
     guild_status_t unregister_package(const std::string& package_id, std::string& err);
 
+    /// Preflight used by cross-registry unload while holding the lifecycle transaction.
+    guild_status_t can_unregister_package(const std::string& package_id, std::string& err) const;
+
     /// Enable or disable all operations belonging to `package_id` for future selections.
     void set_package_enabled(const std::string& package_id, bool enabled);
     bool is_package_enabled(const std::string& package_id) const;
@@ -192,6 +198,9 @@ public:
 
     /// Look up a registered operation by exact `impl_id`.
     KernelBinding find_by_id(const std::string& impl_id) const;
+
+    /// C-compatible, reference-counted operation service for runners/extensions.
+    guild_operation_api_v1_t operation_api();
 
     /// Snapshot of all registered descriptors.
     std::vector<KernelBinding> list_operations() const;

@@ -1016,6 +1016,7 @@ write_basic_package_version_file(
   VERSION ${GUILD_KERNEL_SDK_VERSION}
   COMPATIBILITY SameMajorVersion)
 install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/include/guild/abi/kernel_abi.h
+              ${CMAKE_CURRENT_SOURCE_DIR}/include/guild/abi/module_abi.h
               ${CMAKE_CURRENT_SOURCE_DIR}/include/guild/abi/runner_abi.h
               ${CMAKE_CURRENT_SOURCE_DIR}/include/guild/abi/cpu_expert_abi.h
                ${CMAKE_CURRENT_SOURCE_DIR}/include/guild/abi/cpu_backend_abi.h
@@ -1060,6 +1061,7 @@ else()
 endif()
 
 include(cmake/QwenRunnersBackend.cmake)
+target_sources(guild_runtime PRIVATE src/kernels/operation.cpp)
 guild_resolve_qwen_runners_backend()
 if(GUILD_BUILTIN_QWEN_RUNNERS)
   target_sources(guild_runtime PRIVATE ${GUILD_QWEN_RUNNERS_BACKEND_SOURCES})
@@ -1162,10 +1164,45 @@ if(GUILD_BUILD_TESTS)
   add_test(NAME finite_output_test COMMAND finite_output_test)
 
   # External .gkernel plugins built strictly against the public Guild::KernelSDK interface target
+  enable_language(C)
+  foreach(variant IN ITEMS base fast v11 bad duplicate)
+    add_library(guild_scan_${variant} SHARED plugins/scan_module/scan.c)
+    target_link_libraries(guild_scan_${variant} PRIVATE Guild::KernelSDK)
+    set_target_properties(guild_scan_${variant} PROPERTIES C_STANDARD 99 C_STANDARD_REQUIRED YES)
+  endforeach()
+  target_compile_definitions(guild_scan_fast PRIVATE SCAN_PACKAGE="example.scan.fast" SCAN_PRIORITY=20 SCAN_DELEGATE=1)
+  target_compile_definitions(guild_scan_v11 PRIVATE SCAN_VERSION="1.1.0")
+  target_compile_definitions(guild_scan_bad PRIVATE SCAN_PACKAGE="example.scan.invalid" SCAN_BAD_ABI=1)
+  target_compile_definitions(guild_scan_duplicate PRIVATE SCAN_PACKAGE="example.scan.duplicate" SCAN_DUPLICATE=1)
+  if(UNIX)
+    add_executable(gkmodule_test tests/core/gkmodule_test.cpp)
+    target_link_libraries(gkmodule_test PRIVATE guild_runtime guild_models guild_cli)
+    target_compile_definitions(gkmodule_test PRIVATE
+      GUILD_SCAN_SO="$<TARGET_FILE:guild_scan_base>"
+      GUILD_SCAN_FAST_SO="$<TARGET_FILE:guild_scan_fast>"
+      GUILD_SCAN_V11_SO="$<TARGET_FILE:guild_scan_v11>"
+      GUILD_SCAN_BAD_SO="$<TARGET_FILE:guild_scan_bad>"
+      GUILD_SCAN_DUP_SO="$<TARGET_FILE:guild_scan_duplicate>")
+    add_dependencies(gkmodule_test guild_scan_base guild_scan_fast guild_scan_v11 guild_scan_bad guild_scan_duplicate)
+    add_test(NAME gkmodule_test COMMAND gkmodule_test)
+    set_tests_properties(gkmodule_test PROPERTIES TIMEOUT 120)
+  endif()
   add_library(guild_ext_runner_smoke SHARED plugins/runner_smoke_ext/runner_smoke_plugin.cpp)
   target_link_libraries(guild_ext_runner_smoke PRIVATE Guild::KernelSDK guild_warnings)
 
   if(GUILD_ENABLE_CUDA)
+    add_library(guild_scan_cuda SHARED plugins/scan_module/scan_cuda.cu)
+    set_target_properties(guild_scan_cuda PROPERTIES CUDA_RUNTIME_LIBRARY Shared)
+    target_link_libraries(guild_scan_cuda PRIVATE Guild::KernelSDK ${_guild_gpu_runtime_target})
+    if(UNIX)
+      add_executable(gkmodule_cuda_test tests/core/gkmodule_cuda_test.cpp)
+      target_link_libraries(gkmodule_cuda_test PRIVATE guild_runtime guild_models guild_cli)
+      target_include_directories(gkmodule_cuda_test PRIVATE ${_guild_gpu_include_directories})
+      target_compile_definitions(gkmodule_cuda_test PRIVATE GUILD_SCAN_CUDA_SO="$<TARGET_FILE:guild_scan_cuda>")
+      add_dependencies(gkmodule_cuda_test guild_scan_cuda)
+      add_test(NAME gkmodule_cuda_test COMMAND gkmodule_cuda_test)
+      set_tests_properties(gkmodule_cuda_test PROPERTIES TIMEOUT 60)
+    endif()
     add_library(guild_ext_ornith_prefill SHARED plugins/ornith_prefill_ext/ornith_prefill_plugin.cu)
     set_target_properties(guild_ext_ornith_prefill PROPERTIES CUDA_RUNTIME_LIBRARY Shared)
     target_compile_definitions(guild_ext_ornith_prefill PRIVATE GUILD_ENABLE_CUDA=1)

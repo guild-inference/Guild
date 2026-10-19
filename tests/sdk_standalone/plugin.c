@@ -1,4 +1,6 @@
 #include <guild/abi/kernel_abi.h>
+#include <guild/abi/module_abi.h>
+typedef char operation_prefix[(offsetof(guild_operation_ext_v1_t,tag)==4)?1:-1];
 #include <guild/abi/runner_abi.h>
 #include <guild/abi/cpu_backend_abi.h>
 #include <guild/abi/cuda_dense_abi.h>

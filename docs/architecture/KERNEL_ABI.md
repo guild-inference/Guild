@@ -1,4 +1,9 @@
-# Guild Kernel ABI v1 and standalone SDK 1.4
+# Guild Kernel ABI v1 and standalone SDK 1.5
+
+SDK 1.5 adds the optional [Phase 3 operation service](GKMODULE.md), declared in
+`include/guild/abi/module_abi.h`. Kernel/runner descriptors retain their v1 layout;
+the host callback table has an optional, size-checked tail pointer. Namespaced
+GOP1 operations use the existing registry and reference-counted bindings.
 
 Normative headers:
 

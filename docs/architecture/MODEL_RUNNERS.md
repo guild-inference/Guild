@@ -1,5 +1,15 @@
 # Model Architecture Runners
 
+## Phase 3 specialized operations
+
+SDK 1.5 exposes `guild_operation_api_v1_t` through the optional `operations` tail
+of the plugin host API. Runners can copy that table during init, resolve named
+operation/version/capability requirements, and retain opaque bindings for their
+execution resources. See [GKMODULE.md](GKMODULE.md) for tensor, scratch, device,
+stream and unloading contracts. This service is available to `.gkernel` runners
+and `.gkmodule` operation providers. It does not change the existing RMD1 model
+description layout or claim support for arbitrary execution topologies.
+
 SDK 1.1+ supplies the `RMD1` model-description extension in
 `include/guild/abi/runner_abi.h`. The independent
 [guild-runners-qwen](https://github.com/guild-inference/guild-runners-qwen)

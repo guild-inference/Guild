@@ -1,0 +1,10 @@
+cmake_minimum_required(VERSION 3.24)
+project(GuildScanModule LANGUAGES C)
+find_package(GuildKernelSDK 1.5 REQUIRED CONFIG)
+add_library(guild_scan_module SHARED scan.c)
+target_link_libraries(guild_scan_module PRIVATE Guild::KernelSDK)
+set_target_properties(guild_scan_module PROPERTIES C_STANDARD 99 C_STANDARD_REQUIRED YES)
+set_target_properties(guild_scan_module PROPERTIES LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/package/lib"
+  RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/package/lib")
+set(MODULE_LIBRARY "lib/${CMAKE_SHARED_LIBRARY_PREFIX}guild_scan_module${CMAKE_SHARED_LIBRARY_SUFFIX}")
+configure_file(.gkmetadata.in package/.gkmetadata @ONLY)

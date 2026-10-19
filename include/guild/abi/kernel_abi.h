@@ -448,6 +448,8 @@ typedef struct guild_host_api_v1_s {
     guild_status_t (*get_device_capabilities)(guild_core_host_t host, guild_device_capabilities_v1_t* out_caps);
     guild_status_t (*register_kernel_op)(guild_core_host_t host, const guild_kernel_op_desc_v1_t* desc, guild_error_info_t* err);
     guild_status_t (*register_runner)(guild_core_host_t host, const guild_runner_desc_v1_t* desc, guild_error_info_t* err);
+    // Optional SDK 1.5 tail. Check struct_size before reading. Copy during init.
+    const struct guild_operation_api_v1_s* operations;
 } guild_host_api_v1_t;
 
 typedef struct guild_plugin_descriptor_v1_s {

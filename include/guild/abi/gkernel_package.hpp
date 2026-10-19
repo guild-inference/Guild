@@ -33,14 +33,15 @@ struct PackageDependency {
     std::string max_version;
 };
 
-/// Dependency boundary for reusable `.gkmodule` building blocks consumed by `.gkernel` packages.
-/// `.gkmodule` packages are never directly executed or registered as plugins by Guild Core.
+/// Runtime dependencies use abi_tag "guild.module.v1". Other tags retain their
+/// legacy build-time provenance meaning in .gkernel packages.
 struct ModuleDependencySpec {
     std::string module_id;
     std::string min_version;
     std::string abi_tag;
     std::string expected_publisher_id;
     std::string sha256;
+    std::string max_version;
 };
 
 struct TargetPlatformSpec {
@@ -85,7 +86,8 @@ struct ProvenanceMetadata {
 
 struct GKernelMetadata {
     uint32_t format_version = 1;
-    std::string package_kind = "gkernel"; // "gkernel" (executable plugin) or "gkmodule" (non-executable module)
+    std::string package_kind = "gkernel";
+    uint32_t module_abi = 0; // 1 opts a gkmodule into runtime operation registration
     std::string package_id;               // e.g. "guild-kernels-cuda"
     std::string scope;                    // "cpu-kernels", "cuda-kernels", "hip-kernels", "runner", "hybrid", "module"
     std::string version;                  // Semantic version "MAJOR.MINOR.PATCH"

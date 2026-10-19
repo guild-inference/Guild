@@ -1,0 +1,19 @@
+{
+  "format_version": 1,
+  "package_kind": "gkmodule",
+  "module_abi": 1,
+  "package_id": "example.scan",
+  "scope": "module",
+  "version": "1.0.0",
+  "publisher_id": "org.illatio.guild",
+  "kernel_abi": {"major": 1, "minor_min": 0, "minor_max": 0},
+  "library_path": "@MODULE_LIBRARY@",
+  "backends": ["cpu"],
+  "provided_ops": ["example.scan.prefix_sum", "example.scan.exclusive_sum"],
+  "artifacts": [{
+    "path": "@MODULE_LIBRARY@",
+    "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "byte_size": 0,
+    "role": "shared_library"
+  }]
+}

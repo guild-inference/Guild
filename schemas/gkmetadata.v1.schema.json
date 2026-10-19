@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://guild-inference.org/schemas/gkmetadata.v1.schema.json",
   "title": "Guild .gkmetadata Package Manifest (v1)",
-  "description": "Declarative manifest for .gkernel (executable kernel/runner plugin) and .gkmodule (non-executable building block) packages.",
+  "description": "Signed manifest for .gkernel plugins and .gkmodule components. Runtime modules require module_abi=1; legacy modules remain build-time inputs.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -14,6 +14,7 @@
     "kernel_abi"
   ],
   "properties": {
+    "module_abi": { "type": "integer", "const": 1 },
     "format_version": {
       "type": "integer",
       "const": 1
@@ -113,6 +114,7 @@
         "properties": {
           "module_id": { "type": "string" },
           "min_version": { "type": "string" },
+          "max_version": { "type": "string" },
           "abi_tag": { "type": "string" },
           "publisher_id": { "type": "string" },
           "sha256": { "type": "string", "pattern": "^[0-9a-fA-F]{64}$" }
@@ -182,5 +184,22 @@
         }
       }
     }
-  }
+  },
+  "allOf": [{
+    "if": { "required": ["module_abi"] },
+    "then": {
+      "required": ["package_kind", "library_path", "provided_ops"],
+      "properties": {
+        "package_kind": { "const": "gkmodule" },
+        "scope": { "const": "module" },
+        "library_path": { "minLength": 1 },
+        "provided_ops": { "minItems": 1, "uniqueItems": true },
+        "provided_runners": { "maxItems": 0 },
+        "entrypoint_symbol": { "const": "guild_plugin_entry_v1" },
+        "module_dependencies": {
+          "items": { "required": ["abi_tag"], "properties": { "abi_tag": { "const": "guild.module.v1" } } }
+        }
+      }
+    }
+  }]
 }

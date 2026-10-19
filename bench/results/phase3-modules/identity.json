@@ -1,0 +1,19 @@
+{
+  "preserved_sha256": "444dcfc31c39c6f568952c8ba07f3f29523550ae5b898fc06a22b5e4211a218e",
+  "current_sha256": "71cfe17157c8c21b7040ecb18d3531638505729520b674f0fcaaecbf0104211a",
+  "guild_sha256": "d13543478c627fa94c6c852d42286445ff60173df8c1573e425158c6d70df828",
+  "cases": [
+    "preserved",
+    "builtin",
+    "module"
+  ],
+  "prompts": [
+    512,
+    4096
+  ],
+  "rounds": 3,
+  "context": 32768,
+  "batch": 256,
+  "generate": 128,
+  "environment": {}
+}

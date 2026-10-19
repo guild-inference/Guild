@@ -1,5 +1,9 @@
 # Phase 2E package lifecycle and durability contract
 
+Phase 3 extends this contract to explicitly opted-in runtime modules; see
+[GKMODULE.md](GKMODULE.md). Publication is now locked through registry persistence,
+and enable/disable write failures restore the preceding in-process state.
+
 This document specifies how Guild stages, verifies, publishes, loads, replaces,
 rolls back, and removes `.gkernel` packages in `GKernelPackageManager`
 (`include/guild/abi/gkernel_package.hpp`, `src/abi/gkernel_package.cpp`).
@@ -24,7 +28,7 @@ rolls back, and removes `.gkernel` packages in `GKernelPackageManager`
    - Parses `.gkmetadata` without executing plugin code and rejects any extracted file not listed in `artifacts` or `validation_fixtures`.
    - Flushes each staged file with `fsync` (`0500` for shared libraries, `0400` for metadata/fixtures) and `fsync`s parent directories.
 2. **Validate (`validate_gkernel_package` + `validate_package_dependency_graph`)**:
-   - Enforces `package_kind == "gkernel"` (non-executable `.gkmodule` archives are rejected for direct loading).
+    - Accepts `gkernel` and Phase 3 `gkmodule` with `module_abi: 1`; legacy build-time modules are rejected for runtime loading.
    - Checks release, publisher, and key revocations against `PackageSecurityPolicy`.
    - Verifies the canonical `.gkmetadata` SHA-256 payload digest and Ed25519 signature (`GUILD-GKERNEL-SIG-V1:<payload_sha256>`).
    - Verifies Kernel ABI v1 compatibility, target OS/architecture, host CPU ISA, GPU SM bounds, every declared artifact's byte size and SHA-256 digest, every on-disk validation fixture's SHA-256 digest, and the topological dependency graph across enabled packages.

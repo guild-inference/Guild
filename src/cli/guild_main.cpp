@@ -1263,7 +1263,7 @@ int cmd_kernel(int argc, char** argv) {
             std::cout << "{\"status\":\"installed\",\"enabled\":" << (enable_now ? "true" : "false")
                       << ",\"installed_count\":" << pkgs.size() << "}\n";
         } else {
-            std::cout << "Installed .gkernel package from '" << target << "' ("
+            std::cout << "Installed extension package from '" << target << "' ("
                       << (enable_now ? "enabled" : "staged, disabled") << ").\n";
         }
         return 0;
@@ -1278,6 +1278,8 @@ int cmd_kernel(int argc, char** argv) {
                 std::cout << "  {\n"
                           << "    \"package_id\": \"" << p.package_id << "\",\n"
                           << "    \"version\": \"" << p.active_version << "\",\n"
+                          << "    \"package_kind\": \"" << p.metadata.package_kind << "\",\n"
+                          << "    \"module_abi\": " << p.metadata.module_abi << ",\n"
                           << "    \"previous_version\": \"" << p.previous_version << "\",\n"
                           << "    \"scope\": \"" << p.metadata.scope << "\",\n"
                           << "    \"publisher_id\": \"" << p.metadata.publisher_id << "\",\n"
@@ -1288,7 +1290,7 @@ int cmd_kernel(int argc, char** argv) {
             return 0;
         }
         if (pkgs.empty()) {
-            std::cout << "No external .gkernel packages installed.\n";
+            std::cout << "No external extension packages installed.\n";
             return 0;
         }
         std::cout << bold() << std::left
@@ -1321,6 +1323,7 @@ int cmd_kernel(int argc, char** argv) {
                 std::cout << rec.metadata.to_json_string() << "\n";
             } else {
                 std::cout << "Package ID:    " << rec.package_id << "\n"
+                          << "Package Kind:  " << rec.metadata.package_kind << "\n"
                           << "Version:       " << rec.active_version << "\n"
                           << "Previous Ver:  " << (rec.previous_version.empty() ? "-" : rec.previous_version) << "\n"
                           << "Status:        " << (rec.enabled ? "enabled" : "disabled") << "\n"

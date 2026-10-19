@@ -10,18 +10,22 @@ A `.gkernel` package is a cryptographically signed, content-addressed bundle of 
 
 ---
 
-## 1. Three-Tier Package Boundary (`gkernel` vs `gkmodule`)
+## 1. Package boundary (`gkernel` vs `gkmodule`)
 
-Guild enforces a strict three-tier architectural boundary in `.gkmetadata`:
+Guild distinguishes two runtime package roles in `.gkmetadata`:
 
 1. **`package_kind: "gkernel"` (Executable Plugin Package)**
    - Allowed `scope`: `"cpu-kernels"`, `"cuda-kernels"`, `"hip-kernels"`, `"runner"`, or `"hybrid"`.
    - Exports `guild_plugin_entry_v1` from its declared shared library and registers `guild_kernel_op_desc_v1_t` operations and/or `guild_runner_desc_v1_t` model runners with Guild Core.
-   - May declare `module_dependencies` recording reusable `.gkmodule` building blocks linked or consumed at build time.
-2. **`package_kind: "gkmodule"` (Non-Executable Building Block)**
-   - Allowed `scope`: `"module"`.
-   - Must **not** declare `provided_ops`, `provided_runners`, or `library_path`.
-   - **Direct Execution Rejection**: Guild Core (`validate_gkernel_package` and `GKernelPackageManager`) rejects any attempt to directly install, validate, or `dlopen` a `.gkmodule` package as a runtime plugin with `GUILD_STATUS_ERR_SECURITY_VIOLATION`.
+   - May declare build-time module provenance or runtime dependencies tagged `guild.module.v1`.
+2. **`package_kind: "gkmodule"`, `module_abi: 1` (Runtime Operation Module)**
+    - Allowed `scope`: `"module"`.
+    - Requires `provided_ops` and `library_path`; cannot register model runners.
+    - Uses the same signed archive, entrypoint, registry and lifecycle as `.gkernel`.
+    - Modules without `module_abi` retain their legacy build-time meaning and are rejected for runtime loading.
+
+See [GKMODULE.md](GKMODULE.md) for the Phase 3 operation service, dependency rules,
+namespaced capability negotiation and plugin workflow.
 
 ---
 

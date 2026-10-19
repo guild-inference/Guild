@@ -1,0 +1,361 @@
+{
+  "metadata": {
+    "format_version": 1,
+    "package_kind": "gkmodule",
+    "module_abi": 1,
+    "package_id": "example.scan",
+    "scope": "module",
+    "version": "1.0.0",
+    "publisher_id": "org.illatio.guild",
+    "entrypoint_symbol": "guild_plugin_entry_v1",
+    "library_path": "lib/libguild_scan_module.so",
+    "kernel_abi": {
+      "major": 1,
+      "minor_min": 0,
+      "minor_max": 0
+    },
+    "required_core_caps": 0,
+    "required_cpu_isa": 0,
+    "required_gpu_caps": 0,
+    "min_sm_version": 0,
+    "backends": [
+      "cpu"
+    ],
+    "supported_architectures": [],
+    "provided_ops": [
+      "example.scan.prefix_sum",
+      "example.scan.exclusive_sum"
+    ],
+    "provided_runners": [],
+    "required_ops": [],
+    "dependencies": [],
+    "artifacts": [
+      {
+        "path": "lib/libguild_scan_module.so",
+        "sha256": "cc860d675ff978ee7ca0698a797e572a70e57ab834c3f50017b4c0c82685be25",
+        "byte_size": 15824,
+        "role": "shared_library"
+      }
+    ],
+    "provenance": {
+      "spdx_license": "",
+      "source_repo": "",
+      "source_revision": ""
+    },
+    "signature": {
+      "algorithm": "ed25519",
+      "key_id": "benchmark",
+      "signature_hex": "8d723ddb03734d59d8999e00db91a6bf3c946014bf59c3ef7c0d30cd8f5278c2c1c5636fd4aa49cbaf73ec99b386f4512571ed0cac7d5b2f112b5d38d1fe6704",
+      "payload_sha256": "64ff6749116615ffd3a8de4ae55972d99b3003050aa2a074ebc4773aaf786fe8"
+    }
+  },
+  "report": {
+    "backend": "cuda",
+    "build_timestamp_utc": "2026-10-19T07:36:23Z",
+    "build_type": "Release",
+    "bundled_cpu": {
+      "enabled": true,
+      "package_id": "builtin.guild-kernels-cpu",
+      "pinned": true,
+      "source_revision": "264227c74d0151b914d826b0fa35a0f576a117b8",
+      "version": "1.1.1"
+    },
+    "bundled_cuda": {
+      "attn_bundled": true,
+      "dense_bundled": true,
+      "enabled": true,
+      "moe_bundled": true,
+      "ownership": "independent dense, attention, MoE and prefill CUDA sources; legacy prefill linked from backend sources",
+      "pinned": false,
+      "repository": "https://github.com/guild-inference/guild-kernels-cuda.git",
+      "revision": "fe4c0808dab38e72d31b9b6bfcc0943ee6e3c79a",
+      "source_revision": "fe4c0808dab38e72d31b9b6bfcc0943ee6e3c79a",
+      "version": "1.4.0"
+    },
+    "bundled_qwen_runners": {
+      "enabled": true,
+      "ownership": "independent RMD1 description runner, compiled bundled or loaded externally",
+      "pinned": true,
+      "repository": "https://github.com/guild-inference/guild-runners-qwen.git",
+      "revision": "650b09cef3a1dec184a96605111fa6d44622ebe6",
+      "source_revision": "650b09cef3a1dec184a96605111fa6d44622ebe6",
+      "version": "1.1.0"
+    },
+    "channel": "development",
+    "commit": "88c81179674f6fb55fbbfe006686059f9cba4c17",
+    "compiled_gpu_architectures": [
+      "61"
+    ],
+    "compiler": "GNU 13.3.0",
+    "cpu_only_inference_supported": false,
+    "display_version": "v0.2.0-dev",
+    "gpu_toolchain": "NVIDIA 12.0.140",
+    "kernel_abi_version": "1.0.0",
+    "kernel_sdk_version": "1.5.0",
+    "portable_cpu_baseline": false,
+    "prerelease": "dev",
+    "release_tag": null,
+    "revision": 0,
+    "software_version": "0.2.0-dev",
+    "tracked_source_dirty": true,
+    "version": "0.2.0",
+    "package_load_ok": true,
+    "external_packages": [
+      {
+        "package_id": "example.scan",
+        "version": "1.0.0",
+        "enabled": true,
+        "loaded_in_process": true,
+        "publisher_id": "org.illatio.guild"
+      }
+    ],
+    "registered_kernels": [
+      {
+        "impl_id": "cpu.expert_pool.split_multi_native",
+        "package_id": "builtin.guild-kernels-cpu",
+        "enabled": true,
+        "impl_version_encoded": 16781313,
+        "impl_version": "1.1.1"
+      },
+      {
+        "impl_id": "cpu.expert_pool.split_multi_canonical_avx512",
+        "package_id": "builtin.guild-kernels-cpu",
+        "enabled": true,
+        "impl_version_encoded": 16781313,
+        "impl_version": "1.1.1"
+      },
+      {
+        "impl_id": "cpu.quantize.act_q8_k_avx2",
+        "package_id": "builtin.guild-kernels-cpu",
+        "enabled": true,
+        "impl_version_encoded": 16781313,
+        "impl_version": "1.1.1"
+      },
+      {
+        "impl_id": "cpu.finite_check.simd64",
+        "package_id": "builtin.guild-kernels-cpu",
+        "enabled": true,
+        "impl_version_encoded": 16777216,
+        "impl_version": "1.0.0"
+      },
+      {
+        "impl_id": "gpu.embed.native_gather",
+        "package_id": "builtin.guild-kernels-cuda",
+        "enabled": true,
+        "impl_version_encoded": 16777216,
+        "impl_version": "1.0.0"
+      },
+      {
+        "impl_id": "gpu.quantize.q8_1_8col",
+        "package_id": "builtin.guild-kernels-cuda",
+        "enabled": true,
+        "impl_version_encoded": 16777216,
+        "impl_version": "1.0.0"
+      },
+      {
+        "impl_id": "gpu.dequant.bf16_native",
+        "package_id": "builtin.guild-kernels-cuda",
+        "enabled": true,
+        "impl_version_encoded": 16777216,
+        "impl_version": "1.0.0"
+      },
+      {
+        "impl_id": "gpu.mmvq.native_1col",
+        "package_id": "builtin.guild-kernels-cuda",
+        "enabled": true,
+        "impl_version_encoded": 16793600,
+        "impl_version": "1.4.0"
+      },
+      {
+        "impl_id": "gpu.moe.router_topk_native",
+        "package_id": "builtin.guild-kernels-cuda",
+        "enabled": true,
+        "impl_version_encoded": 16777216,
+        "impl_version": "1.0.0"
+      },
+      {
+        "impl_id": "gpu.mmvq.native_8col",
+        "package_id": "builtin.guild-kernels-cuda",
+        "enabled": true,
+        "impl_version_encoded": 16777216,
+        "impl_version": "1.0.0"
+      },
+      {
+        "impl_id": "gpu.moe.shared_expert_bf16",
+        "package_id": "builtin.guild-kernels-cuda",
+        "enabled": true,
+        "impl_version_encoded": 16777216,
+        "impl_version": "1.0.0"
+      },
+      {
+        "impl_id": "gpu.moe.grouped_hit_native",
+        "package_id": "builtin.guild-kernels-cuda",
+        "enabled": true,
+        "impl_version_encoded": 16777216,
+        "impl_version": "1.0.0"
+      },
+      {
+        "impl_id": "gpu.moe.dispatch_hybrid",
+        "package_id": "builtin.guild-kernels-cuda",
+        "enabled": true,
+        "impl_version_encoded": 16777216,
+        "impl_version": "1.0.0"
+      },
+      {
+        "impl_id": "gpu.moe.combine_native",
+        "package_id": "builtin.guild-kernels-cuda",
+        "enabled": true,
+        "impl_version_encoded": 16793600,
+        "impl_version": "1.4.0"
+      },
+      {
+        "impl_id": "gpu.norm.qsa_rms_weighted",
+        "package_id": "builtin.guild-kernels-cuda",
+        "enabled": true,
+        "impl_version_encoded": 16777216,
+        "impl_version": "1.0.0"
+      },
+      {
+        "impl_id": "gpu.gr.fused_read_write",
+        "package_id": "builtin.guild-kernels-cuda",
+        "enabled": true,
+        "impl_version_encoded": 16777216,
+        "impl_version": "1.0.0"
+      },
+      {
+        "impl_id": "gpu.rope.native_apply",
+        "package_id": "builtin.guild-kernels-cuda",
+        "enabled": true,
+        "impl_version_encoded": 16777216,
+        "impl_version": "1.0.0"
+      },
+      {
+        "impl_id": "gpu.kv.append_step",
+        "package_id": "builtin.guild-kernels-cuda",
+        "enabled": true,
+        "impl_version_encoded": 16777216,
+        "impl_version": "1.0.0"
+      },
+      {
+        "impl_id": "gpu.kv.gather_step",
+        "package_id": "builtin.guild-kernels-cuda",
+        "enabled": true,
+        "impl_version_encoded": 16777216,
+        "impl_version": "1.0.0"
+      },
+      {
+        "impl_id": "gpu.qsa.indexer_topk",
+        "package_id": "builtin.guild-kernels-cuda",
+        "enabled": true,
+        "impl_version_encoded": 16777216,
+        "impl_version": "1.0.0"
+      },
+      {
+        "impl_id": "gpu.attention.qsa_decode_batch",
+        "package_id": "builtin.guild-kernels-cuda",
+        "enabled": true,
+        "impl_version_encoded": 16793600,
+        "impl_version": "1.4.0"
+      },
+      {
+        "impl_id": "gpu.attention.qsa_prompt_flash",
+        "package_id": "builtin.guild-kernels-cuda",
+        "enabled": true,
+        "impl_version_encoded": 16777216,
+        "impl_version": "1.0.0"
+      },
+      {
+        "impl_id": "gpu.gdn.prefill_conv_l2",
+        "package_id": "builtin.guild-kernels-cuda",
+        "enabled": true,
+        "impl_version_encoded": 16777216,
+        "impl_version": "1.0.0"
+      },
+      {
+        "impl_id": "gpu.gdn.ab_proj",
+        "package_id": "builtin.guild-kernels-cuda",
+        "enabled": true,
+        "impl_version_encoded": 16777216,
+        "impl_version": "1.0.0"
+      },
+      {
+        "impl_id": "gpu.gdn.ab_proj_prefill_serial",
+        "package_id": "builtin.guild-kernels-cuda",
+        "enabled": true,
+        "impl_version_encoded": 16777216,
+        "impl_version": "1.0.0"
+      },
+      {
+        "impl_id": "gpu.gdn.ab_proj_prefill_tiled",
+        "package_id": "builtin.guild-kernels-cuda",
+        "enabled": true,
+        "impl_version_encoded": 16777216,
+        "impl_version": "1.0.0"
+      },
+      {
+        "impl_id": "gpu.gdn.prefill_recurrence",
+        "package_id": "builtin.guild-kernels-cuda",
+        "enabled": true,
+        "impl_version_encoded": 16777216,
+        "impl_version": "1.0.0"
+      },
+      {
+        "impl_id": "gpu.gdn.out_norm_native",
+        "package_id": "builtin.guild-kernels-cuda",
+        "enabled": true,
+        "impl_version_encoded": 16777216,
+        "impl_version": "1.0.0"
+      },
+      {
+        "impl_id": "gpu.ple.native_postops",
+        "package_id": "builtin.guild-kernels-cuda",
+        "enabled": true,
+        "impl_version_encoded": 16777216,
+        "impl_version": "1.0.0"
+      },
+      {
+        "impl_id": "gpu.verify.window_graph",
+        "package_id": "builtin.guild-kernels-cuda",
+        "enabled": true,
+        "impl_version_encoded": 16777216,
+        "impl_version": "1.0.0"
+      },
+      {
+        "impl_id": "gpu.finite.first_bad",
+        "package_id": "builtin.guild-kernels-cuda",
+        "enabled": true,
+        "impl_version_encoded": 16777216,
+        "impl_version": "1.0.0"
+      },
+      {
+        "impl_id": "example.scan.prefix_sum",
+        "package_id": "example.scan",
+        "enabled": true,
+        "impl_version_encoded": 16777216,
+        "impl_version": "1.0.0"
+      },
+      {
+        "impl_id": "example.scan.exclusive_sum",
+        "package_id": "example.scan",
+        "enabled": true,
+        "impl_version_encoded": 16777216,
+        "impl_version": "1.0.0"
+      }
+    ],
+    "registered_runners": [
+      {
+        "runner_id": "runner.qwen4exp.v1",
+        "package_id": "builtin.guild-kernels-qwen",
+        "enabled": true,
+        "runner_version_encoded": 16777216
+      },
+      {
+        "runner_id": "runner.qwen35moe.v1",
+        "package_id": "builtin.guild-kernels-ornith",
+        "enabled": true,
+        "runner_version_encoded": 16777216
+      }
+    ],
+    "selection_scope": "process registry; model-specific bindings are reported by inference telemetry/tests"
+  }
+}

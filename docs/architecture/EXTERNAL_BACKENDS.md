@@ -1,5 +1,10 @@
 # Independent backends: verified migration slices
 
+[Phase 3 runtime modules](GKMODULE.md) build with standalone SDK 1.5 and reuse
+the same signing/loading system. The independent C99 scan example is in
+`plugins/scan_module`; module and existing backend packages can coexist in one
+store. The pinned CPU/CUDA/Qwen packages retain their current versions.
+
 **Phase 2 is in progress.** These are functioning independent repositories and
 packages, but complete CPU/CUDA/architecture decoupling is not finished.
 
@@ -131,10 +136,14 @@ CUDA backend or canonical planar Q2 implementation.
    evidence is recorded in
    [Phase 2E multi-session validation](../performance/PHASE2E_MULTI_SESSION_VALIDATION.md).
 
-## Later phases (not started here)
+## Extension roadmap
 
-Phase 3: reusable `.gkmodule` and measured model-specialized fusion. Guild
-dispatches `.gkernel`, never `.gkmodule` operations. Phase 4: GPACK/GEXEC and
-reproducible frozen selections. Phase 5: hardware-aware and multi-GPU optimization.
-Phase 6: Qwen/long-context decode (16K milestones: 22+, 25+, stretch 30 tok/s).
-Phase 7: externally developed GLM runner. No empty future repositories were made.
+- Phase 3: runtime `.gkmodule` components, namespaced capability negotiation,
+  signed CPU/CUDA example operations and lifetime/dependency validation. See
+  [the implementation contract](GKMODULE.md) and
+  [validation record](../quality/PHASE3_MODULE_VALIDATION.md).
+- Phase 4: GPACK artifact infrastructure (not implemented here).
+- Phase 5: GEXEC generation and optimization (not implemented here).
+- Later architecture work: complete runner-owned execution topology, specialized
+  Qwen/GLM/Nemotron operations and Phase 7 Drama 3/audio integration. The Phase 3
+  service is an operation foundation, not a complete implementation of these models.

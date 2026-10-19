@@ -105,10 +105,10 @@ package presence alone. No stage is complete merely because registration works.
 
 Qwen4Exp and Qwen35MoE stay together: both use hybrid GDN/attention and MoE;
 Ornith is a model variant, not an independent ownership boundary. Future GLM,
-AMD and `.gkmodule` repositories are planned only. Guild dispatches `.gkernel`
-operations; modules remain build-time reusable dependencies, not dispatchable
-runtime providers. GPACK/GEXEC compilation and later optimization phases are
-outside this extraction.
+AMD and independent model-specific module repositories remain future work.
+[Phase 3](GKMODULE.md) adds runtime `.gkmodule` operation providers through the
+existing registries. Legacy build-time module declarations remain supported.
+GPACK/GEXEC compilation and later model implementations are separate milestones.
 
 ## Implemented migration milestone
 

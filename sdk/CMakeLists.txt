@@ -8,6 +8,7 @@ configure_package_config_file(../cmake/GuildKernelSDKConfig.cmake.in
 write_basic_package_version_file(${CMAKE_CURRENT_BINARY_DIR}/GuildKernelSDKConfigVersion.cmake
   VERSION ${PROJECT_VERSION} COMPATIBILITY SameMajorVersion)
 install(FILES ../include/guild/abi/kernel_abi.h ../include/guild/abi/runner_abi.h
+  ../include/guild/abi/module_abi.h
   ../include/guild/abi/cpu_expert_abi.h ../include/guild/abi/cpu_backend_abi.h
   ../include/guild/abi/cuda_dense_abi.h ../include/guild/abi/cuda_attn_abi.h
   ../include/guild/abi/cuda_moe_abi.h DESTINATION include/guild/abi)

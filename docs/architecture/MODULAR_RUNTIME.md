@@ -1,5 +1,15 @@
 # Modular Runtime Architecture
 
+## Phase 3 extension infrastructure
+
+[Runtime `.gkmodule` components](GKMODULE.md) reuse Phase 2E package, trust and
+binding infrastructure. SDK 1.5 adds namespaced, versioned operations and a C
+resolve/scratch/execute/release service. Runners can consume specialized operations
+without adding model-specific operation enums to Core. Signed CPU and CUDA scan
+modules exercise actual invocation, concurrent unload protection and graph/stream
+lifetimes. Current RMD1 execution topology is unchanged; new complete model runners,
+GPACK, GEXEC and audio pipelines are later work.
+
 ## Phase 2 status
 
 Independent native CPU experts, an SM 6.1 CUDA router, and a real Ornith model
@@ -16,7 +26,7 @@ Guild separates inference execution into three strictly decoupled layers connect
 
 1. **Guild Core (`src/runtime/`, `src/memory/`, `src/plan/`, `src/spec/`, `src/server/`, `src/abi/`)**
    - GGUF/pack loading, memory hierarchy planning (VRAM, pinned host RAM, mmap/file expert tiers), KV/recurrent state lifecycle, speculative decoding orchestration (`SpeculativeController`, `SuffixDrafter`, `MtpDrafter`), tokenization, sampling, HTTP/OpenAI/Anthropic APIs, CLI, and `.gkernel` cryptographic package management (`GKernelPackageManager`).
-   - Completely independent of model-specific layer equations or hardware-specific kernel intrinsics.
+    - Owns orchestration; the existing execution path still includes Qwen-shaped topology assumptions. Independent providers own the extracted arithmetic.
 
 2. **Model Architecture Runners (`include/guild/model/runner.hpp`, `src/model/runner.cpp`)**
    - Define how a model family (`qwen4exp`, `qwen35moe`, or external ABI v1 runners) maps GGUF metadata and tensors into `ModelDescriptor`, validates architectural invariants (such as mandatory PLE tables or hybrid recurrent/full-attention intervals), declares required kernel operations (`required_ops`), and binds prefill/decode execution graphs.
