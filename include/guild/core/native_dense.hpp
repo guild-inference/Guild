@@ -5,6 +5,8 @@
 #include <string>
 #include <vector>
 
+namespace guild::artifact { class GPackReader; }
+
 namespace guild::core {
 class WeightTable;
 
@@ -23,6 +25,7 @@ public:
     /// split's stage holds its own layers' projections, not the whole model's); the others keep data == nullptr.
     bool load(const std::vector<std::string>& shards, WeightTable& table, std::string& err,
               bool include_ple_key = false, int64_t layer_lo = 0, int64_t layer_hi = -1);
+    bool load_gpack(const guild::artifact::GPackReader& gpack, WeightTable& table, std::string& err);
     /// Plan v0.3 P1: the canonical tensor names `load` would serve natively from these shards (eligible name,
     /// supported type, 2-D), read from the GGUF headers only - so the canonical arena can skip them.
     static bool served_names(const std::vector<std::string>& shards, bool include_ple_key,

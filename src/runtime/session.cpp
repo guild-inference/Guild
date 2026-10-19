@@ -244,6 +244,18 @@ bool GuildSession::generate(
     telemetry.prompt_tok_s = (n_prompt > 1 && telemetry.prompt_ms > 0)
                                  ? ((n_prompt - 1) / (telemetry.prompt_ms / 1000.0))
                                  : 0.0;
+    if (m_impl->batched_prefill && std::getenv("GUILD_PREFILL_SEQUENTIAL") == nullptr) {
+        const auto& st = m_impl->batched_prefill->stats();
+        telemetry.prefill_embed_ms = st.ms_embed;
+        telemetry.prefill_gpu_dense_ms = st.gpu_dense_ms;
+        telemetry.prefill_gpu_attn_ms = st.gpu_attention_ms;
+        telemetry.prefill_gpu_gdn_ms = st.gpu_gdn_ms;
+        telemetry.prefill_host_wait_ms = st.host_wait_ms;
+        telemetry.prefill_cpu_group_ms = st.cpu_group_ms;
+        telemetry.prefill_cpu_quant_ms = st.ms_cpu_quant;
+        telemetry.prefill_cpu_gu_ms = st.ms_cpu_gu;
+        telemetry.prefill_cpu_down_ms = st.ms_cpu_down;
+    }
 
     if (on_prefill) {
         PrefillProgressEvent pev;
@@ -260,8 +272,14 @@ bool GuildSession::generate(
     const int64_t windows_before = m_impl->ver->windows;
     const int64_t pcie_before = m_impl->drive.d.pcie_experts;
     const double commit_before = m_impl->ver->ms_commit;
+    const double wait_before = m_impl->ver->ms_wait;
+    const double host_before = m_impl->ver->ms_host;
+    const double capture_before = m_impl->ver->ms_capture;
     const double pool_before = m_impl->drive.cpu_ms;
     const double validation_before = m_impl->drive.validation_ms;
+    const double gu_before = m_impl->pool ? m_impl->pool->ms_multi_gu : 0.0;
+    const double quant_before = m_impl->pool ? m_impl->pool->ms_multi_q : 0.0;
+    const double down_before = m_impl->pool ? m_impl->pool->ms_multi_down : 0.0;
     const double draft_before = use_mtp ? m_impl->mtp->ms_draft : 0;
     const auto logits_bytes_before = m_impl->ver->logits_readback_bytes;
     const double logits_validation_before = m_impl->ver->ms_logit_validation;
@@ -325,6 +343,7 @@ bool GuildSession::generate(
 
         m_impl->drive.d.layers = 0;
         m_impl->drive.d.experts = 0;
+        const double cap_w0 = m_impl->ver->ms_capture;
         if (!m_impl->ver->run(T, window.data(), p, drive_pool_multi, &m_impl->drive, outv.data(), error_msg)) {
             return runtime_failure();
         }
@@ -335,6 +354,10 @@ bool GuildSession::generate(
 
         if (!m_impl->ver->commit(a + 1, error_msg)) {
             return runtime_failure();
+        }
+        if (first_window) {
+            telemetry.first_window_capture_ms = m_impl->ver->ms_capture - cap_w0;
+            telemetry.ttft_ms = std::chrono::duration<double, std::milli>(Clock::now() - t_req_start).count();
         }
 
         telemetry.drafts_offered += (T - 1);
@@ -408,6 +431,19 @@ bool GuildSession::generate(
         : m_impl->drive.d.cache_hits + m_impl->drive.d.cache_refused - cache_lookups_before;
     telemetry.offload_entries = m_impl->drive.d.offload_entries - offload_before;
     telemetry.request_latency_s = std::chrono::duration<double>(t_decode_end - t_req_start).count();
+    telemetry.decode_windows = m_impl->ver->windows - windows_before;
+    telemetry.decode_mtp_draft_ms = use_mtp ? (m_impl->mtp->ms_draft - draft_before) : 0.0;
+    telemetry.decode_commit_ms = m_impl->ver->ms_commit - commit_before;
+    telemetry.decode_host_wait_ms = m_impl->ver->ms_wait - wait_before;
+    telemetry.decode_ple_ms = m_impl->ver->ms_host - host_before;
+    telemetry.decode_cpu_pool_ms = m_impl->drive.cpu_ms - pool_before;
+    telemetry.decode_cpu_validation_ms = m_impl->drive.validation_ms - validation_before;
+    telemetry.decode_cpu_gu_ms = m_impl->pool ? (m_impl->pool->ms_multi_gu - gu_before) : 0.0;
+    telemetry.decode_cpu_quant_ms = m_impl->pool ? (m_impl->pool->ms_multi_q - quant_before) : 0.0;
+    telemetry.decode_cpu_down_ms = m_impl->pool ? (m_impl->pool->ms_multi_down - down_before) : 0.0;
+    telemetry.decode_logit_validation_ms = m_impl->ver->ms_logit_validation - logits_validation_before;
+    telemetry.decode_verify_ms = std::max(0.0, telemetry.decode_ms - telemetry.decode_mtp_draft_ms);
+    (void) capture_before;
     if (decode_timing) {
         const int64_t windows = m_impl->ver->windows - windows_before;
         const double denominator = std::max<int64_t>(1, windows);

@@ -313,7 +313,9 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
     }
     release_gpu_fn().store(&release_live_verifiers);
     cudaGetDevice(&device_);   // a layer split's stage on another GPU: its streams, graphs and buffers live there
-    guild::kernels::fused_gr_check();   // once per card: which bitwise-equal hyper-connection read runs there
+    if (g.hc > 1) {
+        guild::kernels::fused_gr_check();   // once per card: which bitwise-equal hyper-connection read runs there
+    }
     wt_ = &wt;
     g_ = &g;
     ss_ = &ss;
@@ -1348,6 +1350,7 @@ std::string Verifier::profile_report() {
 
 bool Verifier::capture(int T, std::string& err) {
     if (exec_[T] != nullptr) return true;
+    const Clock::time_point cap_t0 = Clock::now();
     if (cudaStreamBeginCapture(cs_, cudaStreamCaptureModeThreadLocal) != cudaSuccess) {
         err = "verify: begin capture failed";
         return false;
@@ -1404,6 +1407,7 @@ bool Verifier::capture(int T, std::string& err) {
     }
     const cudaError_t ue = cudaGraphUpload(exec_[T], cs_);
     const cudaError_t us = cudaStreamSynchronize(cs_);
+    ms_capture += ms_since(cap_t0);
     std::fprintf(stderr, "guild verify: captured the %d-token window (upload %s, sync %s)\n", T,
                  cudaGetErrorString(ue), cudaGetErrorString(us));
     return true;
@@ -1411,6 +1415,7 @@ bool Verifier::capture(int T, std::string& err) {
 
 bool Verifier::capture_commit(std::string& err) {
     if (commit_exec_ != nullptr) return true;
+    const Clock::time_point cap_t0 = Clock::now();
     using namespace guild::kernels;
     const ModelGeometry& g = *g_;
     SessionState& ss = *ss_;
@@ -1474,6 +1479,7 @@ bool Verifier::capture_commit(std::string& err) {
         return false;
     }
     cudaGraphDestroy(graph);
+    ms_capture += ms_since(cap_t0);
     return true;
 }
 

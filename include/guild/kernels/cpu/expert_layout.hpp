@@ -14,6 +14,8 @@
 #include <string>
 #include <vector>
 
+namespace guild::artifact { class GPackReader; }
+
 namespace guild::kernels::cpu {
 
 struct ExpertLayout {
@@ -77,6 +79,9 @@ const ExpertLayout& expert_layout();
 bool expert_layout_load(const std::string& pack_dir, int64_t n_layers, int64_t n_expert, std::string& err,
                          int64_t n_embd = 2560, int64_t n_ff = 640,
                          const guild_cpu_backend_ext_v2_t* backend = nullptr);
+bool expert_layout_load_gpack(const guild::artifact::GPackReader& gpack, int64_t n_layers, int64_t n_expert,
+                              std::string& err, int64_t n_embd = 2560, int64_t n_ff = 640,
+                              const guild_cpu_backend_ext_v2_t* backend = nullptr);
 /// The newest native_experts.txt this engine reads.  v4 = v3 plus the per-role shard column `gate,up,down`,
 /// written only when some layer's roles are in different shards (every other pack stays v3, byte for byte).
 inline constexpr int kExpertLayoutVersion = 4;

@@ -514,6 +514,40 @@ bool FileExpertSource::open(const std::string& pack_dir, int64_t n_layers, int64
     return true;
 }
 
+bool FileExpertSource::open_gpack(const uint8_t* exp_base, uint64_t exp_bytes, int64_t n_layers, int64_t n_expert,
+                                  std::string& err) {
+    close();
+    if (!exp_base || n_layers <= 0 || n_expert <= 0) {
+        err = "FileExpertSource::open_gpack: invalid arguments";
+        return false;
+    }
+    const auto& lay = guild::kernels::cpu::expert_layout();
+    if (lay.n_layers != n_layers || lay.n_expert != n_expert) {
+        err = "FileExpertSource::open_gpack: expert layout geometry mismatch";
+        return false;
+    }
+    if (exp_bytes != lay.total) {
+        err = "FileExpertSource::open_gpack: ExpertBlobs size mismatch against expert layout total";
+        return false;
+    }
+    std::vector<uint64_t> layer_offsets((size_t) n_layers, 0);
+    std::vector<uint64_t> layer_blob_bytes((size_t) n_layers, 0);
+    for (int64_t l = 0; l < n_layers; ++l) {
+        layer_offsets[(size_t) l] = lay.layer_offset(l);
+        layer_blob_bytes[(size_t) l] = lay.blob_bytes(l);
+    }
+    base_ = exp_base;
+    external_view_ = true;
+    blobs_ = n_layers * n_expert;
+    n_layers_ = n_layers;
+    n_expert_ = n_expert;
+    mapped_bytes_ = exp_bytes;
+    layer_offsets_ = std::move(layer_offsets);
+    layer_blob_bytes_ = std::move(layer_blob_bytes);
+    override_.assign((size_t) blobs_, nullptr);
+    return true;
+}
+
 void FileExpertSource::close() {
     if (complement_arena_ != nullptr) {
         if (complement_pinned_ && !complement_partial_) (void) cudaFreeHost(complement_arena_);
@@ -592,16 +626,21 @@ void FileExpertSource::close() {
     file_blob_bytes_.store(0);
     file_us_.store(0);
 #if defined(_WIN32)
-    if (base_ != nullptr) UnmapViewOfFile((LPCVOID) base_);
-    if (mapping_ != nullptr) CloseHandle((HANDLE) mapping_);
-    if (file_ != nullptr) CloseHandle((HANDLE) file_);
+    if (!external_view_) {
+        if (base_ != nullptr) UnmapViewOfFile((LPCVOID) base_);
+        if (mapping_ != nullptr) CloseHandle((HANDLE) mapping_);
+        if (file_ != nullptr) CloseHandle((HANDLE) file_);
+    }
     mapping_ = nullptr;
     file_ = nullptr;
 #else
-    if (base_ != nullptr) munmap((void*) base_, (size_t) mapped_bytes_);
-    if (fd_ >= 0) ::close(fd_);
+    if (!external_view_) {
+        if (base_ != nullptr) munmap((void*) base_, (size_t) mapped_bytes_);
+        if (fd_ >= 0) ::close(fd_);
+    }
     fd_ = -1;
 #endif
+    external_view_ = false;
     base_ = nullptr;
     blobs_ = 0;
     n_layers_ = 0;
@@ -1529,8 +1568,18 @@ bool FileExpertSource::pin_cache_complement(
         if (arena == nullptr) {
 #if !defined(_WIN32)
             const long pg_sz = sysconf(_SC_PAGESIZE);
-            const size_t align_sz = pg_sz > 0 ? (size_t) pg_sz : 4096u;
+            const size_t base_align = pg_sz > 0 ? (size_t) pg_sz : 4096u;
+            const char* thp_env = std::getenv("GUILD_EXPERT_THP");
+            const bool thp_disabled = (thp_env != nullptr && std::strcmp(thp_env, "0") == 0);
+            const bool thp_forced = (thp_env != nullptr && std::atoi(thp_env) != 0);
+            const bool use_thp = !thp_disabled && (thp_forced || bytes >= (32ull << 30));
+            const size_t align_sz = use_thp ? (2ull << 20) : base_align;
             if (posix_memalign(&arena, align_sz, (size_t) bytes) != 0) arena = nullptr;
+#if defined(MADV_HUGEPAGE)
+            if (arena != nullptr && use_thp && bytes >= (2ull << 20)) {
+                (void) madvise(arena, (size_t) bytes, MADV_HUGEPAGE);
+            }
+#endif
 #if defined(__linux__) && defined(SYS_mbind) && defined(SYS_get_mempolicy)
             if (arena != nullptr) {
                 // Respect numactl/containers rather than overriding a caller's bind policy.
@@ -1547,13 +1596,19 @@ bool FileExpertSource::pin_cache_complement(
                 if (syscall(SYS_get_mempolicy, nullptr, nodemask, maxnode, nullptr, MPOL_F_MEMS_ALLOWED) == 0)
                     for (auto word : nodemask) nodes += __builtin_popcountl(word);
                 if (!process && known && (force || mode == MPOL_DEFAULT) && nodes > 1) {
-                    const size_t aligned_bytes = ((size_t) bytes + align_sz - 1) & ~(align_sz - 1);
+                    const size_t mbind_align = base_align;
+                    const size_t aligned_bytes = ((size_t) bytes + mbind_align - 1) & ~(mbind_align - 1);
                     const long result = syscall(SYS_mbind, arena, (unsigned long) aligned_bytes, MPOL_INTERLEAVE,
                                                 nodemask, maxnode, 0u);
                     std::fprintf(stderr, "FileExpertSource: resident NUMA interleave across %d allowed nodes: %s\n",
                                  nodes, result == 0 ? "applied" : "unavailable; process policy retained");
                 } else {
                     std::fprintf(stderr, "FileExpertSource: resident NUMA process policy retained (mode %d, %d allowed nodes)\n", mode, nodes);
+#if defined(MADV_HUGEPAGE)
+                    if (!thp_disabled && nodes <= 1 && bytes >= (2ull << 20)) {
+                        (void) madvise(arena, (size_t) bytes, MADV_HUGEPAGE);
+                    }
+#endif
                 }
             }
 #endif
@@ -1683,7 +1738,7 @@ bool FileExpertSource::pin_cache_complement(
                 return;
             }
 #if !defined(_WIN32)
-            if (role_ptr_.empty()) {   // experts.bin; the GGUF in place leaves its pages to the OS
+            if (role_ptr_.empty()) {   // experts.bin or GPACK ExpertBlobs
             const uint64_t layer_offset = layer_offsets_[(size_t) layer];
             const uint64_t layer_bytes = blob_bytes * (uint64_t) n_expert_;
             const uint64_t layer_end = layer_offset + layer_bytes;
@@ -1697,10 +1752,30 @@ bool FileExpertSource::pin_cache_complement(
                 fail("FileExpertSource: madvise could not release mapped expert layer " + std::to_string(layer));
                 return;
             }
-            if (posix_fadvise(fd_, (off_t) layer_offset, (off_t) layer_bytes, POSIX_FADV_DONTNEED) != 0) {
+            static const bool drop_pagecache = [] {
+                const char* e = std::getenv("GUILD_DROP_EXPERT_PAGECACHE");
+                return e != nullptr && std::atoi(e) != 0;
+            }();
+            if (drop_pagecache && fd_ >= 0 &&
+                posix_fadvise(fd_, (off_t) layer_offset, (off_t) layer_bytes, POSIX_FADV_DONTNEED) != 0) {
                 fail("FileExpertSource: posix_fadvise could not release expert layer " + std::to_string(layer));
                 return;
             }
+            } else {
+                // Release mapped GGUF pages from this process's RSS (MADV_DONTNEED unmaps from process page tables
+                // without evicting from the Linux page cache), preventing process RSS from doubling to 2x model size!
+                const uint64_t page = (uint64_t) page_size;
+                for (int r = 0; r < 3; ++r) {
+                    const size_t ri = (size_t) (3 * layer + r);
+                    if (ri >= role_ptr_.size() || role_ptr_[ri] == nullptr) continue;
+                    const uint64_t rbytes = role_bytes_[ri] * (uint64_t) n_expert_;
+                    const uintptr_t addr0 = (uintptr_t) role_ptr_[ri];
+                    const uintptr_t aligned0 = (addr0 + (uintptr_t) page - 1) & ~((uintptr_t) page - 1);
+                    const uintptr_t aligned1 = (addr0 + (uintptr_t) rbytes) & ~((uintptr_t) page - 1);
+                    if (aligned1 > aligned0) {
+                        (void) madvise((void*) aligned0, (size_t) (aligned1 - aligned0), MADV_DONTNEED);
+                    }
+                }
             }
 #endif
             const int64_t done = layers_done.fetch_add(1) + 1;
@@ -1710,7 +1785,9 @@ bool FileExpertSource::pin_cache_complement(
         }
     };
     {
-        const int threads = (int) std::max<int64_t>(1, std::min<int64_t>(6, n_layers_));
+        const int hw_threads = (int) std::max(1u, std::thread::hardware_concurrency());
+        const int max_workers = role_ptr_.empty() ? std::min(16, hw_threads) : 8;
+        const int threads = (int) std::max<int64_t>(1, std::min<int64_t>(max_workers, n_layers_));
         std::vector<std::thread> pool;
         for (int i = 1; i < threads; ++i) pool.emplace_back(worker);
         worker();

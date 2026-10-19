@@ -2,6 +2,7 @@
 #include <cstdlib>
 #include "guild/core/weights.hpp"
 #include "guild/artifact/gguf_reader.hpp"
+#include "guild/artifact/gpack.hpp"
 #include "guild/kernels/native_mmvq.hpp"
 
 #include <cuda_runtime.h>
@@ -207,5 +208,125 @@ bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& tabl
         err = std::string("native dense: ") + error.what();
         return false;
     }
+}
+
+bool NativeDense::load_gpack(const guild::artifact::GPackReader& gpack, WeightTable& table, std::string& err) {
+    if (scratch_ || !weights_.empty()) {
+        err = "native dense: already loaded";
+        return false;
+    }
+    if (!gpack.has_native_dense() || gpack.native_dense_rows().empty()) {
+        err = "native dense: GPACK has no NativeDenseIndexBin section";
+        return false;
+    }
+    uint64_t blob_size = 0;
+    const uint8_t* blob_ptr = gpack.native_dense_data(&blob_size);
+    if (!blob_ptr) {
+        err = "native dense: GPACK has no NativeDenseBlob section";
+        return false;
+    }
+
+    const uint64_t arena_bytes = gpack.native_dense_arena_bytes();
+    void* arena_raw = nullptr;
+    if (cudaMalloc(&arena_raw, arena_bytes) != cudaSuccess) {
+        err = "native dense GPACK arena allocation failed";
+        return false;
+    }
+    DevicePtr arena(arena_raw);
+    uint8_t* arena_base = static_cast<uint8_t*>(arena.get());
+
+    constexpr uint64_t kStageBytes = 16ull << 20;
+    void* stage_buf = nullptr;
+    if (cudaHostAlloc(&stage_buf, kStageBytes, cudaHostAllocDefault) != cudaSuccess) {
+        stage_buf = nullptr;
+    }
+
+    int max_in = 0;
+    uint64_t total = 0;
+    struct PendingSlice {
+        WeightRef* ref;
+        int type;
+        void* dev_ptr;
+    };
+    std::vector<PendingSlice> slices;
+    slices.reserve(gpack.native_dense_rows().size());
+
+    for (const auto& r : gpack.native_dense_rows()) {
+        if (r.blob_offset > blob_size || r.byte_size > blob_size - r.blob_offset ||
+            r.arena_offset > arena_bytes || r.byte_size > arena_bytes - r.arena_offset) {
+            if (stage_buf) cudaFreeHost(stage_buf);
+            err = "native dense: GPACK row out of bounds: " + r.name;
+            return false;
+        }
+        auto found = table.table_.find(r.name);
+        if (found == table.table_.end()) {
+            if (stage_buf) cudaFreeHost(stage_buf);
+            err = "native dense: tensor absent from canonical table: " + r.name;
+            return false;
+        }
+        auto& ref = found->second;
+        if (!guild::kernels::native_mmvq_supported(r.ggml_type)) continue;
+        if (r.name == "blk.1.ple_key.weight" && !ref.quantized()) continue;
+        if (!ref.quantized() || ref.ne0 != r.ne0 || ref.ne1 != r.ne1) {
+            if (stage_buf) cudaFreeHost(stage_buf);
+            err = "native dense: incompatible GPACK matrix " + r.name;
+            return false;
+        }
+        const uint64_t expected_bytes = guild::kernels::native_mmvq_weight_bytes(r.ggml_type, (int) r.ne0, (int) r.ne1);
+        if (expected_bytes != r.byte_size) {
+            if (stage_buf) cudaFreeHost(stage_buf);
+            err = "native dense: GPACK byte size mismatch for " + r.name;
+            return false;
+        }
+
+        uint8_t* dst = arena_base + r.arena_offset;
+        const uint8_t* src = blob_ptr + r.blob_offset;
+        if (stage_buf) {
+            uint64_t done = 0;
+            while (done < r.byte_size) {
+                const uint64_t chunk = std::min(kStageBytes, r.byte_size - done);
+                std::memcpy(stage_buf, src + done, static_cast<size_t>(chunk));
+                const auto st = cudaMemcpy(dst + done, stage_buf, static_cast<size_t>(chunk), cudaMemcpyHostToDevice);
+                if (st != cudaSuccess) {
+                    cudaFreeHost(stage_buf);
+                    err = "native dense GPACK upload failed for " + r.name;
+                    return false;
+                }
+                done += chunk;
+            }
+        } else {
+            const auto st = cudaMemcpy(dst, src, static_cast<size_t>(r.byte_size), cudaMemcpyHostToDevice);
+            if (st != cudaSuccess) {
+                err = "native dense GPACK upload failed for " + r.name;
+                return false;
+            }
+        }
+        max_in = (std::max)(max_in, (int) r.ne0);
+        total += r.byte_size;
+        slices.push_back(PendingSlice{&ref, r.ggml_type, dst});
+    }
+    if (stage_buf) cudaFreeHost(stage_buf);
+    if (slices.empty()) {
+        err = "native dense: no supported matrices in GPACK";
+        return false;
+    }
+
+    void* scratch_raw = nullptr;
+    const auto status = cudaMalloc(&scratch_raw, guild::kernels::native_q8_1_bytes(max_in));
+    DevicePtr scratch(scratch_raw);
+    if (status != cudaSuccess) {
+        err = std::string("native dense scratch: ") + cudaGetErrorString(status);
+        return false;
+    }
+
+    for (auto& sl : slices) {
+        sl.ref->native_data = sl.dev_ptr;
+        sl.ref->native_type = sl.type;
+        sl.ref->native_q8_1 = scratch.get();
+    }
+    weights_.push_back(arena.release());
+    scratch_ = scratch.release();
+    bytes_ = total;
+    return true;
 }
 } // namespace guild::core

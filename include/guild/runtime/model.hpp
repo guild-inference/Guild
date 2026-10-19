@@ -36,6 +36,7 @@ public:
     const memory::ExecutionPlan& plan() const { return plan_; }
     const ModelPaths& paths() const { return paths_; }
     const RuntimeConfig& config() const { return config_; }
+    const StartupProfile& startup_profile() const { return startup_profile_; }
     const Tokenizer& tokenizer() const { return *tokenizer_; }
     Tokenizer& tokenizer() { return *tokenizer_; }
 
@@ -52,6 +53,7 @@ private:
     memory::ExecutionPlan plan_;
     ModelPaths paths_;
     RuntimeConfig config_;
+    StartupProfile startup_profile_;
     std::shared_ptr<Tokenizer> tokenizer_ = std::make_shared<Tokenizer>();
     std::shared_ptr<std::atomic<bool>> ready_ = std::make_shared<std::atomic<bool>>(false);
     std::shared_ptr<Impl> impl_;

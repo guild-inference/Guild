@@ -1,6 +1,8 @@
 #include "guild/abi/gkernel_package.hpp"
+#include "guild/artifact/gpack.hpp"
 #include "guild/cli/ansi.hpp"
 #include "guild/cli/hardware.hpp"
+#include "guild/gexec/gexec_contract.hpp"
 #include "guild/kernels/registry.hpp"
 #include "guild/memory/planner.hpp"
 #include "guild/model/archetype.hpp"
@@ -40,6 +42,14 @@ bool parse_prefill_batch(const char* value,int64_t& batch) {
 
 bool resolve_model_descriptor(const std::string& path_or_name, guild::model::ModelDescriptor& desc) {
     bool described = false;
+    if (guild::artifact::GPackReader::is_gpack_file(path_or_name)) {
+        guild::artifact::GPackReader reader;
+        std::string gerr;
+        if (reader.open(path_or_name, gerr, false)) {
+            desc = reader.descriptor();
+            return true;
+        }
+    }
     try {
         guild::GgufFile gguf(path_or_name);
         std::string err;
@@ -98,10 +108,11 @@ void print_usage() {
               << "  " << cyan() << "rm" << reset() << " <model>        Safely remove a model and its unreferenced blobs\n"
               << "  " << cyan() << "import" << reset() << " <path>     Import existing model directory/files into store without copying\n"
               << "  " << cyan() << "serve" << reset() << " [model]     Start OpenAI-compatible HTTP inference server\n"
-              << "  " << cyan() << "inspect" << reset() << " <model>   Inspect model GGUF architecture, metadata, and MoE layout\n"
+              << "  " << cyan() << "inspect" << reset() << " <model>   Inspect model GGUF/GPACK architecture, metadata, and MoE layout\n"
               << "                      [--plan] [--json] to compute native execution memory plan\n"
-              << "  " << cyan() << "kernel" << reset() << " <subcmd>   Manage .gkernel packages (install, list, inspect, enable, disable,\n"
-              << "                      remove, rollback, active, keygen, sign, trust-key, revoke-key)\n"
+              << "  " << cyan() << "convert" << reset() << " <in>      Convert GGUF/pack or safetensors into portable .gpack container\n"
+              << "  " << cyan() << "verify" << reset() << " <gpack>    Verify .gpack container structure and SHA-256 section digests\n"
+              << "  " << cyan() << "kernel" << reset() << " <subcmd>   Manage .gkernel/.gkmodule packages\n"
               << "  " << cyan() << "bench" << reset() << " <model>     Run performance benchmark suite on target model\n"
               << "  " << cyan() << "ps" << reset() << "                List running Guild model instances and memory status\n"
               << "  " << cyan() << "version" << reset() << "           Show Guild version and platform build configuration\n\n"
@@ -334,8 +345,12 @@ int cmd_serve(int argc, char** argv) {
         tokenizer_dir = manifest_opt->metadata.at("tokenizer_dir");
     }
 
-    bool real_weights_available = std::filesystem::exists(pack_dir) &&
-                                  std::filesystem::exists(native_model);
+    if (native_model.empty() && guild::artifact::GPackReader::is_gpack_file(model)) {
+        native_model = model;
+    }
+    const bool is_gpack_model = guild::artifact::GPackReader::is_gpack_file(native_model);
+    bool real_weights_available = is_gpack_model ||
+                                  (std::filesystem::exists(pack_dir) && std::filesystem::exists(native_model));
 
     if (!force_mock && real_weights_available) {
         guild::server::NativeInferenceEngineOptions n_opts;
@@ -813,6 +828,47 @@ int cmd_import(int argc, char** argv) {
     }
 
     std::string err_msg;
+    if (guild::artifact::GPackReader::is_gpack_file(path)) {
+        guild::artifact::GPackReader reader;
+        if (!reader.open(path, err_msg, false)) {
+            std::cerr << "guild import failed: " << err_msg << "\n";
+            return 1;
+        }
+        const auto& d = reader.descriptor();
+        guild::models::ModelManifest gm;
+        gm.name = name.empty() ? d.name : name;
+        if (gm.name.empty()) gm.name = fs::path(path).stem().string();
+        gm.architecture = d.arch_name;
+        gm.quantization = "gpack.v1";
+        gm.source = "local-gpack";
+        gm.context_length = d.attn.context_length;
+        gm.vocab_size = d.attn.vocab_size;
+        gm.n_embd = d.attn.n_embd;
+        gm.n_layers = d.attn.n_layers;
+        gm.n_heads = d.attn.n_heads;
+        gm.n_kv_heads = d.attn.n_kv_heads;
+        gm.head_dim = d.attn.head_dim;
+        gm.full_attn_interval = d.attn.full_attn_interval;
+        gm.n_routed_experts = d.moe.n_routed_experts;
+        gm.k_active_experts = d.moe.k_active_experts;
+        gm.expert_dim_ff = d.moe.expert_dim_ff;
+        gm.n_shared_experts = d.moe.n_shared_experts;
+        gm.shared_dim_ff = d.moe.shared_dim_ff;
+        gm.expert_blob_bytes = d.moe.expert_blob_bytes;
+        guild::models::ModelFile mf;
+        mf.name = fs::path(path).filename().string();
+        mf.role = "primary";
+        mf.size_bytes = reader.file_size();
+        mf.local_path = fs::canonical(path).string();
+        gm.files.push_back(mf);
+        if (!store.save_manifest(gm)) {
+            std::cerr << "guild import failed: could not save GPACK manifest to store\n";
+            return 1;
+        }
+        std::cout << "Successfully imported GPACK '" << gm.name << "' into Guild store.\n";
+        return 0;
+    }
+
     bool ok = store.import_model_directory(*base_manifest, path, !copy_mode, err_msg);
     if (!ok) {
         std::cerr << "guild import failed: " << err_msg << "\n";
@@ -957,8 +1013,12 @@ int cmd_run(int argc, char** argv) {
         tokenizer_dir = manifest.metadata.at("tokenizer_dir");
     }
 
-    bool real_weights_available = std::filesystem::exists(pack_dir) &&
-                                  std::filesystem::exists(native_model);
+    if (native_model.empty() && guild::artifact::GPackReader::is_gpack_file(model)) {
+        native_model = model;
+    }
+    const bool is_gpack_model = guild::artifact::GPackReader::is_gpack_file(native_model);
+    bool real_weights_available = is_gpack_model ||
+                                  (std::filesystem::exists(pack_dir) && std::filesystem::exists(native_model));
 
     if (!force_mock && real_weights_available) {
         guild::server::NativeInferenceEngineOptions n_opts;
@@ -1461,6 +1521,131 @@ int cmd_kernel(int argc, char** argv) {
     return 1;
 }
 
+int cmd_convert(int argc, char** argv) {
+    using namespace guild::cli::ansi;
+    guild::artifact::GPackBuildOptions opts;
+    bool json_mode = false;
+
+    for (int i = 2; i < argc; ++i) {
+        std::string arg = argv[i];
+        if ((arg == "-o" || arg == "--output") && i + 1 < argc) opts.output_path = argv[++i];
+        else if (arg == "--pack-dir" && i + 1 < argc) opts.pack_dir = argv[++i];
+        else if (arg == "--tokenizer-dir" && i + 1 < argc) opts.tokenizer_dir = argv[++i];
+        else if (arg == "--mtp-dir" && i + 1 < argc) opts.mtp_dir = argv[++i];
+        else if (arg == "--ple-gguf" && i + 1 < argc) opts.ple_gguf = argv[++i];
+        else if (arg == "--name" && i + 1 < argc) opts.model_name = argv[++i];
+        else if (arg == "--shard" && i + 1 < argc) opts.additional_shards.push_back(argv[++i]);
+        else if (arg == "--external-experts") opts.embed_experts = false;
+        else if (arg == "--no-verify") opts.verify_after_write = false;
+        else if (arg == "--json") json_mode = true;
+        else if (arg == "-h" || arg == "--help") {
+            std::cout << "Usage: guild convert <input_gguf_or_safetensors> -o <output.gpack> [options]\n"
+                      << "  -o, --output <path>       Output .gpack path\n"
+                      << "  --pack-dir <dir>          Native pack directory (index.txt, dense.bin, tokenizer/)\n"
+                      << "  --tokenizer-dir <dir>     Tokenizer directory override\n"
+                      << "  --mtp-dir <dir>           Optional MTP draft directory\n"
+                      << "  --name <name>             Canonical model name\n"
+                      << "  --external-experts        Record GGUF expert layout without duplicating expert blobs\n"
+                      << "  --json                    Emit JSON conversion report\n";
+            return 0;
+        } else if (!arg.empty() && arg[0] != '-' && opts.primary_input_path.empty()) {
+            opts.primary_input_path = arg;
+        }
+    }
+
+    if (opts.primary_input_path.empty() || opts.output_path.empty()) {
+        std::cerr << "Usage: guild convert <input> -o <output.gpack> [--pack-dir <dir>] [--external-experts] [--json]\n";
+        return 1;
+    }
+
+    guild::artifact::GPackBuildReport report;
+    std::string err;
+    if (!guild::artifact::GPackBuilder::build(opts, report, err)) {
+        std::cerr << "guild convert failed: " << err << "\n";
+        return 1;
+    }
+
+    if (json_mode) {
+        std::cout << "{\n"
+                  << "  \"status\": \"ok\",\n"
+                  << "  \"output_path\": \"" << report.output_path << "\",\n"
+                  << "  \"manifest_sha256\": \"" << report.manifest_sha256 << "\",\n"
+                  << "  \"total_file_size\": " << report.total_file_size << ",\n"
+                  << "  \"section_count\": " << report.section_count << ",\n"
+                  << "  \"tensor_count\": " << report.tensor_count << ",\n"
+                  << "  \"dense_pack_bytes\": " << report.dense_pack_bytes << ",\n"
+                  << "  \"native_dense_bytes\": " << report.native_dense_bytes << ",\n"
+                  << "  \"expert_blob_bytes\": " << report.expert_blob_bytes << ",\n"
+                  << "  \"tokenizer_bin_bytes\": " << report.tokenizer_bin_bytes << ",\n"
+                  << "  \"build_ms\": " << report.build_ms << ",\n"
+                  << "  \"verify_ms\": " << report.verify_ms << "\n"
+                  << "}\n";
+    } else {
+        std::cout << bold() << "Built GPACK v1 Container" << reset() << "\n"
+                  << "  Output       " << report.output_path << "\n"
+                  << "  Size         " << guild::models::Downloader::format_bytes(report.total_file_size) << "\n"
+                  << "  Manifest SHA " << report.manifest_sha256 << "\n"
+                  << "  Sections     " << report.section_count << " (" << report.tensor_count << " tensors)\n"
+                  << "  Build Time   " << std::fixed << std::setprecision(1) << report.build_ms << " ms\n";
+    }
+    return 0;
+}
+
+int cmd_verify(int argc, char** argv) {
+    std::string path;
+    bool json_mode = false;
+    bool quick_mode = false;
+
+    for (int i = 2; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg == "--json") json_mode = true;
+        else if (arg == "--quick") quick_mode = true;
+        else if (arg == "-h" || arg == "--help") {
+            std::cout << "Usage: guild verify <model.gpack> [--quick] [--json]\n";
+            return 0;
+        } else if (!arg.empty() && arg[0] != '-' && path.empty()) {
+            path = arg;
+        }
+    }
+
+    if (path.empty()) {
+        std::cerr << "Usage: guild verify <model.gpack> [--quick] [--json]\n";
+        return 1;
+    }
+
+    const auto t0 = std::chrono::steady_clock::now();
+    guild::artifact::GPackReader reader;
+    std::string err;
+    if (!reader.open(path, err, !quick_mode)) {
+        if (json_mode) {
+            std::cout << "{\"valid\":false,\"error\":\"" << err << "\"}\n";
+        } else {
+            std::cerr << "guild verify failed: " << err << "\n";
+        }
+        return 1;
+    }
+    const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    if (json_mode) {
+        std::cout << "{\n"
+                  << "  \"valid\": true,\n"
+                  << "  \"path\": \"" << reader.path() << "\",\n"
+                  << "  \"format_version\": " << reader.header().format_version << ",\n"
+                  << "  \"manifest_sha256\": \"" << reader.manifest_sha256_hex() << "\",\n"
+                  << "  \"file_size\": " << reader.file_size() << ",\n"
+                  << "  \"sections\": " << reader.sections().size() << ",\n"
+                  << "  \"tensors\": " << reader.tensors().size() << ",\n"
+                  << "  \"verify_ms\": " << ms << "\n"
+                  << "}\n";
+    } else {
+        std::cout << "GPACK container verified: " << reader.path() << " ("
+                  << reader.sections().size() << " sections, "
+                  << reader.tensors().size() << " tensors, manifest "
+                  << reader.manifest_sha256_hex().substr(0, 16) << "..., "
+                  << std::fixed << std::setprecision(1) << ms << " ms)\n";
+    }
+    return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -1497,6 +1682,12 @@ int main(int argc, char** argv) {
     }
     if (cmd == "inspect") {
         return cmd_inspect(argc, argv);
+    }
+    if (cmd == "convert" || cmd == "gpack") {
+        return cmd_convert(argc, argv);
+    }
+    if (cmd == "verify") {
+        return cmd_verify(argc, argv);
     }
     if (cmd == "serve") {
         return cmd_serve(argc, argv);

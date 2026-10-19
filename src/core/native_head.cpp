@@ -1,5 +1,6 @@
 #include "guild/core/native_head.hpp"
 #include "guild/artifact/gguf_reader.hpp"
+#include "guild/artifact/gpack.hpp"
 #include "guild/kernels/iq_kernels.hpp"
 #include "guild/kernels/native_mmvq.hpp"
 
@@ -66,6 +67,65 @@ bool NativeHead::load(const std::vector<std::string>& shards, int64_t n_in, int6
         err = std::string("native head: ") + error.what();
         return false;
     }
+}
+
+bool NativeHead::load_gpack(const guild::artifact::GPackReader& gpack, int64_t n_in, int64_t n_out, std::string& err) {
+    if (loaded()) { err = "native head is already loaded"; return false; }
+    if (n_in <= 0 || n_out <= 0 || n_in > INT_MAX || n_out > INT_MAX || n_in % 256) {
+        err = "native head requires positive int32 dimensions and whole 256-value rows";
+        return false;
+    }
+    guild::artifact::GPackSingleTensorHeaderV1 hdr{};
+    const uint8_t* data = nullptr;
+    if (!gpack.head_tensor(hdr, data) || !data) {
+        err = "native head: GPACK has no HeadBlob section";
+        return false;
+    }
+    if (!guild::kernels::native_mmvq_supported(hdr.ggml_type) || hdr.ne0 != n_in || hdr.ne1 != n_out) {
+        err = "native head: incompatible GPACK HeadBlob shape or type";
+        return false;
+    }
+    const uint64_t bytes = guild::kernels::native_mmvq_weight_bytes(hdr.ggml_type, (int) n_in, (int) n_out);
+    if (bytes != hdr.byte_size) {
+        err = "native head: GPACK HeadBlob byte size mismatch";
+        return false;
+    }
+    void* weights = nullptr;
+    void* scratch = nullptr;
+    cudaError_t status = cudaMalloc(&weights, bytes);
+    if (status == cudaSuccess)
+        status = cudaMalloc(&scratch, guild::kernels::native_q8_1_bytes((int) n_in, 1));
+    if (status == cudaSuccess) {
+        constexpr uint64_t kStage = 16ull << 20;
+        void* stage = nullptr;
+        if (cudaHostAlloc(&stage, kStage, cudaHostAllocDefault) == cudaSuccess && stage) {
+            uint64_t done = 0;
+            while (done < bytes && status == cudaSuccess) {
+                const uint64_t chunk = std::min(kStage, bytes - done);
+                std::memcpy(stage, data + done, static_cast<size_t>(chunk));
+                status = cudaMemcpy(static_cast<uint8_t*>(weights) + done, stage, static_cast<size_t>(chunk),
+                                    cudaMemcpyHostToDevice);
+                done += chunk;
+            }
+            cudaFreeHost(stage);
+        } else {
+            (void) cudaGetLastError();
+            status = cudaMemcpy(weights, data, bytes, cudaMemcpyHostToDevice);
+        }
+    }
+    if (status != cudaSuccess) {
+        if (scratch) cudaFree(scratch);
+        if (weights) cudaFree(weights);
+        err = std::string("native head GPACK upload: ") + cudaGetErrorString(status);
+        return false;
+    }
+    weights_ = weights;
+    scratch_ = scratch;
+    bytes_ = bytes;
+    n_in_ = (int) n_in;
+    n_out_ = (int) n_out;
+    type_ = hdr.ggml_type;
+    return true;
 }
 
 bool NativeHead::run(const float* mixed, float* logits, void* stream, std::string& err) const {
@@ -185,6 +245,51 @@ bool NativeEmbed::load(const std::vector<std::string>& shards, int64_t n_embd, i
         err = std::string("native embedding: ") + e.what();
         return false;
     }
+}
+
+bool NativeEmbed::load_gpack(const guild::artifact::GPackReader& gpack, int64_t n_embd, int64_t n_vocab, std::string& err) {
+    guild::artifact::GPackSingleTensorHeaderV1 hdr{};
+    const uint8_t* data = nullptr;
+    if (!gpack.embed_tensor(hdr, data) || !data) {
+        err = "native embedding: GPACK has no EmbedBlob section";
+        return false;
+    }
+    if (hdr.ne0 != n_embd || hdr.ne1 != n_vocab || !guild::kernels::embed_type_supported(hdr.ggml_type) || (n_embd % 256) != 0) {
+        err = "native embedding: GPACK EmbedBlob shape or type mismatch";
+        return false;
+    }
+    row_ = guild::kernels::iq_row_bytes(hdr.ggml_type, n_embd);
+    bytes_ = static_cast<uint64_t>(row_) * static_cast<uint64_t>(n_vocab);
+    if (hdr.byte_size != bytes_) {
+        err = "native embedding: GPACK EmbedBlob byte size mismatch";
+        bytes_ = 0;
+        return false;
+    }
+    if (cudaHostAlloc(&host_, bytes_, cudaHostAllocMapped | cudaHostAllocPortable) != cudaSuccess) {
+        cudaGetLastError();
+        host_ = nullptr;
+        void* d = nullptr;
+        if (cudaMalloc(&d, bytes_) != cudaSuccess ||
+            cudaMemcpy(d, data, bytes_, cudaMemcpyHostToDevice) != cudaSuccess) {
+            if (d) cudaFree(d);
+            cudaGetLastError();
+            err = "native embedding: cannot pin " + std::to_string(bytes_ >> 20) + " MiB, nor place it in VRAM";
+            return false;
+        }
+        dev_ = d;
+    } else {
+        std::memcpy(host_, data, bytes_);
+        void* d = nullptr;
+        if (cudaHostGetDevicePointer(&d, host_, 0) != cudaSuccess || d == nullptr) {
+            err = "native embedding: no device alias for the mapped table";
+            return false;
+        }
+        dev_ = d;
+    }
+    type_ = hdr.ggml_type;
+    n_embd_ = n_embd;
+    n_vocab_ = n_vocab;
+    return true;
 }
 
 void NativeEmbed::gather_dev(const int32_t* tokens, int64_t n_tok, float* out, void* stream) const {

@@ -29,31 +29,51 @@ double percentile(std::vector<double> v, double p) {
     return v[lo] * (1.0 - frac) + v[hi] * frac;
 }
 int main(int argc,char**argv) try {
-    int prompt=512,generated=128,runs=3,context=32768,only_batch=0,n_sessions=1;
-    std::string csv,write_ids,dump,activity,json_summary;
+    int prompt=512,generated=128,runs=3,context=32768,only_batch=0,n_sessions=1,spec_tokens=0;
+    double pcie_frac=-1.0;
+    std::string csv,write_ids,dump,activity,json_summary,startup_json,model_arg="ornith:35b",gpack_path;
     std::string activity_library="./build-cuda12/libguild_activity.so";
-    bool sequential=false,full_warmup=false,concurrent_pkg_ops=false;
+    bool sequential=false,full_warmup=false,concurrent_pkg_ops=false,ignore_eos=false;
     for(int i=1;i<argc;++i) {
         const std::string a=argv[i];auto value=[&](){if(i+1>=argc)throw std::invalid_argument("missing argument");return std::string(argv[++i]);};
         if(a=="--prompt")prompt=std::stoi(value());else if(a=="--generate")generated=std::stoi(value());
         else if(a=="--runs")runs=std::stoi(value());else if(a=="--context")context=std::stoi(value());
         else if(a=="--batch")only_batch=std::stoi(value());
         else if(a=="--sessions")n_sessions=std::stoi(value());
+        else if(a=="--spec")spec_tokens=std::stoi(value());
+        else if(a=="--pcie-frac")pcie_frac=std::stod(value());
+        else if(a=="--ignore-eos")ignore_eos=true;
         else if(a=="--concurrent-pkg-ops")concurrent_pkg_ops=true;
         else if(a=="--json-summary")json_summary=value();
+        else if(a=="--startup-json")startup_json=value();
+        else if(a=="--model")model_arg=value();
+        else if(a=="--gpack")gpack_path=value();
         else if(a=="--activity")activity=value();else if(a=="--activity-library")activity_library=value();
         else if(a=="--full-warmup")full_warmup=true;
         else if(a=="--csv")csv=value();else if(a=="--write-ids")write_ids=value();else if(a=="--dump")dump=value();
         else if(a=="--sequential")sequential=true;else throw std::invalid_argument("unknown argument: "+a);
     }
     CHECK(prompt>0&&generated>0&&runs>0&&n_sessions>0&&context>=prompt+generated);
-    models::ModelStore store;store.init();auto manifest=models::ModelRegistry::instance().resolve("ornith:35b",store);CHECK(manifest);
-    runtime::ModelPaths paths;const auto* primary=manifest->find_file_by_role("primary");if(!primary)primary=manifest->find_file_by_role("shard");CHECK(primary);
-    paths.primary_model_path=primary->local_path;paths.pack_dir=manifest->metadata.at("pack_dir");paths.tokenizer_dir=paths.pack_dir+"/tokenizer";
-    memory::ExecutionPlan plan;plan.context_length=context;plan.prefill_batch=512;plan.mtp_spec_tokens=0;
+    models::ModelStore store;store.init();auto manifest=models::ModelRegistry::instance().resolve(model_arg,store);CHECK(manifest);
+    runtime::ModelPaths paths;const auto* primary=manifest->find_file_by_role("primary");if(!primary)primary=manifest->find_file_by_role("shard");
+    std::string default_primary = primary ? primary->local_path : "";
+    if(default_primary.empty() && manifest->name == "qwen3.8-flash-next")
+        default_primary = "/mnt/models-ssd/Strata-data/models/unsloth-UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf";
+    paths.primary_model_path=gpack_path.empty()?default_primary:gpack_path;
+    paths.pack_dir=manifest->metadata.count("pack_dir")?manifest->metadata.at("pack_dir"):"/mnt/models-ssd/Strata-data/packs/unsloth-ud-iq4_xs";
+    paths.tokenizer_dir=paths.pack_dir+"/tokenizer";
+    if(manifest->metadata.count("expert_profile"))paths.expert_profile_path=manifest->metadata.at("expert_profile");
+    else if(manifest->name=="qwen3.8-flash-next")paths.expert_profile_path="/home/ubuntu/Guild/data/expert-profile.bin";
+    if(spec_tokens>0) {
+        if(manifest->metadata.count("mtp_dir"))paths.mtp_dir=manifest->metadata.at("mtp_dir");
+        else if(manifest->name=="qwen3.8-flash-next")paths.mtp_dir="/mnt/models-ssd/Strata-data/mtp/rt";
+    }
+    memory::ExecutionPlan plan;plan.context_length=context;plan.prefill_batch=512;plan.mtp_spec_tokens=spec_tokens;plan.pcie_expert_fraction=pcie_frac;
     std::string err;const auto load_start=Clock::now();auto model=runtime::GuildModel::load(paths,manifest->to_descriptor(),plan,err);
     if(!model)throw std::runtime_error(err);
-    const double load_ms=elapsed(load_start);auto* m=model->impl();CHECK(!m->mtp&&m->batched_prefill);
+    const double load_ms=elapsed(load_start);auto* m=model->impl();
+    if(ignore_eos) m->config.eos_token_ids.clear();
+    if(model_arg=="ornith:35b") CHECK(!m->mtp&&m->batched_prefill);
     std::vector<int32_t> base;CHECK(model->tokenizer().encode("The quick brown fox jumps over the lazy dog repeatedly to test transformer attention. ",base,false,err));
     std::vector<int32_t> ids(prompt);for(int i=0;i<prompt;++i)ids[i]=base[i%base.size()];
     if(!write_ids.empty()){std::ofstream f(write_ids);CHECK(f);for(auto i:ids)f<<i<<' ';CHECK(f);}
@@ -80,7 +100,7 @@ int main(int argc,char**argv) try {
     }
     for(int batch:batches) {
         if(sequential)setenv("GUILD_PREFILL_SEQUENTIAL","1",1);else unsetenv("GUILD_PREFILL_SEQUENTIAL");
-        if(batch)m->batched_prefill->set_batch_size(batch);
+        if(batch && m->batched_prefill)m->batched_prefill->set_batch_size(batch);
         runtime::GenerationRequest warm;warm.prompt_tokens={9419,11,220};warm.max_new_tokens=4;
         if(full_warmup){warm.prompt_tokens=ids;warm.max_new_tokens=generated;}
         runtime::RuntimeTelemetry warm_t;auto session=model->create_session();
@@ -108,7 +128,8 @@ int main(int argc,char**argv) try {
                 },t,err));
                 CHECK(m->ver->wait_commit(err));CHECK(cudaDeviceSynchronize()==cudaSuccess);const double wall=elapsed(start);
                 if(activity_stop){activity_mark("end");activity_stop();}
-                CHECK(t.completion_tokens==int(output.size())&&t.drafts_offered==0&&t.drafts_accepted==0);
+                if(spec_tokens == 0) CHECK(t.completion_tokens==int(output.size())&&t.drafts_offered==0&&t.drafts_accepted==0);
+                else CHECK(t.completion_tokens==int(output.size()));
                 // Early EOS is recorded, never relabeled as the requested output length.
                 if(expected.empty())expected=output;else CHECK(expected==output);
                 if(!dump.empty()){std::ofstream f(dump+".ids");for(auto id:output)f<<id<<' ';CHECK(f);}
@@ -116,13 +137,97 @@ int main(int argc,char**argv) try {
                 rusage usage{};CHECK(getrusage(RUSAGE_SELF,&usage)==0);
                 const auto& st=m->ss.qsa_states[m->ss.qsa_primary()];
                 const uint64_t stage=uint64_t(st.n_slots)*4*m->g.n_head_kv*m->g.head_dim*4;
-                const runtime::BatchedPrefillStats p=sequential?runtime::BatchedPrefillStats{}:m->batched_prefill->stats();
+                const runtime::BatchedPrefillStats p=(sequential||!m->batched_prefill)?runtime::BatchedPrefillStats{}:m->batched_prefill->stats();
                 out<<batch<<','<<r<<','<<t.prompt_tokens<<','<<prompt-1<<','<<t.completion_tokens<<','<<t.prompt_ms<<','<<t.decode_ms<<','<<wall<<','<<first_ms<<','
                    <<t.prompt_tok_s<<','<<t.decode_tok_s<<','<<load_ms<<','<<total-free<<','<<uint64_t(usage.ru_maxrss)*1024<<','
                    <<core::qsa_kv_host_bytes()<<','<<stage<<','<<p.device_bytes<<','<<p.expert_groups<<','<<p.expert_bytes<<','<<p.activation_bytes<<','
                    <<p.ms_cpu_gu<<','<<p.ms_cpu_quant<<','<<p.ms_cpu_down<<','<<p.cpu_group_ms<<','<<p.host_wait_ms<<','
                    <<p.gpu_dense_ms<<','<<p.gpu_gdn_ms<<','<<p.gpu_attention_ms<<','<<m->src.file_reads()-file0<<','<<p.gpu_groups<<','<<t.finish_reason<<'\n';
                 out.flush();std::cerr<<"batch="<<batch<<" prompt="<<prompt<<" generated="<<t.completion_tokens<<" pp="<<t.prompt_tok_s<<" tg="<<t.decode_tok_s<<'\n';
+                if(!startup_json.empty() && r==0) {
+                    const auto& sp = model->startup_profile();
+                    std::ofstream sf(startup_json); CHECK(sf);
+                    sf << std::setprecision(10)
+                       << "{\n"
+                       << "  \"container_format\": \"" << sp.container_format << "\",\n"
+                       << "  \"load_ms\": " << load_ms << ",\n"
+                       << "  \"startup\": {\n"
+                       << "    \"package_load_ms\": " << sp.package_load_ms << ",\n"
+                       << "    \"model_open_parse_ms\": " << sp.model_open_parse_ms << ",\n"
+                       << "    \"runner_and_plan_ms\": " << sp.runner_and_plan_ms << ",\n"
+                       << "    \"cuda_init_ms\": " << sp.cuda_init_ms << ",\n"
+                       << "    \"kernel_provider_resolve_ms\": " << sp.kernel_provider_resolve_ms << ",\n"
+                       << "    \"quant_layout_prep_ms\": " << sp.quant_layout_prep_ms << ",\n"
+                       << "    \"embed_load_ms\": " << sp.embed_load_ms << ",\n"
+                       << "    \"dense_index_and_pack_ms\": " << sp.dense_index_and_pack_ms << ",\n"
+                       << "    \"native_dense_load_ms\": " << sp.native_dense_load_ms << ",\n"
+                       << "    \"native_head_load_ms\": " << sp.native_head_load_ms << ",\n"
+                       << "    \"expert_source_open_ms\": " << sp.expert_source_open_ms << ",\n"
+                       << "    \"expert_calibration_pre_ms\": " << sp.expert_calibration_pre_ms << ",\n"
+                       << "    \"expert_cache_init_ms\": " << sp.expert_cache_init_ms << ",\n"
+                       << "    \"numa_expert_pin_ms\": " << sp.numa_expert_pin_ms << ",\n"
+                       << "    \"kv_session_init_ms\": " << sp.kv_session_init_ms << ",\n"
+                       << "    \"ple_bind_ms\": " << sp.ple_bind_ms << ",\n"
+                       << "    \"mtp_init_ms\": " << sp.mtp_init_ms << ",\n"
+                       << "    \"verifier_init_ms\": " << sp.verifier_init_ms << ",\n"
+                       << "    \"prefill_init_ms\": " << sp.prefill_init_ms << ",\n"
+                       << "    \"expert_calibration_post_ms\": " << sp.expert_calibration_post_ms << ",\n"
+                       << "    \"graph_capture_startup_ms\": " << sp.graph_capture_startup_ms << ",\n"
+                       << "    \"tokenizer_load_ms\": " << sp.tokenizer_load_ms << ",\n"
+                       << "    \"total_load_ms\": " << sp.total_load_ms << ",\n"
+                       << "    \"container_opens\": " << sp.container_opens << ",\n"
+                       << "    \"index_parses\": " << sp.index_parses << ",\n"
+                       << "    \"dense_device_allocs\": " << sp.dense_device_allocs << ",\n"
+                       << "    \"expert_copy_calls\": " << sp.expert_copy_calls << ",\n"
+                       << "    \"dense_vram_bytes\": " << sp.dense_vram_bytes << ",\n"
+                       << "    \"expert_vram_bytes\": " << sp.expert_vram_bytes << ",\n"
+                       << "    \"expert_ram_bytes\": " << sp.expert_ram_bytes << ",\n"
+                       << "    \"kv_host_bytes\": " << sp.kv_host_bytes << ",\n"
+                       << "    \"kv_device_bytes\": " << sp.kv_device_bytes << ",\n"
+                       << "    \"expert_zero_copy\": " << (sp.expert_zero_copy ? "true" : "false") << ",\n"
+                       << "    \"expert_numa_interleaved\": " << (sp.expert_numa_interleaved ? "true" : "false") << ",\n"
+                       << "    \"expert_page_locked\": " << (sp.expert_page_locked ? "true" : "false") << "\n"
+                       << "  },\n"
+                       << "  \"first_inference\": {\n"
+                       << "    \"prompt_ms\": " << warm_t.prompt_ms << ",\n"
+                       << "    \"decode_ms\": " << warm_t.decode_ms << ",\n"
+                       << "    \"ttft_ms\": " << warm_t.ttft_ms << ",\n"
+                       << "    \"first_window_capture_ms\": " << warm_t.first_window_capture_ms << "\n"
+                       << "  },\n"
+                       << "  \"steady_state\": {\n"
+                       << "    \"prompt_tokens\": " << t.prompt_tokens << ",\n"
+                       << "    \"completion_tokens\": " << t.completion_tokens << ",\n"
+                       << "    \"prompt_ms\": " << t.prompt_ms << ",\n"
+                       << "    \"decode_ms\": " << t.decode_ms << ",\n"
+                       << "    \"ttft_ms\": " << first_ms << ",\n"
+                       << "    \"prefill_tps\": " << t.prompt_tok_s << ",\n"
+                       << "    \"decode_tps\": " << t.decode_tok_s << ",\n"
+                       << "    \"prefill_embed_ms\": " << p.ms_embed << ",\n"
+                       << "    \"prefill_gpu_dense_ms\": " << p.gpu_dense_ms << ",\n"
+                       << "    \"prefill_gpu_attn_ms\": " << p.gpu_attention_ms << ",\n"
+                       << "    \"prefill_gpu_gdn_ms\": " << p.gpu_gdn_ms << ",\n"
+                       << "    \"prefill_host_wait_ms\": " << p.host_wait_ms << ",\n"
+                       << "    \"prefill_cpu_group_ms\": " << p.cpu_group_ms << ",\n"
+                       << "    \"prefill_cpu_quant_ms\": " << p.ms_cpu_quant << ",\n"
+                       << "    \"prefill_cpu_gu_ms\": " << p.ms_cpu_gu << ",\n"
+                       << "    \"prefill_cpu_down_ms\": " << p.ms_cpu_down << ",\n"
+                       << "    \"decode_verify_ms\": " << t.decode_verify_ms << ",\n"
+                       << "    \"decode_mtp_draft_ms\": " << t.decode_mtp_draft_ms << ",\n"
+                       << "    \"decode_host_wait_ms\": " << t.decode_host_wait_ms << ",\n"
+                       << "    \"decode_cpu_pool_ms\": " << t.decode_cpu_pool_ms << ",\n"
+                       << "    \"decode_cpu_validation_ms\": " << t.decode_cpu_validation_ms << ",\n"
+                       << "    \"decode_cpu_quant_ms\": " << t.decode_cpu_quant_ms << ",\n"
+                       << "    \"decode_cpu_gu_ms\": " << t.decode_cpu_gu_ms << ",\n"
+                       << "    \"decode_cpu_down_ms\": " << t.decode_cpu_down_ms << ",\n"
+                       << "    \"decode_ple_ms\": " << t.decode_ple_ms << ",\n"
+                       << "    \"decode_commit_ms\": " << t.decode_commit_ms << ",\n"
+                       << "    \"decode_logit_validation_ms\": " << t.decode_logit_validation_ms << ",\n"
+                       << "    \"decode_windows\": " << t.decode_windows << ",\n"
+                       << "    \"vram_sample_bytes\": " << (total - free) << ",\n"
+                       << "    \"host_peak_bytes\": " << (uint64_t(usage.ru_maxrss) * 1024ULL) << "\n"
+                       << "  }\n"
+                       << "}\n";
+                }
             }
         } else {
             std::vector<std::unique_ptr<runtime::GuildSession>> sessions_vec;

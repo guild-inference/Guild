@@ -141,6 +141,9 @@ public:
 
     /// Open with an explicit I/O mode. The two-argument `open` below is the default (Direct).
     bool open(const std::string& gguf_path, std::string& err, const PleIoOptions& io);
+    bool open_raw(const std::string& file_path, uint64_t file_offset, const uint8_t* mapped_data,
+                  int32_t ggml_type, uint64_t n_rows, float fp8_scale, std::string& err,
+                  const PleIoOptions& io = PleIoOptions{});
 
     /// The split the plan asks for: `issue` as soon as the token id is known, `collect` just before layer 1
     /// needs the rows. `gather` is `issue` followed by `collect`. In Mmap mode `issue` only prefetches.

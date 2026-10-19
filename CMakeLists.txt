@@ -1025,6 +1025,7 @@ install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/include/guild/abi/kernel_abi.h
                ${CMAKE_CURRENT_SOURCE_DIR}/include/guild/abi/cuda_moe_abi.h
         DESTINATION include/guild/abi)
 install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/schemas/gkmetadata.v1.schema.json
+              ${CMAKE_CURRENT_SOURCE_DIR}/schemas/gpack.v1.schema.json
         DESTINATION share/guild/schemas)
 install(FILES ${CMAKE_CURRENT_BINARY_DIR}/GuildKernelSDKConfig.cmake
               ${CMAKE_CURRENT_BINARY_DIR}/GuildKernelSDKConfigVersion.cmake
@@ -1035,6 +1036,8 @@ if(GUILD_ENABLE_CUDA OR GUILD_ENABLE_HIP)
   add_library(guild_runtime STATIC
     src/abi/ed25519.cpp
     src/abi/gkernel_package.cpp
+    src/artifact/gpack.cpp
+    src/gexec/gexec_contract.cpp
     src/kernels/registry.cpp
     src/model/runner.cpp
     src/runtime/model.cpp
@@ -1050,6 +1053,8 @@ else()
   add_library(guild_runtime STATIC
     src/abi/ed25519.cpp
     src/abi/gkernel_package.cpp
+    src/artifact/gpack.cpp
+    src/gexec/gexec_contract.cpp
     src/kernels/registry.cpp
     src/model/runner.cpp
     src/runtime/model_stub.cpp
@@ -1162,6 +1167,16 @@ if(GUILD_BUILD_TESTS)
   add_executable(finite_output_test tests/core/finite_output_test.cpp)
   target_include_directories(finite_output_test PRIVATE include)
   add_test(NAME finite_output_test COMMAND finite_output_test)
+
+  add_executable(gpack_test tests/core/gpack_test.cpp)
+  target_link_libraries(gpack_test PRIVATE guild_runtime guild_models guild_cli)
+  add_test(NAME gpack_test COMMAND gpack_test)
+  set_tests_properties(gpack_test PROPERTIES TIMEOUT 90)
+
+  add_executable(gexec_contract_test tests/core/gexec_contract_test.cpp)
+  target_link_libraries(gexec_contract_test PRIVATE guild_runtime guild_models guild_cli)
+  add_test(NAME gexec_contract_test COMMAND gexec_contract_test)
+  set_tests_properties(gexec_contract_test PROPERTIES TIMEOUT 60)
 
   # External .gkernel plugins built strictly against the public Guild::KernelSDK interface target
   enable_language(C)

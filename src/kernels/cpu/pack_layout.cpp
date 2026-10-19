@@ -1,6 +1,7 @@
 // Guild/Strata MIT: expert pack interpretation and file offsets stay in Core.
 // Arithmetic and feature-dispatch implementations belong to guild-kernels-cpu.
 #include "guild/kernels/cpu/expert_layout.hpp"
+#include "guild/artifact/gpack.hpp"
 #include <cstdlib>
 #include <fstream>
 #include <sstream>
@@ -88,6 +89,88 @@ bool expert_layout_load(const std::string& pack_dir,int64_t layers,int64_t exper
         at+=next.bytes[size_t(layer)]*uint64_t(next.n_expert);
     }
     next.total=at;layout=next;return true;
+#endif
+}
+
+bool expert_layout_load_gpack(const guild::artifact::GPackReader& gpack, int64_t layers, int64_t experts,
+                              std::string& error, int64_t embedding, int64_t hidden,
+                              const guild_cpu_backend_ext_v2_t* backend) {
+    ExpertLayout next;
+    next.n_layers = layers;
+    next.n_expert = gpack.expert_count_per_layer() > 0 ? gpack.expert_count_per_layer() : experts;
+    if (!gpack.has_expert_layout()) {
+        error = "GPACK has no ExpertLayoutBin section";
+        return false;
+    }
+    if (!gpack.expert_native_format()) {
+        next.total = uint64_t(layers) * uint64_t(next.n_expert) * uint64_t(BLOB);
+        layout = next;
+        return true;
+    }
+#if !defined(GUILD_NATIVE_EXPERTS)
+    error = "this GPACK has native experts but the engine was built without GUILD_NATIVE_EXPERTS";
+    return false;
+#else
+    next.native = true;
+    next.version = kExpertLayoutVersion;
+    next.fmt.resize(size_t(layers));
+    next.offset.assign(size_t(layers), ~0ull);
+    next.bytes.assign(size_t(layers), 0);
+    next.max_blob = 0;
+
+    const auto& elayers = gpack.expert_layers();
+    if (static_cast<int64_t>(elayers.size()) < layers) {
+        error = "GPACK expert layout has fewer layers than requested";
+        return false;
+    }
+    for (int64_t l = 0; l < layers; ++l) {
+        const auto& r = elayers[static_cast<size_t>(l)];
+        if (r.layer != l) {
+            error = "GPACK expert layout layer index out of order at layer " + std::to_string(l);
+            return false;
+        }
+        NativeFmt format{};
+        if (backend && backend->format) {
+            guild_error_info_t info{};
+            if (backend->format(r.gu_type, r.d_type, embedding, hidden, &format, &info) != GUILD_STATUS_OK) {
+                error = info.message;
+                return false;
+            }
+        } else if (!native_fmt(r.gu_type, r.d_type, embedding, hidden, format, error)) {
+            return false;
+        }
+        if (format.bytes != r.blob_bytes) {
+            error = "GPACK expert layout layer " + std::to_string(l) + " blob_bytes mismatch";
+            return false;
+        }
+        next.fmt[static_cast<size_t>(l)] = format;
+        next.offset[static_cast<size_t>(l)] = r.layer_offset;
+        next.bytes[static_cast<size_t>(l)] = r.blob_bytes;
+        if (r.blob_bytes > next.max_blob) next.max_blob = r.blob_bytes;
+        if (!gpack.has_embedded_experts() && (r.gguf_gate_off || r.gguf_up_off || r.gguf_down_off)) {
+            if (next.gguf_off.empty()) next.gguf_off.assign(static_cast<size_t>(3 * layers), 0);
+            next.gguf_off[static_cast<size_t>(3 * l)]     = r.gguf_gate_off;
+            next.gguf_off[static_cast<size_t>(3 * l + 1)] = r.gguf_up_off;
+            next.gguf_off[static_cast<size_t>(3 * l + 2)] = r.gguf_down_off;
+            if (!r.gate_shard.empty() || !r.up_shard.empty() || !r.down_shard.empty()) {
+                if (next.gguf_file.empty()) next.gguf_file.assign(static_cast<size_t>(3 * layers), std::string());
+                next.gguf_file[static_cast<size_t>(3 * l)]     = r.gate_shard;
+                next.gguf_file[static_cast<size_t>(3 * l + 1)] = r.up_shard;
+                next.gguf_file[static_cast<size_t>(3 * l + 2)] = r.down_shard;
+            }
+        }
+    }
+    uint64_t at = 0;
+    for (int64_t l = 0; l < layers; ++l) {
+        if (next.offset[static_cast<size_t>(l)] != at) {
+            error = "GPACK expert layout layer " + std::to_string(l) + " offset is not contiguous";
+            return false;
+        }
+        at += next.bytes[static_cast<size_t>(l)] * static_cast<uint64_t>(next.n_expert);
+    }
+    next.total = at;
+    layout = next;
+    return true;
 #endif
 }
 }

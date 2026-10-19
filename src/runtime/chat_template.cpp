@@ -53,6 +53,19 @@ bool ChatTemplate::load(const std::string& path_or_dir, std::string& err_msg) {
         return false;
     }
 
+    return load_from_string(content, err_msg);
+}
+
+bool ChatTemplate::load_from_string(const std::string& content, std::string& err_msg) {
+    loaded_ = false;
+    type_ = TemplateType::Unknown;
+    source_.clear();
+
+    if (content.empty()) {
+        err_msg = "chat template content is empty";
+        return false;
+    }
+
     source_ = content;
 
     // Detect template type from structure and identifiers
@@ -64,7 +77,7 @@ bool ChatTemplate::load(const std::string& path_or_dir, std::string& err_msg) {
                 source_.find("render_content") != std::string::npos)) {
         type_ = TemplateType::Ornith;
     } else {
-        err_msg = "unsupported or unrecognized chat template format in " + p.string();
+        err_msg = "unsupported or unrecognized chat template format";
         return false;
     }
 

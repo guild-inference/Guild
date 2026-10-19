@@ -284,6 +284,43 @@ bool PleTable::open(const std::string& gguf_path, std::string& err, const PleIoO
     return true;
 }
 
+bool PleTable::open_raw(const std::string& file_path, uint64_t file_offset, const uint8_t* mapped_data,
+                        int32_t ggml_type, uint64_t n_rows, float fp8_scale, std::string& err,
+                        const PleIoOptions& io) {
+    close();
+    impl_->fp8 = false;
+    impl_->q5_0 = (ggml_type == 6); // Q5_0
+    if (ggml_type == 24) { // I8 (FP8 E4M3)
+        if (!(fp8_scale > 0.0f)) {
+            err = "PLE table FP8 scale must be positive";
+            return false;
+        }
+        impl_->fp8 = true;
+        impl_->scale = fp8_scale;
+        impl_->rb = PLE_ROW_BYTES_FP8;
+    } else if (impl_->q5_0) {
+        impl_->rb = (PLE_HEAD_DIM / 32) * 22;
+    } else if (ggml_type == 20) { // IQ4_NL
+        impl_->rb = PLE_ROW_BYTES;
+    } else {
+        err = "PLE table unsupported ggml_type " + std::to_string(ggml_type);
+        return false;
+    }
+    impl_->n_rows = n_rows;
+    impl_->data = mapped_data;
+    impl_->mode = io.mode;
+    if (io.mode == PleIo::Direct) {
+        impl_->data = nullptr;
+        if (!impl_->reader.open(file_path, file_offset, n_rows, io.max_inflight, io.cache_rows, err, io.io_thread,
+                                impl_->rb)) {
+            close();
+            return false;
+        }
+        impl_->reader.set_keepalive(io.keepalive_ms, io.keepalive_window_s);
+    }
+    return true;
+}
+
 void PleTable::wait_prefetches() {
     if (impl_->n_prefetch == 0) return;
     std::string dummy;

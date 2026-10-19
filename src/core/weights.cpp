@@ -1,6 +1,7 @@
 // src/core/weights.cpp - the dense-weight loader.  See the header for the engine-vs-pack distinction.
 #include "guild/core/weights.hpp"
 
+#include "guild/artifact/gpack.hpp"
 #include "guild/kernels/f16_bits.hpp"
 
 #include <cuda_runtime.h>
@@ -468,6 +469,260 @@ bool WeightTable::load(const std::string& pack_dir, void* arena_base, uint64_t a
     report_.read_ms = now_ms() - t_read0 - upload_ms;
     report_.upload_ms = upload_ms;
     if (cudaDeviceSynchronize() != cudaSuccess) { err = "cudaDeviceSynchronize after the load failed"; return false; }
+    return true;
+}
+
+bool WeightTable::pool_bytes_gpack(const guild::artifact::GPackReader& gpack, uint64_t& out, std::string& err,
+                                   const std::set<std::string>* skip) {
+    if (!gpack.has_dense_pack() || gpack.dense_rows().empty()) {
+        err = "GPACK has no dense index or dense pack";
+        return false;
+    }
+    if (skip == nullptr) {
+        out = gpack.dense_pool_bytes();
+        return true;
+    }
+    if (*skip == gpack.precomputed_skip_set() && gpack.dense_compacted_pool_bytes() > 0) {
+        out = gpack.dense_compacted_pool_bytes();
+        return true;
+    }
+    uint64_t compact = 0;
+    for (const auto& r : gpack.dense_rows()) {
+        if (skip->count(r.name)) continue;
+        compact += (r.dst_bytes + 63) / 64 * 64;
+    }
+    out = compact;
+    return true;
+}
+
+bool WeightTable::load_gpack(const guild::artifact::GPackReader& gpack, void* arena_base, uint64_t arena_bytes,
+                             std::string& err, const std::set<std::string>* skip) {
+    uint64_t pack_size = 0;
+    const uint8_t* pack_ptr = gpack.dense_pack_data(&pack_size);
+    if (!gpack.has_dense_pack() || !pack_ptr || gpack.dense_rows().empty()) {
+        err = "GPACK has no DensePackBlob section";
+        return false;
+    }
+
+    const auto& grows = gpack.dense_rows();
+    std::vector<IndexRow> rows;
+    rows.reserve(grows.size());
+    for (const auto& gr : grows) {
+        IndexRow r;
+        r.name = gr.name;
+        r.file = gr.file_id;
+        r.kind = static_cast<WeightKind>(gr.kind);
+        r.src_off = gr.src_off;
+        r.src_bytes = gr.src_bytes;
+        r.dst_off = gr.dst_off;
+        r.dst_bytes = gr.dst_bytes;
+        r.ne0 = gr.ne0;
+        r.ne1 = gr.ne1;
+        r.code_bits = gr.code_bits;
+        r.code_bias = gr.code_bias;
+        r.group_elems = gr.group_elems;
+        r.codebook = gr.codebook;
+        r.has_offset = gr.has_offset;
+        r.codes_bytes = gr.codes_bytes;
+        r.scales_bytes = gr.scales_bytes;
+        r.offset_bytes = gr.offset_bytes;
+        r.scales_fp16 = gr.scales_fp16;
+        r.act_kind = gr.act_kind;
+        r.raw16 = gr.raw16;
+        if (r.raw16 && (gr.kind == 0 || gr.kind == 4)) {
+            r.kind = WeightKind::Bf16InF32;
+        } else if (r.raw16 && gr.kind == 5) {
+            r.kind = WeightKind::F16InF32;
+        }
+        rows.push_back(std::move(r));
+    }
+
+    uint64_t pool = gpack.dense_pool_bytes();
+    std::vector<bool> skipped(rows.size(), false);
+    if (skip != nullptr) {
+        uint64_t at = 0;
+        for (size_t i = 0; i < rows.size(); ++i) {
+            if (skip->count(rows[i].name)) {
+                skipped[i] = true;
+                continue;
+            }
+            rows[i].dst_off = at;
+            at += (rows[i].dst_bytes + 63) / 64 * 64;
+        }
+        pool = at;
+    }
+    if (arena_bytes < pool) {
+        err = "arena is " + std::to_string(arena_bytes) + " B but GPACK dense index needs " + std::to_string(pool);
+        return false;
+    }
+
+    void* stage_out = nullptr;
+    if (cudaHostAlloc(&stage_out, CHUNK * 2, cudaHostAllocDefault) != cudaSuccess) {
+        err = "cudaHostAlloc for GPACK dense staging buffer failed";
+        return false;
+    }
+
+    uint8_t* dst_base = static_cast<uint8_t*>(arena_base);
+    table_.clear();
+    report_ = LoadReport{};
+    const double t_read0 = now_ms();
+    double upload_ms = 0;
+
+    for (size_t row_i = 0; row_i < rows.size(); ++row_i) {
+        const IndexRow& r = rows[row_i];
+        if (skipped[row_i]) {
+            WeightRef wr;
+            wr.data = nullptr;
+            wr.resident = false;
+            wr.bytes = r.dst_bytes;
+            wr.ne0 = r.ne0;
+            wr.ne1 = r.ne1;
+            wr.elements = r.ne0 * (r.ne1 > 0 ? r.ne1 : 1);
+            wr.kind = r.kind;
+            wr.code_bits = r.code_bits;
+            wr.code_bias = r.code_bias;
+            wr.group_elems = r.group_elems;
+            wr.codebook_iq4nl = r.codebook != 0;
+            wr.has_offset = r.has_offset != 0;
+            wr.codes_bytes = r.codes_bytes;
+            wr.scales_bytes = r.scales_bytes;
+            wr.offset_bytes = r.offset_bytes;
+            wr.src_off = r.src_off;
+            wr.src_bytes = r.src_bytes;
+            wr.file_id = r.file;
+            wr.scales_fp16 = r.scales_fp16 != 0;
+            wr.act_kind = r.act_kind;
+            table_[r.name] = wr;
+            ++report_.tensors;
+            continue;
+        }
+        if (r.src_off > pack_size || r.src_bytes > pack_size - r.src_off) {
+            err = r.name + ": GPACK dense pack span exceeds DensePackBlob bounds";
+            cudaFreeHost(stage_out);
+            return false;
+        }
+
+        Seg segs[3];
+        int n_segs = 0;
+        if (r.codes_bytes != 0) {
+            segs[n_segs++] = Seg{0, r.codes_bytes, 0, r.codes_bytes, Conv::Copy};
+            if (r.scales_bytes) {
+                const uint64_t src_scale_bytes = r.scales_fp16 ? r.scales_bytes / 2 : r.scales_bytes;
+                segs[n_segs++] = Seg{r.codes_bytes, src_scale_bytes, r.codes_bytes, r.scales_bytes,
+                                     r.scales_fp16 ? Conv::WidenF16 : Conv::Copy};
+            }
+            if (r.offset_bytes) {
+                const uint64_t after = r.codes_bytes + (r.scales_fp16 ? r.scales_bytes / 2 : r.scales_bytes);
+                segs[n_segs++] = Seg{after, r.offset_bytes, r.codes_bytes + r.scales_bytes, r.offset_bytes,
+                                     Conv::Copy};
+            }
+        } else {
+            Conv c = Conv::Copy;
+            if (r.raw16) c = Conv::Copy;
+            else if (r.kind == WeightKind::Bf16InF32) c = Conv::Bf16High;
+            else if (r.kind == WeightKind::F16InF32) c = Conv::ToF16;
+            segs[n_segs++] = Seg{0, r.src_bytes, 0, r.dst_bytes, c};
+        }
+
+        for (int si = 0; si < n_segs; ++si) {
+            const Seg& s = segs[si];
+            uint64_t done = 0;
+            while (done < s.src_bytes) {
+                uint64_t n = std::min(CHUNK, s.src_bytes - done);
+                if (s.conv == Conv::WidenF16 && (n & 1ull)) n -= 1;
+                const uint8_t* src = pack_ptr + r.src_off + s.src_off + done;
+                const void* host_src = stage_out;
+                uint64_t out_bytes = n;
+                uint64_t out_at = s.dst_off + done;
+
+                switch (s.conv) {
+                    case Conv::Copy:
+                        std::memcpy(stage_out, src, static_cast<size_t>(n));
+                        break;
+                    case Conv::Bf16High: {
+                        const uint64_t elems = n / 4;
+                        out_bytes = elems * 2;
+                        uint8_t* o = static_cast<uint8_t*>(stage_out);
+                        for (uint64_t i = 0; i < elems; ++i) {
+                            uint32_t v;
+                            std::memcpy(&v, src + i * 4, 4);
+                            const uint16_t h = static_cast<uint16_t>(v >> 16);
+                            std::memcpy(o + i * 2, &h, 2);
+                        }
+                        out_at = s.dst_off + done / 2;
+                        break;
+                    }
+                    case Conv::ToF16: {
+                        const uint64_t elems = n / 4;
+                        out_bytes = elems * 2;
+                        uint8_t* o = static_cast<uint8_t*>(stage_out);
+                        for (uint64_t i = 0; i < elems; ++i) {
+                            float v;
+                            std::memcpy(&v, src + i * 4, 4);
+                            const uint16_t h = guild::kernels::f16_from_f32(v);
+                            std::memcpy(o + i * 2, &h, 2);
+                        }
+                        out_at = s.dst_off + done / 2;
+                        break;
+                    }
+                    case Conv::WidenF16: {
+                        const uint64_t elems = n / 2;
+                        out_bytes = elems * 4;
+                        float* o = static_cast<float*>(stage_out);
+                        for (uint64_t i = 0; i < elems; ++i) {
+                            uint16_t h;
+                            std::memcpy(&h, src + i * 2, 2);
+                            o[i] = guild::kernels::f32_from_f16(h);
+                        }
+                        out_at = s.dst_off + done * 2;
+                        break;
+                    }
+                }
+
+                const double u0 = now_ms();
+                if (cudaMemcpy(dst_base + r.dst_off + out_at, host_src, out_bytes, cudaMemcpyHostToDevice) !=
+                    cudaSuccess) {
+                    err = "cudaMemcpy failed for " + r.name;
+                    cudaFreeHost(stage_out);
+                    return false;
+                }
+                upload_ms += now_ms() - u0;
+                done += n;
+            }
+        }
+
+        WeightRef wr;
+        wr.data = dst_base + r.dst_off;
+        wr.bytes = r.dst_bytes;
+        wr.ne0 = r.ne0;
+        wr.ne1 = r.ne1;
+        wr.elements = r.ne0 * (r.ne1 > 0 ? r.ne1 : 1);
+        wr.kind = r.kind;
+        wr.code_bits = r.code_bits;
+        wr.code_bias = r.code_bias;
+        wr.group_elems = r.group_elems;
+        wr.codebook_iq4nl = r.codebook != 0;
+        wr.has_offset = r.has_offset != 0;
+        wr.codes_bytes = r.codes_bytes;
+        wr.scales_bytes = r.scales_bytes;
+        wr.offset_bytes = r.offset_bytes;
+        wr.src_off = r.src_off;
+        wr.src_bytes = r.src_bytes;
+        wr.file_id = r.file;
+        wr.scales_fp16 = r.scales_fp16 != 0;
+        wr.act_kind = r.act_kind;
+        table_[r.name] = wr;
+        ++report_.tensors;
+    }
+
+    cudaFreeHost(stage_out);
+    report_.arena_bytes = pool;
+    report_.read_ms = now_ms() - t_read0 - upload_ms;
+    report_.upload_ms = upload_ms;
+    if (cudaDeviceSynchronize() != cudaSuccess) {
+        err = "cudaDeviceSynchronize after GPACK dense load failed";
+        return false;
+    }
     return true;
 }
 

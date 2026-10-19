@@ -41,6 +41,12 @@ public:
     // Loads vocab.json, merges.txt, tokenizer.json, token_type.json, and chat_template.jinja
     bool load(const std::string& tokenizer_dir, std::string& err_msg);
 
+    // Loads precomputed binary tokenizer (GBT1 section in GPACK)
+    bool load_binary(const uint8_t* data, size_t size, std::string& err_msg);
+
+    // Serializes loaded tokenizer into deterministic GBT1 binary format
+    bool serialize_binary(std::vector<uint8_t>& out, std::string& err_msg) const;
+
     bool is_loaded() const { return loaded_; }
 
     // Tokenizes raw text into token IDs (defaults to allow_special = false)
@@ -82,6 +88,12 @@ private:
     std::vector<std::string> byte_to_unicode_;
     std::unordered_map<std::string, int32_t> special_tokens_;
     std::unordered_map<int32_t, bool> is_special_map_;
+    std::vector<uint8_t> token_types_;
+    std::vector<uint8_t> is_special_vec_;
+    int32_t byte_token_ids_[256] = {};
+    bool id_merges_complete_ = false;
+    std::unordered_map<uint64_t, uint64_t> id_merges_;
+    std::vector<std::pair<int32_t, int32_t>> merge_id_pairs_;
 
     // Pair merges: (first, second) -> rank
     struct PairHash {

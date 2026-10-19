@@ -6,6 +6,7 @@
 #include "guild/runtime/session.hpp"
 
 #include "guild/artifact/gguf_split.hpp"
+#include "guild/artifact/gpack.hpp"
 #include "guild/core/device.hpp"
 #include "guild/core/expert_cache.hpp"
 #include "guild/core/expert_source.hpp"
@@ -111,6 +112,8 @@ struct GuildModel::Impl {
     model::ModelDescriptor desc;
     memory::ExecutionPlan plan;
     RuntimeConfig config;
+    StartupProfile startup_profile;
+    std::unique_ptr<artifact::GPackReader> gpack;
     std::shared_ptr<Tokenizer> tokenizer;
     std::shared_ptr<std::atomic<bool>> ready;
     ExpertPerformance expert_performance;
@@ -199,6 +202,7 @@ struct GuildModel::Impl {
             cpu_binding.reset();
             runner_exec.bindings.clear();
             runner.reset();
+            gpack.reset();
             kernel_lease = {};
             runner_lease = {};
             cudaStreamDestroy(main_stream);
@@ -210,6 +214,7 @@ struct GuildModel::Impl {
             cpu_binding.reset();
             runner_exec.bindings.clear();
             runner.reset();
+            gpack.reset();
             kernel_lease = {};
             runner_lease = {};
         }
@@ -217,6 +222,7 @@ struct GuildModel::Impl {
 };
 
 bool bind_required_ple(GuildModel::Impl& model, const std::vector<std::string>& shards, std::string& err);
+bool bind_required_ple_gpack(GuildModel::Impl& model, const artifact::GPackReader& gpack, std::string& err);
 
 } // namespace guild::runtime
 

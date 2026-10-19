@@ -1,0 +1,173 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://guild.local/schemas/gpack.v1.schema.json",
+  "title": "Guild GPACK Manifest v1",
+  "type": "object",
+  "required": [
+    "schema",
+    "format_version",
+    "min_reader_version",
+    "model",
+    "execution",
+    "provenance",
+    "sections"
+  ],
+  "properties": {
+    "schema": {
+      "type": "string",
+      "const": "guild.gpack.v1"
+    },
+    "format_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "min_reader_version": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1
+    },
+    "model": {
+      "type": "object",
+      "required": [
+        "name",
+        "architecture",
+        "archetype",
+        "quantization",
+        "context_length",
+        "vocab_size",
+        "n_embd",
+        "n_layers",
+        "n_heads",
+        "n_kv_heads",
+        "head_dim",
+        "rope",
+        "moe"
+      ],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "architecture": { "type": "string", "minLength": 1 },
+        "archetype": { "type": "string", "minLength": 1 },
+        "quantization": { "type": "string" },
+        "context_length": { "type": "integer", "minimum": 1 },
+        "vocab_size": { "type": "integer", "minimum": 1 },
+        "n_embd": { "type": "integer", "minimum": 1 },
+        "n_layers": { "type": "integer", "minimum": 1 },
+        "n_heads": { "type": "integer", "minimum": 1 },
+        "n_kv_heads": { "type": "integer", "minimum": 1 },
+        "head_dim": { "type": "integer", "minimum": 1 },
+        "full_attn_interval": { "type": "integer", "minimum": 0 },
+        "ssm_state_size": { "type": "integer", "minimum": 0 },
+        "ssm_k_heads": { "type": "integer", "minimum": 0 },
+        "ssm_v_heads": { "type": "integer", "minimum": 0 },
+        "ssm_d_conv": { "type": "integer", "minimum": 0 },
+        "ssm_conv_channels": { "type": "integer", "minimum": 0 },
+        "ssm_value_dim": { "type": "integer", "minimum": 0 },
+        "idx_q_heads": { "type": "integer", "minimum": 0 },
+        "idx_key_dim": { "type": "integer", "minimum": 0 },
+        "residual_streams": { "type": "integer", "minimum": 1 },
+        "residual_rank": { "type": "integer", "minimum": 0 },
+        "gdn_gate_silu": { "type": "boolean" },
+        "rope": {
+          "type": "object",
+          "required": ["freq_base", "factor", "orig_ctx", "type"],
+          "properties": {
+            "freq_base": { "type": "number" },
+            "factor": { "type": "number" },
+            "orig_ctx": { "type": "integer" },
+            "type": { "type": "string" }
+          }
+        },
+        "moe": {
+          "type": "object",
+          "required": [
+            "n_routed_experts",
+            "k_active_experts",
+            "expert_dim_ff",
+            "n_shared_experts",
+            "shared_dim_ff",
+            "expert_blob_bytes"
+          ],
+          "properties": {
+            "n_routed_experts": { "type": "integer", "minimum": 0 },
+            "k_active_experts": { "type": "integer", "minimum": 0 },
+            "expert_dim_ff": { "type": "integer", "minimum": 0 },
+            "n_shared_experts": { "type": "integer", "minimum": 0 },
+            "shared_dim_ff": { "type": "integer", "minimum": 0 },
+            "expert_blob_bytes": { "type": "integer", "minimum": 0 }
+          }
+        }
+      }
+    },
+    "execution": {
+      "type": "object",
+      "required": [
+        "runner_id",
+        "arch_id",
+        "prefill_strategy",
+        "required_core_caps",
+        "required_ops",
+        "requires_ple",
+        "supports_mtp"
+      ],
+      "properties": {
+        "runner_id": { "type": "string" },
+        "arch_id": { "type": "string" },
+        "prefill_strategy": { "type": "string" },
+        "required_core_caps": { "type": "integer", "minimum": 0 },
+        "required_ops": {
+          "type": "array",
+          "items": { "type": "integer" }
+        },
+        "required_modules": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "requires_ple": { "type": "boolean" },
+        "supports_mtp": { "type": "boolean" },
+        "eos_token_ids": {
+          "type": "array",
+          "items": { "type": "integer" }
+        }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "required": ["source_format", "source_shards", "embedded_experts"],
+      "properties": {
+        "source_format": {
+          "type": "string",
+          "enum": ["gguf", "gguf+pack", "safetensors"]
+        },
+        "embedded_experts": { "type": "boolean" },
+        "source_shards": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name", "size_bytes"],
+            "properties": {
+              "name": { "type": "string" },
+              "size_bytes": { "type": "integer", "minimum": 0 },
+              "sha256": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "sections": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "kind", "offset", "size", "alignment", "item_count", "sha256"],
+        "properties": {
+          "name": { "type": "string" },
+          "kind": { "type": "integer" },
+          "offset": { "type": "integer", "minimum": 64 },
+          "size": { "type": "integer", "minimum": 0 },
+          "alignment": { "type": "integer", "minimum": 1 },
+          "item_count": { "type": "integer", "minimum": 0 },
+          "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+        }
+      }
+    }
+  }
+}

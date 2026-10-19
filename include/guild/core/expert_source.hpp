@@ -432,6 +432,7 @@ public:
     /// it is asked for: the SSD tier, read in place through the OS file cache, with no 30-77 GB experts.bin copy.
     /// With experts.bin present nothing changes.
     bool open(const std::string& pack_dir, int64_t n_layers, int64_t n_expert, std::string& err);
+    bool open_gpack(const uint8_t* exp_base, uint64_t exp_bytes, int64_t n_layers, int64_t n_expert, std::string& err);
     /// CS-T: the --native shard (native_experts.txt names the other files beside it); see `open`.
     void set_gguf(const std::string& native) { gguf_ = native; }
     /// Whether the experts are read from the GGUF shards in place (no experts.bin).
@@ -604,6 +605,7 @@ private:
     uint64_t epoch_ = 0;
     int64_t last_layer_ = -1;
     bool stage_grew_ = false;
+    bool external_view_ = false;
     std::atomic<int64_t> ram_reads_{0};
     std::atomic<uint64_t> file_read_bytes_{0};
     const uint8_t* base_ = nullptr;

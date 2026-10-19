@@ -33,6 +33,8 @@
 #include <string>
 #include <vector>
 
+namespace guild::artifact { class GPackReader; }
+
 namespace guild::core {
 
 /// What the loader had to DO for a tensor, decided by `tools/pack_index.py` and written into the index
@@ -127,6 +129,11 @@ public:
     /// `resident == false`, and the other tensors are packed into the compacted arena `pool_bytes` sized.
     bool load(const std::string& pack_dir, void* arena_base, uint64_t arena_bytes, std::string& err,
               const std::set<std::string>* skip = nullptr);
+
+    static bool pool_bytes_gpack(const guild::artifact::GPackReader& gpack, uint64_t& out, std::string& err,
+                                 const std::set<std::string>* skip = nullptr);
+    bool load_gpack(const guild::artifact::GPackReader& gpack, void* arena_base, uint64_t arena_bytes, std::string& err,
+                    const std::set<std::string>* skip = nullptr);
 
     const WeightRef* find(const std::string& name) const;
     const std::map<std::string, WeightRef>& all() const { return table_; }

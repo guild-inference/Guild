@@ -5,6 +5,8 @@
 #include <string>
 #include <vector>
 
+namespace guild::artifact { class GPackReader; }
+
 namespace guild::core {
 
 /// Opt-in native output projection. Uploads unchanged GGUF blocks once at startup and owns its
@@ -20,6 +22,7 @@ public:
     NativeHead& operator=(const NativeHead&) = delete;
 
     bool load(const std::vector<std::string>& shards, int64_t n_in, int64_t n_out, std::string& err);
+    bool load_gpack(const guild::artifact::GPackReader& gpack, int64_t n_in, int64_t n_out, std::string& err);
     bool run(const float* mixed, float* logits, void* stream, std::string& err) const;
     uint64_t weight_bytes() const { return bytes_; }
     bool loaded() const { return weights_ != nullptr; }
@@ -47,6 +50,7 @@ public:
     NativeEmbed(const NativeEmbed&) = delete;
     NativeEmbed& operator=(const NativeEmbed&) = delete;
     bool load(const std::vector<std::string>& shards, int64_t n_embd, int64_t n_vocab, std::string& err);
+    bool load_gpack(const guild::artifact::GPackReader& gpack, int64_t n_embd, int64_t n_vocab, std::string& err);
     /// Rows for device token ids.
     void gather_dev(const int32_t* tokens, int64_t n_tok, float* out, void* stream) const;
     /// One row for a host token id.

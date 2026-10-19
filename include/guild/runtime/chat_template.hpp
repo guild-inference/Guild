@@ -23,6 +23,7 @@ public:
 
     // Loads chat_template.jinja from tokenizer_dir or file path
     bool load(const std::string& path_or_dir, std::string& err_msg);
+    bool load_from_string(const std::string& content, std::string& err_msg);
 
     bool is_loaded() const { return loaded_; }
     TemplateType type() const { return type_; }

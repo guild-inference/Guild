@@ -86,6 +86,72 @@ struct RuntimeTelemetry {
     int64_t current_context_length = 0;
     int64_t prefill_chunk = 0;
     double request_latency_s = 0.0;
+
+    // Detailed inference stage breakdown (Phase 4 performance telemetry)
+    double ttft_ms = 0.0;
+    double first_window_capture_ms = 0.0;
+    double prefill_embed_ms = 0.0;
+    double prefill_gpu_dense_ms = 0.0;
+    double prefill_gpu_attn_ms = 0.0;
+    double prefill_gpu_gdn_ms = 0.0;
+    double prefill_host_wait_ms = 0.0;
+    double prefill_cpu_group_ms = 0.0;
+    double prefill_cpu_quant_ms = 0.0;
+    double prefill_cpu_gu_ms = 0.0;
+    double prefill_cpu_down_ms = 0.0;
+    double prefill_cpu_combine_ms = 0.0;
+    double decode_verify_ms = 0.0;
+    double decode_mtp_draft_ms = 0.0;
+    double decode_host_wait_ms = 0.0;
+    double decode_cpu_pool_ms = 0.0;
+    double decode_cpu_validation_ms = 0.0;
+    double decode_cpu_quant_ms = 0.0;
+    double decode_cpu_gu_ms = 0.0;
+    double decode_cpu_down_ms = 0.0;
+    double decode_ple_ms = 0.0;
+    double decode_commit_ms = 0.0;
+    double decode_logit_validation_ms = 0.0;
+    int64_t decode_windows = 0;
+};
+
+struct StartupProfile {
+    std::string container_format = "gguf+pack";
+    double package_load_ms = 0.0;
+    double model_open_parse_ms = 0.0;
+    double runner_and_plan_ms = 0.0;
+    double cuda_init_ms = 0.0;
+    double kernel_provider_resolve_ms = 0.0;
+    double quant_layout_prep_ms = 0.0;
+    double embed_load_ms = 0.0;
+    double dense_index_and_pack_ms = 0.0;
+    double native_dense_load_ms = 0.0;
+    double native_head_load_ms = 0.0;
+    double expert_source_open_ms = 0.0;
+    double expert_calibration_pre_ms = 0.0;
+    double expert_cache_init_ms = 0.0;
+    double numa_expert_pin_ms = 0.0;
+    double kv_session_init_ms = 0.0;
+    double ple_bind_ms = 0.0;
+    double mtp_init_ms = 0.0;
+    double verifier_init_ms = 0.0;
+    double prefill_init_ms = 0.0;
+    double expert_calibration_post_ms = 0.0;
+    double graph_capture_startup_ms = 0.0;
+    double tokenizer_load_ms = 0.0;
+    double total_load_ms = 0.0;
+
+    int64_t container_opens = 0;
+    int64_t index_parses = 0;
+    int64_t dense_device_allocs = 0;
+    int64_t expert_copy_calls = 0;
+    uint64_t dense_vram_bytes = 0;
+    uint64_t expert_vram_bytes = 0;
+    uint64_t expert_ram_bytes = 0;
+    uint64_t kv_host_bytes = 0;
+    uint64_t kv_device_bytes = 0;
+    bool expert_zero_copy = false;
+    bool expert_numa_interleaved = false;
+    bool expert_page_locked = false;
 };
 
 } // namespace guild::runtime

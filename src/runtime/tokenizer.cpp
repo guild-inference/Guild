@@ -3,6 +3,7 @@
 #include "guild/server/json.hpp"
 
 #include <algorithm>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -203,8 +204,13 @@ bool Tokenizer::load(const std::string& tokenizer_dir, std::string& err_msg) {
     vocab_tokens_.clear();
     token_to_id_.clear();
     merges_.clear();
+    id_merges_.clear();
+    merge_id_pairs_.clear();
+    id_merges_complete_ = false;
     special_tokens_.clear();
     is_special_map_.clear();
+    token_types_.clear();
+    is_special_vec_.clear();
 
     if (tokenizer_dir.empty()) {
         err_msg = "empty tokenizer directory";
@@ -286,6 +292,7 @@ bool Tokenizer::load(const std::string& tokenizer_dir, std::string& err_msg) {
     }
 
     vocab_tokens_.resize(static_cast<size_t>(expected_vocab_size));
+    token_to_id_.reserve(static_cast<size_t>(expected_vocab_size) * 2);
     for (const auto& kv : vocab_root.obj_val) {
         int64_t id = kv.second.as_int(-1);
         if (id < 0 || id >= expected_vocab_size) {
@@ -296,6 +303,17 @@ bool Tokenizer::load(const std::string& tokenizer_dir, std::string& err_msg) {
         token_to_id_[kv.first] = static_cast<int32_t>(id);
     }
 
+    bool all_bytes_resolved = true;
+    for (int b = 0; b < 256; ++b) {
+        auto it = token_to_id_.find(byte_to_unicode_[static_cast<size_t>(b)]);
+        if (it == token_to_id_.end()) {
+            byte_token_ids_[b] = -1;
+            all_bytes_resolved = false;
+        } else {
+            byte_token_ids_[b] = it->second;
+        }
+    }
+
     // 3. Load merges.txt
     std::filesystem::path merges_path = dir / "merges.txt";
     std::ifstream mf(merges_path);
@@ -303,6 +321,10 @@ bool Tokenizer::load(const std::string& tokenizer_dir, std::string& err_msg) {
         err_msg = "failed to open " + merges_path.string();
         return false;
     }
+
+    id_merges_.reserve(static_cast<size_t>(expected_merges) * 2);
+    merge_id_pairs_.reserve(static_cast<size_t>(expected_merges));
+    bool all_merges_resolved = all_bytes_resolved;
 
     std::string line;
     int32_t rank = 0;
@@ -313,7 +335,38 @@ bool Tokenizer::load(const std::string& tokenizer_dir, std::string& err_msg) {
         if (sp == std::string::npos) continue;
         std::string first = line.substr(0, sp);
         std::string second = line.substr(sp + 1);
-        merges_[std::make_pair(std::move(first), std::move(second))] = rank++;
+        auto it1 = token_to_id_.find(first);
+        auto it2 = token_to_id_.find(second);
+        auto itm = token_to_id_.find(first + second);
+        if (it1 != token_to_id_.end() && it2 != token_to_id_.end() && itm != token_to_id_.end()) {
+            const uint64_t key = (static_cast<uint64_t>(static_cast<uint32_t>(it1->second)) << 32) |
+                                 static_cast<uint32_t>(it2->second);
+            const uint64_t val = (static_cast<uint64_t>(static_cast<uint32_t>(rank)) << 32) |
+                                 static_cast<uint32_t>(itm->second);
+            id_merges_.emplace(key, val);
+            merge_id_pairs_.emplace_back(it1->second, it2->second);
+        } else {
+            all_merges_resolved = false;
+            merges_[std::make_pair(std::move(first), std::move(second))] = rank;
+            merge_id_pairs_.emplace_back(-1, -1);
+        }
+        rank++;
+    }
+    id_merges_complete_ = all_merges_resolved;
+    if (!id_merges_complete_ && merges_.size() < static_cast<size_t>(rank)) {
+        // Populate fallback string merges if needed
+        mf.clear();
+        mf.seekg(0);
+        int32_t r2 = 0;
+        merges_.clear();
+        merges_.reserve(static_cast<size_t>(expected_merges) * 2);
+        while (std::getline(mf, line)) {
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            if (line.empty()) continue;
+            size_t sp = line.find(' ');
+            if (sp == std::string::npos) continue;
+            merges_[std::make_pair(line.substr(0, sp), line.substr(sp + 1))] = r2++;
+        }
     }
 
     if (static_cast<int64_t>(rank) != expected_merges) {
@@ -337,13 +390,17 @@ bool Tokenizer::load(const std::string& tokenizer_dir, std::string& err_msg) {
         return false;
     }
 
+    token_types_.assign(vocab_tokens_.size(), 1);
+    is_special_vec_.assign(vocab_tokens_.size(), 0);
     for (size_t id = 0; id < type_root.arr_val.size() && id < vocab_tokens_.size(); ++id) {
         int64_t ttype = type_root.arr_val[id].as_int(1);
+        token_types_[id] = static_cast<uint8_t>(ttype);
         // Type 3 = Control, Type 4 = User Defined
         if (ttype == 3 || ttype == 4) {
             const std::string& tok_str = vocab_tokens_[id];
             special_tokens_[tok_str] = static_cast<int32_t>(id);
             is_special_map_[static_cast<int32_t>(id)] = true;
+            is_special_vec_[id] = 1;
         }
     }
 
@@ -366,7 +423,240 @@ bool Tokenizer::load(const std::string& tokenizer_dir, std::string& err_msg) {
     return true;
 }
 
+#pragma pack(push, 1)
+struct GbtHeaderV1 {
+    uint32_t magic = 0x31544247u; // "GBT1"
+    uint32_t version = 1u;
+    int32_t vocab_size = 0;
+    int32_t n_merges = 0;
+    int32_t eos_token_id = 248046;
+    uint32_t flags = 0; // bit 0 = id_merges_complete
+    uint64_t vocab_blob_bytes = 0;
+    uint64_t chat_template_bytes = 0;
+};
+#pragma pack(pop)
+
+bool Tokenizer::serialize_binary(std::vector<uint8_t>& out, std::string& err_msg) const {
+    if (!loaded_) {
+        err_msg = "cannot serialize unloaded tokenizer";
+        return false;
+    }
+    if (merge_id_pairs_.size() != id_merges_.size()) {
+        err_msg = "cannot serialize binary tokenizer with unresolved merge pairs";
+        return false;
+    }
+    GbtHeaderV1 hdr{};
+    hdr.vocab_size = static_cast<int32_t>(vocab_tokens_.size());
+    hdr.n_merges = static_cast<int32_t>(merge_id_pairs_.size());
+    hdr.eos_token_id = eos_token_id_;
+    hdr.flags = id_merges_complete_ ? 1u : 0u;
+
+    uint64_t str_bytes = 0;
+    for (const auto& s : vocab_tokens_) str_bytes += s.size();
+    hdr.vocab_blob_bytes = str_bytes;
+    const std::string& chat_src = chat_template_.source();
+    hdr.chat_template_bytes = chat_src.size();
+
+    // Layout:
+    // GbtHeaderV1
+    // uint32_t token_offsets[vocab_size + 1]
+    // uint8_t token_types[vocab_size]
+    // char vocab_strings[vocab_blob_bytes]
+    // int32_t merge_triples[n_merges * 3] (id1, id2, merged_id)
+    // char chat_template[chat_template_bytes]
+    const size_t total_size =
+        sizeof(GbtHeaderV1) +
+        static_cast<size_t>(hdr.vocab_size + 1) * sizeof(uint32_t) +
+        static_cast<size_t>(hdr.vocab_size) * sizeof(uint8_t) +
+        static_cast<size_t>(hdr.vocab_blob_bytes) +
+        static_cast<size_t>(hdr.n_merges) * 3 * sizeof(int32_t) +
+        static_cast<size_t>(hdr.chat_template_bytes);
+
+    out.assign(total_size, 0);
+    size_t cursor = 0;
+    std::memcpy(out.data() + cursor, &hdr, sizeof(hdr));
+    cursor += sizeof(hdr);
+
+    uint32_t cur_off = 0;
+    for (int32_t i = 0; i < hdr.vocab_size; ++i) {
+        std::memcpy(out.data() + cursor, &cur_off, sizeof(uint32_t));
+        cursor += sizeof(uint32_t);
+        cur_off += static_cast<uint32_t>(vocab_tokens_[static_cast<size_t>(i)].size());
+    }
+    std::memcpy(out.data() + cursor, &cur_off, sizeof(uint32_t));
+    cursor += sizeof(uint32_t);
+
+    std::memcpy(out.data() + cursor, token_types_.data(), static_cast<size_t>(hdr.vocab_size));
+    cursor += static_cast<size_t>(hdr.vocab_size);
+
+    for (const auto& s : vocab_tokens_) {
+        if (!s.empty()) {
+            std::memcpy(out.data() + cursor, s.data(), s.size());
+            cursor += s.size();
+        }
+    }
+
+    for (int32_t r = 0; r < hdr.n_merges; ++r) {
+        const auto [id1, id2] = merge_id_pairs_[static_cast<size_t>(r)];
+        const uint64_t key = (static_cast<uint64_t>(static_cast<uint32_t>(id1)) << 32) |
+                             static_cast<uint32_t>(id2);
+        auto it = id_merges_.find(key);
+        if (it == id_merges_.end()) {
+            err_msg = "internal error: missing merge key during serialization";
+            return false;
+        }
+        const int32_t merged_id = static_cast<int32_t>(static_cast<uint32_t>(it->second));
+        const int32_t triple[3] = {id1, id2, merged_id};
+        std::memcpy(out.data() + cursor, triple, sizeof(triple));
+        cursor += sizeof(triple);
+    }
+
+    if (!chat_src.empty()) {
+        std::memcpy(out.data() + cursor, chat_src.data(), chat_src.size());
+        cursor += chat_src.size();
+    }
+    return cursor == total_size;
+}
+
+bool Tokenizer::load_binary(const uint8_t* data, size_t size, std::string& err_msg) {
+    loaded_ = false;
+    err_msg.clear();
+    vocab_tokens_.clear();
+    token_to_id_.clear();
+    merges_.clear();
+    id_merges_.clear();
+    merge_id_pairs_.clear();
+    id_merges_complete_ = false;
+    special_tokens_.clear();
+    is_special_map_.clear();
+    token_types_.clear();
+    is_special_vec_.clear();
+
+    if (!data || size < sizeof(GbtHeaderV1)) {
+        err_msg = "GBT1 binary tokenizer buffer too small";
+        return false;
+    }
+    GbtHeaderV1 hdr{};
+    std::memcpy(&hdr, data, sizeof(hdr));
+    if (hdr.magic != 0x31544247u || hdr.version != 1u) {
+        err_msg = "invalid GBT1 binary tokenizer magic or version";
+        return false;
+    }
+    if (hdr.vocab_size <= 0 || hdr.n_merges <= 0) {
+        err_msg = "invalid GBT1 vocab_size or n_merges";
+        return false;
+    }
+    const uint64_t expected_size =
+        sizeof(GbtHeaderV1) +
+        static_cast<uint64_t>(hdr.vocab_size + 1) * sizeof(uint32_t) +
+        static_cast<uint64_t>(hdr.vocab_size) * sizeof(uint8_t) +
+        hdr.vocab_blob_bytes +
+        static_cast<uint64_t>(hdr.n_merges) * 3 * sizeof(int32_t) +
+        hdr.chat_template_bytes;
+    if (expected_size != size) {
+        err_msg = "GBT1 binary tokenizer size mismatch";
+        return false;
+    }
+
+    eos_token_id_ = hdr.eos_token_id;
+    size_t cursor = sizeof(GbtHeaderV1);
+    const uint32_t* offsets = reinterpret_cast<const uint32_t*>(data + cursor);
+    cursor += static_cast<size_t>(hdr.vocab_size + 1) * sizeof(uint32_t);
+    const uint8_t* types = data + cursor;
+    cursor += static_cast<size_t>(hdr.vocab_size);
+    const char* str_base = reinterpret_cast<const char*>(data + cursor);
+    cursor += static_cast<size_t>(hdr.vocab_blob_bytes);
+
+    if (offsets[hdr.vocab_size] != hdr.vocab_blob_bytes) {
+        err_msg = "GBT1 final string offset mismatch";
+        return false;
+    }
+
+    vocab_tokens_.resize(static_cast<size_t>(hdr.vocab_size));
+    token_types_.assign(types, types + hdr.vocab_size);
+    is_special_vec_.assign(static_cast<size_t>(hdr.vocab_size), 0);
+    token_to_id_.reserve(static_cast<size_t>(hdr.vocab_size) * 2);
+
+    for (int32_t id = 0; id < hdr.vocab_size; ++id) {
+        uint32_t off0 = offsets[id];
+        uint32_t off1 = offsets[id + 1];
+        if (off1 < off0 || off1 > hdr.vocab_blob_bytes) {
+            err_msg = "GBT1 corrupted token string offset";
+            return false;
+        }
+        vocab_tokens_[static_cast<size_t>(id)].assign(str_base + off0, off1 - off0);
+        token_to_id_.emplace(vocab_tokens_[static_cast<size_t>(id)], id);
+        uint8_t ttype = types[id];
+        if (ttype == 3 || ttype == 4) {
+            special_tokens_.emplace(vocab_tokens_[static_cast<size_t>(id)], id);
+            is_special_map_.emplace(id, true);
+            is_special_vec_[static_cast<size_t>(id)] = 1;
+        }
+    }
+
+    bool all_bytes = true;
+    for (int b = 0; b < 256; ++b) {
+        auto it = token_to_id_.find(byte_to_unicode_[static_cast<size_t>(b)]);
+        if (it == token_to_id_.end()) {
+            byte_token_ids_[b] = -1;
+            all_bytes = false;
+        } else {
+            byte_token_ids_[b] = it->second;
+        }
+    }
+
+    id_merges_.reserve(static_cast<size_t>(hdr.n_merges) * 2);
+    merge_id_pairs_.resize(static_cast<size_t>(hdr.n_merges));
+    for (int32_t r = 0; r < hdr.n_merges; ++r) {
+        int32_t triple[3];
+        std::memcpy(triple, data + cursor, sizeof(triple));
+        cursor += sizeof(triple);
+        if (triple[0] < 0 || triple[0] >= hdr.vocab_size ||
+            triple[1] < 0 || triple[1] >= hdr.vocab_size ||
+            triple[2] < 0 || triple[2] >= hdr.vocab_size) {
+            err_msg = "GBT1 merge token ID out of bounds";
+            return false;
+        }
+        merge_id_pairs_[static_cast<size_t>(r)] = {triple[0], triple[1]};
+        const uint64_t key = (static_cast<uint64_t>(static_cast<uint32_t>(triple[0])) << 32) |
+                             static_cast<uint32_t>(triple[1]);
+        const uint64_t val = (static_cast<uint64_t>(static_cast<uint32_t>(r)) << 32) |
+                             static_cast<uint32_t>(triple[2]);
+        id_merges_.emplace(key, val);
+    }
+    id_merges_complete_ = all_bytes && ((hdr.flags & 1u) != 0);
+    if (!id_merges_complete_) {
+        merges_.reserve(static_cast<size_t>(hdr.n_merges) * 2);
+        for (int32_t r = 0; r < hdr.n_merges; ++r) {
+            const auto [id1, id2] = merge_id_pairs_[static_cast<size_t>(r)];
+            merges_.emplace(std::make_pair(vocab_tokens_[static_cast<size_t>(id1)],
+                                           vocab_tokens_[static_cast<size_t>(id2)]),
+                            r);
+        }
+    }
+
+    std::string chat_src(reinterpret_cast<const char*>(data + cursor), static_cast<size_t>(hdr.chat_template_bytes));
+    std::string chat_err;
+    if (!chat_template_.load_from_string(chat_src, chat_err)) {
+        err_msg = "GBT1 chat template error: " + chat_err;
+        return false;
+    }
+
+    eos_token_ids_.clear();
+    eos_token_ids_.push_back(eos_token_id_);
+    auto it_endoftext = token_to_id_.find("<|endoftext|>");
+    if (it_endoftext != token_to_id_.end() && it_endoftext->second != eos_token_id_) {
+        eos_token_ids_.push_back(it_endoftext->second);
+    }
+
+    loaded_ = true;
+    return true;
+}
+
 bool Tokenizer::is_special(int32_t token_id) const {
+    if (token_id >= 0 && static_cast<size_t>(token_id) < is_special_vec_.size()) {
+        return is_special_vec_[static_cast<size_t>(token_id)] != 0;
+    }
     auto it = is_special_map_.find(token_id);
     return it != is_special_map_.end() && it->second;
 }
@@ -557,6 +847,45 @@ std::vector<std::string> Tokenizer::pre_tokenize_qwen(const std::string& text) c
 
 std::vector<int32_t> Tokenizer::bpe_merge_word(const std::string& word) const {
     if (word.empty()) return {};
+
+    if (id_merges_complete_) {
+        std::vector<int32_t> ids;
+        ids.reserve(word.size());
+        for (unsigned char b : word) {
+            ids.push_back(byte_token_ids_[b]);
+        }
+        while (ids.size() > 1) {
+            uint32_t best_rank = UINT32_MAX;
+            int32_t best_a = -1, best_b = -1, best_merged = -1;
+            for (size_t i = 0; i + 1 < ids.size(); ++i) {
+                const uint64_t key = (static_cast<uint64_t>(static_cast<uint32_t>(ids[i])) << 32) |
+                                     static_cast<uint32_t>(ids[i + 1]);
+                auto it = id_merges_.find(key);
+                if (it != id_merges_.end()) {
+                    const uint32_t rank = static_cast<uint32_t>(it->second >> 32);
+                    if (rank < best_rank) {
+                        best_rank = rank;
+                        best_a = ids[i];
+                        best_b = ids[i + 1];
+                        best_merged = static_cast<int32_t>(static_cast<uint32_t>(it->second));
+                    }
+                }
+            }
+            if (best_rank == UINT32_MAX) break;
+            size_t write_idx = 0;
+            size_t read_idx = 0;
+            while (read_idx < ids.size()) {
+                if (read_idx + 1 < ids.size() && ids[read_idx] == best_a && ids[read_idx + 1] == best_b) {
+                    ids[write_idx++] = best_merged;
+                    read_idx += 2;
+                } else {
+                    ids[write_idx++] = ids[read_idx++];
+                }
+            }
+            ids.resize(write_idx);
+        }
+        return ids;
+    }
 
     // Initial sequence of byte-encoded characters
     std::vector<std::string> word_tokens;
