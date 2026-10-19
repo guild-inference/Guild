@@ -9,20 +9,22 @@
 
 int main() {
     int devices = 0;
-    if (cudaGetDeviceCount(&devices) != cudaSuccess || !devices) return 77;
+    if (cudaGetDeviceCount(&devices) != cudaSuccess || !devices)
+        return 77;
     cudaStream_t stream;
     CHECK(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking) == cudaSuccess);
     unsigned long long *status, *host;
     CHECK(cudaMalloc(&status, sizeof(*status)) == cudaSuccess);
     CHECK(cudaMallocHost(&host, sizeof(*host)) == cudaSuccess);
-    for (size_t count : {size_t(1), size_t(63), size_t(64), size_t(65), size_t(255), size_t(257),
-                         size_t(248320), size_t(8 * 248320)}) {
+    for (size_t count : {size_t(1), size_t(63), size_t(64), size_t(65), size_t(255), size_t(257), size_t(248320),
+                         size_t(8 * 248320)}) {
         std::vector<float> values(count, std::numeric_limits<float>::max());
         values[0] = -0.0f;
         values[count / 2] = std::numeric_limits<float>::denorm_min();
         float* device;
         CHECK(cudaMalloc(&device, count * sizeof(float)) == cudaSuccess);
-        CHECK(cudaMemcpyAsync(device, values.data(), count * sizeof(float), cudaMemcpyHostToDevice, stream) == cudaSuccess);
+        CHECK(cudaMemcpyAsync(device, values.data(), count * sizeof(float), cudaMemcpyHostToDevice, stream) ==
+              cudaSuccess);
         CHECK(cudaStreamSynchronize(stream) == cudaSuccess);
         cudaGraph_t graph;
         cudaGraphExec_t exec;
@@ -32,7 +34,8 @@ int main() {
         CHECK(cudaStreamEndCapture(stream, &graph) == cudaSuccess);
         CHECK(cudaGraphInstantiate(&exec, graph, nullptr, nullptr, 0) == cudaSuccess);
         auto check = [&](unsigned long long expected) {
-            CHECK(cudaMemcpyAsync(device, values.data(), count * sizeof(float), cudaMemcpyHostToDevice, stream) == cudaSuccess);
+            CHECK(cudaMemcpyAsync(device, values.data(), count * sizeof(float), cudaMemcpyHostToDevice, stream) ==
+                  cudaSuccess);
             CHECK(cudaGraphLaunch(exec, stream) == cudaSuccess);
             CHECK(cudaStreamSynchronize(stream) == cudaSuccess);
             CHECK(*host == expected);

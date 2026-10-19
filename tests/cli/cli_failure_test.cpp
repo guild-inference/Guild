@@ -12,7 +12,10 @@
 #include <unistd.h>
 #include <vector>
 
-struct ChildResult { int status; std::string output; };
+struct ChildResult {
+    int status;
+    std::string output;
+};
 
 ChildResult run(const std::string& exe, std::vector<std::string> args, bool stop_when_listening = false) {
     int pipefd[2];
@@ -29,7 +32,8 @@ ChildResult run(const std::string& exe, std::vector<std::string> args, bool stop
         close(input);
         args.insert(args.begin(), exe);
         std::vector<char*> argv;
-        for (auto& arg : args) argv.push_back(arg.data());
+        for (auto& arg : args)
+            argv.push_back(arg.data());
         argv.push_back(nullptr);
         execv(exe.c_str(), argv.data());
         _exit(127);
@@ -41,15 +45,18 @@ ChildResult run(const std::string& exe, std::vector<std::string> args, bool stop
     for (;;) {
         if (std::chrono::steady_clock::now() >= deadline) {
             kill(pid, SIGKILL);
-            int status; waitpid(pid, &status, 0);
+            int status;
+            waitpid(pid, &status, 0);
             std::fprintf(stderr, "CLI child timed out: %s\n", output.c_str());
             CHECK(false);
         }
         pollfd pfd{pipefd[0], POLLIN, 0};
-        if (poll(&pfd, 1, 100) <= 0) continue;
+        if (poll(&pfd, 1, 100) <= 0)
+            continue;
         char buf[4096];
         ssize_t n = read(pipefd[0], buf, sizeof(buf));
-        if (n <= 0) break;
+        if (n <= 0)
+            break;
         output.append(buf, size_t(n));
         if (stop_when_listening && !stopped && output.find("Guild listening") != std::string::npos) {
             kill(pid, SIGTERM);
@@ -73,7 +80,8 @@ int main(int argc, char** argv) {
     CHECK(manifest.has_value());
     manifest->name = "missing-assets";
     manifest->aliases.clear();
-    for (auto& file : manifest->files) file.local_path = (root / file.name).string();
+    for (auto& file : manifest->files)
+        file.local_path = (root / file.name).string();
     manifest->metadata["pack_dir"] = (root / "missing-pack").string();
     CHECK(store.save_manifest(*manifest));
     for (const std::string command : {"run", "serve"}) {
@@ -82,8 +90,9 @@ int main(int argc, char** argv) {
         CHECK(failed.output.find("Guild listening") == std::string::npos);
         CHECK(failed.output.find(">>>") == std::string::npos);
         CHECK(failed.output.find("Hello! I am Guild") == std::string::npos);
-        auto explicit_mock = run(argv[1], {command, "missing-assets", "--mock", "--data-dir", root.string(),
-                                          "--quiet", "--port", "0"}, command == "serve");
+        auto explicit_mock =
+            run(argv[1], {command, "missing-assets", "--mock", "--data-dir", root.string(), "--quiet", "--port", "0"},
+                command == "serve");
         CHECK(explicit_mock.status == 0);
         CHECK(explicit_mock.output.find("explicit --mock") != std::string::npos);
     }
@@ -97,7 +106,10 @@ int main(int argc, char** argv) {
         const auto absent = run(argv[2], {"--tokens-file", (root / "absent.ids").string()});
         CHECK(absent.status == 2 && absent.output.find("cannot open token file") != std::string::npos);
         const fs::path malformed = root / "malformed.ids";
-        { std::ofstream file(malformed); file << "1,2broken\n"; }
+        {
+            std::ofstream file(malformed);
+            file << "1,2broken\n";
+        }
         const auto bad_file = run(argv[2], {"--tokens-file", malformed.string()});
         CHECK(bad_file.status == 2 && bad_file.output.find("invalid prompt token file") != std::string::npos);
     }

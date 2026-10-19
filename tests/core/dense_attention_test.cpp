@@ -57,9 +57,8 @@ uint16_t f32_to_f16(float f) {
 }
 
 // Independent CPU reference for full causal GQA attention
-void cpu_dense_gqa(const float* q, const uint16_t* k_pool, const uint16_t* v_pool,
-                   const int32_t* page_table, int64_t n_kv, const guild::kernels::QsaShapes& s,
-                   float* out) {
+void cpu_dense_gqa(const float* q, const uint16_t* k_pool, const uint16_t* v_pool, const int32_t* page_table,
+                   int64_t n_kv, const guild::kernels::QsaShapes& s, float* out) {
     const int64_t NH = s.n_head;
     const int64_t NKV = s.n_head_kv;
     const int64_t HD = s.head_dim;
@@ -84,7 +83,8 @@ void cpu_dense_gqa(const float* q, const uint16_t* k_pool, const uint16_t* v_poo
             }
             float sc = dot * scale;
             scores[static_cast<size_t>(j)] = sc;
-            if (sc > max_s) max_s = sc;
+            if (sc > max_s)
+                max_s = sc;
         }
 
         float sum_exp = 0.0f;
@@ -95,7 +95,8 @@ void cpu_dense_gqa(const float* q, const uint16_t* k_pool, const uint16_t* v_poo
         }
 
         float* out_h = out + h * HD;
-        for (int64_t d = 0; d < HD; ++d) out_h[d] = 0.0f;
+        for (int64_t d = 0; d < HD; ++d)
+            out_h[d] = 0.0f;
 
         for (int64_t j = 0; j < n_kv; ++j) {
             const float w = scores[static_cast<size_t>(j)] / sum_exp;
@@ -130,15 +131,19 @@ void test_dense_attention_at_length(int64_t n_kv) {
     std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
 
     std::vector<float> h_q(static_cast<size_t>(NH * HD));
-    for (auto& x : h_q) x = dist(rng);
+    for (auto& x : h_q)
+        x = dist(rng);
 
     std::vector<uint16_t> h_k_pool(static_cast<size_t>(total_slots * HD));
     std::vector<uint16_t> h_v_pool(static_cast<size_t>(total_slots * HD));
-    for (auto& x : h_k_pool) x = f32_to_f16(dist(rng) * 0.5f);
-    for (auto& x : h_v_pool) x = f32_to_f16(dist(rng) * 0.5f);
+    for (auto& x : h_k_pool)
+        x = f32_to_f16(dist(rng) * 0.5f);
+    for (auto& x : h_v_pool)
+        x = f32_to_f16(dist(rng) * 0.5f);
 
     std::vector<int32_t> h_page_table(static_cast<size_t>(n_pages));
-    for (int64_t i = 0; i < n_pages; ++i) h_page_table[static_cast<size_t>(i)] = static_cast<int32_t>(i);
+    for (int64_t i = 0; i < n_pages; ++i)
+        h_page_table[static_cast<size_t>(i)] = static_cast<int32_t>(i);
 
     // Compute CPU reference
     std::vector<float> ref_attn(static_cast<size_t>(NH * HD), 0.0f);
@@ -167,7 +172,8 @@ void test_dense_attention_at_length(int64_t n_kv) {
     CHECK(cudaMalloc(&d_attn, ref_attn.size() * sizeof(float)) == cudaSuccess);
 
     std::vector<int32_t> h_ids(static_cast<size_t>(cap));
-    for (int64_t i = 0; i < cap; ++i) h_ids[static_cast<size_t>(i)] = static_cast<int32_t>(i);
+    for (int64_t i = 0; i < cap; ++i)
+        h_ids[static_cast<size_t>(i)] = static_cast<int32_t>(i);
 
     std::vector<int32_t> h_step(guild::kernels::kStepCount, 0);
     h_step[guild::kernels::kStepPos] = static_cast<int32_t>(n_kv - 1);
@@ -176,9 +182,12 @@ void test_dense_attention_at_length(int64_t n_kv) {
     h_step[guild::kernels::kStepWidth] = static_cast<int32_t>(guild::kernels::qsa_selection_width(n_kv, s));
 
     CHECK(cudaMemcpy(d_q, h_q.data(), h_q.size() * sizeof(float), cudaMemcpyHostToDevice) == cudaSuccess);
-    CHECK(cudaMemcpy(d_k_pool, h_k_pool.data(), h_k_pool.size() * sizeof(uint16_t), cudaMemcpyHostToDevice) == cudaSuccess);
-    CHECK(cudaMemcpy(d_v_pool, h_v_pool.data(), h_v_pool.size() * sizeof(uint16_t), cudaMemcpyHostToDevice) == cudaSuccess);
-    CHECK(cudaMemcpy(d_page_table, h_page_table.data(), h_page_table.size() * sizeof(int32_t), cudaMemcpyHostToDevice) == cudaSuccess);
+    CHECK(cudaMemcpy(d_k_pool, h_k_pool.data(), h_k_pool.size() * sizeof(uint16_t), cudaMemcpyHostToDevice) ==
+          cudaSuccess);
+    CHECK(cudaMemcpy(d_v_pool, h_v_pool.data(), h_v_pool.size() * sizeof(uint16_t), cudaMemcpyHostToDevice) ==
+          cudaSuccess);
+    CHECK(cudaMemcpy(d_page_table, h_page_table.data(), h_page_table.size() * sizeof(int32_t),
+                     cudaMemcpyHostToDevice) == cudaSuccess);
     CHECK(cudaMemcpy(d_step, h_step.data(), h_step.size() * sizeof(int32_t), cudaMemcpyHostToDevice) == cudaSuccess);
     CHECK(cudaMemcpy(d_ids, h_ids.data(), h_ids.size() * sizeof(int32_t), cudaMemcpyHostToDevice) == cudaSuccess);
     CHECK(cudaMemset(d_attn, 0, ref_attn.size() * sizeof(float)) == cudaSuccess);
@@ -201,7 +210,8 @@ void test_dense_attention_at_length(int64_t n_kv) {
 
     for (size_t i = 0; i < ref_attn.size(); ++i) {
         float diff = std::abs(gpu_attn[i] - ref_attn[i]);
-        if (diff > max_abs_diff) max_abs_diff = diff;
+        if (diff > max_abs_diff)
+            max_abs_diff = diff;
         sum_diff_sq += diff * diff;
         sum_ref_sq += ref_attn[i] * ref_attn[i];
     }

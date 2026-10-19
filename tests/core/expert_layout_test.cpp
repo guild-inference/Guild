@@ -35,14 +35,16 @@ namespace {
 int g_fail = 0;
 void check(bool ok, const std::string& what) {
     std::printf("  %-84s %s\n", what.c_str(), ok ? "ok" : "FAIL");
-    if (!ok) ++g_fail;
+    if (!ok)
+        ++g_fail;
 }
 
 struct TempDir {
     fs::path path;
     TempDir() {
-        path = fs::temp_directory_path() /
-               ("guild-expert-layout-test-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+        path =
+            fs::temp_directory_path() /
+            ("guild-expert-layout-test-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
         fs::create_directories(path);
     }
     ~TempDir() {
@@ -51,7 +53,9 @@ struct TempDir {
     }
 };
 
-void write_text(const fs::path& p, const std::string& s) { std::ofstream(p, std::ios::binary) << s; }
+void write_text(const fs::path& p, const std::string& s) {
+    std::ofstream(p, std::ios::binary) << s;
+}
 
 bool load(const fs::path& dir, int64_t n_layers, int64_t n_expert, std::string& err) {
     err.clear();
@@ -66,7 +70,8 @@ void real_packs(const fs::path& data) {
         std::string err;
         const bool ok = load(d.path, 48, 512, err);
         check(ok, std::string(pack) + ": loads" + (ok ? "" : ": " + err));
-        if (!ok) continue;
+        if (!ok)
+            continue;
         const ExpertLayout& L = guild::kernels::cpu::expert_layout();
         // the pre-v4 reader's rules, applied to the same text
         std::ifstream in(d.path / "native_experts.txt");
@@ -75,13 +80,15 @@ void real_packs(const fs::path& data) {
         bool same = L.native && L.n_layers == 48 && L.gguf_off.size() == 3 * 48;
         uint64_t max_blob = 0;
         while (std::getline(in, line)) {
-            if (line.empty()) continue;
+            if (line.empty())
+                continue;
             if (line[0] == '#') {
-                if (line.find("(n_expert ") == std::string::npos) continue;
+                if (line.find("(n_expert ") == std::string::npos)
+                    continue;
                 std::istringstream h(line.substr(line.find("(n_expert ") + 10));
                 char comma = 0;
                 std::string word;
-                h >> hdr_n >> comma >> word >> hdr_total;   // "(n_expert N, total T; ..."
+                h >> hdr_n >> comma >> word >> hdr_total; // "(n_expert N, total T; ..."
                 continue;
             }
             std::istringstream ss(line);
@@ -97,7 +104,8 @@ void real_packs(const fs::path& data) {
                 const std::string got = L.gguf_file.empty() ? std::string() : L.gguf_file[(size_t) (3 * l + r)];
                 same = same && got == file;
             }
-            if (blob > max_blob) max_blob = blob;
+            if (blob > max_blob)
+                max_blob = blob;
         }
         same = same && L.n_expert == hdr_n && (long long) L.total == hdr_total && L.max_blob == max_blob;
         check(same, std::string(pack) + ": every field as the pre-v4 reader, totals as the header (v" +
@@ -109,7 +117,8 @@ void real_packs(const fs::path& data) {
 std::string manifest(int version, const std::string& col1, int64_t blob, int n_expert = 2) {
     std::string s = "# guild native experts v" + std::to_string(version) +
                     ": layer gu_type d_type offset blob_bytes gate_off up_off down_off [shard | gate,up,down] "
-                    "(n_expert " + std::to_string(n_expert) + ", total " + std::to_string(2 * blob * n_expert) + ")\n";
+                    "(n_expert " +
+                    std::to_string(n_expert) + ", total " + std::to_string(2 * blob * n_expert) + ")\n";
     s += "0 12 7 0 " + std::to_string(blob) + " 100 200 300\n";
     s += "1 12 7 " + std::to_string(blob * n_expert) + " " + std::to_string(blob) + " 400 500 600" +
          (col1.empty() ? "" : " " + col1) + "\n";
@@ -174,24 +183,25 @@ void arena() {
     const uint64_t total = (f0.bytes + f1.bytes) * NE;
     auto text = [&](const std::string& down1, const std::string& col1) {
         return "# guild native experts v4: layer gu_type d_type offset blob_bytes gate_off up_off down_off "
-               "[shard | gate,up,down] (n_expert 2, total " + std::to_string(total) + ")\n" +
-               "0 12 7 0 " + std::to_string(f0.bytes) + " " + at(wa, 0) + " " + at(wa, 1) + " " + at(wa, 2) + "\n" +
-               "1 13 8 " + std::to_string(f0.bytes * NE) + " " + std::to_string(f1.bytes) + " " + at(wb, 0) + " " +
-               at(wb, 1) + " " + down1 + " " + col1 + "\n";
+               "[shard | gate,up,down] (n_expert 2, total " +
+               std::to_string(total) + ")\n" + "0 12 7 0 " + std::to_string(f0.bytes) + " " + at(wa, 0) + " " +
+               at(wa, 1) + " " + at(wa, 2) + "\n" + "1 13 8 " + std::to_string(f0.bytes * NE) + " " +
+               std::to_string(f1.bytes) + " " + at(wb, 0) + " " + at(wb, 1) + " " + down1 + " " + col1 + "\n";
     };
     const fs::path pack = d.path / "pack";
     fs::create_directories(pack);
     write_text(pack / "native_experts.txt", text(at(wa, 3), B.filename().string() + "," + B.filename().string() + ","));
     bool ok = load(pack, 2, 512, err);
     check(ok, "the v4 manifest of the split layer loads" + (ok ? "" : ": " + err));
-    if (!ok) return;
+    if (!ok)
+        return;
     const ExpertLayout& L = guild::kernels::cpu::expert_layout();
     ok = guild::core::check_experts_gguf(A.string(), L, err);
     check(ok, "check_experts_gguf: every span is its tensor" + (ok ? "" : ": " + err));
     std::vector<uint8_t> dst((size_t) L.total, 0xEE);
     const guild::core::LoadStats st = guild::core::load_experts_gguf(A.string(), dst.data(), L, 3);
-    check(st.ok && st.bytes == L.total && L.total == total, "load_experts_gguf reads the whole arena (" +
-                                                                 std::to_string(L.total) + " B)");
+    check(st.ok && st.bytes == L.total && L.total == total,
+          "load_experts_gguf reads the whole arena (" + std::to_string(L.total) + " B)");
     // every byte: expert e's slice of role r comes from byte e * per[r] of that role's tensor
     bool exact = true;
     for (int64_t l = 0; l < 2 && exact; ++l) {
@@ -203,12 +213,15 @@ void arena() {
             for (int r = 0; r < 3 && exact; ++r) {
                 const uint8_t* got = dst.data() + L.blob_offset(l, e) + off[r];
                 for (uint64_t j = 0; j < per[r]; ++j)
-                    if (got[j] != fixture::pattern(seed[l][r], (uint64_t) e * per[r] + j)) { exact = false; break; }
+                    if (got[j] != fixture::pattern(seed[l][r], (uint64_t) e * per[r] + j)) {
+                        exact = false;
+                        break;
+                    }
             }
     }
     check(exact, "every blob is [gate | up | down] of its expert, layer 1 from both files");
 
-    {   // CS-T: the same blobs from FileExpertSource reading the shards in place (no experts.bin in the pack)
+    { // CS-T: the same blobs from FileExpertSource reading the shards in place (no experts.bin in the pack)
         guild::core::FileExpertSource fs;
         fs.set_gguf(A.string());
         std::string e1;
@@ -227,7 +240,8 @@ void arena() {
                              std::memcmp(buf.data(), dst.data() + L.blob_offset(l, e), n) == 0;
                     transient = transient && fs.transient(l, e);
                 }
-            check(same && copies && transient, "blob() and copy_blob() equal the loaded arena byte for byte (transient)");
+            check(same && copies && transient,
+                  "blob() and copy_blob() equal the loaded arena byte for byte (transient)");
             // a blob asked again in the same layer is the same buffer; its bytes hold through two more layers
             fs.begin_layer(0, nullptr, 0);
             const uint8_t* p = fs.blob(0, 1);
@@ -239,13 +253,14 @@ void arena() {
             (void) fs.blob(0, 0);
             check(p == q && std::memcmp(p, dst.data() + L.blob_offset(0, 1), (size_t) L.blob_bytes(0)) == 0,
                   "an assembled blob stays put while it is in use");
-            check(fs.file_read_bytes() > 0, "the file tier counts its bytes (" + std::to_string(fs.file_read_bytes()) + ")");
+            check(fs.file_read_bytes() > 0,
+                  "the file tier counts its bytes (" + std::to_string(fs.file_read_bytes()) + ")");
             // prefetch: a layer's experts fetched together on several threads, then the same bytes from blob()
             bool pre = true;
             for (int round = 0; round < 3; ++round)
                 for (int64_t l = 0; l < 2; ++l) {
                     fs.begin_layer(l, nullptr, 0);
-                    fs.begin_layer(l == 0 ? 1 : 0, nullptr, 0);   // age the buffers so the prefetch refills them
+                    fs.begin_layer(l == 0 ? 1 : 0, nullptr, 0); // age the buffers so the prefetch refills them
                     fs.begin_layer(l, nullptr, 0);
                     const int64_t both[2] = {1, 0};
                     fs.set_fetch_threads(2);
@@ -279,8 +294,8 @@ void arena() {
 
     auto refused = [&](const std::string& what, const std::string& needle) {
         std::string e2;
-        const bool bad = load(pack, 2, 512, e2) && !guild::core::check_experts_gguf(A.string(),
-                                                                                    guild::kernels::cpu::expert_layout(), e2);
+        const bool bad = load(pack, 2, 512, e2) &&
+                         !guild::core::check_experts_gguf(A.string(), guild::kernels::cpu::expert_layout(), e2);
         check(bad && e2.find(needle) != std::string::npos, what + " (\"..." + needle + "...\")");
     };
     const std::string both = B.filename().string() + "," + B.filename().string() + ",";
@@ -300,9 +315,10 @@ void arena() {
     // a type and a shape the pack does not say: Q3_K and IQ3_S are both 110 B per 256, so only the type differs
     TempDir d2;
     const fs::path C = d2.path / "C.gguf";
-    const auto wc = fixture::write(C, {}, {{"blk.0.ffn_gate_exps.weight", {H, FF, NE}, IQ3_S, 31},
-                                           {"blk.0.ffn_up_exps.weight", {H, FF, NE}, Q3_K, 32},
-                                           {"blk.0.ffn_down_exps.weight", {FF, H, NE + 1}, Q5_1, 33}});
+    const auto wc = fixture::write(C, {},
+                                   {{"blk.0.ffn_gate_exps.weight", {H, FF, NE}, IQ3_S, 31},
+                                    {"blk.0.ffn_up_exps.weight", {H, FF, NE}, Q3_K, 32},
+                                    {"blk.0.ffn_down_exps.weight", {FF, H, NE + 1}, Q5_1, 33}});
     guild::kernels::cpu::NativeFmt f2;
     if (!guild::kernels::cpu::native_fmt(Q3_K, Q5_1, H, FF, f2, err)) {
         check(false, "Q3_K/Q5_1 native format: " + err);
@@ -312,26 +328,31 @@ void arena() {
     write_text(d2.path / "pack" / "native_experts.txt",
                "# guild native experts v3: (n_expert 2, total " + std::to_string(f2.bytes * NE) + ")\n0 11 7 0 " +
                    std::to_string(f2.bytes) + " " + std::to_string(wc.data_start + wc.offsets[0]) + " " +
-                   std::to_string(wc.data_start + wc.offsets[1]) + " " + std::to_string(wc.data_start + wc.offsets[2]) + "\n");
-    ok = load(d2.path / "pack", 1, 512, err) && !guild::core::check_experts_gguf(C.string(),
-                                                                                  guild::kernels::cpu::expert_layout(), err);
+                   std::to_string(wc.data_start + wc.offsets[1]) + " " + std::to_string(wc.data_start + wc.offsets[2]) +
+                   "\n");
+    ok = load(d2.path / "pack", 1, 512, err) &&
+         !guild::core::check_experts_gguf(C.string(), guild::kernels::cpu::expert_layout(), err);
     check(ok && err.find("is IQ3_S") != std::string::npos, "a gate of another type than the pack's is refused");
     // the same bytes with the pack's types, but a down tensor of three experts where the pack says two
-    fixture::write(C, {}, {{"blk.0.ffn_gate_exps.weight", {H, FF, NE}, Q3_K, 31},
-                           {"blk.0.ffn_up_exps.weight", {H, FF, NE}, Q3_K, 32},
-                           {"blk.0.ffn_down_exps.weight", {FF, H, NE + 1}, Q5_1, 33}});
-    ok = load(d2.path / "pack", 1, 512, err) && !guild::core::check_experts_gguf(C.string(),
-                                                                                  guild::kernels::cpu::expert_layout(), err);
+    fixture::write(C, {},
+                   {{"blk.0.ffn_gate_exps.weight", {H, FF, NE}, Q3_K, 31},
+                    {"blk.0.ffn_up_exps.weight", {H, FF, NE}, Q3_K, 32},
+                    {"blk.0.ffn_down_exps.weight", {FF, H, NE + 1}, Q5_1, 33}});
+    ok = load(d2.path / "pack", 1, 512, err) &&
+         !guild::core::check_experts_gguf(C.string(), guild::kernels::cpu::expert_layout(), err);
     check(ok && err.find("is not [640, 2560, 2]") != std::string::npos, "a down tensor of another shape is refused");
 }
-}  // namespace
+} // namespace
 
 int main(int argc, char** argv) {
     // `expert_layout_test --real PACK_DIR NATIVE_SHARD`: a real pack's native_experts.txt against its model's files
     // (headers only - check_experts_gguf reads no expert byte)
     if (argc == 4 && std::string(argv[1]) == "--real") {
         std::string err;
-        if (!load(argv[2], 48, 512, err)) { std::printf("layout refused: %s\n", err.c_str()); return 1; }
+        if (!load(argv[2], 48, 512, err)) {
+            std::printf("layout refused: %s\n", err.c_str());
+            return 1;
+        }
         const ExpertLayout& L = guild::kernels::cpu::expert_layout();
         const bool ok = guild::core::check_experts_gguf(argv[3], L, err);
         size_t split = 0;

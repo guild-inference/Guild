@@ -24,13 +24,13 @@ constexpr int kTypeIq3Xxs = 18;
 constexpr int kTypeIq4Xs = 23;
 constexpr int kReplayCount = 3;
 
-#define CHECK(call)                                                                                                  \
-    do {                                                                                                             \
-        const hipError_t error = (call);                                                                             \
-        if (error != hipSuccess) {                                                                                   \
-            std::fprintf(stderr, "%s: %s\n", #call, hipGetErrorString(error));                                    \
-            return 2;                                                                                                \
-        }                                                                                                            \
+#define CHECK(call)                                                                                                    \
+    do {                                                                                                               \
+        const hipError_t error = (call);                                                                               \
+        if (error != hipSuccess) {                                                                                     \
+            std::fprintf(stderr, "%s: %s\n", #call, hipGetErrorString(error));                                         \
+            return 2;                                                                                                  \
+        }                                                                                                              \
     } while (0)
 
 struct Q8Reference {
@@ -42,7 +42,8 @@ Q8Reference quantize_q8_1_reference(const std::vector<float>& x) {
     result.dequantized.resize(x.size());
     for (size_t offset = 0; offset < x.size(); offset += 32) {
         float amax = 0.0f;
-        for (int i = 0; i < 32; ++i) amax = std::fmax(amax, std::fabs(x[offset + i]));
+        for (int i = 0; i < 32; ++i)
+            amax = std::fmax(amax, std::fabs(x[offset + i]));
         if (amax == 0.0f) {
             std::fill(result.dequantized.begin() + offset, result.dequantized.begin() + offset + 32, 0.0f);
             continue;
@@ -65,9 +66,8 @@ struct Parity {
     bool finite = true;
 };
 
-Parity compare(const uint8_t* weights, size_t row_bytes, const ggml_type_traits* traits,
-               const std::vector<float>& x, const std::vector<float>& x_q8,
-               const std::vector<float>& actual) {
+Parity compare(const uint8_t* weights, size_t row_bytes, const ggml_type_traits* traits, const std::vector<float>& x,
+               const std::vector<float>& x_q8, const std::vector<float>& actual) {
     std::vector<float> row(kNIn);
     double q8_error = 0.0, q8_magnitude = 0.0;
     double f32_error = 0.0, f32_magnitude = 0.0;
@@ -83,14 +83,15 @@ Parity compare(const uint8_t* weights, size_t row_bytes, const ggml_type_traits*
             expected_f32 += term_f32;
         }
         const double got = actual[r];
-        if (!std::isfinite(got) || !std::isfinite(expected_q8) || !std::isfinite(expected_f32)) result.finite = false;
+        if (!std::isfinite(got) || !std::isfinite(expected_q8) || !std::isfinite(expected_f32))
+            result.finite = false;
         q8_error += std::fabs(got - expected_q8);
         q8_magnitude += std::fabs(expected_q8);
         f32_error += std::fabs(got - expected_f32);
         f32_magnitude += std::fabs(expected_f32);
         result.max_abs_q8 = std::fmax(result.max_abs_q8, std::fabs(got - expected_q8));
-        result.worst_terms_q8 = std::fmax(result.worst_terms_q8,
-                                         std::fabs(got - expected_q8) / std::fmax(terms_q8, 1e-30));
+        result.worst_terms_q8 =
+            std::fmax(result.worst_terms_q8, std::fabs(got - expected_q8) / std::fmax(terms_q8, 1e-30));
     }
     result.rel_l1_q8 = q8_error / std::fmax(q8_magnitude, 1e-30);
     result.rel_l1_f32 = f32_error / std::fmax(f32_magnitude, 1e-30);
@@ -106,7 +107,7 @@ std::vector<float> make_input(uint32_t seed) {
     return x;
 }
 
-}  // namespace
+} // namespace
 
 int main(int argc, char** argv) {
     if (argc != 2 && argc != 3) {
@@ -123,8 +124,8 @@ int main(int argc, char** argv) {
             return 1;
         }
         if (argc == 3 && std::atoi(argv[2]) != static_cast<int>(tensor->type)) {
-            std::fprintf(stderr, "requested GGML type %s but blk.1.ple_key.weight is type %u (%s)\n",
-                         argv[2], tensor->type, tensor->type_name());
+            std::fprintf(stderr, "requested GGML type %s but blk.1.ple_key.weight is type %u (%s)\n", argv[2],
+                         tensor->type, tensor->type_name());
             return 1;
         }
         const auto* traits = ggml_get_type_traits(static_cast<ggml_type>(tensor->type));
@@ -133,13 +134,14 @@ int main(int argc, char** argv) {
             return 1;
         }
         const uint8_t* host_weights = gguf.tensor_data(*tensor);
-        const size_t weight_bytes = guild::kernels::native_mmvq_weight_bytes(static_cast<int>(tensor->type), kNIn, kNOut);
+        const size_t weight_bytes =
+            guild::kernels::native_mmvq_weight_bytes(static_cast<int>(tensor->type), kNIn, kNOut);
         const size_t row_bytes = weight_bytes / kNOut;
         const size_t expected_bytes_per_block = tensor->type == kTypeIq3Xxs ? 98 : 136;
         if (weight_bytes != static_cast<size_t>(tensor->elements()) / 256 * expected_bytes_per_block ||
             row_bytes != static_cast<size_t>(kNIn / 256) * expected_bytes_per_block) {
-            std::fprintf(stderr, "unexpected %s storage geometry: %zu bytes, row %zu\n",
-                         tensor->type_name(), weight_bytes, row_bytes);
+            std::fprintf(stderr, "unexpected %s storage geometry: %zu bytes, row %zu\n", tensor->type_name(),
+                         weight_bytes, row_bytes);
             return 1;
         }
 
@@ -157,8 +159,8 @@ int main(int argc, char** argv) {
         CHECK(hipStreamCreateWithFlags(&stream, hipStreamNonBlocking));
         CHECK(hipStreamBeginCapture(stream, hipStreamCaptureModeThreadLocal));
         guild::kernels::native_quantize_q8_1(device_x, device_q8_1, kNIn, 1, static_cast<void*>(stream));
-        guild::kernels::native_mmvq(static_cast<int>(tensor->type), device_weights, device_q8_1, device_y,
-                                     kNIn, kNOut, 1, static_cast<void*>(stream));
+        guild::kernels::native_mmvq(static_cast<int>(tensor->type), device_weights, device_q8_1, device_y, kNIn, kNOut,
+                                    1, static_cast<void*>(stream));
         hipGraph_t graph = nullptr;
         CHECK(hipStreamEndCapture(stream, &graph));
         hipGraphExec_t graph_exec = nullptr;
@@ -171,12 +173,13 @@ int main(int argc, char** argv) {
             const Q8Reference q8 = quantize_q8_1_reference(x);
             CHECK(hipMemcpyAsync(device_x, x.data(), x.size() * sizeof(float), hipMemcpyHostToDevice, stream));
             CHECK(hipGraphLaunch(graph_exec, stream));
-            CHECK(hipMemcpyAsync(actual.data(), device_y, actual.size() * sizeof(float), hipMemcpyDeviceToHost, stream));
+            CHECK(
+                hipMemcpyAsync(actual.data(), device_y, actual.size() * sizeof(float), hipMemcpyDeviceToHost, stream));
             CHECK(hipStreamSynchronize(stream));
 
             const Parity parity = compare(host_weights, row_bytes, traits, x, q8.dequantized, actual);
-            const bool pass = parity.finite && parity.rel_l1_q8 <= 5e-5 && parity.worst_terms_q8 <= 1e-4 &&
-                              parity.rel_l1_f32 <= 3e-2;
+            const bool pass =
+                parity.finite && parity.rel_l1_q8 <= 5e-5 && parity.worst_terms_q8 <= 1e-4 && parity.rel_l1_f32 <= 3e-2;
             std::printf("%s PLE graph replay %d/%d: q8-ref rel-L1 %.3e, worst terms %.3e, "
                         "original-f32 rel-L1 %.3e, max q8 abs %.3e %s\n",
                         tensor->type_name(), replay + 1, kReplayCount, parity.rel_l1_q8, parity.worst_terms_q8,
@@ -191,7 +194,8 @@ int main(int argc, char** argv) {
         CHECK(hipFree(device_y));
         CHECK(hipFree(device_x));
         CHECK(hipFree(device_weights));
-        if (!ok) return 1;
+        if (!ok)
+            return 1;
         std::printf("PLE %s native MMVQ parity OK: real GGUF matrix, CPU dequant reference, %d graph replays\n",
                     tensor->type_name(), kReplayCount);
         return 0;

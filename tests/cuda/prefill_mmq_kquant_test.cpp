@@ -23,20 +23,26 @@ namespace {
 namespace mmq = guild::prefill::mmq;
 
 void ck(cudaError_t e, const char* what) {
-    if (e != cudaSuccess) throw std::runtime_error(std::string(what) + ": " + cudaGetErrorString(e));
+    if (e != cudaSuccess)
+        throw std::runtime_error(std::string(what) + ": " + cudaGetErrorString(e));
 }
 
 struct Dev {
     void* p = nullptr;
-    explicit Dev(size_t n) { ck(cudaMalloc(&p, n), "cudaMalloc"); }
-    ~Dev() { cudaFree(p); }
+    explicit Dev(size_t n) {
+        ck(cudaMalloc(&p, n), "cudaMalloc");
+    }
+    ~Dev() {
+        cudaFree(p);
+    }
     Dev(const Dev&) = delete;
     Dev& operator=(const Dev&) = delete;
 };
 
 std::vector<uint8_t> make_matrix(ggml_type t, int64_t rows, int64_t cols, int expert, int trial) {
     const auto* tr = ggml_get_type_traits(t);
-    if (tr == nullptr || tr->from_float_ref == nullptr) throw std::runtime_error("no reference quantizer");
+    if (tr == nullptr || tr->from_float_ref == nullptr)
+        throw std::runtime_error("no reference quantizer");
     const size_t rb = ggml_row_size(t, cols);
     std::vector<uint8_t> out((size_t) rows * rb);
     std::vector<float> row((size_t) cols);
@@ -59,27 +65,31 @@ std::vector<float> make_x(int rows, int64_t cols, int trial) {
                 0.45f * std::sin(0.009f * (float) (k + 1) + 0.23f * (float) r + 0.07f * (float) trial) +
                 0.17f * std::cos(0.021f * (float) (k + 3) - 0.19f * (float) r) +
                 0.002f * (float) (((k * 7 + r * 13 + trial * 5) % 19) - 9);
-    std::fill(x.end() - cols, x.end(), 0.0f);   // an all-zero row: exactly zero out
+    std::fill(x.end() - cols, x.end(), 0.0f); // an all-zero row: exactly zero out
     return x;
 }
 
 std::vector<int32_t> perm(int n, int shift, bool reverse) {
     std::vector<int32_t> p((size_t) n);
-    for (int i = 0; i < n; ++i) p[(size_t) i] = (int32_t) (((reverse ? n - 1 - i : i) + shift) % n);
+    for (int i = 0; i < n; ++i)
+        p[(size_t) i] = (int32_t) (((reverse ? n - 1 - i : i) + shift) % n);
     return p;
 }
 
 // one grouped product: experts side by side at one stride (a zeroed tail after them, as prefill.cpp stages them)
 void product(mmq::Context& ctx, cudaStream_t s, const char* name, ggml_type t, int64_t out_rows, int64_t cols,
              const std::vector<int>& counts, int trial) {
-    if (!mmq::supported((int) t)) throw std::runtime_error(std::string(name) + ": not covered by this build");
+    if (!mmq::supported((int) t))
+        throw std::runtime_error(std::string(name) + ": not covered by this build");
     const int n = (int) counts.size(), rows = std::accumulate(counts.begin(), counts.end(), 0);
     std::vector<int32_t> bounds((size_t) n + 1, 0);
-    for (int e = 0; e < n; ++e) bounds[(size_t) e + 1] = bounds[(size_t) e] + counts[(size_t) e];
+    for (int e = 0; e < n; ++e)
+        bounds[(size_t) e + 1] = bounds[(size_t) e] + counts[(size_t) e];
     const auto src = perm(rows, trial + 1, false), dst = perm(rows, trial + 2, true);
     const std::vector<float> x = make_x(rows, cols, trial);
     const size_t eb = mmq::matrix_bytes((int) t, out_rows, cols);
-    if (eb != (size_t) out_rows * ggml_row_size(t, cols)) throw std::runtime_error(std::string(name) + ": matrix_bytes");
+    if (eb != (size_t) out_rows * ggml_row_size(t, cols))
+        throw std::runtime_error(std::string(name) + ": matrix_bytes");
     std::vector<std::vector<uint8_t>> ws;
     std::vector<uint8_t> w((size_t) n * eb + 4096, 0);
     for (int e = 0; e < n; ++e) {
@@ -96,9 +106,19 @@ void product(mmq::Context& ctx, cudaStream_t s, const char* name, ggml_type t, i
     ck(cudaMemset(dy.p, 0xff, (size_t) rows * (size_t) out_rows * 4), "sentinel");
     mmq::quantize((const float*) dx.p, (const int32_t*) dsrc.p, dxq.p, (int) t, cols, cols, rows, s);
     mmq::Product p;
-    p.w = dw.p; p.type = (int) t; p.w_rows = out_rows; p.w_cols = cols; p.expert_bytes = eb; p.n = n;
-    p.xq = dxq.p; p.bounds = (const int32_t*) db.p; p.ids = (const int32_t*) ddst.p; p.total_rows = rows;
-    p.max_rows = *std::max_element(counts.begin(), counts.end()); p.dst = (float*) dy.p; p.ld_dst = out_rows;
+    p.w = dw.p;
+    p.type = (int) t;
+    p.w_rows = out_rows;
+    p.w_cols = cols;
+    p.expert_bytes = eb;
+    p.n = n;
+    p.xq = dxq.p;
+    p.bounds = (const int32_t*) db.p;
+    p.ids = (const int32_t*) ddst.p;
+    p.total_rows = rows;
+    p.max_rows = *std::max_element(counts.begin(), counts.end());
+    p.dst = (float*) dy.p;
+    p.ld_dst = out_rows;
     ctx.run(p, s);
     ck(cudaGetLastError(), "launch");
     ck(cudaStreamSynchronize(s), "sync");
@@ -116,33 +136,42 @@ void product(mmq::Context& ctx, cudaStream_t s, const char* name, ggml_type t, i
             for (int64_t o = 0; o < out_rows; ++o) {
                 double acc = 0;
                 const float* wr = wd.data() + (size_t) o * (size_t) cols;
-                for (int64_t k = 0; k < cols; ++k) acc += (double) wr[k] * xr[k];
+                for (int64_t k = 0; k < cols; ++k)
+                    acc += (double) wr[k] * xr[k];
                 ref[(size_t) dst[(size_t) r] * (size_t) out_rows + (size_t) o] = (float) acc;
             }
         }
     }
     double err2 = 0, ref2 = 0, max_abs = 0, zero_max = 0;
     for (size_t i = 0; i < got.size(); ++i) {
-        if (!std::isfinite(got[i])) throw std::runtime_error(std::string(name) + ": unwritten or non-finite output");
+        if (!std::isfinite(got[i]))
+            throw std::runtime_error(std::string(name) + ": unwritten or non-finite output");
         const double d = (double) got[i] - ref[i];
-        err2 += d * d; ref2 += (double) ref[i] * ref[i]; max_abs = std::max(max_abs, std::fabs(d));
+        err2 += d * d;
+        ref2 += (double) ref[i] * ref[i];
+        max_abs = std::max(max_abs, std::fabs(d));
     }
     for (int r = 0; r < rows; ++r)
-        if (src[(size_t) r] == rows - 1)   // the zero row
+        if (src[(size_t) r] == rows - 1) // the zero row
             for (int64_t o = 0; o < out_rows; ++o)
-                zero_max = std::max(zero_max, (double) std::fabs(got[(size_t) dst[(size_t) r] * (size_t) out_rows + (size_t) o]));
+                zero_max = std::max(zero_max,
+                                    (double) std::fabs(got[(size_t) dst[(size_t) r] * (size_t) out_rows + (size_t) o]));
     const double rms = std::sqrt(ref2 / (double) ref.size()), rel = std::sqrt(err2 / (double) ref.size()) / rms;
-    std::printf("%-22s rows %2d experts %d  ref_rms %.4g  rel_l2 %.5f  max/rms %.4f  zero row %.3g\n", name, rows, n, rms,
-                rel, max_abs / rms, zero_max);
+    std::printf("%-22s rows %2d experts %d  ref_rms %.4g  rel_l2 %.5f  max/rms %.4f  zero row %.3g\n", name, rows, n,
+                rms, rel, max_abs / rms, zero_max);
     if (rel > 0.04 || max_abs / rms > 0.35 || zero_max > std::max(1e-5, 1e-4 * rms))
         throw std::runtime_error(std::string(name) + ": outside the screen");
 }
-}  // namespace
+} // namespace
 
 int main() {
     try {
-        if (!mmq::built()) { std::printf("no MMQ in this build\n"); return 1; }
-        if (mmq::supported(GGML_TYPE_Q6_K)) throw std::runtime_error("Q6_K should not be covered");
+        if (!mmq::built()) {
+            std::printf("no MMQ in this build\n");
+            return 1;
+        }
+        if (mmq::supported(GGML_TYPE_Q6_K))
+            throw std::runtime_error("Q6_K should not be covered");
         cudaStream_t s = nullptr;
         ck(cudaStreamCreateWithFlags(&s, cudaStreamNonBlocking), "stream");
         {

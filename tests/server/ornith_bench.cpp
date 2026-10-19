@@ -41,14 +41,21 @@ int main(int argc, char** argv) {
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
-        if (arg == "--context" && i + 1 < argc) target_context = std::stoll(argv[++i]);
-        else if (arg == "--prompt-len" && i + 1 < argc) target_prompt_len = std::stoll(argv[++i]);
-        else if (arg == "--gen-tokens" && i + 1 < argc) target_gen_tokens = std::stoll(argv[++i]);
-        else if (arg == "--runs" && i + 1 < argc) target_runs = std::stoi(argv[++i]);
-        else if (arg == "--csv" && i + 1 < argc) out_csv = argv[++i];
-        else if (arg == "--json" && i + 1 < argc) out_json = argv[++i];
+        if (arg == "--context" && i + 1 < argc)
+            target_context = std::stoll(argv[++i]);
+        else if (arg == "--prompt-len" && i + 1 < argc)
+            target_prompt_len = std::stoll(argv[++i]);
+        else if (arg == "--gen-tokens" && i + 1 < argc)
+            target_gen_tokens = std::stoll(argv[++i]);
+        else if (arg == "--runs" && i + 1 < argc)
+            target_runs = std::stoi(argv[++i]);
+        else if (arg == "--csv" && i + 1 < argc)
+            out_csv = argv[++i];
+        else if (arg == "--json" && i + 1 < argc)
+            out_json = argv[++i];
         else if (arg == "-h" || arg == "--help") {
-            std::cout << "Usage: ornith_bench [--context N] [--prompt-len N] [--gen-tokens N] [--runs N] [--csv PATH] [--json PATH]\n";
+            std::cout << "Usage: ornith_bench [--context N] [--prompt-len N] [--gen-tokens N] [--runs N] [--csv PATH] "
+                         "[--json PATH]\n";
             return 0;
         }
     }
@@ -83,8 +90,10 @@ int main(int argc, char** argv) {
 
     std::string native_model;
     const auto* prim = manifest.find_file_by_role("primary");
-    if (!prim) prim = manifest.find_file_by_role("shard");
-    if (prim) native_model = prim->local_path;
+    if (!prim)
+        prim = manifest.find_file_by_role("shard");
+    if (prim)
+        native_model = prim->local_path;
 
     std::string pack_dir = manifest.metadata.at("pack_dir");
     std::string tokenizer_dir = pack_dir + "/tokenizer";
@@ -108,11 +117,10 @@ int main(int argc, char** argv) {
 
     std::cout << "Model Loaded in " << std::fixed << std::setprecision(2) << load_s << " s\n";
     std::cout << "Initial Memory State:\n";
-    std::cout << "  VRAM Used:        " << std::fixed << std::setprecision(2)
-              << (double)used_vram / (1024.0 * 1024.0) << " MiB / "
-              << (double)total_vram / (1024.0 * 1024.0) << " MiB\n";
+    std::cout << "  VRAM Used:        " << std::fixed << std::setprecision(2) << (double) used_vram / (1024.0 * 1024.0)
+              << " MiB / " << (double) total_vram / (1024.0 * 1024.0) << " MiB\n";
     std::cout << "  Host RAM (RSS):   " << std::fixed << std::setprecision(2)
-              << (double)host_ram / (1024.0 * 1024.0 * 1024.0) << " GiB\n\n";
+              << (double) host_ram / (1024.0 * 1024.0 * 1024.0) << " GiB\n\n";
 
     // Build prompt tokens
     std::vector<int32_t> prompt_tokens;
@@ -169,13 +177,16 @@ int main(int argc, char** argv) {
 
         bool first_tok = true;
         auto t_first = t_start;
-        bool ok = session->generate(req, [&](const guild::runtime::TokenEvent& ev) {
-            if (first_tok) {
-                t_first = std::chrono::steady_clock::now();
-                first_tok = false;
-            }
-            return true;
-        }, telem, gen_err);
+        bool ok = session->generate(
+            req,
+            [&](const guild::runtime::TokenEvent& ev) {
+                if (first_tok) {
+                    t_first = std::chrono::steady_clock::now();
+                    first_tok = false;
+                }
+                return true;
+            },
+            telem, gen_err);
 
         auto t_end = std::chrono::steady_clock::now();
         CHECK(ok);
@@ -191,20 +202,21 @@ int main(int argc, char** argv) {
         cudaMemGetInfo(&free_vram, &total_vram);
         size_t cur_vram = total_vram - free_vram;
         size_t cur_ram = get_host_ram_used_bytes();
-        if (cur_vram > peak_vram) peak_vram = cur_vram;
-        if (cur_ram > peak_ram) peak_ram = cur_ram;
+        if (cur_vram > peak_vram)
+            peak_vram = cur_vram;
+        if (cur_ram > peak_ram)
+            peak_ram = cur_ram;
 
-        std::cout << "  Prompt: " << telem.prompt_tokens << " tokens, "
-                  << std::fixed << std::setprecision(2) << telem.prompt_ms << " ms ("
-                  << telem.prompt_tok_s << " tok/s)\n";
+        std::cout << "  Prompt: " << telem.prompt_tokens << " tokens, " << std::fixed << std::setprecision(2)
+                  << telem.prompt_ms << " ms (" << telem.prompt_tok_s << " tok/s)\n";
         std::cout << "  TTFT:   " << std::fixed << std::setprecision(2) << ttft_ms << " ms\n";
-        std::cout << "  Decode: " << telem.completion_tokens << " tokens, "
-                  << std::fixed << std::setprecision(2) << telem.decode_ms << " ms ("
-                  << telem.decode_tok_s << " tok/s)\n";
+        std::cout << "  Decode: " << telem.completion_tokens << " tokens, " << std::fixed << std::setprecision(2)
+                  << telem.decode_ms << " ms (" << telem.decode_tok_s << " tok/s)\n";
     }
 
     auto median_of = [](std::vector<double> v) -> double {
-        if (v.empty()) return 0.0;
+        if (v.empty())
+            return 0.0;
         std::sort(v.begin(), v.end());
         return v[v.size() / 2];
     };
@@ -232,10 +244,14 @@ int main(int argc, char** argv) {
     std::cout << "Median TTFT:           " << std::fixed << std::setprecision(2) << med_ttft_ms << " ms\n";
     std::cout << "Median Decode Tok/s:   " << std::fixed << std::setprecision(2) << med_decode_tok_s << " tok/s\n";
     std::cout << "Est. RAM Bandwidth:    " << std::fixed << std::setprecision(2) << med_bandwidth_gb_s << " GiB/s\n";
-    std::cout << "Peak VRAM Used:        " << std::fixed << std::setprecision(2) << (double)peak_vram / (1024.0 * 1024.0) << " MiB\n";
-    std::cout << "Peak Host RAM (RSS):   " << std::fixed << std::setprecision(2) << (double)peak_ram / (1024.0 * 1024.0 * 1024.0) << " GiB\n";
-    std::cout << "KV Footprint (Host):   " << std::fixed << std::setprecision(2) << kv_host_bytes / (1024.0 * 1024.0) << " MiB\n";
-    std::cout << "KV Staging (GPU VRAM): " << std::fixed << std::setprecision(2) << kv_staging_bytes / (1024.0 * 1024.0) << " MiB\n";
+    std::cout << "Peak VRAM Used:        " << std::fixed << std::setprecision(2)
+              << (double) peak_vram / (1024.0 * 1024.0) << " MiB\n";
+    std::cout << "Peak Host RAM (RSS):   " << std::fixed << std::setprecision(2)
+              << (double) peak_ram / (1024.0 * 1024.0 * 1024.0) << " GiB\n";
+    std::cout << "KV Footprint (Host):   " << std::fixed << std::setprecision(2) << kv_host_bytes / (1024.0 * 1024.0)
+              << " MiB\n";
+    std::cout << "KV Staging (GPU VRAM): " << std::fixed << std::setprecision(2) << kv_staging_bytes / (1024.0 * 1024.0)
+              << " MiB\n";
     std::cout << "RAM Expert Hits:       " << last_telem.ram_expert_hits << "\n";
     std::cout << "File Expert Reads:     " << last_telem.file_expert_reads << "\n";
     std::cout << "GPU Expert Cache Hits: " << last_telem.gpu_cache_hits << "\n";
@@ -245,13 +261,13 @@ int main(int argc, char** argv) {
         bool write_header = !std::filesystem::exists(out_csv);
         std::ofstream csv(out_csv, std::ios::app);
         if (write_header) {
-            csv << "context,prompt_len,gen_tokens,prompt_tok_s,ttft_ms,decode_tok_s,ram_bw_gib_s,peak_vram_mib,peak_ram_gib,kv_host_mib,kv_gpu_mib\n";
+            csv << "context,prompt_len,gen_tokens,prompt_tok_s,ttft_ms,decode_tok_s,ram_bw_gib_s,peak_vram_mib,peak_"
+                   "ram_gib,kv_host_mib,kv_gpu_mib\n";
         }
         csv << target_context << "," << last_telem.prompt_tokens << "," << last_telem.completion_tokens << ","
-            << med_prompt_tok_s << "," << med_ttft_ms << "," << med_decode_tok_s << ","
-            << med_bandwidth_gb_s << "," << ((double)peak_vram / (1024.0 * 1024.0)) << ","
-            << ((double)peak_ram / (1024.0 * 1024.0 * 1024.0)) << ","
-            << (kv_host_bytes / (1024.0 * 1024.0)) << "," << (kv_staging_bytes / (1024.0 * 1024.0)) << "\n";
+            << med_prompt_tok_s << "," << med_ttft_ms << "," << med_decode_tok_s << "," << med_bandwidth_gb_s << ","
+            << ((double) peak_vram / (1024.0 * 1024.0)) << "," << ((double) peak_ram / (1024.0 * 1024.0 * 1024.0))
+            << "," << (kv_host_bytes / (1024.0 * 1024.0)) << "," << (kv_staging_bytes / (1024.0 * 1024.0)) << "\n";
     }
 
     if (!out_json.empty()) {
@@ -265,8 +281,8 @@ int main(int argc, char** argv) {
            << "  \"median_decode_tok_s\": " << med_decode_tok_s << ",\n"
            << "  \"median_ttft_ms\": " << med_ttft_ms << ",\n"
            << "  \"ram_bandwidth_gib_s\": " << med_bandwidth_gb_s << ",\n"
-           << "  \"peak_vram_mib\": " << ((double)peak_vram / (1024.0 * 1024.0)) << ",\n"
-           << "  \"peak_ram_gib\": " << ((double)peak_ram / (1024.0 * 1024.0 * 1024.0)) << ",\n"
+           << "  \"peak_vram_mib\": " << ((double) peak_vram / (1024.0 * 1024.0)) << ",\n"
+           << "  \"peak_ram_gib\": " << ((double) peak_ram / (1024.0 * 1024.0 * 1024.0)) << ",\n"
            << "  \"kv_host_mib\": " << (kv_host_bytes / (1024.0 * 1024.0)) << ",\n"
            << "  \"kv_gpu_staging_mib\": " << (kv_staging_bytes / (1024.0 * 1024.0)) << ",\n"
            << "  \"runs\": " << target_runs << "\n"

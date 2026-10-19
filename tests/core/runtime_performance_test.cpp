@@ -5,14 +5,20 @@
 class Source final : public guild::core::ExpertSource {
 public:
     bool mapped = true;
-    const uint8_t* blob(int64_t, int64_t) override { return nullptr; }
-    bool pcie_layer(int64_t) const override { return mapped; }
+    const uint8_t* blob(int64_t, int64_t) override {
+        return nullptr;
+    }
+    bool pcie_layer(int64_t) const override {
+        return mapped;
+    }
 };
 
 int main() {
     using namespace guild;
     kernels::cpu::ExpertLayout layout;
-    layout.native = true; layout.n_layers = 3; layout.n_expert = 4;
+    layout.native = true;
+    layout.n_layers = 3;
+    layout.n_expert = 4;
     layout.fmt.resize(3);
     std::string err;
     CHECK(kernels::cpu::native_fmt(8, 8, 256, 256, layout.fmt[0], err));
@@ -41,7 +47,9 @@ int main() {
     source.mapped = false;
     CHECK(runtime::calibrate_experts(layout, source, pool, -1, nullptr, performance, err));
     CHECK(performance.measured_formats == 0 && performance.pcie_numerators == std::vector<int>({0, 0, 0}));
-    CHECK(!runtime::calibrate_experts(layout, source, pool, std::numeric_limits<double>::quiet_NaN(), nullptr, performance, err));
+    CHECK(!runtime::calibrate_experts(layout, source, pool, std::numeric_limits<double>::quiet_NaN(), nullptr,
+                                      performance, err));
     CHECK(!runtime::calibrate_experts(layout, source, pool, -0.1, nullptr, performance, err));
-    std::puts("runtime_performance_test: format capabilities, variable cache bytes, limits and explicit fractions PASS");
+    std::puts(
+        "runtime_performance_test: format capabilities, variable cache bytes, limits and explicit fractions PASS");
 }

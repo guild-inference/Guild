@@ -6,13 +6,13 @@
 #include <cstdio>
 #include <limits>
 
-#define CHECK(call)                                                                                                  \
-    do {                                                                                                             \
-        const hipError_t error = (call);                                                                             \
-        if (error != hipSuccess) {                                                                                   \
-            std::fprintf(stderr, "%s: %s\n", #call, hipGetErrorString(error));                                     \
-            return 2;                                                                                                \
-        }                                                                                                            \
+#define CHECK(call)                                                                                                    \
+    do {                                                                                                               \
+        const hipError_t error = (call);                                                                               \
+        if (error != hipSuccess) {                                                                                     \
+            std::fprintf(stderr, "%s: %s\n", #call, hipGetErrorString(error));                                         \
+            return 2;                                                                                                  \
+        }                                                                                                              \
     } while (0)
 
 namespace {
@@ -20,8 +20,8 @@ namespace {
 constexpr int kLanes = 32;
 constexpr int kIntegerResults = 10;
 
-__global__ void intrinsic_probe(int* integer_results, float* float_shuffle, double* double_shuffle,
-                                unsigned* ballot, const uint32_t* dot_inputs) {
+__global__ void intrinsic_probe(int* integer_results, float* float_shuffle, double* double_shuffle, unsigned* ballot,
+                                const uint32_t* dot_inputs) {
     const int lane = static_cast<int>(threadIdx.x);
     constexpr unsigned mask = 0xffffffffu;
     const uint32_t a = 0x80ff017fu;
@@ -34,8 +34,7 @@ __global__ void intrinsic_probe(int* integer_results, float* float_shuffle, doub
     integer_results[lane * kIntegerResults + 4] = __vsubss4(0x807f0080, 0x017f0180);
     integer_results[lane * kIntegerResults + 5] = __vcmpne4(0x00ff0102, 0x01010103);
     integer_results[lane * kIntegerResults + 6] =
-        __dp4a(static_cast<int>(dot_inputs[lane * 2]), static_cast<int>(dot_inputs[lane * 2 + 1]),
-               0x7fffffff - lane);
+        __dp4a(static_cast<int>(dot_inputs[lane * 2]), static_cast<int>(dot_inputs[lane * 2 + 1]), 0x7fffffff - lane);
 
     __shared__ int exchanged[kLanes];
     int sum = 0;
@@ -71,7 +70,8 @@ constexpr int kPermCases = 1024;
 constexpr int kPermResults = 4;
 __global__ void byte_perm_probe(const uint32_t* inputs, uint32_t* results) {
     const int i = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
-    if (i >= kPermCases) return;
+    if (i >= kPermCases)
+        return;
     const uint32_t x = inputs[3 * i], y = inputs[3 * i + 1], s = inputs[3 * i + 2];
     results[kPermResults * i + 0] = __byte_perm(x, y, s);
     results[kPermResults * i + 1] = static_cast<uint32_t>(__vsub4(static_cast<int>(x), static_cast<int>(y)));
@@ -83,7 +83,8 @@ __global__ void byte_perm_probe(const uint32_t* inputs, uint32_t* results) {
 uint32_t byte_perm_reference(uint32_t x, uint32_t y, uint32_t s) {
     const uint64_t pair = (static_cast<uint64_t>(y) << 32) | x;
     uint32_t out = 0;
-    for (int i = 0; i < 4; ++i) out |= static_cast<uint32_t>((pair >> (8 * ((s >> (4 * i)) & 7u))) & 0xffu) << (8 * i);
+    for (int i = 0; i < 4; ++i)
+        out |= static_cast<uint32_t>((pair >> (8 * ((s >> (4 * i)) & 7u))) & 0xffu) << (8 * i);
     return out;
 }
 
@@ -94,7 +95,8 @@ int signed_byte(uint32_t word, int lane) {
 
 int dp4a_reference(uint32_t a, uint32_t b, int c) {
     int64_t sum = c;
-    for (int lane = 0; lane < 4; ++lane) sum += signed_byte(a, lane) * signed_byte(b, lane);
+    for (int lane = 0; lane < 4; ++lane)
+        sum += signed_byte(a, lane) * signed_byte(b, lane);
     return static_cast<int32_t>(static_cast<uint32_t>(sum));
 }
 
@@ -109,8 +111,10 @@ uint32_t signed_saturating_sub_reference(uint32_t a, uint32_t b) {
     uint32_t out = 0;
     for (int lane = 0; lane < 4; ++lane) {
         int value = signed_byte(a, lane) - signed_byte(b, lane);
-        if (value < -128) value = -128;
-        if (value > 127) value = 127;
+        if (value < -128)
+            value = -128;
+        if (value > 127)
+            value = 127;
         out |= (static_cast<uint32_t>(value) & 0xffu) << (lane * 8);
     }
     return out;
@@ -119,11 +123,12 @@ uint32_t signed_saturating_sub_reference(uint32_t a, uint32_t b) {
 uint32_t not_equal_reference(uint32_t a, uint32_t b) {
     uint32_t out = 0;
     for (int lane = 0; lane < 4; ++lane)
-        if (((a >> (lane * 8)) & 0xffu) != ((b >> (lane * 8)) & 0xffu)) out |= 0xffu << (lane * 8);
+        if (((a >> (lane * 8)) & 0xffu) != ((b >> (lane * 8)) & 0xffu))
+            out |= 0xffu << (lane * 8);
     return out;
 }
 
-}  // namespace
+} // namespace
 
 int main() {
     int device = 0;
@@ -153,8 +158,8 @@ int main() {
     }
     CHECK(hipMemcpy(device_dot_inputs, dot_inputs, sizeof(dot_inputs), hipMemcpyHostToDevice));
 
-    hipLaunchKernelGGL(intrinsic_probe, dim3(1), dim3(kLanes), 0, 0,
-                       device_integers, device_float_shuffle, device_double_shuffle, device_ballot, device_dot_inputs);
+    hipLaunchKernelGGL(intrinsic_probe, dim3(1), dim3(kLanes), 0, 0, device_integers, device_float_shuffle,
+                       device_double_shuffle, device_ballot, device_dot_inputs);
     CHECK(hipDeviceSynchronize());
 
     int integers[kLanes * kIntegerResults]{};
@@ -180,14 +185,14 @@ int main() {
         for (int i = 0; i < 6; ++i)
             ok = ok && static_cast<uint32_t>(integers[lane * kIntegerResults + i]) == expected_integer[i];
         ok = ok && static_cast<uint32_t>(integers[lane * kIntegerResults + 6]) ==
-                     static_cast<uint32_t>(dp4a_reference(dot_inputs[lane * 2], dot_inputs[lane * 2 + 1],
-                                                          0x7fffffff - lane));
-        ok = ok && integers[lane * kIntegerResults + 7] ==
-                     64 * static_cast<int>(dot_inputs[(lane ^ 1) * 2] & 255u) + 2016;
+                       static_cast<uint32_t>(
+                           dp4a_reference(dot_inputs[lane * 2], dot_inputs[lane * 2 + 1], 0x7fffffff - lane));
+        ok = ok &&
+             integers[lane * kIntegerResults + 7] == 64 * static_cast<int>(dot_inputs[(lane ^ 1) * 2] & 255u) + 2016;
         for (int alias = 0; alias < 2; ++alias)
             ok = ok && static_cast<uint32_t>(integers[lane * kIntegerResults + 8 + alias]) ==
-                static_cast<uint32_t>(dp4a_reference(dot_inputs[lane * 2], dot_inputs[lane * 2 + 1],
-                    static_cast<int>(dot_inputs[lane * 2 + alias])));
+                           static_cast<uint32_t>(dp4a_reference(dot_inputs[lane * 2], dot_inputs[lane * 2 + 1],
+                                                                static_cast<int>(dot_inputs[lane * 2 + alias])));
         ok = ok && float_shuffle[lane * 4 + 0] == static_cast<float>(lane ^ 1);
         const int down = lane % 8 < 4 ? lane + 4 : lane;
         ok = ok && float_shuffle[lane * 4 + 1] == static_cast<float>(down);
@@ -199,7 +204,9 @@ int main() {
     uint32_t perm_inputs[kPermCases * 3]{};
     uint32_t state = 0x9e3779b9u;
     for (uint32_t& v : perm_inputs) {
-        state ^= state << 13; state ^= state >> 17; state ^= state << 5;
+        state ^= state << 13;
+        state ^= state >> 17;
+        state ^= state << 5;
         v = state;
     }
     uint32_t* device_perm_inputs = nullptr;
@@ -207,7 +214,8 @@ int main() {
     CHECK(hipMalloc(reinterpret_cast<void**>(&device_perm_inputs), sizeof(perm_inputs)));
     CHECK(hipMalloc(reinterpret_cast<void**>(&device_perm_results), kPermCases * kPermResults * sizeof(uint32_t)));
     CHECK(hipMemcpy(device_perm_inputs, perm_inputs, sizeof(perm_inputs), hipMemcpyHostToDevice));
-    hipLaunchKernelGGL(byte_perm_probe, dim3(kPermCases / 256), dim3(256), 0, 0, device_perm_inputs, device_perm_results);
+    hipLaunchKernelGGL(byte_perm_probe, dim3(kPermCases / 256), dim3(256), 0, 0, device_perm_inputs,
+                       device_perm_results);
     CHECK(hipDeviceSynchronize());
     uint32_t perm_results[kPermCases * kPermResults]{};
     CHECK(hipMemcpy(perm_results, device_perm_results, sizeof(perm_results), hipMemcpyDeviceToHost));
@@ -231,6 +239,7 @@ int main() {
         std::fprintf(stderr, "HIP intrinsic parity failed (ballot 0x%08x)\n", ballot);
         return 1;
     }
-    std::puts("HIP intrinsics parity OK: dynamic signed dot4/overflow, byte permute, packed integer boundaries, wave32 shuffles, shared-memory exchange, ballot and sleep");
+    std::puts("HIP intrinsics parity OK: dynamic signed dot4/overflow, byte permute, packed integer boundaries, wave32 "
+              "shuffles, shared-memory exchange, ballot and sleep");
     return 0;
 }

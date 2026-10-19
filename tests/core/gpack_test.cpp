@@ -32,7 +32,8 @@ void check(bool cond, const char* msg, int line, const std::string& extra = "") 
     } else {
         ++g_failed;
         std::cerr << "[FAIL] line " << line << ": " << msg;
-        if (!extra.empty()) std::cerr << " (" << extra << ")";
+        if (!extra.empty())
+            std::cerr << " (" << extra << ")";
         std::cerr << "\n";
     }
 }
@@ -60,39 +61,42 @@ void create_safetensors_fixture(const fs::path& dir, bool sharded) {
 })";
     }
 
-    auto write_st_file = [](const fs::path& file_path,
-                            const std::vector<std::tuple<std::string, std::string, std::vector<int64_t>, std::vector<uint8_t>>>& tensors) {
-        guild::server::json::JsonValue hroot;
-        uint64_t off = 0;
-        for (const auto& [name, dtype, shape, data] : tensors) {
-            guild::server::json::JsonValue tdesc;
-            tdesc["dtype"] = dtype;
-            guild::server::json::JsonValue sh(std::vector<guild::server::json::JsonValue>{});
-            for (int64_t d : shape) sh.arr_val.push_back(guild::server::json::JsonValue(d));
-            tdesc["shape"] = std::move(sh);
-            guild::server::json::JsonValue offs(std::vector<guild::server::json::JsonValue>{
-                guild::server::json::JsonValue(static_cast<int64_t>(off)),
-                guild::server::json::JsonValue(static_cast<int64_t>(off + data.size()))
-            });
-            tdesc["data_offsets"] = std::move(offs);
-            hroot[name] = std::move(tdesc);
-            off += data.size();
-        }
-        const std::string hstr = hroot.dump();
-        const uint64_t hlen = hstr.size();
-        std::ofstream out(file_path, std::ios::binary);
-        out.write(reinterpret_cast<const char*>(&hlen), 8);
-        out.write(hstr.data(), static_cast<std::streamsize>(hstr.size()));
-        for (const auto& [name, dtype, shape, data] : tensors) {
-            if (!data.empty()) {
-                out.write(reinterpret_cast<const char*>(data.data()), static_cast<std::streamsize>(data.size()));
+    auto write_st_file =
+        [](const fs::path& file_path,
+           const std::vector<std::tuple<std::string, std::string, std::vector<int64_t>, std::vector<uint8_t>>>&
+               tensors) {
+            guild::server::json::JsonValue hroot;
+            uint64_t off = 0;
+            for (const auto& [name, dtype, shape, data] : tensors) {
+                guild::server::json::JsonValue tdesc;
+                tdesc["dtype"] = dtype;
+                guild::server::json::JsonValue sh(std::vector<guild::server::json::JsonValue>{});
+                for (int64_t d : shape)
+                    sh.arr_val.push_back(guild::server::json::JsonValue(d));
+                tdesc["shape"] = std::move(sh);
+                guild::server::json::JsonValue offs(std::vector<guild::server::json::JsonValue>{
+                    guild::server::json::JsonValue(static_cast<int64_t>(off)),
+                    guild::server::json::JsonValue(static_cast<int64_t>(off + data.size()))});
+                tdesc["data_offsets"] = std::move(offs);
+                hroot[name] = std::move(tdesc);
+                off += data.size();
             }
-        }
-    };
+            const std::string hstr = hroot.dump();
+            const uint64_t hlen = hstr.size();
+            std::ofstream out(file_path, std::ios::binary);
+            out.write(reinterpret_cast<const char*>(&hlen), 8);
+            out.write(hstr.data(), static_cast<std::streamsize>(hstr.size()));
+            for (const auto& [name, dtype, shape, data] : tensors) {
+                if (!data.empty()) {
+                    out.write(reinterpret_cast<const char*>(data.data()), static_cast<std::streamsize>(data.size()));
+                }
+            }
+        };
 
     auto make_bytes = [](size_t n, uint8_t seed) {
         std::vector<uint8_t> b(n);
-        for (size_t i = 0; i < n; ++i) b[i] = static_cast<uint8_t>((seed + i * 13) & 0xFF);
+        for (size_t i = 0; i < n; ++i)
+            b[i] = static_cast<uint8_t>((seed + i * 13) & 0xFF);
         return b;
     };
 
@@ -110,11 +114,19 @@ void create_safetensors_fixture(const fs::path& dir, bool sharded) {
         const std::string pfx = "blk." + std::to_string(l) + ".";
         auto& target = (sharded && l == 1) ? shard2 : shard1;
         target.push_back({pfx + "attn_norm.weight", "F32", {16}, make_bytes(16 * 4, static_cast<uint8_t>(10 + l))});
-        target.push_back({pfx + "ffn_gate_inp.weight", "BF16", {4, 16}, make_bytes(4 * 16 * 2, static_cast<uint8_t>(20 + l))});
+        target.push_back(
+            {pfx + "ffn_gate_inp.weight", "BF16", {4, 16}, make_bytes(4 * 16 * 2, static_cast<uint8_t>(20 + l))});
         // Experts: [4, 8, 16] BF16 -> 4 * 8 * 16 * 2 = 1024 B
-        target.push_back({pfx + "ffn_gate_exps.weight", "BF16", {4, 8, 16}, make_bytes(4 * 8 * 16 * 2, static_cast<uint8_t>(30 + l))});
-        target.push_back({pfx + "ffn_up_exps.weight", "BF16", {4, 8, 16}, make_bytes(4 * 8 * 16 * 2, static_cast<uint8_t>(40 + l))});
-        target.push_back({pfx + "ffn_down_exps.weight", "BF16", {4, 16, 8}, make_bytes(4 * 16 * 8 * 2, static_cast<uint8_t>(50 + l))});
+        target.push_back({pfx + "ffn_gate_exps.weight",
+                          "BF16",
+                          {4, 8, 16},
+                          make_bytes(4 * 8 * 16 * 2, static_cast<uint8_t>(30 + l))});
+        target.push_back(
+            {pfx + "ffn_up_exps.weight", "BF16", {4, 8, 16}, make_bytes(4 * 8 * 16 * 2, static_cast<uint8_t>(40 + l))});
+        target.push_back({pfx + "ffn_down_exps.weight",
+                          "BF16",
+                          {4, 16, 8},
+                          make_bytes(4 * 16 * 8 * 2, static_cast<uint8_t>(50 + l))});
     }
 
     if (!sharded) {
@@ -124,8 +136,10 @@ void create_safetensors_fixture(const fs::path& dir, bool sharded) {
         write_st_file(dir / "model-00002-of-00002.safetensors", shard2);
         guild::server::json::JsonValue idx;
         guild::server::json::JsonValue wmap;
-        for (const auto& t : shard1) wmap[std::get<0>(t)] = "model-00001-of-00002.safetensors";
-        for (const auto& t : shard2) wmap[std::get<0>(t)] = "model-00002-of-00002.safetensors";
+        for (const auto& t : shard1)
+            wmap[std::get<0>(t)] = "model-00001-of-00002.safetensors";
+        for (const auto& t : shard2)
+            wmap[std::get<0>(t)] = "model-00002-of-00002.safetensors";
         idx["weight_map"] = std::move(wmap);
         std::ofstream out(dir / "model.safetensors.index.json");
         out << idx.dump_pretty();
@@ -190,7 +204,8 @@ void create_tokenizer_fixture(const fs::path& tok_dir) {
     {
         std::ofstream ctf(tok_dir / "chat_template.jinja");
         ctf << "{% macro render_content(msg) %}{{ msg.content }}{% endmacro %}"
-            << "{% for message in messages %}<|im_start|>{{ message.role }}\n{{ render_content(message) }}<|im_end|>\n{% endfor %}";
+            << "{% for message in messages %}<|im_start|>{{ message.role }}\n{{ render_content(message) "
+               "}}<|im_end|>\n{% endfor %}";
     }
 }
 
@@ -210,11 +225,8 @@ void test_gbt1_binary_tokenizer(const fs::path& work_dir) {
     CHECK(tok2.load_binary(bin.data(), bin.size(), err));
     CHECK(tok2.vocab_size() == tok1.vocab_size());
 
-    const std::vector<std::string> prompts = {
-        "hello world",
-        "<|im_start|>hello world<|im_end|>",
-        "hell hello world hello"
-    };
+    const std::vector<std::string> prompts = {"hello world", "<|im_start|>hello world<|im_end|>",
+                                              "hell hello world hello"};
     for (const auto& p : prompts) {
         std::vector<int32_t> ids1, ids2;
         CHECK(tok1.encode(p, ids1, true, err));
@@ -241,7 +253,8 @@ void test_gbt1_binary_tokenizer(const fs::path& work_dir) {
         const auto t0 = std::chrono::steady_clock::now();
         Tokenizer rtok_json;
         CHECK(rtok_json.load(real_tok.string(), err));
-        const double json_load_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        const double json_load_ms =
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
 
         std::vector<uint8_t> rbin;
         CHECK(rtok_json.serialize_binary(rbin, err));
@@ -249,17 +262,18 @@ void test_gbt1_binary_tokenizer(const fs::path& work_dir) {
         const auto t1 = std::chrono::steady_clock::now();
         Tokenizer rtok_bin;
         CHECK(rtok_bin.load_binary(rbin.data(), rbin.size(), err));
-        const double bin_load_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t1).count();
+        const double bin_load_ms =
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t1).count();
 
-        std::cout << "[GBT1] Real 248k-vocab tokenizer load: JSON=" << json_load_ms
-                  << " ms vs GBT1=" << bin_load_ms << " ms (" << (rbin.size() >> 20) << " MiB)\n";
+        std::cout << "[GBT1] Real 248k-vocab tokenizer load: JSON=" << json_load_ms << " ms vs GBT1=" << bin_load_ms
+                  << " ms (" << (rbin.size() >> 20) << " MiB)\n";
         CHECK(bin_load_ms < json_load_ms);
 
         const std::vector<std::string> real_cases = {
-            "<|im_start|>user\nWrite a fast C++20 SIMD matrix multiplication kernel with AVX-512.<|im_end|>\n<|im_start|>assistant\n",
+            "<|im_start|>user\nWrite a fast C++20 SIMD matrix multiplication kernel with "
+            "AVX-512.<|im_end|>\n<|im_start|>assistant\n",
             "你好，世界！这是一个测试：1234567890 !== === >= <= -> :: std::vector<uint64_t>",
-            "   \n\t  multiple   spaces   and\nnewlines\n\n"
-        };
+            "   \n\t  multiple   spaces   and\nnewlines\n\n"};
         for (const auto& rc : real_cases) {
             std::vector<int32_t> a, b;
             CHECK(rtok_json.encode(rc, a, true, err));
@@ -333,7 +347,8 @@ void test_safetensors_and_gpack_integrity(const fs::path& work_dir) {
             }
         });
     }
-    for (auto& th : threads) th.join();
+    for (auto& th : threads)
+        th.join();
     CHECK(thread_ok.load());
 
     // 5. Corruption, truncation, and version compatibility tests
@@ -412,27 +427,23 @@ void test_gguf_single_and_split_conversion(const fs::path& work_dir) {
     const fs::path gguf_dir = work_dir / "gguf_conv";
     fs::create_directories(gguf_dir);
 
-    std::vector<fixture::Kv> base_kv = {
-        fixture::str("general.architecture", "qwen35moe"),
-        fixture::str("general.name", "tiny-ornith"),
-        fixture::u32("qwen35moe.block_count", 1),
-        fixture::u32("qwen35moe.full_attention_interval", 1),
-        fixture::u32("qwen35moe.embedding_length", 256),
-        fixture::u32("qwen35moe.attention.head_count", 4),
-        fixture::u32("qwen35moe.attention.head_count_kv", 2),
-        fixture::u32("qwen35moe.attention.key_length", 256),
-        fixture::u32("qwen35moe.expert_count", 4),
-        fixture::u32("qwen35moe.expert_used_count", 2),
-        fixture::u32("qwen35moe.expert_feed_forward_length", 256),
-        fixture::u32("qwen35moe.context_length", 512)
-    };
+    std::vector<fixture::Kv> base_kv = {fixture::str("general.architecture", "qwen35moe"),
+                                        fixture::str("general.name", "tiny-ornith"),
+                                        fixture::u32("qwen35moe.block_count", 1),
+                                        fixture::u32("qwen35moe.full_attention_interval", 1),
+                                        fixture::u32("qwen35moe.embedding_length", 256),
+                                        fixture::u32("qwen35moe.attention.head_count", 4),
+                                        fixture::u32("qwen35moe.attention.head_count_kv", 2),
+                                        fixture::u32("qwen35moe.attention.key_length", 256),
+                                        fixture::u32("qwen35moe.expert_count", 4),
+                                        fixture::u32("qwen35moe.expert_used_count", 2),
+                                        fixture::u32("qwen35moe.expert_feed_forward_length", 256),
+                                        fixture::u32("qwen35moe.context_length", 512)};
 
-    std::vector<fixture::Tensor> t_shard1 = {
-        {"token_embd.weight", {256, 32}, 18, 1}, // IQ3_XXS
-        {"output_norm.weight", {256}, 0, 2},     // F32
-        {"blk.0.attn_norm.weight", {256}, 0, 3},
-        {"blk.0.ffn_gate_inp.weight", {256, 4}, 0, 4}
-    };
+    std::vector<fixture::Tensor> t_shard1 = {{"token_embd.weight", {256, 32}, 18, 1}, // IQ3_XXS
+                                             {"output_norm.weight", {256}, 0, 2},     // F32
+                                             {"blk.0.attn_norm.weight", {256}, 0, 3},
+                                             {"blk.0.ffn_gate_inp.weight", {256, 4}, 0, 4}};
     std::vector<fixture::Tensor> t_shard2 = {
         {"output.weight", {256, 32}, 13, 5}, // Q5_K
         {"blk.0.ffn_gate_exps.weight", {256, 256, 4}, 18, 6},
@@ -459,8 +470,8 @@ void test_gguf_single_and_split_conversion(const fs::path& work_dir) {
 
     // 3. Convert both to embedded-expert GPACK
     const fs::path out_single = gguf_dir / "from_single.gpack";
-    const fs::path out_split  = gguf_dir / "from_split.gpack";
-    const fs::path out_ext    = gguf_dir / "from_split_ext.gpack";
+    const fs::path out_split = gguf_dir / "from_split.gpack";
+    const fs::path out_ext = gguf_dir / "from_split_ext.gpack";
     std::string err;
 
     GPackBuildOptions opts1;

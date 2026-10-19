@@ -45,7 +45,8 @@ void check(bool cond, const char* msg, int line, const std::string& extra = "") 
     } else {
         ++g_failed;
         std::cerr << "[FAIL] line " << line << ": " << msg;
-        if (!extra.empty()) std::cerr << " (" << extra << ")";
+        if (!extra.empty())
+            std::cerr << " (" << extra << ")";
         std::cerr << "\n";
     }
 }
@@ -90,7 +91,8 @@ void test_all_gexec_cpu_expert_kernels(int64_t n_embd, int64_t n_ff) {
     const auto caps = kernels::query_host_device_capabilities();
     const auto ref_bind = kernels::KernelRegistry::instance().find_by_id("cpu.expert_pool.split_multi_native");
     CHECK(static_cast<bool>(ref_bind));
-    if (!ref_bind || !ref_bind->next_ext) return;
+    if (!ref_bind || !ref_bind->next_ext)
+        return;
     const auto* ref_tbl = static_cast<const guild_cpu_backend_ext_v2_t*>(ref_bind->next_ext);
 
     struct ProviderEntry {
@@ -101,9 +103,11 @@ void test_all_gexec_cpu_expert_kernels(int64_t n_embd, int64_t n_ff) {
     };
     const std::vector<ProviderEntry> providers = {
         {kernels::cpu::kGExecFusedAvx2ImplId, kernels::cpu::guild_cpu_gexec_fused_avx2_table_v2(), false, false},
-        {kernels::cpu::kGExecInterleavedAvx2ImplId, kernels::cpu::guild_cpu_gexec_interleaved_avx2_table_v2(), true, false},
+        {kernels::cpu::kGExecInterleavedAvx2ImplId, kernels::cpu::guild_cpu_gexec_interleaved_avx2_table_v2(), true,
+         false},
         {kernels::cpu::kGExecFusedAvx512ImplId, kernels::cpu::guild_cpu_gexec_fused_avx512_table_v2(), false, true},
-        {kernels::cpu::kGExecInterleavedAvx512ImplId, kernels::cpu::guild_cpu_gexec_interleaved_avx512_table_v2(), true, true},
+        {kernels::cpu::kGExecInterleavedAvx512ImplId, kernels::cpu::guild_cpu_gexec_interleaved_avx512_table_v2(), true,
+         true},
     };
 
     const uint32_t avx512_mask = GUILD_ISA_AVX512F | GUILD_ISA_AVX512BW | GUILD_ISA_AVX512DQ | GUILD_ISA_AVX512VL;
@@ -115,8 +119,8 @@ void test_all_gexec_cpu_expert_kernels(int64_t n_embd, int64_t n_ff) {
         {12, 14}, // Q4_K + Q6_K
         {12, 20}, // Q4_K + IQ4_NL (Ornith-1.5-35B primary format)
         {14, 14}, // Q6_K + Q6_K
-        {8,  8},  // Q8_0 + Q8_0
-        {7,  7},  // Q5_1 + Q5_1
+        {8, 8},   // Q8_0 + Q8_0
+        {7, 7},   // Q5_1 + Q5_1
         {23, 20}, // IQ4_XS + IQ4_NL (Qwen3.8-Flash-Next primary format)
         {21, 20}, // IQ3_S + IQ4_NL
         {16, 20}, // IQ2_XXS + IQ4_NL
@@ -139,13 +143,9 @@ void test_all_gexec_cpu_expert_kernels(int64_t n_embd, int64_t n_ff) {
         std::vector<uint8_t> blob_contig;
         fill_synthetic_blob(fmt, gu_type * 37 + d_type, blob_contig);
         std::vector<uint8_t> blob_inter(blob_contig.size());
-        pack_expert_gate_up_interleaved(
-            blob_contig.data(),
-            blob_inter.data(),
-            static_cast<size_t>(fmt.n_ff),
-            static_cast<size_t>(fmt.gu_row),
-            static_cast<size_t>(fmt.gu_row),
-            static_cast<size_t>(fmt.bytes - fmt.down_off));
+        pack_expert_gate_up_interleaved(blob_contig.data(), blob_inter.data(), static_cast<size_t>(fmt.n_ff),
+                                        static_cast<size_t>(fmt.gu_row), static_cast<size_t>(fmt.gu_row),
+                                        static_cast<size_t>(fmt.bytes - fmt.down_off));
 
         alignas(64) uint8_t qact[max_tokens][kernels::cpu::kNativeActBytes] = {};
         const void* act_ptrs[max_tokens] = {};
@@ -155,9 +155,11 @@ void test_all_gexec_cpu_expert_kernels(int64_t n_embd, int64_t n_ff) {
         }
 
         for (int nt = 1; nt <= max_tokens; ++nt) {
-            std::vector<std::vector<float>> ref_ff(static_cast<size_t>(nt), std::vector<float>(static_cast<size_t>(n_ff), 0.0f));
+            std::vector<std::vector<float>> ref_ff(static_cast<size_t>(nt),
+                                                   std::vector<float>(static_cast<size_t>(n_ff), 0.0f));
             float* ref_ff_ptrs[max_tokens] = {};
-            for (int t = 0; t < nt; ++t) ref_ff_ptrs[t] = ref_ff[static_cast<size_t>(t)].data();
+            for (int t = 0; t < nt; ++t)
+                ref_ff_ptrs[t] = ref_ff[static_cast<size_t>(t)].data();
             ref_tbl->native.gate_up(&fmt, blob_contig.data(), act_ptrs, nt, ref_ff_ptrs, 0, static_cast<int>(n_ff));
 
             alignas(64) uint8_t ref_hq[max_tokens][kernels::cpu::kNativeHBytes] = {};
@@ -167,18 +169,23 @@ void test_all_gexec_cpu_expert_kernels(int64_t n_embd, int64_t n_ff) {
                 ref_tbl->native.quant_h(&fmt, ref_ff[static_cast<size_t>(t)].data(), ref_hq[t]);
             }
 
-            std::vector<std::vector<float>> ref_out(static_cast<size_t>(nt), std::vector<float>(static_cast<size_t>(n_embd), 0.0f));
+            std::vector<std::vector<float>> ref_out(static_cast<size_t>(nt),
+                                                    std::vector<float>(static_cast<size_t>(n_embd), 0.0f));
             float* ref_out_ptrs[max_tokens] = {};
-            for (int t = 0; t < nt; ++t) ref_out_ptrs[t] = ref_out[static_cast<size_t>(t)].data();
+            for (int t = 0; t < nt; ++t)
+                ref_out_ptrs[t] = ref_out[static_cast<size_t>(t)].data();
             ref_tbl->native.down(&fmt, blob_contig.data(), ref_hq_ptrs, nt, ref_out_ptrs, 0, static_cast<int>(n_embd));
 
             for (const auto& prov : providers) {
-                if (prov.needs_avx512 && !host_has_avx512) continue;
+                if (prov.needs_avx512 && !host_has_avx512)
+                    continue;
                 const uint8_t* wblob = prov.interleaved ? blob_inter.data() : blob_contig.data();
 
-                std::vector<std::vector<float>> cand_ff(static_cast<size_t>(nt), std::vector<float>(static_cast<size_t>(n_ff), 0.0f));
+                std::vector<std::vector<float>> cand_ff(static_cast<size_t>(nt),
+                                                        std::vector<float>(static_cast<size_t>(n_ff), 0.0f));
                 float* cand_ff_ptrs[max_tokens] = {};
-                for (int t = 0; t < nt; ++t) cand_ff_ptrs[t] = cand_ff[static_cast<size_t>(t)].data();
+                for (int t = 0; t < nt; ++t)
+                    cand_ff_ptrs[t] = cand_ff[static_cast<size_t>(t)].data();
                 for (const auto& [a, z] : {std::pair<int, int>{0, 1}, {1, int(n_ff) - 1}, {int(n_ff) - 1, int(n_ff)}})
                     prov.tbl->native.gate_up(&fmt, wblob, act_ptrs, nt, cand_ff_ptrs, a, z);
 
@@ -189,23 +196,24 @@ void test_all_gexec_cpu_expert_kernels(int64_t n_embd, int64_t n_ff) {
                     quant_exact = quant_exact && std::memcmp(cand_hq[t], ref_hq[t], fmt.h_bytes) == 0;
                 }
 
-                std::vector<std::vector<float>> cand_out(static_cast<size_t>(nt), std::vector<float>(static_cast<size_t>(n_embd), 0.0f));
+                std::vector<std::vector<float>> cand_out(static_cast<size_t>(nt),
+                                                         std::vector<float>(static_cast<size_t>(n_embd), 0.0f));
                 float* cand_out_ptrs[max_tokens] = {};
-                for (int t = 0; t < nt; ++t) cand_out_ptrs[t] = cand_out[static_cast<size_t>(t)].data();
-                for (const auto& [a, z] : {std::pair<int, int>{0, 1}, {1, int(n_embd) - 1}, {int(n_embd) - 1, int(n_embd)}})
+                for (int t = 0; t < nt; ++t)
+                    cand_out_ptrs[t] = cand_out[static_cast<size_t>(t)].data();
+                for (const auto& [a, z] :
+                     {std::pair<int, int>{0, 1}, {1, int(n_embd) - 1}, {int(n_embd) - 1, int(n_embd)}})
                     prov.tbl->native.down(&fmt, wblob, ref_hq_ptrs, nt, cand_out_ptrs, a, z);
 
                 // Verify bitwise parity on gate_up and down!
                 bool gu_exact = true;
                 bool down_exact = true;
                 for (int t = 0; t < nt; ++t) {
-                    if (std::memcmp(cand_ff[static_cast<size_t>(t)].data(),
-                                    ref_ff[static_cast<size_t>(t)].data(),
+                    if (std::memcmp(cand_ff[static_cast<size_t>(t)].data(), ref_ff[static_cast<size_t>(t)].data(),
                                     static_cast<size_t>(n_ff) * sizeof(float)) != 0) {
                         gu_exact = false;
                     }
-                    if (std::memcmp(cand_out[static_cast<size_t>(t)].data(),
-                                    ref_out[static_cast<size_t>(t)].data(),
+                    if (std::memcmp(cand_out[static_cast<size_t>(t)].data(), ref_out[static_cast<size_t>(t)].data(),
                                     static_cast<size_t>(n_embd) * sizeof(float)) != 0) {
                         down_exact = false;
                     }
@@ -224,8 +232,10 @@ void test_all_gexec_cpu_expert_kernels(int64_t n_embd, int64_t n_ff) {
         const int k = 8, n = 259; // non-multiple of 8 tail coverage
         std::vector<float> parts(static_cast<size_t>(k * n));
         std::vector<float> weights(static_cast<size_t>(k));
-        for (int r = 0; r < k; ++r) weights[static_cast<size_t>(r)] = 0.1f * static_cast<float>(r + 1);
-        for (size_t i = 0; i < parts.size(); ++i) parts[i] = std::cos(static_cast<float>(i) * 0.05f);
+        for (int r = 0; r < k; ++r)
+            weights[static_cast<size_t>(r)] = 0.1f * static_cast<float>(r + 1);
+        for (size_t i = 0; i < parts.size(); ++i)
+            parts[i] = std::cos(static_cast<float>(i) * 0.05f);
 
         std::vector<float> out_ref(static_cast<size_t>(n), 0.0f);
         std::vector<float> out_gexec(static_cast<size_t>(n), 0.0f);
@@ -234,7 +244,8 @@ void test_all_gexec_cpu_expert_kernels(int64_t n_embd, int64_t n_ff) {
         CHECK(gtbl->combine(parts.data(), weights.data(), out_gexec.data(), k, n) == GUILD_STATUS_OK);
         double max_diff = 0.0;
         for (int d = 0; d < n; ++d) {
-            max_diff = std::max(max_diff, static_cast<double>(std::fabs(out_ref[static_cast<size_t>(d)] - out_gexec[static_cast<size_t>(d)])));
+            max_diff = std::max(max_diff, static_cast<double>(std::fabs(out_ref[static_cast<size_t>(d)] -
+                                                                        out_gexec[static_cast<size_t>(d)])));
         }
         CHECK(max_diff < 1e-6);
 
@@ -258,17 +269,15 @@ void test_expert_pool_fused_pipeline() {
     for (int e = 0; e < k; ++e) {
         fill_synthetic_blob(fmt, 900 + e, blobs_contig[static_cast<size_t>(e)]);
         blobs_inter[static_cast<size_t>(e)].resize(blobs_contig[static_cast<size_t>(e)].size());
-        pack_expert_gate_up_interleaved(
-            blobs_contig[static_cast<size_t>(e)].data(),
-            blobs_inter[static_cast<size_t>(e)].data(),
-            static_cast<size_t>(fmt.n_ff),
-            static_cast<size_t>(fmt.gu_row),
-            static_cast<size_t>(fmt.gu_row),
-            static_cast<size_t>(fmt.bytes - fmt.down_off));
+        pack_expert_gate_up_interleaved(blobs_contig[static_cast<size_t>(e)].data(),
+                                        blobs_inter[static_cast<size_t>(e)].data(), static_cast<size_t>(fmt.n_ff),
+                                        static_cast<size_t>(fmt.gu_row), static_cast<size_t>(fmt.gu_row),
+                                        static_cast<size_t>(fmt.bytes - fmt.down_off));
     }
 
     std::vector<float> x_in(static_cast<size_t>(2 * fmt.n_embd));
-    for (size_t i = 0; i < x_in.size(); ++i) x_in[i] = std::sin(static_cast<float>(i) * 0.03f);
+    for (size_t i = 0; i < x_in.size(); ++i)
+        x_in[i] = std::sin(static_cast<float>(i) * 0.03f);
     alignas(64) uint8_t qact0[kernels::cpu::kNativeActBytes] = {};
     alignas(64) uint8_t qact1[kernels::cpu::kNativeActBytes] = {};
     ftbl->native.quant_act(&fmt, x_in.data(), qact0);
@@ -276,10 +285,14 @@ void test_expert_pool_fused_pipeline() {
 
     kernels::cpu::ExpertPool pool(/*n_workers=*/4, /*pin=*/false);
 
-    std::vector<std::vector<float>> out_base0(static_cast<size_t>(k), std::vector<float>(static_cast<size_t>(fmt.n_embd), 0.0f));
-    std::vector<std::vector<float>> out_base1(static_cast<size_t>(k), std::vector<float>(static_cast<size_t>(fmt.n_embd), 0.0f));
-    std::vector<std::vector<float>> out_fused0(static_cast<size_t>(k), std::vector<float>(static_cast<size_t>(fmt.n_embd), 0.0f));
-    std::vector<std::vector<float>> out_fused1(static_cast<size_t>(k), std::vector<float>(static_cast<size_t>(fmt.n_embd), 0.0f));
+    std::vector<std::vector<float>> out_base0(static_cast<size_t>(k),
+                                              std::vector<float>(static_cast<size_t>(fmt.n_embd), 0.0f));
+    std::vector<std::vector<float>> out_base1(static_cast<size_t>(k),
+                                              std::vector<float>(static_cast<size_t>(fmt.n_embd), 0.0f));
+    std::vector<std::vector<float>> out_fused0(static_cast<size_t>(k),
+                                               std::vector<float>(static_cast<size_t>(fmt.n_embd), 0.0f));
+    std::vector<std::vector<float>> out_fused1(static_cast<size_t>(k),
+                                               std::vector<float>(static_cast<size_t>(fmt.n_embd), 0.0f));
 
     std::vector<kernels::cpu::ExpertJobMulti> jobs_base(static_cast<size_t>(k));
     std::vector<kernels::cpu::ExpertJobMulti> jobs_fused(static_cast<size_t>(k));
@@ -312,11 +325,9 @@ void test_expert_pool_fused_pipeline() {
     CHECK(pool.last_run_all_finite());
 
     for (int e = 0; e < k; ++e) {
-        CHECK(std::memcmp(out_base0[static_cast<size_t>(e)].data(),
-                          out_fused0[static_cast<size_t>(e)].data(),
+        CHECK(std::memcmp(out_base0[static_cast<size_t>(e)].data(), out_fused0[static_cast<size_t>(e)].data(),
                           static_cast<size_t>(fmt.n_embd) * sizeof(float)) == 0);
-        CHECK(std::memcmp(out_base1[static_cast<size_t>(e)].data(),
-                          out_fused1[static_cast<size_t>(e)].data(),
+        CHECK(std::memcmp(out_base1[static_cast<size_t>(e)].data(), out_fused1[static_cast<size_t>(e)].data(),
                           static_cast<size_t>(fmt.n_embd) * sizeof(float)) == 0);
     }
 }
@@ -403,10 +414,9 @@ void test_gexec_binary_container_and_corruption(const fs::path& work_dir) {
     dlog.speedup_ratio = 55.0 / 39.5;
     dlog.break_even_tokens = 12.0;
     dlog.notes = {"unit test diagnostic note"};
-    dlog.rejected_candidates.push_back({
-        GUILD_OP_BATCHED_EXPERT_EXEC, "batched_expert_exec",
-        "cpu.expert_pool.split_multi_native", "microbenchmark", "slower than GEXEC", 0.0, 62.0
-    });
+    dlog.rejected_candidates.push_back({GUILD_OP_BATCHED_EXPERT_EXEC, "batched_expert_exec",
+                                        "cpu.expert_pool.split_multi_native", "microbenchmark", "slower than GEXEC",
+                                        0.0, 62.0});
 
     std::vector<uint8_t> fake_experts(8192, 0x5Au);
 
@@ -420,9 +430,7 @@ void test_gexec_binary_container_and_corruption(const fs::path& work_dir) {
     builder.set_expert_pack_meta(pmeta);
     builder.set_diagnostic_log(dlog);
     // A blob replacement must clear the old streaming callback and byte count.
-    builder.set_packed_experts_stream(3, [](uint64_t, uint8_t*, size_t, std::string&) {
-        return false;
-    });
+    builder.set_packed_experts_stream(3, [](uint64_t, uint8_t*, size_t, std::string&) { return false; });
     builder.set_packed_experts_blob(fake_experts, 4096);
 
     std::string err;
@@ -506,12 +514,13 @@ void test_gexec_binary_container_and_corruption(const fs::path& work_dir) {
     }
     // 3g. Flip a byte inside EVERY single section payload and verify SHA-256 catches it!
     for (const auto& sec : reader.sections()) {
-        if (sec.byte_size == 0) continue;
+        if (sec.byte_size == 0)
+            continue;
         auto c = raw;
         c[static_cast<size_t>(sec.offset + sec.byte_size / 2)] ^= 0x40;
         GExecReader r;
-        const std::string cname = std::string("corrupt_sec_") +
-                                  section_kind_to_string(static_cast<GExecSectionKind>(sec.kind)) + ".gexec";
+        const std::string cname =
+            std::string("corrupt_sec_") + section_kind_to_string(static_cast<GExecSectionKind>(sec.kind)) + ".gexec";
         CHECK(!r.open(write_corrupt(cname, c), err, &reason, /*verify_expert_blob_digest=*/true));
         CHECK(reason == GExecInvalidationReason::CorruptedDigest);
     }
@@ -560,12 +569,12 @@ std::string create_test_gpack(const fs::path& work_dir) {
         guild::server::json::JsonValue tdesc;
         tdesc["dtype"] = dtype;
         guild::server::json::JsonValue sh(std::vector<guild::server::json::JsonValue>{});
-        for (int64_t d : shape) sh.arr_val.push_back(guild::server::json::JsonValue(d));
+        for (int64_t d : shape)
+            sh.arr_val.push_back(guild::server::json::JsonValue(d));
         tdesc["shape"] = std::move(sh);
         guild::server::json::JsonValue offs(std::vector<guild::server::json::JsonValue>{
             guild::server::json::JsonValue(static_cast<int64_t>(off)),
-            guild::server::json::JsonValue(static_cast<int64_t>(off + data.size()))
-        });
+            guild::server::json::JsonValue(static_cast<int64_t>(off + data.size()))});
         tdesc["data_offsets"] = std::move(offs);
         hroot[name] = std::move(tdesc);
         off += data.size();
@@ -590,14 +599,16 @@ std::string create_test_gpack(const fs::path& work_dir) {
     std::string err;
     const bool built = artifact::GPackBuilder::build(bopts, brep, err);
     CHECK_MSG(built, err);
-    if (!built) return {};
+    if (!built)
+        return {};
     return gpack_path.string();
 }
 
 // 4. Test optimize_gpack modes, checkpoint/resume, section regeneration, lock contention, concurrency, and cache-clean
 void test_optimizer_lifecycle_and_concurrency(const fs::path& work_dir) {
     const std::string gpack_path = create_test_gpack(work_dir);
-    if (gpack_path.empty()) return;
+    if (gpack_path.empty())
+        return;
     const fs::path cache_dir = work_dir / ".gexec_cache";
 
     // 4a. Skip mode
@@ -642,7 +653,8 @@ void test_optimizer_lifecycle_and_concurrency(const fs::path& work_dir) {
         CHECK(res.resumed_from_checkpoint);
         CHECK(!res.partial_artifact);
         CHECK(!fs::exists(interrupted_gexec.string() + ".progress.json"));
-        CHECK(!res.selected_cpu_expert_impl_id.empty() || res.expert_layout_kind == ExpertPackLayoutKind::PortableContiguous);
+        CHECK(!res.selected_cpu_expert_impl_id.empty() ||
+              res.expert_layout_kind == ExpertPackLayoutKind::PortableContiguous);
 
         GExecReader r;
         std::string err;
@@ -673,7 +685,8 @@ void test_optimizer_lifecycle_and_concurrency(const fs::path& work_dir) {
         std::string gerr;
         CHECK(gpack.open(gpack_path, gerr, false));
         const auto cur_id = build_current_gexec_identity(gpack);
-        CHECK(build_current_gexec_identity(gpack, "FP16", "host-only").compute_cache_key() == cur_id.compute_cache_key());
+        CHECK(build_current_gexec_identity(gpack, "FP16", "host-only").compute_cache_key() ==
+              cur_id.compute_cache_key());
 
         GExecReader resolved;
         std::string fb_reason;
@@ -718,7 +731,8 @@ void test_optimizer_lifecycle_and_concurrency(const fs::path& work_dir) {
         GExecReader updated;
         CHECK(updated.open(auto_gexec_path, err, nullptr, true));
         for (const auto& section : r.sections()) {
-            if (section.kind == static_cast<uint32_t>(GExecSectionKind::WorkspaceRecipe)) continue;
+            if (section.kind == static_cast<uint32_t>(GExecSectionKind::WorkspaceRecipe))
+                continue;
             const auto* after = updated.find_section(static_cast<GExecSectionKind>(section.kind));
             CHECK(after && std::memcmp(section.sha256, after->sha256, sizeof(section.sha256)) == 0);
         }
@@ -778,7 +792,8 @@ void test_optimizer_lifecycle_and_concurrency(const fs::path& work_dir) {
             }
         }
         stop.store(true);
-        for (auto& th : readers) th.join();
+        for (auto& th : readers)
+            th.join();
         CHECK(ok.load());
     }
 

@@ -11,13 +11,13 @@
 #include <random>
 #include <vector>
 
-#define CHECK(call)                                                                                                  \
-    do {                                                                                                             \
-        const hipError_t error = (call);                                                                             \
-        if (error != hipSuccess) {                                                                                   \
-            std::fprintf(stderr, "%s: %s\n", #call, hipGetErrorString(error));                                     \
-            return 2;                                                                                                \
-        }                                                                                                            \
+#define CHECK(call)                                                                                                    \
+    do {                                                                                                               \
+        const hipError_t error = (call);                                                                               \
+        if (error != hipSuccess) {                                                                                     \
+            std::fprintf(stderr, "%s: %s\n", #call, hipGetErrorString(error));                                         \
+            return 2;                                                                                                  \
+        }                                                                                                              \
     } while (0)
 
 namespace k = guild::kernels;
@@ -29,10 +29,14 @@ static int compare(int n_expert, int topk, int rows, unsigned seed) {
     for (size_t i = 0; i < lg.size(); ++i) {
         const size_t r = i / n_expert;
         float x = nd(rng) * (r % 7 == 5 ? 40.0f : 1.0f);
-        if (r % 3 == 1) x = std::round(x * 4.0f) / 4.0f;
-        if (r % 3 == 2) x = std::round(x * 64.0f) / 64.0f;
-        if (r % 1000 == 999 && (i % n_expert) == 77) x = NAN;
-        if (r % 1000 == 998) x = 1.0f;
+        if (r % 3 == 1)
+            x = std::round(x * 4.0f) / 4.0f;
+        if (r % 3 == 2)
+            x = std::round(x * 64.0f) / 64.0f;
+        if (r % 1000 == 999 && (i % n_expert) == 77)
+            x = NAN;
+        if (r % 1000 == 998)
+            x = 1.0f;
         lg[i] = x;
     }
     const size_t out = (size_t) rows * topk;
@@ -45,7 +49,7 @@ static int compare(int n_expert, int topk, int rows, unsigned seed) {
     for (int v = 0; v < 3; ++v) {
         CHECK(hipMalloc(&d_w[v], out * 4));
         CHECK(hipMalloc(&d_i[v], out * 4));
-        CHECK(hipMemset(d_w[v], 0x3c, out * 4));   // what an unwritten rank keeps (NaN rows)
+        CHECK(hipMemset(d_w[v], 0x3c, out * 4)); // what an unwritten rank keeps (NaN rows)
         CHECK(hipMemset(d_i[v], 0x11, out * 4));
         if (!k::router_top10_variant(d_l, rows, n_expert, topk, d_i[v], d_w[v], nullptr, v)) {
             std::fprintf(stderr, "router_top10_variant %d refused\n", v);
@@ -87,7 +91,10 @@ static int compare(int n_expert, int topk, int rows, unsigned seed) {
         CHECK(hipEventElapsedTime(&ms, e0, e1));
         std::printf("  %s: %.2f us per single-token call\n", v ? "fast" : "portable", 1000.0f * ms / reps);
     }
-    for (int v = 0; v < 3; ++v) { (void) hipFree(d_w[v]); (void) hipFree(d_i[v]); }
+    for (int v = 0; v < 3; ++v) {
+        (void) hipFree(d_w[v]);
+        (void) hipFree(d_i[v]);
+    }
     (void) hipFree(d_l);
     return fails;
 }

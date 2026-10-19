@@ -41,16 +41,23 @@ namespace fused = guild::prefill::fused;
 constexpr int N = 2560, FF = 640, K = 10, GROUP = 16;
 
 void ck(cudaError_t e, const char* what) {
-    if (e != cudaSuccess) throw std::runtime_error(std::string(what) + ": " + cudaGetErrorString(e));
+    if (e != cudaSuccess)
+        throw std::runtime_error(std::string(what) + ": " + cudaGetErrorString(e));
 }
 
 struct Dev {
     void* p = nullptr;
-    explicit Dev(size_t n) { ck(cudaMalloc(&p, n), "cudaMalloc"); }
-    ~Dev() { cudaFree(p); }
+    explicit Dev(size_t n) {
+        ck(cudaMalloc(&p, n), "cudaMalloc");
+    }
+    ~Dev() {
+        cudaFree(p);
+    }
     Dev(const Dev&) = delete;
     Dev& operator=(const Dev&) = delete;
-    template <typename T> T* as() const { return (T*) p; }
+    template <typename T> T* as() const {
+        return (T*) p;
+    }
 };
 
 struct Pair {
@@ -69,7 +76,11 @@ struct Geo {
     }
     fused::NativeGeom native(const Pair& p) const {
         fused::NativeGeom g;
-        g.gu_type = (int) p.gu; g.d_type = (int) p.d; g.gu_row = gu_row; g.d_row = d_row; g.up_off = up_off;
+        g.gu_type = (int) p.gu;
+        g.d_type = (int) p.d;
+        g.gu_row = gu_row;
+        g.d_row = d_row;
+        g.up_off = up_off;
         g.down_off = down_off;
         return g;
     }
@@ -80,10 +91,14 @@ struct Geo {
 void fill_matrix(uint8_t* m, ggml_type t, int64_t rows, int64_t cols, std::mt19937& rng) {
     const size_t bs = ggml_type_size(t), nb = (size_t) rows * (size_t) (cols / ggml_blck_size(t));
     std::uniform_int_distribution<int> byte(0, 255);
-    const float lo = t == GGML_TYPE_IQ3_S ? 0.0004f : t == GGML_TYPE_IQ4_XS ? 0.00005f
-                   : t == GGML_TYPE_IQ4_NL ? 0.0002f : t == GGML_TYPE_Q2_0 ? 0.004f : 0.0008f;
+    const float lo = t == GGML_TYPE_IQ3_S    ? 0.0004f
+                     : t == GGML_TYPE_IQ4_XS ? 0.00005f
+                     : t == GGML_TYPE_IQ4_NL ? 0.0002f
+                     : t == GGML_TYPE_Q2_0   ? 0.004f
+                                             : 0.0008f;
     std::uniform_real_distribution<float> sc(lo, 6.0f * lo);
-    for (size_t i = 0; i < nb * bs; ++i) m[i] = (uint8_t) byte(rng);
+    for (size_t i = 0; i < nb * bs; ++i)
+        m[i] = (uint8_t) byte(rng);
     for (size_t b = 0; b < nb; ++b) {
         const ggml_fp16_t h = ggml_fp32_to_fp16(sc(rng));
         std::memcpy(m + b * bs, &h, 2);
@@ -97,13 +112,16 @@ std::vector<uint8_t> make_blob(const Pair& p, const Geo& g, std::mt19937& rng) {
 }
 
 // ggml's dequantized weights: gate [640][2560], up [640][2560], down [2560][640]
-void dequant(const Pair& p, const Geo& g, const std::vector<uint8_t>& b, std::vector<float>& gu, std::vector<float>& dn) {
+void dequant(const Pair& p, const Geo& g, const std::vector<uint8_t>& b, std::vector<float>& gu,
+             std::vector<float>& dn) {
     const auto* tg = ggml_get_type_traits(p.gu);
     const auto* td = ggml_get_type_traits(p.d);
     gu.resize((size_t) 2 * FF * N);
     dn.resize((size_t) N * FF);
-    for (int r = 0; r < 2 * FF; ++r) tg->to_float(b.data() + (size_t) r * g.gu_row, gu.data() + (size_t) r * N, N);
-    for (int r = 0; r < N; ++r) td->to_float(b.data() + g.down_off + (size_t) r * g.d_row, dn.data() + (size_t) r * FF, FF);
+    for (int r = 0; r < 2 * FF; ++r)
+        tg->to_float(b.data() + (size_t) r * g.gu_row, gu.data() + (size_t) r * N, N);
+    for (int r = 0; r < N; ++r)
+        td->to_float(b.data() + g.down_off + (size_t) r * g.d_row, dn.data() + (size_t) r * FF, FF);
 }
 
 // activations: N(0, 1) with a few large values (the hidden state has outliers); token `zero` all zero
@@ -111,8 +129,10 @@ std::vector<float> make_x(int T, std::mt19937& rng, int zero) {
     std::vector<float> x((size_t) T * N);
     std::normal_distribution<float> nd(0.0f, 1.0f);
     std::uniform_int_distribution<int> pick(0, 199);
-    for (float& v : x) v = nd(rng) * (pick(rng) == 0 ? 12.0f : 1.0f);
-    if (zero >= 0) std::fill(x.begin() + (size_t) zero * N, x.begin() + (size_t) (zero + 1) * N, 0.0f);
+    for (float& v : x)
+        v = nd(rng) * (pick(rng) == 0 ? 12.0f : 1.0f);
+    if (zero >= 0)
+        std::fill(x.begin() + (size_t) zero * N, x.begin() + (size_t) (zero + 1) * N, 0.0f);
     return x;
 }
 
@@ -127,7 +147,8 @@ std::vector<int32_t> make_ids(int T, int E, std::mt19937& rng, int hot, int unus
             do {
                 e = (hot > 0 && k < 3 && (int) (rng() % 4) != 0) ? (int) (rng() % (unsigned) hot) : any(rng);
                 dup = false;
-                for (int j = 0; j < k; ++j) dup |= ids[(size_t) t * K + j] == e;
+                for (int j = 0; j < k; ++j)
+                    dup |= ids[(size_t) t * K + j] == e;
             } while (dup);
             ids[(size_t) t * K + k] = e;
         }
@@ -135,15 +156,17 @@ std::vector<int32_t> make_ids(int T, int E, std::mt19937& rng, int hot, int unus
 }
 
 struct Routing {
-    std::vector<int32_t> cnt, off, src;   // per expert; sorted row -> token (rows in pair order within an expert)
-    std::vector<int32_t> row_of;          // pair -> sorted row
+    std::vector<int32_t> cnt, off, src; // per expert; sorted row -> token (rows in pair order within an expert)
+    std::vector<int32_t> row_of;        // pair -> sorted row
 };
 Routing sort_rows(const std::vector<int32_t>& ids, int E) {
     Routing r;
     r.cnt.assign((size_t) E, 0);
-    for (int32_t e : ids) ++r.cnt[(size_t) e];
+    for (int32_t e : ids)
+        ++r.cnt[(size_t) e];
     r.off.assign((size_t) E + 1, 0);
-    for (int e = 0; e < E; ++e) r.off[(size_t) e + 1] = r.off[(size_t) e] + r.cnt[(size_t) e];
+    for (int e = 0; e < E; ++e)
+        r.off[(size_t) e + 1] = r.off[(size_t) e] + r.cnt[(size_t) e];
     std::vector<int32_t> fill(r.off.begin(), r.off.end() - 1);
     r.src.resize(ids.size());
     r.row_of.resize(ids.size());
@@ -160,10 +183,16 @@ Routing sort_rows(const std::vector<int32_t>& ids, int E) {
 struct MmqBufs {
     Dev xq, gu, h, hq, dm, ident, bounds, grp_gu, grp_d;
     MmqBufs(const Pair& p, int64_t rows, int E)
-        : xq(mmq::q8_bytes(rows, N)), gu((size_t) rows * 1280 * 4), h((size_t) rows * FF * 4),
-          hq(mmq::q8_bytes(rows, FF)), dm((size_t) rows * N * 4), ident((size_t) rows * 4),
-          bounds((size_t) (2 * (E + E / GROUP + 2)) * 4), grp_gu(GROUP * mmq::matrix_bytes(p.gu, 1280, N) + 4096),
-          grp_d(GROUP * mmq::matrix_bytes(p.d, N, FF) + 4096) {}
+        : xq(mmq::q8_bytes(rows, N)),
+          gu((size_t) rows * 1280 * 4),
+          h((size_t) rows * FF * 4),
+          hq(mmq::q8_bytes(rows, FF)),
+          dm((size_t) rows * N * 4),
+          ident((size_t) rows * 4),
+          bounds((size_t) (2 * (E + E / GROUP + 2)) * 4),
+          grp_gu(GROUP * mmq::matrix_bytes(p.gu, 1280, N) + 4096),
+          grp_d(GROUP * mmq::matrix_bytes(p.d, N, FF) + 4096) {
+    }
 };
 // `direct`: no gathers - the products read the blobs where they are (they must lie at a fixed stride, every expert
 // with rows: the timing part's layout), the cost of MMQ's own kernels alone
@@ -173,10 +202,13 @@ void run_mmq(const Pair& p, const Geo& geo, mmq::Context& ctx, MmqBufs& b, const
     const size_t gub = mmq::matrix_bytes(p.gu, 1280, N), db = mmq::matrix_bytes(p.d, N, FF);
     const int E = (int) r.cnt.size();
     std::vector<int32_t> order;
-    for (int e = 0; e < E; ++e) if (r.cnt[(size_t) e] > 0) order.push_back(e);
+    for (int e = 0; e < E; ++e)
+        if (r.cnt[(size_t) e] > 0)
+            order.push_back(e);
     const size_t n = order.size(), ng = (n + GROUP - 1) / GROUP;
     std::vector<int32_t> bh(n + 1 + ng * (GROUP + 1));
-    for (size_t j = 0; j < n; ++j) bh[j] = r.off[(size_t) order[j]];
+    for (size_t j = 0; j < n; ++j)
+        bh[j] = r.off[(size_t) order[j]];
     bh[n] = (int32_t) rows;
     for (size_t g = 0; g < ng; ++g)
         for (size_t i = 0; i <= GROUP; ++i)
@@ -190,30 +222,49 @@ void run_mmq(const Pair& p, const Geo& geo, mmq::Context& ctx, MmqBufs& b, const
         if (!direct)
             mmq::gather_native(bl, bl + geo.up_off, gub / 2, bl + geo.down_off, db, b.grp_gu.as<uint8_t>() + q * gub,
                                b.grp_d.as<uint8_t>() + q * db, s);
-        if (q + 1 < GROUP && j + 1 < n) continue;
+        if (q + 1 < GROUP && j + 1 < n)
+            continue;
         const size_t j0 = j - q, g = j0 / GROUP;
         const int ngx = (int) (q + 1);
         const int64_t r0 = bh[j0], nr = bh[j + 1] - r0;
         int64_t maxr = 0;
-        for (size_t i = j0; i <= j; ++i) maxr = std::max<int64_t>(maxr, r.cnt[(size_t) order[i]]);
+        for (size_t i = j0; i <= j; ++i)
+            maxr = std::max<int64_t>(maxr, r.cnt[(size_t) order[i]]);
         if (!direct) {
             ck(cudaMemsetAsync(b.grp_gu.as<uint8_t>() + (size_t) ngx * gub, 0, 4096, s), "tail");
             ck(cudaMemsetAsync(b.grp_d.as<uint8_t>() + (size_t) ngx * db, 0, 4096, s), "tail");
         }
         const uint8_t* b0 = blob[(size_t) order[j0]];
         mmq::Product gu;
-        gu.w = direct ? (const void*) b0 : b.grp_gu.p; gu.type = (int) p.gu; gu.w_rows = 1280; gu.w_cols = N;
+        gu.w = direct ? (const void*) b0 : b.grp_gu.p;
+        gu.type = (int) p.gu;
+        gu.w_rows = 1280;
+        gu.w_cols = N;
         gu.expert_bytes = direct ? stride : gub;
-        gu.n = ngx; gu.xq = b.xq.p; gu.bounds = b.bounds.as<int32_t>() + j0; gu.ids = b.ident.as<int32_t>();
-        gu.total_rows = rows; gu.max_rows = maxr; gu.dst = b.gu.as<float>(); gu.ld_dst = 1280;
+        gu.n = ngx;
+        gu.xq = b.xq.p;
+        gu.bounds = b.bounds.as<int32_t>() + j0;
+        gu.ids = b.ident.as<int32_t>();
+        gu.total_rows = rows;
+        gu.max_rows = maxr;
+        gu.dst = b.gu.as<float>();
+        gu.ld_dst = 1280;
         ctx.run(gu, s);
         mmq::swiglu(b.gu.as<float>() + r0 * 1280, b.h.as<float>() + r0 * FF, nr, FF, false, s);
         mmq::quantize(b.h.as<float>() + r0 * FF, nullptr, b.hq.p, (int) p.d, FF, FF, nr, s);
         mmq::Product dn;
-        dn.w = direct ? (const void*) (b0 + geo.down_off) : b.grp_d.p; dn.type = (int) p.d; dn.w_rows = N; dn.w_cols = FF;
+        dn.w = direct ? (const void*) (b0 + geo.down_off) : b.grp_d.p;
+        dn.type = (int) p.d;
+        dn.w_rows = N;
+        dn.w_cols = FF;
         dn.expert_bytes = direct ? stride : db;
-        dn.n = ngx; dn.xq = b.hq.p; dn.bounds = b.bounds.as<int32_t>() + n + 1 + g * (GROUP + 1);
-        dn.ids = b.ident.as<int32_t>(); dn.total_rows = nr; dn.max_rows = maxr; dn.dst = b.dm.as<float>() + r0 * N;
+        dn.n = ngx;
+        dn.xq = b.hq.p;
+        dn.bounds = b.bounds.as<int32_t>() + n + 1 + g * (GROUP + 1);
+        dn.ids = b.ident.as<int32_t>();
+        dn.total_rows = nr;
+        dn.max_rows = maxr;
+        dn.dst = b.dm.as<float>() + r0 * N;
         dn.ld_dst = N;
         ctx.run(dn, s);
     }
@@ -223,9 +274,14 @@ void run_mmq(const Pair& p, const Geo& geo, mmq::Context& ctx, MmqBufs& b, const
 struct FusedBufs {
     Dev xa, ha, dm, scratch, slot, src, ids;
     FusedBufs(int T, int64_t rows, int E)
-        : xa(fused::act_bytes(T, N)), ha(fused::act_bytes(rows, FF)), dm((size_t) rows * N * 4),
-          scratch(fused::group_bytes(rows, E)), slot((size_t) rows * 4), src((size_t) rows * 4),
-          ids((size_t) rows * 4) {}
+        : xa(fused::act_bytes(T, N)),
+          ha(fused::act_bytes(rows, FF)),
+          dm((size_t) rows * N * 4),
+          scratch(fused::group_bytes(rows, E)),
+          slot((size_t) rows * 4),
+          src((size_t) rows * 4),
+          ids((size_t) rows * 4) {
+    }
 };
 void run_fused(const Pair& p, const Geo& geo, FusedBufs& b, const float* x_dev, int T, int E,
                const std::vector<int>& cuts, const std::vector<const uint8_t*>& blob, cudaStream_t s) {
@@ -238,14 +294,16 @@ void run_fused(const Pair& p, const Geo& geo, FusedBufs& b, const float* x_dev, 
             fused::Batch bt;
             bt.e0 = e0;
             bt.e1 = std::min(cuts[c + 1], e0 + fused::kMaxBatch);
-            for (int e = bt.e0; e < bt.e1; ++e) bt.blob[e - bt.e0] = blob[(size_t) e];
-            fused::experts_native(bt, ng, E, rows, b.scratch.p, b.xa.p, b.src.as<int32_t>(), b.ha.p, b.dm.as<float>(), s);
+            for (int e = bt.e0; e < bt.e1; ++e)
+                bt.blob[e - bt.e0] = blob[(size_t) e];
+            fused::experts_native(bt, ng, E, rows, b.scratch.p, b.xa.p, b.src.as<int32_t>(), b.ha.p, b.dm.as<float>(),
+                                  s);
         }
     }
 }
 
 struct Err {
-    double rms = 0, worst = 0;   // RMS error / RMS of the reference; the worst row's max |error| / its max |ref|
+    double rms = 0, worst = 0; // RMS error / RMS of the reference; the worst row's max |error| / its max |ref|
 };
 // y_a[row_a(i)] against y_b[row_b(i)] for every pair i (rows of N values)
 template <typename RA, typename RB>
@@ -257,15 +315,18 @@ Err compare(const std::vector<float>& a, RA row_a, const std::vector<float>& b, 
         const float* yb = b.data() + (size_t) row_b(i) * N;
         double me = 0, mr = 0;
         for (int o = 0; o < N; ++o) {
-            if (!std::isfinite(ya[o])) throw std::runtime_error("a non-finite output");
+            if (!std::isfinite(ya[o]))
+                throw std::runtime_error("a non-finite output");
             const double d = (double) ya[o] - yb[o];
             e2 += d * d;
             r2 += (double) yb[o] * yb[o];
             me = std::max(me, std::fabs(d));
             mr = std::max(mr, (double) std::fabs(yb[o]));
         }
-        if (mr > 0) out.worst = std::max(out.worst, me / mr);
-        else if (me > 0) out.worst = 1e30;   // a zero row must stay exactly zero
+        if (mr > 0)
+            out.worst = std::max(out.worst, me / mr);
+        else if (me > 0)
+            out.worst = 1e30; // a zero row must stay exactly zero
     }
     out.rms = r2 > 0 ? std::sqrt(e2 / r2) : 0;
     return out;
@@ -292,17 +353,18 @@ void reference_part(const Pair& p, cudaStream_t s) {
     std::vector<const uint8_t*> blob((size_t) E);
     for (int e = 0; e < E; ++e) {
         host[(size_t) e] = make_blob(p, geo, rng);
-        dev.push_back(std::make_unique<Dev>(geo.bytes + 4096 * (size_t) (e % 3) + 64));   // unrelated addresses
-        uint8_t* q = dev.back()->as<uint8_t>() + 256 * (size_t) (e % 3) + 2 * (size_t) (e % 2);   // 2-byte aligned
+        dev.push_back(std::make_unique<Dev>(geo.bytes + 4096 * (size_t) (e % 3) + 64));         // unrelated addresses
+        uint8_t* q = dev.back()->as<uint8_t>() + 256 * (size_t) (e % 3) + 2 * (size_t) (e % 2); // 2-byte aligned
         ck(cudaMemcpy(q, host[(size_t) e].data(), geo.bytes, cudaMemcpyHostToDevice), "blob");
         blob[(size_t) e] = q;
     }
     const std::vector<float> x = make_x(T, rng, ZERO);
-    const std::vector<int32_t> ids = make_ids(T, E, rng, 2, 4);   // experts 0, 1 hot (several tiles), 60-63 unused
+    const std::vector<int32_t> ids = make_ids(T, E, rng, 2, 4); // experts 0, 1 hot (several tiles), 60-63 unused
     const int64_t rows = (int64_t) T * K;
     const Routing r = sort_rows(ids, E);
-    std::printf("%s - reference part: %d tokens, %d experts, rows per expert: max %d, experts without rows %d\n", p.name,
-                T, E, *std::max_element(r.cnt.begin(), r.cnt.end()), (int) std::count(r.cnt.begin(), r.cnt.end(), 0));
+    std::printf("%s - reference part: %d tokens, %d experts, rows per expert: max %d, experts without rows %d\n",
+                p.name, T, E, *std::max_element(r.cnt.begin(), r.cnt.end()),
+                (int) std::count(r.cnt.begin(), r.cnt.end(), 0));
 
     Dev x_dev(x.size() * 4), src_dev((size_t) rows * 4);
     ck(cudaMemcpy(x_dev.p, x.data(), x.size() * 4, cudaMemcpyHostToDevice), "x");
@@ -315,14 +377,15 @@ void reference_part(const Pair& p, cudaStream_t s) {
     run_mmq(p, geo, ctx, mb, r, x_dev.as<float>(), src_dev.as<int32_t>(), blob, rows, s);
     FusedBufs fb(T, rows, E);
     ck(cudaMemcpy(fb.ids.p, ids.data(), ids.size() * 4, cudaMemcpyHostToDevice), "ids");
-    ck(cudaMemset(fb.dm.p, 0xff, (size_t) rows * N * 4), "sentinel");   // an unwritten row is NaN
+    ck(cudaMemset(fb.dm.p, 0xff, (size_t) rows * N * 4), "sentinel"); // an unwritten row is NaN
     ck(cudaDeviceSynchronize(), "uploads");
     run_fused(p, geo, fb, x_dev.as<float>(), T, E, {0, 1, 20, E}, blob, s);
     ck(cudaStreamSynchronize(s), "sync");
     const std::vector<float> y_mmq = download(mb.dm, (size_t) rows * N), y_f = download(fb.dm, (size_t) rows * N);
     const std::vector<int32_t> slot = download_i(fb.slot, (size_t) rows), fsrc = download_i(fb.src, (size_t) rows);
     for (int64_t i = 0; i < rows; ++i)
-        if (fsrc[(size_t) slot[(size_t) i]] != (int32_t) (i / K)) throw std::runtime_error("group: slot/src disagree");
+        if (fsrc[(size_t) slot[(size_t) i]] != (int32_t) (i / K))
+            throw std::runtime_error("group: slot/src disagree");
 
     // the reference, an expert at a time on all cores
     std::vector<float> ref((size_t) rows * N);
@@ -332,27 +395,34 @@ void reference_part(const Pair& p, cudaStream_t s) {
         th.emplace_back([&, w] {
             std::vector<float> gu, dn, h(FF);
             for (int e = w; e < E; e += nth) {
-                if (r.cnt[(size_t) e] == 0) continue;
+                if (r.cnt[(size_t) e] == 0)
+                    continue;
                 dequant(p, geo, host[(size_t) e], gu, dn);
                 for (int64_t i = 0; i < rows; ++i) {
-                    if (ids[(size_t) i] != e) continue;
+                    if (ids[(size_t) i] != e)
+                        continue;
                     const float* xr = x.data() + (size_t) (i / K) * N;
                     for (int f = 0; f < FF; ++f) {
                         double gt = 0, up = 0;
                         const float *wg = gu.data() + (size_t) f * N, *wu = gu.data() + (size_t) (FF + f) * N;
-                        for (int k = 0; k < N; ++k) { gt += (double) wg[k] * xr[k]; up += (double) wu[k] * xr[k]; }
+                        for (int k = 0; k < N; ++k) {
+                            gt += (double) wg[k] * xr[k];
+                            up += (double) wu[k] * xr[k];
+                        }
                         h[(size_t) f] = (float) (gt / (1.0 + std::exp(-gt)) * up);
                     }
                     for (int o = 0; o < N; ++o) {
                         double a = 0;
                         const float* wd = dn.data() + (size_t) o * FF;
-                        for (int f = 0; f < FF; ++f) a += (double) wd[f] * h[(size_t) f];
+                        for (int f = 0; f < FF; ++f)
+                            a += (double) wd[f] * h[(size_t) f];
                         ref[(size_t) i * N + o] = (float) a;
                     }
                 }
             }
         });
-    for (auto& t : th) t.join();
+    for (auto& t : th)
+        t.join();
 
     auto pair = [](size_t i) { return (int64_t) i; };
     auto mrow = [&](size_t i) { return (int64_t) r.row_of[i]; };
@@ -367,7 +437,8 @@ void reference_part(const Pair& p, cudaStream_t s) {
     for (int k = 0; k < K; ++k)
         for (int o = 0; o < N; ++o)
             zmax = std::max(zmax, (double) std::fabs(y_f[(size_t) slot[(size_t) (ZERO * K + k)] * N + o]));
-    if (zmax != 0) throw std::runtime_error(std::string(p.name) + ": the all-zero token's outputs are not zero");
+    if (zmax != 0)
+        throw std::runtime_error(std::string(p.name) + ": the all-zero token's outputs are not zero");
     if (ef.rms > 1.5 * em.rms || ef.worst > 2.0 * em.worst)
         throw std::runtime_error(std::string(p.name) + ": the fused path's error is not comparable to MMQ's");
 }
@@ -381,20 +452,22 @@ void timing_part(const Pair& p, int T, cudaStream_t s) {
     // 512 distinct blobs - the products read each once per tile, as the engine does
     // at a stride of whole blocks of both formats (MMQ's expert stride counts blocks), + MMQ's read past the end
     size_t unit = ggml_type_size(p.gu);
-    while (unit % ggml_type_size(p.d) != 0 || unit % 16 != 0) unit += ggml_type_size(p.gu);
+    while (unit % ggml_type_size(p.d) != 0 || unit % 16 != 0)
+        unit += ggml_type_size(p.gu);
     const size_t stride = (geo.bytes + unit - 1) / unit * unit;
     Dev blobs((size_t) E * stride + 4096);
     ck(cudaMemset(blobs.p, 0, (size_t) E * stride + 4096), "zero");
     {
         std::vector<uint8_t> b = make_blob(p, geo, rng);
         for (int e = 0; e < E; ++e) {
-            b[4 + (size_t) (e % 16)] ^= (uint8_t) e;   // not all equal (inside the first block, not its scale)
+            b[4 + (size_t) (e % 16)] ^= (uint8_t) e; // not all equal (inside the first block, not its scale)
             ck(cudaMemcpy(blobs.as<uint8_t>() + (size_t) e * stride, b.data(), geo.bytes, cudaMemcpyHostToDevice),
                "blob");
         }
     }
     std::vector<const uint8_t*> blob((size_t) E);
-    for (int e = 0; e < E; ++e) blob[(size_t) e] = blobs.as<uint8_t>() + (size_t) e * stride;
+    for (int e = 0; e < E; ++e)
+        blob[(size_t) e] = blobs.as<uint8_t>() + (size_t) e * stride;
     const std::vector<float> x = make_x(T, rng, -1);
     const std::vector<int32_t> ids = make_ids(T, E, rng, 0, 0);
     const Routing r = sort_rows(ids, E);
@@ -405,7 +478,7 @@ void timing_part(const Pair& p, int T, cudaStream_t s) {
     MmqBufs mb(p, rows, E);
     FusedBufs fb(T, rows, E);
     ck(cudaMemcpy(fb.ids.p, ids.data(), ids.size() * 4, cudaMemcpyHostToDevice), "ids");
-    ck(cudaDeviceSynchronize(), "uploads");   // (see reference_part)
+    ck(cudaDeviceSynchronize(), "uploads"); // (see reference_part)
     cudaEvent_t a, b;
     ck(cudaEventCreate(&a), "event");
     ck(cudaEventCreate(&b), "event");
@@ -424,12 +497,13 @@ void timing_part(const Pair& p, int T, cudaStream_t s) {
     auto direct_run = [&] {
         run_mmq(p, geo, ctx, mb, r, x_dev.as<float>(), src_dev.as<int32_t>(), blob, rows, s, true, stride);
     };
-    if (std::getenv("S20_IDSDIAG")) {   // which step overwrites the routing ids on the device
+    if (std::getenv("S20_IDSDIAG")) { // which step overwrites the routing ids on the device
         auto check = [&](const char* after) {
             ck(cudaStreamSynchronize(s), "sync");
             const std::vector<int32_t> d = download_i(fb.ids, (size_t) rows);
             int64_t bad = 0;
-            for (size_t i = 0; i < (size_t) rows; ++i) bad += d[i] != ids[i];
+            for (size_t i = 0; i < (size_t) rows; ++i)
+                bad += d[i] != ids[i];
             std::printf("    ids on the device after %s: %lld of %lld differ (fb.ids %p, mb.dm %p..%p, fb.dm %p..%p)\n",
                         after, (long long) bad, (long long) rows, fb.ids.p, mb.dm.p,
                         (void*) (mb.dm.as<uint8_t>() + (size_t) rows * N * 4), fb.dm.p,
@@ -446,15 +520,18 @@ void timing_part(const Pair& p, int T, cudaStream_t s) {
         }
     }
     // ~1 s of both first (the clocks ramp up), then alternating rounds; the medians
-    const bool no_mmq = std::getenv("S20_NOMMQ") != nullptr;   // (debug: the fused runs alone)
-    for (float spent = 0; spent < 1000.0f;) spent += (no_mmq ? 0.0f : once(mmq_run)) + once(fused_run);
+    const bool no_mmq = std::getenv("S20_NOMMQ") != nullptr; // (debug: the fused runs alone)
+    for (float spent = 0; spent < 1000.0f;)
+        spent += (no_mmq ? 0.0f : once(mmq_run)) + once(fused_run);
     std::vector<float> tm, tf, td;
     for (int rep = 0; rep < 8; ++rep) {
         tm.push_back(no_mmq ? 1.0f : once(mmq_run));
         tf.push_back(once(fused_run));
-        if (all_routed && !no_mmq) td.push_back(once(direct_run));
+        if (all_routed && !no_mmq)
+            td.push_back(once(direct_run));
     }
-    if (td.empty()) td.push_back(0.0f);
+    if (td.empty())
+        td.push_back(0.0f);
     std::sort(tm.begin(), tm.end());
     std::sort(tf.begin(), tf.end());
     std::sort(td.begin(), td.end());
@@ -462,19 +539,21 @@ void timing_part(const Pair& p, int T, cudaStream_t s) {
     if (all_routed)
         std::printf("  (MMQ's products alone, no gathers: %.3f ms - fused %.2fx)\n", td[td.size() / 2],
                     td[td.size() / 2] / t_f);
-    std::vector<float> tf2;   // back to back
-    for (int rep = 0; rep < 8; ++rep) tf2.push_back(once(fused_run));
+    std::vector<float> tf2; // back to back
+    for (int rep = 0; rep < 8; ++rep)
+        tf2.push_back(once(fused_run));
     std::sort(tf2.begin(), tf2.end());
     std::printf("  (fused back to back: median %.3f ms, min %.3f; alternating min %.3f; MMQ min %.3f)\n", tf2[4],
                 tf2[0], tf[0], tm[0]);
     const std::vector<float> y_mmq = download(mb.dm, (size_t) rows * N), y_f = download(fb.dm, (size_t) rows * N);
     const std::vector<int32_t> slot = download_i(fb.slot, (size_t) rows);
-    const Err efm = compare(y_f, [&](size_t i) { return (int64_t) slot[i]; }, y_mmq,
-                            [&](size_t i) { return (int64_t) r.row_of[i]; }, (size_t) rows);
+    const Err efm = compare(
+        y_f, [&](size_t i) { return (int64_t) slot[i]; }, y_mmq, [&](size_t i) { return (int64_t) r.row_of[i]; },
+        (size_t) rows);
     std::printf("%s - timing part: %d tokens x top %d over %d experts, one layer: MMQ path %.3f ms, fused %.3f ms "
                 "(%.2fx); fused vs MMQ rel RMS %.3e worst row %.3e\n",
                 p.name, T, K, E, t_mmq, t_f, t_mmq / t_f, efm.rms, efm.worst);
-    {   // the grouping: every pair in its expert's rows (the near-identical blobs here would hide a wrong expert)
+    { // the grouping: every pair in its expert's rows (the near-identical blobs here would hide a wrong expert)
         const std::vector<int32_t> fsrc = download_i(fb.src, (size_t) rows);
         int64_t bad = 0, bad_src = 0;
         for (size_t i = 0; i < (size_t) rows; ++i) {
@@ -487,16 +566,20 @@ void timing_part(const Pair& p, int T, cudaStream_t s) {
             ck(cudaMemcpy(tbl.data(), fb.scratch.p, tbl.size() * 4, cudaMemcpyDeviceToHost), "tables");
             int64_t bad_cnt = 0, bad_off = 0, bad_ids = 0;
             const std::vector<int32_t> d_ids = download_i(fb.ids, (size_t) rows);
-            for (size_t i = 0; i < (size_t) rows; ++i) bad_ids += d_ids[i] != ids[i];
+            for (size_t i = 0; i < (size_t) rows; ++i)
+                bad_ids += d_ids[i] != ids[i];
             std::printf("  the routing ids on the device: %lld of %lld differ (first %d %d %d)\n", (long long) bad_ids,
                         (long long) rows, d_ids[0], d_ids[1], d_ids[2]);
-            const int32_t smin = *std::min_element(slot.begin(), slot.end()), smax = *std::max_element(slot.begin(), slot.end());
+            const int32_t smin = *std::min_element(slot.begin(), slot.end()),
+                          smax = *std::max_element(slot.begin(), slot.end());
             std::printf("  slots %d..%d; off[0..3] %d %d %d %d off[E] %d; fill[0..3] %d %d %d %d; ts[0..3] %d %d %d %d "
-                        "ts[E] %d\n", smin, smax, tbl[E], tbl[E + 1], tbl[E + 2], tbl[E + 3], tbl[2 * E], tbl[2 * E + 1],
+                        "ts[E] %d\n",
+                        smin, smax, tbl[E], tbl[E + 1], tbl[E + 2], tbl[E + 3], tbl[2 * E], tbl[2 * E + 1],
                         tbl[2 * E + 2], tbl[2 * E + 3], tbl[2 * E + 4], tbl[3 * E + 1], tbl[3 * E + 2], tbl[3 * E + 3],
                         tbl[3 * E + 4], tbl[4 * E + 1]);
             // the group again on these ids, synchronously
-            fused::group(fb.ids.as<int32_t>(), rows, K, E, fb.scratch.p, fb.slot.as<int32_t>(), fb.src.as<int32_t>(), s);
+            fused::group(fb.ids.as<int32_t>(), rows, K, E, fb.scratch.p, fb.slot.as<int32_t>(), fb.src.as<int32_t>(),
+                         s);
             ck(cudaStreamSynchronize(s), "sync");
             std::vector<int32_t> t2((size_t) 4 * E + 2);
             ck(cudaMemcpy(t2.data(), fb.scratch.p, t2.size() * 4, cudaMemcpyDeviceToHost), "tables");
@@ -506,21 +589,25 @@ void timing_part(const Pair& p, int T, cudaStream_t s) {
                 bad_cnt += tbl[(size_t) e] != r.cnt[(size_t) e];
                 bad_off += tbl[(size_t) E + e] != r.off[(size_t) e];
             }
-            std::printf("  GROUPING WRONG: %lld pairs outside their expert's rows, %lld src mismatches; tables: %lld counts "
-                        "and %lld offsets differ from the host's (cnt[0..3] %d %d %d %d vs %d %d %d %d)\n",
-                        (long long) bad, (long long) bad_src, (long long) bad_cnt, (long long) bad_off, tbl[0], tbl[1],
-                        tbl[2], tbl[3], r.cnt[0], r.cnt[1], r.cnt[2], r.cnt[3]);
+            std::printf(
+                "  GROUPING WRONG: %lld pairs outside their expert's rows, %lld src mismatches; tables: %lld counts "
+                "and %lld offsets differ from the host's (cnt[0..3] %d %d %d %d vs %d %d %d %d)\n",
+                (long long) bad, (long long) bad_src, (long long) bad_cnt, (long long) bad_off, tbl[0], tbl[1], tbl[2],
+                tbl[3], r.cnt[0], r.cnt[1], r.cnt[2], r.cnt[3]);
             throw std::runtime_error(std::string(p.name) + ": the grouping is wrong");
         }
     }
-    if (std::getenv("S20_ROWDIAG")) {   // the pairs whose rows differ most: expert, its rows, the row's place
+    if (std::getenv("S20_ROWDIAG")) { // the pairs whose rows differ most: expert, its rows, the row's place
         const std::vector<int32_t> fsrc = download_i(fb.src, (size_t) rows);
         std::vector<std::pair<double, size_t>> worst;
         for (size_t i = 0; i < (size_t) rows; ++i) {
             const float* a = y_f.data() + (size_t) slot[i] * N;
             const float* m = y_mmq.data() + (size_t) r.row_of[i] * N;
             double me = 0, mr = 0;
-            for (int o = 0; o < N; ++o) { me = std::max(me, (double) std::fabs(a[o] - m[o])); mr = std::max(mr, (double) std::fabs(m[o])); }
+            for (int o = 0; o < N; ++o) {
+                me = std::max(me, (double) std::fabs(a[o] - m[o]));
+                mr = std::max(mr, (double) std::fabs(m[o]));
+            }
             worst.push_back({mr > 0 ? me / mr : me, i});
         }
         std::sort(worst.rbegin(), worst.rend());
@@ -529,7 +616,9 @@ void timing_part(const Pair& p, int T, cudaStream_t s) {
             const int e = ids[i];
             // the expert's rows start at its first fused row: the smallest slot of its pairs
             int32_t first = INT32_MAX;
-            for (size_t j = 0; j < (size_t) rows; ++j) if (ids[j] == e) first = std::min(first, slot[j]);
+            for (size_t j = 0; j < (size_t) rows; ++j)
+                if (ids[j] == e)
+                    first = std::min(first, slot[j]);
             std::printf("    pair %zu token %zu expert %d (%d rows) fused row %d (+%d in the expert) max rel %.3e\n", i,
                         i / K, e, r.cnt[(size_t) e], slot[i], slot[i] - first, worst[(size_t) k].first);
         }
@@ -538,7 +627,8 @@ void timing_part(const Pair& p, int T, cudaStream_t s) {
     // both against the double-precision reference on a sample of 96 pairs
     {
         std::vector<size_t> pick;
-        for (size_t i = 0; i < 96; ++i) pick.push_back((i * 2654435761u) % (size_t) rows);
+        for (size_t i = 0; i < 96; ++i)
+            pick.push_back((i * 2654435761u) % (size_t) rows);
         std::vector<float> ref(pick.size() * N), ym(pick.size() * N), yf(pick.size() * N);
         std::vector<uint8_t> hb(geo.bytes);
         std::vector<float> gu, dn, h(FF);
@@ -551,13 +641,17 @@ void timing_part(const Pair& p, int T, cudaStream_t s) {
             for (int f = 0; f < FF; ++f) {
                 double gt = 0, up = 0;
                 const float *wg = gu.data() + (size_t) f * N, *wu = gu.data() + (size_t) (FF + f) * N;
-                for (int k = 0; k < N; ++k) { gt += (double) wg[k] * xr[k]; up += (double) wu[k] * xr[k]; }
+                for (int k = 0; k < N; ++k) {
+                    gt += (double) wg[k] * xr[k];
+                    up += (double) wu[k] * xr[k];
+                }
                 h[(size_t) f] = (float) (gt / (1.0 + std::exp(-gt)) * up);
             }
             for (int o = 0; o < N; ++o) {
                 double a = 0;
                 const float* wd = dn.data() + (size_t) o * FF;
-                for (int f = 0; f < FF; ++f) a += (double) wd[f] * h[(size_t) f];
+                for (int f = 0; f < FF; ++f)
+                    a += (double) wd[f] * h[(size_t) f];
                 ref[j * N + o] = (float) a;
             }
             std::copy_n(y_mmq.begin() + (ptrdiff_t) ((size_t) r.row_of[i] * N), N, ym.begin() + (ptrdiff_t) (j * N));
@@ -566,15 +660,18 @@ void timing_part(const Pair& p, int T, cudaStream_t s) {
         auto id = [](size_t j) { return (int64_t) j; };
         const Err em = compare(ym, id, ref, id, pick.size()), ef = compare(yf, id, ref, id, pick.size());
         std::printf("  sample of %zu pairs vs FP32 reference: MMQ rel RMS %.3e worst %.3e, fused rel RMS %.3e worst "
-                    "%.3e\n", pick.size(), em.rms, em.worst, ef.rms, ef.worst);
+                    "%.3e\n",
+                    pick.size(), em.rms, em.worst, ef.rms, ef.worst);
         if (ef.rms > 1.5 * em.rms || ef.worst > 2.0 * em.worst)
-            throw std::runtime_error(std::string(p.name) + ": the fused path's error is not comparable to MMQ's (timing)");
+            throw std::runtime_error(std::string(p.name) +
+                                     ": the fused path's error is not comparable to MMQ's (timing)");
     }
     cudaEventDestroy(a);
     cudaEventDestroy(b);
-    if (efm.rms > 0.05) throw std::runtime_error(std::string(p.name) + ": the paths disagree at the real shape");
+    if (efm.rms > 0.05)
+        throw std::runtime_error(std::string(p.name) + ": the paths disagree at the real shape");
 }
-}  // namespace
+} // namespace
 
 int main(int argc, char** argv) {
     try {
@@ -584,43 +681,64 @@ int main(int argc, char** argv) {
         setenv("GUILD_PF_FUSED", "1", 1);
 #endif
         int n = 0;
-        if (cudaGetDeviceCount(&n) != cudaSuccess || n == 0) { std::printf("no CUDA device: skipped\n"); return 77; }
-        if (!fused::available()) { std::printf("the fused kernels need sm_80 or newer: skipped\n"); return 77; }
-        if (!mmq::built()) { std::printf("no MMQ in this build\n"); return 1; }
-        const std::vector<Pair> pairs = {
-            {GGML_TYPE_IQ2_S, GGML_TYPE_Q2_0, "IQ2_S / Q2_0"},       {GGML_TYPE_IQ2_XXS, GGML_TYPE_Q2_0, "IQ2_XXS / Q2_0"},
-            {GGML_TYPE_IQ2_XS, GGML_TYPE_IQ4_NL, "IQ2_XS / IQ4_NL"}, {GGML_TYPE_IQ3_XXS, GGML_TYPE_IQ4_NL, "IQ3_XXS / IQ4_NL"},
-            {GGML_TYPE_IQ3_S, GGML_TYPE_IQ4_NL, "IQ3_S / IQ4_NL"},   {GGML_TYPE_IQ4_XS, GGML_TYPE_Q2_0, "IQ4_XS / Q2_0"}};
-        const char* only = nullptr;   // --only=NAME: the pairs whose name contains NAME
+        if (cudaGetDeviceCount(&n) != cudaSuccess || n == 0) {
+            std::printf("no CUDA device: skipped\n");
+            return 77;
+        }
+        if (!fused::available()) {
+            std::printf("the fused kernels need sm_80 or newer: skipped\n");
+            return 77;
+        }
+        if (!mmq::built()) {
+            std::printf("no MMQ in this build\n");
+            return 1;
+        }
+        const std::vector<Pair> pairs = {{GGML_TYPE_IQ2_S, GGML_TYPE_Q2_0, "IQ2_S / Q2_0"},
+                                         {GGML_TYPE_IQ2_XXS, GGML_TYPE_Q2_0, "IQ2_XXS / Q2_0"},
+                                         {GGML_TYPE_IQ2_XS, GGML_TYPE_IQ4_NL, "IQ2_XS / IQ4_NL"},
+                                         {GGML_TYPE_IQ3_XXS, GGML_TYPE_IQ4_NL, "IQ3_XXS / IQ4_NL"},
+                                         {GGML_TYPE_IQ3_S, GGML_TYPE_IQ4_NL, "IQ3_S / IQ4_NL"},
+                                         {GGML_TYPE_IQ4_XS, GGML_TYPE_Q2_0, "IQ4_XS / Q2_0"}};
+        const char* only = nullptr; // --only=NAME: the pairs whose name contains NAME
         for (int i = 1; i < argc; ++i)
-            if (std::strncmp(argv[i], "--only=", 7) == 0) only = argv[i] + 7;
-        bool timing = true, ref = true;   // --no-timing, --no-ref: skip a part
-        std::vector<int> chunks = {2048, 3584, 8192};   // --chunks=A,B: the timing part's chunk sizes
+            if (std::strncmp(argv[i], "--only=", 7) == 0)
+                only = argv[i] + 7;
+        bool timing = true, ref = true;               // --no-timing, --no-ref: skip a part
+        std::vector<int> chunks = {2048, 3584, 8192}; // --chunks=A,B: the timing part's chunk sizes
         for (int i = 1; i < argc; ++i) {
-            if (std::strcmp(argv[i], "--no-timing") == 0) timing = false;
-            if (std::strcmp(argv[i], "--no-ref") == 0) ref = false;
+            if (std::strcmp(argv[i], "--no-timing") == 0)
+                timing = false;
+            if (std::strcmp(argv[i], "--no-ref") == 0)
+                ref = false;
             if (std::strncmp(argv[i], "--chunks=", 9) == 0) {
                 chunks.clear();
                 for (const char* c = argv[i] + 9; *c;) {
                     chunks.push_back(std::atoi(c));
-                    while (*c && *c != ',') ++c;
-                    if (*c == ',') ++c;
+                    while (*c && *c != ',')
+                        ++c;
+                    if (*c == ',')
+                        ++c;
                 }
             }
         }
         cudaStream_t s = nullptr;
         ck(cudaStreamCreateWithFlags(&s, cudaStreamNonBlocking), "stream");
         for (const Pair& p : pairs) {
-            if (only && std::string(p.name).find(only) == std::string::npos) continue;
+            if (only && std::string(p.name).find(only) == std::string::npos)
+                continue;
             if (!fused::native_supported((int) p.gu, (int) p.d))
                 throw std::runtime_error(std::string(p.name) + ": not covered by the native kernels");
-            if (ref) reference_part(p, s);
+            if (ref)
+                reference_part(p, s);
         }
         if (timing) {
-            // the IQ2_XS pack's layers (34 of 48 IQ2_S / Q2_0, 11 IQ2_XXS / Q2_0), the IQ3_S pack's most common, IQ3_XXS's
+            // the IQ2_XS pack's layers (34 of 48 IQ2_S / Q2_0, 11 IQ2_XXS / Q2_0), the IQ3_S pack's most common,
+            // IQ3_XXS's
             for (const Pair& p : {pairs[0], pairs[1], pairs[4], pairs[3]}) {
-                if (only && std::string(p.name).find(only) == std::string::npos) continue;
-                for (int T : chunks) timing_part(p, T, s);
+                if (only && std::string(p.name).find(only) == std::string::npos)
+                    continue;
+                for (int T : chunks)
+                    timing_part(p, T, s);
             }
         }
         ck(cudaStreamDestroy(s), "destroy");

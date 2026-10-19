@@ -19,9 +19,7 @@ struct SmokeSessionState {
     int64_t max_context = 0;
 };
 
-guild_status_t smoke_session_alloc(const void*,
-                                   int64_t max_context,
-                                   guild_session_state_handle_t* out_state,
+guild_status_t smoke_session_alloc(const void*, int64_t max_context, guild_session_state_handle_t* out_state,
                                    guild_error_info_t* err) {
     if (!out_state || max_context <= 0) {
         if (err) {
@@ -54,13 +52,8 @@ guild_status_t runner_plugin_init(guild_core_host_t host, const guild_host_api_v
         return GUILD_STATUS_ERR_ABI_MISMATCH;
     }
 
-    const guild_op_kind_t req_ops[] = {
-        GUILD_OP_BATCHED_EXPERT_EXEC,
-        GUILD_OP_FINITE_CHECK
-    };
-    const char* pkg_deps[] = {
-        "builtin.guild-kernels-cpu"
-    };
+    const guild_op_kind_t req_ops[] = {GUILD_OP_BATCHED_EXPERT_EXEC, GUILD_OP_FINITE_CHECK};
+    const char* pkg_deps[] = {"builtin.guild-kernels-cpu"};
 
     guild_runner_desc_v1_t rdesc{};
     rdesc.struct_size = sizeof(rdesc);
@@ -88,11 +81,11 @@ void runner_plugin_shutdown(guild_core_host_t) {
 
 extern "C" {
 
-GUILD_PLUGIN_EXPORT guild_status_t guild_plugin_entry_v1(
-    uint32_t host_abi_version,
-    guild_plugin_descriptor_v1_t* out_plugin_desc,
-    guild_error_info_t*) {
-    if (!out_plugin_desc) return GUILD_STATUS_ERR_INVALID_ARGUMENT;
+GUILD_PLUGIN_EXPORT guild_status_t guild_plugin_entry_v1(uint32_t host_abi_version,
+                                                         guild_plugin_descriptor_v1_t* out_plugin_desc,
+                                                         guild_error_info_t*) {
+    if (!out_plugin_desc)
+        return GUILD_STATUS_ERR_INVALID_ARGUMENT;
     if (GUILD_KERNEL_ABI_VERSION_MAJOR_OF(host_abi_version) != GUILD_KERNEL_ABI_VERSION_MAJOR) {
         return GUILD_STATUS_ERR_ABI_MISMATCH;
     }

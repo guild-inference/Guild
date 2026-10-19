@@ -10,6 +10,6 @@ inline std::string official_guild_public_key_hex() {
     return key.public_key_hex;
 }
 inline void trust_test_signing_key(PackageSecurityPolicy& policy) {
-    policy.trust_publisher_key(kOfficialGuildPublisherId,kOfficialGuildReleaseKeyId,official_guild_public_key_hex());
+    policy.trust_publisher_key(kOfficialGuildPublisherId, kOfficialGuildReleaseKeyId, official_guild_public_key_hex());
 }
-}
+} // namespace guild::abi

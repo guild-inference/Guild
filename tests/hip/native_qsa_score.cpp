@@ -6,13 +6,13 @@
 #include <cstdio>
 #include <vector>
 
-#define CHECK(call)                                                                                                  \
-    do {                                                                                                             \
-        const hipError_t error = (call);                                                                             \
-        if (error != hipSuccess) {                                                                                   \
-            std::fprintf(stderr, "%s: %s\n", #call, hipGetErrorString(error));                                     \
-            return 2;                                                                                                \
-        }                                                                                                            \
+#define CHECK(call)                                                                                                    \
+    do {                                                                                                               \
+        const hipError_t error = (call);                                                                               \
+        if (error != hipSuccess) {                                                                                     \
+            std::fprintf(stderr, "%s: %s\n", #call, hipGetErrorString(error));                                         \
+            return 2;                                                                                                  \
+        }                                                                                                              \
     } while (0)
 
 int main() {
@@ -21,8 +21,8 @@ int main() {
     constexpr int kMaxCells = 8, kMaxBlocks = 3, kCells = 7;
     const QsaShapes shapes = qsa_real_shapes();
 
-    std::vector<float> pooled(kMaxBlocks * kDim), query(kHeads * kDim), bias(kMaxBlocks),
-        scores(kMaxCells, -123.0f), expected(kMaxCells, -123.0f);
+    std::vector<float> pooled(kMaxBlocks * kDim), query(kHeads * kDim), bias(kMaxBlocks), scores(kMaxCells, -123.0f),
+        expected(kMaxCells, -123.0f);
     const float head_sign[kHeads] = {1.0f, -1.0f, 1.0f, -1.0f};
     for (int row = 0; row < kMaxBlocks; ++row)
         for (int d = 0; d < kDim; ++d)
@@ -30,7 +30,8 @@ int main() {
     for (int head = 0; head < kHeads; ++head)
         for (int d = 0; d < kDim; ++d)
             query[head * kDim + d] = head_sign[head] * (1.0f + static_cast<float>((head + d) % 5) / 16.0f) / 16.0f;
-    for (int row = 0; row < kMaxBlocks; ++row) bias[row] = (static_cast<float>(row) - 1.0f) / 8.0f;
+    for (int row = 0; row < kMaxBlocks; ++row)
+        bias[row] = (static_cast<float>(row) - 1.0f) / 8.0f;
 
     int32_t step[kStepCount] = {kCells - 1, kCells, kCells / kBlock, static_cast<int32_t>(kCells)};
     bool saw_positive_head = false, saw_negative_head = false;
@@ -45,10 +46,12 @@ int main() {
             sum = sum + (dot > 0.0f ? dot : 0.0f);
         }
         sum = sum + bias[row];
-        if (row == step[kStepNBid] && kCells % kBlock != 0) sum = sum + 1.0e9f;
+        if (row == step[kStepNBid] && kCells % kBlock != 0)
+            sum = sum + 1.0e9f;
         const int lo = row * kBlock;
         const int hi = (row + 1) * kBlock < kCells ? (row + 1) * kBlock : kCells;
-        for (int cell = lo; cell < hi; ++cell) expected[cell] = sum;
+        for (int cell = lo; cell < hi; ++cell)
+            expected[cell] = sum;
     }
     if (!saw_positive_head || !saw_negative_head) {
         std::fprintf(stderr, "fixture did not exercise both positive and negative head scores\n");
@@ -89,7 +92,8 @@ int main() {
     CHECK(hipFree(device_bias));
     CHECK(hipFree(device_query));
     CHECK(hipFree(device_pooled));
-    if (!ok) return 1;
+    if (!ok)
+        return 1;
     std::puts("native QSA HIP scalar parity OK: FMA order, per-head ReLU, bias, partial tail and padding");
     return 0;
 }

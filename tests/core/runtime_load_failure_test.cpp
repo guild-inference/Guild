@@ -31,7 +31,10 @@ int main() {
     };
     rejects(); // absent pack
     opts.paths.pack_dir = root.string();
-    { std::ofstream index(root / "index.txt"); index << "not a pack\n"; }
+    {
+        std::ofstream index(root / "index.txt");
+        index << "not a pack\n";
+    }
     rejects(); // absent primary file
     opts.paths.primary_model_path = (root / "absent.gguf").string();
     rejects();

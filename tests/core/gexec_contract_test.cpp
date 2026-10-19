@@ -32,10 +32,8 @@ GExecArtifactIdentity make_base_identity() {
     id.module_abi_version = 1;
     id.runner_id = "guild.runner.qwen3_5_moe.v1";
     id.runner_version = 100;
-    id.bound_packages = {
-        {"guild.kernel.cpu.native", "1.0.0", "aaaa1111"},
-        {"guild.kernel.cuda.moe", "1.0.0", "bbbb2222"}
-    };
+    id.bound_packages = {{"guild.kernel.cpu.native", "1.0.0", "aaaa1111"},
+                         {"guild.kernel.cuda.moe", "1.0.0", "bbbb2222"}};
     id.hardware = GExecHardwareFingerprint::detect();
     id.kv_format = "fp16";
     id.kv_mode = "host_only";
@@ -92,7 +90,8 @@ void test_identity_and_invalidation() {
     {
         auto m = base;
         m.bound_packages[0].payload_sha256 = "cccc3333";
-        CHECK(GExecArtifactIdentity::validate(m, base, reason) == GExecInvalidationReason::ModuleOrKernelDigestMismatch);
+        CHECK(GExecArtifactIdentity::validate(m, base, reason) ==
+              GExecInvalidationReason::ModuleOrKernelDigestMismatch);
     }
     // 6. CPU ISA mismatch
     {
@@ -154,8 +153,8 @@ void test_expert_gate_up_interleaving() {
     CHECK(std::memcmp(packed.data() + gate_row, orig.data() + n_ff * gate_row, up_row) == 0);
     CHECK(std::memcmp(packed.data() + gate_row + up_row, orig.data() + gate_row, gate_row) == 0);
 
-    std::cout << "[GEXEC] Expert gate/up row interleave (" << (total_bytes >> 10) << " KiB blob): "
-              << pack_us << " us (100% lossless round-trip)\n";
+    std::cout << "[GEXEC] Expert gate/up row interleave (" << (total_bytes >> 10) << " KiB blob): " << pack_us
+              << " us (100% lossless round-trip)\n";
 }
 
 void test_autotune_and_heterogeneous_plan() {
@@ -188,7 +187,8 @@ void test_autotune_and_heterogeneous_plan() {
     // Tamper with JSON -> digest verification must fail closed
     std::string tampered = tjson;
     const auto pos = tampered.find("41.2");
-    if (pos != std::string::npos) tampered[pos] = '9';
+    if (pos != std::string::npos)
+        tampered[pos] = '9';
     GExecAutotuneTable bad_table;
     CHECK(!GExecAutotuneTable::from_json(tampered, bad_table, err));
 
@@ -213,7 +213,8 @@ void test_autotune_and_heterogeneous_plan() {
 
     std::string bad_hjson = hjson;
     const auto hpos = bad_hjson.find("2496");
-    if (hpos != std::string::npos) bad_hjson[hpos] = '1';
+    if (hpos != std::string::npos)
+        bad_hjson[hpos] = '1';
     CHECK(!GExecHeterogeneousPlan::from_json(bad_hjson, loaded_hplan, err));
 
     // Compilation key determinism

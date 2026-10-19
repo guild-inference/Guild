@@ -18,7 +18,8 @@ int main() {
     // 1. Test MockInferenceEngine stream & non-stream consistency
     {
         std::cout << "  Test 1: MockInferenceEngine request consistency\n";
-        guild::server::MockInferenceEngine mock("Qwen3.8-Flash-Next", 262144, "The quick brown fox jumps over the lazy dog");
+        guild::server::MockInferenceEngine mock("Qwen3.8-Flash-Next", 262144,
+                                                "The quick brown fox jumps over the lazy dog");
 
         guild::server::InferenceRequest req;
         req.request_id = "test-1";

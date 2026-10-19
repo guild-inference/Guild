@@ -6,12 +6,15 @@
 #include <unistd.h>
 
 class MissingSource final : public guild::core::ExpertSource {
-    const uint8_t* blob(int64_t, int64_t) override { return nullptr; }
+    const uint8_t* blob(int64_t, int64_t) override {
+        return nullptr;
+    }
 };
 
 int main() {
     int devices = 0;
-    if (cudaGetDeviceCount(&devices) != cudaSuccess || devices == 0) return 77;
+    if (cudaGetDeviceCount(&devices) != cudaSuccess || devices == 0)
+        return 77;
     namespace fs = std::filesystem;
     const fs::path root = fs::temp_directory_path() / ("guild-inference-failure-" + std::to_string(getpid()));
     fs::create_directories(root);
@@ -36,13 +39,18 @@ int main() {
         CHECK(m->ver->async_commit_enabled());
         guild::core::Verifier independent;
         guild::core::VerifyHits hits;
-        hits.d_res = m->d_res; hits.h_res = m->host_res.data(); hits.blob = int64_t(guild::kernels::cpu::expert_layout().max_blob);
-        hits.cache_base = m->xcache.device_slot(0); hits.slot_off = m->xcache.slot_offsets(); hits.n_slots = m->xcache.slots();
+        hits.d_res = m->d_res;
+        hits.h_res = m->host_res.data();
+        hits.blob = int64_t(guild::kernels::cpu::expert_layout().max_blob);
+        hits.cache_base = m->xcache.device_slot(0);
+        hits.slot_off = m->xcache.slot_offsets();
+        hits.n_slots = m->xcache.slots();
         CHECK(independent.init(m->wt, m->g, m->ss, hits, &m->native_head, 2, err));
         independent.set_async_commit(false);
         CHECK(!independent.async_commit_enabled() && m->ver->async_commit_enabled());
         guild::server::InferenceRequest req;
-        req.prompt_tokens = {1, 2}; req.max_tokens = 2;
+        req.prompt_tokens = {1, 2};
+        req.max_tokens = 2;
         guild::server::GenerationResult result;
         CHECK(engine.generate(req, result) && result.completion_tokens == 2);
         CHECK(result.gpu_cache_hits > 0 && result.ram_blobs == 0 && result.file_blobs == 0);
@@ -60,7 +68,8 @@ int main() {
         auto* m = engine.model()->impl();
         CHECK(!m->xcache.valid() && m->drive.d.pcie_num == 0);
         guild::server::InferenceRequest req;
-        req.prompt_tokens = {1, 2}; req.max_tokens = 2;
+        req.prompt_tokens = {1, 2};
+        req.max_tokens = 2;
         guild::server::GenerationResult result;
         CHECK(engine.generate(req, result) && result.completion_tokens == 2);
     }
@@ -75,7 +84,8 @@ int main() {
         auto* m = offload.model()->impl();
         CHECK(m->xcache.slots() == 0 && m->drive.d.pcie_num == 256);
         guild::server::InferenceRequest req;
-        req.prompt_tokens = {1}; req.max_tokens = 2;
+        req.prompt_tokens = {1};
+        req.max_tokens = 2;
         guild::server::GenerationResult result;
         CHECK(offload.generate(req, result));
         CHECK(result.completion_tokens == 2 && m->drive.d.pcie_experts > 0);
@@ -93,7 +103,7 @@ int main() {
         cached_opts.paths.expert_profile_path = (root / "profile.bin").string();
         cached_opts.plan.routed_experts_in_gpu = 4;
         const std::vector<std::pair<int32_t, int32_t>> ranking = {{0, 0}, {1, 0}, {2, 0}, {3, 0},
-                                                                {0, 1}, {1, 1}, {2, 1}, {3, 1}};
+                                                                  {0, 1}, {1, 1}, {2, 1}, {3, 1}};
         std::string err;
         CHECK(guild::core::write_expert_profile(cached_opts.paths.expert_profile_path, 4, 2, ranking, err));
         guild::server::NativeInferenceEngine cached(cached_opts);
@@ -104,7 +114,7 @@ int main() {
             const int32_t slot = m->xcache.slot_of(l, 0);
             CHECK(slot >= 0 && m->host_res[size_t(l * 2)] == slot);
             CHECK(m->xcache.verify_slot(slot, m->src.blob(l, 0), err,
-                                       int64_t(guild::kernels::cpu::expert_layout().blob_bytes(l))));
+                                        int64_t(guild::kernels::cpu::expert_layout().blob_bytes(l))));
         }
         guild::server::InferenceRequest req;
         req.prompt_tokens = {1};
@@ -116,7 +126,8 @@ int main() {
     for (bool nonfinite : {false, true}) {
         guild::server::NativeInferenceEngine engine(opts);
         std::string err;
-        if (!engine.init(err)) std::fprintf(stderr, "init: %s\n", err.c_str());
+        if (!engine.init(err))
+            std::fprintf(stderr, "init: %s\n", err.c_str());
         CHECK(engine.is_ready());
         guild::server::InferenceRequest req;
         req.prompt_tokens = {1};
@@ -135,14 +146,20 @@ int main() {
             // Poison a head scale on the device: the real CUDA head produces NaN,
             // which must be rejected even if its argmax would look like token 0.
             const uint16_t nan = 0x7e00;
-            CHECK(cudaMemcpy(const_cast<void*>(engine.model()->impl()->native_head.weights()), &nan,
-                             sizeof(nan), cudaMemcpyHostToDevice) == cudaSuccess);
+            CHECK(cudaMemcpy(const_cast<void*>(engine.model()->impl()->native_head.weights()), &nan, sizeof(nan),
+                             cudaMemcpyHostToDevice) == cudaSuccess);
         } else {
             engine.model()->impl()->drive.d.src = &missing;
         }
         int emitted = 0;
         guild::server::GenerationResult result;
-        CHECK(!engine.generate_stream(req, [&](const auto&) { ++emitted; return true; }, result));
+        CHECK(!engine.generate_stream(
+            req,
+            [&](const auto&) {
+                ++emitted;
+                return true;
+            },
+            result));
         CHECK(emitted == 0 && result.completion_tokens == 0 && result.text.empty());
         CHECK(result.finish_reason == "error");
         CHECK(result.error_message.find(nonfinite ? "nonfinite" : "could not produce a blob") != std::string::npos);
@@ -154,5 +171,6 @@ int main() {
     CHECK(guild::core::qsa_kv_host_bytes() == pinned_before);
     CHECK(guild::core::native_embed() == nullptr);
     fs::remove_all(root);
-    std::puts("runtime_inference_failure_test: real CUDA failures emit no tokens, drain waits, refuse commit and release KV");
+    std::puts(
+        "runtime_inference_failure_test: real CUDA failures emit no tokens, drain waits, refuse commit and release KV");
 }

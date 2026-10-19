@@ -20,18 +20,19 @@ bool is_valid_utf8(const std::string& str) {
         if (c < 0x80) {
             i += 1;
         } else if ((c & 0xE0) == 0xC0) {
-            if (i + 1 >= len || (static_cast<unsigned char>(str[i + 1]) & 0xC0) != 0x80) return false;
+            if (i + 1 >= len || (static_cast<unsigned char>(str[i + 1]) & 0xC0) != 0x80)
+                return false;
             i += 2;
         } else if ((c & 0xF0) == 0xE0) {
-            if (i + 2 >= len ||
-                (static_cast<unsigned char>(str[i + 1]) & 0xC0) != 0x80 ||
-                (static_cast<unsigned char>(str[i + 2]) & 0xC0) != 0x80) return false;
+            if (i + 2 >= len || (static_cast<unsigned char>(str[i + 1]) & 0xC0) != 0x80 ||
+                (static_cast<unsigned char>(str[i + 2]) & 0xC0) != 0x80)
+                return false;
             i += 3;
         } else if ((c & 0xF8) == 0xF0) {
-            if (i + 3 >= len ||
-                (static_cast<unsigned char>(str[i + 1]) & 0xC0) != 0x80 ||
+            if (i + 3 >= len || (static_cast<unsigned char>(str[i + 1]) & 0xC0) != 0x80 ||
                 (static_cast<unsigned char>(str[i + 2]) & 0xC0) != 0x80 ||
-                (static_cast<unsigned char>(str[i + 3]) & 0xC0) != 0x80) return false;
+                (static_cast<unsigned char>(str[i + 3]) & 0xC0) != 0x80)
+                return false;
             i += 4;
         } else {
             return false;
@@ -47,9 +48,12 @@ int main(int argc, char** argv) {
     std::string qwen_tok_dir = "/mnt/models-ssd/Strata-data/packs/unsloth-ud-iq4_xs/tokenizer";
     std::string ornith_tok_dir = "/mnt/models-ssd/Strata-data/packs/ornith-1.5-35b/tokenizer";
 
-    if (argc >= 2) golden_json_path = argv[1];
-    if (argc >= 3) qwen_tok_dir = argv[2];
-    if (argc >= 4) ornith_tok_dir = argv[3];
+    if (argc >= 2)
+        golden_json_path = argv[1];
+    if (argc >= 3)
+        qwen_tok_dir = argv[2];
+    if (argc >= 4)
+        ornith_tok_dir = argv[3];
 
     std::cout << "--- 1. Testing Unloaded Tokenizer Fail-Closed ---\n";
     {
@@ -116,8 +120,8 @@ int main(int argc, char** argv) {
         CHECK(actual_tokens.size() == expected_tokens.size());
         for (size_t j = 0; j < expected_tokens.size(); ++j) {
             if (actual_tokens[j] != expected_tokens[j]) {
-                std::cerr << "Mismatch in test case '" << name << "' at token index " << j
-                          << ": expected " << expected_tokens[j] << ", got " << actual_tokens[j] << "\n";
+                std::cerr << "Mismatch in test case '" << name << "' at token index " << j << ": expected "
+                          << expected_tokens[j] << ", got " << actual_tokens[j] << "\n";
                 CHECK(actual_tokens[j] == expected_tokens[j]);
             }
         }
@@ -181,10 +185,7 @@ int main(int argc, char** argv) {
 
         std::vector<guild::runtime::ChatMessage> messages;
         for (size_t m = 0; m < c["messages"].size(); ++m) {
-            messages.push_back({
-                c["messages"][m]["role"].as_string(),
-                c["messages"][m]["content"].as_string()
-            });
+            messages.push_back({c["messages"][m]["role"].as_string(), c["messages"][m]["content"].as_string()});
         }
 
         std::vector<int32_t> expected_tokens;
@@ -198,7 +199,8 @@ int main(int argc, char** argv) {
         CHECK(target_tok.chat_template().render(messages, true, actual_rendered, render_err));
         if (actual_rendered != expected_rendered) {
             std::cerr << "Rendered mismatch in chat case '" << name << "':\nExpected:\n"
-                      << expected_rendered << "\nActual:\n" << actual_rendered << "\n";
+                      << expected_rendered << "\nActual:\n"
+                      << actual_rendered << "\n";
             CHECK(actual_rendered == expected_rendered);
         }
 
@@ -220,17 +222,12 @@ int main(int argc, char** argv) {
         CHECK(err == "No messages provided.");
 
         // System message not at start
-        std::vector<guild::runtime::ChatMessage> bad_order = {
-            {"user", "hello"},
-            {"system", "be concise"}
-        };
+        std::vector<guild::runtime::ChatMessage> bad_order = {{"user", "hello"}, {"system", "be concise"}};
         CHECK(!qwen_tok.chat_template().render(bad_order, true, out, err));
         CHECK(err == "System message must be at the beginning.");
 
         // Unexpected role
-        std::vector<guild::runtime::ChatMessage> bad_role = {
-            {"tool", "result"}
-        };
+        std::vector<guild::runtime::ChatMessage> bad_role = {{"tool", "result"}};
         CHECK(!qwen_tok.chat_template().render(bad_role, true, out, err));
         CHECK(err.find("Unexpected message role") != std::string::npos);
         std::cout << "Chat template error contracts PASSED.\n";
@@ -243,7 +240,8 @@ int main(int argc, char** argv) {
             "The quick brown fox jumps over the lazy dog. Artificial intelligence and machine learning "
             "have transformed computing across data centers and edge devices. 1234567890! "
             "Hierarchical mixture of experts and speculative decoding enable efficient local execution.\n";
-        for (int i = 0; i < 6; ++i) bench_text += bench_text; // ~12 KB text
+        for (int i = 0; i < 6; ++i)
+            bench_text += bench_text; // ~12 KB text
 
         std::vector<int32_t> bench_ids;
         std::string enc_err;

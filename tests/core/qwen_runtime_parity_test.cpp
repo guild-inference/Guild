@@ -24,7 +24,10 @@ std::vector<int32_t> token_ids(const std::string& path) {
     std::istringstream input(text);
     std::vector<int32_t> ids;
     int64_t id;
-    while (input >> id) { CHECK(id >= 0 && id <= INT32_MAX); ids.push_back(int32_t(id)); }
+    while (input >> id) {
+        CHECK(id >= 0 && id <= INT32_MAX);
+        ids.push_back(int32_t(id));
+    }
     CHECK(input.eof() && !ids.empty());
     return ids;
 }
@@ -42,12 +45,14 @@ std::vector<float> read_logits(const std::string& path, int64_t vocab) {
 
 void write_logits(const fs::path& path, const std::vector<float>& logits) {
     std::ofstream file(path, std::ios::binary);
-    CHECK(bool(file.write(reinterpret_cast<const char*>(logits.data()), std::streamsize(logits.size() * sizeof(float)))));
+    CHECK(
+        bool(file.write(reinterpret_cast<const char*>(logits.data()), std::streamsize(logits.size() * sizeof(float)))));
 }
 
 int main(int argc, char** argv) {
     if (argc != 8) {
-        std::cerr << "usage: qwen_runtime_parity_test MODEL PACK IDS REFERENCE_LOGITS REFERENCE_ENGINE PROFILE OUT_DIR\n";
+        std::cerr
+            << "usage: qwen_runtime_parity_test MODEL PACK IDS REFERENCE_LOGITS REFERENCE_ENGINE PROFILE OUT_DIR\n";
         return 2;
     }
     // Use the same declared CPU arithmetic in both executables. The default 2
@@ -64,10 +69,33 @@ int main(int argc, char** argv) {
     server::GuildProcessEngineOptions ro;
     ro.executable = fs::absolute(argv[5]).string();
     ro.tokenizer_dir = std::string(argv[2]) + "/tokenizer";
-    ro.args = {"--pack", argv[2], "--native", argv[1], "--expert-profile", argv[6],
-               "--expert-cache", "off", "--prefill", "512", "--spec", "2", "--suffix-draft", "0",
-               "--pcie-frac", "0", "--max-context", "2048", "--kv", "fp16", "--kv-host-only",
-               "--resident-budget-gib", "56", "--prompt-cache", "0", "--short-read", "0"};
+    ro.args = {"--pack",
+               argv[2],
+               "--native",
+               argv[1],
+               "--expert-profile",
+               argv[6],
+               "--expert-cache",
+               "off",
+               "--prefill",
+               "512",
+               "--spec",
+               "2",
+               "--suffix-draft",
+               "0",
+               "--pcie-frac",
+               "0",
+               "--max-context",
+               "2048",
+               "--kv",
+               "fp16",
+               "--kv-host-only",
+               "--resident-budget-gib",
+               "56",
+               "--prompt-cache",
+               "0",
+               "--short-read",
+               "0"};
     server::GuildProcessEngine reference(ro);
     CHECK(reference.start());
     server::InferenceRequest request;
@@ -90,7 +118,10 @@ int main(int argc, char** argv) {
     opts.plan.pcie_expert_fraction = 0; // reference explicitly uses CPU-only experts
     server::NativeInferenceEngine candidate(opts);
     std::string err;
-    if (!candidate.init(err)) { std::cerr << err << '\n'; return 1; }
+    if (!candidate.init(err)) {
+        std::cerr << err << '\n';
+        return 1;
+    }
     auto* m = candidate.model()->impl();
     CHECK(m->ple_required && m->ss.ple.ready());
     CHECK(m->ple_table.bytes_read() == 0);
@@ -122,7 +153,8 @@ int main(int argc, char** argv) {
     CHECK(m->ple_table.bytes_read() > 0);
     CHECK(m->ss.ple_prev[0] == ids[ids.size() - 2] && m->ss.ple_prev[1] == ids.back());
     std::vector<float> history(size_t(kernels::NG_HIST * kernels::NG_HC_DIM));
-    CHECK(cudaMemcpy(history.data(), m->ss.ple_hist, history.size() * sizeof(float), cudaMemcpyDeviceToHost) == cudaSuccess);
+    CHECK(cudaMemcpy(history.data(), m->ss.ple_hist, history.size() * sizeof(float), cudaMemcpyDeviceToHost) ==
+          cudaSuccess);
     CHECK(core::validate_finite(history.data(), history.size(), "PLE history", err));
     CHECK(std::any_of(history.begin(), history.end(), [](float v) { return v != 0; }));
 
@@ -131,7 +163,8 @@ int main(int argc, char** argv) {
         server::GenerationResult result;
         CHECK(candidate.generate(request, result));
         CHECK(result.tokens.size() == expected.tokens.size());
-        for (size_t i = 0; i < result.tokens.size(); ++i) CHECK(result.tokens[i].token_id == expected.tokens[i].token_id);
+        for (size_t i = 0; i < result.tokens.size(); ++i)
+            CHECK(result.tokens[i].token_id == expected.tokens[i].token_id);
         std::cout << "matched greedy continuation " << repeat << ": " << result.text << '\n';
     }
 
@@ -172,7 +205,8 @@ int main(int argc, char** argv) {
         CHECK(ablated.copy_logits(0, no_ple.data()));
         write_logits(out_dir / "diagnostic-no-ple-logits.bin", no_ple);
         double ablation_delta = 0;
-        for (size_t i = 0; i < got.size(); ++i) ablation_delta = std::max(ablation_delta, std::abs(double(no_ple[i]) - sequential_ple[i]));
+        for (size_t i = 0; i < got.size(); ++i)
+            ablation_delta = std::max(ablation_delta, std::abs(double(no_ple[i]) - sequential_ple[i]));
         std::cout << "PLE ablation max_abs_delta=" << ablation_delta << '\n';
         CHECK(ablation_delta > 1e-3);
     }
@@ -183,7 +217,13 @@ int main(int argc, char** argv) {
     m->ss.ple.table = nullptr;
     int emitted = 0;
     server::GenerationResult rejected;
-    CHECK(!candidate.generate_stream(request, [&](const auto&) { ++emitted; return true; }, rejected));
+    CHECK(!candidate.generate_stream(
+        request,
+        [&](const auto&) {
+            ++emitted;
+            return true;
+        },
+        rejected));
     CHECK(emitted == 0 && rejected.error_message.find("required PLE") != std::string::npos);
     CHECK(!candidate.is_ready());
     m->ss.ple.table = table;
@@ -193,8 +233,10 @@ int main(int argc, char** argv) {
            << "ids_sha256=" << models::Sha256::hash_file(argv[3]) << '\n'
            << "iq_mt_min=" << mt_min << '\n'
            << "vocab=" << wanted.size() << " bitwise=" << bitwise << " max_abs=" << max_abs
-           << " relative_l2=" << relative_l2 << '\n' << "greedy_ids=";
-    for (const auto& token : expected.tokens) report << token.token_id << ',';
+           << " relative_l2=" << relative_l2 << '\n'
+           << "greedy_ids=";
+    for (const auto& token : expected.tokens)
+        report << token.token_id << ',';
     report << "\nPLE_connected_and_ablation_detected=1\n";
     std::puts("qwen_runtime_parity_test: real Qwen logits, greedy continuation, PLE state and failure checks PASS");
 }

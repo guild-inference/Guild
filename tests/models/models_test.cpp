@@ -21,12 +21,12 @@
 namespace fs = std::filesystem;
 using namespace guild::models;
 
-#define TEST_CHECK(cond, msg) \
-    do { \
-        if (!(cond)) { \
-            std::cerr << "FAILED: " << msg << " at " << __FILE__ << ":" << __LINE__ << std::endl; \
-            std::exit(1); \
-        } \
+#define TEST_CHECK(cond, msg)                                                                                          \
+    do {                                                                                                               \
+        if (!(cond)) {                                                                                                 \
+            std::cerr << "FAILED: " << msg << " at " << __FILE__ << ":" << __LINE__ << std::endl;                      \
+            std::exit(1);                                                                                              \
+        }                                                                                                              \
     } while (0)
 
 // Helper class to clean up temp directories on scope exit
@@ -41,7 +41,9 @@ struct TempDir {
         std::error_code ec;
         fs::remove_all(path, ec);
     }
-    std::string string() const { return path.string(); }
+    std::string string() const {
+        return path.string();
+    }
 };
 
 int main() {
@@ -186,11 +188,9 @@ int main() {
     std::cout << "[models_test] Test 4: SHA-256 validation" << std::endl;
     {
         // Test standard string hashes
-        TEST_CHECK(Sha256::hash_string("") ==
-                   "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        TEST_CHECK(Sha256::hash_string("") == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
                    "Empty string SHA-256 mismatch");
-        TEST_CHECK(Sha256::hash_string("guild") ==
-                   "5a20fe2f1b70d1150712b032c84f5998ac797d1bd9c84ed2ada77866ea030287",
+        TEST_CHECK(Sha256::hash_string("guild") == "5a20fe2f1b70d1150712b032c84f5998ac797d1bd9c84ed2ada77866ea030287",
                    "'guild' SHA-256 mismatch");
 
         // Test file hash

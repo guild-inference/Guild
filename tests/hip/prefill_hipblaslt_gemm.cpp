@@ -23,47 +23,59 @@
 #include <string>
 #include <vector>
 
-#define HIP_CHECK(call) do { \
-    const hipError_t status_ = (call); \
-    if (status_ != hipSuccess) { \
-        std::fprintf(stderr, "HIP failure at %s:%d: %s: %s\n", __FILE__, __LINE__, #call, hipGetErrorString(status_)); \
-        std::exit(2); \
-    } \
-} while (0)
+#define HIP_CHECK(call)                                                                                                \
+    do {                                                                                                               \
+        const hipError_t status_ = (call);                                                                             \
+        if (status_ != hipSuccess) {                                                                                   \
+            std::fprintf(stderr, "HIP failure at %s:%d: %s: %s\n", __FILE__, __LINE__, #call,                          \
+                         hipGetErrorString(status_));                                                                  \
+            std::exit(2);                                                                                              \
+        }                                                                                                              \
+    } while (0)
 
-#define HIPBLAS_CHECK(call) do { \
-    const hipblasStatus_t status_ = (call); \
-    if (status_ != HIPBLAS_STATUS_SUCCESS) { \
-        std::fprintf(stderr, "hipBLAS failure at %s:%d: %s: %d\n", __FILE__, __LINE__, #call, (int) status_); \
-        std::exit(2); \
-    } \
-} while (0)
+#define HIPBLAS_CHECK(call)                                                                                            \
+    do {                                                                                                               \
+        const hipblasStatus_t status_ = (call);                                                                        \
+        if (status_ != HIPBLAS_STATUS_SUCCESS) {                                                                       \
+            std::fprintf(stderr, "hipBLAS failure at %s:%d: %s: %d\n", __FILE__, __LINE__, #call, (int) status_);      \
+            std::exit(2);                                                                                              \
+        }                                                                                                              \
+    } while (0)
 
 struct DeviceBuffer {
     void* p = nullptr;
-    explicit DeviceBuffer(size_t bytes) { if (bytes) HIP_CHECK(hipMalloc(&p, bytes)); }
-    ~DeviceBuffer() { if (p) (void) hipFree(p); }
+    explicit DeviceBuffer(size_t bytes) {
+        if (bytes)
+            HIP_CHECK(hipMalloc(&p, bytes));
+    }
+    ~DeviceBuffer() {
+        if (p)
+            (void) hipFree(p);
+    }
     DeviceBuffer(const DeviceBuffer&) = delete;
     DeviceBuffer& operator=(const DeviceBuffer&) = delete;
 };
 
 uint16_t encode(float value, bool bf16) {
-    if (bf16) return guild::kernels::bf16_from_f32(value);
+    if (bf16)
+        return guild::kernels::bf16_from_f32(value);
     const __half half = __float2half_rn(value);
     uint16_t bits = 0;
     std::memcpy(&bits, &half, sizeof(bits));
     return bits;
 }
 
-bool run_case(guild::prefill::Gemm& gemm, hipblasHandle_t blas, hipStream_t stream, bool bf16, int t, int n,
-              int k, int ldy, int output_offset, float beta, uint32_t seed) {
+bool run_case(guild::prefill::Gemm& gemm, hipblasHandle_t blas, hipStream_t stream, bool bf16, int t, int n, int k,
+              int ldy, int output_offset, float beta, uint32_t seed) {
     std::mt19937 rng(seed);
     std::uniform_real_distribution<float> dist(-0.25f, 0.25f);
     const size_t x_count = (size_t) t * k;
     const size_t w_count = (size_t) n * k;
     std::vector<uint16_t> x(x_count), w(w_count);
-    for (auto& value : x) value = encode(dist(rng), bf16);
-    for (auto& value : w) value = encode(dist(rng), bf16);
+    for (auto& value : x)
+        value = encode(dist(rng), bf16);
+    for (auto& value : w)
+        value = encode(dist(rng), bf16);
 
     const size_t output_count = (size_t) output_offset + (size_t) t * ldy + 8;
     std::vector<float> initial(output_count, -777.25f);
@@ -86,15 +98,13 @@ bool run_case(guild::prefill::Gemm& gemm, hipblasHandle_t blas, hipStream_t stre
 
     const hipDataType type = bf16 ? HIP_R_16BF : HIP_R_16F;
     const float alpha = 1.0f;
-    HIPBLAS_CHECK(hipblasGemmEx(blas, HIPBLAS_OP_T, HIPBLAS_OP_N, n, t, k, &alpha, dw.p, type, k, dx.p, type, k,
-                                &beta, (float*) dref.p + output_offset, HIP_R_32F, ldy, HIPBLAS_COMPUTE_32F,
+    HIPBLAS_CHECK(hipblasGemmEx(blas, HIPBLAS_OP_T, HIPBLAS_OP_N, n, t, k, &alpha, dw.p, type, k, dx.p, type, k, &beta,
+                                (float*) dref.p + output_offset, HIP_R_32F, ldy, HIPBLAS_COMPUTE_32F,
                                 HIPBLAS_GEMM_DEFAULT));
     if (bf16) {
-        gemm.bf16((const uint16_t*) dx.p, (const uint16_t*) dw.p, (float*) dy.p + output_offset, t, n, k, ldy,
-                  beta);
+        gemm.bf16((const uint16_t*) dx.p, (const uint16_t*) dw.p, (float*) dy.p + output_offset, t, n, k, ldy, beta);
     } else {
-        gemm.f16((const uint16_t*) dx.p, (const uint16_t*) dw.p, (float*) dy.p + output_offset, t, n, k, ldy,
-                 beta);
+        gemm.f16((const uint16_t*) dx.p, (const uint16_t*) dw.p, (float*) dy.p + output_offset, t, n, k, ldy, beta);
     }
     HIP_CHECK(hipStreamSynchronize(stream));
 
@@ -147,7 +157,8 @@ int main() {
     HIP_CHECK(hipGetDeviceProperties(&properties, device));
     std::string arch(properties.gcnArchName);
     const auto suffix = arch.find(':');
-    if (suffix != std::string::npos) arch.resize(suffix);
+    if (suffix != std::string::npos)
+        arch.resize(suffix);
     hipblasLtHandle_t lt = nullptr;
     HIPBLAS_CHECK(hipblasLtCreate(&lt));
     int version = 0;
@@ -162,7 +173,9 @@ int main() {
     }
     if (!table.closest(guild::prefill::hipblaslt::InputType::bf16, 48, 2560, 96, 4096) ||
         !table.closest(guild::prefill::hipblaslt::InputType::f16, 512, 2560, 512, 4096)) {
-        std::fprintf(stderr, "tuning table lacks the rows this smoke test uses (bf16 N=48 K=2560 ldy=96, f16 N=512 K=2560 ldy=512)\n");
+        std::fprintf(
+            stderr,
+            "tuning table lacks the rows this smoke test uses (bf16 N=48 K=2560 ldy=96, f16 N=512 K=2560 ldy=512)\n");
         return 1;
     }
 
@@ -181,8 +194,8 @@ int main() {
         HIPBLAS_CHECK(hipblasCreate(&blas));
         HIPBLAS_CHECK(hipblasSetStream(blas, stream));
 
-        // T=4096 is an exact calibrated bucket; T=37 resolves to the same T=4096 row (the closest bucket), validates the
-        // actual shape before launch, and tests a non-tile-multiple tail. So the four cases use two table rows.
+        // T=4096 is an exact calibrated bucket; T=37 resolves to the same T=4096 row (the closest bucket), validates
+        // the actual shape before launch, and tests a non-tile-multiple tail. So the four cases use two table rows.
         ok &= run_case(gemm, blas, stream, true, 4096, 48, 2560, 96, 0, 0.0f, 101);
         ok &= run_case(gemm, blas, stream, true, 37, 48, 2560, 96, 48, 1.0f, 102);
         ok &= run_case(gemm, blas, stream, false, 4096, 512, 2560, 512, 0, 0.0f, 103);
@@ -191,7 +204,6 @@ int main() {
     }
     HIP_CHECK(hipStreamDestroy(stream));
     std::printf("smoke test: 4 cases on 2 of the table's %zu rows; %s\n", table.rows().size(),
-                ok ? "outputs match hipBLASEx (solution ids are not verified; see GUILD_HIPBLASLT_VERBOSE)"
-                   : "FAILED");
+                ok ? "outputs match hipBLASEx (solution ids are not verified; see GUILD_HIPBLASLT_VERBOSE)" : "FAILED");
     return ok ? 0 : 1;
 }

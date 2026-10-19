@@ -17,8 +17,8 @@ int main() {
     std::string err;
     for (int sized = 0; sized < 2; ++sized) {
         guild::core::ExpertCache cache;
-        const bool ok = sized ? cache.open_sized(std::vector<int64_t>(6, 1024), 3, 4, err)
-                              : cache.open(6, 3, 4, 1024, err);
+        const bool ok =
+            sized ? cache.open_sized(std::vector<int64_t>(6, 1024), 3, 4, err) : cache.open(6, 3, 4, 1024, err);
         if (!ok) {
             std::fprintf(stderr, "open: %s\n", err.c_str());
             return 1;

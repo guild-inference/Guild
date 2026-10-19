@@ -30,14 +30,16 @@ int not_held = 0;
 
 void report(const char* what, bool holds) {
     std::printf("  %-44s %s\n", what, holds ? "holds" : "DOES NOT HOLD");
-    if (!holds) ++not_held;
+    if (!holds)
+        ++not_held;
 }
 
 // A kernel reads `n` floats through `alias` into VRAM; the result is copied back and compared.
 bool kernel_reads(const float* alias, const std::vector<float>& want) {
     const int64_t n = (int64_t) want.size();
     float* out = nullptr;
-    if (hipMalloc(reinterpret_cast<void**>(&out), want.size() * sizeof(float)) != hipSuccess) return false;
+    if (hipMalloc(reinterpret_cast<void**>(&out), want.size() * sizeof(float)) != hipSuccess)
+        return false;
     guild::kernels::copy_from_mapped(out, alias, n, nullptr);
     std::vector<float> got(want.size(), -1.0f);
     const bool ran = hipDeviceSynchronize() == hipSuccess &&
@@ -47,25 +49,28 @@ bool kernel_reads(const float* alias, const std::vector<float>& want) {
     return ran && got == want;
 }
 
-}  // namespace
+} // namespace
 
 int main() {
     int runtime = 0;
-    if (hipRuntimeGetVersion(&runtime) != hipSuccess) return 1;
+    if (hipRuntimeGetVersion(&runtime) != hipSuccess)
+        return 1;
     int count = 0;
     if (hipGetDeviceCount(&count) != hipSuccess || count < 1) {
         std::printf("no HIP device\n");
-        return 77;  // ctest "skipped"
+        return 77; // ctest "skipped"
     }
     std::printf("HIP runtime %d, %d device(s)\n", runtime, count);
 
-    const int64_t n = 4096;                       // enough elements for copy_from_mapped's float4 path
+    const int64_t n = 4096; // enough elements for copy_from_mapped's float4 path
     const size_t bytes = size_t(n) * sizeof(float);
     std::vector<float> pattern(size_t(n), 0.0f);
-    for (int64_t i = 0; i < n; ++i) pattern[size_t(i)] = float(i + 1);
+    for (int64_t i = 0; i < n; ++i)
+        pattern[size_t(i)] = float(i + 1);
 
     float* host = nullptr;
-    if (hipHostMalloc(reinterpret_cast<void**>(&host), bytes, hipHostMallocMapped) != hipSuccess) return 1;
+    if (hipHostMalloc(reinterpret_cast<void**>(&host), bytes, hipHostMallocMapped) != hipSuccess)
+        return 1;
     void* alias = nullptr;
     if (hipHostGetDevicePointer(&alias, host, 0) != hipSuccess || alias == nullptr) {
         std::printf("hipHostGetDevicePointer failed: native_head.cpp keeps the embedding in VRAM here\n");
@@ -79,23 +84,27 @@ int main() {
     report("the alias is a distinct device address", distinct);
 
     // What the engine relies on: a kernel reading mapped host memory through the alias.
-    for (int64_t i = 0; i < n; ++i) host[i] = pattern[size_t(i)];
+    for (int64_t i = 0; i < n; ++i)
+        host[i] = pattern[size_t(i)];
     report("a kernel reads the alias correctly", kernel_reads(reinterpret_cast<const float*>(alias), pattern));
 
     // What tests/hip/handoff.cpp attempts: a DeviceToDevice copy INTO the alias, seen by the host.
     if (distinct) {
         float* device = nullptr;
         std::vector<float> twice(pattern);
-        for (float& v : twice) v *= 2.0f;
+        for (float& v : twice)
+            v *= 2.0f;
         if (hipMalloc(reinterpret_cast<void**>(&device), bytes) == hipSuccess &&
             hipMemcpy(device, twice.data(), bytes, hipMemcpyHostToDevice) == hipSuccess) {
             const hipError_t copy = hipMemcpy(alias, device, bytes, hipMemcpyDeviceToDevice);
             report("a D2D copy into the alias succeeds", copy == hipSuccess);
             bool seen = hipDeviceSynchronize() == hipSuccess;
-            for (int64_t i = 0; seen && i < n; ++i) seen = host[i] == twice[size_t(i)];
+            for (int64_t i = 0; seen && i < n; ++i)
+                seen = host[i] == twice[size_t(i)];
             report("the host sees a D2D copy into the alias", seen);
         }
-        if (device) hipFree(device);
+        if (device)
+            hipFree(device);
         hipGetLastError();
     } else {
         std::printf("  the D2D copy into the alias is not attempted: with alias == host it may fault rather than\n"

@@ -22,13 +22,22 @@ namespace c = guild::core;
 namespace k = guild::kernels;
 namespace {
 void check(cudaError_t e) {
-    if (e != cudaSuccess) throw std::runtime_error(cudaGetErrorString(e));
+    if (e != cudaSuccess)
+        throw std::runtime_error(cudaGetErrorString(e));
 }
-void require(bool ok, const char* message) { if (!ok) throw std::runtime_error(message); }
-template<class T> struct Device {
+void require(bool ok, const char* message) {
+    if (!ok)
+        throw std::runtime_error(message);
+}
+template <class T> struct Device {
     T* p = nullptr;
-    explicit Device(size_t n) { check(cudaMalloc(&p, n * sizeof(T))); }
-    ~Device() { if (p) cudaFree(p); }
+    explicit Device(size_t n) {
+        check(cudaMalloc(&p, n * sizeof(T)));
+    }
+    ~Device() {
+        if (p)
+            cudaFree(p);
+    }
 };
 struct State {
     c::QsaState s;
@@ -38,7 +47,9 @@ struct State {
         require(c::qsa_state_init(g, ctx, arena.p, s, share) != 0, "state init failed");
         c::qsa_state_zero(s, g, nullptr);
     }
-    ~State() { c::qsa_state_release_host(s); }
+    ~State() {
+        c::qsa_state_release_host(s);
+    }
 };
 
 void run(int fmt) {
@@ -77,33 +88,43 @@ void run(int fmt) {
     std::set<int32_t> cells;
     for (int t = 0; t < nq; ++t) {
         std::set<int32_t> blocks;
-        while (blocks.size() < size_t(cap / 4)) blocks.insert(int32_t(rng() % (ctx / 4 - 1)));
+        while (blocks.size() < size_t(cap / 4))
+            blocks.insert(int32_t(rng() % (ctx / 4 - 1)));
         int64_t at = t * cap;
-        for (int32_t block : blocks) for (int j = 0; j < 4; ++j) selections[at++] = 4 * block + j;
-        for (int j = 0; j < cap % 4; ++j) selections[at++] = int32_t(ctx - 4 + j);
+        for (int32_t block : blocks)
+            for (int j = 0; j < 4; ++j)
+                selections[at++] = 4 * block + j;
+        for (int j = 0; j < cap % 4; ++j)
+            selections[at++] = int32_t(ctx - 4 + j);
         cells.insert(selections.begin() + t * cap, selections.begin() + (t + 1) * cap);
         records[t * k::kStepCount] = int32_t(ctx - 1);
         records[t * k::kStepCount + 1] = int32_t(ctx);
         records[t * k::kStepCount + 2] = int32_t(ctx / 4);
         records[t * k::kStepCount + 3] = int32_t(cap);
     }
-    for (float& x : query) x = random(rng);
+    for (float& x : query)
+        x = random(rng);
     check(cudaMemcpy(q.p, query.data(), query.size() * sizeof(float), cudaMemcpyHostToDevice));
     check(cudaMemcpy(ids.p, selections.data(), selections.size() * sizeof(int32_t), cudaMemcpyHostToDevice));
     check(cudaMemcpy(steps.p, records.data(), records.size() * sizeof(int32_t), cudaMemcpyHostToDevice));
     auto append = [&](c::QsaState& s, const k::KvHostPools* host) {
-        if (fmt == k::kKvF16) k::kv_append_step(s.k_pool, s.v_pool, s.page_table, step.p, kc.p, vc.p, shape, nullptr, host);
-        else if (fmt == k::kKvInt8) k::kv_append_q8_step(s.k_q, s.v_q, s.k_scale, s.v_scale, s.page_table, step.p,
-                                                       kc.p, vc.p, shape, nullptr, host);
-        else k::kv_append_q4_step(s.k_q4, s.v_q4, s.page_table, step.p, kc.p, vc.p, shape, nullptr, host);
+        if (fmt == k::kKvF16)
+            k::kv_append_step(s.k_pool, s.v_pool, s.page_table, step.p, kc.p, vc.p, shape, nullptr, host);
+        else if (fmt == k::kKvInt8)
+            k::kv_append_q8_step(s.k_q, s.v_q, s.k_scale, s.v_scale, s.page_table, step.p, kc.p, vc.p, shape, nullptr,
+                                 host);
+        else
+            k::kv_append_q4_step(s.k_q4, s.v_q4, s.page_table, step.p, kc.p, vc.p, shape, nullptr, host);
     };
     // Fill only the selected cells, at scattered addresses across the full context. Distinct layers detect stale
     // residency maps after the other layer overwrites the shared buffer; varying cells detect incorrect mapping.
     for (int layer = 0; layer < 2; ++layer) {
         auto& state = layer == 0 ? a.s : b.s;
         for (int32_t cell : cells) {
-            for (float& x : keys) x = random(rng);
-            for (float& x : values) x = random(rng) + 2.f * layer;
+            for (float& x : keys)
+                x = random(rng);
+            for (float& x : values)
+                x = random(rng) + 2.f * layer;
             const int32_t st[k::kStepCount] = {cell, cell + 1, (cell + 1) / 4, 0};
             check(cudaMemcpy(step.p, st, sizeof(st), cudaMemcpyHostToDevice));
             check(cudaMemcpy(kc.p, keys.data(), keys.size() * sizeof(float), cudaMemcpyHostToDevice));
@@ -120,8 +141,10 @@ void run(int fmt) {
         } else if (fmt == k::kKvInt8) {
             check(cudaMemcpy(ref.s.k_q, host.k_q, rows * shape.head_dim, cudaMemcpyDefault));
             check(cudaMemcpy(ref.s.v_q, host.v_q, rows * shape.head_dim, cudaMemcpyDefault));
-            check(cudaMemcpy(ref.s.k_scale, host.k_scale, rows * (shape.head_dim / k::KV_Q8_GROUP) * 2, cudaMemcpyDefault));
-            check(cudaMemcpy(ref.s.v_scale, host.v_scale, rows * (shape.head_dim / k::KV_Q8_GROUP) * 2, cudaMemcpyDefault));
+            check(cudaMemcpy(ref.s.k_scale, host.k_scale, rows * (shape.head_dim / k::KV_Q8_GROUP) * 2,
+                             cudaMemcpyDefault));
+            check(cudaMemcpy(ref.s.v_scale, host.v_scale, rows * (shape.head_dim / k::KV_Q8_GROUP) * 2,
+                             cudaMemcpyDefault));
         } else {
             const size_t bytes = rows * k::kv_q4_bytes_per_head(int(shape.head_dim));
             check(cudaMemcpy(ref.s.k_q4, host.k_q4, bytes, cudaMemcpyDefault));
@@ -133,16 +156,19 @@ void run(int fmt) {
         check(cudaDeviceSynchronize());
         check(cudaMemcpy(got.data(), out.p, count * row * sizeof(float), cudaMemcpyDeviceToHost));
         check(cudaMemcpy(want.data(), expected.p, count * row * sizeof(float), cudaMemcpyDeviceToHost));
-        for (size_t i = 0; i < count * row; ++i) require(std::isfinite(got[i]), "nonfinite attention");
+        for (size_t i = 0; i < count * row; ++i)
+            require(std::isfinite(got[i]), "nonfinite attention");
         require(std::memcmp(got.data(), want.data(), count * row * sizeof(float)) == 0, "attention differs bitwise");
     };
     for (int pass = 0; pass < 3; ++pass) {
         auto& state = pass == 1 ? b.s : a.s;
         copy_reference(state);
         for (int count = 1; count <= nq; ++count) {
-            k::qsa_decode_attn_batch(q.p, c::qsa_attn_pools(ref.s), ids.p, steps.p, cap, shape, scratch.p, expected.p, count, nullptr);
+            k::qsa_decode_attn_batch(q.p, c::qsa_attn_pools(ref.s), ids.p, steps.p, cap, shape, scratch.p, expected.p,
+                                     count, nullptr);
             c::qsa_kv_resolve(state, g, ids.p, steps.p, count, cap, nullptr);
-            k::qsa_decode_attn_batch(q.p, c::qsa_attn_pools(state), ids.p, steps.p, cap, shape, scratch.p, out.p, count, nullptr);
+            k::qsa_decode_attn_batch(q.p, c::qsa_attn_pools(state), ids.p, steps.p, cap, shape, scratch.p, out.p, count,
+                                     nullptr);
             compare(count);
         }
     }
@@ -161,19 +187,26 @@ void run(int fmt) {
         check(cudaGraphLaunch(exec, stream));
         compare(nq);
     }
-    cudaGraphExecDestroy(exec); cudaGraphDestroy(graph); cudaStreamDestroy(stream);
+    cudaGraphExecDestroy(exec);
+    cudaGraphDestroy(graph);
+    cudaStreamDestroy(stream);
     const auto counters = k::kv_stream_counters(a.s.map);
-    require(counters.calls == 18 && counters.misses > 0 && counters.misses <= counters.lookups && counters.overflow == 0,
+    require(counters.calls == 18 && counters.misses > 0 && counters.misses <= counters.lookups &&
+                counters.overflow == 0,
             "transient staging counters were reset or overflowed");
-    std::printf("kv_host_only_test: format %d, 262144 cells, %.3f MiB shared staging: bitwise parity (1..8 rows, layers, graphs)\n",
+    std::printf("kv_host_only_test: format %d, 262144 cells, %.3f MiB shared staging: bitwise parity (1..8 rows, "
+                "layers, graphs)\n",
                 fmt, double(staged) / 1048576.0);
 }
 
 void dense_bounds() {
     c::ModelGeometry g;
-    g.idx_q_heads = 0; g.idx_key_dim = 0;
+    g.idx_q_heads = 0;
+    g.idx_key_dim = 0;
     g.attn_mechanism = guild::model::AttentionMechanism::DenseCausal;
-    c::qsa_set_kv_int8(false); c::qsa_set_kv_q4(false); c::qsa_set_kv_host_only(true);
+    c::qsa_set_kv_int8(false);
+    c::qsa_set_kv_q4(false);
+    c::qsa_set_kv_host_only(true);
     const auto shape = k::qsa_real_shapes();
     for (int64_t context : {int64_t(64), int64_t(4096), int64_t(262144)}) {
         State state(g, context);
@@ -202,18 +235,22 @@ void dense_bounds() {
     require(!c::session_own_qsa_staging(g, 32768), "GUILD_MAX_CONCURRENT_SESSIONS=4 must switch to shared staging");
     unsetenv("GUILD_MAX_CONCURRENT_SESSIONS");
 }
-}  // namespace
+} // namespace
 
 int main() {
     int devices = 0;
-    if (cudaGetDeviceCount(&devices) != cudaSuccess || devices == 0) return 77;
+    if (cudaGetDeviceCount(&devices) != cudaSuccess || devices == 0)
+        return 77;
     try {
         const uint64_t pinned_before = c::qsa_kv_host_bytes();
-        run(k::kKvF16); run(k::kKvInt8); run(k::kKvQ4);
+        run(k::kKvF16);
+        run(k::kKvInt8);
+        run(k::kKvQ4);
         dense_bounds();
         require(c::qsa_kv_host_bytes() == pinned_before, "host KV allocations were not released");
     } catch (const std::exception& e) {
-        std::fprintf(stderr, "kv_host_only_test: FAIL: %s\n", e.what()); return 1;
+        std::fprintf(stderr, "kv_host_only_test: FAIL: %s\n", e.what());
+        return 1;
     }
     std::puts("kv_host_only_test: PASS");
     return 0;

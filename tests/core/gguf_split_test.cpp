@@ -21,7 +21,8 @@ namespace {
 int g_fail = 0;
 void check(bool ok, const std::string& what) {
     std::printf("  %-78s %s\n", what.c_str(), ok ? "ok" : "FAIL");
-    if (!ok) ++g_fail;
+    if (!ok)
+        ++g_fail;
 }
 
 struct TempDir {
@@ -51,14 +52,21 @@ template <class F> std::vector<std::string> write_model(const fs::path& dir, F m
     std::vector<std::string> paths;
     for (int i = 0; i < 4; ++i) {
         std::vector<fixture::Kv> kv;
-        if (i == 0) kv.push_back(fixture::str("general.architecture", "qwen4exp"));
-        for (const auto& k : fixture::split_keys((uint64_t) i, 4, total)) kv.push_back(k);
+        if (i == 0)
+            kv.push_back(fixture::str("general.architecture", "qwen4exp"));
+        for (const auto& k : fixture::split_keys((uint64_t) i, 4, total))
+            kv.push_back(k);
         std::vector<Tensor> ts;
-        if (i == 1) ts = {{"output.weight", {64, 4}, Q8_0, 1}, {"token_embd.weight", {64, 4}, Q8_0, 2},
-                          {"blk.11.ffn_down_exps.weight", {32, 32, 2}, F32, 3}};
-        if (i == 2) ts = {{"blk.11.ffn_gate_exps.weight", {32, 32, 2}, F32, 4},
-                          {"blk.11.ffn_up_exps.weight", {32, 32, 2}, F32, 5}, {"blk.12.attn_q.weight", {32, 8}, F32, 6}};
-        if (i == 3) ts = {{"output_norm.weight", {32}, F32, 7}};
+        if (i == 1)
+            ts = {{"output.weight", {64, 4}, Q8_0, 1},
+                  {"token_embd.weight", {64, 4}, Q8_0, 2},
+                  {"blk.11.ffn_down_exps.weight", {32, 32, 2}, F32, 3}};
+        if (i == 2)
+            ts = {{"blk.11.ffn_gate_exps.weight", {32, 32, 2}, F32, 4},
+                  {"blk.11.ffn_up_exps.weight", {32, 32, 2}, F32, 5},
+                  {"blk.12.attn_q.weight", {32, 8}, F32, 6}};
+        if (i == 3)
+            ts = {{"output_norm.weight", {32}, F32, 7}};
         uint64_t cut = 0;
         mutate(i, kv, ts, cut);
         const fs::path p = dir / shard_name(i + 1, 4);
@@ -77,7 +85,7 @@ std::string error_of(const std::vector<std::string>& paths) {
     }
     return {};
 }
-}  // namespace
+} // namespace
 
 // `gguf_split_test --real SHARD`: the same view of a real model (headers only): its shards, the architecture
 // check on the metadata shard, and where the tensors the engine reads by name live.
@@ -94,12 +102,15 @@ int real_model(const std::string& any) {
         std::printf("  %zu tensors; architecture check on the metadata shard: %s\n", tensors,
                     arch.empty() ? "ok" : arch.c_str());
         int bad = arch.empty() ? 0 : 1;
-        for (const char* name : {"output.weight", "token_embd.weight", "per_layer_token_embd.weight",
-                                 "blk.1.ple_key.weight", "blk.11.ffn_gate_exps.weight", "blk.11.ffn_up_exps.weight",
-                                 "blk.11.ffn_down_exps.weight"}) {
+        for (const char* name :
+             {"output.weight", "token_embd.weight", "per_layer_token_embd.weight", "blk.1.ple_key.weight",
+              "blk.11.ffn_gate_exps.weight", "blk.11.ffn_up_exps.weight", "blk.11.ffn_down_exps.weight"}) {
             size_t s = 0;
             const guild::TensorInfo* t = m.find(name, &s);
-            if (!t) { std::printf("  %-30s absent\n", name); continue; }
+            if (!t) {
+                std::printf("  %-30s absent\n", name);
+                continue;
+            }
             const bool ok = m.in_bounds(*t, s);
             bad += !ok;
             std::printf("  %-30s shard %zu, %s, %llu B, %s\n", name, s + 1, t->type_name(),
@@ -113,16 +124,23 @@ int real_model(const std::string& any) {
 }
 
 int main(int argc, char** argv) {
-    if (argc == 3 && std::string(argv[1]) == "--real") return real_model(argv[2]);
+    if (argc == 3 && std::string(argv[1]) == "--real")
+        return real_model(argv[2]);
     std::printf("gguf_split_test\n");
     {
         TempDir d;
         const auto paths = write_model(d.path, same);
         // any shard names the family; the list is in split order, metadata shard first
         std::vector<std::string> got;
-        try { got = guild::gguf_split_paths(paths[2]); } catch (...) {}
+        try {
+            got = guild::gguf_split_paths(paths[2]);
+        } catch (...) {}
         check(got == paths, "gguf_split_paths from shard 3: the 4 shards in order");
-        try { got = guild::gguf_split_paths(paths[0]); } catch (...) { got.clear(); }
+        try {
+            got = guild::gguf_split_paths(paths[0]);
+        } catch (...) {
+            got.clear();
+        }
         check(got == paths, "gguf_split_paths from shard 1: the same 4 shards");
         check(guild::gguf_split_paths((d.path / "plain.gguf").string()).size() == 1,
               "a name without -NNNNN-of-MMMMM is a model of one file");
@@ -152,15 +170,23 @@ int main(int argc, char** argv) {
         const auto paths = write_model(d.path, same);
         fs::remove(paths[3]);
         std::string err;
-        try { guild::gguf_split_paths(paths[0]); } catch (const std::exception& e) { err = e.what(); }
+        try {
+            guild::gguf_split_paths(paths[0]);
+        } catch (const std::exception& e) {
+            err = e.what();
+        }
         check(err.find("missing model shard") != std::string::npos && err.find(shard_name(4, 4)) != std::string::npos,
               "a missing shard is an error that names it");
     }
     {
         TempDir d;
-        const auto paths = write_model(d.path, [](int i, auto&, auto& ts, uint64_t&) {
-            if (i == 3) ts.push_back({"blk.11.ffn_up_exps.weight", {32, 32, 2}, F32, 9});
-        }, 8);
+        const auto paths = write_model(
+            d.path,
+            [](int i, auto&, auto& ts, uint64_t&) {
+                if (i == 3)
+                    ts.push_back({"blk.11.ffn_up_exps.weight", {32, 32, 2}, F32, 9});
+            },
+            8);
         const std::string err = error_of(paths);
         check(err.find("in two shards") != std::string::npos && err.find(shard_name(3, 4)) != std::string::npos &&
                   err.find(shard_name(4, 4)) != std::string::npos,
@@ -169,7 +195,8 @@ int main(int argc, char** argv) {
     {
         TempDir d;
         const auto paths = write_model(d.path, [](int i, auto& kv, auto&, uint64_t&) {
-            if (i == 2) kv = fixture::split_keys(1, 4, 7);    // says it is shard 2
+            if (i == 2)
+                kv = fixture::split_keys(1, 4, 7); // says it is shard 2
         });
         check(error_of(paths).find("does not declare itself shard 3 of 4") != std::string::npos,
               "a shard whose split.no disagrees with its place is refused");
@@ -177,14 +204,16 @@ int main(int argc, char** argv) {
     {
         TempDir d;
         const auto paths = write_model(d.path, [](int i, auto& kv, auto&, uint64_t&) {
-            if (i == 3) kv = fixture::split_keys(3, 4, 9);    // another model's split.tensors.count
+            if (i == 3)
+                kv = fixture::split_keys(3, 4, 9); // another model's split.tensors.count
         });
         check(!error_of(paths).empty(), "a shard of another model (split.tensors.count differs) is refused");
     }
     {
         TempDir d;
         const auto paths = write_model(d.path, [](int i, auto&, auto& ts, uint64_t&) {
-            if (i == 3) ts.clear();                         // a directory short of split.tensors.count
+            if (i == 3)
+                ts.clear(); // a directory short of split.tensors.count
         });
         check(error_of(paths).find("split.tensors.count is 7") != std::string::npos,
               "shards that do not add up to split.tensors.count are refused");
@@ -192,7 +221,8 @@ int main(int argc, char** argv) {
     {
         TempDir d;
         const auto paths = write_model(d.path, [](int i, auto& kv, auto&, uint64_t&) {
-            if (i == 0) kv.erase(kv.begin());               // no general.architecture in shard 1
+            if (i == 0)
+                kv.erase(kv.begin()); // no general.architecture in shard 1
         });
         check(error_of(paths).find("general.architecture") != std::string::npos,
               "a split model whose first shard has no metadata is refused");
@@ -202,7 +232,8 @@ int main(int argc, char** argv) {
     {
         TempDir d;
         const auto paths = write_model(d.path, [](int i, auto&, auto&, uint64_t& cut) {
-            if (i == 2) cut = 100;                          // the last tensor of shard 3 is cut short
+            if (i == 2)
+                cut = 100; // the last tensor of shard 3 is cut short
         });
         bool truncated = false, first_ok = false;
         try {

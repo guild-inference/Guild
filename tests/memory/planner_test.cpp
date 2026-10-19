@@ -6,12 +6,13 @@
 #include <cstring>
 #include <iostream>
 
-#define CHECK(cond) do { \
-    if (!(cond)) { \
-        std::fprintf(stderr, "planner_test assertion failed at line %d: %s\n", __LINE__, #cond); \
-        return 1; \
-    } \
-} while (0)
+#define CHECK(cond)                                                                                                    \
+    do {                                                                                                               \
+        if (!(cond)) {                                                                                                 \
+            std::fprintf(stderr, "planner_test assertion failed at line %d: %s\n", __LINE__, #cond);                   \
+            return 1;                                                                                                  \
+        }                                                                                                              \
+    } while (0)
 
 using namespace guild::memory;
 using namespace guild::model;
@@ -75,7 +76,8 @@ int main() {
         PlanValidation val = MemoryPlanner::validate(plan, hw, desc);
         CHECK(val.ok());
 
-        std::cout << "[Test 1 Passed] 8 GiB / 377 GiB correctly selected host-only KV (6.00 GiB host, 32.1 MiB staging)\n";
+        std::cout
+            << "[Test 1 Passed] 8 GiB / 377 GiB correctly selected host-only KV (6.00 GiB host, 32.1 MiB staging)\n";
     }
 
     // =========================================================================
@@ -116,7 +118,7 @@ int main() {
         ExecutionPlan plan = MemoryPlanner::plan(desc, hw, opts);
 
         const uint64_t budget_bytes = 32ULL * 1024ULL * 1024ULL * 1024ULL;
-        const int64_t expected_ram_slots = budget_bytes / 2421813ULL; // 14,187
+        const int64_t expected_ram_slots = budget_bytes / 2421813ULL;   // 14,187
         const int64_t expected_file_slots = 24576 - expected_ram_slots; // 10,389
 
         CHECK(plan.routed_experts_in_ram == expected_ram_slots);
@@ -124,8 +126,8 @@ int main() {
         CHECK(plan.routed_experts_in_ram + plan.routed_experts_on_file == 24576);
         CHECK(plan.routed_experts_ram_bytes + plan.routed_experts_file_bytes == plan.routed_expert_total_bytes);
 
-        std::cout << "[Test 3 Passed] 32 GiB budget produced deterministic split: "
-                  << plan.routed_experts_in_ram << " RAM / " << plan.routed_experts_on_file << " file\n";
+        std::cout << "[Test 3 Passed] 32 GiB budget produced deterministic split: " << plan.routed_experts_in_ram
+                  << " RAM / " << plan.routed_experts_on_file << " file\n";
     }
 
     // =========================================================================

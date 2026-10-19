@@ -8,12 +8,13 @@
 int main() {
     using namespace guild::model;
 
-#define CHECK(cond) do { \
-    if (!(cond)) { \
-        std::fprintf(stderr, "assertion failed at line %d: %s\n", __LINE__, #cond); \
-        return 1; \
-    } \
-} while (0)
+#define CHECK(cond)                                                                                                    \
+    do {                                                                                                               \
+        if (!(cond)) {                                                                                                 \
+            std::fprintf(stderr, "assertion failed at line %d: %s\n", __LINE__, #cond);                                \
+            return 1;                                                                                                  \
+        }                                                                                                              \
+    } while (0)
 
     // 1. String conversion checks
     CHECK(std::strcmp(archetype_to_string(ModelArchetype::Qwen4Exp), "qwen4exp") == 0);

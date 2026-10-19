@@ -62,8 +62,10 @@ int main() {
 
     std::string native_model;
     const auto* prim = manifest.find_file_by_role("primary");
-    if (!prim) prim = manifest.find_file_by_role("shard");
-    if (prim) native_model = prim->local_path;
+    if (!prim)
+        prim = manifest.find_file_by_role("shard");
+    if (prim)
+        native_model = prim->local_path;
     const std::string pack_dir = manifest.metadata.at("pack_dir");
 
     runtime::ModelPaths paths;
@@ -74,7 +76,8 @@ int main() {
     // Construct prompt without printing raw special tokens
     const std::string im_s = std::string("<|") + "im_start|>";
     const std::string im_e = std::string("<|") + "im_end|>";
-    const std::string prompt = im_s + "user\nWhat is the capital of France? Answer in one word." + im_e + "\n" + im_s + "assistant\n";
+    const std::string prompt =
+        im_s + "user\nWhat is the capital of France? Answer in one word." + im_e + "\n" + im_s + "assistant\n";
 
     std::vector<float> baseline_logits;
     std::vector<int32_t> baseline_tokens;
@@ -98,10 +101,13 @@ int main() {
         req.max_new_tokens = 1;
         req.temperature = 0.0f;
         runtime::RuntimeTelemetry telem;
-        CHECK(session->generate(req, [&](const runtime::TokenEvent& ev) {
-            baseline_tokens.push_back(ev.token_id);
-            return true;
-        }, telem, err));
+        CHECK(session->generate(
+            req,
+            [&](const runtime::TokenEvent& ev) {
+                baseline_tokens.push_back(ev.token_id);
+                return true;
+            },
+            telem, err));
         CHECK(baseline_tokens.size() == 1);
 
         const int64_t n_vocab = model->descriptor().attn.vocab_size > 0 ? model->descriptor().attn.vocab_size : 248320;
@@ -112,12 +118,16 @@ int main() {
         baseline_tokens.clear();
         auto session8 = model->create_session(2048);
         req.max_new_tokens = 8;
-        CHECK(session8->generate(req, [&](const runtime::TokenEvent& ev) {
-            baseline_tokens.push_back(ev.token_id);
-            return true;
-        }, telem, err));
+        CHECK(session8->generate(
+            req,
+            [&](const runtime::TokenEvent& ev) {
+                baseline_tokens.push_back(ev.token_id);
+                return true;
+            },
+            telem, err));
         CHECK(!baseline_tokens.empty());
-        std::cerr << "[ornith_gkernel_plugin_test] Phase A complete: baseline_tokens=" << baseline_tokens.size() << "\n";
+        std::cerr << "[ornith_gkernel_plugin_test] Phase A complete: baseline_tokens=" << baseline_tokens.size()
+                  << "\n";
     }
 
     // -------------------------------------------------------------------------
@@ -167,9 +177,9 @@ int main() {
         const int64_t batch = m_impl->batched_prefill->batch_size();
         m_impl->batched_prefill.reset();
         m_impl->batched_prefill = std::make_unique<runtime::BatchedPrefill>();
-        CHECK(m_impl->batched_prefill->init(
-            m_impl->wt, m_impl->g, m_impl->ss, *m_impl->srcp, *m_impl->pool,
-            m_impl->main_stream, err, batch, m_impl->xcache.valid() ? &m_impl->xcache : nullptr));
+        CHECK(m_impl->batched_prefill->init(m_impl->wt, m_impl->g, m_impl->ss, *m_impl->srcp, *m_impl->pool,
+                                            m_impl->main_stream, err, batch,
+                                            m_impl->xcache.valid() ? &m_impl->xcache : nullptr));
         for (const auto& pkg : m_impl->batched_prefill->bound_package_ids()) {
             m_impl->kernel_lease.add_package(pkg);
         }
@@ -208,10 +218,13 @@ int main() {
         req.temperature = 0.0f;
         runtime::RuntimeTelemetry telem;
         std::vector<int32_t> plugin_tokens;
-        CHECK(session->generate(req, [&](const runtime::TokenEvent& ev) {
-            plugin_tokens.push_back(ev.token_id);
-            return true;
-        }, telem, err));
+        CHECK(session->generate(
+            req,
+            [&](const runtime::TokenEvent& ev) {
+                plugin_tokens.push_back(ev.token_id);
+                return true;
+            },
+            telem, err));
 
         // Verify external CUDA kernel executed across all 40 layers of Ornith!
         const int64_t calls_after_1 = get_calls();
@@ -224,17 +237,19 @@ int main() {
 
         std::vector<float> plugin_logits(baseline_logits.size());
         CHECK(m_impl->ver && m_impl->ver->copy_logits(0, plugin_logits.data()));
-        CHECK(std::memcmp(baseline_logits.data(), plugin_logits.data(),
-                          baseline_logits.size() * sizeof(float)) == 0);
+        CHECK(std::memcmp(baseline_logits.data(), plugin_logits.data(), baseline_logits.size() * sizeof(float)) == 0);
 
         // 4. Run 8-token greedy continuation and verify token-for-token parity
         plugin_tokens.clear();
         auto session8 = model->create_session(2048);
         req.max_new_tokens = 8;
-        CHECK(session8->generate(req, [&](const runtime::TokenEvent& ev) {
-            plugin_tokens.push_back(ev.token_id);
-            return true;
-        }, telem, err));
+        CHECK(session8->generate(
+            req,
+            [&](const runtime::TokenEvent& ev) {
+                plugin_tokens.push_back(ev.token_id);
+                return true;
+            },
+            telem, err));
         CHECK(plugin_tokens == baseline_tokens);
         session8.reset();
         session.reset();
@@ -269,14 +284,18 @@ int main() {
                     runtime::RuntimeTelemetry stelem;
                     std::string serr;
                     std::vector<int32_t> stokens;
-                    CHECK(sessions[static_cast<size_t>(i)]->generate(sreq, [&](const runtime::TokenEvent& ev) {
-                        stokens.push_back(ev.token_id);
-                        return true;
-                    }, stelem, serr));
+                    CHECK(sessions[static_cast<size_t>(i)]->generate(
+                        sreq,
+                        [&](const runtime::TokenEvent& ev) {
+                            stokens.push_back(ev.token_id);
+                            return true;
+                        },
+                        stelem, serr));
                     CHECK(stokens == baseline_tokens);
                 });
             }
-            for (auto& sw : session_workers) sw.join();
+            for (auto& sw : session_workers)
+                sw.join();
             inf_done.store(true);
             pkg_worker.join();
         }
@@ -292,10 +311,11 @@ int main() {
     {
         kernels::ResolvedPrefillKernels fallback_table{};
         CHECK(kernels::KernelRegistry::instance().active_package_leases("ext.guild-kernels-ornith-prefill") == 0);
-        CHECK(abi::GKernelPackageManager::instance().disable_package("ext.guild-kernels-ornith-prefill", err) == GUILD_STATUS_OK);
+        CHECK(abi::GKernelPackageManager::instance().disable_package("ext.guild-kernels-ornith-prefill", err) ==
+              GUILD_STATUS_OK);
 
-        CHECK(kernels::KernelRegistry::instance().resolve_prefill_kernels(
-            kernels::query_host_device_capabilities(), fallback_table, err));
+        CHECK(kernels::KernelRegistry::instance().resolve_prefill_kernels(kernels::query_host_device_capabilities(),
+                                                                          fallback_table, err));
         CHECK(std::find(fallback_table.bound_impl_ids.begin(), fallback_table.bound_impl_ids.end(),
                         "gpu.moe.router_topk_native") != fallback_table.bound_impl_ids.end());
     }
@@ -303,9 +323,9 @@ int main() {
     {
         auto* m_impl = model->impl();
         m_impl->batched_prefill = std::make_unique<runtime::BatchedPrefill>();
-        CHECK(m_impl->batched_prefill->init(
-            m_impl->wt, m_impl->g, m_impl->ss, *m_impl->srcp, *m_impl->pool,
-            m_impl->main_stream, err, plan.prefill_batch, m_impl->xcache.valid() ? &m_impl->xcache : nullptr));
+        CHECK(m_impl->batched_prefill->init(m_impl->wt, m_impl->g, m_impl->ss, *m_impl->srcp, *m_impl->pool,
+                                            m_impl->main_stream, err, plan.prefill_batch,
+                                            m_impl->xcache.valid() ? &m_impl->xcache : nullptr));
         const auto& bound_ids = m_impl->batched_prefill->bound_impl_ids();
         CHECK(std::find(bound_ids.begin(), bound_ids.end(), "gpu.moe.router_topk_native") != bound_ids.end());
 
@@ -316,10 +336,13 @@ int main() {
         req.max_new_tokens = 8;
         req.temperature = 0.0f;
         runtime::RuntimeTelemetry telem;
-        CHECK(session_fb->generate(req, [&](const runtime::TokenEvent& ev) {
-            fallback_tokens.push_back(ev.token_id);
-            return true;
-        }, telem, err));
+        CHECK(session_fb->generate(
+            req,
+            [&](const runtime::TokenEvent& ev) {
+                fallback_tokens.push_back(ev.token_id);
+                return true;
+            },
+            telem, err));
         CHECK(fallback_tokens == baseline_tokens);
     }
 
@@ -338,10 +361,12 @@ int main() {
         orphan_session->reset();
     }
     orphan_session.reset();
-    CHECK(abi::GKernelPackageManager::instance().remove_package("ext.guild-kernels-ornith-prefill", err) == GUILD_STATUS_OK);
+    CHECK(abi::GKernelPackageManager::instance().remove_package("ext.guild-kernels-ornith-prefill", err) ==
+          GUILD_STATUS_OK);
 
     fs::remove_all(temp_root);
-    std::cout << "[ornith_gkernel_plugin_test] PASS: external .gkernel executed in real Ornith inference with bitwise parity and clean fallback.\n";
+    std::cout << "[ornith_gkernel_plugin_test] PASS: external .gkernel executed in real Ornith inference with bitwise "
+                 "parity and clean fallback.\n";
     return 0;
 #endif
 }

@@ -27,7 +27,8 @@ namespace fs = std::filesystem;
 namespace {
 
 void require(bool ok, const std::string& message) {
-    if (!ok) throw std::runtime_error(message);
+    if (!ok)
+        throw std::runtime_error(message);
 }
 
 struct TempDirectory {
@@ -51,7 +52,7 @@ void create_pack(const fs::path& dir, uint64_t bytes, const std::vector<std::pai
         std::ofstream out(file, std::ios::binary | std::ios::trunc);
         require((bool) out, "could not create synthetic experts.bin");
         if (bytes > 0) {
-            out.seekp((std::streamoff) (bytes - 1));
+            out.seekp((std::streamoff)(bytes - 1));
             out.put('\0');
         }
         require((bool) out, "could not size synthetic experts.bin");
@@ -92,8 +93,8 @@ void test_canonical_layout() {
     std::string err;
     const bool layout_ok = expert_layout_load(dir.path.string(), layers, experts, err);
     require(layout_ok, "could not load canonical layout: " + err);
-    create_pack(dir.path, total, {{0, 'a'}, {(uint64_t) BLOB, 'b'}, {layer_bytes, 'c'},
-                                  {layer_bytes + (uint64_t) BLOB, 'd'}});
+    create_pack(dir.path, total,
+                {{0, 'a'}, {(uint64_t) BLOB, 'b'}, {layer_bytes, 'c'}, {layer_bytes + (uint64_t) BLOB, 'd'}});
 
     FileExpertSource source;
     bool opened = source.open(dir.path.string(), layers, experts, err);
@@ -107,8 +108,8 @@ void test_canonical_layout() {
             "canonical expert or layer stride is wrong");
     require(first[0] == 'a' && second[0] == 'b' && next_layer[0] == 'c',
             "canonical blob lookup returned bytes from the wrong expert");
-    require(source.blob(-1, 0) == nullptr && source.blob(0, -1) == nullptr &&
-                source.blob(layers, 0) == nullptr && source.blob(0, experts) == nullptr,
+    require(source.blob(-1, 0) == nullptr && source.blob(0, -1) == nullptr && source.blob(layers, 0) == nullptr &&
+                source.blob(0, experts) == nullptr,
             "canonical bounds check accepted an invalid layer or expert");
     require(source.reads() == 3, "invalid canonical lookups changed the read count");
 
@@ -148,8 +149,10 @@ void test_zero_gpu_ram_tier() {
         require(source.has_resident(1, 2) && source.has_resident(0, 1), "profile order was not honored");
         for (int repeat = 0; repeat < 5; ++repeat) {
             require(source.blob(1, 2)[0] == 'z' && source.blob(0, 1)[0] == 'b', "resident expert bytes changed");
-            if (all) for (int64_t l = 0; l < layers; ++l) for (int64_t e = 0; e < experts; ++e)
-                require(source.has_resident(l, e) && source.blob(l, e), "whole budget left an expert on disk");
+            if (all)
+                for (int64_t l = 0; l < layers; ++l)
+                    for (int64_t e = 0; e < experts; ++e)
+                        require(source.has_resident(l, e) && source.blob(l, e), "whole budget left an expert on disk");
         }
         require(source.file_reads() == 0 && source.file_read_bytes() == 0 && source.ram_reads() > 0,
                 "steady resident reads unnecessarily went to files");
@@ -189,8 +192,11 @@ void test_native_variable_layout() {
                  << second_fmt.bytes << '\n';
         require((bool) metadata, "could not write synthetic native_experts.txt");
     }
-    create_pack(dir.path, total, {{0, 'a'}, {(uint64_t) first_fmt.bytes, 'b'},
-                                  {layer0_bytes, 'c'}, {layer0_bytes + (uint64_t) second_fmt.bytes, 'd'}});
+    create_pack(dir.path, total,
+                {{0, 'a'},
+                 {(uint64_t) first_fmt.bytes, 'b'},
+                 {layer0_bytes, 'c'},
+                 {layer0_bytes + (uint64_t) second_fmt.bytes, 'd'}});
 
     const bool layout_ok = expert_layout_load(dir.path.string(), layers, experts, err);
     require(layout_ok, "could not load synthetic native layout: " + err);
@@ -208,8 +214,8 @@ void test_native_variable_layout() {
             "native per-layer expert stride is wrong");
     require(first[0] == 'a' && second[0] == 'b' && next_layer[0] == 'c' && next_layer_second[0] == 'd',
             "native blob lookup returned bytes from the wrong expert");
-    require(source.blob(-1, 0) == nullptr && source.blob(0, -1) == nullptr &&
-                source.blob(layers, 0) == nullptr && source.blob(0, experts) == nullptr,
+    require(source.blob(-1, 0) == nullptr && source.blob(0, -1) == nullptr && source.blob(layers, 0) == nullptr &&
+                source.blob(0, experts) == nullptr,
             "native bounds check accepted an invalid layer or expert");
     require(source.reads() == 4, "invalid native lookups changed the read count");
 
@@ -237,8 +243,9 @@ void test_complement_plan() {
             "GPU-resident expert lost mmap fallback");
     require(cache_complement_blob_or_fallback(4, offsets, resident, mapped) == resident + 11,
             "CPU miss did not use resident complement");
-    require(!make_cache_complement_plan(2, 3, {3, 5}, {{0, 1}, {0, 1}}, {}, offsets, bytes, error)
-            && offsets.empty() && bytes == 0, "duplicate pair accepted");
+    require(!make_cache_complement_plan(2, 3, {3, 5}, {{0, 1}, {0, 1}}, {}, offsets, bytes, error) && offsets.empty() &&
+                bytes == 0,
+            "duplicate pair accepted");
     require(!make_cache_complement_plan(2, 3, {3, 5}, {{0, 1}}, {{0, 1}}, offsets, bytes, error),
             "overlapping tiers accepted");
     require(!make_cache_complement_plan(2, 3, {3, 5}, {{2, 0}}, {}, offsets, bytes, error),
@@ -273,11 +280,16 @@ void test_resident_exchange() {
     // (1,0) moves into the GPU, (1,2) leaves it: (1,2) takes (1,0)'s bytes' place
     require(exchange_cache_complement(offsets, 3, 5), "a valid exchange was refused");
     require(offsets[5] == before[3] && offsets[3] == kNoCacheComplement, "the exchange did not move the place");
-    for (size_t i : {0u, 1u, 2u, 4u}) require(offsets[i] == before[i], "an exchange touched another expert");
+    for (size_t i : {0u, 1u, 2u, 4u})
+        require(offsets[i] == before[i], "an exchange touched another expert");
     // the copy's size and its set of places are unchanged
     std::vector<uint64_t> a, b;
-    for (uint64_t o : before) if (o != kNoCacheComplement) a.push_back(o);
-    for (uint64_t o : offsets) if (o != kNoCacheComplement) b.push_back(o);
+    for (uint64_t o : before)
+        if (o != kNoCacheComplement)
+            a.push_back(o);
+    for (uint64_t o : offsets)
+        if (o != kNoCacheComplement)
+            b.push_back(o);
     std::sort(a.begin(), a.end());
     std::sort(b.begin(), b.end());
     require(a == b, "an exchange changed the compact copy's places");
@@ -312,8 +324,7 @@ void test_cgroup_memory_budget() {
 
     const uint64_t max = std::numeric_limits<uint64_t>::max();
     CgroupMemoryStat large_counters{max, max, max - 1, max, true};
-    require(cgroup_available_bytes(max, large_counters, bytes),
-            "large memory.stat counters were rejected");
+    require(cgroup_available_bytes(max, large_counters, bytes), "large memory.stat counters were rejected");
     require(bytes == 0, "dirty/writeback subtraction overflowed or escaped the usage cap");
 
     CgroupMemoryStat usage_over_limit{60 * GiB, 0, 0, 0, true};
@@ -339,7 +350,7 @@ void test_host_memory() {
         fs::create_directories((t.path / rel).parent_path());
         std::ofstream(t.path / rel) << text;
     };
-    put("meminfo", "MemTotal: 134217728 kB\nMemAvailable: 104857600 kB\n");   // 100 GiB available
+    put("meminfo", "MemTotal: 134217728 kB\nMemAvailable: 104857600 kB\n"); // 100 GiB available
     const std::string mi = (t.path / "meminfo").string(), cg = (t.path / "cgroup").string(),
                       root = (t.path / "fs").string();
     auto probe = [&](const std::string& self) {
@@ -363,10 +374,11 @@ void test_host_memory() {
     // v1: the memory controller's group (a hybrid line list), a 32 GiB limit with 10 GiB used
     put("fs/memory/docker/abc/memory.limit_in_bytes", std::to_string(32 * GiB) + "\n");
     put("fs/memory/docker/abc/memory.usage_in_bytes", std::to_string(10 * GiB) + "\n");
-    put("fs/memory/memory.limit_in_bytes", "9223372036854771712\n");   // the root: unlimited
+    put("fs/memory/memory.limit_in_bytes", "9223372036854771712\n"); // the root: unlimited
     put("fs/memory/memory.usage_in_bytes", std::to_string(50 * GiB) + "\n");
     require(probe("12:cpu,cpuacct:/docker/abc\n4:memory:/docker/abc\n1:name=systemd:/docker/abc\n") &&
-            m.available == 22 * GiB && m.cgroup_limit == 32 * GiB, "v1 limit");
+                m.available == 22 * GiB && m.cgroup_limit == 32 * GiB,
+            "v1 limit");
     put("fs/memory/docker/abc/memory.limit_in_bytes", "9223372036854771712\n");
     require(probe("4:memory:/docker/abc\n") && m.available == 100 * GiB && m.cgroup_limit == ~0ull, "v1 unlimited");
     // a v1 group not visible here (another namespace): MemAvailable alone
@@ -377,7 +389,7 @@ void test_host_memory() {
 #endif
 }
 
-}  // namespace
+} // namespace
 
 int main() {
     try {

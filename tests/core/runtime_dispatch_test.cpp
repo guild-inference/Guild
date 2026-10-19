@@ -11,7 +11,9 @@ class Source final : public guild::core::ExpertSource {
 public:
     bool missing = false;
     std::vector<uint8_t> weights;
-    const uint8_t* blob(int64_t, int64_t) override { return missing ? nullptr : weights.data(); }
+    const uint8_t* blob(int64_t, int64_t) override {
+        return missing ? nullptr : weights.data();
+    }
 };
 
 int main() {
@@ -64,12 +66,22 @@ int main() {
         int32_t counts[4] = {}, start[3] = {}, dst[2] = {}, tokens[2] = {}, start2[3] = {};
         unsigned long long ptr[2] = {}, ptr2[2] = {};
         core::GpuPlanSink plan;
-        plan.counts = counts; plan.start = start; plan.dst = dst; plan.tok = tokens;
-        plan.start2 = start2; plan.ptr = ptr; plan.ptr2 = ptr2; plan.cap = 2;
+        plan.counts = counts;
+        plan.start = start;
+        plan.dst = dst;
+        plan.tok = tokens;
+        plan.start2 = start2;
+        plan.ptr = ptr;
+        plan.ptr2 = ptr2;
+        plan.cap = 2;
         runtime::Drive mixed;
-        mixed.d.src = &source; mixed.d.pool = &pool; mixed.d.n_expert = 2;
-        mixed.d.host_res = mixed_residency; mixed.d.plan = &plan;
-        mixed.d.cache_base = source.weights.data(); mixed.d.cache_blob = int64_t(fmt.bytes);
+        mixed.d.src = &source;
+        mixed.d.pool = &pool;
+        mixed.d.n_expert = 2;
+        mixed.d.host_res = mixed_residency;
+        mixed.d.plan = &plan;
+        mixed.d.cache_base = source.weights.data();
+        mixed.d.cache_blob = int64_t(fmt.bytes);
         std::vector<float> mixed_out(5120, std::numeric_limits<float>::quiet_NaN());
         runtime::drive_pool_multi(&mixed, x.data(), mixed_ids, 1, 2, mixed_out.data(), 0);
         CHECK(!mixed.d.failed && counts[1] == 1 && dst[0] == 0);
@@ -79,8 +91,9 @@ int main() {
 
     auto rejects = [&](const std::string& message) {
         bool rejected = false;
-        try { runtime::drive_pool_multi(&drive, x.data(), &id, 1, 1, out.data(), 0); }
-        catch (const std::exception& e) {
+        try {
+            runtime::drive_pool_multi(&drive, x.data(), &id, 1, 1, out.data(), 0);
+        } catch (const std::exception& e) {
             rejected = true;
             CHECK(std::string(e.what()).find(message) != std::string::npos);
         }

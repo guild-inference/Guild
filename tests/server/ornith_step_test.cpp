@@ -32,8 +32,10 @@ int main() {
 
     std::string native_model;
     const auto* prim = manifest.find_file_by_role("primary");
-    if (!prim) prim = manifest.find_file_by_role("shard");
-    if (prim) native_model = prim->local_path;
+    if (!prim)
+        prim = manifest.find_file_by_role("shard");
+    if (prim)
+        native_model = prim->local_path;
 
     std::string pack_dir = manifest.metadata.at("pack_dir");
     std::string tokenizer_dir = pack_dir + "/tokenizer";
@@ -64,14 +66,18 @@ int main() {
 
     guild::runtime::RuntimeTelemetry telem;
     std::string gen_err;
-    bool ok = session->generate(req, [](const guild::runtime::TokenEvent& ev) {
-        std::cout << "[" << ev.token_id << "]: '" << ev.text << "'\n" << std::flush;
-        return true;
-    }, telem, gen_err);
+    bool ok = session->generate(
+        req,
+        [](const guild::runtime::TokenEvent& ev) {
+            std::cout << "[" << ev.token_id << "]: '" << ev.text << "'\n" << std::flush;
+            return true;
+        },
+        telem, gen_err);
     CHECK(ok);
 
     int64_t n_vocab = model->descriptor().attn.vocab_size;
-    if (n_vocab <= 0) n_vocab = 248320;
+    if (n_vocab <= 0)
+        n_vocab = 248320;
     std::vector<float> logits(n_vocab);
     CHECK(model->impl() && model->impl()->ver && model->impl()->ver->copy_logits(0, logits.data()));
 
@@ -79,11 +85,15 @@ int main() {
     int n_nan = 0, n_inf = 0;
     for (int i = 0; i < n_vocab; ++i) {
         float v = logits[i];
-        if (std::isnan(v)) n_nan++;
-        else if (std::isinf(v)) n_inf++;
+        if (std::isnan(v))
+            n_nan++;
+        else if (std::isinf(v))
+            n_inf++;
         else {
-            if (v > max_l) max_l = v;
-            if (v < min_l) min_l = v;
+            if (v > max_l)
+                max_l = v;
+            if (v < min_l)
+                min_l = v;
         }
     }
     CHECK(n_nan == 0 && n_inf == 0);
@@ -101,19 +111,21 @@ int main() {
     guild::runtime::RuntimeTelemetry q_telem;
     std::string q_err;
     auto q_session = model->create_session(8192);
-    bool q_ok = q_session->generate(q_req, [](const guild::runtime::TokenEvent& ev) {
-        std::cout << ev.text << std::flush;
-        return true;
-    }, q_telem, q_err);
+    bool q_ok = q_session->generate(
+        q_req,
+        [](const guild::runtime::TokenEvent& ev) {
+            std::cout << ev.text << std::flush;
+            return true;
+        },
+        q_telem, q_err);
     if (!q_ok) {
         std::cerr << "\nGeneration failed: " << q_err << "\n";
     }
     CHECK(q_ok);
     std::cout << "\n\nMulti-token success: " << q_ok << ", prompt_ms=" << q_telem.prompt_ms
-              << ", decode_tok_s=" << q_telem.decode_tok_s
-              << ", ram_expert_hits=" << q_telem.ram_expert_hits
-              << ", file_expert_reads=" << q_telem.file_expert_reads
-              << ", gpu_cache_hits=" << q_telem.gpu_cache_hits << "\n\n";
+              << ", decode_tok_s=" << q_telem.decode_tok_s << ", ram_expert_hits=" << q_telem.ram_expert_hits
+              << ", file_expert_reads=" << q_telem.file_expert_reads << ", gpu_cache_hits=" << q_telem.gpu_cache_hits
+              << "\n\n";
 
     // 4. Test prompt length crossing old 2051 selection bound: exactly 2,052 tokens
     std::cout << "=== Test 4: Crossing 2,051-token boundary with 2,052 prompt tokens ===\n";
@@ -134,8 +146,7 @@ int main() {
         CHECK(b_telem.completion_tokens == 4);
         CHECK(b_telem.prompt_tokens == 2052);
         std::cout << "2052 tokens prompt success: tokens=" << b_telem.completion_tokens
-                  << ", prompt_ms=" << b_telem.prompt_ms
-                  << ", prompt_tok_s=" << b_telem.prompt_tok_s
+                  << ", prompt_ms=" << b_telem.prompt_ms << ", prompt_tok_s=" << b_telem.prompt_tok_s
                   << ", decode_tok_s=" << b_telem.decode_tok_s << "\n\n";
     }
 
@@ -158,8 +169,7 @@ int main() {
         CHECK(c_telem.completion_tokens == 4);
         CHECK(c_telem.prompt_tokens == 4096);
         std::cout << "4096 tokens prompt success: tokens=" << c_telem.completion_tokens
-                  << ", prompt_ms=" << c_telem.prompt_ms
-                  << ", prompt_tok_s=" << c_telem.prompt_tok_s
+                  << ", prompt_ms=" << c_telem.prompt_ms << ", prompt_tok_s=" << c_telem.prompt_tok_s
                   << ", decode_tok_s=" << c_telem.decode_tok_s << "\n\n";
     }
 

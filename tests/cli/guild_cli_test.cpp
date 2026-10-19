@@ -4,12 +4,13 @@
 #include <cstdio>
 #include <iostream>
 
-#define CHECK(cond) do { \
-    if (!(cond)) { \
-        std::fprintf(stderr, "guild_cli_test failed at line %d: %s\n", __LINE__, #cond); \
-        return 1; \
-    } \
-} while (0)
+#define CHECK(cond)                                                                                                    \
+    do {                                                                                                               \
+        if (!(cond)) {                                                                                                 \
+            std::fprintf(stderr, "guild_cli_test failed at line %d: %s\n", __LINE__, #cond);                           \
+            return 1;                                                                                                  \
+        }                                                                                                              \
+    } while (0)
 
 int main() {
     const auto hw = guild::cli::detect_hardware();
@@ -32,8 +33,8 @@ int main() {
     CHECK(!s_gpu.empty());
 
     std::cout << "guild_cli_test detected hardware:\n"
-              << "  CPU: " << s_cpu << " (" << hw.cpu_physical_cores << " cores / "
-              << hw.cpu_logical_threads << " threads)\n"
+              << "  CPU: " << s_cpu << " (" << hw.cpu_physical_cores << " cores / " << hw.cpu_logical_threads
+              << " threads)\n"
               << "  RAM: " << s_ram << "\n"
               << "  GPU: " << s_gpu << "\n";
 
