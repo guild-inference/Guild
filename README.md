@@ -187,6 +187,9 @@ Bug reports, hardware results, architecture work, kernel optimizations, document
 
 Please include relevant hardware details when reporting performance or runtime issues.
 
+Start with [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) for the build, test and formatting commands, and
+[docs/architecture/README.md](docs/architecture/README.md) for the component map and the per-subsystem documents.
+
 ## Security
 
 Please report security vulnerabilities privately using GitHub's private vulnerability reporting feature.

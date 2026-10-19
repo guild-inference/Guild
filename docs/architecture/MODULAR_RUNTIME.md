@@ -41,6 +41,10 @@ Guild separates inference execution into three strictly decoupled layers connect
 
 ## Execution Lifecycle & Zero-Overhead Hot Path
 
+The full sequence - startup stages, session creation, prefill, the decode and speculative window, and the
+ownership rules - is in [EXECUTION_LIFECYCLE.md](EXECUTION_LIFECYCLE.md). The summary below is the modular-runtime
+view of the same path.
+
 To preserve single-token decode latency and batched prefill throughput, **neither virtual method dispatch nor hash-table/registry lookups occur inside layer or token loops**:
 
 1. **Startup & Dynamic `.gkernel` Package Loading**

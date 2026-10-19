@@ -102,6 +102,37 @@ invalidates its artifacts even in an uncommitted development build.
 
 ## 6. Optimizing and using a model
 
+```mermaid
+flowchart TB
+    subgraph produce["Produce (offline, once per host)"]
+        opt["guild optimize model.gpack --mode auto"]
+        meas["Measure: heterogeneous plan,<br/>autotune table, packed experts,<br/>workspace recipe, provenance"]
+        art["Write model.gexec<br/>lock, temp file, atomic rename"]
+        opt --> meas --> art
+    end
+
+    subgraph use["Use (every load)"]
+        src["Source: --gexec, GUILD_GEXEC_PATH,<br/>keyed cache, sibling .gexec"]
+        id{"identity matches<br/>this container, ABI and host?"}
+        frozen["Frozen kernel selection,<br/>packed expert layout"]
+        fallback["GPACK layout,<br/>reason in the startup profile"]
+        src --> id
+        id -- yes --> frozen
+        id -- no --> fallback
+    end
+
+    subgraph maintain["Maintain"]
+        regen["--section autotune|plan|workspace|provenance<br/>regenerates one section"]
+        clean["guild cache-clean<br/>takes the writer lock"]
+        disable["GUILD_DISABLE_GEXEC=1<br/>or a changed model/ABI/host"]
+    end
+
+    art -.-> src
+    art -.-> regen
+    clean -.-> art
+    disable -.-> fallback
+```
+
 ```sh
 guild optimize model.gpack --mode auto --context 2048 --prefill-batch 64 -o model.gexec
 guild inspect model.gexec --json
