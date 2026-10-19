@@ -1,5 +1,6 @@
 // src/kernels/registry.cpp - Hardware Kernel Operation Registry & Selection
 #include "guild/kernels/registry.hpp"
+#include "guild/abi/lifecycle.hpp"
 #include "guild/artifact/gguf_reader.hpp"
 #include "guild/core/validation.hpp"
 #include "guild/abi/runner_abi.h"
@@ -400,6 +401,7 @@ KernelRegistry& KernelRegistry::instance() {
 }
 
 guild_status_t KernelRegistry::register_op(const guild_kernel_op_desc_v1_t& desc, std::string& err) {
+    abi::ProviderTransaction transaction(abi::provider_lifecycle_mutex());
     if (desc.struct_size < sizeof(guild_kernel_op_desc_v1_t)) {
         err = "kernel op descriptor struct_size is smaller than ABI v1";
         return GUILD_STATUS_ERR_ABI_MISMATCH;
@@ -415,6 +417,14 @@ guild_status_t KernelRegistry::register_op(const guild_kernel_op_desc_v1_t& desc
         err = "kernel op descriptor has missing op_kind, impl_id, package_id, or backend";
         return GUILD_STATUS_ERR_INVALID_ARGUMENT;
     }
+    if (desc.max_batch_rows < 0 || desc.min_sm_version < 0 || desc.max_sm_version < 0 ||
+        (desc.min_sm_version > 0 && desc.max_sm_version > 0 && desc.min_sm_version > desc.max_sm_version) ||
+        (desc.min_dim_n > 0 && desc.max_dim_n > 0 && desc.min_dim_n > desc.max_dim_n) ||
+        (desc.min_dim_k > 0 && desc.max_dim_k > 0 && desc.min_dim_k > desc.max_dim_k) ||
+        desc.n_required_op_deps > 1024 || (desc.n_required_op_deps > 0 && !desc.required_op_deps)) {
+        err = "kernel op descriptor has invalid dimension/SM bounds or malformed required_op_deps";
+        return GUILD_STATUS_ERR_INVALID_ARGUMENT;
+    }
     std::lock_guard<std::mutex> lock(mutex_);
     for (const auto& existing : ops_) {
         if (existing->impl_id == desc.impl_id) {
@@ -422,7 +432,7 @@ guild_status_t KernelRegistry::register_op(const guild_kernel_op_desc_v1_t& desc
             return GUILD_STATUS_ERR_DUPLICATE_REGISTRATION;
         }
     }
-    auto stored = std::make_unique<StoredOp>();
+    auto stored = std::make_shared<StoredOp>();
     stored->desc = desc;
     stored->op_name = desc.op_name;
     stored->impl_id = desc.impl_id;
@@ -542,6 +552,7 @@ guild_status_t KernelRegistry::register_plugin_transactional(
     std::function<void(const std::string&)> runner_rollback_fn,
     std::string& err,
     std::shared_ptr<void> library_keepalive) {
+    abi::ProviderTransaction transaction(abi::provider_lifecycle_mutex());
     if (!entry_fn) {
         err = "plugin entry function is null";
         return GUILD_STATUS_ERR_INVALID_ARGUMENT;
@@ -630,8 +641,13 @@ guild_status_t KernelRegistry::register_plugin_transactional(
         }
         if (d->op_kind <= GUILD_OP_INVALID || d->op_kind >= GUILD_OP_COUNT ||
             !d->op_name || !d->op_name[0] || !d->impl_id || !d->impl_id[0] ||
-            !d->package_id || !d->package_id[0] || d->backend == GUILD_BACKEND_NONE) {
-            fill_err(e, GUILD_STATUS_ERR_INVALID_ARGUMENT, "plugin", "kernel op descriptor missing required fields");
+            !d->package_id || !d->package_id[0] || d->backend == GUILD_BACKEND_NONE ||
+            d->max_batch_rows < 0 || d->min_sm_version < 0 || d->max_sm_version < 0 ||
+            (d->min_sm_version > 0 && d->max_sm_version > 0 && d->min_sm_version > d->max_sm_version) ||
+            (d->min_dim_n > 0 && d->max_dim_n > 0 && d->min_dim_n > d->max_dim_n) ||
+            (d->min_dim_k > 0 && d->max_dim_k > 0 && d->min_dim_k > d->max_dim_k) ||
+            d->n_required_op_deps > 1024 || (d->n_required_op_deps > 0 && !d->required_op_deps)) {
+            fill_err(e, GUILD_STATUS_ERR_INVALID_ARGUMENT, "plugin", "kernel op descriptor missing or invalid required fields");
             return GUILD_STATUS_ERR_INVALID_ARGUMENT;
         }
         if (ctx->package_id != d->package_id) {
@@ -736,9 +752,23 @@ guild_status_t KernelRegistry::register_plugin_transactional(
             return GUILD_STATUS_ERR_ABI_MISMATCH;
         }
         if (!r->arch_id || !r->arch_id[0] || !r->runner_id || !r->runner_id[0] ||
-            !r->package_id || !r->package_id[0]) {
-            fill_err(e, GUILD_STATUS_ERR_INVALID_ARGUMENT, "plugin", "runner descriptor missing required fields");
+            !r->package_id || !r->package_id[0] ||
+            r->n_required_op_kinds > 1024 || (r->n_required_op_kinds > 0 && !r->required_op_kinds) ||
+            r->n_required_package_deps > 1024 || (r->n_required_package_deps > 0 && !r->required_package_deps)) {
+            fill_err(e, GUILD_STATUS_ERR_INVALID_ARGUMENT, "plugin", "runner descriptor missing or invalid required fields");
             return GUILD_STATUS_ERR_INVALID_ARGUMENT;
+        }
+        for (size_t i = 0; i < r->n_required_op_kinds; ++i) {
+            if (r->required_op_kinds[i] <= GUILD_OP_INVALID || r->required_op_kinds[i] >= GUILD_OP_COUNT) {
+                fill_err(e, GUILD_STATUS_ERR_INVALID_ARGUMENT, r->runner_id, "runner descriptor contains invalid required op kind");
+                return GUILD_STATUS_ERR_INVALID_ARGUMENT;
+            }
+        }
+        for (size_t i = 0; i < r->n_required_package_deps; ++i) {
+            if (!r->required_package_deps[i] || !r->required_package_deps[i][0]) {
+                fill_err(e, GUILD_STATUS_ERR_INVALID_ARGUMENT, r->runner_id, "runner descriptor contains null or empty package dependency");
+                return GUILD_STATUS_ERR_INVALID_ARGUMENT;
+            }
         }
         if (ctx->package_id != r->package_id) {
             fill_err(e, GUILD_STATUS_ERR_SECURITY_VIOLATION, r->runner_id, "runner package_id does not match owning plugin package_id");
@@ -869,7 +899,8 @@ guild_status_t KernelRegistry::register_plugin_transactional(
             }
         }
         for (size_t i = 0; i < staging.staged_ops.size(); ++i) {
-            auto stored = std::make_unique<StoredOp>();
+            auto stored = std::make_shared<StoredOp>();
+            stored->library_keepalive = library_keepalive;
             stored->desc = staging.staged_ops[i];
             stored->op_name = std::move(staging.staged_op_names[i]);
             stored->impl_id = std::move(staging.staged_impl_ids[i]);
@@ -909,7 +940,8 @@ guild_status_t KernelRegistry::register_plugin_transactional(
 }
 
 guild_status_t KernelRegistry::unregister_package(const std::string& package_id, std::string& err) {
-    if (active_sessions() > 0 || active_package_leases(package_id) > 0) {
+    abi::ProviderTransaction transaction(abi::provider_lifecycle_mutex());
+    if (active_package_leases(package_id) > 0) {
         err = "cannot unregister kernel package '" + package_id + "' while active sessions are running";
         return GUILD_STATUS_ERR_ACTIVE_SESSION_BUSY;
     }
@@ -918,7 +950,7 @@ guild_status_t KernelRegistry::unregister_package(const std::string& package_id,
     {
         std::lock_guard<std::mutex> lock(mutex_);
         const size_t before_ops = ops_.size();
-        ops_.erase(std::remove_if(ops_.begin(), ops_.end(), [&](const std::unique_ptr<StoredOp>& op) {
+        ops_.erase(std::remove_if(ops_.begin(), ops_.end(), [&](const std::shared_ptr<StoredOp>& op) {
             return op->package_id == package_id;
         }), ops_.end());
         const size_t before_plugins = plugins_.size();
@@ -956,6 +988,7 @@ guild_status_t KernelRegistry::unregister_package(const std::string& package_id,
 }
 
 void KernelRegistry::set_package_enabled(const std::string& package_id, bool enabled) {
+    abi::ProviderTransaction transaction(abi::provider_lifecycle_mutex());
     std::lock_guard<std::mutex> lock(mutex_);
     if (enabled) disabled_packages_.erase(package_id);
     else disabled_packages_.insert(package_id);
@@ -967,6 +1000,7 @@ bool KernelRegistry::is_package_enabled(const std::string& package_id) const {
 }
 
 void KernelRegistry::acquire_package_lease(const std::string& package_id, void* device_stream) const {
+    abi::ProviderTransaction transaction(abi::provider_lifecycle_mutex());
     if (package_id.empty()) return;
     std::lock_guard<std::mutex> lock(mutex_);
     auto& entry = package_leases_[package_id];
@@ -998,7 +1032,10 @@ void KernelRegistry::release_package_lease(const std::string& package_id, void* 
 int64_t KernelRegistry::active_package_leases(const std::string& package_id) const {
     std::lock_guard<std::mutex> lock(mutex_);
     const auto it = package_leases_.find(package_id);
-    return it != package_leases_.end() ? it->second.count : 0;
+    int64_t count = it != package_leases_.end() ? it->second.count : 0;
+    for (const auto& op : ops_)
+        if (op->package_id == package_id) count += op.use_count() - 1;
+    return count;
 }
 
 void KernelRegistry::synchronize_package_streams(const std::string& package_id) const {
@@ -1023,7 +1060,7 @@ guild_status_t KernelRegistry::validate_dependencies(std::string& err) const {
     std::lock_guard<std::mutex> lock(mutex_);
     for (const auto& op : ops_) {
         for (const auto& dep_id : op->dep_storage) {
-            const bool found = std::any_of(ops_.begin(), ops_.end(), [&](const std::unique_ptr<StoredOp>& cand) {
+            const bool found = std::any_of(ops_.begin(), ops_.end(), [&](const std::shared_ptr<StoredOp>& cand) {
                 return cand->impl_id == dep_id;
             });
             if (!found) {
@@ -1038,15 +1075,16 @@ guild_status_t KernelRegistry::validate_dependencies(std::string& err) const {
 
 guild_status_t KernelRegistry::select(const KernelSelectionQuery& query,
                                       const guild_device_capabilities_v1_t& caps,
-                                      const guild_kernel_op_desc_v1_t** out_desc,
+                                      KernelBinding* out_desc,
                                       std::string& err) const {
+    abi::ProviderTransaction transaction(abi::provider_lifecycle_mutex());
     if (out_desc) *out_desc = nullptr;
     if (query.op_kind <= GUILD_OP_INVALID || query.op_kind >= GUILD_OP_COUNT) {
         err = "invalid operation kind in kernel selection query";
         return GUILD_STATUS_ERR_INVALID_ARGUMENT;
     }
     std::lock_guard<std::mutex> lock(mutex_);
-    const StoredOp* best = nullptr;
+    std::shared_ptr<StoredOp> best;
     bool saw_op_kind = false;
     bool failed_hw = false;
     bool failed_caps = false;
@@ -1146,7 +1184,7 @@ guild_status_t KernelRegistry::select(const KernelSelectionQuery& query,
         // Check operation dependencies
         bool deps_ok = true;
         for (const auto& dep_id : cand->dep_storage) {
-            const bool dep_present = std::any_of(ops_.begin(), ops_.end(), [&](const std::unique_ptr<StoredOp>& o) {
+            const bool dep_present = std::any_of(ops_.begin(), ops_.end(), [&](const std::shared_ptr<StoredOp>& o) {
                 return o->impl_id == dep_id;
             });
             if (!dep_present) {
@@ -1160,7 +1198,7 @@ guild_status_t KernelRegistry::select(const KernelSelectionQuery& query,
         }
 
         if (!best || d.priority > best->desc.priority) {
-            best = cand.get();
+            best = cand;
         }
     }
 
@@ -1182,24 +1220,26 @@ guild_status_t KernelRegistry::select(const KernelSelectionQuery& query,
         return GUILD_STATUS_ERR_CAPABILITY_MISMATCH;
     }
 
-    if (out_desc) *out_desc = &best->desc;
+    if (out_desc) *out_desc = KernelBinding(best, &best->desc);
     err.clear();
     return GUILD_STATUS_OK;
 }
 
-const guild_kernel_op_desc_v1_t* KernelRegistry::find_by_id(const std::string& impl_id) const {
+KernelBinding KernelRegistry::find_by_id(const std::string& impl_id) const {
+    abi::ProviderTransaction transaction(abi::provider_lifecycle_mutex());
     std::lock_guard<std::mutex> lock(mutex_);
     for (const auto& op : ops_) {
-        if (op->impl_id == impl_id) return &op->desc;
+        if (op->impl_id == impl_id) return KernelBinding(op, &op->desc);
     }
     return nullptr;
 }
 
-std::vector<guild_kernel_op_desc_v1_t> KernelRegistry::list_operations() const {
+std::vector<KernelBinding> KernelRegistry::list_operations() const {
+    abi::ProviderTransaction transaction(abi::provider_lifecycle_mutex());
     std::lock_guard<std::mutex> lock(mutex_);
-    std::vector<guild_kernel_op_desc_v1_t> out;
+    std::vector<KernelBinding> out;
     out.reserve(ops_.size());
-    for (const auto& op : ops_) out.push_back(op->desc);
+    for (const auto& op : ops_) out.emplace_back(op, &op->desc);
     return out;
 }
 
@@ -1227,6 +1267,7 @@ std::vector<KernelOperationSnapshot> KernelRegistry::list_operation_snapshots() 
 bool KernelRegistry::resolve_prefill_kernels(const guild_device_capabilities_v1_t& caps,
                                              ResolvedPrefillKernels& out_table,
                                              std::string& err) const {
+    abi::ProviderTransaction transaction(abi::provider_lifecycle_mutex());
     out_table = {};
     const guild_op_kind_t required_ops[] = {
         GUILD_OP_QUANTIZE_ACT,
@@ -1257,8 +1298,12 @@ bool KernelRegistry::resolve_prefill_kernels(const guild_device_capabilities_v1_
             if (const char* value=std::getenv("GUILD_PREFILL_BATCH_PROJECTIONS"); value && std::atoi(value)==0)
                 q.frozen_impl_id="gpu.gdn.ab_proj_prefill_serial";
         }
-        const guild_kernel_op_desc_v1_t* d = nullptr;
-        if (select(q, caps, &d, err) != GUILD_STATUS_OK || !d) return false;
+        KernelBinding d;
+        if (select(q, caps, &d, err) != GUILD_STATUS_OK || !d) {
+            out_table.bindings.clear();
+            return false;
+        }
+        out_table.bindings.push_back(d);
         out_table.bound_impl_ids.emplace_back(d->impl_id ? d->impl_id : "");
         if (d->package_id && d->package_id[0]) {
             const std::string pkg_id = d->package_id;
@@ -1269,7 +1314,10 @@ bool KernelRegistry::resolve_prefill_kernels(const guild_device_capabilities_v1_
         }
         if (op == GUILD_OP_GDN_AB_PROJ || op == GUILD_OP_MOE_ROUTER_TOPK) {
             PrefillKernelExtensionV1 extension;
-            if (!read_prefill_extension(*d, extension, err)) return false;
+            if (!read_prefill_extension(*d, extension, err)) {
+                out_table.bindings.clear();
+                return false;
+            }
             if (op == GUILD_OP_GDN_AB_PROJ) out_table.gdn_ab = extension.gdn_ab;
             else out_table.router_projection = extension.router_projection;
             continue;
@@ -1335,6 +1383,10 @@ bool KernelRegistry::resolve_prefill_kernels(const guild_device_capabilities_v1_
         }
     }
     if (!out_table.all_bound()) {
+        out_table.bindings.clear();
+        out_table.cuda_dense.binding.reset();
+        out_table.cuda_moe.binding.reset();
+        out_table.cuda_attn.binding.reset();
         err = "prefill kernel resolution did not bind all required device entry points";
         return false;
     }
@@ -1350,7 +1402,7 @@ bool KernelRegistry::resolve_cuda_dense(const guild_device_capabilities_v1_t& ca
     q.allowed_backends = GUILD_BACKEND_CUDA;
     q.required_numerical_flags = GUILD_NUM_BITWISE_DETERMINISTIC;
     q.batch_rows = 512;
-    const guild_kernel_op_desc_v1_t* d = nullptr;
+    KernelBinding d;
     if (select(q, caps, &d, err) != GUILD_STATUS_OK || !d) return false;
     if (!read_cuda_dense_extension(d->next_ext, out_dense.table)) {
         err = std::string("CUDA dense kernel '") + (d->impl_id ? d->impl_id : "") + "' is missing a valid CDD1 extension";
@@ -1358,6 +1410,7 @@ bool KernelRegistry::resolve_cuda_dense(const guild_device_capabilities_v1_t& ca
     }
     out_dense.impl_id = d->impl_id ? d->impl_id : "";
     out_dense.package_id = d->package_id ? d->package_id : "";
+    out_dense.binding = d;
     err.clear();
     return true;
 }
@@ -1371,7 +1424,7 @@ bool KernelRegistry::resolve_cuda_attn(const guild_device_capabilities_v1_t& cap
     q.allowed_backends = GUILD_BACKEND_CUDA;
     q.required_numerical_flags = GUILD_NUM_BITWISE_DETERMINISTIC;
     q.batch_rows = 8;
-    const guild_kernel_op_desc_v1_t* d = nullptr;
+    KernelBinding d;
     if (select(q, caps, &d, err) != GUILD_STATUS_OK || !d) return false;
     if (!read_cuda_attn_extension(d->next_ext, out_attn.table)) {
         err = std::string("CUDA attention kernel '") + (d->impl_id ? d->impl_id : "") + "' is missing a valid CDA1 extension";
@@ -1379,6 +1432,7 @@ bool KernelRegistry::resolve_cuda_attn(const guild_device_capabilities_v1_t& cap
     }
     out_attn.impl_id = d->impl_id ? d->impl_id : "";
     out_attn.package_id = d->package_id ? d->package_id : "";
+    out_attn.binding = d;
     err.clear();
     return true;
 }
@@ -1391,7 +1445,7 @@ bool KernelRegistry::resolve_cuda_moe(const guild_device_capabilities_v1_t& caps
     q.allowed_backends = GUILD_BACKEND_CUDA;
     q.required_numerical_flags = GUILD_NUM_BITWISE_DETERMINISTIC;
     q.batch_rows = 512;
-    const guild_kernel_op_desc_v1_t* d = nullptr;
+    KernelBinding d;
     if (select(q, caps, &d, err) != GUILD_STATUS_OK || !d) return false;
     if (!read_cuda_moe_extension(d->next_ext, out.table)) {
         err = std::string("CUDA MoE kernel '") + (d->impl_id ? d->impl_id : "") + "' is missing a valid CDM1 extension";
@@ -1399,6 +1453,7 @@ bool KernelRegistry::resolve_cuda_moe(const guild_device_capabilities_v1_t& caps
     }
     out.impl_id = d->impl_id ? d->impl_id : "";
     out.package_id = d->package_id ? d->package_id : "";
+    out.binding = d;
     err.clear();
     return true;
 }

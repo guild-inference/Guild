@@ -36,10 +36,10 @@ public:
     const memory::ExecutionPlan& plan() const { return plan_; }
     const ModelPaths& paths() const { return paths_; }
     const RuntimeConfig& config() const { return config_; }
-    const Tokenizer& tokenizer() const { return tokenizer_; }
-    Tokenizer& tokenizer() { return tokenizer_; }
+    const Tokenizer& tokenizer() const { return *tokenizer_; }
+    Tokenizer& tokenizer() { return *tokenizer_; }
 
-    bool is_ready() const { return ready_; }
+    bool is_ready() const { return ready_ && ready_->load(); }
 
     struct Impl;
     Impl* impl() { return impl_.get(); }
@@ -52,9 +52,9 @@ private:
     memory::ExecutionPlan plan_;
     ModelPaths paths_;
     RuntimeConfig config_;
-    Tokenizer tokenizer_;
-    std::atomic<bool> ready_{false};
-    std::unique_ptr<Impl> impl_;
+    std::shared_ptr<Tokenizer> tokenizer_ = std::make_shared<Tokenizer>();
+    std::shared_ptr<std::atomic<bool>> ready_ = std::make_shared<std::atomic<bool>>(false);
+    std::shared_ptr<Impl> impl_;
 };
 
 } // namespace guild::runtime

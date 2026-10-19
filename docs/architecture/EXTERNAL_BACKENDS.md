@@ -9,10 +9,15 @@ configuration. The earlier preview scope and repository table below describe the
 original migration slice, not the complete current CPU operation set.
 
 [CUDA source ownership](CUDA_BACKEND_OWNERSHIP.md) now covers CDD1 dense,
-CDA1 attention/recurrent and CDM1 MoE/device primitives in CUDA package 1.3.0,
+CDA1 attention/recurrent and CDM1 MoE/device primitives in CUDA package 1.4.0,
 using SDK 1.4.0. All three extracted groups passed external-only Ornith inference.
-Legacy GEMM/MMQ and Qwen4Exp prefill remain in Core. Current immutable revisions
-are in `backends.lock.json`; the table below is the historical preview snapshot.
+[Phase 2E package lifecycle](PHASE2E_PACKAGE_LIFECYCLE.md) and
+[Phase 2E concurrency](PHASE2E_CONCURRENCY.md) establish reference-counted
+provider bindings (`KernelBinding` and `std::shared_ptr<const IModelRunner>`),
+cross-registry lifecycle transactions, durable `fsync` installation with
+same-version immutability, and resource-aware KV staging. Current immutable
+revisions are in `backends.lock.json`; the table below is the historical preview
+snapshot.
 
 | Repository | Original preview HEAD | Original verified scope |
 |---|---|---|
@@ -115,15 +120,16 @@ CUDA backend or canonical planar Q2 implementation.
    `CPU_BACKEND_OWNERSHIP.md` while extending architecture coverage.
 3. Move remaining Qwen topology/tensor-validation/state policy out of Core;
    validate Qwen4Exp/PLE/MTP with its actual model and the external runner.
-4. Close selection/lease and cross-registry transaction races; verify concurrent
-   replacement, stream completion on every device, durable install failure and
-   same-version immutability. Current tests do not establish all of these.
-5. Finish cross-repository corruption/hardware/ABI/dependency failure coverage
-   and independent signed production release automation. CI has build workflows;
-   successful hosted CI runs must be reported separately from local tests.
-6. Track paired performance evidence and remaining small differences in
-   `../performance/PHASE2C_CUDA_VALIDATION.md`; the initial unpaired preview
-   measurements are historical evidence.
+4. Selection/lease and cross-registry transaction races, same-version
+   immutability, durable `fsync` staging/registry commit, and 6-boundary fault
+   injection + subprocess crash recovery are verified in
+   [Phase 2E package lifecycle](PHASE2E_PACKAGE_LIFECYCLE.md),
+   [Phase 2E concurrency](PHASE2E_CONCURRENCY.md), and
+   [Phase 2E security and concurrency audit](../quality/PHASE2E_SECURITY_AND_CONCURRENCY_AUDIT.md).
+5. Finish independent signed production release key provisioning outside CI.
+6. Paired single-session and multi-session (`1, 2, 4, 8` sessions) performance
+   evidence is recorded in
+   [Phase 2E multi-session validation](../performance/PHASE2E_MULTI_SESSION_VALIDATION.md).
 
 ## Later phases (not started here)
 

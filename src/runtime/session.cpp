@@ -17,6 +17,7 @@
 namespace guild::runtime {
 
 struct GuildSession::Impl {
+    std::shared_ptr<GuildModel::Impl> model_impl;
     GuildModel* model = nullptr;
     int64_t max_context = 262144;
     std::unique_ptr<spec::SuffixDrafter> sfx;
@@ -29,32 +30,38 @@ struct GuildSession::Impl {
 GuildSession::GuildSession(GuildModel* model, int64_t max_context)
     : model_(model), max_context_(max_context), impl_(std::make_unique<Impl>()) {
     impl_->model = model;
-    impl_->max_context = max_context > 0 ? max_context : model->config().max_context;
+    impl_->model_impl = model ? model->impl_ : nullptr;
+    auto* m_impl = impl_->model_impl.get();
+    impl_->max_context = max_context > 0 ? max_context : (m_impl ? m_impl->config.max_context : 262144);
     impl_->sfx = std::make_unique<spec::SuffixDrafter>(3, 64, (size_t) impl_->max_context + 4096);
-    impl_->policy = std::make_unique<spec::DraftPolicy>(model->config().spec);
-    impl_->runner_lease = model::SessionRunnerLease(&model::ModelRunnerRegistry::instance());
-    impl_->kernel_lease = kernels::SessionKernelLease(&kernels::KernelRegistry::instance());
+    impl_->policy = std::make_unique<spec::DraftPolicy>(m_impl ? m_impl->config.spec : 2);
+    impl_->runner_lease = model::SessionRunnerLease(
+        &model::ModelRunnerRegistry::instance(),
+        (m_impl && m_impl->runner && m_impl->runner->package_id()) ? m_impl->runner->package_id() : "");
+    impl_->kernel_lease = kernels::SessionKernelLease(
+        &kernels::KernelRegistry::instance(),
+        m_impl ? m_impl->kernel_lease.package_ids() : std::vector<std::string>{});
 }
 
 GuildSession::~GuildSession() = default;
 
 void GuildSession::reset() {
-    if (!impl_ || !model_) return;
-    auto* m_impl = model_->impl();
+    if (!impl_ || !impl_->model_impl) return;
+    auto* m_impl = impl_->model_impl.get();
     std::lock_guard<std::mutex> lock(m_impl->generation_mutex);
-    if (!model_->is_ready()) return;
+    if (!m_impl->ready || !m_impl->ready->load()) return;
     std::optional<kernels::ScopedCudaAttn> attn_scope;
     if (m_impl->cuda_attn) attn_scope.emplace(*m_impl->cuda_attn);
     std::optional<kernels::ScopedCudaMoE> moe_scope;
     if (m_impl->cuda_moe) moe_scope.emplace(*m_impl->cuda_moe);
     std::string error;
     if (!m_impl->ver->wait_commit(error) || (m_impl->mtp && !m_impl->mtp->idle(error))) {
-        model_->ready_.store(false);
+        m_impl->ready->store(false);
         return;
     }
     core::session_zero(m_impl->ss, m_impl->g, nullptr, m_impl->main_stream);
     if (m_impl->mtp) core::qsa_state_zero(m_impl->mtp->kv_state(), m_impl->g, m_impl->main_stream);
-    if (cudaStreamSynchronize(m_impl->main_stream) != cudaSuccess) model_->ready_.store(false);
+    if (cudaStreamSynchronize(m_impl->main_stream) != cudaSuccess) m_impl->ready->store(false);
 }
 
 void GuildSession::cancel() {
@@ -73,18 +80,18 @@ bool GuildSession::generate(
     telemetry = RuntimeTelemetry{};
     telemetry.finish_reason = "error";
     error_msg.clear();
-    if (!model_ || !impl_) {
+    if (!impl_ || !impl_->model_impl) {
         error_msg = "session uninitialized";
         return false;
     }
 
-    auto* m_impl = model_->impl();
+    auto* m_impl = impl_->model_impl.get();
     std::lock_guard<std::mutex> lock(m_impl->generation_mutex);
-    if (!model_->is_ready()) {
+    if (!m_impl->ready || !m_impl->ready->load()) {
         error_msg = "model is not ready or an earlier inference failed; reload the model";
         return false;
     }
-    auto runtime_failure = [&]() { model_->ready_.store(false); return false; };
+    auto runtime_failure = [&]() { m_impl->ready->store(false); return false; };
     if (m_impl->ple_required && !m_impl->ss.ple.ready()) {
         error_msg = "required PLE operation is no longer connected; reload the model";
         return runtime_failure();
@@ -98,7 +105,7 @@ bool GuildSession::generate(
         ids.assign(req.prompt_tokens.begin(), req.prompt_tokens.end());
     } else if (!req.prompt.empty()) {
         std::vector<int32_t> enc_ids;
-        if (!model_->tokenizer().encode(req.prompt, enc_ids, true, error_msg)) {
+        if (!m_impl->tokenizer || !m_impl->tokenizer->encode(req.prompt, enc_ids, true, error_msg)) {
             return false;
         }
         ids.assign(enc_ids.begin(), enc_ids.end());
@@ -267,7 +274,7 @@ bool GuildSession::generate(
     int32_t x = static_cast<int32_t>(ids.back());
     int64_t p = n_prompt - 1;
 
-    const int S = std::max(1, model_->config().spec);
+    const int S = std::max(1, m_impl->config.spec);
     std::vector<int32_t> window(static_cast<size_t>(S), 0);
     std::vector<int32_t> drafts(static_cast<size_t>(S), 0);
     std::vector<int32_t> outv(static_cast<size_t>(S), 0);
@@ -289,7 +296,7 @@ bool GuildSession::generate(
     if (use_mtp) m_impl->mtp->set_draft_sampling(sp_params);
 
     std::string text_accum;
-    auto decoder = model_->tokenizer().create_incremental_decoder(true);
+    auto decoder = m_impl->tokenizer->create_incremental_decoder(true);
 
     while (produced_n < req.max_new_tokens && !eos) {
         if (impl_->cancelled.load() || (req.cancel_flag && req.cancel_flag->load())) {
@@ -298,9 +305,9 @@ bool GuildSession::generate(
         }
 
         int T = S;
-        if (use_mtp && model_->config().spec_min_p > 0.0f) {
+        if (use_mtp && m_impl->config.spec_min_p > 0.0f) {
             T = 1;
-            while (T < S && dprob[static_cast<size_t>(T - 1)] >= model_->config().spec_min_p) ++T;
+            while (T < S && dprob[static_cast<size_t>(T - 1)] >= m_impl->config.spec_min_p) ++T;
         }
         // There are no valid draft IDs before the first round or without a drafter.
         if (first_window || !use_mtp) T = 1;
@@ -341,9 +348,9 @@ bool GuildSession::generate(
             text_accum += tok_str;
 
             // Check EOS
-            eos = std::find(model_->config().eos_token_ids.begin(),
-                            model_->config().eos_token_ids.end(),
-                            static_cast<int64_t>(tid)) != model_->config().eos_token_ids.end();
+            eos = std::find(m_impl->config.eos_token_ids.begin(),
+                            m_impl->config.eos_token_ids.end(),
+                            static_cast<int64_t>(tid)) != m_impl->config.eos_token_ids.end();
 
             // Check custom stop sequence
             for (const auto& stop_word : req.stop) {
@@ -369,7 +376,7 @@ bool GuildSession::generate(
 
         // MTP Draft for next round
         if (use_mtp && produced_n < req.max_new_tokens) {
-            if (!m_impl->mtp->draft(T, outv.data(), p, a, drafts.data(), error_msg, dprob.data(), model_->config().spec_min_p)) {
+            if (!m_impl->mtp->draft(T, outv.data(), p, a, drafts.data(), error_msg, dprob.data(), m_impl->config.spec_min_p)) {
                 return runtime_failure();
             }
         }
@@ -392,7 +399,7 @@ bool GuildSession::generate(
                                  ? (produced_n / (telemetry.decode_ms / 1000.0))
                                  : 0.0;
     telemetry.current_context_length = p;
-    telemetry.prefill_chunk = m_impl->batched_prefill ? m_impl->batched_prefill->batch_size() : model_->config().prefill_chunk;
+    telemetry.prefill_chunk = m_impl->batched_prefill ? m_impl->batched_prefill->batch_size() : m_impl->config.prefill_chunk;
     telemetry.ram_expert_hits = m_impl->src.ram_reads() - ram_before;
     telemetry.file_expert_reads = m_impl->src.file_reads() - files_before;
     telemetry.file_read_bytes = m_impl->src.file_blob_bytes() - file_bytes_before;
@@ -435,12 +442,12 @@ bool GuildSession::generate(
 } catch (const std::exception& e) {
     telemetry.finish_reason = "error";
     error_msg = std::string("inference failed: ") + e.what();
-    if (model_) model_->ready_.store(false);
+    if (impl_ && impl_->model_impl && impl_->model_impl->ready) impl_->model_impl->ready->store(false);
     return false;
 } catch (...) {
     telemetry.finish_reason = "error";
     error_msg = "inference failed with an unknown exception";
-    if (model_) model_->ready_.store(false);
+    if (impl_ && impl_->model_impl && impl_->model_impl->ready) impl_->model_impl->ready->store(false);
     return false;
 }
 

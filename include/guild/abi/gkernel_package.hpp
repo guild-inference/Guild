@@ -154,6 +154,7 @@ struct PackageSecurityPolicy {
     bool require_signature = true;
     bool allow_unsigned_dev = false;
     bool verify_artifact_hashes = true;
+    bool allow_same_version_replacement = false;
     // Map of publisher_id -> set of trusted key_ids
     std::map<std::string, std::set<std::string>> trusted_publishers;
     // Map of (publisher_id, key_id) -> 64-char hex Ed25519 public key
@@ -229,6 +230,17 @@ guild_status_t stage_gkernel_source(const std::string& source_path,
                                     uint64_t max_total_bytes = (256ull << 20),
                                     size_t max_entries = 64);
 
+/// Deterministic fault-injection points for package installation, upgrade, rollback, and persistence testing.
+enum class PackageFaultPoint {
+    None = 0,
+    ArchiveRead,
+    AfterStagingBeforeVerify,
+    AfterVerifyBeforePublish,
+    AfterPublishBeforeLoad,
+    DuringRegistryWrite,
+    DuringRollbackLoad
+};
+
 /// Installed package record managed by GKernelPackageManager.
 struct InstalledPackageRecord {
     std::string package_id;
@@ -291,7 +303,12 @@ public:
     /// Inspect a specific installed package by `package_id` (or inspect a path on disk before installation).
     bool get_package(const std::string& package_id, InstalledPackageRecord& out_rec) const;
 
+    /// Configure deterministic fault injection for durability and rollback tests.
+    void set_fault_injection(PackageFaultPoint point, bool abort_process = false);
+    void clear_fault_injection();
+
 private:
+    bool should_trigger_fault_unlocked(PackageFaultPoint point, std::string& err);
     guild_status_t load_staged_package_unlocked(InstalledPackageRecord& rec, std::string& err);
     guild_status_t unload_package_unlocked(InstalledPackageRecord& rec, std::string& err);
     bool save_registry_unlocked(std::string& err) const;
@@ -303,6 +320,8 @@ private:
     PackageSecurityPolicy policy_;
     bool initialized_ = false;
     std::string initialization_error_;
+    mutable PackageFaultPoint fault_point_ = PackageFaultPoint::None;
+    mutable bool fault_abort_process_ = false;
     mutable std::mutex mutex_;
     std::map<std::string, InstalledPackageRecord> packages_;
 };

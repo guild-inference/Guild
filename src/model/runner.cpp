@@ -1,5 +1,6 @@
 // src/model/runner.cpp - Modular Model Architecture Runners & Registry
 #include "guild/model/runner.hpp"
+#include "guild/abi/lifecycle.hpp"
 #include "guild/core/validation.hpp"
 
 #include <algorithm>
@@ -217,8 +218,8 @@ bool validate_embedding_and_head(const GgufModel& artifact,
 // -----------------------------------------------------------------------------
 class AbiModelRunnerAdapter final : public IModelRunner {
 public:
-    explicit AbiModelRunnerAdapter(const guild_runner_desc_v1_t& desc)
-        : arch_id_(desc.arch_id),
+    explicit AbiModelRunnerAdapter(const guild_runner_desc_v1_t& desc, std::shared_ptr<void> keepalive)
+        : library_keepalive_(std::move(keepalive)), arch_id_(desc.arch_id),
           runner_id_(desc.runner_id),
           package_id_(desc.package_id),
           version_(desc.runner_version),
@@ -314,12 +315,8 @@ public:
             }
             if (!import_runner_model(m, out_desc, err)) return false;
             out_desc.file_path=artifact.meta().path();
-            tmap_.embedding_tensor = m.embedding_tensor;
-            tmap_.output_tensor = m.output_tensor;
-            tmap_.output_norm_tensor = m.output_norm_tensor;
-            tmap_.ple_table_tensor = m.ple_table_tensor;
-            tmap_.ple_key_tensor = m.ple_key_tensor;
-            tmap_.layer_prefix = m.layer_prefix;
+            // import_runner_model already requires canonical tensor roles. Never
+            // mutate registry-shared strings while other models read tensor_map().
             return validate_embedding_and_head(artifact, tmap_, out_desc, err);
         }
         if (!ArchetypeRegistry::instance().describe_gguf(artifact.meta(), out_desc, err)) {
@@ -478,6 +475,7 @@ public:
     }
 
 private:
+    std::shared_ptr<void> library_keepalive_;
     std::string arch_id_;
     std::string runner_id_;
     std::string package_id_;
@@ -488,7 +486,7 @@ private:
     std::vector<const char*> pkg_dep_ptrs_;
     guild_runner_session_alloc_fn session_alloc_ = nullptr;
     guild_runner_session_free_fn session_free_ = nullptr;
-    mutable RunnerTensorMap tmap_{};
+    RunnerTensorMap tmap_{};
     std::optional<guild_runner_model_ext_v1_t> extension_;
 };
 
@@ -525,6 +523,7 @@ void ModelRunnerRegistry::register_builtin_runners() {
 }
 
 guild_status_t ModelRunnerRegistry::register_runner(std::unique_ptr<IModelRunner> runner, std::string& err) {
+    abi::ProviderTransaction transaction(abi::provider_lifecycle_mutex());
     if (!runner || !runner->runner_id() || !runner->runner_id()[0] ||
         !runner->arch_id() || !runner->arch_id()[0] ||
         !runner->package_id() || !runner->package_id()[0]) {
@@ -551,7 +550,8 @@ guild_status_t ModelRunnerRegistry::register_runner(std::unique_ptr<IModelRunner
     return GUILD_STATUS_OK;
 }
 
-guild_status_t ModelRunnerRegistry::register_abi_runner(const guild_runner_desc_v1_t& desc, std::string& err) {
+guild_status_t ModelRunnerRegistry::register_abi_runner(const guild_runner_desc_v1_t& desc, std::string& err,
+                                                       std::shared_ptr<void> keepalive) {
     if (desc.struct_size < sizeof(guild_runner_desc_v1_t)) {
         err = "runner ABI descriptor struct_size is too small";
         return GUILD_STATUS_ERR_ABI_MISMATCH;
@@ -561,14 +561,22 @@ guild_status_t ModelRunnerRegistry::register_abi_runner(const guild_runner_desc_
         return GUILD_STATUS_ERR_ABI_MISMATCH;
     }
     if (!desc.arch_id || !desc.arch_id[0] || !desc.runner_id || !desc.runner_id[0] ||
-        !desc.package_id || !desc.package_id[0]) {
-        err = "runner ABI descriptor missing arch_id, runner_id, or package_id";
+        !desc.package_id || !desc.package_id[0] ||
+        desc.n_required_op_kinds > 1024 || (desc.n_required_op_kinds > 0 && !desc.required_op_kinds) ||
+        desc.n_required_package_deps > 1024 || (desc.n_required_package_deps > 0 && !desc.required_package_deps)) {
+        err = "runner ABI descriptor missing arch_id, runner_id, package_id, or valid dependency arrays";
         return GUILD_STATUS_ERR_INVALID_ARGUMENT;
     }
     for (size_t i = 0; i < desc.n_required_op_kinds; ++i) {
         if (!desc.required_op_kinds || desc.required_op_kinds[i] <= GUILD_OP_INVALID ||
             desc.required_op_kinds[i] >= GUILD_OP_COUNT) {
             err = "runner ABI descriptor declares invalid required operation kind";
+            return GUILD_STATUS_ERR_INVALID_ARGUMENT;
+        }
+    }
+    for (size_t i = 0; i < desc.n_required_package_deps; ++i) {
+        if (!desc.required_package_deps || !desc.required_package_deps[i] || !desc.required_package_deps[i][0]) {
+            err = "runner ABI descriptor declares null or empty package dependency";
             return GUILD_STATUS_ERR_INVALID_ARGUMENT;
         }
     }
@@ -587,26 +595,23 @@ guild_status_t ModelRunnerRegistry::register_abi_runner(const guild_runner_desc_
             return GUILD_STATUS_ERR_ABI_MISMATCH;
         }
     }
-    return register_runner(std::make_unique<AbiModelRunnerAdapter>(desc), err);
+    return register_runner(std::make_unique<AbiModelRunnerAdapter>(desc, std::move(keepalive)), err);
 }
 
 guild_status_t ModelRunnerRegistry::unregister_runner(const std::string& runner_id, std::string& err) {
-    if (active_sessions() > 0) {
-        err = "cannot unregister model runner '" + runner_id + "' while active sessions are running";
-        return GUILD_STATUS_ERR_ACTIVE_SESSION_BUSY;
-    }
+    abi::ProviderTransaction transaction(abi::provider_lifecycle_mutex());
     std::lock_guard<std::mutex> lock(mutex_);
     for (const auto& r : runners_) {
         if (runner_id == r->runner_id()) {
             const auto lit = package_leases_.find(r->package_id());
-            if (lit != package_leases_.end() && lit->second > 0) {
+            if (r.use_count() > 1 || (lit != package_leases_.end() && lit->second > 0)) {
                 err = "cannot unregister model runner '" + runner_id + "' while its package holds active leases";
                 return GUILD_STATUS_ERR_ACTIVE_SESSION_BUSY;
             }
         }
     }
     const size_t before = runners_.size();
-    runners_.erase(std::remove_if(runners_.begin(), runners_.end(), [&](const std::unique_ptr<IModelRunner>& r) {
+    runners_.erase(std::remove_if(runners_.begin(), runners_.end(), [&](const std::shared_ptr<IModelRunner>& r) {
         return runner_id == r->runner_id();
     }), runners_.end());
     if (runners_.size() == before) {
@@ -618,13 +623,14 @@ guild_status_t ModelRunnerRegistry::unregister_runner(const std::string& runner_
 }
 
 guild_status_t ModelRunnerRegistry::unregister_package(const std::string& package_id, std::string& err) {
-    if (active_sessions() > 0 || active_package_leases(package_id) > 0) {
+    abi::ProviderTransaction transaction(abi::provider_lifecycle_mutex());
+    if (active_package_leases(package_id) > 0) {
         err = "cannot unregister runner package '" + package_id + "' while active sessions are running";
         return GUILD_STATUS_ERR_ACTIVE_SESSION_BUSY;
     }
     std::lock_guard<std::mutex> lock(mutex_);
     const size_t before = runners_.size();
-    runners_.erase(std::remove_if(runners_.begin(), runners_.end(), [&](const std::unique_ptr<IModelRunner>& r) {
+    runners_.erase(std::remove_if(runners_.begin(), runners_.end(), [&](const std::shared_ptr<IModelRunner>& r) {
         return package_id == r->package_id();
     }), runners_.end());
     disabled_packages_.erase(package_id);
@@ -637,6 +643,7 @@ guild_status_t ModelRunnerRegistry::unregister_package(const std::string& packag
 }
 
 void ModelRunnerRegistry::set_package_enabled(const std::string& package_id, bool enabled) {
+    abi::ProviderTransaction transaction(abi::provider_lifecycle_mutex());
     std::lock_guard<std::mutex> lock(mutex_);
     if (enabled) disabled_packages_.erase(package_id);
     else disabled_packages_.insert(package_id);
@@ -648,6 +655,7 @@ bool ModelRunnerRegistry::is_package_enabled(const std::string& package_id) cons
 }
 
 void ModelRunnerRegistry::acquire_package_lease(const std::string& package_id) const {
+    abi::ProviderTransaction transaction(abi::provider_lifecycle_mutex());
     if (package_id.empty()) return;
     std::lock_guard<std::mutex> lock(mutex_);
     ++package_leases_[package_id];
@@ -665,18 +673,22 @@ void ModelRunnerRegistry::release_package_lease(const std::string& package_id) c
 int64_t ModelRunnerRegistry::active_package_leases(const std::string& package_id) const {
     std::lock_guard<std::mutex> lock(mutex_);
     const auto it = package_leases_.find(package_id);
-    return it != package_leases_.end() ? it->second : 0;
+    int64_t count = it != package_leases_.end() ? it->second : 0;
+    for (const auto& r : runners_)
+        if (package_id == r->package_id()) count += r.use_count() - 1;
+    return count;
 }
 
 guild_status_t ModelRunnerRegistry::resolve_for_gguf(const GgufFile& gguf,
-                                                     const IModelRunner** out_runner,
+                                                     std::shared_ptr<const IModelRunner>* out_runner,
                                                      std::string& err) const {
+    abi::ProviderTransaction transaction(abi::provider_lifecycle_mutex());
     if (out_runner) *out_runner = nullptr;
     std::lock_guard<std::mutex> lock(mutex_);
     for (const auto& r : runners_) {
         if (disabled_packages_.count(r->package_id()) > 0) continue;
         if (r->matches_gguf(gguf)) {
-            if (out_runner) *out_runner = r.get();
+            if (out_runner) *out_runner = r;
             err.clear();
             return GUILD_STATUS_OK;
         }
@@ -691,8 +703,9 @@ guild_status_t ModelRunnerRegistry::resolve_for_gguf(const GgufFile& gguf,
 }
 
 guild_status_t ModelRunnerRegistry::resolve_by_arch(const std::string& arch_name,
-                                                    const IModelRunner** out_runner,
+                                                    std::shared_ptr<const IModelRunner>* out_runner,
                                                     std::string& err) const {
+    abi::ProviderTransaction transaction(abi::provider_lifecycle_mutex());
     if (out_runner) *out_runner = nullptr;
     if (arch_name.empty()) {
         err = "architecture name cannot be empty";
@@ -702,7 +715,7 @@ guild_status_t ModelRunnerRegistry::resolve_by_arch(const std::string& arch_name
     for (const auto& r : runners_) {
         if (disabled_packages_.count(r->package_id()) > 0) continue;
         if (r->matches_arch_name(arch_name)) {
-            if (out_runner) *out_runner = r.get();
+            if (out_runner) *out_runner = r;
             err.clear();
             return GUILD_STATUS_OK;
         }
@@ -711,10 +724,11 @@ guild_status_t ModelRunnerRegistry::resolve_by_arch(const std::string& arch_name
     return GUILD_STATUS_ERR_MISSING_RUNNER;
 }
 
-const IModelRunner* ModelRunnerRegistry::find_by_id(const std::string& runner_id) const {
+std::shared_ptr<const IModelRunner> ModelRunnerRegistry::find_by_id(const std::string& runner_id) const {
+    abi::ProviderTransaction transaction(abi::provider_lifecycle_mutex());
     std::lock_guard<std::mutex> lock(mutex_);
     for (const auto& r : runners_) {
-        if (runner_id == r->runner_id()) return r.get();
+        if (runner_id == r->runner_id()) return r;
     }
     return nullptr;
 }
@@ -727,6 +741,8 @@ guild_status_t ModelRunnerRegistry::validate_runner_requirements(const IModelRun
                                                                  const guild_device_capabilities_v1_t& caps,
                                                                  RunnerExecutionPlan& out_exec,
                                                                  std::string& err) const {
+    abi::ProviderTransaction transaction(abi::provider_lifecycle_mutex());
+    out_exec.bindings.clear();
     if (!runner.build_execution_plan(desc, geom, mem_plan, out_exec, err)) {
         return GUILD_STATUS_ERR_CAPABILITY_MISMATCH;
     }
@@ -742,12 +758,14 @@ guild_status_t ModelRunnerRegistry::validate_runner_requirements(const IModelRun
         q.op_kind = op;
         q.dim_n = geom.n_embd;
         q.dim_k = geom.n_ff;
-        const guild_kernel_op_desc_v1_t* kdesc = nullptr;
+        kernels::KernelBinding kdesc;
         const guild_status_t st = kernel_reg.select(q, caps, &kdesc, err);
         if (st != GUILD_STATUS_OK || !kdesc) {
+            out_exec.bindings.clear();
             return st != GUILD_STATUS_OK ? st : GUILD_STATUS_ERR_MISSING_KERNEL;
         }
         out_exec.resolved_kernel_ids.emplace_back(kdesc->impl_id);
+        out_exec.bindings.push_back(kdesc);
         if (kdesc->package_id && kdesc->package_id[0]) {
             const std::string pkg_id = kdesc->package_id;
             if (std::find(out_exec.resolved_package_ids.begin(), out_exec.resolved_package_ids.end(), pkg_id) ==
@@ -760,11 +778,12 @@ guild_status_t ModelRunnerRegistry::validate_runner_requirements(const IModelRun
     return GUILD_STATUS_OK;
 }
 
-std::vector<guild_runner_desc_v1_t> ModelRunnerRegistry::list_runners() const {
+std::vector<std::shared_ptr<const IModelRunner>> ModelRunnerRegistry::list_runners() const {
+    abi::ProviderTransaction transaction(abi::provider_lifecycle_mutex());
     std::lock_guard<std::mutex> lock(mutex_);
-    std::vector<guild_runner_desc_v1_t> out;
+    std::vector<std::shared_ptr<const IModelRunner>> out;
     out.reserve(runners_.size());
-    for (const auto& r : runners_) out.push_back(r->abi_descriptor());
+    for (const auto& r : runners_) out.push_back(r);
     return out;
 }
 

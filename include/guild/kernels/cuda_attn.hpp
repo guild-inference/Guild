@@ -1,8 +1,10 @@
 #pragma once
 #include "guild/abi/cuda_attn_abi.h"
 #include <string>
+#include <memory>
 namespace guild::kernels {
 struct ResolvedCudaAttn {
+    std::shared_ptr<const guild_kernel_op_desc_v1_t> binding;
     guild_cuda_attn_ext_v1_t table{};
     std::string impl_id, package_id;
 };

@@ -4,7 +4,7 @@
 
 | Workflow | Work performed | Evidence boundary |
 | --- | --- | --- |
-| `ci.yml` | Python policy/installer tests, installed C99/C++17 SDK on Ubuntu 22.04/24.04 and Windows 2022, Linux management/ABI tests | Windows SDK checks do not validate a Windows inference engine; the Linux non-CUDA build cannot perform CPU-only inference |
+| `ci.yml` | Python policy/installer tests, installed C99/C++17 SDK on Ubuntu 22.04/24.04, Windows 2022 and macOS 14, Linux management/ABI tests, and ASan+UBSan / TSan `modular_abi_test` sanitizer gates | Windows/macOS SDK checks do not validate a Windows/macOS inference engine; the Linux non-CUDA build cannot perform CPU-only inference |
 | `backend-integration.yml` | Build/test exact CPU and runner commits against the current installed SDK, fresh-process signed registration, full pinned CUDA backend compilation and manifest/operation checks | Signing uses a temporary test identity; hosted CUDA compilation has no device execution |
 | `dev-build.yml` | Linux CUDA 13 inference executable, portable CPU baseline, linked CUDA runtime/BLAS, licenses, manifest and checksums | Development artifact; no real-GPU or full-model claim |
 | `release.yml` | Tag/revision validation, all CI checks, distribution build, dedicated-GPU shipped-binary golden test, reviewer-protected publication and OIDC provenance | Publication waits for real GPU evidence and configured release protection |

@@ -5,8 +5,10 @@ namespace guild::runtime {
 
 struct GuildModel::Impl {};
 
-GuildModel::GuildModel() : impl_(std::make_unique<Impl>()) {}
-GuildModel::~GuildModel() = default;
+GuildModel::GuildModel() : impl_(std::make_shared<Impl>()) {}
+GuildModel::~GuildModel() {
+    if (ready_) ready_->store(false);
+}
 
 std::unique_ptr<GuildModel> GuildModel::load(
     const ModelPaths& paths,

@@ -39,7 +39,7 @@ int main(int argc, char** argv) {
         CHECK(std::find(ids.begin(),ids.end(),"gpu.moe.router_topk_native")!=ids.end());
     }
     if (std::getenv("GUILD_EXPECT_CPU_PACKAGE") && !std::getenv("GUILD_TEST_NO_CPU_REFERENCE")) {
-        const auto* op=guild::kernels::KernelRegistry::instance().find_by_id("external.cpu.native_expert.v1");
+        const auto op=guild::kernels::KernelRegistry::instance().find_by_id("external.cpu.native_expert.v1");
         CHECK(op && op->next_ext);
         const auto* table=static_cast<const guild_cpu_expert_ext_v1_t*>(op->next_ext);
         const auto& format=guild::kernels::cpu::expert_layout().fmt[0];
@@ -124,7 +124,7 @@ int main(int argc, char** argv) {
         if(const char* version=std::getenv("GUILD_EXPECT_CPU_VERSION")) {
             CHECK(record.active_version==version);
             unsigned major=0,minor=0,patch=0;CHECK(std::sscanf(version,"%u.%u.%u",&major,&minor,&patch)==3);
-            const auto* operation=guild::kernels::KernelRegistry::instance().find_by_id("external.cpu.native_expert.v1");
+            const auto operation=guild::kernels::KernelRegistry::instance().find_by_id("external.cpu.native_expert.v1");
             CHECK(operation && operation->impl_version==GUILD_MAKE_ABI_VERSION(major,minor,patch));
         }
         const auto library=std::filesystem::path(record.staged_dir)/record.metadata.library_path;

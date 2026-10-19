@@ -20,6 +20,8 @@
 
 #if !defined(_WIN32)
 #include <dlfcn.h>
+#include <sys/wait.h>
+#include <unistd.h>
 #endif
 
 namespace fs = std::filesystem;
@@ -268,14 +270,14 @@ int main() {
     // -------------------------------------------------------------------------
     {
         auto& builtin_runners = model::ModelRunnerRegistry::instance();
-        const model::IModelRunner* qwen_runner = nullptr;
-        const model::IModelRunner* ornith_runner = nullptr;
+        std::shared_ptr<const model::IModelRunner> qwen_runner;
+        std::shared_ptr<const model::IModelRunner> ornith_runner;
         CHECK(builtin_runners.resolve_by_arch("qwen4exp", &qwen_runner, err) == GUILD_STATUS_OK && qwen_runner != nullptr);
         CHECK(builtin_runners.resolve_by_arch("qwen35moe", &ornith_runner, err) == GUILD_STATUS_OK && ornith_runner != nullptr);
         CHECK(builtin_runners.resolve_by_arch("ornith", &ornith_runner, err) == GUILD_STATUS_OK && ornith_runner != nullptr);
 
         // Missing runner for unregistered architecture
-        const model::IModelRunner* missing = nullptr;
+        std::shared_ptr<const model::IModelRunner> missing;
         CHECK(builtin_runners.resolve_by_arch("nonexistent_arch", &missing, err) == GUILD_STATUS_ERR_MISSING_RUNNER);
         CHECK(missing == nullptr);
 
@@ -308,7 +310,7 @@ int main() {
 
         // Active session lease prevents runner unregistration
         {
-            model::SessionRunnerLease lease(&reg);
+            model::SessionRunnerLease lease(&reg, "ext.guild-kernels-glm");
             CHECK(reg.active_sessions() == 1);
             CHECK(reg.unregister_runner("runner.glm.v1", err) == GUILD_STATUS_ERR_ACTIVE_SESSION_BUSY);
         }
@@ -343,7 +345,7 @@ int main() {
             q.batch_rows = 8;
             q.dim_n = 2048;
             q.dim_k = 512;
-            const guild_kernel_op_desc_v1_t* selected = nullptr;
+            kernels::KernelBinding selected;
             CHECK(kreg.select(q, caps, &selected, err) == GUILD_STATUS_OK && selected != nullptr);
             CHECK(std::strcmp(selected->impl_id, "cpu.expert_pool.split_multi_native") == 0);
 
@@ -406,14 +408,14 @@ int main() {
 
             // Active session lease prevents unregistering package
             {
-                kernels::SessionKernelLease klease(&kreg);
+                kernels::SessionKernelLease klease(&kreg, {"ext.dep"});
                 CHECK(kreg.unregister_package("ext.dep", err) == GUILD_STATUS_ERR_ACTIVE_SESSION_BUSY);
             }
             CHECK(kreg.unregister_package("ext.dep", err) == GUILD_STATUS_OK);
             CHECK(kreg.validate_dependencies(err) == GUILD_STATUS_OK);
 
             // Kernel dispatch failure propagation (NaN detection via cpu.finite_check.simd64)
-            const auto* finite_op = kreg.find_by_id("cpu.finite_check.simd64");
+            const auto finite_op = kreg.find_by_id("cpu.finite_check.simd64");
             CHECK(finite_op != nullptr && finite_op->execute != nullptr);
             alignas(64) float values[32] = {};
             values[17] = std::numeric_limits<float>::quiet_NaN();
@@ -457,6 +459,7 @@ int main() {
         kernels::PrefillKernelExtensionV1 gdn_extension;
         gdn_extension.gdn_ab = +[](const float*, const uint16_t*, const uint16_t*, const float*, const float*,
                                    float*, float*, int, int, int, void*) {};
+        resolved = {};
         // Keep the serial implementation ID so this test also works with the frozen A/B policy.
         f.replace(GUILD_OP_GDN_AB_PROJ, nullptr, &gdn_extension);
         kernels::PrefillKernelExtensionV1 router_extension;
@@ -547,6 +550,7 @@ int main() {
             uint64_t extra = 0;
         } extended{f.extension};
         extended.v1.header.struct_size = sizeof(extended);
+        resolved = {};
         f.replace(op, f.legacy.get(), &extended);
         CHECK(f.reg.resolve_prefill_kernels(f.caps, resolved, err) && resolved.all_bound());
     }
@@ -1004,7 +1008,7 @@ int main() {
         lock.artifact_sha256 = art_sha;
         lock.impl_id = "cpu.expert_pool.split_multi_native";
         lock.abi_version = GUILD_KERNEL_ABI_VERSION_V1;
-        const auto* op_desc = kernels::KernelRegistry::instance().find_by_id("cpu.expert_pool.split_multi_native");
+        const auto op_desc = kernels::KernelRegistry::instance().find_by_id("cpu.expert_pool.split_multi_native");
         CHECK(op_desc != nullptr);
         CHECK(abi::verify_gexec_kernel_lock(lock, meta, *op_desc, err) == GUILD_STATUS_OK);
 
@@ -1032,13 +1036,43 @@ int main() {
         // Max entries budget check (max_entries = 1 < 2 entries)
         CHECK(abi::stage_gkernel_source(bundle_path.string(), stage_out.string(), staged_meta, err, 1024 * 1024, 1) == GUILD_STATUS_ERR_SECURITY_VIOLATION);
 
-        // Undeclared shared library in package directory -> rejected
+        // Undeclared shared library or non-library file in package directory -> rejected
         {
             std::ofstream extra_so(temp_dir / "lib" / "undeclared_evil.so", std::ios::binary);
             extra_so << "UNDECLARED_SO";
         }
         CHECK(abi::stage_gkernel_source(temp_dir.string(), stage_out.string(), staged_meta, err) == GUILD_STATUS_ERR_SECURITY_VIOLATION);
         fs::remove(temp_dir / "lib" / "undeclared_evil.so");
+        {
+            std::ofstream extra_txt(temp_dir / "undeclared_payload.txt", std::ios::binary);
+            extra_txt << "UNDECLARED_PAYLOAD";
+        }
+        CHECK(abi::stage_gkernel_source(temp_dir.string(), stage_out.string(), staged_meta, err) == GUILD_STATUS_ERR_SECURITY_VIOLATION);
+        fs::remove(temp_dir / "undeclared_payload.txt");
+
+        // GKPK archive with trailing unauthenticated bytes -> rejected
+        {
+            const fs::path trailing_archive = temp_dir.parent_path() / "trailing_bytes.gkernel";
+            fs::copy_file(bundle_path, trailing_archive, fs::copy_options::overwrite_existing);
+            {
+                std::ofstream out(trailing_archive, std::ios::binary | std::ios::app);
+                out.write("TRAILING", 8);
+            }
+            CHECK(abi::stage_gkernel_source(trailing_archive.string(), stage_out.string(), staged_meta, err) == GUILD_STATUS_ERR_SECURITY_VIOLATION);
+            fs::remove(trailing_archive);
+        }
+
+        // Truncated POSIX .tar archive header -> rejected
+        {
+            const fs::path trunc_tar = temp_dir.parent_path() / "truncated.tar";
+            {
+                std::ofstream out(trunc_tar, std::ios::binary | std::ios::trunc);
+                char partial_block[200] = {'t', 'e', 's', 't'};
+                out.write(partial_block, sizeof(partial_block));
+            }
+            CHECK(abi::stage_gkernel_source(trunc_tar.string(), stage_out.string(), staged_meta, err) == GUILD_STATUS_ERR_SECURITY_VIOLATION);
+            fs::remove(trunc_tar);
+        }
 
 #if !defined(_WIN32)
         // Symlink inside package directory -> rejected
@@ -1091,7 +1125,7 @@ int main() {
             CHECK(table.all_bound());
 
             for (const char* arch : {"qwen4exp", "qwen35moe"}) {
-                const model::IModelRunner* runner = nullptr;
+                std::shared_ptr<const model::IModelRunner> runner;
                 CHECK(model::ModelRunnerRegistry::instance().resolve_by_arch(arch, &runner, err) == GUILD_STATUS_OK && runner);
                 model::ModelDescriptor desc;
                 desc.arch_name = arch;
@@ -1245,7 +1279,7 @@ int main() {
         CHECK(mgr.install_package(runner_bundle.string(), true, err) == GUILD_STATUS_OK);
 
         // Verify external runner is resolved
-        const model::IModelRunner* smoke_runner = nullptr;
+        std::shared_ptr<const model::IModelRunner> smoke_runner;
         CHECK(iso_rreg.resolve_by_arch("ornith_ext_smoke", &smoke_runner, err) == GUILD_STATUS_OK && smoke_runner != nullptr);
         CHECK(std::strcmp(smoke_runner->runner_id(), "runner.ornith_ext_smoke.v1") == 0);
         const auto r_abi = smoke_runner->abi_descriptor();
@@ -1253,13 +1287,14 @@ int main() {
         guild_session_state_handle_t smoke_state = nullptr;
         CHECK(r_abi.session_alloc(nullptr, 4096, &smoke_state, nullptr) == GUILD_STATUS_OK && smoke_state != nullptr);
         r_abi.session_free(smoke_state);
+        smoke_runner.reset();
 
         // Verify external kernel is selected over built-in cpu.finite_check.simd64 (priority 250 > 100)
         const auto host_caps = kernels::query_host_device_capabilities();
         kernels::KernelSelectionQuery fq;
         fq.op_kind = GUILD_OP_FINITE_CHECK;
         fq.allowed_backends = GUILD_BACKEND_CPU;
-        const guild_kernel_op_desc_v1_t* sel_finite = nullptr;
+        kernels::KernelBinding sel_finite;
         CHECK(iso_kreg.select(fq, host_caps, &sel_finite, err) == GUILD_STATUS_OK && sel_finite != nullptr);
         CHECK(std::strcmp(sel_finite->impl_id, "ext.cpu.finite_check.v1") == 0);
         CHECK(sel_finite->impl_version == GUILD_KERNEL_ABI_MAKE_VERSION(1, 0, 0));
@@ -1282,6 +1317,7 @@ int main() {
         CHECK(sel_finite->execute(nullptr, &t_ok, 1, nullptr, 0, nullptr, 0, &einfo) == GUILD_STATUS_OK);
         ok_vals[9] = std::numeric_limits<float>::infinity();
         CHECK(sel_finite->execute(nullptr, &t_ok, 1, nullptr, 0, nullptr, 0, &einfo) == GUILD_STATUS_ERR_NONFINITE_OUTPUT);
+        sel_finite.reset();
 
 #if defined(GUILD_ENABLE_CUDA)
         if (host_caps.gpu_device_count > 0) {
@@ -1310,7 +1346,7 @@ int main() {
                     guild_tensor_desc_t tl = t_ok;
                     tl.buffer.data = local_vals;
                     for (int iter = 0; iter < 50 && !stop_threads.load(std::memory_order_relaxed); ++iter) {
-                        const guild_kernel_op_desc_v1_t* d = nullptr;
+                        kernels::KernelBinding d;
                         std::string lerr;
                         CHECK(iso_kreg.select(fq, host_caps, &d, lerr) == GUILD_STATUS_OK && d != nullptr);
                         guild_error_info_t le{};
@@ -1324,16 +1360,195 @@ int main() {
         }
         CHECK(iso_kreg.active_package_leases("ext.guild-kernels-ornith-prefill") == 0);
 
-        // 7d. Upgrade (1.0.0 -> 1.1.0) and Rollback (1.1.0 -> 1.0.0)
+        // 7d. Same-version immutability & idempotency tests (Stage D)
+        // Re-installing the exact same v1.0.0 bundle is idempotent
+        CHECK(mgr.install_package(pkg_v10_bundle.string(), true, err) == GUILD_STATUS_OK);
+
+        // Building a different v1.0.0 bundle for the same package_id@1.0.0 must be rejected
+        const fs::path pkg_v10_tampered_dir = pkg_work / "src_v10_tampered";
+        const fs::path pkg_v10_tampered_bundle = pkg_work / "ornith_prefill_v1_0_0_tampered.gkernel";
+        build_signed_pkg("ext.guild-kernels-ornith-prefill", "1.0.0", "cuda-kernels",
+                         GUILD_TEST_EXT_PREFILL_SO, "libguild_ext_ornith_prefill.so",
+                         prefill_ops, {}, pkg_v10_tampered_dir, pkg_v10_tampered_bundle);
+        CHECK(mgr.install_package(pkg_v10_tampered_bundle.string(), true, err) == GUILD_STATUS_ERR_DUPLICATE_REGISTRATION);
+
+        // Unrelated package lease isolation test (Stage B):
+        // Holding a lease on ext.guild-runner-smoke must NOT block disabling/enabling ext.guild-kernels-ornith-prefill
+        {
+            model::SessionRunnerLease unrelated_lease(&iso_rreg, "ext.guild-runner-smoke");
+            CHECK(iso_rreg.active_package_leases("ext.guild-runner-smoke") == 1);
+            CHECK(mgr.disable_package("ext.guild-kernels-ornith-prefill", err) == GUILD_STATUS_OK);
+            CHECK(mgr.enable_package("ext.guild-kernels-ornith-prefill", err) == GUILD_STATUS_OK);
+            // Meanwhile, disabling ext.guild-runner-smoke itself IS blocked by its lease
+            CHECK(mgr.disable_package("ext.guild-runner-smoke", err) == GUILD_STATUS_ERR_ACTIVE_SESSION_BUSY);
+        }
+
+        // Upgrade (1.0.0 -> 1.1.0) and Rollback (1.1.0 -> 1.0.0)
         CHECK(mgr.install_package(pkg_v11_bundle.string(), true, err) == GUILD_STATUS_OK);
         CHECK(iso_kreg.select(fq, host_caps, &sel_finite, err) == GUILD_STATUS_OK && sel_finite != nullptr);
         CHECK(sel_finite->impl_version == GUILD_KERNEL_ABI_MAKE_VERSION(1, 1, 0));
+        sel_finite.reset();
+
+        // Even while 1.1.0 is active, 1.0.0 is retained in the store and remains immutable against different 1.0.0 content
+        CHECK(mgr.install_package(pkg_v10_tampered_bundle.string(), true, err) == GUILD_STATUS_ERR_DUPLICATE_REGISTRATION);
 
         CHECK(mgr.rollback_package("ext.guild-kernels-ornith-prefill", err) == GUILD_STATUS_OK);
         CHECK(iso_kreg.select(fq, host_caps, &sel_finite, err) == GUILD_STATUS_OK && sel_finite != nullptr);
         CHECK(sel_finite->impl_version == GUILD_KERNEL_ABI_MAKE_VERSION(1, 0, 0));
+        sel_finite.reset();
+
+        // 7d-faults. Fault-injection across all 6 transaction boundaries (Stage D)
+        for (abi::PackageFaultPoint fp : {
+                 abi::PackageFaultPoint::ArchiveRead,
+                 abi::PackageFaultPoint::AfterStagingBeforeVerify,
+                 abi::PackageFaultPoint::AfterVerifyBeforePublish,
+                 abi::PackageFaultPoint::AfterPublishBeforeLoad,
+                 abi::PackageFaultPoint::DuringRegistryWrite}) {
+            mgr.set_fault_injection(fp, false);
+            CHECK(mgr.install_package(pkg_v11_bundle.string(), true, err) == GUILD_STATUS_ERR_INTERNAL);
+            // Verify v1.0.0 remains active, loaded, and selectable after every injected fault
+            CHECK(iso_kreg.select(fq, host_caps, &sel_finite, err) == GUILD_STATUS_OK && sel_finite != nullptr);
+            CHECK(sel_finite->impl_version == GUILD_KERNEL_ABI_MAKE_VERSION(1, 0, 0));
+            sel_finite.reset();
+            abi::InstalledPackageRecord rec_check;
+            CHECK(mgr.get_package("ext.guild-kernels-ornith-prefill", rec_check));
+            CHECK(rec_check.active_version == "1.0.0" && rec_check.enabled && rec_check.loaded_in_process);
+        }
+
+        // Fault injection during remove_package registry commit: package must remain installed and loaded
+        mgr.set_fault_injection(abi::PackageFaultPoint::DuringRegistryWrite, false);
+        CHECK(mgr.remove_package("ext.guild-kernels-ornith-prefill", err) == GUILD_STATUS_ERR_INTERNAL);
+        CHECK(iso_kreg.select(fq, host_caps, &sel_finite, err) == GUILD_STATUS_OK && sel_finite != nullptr);
+        CHECK(sel_finite->impl_version == GUILD_KERNEL_ABI_MAKE_VERSION(1, 0, 0));
+        sel_finite.reset();
+
+        // Upgrade to 1.1.0, then inject fault during rollback load -> must stay on 1.1.0
+        CHECK(mgr.install_package(pkg_v11_bundle.string(), true, err) == GUILD_STATUS_OK);
+        mgr.set_fault_injection(abi::PackageFaultPoint::DuringRollbackLoad, false);
+        CHECK(mgr.rollback_package("ext.guild-kernels-ornith-prefill", err) == GUILD_STATUS_ERR_INTERNAL);
+        CHECK(iso_kreg.select(fq, host_caps, &sel_finite, err) == GUILD_STATUS_OK && sel_finite != nullptr);
+        CHECK(sel_finite->impl_version == GUILD_KERNEL_ABI_MAKE_VERSION(1, 1, 0));
+        sel_finite.reset();
+
+        // Roll back cleanly to 1.0.0
+        CHECK(mgr.rollback_package("ext.guild-kernels-ornith-prefill", err) == GUILD_STATUS_OK);
+
+#if !defined(_WIN32)
+        // Real subprocess crash test (_Exit(99) during registry write & after publish) + startup recovery
+        {
+            const fs::path crash_store = pkg_work / "crash_store";
+            {
+                kernels::KernelRegistry ckreg;
+                ckreg.register_builtin_kernels();
+                model::ModelRunnerRegistry crreg;
+                crreg.register_builtin_runners();
+                abi::GKernelPackageManager cmgr(crash_store.string(), &ckreg, &crreg);
+                CHECK(cmgr.init(err));
+                abi::trust_test_signing_key(cmgr.security_policy());
+                CHECK(cmgr.save_security_policy(err));
+                CHECK(cmgr.install_package(pkg_v10_bundle.string(), true, err) == GUILD_STATUS_OK);
+            }
+            for (abi::PackageFaultPoint crash_fp : {
+                     abi::PackageFaultPoint::AfterPublishBeforeLoad,
+                     abi::PackageFaultPoint::DuringRegistryWrite}) {
+                const pid_t pid = ::fork();
+                CHECK(pid >= 0);
+                if (pid == 0) {
+                    kernels::KernelRegistry child_kreg;
+                    child_kreg.register_builtin_kernels();
+                    model::ModelRunnerRegistry child_rreg;
+                    child_rreg.register_builtin_runners();
+                    abi::GKernelPackageManager child_mgr(crash_store.string(), &child_kreg, &child_rreg);
+                    std::string cerr;
+                    if (!child_mgr.init(cerr)) std::_Exit(2);
+                    child_mgr.set_fault_injection(crash_fp, true);
+                    (void)child_mgr.install_package(pkg_v11_bundle.string(), true, cerr);
+                    std::_Exit(0);
+                }
+                int wstatus = 0;
+                CHECK(::waitpid(pid, &wstatus, 0) == pid);
+                CHECK(WIFEXITED(wstatus) && WEXITSTATUS(wstatus) == 99);
+
+                // Recover store in parent process
+                kernels::KernelRegistry rec_kreg;
+                rec_kreg.register_builtin_kernels();
+                model::ModelRunnerRegistry rec_rreg;
+                rec_rreg.register_builtin_runners();
+                abi::GKernelPackageManager rec_mgr(crash_store.string(), &rec_kreg, &rec_rreg);
+                CHECK(rec_mgr.init(err));
+                CHECK(!fs::exists(crash_store / "registry.json.tmp"));
+                CHECK(fs::is_empty(crash_store / "staging"));
+                CHECK(!fs::exists(crash_store / "packages" / "ext.guild-kernels-ornith-prefill" / "1.1.0"));
+                CHECK(rec_mgr.load_enabled_packages(err) == GUILD_STATUS_OK);
+                kernels::KernelBinding rec_sel;
+                CHECK(rec_kreg.select(fq, host_caps, &rec_sel, err) == GUILD_STATUS_OK && rec_sel != nullptr);
+                CHECK(rec_sel->impl_version == GUILD_KERNEL_ABI_MAKE_VERSION(1, 0, 0));
+            }
+            fs::remove_all(crash_store);
+        }
+#endif
+
+        // Adversarial 12-thread concurrent selection, execution, inspection & lifecycle replacement test (Stages B & C)
+        {
+            std::atomic<bool> done{false};
+            std::vector<std::thread> adv_threads;
+            for (int w = 0; w < 8; ++w) {
+                adv_threads.emplace_back([&, w]() {
+                    alignas(64) float local_vals[16] = {1.0f, static_cast<float>(w)};
+                    guild_tensor_desc_t tl = t_ok;
+                    tl.buffer.data = local_vals;
+                    for (int iter = 0; iter < 60 && !done.load(std::memory_order_relaxed); ++iter) {
+                        kernels::KernelBinding d;
+                        std::string lerr;
+                        if (iso_kreg.select(fq, host_caps, &d, lerr) == GUILD_STATUS_OK && d != nullptr) {
+                            guild_error_info_t le{};
+                            CHECK(d->execute(nullptr, &tl, 1, nullptr, 0, nullptr, 0, &le) == GUILD_STATUS_OK);
+                        }
+                        std::shared_ptr<const model::IModelRunner> r;
+                        if (iso_rreg.resolve_by_arch("ornith_ext_smoke", &r, lerr) == GUILD_STATUS_OK && r != nullptr) {
+                            CHECK(std::strcmp(r->runner_id(), "runner.ornith_ext_smoke.v1") == 0);
+                        }
+                    }
+                });
+            }
+            for (int insp = 0; insp < 2; ++insp) {
+                adv_threads.emplace_back([&]() {
+                    for (int iter = 0; iter < 60 && !done.load(std::memory_order_relaxed); ++iter) {
+                        auto pkgs = mgr.list_packages();
+                        CHECK(!pkgs.empty());
+                        auto ops = iso_kreg.list_operation_snapshots();
+                        CHECK(!ops.empty());
+                        auto rns = iso_rreg.list_runners();
+                        CHECK(!rns.empty());
+                    }
+                });
+            }
+            for (int mod = 0; mod < 2; ++mod) {
+                adv_threads.emplace_back([&]() {
+                    for (int iter = 0; iter < 15; ++iter) {
+                        std::string merr;
+                        guild_status_t st = mgr.install_package(pkg_v11_bundle.string(), true, merr);
+                        CHECK(st == GUILD_STATUS_OK || st == GUILD_STATUS_ERR_ACTIVE_SESSION_BUSY ||
+                              st == GUILD_STATUS_ERR_DUPLICATE_REGISTRATION);
+                        st = mgr.rollback_package("ext.guild-kernels-ornith-prefill", merr);
+                        CHECK(st == GUILD_STATUS_OK || st == GUILD_STATUS_ERR_ACTIVE_SESSION_BUSY ||
+                              st == GUILD_STATUS_ERR_INVALID_ARGUMENT);
+                    }
+                });
+            }
+            for (auto& th : adv_threads) th.join();
+            done.store(true);
+            // Ensure package is enabled and on v1.0.0 after adversarial stress
+            CHECK(mgr.enable_package("ext.guild-kernels-ornith-prefill", err) == GUILD_STATUS_OK);
+            abi::InstalledPackageRecord final_rec;
+            CHECK(mgr.get_package("ext.guild-kernels-ornith-prefill", final_rec));
+            if (final_rec.active_version != "1.0.0") {
+                CHECK(mgr.rollback_package("ext.guild-kernels-ornith-prefill", err) == GUILD_STATUS_OK);
+            }
+        }
 
         // 7e. Disable package -> automatically falls back to built-in cpu.finite_check.simd64
+        sel_finite.reset();
         CHECK(mgr.disable_package("ext.guild-kernels-ornith-prefill", err) == GUILD_STATUS_OK);
         CHECK(iso_kreg.select(fq, host_caps, &sel_finite, err) == GUILD_STATUS_OK && sel_finite != nullptr);
         CHECK(std::strcmp(sel_finite->impl_id, "cpu.finite_check.simd64") == 0);
@@ -1344,6 +1559,7 @@ int main() {
         CHECK(std::strcmp(sel_finite->impl_id, "ext.cpu.finite_check.v1") == 0);
 
         // Remove packages cleanly
+        sel_finite.reset();
         CHECK(mgr.remove_package("ext.guild-kernels-ornith-prefill", err) == GUILD_STATUS_OK);
         CHECK(mgr.remove_package("ext.guild-runner-smoke", err) == GUILD_STATUS_OK);
         CHECK(mgr.list_packages().empty());

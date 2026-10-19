@@ -1,8 +1,10 @@
 #pragma once
 #include "guild/abi/cuda_dense_abi.h"
 #include <string>
+#include <memory>
 namespace guild::kernels {
 struct ResolvedCudaDense {
+    std::shared_ptr<const guild_kernel_op_desc_v1_t> binding;
     guild_cuda_dense_ext_v1_t table{};
     std::string impl_id,package_id;
 };

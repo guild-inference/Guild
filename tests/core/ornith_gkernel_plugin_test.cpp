@@ -25,6 +25,7 @@
 #include <fstream>
 #include <iostream>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -235,6 +236,50 @@ int main() {
             return true;
         }, telem, err));
         CHECK(plugin_tokens == baseline_tokens);
+        session8.reset();
+        session.reset();
+
+        // 5. Multi-session (8 concurrent sessions) + concurrent package inspection/unload-attempt stress
+        {
+            std::vector<std::unique_ptr<runtime::GuildSession>> sessions;
+            for (int i = 0; i < 8; ++i) {
+                auto s = model->create_session(2048);
+                CHECK(s != nullptr);
+                sessions.push_back(std::move(s));
+            }
+            std::atomic<bool> inf_done{false};
+            std::thread pkg_worker([&]() {
+                while (!inf_done.load(std::memory_order_relaxed)) {
+                    std::string perr;
+                    CHECK(abi::GKernelPackageManager::instance().disable_package(
+                              "ext.guild-kernels-ornith-prefill", perr) == GUILD_STATUS_ERR_ACTIVE_SESSION_BUSY);
+                    CHECK(abi::GKernelPackageManager::instance().remove_package(
+                              "ext.guild-kernels-ornith-prefill", perr) == GUILD_STATUS_ERR_ACTIVE_SESSION_BUSY);
+                    auto pkgs = abi::GKernelPackageManager::instance().list_packages();
+                    CHECK(!pkgs.empty());
+                }
+            });
+            std::vector<std::thread> session_workers;
+            for (int i = 0; i < 8; ++i) {
+                session_workers.emplace_back([&, i]() {
+                    runtime::GenerationRequest sreq;
+                    sreq.prompt = prompt;
+                    sreq.max_new_tokens = 8;
+                    sreq.temperature = 0.0f;
+                    runtime::RuntimeTelemetry stelem;
+                    std::string serr;
+                    std::vector<int32_t> stokens;
+                    CHECK(sessions[static_cast<size_t>(i)]->generate(sreq, [&](const runtime::TokenEvent& ev) {
+                        stokens.push_back(ev.token_id);
+                        return true;
+                    }, stelem, serr));
+                    CHECK(stokens == baseline_tokens);
+                });
+            }
+            for (auto& sw : session_workers) sw.join();
+            inf_done.store(true);
+            pkg_worker.join();
+        }
 
         // Release model's kernel lease & batched_prefill before disabling/unloading package
         m_impl->batched_prefill.reset();
@@ -244,14 +289,16 @@ int main() {
     // -------------------------------------------------------------------------
     // Phase C: Disable external .gkernel, verify fallback inference, then remove package
     // -------------------------------------------------------------------------
-    CHECK(kernels::KernelRegistry::instance().active_package_leases("ext.guild-kernels-ornith-prefill") == 0);
-    CHECK(abi::GKernelPackageManager::instance().disable_package("ext.guild-kernels-ornith-prefill", err) == GUILD_STATUS_OK);
+    {
+        kernels::ResolvedPrefillKernels fallback_table{};
+        CHECK(kernels::KernelRegistry::instance().active_package_leases("ext.guild-kernels-ornith-prefill") == 0);
+        CHECK(abi::GKernelPackageManager::instance().disable_package("ext.guild-kernels-ornith-prefill", err) == GUILD_STATUS_OK);
 
-    kernels::ResolvedPrefillKernels fallback_table{};
-    CHECK(kernels::KernelRegistry::instance().resolve_prefill_kernels(
-        kernels::query_host_device_capabilities(), fallback_table, err));
-    CHECK(std::find(fallback_table.bound_impl_ids.begin(), fallback_table.bound_impl_ids.end(),
-                    "gpu.moe.router_topk_native") != fallback_table.bound_impl_ids.end());
+        CHECK(kernels::KernelRegistry::instance().resolve_prefill_kernels(
+            kernels::query_host_device_capabilities(), fallback_table, err));
+        CHECK(std::find(fallback_table.bound_impl_ids.begin(), fallback_table.bound_impl_ids.end(),
+                        "gpu.moe.router_topk_native") != fallback_table.bound_impl_ids.end());
+    }
 
     {
         auto* m_impl = model->impl();
@@ -276,7 +323,21 @@ int main() {
         CHECK(fallback_tokens == baseline_tokens);
     }
 
+    // Phase D: Verify orphaned GuildSession handle outlives GuildModel without use-after-free
+    auto orphan_session = model->create_session(2048);
+    CHECK(orphan_session != nullptr);
     model.reset();
+    {
+        runtime::GenerationRequest oreq;
+        oreq.prompt = prompt;
+        oreq.max_new_tokens = 4;
+        runtime::RuntimeTelemetry otelem;
+        std::string oerr;
+        CHECK(!orphan_session->generate(oreq, nullptr, otelem, oerr));
+        CHECK(oerr.find("not ready") != std::string::npos);
+        orphan_session->reset();
+    }
+    orphan_session.reset();
     CHECK(abi::GKernelPackageManager::instance().remove_package("ext.guild-kernels-ornith-prefill", err) == GUILD_STATUS_OK);
 
     fs::remove_all(temp_root);

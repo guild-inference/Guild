@@ -111,8 +111,11 @@ struct GuildModel::Impl {
     model::ModelDescriptor desc;
     memory::ExecutionPlan plan;
     RuntimeConfig config;
+    std::shared_ptr<Tokenizer> tokenizer;
+    std::shared_ptr<std::atomic<bool>> ready;
     ExpertPerformance expert_performance;
-    const model::IModelRunner* runner = nullptr;
+    std::shared_ptr<const model::IModelRunner> runner;
+    kernels::KernelBinding cpu_binding;
     model::RunnerExecutionPlan runner_exec;
     std::string native_cpu_package;
     std::optional<guild_cpu_backend_ext_v2_t> cpu_backend;
@@ -190,11 +193,23 @@ struct GuildModel::Impl {
         core::doorbell_free(db);
         if (main_stream) {
             cudaStreamSynchronize(main_stream);
+            cuda_moe.reset();
+            cuda_attn.reset();
+            cuda_dense.reset();
+            cpu_binding.reset();
+            runner_exec.bindings.clear();
+            runner.reset();
             kernel_lease = {};
             runner_lease = {};
             cudaStreamDestroy(main_stream);
             main_stream = nullptr;
         } else {
+            cuda_moe.reset();
+            cuda_attn.reset();
+            cuda_dense.reset();
+            cpu_binding.reset();
+            runner_exec.bindings.clear();
+            runner.reset();
             kernel_lease = {};
             runner_lease = {};
         }

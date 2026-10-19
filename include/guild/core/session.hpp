@@ -95,6 +95,11 @@ struct SessionState {
 /// [layer_lo, layer_hi) carves only that range's per-layer state (a split stage runs a slice of the model);
 /// the default full range is byte-identical to the old whole-model carve.  Pure arithmetic - safe to call for
 /// a candidate range before anything is allocated, which is how the layer-split search prices a placement.
+/// Configure host-only QSA staging policy across layers: -1 = resource-aware auto, 0 = per-layer staging, 1 = shared staging.
+void session_set_kv_share_staging(int mode);
+/// Returns true when each QSA layer in [layer_lo, layer_hi) allocates its own device staging tile.
+bool session_own_qsa_staging(const ModelGeometry& g, int64_t max_cells, int64_t layer_lo = 0, int64_t layer_hi = -1);
+
 uint64_t session_bytes(const ModelGeometry& g, int64_t max_cells, int64_t k, int64_t layer_lo = 0,
                        int64_t layer_hi = -1);
 /// Carves `base` (DEVICE memory) into `s`.  Returns the bytes used.  Same range convention as `session_bytes`.

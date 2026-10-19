@@ -27,8 +27,13 @@
 
 namespace guild::runtime {
 
-GuildModel::GuildModel() : impl_(std::make_unique<Impl>()) {}
-GuildModel::~GuildModel() = default;
+GuildModel::GuildModel() : impl_(std::make_shared<Impl>()) {
+    impl_->tokenizer = tokenizer_;
+    impl_->ready = ready_;
+}
+GuildModel::~GuildModel() {
+    if (ready_) ready_->store(false);
+}
 
 std::unique_ptr<GuildModel> GuildModel::load(
     const ModelPaths& paths,
@@ -57,7 +62,7 @@ std::unique_ptr<GuildModel> GuildModel::load(
         }
     }
     model::ModelDescriptor desc = requested_desc;
-    const model::IModelRunner* runner = nullptr;
+    std::shared_ptr<const model::IModelRunner> runner;
     {
         const guild::GgufModel artifact(shards);
         if (model::ModelRunnerRegistry::instance().resolve_for_gguf(artifact.meta(), &runner, error_msg) != GUILD_STATUS_OK ||
@@ -158,10 +163,11 @@ std::unique_ptr<GuildModel> GuildModel::load(
     {
         kernels::KernelSelectionQuery query;
         query.op_kind=GUILD_OP_BATCHED_EXPERT_EXEC; query.allowed_backends=GUILD_BACKEND_CPU;
-        const guild_kernel_op_desc_v1_t* selected=nullptr;
+        kernels::KernelBinding selected;
         if (kernels::KernelRegistry::instance().select(query,host_caps,&selected,error_msg) != GUILD_STATUS_OK)
             return nullptr;
         if (selected->next_ext) {
+            impl->cpu_binding = selected;
             guild_cpu_expert_ext_v1_t table{};
             std::memcpy(&table,selected->next_ext,sizeof(table));
             if (table.struct_size<sizeof(table) || table.tag!=GUILD_CPU_EXPERT_TAG_V1 || table.version!=1) {
@@ -420,9 +426,29 @@ std::unique_ptr<GuildModel> GuildModel::load(
                                             profile.empty() ? nullptr : &profile)) return nullptr;
     }
 
-    // Session state initialization
-    const uint64_t sbytes = core::session_bytes(impl->g, impl->config.max_context, impl->K);
-    if (cudaMalloc(&impl->sbuf, sbytes) != cudaSuccess ||
+    // Session state initialization (with resource-aware QSA staging fallback under tight VRAM)
+    core::session_set_kv_share_staging(-1);
+    uint64_t sbytes = core::session_bytes(impl->g, impl->config.max_context, impl->K);
+    {
+        size_t free_vram = 0, total_vram = 0;
+        if (cudaMemGetInfo(&free_vram, &total_vram) == cudaSuccess && free_vram > 0) {
+            const uint64_t reserve_needed = (plan.safety_reserve_bytes ? plan.safety_reserve_bytes : (512ull << 20)) + (512ull << 20);
+            if (free_vram < sbytes + reserve_needed &&
+                core::session_own_qsa_staging(impl->g, impl->config.max_context)) {
+                core::session_set_kv_share_staging(1);
+                sbytes = core::session_bytes(impl->g, impl->config.max_context, impl->K);
+            }
+        }
+    }
+    if (cudaMalloc(&impl->sbuf, sbytes) != cudaSuccess) {
+        if (core::session_own_qsa_staging(impl->g, impl->config.max_context)) {
+            cudaGetLastError();
+            core::session_set_kv_share_staging(1);
+            sbytes = core::session_bytes(impl->g, impl->config.max_context, impl->K);
+            cudaMalloc(&impl->sbuf, sbytes);
+        }
+    }
+    if (!impl->sbuf ||
         core::session_init(impl->g, impl->config.max_context, impl->K, impl->sbuf, impl->ss, 0, -1) == 0) {
         error_msg = "failed to allocate session buffer (" + std::to_string(sbytes >> 20) + " MiB)";
         return nullptr;
@@ -622,11 +648,11 @@ std::unique_ptr<GuildModel> GuildModel::load(
     // Load tokenizer
     if (!paths.tokenizer_dir.empty()) {
         std::string tok_err;
-        if (!model->tokenizer_.load(paths.tokenizer_dir, tok_err)) {
+        if (!model->tokenizer_->load(paths.tokenizer_dir, tok_err)) {
             error_msg = "model load: tokenizer: " + tok_err;
             return nullptr;
         } else {
-            const auto& eids = model->tokenizer_.eos_token_ids();
+            const auto& eids = model->tokenizer_->eos_token_ids();
             if (!eids.empty()) {
                 impl->config.eos_token_ids.clear();
                 for (int32_t id : eids) impl->config.eos_token_ids.push_back(id);
@@ -635,7 +661,7 @@ std::unique_ptr<GuildModel> GuildModel::load(
         }
     }
 
-    model->ready_ = true;
+    model->ready_->store(true);
     return model;
 } catch (const std::exception& e) {
     error_msg = std::string("model load: ") + e.what();
@@ -643,7 +669,7 @@ std::unique_ptr<GuildModel> GuildModel::load(
 }
 
 std::unique_ptr<GuildSession> GuildModel::create_session(int64_t max_context) {
-    if (!ready_) return nullptr;
+    if (!is_ready()) return nullptr;
     int64_t ctx = max_context > 0 ? max_context : config_.max_context;
     if (ctx > config_.max_context) return nullptr;
     return std::make_unique<GuildSession>(this, ctx);

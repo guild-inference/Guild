@@ -43,12 +43,61 @@ uint64_t gdn_state_floats(const ModelGeometry& g) {
            (uint64_t) g.ssm_conv_channels * (g.ssm_d_conv - 1);
 }
 
-bool session_own_qsa_staging(const ModelGeometry&, int64_t) {
-    static const bool share_env = std::getenv("GUILD_KV_SHARE_STAGING") != nullptr;
-    return !share_env;
+std::atomic<int> g_kv_share_staging_mode{-1}; // -1 = auto, 0 = per-layer, 1 = shared
+
+int parse_share_staging_env(const char* val) {
+    if (!val || !val[0]) return -1;
+    if (std::strcmp(val, "1") == 0 || std::strcmp(val, "true") == 0 ||
+        std::strcmp(val, "TRUE") == 0 || std::strcmp(val, "yes") == 0 ||
+        std::strcmp(val, "on") == 0) {
+        return 1;
+    }
+    if (std::strcmp(val, "0") == 0 || std::strcmp(val, "false") == 0 ||
+        std::strcmp(val, "FALSE") == 0 || std::strcmp(val, "no") == 0 ||
+        std::strcmp(val, "off") == 0) {
+        return 0;
+    }
+    return -1;
 }
 
 }  // namespace
+
+void session_set_kv_share_staging(int mode) {
+    g_kv_share_staging_mode.store(mode, std::memory_order_relaxed);
+}
+
+bool session_own_qsa_staging(const ModelGeometry& g, int64_t max_cells, int64_t layer_lo, int64_t layer_hi) {
+    const int env_mode = parse_share_staging_env(std::getenv("GUILD_KV_SHARE_STAGING"));
+    if (env_mode == 1) return false;
+    if (env_mode == 0) return true;
+    const int configured = g_kv_share_staging_mode.load(std::memory_order_relaxed);
+    if (configured == 1) return false;
+    if (configured == 0) return true;
+
+    if (layer_hi < 0 || layer_hi > g.n_layers) layer_hi = g.n_layers;
+    if (layer_lo < 0) layer_lo = 0;
+    int64_t q_n = 0;
+    for (int64_t l = layer_lo; l < layer_hi; ++l) if (is_qsa_layer(g, l)) ++q_n;
+    if (q_n <= 1) return true;
+
+    const uint64_t single_pool_diff =
+        qsa_state_bytes(g, max_cells, false, 0, true) - qsa_state_bytes(g, max_cells, false, 0, false);
+    const uint64_t total_per_layer_staging = uint64_t(q_n) * single_pool_diff;
+
+    if (const char* budget_env = std::getenv("GUILD_KV_STAGING_BUDGET_MIB"); budget_env && budget_env[0]) {
+        const long long budget_mib = std::atoll(budget_env);
+        if (budget_mib > 0 && total_per_layer_staging > (uint64_t(budget_mib) << 20)) {
+            return false;
+        }
+    }
+    if (const char* conc_env = std::getenv("GUILD_MAX_CONCURRENT_SESSIONS"); conc_env && conc_env[0]) {
+        const int conc = std::atoi(conc_env);
+        if (conc > 1 && uint64_t(conc) * total_per_layer_staging > (1024ull << 20)) {
+            return false;
+        }
+    }
+    return true;
+}
 
 /// `NG_HIST` rows of `hc_dim` floats: the PLE conv's history, which is the ONLY PLE state that lives in the
 /// session arena.  The table and the weights are model-level and the caller owns them.
@@ -75,7 +124,7 @@ uint64_t session_bytes(const ModelGeometry& g, int64_t max_cells, int64_t k, int
     n += gdn_buffers_bytes(g);
     n += (uint64_t) gdn_n * gdn_state_floats(g) * 4;
     // One QSA state carries the RoPE table; the others borrow it (P7: 64 MiB per layer at 262K).
-    const bool own_staging = session_own_qsa_staging(g, max_cells);
+    const bool own_staging = session_own_qsa_staging(g, max_cells, layer_lo, layer_hi);
     if (g.n_qsa_layers() > 0)
         n += qsa_state_bytes(g, max_cells, true, 0, own_staging) +
              (uint64_t) (q_n - 1) * qsa_state_bytes(g, max_cells, false, 0, own_staging);
@@ -127,7 +176,7 @@ uint64_t session_init(const ModelGeometry& g, int64_t max_cells, int64_t k, void
     // same way, which is a coupling with nothing to gain.  Only the range's ordinals are initialized; the
     // rest stay value-initialized nulls.  The FIRST ALLOCATED one (the session's primary, ordinal qsa_ord0)
     // owns the RoPE table that the others - and the prefill staging identity, and the MTP drafter - borrow.
-    const bool own_staging = session_own_qsa_staging(g, max_cells);
+    const bool own_staging = session_own_qsa_staging(g, max_cells, layer_lo, layer_hi);
     const uint64_t first = qsa_state_bytes(g, max_cells, true, 0, own_staging),
                    rest = qsa_state_bytes(g, max_cells, false, 0, own_staging);
     s.qsa_state_arena = take(g.n_qsa_layers() > 0 ? first + (uint64_t) (s.qsa_alloc - 1) * rest : 0);

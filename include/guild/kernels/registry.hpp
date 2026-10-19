@@ -20,6 +20,8 @@
 
 namespace guild::kernels {
 
+using KernelBinding = std::shared_ptr<const guild_kernel_op_desc_v1_t>;
+
 /// Convert a status code to a human-readable string.
 const char* status_to_string(guild_status_t status);
 
@@ -110,6 +112,7 @@ static_assert(sizeof(PrefillKernelExtensionV1) == sizeof(guild_prefill_kernel_ex
 /// Runtime-only convenience table resolved once during BatchedPrefill::init().
 /// This is not the descriptor payload: direct_fn_table exposes only PrefillKernelTableV1.
 struct ResolvedPrefillKernels : PrefillKernelTableV1 {
+    std::vector<KernelBinding> bindings;
     decltype(PrefillKernelExtensionV1::gdn_ab) gdn_ab = nullptr;
     decltype(PrefillKernelExtensionV1::router_projection) router_projection = nullptr;
     ResolvedCudaDense cuda_dense{};
@@ -184,14 +187,14 @@ public:
     /// Select the highest-priority compatible kernel for `query` under `caps`.
     guild_status_t select(const KernelSelectionQuery& query,
                           const guild_device_capabilities_v1_t& caps,
-                          const guild_kernel_op_desc_v1_t** out_desc,
+                          KernelBinding* out_desc,
                           std::string& err) const;
 
     /// Look up a registered operation by exact `impl_id`.
-    const guild_kernel_op_desc_v1_t* find_by_id(const std::string& impl_id) const;
+    KernelBinding find_by_id(const std::string& impl_id) const;
 
     /// Snapshot of all registered descriptors.
-    std::vector<guild_kernel_op_desc_v1_t> list_operations() const;
+    std::vector<KernelBinding> list_operations() const;
 
     /// Value-owning snapshots of all registered operations (safe without holding registry lock).
     std::vector<KernelOperationSnapshot> list_operation_snapshots() const;
@@ -228,6 +231,7 @@ public:
 
 private:
     struct StoredOp {
+        std::shared_ptr<void> library_keepalive;
         guild_kernel_op_desc_v1_t desc{};
         std::string op_name;
         std::string impl_id;
@@ -250,7 +254,7 @@ private:
     };
 
     mutable std::mutex mutex_;
-    std::vector<std::unique_ptr<StoredOp>> ops_;
+    std::vector<std::shared_ptr<StoredOp>> ops_;
     std::vector<LoadedPlugin> plugins_;
     std::set<std::string> disabled_packages_;
     mutable std::map<std::string, PackageLeaseEntry> package_leases_;
@@ -301,6 +305,7 @@ public:
         reg_->acquire_package_lease(package_id, stream_);
         package_ids_.push_back(package_id);
     }
+    const std::vector<std::string>& package_ids() const { return package_ids_; }
     void reset() {
         if (reg_) {
             for (const auto& pkg : package_ids_) {

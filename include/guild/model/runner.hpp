@@ -45,6 +45,7 @@ struct RunnerExecutionPlan {
     std::vector<guild_op_kind_t> required_ops;
     std::vector<std::string> resolved_kernel_ids;
     std::vector<std::string> resolved_package_ids;
+    std::vector<kernels::KernelBinding> bindings;
 };
 
 struct RunnerInfoSnapshot {
@@ -135,7 +136,8 @@ public:
     guild_status_t register_runner(std::unique_ptr<IModelRunner> runner, std::string& err);
 
     /// Register a C ABI v1 runner descriptor.
-    guild_status_t register_abi_runner(const guild_runner_desc_v1_t& desc, std::string& err);
+    guild_status_t register_abi_runner(const guild_runner_desc_v1_t& desc, std::string& err,
+                                      std::shared_ptr<void> library_keepalive = nullptr);
 
     /// Unregister a runner by runner_id. Fails with GUILD_STATUS_ERR_ACTIVE_SESSION_BUSY if sessions are active.
     guild_status_t unregister_runner(const std::string& runner_id, std::string& err);
@@ -149,16 +151,16 @@ public:
 
     /// Resolve a runner for a GGUF metadata file.
     guild_status_t resolve_for_gguf(const GgufFile& gguf,
-                                    const IModelRunner** out_runner,
+                                    std::shared_ptr<const IModelRunner>* out_runner,
                                     std::string& err) const;
 
     /// Resolve a runner by architecture tag or alias.
     guild_status_t resolve_by_arch(const std::string& arch_name,
-                                   const IModelRunner** out_runner,
+                                   std::shared_ptr<const IModelRunner>* out_runner,
                                    std::string& err) const;
 
     /// Resolve a runner by exact runner_id.
-    const IModelRunner* find_by_id(const std::string& runner_id) const;
+    std::shared_ptr<const IModelRunner> find_by_id(const std::string& runner_id) const;
 
     /// Validate that a runner's required Core capabilities and kernel operations can be satisfied.
     guild_status_t validate_runner_requirements(const IModelRunner& runner,
@@ -171,7 +173,7 @@ public:
                                                 std::string& err) const;
 
     /// Snapshot of registered runner ABI descriptors.
-    std::vector<guild_runner_desc_v1_t> list_runners() const;
+    std::vector<std::shared_ptr<const IModelRunner>> list_runners() const;
 
     /// Value-owning snapshots of registered runners (safe without holding registry lock).
     std::vector<RunnerInfoSnapshot> list_runner_snapshots() const;
@@ -186,7 +188,7 @@ public:
 
 private:
     mutable std::mutex mutex_;
-    std::vector<std::unique_ptr<IModelRunner>> runners_;
+    std::vector<std::shared_ptr<IModelRunner>> runners_;
     std::set<std::string> disabled_packages_;
     mutable std::map<std::string, int64_t> package_leases_;
     mutable std::atomic<int64_t> active_sessions_{0};

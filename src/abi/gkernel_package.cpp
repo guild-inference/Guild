@@ -1,5 +1,6 @@
 // src/abi/gkernel_package.cpp - Declarative .gkmetadata Parser, Ed25519 Verifier, Archive Stager & Package Manager
 #include "guild/abi/gkernel_package.hpp"
+#include "guild/abi/lifecycle.hpp"
 #include "guild/kernels/registry.hpp"
 #include "guild/model/runner.hpp"
 #include "guild/models/sha256.hpp"
@@ -7,12 +8,17 @@
 
 #if !defined(_WIN32)
 #include <dlfcn.h>
+#include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#else
+#include <io.h>
 #endif
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
+#include <cerrno>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -134,6 +140,159 @@ bool has_any_symlink_in_tree(const fs::path& root, const fs::path& rel) {
         if (fs::is_symlink(fs::symlink_status(cur, ec))) return true;
     }
     return false;
+}
+
+std::atomic<uint64_t> g_staging_seq{1};
+
+bool sync_directory_durable(const fs::path& dir, std::string& err) {
+#if !defined(_WIN32)
+    int flags = O_RDONLY;
+#if defined(O_DIRECTORY)
+    flags |= O_DIRECTORY;
+#endif
+#if defined(O_CLOEXEC)
+    flags |= O_CLOEXEC;
+#endif
+    const int fd = ::open(dir.c_str(), flags);
+    if (fd < 0) {
+        err = "failed to open directory for fsync '" + dir.string() + "': " + std::strerror(errno);
+        return false;
+    }
+    const int rc = ::fsync(fd);
+    const int saved_errno = errno;
+    ::close(fd);
+    if (rc != 0 && saved_errno != EINVAL && saved_errno != EBADF && saved_errno != EROFS) {
+        err = "failed to fsync directory '" + dir.string() + "': " + std::strerror(saved_errno);
+        return false;
+    }
+#else
+    (void)dir;
+    (void)err;
+#endif
+    return true;
+}
+
+bool write_file_durable(const fs::path& dst,
+                        const char* data,
+                        size_t len,
+                        int posix_mode,
+                        std::string& err) {
+#if !defined(_WIN32)
+    int flags = O_WRONLY | O_CREAT | O_TRUNC;
+#if defined(O_CLOEXEC)
+    flags |= O_CLOEXEC;
+#endif
+#if defined(O_NOFOLLOW)
+    flags |= O_NOFOLLOW;
+#endif
+    const int fd = ::open(dst.c_str(), flags, 0600);
+    if (fd < 0) {
+        err = "failed to open file for durable write '" + dst.string() + "': " + std::strerror(errno);
+        return false;
+    }
+    size_t written = 0;
+    while (written < len) {
+        const ssize_t n = ::write(fd, data + written, len - written);
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            err = "failed to write file '" + dst.string() + "': " + std::strerror(errno);
+            ::close(fd);
+            return false;
+        }
+        written += static_cast<size_t>(n);
+    }
+    if (::fsync(fd) != 0 && errno != EINVAL && errno != EROFS) {
+        err = "failed to fsync file '" + dst.string() + "': " + std::strerror(errno);
+        ::close(fd);
+        return false;
+    }
+    if (::fchmod(fd, static_cast<mode_t>(posix_mode)) != 0) {
+        err = "failed to chmod file '" + dst.string() + "': " + std::strerror(errno);
+        ::close(fd);
+        return false;
+    }
+    if (::close(fd) != 0) {
+        err = "failed to close file '" + dst.string() + "': " + std::strerror(errno);
+        return false;
+    }
+    return true;
+#else
+    (void)posix_mode;
+    std::ofstream out(dst, std::ios::binary | std::ios::trunc);
+    if (!out.good()) {
+        err = "failed to open file for writing: " + dst.string();
+        return false;
+    }
+    if (len > 0) {
+        out.write(data, static_cast<std::streamsize>(len));
+    }
+    out.flush();
+    if (!out.good()) {
+        err = "failed to write file: " + dst.string();
+        return false;
+    }
+    out.close();
+    return true;
+#endif
+}
+
+bool atomic_write_json_file(const fs::path& final_path,
+                            const std::string& content,
+                            std::string& err,
+                            bool fail_before_rename = false,
+                            bool abort_before_rename = false) {
+    std::error_code ec;
+    const fs::path parent = final_path.parent_path();
+    if (!parent.empty()) {
+        fs::create_directories(parent, ec);
+        if (ec) {
+            err = "failed to create parent directory '" + parent.string() + "': " + ec.message();
+            return false;
+        }
+#if !defined(_WIN32)
+        ::chmod(parent.c_str(), 0700);
+#endif
+    }
+    const fs::path tmp_path = final_path.string() + ".tmp";
+    if (!write_file_durable(tmp_path, content.data(), content.size(), 0600, err)) {
+        fs::remove(tmp_path, ec);
+        return false;
+    }
+    if (abort_before_rename) {
+        std::_Exit(99);
+    }
+    if (fail_before_rename) {
+        err = "injected fault during atomic JSON persistence before rename";
+        return false;
+    }
+    fs::rename(tmp_path, final_path, ec);
+    if (ec) {
+        err = "failed to atomically rename '" + tmp_path.string() + "' to '" + final_path.string() + "': " + ec.message();
+        fs::remove(tmp_path, ec);
+        return false;
+    }
+    if (!parent.empty() && !sync_directory_durable(parent, err)) {
+        return false;
+    }
+    return true;
+}
+
+PackageFaultPoint parse_env_fault_point() {
+    const char* env_pt = std::getenv("GUILD_PACKAGE_FAULT_POINT");
+    if (!env_pt || !env_pt[0]) return PackageFaultPoint::None;
+    const std::string s(env_pt);
+    if (s == "archive_read") return PackageFaultPoint::ArchiveRead;
+    if (s == "after_staging") return PackageFaultPoint::AfterStagingBeforeVerify;
+    if (s == "after_verify") return PackageFaultPoint::AfterVerifyBeforePublish;
+    if (s == "after_publish") return PackageFaultPoint::AfterPublishBeforeLoad;
+    if (s == "registry_write") return PackageFaultPoint::DuringRegistryWrite;
+    if (s == "rollback_load") return PackageFaultPoint::DuringRollbackLoad;
+    return PackageFaultPoint::None;
+}
+
+bool parse_env_fault_abort() {
+    const char* v = std::getenv("GUILD_PACKAGE_FAULT_ABORT");
+    return v && std::atoi(v) != 0;
 }
 
 JsonValue build_unsigned_json_object(const GKernelMetadata& m) {
@@ -585,6 +744,7 @@ bool PackageSecurityPolicy::save_to_file(const std::string& path, std::string& e
     root["require_signature"] = require_signature;
     root["allow_unsigned_dev"] = allow_unsigned_dev;
     root["verify_artifact_hashes"] = verify_artifact_hashes;
+    root["allow_same_version_replacement"] = allow_same_version_replacement;
 
     std::vector<JsonValue> keys_arr;
     for (const auto& [pub, key_set] : trusted_publishers) {
@@ -610,21 +770,7 @@ bool PackageSecurityPolicy::save_to_file(const std::string& path, std::string& e
     root["revoked_publishers"] = set_to_json(revoked_publishers);
     root["revoked_releases"] = set_to_json(revoked_releases);
 
-    std::error_code ec;
-    fs::create_directories(fs::path(path).parent_path(), ec);
-    const std::string tmp_path = path + ".tmp";
-    {
-        std::ofstream f(tmp_path, std::ios::binary | std::ios::trunc);
-        if (!f.good()) {
-            err = "failed to write trust store file: " + tmp_path;
-            return false;
-        }
-        const std::string s = root.serialize_pretty();
-        f.write(s.data(), static_cast<std::streamsize>(s.size()));
-    }
-    fs::rename(tmp_path, path, ec);
-    if (ec) {
-        err = "failed to commit trust store file: " + ec.message();
+    if (!atomic_write_json_file(fs::path(path), root.serialize_pretty(), err)) {
         return false;
     }
     err.clear();
@@ -646,6 +792,7 @@ bool PackageSecurityPolicy::load_from_file(const std::string& path, std::string&
     require_signature = root["require_signature"].as_bool(true);
     allow_unsigned_dev = root["allow_unsigned_dev"].as_bool(false);
     verify_artifact_hashes = root["verify_artifact_hashes"].as_bool(true);
+    allow_same_version_replacement = root["allow_same_version_replacement"].as_bool(false);
     trusted_publishers.clear();
     trusted_public_keys.clear();
     revoked_key_ids.clear();
@@ -822,6 +969,32 @@ guild_status_t validate_gkernel_package(const GKernelMetadata& meta,
         if (!meta.library_path.empty() && seen_rel_paths.count(meta.library_path) == 0) {
             err = "security violation: library_path '" + meta.library_path + "' is not listed in artifacts";
             return GUILD_STATUS_ERR_SECURITY_VIOLATION;
+        }
+        for (const auto& fx : meta.validation_fixtures) {
+            if (fx.relative_path.empty()) continue;
+            if (!is_safe_relative_path(fx.relative_path)) {
+                err = "security violation: unsafe fixture path '" + fx.relative_path + "'";
+                return GUILD_STATUS_ERR_SECURITY_VIOLATION;
+            }
+            const fs::path root_p(package_dir);
+            const fs::path rel_p(fx.relative_path);
+            if (has_any_symlink_in_tree(root_p, rel_p)) {
+                err = "security violation: symlink detected in fixture path '" + fx.relative_path + "'";
+                return GUILD_STATUS_ERR_SECURITY_VIOLATION;
+            }
+            const fs::path full_path = root_p / rel_p;
+            std::error_code ec;
+            const auto st = fs::symlink_status(full_path, ec);
+            if (!ec && fs::exists(st)) {
+                if (fs::is_symlink(st) || !fs::is_regular_file(st)) {
+                    err = "security violation: non-regular validation fixture '" + fx.relative_path + "'";
+                    return GUILD_STATUS_ERR_SECURITY_VIOLATION;
+                }
+                if (!fx.sha256.empty() && models::Sha256::hash_file(full_path.string()) != fx.sha256) {
+                    err = "security violation: validation fixture SHA-256 mismatch for '" + fx.relative_path + "'";
+                    return GUILD_STATUS_ERR_SECURITY_VIOLATION;
+                }
+            }
         }
     }
 
@@ -1003,23 +1176,11 @@ bool write_staged_file(const fs::path& staging_root,
         err = "security violation: duplicate file entry '" + rel_path + "' in package";
         return false;
     }
-    std::ofstream out(dst, std::ios::binary | std::ios::trunc);
-    if (!out.good()) {
-        err = "failed to open staging file for writing: " + dst.string();
+    const int mode = is_shared_lib_extension(rel_path) ? 0500 : 0400;
+    if (!write_file_durable(dst, data, len, mode, err)) {
         return false;
     }
-    if (len > 0) {
-        out.write(data, static_cast<std::streamsize>(len));
-        if (!out.good()) {
-            err = "failed to write staging file: " + dst.string();
-            return false;
-        }
-    }
-    out.close();
-#if !defined(_WIN32)
-    ::chmod(dst.c_str(), is_shared_lib_extension(rel_path) ? 0500 : 0400);
-#endif
-    return true;
+    return sync_directory_durable(dst.parent_path(), err);
 }
 
 } // namespace
@@ -1212,12 +1373,22 @@ guild_status_t stage_gkernel_source(const std::string& source_path,
                 }
                 staged_rel_paths.insert(rel_path);
             }
+            if (in.peek() != std::char_traits<char>::eof()) {
+                err = "security violation: unexpected trailing bytes in GKPK archive";
+                return GUILD_STATUS_ERR_SECURITY_VIOLATION;
+            }
         } else {
             // Check for POSIX USTAR .tar archive (512-byte blocks)
             in.seekg(0, std::ios::beg);
             while (true) {
                 char block[512];
-                if (!in.read(block, 512)) break;
+                if (!in.read(block, 512)) {
+                    if (in.gcount() > 0) {
+                        err = "security violation: truncated tar header block in archive";
+                        return GUILD_STATUS_ERR_SECURITY_VIOLATION;
+                    }
+                    break;
+                }
                 bool all_zero = true;
                 for (char c : block) if (c != 0) { all_zero = false; break; }
                 if (all_zero) break;
@@ -1256,7 +1427,13 @@ guild_status_t stage_gkernel_source(const std::string& source_path,
                     return GUILD_STATUS_ERR_SECURITY_VIOLATION;
                 }
                 const size_t pad = (512 - (fsize % 512)) % 512;
-                if (pad > 0) in.ignore(static_cast<std::streamsize>(pad));
+                if (pad > 0) {
+                    char pad_buf[512];
+                    if (!in.read(pad_buf, static_cast<std::streamsize>(pad))) {
+                        err = "security violation: truncated tar entry padding for '" + name + "'";
+                        return GUILD_STATUS_ERR_SECURITY_VIOLATION;
+                    }
+                }
                 if (!write_staged_file(stage, name, data.data(), data.size(), err)) {
                     return GUILD_STATUS_ERR_SECURITY_VIOLATION;
                 }
@@ -1287,17 +1464,23 @@ guild_status_t stage_gkernel_source(const std::string& source_path,
     const guild_status_t pst = GKernelMetadata::parse_json(meta_text, out_meta, err);
     if (pst != GUILD_STATUS_OK) return pst;
 
-    // Reject any undeclared shared libraries in the staged package
-    std::set<std::string> declared_artifacts;
-    for (const auto& a : out_meta.artifacts) declared_artifacts.insert(a.relative_path);
+    // Reject any undeclared files in the staged package (every extracted file must be declared in artifacts or validation_fixtures)
+    std::set<std::string> declared_files;
+    for (const auto& a : out_meta.artifacts) declared_files.insert(a.relative_path);
+    for (const auto& fx : out_meta.validation_fixtures) {
+        if (!fx.relative_path.empty()) declared_files.insert(fx.relative_path);
+    }
     for (const auto& p : staged_rel_paths) {
         if (p == ".gkmetadata") continue;
-        if (is_shared_lib_extension(p) && declared_artifacts.count(p) == 0) {
-            err = "security violation: undeclared shared library '" + p + "' present in package";
+        if (declared_files.count(p) == 0) {
+            err = "security violation: undeclared file '" + p + "' present in package";
             return GUILD_STATUS_ERR_SECURITY_VIOLATION;
         }
     }
 
+    if (!sync_directory_durable(stage, err)) {
+        return GUILD_STATUS_ERR_INTERNAL;
+    }
     err.clear();
     return GUILD_STATUS_OK;
 }
@@ -1354,18 +1537,63 @@ GKernelPackageManager& GKernelPackageManager::instance() {
     return mgr;
 }
 
+void GKernelPackageManager::set_fault_injection(PackageFaultPoint point, bool abort_process) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    fault_point_ = point;
+    fault_abort_process_ = abort_process;
+}
+
+void GKernelPackageManager::clear_fault_injection() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    fault_point_ = PackageFaultPoint::None;
+    fault_abort_process_ = false;
+}
+
+bool GKernelPackageManager::should_trigger_fault_unlocked(PackageFaultPoint point, std::string& err) {
+    PackageFaultPoint active = fault_point_;
+    bool do_abort = fault_abort_process_;
+    if (active == PackageFaultPoint::None) {
+        active = parse_env_fault_point();
+        do_abort = parse_env_fault_abort();
+    }
+    if (active != point) return false;
+    fault_point_ = PackageFaultPoint::None;
+    fault_abort_process_ = false;
+    if (do_abort) {
+        std::_Exit(99);
+    }
+    err = "injected package manager fault at transaction boundary";
+    return true;
+}
+
 bool GKernelPackageManager::init(std::string& err) {
     std::lock_guard<std::mutex> lock(mutex_);
     initialized_ = false;
     initialization_error_ = "package store initialization did not finish";
     std::error_code ec;
-    fs::create_directories(fs::path(root_dir_) / "packages", ec);
-    fs::create_directories(fs::path(root_dir_) / "staging", ec);
+    const fs::path root_p(root_dir_);
+    const fs::path pkgs_p = root_p / "packages";
+    const fs::path staging_p = root_p / "staging";
+    fs::create_directories(pkgs_p, ec);
+    fs::create_directories(staging_p, ec);
     if (ec) {
         err = "failed to create kernel package store directories: " + ec.message();
         return false;
     }
-    const fs::path trust_path = fs::path(root_dir_) / "trust_store.json";
+#if !defined(_WIN32)
+    ::chmod(root_p.c_str(), 0700);
+    ::chmod(pkgs_p.c_str(), 0700);
+    ::chmod(staging_p.c_str(), 0700);
+#endif
+    // Clean up any leftover staging directories or .tmp files from interrupted transactions
+    for (fs::directory_iterator it(staging_p, ec), end; !ec && it != end; it.increment(ec)) {
+        std::error_code rm_ec;
+        fs::remove_all(it->path(), rm_ec);
+    }
+    fs::remove(root_p / "registry.json.tmp", ec);
+    fs::remove(root_p / "trust_store.json.tmp", ec);
+
+    const fs::path trust_path = root_p / "trust_store.json";
     if (fs::is_regular_file(trust_path, ec)) {
         if (!policy_.load_from_file(trust_path.string(), err)) {
             initialization_error_ = err;
@@ -1378,12 +1606,38 @@ bool GKernelPackageManager::init(std::string& err) {
             return false;
         }
     }
-    const fs::path reg_path = fs::path(root_dir_) / "registry.json";
+    const fs::path reg_path = root_p / "registry.json";
     if (fs::is_regular_file(reg_path, ec)) {
         initialized_ = load_registry_unlocked(err);
         initialization_error_ = err;
-        return initialized_;
+        if (!initialized_) return false;
+    } else {
+        packages_.clear();
     }
+
+    // Sweep unreferenced package/version directories or backup directories left behind by a crash before registry commit
+    for (fs::directory_iterator pkg_it(pkgs_p, ec), pkg_end; !ec && pkg_it != pkg_end; pkg_it.increment(ec)) {
+        const std::string pid = pkg_it->path().filename().string();
+        const auto rec_it = packages_.find(pid);
+        if (rec_it == packages_.end()) {
+            std::error_code rm_ec;
+            fs::remove_all(pkg_it->path(), rm_ec);
+            continue;
+        }
+        std::set<std::string> valid_vdirs;
+        valid_vdirs.insert(fs::path(rec_it->second.staged_dir).lexically_normal().string());
+        for (const auto& [v, vd] : rec_it->second.version_dirs) {
+            valid_vdirs.insert(fs::path(vd).lexically_normal().string());
+        }
+        for (fs::directory_iterator ver_it(pkg_it->path(), ec), ver_end; !ec && ver_it != ver_end; ver_it.increment(ec)) {
+            const std::string norm_p = ver_it->path().lexically_normal().string();
+            if (valid_vdirs.count(norm_p) == 0) {
+                std::error_code rm_ec;
+                fs::remove_all(ver_it->path(), rm_ec);
+            }
+        }
+    }
+
     initialized_ = true;
     initialization_error_.clear();
     err.clear();
@@ -1416,22 +1670,23 @@ bool GKernelPackageManager::save_registry_unlocked(std::string& err) const {
     }
     root["packages"] = JsonValue(std::move(pkg_arr));
 
-    std::error_code ec;
-    fs::create_directories(root_dir_, ec);
-    const std::string reg_path = (fs::path(root_dir_) / "registry.json").string();
-    const std::string tmp_path = reg_path + ".tmp";
-    {
-        std::ofstream f(tmp_path, std::ios::binary | std::ios::trunc);
-        if (!f.good()) {
-            err = "failed to write kernel package registry: " + tmp_path;
-            return false;
-        }
-        const std::string s = root.serialize_pretty();
-        f.write(s.data(), static_cast<std::streamsize>(s.size()));
+    PackageFaultPoint active = fault_point_;
+    bool do_abort = fault_abort_process_;
+    if (active == PackageFaultPoint::None) {
+        active = parse_env_fault_point();
+        do_abort = parse_env_fault_abort();
     }
-    fs::rename(tmp_path, reg_path, ec);
-    if (ec) {
-        err = "failed to commit kernel package registry: " + ec.message();
+    bool fail_before_rename = false;
+    bool abort_before_rename = false;
+    if (active == PackageFaultPoint::DuringRegistryWrite) {
+        fault_point_ = PackageFaultPoint::None;
+        fault_abort_process_ = false;
+        fail_before_rename = !do_abort;
+        abort_before_rename = do_abort;
+    }
+
+    const fs::path reg_path = fs::path(root_dir_) / "registry.json";
+    if (!atomic_write_json_file(reg_path, root.serialize_pretty(), err, fail_before_rename, abort_before_rename)) {
         return false;
     }
     err.clear();
@@ -1449,42 +1704,66 @@ bool GKernelPackageManager::load_registry_unlocked(std::string& err) {
     ss << f.rdbuf();
     JsonValue root;
     if (!JsonValue::parse(ss.str(), root, err) || !root.is_object()) {
+        if (err.empty()) err = "kernel package registry root must be a JSON object";
         return false;
     }
     packages_.clear();
     const JsonValue& arr = root["packages"];
-    if (arr.is_array()) {
-        for (const auto& item : arr.arr_val) {
-            if (!item.is_object()) continue;
-            InstalledPackageRecord rec;
-            rec.package_id = item["package_id"].as_string("");
-            rec.active_version = item["active_version"].as_string("");
-            rec.previous_version = item["previous_version"].as_string("");
-            rec.enabled = item["enabled"].as_bool(true);
-            rec.staged_dir = item["staged_dir"].as_string("");
-            const JsonValue& vdirs = item["version_dirs"];
-            if (vdirs.is_object()) {
-                for (const auto& kv : vdirs.obj_val) {
-                    if (kv.second.is_string()) rec.version_dirs[kv.first] = kv.second.as_string();
+    if (!arr.is_array()) {
+        err = "kernel package registry is missing 'packages' array";
+        return false;
+    }
+    for (const auto& item : arr.arr_val) {
+        if (!item.is_object()) {
+            err = "corrupted package entry in registry.json";
+            return false;
+        }
+        InstalledPackageRecord rec;
+        rec.package_id = item["package_id"].as_string("");
+        rec.active_version = item["active_version"].as_string("");
+        rec.previous_version = item["previous_version"].as_string("");
+        rec.enabled = item["enabled"].as_bool(true);
+        rec.staged_dir = item["staged_dir"].as_string("");
+        const JsonValue& vdirs = item["version_dirs"];
+        if (vdirs.is_object()) {
+            for (const auto& kv : vdirs.obj_val) {
+                if (kv.second.is_string()) {
+                    std::error_code ec;
+                    if (fs::is_directory(kv.second.as_string(), ec)) {
+                        rec.version_dirs[kv.first] = kv.second.as_string();
+                    }
                 }
             }
-            if (rec.package_id.empty() || rec.staged_dir.empty()) continue;
-            const fs::path meta_p = fs::path(rec.staged_dir) / ".gkmetadata";
-            std::ifstream mf(meta_p, std::ios::binary);
-            if (!mf.good()) continue;
-            std::ostringstream mss;
-            mss << mf.rdbuf();
-            std::string merr;
-            if (GKernelMetadata::parse_json(mss.str(), rec.metadata, merr) == GUILD_STATUS_OK) {
-                packages_[rec.package_id] = std::move(rec);
-            }
         }
+        if (rec.package_id.empty() || rec.active_version.empty() || rec.staged_dir.empty()) {
+            err = "corrupted package entry in registry.json: missing package_id, active_version, or staged_dir";
+            return false;
+        }
+        const fs::path meta_p = fs::path(rec.staged_dir) / ".gkmetadata";
+        std::ifstream mf(meta_p, std::ios::binary);
+        if (!mf.good()) {
+            err = "corrupted package store: missing .gkmetadata for '" + rec.package_id + "' at " + meta_p.string();
+            return false;
+        }
+        std::ostringstream mss;
+        mss << mf.rdbuf();
+        std::string merr;
+        if (GKernelMetadata::parse_json(mss.str(), rec.metadata, merr) != GUILD_STATUS_OK) {
+            err = "corrupted package store: invalid .gkmetadata for '" + rec.package_id + "': " + merr;
+            return false;
+        }
+        rec.version_dirs[rec.active_version] = rec.staged_dir;
+        if (!rec.previous_version.empty() && rec.version_dirs.count(rec.previous_version) == 0) {
+            rec.previous_version.clear();
+        }
+        packages_[rec.package_id] = std::move(rec);
     }
     err.clear();
     return true;
 }
 
 guild_status_t GKernelPackageManager::load_staged_package_unlocked(InstalledPackageRecord& rec, std::string& err) {
+    ProviderTransaction transaction(provider_lifecycle_mutex());
     if (rec.loaded_in_process) {
         kernel_reg_->set_package_enabled(rec.package_id, true);
         runner_reg_->set_package_enabled(rec.package_id, true);
@@ -1534,8 +1813,8 @@ guild_status_t GKernelPackageManager::load_staged_package_unlocked(InstalledPack
     }
 
     auto entry_fn = reinterpret_cast<guild_plugin_entry_fn>(sym);
-    auto runner_commit = [this](const guild_runner_desc_v1_t& rdesc, std::string& rerr) -> guild_status_t {
-        return runner_reg_->register_abi_runner(rdesc, rerr);
+    auto runner_commit = [this, lib_keepalive](const guild_runner_desc_v1_t& rdesc, std::string& rerr) -> guild_status_t {
+        return runner_reg_->register_abi_runner(rdesc, rerr, lib_keepalive);
     };
     auto runner_rollback = [this](const std::string& runner_id) {
         std::string ignore;
@@ -1566,14 +1845,13 @@ guild_status_t GKernelPackageManager::load_staged_package_unlocked(InstalledPack
 }
 
 guild_status_t GKernelPackageManager::unload_package_unlocked(InstalledPackageRecord& rec, std::string& err) {
+    ProviderTransaction transaction(provider_lifecycle_mutex());
     if (!rec.loaded_in_process) {
         err.clear();
         return GUILD_STATUS_OK;
     }
     if (kernel_reg_->active_package_leases(rec.package_id) > 0 ||
-        runner_reg_->active_package_leases(rec.package_id) > 0 ||
-        (!rec.metadata.provided_ops.empty() && kernel_reg_->active_sessions() > 0) ||
-        (!rec.metadata.provided_runners.empty() && runner_reg_->active_sessions() > 0)) {
+        runner_reg_->active_package_leases(rec.package_id) > 0) {
         err = "cannot unload package '" + rec.package_id + "' while active model/session leases are held";
         return GUILD_STATUS_ERR_ACTIVE_SESSION_BUSY;
     }
@@ -1598,8 +1876,15 @@ guild_status_t GKernelPackageManager::install_package(const std::string& source_
     std::lock_guard<std::mutex> lock(mutex_);
     std::error_code ec;
     fs::create_directories(fs::path(root_dir_) / "staging", ec);
+    const uint64_t seq = g_staging_seq.fetch_add(1, std::memory_order_relaxed);
+#if !defined(_WIN32)
+    const uint64_t pid = static_cast<uint64_t>(::getpid());
+#else
+    const uint64_t pid = 0;
+#endif
     const fs::path temp_stage = fs::path(root_dir_) / "staging" /
-                                ("stage_" + std::to_string(std::rand()) + "_" + std::to_string(reinterpret_cast<uintptr_t>(this)));
+                                ("stage_" + std::to_string(pid) + "_" + std::to_string(seq) + "_" +
+                                 std::to_string(reinterpret_cast<uintptr_t>(this)));
 
     struct StageCleanup {
         fs::path p;
@@ -1609,9 +1894,17 @@ guild_status_t GKernelPackageManager::install_package(const std::string& source_
         }
     } cleanup{temp_stage};
 
+    if (should_trigger_fault_unlocked(PackageFaultPoint::ArchiveRead, err)) {
+        return GUILD_STATUS_ERR_INTERNAL;
+    }
+
     GKernelMetadata meta;
     const guild_status_t sst = stage_gkernel_source(source_path, temp_stage.string(), meta, err);
     if (sst != GUILD_STATUS_OK) return sst;
+
+    if (should_trigger_fault_unlocked(PackageFaultPoint::AfterStagingBeforeVerify, err)) {
+        return GUILD_STATUS_ERR_INTERNAL;
+    }
 
     const auto host_caps = kernels::query_host_device_capabilities();
     const guild_status_t vst = validate_gkernel_package(meta, policy_, host_caps, temp_stage.string(), err);
@@ -1628,39 +1921,124 @@ guild_status_t GKernelPackageManager::install_package(const std::string& source_
     const guild_status_t dst = validate_package_dependency_graph(graph_pkgs, policy_, host_caps, err);
     if (dst != GUILD_STATUS_OK) return dst;
 
-    // Check if an existing version is currently loaded
+    if (should_trigger_fault_unlocked(PackageFaultPoint::AfterVerifyBeforePublish, err)) {
+        return GUILD_STATUS_ERR_INTERNAL;
+    }
+
+    const fs::path final_dir = fs::path(root_dir_) / "packages" / meta.package_id / meta.version;
     auto existing_it = packages_.find(meta.package_id);
-    std::string prev_version;
-    std::string prev_staged_dir;
-    bool had_existing = (existing_it != packages_.end());
-    if (had_existing) {
-        if (existing_it->second.active_version == meta.version && existing_it->second.loaded_in_process) {
-            err = "package '" + meta.package_id + "@" + meta.version + "' is already installed and active";
+    const bool had_existing = (existing_it != packages_.end());
+
+    // Enforce same-version immutability if this package_id@version already exists in store or registry
+    const bool version_exists_in_reg = had_existing &&
+        (existing_it->second.active_version == meta.version ||
+         existing_it->second.version_dirs.count(meta.version) > 0);
+    if (version_exists_in_reg || fs::exists(final_dir, ec)) {
+        const fs::path existing_meta_path = final_dir / ".gkmetadata";
+        GKernelMetadata existing_meta;
+        bool existing_valid = false;
+        if (fs::is_regular_file(existing_meta_path, ec)) {
+            std::ifstream mf(existing_meta_path, std::ios::binary);
+            std::ostringstream mss;
+            mss << mf.rdbuf();
+            std::string ignore_err;
+            if (GKernelMetadata::parse_json(mss.str(), existing_meta, ignore_err) == GUILD_STATUS_OK &&
+                validate_gkernel_package(existing_meta, policy_, host_caps, final_dir.string(), ignore_err) == GUILD_STATUS_OK) {
+                existing_valid = true;
+            }
+        }
+        const bool identical_content = existing_valid &&
+            (existing_meta.compute_payload_sha256() == meta.compute_payload_sha256());
+        if (!identical_content && !policy_.allow_same_version_replacement) {
+            err = "same-version immutability violation: package '" + meta.package_id + "@" + meta.version +
+                  "' is already installed with different content";
             return GUILD_STATUS_ERR_DUPLICATE_REGISTRATION;
         }
-        prev_version = existing_it->second.active_version;
-        prev_staged_dir = existing_it->second.staged_dir;
-        if (existing_it->second.loaded_in_process) {
-            const guild_status_t ust = unload_package_unlocked(existing_it->second, err);
-            if (ust != GUILD_STATUS_OK) return ust;
+        if (identical_content && !policy_.allow_same_version_replacement && had_existing &&
+            existing_it->second.active_version == meta.version) {
+            // Idempotent same-version install or explicit re-enable without touching final_dir
+            if (enable_now && (!existing_it->second.enabled || !existing_it->second.loaded_in_process)) {
+                existing_it->second.enabled = true;
+                const guild_status_t lst = load_staged_package_unlocked(existing_it->second, err);
+                if (lst != GUILD_STATUS_OK) return lst;
+                if (!save_registry_unlocked(err)) return GUILD_STATUS_ERR_INTERNAL;
+            }
+            err.clear();
+            return GUILD_STATUS_OK;
         }
     }
 
-    // Move verified staged directory into immutable store path <root_dir>/packages/<package_id>/<version>
-    const fs::path final_dir = fs::path(root_dir_) / "packages" / meta.package_id / meta.version;
-    fs::remove_all(final_dir, ec);
+    // Check active package leases before touching disk or unloading an active version
+    if (had_existing && existing_it->second.loaded_in_process) {
+        ProviderTransaction transaction(provider_lifecycle_mutex());
+        if (kernel_reg_->active_package_leases(meta.package_id) > 0 ||
+            runner_reg_->active_package_leases(meta.package_id) > 0) {
+            err = "cannot replace package '" + meta.package_id + "' while active model/session leases are held";
+            return GUILD_STATUS_ERR_ACTIVE_SESSION_BUSY;
+        }
+    }
+
+    // Publish verified staged directory into <root_dir>/packages/<package_id>/<version> without destroying existing data first
     fs::create_directories(final_dir.parent_path(), ec);
-    fs::rename(temp_stage, final_dir, ec);
-    if (ec) {
-        err = "failed to move verified package into store: " + ec.message();
+#if !defined(_WIN32)
+    ::chmod(final_dir.parent_path().c_str(), 0700);
+#endif
+    fs::path backup_dir;
+    bool reused_existing_dir = false;
+    if (fs::exists(final_dir, ec)) {
+        if (!policy_.allow_same_version_replacement) {
+            // Identical version already present on disk (e.g. re-activating a retained previous version)
+            reused_existing_dir = true;
+        } else {
+            backup_dir = final_dir.parent_path() / (".backup_" + meta.version + "_" + std::to_string(seq));
+            fs::remove_all(backup_dir, ec);
+            fs::rename(final_dir, backup_dir, ec);
+            if (ec) {
+                err = "failed to back up existing package directory before replacement: " + ec.message();
+                return GUILD_STATUS_ERR_INTERNAL;
+            }
+        }
+    }
+    if (!reused_existing_dir) {
+        fs::rename(temp_stage, final_dir, ec);
+        if (ec) {
+            if (!backup_dir.empty()) {
+                std::error_code restore_ec;
+                fs::rename(backup_dir, final_dir, restore_ec);
+            }
+            err = "failed to move verified package into store: " + ec.message();
+            return GUILD_STATUS_ERR_INTERNAL;
+        }
+        cleanup.p.clear(); // moved
+        if (!sync_directory_durable(final_dir.parent_path(), err)) {
+            return GUILD_STATUS_ERR_INTERNAL;
+        }
+    }
+
+    auto rollback_disk = [&]() {
+        std::error_code rb_ec;
+        if (!reused_existing_dir) {
+            fs::remove_all(final_dir, rb_ec);
+            if (!backup_dir.empty()) {
+                fs::rename(backup_dir, final_dir, rb_ec);
+            }
+            std::string ignore_sync;
+            sync_directory_durable(final_dir.parent_path(), ignore_sync);
+        }
+    };
+
+    if (should_trigger_fault_unlocked(PackageFaultPoint::AfterPublishBeforeLoad, err)) {
+        rollback_disk();
         return GUILD_STATUS_ERR_INTERNAL;
     }
-    cleanup.p.clear(); // moved
+
+    std::string prev_version = had_existing ? existing_it->second.active_version : "";
+    const bool was_loaded = had_existing && existing_it->second.loaded_in_process;
 
     InstalledPackageRecord rec;
     if (had_existing) rec = existing_it->second;
     rec.package_id = meta.package_id;
-    rec.previous_version = (prev_version != meta.version) ? prev_version : rec.previous_version;
+    rec.previous_version = (!prev_version.empty() && prev_version != meta.version) ? prev_version : rec.previous_version;
     rec.active_version = meta.version;
     rec.enabled = enable_now;
     rec.loaded_in_process = false;
@@ -1668,24 +2046,54 @@ guild_status_t GKernelPackageManager::install_package(const std::string& source_
     rec.metadata = meta;
     rec.version_dirs[meta.version] = final_dir.string();
 
-    if (enable_now) {
-        const guild_status_t lst = load_staged_package_unlocked(rec, err);
-        if (lst != GUILD_STATUS_OK) {
-            fs::remove_all(final_dir, ec);
-            // Restore previous version if it was loaded
-            if (had_existing && !prev_version.empty() && !prev_staged_dir.empty()) {
-                std::string restore_err;
-                load_staged_package_unlocked(existing_it->second, restore_err);
+    {
+        ProviderTransaction transaction(provider_lifecycle_mutex());
+        if (was_loaded) {
+            const guild_status_t ust = unload_package_unlocked(existing_it->second, err);
+            if (ust != GUILD_STATUS_OK) {
+                rollback_disk();
+                return ust;
             }
-            return lst;
+        }
+        if (enable_now) {
+            const guild_status_t lst = load_staged_package_unlocked(rec, err);
+            if (lst != GUILD_STATUS_OK) {
+                rollback_disk();
+                if (was_loaded) {
+                    std::string rb_err;
+                    if (!should_trigger_fault_unlocked(PackageFaultPoint::DuringRollbackLoad, rb_err)) {
+                        load_staged_package_unlocked(existing_it->second, rb_err);
+                    }
+                }
+                return lst;
+            }
         }
     }
 
+    InstalledPackageRecord old_copy;
+    if (had_existing) old_copy = existing_it->second;
     packages_[meta.package_id] = std::move(rec);
+
     std::string save_err;
     if (!save_registry_unlocked(save_err)) {
+        ProviderTransaction transaction(provider_lifecycle_mutex());
+        std::string ignore_err;
+        unload_package_unlocked(packages_[meta.package_id], ignore_err);
+        rollback_disk();
+        if (had_existing) {
+            packages_[meta.package_id] = std::move(old_copy);
+            if (was_loaded) {
+                load_staged_package_unlocked(packages_[meta.package_id], ignore_err);
+            }
+        } else {
+            packages_.erase(meta.package_id);
+        }
         err = save_err;
         return GUILD_STATUS_ERR_INTERNAL;
+    }
+
+    if (!backup_dir.empty()) {
+        fs::remove_all(backup_dir, ec);
     }
     err.clear();
     return GUILD_STATUS_OK;
@@ -1807,13 +2215,26 @@ guild_status_t GKernelPackageManager::remove_package(const std::string& package_
             }
         }
     }
+    const bool was_loaded = it->second.loaded_in_process;
     const guild_status_t ust = unload_package_unlocked(it->second, err);
     if (ust != GUILD_STATUS_OK) return ust;
 
+    // Commit registry removal BEFORE deleting on-disk package files so a crash or write failure never leaves a broken registry entry
+    InstalledPackageRecord removed_rec = std::move(it->second);
+    packages_.erase(it);
+    if (!save_registry_unlocked(err)) {
+        if (was_loaded) {
+            std::string ignore_err;
+            load_staged_package_unlocked(removed_rec, ignore_err);
+        }
+        packages_[package_id] = std::move(removed_rec);
+        return GUILD_STATUS_ERR_INTERNAL;
+    }
+
     std::error_code ec;
     fs::remove_all(fs::path(root_dir_) / "packages" / package_id, ec);
-    packages_.erase(it);
-    if (!save_registry_unlocked(err)) return GUILD_STATUS_ERR_INTERNAL;
+    std::string ignore_sync;
+    sync_directory_durable(fs::path(root_dir_) / "packages", ignore_sync);
     return GUILD_STATUS_OK;
 }
 
@@ -1843,31 +2264,61 @@ guild_status_t GKernelPackageManager::rollback_package(const std::string& packag
     const guild_status_t pst = GKernelMetadata::parse_json(ss.str(), prev_meta, err);
     if (pst != GUILD_STATUS_OK) return pst;
 
-    const guild_status_t ust = unload_package_unlocked(rec, err);
-    if (ust != GUILD_STATUS_OK) return ust;
-
     const std::string old_active = rec.active_version;
     const std::string old_dir = rec.staged_dir;
     const GKernelMetadata old_meta = rec.metadata;
+    const bool was_loaded = rec.loaded_in_process;
 
-    rec.active_version = target_ver;
-    rec.previous_version = old_active;
-    rec.staged_dir = target_dir;
-    rec.metadata = prev_meta;
+    {
+        ProviderTransaction transaction(provider_lifecycle_mutex());
+        const guild_status_t ust = unload_package_unlocked(rec, err);
+        if (ust != GUILD_STATUS_OK) return ust;
 
-    if (rec.enabled) {
-        const guild_status_t lst = load_staged_package_unlocked(rec, err);
-        if (lst != GUILD_STATUS_OK) {
-            rec.active_version = old_active;
-            rec.previous_version = target_ver;
-            rec.staged_dir = old_dir;
-            rec.metadata = old_meta;
-            std::string restore_err;
-            load_staged_package_unlocked(rec, restore_err);
-            return lst;
+        rec.active_version = target_ver;
+        rec.previous_version = old_active;
+        rec.staged_dir = target_dir;
+        rec.metadata = prev_meta;
+
+        if (rec.enabled) {
+            if (should_trigger_fault_unlocked(PackageFaultPoint::DuringRollbackLoad, err)) {
+                rec.active_version = old_active;
+                rec.previous_version = target_ver;
+                rec.staged_dir = old_dir;
+                rec.metadata = old_meta;
+                if (was_loaded) {
+                    std::string restore_err;
+                    load_staged_package_unlocked(rec, restore_err);
+                }
+                return GUILD_STATUS_ERR_INTERNAL;
+            }
+            const guild_status_t lst = load_staged_package_unlocked(rec, err);
+            if (lst != GUILD_STATUS_OK) {
+                rec.active_version = old_active;
+                rec.previous_version = target_ver;
+                rec.staged_dir = old_dir;
+                rec.metadata = old_meta;
+                if (was_loaded) {
+                    std::string restore_err;
+                    load_staged_package_unlocked(rec, restore_err);
+                }
+                return lst;
+            }
         }
     }
-    if (!save_registry_unlocked(err)) return GUILD_STATUS_ERR_INTERNAL;
+
+    if (!save_registry_unlocked(err)) {
+        ProviderTransaction transaction(provider_lifecycle_mutex());
+        std::string ignore_err;
+        unload_package_unlocked(rec, ignore_err);
+        rec.active_version = old_active;
+        rec.previous_version = target_ver;
+        rec.staged_dir = old_dir;
+        rec.metadata = old_meta;
+        if (was_loaded) {
+            load_staged_package_unlocked(rec, ignore_err);
+        }
+        return GUILD_STATUS_ERR_INTERNAL;
+    }
     return GUILD_STATUS_OK;
 }
 

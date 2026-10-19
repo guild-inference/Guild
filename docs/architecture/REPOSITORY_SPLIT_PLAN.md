@@ -119,8 +119,10 @@ inference passed with external native CPU experts, external CUDA router and
 external model descriptions together, and with built-in Qwen registration /
 native CPU arithmetic disabled. CPU upgrade/rollback ran without a Core rebuild.
 
-This is a verified slice, not the complete extraction. The CUDA implementation
-graph, canonical Q2 CPU path and remaining model tensor/topology policy are still
-in Core. Atomic select/lease replacement and complete production release gates
-also remain. The performance report records the measured small prefill drop
-instead of marking the no-regression requirement complete.
+This initial slice was subsequently expanded through Phase 2B–2E:
+[CPU source ownership](CPU_BACKEND_OWNERSHIP.md) (`org.guild.kernels.cpu@1.1.1`),
+[CUDA source ownership](CUDA_BACKEND_OWNERSHIP.md) (`org.guild.kernels.cuda@1.4.0`),
+`org.guild.runners.qwen@1.1.0`,
+[Phase 2E concurrency](PHASE2E_CONCURRENCY.md),
+[Phase 2E package lifecycle](PHASE2E_PACKAGE_LIFECYCLE.md), and
+[Phase 2E multi-session validation](../performance/PHASE2E_MULTI_SESSION_VALIDATION.md).

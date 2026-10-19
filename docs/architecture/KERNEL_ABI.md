@@ -122,10 +122,14 @@ beyond their declared lifetime or free Core allocations. Device launches use
 the supplied stream. Models hold the package while bound pointers/graphs exist;
 unloading synchronizes work before releasing executable code.
 
-The current registry still has conservative process-wide session checks and
-raw select-then-lease APIs. Atomic concurrent selection/replacement across both
-registries is an outstanding Phase 2 gate; the existing concurrency test alone
-does not prove all replacement races safe.
+`KernelRegistry::select` and `find_by_id` return `KernelBinding`
+(`std::shared_ptr<const guild_kernel_op_desc_v1_t>` aliasing the internal
+`StoredOp` and its `library_keepalive`), and `ModelRunnerRegistry` returns
+`std::shared_ptr<const IModelRunner>`. Cross-registry publication, enable/disable,
+unload, and selection are serialized through `abi::provider_lifecycle_mutex()`,
+and `active_package_leases(package_id)` counts both explicit session leases and
+live `KernelBinding` / `IModelRunner` references per package. See
+[Phase 2E concurrency](PHASE2E_CONCURRENCY.md).
 ## CUDA execution extensions (SDK 1.4)
 
 `guild/abi/cuda_dense_abi.h` adds the `CDD1` size-checked extension without

@@ -1,0 +1,43 @@
+{
+  "preserved_sha256": "71dca3597ba64f135517e0d32f5dd585171d4913b18a1919a537f926c2decc7c",
+  "current_sha256": "444dcfc31c39c6f568952c8ba07f3f29523550ae5b898fc06a22b5e4211a218e",
+  "guild_sha256": "e2362743768c9ce8ce63352d911ba47ca275dc050cb7432bfa63abc5c5a7a4c1",
+  "cases": [
+    "preserved",
+    "builtin",
+    "cpu",
+    "cuda",
+    "runner",
+    "all"
+  ],
+  "prompts": [
+    512,
+    4096,
+    16384
+  ],
+  "rounds": 2,
+  "context": 32768,
+  "batch": 256,
+  "generate": 128,
+  "packages": {
+    "cpu": {
+      "manifest_sha256": "4d9dc3964b6bed52b416b7c0c29beffa21f6c2aeae782280a314750af1c257f9",
+      "library_sha256": "abe857c2e85bcc20cc10425c57f4c8b6f20f328f28ec3603ccd5e790aa5dcaec"
+    },
+    "cuda": {
+      "manifest_sha256": "04662578723e0dba87d6c1ef9374901aeba3629fc489e7287ea981da2ca46f8f",
+      "library_sha256": "d9221b9d4ffddde79590e267ff08fb30187a14ac3d836ef140c47ea31f0a591f"
+    },
+    "runner": {
+      "manifest_sha256": "d55acfffd601bb2b46b9d9ba195171f448421b786647b67a004f2ccc5fffbeb8",
+      "library_sha256": "38220263829ce93b3f27523725ac5e2037394c13be8659da35be97fd506f13ce"
+    }
+  },
+  "environment": {
+    "CUDA_MODULE_LOADING": null,
+    "CUDA_VISIBLE_DEVICES": null,
+    "OMP_NUM_THREADS": null,
+    "OMP_PROC_BIND": null,
+    "OMP_PLACES": null
+  }
+}

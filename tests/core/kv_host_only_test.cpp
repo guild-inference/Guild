@@ -1,5 +1,6 @@
 // Bounded shared staging at the full 262K context, including graph replay and different layers sharing storage.
 #include "guild/core/layer.hpp"
+#include "guild/core/session.hpp"
 #include "guild/kernels/kv_q4.hpp"
 #include "guild/kernels/kv_q8.hpp"
 #include "guild/kernels/qsa_decode_attn.hpp"
@@ -10,6 +11,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <random>
 #include <set>
@@ -180,6 +182,25 @@ void dense_bounds() {
         require(state.s.n_slots * shape.page_size <= k::kTopkMaxCells + 2 * shape.page_size,
                 "dense staging grew beyond the validated tile bound");
     }
+
+    // Verify dynamic GUILD_KV_SHARE_STAGING=0 vs 1, GUILD_KV_STAGING_BUDGET_MIB, and GUILD_MAX_CONCURRENT_SESSIONS
+    c::session_set_kv_share_staging(-1);
+    setenv("GUILD_KV_SHARE_STAGING", "0", 1);
+    require(c::session_own_qsa_staging(g, 32768), "GUILD_KV_SHARE_STAGING=0 must select per-layer staging");
+    const uint64_t bytes_own = c::session_bytes(g, 32768, 8);
+    setenv("GUILD_KV_SHARE_STAGING", "1", 1);
+    require(!c::session_own_qsa_staging(g, 32768), "GUILD_KV_SHARE_STAGING=1 must select shared staging");
+    const uint64_t bytes_shared = c::session_bytes(g, 32768, 8);
+    require(bytes_own > bytes_shared + (500ull << 20), "per-layer staging must exceed shared staging by >500 MiB");
+    unsetenv("GUILD_KV_SHARE_STAGING");
+
+    setenv("GUILD_KV_STAGING_BUDGET_MIB", "128", 1);
+    require(!c::session_own_qsa_staging(g, 32768), "GUILD_KV_STAGING_BUDGET_MIB=128 must switch to shared staging");
+    unsetenv("GUILD_KV_STAGING_BUDGET_MIB");
+
+    setenv("GUILD_MAX_CONCURRENT_SESSIONS", "4", 1);
+    require(!c::session_own_qsa_staging(g, 32768), "GUILD_MAX_CONCURRENT_SESSIONS=4 must switch to shared staging");
+    unsetenv("GUILD_MAX_CONCURRENT_SESSIONS");
 }
 }  // namespace
 
