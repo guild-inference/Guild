@@ -1,0 +1,7 @@
+# Paths clang-format must not touch, relative to this file (gitignore-style patterns).
+# Guild's own C++/CUDA lives in include/, src/, tests/, tools/, plugins/, bench/ and sycl/; everything below is
+# vendored, generated, or an archived measurement artifact.  See docs/quality/CODE_STYLE.md.
+third_party/**
+sycl/third_party/**
+sycl/include/dpct/**
+bench/results/**

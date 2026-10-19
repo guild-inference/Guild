@@ -28,5 +28,8 @@ offers the same steps as tools.
 - AMD (HIP) build and validation: [docs/AMD_HIP.md](docs/AMD_HIP.md); multi-GPU: [docs/MULTI_GPU.md](docs/MULTI_GPU.md).
 - Setup's own tests run without a GPU or downloads: `python tools/test_setup_<name>.py` (for example
   `tools/test_setup_amd.py`, `tools/test_setup_choices.py`).
+- Formatting: first-party C/C++/CUDA is formatted with clang-format 18.1.8; check it with
+  `python tools/format_code.py --check`, and read [docs/quality/CODE_STYLE.md](docs/quality/CODE_STYLE.md) for the
+  conventions, the pinned version, and what is excluded (vendored trees, generated tables, archived artifacts).
 - Keep the docs' style: plain words, measured numbers with what they were measured on, no claims without a
   measurement.

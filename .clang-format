@@ -1,0 +1,59 @@
+# Guild C++/CUDA formatting - see docs/quality/CODE_STYLE.md for the policy, the pinned tool version and the
+# rationale for the choices below.
+#
+# The configuration is deliberate, not a stock preset: it follows LLVM where the existing code already agreed with
+# it (4-space blocks, attached braces, pointer on the type, `(type) expr` casts) and pins the few options where the
+# preset would fight the tree (line width, no include reordering, no one-line control statements).
+---
+BasedOnStyle: LLVM
+Standard: c++20
+
+# 120 columns: the tree already aligns SIMD macro continuations on column 120 and 10 455 lines sit between 100 and
+# 120 characters.  Rewrapping those to 100 buys nothing in the kernel code and would rewrite a tenth of the tree.
+ColumnLimit: 120
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+ContinuationIndentWidth: 4
+ConstructorInitializerIndentWidth: 4
+
+# Class members sit one level in from the class keyword; `public:`/`private:` line up with the class keyword.
+AccessModifierOffset: -4
+
+# The tree writes C-style casts as `(int) x`, not `(int)x`.
+SpaceAfterCStyleCast: true
+# ... and puts the star on the type: `const float* p`.
+DerivePointerAlignment: false
+PointerAlignment: Left
+# One space before a trailing comment: `} // namespace`, `x = 1; // why`.
+SpacesBeforeTrailingComments: 1
+
+# Include order is preserved: several translation units depend on ordering (windows.h before the Win32 headers it
+# configures, CUDA before glibc on some toolchains, a module's own header first).  Sorting is a review of its own.
+SortIncludes: Never
+IncludeBlocks: Preserve
+# #if/#ifdef stay in column 0, as in the existing sources.
+IndentPPDirectives: None
+
+# Control statements that fit on one line are still written on their own line; braces stay attached.
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+AllowShortCaseLabelsOnASingleLine: true
+AllowShortBlocksOnASingleLine: Empty
+AllowShortFunctionsOnASingleLine: None
+AllowShortEnumsOnASingleLine: false
+BreakBeforeBraces: Attach
+# Short lambdas and short constructors/initializers stay compact; long ones wrap one item per line.
+AllowShortLambdasOnASingleLine: All
+PackConstructorInitializers: CurrentLine
+BreakConstructorInitializers: BeforeColon
+BreakInheritanceList: BeforeColon
+
+# Reflow prose comments onto the line width; clang-format leaves tables, code and ASCII art alone.
+ReflowComments: true
+# Keep the `// namespace foo` markers clang-format adds, and the blank line policy of the existing sources.
+FixNamespaceComments: true
+MaxEmptyLinesToKeep: 1
+KeepEmptyLinesAtTheStartOfBlocks: false
+SeparateDefinitionBlocks: Leave
+InsertNewlineAtEOF: true
