@@ -18,12 +18,14 @@
 #include "guild/server/openai.hpp"
 #include "guild/runtime/chat_template.hpp"
 
+#include <algorithm>
 #include <arpa/inet.h>
 #include <cerrno>
 #include <chrono>
 #include <csignal>
 #include <cstring>
 #include <exception>
+#include <fcntl.h>
 #include <iostream>
 #include <netinet/in.h>
 #include <poll.h>
@@ -82,28 +84,84 @@ bool generate_checked(IInferenceEngine& engine, const InferenceRequest& req, Str
 Server::Server(std::shared_ptr<IInferenceEngine> engine, ServerOptions options)
     : engine_(std::move(engine)),
       options_(std::move(options)) {
+    if (pipe(wake_pipe_) == 0) {
+        for (int i = 0; i < 2; ++i) {
+            const int flags = fcntl(wake_pipe_[i], F_GETFL, 0);
+            if (flags >= 0)
+                fcntl(wake_pipe_[i], F_SETFL, flags | O_NONBLOCK);
+            fcntl(wake_pipe_[i], F_SETFD, FD_CLOEXEC);
+        }
+    } else {
+        wake_pipe_[0] = -1;
+        wake_pipe_[1] = -1;
+    }
 }
 
 Server::~Server() {
     stop();
+    for (int i = 0; i < 2; ++i) {
+        if (wake_pipe_[i] >= 0) {
+            close(wake_pipe_[i]);
+            wake_pipe_[i] = -1;
+        }
+    }
+}
+
+void Server::request_stop() {
+    running_.store(false, std::memory_order_release);
+    if (wake_pipe_[1] >= 0) {
+        const char byte = 1;
+        const ssize_t ignored = ::write(wake_pipe_[1], &byte, 1);
+        (void) ignored;
+    }
 }
 
 bool Server::start() {
-    if (running_.load())
-        return true;
+    std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mutex_);
+    if (wake_pipe_[0] < 0 || wake_pipe_[1] < 0) {
+        if (options_.verbose) {
+            std::cerr << "[server] Wake pipe unavailable\n";
+        }
+        return false;
+    }
+    if (started_) {
+        if (running_.load(std::memory_order_acquire))
+            return true;
+        // A prior run exited via request_stop() without stop(); join and close before restarting.
+        if (listen_fd_ >= 0)
+            shutdown(listen_fd_, SHUT_RDWR);
+        queue_cv_.notify_all();
+        if (listener_thread_.joinable())
+            listener_thread_.join();
+        if (listen_fd_ >= 0) {
+            close(listen_fd_);
+            listen_fd_ = -1;
+        }
+        for (auto& w : workers_) {
+            if (w.joinable())
+                w.join();
+        }
+        workers_.clear();
+        started_ = false;
+    }
+
+    // Drain any residual wakeup bytes from a previous stop()/request_stop().
+    char drain[64];
+    while (::read(wake_pipe_[0], drain, sizeof(drain)) > 0) {}
 
     signal(SIGPIPE, SIG_IGN);
 
-    listen_fd_ = socket(AF_INET, SOCK_STREAM, 0);
-    if (listen_fd_ < 0) {
+    int sock_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock_fd < 0) {
         if (options_.verbose) {
             std::cerr << "[server] Failed to create socket: " << std::strerror(errno) << "\n";
         }
         return false;
     }
+    fcntl(sock_fd, F_SETFD, FD_CLOEXEC);
 
     int opt = 1;
-    setsockopt(listen_fd_, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    setsockopt(sock_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
 
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
@@ -112,71 +170,88 @@ bool Server::start() {
         if (options_.verbose) {
             std::cerr << "[server] Invalid host address: " << options_.host << "\n";
         }
-        close(listen_fd_);
-        listen_fd_ = -1;
+        close(sock_fd);
         return false;
     }
 
-    if (bind(listen_fd_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
+    if (bind(sock_fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
         if (options_.verbose) {
             std::cerr << "[server] Bind failed on " << options_.host << ":" << options_.port << ": "
                       << std::strerror(errno) << "\n";
         }
-        close(listen_fd_);
-        listen_fd_ = -1;
+        close(sock_fd);
         return false;
     }
 
     if (options_.port == 0) {
         sockaddr_in actual_addr{};
         socklen_t len = sizeof(actual_addr);
-        if (getsockname(listen_fd_, reinterpret_cast<sockaddr*>(&actual_addr), &len) == 0) {
-            bound_port_ = ntohs(actual_addr.sin_port);
+        if (getsockname(sock_fd, reinterpret_cast<sockaddr*>(&actual_addr), &len) == 0) {
+            bound_port_.store(ntohs(actual_addr.sin_port), std::memory_order_release);
         } else {
-            bound_port_ = options_.port;
+            bound_port_.store(options_.port, std::memory_order_release);
         }
     } else {
-        bound_port_ = options_.port;
+        bound_port_.store(options_.port, std::memory_order_release);
     }
 
-    if (listen(listen_fd_, 128) != 0) {
+    if (listen(sock_fd, 128) != 0) {
         if (options_.verbose) {
             std::cerr << "[server] Listen failed: " << std::strerror(errno) << "\n";
         }
-        close(listen_fd_);
-        listen_fd_ = -1;
+        close(sock_fd);
         return false;
     }
 
-    stopped_.store(false);
-    running_.store(true);
+    listen_fd_ = sock_fd;
+    running_.store(true, std::memory_order_release);
+    started_ = true;
 
     int num_workers = options_.worker_threads > 0 ? options_.worker_threads : 4;
     for (int i = 0; i < num_workers; ++i) {
         workers_.emplace_back(&Server::worker_loop, this);
     }
 
-    listener_thread_ = std::thread(&Server::listener_loop, this);
+    // Pass descriptors by value so listener_loop never reads mutable member fields.
+    // Descriptor ownership stays with the Server until after listener_thread_.join().
+    listener_thread_ = std::thread(&Server::listener_loop, this, listen_fd_, wake_pipe_[0]);
 
     return true;
 }
 
 void Server::run() {
-    while (running_.load()) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    while (running_.load(std::memory_order_acquire)) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
     stop();
 }
 
 void Server::stop() {
-    running_.store(false);
-    if (stopped_.exchange(true))
+    std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mutex_);
+    request_stop();
+    if (!started_)
         return;
 
     if (listen_fd_ >= 0) {
         shutdown(listen_fd_, SHUT_RDWR);
-        close(listen_fd_);
-        listen_fd_ = -1;
+    }
+
+    // Cancel any in-flight engine generation before waiting for worker threads.
+    if (engine_) {
+        engine_->stop();
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(queue_mutex_);
+        for (int fd : client_queue_) {
+            close(fd);
+        }
+        client_queue_.clear();
+        // Shutdown (but do not close) active client sockets so workers blocked in recv()/send()
+        // wake immediately while retaining exclusive ownership of close(client_fd).
+        for (int fd : active_clients_) {
+            shutdown(fd, SHUT_RDWR);
+        }
     }
 
     queue_cv_.notify_all();
@@ -185,39 +260,55 @@ void Server::stop() {
         listener_thread_.join();
     }
 
+    // Only close listen_fd_ after listener_thread_ has exited, preventing use-after-close
+    // and file-descriptor number reuse while poll()/accept() can run.
+    if (listen_fd_ >= 0) {
+        close(listen_fd_);
+        listen_fd_ = -1;
+    }
+    char drain[64];
+    while (::read(wake_pipe_[0], drain, sizeof(drain)) > 0) {}
+
     for (auto& w : workers_) {
         if (w.joinable()) {
             w.join();
         }
     }
     workers_.clear();
-
-    if (engine_) {
-        engine_->stop();
-    }
+    started_ = false;
 }
 
-void Server::listener_loop() {
-    while (running_.load()) {
-        struct pollfd pfd {};
-        pfd.fd = listen_fd_;
-        pfd.events = POLLIN;
+void Server::listener_loop(int listen_fd, int wake_fd) {
+    while (running_.load(std::memory_order_acquire)) {
+        struct pollfd pfds[2]{};
+        pfds[0].fd = listen_fd;
+        pfds[0].events = POLLIN;
+        pfds[1].fd = wake_fd;
+        pfds[1].events = POLLIN;
 
-        int ret = poll(&pfd, 1, 100);
+        int ret = poll(pfds, 2, 100);
         if (ret < 0) {
             if (errno == EINTR)
                 continue;
             break;
         }
+        if (!running_.load(std::memory_order_acquire) || (pfds[1].revents & (POLLIN | POLLERR | POLLHUP))) {
+            break;
+        }
         if (ret == 0) {
-            continue; // timeout, check running_
+            continue;
         }
 
-        if (pfd.revents & POLLIN) {
+        if (pfds[0].revents & (POLLERR | POLLHUP | POLLNVAL)) {
+            break;
+        }
+
+        if (pfds[0].revents & POLLIN) {
             sockaddr_in client_addr{};
             socklen_t client_len = sizeof(client_addr);
-            int client_fd = accept(listen_fd_, reinterpret_cast<sockaddr*>(&client_addr), &client_len);
+            int client_fd = accept(listen_fd, reinterpret_cast<sockaddr*>(&client_addr), &client_len);
             if (client_fd >= 0) {
+                fcntl(client_fd, F_SETFD, FD_CLOEXEC);
                 // Set send/recv timeouts
                 struct timeval tv {};
                 tv.tv_sec = 30;
@@ -227,6 +318,10 @@ void Server::listener_loop() {
 
                 {
                     std::lock_guard<std::mutex> lock(queue_mutex_);
+                    if (!running_.load(std::memory_order_acquire)) {
+                        close(client_fd);
+                        break;
+                    }
                     if (client_queue_.size() < 64) {
                         client_queue_.push_back(client_fd);
                         queue_cv_.notify_one();
@@ -238,30 +333,44 @@ void Server::listener_loop() {
                         close(client_fd);
                     }
                 }
+            } else if (errno != EINTR && errno != EAGAIN && errno != EWOULDBLOCK) {
+                if (!running_.load(std::memory_order_acquire))
+                    break;
             }
         }
     }
 }
 
 void Server::worker_loop() {
-    while (running_.load()) {
+    for (;;) {
         int client_fd = -1;
         {
             std::unique_lock<std::mutex> lock(queue_mutex_);
-            queue_cv_.wait(lock, [this] { return !client_queue_.empty() || !running_.load(); });
+            queue_cv_.wait(lock,
+                           [this] { return !client_queue_.empty() || !running_.load(std::memory_order_acquire); });
 
-            if (!running_.load() && client_queue_.empty()) {
+            if (!running_.load(std::memory_order_acquire)) {
+                while (!client_queue_.empty()) {
+                    close(client_queue_.back());
+                    client_queue_.pop_back();
+                }
                 return;
             }
 
-            if (!client_queue_.empty()) {
-                client_fd = client_queue_.front();
-                client_queue_.erase(client_queue_.begin());
-            }
+            client_fd = client_queue_.front();
+            client_queue_.erase(client_queue_.begin());
+            active_clients_.push_back(client_fd);
         }
 
         if (client_fd >= 0) {
             handle_client(client_fd);
+            {
+                std::lock_guard<std::mutex> lock(queue_mutex_);
+                auto it = std::find(active_clients_.begin(), active_clients_.end(), client_fd);
+                if (it != active_clients_.end()) {
+                    active_clients_.erase(it);
+                }
+            }
             close(client_fd);
         }
     }

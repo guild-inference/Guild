@@ -78,8 +78,9 @@ bool MockInferenceEngine::generate_stream(const InferenceRequest& req, StreamCal
             break;
         }
 
-        if (delay_ms_ > 0) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms_));
+        const int delay_ms = delay_ms_.load(std::memory_order_relaxed);
+        if (delay_ms > 0) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
         }
 
         TokenOutput tok;

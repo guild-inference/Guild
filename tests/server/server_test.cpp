@@ -458,6 +458,157 @@ int main() {
         }
     }
 
+    // -------------------------------------------------------------------------
+    // Test 11: Stop before start and after failed socket initialization
+    // -------------------------------------------------------------------------
+    std::cout << "[server_test] Test 11: Stop before start and after failed initialization\n";
+    {
+        guild::server::Server unstarted_server(mock_engine, opts);
+        unstarted_server.stop();
+        unstarted_server.stop();
+        CHECK(!unstarted_server.is_running());
+
+        guild::server::ServerOptions invalid_opts = opts;
+        invalid_opts.host = "not-an-ipv4-address";
+        guild::server::Server invalid_server(mock_engine, invalid_opts);
+        CHECK(!invalid_server.start());
+        CHECK(!invalid_server.is_running());
+        invalid_server.stop();
+        invalid_server.stop();
+        std::cout << "  -> PASSED\n";
+    }
+
+    // -------------------------------------------------------------------------
+    // Test 12: Repeated start/stop cycles on the same Server instance
+    // -------------------------------------------------------------------------
+    std::cout << "[server_test] Test 12: Repeated start/stop cycles on a single Server\n";
+    {
+        guild::server::Server cycle_server(mock_engine, opts);
+        for (int cycle = 0; cycle < 5; ++cycle) {
+            CHECK(cycle_server.start());
+            CHECK(cycle_server.is_running());
+            const int cport = cycle_server.bound_port();
+            CHECK(cport > 0);
+            auto resp = send_http_request(cport, "GET", "/health");
+            CHECK(resp.status_code == 200);
+            cycle_server.stop();
+            CHECK(!cycle_server.is_running());
+            cycle_server.stop(); // idempotent repeat stop
+        }
+        std::cout << "  -> PASSED\n";
+    }
+
+    // -------------------------------------------------------------------------
+    // Test 13: Concurrent stop() calls and prompt wake-up during listener wait
+    // -------------------------------------------------------------------------
+    std::cout << "[server_test] Test 13: Concurrent stop() calls & prompt listener wake-up\n";
+    {
+        for (int iter = 0; iter < 15; ++iter) {
+            guild::server::Server race_server(mock_engine, opts);
+            CHECK(race_server.start());
+            const auto t0 = std::chrono::steady_clock::now();
+            std::vector<std::thread> stoppers;
+            for (int t = 0; t < 4; ++t) {
+                stoppers.emplace_back([&race_server]() {
+                    race_server.stop();
+                    CHECK(!race_server.is_running());
+                });
+            }
+            for (auto& th : stoppers) {
+                th.join();
+            }
+            const auto elapsed_ms =
+                std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
+            CHECK(elapsed_ms < 500);
+            CHECK(!race_server.is_running());
+        }
+        std::cout << "  -> PASSED\n";
+    }
+
+    // -------------------------------------------------------------------------
+    // Test 14: Stop with active idle clients (must not block on 30s SO_RCVTIMEO)
+    // -------------------------------------------------------------------------
+    std::cout << "[server_test] Test 14: Stop with active connected clients blocked in recv()\n";
+    {
+        guild::server::Server active_server(mock_engine, opts);
+        CHECK(active_server.start());
+        const int aport = active_server.bound_port();
+
+        std::vector<int> idle_fds;
+        for (int i = 0; i < 6; ++i) {
+            int fd = socket(AF_INET, SOCK_STREAM, 0);
+            CHECK(fd >= 0);
+            sockaddr_in addr{};
+            addr.sin_family = AF_INET;
+            addr.sin_port = htons(static_cast<uint16_t>(aport));
+            inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
+            CHECK(connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0);
+            // Send partial header (no \r\n\r\n) so worker enters handle_client and blocks in recv()
+            const char partial_req[] = "GET /health HTTP/1.1\r\nHost: localhost";
+            (void) send(fd, partial_req, sizeof(partial_req) - 1, MSG_NOSIGNAL);
+            idle_fds.push_back(fd);
+        }
+
+        // Wait until at least one worker has accepted and started reading
+        auto resp_check = std::chrono::steady_clock::now();
+        (void) resp_check;
+        const auto stop_t0 = std::chrono::steady_clock::now();
+        active_server.stop();
+        const auto stop_ms =
+            std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - stop_t0).count();
+        for (int fd : idle_fds) {
+            close(fd);
+        }
+        // Without shutdown(fd, SHUT_RDWR) on active clients, stop() would block for 30,000 ms (SO_RCVTIMEO).
+        CHECK(stop_ms < 2000);
+        CHECK(!active_server.is_running());
+        std::cout << "  -> PASSED (stopped in " << stop_ms << " ms with 6 half-open/queued clients)\n";
+    }
+
+    // -------------------------------------------------------------------------
+    // Test 15: Stop while clients are actively connecting and requesting
+    // -------------------------------------------------------------------------
+    std::cout << "[server_test] Test 15: Stop while clients connect concurrently (TSan stress)\n";
+    {
+        for (int round = 0; round < 10; ++round) {
+            guild::server::Server stress_server(mock_engine, opts);
+            CHECK(stress_server.start());
+            const int sport = stress_server.bound_port();
+            std::atomic<bool> keep_connecting{true};
+
+            std::vector<std::thread> clients;
+            for (int c = 0; c < 4; ++c) {
+                clients.emplace_back([sport, &keep_connecting]() {
+                    while (keep_connecting.load(std::memory_order_relaxed)) {
+                        int fd = socket(AF_INET, SOCK_STREAM, 0);
+                        if (fd < 0)
+                            continue;
+                        sockaddr_in addr{};
+                        addr.sin_family = AF_INET;
+                        addr.sin_port = htons(static_cast<uint16_t>(sport));
+                        inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
+                        if (connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0) {
+                            const char req[] = "GET /health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
+                            (void) send(fd, req, sizeof(req) - 1, MSG_NOSIGNAL);
+                        }
+                        close(fd);
+                    }
+                });
+            }
+
+            std::thread stopper([&stress_server, &keep_connecting]() {
+                stress_server.stop();
+                keep_connecting.store(false, std::memory_order_relaxed);
+            });
+            stopper.join();
+            for (auto& c : clients) {
+                c.join();
+            }
+            CHECK(!stress_server.is_running());
+        }
+        std::cout << "  -> PASSED\n";
+    }
+
     std::cout << "\n[server_test] lifecycle, success and failure checks PASSED (Release-active)\n";
     return 0;
 }

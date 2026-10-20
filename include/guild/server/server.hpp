@@ -40,15 +40,13 @@ public:
     void stop();
 
     // Async-signal-safe request to stop
-    void request_stop() {
-        running_.store(false);
-    }
+    void request_stop();
 
     bool is_running() const {
-        return running_.load();
+        return running_.load(std::memory_order_acquire);
     }
     int bound_port() const {
-        return bound_port_;
+        return bound_port_.load(std::memory_order_acquire);
     }
     const ServerOptions& options() const {
         return options_;
@@ -62,18 +60,21 @@ private:
     ServerOptions options_;
     Telemetry telemetry_;
 
+    std::mutex lifecycle_mutex_;
     std::atomic<bool> running_{false};
-    std::atomic<bool> stopped_{false};
+    bool started_{false};
     int listen_fd_{-1};
-    int bound_port_{0};
+    int wake_pipe_[2]{-1, -1};
+    std::atomic<int> bound_port_{0};
 
     std::thread listener_thread_;
     std::vector<std::thread> workers_;
     std::mutex queue_mutex_;
     std::condition_variable queue_cv_;
     std::vector<int> client_queue_;
+    std::vector<int> active_clients_;
 
-    void listener_loop();
+    void listener_loop(int listen_fd, int wake_fd);
     void worker_loop();
     void handle_client(int client_fd);
 

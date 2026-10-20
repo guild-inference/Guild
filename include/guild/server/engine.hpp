@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -119,14 +120,14 @@ public:
         script_ = s;
     }
     void set_delay_ms(int ms) {
-        delay_ms_ = ms;
+        delay_ms_.store(ms, std::memory_order_relaxed);
     }
 
 private:
     std::string model_;
     int64_t max_context_;
     std::string script_;
-    int delay_ms_ = 0;
+    std::atomic<int> delay_ms_{0};
 };
 
 struct GuildProcessEngineOptions {
