@@ -1,0 +1,78 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="560" viewBox="0 0 1000 560">
+<rect width="100%" height="100%" fill="white"/>
+<g font-family="sans-serif" font-size="13" fill="#222">
+<text x="30" y="28" font-size="17">Populated context: ad7271c46b91 (decode_tps; median, p05–p95)</text>
+<text x="15" y="54">tokens / second</text>
+<path d="M90 360.00 H910" stroke="#ddd"/>
+<text x="30" y="364.00">0.00</text>
+<path d="M90 302.00 H910" stroke="#ddd"/>
+<text x="30" y="306.00">11.08</text>
+<path d="M90 244.00 H910" stroke="#ddd"/>
+<text x="30" y="248.00">22.17</text>
+<path d="M90 186.00 H910" stroke="#ddd"/>
+<text x="30" y="190.00">33.25</text>
+<path d="M90 128.00 H910" stroke="#ddd"/>
+<text x="30" y="132.00">44.34</text>
+<path d="M90 70.00 H910" stroke="#ddd"/>
+<text x="30" y="74.00">55.42</text>
+<text x="90.00" y="382" text-anchor="middle">512</text>
+<text x="295.00" y="382" text-anchor="middle">4096</text>
+<text x="500.00" y="382" text-anchor="middle">8192</text>
+<text x="705.00" y="382" text-anchor="middle">16384</text>
+<text x="910.00" y="382" text-anchor="middle">32704</text>
+<text x="500" y="410" text-anchor="middle">Real prompt tokens</text>
+<polyline points="90.00,101.07 295.00,110.76 500.00,120.48 705.00,137.60 910.00,166.88" fill="none" stroke="#1565c0" stroke-width="2"/>
+<path d="M90.00 101.07 V101.07" stroke="#1565c0"/>
+<circle cx="90.00" cy="101.07" r="4" fill="#1565c0"><title>49.4837</title></circle>
+<path d="M295.00 110.76 V110.76" stroke="#1565c0"/>
+<circle cx="295.00" cy="110.76" r="4" fill="#1565c0"><title>47.6318</title></circle>
+<path d="M500.00 120.48 V120.48" stroke="#1565c0"/>
+<circle cx="500.00" cy="120.48" r="4" fill="#1565c0"><title>45.7738</title></circle>
+<path d="M705.00 137.60 V137.60" stroke="#1565c0"/>
+<circle cx="705.00" cy="137.60" r="4" fill="#1565c0"><title>42.5035</title></circle>
+<path d="M910.00 166.88 V166.88" stroke="#1565c0"/>
+<circle cx="910.00" cy="166.88" r="4" fill="#1565c0"><title>36.9077</title></circle>
+<text x="90" y="440" fill="#1565c0">guild-gexec / v0.6.0-phase6 / a4e77808c811</text>
+<polyline points="90.00,116.23 295.00,123.82 500.00,133.01 705.00,152.20" fill="none" stroke="#c62828" stroke-width="2"/>
+<path d="M90.00 116.23 V116.23" stroke="#c62828"/>
+<circle cx="90.00" cy="116.23" r="4" fill="#c62828"><title>46.5872</title></circle>
+<path d="M295.00 123.82 V123.82" stroke="#c62828"/>
+<circle cx="295.00" cy="123.82" r="4" fill="#c62828"><title>45.1359</title></circle>
+<path d="M500.00 133.01 V133.01" stroke="#c62828"/>
+<circle cx="500.00" cy="133.01" r="4" fill="#c62828"><title>43.3804</title></circle>
+<path d="M705.00 152.20 V152.20" stroke="#c62828"/>
+<circle cx="705.00" cy="152.20" r="4" fill="#c62828"><title>39.7125</title></circle>
+<text x="90" y="464" fill="#c62828">guild-portable / v0.5.6-baseline / d0311f4a0fc0</text>
+<polyline points="90.00,118.58 295.00,124.15 500.00,133.60 705.00,153.06 910.00,175.26" fill="none" stroke="#2e7d32" stroke-width="2"/>
+<path d="M90.00 118.58 V118.58" stroke="#2e7d32"/>
+<circle cx="90.00" cy="118.58" r="4" fill="#2e7d32"><title>46.1384</title></circle>
+<path d="M295.00 124.15 V124.15" stroke="#2e7d32"/>
+<circle cx="295.00" cy="124.15" r="4" fill="#2e7d32"><title>45.0722</title></circle>
+<path d="M500.00 133.60 V133.60" stroke="#2e7d32"/>
+<circle cx="500.00" cy="133.60" r="4" fill="#2e7d32"><title>43.2663</title></circle>
+<path d="M705.00 153.06 V153.06" stroke="#2e7d32"/>
+<circle cx="705.00" cy="153.06" r="4" fill="#2e7d32"><title>39.5479</title></circle>
+<path d="M910.00 175.26 V175.26" stroke="#2e7d32"/>
+<circle cx="910.00" cy="175.26" r="4" fill="#2e7d32"><title>35.3056</title></circle>
+<text x="90" y="488" fill="#2e7d32">guild-portable / v0.6.0-phase6 / d0311f4a0fc0</text>
+<polyline points="90.00,306.32 295.00,314.34 500.00,319.90 705.00,328.92" fill="none" stroke="#6a1b9a" stroke-width="2"/>
+<path d="M90.00 306.32 V306.32" stroke="#6a1b9a"/>
+<circle cx="90.00" cy="306.32" r="4" fill="#6a1b9a"><title>10.2590</title></circle>
+<path d="M295.00 314.34 V314.34" stroke="#6a1b9a"/>
+<circle cx="295.00" cy="314.34" r="4" fill="#6a1b9a"><title>8.7258</title></circle>
+<path d="M500.00 319.90 V319.90" stroke="#6a1b9a"/>
+<circle cx="500.00" cy="319.90" r="4" fill="#6a1b9a"><title>7.6639</title></circle>
+<path d="M705.00 328.92 V328.92" stroke="#6a1b9a"/>
+<circle cx="705.00" cy="328.92" r="4" fill="#6a1b9a"><title>5.9404</title></circle>
+<text x="90" y="512" fill="#6a1b9a">llama.cpp-newer / v0.6.0-phase6 / d0311f4a0fc0</text>
+<polyline points="90.00,307.67 295.00,314.65 500.00,320.83 705.00,328.75" fill="none" stroke="#e65100" stroke-width="2"/>
+<path d="M90.00 307.67 V307.67" stroke="#e65100"/>
+<circle cx="90.00" cy="307.67" r="4" fill="#e65100"><title>10.0001</title></circle>
+<path d="M295.00 314.65 V314.65" stroke="#e65100"/>
+<circle cx="295.00" cy="314.65" r="4" fill="#e65100"><title>8.6676</title></circle>
+<path d="M500.00 320.83 V320.83" stroke="#e65100"/>
+<circle cx="500.00" cy="320.83" r="4" fill="#e65100"><title>7.4867</title></circle>
+<path d="M705.00 328.75 V328.75" stroke="#e65100"/>
+<circle cx="705.00" cy="328.75" r="4" fill="#e65100"><title>5.9718</title></circle>
+<text x="90" y="536" fill="#e65100">llama.cpp-pinned / v0.6.0-phase6 / d0311f4a0fc0</text>
+</g></svg>

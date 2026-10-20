@@ -1,0 +1,1109 @@
+{
+  "schema_version": 2,
+  "statistical_method": "Per-file, exact-configuration samples; median, min/max, linearly interpolated p05/p95 at (n-1)*q, IQR=Q75-Q25, unscaled MAD. No outlier removal or cross-file pooling.",
+  "measurements": {
+    "qwen-spec1-p16384.csv:b512": {
+      "source": "build-cuda12/phase6/baseline/qwen-spec1-p16384.csv",
+      "metadata_status": "complete",
+      "command_configuration": {
+        "context": "32768",
+        "prompt": "16384",
+        "generate": "64",
+        "batch": "512",
+        "runs": "1",
+        "environment": {},
+        "full_warmup": false,
+        "sequential": false
+      },
+      "exclusion_reasons": [],
+      "notes": [],
+      "build_identity": {
+        "git_head": {
+          "command": [
+            "git",
+            "rev-parse",
+            "HEAD"
+          ],
+          "status": 0,
+          "stdout": "e11e0905df3f5ffdad293b32c74f059d5cea09df\n",
+          "stderr": ""
+        },
+        "diff_sha256": "aece4271edaf4d097c55bebaf1ca09043add86cc407886d140db86e0926d3a75",
+        "build-cuda12/libguild_activity.so_sha256": "06092a0db7011fdad6ef20370cc6afb9bd249a19e8b61fcd0e9ff0b340a3b70f",
+        "build-cuda12/ornith_prefill_bench_sha256": "3b9756d125118a6093cf622302059fb8dc97b4c8e4637fa4a88807d29a286331",
+        "build-cuda12/phase6/baseline/ornith_prefill_bench_sha256": "3e8e921502558f78661b852f3b63872d99d7d0791dffeb7ef01f075c561d7338"
+      },
+      "schema": "main_benchmark",
+      "role": "primary",
+      "samples": 1,
+      "configuration": {
+        "batch": "512",
+        "prompt_tokens": "16384",
+        "prefill_tokens": "16383",
+        "generated_tokens": "64",
+        "finish": "length"
+      },
+      "columns": {
+        "activation_transfer_bytes": {
+          "median": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "p05": 0.0,
+          "p95": 0.0,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "cpu_down_ms": {
+          "median": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "p05": 0.0,
+          "p95": 0.0,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "cpu_group_ms": {
+          "median": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "p05": 0.0,
+          "p95": 0.0,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "cpu_gu_ms": {
+          "median": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "p05": 0.0,
+          "p95": 0.0,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "cpu_quant_ms": {
+          "median": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "p05": 0.0,
+          "p95": 0.0,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "decode_ms": {
+          "median": 2858.005716,
+          "min": 2858.005716,
+          "max": 2858.005716,
+          "p05": 2858.005716,
+          "p95": 2858.005716,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "decode_tps": {
+          "median": 22.3932372289,
+          "min": 22.3932372289,
+          "max": 22.3932372289,
+          "p05": 22.3932372289,
+          "p95": 22.3932372289,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "expert_groups": {
+          "median": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "p05": 0.0,
+          "p95": 0.0,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "expert_weight_bytes": {
+          "median": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "p05": 0.0,
+          "p95": 0.0,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "file_reads": {
+          "median": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "p05": 0.0,
+          "p95": 0.0,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "gpu_attention_ms": {
+          "median": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "p05": 0.0,
+          "p95": 0.0,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "gpu_dense_ms": {
+          "median": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "p05": 0.0,
+          "p95": 0.0,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "gpu_gdn_ms": {
+          "median": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "p05": 0.0,
+          "p95": 0.0,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "gpu_groups": {
+          "median": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "p05": 0.0,
+          "p95": 0.0,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "host_kv_allocated_bytes": {
+          "median": 805318656.0,
+          "min": 805318656.0,
+          "max": 805318656.0,
+          "p05": 805318656.0,
+          "p95": 805318656.0,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "host_peak_bytes": {
+          "median": 70664937472.0,
+          "min": 70664937472.0,
+          "max": 70664937472.0,
+          "p05": 70664937472.0,
+          "p95": 70664937472.0,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "host_wait_ms": {
+          "median": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "p05": 0.0,
+          "p95": 0.0,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "kv_staging_bytes": {
+          "median": 33685504.0,
+          "min": 33685504.0,
+          "max": 33685504.0,
+          "p05": 33685504.0,
+          "p95": 33685504.0,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "load_ms": {
+          "median": 9717.1149,
+          "min": 9717.1149,
+          "max": 9717.1149,
+          "p05": 9717.1149,
+          "p95": 9717.1149,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "prefill_ms": {
+          "median": 175620.145847,
+          "min": 175620.145847,
+          "max": 175620.145847,
+          "p05": 175620.145847,
+          "p95": 175620.145847,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "prefill_scratch_bytes": {
+          "median": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "p05": 0.0,
+          "p95": 0.0,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "prefill_tps": {
+          "median": 93.286564141,
+          "min": 93.286564141,
+          "max": 93.286564141,
+          "p05": 93.286564141,
+          "p95": 93.286564141,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "ttft_ms": {
+          "median": 175689.542156,
+          "min": 175689.542156,
+          "max": 175689.542156,
+          "p05": 175689.542156,
+          "p95": 175689.542156,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "vram_sample_bytes": {
+          "median": 7665287168.0,
+          "min": 7665287168.0,
+          "max": 7665287168.0,
+          "p05": 7665287168.0,
+          "p95": 7665287168.0,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "wall_ms": {
+          "median": 178481.481547,
+          "min": 178481.481547,
+          "max": 178481.481547,
+          "p05": 178481.481547,
+          "p95": 178481.481547,
+          "iqr": 0.0,
+          "mad": 0.0
+        }
+      },
+      "sample_status": "complete",
+      "run_ids": [
+        0
+      ],
+      "primary_eligible": true
+    },
+    "qwen-spec1-p4096.csv:b512": {
+      "source": "build-cuda12/phase6/baseline/qwen-spec1-p4096.csv",
+      "metadata_status": "complete",
+      "command_configuration": {
+        "context": "32768",
+        "prompt": "4096",
+        "generate": "64",
+        "batch": "512",
+        "runs": "1",
+        "environment": {},
+        "full_warmup": false,
+        "sequential": false
+      },
+      "exclusion_reasons": [],
+      "notes": [],
+      "build_identity": {
+        "git_head": {
+          "command": [
+            "git",
+            "rev-parse",
+            "HEAD"
+          ],
+          "status": 0,
+          "stdout": "e11e0905df3f5ffdad293b32c74f059d5cea09df\n",
+          "stderr": ""
+        },
+        "diff_sha256": "32840cf1e2d95af3bb135dedb7dd54c41f46eed6082d6d939f056980563b9f02",
+        "build-cuda12/libguild_activity.so_sha256": "06092a0db7011fdad6ef20370cc6afb9bd249a19e8b61fcd0e9ff0b340a3b70f",
+        "build-cuda12/ornith_prefill_bench_sha256": "3b9756d125118a6093cf622302059fb8dc97b4c8e4637fa4a88807d29a286331",
+        "build-cuda12/phase6/baseline/ornith_prefill_bench_sha256": "3e8e921502558f78661b852f3b63872d99d7d0791dffeb7ef01f075c561d7338"
+      },
+      "schema": "main_benchmark",
+      "role": "primary",
+      "samples": 1,
+      "configuration": {
+        "batch": "512",
+        "prompt_tokens": "4096",
+        "prefill_tokens": "4095",
+        "generated_tokens": "64",
+        "finish": "length"
+      },
+      "columns": {
+        "activation_transfer_bytes": {
+          "median": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "p05": 0.0,
+          "p95": 0.0,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "cpu_down_ms": {
+          "median": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "p05": 0.0,
+          "p95": 0.0,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "cpu_group_ms": {
+          "median": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "p05": 0.0,
+          "p95": 0.0,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "cpu_gu_ms": {
+          "median": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "p05": 0.0,
+          "p95": 0.0,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "cpu_quant_ms": {
+          "median": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "p05": 0.0,
+          "p95": 0.0,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "decode_ms": {
+          "median": 3092.131161,
+          "min": 3092.131161,
+          "max": 3092.131161,
+          "p05": 3092.131161,
+          "p95": 3092.131161,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "decode_tps": {
+          "median": 20.6976989874,
+          "min": 20.6976989874,
+          "max": 20.6976989874,
+          "p05": 20.6976989874,
+          "p95": 20.6976989874,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "expert_groups": {
+          "median": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "p05": 0.0,
+          "p95": 0.0,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "expert_weight_bytes": {
+          "median": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "p05": 0.0,
+          "p95": 0.0,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "file_reads": {
+          "median": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "p05": 0.0,
+          "p95": 0.0,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "gpu_attention_ms": {
+          "median": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "p05": 0.0,
+          "p95": 0.0,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "gpu_dense_ms": {
+          "median": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "p05": 0.0,
+          "p95": 0.0,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "gpu_gdn_ms": {
+          "median": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "p05": 0.0,
+          "p95": 0.0,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "gpu_groups": {
+          "median": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "p05": 0.0,
+          "p95": 0.0,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "host_kv_allocated_bytes": {
+          "median": 805318656.0,
+          "min": 805318656.0,
+          "max": 805318656.0,
+          "p05": 805318656.0,
+          "p95": 805318656.0,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "host_peak_bytes": {
+          "median": 70761697280.0,
+          "min": 70761697280.0,
+          "max": 70761697280.0,
+          "p05": 70761697280.0,
+          "p95": 70761697280.0,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "host_wait_ms": {
+          "median": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "p05": 0.0,
+          "p95": 0.0,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "kv_staging_bytes": {
+          "median": 33685504.0,
+          "min": 33685504.0,
+          "max": 33685504.0,
+          "p05": 33685504.0,
+          "p95": 33685504.0,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "load_ms": {
+          "median": 9702.736498,
+          "min": 9702.736498,
+          "max": 9702.736498,
+          "p05": 9702.736498,
+          "p95": 9702.736498,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "prefill_ms": {
+          "median": 41549.7829,
+          "min": 41549.7829,
+          "max": 41549.7829,
+          "p05": 41549.7829,
+          "p95": 41549.7829,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "prefill_scratch_bytes": {
+          "median": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "p05": 0.0,
+          "p95": 0.0,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "prefill_tps": {
+          "median": 98.5564716392,
+          "min": 98.5564716392,
+          "max": 98.5564716392,
+          "p05": 98.5564716392,
+          "p95": 98.5564716392,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "ttft_ms": {
+          "median": 41621.093164,
+          "min": 41621.093164,
+          "max": 41621.093164,
+          "p05": 41621.093164,
+          "p95": 41621.093164,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "vram_sample_bytes": {
+          "median": 7665287168.0,
+          "min": 7665287168.0,
+          "max": 7665287168.0,
+          "p05": 7665287168.0,
+          "p95": 7665287168.0,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "wall_ms": {
+          "median": 44645.16063,
+          "min": 44645.16063,
+          "max": 44645.16063,
+          "p05": 44645.16063,
+          "p95": 44645.16063,
+          "iqr": 0.0,
+          "mad": 0.0
+        }
+      },
+      "sample_status": "complete",
+      "run_ids": [
+        0
+      ],
+      "primary_eligible": true
+    },
+    "qwen-spec1-p512.csv:b512": {
+      "source": "build-cuda12/phase6/baseline/qwen-spec1-p512.csv",
+      "metadata_status": "complete",
+      "command_configuration": {
+        "context": "32768",
+        "prompt": "512",
+        "generate": "64",
+        "batch": "512",
+        "runs": "1",
+        "environment": {},
+        "full_warmup": false,
+        "sequential": false
+      },
+      "exclusion_reasons": [],
+      "notes": [],
+      "build_identity": {
+        "git_head": {
+          "command": [
+            "git",
+            "rev-parse",
+            "HEAD"
+          ],
+          "status": 0,
+          "stdout": "e11e0905df3f5ffdad293b32c74f059d5cea09df\n",
+          "stderr": ""
+        },
+        "diff_sha256": "32840cf1e2d95af3bb135dedb7dd54c41f46eed6082d6d939f056980563b9f02",
+        "build-cuda12/libguild_activity.so_sha256": "06092a0db7011fdad6ef20370cc6afb9bd249a19e8b61fcd0e9ff0b340a3b70f",
+        "build-cuda12/ornith_prefill_bench_sha256": "3b9756d125118a6093cf622302059fb8dc97b4c8e4637fa4a88807d29a286331",
+        "build-cuda12/phase6/baseline/ornith_prefill_bench_sha256": "3e8e921502558f78661b852f3b63872d99d7d0791dffeb7ef01f075c561d7338"
+      },
+      "schema": "main_benchmark",
+      "role": "primary",
+      "samples": 1,
+      "configuration": {
+        "batch": "512",
+        "prompt_tokens": "512",
+        "prefill_tokens": "511",
+        "generated_tokens": "64",
+        "finish": "length"
+      },
+      "columns": {
+        "activation_transfer_bytes": {
+          "median": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "p05": 0.0,
+          "p95": 0.0,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "cpu_down_ms": {
+          "median": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "p05": 0.0,
+          "p95": 0.0,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "cpu_group_ms": {
+          "median": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "p05": 0.0,
+          "p95": 0.0,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "cpu_gu_ms": {
+          "median": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "p05": 0.0,
+          "p95": 0.0,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "cpu_quant_ms": {
+          "median": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "p05": 0.0,
+          "p95": 0.0,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "decode_ms": {
+          "median": 2954.732937,
+          "min": 2954.732937,
+          "max": 2954.732937,
+          "p05": 2954.732937,
+          "p95": 2954.732937,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "decode_tps": {
+          "median": 21.6601640028,
+          "min": 21.6601640028,
+          "max": 21.6601640028,
+          "p05": 21.6601640028,
+          "p95": 21.6601640028,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "expert_groups": {
+          "median": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "p05": 0.0,
+          "p95": 0.0,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "expert_weight_bytes": {
+          "median": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "p05": 0.0,
+          "p95": 0.0,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "file_reads": {
+          "median": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "p05": 0.0,
+          "p95": 0.0,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "gpu_attention_ms": {
+          "median": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "p05": 0.0,
+          "p95": 0.0,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "gpu_dense_ms": {
+          "median": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "p05": 0.0,
+          "p95": 0.0,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "gpu_gdn_ms": {
+          "median": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "p05": 0.0,
+          "p95": 0.0,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "gpu_groups": {
+          "median": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "p05": 0.0,
+          "p95": 0.0,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "host_kv_allocated_bytes": {
+          "median": 805318656.0,
+          "min": 805318656.0,
+          "max": 805318656.0,
+          "p05": 805318656.0,
+          "p95": 805318656.0,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "host_peak_bytes": {
+          "median": 69565726720.0,
+          "min": 69565726720.0,
+          "max": 69565726720.0,
+          "p05": 69565726720.0,
+          "p95": 69565726720.0,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "host_wait_ms": {
+          "median": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "p05": 0.0,
+          "p95": 0.0,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "kv_staging_bytes": {
+          "median": 33685504.0,
+          "min": 33685504.0,
+          "max": 33685504.0,
+          "p05": 33685504.0,
+          "p95": 33685504.0,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "load_ms": {
+          "median": 9775.47241,
+          "min": 9775.47241,
+          "max": 9775.47241,
+          "p05": 9775.47241,
+          "p95": 9775.47241,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "prefill_ms": {
+          "median": 5367.188556,
+          "min": 5367.188556,
+          "max": 5367.188556,
+          "p05": 5367.188556,
+          "p95": 5367.188556,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "prefill_scratch_bytes": {
+          "median": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "p05": 0.0,
+          "p95": 0.0,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "prefill_tps": {
+          "median": 95.2081326505,
+          "min": 95.2081326505,
+          "max": 95.2081326505,
+          "p05": 95.2081326505,
+          "p95": 95.2081326505,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "ttft_ms": {
+          "median": 5434.912044,
+          "min": 5434.912044,
+          "max": 5434.912044,
+          "p05": 5434.912044,
+          "p95": 5434.912044,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "vram_sample_bytes": {
+          "median": 7665287168.0,
+          "min": 7665287168.0,
+          "max": 7665287168.0,
+          "p05": 7665287168.0,
+          "p95": 7665287168.0,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "wall_ms": {
+          "median": 8325.176652,
+          "min": 8325.176652,
+          "max": 8325.176652,
+          "p05": 8325.176652,
+          "p95": 8325.176652,
+          "iqr": 0.0,
+          "mad": 0.0
+        }
+      },
+      "sample_status": "complete",
+      "run_ids": [
+        0
+      ],
+      "primary_eligible": true
+    },
+    "qwen-spec1-p8192.csv:b512": {
+      "source": "build-cuda12/phase6/baseline/qwen-spec1-p8192.csv",
+      "metadata_status": "complete",
+      "command_configuration": {
+        "context": "32768",
+        "prompt": "8192",
+        "generate": "64",
+        "batch": "512",
+        "runs": "1",
+        "environment": {},
+        "full_warmup": false,
+        "sequential": false
+      },
+      "exclusion_reasons": [],
+      "notes": [],
+      "build_identity": {
+        "git_head": {
+          "command": [
+            "git",
+            "rev-parse",
+            "HEAD"
+          ],
+          "status": 0,
+          "stdout": "e11e0905df3f5ffdad293b32c74f059d5cea09df\n",
+          "stderr": ""
+        },
+        "diff_sha256": "9d6ad25e43e08faad28e3e8912386dee62ef9dc58d55ae0bc9ce7f015c5de3dc",
+        "build-cuda12/libguild_activity.so_sha256": "06092a0db7011fdad6ef20370cc6afb9bd249a19e8b61fcd0e9ff0b340a3b70f",
+        "build-cuda12/ornith_prefill_bench_sha256": "3b9756d125118a6093cf622302059fb8dc97b4c8e4637fa4a88807d29a286331",
+        "build-cuda12/phase6/baseline/ornith_prefill_bench_sha256": "3e8e921502558f78661b852f3b63872d99d7d0791dffeb7ef01f075c561d7338"
+      },
+      "schema": "main_benchmark",
+      "role": "primary",
+      "samples": 1,
+      "configuration": {
+        "batch": "512",
+        "prompt_tokens": "8192",
+        "prefill_tokens": "8191",
+        "generated_tokens": "64",
+        "finish": "length"
+      },
+      "columns": {
+        "activation_transfer_bytes": {
+          "median": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "p05": 0.0,
+          "p95": 0.0,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "cpu_down_ms": {
+          "median": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "p05": 0.0,
+          "p95": 0.0,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "cpu_group_ms": {
+          "median": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "p05": 0.0,
+          "p95": 0.0,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "cpu_gu_ms": {
+          "median": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "p05": 0.0,
+          "p95": 0.0,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "cpu_quant_ms": {
+          "median": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "p05": 0.0,
+          "p95": 0.0,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "decode_ms": {
+          "median": 2995.16759,
+          "min": 2995.16759,
+          "max": 2995.16759,
+          "p05": 2995.16759,
+          "p95": 2995.16759,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "decode_tps": {
+          "median": 21.3677525804,
+          "min": 21.3677525804,
+          "max": 21.3677525804,
+          "p05": 21.3677525804,
+          "p95": 21.3677525804,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "expert_groups": {
+          "median": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "p05": 0.0,
+          "p95": 0.0,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "expert_weight_bytes": {
+          "median": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "p05": 0.0,
+          "p95": 0.0,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "file_reads": {
+          "median": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "p05": 0.0,
+          "p95": 0.0,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "gpu_attention_ms": {
+          "median": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "p05": 0.0,
+          "p95": 0.0,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "gpu_dense_ms": {
+          "median": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "p05": 0.0,
+          "p95": 0.0,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "gpu_gdn_ms": {
+          "median": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "p05": 0.0,
+          "p95": 0.0,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "gpu_groups": {
+          "median": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "p05": 0.0,
+          "p95": 0.0,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "host_kv_allocated_bytes": {
+          "median": 805318656.0,
+          "min": 805318656.0,
+          "max": 805318656.0,
+          "p05": 805318656.0,
+          "p95": 805318656.0,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "host_peak_bytes": {
+          "median": 71348142080.0,
+          "min": 71348142080.0,
+          "max": 71348142080.0,
+          "p05": 71348142080.0,
+          "p95": 71348142080.0,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "host_wait_ms": {
+          "median": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "p05": 0.0,
+          "p95": 0.0,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "kv_staging_bytes": {
+          "median": 33685504.0,
+          "min": 33685504.0,
+          "max": 33685504.0,
+          "p05": 33685504.0,
+          "p95": 33685504.0,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "load_ms": {
+          "median": 9730.483993,
+          "min": 9730.483993,
+          "max": 9730.483993,
+          "p05": 9730.483993,
+          "p95": 9730.483993,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "prefill_ms": {
+          "median": 85606.516796,
+          "min": 85606.516796,
+          "max": 85606.516796,
+          "p05": 85606.516796,
+          "p95": 85606.516796,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "prefill_scratch_bytes": {
+          "median": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "p05": 0.0,
+          "p95": 0.0,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "prefill_tps": {
+          "median": 95.6819679922,
+          "min": 95.6819679922,
+          "max": 95.6819679922,
+          "p05": 95.6819679922,
+          "p95": 95.6819679922,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "ttft_ms": {
+          "median": 85674.654065,
+          "min": 85674.654065,
+          "max": 85674.654065,
+          "p05": 85674.654065,
+          "p95": 85674.654065,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "vram_sample_bytes": {
+          "median": 7665287168.0,
+          "min": 7665287168.0,
+          "max": 7665287168.0,
+          "p05": 7665287168.0,
+          "p95": 7665287168.0,
+          "iqr": 0.0,
+          "mad": 0.0
+        },
+        "wall_ms": {
+          "median": 88604.970943,
+          "min": 88604.970943,
+          "max": 88604.970943,
+          "p05": 88604.970943,
+          "p95": 88604.970943,
+          "iqr": 0.0,
+          "mad": 0.0
+        }
+      },
+      "sample_status": "complete",
+      "run_ids": [
+        0
+      ],
+      "primary_eligible": true
+    }
+  },
+  "primary_measurements": [
+    "qwen-spec1-p16384.csv:b512",
+    "qwen-spec1-p4096.csv:b512",
+    "qwen-spec1-p512.csv:b512",
+    "qwen-spec1-p8192.csv:b512"
+  ],
+  "excluded_measurements": {}
+}

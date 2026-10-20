@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="512" viewBox="0 0 1000 512">
+<rect width="100%" height="100%" fill="white"/>
+<g font-family="sans-serif" font-size="13" fill="#222">
+<text x="30" y="28" font-size="17">Decode relative to measured 512-token baseline</text>
+<text x="15" y="54">throughput / 512-token throughput</text>
+<path d="M90 360.00 H910" stroke="#ddd"/>
+<text x="30" y="364.00">0.00</text>
+<path d="M90 302.00 H910" stroke="#ddd"/>
+<text x="30" y="306.00">0.23</text>
+<path d="M90 244.00 H910" stroke="#ddd"/>
+<text x="30" y="248.00">0.46</text>
+<path d="M90 186.00 H910" stroke="#ddd"/>
+<text x="30" y="190.00">0.69</text>
+<path d="M90 128.00 H910" stroke="#ddd"/>
+<text x="30" y="132.00">0.93</text>
+<path d="M90 70.00 H910" stroke="#ddd"/>
+<text x="30" y="74.00">1.16</text>
+<text x="90.00" y="382" text-anchor="middle">512</text>
+<text x="254.00" y="382" text-anchor="middle">4096</text>
+<text x="418.00" y="382" text-anchor="middle">8192</text>
+<text x="582.00" y="382" text-anchor="middle">16384</text>
+<text x="746.00" y="382" text-anchor="middle">32768</text>
+<text x="910.00" y="382" text-anchor="middle">65536</text>
+<text x="500" y="410" text-anchor="middle">Real prompt tokens</text>
+<polyline points="90.00,109.55 254.00,124.39 418.00,111.62 582.00,102.63 746.00,121.41 910.00,105.20" fill="none" stroke="#1565c0" stroke-width="2"/>
+<path d="M90.00 109.55 V109.55" stroke="#1565c0"/>
+<circle cx="90.00" cy="109.55" r="4" fill="#1565c0"><title>1.0000</title></circle>
+<path d="M254.00 124.39 V124.39" stroke="#1565c0"/>
+<circle cx="254.00" cy="124.39" r="4" fill="#1565c0"><title>0.9407</title></circle>
+<path d="M418.00 111.62 V111.62" stroke="#1565c0"/>
+<circle cx="418.00" cy="111.62" r="4" fill="#1565c0"><title>0.9917</title></circle>
+<path d="M582.00 102.63 V102.63" stroke="#1565c0"/>
+<circle cx="582.00" cy="102.63" r="4" fill="#1565c0"><title>1.0276</title></circle>
+<path d="M746.00 121.41 V121.41" stroke="#1565c0"/>
+<circle cx="746.00" cy="121.41" r="4" fill="#1565c0"><title>0.9526</title></circle>
+<path d="M910.00 105.20 V105.20" stroke="#1565c0"/>
+<circle cx="910.00" cy="105.20" r="4" fill="#1565c0"><title>1.0173</title></circle>
+<text x="90" y="440" fill="#1565c0">guild-gexec / v0.6.0-phase6 / e91fa150b02c</text>
+<polyline points="90.00,109.55 254.00,120.68 418.00,112.93 582.00,101.07 746.00,121.49" fill="none" stroke="#c62828" stroke-width="2"/>
+<path d="M90.00 109.55 V109.55" stroke="#c62828"/>
+<circle cx="90.00" cy="109.55" r="4" fill="#c62828"><title>1.0000</title></circle>
+<path d="M254.00 120.68 V120.68" stroke="#c62828"/>
+<circle cx="254.00" cy="120.68" r="4" fill="#c62828"><title>0.9556</title></circle>
+<path d="M418.00 112.93 V112.93" stroke="#c62828"/>
+<circle cx="418.00" cy="112.93" r="4" fill="#c62828"><title>0.9865</title></circle>
+<path d="M582.00 101.07 V101.07" stroke="#c62828"/>
+<circle cx="582.00" cy="101.07" r="4" fill="#c62828"><title>1.0338</title></circle>
+<path d="M746.00 121.49 V121.49" stroke="#c62828"/>
+<circle cx="746.00" cy="121.49" r="4" fill="#c62828"><title>0.9523</title></circle>
+<text x="90" y="464" fill="#c62828">guild-portable / v0.5.6-baseline / bb3298e72fdd</text>
+<polyline points="90.00,109.55 254.00,124.69 418.00,110.87 582.00,101.41 746.00,118.51" fill="none" stroke="#2e7d32" stroke-width="2"/>
+<path d="M90.00 109.55 V109.55" stroke="#2e7d32"/>
+<circle cx="90.00" cy="109.55" r="4" fill="#2e7d32"><title>1.0000</title></circle>
+<path d="M254.00 124.69 V124.69" stroke="#2e7d32"/>
+<circle cx="254.00" cy="124.69" r="4" fill="#2e7d32"><title>0.9395</title></circle>
+<path d="M418.00 110.87 V110.87" stroke="#2e7d32"/>
+<circle cx="418.00" cy="110.87" r="4" fill="#2e7d32"><title>0.9947</title></circle>
+<path d="M582.00 101.41 V101.41" stroke="#2e7d32"/>
+<circle cx="582.00" cy="101.41" r="4" fill="#2e7d32"><title>1.0325</title></circle>
+<path d="M746.00 118.51 V118.51" stroke="#2e7d32"/>
+<circle cx="746.00" cy="118.51" r="4" fill="#2e7d32"><title>0.9642</title></circle>
+<text x="90" y="488" fill="#2e7d32">guild-portable / v0.6.0-phase6 / bb3298e72fdd</text>
+</g></svg>

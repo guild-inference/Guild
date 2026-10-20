@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "label": "ornith-spec0",
+  "model": "ornith:35b",
+  "population": "real_prompt_prefill",
+  "full_warmup": false,
+  "cases": [
+    {
+      "name": "ornith-spec0-p512",
+      "prompt_tokens": 512,
+      "context_capacity": 32832,
+      "status": "complete",
+      "exit_code": 0,
+      "command_metadata": "build-cuda12/phase6/baseline/ornith-spec0-p512.command.json"
+    },
+    {
+      "name": "ornith-spec0-p4096",
+      "prompt_tokens": 4096,
+      "context_capacity": 32832,
+      "status": "complete",
+      "exit_code": 0,
+      "command_metadata": "build-cuda12/phase6/baseline/ornith-spec0-p4096.command.json"
+    },
+    {
+      "name": "ornith-spec0-p8192",
+      "prompt_tokens": 8192,
+      "context_capacity": 32832,
+      "status": "complete",
+      "exit_code": 0,
+      "command_metadata": "build-cuda12/phase6/baseline/ornith-spec0-p8192.command.json"
+    },
+    {
+      "name": "ornith-spec0-p16384",
+      "prompt_tokens": 16384,
+      "context_capacity": 32832,
+      "status": "complete",
+      "exit_code": 0,
+      "command_metadata": "build-cuda12/phase6/baseline/ornith-spec0-p16384.command.json"
+    },
+    {
+      "name": "ornith-spec0-p32768",
+      "prompt_tokens": 32768,
+      "context_capacity": 32832,
+      "status": "failed",
+      "exit_code": 1,
+      "command_metadata": "build-cuda12/phase6/baseline/ornith-spec0-p32768.command.json"
+    }
+  ]
+}

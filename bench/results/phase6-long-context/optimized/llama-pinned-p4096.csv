@@ -1,0 +1,2 @@
+run,prompt,generated,prefill_ms,decode_ms,load_ms,wall_ms,host_peak_bytes,prefill_tokens,decode_evals
+0,4096,64,49949.2,7383.8,2749.61,57333,22035468288,4095,64

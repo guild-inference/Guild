@@ -115,4 +115,4 @@ drove the split.
 | [CPU_BACKEND_OWNERSHIP.md](CPU_BACKEND_OWNERSHIP.md), [CUDA_BACKEND_OWNERSHIP.md](CUDA_BACKEND_OWNERSHIP.md), [EXTERNAL_BACKENDS.md](EXTERNAL_BACKENDS.md), [REPOSITORY_SPLIT_PLAN.md](REPOSITORY_SPLIT_PLAN.md) | Which repository owns which arithmetic, and the gates between them |
 | [PHASE2E_CONCURRENCY.md](PHASE2E_CONCURRENCY.md), [PHASE2E_PACKAGE_LIFECYCLE.md](PHASE2E_PACKAGE_LIFECYCLE.md) | Session/package concurrency and package lifetimes |
 | [../quality/CODE_STYLE.md](../quality/CODE_STYLE.md), [../CONTRIBUTING.md](../CONTRIBUTING.md) | How to write and build code here |
-| [../performance/](../performance/), [../quality/](../quality/), `bench/results/` | Measurements and audits - every number with the machine it was measured on |
+| [../performance/](../performance/), [../performance/PHASE6_LONG_CONTEXT_OPTIMIZATION.md](../performance/PHASE6_LONG_CONTEXT_OPTIMIZATION.md), [../quality/](../quality/), `bench/results/` | Measurements, populated long-context curves, `llama.cpp` reference comparisons, and audits - every number with the machine it was measured on |
