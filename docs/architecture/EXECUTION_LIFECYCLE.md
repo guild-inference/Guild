@@ -15,7 +15,7 @@ this order.
 flowchart TB
     a["Device runtime policy"] --> b["Enabled .gkmetadata packages<br/>load_enabled_packages"]
     b --> c{"Container?"}
-    c -->|"-explicit .gpack"| d[".gpack opens or the load fails"]
+    c -->|"explicit .gpack"| d[".gpack opens or the load fails"]
     c -->|"GGUF shards"| e["shards open"]
     d --> f["Runner resolution<br/>architecture + capability checks"]
     e --> f
