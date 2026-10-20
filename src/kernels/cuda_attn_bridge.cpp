@@ -37,22 +37,14 @@ namespace guild::kernels {
 namespace {
 
 thread_local const guild_cuda_attn_ext_v1_t* active = nullptr;
+thread_local CudaAttnConfigState* tl_attn_state = nullptr;
+CudaAttnConfigState g_default_attn_state{};
 
-std::atomic<bool> g_native_qsa{false};
-std::atomic<bool> g_native_rope{false};
-std::atomic<bool> g_native_gdn{false};
-std::atomic<bool> g_native_qsa_indexer{false};
-std::atomic<bool> g_native_qsa_score{false};
-RopeScaling g_rope_scaling{};
+CudaAttnConfigState& active_attn_state() noexcept {
+    return tl_attn_state ? *tl_attn_state : g_default_attn_state;
+}
 
-constexpr int kMropeDevices = 64;
-std::atomic<const int32_t*> g_mrope_tab[kMropeDevices] = {};
-
-struct RopeReg {
-    RopeTab tab;
-    RopeScaling scaling;
-};
-RopeReg g_rope_tab[kMropeDevices] = {};
+constexpr int kMropeDevices = CudaAttnConfigState::kMaxDevices;
 
 int current_dev() {
     int d = 0;
@@ -212,6 +204,7 @@ const guild_cuda_attn_ext_v1_t& backend() {
 
 void sync_state(const guild_cuda_attn_ext_v1_t& tbl) {
     const int d = current_dev();
+    const CudaAttnConfigState& st = active_attn_state();
     guild_cuda_attn_config_v1_t cfg{};
     cfg.struct_size = sizeof(cfg);
     cfg.actions = GUILD_CUDA_ATTN_CFG_SET_TOGGLES_V1 | GUILD_CUDA_ATTN_CFG_SET_ROPE_SCALING_V1 |
@@ -219,24 +212,24 @@ void sync_state(const guild_cuda_attn_ext_v1_t& tbl) {
     cfg.toggle_mask = GUILD_CUDA_ATTN_TOGGLE_NATIVE_QSA_V1 | GUILD_CUDA_ATTN_TOGGLE_NATIVE_ROPE_V1 |
                       GUILD_CUDA_ATTN_TOGGLE_NATIVE_GDN_V1 | GUILD_CUDA_ATTN_TOGGLE_NATIVE_QSA_INDEXER_V1 |
                       GUILD_CUDA_ATTN_TOGGLE_NATIVE_QSA_SCORE_V1;
-    if (g_native_qsa.load(std::memory_order_relaxed))
+    if (st.native_qsa)
         cfg.toggle_values |= GUILD_CUDA_ATTN_TOGGLE_NATIVE_QSA_V1;
-    if (g_native_rope.load(std::memory_order_relaxed))
+    if (st.native_rope)
         cfg.toggle_values |= GUILD_CUDA_ATTN_TOGGLE_NATIVE_ROPE_V1;
-    if (g_native_gdn.load(std::memory_order_relaxed))
+    if (st.native_gdn)
         cfg.toggle_values |= GUILD_CUDA_ATTN_TOGGLE_NATIVE_GDN_V1;
-    if (g_native_qsa_indexer.load(std::memory_order_relaxed))
+    if (st.native_qsa_indexer)
         cfg.toggle_values |= GUILD_CUDA_ATTN_TOGGLE_NATIVE_QSA_INDEXER_V1;
-    if (g_native_qsa_score.load(std::memory_order_relaxed))
+    if (st.native_qsa_score)
         cfg.toggle_values |= GUILD_CUDA_ATTN_TOGGLE_NATIVE_QSA_SCORE_V1;
-    cfg.mrope_table = g_mrope_tab[d].load(std::memory_order_relaxed);
-    cfg.rope_scaling = from_scaling(g_rope_scaling);
-    if (g_rope_tab[d].tab.cos != nullptr) {
+    cfg.mrope_table = st.mrope_tab[d];
+    cfg.rope_scaling = from_scaling(st.rope_scaling);
+    if (st.rope_tab[d].cos != nullptr) {
         cfg.actions |= GUILD_CUDA_ATTN_CFG_SET_ROPE_TABLE_V1;
-        cfg.rope_cos_tab = g_rope_tab[d].tab.cos;
-        cfg.rope_sin_tab = g_rope_tab[d].tab.sin;
-        cfg.rope_max_pos = g_rope_tab[d].tab.max_pos;
-        cfg.rope_scaling = from_scaling(g_rope_tab[d].scaling);
+        cfg.rope_cos_tab = st.rope_tab[d].cos;
+        cfg.rope_sin_tab = st.rope_tab[d].sin;
+        cfg.rope_max_pos = st.rope_tab[d].max_pos;
+        cfg.rope_scaling = from_scaling(st.rope_tab[d].scaling);
     }
     const auto c = context(nullptr);
     guild_error_info_t e{};
@@ -258,6 +251,28 @@ void push_toggle(uint32_t flag, bool value) {
 
 } // namespace
 
+CudaAttnConfigState CudaAttnConfigState::snapshot_current() noexcept {
+    return active_attn_state();
+}
+
+ScopedCudaAttnConfig::ScopedCudaAttnConfig(CudaAttnConfigState* state) : previous_(tl_attn_state) {
+    tl_attn_state = state;
+    if (const auto* b = try_backend()) {
+        try {
+            sync_state(*b);
+        } catch (...) {}
+    }
+}
+
+ScopedCudaAttnConfig::~ScopedCudaAttnConfig() noexcept {
+    tl_attn_state = previous_;
+    if (const auto* b = try_backend()) {
+        try {
+            sync_state(*b);
+        } catch (...) {}
+    }
+}
+
 ScopedCudaAttn::ScopedCudaAttn(const ResolvedCudaAttn& binding) : previous_(active) {
     // A failing configure must not leave a dangling thread-local binding.
     sync_state(binding.table);
@@ -266,50 +281,55 @@ ScopedCudaAttn::ScopedCudaAttn(const ResolvedCudaAttn& binding) : previous_(acti
 
 ScopedCudaAttn::~ScopedCudaAttn() {
     active = previous_;
+    if (active) {
+        try {
+            sync_state(*active);
+        } catch (...) {}
+    }
 }
 
 void native_qsa_set_enabled(bool enabled) {
-    g_native_qsa.store(enabled, std::memory_order_relaxed);
+    active_attn_state().native_qsa = enabled;
     push_toggle(GUILD_CUDA_ATTN_TOGGLE_NATIVE_QSA_V1, enabled);
 }
 bool native_qsa_enabled() {
-    return g_native_qsa.load(std::memory_order_relaxed);
+    return active_attn_state().native_qsa;
 }
 
 void native_rope_set_enabled(bool enabled) {
-    g_native_rope.store(enabled, std::memory_order_relaxed);
+    active_attn_state().native_rope = enabled;
     push_toggle(GUILD_CUDA_ATTN_TOGGLE_NATIVE_ROPE_V1, enabled);
 }
 bool native_rope_enabled() {
-    return g_native_rope.load(std::memory_order_relaxed);
+    return active_attn_state().native_rope;
 }
 
 void native_gdn_set_enabled(bool enabled) {
-    g_native_gdn.store(enabled, std::memory_order_relaxed);
+    active_attn_state().native_gdn = enabled;
     push_toggle(GUILD_CUDA_ATTN_TOGGLE_NATIVE_GDN_V1, enabled);
 }
 bool native_gdn_enabled() {
-    return g_native_gdn.load(std::memory_order_relaxed);
+    return active_attn_state().native_gdn;
 }
 
 void native_qsa_indexer_set_enabled(bool enabled) {
-    g_native_qsa_indexer.store(enabled, std::memory_order_relaxed);
+    active_attn_state().native_qsa_indexer = enabled;
     push_toggle(GUILD_CUDA_ATTN_TOGGLE_NATIVE_QSA_INDEXER_V1, enabled);
 }
 bool native_qsa_indexer_enabled() {
-    return g_native_qsa_indexer.load(std::memory_order_relaxed);
+    return active_attn_state().native_qsa_indexer;
 }
 
 void native_qsa_score_set_enabled(bool enabled) {
-    g_native_qsa_score.store(enabled, std::memory_order_relaxed);
+    active_attn_state().native_qsa_score = enabled;
     push_toggle(GUILD_CUDA_ATTN_TOGGLE_NATIVE_QSA_SCORE_V1, enabled);
 }
 bool native_qsa_score_enabled() {
-    return g_native_qsa_score.load(std::memory_order_relaxed);
+    return active_attn_state().native_qsa_score;
 }
 
 void rope_scaling_set(const RopeScaling& scaling) {
-    g_rope_scaling = scaling;
+    active_attn_state().rope_scaling = scaling;
     if (const auto* b = try_backend()) {
         guild_cuda_attn_config_v1_t cfg{};
         cfg.struct_size = sizeof(cfg);
@@ -321,11 +341,11 @@ void rope_scaling_set(const RopeScaling& scaling) {
     }
 }
 const RopeScaling& rope_scaling() {
-    return g_rope_scaling;
+    return active_attn_state().rope_scaling;
 }
 
 void mrope_table_set(const int32_t* device_table) {
-    g_mrope_tab[current_dev()].store(device_table, std::memory_order_relaxed);
+    active_attn_state().mrope_tab[current_dev()] = device_table;
     if (const auto* b = try_backend()) {
         guild_cuda_attn_config_v1_t cfg{};
         cfg.struct_size = sizeof(cfg);
@@ -337,11 +357,12 @@ void mrope_table_set(const int32_t* device_table) {
     }
 }
 const int32_t* mrope_table() {
-    return g_mrope_tab[current_dev()].load(std::memory_order_relaxed);
+    return active_attn_state().mrope_tab[current_dev()];
 }
 
 void rope_table_set(const float* cos_tab, const float* sin_tab, int max_pos, const RopeScaling& scaling) {
-    g_rope_tab[current_dev()] = RopeReg{RopeTab{cos_tab, sin_tab, max_pos}, scaling};
+    active_attn_state().rope_tab[current_dev()] =
+        CudaAttnConfigState::RopeDeviceReg{cos_tab, sin_tab, max_pos, scaling};
     if (const auto* b = try_backend()) {
         guild_cuda_attn_config_v1_t cfg{};
         cfg.struct_size = sizeof(cfg);
@@ -357,9 +378,15 @@ void rope_table_set(const float* cos_tab, const float* sin_tab, int max_pos, con
 }
 
 void rope_table_release(const float* cos_tab) {
-    for (RopeReg& r : g_rope_tab) {
-        if (cos_tab != nullptr && r.tab.cos == cos_tab)
-            r = RopeReg{};
+    for (auto& r : active_attn_state().rope_tab) {
+        if (cos_tab != nullptr && r.cos == cos_tab)
+            r = CudaAttnConfigState::RopeDeviceReg{};
+    }
+    if (tl_attn_state != nullptr) {
+        for (auto& r : g_default_attn_state.rope_tab) {
+            if (cos_tab != nullptr && r.cos == cos_tab)
+                r = CudaAttnConfigState::RopeDeviceReg{};
+        }
     }
     if (const auto* b = try_backend()) {
         guild_cuda_attn_config_v1_t cfg{};
@@ -375,8 +402,8 @@ void rope_table_release(const float* cos_tab) {
 RopeTab rope_table_for(const RopeScaling& scaling) {
     if (!rope_table_enabled())
         return {};
-    const RopeReg& r = g_rope_tab[current_dev()];
-    return r.tab.cos != nullptr && same_scaling(r.scaling, scaling) ? r.tab : RopeTab{};
+    const auto& r = active_attn_state().rope_tab[current_dev()];
+    return r.cos != nullptr && same_scaling(r.scaling, scaling) ? RopeTab{r.cos, r.sin, r.max_pos} : RopeTab{};
 }
 
 // Host float64 table builder for RoPE cos/sin arrays (no GPU kernel or CPU fallback).

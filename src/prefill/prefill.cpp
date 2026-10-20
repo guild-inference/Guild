@@ -149,7 +149,7 @@ inline int64_t stream_all_min() {
     }();
     return v;
 }
-double g_pinned_share = 1.0;
+thread_local double g_pinned_share = 1.0;
 // The streamed ring: 384 slots when (nearly) every streamed expert is DMA'd from pinned RAM - measured on Q2_0,
 // 8192-token chunks: 96 slots 1153 tok/s, 384 1294 (the next layer's experts arrive during its attention half) -
 // and 96 when a large share goes through host copies (IQ3_S on 64 GB, a third unpinned: 96 slots 1216, 256 1070 -
@@ -162,12 +162,12 @@ double g_pinned_share = 1.0;
 // env var and nothing else: chunk 1,024 -> 6,144, prefill 87 -> 402 tok/s.  So the budget is kept in BYTES and the
 // slot count is derived from the pack (`ring_budget_slots`); Q2_0 still resolves to exactly 1024 (fused) and 384,
 // so the pack all of this was tuned on does not move.
-int g_ring_override = 0; // #340: set by a layer split (Prefill::set_ring_override); 0 = the rule below
+thread_local int g_ring_override = 0; // #340: set by a layer split (Prefill::set_ring_override); 0 = the rule below
 // #583 (0.1.39b): the auto chunk scan's byte-budget ring (Prefill::set_ring_budget), for requests whose chunk is above
 // g_ring_small_max - the chunk 0.1.39's rule would have picked.  A prompt that fits that chunk keeps 0.1.39's ring:
 // on one chunk the smaller ring only slowed it (RTX 5070, 4K prompts: Coder -15%, IQ3_S -5%, IQ3_XXS -2%).
-int g_ring_budget = 0;
-int64_t g_ring_small_max = 0;
+thread_local int g_ring_budget = 0;
+thread_local int64_t g_ring_small_max = 0;
 // #136: the fused experts (GUILD_PF_FUSED=1) launch on a batch of a layer's streamed experts at once, so the ring
 // should hold a whole layer's (~460 of 512 on Q2_0): with 384 slots a layer's last batch waits for slots its own
 // first batch frees.  Measured on the 5070, Q2_0, the 4K / 32K code-agent prompts (one run each): fused at 384 slots
@@ -188,13 +188,10 @@ inline bool fused_ring() {
     // not cover (Unsloth UD-IQ4_XS's Q8_0 down projections) would run MMQ in them at the full chunk and overflow them
     // (garbage, an illegal memory access or a hung prompt on gfx1151).  A pack with such a layer keeps MMQ's buffers;
     // its covered layers still take the fused kernels.
-    static const bool all = [&lay] {
-        for (const auto& f : lay.fmt)
-            if (!fused::native_supported(f.gu_type, f.d_type))
-                return false;
-        return !lay.fmt.empty();
-    }();
-    return all;
+    for (const auto& f : lay.fmt)
+        if (!fused::native_supported(f.gu_type, f.d_type))
+            return false;
+    return !lay.fmt.empty();
 }
 // the largest ring: 512 slots; 1024 with the Q2_0 pack's fused experts (P3's smaller buffers, measured there) - the
 // native packs' fused layers were measured at 512
@@ -836,9 +833,13 @@ struct MmqPlan {
     size_t gu_max = 0, d_max = 0;
 };
 const MmqPlan& mmq_plan() {
-    static const MmqPlan plan = [] {
+    thread_local MmqPlan cached_plan;
+    thread_local const guild::kernels::cpu::ExpertLayout* cached_lay = nullptr;
+    thread_local uint64_t cached_total = ~0ull;
+    thread_local int64_t cached_layers = -1;
+    const auto& lay = guild::kernels::cpu::expert_layout();
+    if (cached_lay != &lay || cached_total != lay.total || cached_layers != lay.n_layers) {
         MmqPlan p;
-        const auto& lay = guild::kernels::cpu::expert_layout();
         const char* env = std::getenv("GUILD_PREFILL_MMQ");
         const bool on = mmq::built() && (env == nullptr || std::atoi(env) != 0);
         const int64_t layers = lay.native ? (int64_t) lay.fmt.size() : lay.n_layers;
@@ -857,9 +858,12 @@ const MmqPlan& mmq_plan() {
             p.gu_max = std::max(p.gu_max, mmq::matrix_bytes(gt, 1280, N));
             p.d_max = std::max(p.d_max, mmq::matrix_bytes(dt, N, 640));
         }
-        return p;
-    }();
-    return plan;
+        cached_plan = std::move(p);
+        cached_lay = &lay;
+        cached_total = lay.total;
+        cached_layers = lay.n_layers;
+    }
+    return cached_plan;
 }
 // #136 P3: a layout whose chunks run the fused experts (GUILD_PF_FUSED=1, the Q2_0 pack, a streamed chunk of
 // stream_all_min() tokens or more).  Its GU, H and Xq hold only the fused path's grouping tables, int8 H and per-token
@@ -923,6 +927,7 @@ void Prefill::set_expert_cache(const core::ExpertCache* cache, const int32_t* ho
 bool Prefill::init(const core::WeightTable& wt, const core::ModelGeometry& g, core::SessionState& ss,
                    core::ExpertSource* src, const core::ExpertCache* cache, const int32_t* host_res, int64_t chunk,
                    void* stream, std::string& err, void* borrow, uint64_t borrow_bytes) {
+    core::ScopedModelExecution exec_scope(ss.exec_state);
     Impl& m = *impl_;
     m.wt = &wt;
     m.g = &g;
@@ -1199,6 +1204,7 @@ bool Prefill::carve(size_t T, void* alloc) {
 
 bool Prefill::relayout(int64_t chunk, void* borrow, uint64_t borrow_bytes, std::string& err) {
     Impl& m = *impl_;
+    core::ScopedModelExecution exec_scope(m.ss ? m.ss->exec_state : nullptr);
     if (!m.borrowed || borrow == nullptr || chunk <= 0 || chunk > m.T_max) {
         err = "prefill: relayout needs borrowed buffers and a chunk of at most " + std::to_string(m.T_max);
         return false;
@@ -1719,6 +1725,7 @@ double Prefill::pinned_share() {
 }
 
 uint64_t Prefill::bytes_needed(const core::ModelGeometry& g, const core::SessionState& ss, int64_t chunk) {
+    core::ScopedModelExecution exec_scope(ss.exec_state);
     // the same allocation sequence as `init`, counted
     const size_t T = (size_t) chunk;
     bool ok = true;
@@ -1978,6 +1985,7 @@ struct PeTimer {
 bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::string& err) {
     err.clear();
     Impl& m = *impl_;
+    core::ScopedModelExecution exec_scope(m.ss ? m.ss->exec_state : nullptr);
     const core::OnDevice on_device(m.device);
     const core::ModelGeometry& g = *m.g;
     core::SessionState& ss = *m.ss;

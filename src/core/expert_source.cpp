@@ -384,7 +384,8 @@ bool FileExpertSource::open(const std::string& pack_dir, int64_t n_layers, int64
         err = "FileExpertSource: the geometry is empty";
         return false;
     }
-    const auto& layout = guild::kernels::cpu::expert_layout();
+    set_layout(guild::kernels::cpu::expert_layout());
+    const auto& layout = this->layout();
     if (layout.n_layers != n_layers || layout.n_expert != n_expert) {
         err = "FileExpertSource: the requested geometry does not match the loaded expert layout";
         return false;
@@ -571,7 +572,8 @@ bool FileExpertSource::open_gpack(const uint8_t* exp_base, uint64_t exp_bytes, i
         err = "FileExpertSource::open_gpack: invalid arguments";
         return false;
     }
-    const auto& lay = guild::kernels::cpu::expert_layout();
+    set_layout(guild::kernels::cpu::expert_layout());
+    const auto& lay = this->layout();
     if (lay.n_layers != n_layers || lay.n_expert != n_expert) {
         err = "FileExpertSource::open_gpack: expert layout geometry mismatch";
         return false;
@@ -720,6 +722,7 @@ void FileExpertSource::close() {
 
 void FileExpertSource::set_gate_up_interleaved(bool interleave_on_copy) {
     interleave_on_copy_ = interleave_on_copy;
+    layout_.gate_up_interleaved = interleave_on_copy;
     if (interleave_on_copy_) {
         std::lock_guard<std::mutex> lk(stage_mu_);
         for (uint64_t b : layer_blob_bytes_)
@@ -731,7 +734,7 @@ bool ExpertSource::copy_blob(int64_t layer, int64_t expert, uint8_t* dst) {
     const uint8_t* b = blob(layer, expert);
     if (b == nullptr || dst == nullptr)
         return false;
-    std::memcpy(dst, b, (size_t) guild::kernels::cpu::expert_layout().blob_bytes(layer));
+    std::memcpy(dst, b, (size_t) layout().blob_bytes(layer));
     return true;
 }
 
@@ -743,7 +746,7 @@ bool ExpertSource::copy_blob(int64_t layer, int64_t expert, uint8_t* dst) {
 // blob is assembled when it is asked for (`blob`, into a small pool of buffers) or copied where it is needed
 // (`copy_blob`: the RAM copy, the prompt path's pinned stager buffers).
 bool FileExpertSource::open_gguf(std::string& err) {
-    const auto& lay = guild::kernels::cpu::expert_layout();
+    const auto& lay = this->layout();
     if (!check_experts_gguf(gguf_, lay, err)) {
         err = "FileExpertSource: " + err;
         return false;
@@ -841,7 +844,7 @@ bool FileExpertSource::copy_from_files(int64_t layer, int64_t expert, uint8_t* d
         if (read_direct(&f, 1))
             return true;
     }
-    const auto& lay = guild::kernels::cpu::expert_layout();
+    const auto& lay = this->layout();
     if (!role_ptr_.empty()) {
         if (interleave_on_copy_ && lay.native && (size_t) layer < lay.fmt.size()) {
             const auto& fm = lay.fmt[(size_t) layer];
@@ -2279,7 +2282,8 @@ void expert_pool_dispatch(void* user, const float* x_f, const int32_t* ids, cons
         d.fail_layer = d.layers;
         return;
     }
-    if (expert_layout().native) {
+    const ExpertLayout& lay = d.src ? d.src->layout() : expert_layout();
+    if (lay.native) {
         // plan v0.3 P6: a native pack runs its experts in verify windows only (the driver guarantees it)
         d.failed = true;
         d.fail = "the single-token expert path does not take a native (IQ) pack";
@@ -2430,7 +2434,7 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
     }
     if ((int64_t) d.act_multi.size() < n_tok)
         d.act_multi.resize((size_t) MAXT);
-    const ExpertLayout& lay = expert_layout();
+    const ExpertLayout& lay = d.src ? d.src->layout() : expert_layout();
     const bool native = lay.native;
     if (native && d.nact_multi.size() < (size_t) MAXT * kNativeActBytes)
         d.nact_multi.resize((size_t) MAXT * kNativeActBytes);
@@ -2768,7 +2772,8 @@ void expert_hit_run(void* user, void* stream, HitPhase phase, const int32_t* ids
                 std::string ferr;
                 if (b == nullptr ||
                     !d.cache->fill_slot(cand, b, cs, ferr,
-                                        (int64_t) guild::kernels::cpu::expert_layout().blob_bytes(d.layers))) {
+                                        (int64_t) (d.src ? d.src->layout() : guild::kernels::cpu::expert_layout())
+                                            .blob_bytes(d.layers))) {
                     d.failed = true;
                     d.fail = "the expert cache could not fill a slot";
                     d.fail_layer = d.layers;
@@ -3229,7 +3234,8 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
     close();
     const std::string path = pack_dir + "/experts.bin";
     // plan v0.3 P6: the layout (canonical, or a native pack's per-layer blobs) was loaded by the driver
-    const guild::kernels::cpu::ExpertLayout& lay = guild::kernels::cpu::expert_layout();
+    set_layout(guild::kernels::cpu::expert_layout());
+    const guild::kernels::cpu::ExpertLayout& lay = this->layout();
     if (lay.n_layers != n_layers || lay.n_expert != n_expert) {
         err = "ArenaExpertSource: the expert layout was loaded for a different geometry";
         return false;
@@ -3488,7 +3494,7 @@ void ArenaExpertSource::prefetch(int64_t layer, int64_t expert) {
 #else
     if (map_ == nullptr || layer < 0 || expert < 0 || expert >= n_expert_)
         return;
-    const auto& lay = guild::kernels::cpu::expert_layout();
+    const auto& lay = this->layout();
     const uint64_t off = lay.blob_offset(layer, expert) & ~(uint64_t) 4095;
     const uint64_t end = lay.blob_offset(layer, expert) + lay.blob_bytes(layer);
     madvise((uint8_t*) map_ + off, (size_t) (end - off), MADV_WILLNEED);
@@ -3509,7 +3515,7 @@ uint64_t ArenaExpertSource::release(int64_t layer, int64_t expert) {
 #else
     if (map_ == nullptr || layer < 0 || expert < 0 || expert >= n_expert_)
         return 0;
-    const auto& lay = guild::kernels::cpu::expert_layout();
+    const auto& lay = this->layout();
     const uint64_t off = (lay.blob_offset(layer, expert) + 4095) & ~(uint64_t) 4095;
     const uint64_t end = (lay.blob_offset(layer, expert) + lay.blob_bytes(layer)) & ~(uint64_t) 4095;
     if (end <= off)
@@ -3523,14 +3529,14 @@ uint64_t ArenaExpertSource::release(int64_t layer, int64_t expert) {
 bool ArenaExpertSource::pinned(int64_t layer, int64_t expert) const {
     if (base_ == nullptr || layer < 0 || expert < 0 || expert >= n_expert_)
         return false;
-    const auto& lay = guild::kernels::cpu::expert_layout();
+    const auto& lay = this->layout();
     return lay.blob_offset(layer, expert) + lay.blob_bytes(layer) <= pinned_bytes_;
 }
 
 const uint8_t* ArenaExpertSource::device_alias(int64_t layer, int64_t expert) const {
     if (dev_slice_.empty() || !pinned(layer, expert))
         return nullptr;
-    const auto& lay = guild::kernels::cpu::expert_layout();
+    const auto& lay = this->layout();
     if (slice_bytes_ == 0)
         return dev_slice_[0] + lay.blob_offset(layer, expert);
     // one registration slice per layer
@@ -3550,7 +3556,7 @@ const uint8_t* ArenaExpertSource::blob(int64_t layer, int64_t expert) {
     ++reads_;
     // Pointer arithmetic into resident memory.  No fault, no copy, no mapping - which is the entire point of
     // this class over `FileExpertSource`.
-    return base_ + guild::kernels::cpu::expert_layout().blob_offset(layer, expert);
+    return base_ + this->layout().blob_offset(layer, expert);
 }
 
 } // namespace guild::core

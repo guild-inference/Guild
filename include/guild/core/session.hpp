@@ -14,6 +14,7 @@
 // lets the CPU expert pool start while the GPU is still working on the next layer.
 #pragma once
 
+#include "guild/core/execution_state.hpp"
 #include "guild/core/hit_hook.hpp"
 #include "guild/core/layer.hpp"
 #include "guild/kernels/cpu/pool.hpp"
@@ -21,6 +22,7 @@
 #include <cuda_runtime.h>
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -88,6 +90,7 @@ struct SessionState {
     /// `session_capture`/`session_loop`/`session_token` need no new parameter to reach it.  A `PleRun` whose
     /// `ready()` is false is skipped, which is what every caller had before LEDGER L123.
     PleRun ple;
+    std::shared_ptr<ModelExecutionState> exec_state;
 };
 
 /// Bytes for a whole session at `max_cells` of context.  Every layer's state is sized at once, because P2.T10

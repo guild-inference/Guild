@@ -23,6 +23,7 @@
 
 #include "guild/core/expert_cache.hpp"
 #include "guild/core/hit_hook.hpp"
+#include "guild/kernels/cpu/expert_layout.hpp"
 #include "guild/kernels/cpu/pool.hpp"
 
 #include <atomic>
@@ -36,10 +37,6 @@
 #include <utility>
 #include <string>
 #include <vector>
-
-namespace guild::kernels::cpu {
-struct ExpertLayout;
-}
 
 namespace guild::core {
 
@@ -197,6 +194,18 @@ public:
     virtual bool warms() const {
         return false;
     }
+
+    const guild::kernels::cpu::ExpertLayout& layout() const noexcept {
+        return has_layout_ ? layout_ : guild::kernels::cpu::expert_layout();
+    }
+    void set_layout(const guild::kernels::cpu::ExpertLayout& lay) {
+        layout_ = lay;
+        has_layout_ = true;
+    }
+
+protected:
+    guild::kernels::cpu::ExpertLayout layout_{};
+    bool has_layout_ = false;
 };
 
 /// CS-T, routing-aware prefetch of the file tier: when the CPU pool starts layer `l`, a worker thread applies layer

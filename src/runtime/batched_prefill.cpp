@@ -209,6 +209,7 @@ const std::vector<std::string>& BatchedPrefill::bound_package_ids() const {
 bool BatchedPrefill::init(const core::WeightTable& wt, const core::ModelGeometry& g, core::SessionState& ss,
                           core::ExpertSource& src, kernels::cpu::ExpertPool& pool, void* stream, std::string& err,
                           int64_t requested, const core::ExpertCache* cache) try {
+    core::ScopedModelExecution exec_scope(ss.exec_state);
     auto& m = *impl_;
     if (m.wt)
         throw std::invalid_argument("prefill already initialized");
@@ -352,6 +353,7 @@ bool BatchedPrefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::st
     const auto start = Clock::now();
     const auto& g = *m.g;
     auto& ss = *m.ss;
+    core::ScopedModelExecution exec_scope(ss.exec_state);
     auto cs = m.cs;
     std::optional<ScopedCudaDense> dense_scope;
     if (m.fns.has_cuda_dense)
@@ -374,7 +376,7 @@ bool BatchedPrefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::st
     s.idx_dim = 0;
     const size_t state_floats = size_t(g.ssm_state_size) * HV * g.ssm_state_size;
     const size_t gdn_floats = state_floats + size_t(C) * (g.ssm_d_conv - 1);
-    const auto& layout = kernels::cpu::expert_layout();
+    const auto& layout = m.src ? m.src->layout() : kernels::cpu::expert_layout();
     const double gu0 = m.pool->ms_multi_gu, quant0 = m.pool->ms_multi_q, down0 = m.pool->ms_multi_down;
     for (int64_t c0 = 0; c0 < n; c0 += batch_size_) {
         if (should_stop && should_stop()) {

@@ -1,4 +1,5 @@
 #include "guild/core/native_head.hpp"
+#include "guild/core/execution_state.hpp"
 #include "guild/artifact/gguf_reader.hpp"
 #include "guild/artifact/gpack.hpp"
 #include "guild/kernels/iq_kernels.hpp"
@@ -171,9 +172,14 @@ namespace {
 const NativeEmbed* g_embed = nullptr;
 }
 void set_native_embed(const NativeEmbed* e) {
-    g_embed = e;
+    if (auto* st = active_model_execution_state())
+        st->native_embed = e;
+    else
+        g_embed = e;
 }
 const NativeEmbed* native_embed() {
+    if (const auto* st = active_model_execution_state())
+        return st->native_embed;
     return g_embed;
 }
 

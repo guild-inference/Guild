@@ -196,6 +196,7 @@ const void* MtpDrafter::q8(const char* name) const {
 
 bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, SessionState& ss, int max_t, std::string& err,
                       int64_t window) {
+    ScopedModelExecution exec_scope(ss.exec_state);
     cudaGetDevice(&device_); // a layer split's last stage on another GPU: the drafter lives there
     g_ = &g;
     ss_ = &ss;
@@ -968,6 +969,7 @@ bool MtpDrafter::capture_step(int j, bool coupled, std::string& err) {
 }
 
 void MtpDrafter::kv_restore(int64_t upto) {
+    ScopedModelExecution exec_scope(ss_ ? ss_->exec_state : nullptr);
     const OnDevice on_device(device_);
     if (st_.kv_mode != 2 || upto <= 0)
         return;
@@ -979,6 +981,7 @@ void MtpDrafter::kv_restore(int64_t upto) {
 }
 
 bool MtpDrafter::prefill(const float* R_rows, const int32_t* next_tokens, int64_t n, int64_t cell0, std::string& err) {
+    ScopedModelExecution exec_scope(ss_ ? ss_->exec_state : nullptr);
     const OnDevice on_device(device_);
     const Clock::time_point t0 = Clock::now();
     const int64_t HCN = g_->hc * g_->n_embd;
@@ -1091,6 +1094,7 @@ bool MtpDrafter::prefill(const float* R_rows, const int32_t* next_tokens, int64_
 
 bool MtpDrafter::draft(int T, const int32_t* tokens, int64_t p, int a, int32_t* drafts, std::string& err, float* probs,
                        float min_p, int* n_drafts) {
+    ScopedModelExecution exec_scope(ss_ ? ss_->exec_state : nullptr);
     const OnDevice on_device(device_);
     if (T < 1 || T > max_t_ || a < 0 || a >= T) {
         err = "mtp: draft arguments out of range";
@@ -1234,6 +1238,7 @@ bool MtpDrafter::draft(int T, const int32_t* tokens, int64_t p, int a, int32_t* 
 
 bool MtpDrafter::draft_first(int T, const float* R_row, int32_t token, int64_t cell, int32_t* drafts, std::string& err,
                              float* probs, float min_p, int* n_drafts) {
+    ScopedModelExecution exec_scope(ss_ ? ss_->exec_state : nullptr);
     const OnDevice on_device(device_);
     // row 0 is the real pair; rows 1.. repeat it and only write cells the next round overwrites
     const int64_t HCN = g_->hc * g_->n_embd;

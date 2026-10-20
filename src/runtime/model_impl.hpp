@@ -159,6 +159,7 @@ struct GuildModel::Impl {
     Drive drive;
 
     // Primary session state & prefill engine
+    std::shared_ptr<core::ModelExecutionState> exec_state;
     core::SessionState ss;
     void* sbuf = nullptr;
     std::unique_ptr<prefill::Prefill> prefill;
@@ -171,6 +172,7 @@ struct GuildModel::Impl {
     std::mutex generation_mutex;
 
     ~Impl() {
+        core::ScopedModelExecution exec_scope(exec_state);
         std::optional<kernels::ScopedCudaDense> dense_scope;
         if (cuda_dense)
             dense_scope.emplace(*cuda_dense);
@@ -252,6 +254,7 @@ struct GuildModel::Impl {
             kernel_lease = {};
             runner_lease = {};
         }
+        (void) cudaGetLastError();
     }
 };
 

@@ -25,6 +25,7 @@ struct RuntimeConfig {
     std::string kv_format = "fp16";
     bool kv_host_only = true;
     int64_t kv_resident = 0;
+    bool shared_early = true;
     uint64_t resident_budget_gib = 56;
     int spec = 4;
     float spec_min_p = 0.5f;

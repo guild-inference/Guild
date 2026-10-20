@@ -8,13 +8,39 @@
 
 namespace guild::kernels::cpu {
 namespace {
-ExpertLayout layout;
+ExpertLayout default_layout;
+thread_local ExpertLayout* tl_mutable_layout = nullptr;
+thread_local const ExpertLayout* tl_const_layout = nullptr;
+
+ExpertLayout& active_mutable_layout() noexcept {
+    return tl_mutable_layout ? *tl_mutable_layout : default_layout;
 }
+} // namespace
+
+ScopedExpertLayout::ScopedExpertLayout(ExpertLayout* l) noexcept
+    : prev_mutable_(tl_mutable_layout),
+      prev_const_(tl_const_layout) {
+    tl_mutable_layout = l;
+    tl_const_layout = l;
+}
+
+ScopedExpertLayout::ScopedExpertLayout(const ExpertLayout* l) noexcept
+    : prev_mutable_(tl_mutable_layout),
+      prev_const_(tl_const_layout) {
+    tl_mutable_layout = nullptr;
+    tl_const_layout = l;
+}
+
+ScopedExpertLayout::~ScopedExpertLayout() noexcept {
+    tl_mutable_layout = prev_mutable_;
+    tl_const_layout = prev_const_;
+}
+
 const ExpertLayout& expert_layout() {
-    return layout;
+    return tl_const_layout ? *tl_const_layout : default_layout;
 }
 void expert_layout_set_gate_up_interleaved(bool interleaved) noexcept {
-    layout.gate_up_interleaved = interleaved;
+    active_mutable_layout().gate_up_interleaved = interleaved;
 }
 
 #if !defined(GUILD_NATIVE_EXPERTS)
@@ -47,7 +73,7 @@ bool expert_layout_load(const std::string& pack_dir, int64_t layers, int64_t exp
     std::ifstream input(pack_dir + "/native_experts.txt");
     if (!input) {
         next.total = uint64_t(layers) * uint64_t(experts) * uint64_t(BLOB);
-        layout = next;
+        active_mutable_layout() = std::move(next);
         return true;
     }
 #if !defined(GUILD_NATIVE_EXPERTS)
@@ -151,7 +177,7 @@ bool expert_layout_load(const std::string& pack_dir, int64_t layers, int64_t exp
         at += next.bytes[size_t(layer)] * uint64_t(next.n_expert);
     }
     next.total = at;
-    layout = next;
+    active_mutable_layout() = std::move(next);
     return true;
 #endif
 }
@@ -168,7 +194,7 @@ bool expert_layout_load_gpack(const guild::artifact::GPackReader& gpack, int64_t
     }
     if (!gpack.expert_native_format()) {
         next.total = uint64_t(layers) * uint64_t(next.n_expert) * uint64_t(BLOB);
-        layout = next;
+        active_mutable_layout() = std::move(next);
         return true;
     }
 #if !defined(GUILD_NATIVE_EXPERTS)
@@ -236,7 +262,7 @@ bool expert_layout_load_gpack(const guild::artifact::GPackReader& gpack, int64_t
         at += next.bytes[static_cast<size_t>(l)] * static_cast<uint64_t>(next.n_expert);
     }
     next.total = at;
-    layout = next;
+    active_mutable_layout() = std::move(next);
     return true;
 #endif
 }

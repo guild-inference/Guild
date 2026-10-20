@@ -25,9 +25,9 @@
 #include <set>
 #include <vector>
 
-// GuildModel::load is the whole startup sequence.  Everything below runs once per process, in the order below, and
-// every stage may only rely on what the stages above it have already put in place.  A failure returns nullptr with
-// `error_msg` set; the function never throws to its caller (the CUDA/HIP entry points are C ABI).
+// GuildModel::load is the per-model startup sequence.  Each model instance owns its own ModelExecutionState and
+// enters a ScopedModelExecution guard here so configuration settings never leak across models in the same process.
+// A failure returns nullptr with `error_msg` set and unwinds the model's execution scope cleanly.
 //
 // The stages are also what the StartupProfile in `sp` reports, so the timing JSON of a load reads in this order:
 //
@@ -129,6 +129,10 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
     if (use_gpack) {
         const auto run_t0 = Clock::now();
         desc = gpack_reader->descriptor();
+        if (requested_desc.rope.type != "none" || requested_desc.rope.factor != 1.0 ||
+            requested_desc.rope.orig_ctx > 0.0) {
+            desc.rope = requested_desc.rope;
+        }
         const std::string arch_id = !gpack_reader->execution_metadata().arch_id.empty()
                                         ? gpack_reader->execution_metadata().arch_id
                                         : desc.arch_name;
@@ -157,6 +161,10 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
             !runner || !runner->validate_and_describe(artifact, desc, error_msg)) {
             return nullptr;
         }
+        if (requested_desc.rope.type != "none" || requested_desc.rope.factor != 1.0 ||
+            requested_desc.rope.orig_ctx > 0.0) {
+            desc.rope = requested_desc.rope;
+        }
         sp.runner_and_plan_ms += ms_since(run_t0);
     }
     if (plan.context_length <= 0 || plan.context_length > desc.attn.context_length || plan.mtp_spec_tokens < 0 ||
@@ -172,6 +180,8 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
     }
     auto model = std::unique_ptr<GuildModel>(new GuildModel());
     auto* impl = model->impl_.get();
+    impl->exec_state = std::make_shared<core::ModelExecutionState>(core::ModelExecutionState::snapshot_current());
+    core::ScopedModelExecution exec_scope(impl->exec_state);
 
     impl->paths = paths;
     impl->desc = desc;
@@ -186,7 +196,8 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
     impl->config.max_context = plan.context_length;
     impl->config.kv_format = memory::kv_precision_to_string(plan.kv_format);
     impl->config.kv_host_only = (plan.kv_mode == memory::KvMode::HostOnly);
-    impl->config.kv_resident = 0;
+    impl->config.kv_resident = plan.kv_resident;
+    impl->config.shared_early = plan.shared_early;
     impl->config.spec = std::max(2, plan.mtp_spec_tokens);
     impl->config.spec_min_p = plan.spec_min_p;
     impl->config.pool_workers = plan.pool_workers;
@@ -213,9 +224,9 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
     }
     sp.runner_and_plan_ms += ms_since(geom_t0);
 
-    // Process-wide kernel settings, read back by the kernels module through globals.  They are set here, before any
-    // weight is touched, because the kernels consult them while preparing quantized layouts and KV buffers; setting
-    // them later would leave already-prepared state on the old values.
+    // Model-scoped execution settings, written into `impl->exec_state` via `exec_scope` above.  They are configured
+    // here, before any weight is touched, because the kernels consult them while preparing quantized layouts and KV
+    // buffers; `impl->ss.exec_state` retains the shared state for session execution and teardown.
     //
     // RoPE scaling
     kernels::RopeScaling rope_cfg;
@@ -244,7 +255,7 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
     }
     core::qsa_set_kv_host_only(impl->config.kv_host_only);
     core::qsa_set_kv_resident(impl->config.kv_resident);
-    core::layer_set_shared_early(true);
+    core::layer_set_shared_early(impl->config.shared_early);
 
     // Long-lived resources, in dependency order: the CPU expert pool first (its workers install the thread
     // affinity that decides where the expert pages they later touch physically land), then the main CUDA stream,
@@ -847,7 +858,11 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
     }
     sp.kv_session_init_ms += ms_since(kv_t0);
     sp.kv_device_bytes = sbytes;
-    sp.kv_host_bytes = core::qsa_kv_host_bytes();
+    uint64_t model_kv_host_bytes = 0;
+    for (int64_t j = 0; impl->ss.qsa_states && j < impl->ss.qsa_alloc; ++j) {
+        model_kv_host_bytes += impl->ss.qsa_states[impl->ss.qsa_ord0 + j].host_allocation_bytes;
+    }
+    sp.kv_host_bytes = model_kv_host_bytes;
 
     const auto ple_t0 = Clock::now();
     if (use_gpack) {

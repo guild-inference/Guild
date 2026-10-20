@@ -39,9 +39,15 @@ bool env_on(const char* name) {
     const char* v = std::getenv(name);
     return v && v[0] && v[0] != '0';
 }
-std::atomic<uint32_t> flags{(env_on("GUILD_OLD_IQ_MMVQ") ? uint32_t(GUILD_CUDA_MOE_FLAG_IQ_OLD_KERNELS_V1) : 0u) |
-                            (env_on("GUILD_GROUPED_V1") ? uint32_t(GUILD_CUDA_MOE_FLAG_NATIVE_GROUPED_V1_V1) : 0u)};
-std::atomic<int> grouped_old{-1}, gr_fast{-1}, expert_mode{-1}, expert_phase{0};
+CudaMoEConfigState g_default_moe_state{
+    (env_on("GUILD_OLD_IQ_MMVQ") ? uint32_t(GUILD_CUDA_MOE_FLAG_IQ_OLD_KERNELS_V1) : 0u) |
+        (env_on("GUILD_GROUPED_V1") ? uint32_t(GUILD_CUDA_MOE_FLAG_NATIVE_GROUPED_V1_V1) : 0u),
+    -1, -1, -1, 0};
+thread_local CudaMoEConfigState* tl_moe_state = nullptr;
+
+CudaMoEConfigState& active_moe_state() noexcept {
+    return tl_moe_state ? *tl_moe_state : g_default_moe_state;
+}
 
 const guild_cuda_moe_ext_v1_t* try_backend() {
     if (active)
@@ -92,28 +98,30 @@ void call(guild_status_t (*fn)(const guild_exec_context_v1_t*, const T*, guild_e
     checked(fn(&c, &p, &e), e);
 }
 void sync_state(const guild_cuda_moe_ext_v1_t& b) {
+    const CudaMoEConfigState& st = active_moe_state();
     auto p = command<guild_cuda_moe_config_v1_t>(GUILD_CUDA_MOE_CFG_SET_FLAGS_V1);
-    p.flags = flags.load(std::memory_order_relaxed);
-    p.grouped_select_old = grouped_old.load(std::memory_order_relaxed);
+    p.flags = st.flags;
+    p.grouped_select_old = st.grouped_old;
     call(b.configure, p, nullptr);
     p.mode = GUILD_CUDA_MOE_CFG_FUSED_GR_SET_FAST_V1;
-    p.value = gr_fast.load(std::memory_order_relaxed);
+    p.value = st.gr_fast;
     call(b.configure, p, nullptr);
     p.mode = GUILD_CUDA_MOE_CFG_NATIVE_EXPERT_SET_MODE_V1;
-    p.value = expert_mode.load(std::memory_order_relaxed);
-    p.value2 = expert_phase.load(std::memory_order_relaxed);
+    p.value = st.expert_mode;
+    p.value2 = st.expert_phase;
     call(b.configure, p, nullptr);
 }
 void toggle(uint32_t bit, bool on) {
+    auto& st = active_moe_state();
     if (on)
-        flags.fetch_or(bit, std::memory_order_relaxed);
+        st.flags |= bit;
     else
-        flags.fetch_and(~bit, std::memory_order_relaxed);
+        st.flags &= ~bit;
     if (const auto* b = try_backend())
         sync_state(*b);
 }
 bool enabled(uint32_t bit) {
-    return (flags.load(std::memory_order_relaxed) & bit) != 0;
+    return (active_moe_state().flags & bit) != 0;
 }
 int query(uint32_t mode, int value = 0, int64_t n = 0, int64_t hc = 0, int64_t lr = 0) {
     auto p = command<guild_cuda_moe_config_v1_t>(mode);
@@ -189,6 +197,28 @@ void qwen(const guild_cuda_qwen_op_v1_t& p, void* s) {
 }
 } // namespace
 
+CudaMoEConfigState CudaMoEConfigState::snapshot_current() noexcept {
+    return active_moe_state();
+}
+
+ScopedCudaMoEConfig::ScopedCudaMoEConfig(CudaMoEConfigState* state) : previous_(tl_moe_state) {
+    tl_moe_state = state;
+    if (const auto* b = try_backend()) {
+        try {
+            sync_state(*b);
+        } catch (...) {}
+    }
+}
+
+ScopedCudaMoEConfig::~ScopedCudaMoEConfig() noexcept {
+    tl_moe_state = previous_;
+    if (const auto* b = try_backend()) {
+        try {
+            sync_state(*b);
+        } catch (...) {}
+    }
+}
+
 ScopedCudaMoE::ScopedCudaMoE(const ResolvedCudaMoE& binding) : previous_(active) {
     // A failing configure must not leave a dangling thread-local binding.
     sync_state(binding.table);
@@ -196,6 +226,11 @@ ScopedCudaMoE::ScopedCudaMoE(const ResolvedCudaMoE& binding) : previous_(active)
 }
 ScopedCudaMoE::~ScopedCudaMoE() {
     active = previous_;
+    if (active) {
+        try {
+            sync_state(*active);
+        } catch (...) {}
+    }
 }
 
 void shared_expert_set_native_bf16(bool v) {
@@ -244,7 +279,7 @@ bool iq_old_kernels() {
     return enabled(GUILD_CUDA_MOE_FLAG_IQ_OLD_KERNELS_V1);
 }
 void moe_grouped_select_old(int v) {
-    grouped_old = v;
+    active_moe_state().grouped_old = v;
     if (const auto* b = try_backend())
         sync_state(*b);
 }
@@ -252,13 +287,13 @@ int moe_grouped_last_path() {
     return query(GUILD_CUDA_MOE_CFG_QUERY_GROUPED_LAST_PATH_V1);
 }
 void fused_gr_set_fast(int v) {
-    gr_fast = v;
+    active_moe_state().gr_fast = v;
     if (const auto* b = try_backend())
         sync_state(*b);
 }
 void native_expert_set_mode(int mode, int phase) {
-    expert_mode = mode;
-    expert_phase = phase;
+    active_moe_state().expert_mode = mode;
+    active_moe_state().expert_phase = phase;
     if (const auto* b = try_backend())
         sync_state(*b);
 }

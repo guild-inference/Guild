@@ -68,6 +68,7 @@ void GuildSession::reset() {
     std::lock_guard<std::mutex> lock(m_impl->generation_mutex);
     if (!m_impl->ready || !m_impl->ready->load())
         return;
+    core::ScopedModelExecution exec_scope(m_impl->exec_state);
     std::optional<kernels::ScopedCudaAttn> attn_scope;
     if (m_impl->cuda_attn)
         attn_scope.emplace(*m_impl->cuda_attn);
@@ -178,6 +179,7 @@ bool GuildSession::generate(const GenerationRequest& req, TokenStreamCallback on
     const char* host_affinity = std::getenv("GUILD_HOST_AFFINITY");
     if (!host_affinity || std::atoi(host_affinity) != 0)
         affinity.previous = kernels::cpu::pin_current_thread_if_allowed(m_impl->pool->host_core());
+    core::ScopedModelExecution exec_scope(m_impl->exec_state);
     std::optional<kernels::ScopedCudaDense> dense_scope;
     if (m_impl->cuda_dense)
         dense_scope.emplace(*m_impl->cuda_dense);

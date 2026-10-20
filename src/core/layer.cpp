@@ -1,6 +1,7 @@
 
 // src/core/layer.cpp - the GDN layer, composed.  See the header for the operation order and its traps.
 #include "guild/core/layer.hpp"
+#include "guild/core/execution_state.hpp"
 #include "guild/core/native_head.hpp"
 #include "guild/kernels/bf16_bits.hpp"
 #include "guild/kernels/bf16_gemv.hpp"
@@ -32,6 +33,7 @@
 #include "guild/kernels/qsa_select.hpp"
 #include "guild/kernels/verify_kernels.hpp"
 #include <algorithm>
+#include <atomic>
 #include <cstdlib>
 #include <exception>
 #include <cuda_runtime.h>
@@ -41,13 +43,67 @@
 #include <vector>
 namespace guild::core {
 namespace {
-bool g_shared_early = true;
-bool g_fused_gr = false;
-bool g_fast_attn = true;
-bool g_publish_kernel = true;
-bool g_fused_gdn = true;
-bool g_fast_select = true;
+ModelExecutionState g_default_exec_state{};
+thread_local ModelExecutionState* tl_active_raw = nullptr;
+thread_local std::shared_ptr<ModelExecutionState> tl_active_shared;
+
+ModelExecutionState& active_exec_state() noexcept {
+    return tl_active_raw ? *tl_active_raw : g_default_exec_state;
+}
 } // namespace
+
+ModelExecutionState* active_model_execution_state() noexcept {
+    return tl_active_raw;
+}
+
+std::shared_ptr<ModelExecutionState> active_model_execution_state_shared() noexcept {
+    return tl_active_shared;
+}
+
+ModelExecutionState ModelExecutionState::snapshot_current() {
+    ModelExecutionState st = active_exec_state();
+    st.native_embed = ::guild::core::native_embed();
+    st.expert_layout = ::guild::kernels::cpu::expert_layout();
+    st.cuda_attn = ::guild::kernels::CudaAttnConfigState::snapshot_current();
+    st.cuda_moe = ::guild::kernels::CudaMoEConfigState::snapshot_current();
+    return st;
+}
+
+ScopedModelExecution::ScopedModelExecution(std::shared_ptr<ModelExecutionState> state) {
+    ModelExecutionState* raw = state.get();
+    enter(raw, std::move(state));
+}
+
+ScopedModelExecution::ScopedModelExecution(ModelExecutionState* state) {
+    if (state && tl_active_shared && tl_active_shared.get() == state) {
+        enter(state, tl_active_shared);
+    } else {
+        enter(state, nullptr);
+    }
+}
+
+void ScopedModelExecution::enter(ModelExecutionState* raw, std::shared_ptr<ModelExecutionState> shared) {
+    if (!raw || raw == tl_active_raw)
+        return;
+    active_ = true;
+    prev_raw_ = tl_active_raw;
+    prev_shared_ = std::move(tl_active_shared);
+    tl_active_raw = raw;
+    tl_active_shared = std::move(shared);
+    layout_scope_.emplace(&raw->expert_layout);
+    attn_scope_.emplace(&raw->cuda_attn);
+    moe_scope_.emplace(&raw->cuda_moe);
+}
+
+ScopedModelExecution::~ScopedModelExecution() noexcept {
+    if (!active_)
+        return;
+    moe_scope_.reset();
+    attn_scope_.reset();
+    layout_scope_.reset();
+    tl_active_raw = prev_raw_;
+    tl_active_shared = std::move(prev_shared_);
+}
 namespace {
 constexpr int Q8K_BYTES_PER_BLOCK = 292;
 constexpr int Q8K_ELEMS_PER_BLOCK = 256;
@@ -139,13 +195,11 @@ bool plane_ptrs(const WeightRef& r, const std::string& name, Planes& out, std::s
     return true;
 }
 constexpr int TPR = 32;
-bool native_bf16_projections = false;
-bool native_flash_attn_short = false;
 
 void project_bf16(const float* x, const uint16_t* x_bf16, const uint16_t* weights, float* out, int64_t n_in,
                   int64_t n_out, bool split, void* stream) {
     using namespace guild::kernels;
-    if (native_bf16_projections)
+    if (active_exec_state().native_bf16_projections)
         bf16_gemv_fp32_mmvf(x, weights, out, n_in, n_out, stream);
     else if (split)
         bf16_gemv_split(x_bf16, weights, out, n_in, n_out, TPR, stream);
@@ -246,34 +300,31 @@ bool gemv_quantized(const WeightRef& w, const Planes& p, const guild::kernels::S
 } // namespace
 // namespace
 void layer_set_native_bf16(bool enabled) {
-    native_bf16_projections = enabled;
+    active_exec_state().native_bf16_projections = enabled;
 }
 void layer_set_native_flash_attn_short(bool enabled) {
-    native_flash_attn_short = enabled;
-}
-namespace {
-bool g_kv_int8 = false, g_kv_q4 = false, g_kv_hybrid = false, g_kv_int8_rot = false;
+    active_exec_state().native_flash_attn_short = enabled;
 }
 void qsa_set_kv_int8(bool enabled) {
-    g_kv_int8 = enabled;
+    active_exec_state().kv_int8 = enabled;
 }
 void qsa_set_kv_int8_rotate(bool enabled) {
-    g_kv_int8_rot = enabled;
+    active_exec_state().kv_int8_rot = enabled;
 }
 bool qsa_kv_int8() {
-    return g_kv_int8;
+    return active_exec_state().kv_int8;
 }
 void qsa_set_kv_q4(bool enabled) {
-    g_kv_q4 = enabled;
+    active_exec_state().kv_q4 = enabled;
 }
 bool qsa_kv_q4() {
-    return g_kv_q4;
+    return active_exec_state().kv_q4;
 }
 void qsa_set_kv_hybrid(bool enabled) {
-    g_kv_hybrid = enabled;
+    active_exec_state().kv_hybrid = enabled;
 }
 bool qsa_kv_hybrid() {
-    return g_kv_hybrid;
+    return active_exec_state().kv_hybrid;
 }
 uint64_t gdn_buffers_bytes(const ModelGeometry& g) {
     const int64_t C = g.ssm_conv_channels;
@@ -447,8 +498,9 @@ bool gdn_layer(const WeightTable& tables, const ModelGeometry& g, int64_t layer,
     st_begin(layer, 10, stream);
     // Plan v0.3 P3: under the native contract, conv + SiLU + both L2 norms are one kernel, and alpha/beta with their
     // epilogues another (`fused_gdn.hpp`).
-    const bool fused_pre =
-        g_fused_gdn && native_gdn_enabled() && native_bf16_projections && g.ssm_d_conv == 4 && g.ssm_state_size == 128;
+    const auto& exec_st = active_exec_state();
+    const bool fused_pre = exec_st.fused_gdn && native_gdn_enabled() && exec_st.native_bf16_projections &&
+                           g.ssm_d_conv == 4 && g.ssm_state_size == 128;
     if (fused_pre) {
         fused_gdn_conv_l2(b.conv_state, b.qkv, conv_kernel, b.h, (int) C, (int) (2 * g.ssm_k_heads), RMS_EPS, stream);
     } else
@@ -500,7 +552,7 @@ bool gdn_layer(const WeightTable& tables, const ModelGeometry& g, int64_t layer,
         fused_gdn_ab(mixed, (const uint16_t*) w_alpha->data, (const uint16_t*) w_beta->data, dt, ssm_a, b.gate, b.beta,
                      (int) g.n_embd, (int) g.ssm_v_heads, stream);
     } else {
-        if (!native_bf16_projections)
+        if (!exec_st.native_bf16_projections)
             f32_to_bf16_bulk(mixed, b.x_bf16, g.n_embd, stream);
         project_bf16(mixed, b.x_bf16, (const uint16_t*) w_alpha->data, b.alpha, g.n_embd, g.ssm_v_heads, true, stream);
         project_bf16(mixed, b.x_bf16, (const uint16_t*) w_beta->data, b.beta, g.n_embd, g.ssm_v_heads, true, stream);
@@ -522,7 +574,7 @@ bool gdn_layer(const WeightTable& tables, const ModelGeometry& g, int64_t layer,
     st_begin(layer, 13, stream);
     GdnShapes gs{g.ssm_state_size, g.ssm_k_heads, g.ssm_v_heads};
     // Plan v0.3 P3: with the native contract the step and the output norm are one kernel (after the z GEMV).
-    const bool fused_gdn = g_fused_gdn && native_gdn_enabled() && g.ssm_state_size == 128;
+    const bool fused_gdn = exec_st.fused_gdn && native_gdn_enabled() && g.ssm_state_size == 128;
     if (!fused_gdn)
         try {
             if (native_gdn_enabled())
@@ -640,8 +692,9 @@ bool moe_route(const WeightTable& tables, const ModelGeometry& g, int64_t layer,
         err = "moe_route: k must be 1..64";
         return false;
     }
+    const auto& exec_st = active_exec_state();
     // ---- the router's activation.  The router's weight is BF16 and that is the one `ref/moe.py` singles out.
-    if (!native_bf16_projections)
+    if (!exec_st.native_bf16_projections)
         f32_to_bf16_bulk(x, b.x_bf16, g.n_embd, stream);
     // ---- logits = ffn_gate_inp @ bf16(x).  The weight is BF16, so this is `bf16_gemv` and not `s_gemv` -
     //      and using the fp16 activation here instead is the 8.100e-03 error that flips a selection.
@@ -669,7 +722,7 @@ bool moe_route(const WeightTable& tables, const ModelGeometry& g, int64_t layer,
     //      so a CPU pool can start on them while the GPU keeps working.  Both the copy and the ring are
     //      captured into `G[l]` like anything else - a kernel writing mapped pinned memory, which round 209
     //      measured the host seeing 0.050 ms into a 39.8 ms graph.
-    if (db != nullptr && g_publish_kernel) {
+    if (db != nullptr && exec_st.publish_kernel) {
         guild::kernels::doorbell_publish(x, b.ids, b.weights, g.n_embd, k, db->d_x_f, db->d_ids, db->d_weights,
                                          db->d_seq, stream);
     } else if (db != nullptr) {
@@ -699,7 +752,8 @@ bool moe_route_window(const WeightTable& tables, const ModelGeometry& g, int64_t
                       const float* x, float* logits, int32_t* ids, float* weights, int n, void* stream,
                       std::string& err) {
     using namespace guild::kernels;
-    const bool batched = native_bf16_projections && !(native_router_enabled() && g.n_expert == 512 && k == 10) &&
+    const bool batched = active_exec_state().native_bf16_projections &&
+                         !(native_router_enabled() && g.n_expert == 512 && k == 10) &&
                          !std::getenv("GUILD_ROUTE_PER_TOKEN");
     if (!batched || n == 1) {
         for (int t = 0; t < n; ++t) {
@@ -834,16 +888,17 @@ bool moe_finish(const WeightTable& tables, const ModelGeometry& g, int64_t layer
     return moe_combine_parts(g, layer, k, b, parts, out, stream, err);
 }
 bool layer_verify_compatible(std::string& why, const ModelGeometry* g) {
+    const auto& exec_st = active_exec_state();
     // Plan v0.3 P6: the verify window reproduces exactly this configuration's per-token arithmetic.
-    if (!native_bf16_projections)
+    if (!exec_st.native_bf16_projections)
         why = "the native BF16 projections are off";
-    else if ((!g || g->hc > 1) && !g_fused_gr)
+    else if ((!g || g->hc > 1) && !exec_st.fused_gr)
         why = "the fused hyper-connection read is off";
-    else if ((!g || g->n_gdn_layers() > 0) && (!g_fused_gdn || !guild::kernels::native_gdn_enabled()))
+    else if ((!g || g->n_gdn_layers() > 0) && (!exec_st.fused_gdn || !guild::kernels::native_gdn_enabled()))
         why = "the fused native GDN kernels are off";
-    else if ((!g || g->n_qsa_layers() > 0) && (!g_fast_attn || native_flash_attn_short))
+    else if ((!g || g->n_qsa_layers() > 0) && (!exec_st.fast_attn || exec_st.native_flash_attn_short))
         why = "the split-K decode attention is off";
-    else if ((!g || g->idx_q_heads > 0) && !g_fast_select)
+    else if ((!g || g->idx_q_heads > 0) && !exec_st.fast_select)
         why = "the block top-k selection is off";
     else if ((!g || g->idx_q_heads > 0) && !guild::kernels::native_qsa_indexer_enabled())
         why = "the native QSA indexer is off";
@@ -852,28 +907,28 @@ bool layer_verify_compatible(std::string& why, const ModelGeometry* g) {
     return false;
 }
 void layer_set_publish_kernel(bool enabled) {
-    g_publish_kernel = enabled;
+    active_exec_state().publish_kernel = enabled;
 }
 void layer_set_fused_gdn(bool enabled) {
-    g_fused_gdn = enabled;
+    active_exec_state().fused_gdn = enabled;
 }
 void layer_set_fast_select(bool enabled) {
-    g_fast_select = enabled;
+    active_exec_state().fast_select = enabled;
 }
 void layer_set_fast_attn(bool enabled) {
-    g_fast_attn = enabled;
+    active_exec_state().fast_attn = enabled;
 }
 void layer_set_fused_gr(bool enabled) {
-    g_fused_gr = enabled;
+    active_exec_state().fused_gr = enabled;
 }
 bool layer_fused_gr() {
-    return g_fused_gr;
+    return active_exec_state().fused_gr;
 }
 void layer_set_shared_early(bool enabled) {
-    g_shared_early = enabled;
+    active_exec_state().shared_early = enabled;
 }
 bool layer_shared_early() {
-    return g_shared_early;
+    return active_exec_state().shared_early;
 }
 bool moe_layer(const WeightTable& tables, const ModelGeometry& g, int64_t layer, int64_t k, const MoEBuffers& b,
                const float* x, const float* parts, float* out, void* stream, std::string& err, const Doorbell* db) {
@@ -923,10 +978,7 @@ struct Cursor {
 } // namespace
 // namespace
 namespace {
-// KV streaming (docs/kv-streaming-design.md): 0 keeps every cell in VRAM.
-int64_t g_kv_resident = 0;
-bool g_kv_host_only = false;
-uint64_t g_kv_host_bytes = 0;
+std::atomic<uint64_t> g_kv_host_bytes{0};
 
 /// How one state holds its K/V: `mode` as in QsaState::kv_mode, `slots` VRAM pages of `pages` logical ones.
 struct KvPlan {
@@ -951,11 +1003,12 @@ inline int64_t qsa_effective_cap(const ModelGeometry& g, const QsaShapes& s, int
 }
 
 KvPlan kv_plan(const QsaShapes& s, int64_t max_cells, int64_t ring_cells, bool is_dense = false) {
+    const auto& exec_st = active_exec_state();
     KvPlan p;
     p.pages = (max_cells + s.page_size - 1) / s.page_size;
     p.slots = p.pages;
     p.pooled_rows = max_cells / s.idx_block + 2;
-    if ((!g_kv_host_only && g_kv_resident <= 0) || ring_cells < 0)
+    if ((!exec_st.kv_host_only && exec_st.kv_resident <= 0) || ring_cells < 0)
         return p; // -1: always fully resident
     // A/B only: GUILD_KV_RING_OFF keeps the drafter fully resident, GUILD_KV_MAIN_OFF the main layers
     static const bool ring_off = std::getenv("GUILD_KV_RING_OFF") != nullptr;
@@ -969,14 +1022,14 @@ KvPlan kv_plan(const QsaShapes& s, int64_t max_cells, int64_t ring_cells, bool i
             p.slots = r;
             p.pooled_rows = 2;
         } // the drafter has no indexer
-    } else if (g_kv_host_only) {
+    } else if (exec_st.kv_host_only) {
         // Selections contain whole indexer blocks plus the threshold/tail blocks. The bounded pool is shared by
         // the main layers; its size depends only on selection width and the largest legal verify window. The
         // clock resolver requires at least its 1,024-thread block's worth of slots, even for a short context.
         p.mode = 3;
         p.slots = staging_slots(s, is_dense, max_cells);
     } else {
-        const int64_t r = (std::max(g_kv_resident, qsa_kv_resident_min()) + s.page_size - 1) / s.page_size;
+        const int64_t r = (std::max(exec_st.kv_resident, qsa_kv_resident_min()) + s.page_size - 1) / s.page_size;
         if (r < p.pages) {
             p.mode = 1;
             p.slots = r;
@@ -990,7 +1043,7 @@ uint64_t kv_pool_bytes(const QsaShapes& s, int64_t pages, bool hybrid, bool int8
         return rows * (uint64_t) s.head_dim + rows * (uint64_t) (s.head_dim / guild::kernels::KV_Q8_GROUP) * 2 +
                rows * guild::kernels::kv_q4_bytes_per_head((int) s.head_dim) + 64;
     }
-    if (g_kv_q4)
+    if (active_exec_state().kv_q4)
         return (uint64_t) pages * s.page_size * guild::kernels::kv_q4_bytes_per_cell(s) + 64;
     return int8 ? (uint64_t) pages * s.page_size * guild::kernels::kv_q8_bytes_per_cell(s) + 64
                 : (uint64_t) pages * s.n_head_kv * s.page_size * s.head_dim * 2 * 2;
@@ -998,16 +1051,16 @@ uint64_t kv_pool_bytes(const QsaShapes& s, int64_t pages, bool hybrid, bool int8
 } // namespace
 
 void qsa_set_kv_resident(int64_t cells) {
-    g_kv_resident = cells > 0 ? cells : 0;
+    active_exec_state().kv_resident = cells > 0 ? cells : 0;
 }
 int64_t qsa_kv_resident() {
-    return g_kv_resident;
+    return active_exec_state().kv_resident;
 }
 void qsa_set_kv_host_only(bool enabled) {
-    g_kv_host_only = enabled;
+    active_exec_state().kv_host_only = enabled;
 }
 bool qsa_kv_host_only() {
-    return g_kv_host_only;
+    return active_exec_state().kv_host_only;
 }
 int64_t qsa_kv_staging_cells(const ModelGeometry& g, int64_t max_cells) {
     const auto s = qsa_shapes(g);
@@ -1017,12 +1070,12 @@ int64_t qsa_kv_resident_min() {
     return 20480;
 }
 uint64_t qsa_kv_host_bytes() {
-    return g_kv_host_bytes;
+    return g_kv_host_bytes.load(std::memory_order_relaxed);
 }
 void qsa_state_release_host(QsaState& st) {
     if (st.host_allocation) {
         cudaFreeHost(st.host_allocation);
-        g_kv_host_bytes -= st.host_allocation_bytes;
+        g_kv_host_bytes.fetch_sub(st.host_allocation_bytes, std::memory_order_relaxed);
     }
     if (st.host_step)
         cudaFreeHost(st.host_step);
@@ -1037,12 +1090,13 @@ void qsa_state_release_host(QsaState& st) {
 
 uint64_t qsa_state_bytes(const ModelGeometry& g, int64_t max_cells, bool with_rope, int64_t ring_cells,
                          bool own_staging) {
+    const auto& exec_st = active_exec_state();
     const QsaShapes s = qsa_shapes(g);
     const KvPlan p = kv_plan(s, max_cells, ring_cells, g.is_dense_attention());
     uint64_t n = 0;
     if (p.mode != 3 || with_rope || own_staging)
-        n += kv_pool_bytes(s, p.slots, g_kv_hybrid && ring_cells <= 0,
-                           g_kv_int8 || g_kv_hybrid) +
+        n += kv_pool_bytes(s, p.slots, exec_st.kv_hybrid && ring_cells <= 0,
+                           exec_st.kv_int8 || exec_st.kv_hybrid) +
              4 * 16;             // host-only staging pool (shared or per-layer)
     n += (uint64_t) p.pages * 4; // page_table
     if (p.mode == 1 || p.mode == 3)
@@ -1060,15 +1114,16 @@ uint64_t qsa_state_bytes(const ModelGeometry& g, int64_t max_cells, bool with_ro
 
 uint64_t qsa_state_init(const ModelGeometry& g, int64_t max_cells, void* base, QsaState& st, const QsaState* share_rope,
                         int64_t ring_cells, bool own_staging) {
+    const auto& exec_st = active_exec_state();
     const QsaShapes s = qsa_shapes(g);
     const KvPlan p = kv_plan(s, max_cells, ring_cells, g.is_dense_attention());
     const int64_t pages = p.pages;
     Cursor c{(uint8_t*) base};
-    st.kv_int8 = g_kv_int8 && !g_kv_q4;
-    st.kv_q4 = g_kv_q4;
+    st.kv_int8 = exec_st.kv_int8 && !exec_st.kv_q4;
+    st.kv_q4 = exec_st.kv_q4;
     // Hybrid K8V4, main layers only (the drafter's state is created with the globals toggled to INT8 -
     // mtp.cpp). Streamed mode is refused outright; generate.cpp validates it too, this is the backstop.
-    if (g_kv_hybrid && ring_cells <= 0) {
+    if (exec_st.kv_hybrid && ring_cells <= 0) {
         if (p.mode == 1 || p.mode == 3) {
             std::fprintf(stderr, "guild: hybrid K8V4 KV does not support host streaming\n");
             return 0;
@@ -1077,7 +1132,7 @@ uint64_t qsa_state_init(const ModelGeometry& g, int64_t max_cells, void* base, Q
         st.kv_int8 = false;
         st.kv_q4 = false;
     }
-    st.kv_rot = st.kv_q4 || (st.kv_int8 && g_kv_int8_rot); // K8V4 rotates only V (below)
+    st.kv_rot = st.kv_q4 || (st.kv_int8 && exec_st.kv_int8_rot); // K8V4 rotates only V (below)
     st.kv_mode = p.mode;
     st.n_slots = p.slots;
     const uint64_t rows = (uint64_t) p.slots * s.n_head_kv * s.page_size; // VRAM rows: the slots
@@ -1167,11 +1222,12 @@ uint64_t qsa_state_init(const ModelGeometry& g, int64_t max_cells, void* base, Q
                              "guild: KV streaming: cannot pin %.2f GiB of RAM for a layer's KV copy "
                              "(%.2f GiB pinned so far) - lower the context, or run without --kv-resident (under "
                              "WSL the driver pins only about 1 GiB in all)\n",
-                             (double) bytes / 1073741824.0, (double) g_kv_host_bytes / 1073741824.0);
+                             (double) bytes / 1073741824.0,
+                             (double) g_kv_host_bytes.load(std::memory_order_relaxed) / 1073741824.0);
             qsa_state_release_host(st);
             return 0;
         }
-        g_kv_host_bytes += bytes;
+        g_kv_host_bytes.fetch_add(bytes, std::memory_order_relaxed);
         st.host_allocation = h;
         st.host_allocation_bytes = bytes;
         Cursor hc{d};
@@ -1528,12 +1584,13 @@ bool qsa_layer(const WeightTable& tables, const ModelGeometry& g, int64_t layer,
               std::to_string((int) w_idxk->kind) + " and " + std::to_string((int) w_idxq->kind);
         return false;
     }
+    const auto& exec_st = active_exec_state();
     // ---- 1. the three activation formats, once each
     if (!w_attnk->native_data || !w_attnv->native_data || !w_attnq->native_data) {
         quantize_q8_K(x, b.x_q8k, g.n_embd, stream);
         quantize_q8_0(x, b.x_q8_0, g.n_embd, stream);
     }
-    if (!native_bf16_projections)
+    if (!exec_st.native_bf16_projections)
         f32_to_bf16_bulk(x, b.x_bf16, g.n_embd, stream);
     // ---- 2. the step state: ONE H2D carries every per-token count the kernels need.  Nothing below passes a
     // per-token scalar as an argument, which is what keeps this layer capturable.
@@ -1548,7 +1605,7 @@ bool qsa_layer(const WeightTable& tables, const ModelGeometry& g, int64_t layer,
             st.host_pos[h] = (int32_t) (pos_base + pos);
         int32_t* m_step = nullptr;
         int32_t* m_pos = nullptr;
-        if (g_publish_kernel && cudaHostGetDevicePointer((void**) &m_step, st.host_step, 0) == cudaSuccess &&
+        if (exec_st.publish_kernel && cudaHostGetDevicePointer((void**) &m_step, st.host_step, 0) == cudaSuccess &&
             cudaHostGetDevicePointer((void**) &m_pos, st.host_pos, 0) == cudaSuccess) {
             guild::kernels::copy_i32_from_mapped(st.step, m_step, guild::kernels::kStepCount, stream);
             guild::kernels::copy_i32_from_mapped(st.pos_dev, m_pos, g.n_head, stream);
@@ -1678,7 +1735,7 @@ bool qsa_layer(const WeightTable& tables, const ModelGeometry& g, int64_t layer,
     // graph, and the kernels guard for the surplus.
     const int64_t max_blocks = (st.max_cells / s.idx_block) + 2;
     if (g.idx_q_heads > 0) {
-        if (g_fast_select) {
+        if (exec_st.fast_select) {
             // Plan v0.3 P7: block-level FP32 scores and a radix selection over blocks (qsa_select.hpp).
             qsa_block_scores(st.idx_pooled, st.idx_dead, b.q_idx, st.step, 1, max_blocks, s, b.cell_scores, stream);
             qsa_block_topk(b.cell_scores, st.step, 1, max_blocks, cap, s, b.ids, stream);
@@ -1691,7 +1748,7 @@ bool qsa_layer(const WeightTable& tables, const ModelGeometry& g, int64_t layer,
     qsa_kv_resolve(st, g, b.ids, st.step, 1, cap, stream);
     if (st.kv_rot)
         guild::kernels::fwht256_inplace_cuda(b.qcur, g.n_head, stream); // <Hq, Hk> = <q, k>
-    if (g_fast_attn && !native_flash_attn_short && dump == nullptr) {
+    if (exec_st.fast_attn && !exec_st.native_flash_attn_short && dump == nullptr) {
         const guild::kernels::QsaAttnPools pools = qsa_attn_pools(st);
         guild::kernels::qsa_decode_attn_step(b.qcur, pools, b.ids, st.step, cap, s, b.attn_scratch, b.attn, stream);
     } else {
@@ -1709,7 +1766,7 @@ bool qsa_layer(const WeightTable& tables, const ModelGeometry& g, int64_t layer,
         else
             kv_gather_step(st.k_pool, st.v_pool, st.page_table, b.ids, st.step, cap, s, b.k_scratch, b.v_scratch,
                            stream);
-        if (native_flash_attn_short) {
+        if (exec_st.native_flash_attn_short) {
             if (st.max_cells < 1 || st.max_cells > 256 || !st.attention_status || !st.host_step) {
                 err = v.name("native_flash_attn") +
                       ": short adapter requires context <=256 and persistent status storage";
@@ -2021,8 +2078,9 @@ bool block_layer_pre(const WeightTable& tables, const ModelGeometry& g, int64_t 
     //
     // So the driver calls `ple_stage_token` once per token, BEFORE the graphs, and what is captured here is only
     // the device half: `ple_block` reading `emb_dev`, and the history shift.
-    const bool fused =
-        g_fused_gr && stage_prefix == 0 && half == 0 && guild::kernels::fused_gr_supported(g.n_embd, g.hc, g.hc_lr);
+    const auto& exec_st = active_exec_state();
+    const bool fused = exec_st.fused_gr && stage_prefix == 0 && half == 0 &&
+                       guild::kernels::fused_gr_supported(g.n_embd, g.hc, g.hc_lr);
     // layer-1's FFN write has not been applied to R yet - unless a control vector follows it, which needs R
     bool pending_ffn = fused && layer > 0 && !guild::kernels::cvec().covers(layer - 1);
     if (ple != nullptr && ple->ready() && layer == 1 && (half == 0 || half == 1)) {
@@ -2237,7 +2295,7 @@ bool block_layer_pre(const WeightTable& tables, const ModelGeometry& g, int64_t 
                 return false;
         }
         // Plan v0.3 P3: after the ring, so the GPU computes the shared expert while the host runs the pool.
-        if (g_shared_early && !moe_shared(tables, g, layer, mb, bb.mixed, stream, err))
+        if (exec_st.shared_early && !moe_shared(tables, g, layer, mb, bb.mixed, stream, err))
             return false;
     }
     // Every stage this call was asked to run has run.  There is no other way out: the old `return ok;`
@@ -2288,12 +2346,13 @@ uint64_t ple_run_scratch_bytes() {
 
 bool block_layer_post(const WeightTable& tables, const ModelGeometry& g, int64_t layer, int64_t k, const MoEBuffers& mb,
                       const BlockBuffers& bb, const float* parts, void* stream, std::string& err) {
+    const auto& exec_st = active_exec_state();
     const guild::kernels::GrShapes gs{g.n_embd, g.hc, g.hc_lr};
     // `bb.mixed` and `bb.inject` are what `block_layer_pre` left, and NOTHING between the two calls may touch
     // them - that is what makes `post[l]` safe to launch after the host has run the pool.
     st_begin(layer, 5, stream);
-    if (g_shared_early ? !moe_combine_parts(g, layer, k, mb, parts, bb.block_out, stream, err)
-                       : !moe_finish(tables, g, layer, k, mb, bb.mixed, parts, bb.block_out, stream, err))
+    if (exec_st.shared_early ? !moe_combine_parts(g, layer, k, mb, parts, bb.block_out, stream, err)
+                             : !moe_finish(tables, g, layer, k, mb, bb.mixed, parts, bb.block_out, stream, err))
         return false;
     st_end(layer, 5, stream);
     dump_half(bb, g, layer, bb.block_out, (uint64_t) g.n_embd, g.n_embd, stream);
@@ -2303,7 +2362,7 @@ bool block_layer_post(const WeightTable& tables, const ModelGeometry& g, int64_t
     try {
         if (g.hc == 1) {
             guild::kernels::add_inplace(bb.R, bb.block_out, g.n_embd, stream);
-        } else if (!(g_fused_gr && guild::kernels::fused_gr_supported(g.n_embd, g.hc, g.hc_lr))) {
+        } else if (!(exec_st.fused_gr && guild::kernels::fused_gr_supported(g.n_embd, g.hc, g.hc_lr))) {
             gr_write(bb.R, bb.block_out, bb.inject, gs, bb.R, stream);
             if (steer)
                 guild::kernels::cvec_apply(bb.R, layer, 1, g.hc * g.n_embd, nullptr, 0, nullptr, 0, false, stream);

@@ -64,7 +64,10 @@ int parse_share_staging_env(const char* val) {
 } // namespace
 
 void session_set_kv_share_staging(int mode) {
-    g_kv_share_staging_mode.store(mode, std::memory_order_relaxed);
+    if (auto* st = active_model_execution_state())
+        st->kv_share_staging_mode = mode;
+    else
+        g_kv_share_staging_mode.store(mode, std::memory_order_relaxed);
 }
 
 bool session_own_qsa_staging(const ModelGeometry& g, int64_t max_cells, int64_t layer_lo, int64_t layer_hi) {
@@ -73,7 +76,8 @@ bool session_own_qsa_staging(const ModelGeometry& g, int64_t max_cells, int64_t 
         return false;
     if (env_mode == 0)
         return true;
-    const int configured = g_kv_share_staging_mode.load(std::memory_order_relaxed);
+    const int configured = active_model_execution_state() ? active_model_execution_state()->kv_share_staging_mode
+                                                          : g_kv_share_staging_mode.load(std::memory_order_relaxed);
     if (configured == 1)
         return false;
     if (configured == 0)
@@ -173,6 +177,12 @@ uint64_t session_init(const ModelGeometry& g, int64_t max_cells, int64_t k, void
     s.k = k;
     s.layer_lo = layer_lo;
     s.layer_hi = layer_hi;
+    if (auto shared_st = active_model_execution_state_shared()) {
+        s.exec_state = std::move(shared_st);
+    } else if (auto* raw_st = active_model_execution_state()) {
+        s.exec_state = std::make_shared<ModelExecutionState>(*raw_st);
+    }
+    ScopedModelExecution exec_scope(s.exec_state);
     int64_t q_lo = 0;
     for (int64_t l = 0; l < layer_lo; ++l)
         if (is_qsa_layer(g, l))
@@ -235,6 +245,7 @@ uint64_t session_init(const ModelGeometry& g, int64_t max_cells, int64_t k, void
 }
 
 void session_release(SessionState& s) {
+    ScopedModelExecution exec_scope(s.exec_state);
     for (int64_t j = 0; s.qsa_states != nullptr && j < s.qsa_alloc; ++j)
         if (s.qsa_states[j].owns_rope) {
             guild::kernels::rope_table_release(s.qsa_states[j].cos_tab);
@@ -243,6 +254,7 @@ void session_release(SessionState& s) {
 }
 
 void session_zero(SessionState& s, const ModelGeometry& g, const float* R_init, void* stream) {
+    ScopedModelExecution exec_scope(s.exec_state);
     cudaStream_t cs = (cudaStream_t) stream;
     // the residual: `hc` copies of the one vector a caller hands in.  A real sequence's first token is the
     // embedding broadcast to every stream, which is the reference's own initial condition.
@@ -301,6 +313,7 @@ void stage_token(const ModelGeometry& g, int64_t pos, int32_t pos_base, SessionS
 
 bool session_capture(const WeightTable& tables, const ModelGeometry& g, SessionState& s, const float* parts,
                      SessionGraphs& gr, std::string& err, bool split, int64_t layer_lo, int64_t layer_hi) {
+    ScopedModelExecution exec_scope(s.exec_state);
     if (gr.captured)
         return true;
     if (layer_hi < 0 || layer_hi > g.n_layers)
@@ -747,6 +760,7 @@ void SessionLoopScratch::free() {
 bool session_loop(const ModelGeometry& g, int64_t pos, int32_t pos_base, SessionState& s, SessionGraphs& gr,
                   PoolFn pool, HitFn hits, void* user, bool overlap, void* stream, std::string& err, float* dump_layers,
                   SessionLoopScratch* scratch) {
+    ScopedModelExecution exec_scope(s.exec_state);
     if (!gr.captured || gr.n != g.n_layers) {
         err = "session_loop: not captured";
         return false;
@@ -981,6 +995,7 @@ bool session_loop(const ModelGeometry& g, int64_t pos, int32_t pos_base, Session
 
 bool session_token(const WeightTable& tables, const ModelGeometry& g, int64_t pos, int32_t pos_base, SessionState& s,
                    const float* parts, void* stream, bool sync_every_layer, std::string& err) {
+    ScopedModelExecution exec_scope(s.exec_state);
     cudaStream_t cs = (cudaStream_t) stream;
     int64_t qsa_index = 0;
     int64_t gdn_index = 0;
@@ -1031,6 +1046,7 @@ namespace guild::core {
 bool session_capture_token(const WeightTable& tables, const ModelGeometry& g, SessionState& s, float* parts_dev,
                            const float* y_miss_host, size_t parts_bytes, TokenGraph& tg, std::string& err,
                            const TokenHits* hits) {
+    ScopedModelExecution exec_scope(s.exec_state);
     if (hits != nullptr && !hits->on()) {
         err = "session_capture_token: incomplete hit configuration";
         return false;
@@ -1123,6 +1139,7 @@ bool session_capture_token(const WeightTable& tables, const ModelGeometry& g, Se
 
 bool session_run_token(const ModelGeometry& g, int64_t pos, int32_t pos_base, SessionState& s, TokenGraph& tg,
                        PoolFn pool, void* user, float* y_miss_host, void* stream, std::string& err) {
+    ScopedModelExecution exec_scope(s.exec_state);
     if (!tg.captured) {
         err = "session_run_token: not captured";
         return false;

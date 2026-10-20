@@ -78,6 +78,8 @@ struct ExecutionPlan {
     KvPrecision kv_format = KvPrecision::FP16;
     KvMode kv_mode = KvMode::HostOnly;
     bool host_only_kv = false;
+    int64_t kv_resident = 0;  ///< Per-model resident KV cell cap (0 = full/host-only per kv_mode).
+    bool shared_early = true; ///< Per-model MoE shared-expert scheduling policy.
 
     // KV Cache byte sizing
     uint64_t full_host_kv_bytes = 0;

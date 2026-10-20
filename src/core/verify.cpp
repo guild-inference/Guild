@@ -357,6 +357,7 @@ Verifier::~Verifier() {
 
 bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState& ss, const VerifyHits& hits,
                     const NativeHead* head, int max_t, std::string& err) {
+    ScopedModelExecution exec_scope(ss.exec_state);
     g_diag_verifier.store(this);
     diag_verify_fn().store(&diag_active_verifier);
     for (auto& slot : g_live) {
@@ -700,6 +701,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
     const ModelGeometry& g = *g_;
     const WeightTable& wt = *wt_;
     SessionState& ss = *ss_;
+    ScopedModelExecution exec_scope(ss.exec_state);
     const int64_t N = g.n_embd, HC = g.hc, K = ss.k, C = g.ssm_conv_channels, ZV = g.ssm_value_dim;
     const int64_t HV = g.ssm_v_heads, HK = g.ssm_k_heads, NH = g.n_head, HD = g.head_dim, NKV = g.n_head_kv;
     const int64_t IQ = g.idx_q_heads, ID = g.idx_key_dim, NE = g.n_expert, MT = max_t_;
@@ -1659,6 +1661,7 @@ bool Verifier::capture(int T, std::string& err) {
 bool Verifier::capture_commit(std::string& err) {
     if (commit_exec_ != nullptr)
         return true;
+    ScopedModelExecution exec_scope(ss_ ? ss_->exec_state : nullptr);
     const Clock::time_point cap_t0 = Clock::now();
     using namespace guild::kernels;
     const ModelGeometry& g = *g_;
@@ -1811,6 +1814,7 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
         err = "verify: uninitialized verifier or invalid input";
         return false;
     }
+    ScopedModelExecution exec_scope(ss_->exec_state);
     last_batch_ = false;
     if (T < 1 || T > max_t_) {
         err = "verify: window size out of range";
