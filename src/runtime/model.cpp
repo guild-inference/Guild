@@ -334,17 +334,39 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
             const bool want_zero_copy = (zcopy_env != nullptr && std::atoi(zcopy_env) != 0) &&
                                         impl->gpack->has_embedded_experts() &&
                                         !impl->gexec->has_section(gexec::GExecSectionKind::PackedExpertsBlob);
-            const bool gpu_decode_experts = (plan.routed_experts_in_gpu != 0) || (plan.pcie_expert_fraction > 0.0);
-            if ((want_zero_copy || gpu_decode_experts || plan.pcie_expert_fraction < 0 || plan.expert_cache_auto) &&
+            const char* pin_env = std::getenv("GUILD_PIN_EXPERTS");
+            const bool force_pin = (pin_env != nullptr && std::atoi(pin_env) != 0);
+            const uint64_t est_ram_budget =
+                plan.expert_ram_budget_bytes ? std::min(plan.expert_ram_budget_bytes, impl->gpack->total_expert_bytes())
+                : plan.routed_expert_total_bytes ? plan.routed_experts_ram_bytes
+                                                 : impl->gpack->total_expert_bytes();
+            const bool auto_pcie_pin = (plan.pcie_expert_fraction < 0.0) && (est_ram_budget > 0) &&
+                                       (est_ram_budget <= (24ull << 30)) &&
+                                       (impl->gexec->identity().hardware.numa_nodes <= 1);
+            const bool gpu_decode_experts =
+                (plan.routed_experts_in_gpu != 0) || (plan.pcie_expert_fraction > 0.0) || force_pin || auto_pcie_pin;
+            const bool fused_pf_env =
+                (std::getenv("GUILD_PF_FUSED") != nullptr && std::atoi(std::getenv("GUILD_PF_FUSED")) != 0);
+            if ((want_zero_copy || gpu_decode_experts || plan.expert_cache_auto || fused_pf_env) &&
                 kernels::cpu::is_gexec_interleaved_impl(query.frozen_impl_id.c_str())) {
-                sp.gexec_fallback_reason =
-                    "interleaved expert plan is incompatible with the requested mmap/GPU expert path";
-                std::fprintf(stderr, "guild runtime: GEXEC fallback to GPACK (%s)\n", sp.gexec_fallback_reason.c_str());
-                impl->gexec.reset();
-                sp.gexec_active = false;
-                sp.container_format = "gpack.v1";
-                query.frozen_impl_id.clear();
-                query.frozen_impl_version = 0;
+                if (want_zero_copy || gpu_decode_experts || plan.expert_cache_auto) {
+                    sp.gexec_fallback_reason =
+                        "interleaved expert plan is incompatible with the requested mmap/GPU expert path";
+                    std::fprintf(stderr, "guild runtime: GEXEC fallback to GPACK (%s)\n",
+                                 sp.gexec_fallback_reason.c_str());
+                    impl->gexec.reset();
+                    sp.gexec_active = false;
+                    sp.container_format = "gpack.v1";
+                    query.frozen_impl_id.clear();
+                    query.frozen_impl_version = 0;
+                } else if (!impl->gexec->has_section(gexec::GExecSectionKind::PackedExpertsBlob)) {
+                    // Preserve GEXEC single-barrier fused pipeline with PortableContiguous layout when fused prefill is
+                    // active
+                    if (query.frozen_impl_id == kernels::cpu::kGExecInterleavedAvx512ImplId)
+                        query.frozen_impl_id = kernels::cpu::kGExecFusedAvx512ImplId;
+                    else if (query.frozen_impl_id == kernels::cpu::kGExecInterleavedAvx2ImplId)
+                        query.frozen_impl_id = kernels::cpu::kGExecFusedAvx2ImplId;
+                }
             }
         }
         kernels::KernelBinding selected;
@@ -829,8 +851,10 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
     {
         size_t free_vram = 0, total_vram = 0;
         if (cudaMemGetInfo(&free_vram, &total_vram) == cudaSuccess && free_vram > 0) {
-            const uint64_t reserve_needed =
-                (plan.safety_reserve_bytes ? plan.safety_reserve_bytes : (512ull << 20)) + (512ull << 20);
+            const uint64_t mtp_margin = (!paths.mtp_dir.empty() && plan.mtp_spec_tokens > 0)
+                                            ? (plan.mtp_bytes ? plan.mtp_bytes : (896ull << 20))
+                                            : 0;
+            const uint64_t reserve_needed = mtp_margin + std::max<uint64_t>(plan.prompt_scratch_bytes, 1024ull << 20);
             if (free_vram < sbytes + reserve_needed &&
                 core::session_own_qsa_staging(impl->g, impl->config.max_context)) {
                 core::session_set_kv_share_staging(1);
@@ -943,7 +967,7 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
             }
         }
         if (impl->g.hc == 1 && impl->g.ssm_state_size == 128 && impl->g.ssm_d_conv == 4 && impl->g.head_dim == 256 &&
-            kernels::cpu::expert_layout().native && plan.kv_format == memory::KvPrecision::FP16) {
+            kernels::cpu::expert_layout().native) {
             impl->batched_prefill = std::make_unique<BatchedPrefill>();
             if (!impl->batched_prefill->init(impl->wt, impl->g, impl->ss, *impl->srcp, *impl->pool, impl->main_stream,
                                              error_msg, batch, impl->xcache.valid() ? &impl->xcache : nullptr))

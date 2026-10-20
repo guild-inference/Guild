@@ -1327,10 +1327,10 @@ guild::kernels::QsaAttnPools qsa_attn_pools(const QsaState& st) {
 }
 
 void qsa_kv_resolve(const QsaState& st, const ModelGeometry& g, const int32_t* ids, const int32_t* steps, int64_t n_q,
-                    int64_t cap, void* stream) {
+                    int64_t cap, void* stream, bool invalidate_shared) {
     if (st.kv_mode != 1 && st.kv_mode != 3)
         return;
-    if (st.kv_mode == 3 && st.shares_staging)
+    if (invalidate_shared && st.kv_mode == 3 && st.shares_staging)
         guild::kernels::kv_stream_invalidate(st.map, stream);
     guild::kernels::kv_stream_resolve(st.map, qsa_attn_pools(st), st.host, qsa_kv_format(st), ids, steps, n_q, cap,
                                       qsa_shapes(g), stream);

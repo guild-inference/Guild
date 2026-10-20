@@ -42,17 +42,16 @@ namespace {
 
 void test_scoped_expert_layout_concurrency() {
     std::cout << "[multi_model_isolation_test] 1. ScopedExpertLayout concurrent thread isolation...\n";
-    using guild::kernels::cpu::ExpertLayout;
-    using guild::kernels::cpu::ScopedExpertLayout;
     using guild::kernels::cpu::expert_layout;
     using guild::kernels::cpu::expert_layout_set_gate_up_interleaved;
+    using guild::kernels::cpu::ExpertLayout;
+    using guild::kernels::cpu::ScopedExpertLayout;
 
     std::atomic<bool> start_flag{false};
     std::vector<std::thread> threads;
     for (int t = 0; t < 6; ++t) {
         threads.emplace_back([t, &start_flag]() {
-            while (!start_flag.load(std::memory_order_acquire)) {
-            }
+            while (!start_flag.load(std::memory_order_acquire)) {}
             for (int iter = 0; iter < 500; ++iter) {
                 ExpertLayout local{};
                 local.native = (t % 2 == 0);
@@ -104,8 +103,7 @@ void test_model_execution_state_concurrency() {
             auto state = std::make_shared<core::ModelExecutionState>(core::ModelExecutionState::snapshot_current());
             const core::NativeEmbed* fake_embed =
                 reinterpret_cast<const core::NativeEmbed*>(uintptr_t(0x10000 + (t + 1) * 64));
-            while (!go.load(std::memory_order_acquire)) {
-            }
+            while (!go.load(std::memory_order_acquire)) {}
             for (int iter = 0; iter < 300; ++iter) {
                 core::ScopedModelExecution scope(state);
                 const bool odd = ((t + iter) % 2 == 1);
@@ -252,8 +250,8 @@ void test_real_multi_model_coexistence() {
     planA.kv_resident = 0;
 
     // Configure Model B: 4K context, HostOnly INT8 KV, shared_early=false, aggressive Linear RoPE scaling
-    // (freq_base=1.01, factor=1000.0) AND a GEXEC artifact selecting interleaved gate/up rows (when model.gpack exists),
-    // proving that any cross-model configuration or GEXEC layout leak between A and B is immediately caught!
+    // (freq_base=1.01, factor=1000.0) AND a GEXEC artifact selecting interleaved gate/up rows (when model.gpack
+    // exists), proving that any cross-model configuration or GEXEC layout leak between A and B is immediately caught!
     runtime::ModelPaths pathsB = pathsA;
     auto descB = manifest.to_descriptor();
     descB.rope.type = "linear";
@@ -282,8 +280,8 @@ void test_real_multi_model_coexistence() {
         artifact::GPackReader gpack_reader;
         std::string gerr;
         if (gpack_reader.open(gpack_ext.string(), gerr, false)) {
-            const int64_t pf_batch = planB.prefill_batch > 0 ? planB.prefill_batch
-                                                             : (planB.prefill_chunk > 0 ? planB.prefill_chunk : 512);
+            const int64_t pf_batch =
+                planB.prefill_batch > 0 ? planB.prefill_batch : (planB.prefill_chunk > 0 ? planB.prefill_chunk : 512);
             const auto gid = gexec::build_current_gexec_identity(gpack_reader, "int8", "host_only", 4096, pf_batch,
                                                                  planB.mtp_spec_tokens);
             gexec::GExecAutotuneTable at{};

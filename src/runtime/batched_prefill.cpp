@@ -14,6 +14,8 @@
 #include "guild/kernels/native_moe.hpp"
 #include "guild/kernels/verify_kernels.hpp"
 #include "guild/kernels/rope.hpp"
+#include "guild/kernels/kv_q4.hpp"
+#include "guild/kernels/kv_q8.hpp"
 #include "guild/kernels/qsa_decode_attn.hpp"
 #include "guild/kernels/shared_expert.hpp"
 #include "guild/kernels/elementwise.hpp"
@@ -34,7 +36,7 @@ namespace {
 using namespace guild::kernels;
 constexpr int kProjectionRows = kVerifyMaxT;
 constexpr int kMaxBatch = 512;
-constexpr int kAttentionQueries = 8; // bounded split-K scratch, independent of prompt length
+constexpr int kAttentionQueries = 32; // bounded split-K scratch, independent of prompt length
 constexpr float kEps = 1e-6f;
 using Clock = std::chrono::steady_clock;
 double ms(Clock::time_point a) {
@@ -311,14 +313,24 @@ bool BatchedPrefill::init(const core::WeightTable& wt, const core::ModelGeometry
     m.alloc(m.gu, size_t(kProjectionRows) * F);
     m.alloc(m.go, size_t(kProjectionRows) * N);
     m.alloc(m.gq, size_t(kProjectionRows) * std::max(N, F) / 32 * 36);
-    m.alloc(m.htokens, B, true);
-    m.alloc(m.hpositions, B * m.pos_stride, true);
-    m.alloc(m.hsteps, B * kStepCount, true);
-    m.alloc(m.hkeep, 1, true);
-    m.alloc(m.hact, B * N, true);
-    m.alloc(m.hparts, B * K * N, true);
-    m.alloc(m.hids, B * K, true);
-    m.alloc(m.hweights, B * K, true);
+    {
+        struct HostAllocAffinity {
+            kernels::cpu::ThreadAffinity prev;
+            explicit HostAllocAffinity(int core) : prev(kernels::cpu::pin_current_thread_if_allowed(core)) {
+            }
+            ~HostAllocAffinity() {
+                kernels::cpu::restore_thread_affinity(prev);
+            }
+        } local_alloc(pool.host_core());
+        m.alloc(m.htokens, B, true);
+        m.alloc(m.hpositions, B * m.pos_stride, true);
+        m.alloc(m.hsteps, B * kStepCount, true);
+        m.alloc(m.hkeep, 1, true);
+        m.alloc(m.hact, B * N, true);
+        m.alloc(m.hparts, B * K * N, true);
+        m.alloc(m.hids, B * K, true);
+        m.alloc(m.hweights, B * K, true);
+    }
     std::vector<int32_t> identity(size_t(kAttentionQueries) * m.cap);
     for (size_t i = 0; i < identity.size(); ++i)
         identity[i] = int(i % m.cap);
@@ -450,12 +462,38 @@ bool BatchedPrefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::st
                 m.norm(m.k, need(lv, "attn_k_norm.weight"), m.k, HD, T * NK);
                 m.fns.rope_apply(m.q, m.q, T * NH, HD, int(s.n_rot), rope_scaling(), m.positions, cs);
                 m.fns.rope_apply(m.k, m.k, T * NK, HD, int(s.n_rot), rope_scaling(), m.positions + T * NH, cs);
+                if (st.kv_rot) {
+                    fwht256_inplace_cuda(m.k, int64_t(T) * NK, cs);
+                    fwht256_inplace_cuda(m.v, int64_t(T) * NK, cs);
+                    fwht256_inplace_cuda(m.q, int64_t(T) * NH, cs);
+                } else if (st.kv_hybrid) {
+                    fwht256_inplace_cuda(m.v, int64_t(T) * NK, cs);
+                }
+                if (st.kv_mode == 3 && !st.shares_staging) {
+                    // Claim new staging slots before kv_append_step so new cells are written directly into VRAM
+                    // and st.host instead of round-tripping through st.host over PCIe.
+                    core::qsa_kv_resolve(st, g, m.ident, m.steps + (T - 1) * kStepCount, 1, m.cap, cs);
+                }
                 for (int t = 0; t < T; ++t) {
                     float* kt = m.k + size_t(t) * NK * HD;
-                    kv_append_step(st.k_pool, st.v_pool, st.page_table, m.steps + t * kStepCount, kt,
-                                   m.v + size_t(t) * NK * HD, s, cs, &st.host);
+                    float* vt = m.v + size_t(t) * NK * HD;
+                    const int32_t* step_t = m.steps + t * kStepCount;
+                    if (st.kv_hybrid) {
+                        kv_append_q8_step(st.k_q, st.k_q, st.k_scale, st.k_scale, st.page_table, step_t, kt, kt, s, cs,
+                                          nullptr);
+                        kv_append_q4_step(st.v_q4, st.v_q4, st.page_table, step_t, vt, vt, s, cs, nullptr);
+                    } else if (st.kv_q4) {
+                        kv_append_q4_step(st.k_q4, st.v_q4, st.page_table, step_t, kt, vt, s, cs, &st.host);
+                    } else if (st.kv_int8) {
+                        kv_append_q8_step(st.k_q, st.v_q, st.k_scale, st.v_scale, st.page_table, step_t, kt, vt, s, cs,
+                                          &st.host);
+                    } else {
+                        kv_append_step(st.k_pool, st.v_pool, st.page_table, step_t, kt, vt, s, cs, &st.host);
+                    }
                 }
-                core::qsa_kv_resolve(st, g, m.ident, m.steps + (T - 1) * kStepCount, 1, m.cap, cs);
+                if (!(st.kv_mode == 3 && !st.shares_staging)) {
+                    core::qsa_kv_resolve(st, g, m.ident, m.steps + (T - 1) * kStepCount, 1, m.cap, cs);
+                }
                 for (int t = 0; t < T; t += kAttentionQueries) {
                     const int count = std::min(kAttentionQueries, T - t);
                     const int active_cap = std::max(1, int(p0 + t + count));
@@ -463,6 +501,8 @@ bool BatchedPrefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::st
                                           m.steps + t * kStepCount, active_cap, s, m.scratch,
                                           m.attn + size_t(t) * NH * HD, count, cs, 0);
                 }
+                if (st.kv_rot || st.kv_hybrid)
+                    fwht256_inplace_cuda(m.attn, int64_t(T) * NH, cs);
                 native_qsa_gate_apply(m.attn, m.qfull, m.attn, T * NH, HD, cs);
                 m.stamp(2);
                 quant(m.fns, m.attn, m.xq, NH * HD, T, cs);

@@ -12,6 +12,7 @@
 #include "guild/kernels/native_ple_postops.hpp"
 #include "guild/kernels/iq_kernels.hpp"
 #include "guild/kernels/cpu/expert_layout.hpp"
+#include "guild/kernels/cpu/pool.hpp"
 #include "guild/kernels/qsa.hpp"
 #include "guild/kernels/kv_stream.hpp"
 #include "guild/kernels/cvec.hpp"
@@ -360,15 +361,26 @@ struct Stager {
         pinned.assign((size_t) kRing, 0);
         dma_done.assign((size_t) kRing, nullptr);
         pageable.resize(kRing);
-        for (int i = 0; i < kRing; ++i) {
-            pinned[i] = cudaHostAlloc((void**) &buf[i], blob_bytes, cudaHostAllocDefault) == cudaSuccess;
-            if (!pinned[i]) {
-                cudaGetLastError();
-                pageable[(size_t) i].resize(blob_bytes);
-                buf[i] = pageable[(size_t) i].data();
+        struct HostAllocAffinity {
+            kernels::cpu::ThreadAffinity prev;
+            HostAllocAffinity() : prev(kernels::cpu::pin_current_thread_if_allowed(0)) {
             }
-            if (cudaEventCreateWithFlags(&dma_done[i], cudaEventDisableTiming) != cudaSuccess)
-                return false;
+            ~HostAllocAffinity() {
+                kernels::cpu::restore_thread_affinity(prev);
+            }
+        };
+        {
+            HostAllocAffinity local_alloc;
+            for (int i = 0; i < kRing; ++i) {
+                pinned[i] = cudaHostAlloc((void**) &buf[i], blob_bytes, cudaHostAllocDefault) == cudaSuccess;
+                if (!pinned[i]) {
+                    cudaGetLastError();
+                    pageable[(size_t) i].resize(blob_bytes);
+                    buf[i] = pageable[(size_t) i].data();
+                }
+                if (cudaEventCreateWithFlags(&dma_done[i], cudaEventDisableTiming) != cudaSuccess)
+                    return false;
+            }
         }
         cudaGetDevice(&device);
         for (int t = 0; t < nthreads; ++t)
@@ -1003,6 +1015,14 @@ bool Prefill::init(const core::WeightTable& wt, const core::ModelGeometry& g, co
     m.cnt.resize(m.g->n_expert);
     m.off.resize(m.g->n_expert + 1);
     {
+        struct HostAllocAffinity {
+            kernels::cpu::ThreadAffinity prev;
+            HostAllocAffinity() : prev(kernels::cpu::pin_current_thread_if_allowed(0)) {
+            }
+            ~HostAllocAffinity() {
+                kernels::cpu::restore_thread_affinity(prev);
+            }
+        } local_alloc;
         const size_t need = 3 * T * K + (size_t) (2 * (m.g->n_expert + m.g->n_expert / MMQ_GROUP + 2));
         const char* gc = std::getenv("GUILD_GROUP_COPY");
         if (m.grp_n < need && !(gc && gc[0] == '1')) {
@@ -1025,17 +1045,17 @@ bool Prefill::init(const core::WeightTable& wt, const core::ModelGeometry& g, co
                 cudaGetLastError();
             }
         }
-    }
-    for (int b = 0; b < 2; ++b) {
-        if (!m.ple_emb_host[b] &&
-            cudaHostAlloc((void**) &m.ple_emb_host[b], (size_t) T * N * 4, cudaHostAllocDefault) != cudaSuccess) {
-            cudaGetLastError();
-            m.ple_pageable[b].resize(T * N); // pageable: the upload is staged before it returns
-            m.ple_emb_host[b] = m.ple_pageable[b].data();
+        for (int b = 0; b < 2; ++b) {
+            if (!m.ple_emb_host[b] &&
+                cudaHostAlloc((void**) &m.ple_emb_host[b], (size_t) T * N * 4, cudaHostAllocDefault) != cudaSuccess) {
+                cudaGetLastError();
+                m.ple_pageable[b].resize(T * N); // pageable: the upload is staged before it returns
+                m.ple_emb_host[b] = m.ple_pageable[b].data();
+            }
+            if (!m.ple_copied[b] && cudaEventCreateWithFlags(&m.ple_copied[b], cudaEventDisableTiming) != cudaSuccess)
+                ok = false;
+            m.ple_rows[b].resize(T * guild::kernels::PLE_N_HEADS);
         }
-        if (!m.ple_copied[b] && cudaEventCreateWithFlags(&m.ple_copied[b], cudaEventDisableTiming) != cudaSuccess)
-            ok = false;
-        m.ple_rows[b].resize(T * guild::kernels::PLE_N_HEADS);
     }
     if (ss.qsa_states[ss.qsa_primary()].kv_mode == 1) { // KV streaming: the staging pool's identity page table
         const int64_t pages = ss.qsa_states[ss.qsa_primary()].n_pages;
@@ -2601,6 +2621,8 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
 #endif
                     const bool host_by_dma = staged && kv_host_dma;
                     const guild::kernels::KvHostPools* host_w = host_by_dma ? nullptr : &st.host;
+                    if (st.kv_mode == 3 && st.shares_staging)
+                        guild::kernels::kv_stream_invalidate(st.map, m.cs);
                     if (st.kv_hybrid) { // K8V4: K INT8 unrotated, V rotated Q4_0 (only V and the output rotate)
                         guild::kernels::fwht256_inplace_cuda(m.Vc, T * 2, m.cs);
                         kv_append(m.Kc, m.Kc, T, p0, st.page_table, s.page_size, nullptr, nullptr, st.k_q, st.k_q,
@@ -2797,7 +2819,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                             const int64_t nb = std::min<int64_t>(guild::kernels::kVerifyMaxT, T - t0);
                             const int32_t* ids0 = m.sel_ids + t0 * m.cap;
                             const int32_t* steps0 = m.steps_dev + t0 * guild::kernels::kStepCount;
-                            core::qsa_kv_resolve(st, g, ids0, steps0, nb, m.cap, m.cs);
+                            core::qsa_kv_resolve(st, g, ids0, steps0, nb, m.cap, m.cs, /*invalidate_shared=*/false);
                             if (old_attn ||
                                 !guild::kernels::qsa_prompt_attn_batch(m.q + t0 * ZV, pools, ids0, steps0, m.cap, s,
                                                                        m.attn + t0 * ZV, nb, m.cs))
