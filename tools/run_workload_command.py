@@ -96,7 +96,7 @@ def stop_process_group(process, first_signal=signal.SIGTERM, timeout=10):
     process.wait(timeout=timeout)
 
 
-def execute(cmd, env, prefix, metadata, turbostat=False):
+def execute(cmd, env, prefix, metadata, turbostat=False, timeout=None):
     """Run and finalize metadata even if a launch, telemetry read or signal fails."""
     def artifact(suffix):
         return Path(str(prefix) + suffix)
@@ -129,14 +129,16 @@ def execute(cmd, env, prefix, metadata, turbostat=False):
             metadata["child_pid"] = child.pid
             next_sample = time.monotonic()
             while child.poll() is None:
+                if timeout is not None and time.monotonic() - start >= timeout:
+                    raise TimeoutError(f"measurement exceeded {timeout:g} seconds")
                 record = {"seconds": time.monotonic() - start, "monotonic_ns": time.monotonic_ns(), "pid": child.pid}
-                for name in ("status", "numa_maps"):
+                for name in ("status", "numa_maps", "stat"):
                     try:
                         record[name] = Path(f"/proc/{child.pid}/{name}").read_text()
                     except OSError as e:
                         # A root perf/sudo process may hide procfs; its benchmark is still valid.
                         record[name + "_error"] = type(e).__name__
-                record["gpu"] = capture(["nvidia-smi", "--query-gpu=clocks.sm,clocks.mem,temperature.gpu,power.draw,memory.used,pstate",
+                record["gpu"] = capture(["nvidia-smi", "--query-gpu=clocks.sm,clocks.mem,temperature.gpu,power.draw,memory.used,pstate,utilization.gpu,utilization.memory",
                                          "--format=csv,noheader,nounits"], timeout=2)
                 telemetry.write(json.dumps(record) + "\n")
                 next_sample = max(next_sample + 1, time.monotonic())
@@ -195,8 +197,11 @@ def main():
     parser.add_argument("--output", type=Path, default=Path("bench/results/hybrid-workload-optimization"))
     parser.add_argument("--env", action="append", default=[])
     parser.add_argument("--turbostat", action="store_true", help="optional sudo hardware frequency sampler")
+    parser.add_argument("--timeout", type=float, help="maximum command seconds; timeout is a failed measurement")
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
+    if args.timeout is not None and (not 0 < args.timeout < float("inf")):
+        parser.error("timeout must be finite and positive")
     cmd = args.command[1:] if args.command[:1] == ["--"] else args.command
     if not cmd or args.name in (".", "..") or Path(args.name).name != args.name:
         parser.error("a command and a simple measurement name are required")
@@ -230,7 +235,7 @@ def main():
             f.write(json.dumps(metadata, indent=2) + "\n")
     except FileExistsError:
         parser.error("measurement already exists; choose a new name")
-    exit_code = execute(cmd, env, prefix, metadata, args.turbostat)
+    exit_code = execute(cmd, env, prefix, metadata, args.turbostat, args.timeout)
     print(f"{args.name}: exit={metadata['exit_code']}, {metadata['elapsed_seconds']:.1f}s", flush=True)
     raise SystemExit(exit_code)
 

@@ -34,8 +34,13 @@ double percentile(std::vector<double> v, double p) {
 int main(int argc, char** argv) try {
     int prompt = 512, generated = 128, runs = 3, context = 32768, only_batch = 0, n_sessions = 1, spec_tokens = 0;
     double pcie_frac = -1.0;
+    int pool_workers = 0;
+    float spec_min_p = 0.5f;
+    memory::KvPrecision kv_format = memory::KvPrecision::FP16;
+    memory::KvMode kv_mode = memory::KvMode::HostOnly;
     std::string csv, write_ids, dump, activity, json_summary, startup_json, model_arg = "ornith:35b", gpack_path,
                                                                             gexec_path;
+    std::string prompt_ids, latencies;
     std::string activity_library = "./build-cuda12/libguild_activity.so";
     bool sequential = false, full_warmup = false, concurrent_pkg_ops = false, ignore_eos = false, disable_gexec = false;
     for (int i = 1; i < argc; ++i) {
@@ -61,6 +66,24 @@ int main(int argc, char** argv) try {
             spec_tokens = std::stoi(value());
         else if (a == "--pcie-frac")
             pcie_frac = std::stod(value());
+        else if (a == "--pool-workers")
+            pool_workers = std::stoi(value());
+        else if (a == "--spec-min-p")
+            spec_min_p = std::stof(value());
+        else if (a == "--kv") {
+            const auto v = value();
+            if (v != "fp16" && v != "int8" && v != "q4_0" && v != "k8v4")
+                throw std::invalid_argument("unsupported KV precision: " + v);
+            kv_format = memory::kv_precision_from_string(v);
+        } else if (a == "--kv-mode") {
+            const auto v = value();
+            if (v != "resident" && v != "host-only")
+                throw std::invalid_argument("unsupported KV placement: " + v);
+            kv_mode = memory::kv_mode_from_string(v);
+        } else if (a == "--prompt-ids")
+            prompt_ids = value();
+        else if (a == "--latencies")
+            latencies = value();
         else if (a == "--ignore-eos")
             ignore_eos = true;
         else if (a == "--concurrent-pkg-ops")
@@ -94,7 +117,9 @@ int main(int argc, char** argv) try {
         else
             throw std::invalid_argument("unknown argument: " + a);
     }
-    CHECK(prompt > 0 && generated > 0 && runs > 0 && n_sessions > 0 && context >= prompt + generated);
+    CHECK(prompt > 0 && generated > 0 && runs > 0 && n_sessions > 0 && context >= int64_t(prompt) + generated);
+    CHECK(pool_workers >= 0 && spec_min_p >= 0 && spec_min_p <= 1);
+    CHECK(latencies.empty() || (n_sessions == 1 && !concurrent_pkg_ops && json_summary.empty()));
     models::ModelStore store;
     store.init();
     auto manifest = models::ModelRegistry::instance().resolve(model_arg, store);
@@ -129,8 +154,13 @@ int main(int argc, char** argv) try {
     memory::ExecutionPlan plan;
     plan.context_length = context;
     plan.prefill_batch = 512;
+    plan.prefill_chunk = only_batch > 0 ? only_batch : 512;
     plan.mtp_spec_tokens = spec_tokens;
     plan.pcie_expert_fraction = pcie_frac;
+    plan.pool_workers = pool_workers;
+    plan.spec_min_p = spec_min_p;
+    plan.kv_format = kv_format;
+    plan.kv_mode = kv_mode;
     std::string err;
     const auto load_start = Clock::now();
     auto model = runtime::GuildModel::load(paths, manifest->to_descriptor(), plan, err);
@@ -141,13 +171,23 @@ int main(int argc, char** argv) try {
     if (ignore_eos)
         m->config.eos_token_ids.clear();
     if (model_arg == "ornith:35b")
-        CHECK(!m->mtp && m->batched_prefill);
+        CHECK(!m->mtp);
     std::vector<int32_t> base;
     CHECK(model->tokenizer().encode(
         "The quick brown fox jumps over the lazy dog repeatedly to test transformer attention. ", base, false, err));
     std::vector<int32_t> ids(prompt);
     for (int i = 0; i < prompt; ++i)
         ids[i] = base[i % base.size()];
+    if (!prompt_ids.empty()) {
+        std::ifstream f(prompt_ids);
+        CHECK(f);
+        for (auto& id : ids) {
+            CHECK(f >> id);
+            CHECK(id >= 0 && id < model->descriptor().attn.vocab_size);
+        }
+        f >> std::ws;
+        CHECK(f.eof()); // Exact frozen workload; never silently truncate an IDs file.
+    }
     if (!write_ids.empty()) {
         std::ofstream f(write_ids);
         CHECK(f);
@@ -161,12 +201,19 @@ int main(int argc, char** argv) try {
         CHECK(file);
     }
     std::ostream& out = csv.empty() ? std::cout : file;
+    std::ofstream latency_file;
+    if (!latencies.empty()) {
+        latency_file.open(latencies);
+        CHECK(latency_file);
+        latency_file << "batch,run,token_index,elapsed_ms,interval_ms\n" << std::setprecision(12);
+    }
     out << "batch,run,prompt_tokens,prefill_tokens,generated_tokens,prefill_ms,decode_ms,wall_ms,ttft_ms,prefill_tps,"
            "decode_tps,load_ms,vram_sample_bytes,host_peak_bytes,host_kv_allocated_bytes,kv_staging_bytes,prefill_"
            "scratch_bytes,expert_groups,expert_weight_bytes,activation_transfer_bytes,cpu_gu_ms,cpu_quant_ms,cpu_down_"
            "ms,cpu_group_ms,host_wait_ms,gpu_dense_ms,gpu_gdn_ms,gpu_attention_ms,file_reads,gpu_groups,finish\n"
         << std::setprecision(12);
-    const std::vector<int> batches = sequential   ? std::vector<int>{0}
+    const std::vector<int> batches = m->prefill   ? std::vector<int>{int(m->prefill->chunk())}
+                                     : sequential ? std::vector<int>{0}
                                      : only_batch ? std::vector<int>{only_batch}
                                                   : std::vector<int>{8, 16, 32, 64, 128, 256, 512};
     std::vector<int32_t> expected;
@@ -227,12 +274,15 @@ int main(int argc, char** argv) try {
                 req.max_new_tokens = generated;
                 runtime::RuntimeTelemetry t;
                 std::vector<int32_t> output;
+                std::vector<double> arrival_ms;
+                arrival_ms.reserve(generated);
                 const auto file0 = m->src.file_reads();
                 const auto start = Clock::now();
                 double first_ms = 0;
                 CHECK(session->generate(
                     req,
                     [&](const runtime::TokenEvent& ev) {
+                        arrival_ms.push_back(elapsed(start));
                         if (output.empty()) {
                             first_ms = elapsed(start);
                             if (activity_mark)
@@ -251,6 +301,13 @@ int main(int argc, char** argv) try {
                 CHECK(m->ver->wait_commit(err));
                 CHECK(cudaDeviceSynchronize() == cudaSuccess);
                 const double wall = elapsed(start);
+                if (latency_file.is_open()) {
+                    for (size_t i = 0; i < arrival_ms.size(); ++i)
+                        latency_file << batch << ',' << r << ',' << i << ',' << arrival_ms[i] << ','
+                                     << arrival_ms[i] - (i ? arrival_ms[i - 1] : 0.0) << '\n';
+                    latency_file.flush();
+                    CHECK(latency_file);
+                }
                 if (activity_stop) {
                     activity_mark("end");
                     activity_stop();
@@ -376,6 +433,8 @@ int main(int argc, char** argv) try {
                        << "    \"decode_commit_ms\": " << t.decode_commit_ms << ",\n"
                        << "    \"decode_logit_validation_ms\": " << t.decode_logit_validation_ms << ",\n"
                        << "    \"decode_windows\": " << t.decode_windows << ",\n"
+                       << "    \"drafts_offered\": " << t.drafts_offered << ",\n"
+                       << "    \"drafts_accepted\": " << t.drafts_accepted << ",\n"
                        << "    \"vram_sample_bytes\": " << (total - free) << ",\n"
                        << "    \"host_peak_bytes\": " << (uint64_t(usage.ru_maxrss) * 1024ULL) << "\n"
                        << "  }\n"

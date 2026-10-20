@@ -19,6 +19,7 @@ import archive_workload_results as archiver
 import bench_cpu_experts as cpu_bench
 import collect_workload_environment as environment
 import run_workload_command as runner
+import release_benchmarks as releases
 import summarize_workload_activity as activity
 import summarize_workload_benchmarks as benchmarks
 
@@ -335,6 +336,17 @@ class ArchiveResults(TemporaryFiles):
 
 
 class CommandCleanup(TemporaryFiles):
+    def test_timeout_reaps_child_and_is_not_a_zero_throughput_sample(self):
+        metadata = {}
+        with mock.patch.object(runner, "capture", return_value={}):
+            code = runner.execute([sys.executable, "-c", "import time; time.sleep(60)"],
+                                  os.environ.copy(), self.root / "timeout", metadata, timeout=.01)
+        self.assertNotEqual(code, 0)
+        self.assertEqual(metadata["state"], "failed")
+        self.assertIn("TimeoutError", metadata["error"])
+        with self.assertRaises(ProcessLookupError):
+            os.kill(metadata["child_pid"], 0)
+
     def test_only_public_workload_environment_no_credentials(self):
         env = {"GUILD_FORCE_AVX2": "1", "CUDA_VISIBLE_DEVICES": "0", "OMP_NUM_THREADS": "8", "GGML_TEST": "1",
                "HOME": "/tmp", "AWS_SECRET_ACCESS_KEY": "private", "GUILD_API_KEY": "private", "GGML_AUTH_TOKEN": "private"}
@@ -363,6 +375,46 @@ class CommandCleanup(TemporaryFiles):
         saved = json.loads((self.root / "failed.command.json").read_text())
         self.assertIn("turbostat_exit_code", saved)
         self.assertEqual(saved["wrapper_exit_code"], 127)
+
+
+class ReleaseHistory(TemporaryFiles):
+    def test_failed_and_instrumented_results_are_excluded_and_graphs_use_real_prompts(self):
+        ids = self.root / "prompt.ids"
+        ids.write_text(" ".join(["1"] * 512))
+        metadata = {"command": ["ornith_prefill_bench", "--runs", "1", "--context", "32768",
+                                "--write-ids", str(ids)], "exit_code": 0, "cwd": str(self.root)}
+        self.csv("good.csv", [BenchmarkSummaries.main_row()], metadata)
+        self.csv("bad.csv", [BenchmarkSummaries.main_row()], {**metadata, "exit_code": 1})
+        row = {"csv": "good.csv", "release": "test", "date": "2026-10-20", "engine": "guild-portable",
+               "engine_commit": "a" * 40, "hardware": "fixture", "model": "fixture", "source_weights_sha256": "b" * 64,
+               "quantization": "fixture", "workload": "fixture", "settings": dict.fromkeys(
+                   ("kv_format", "kv_placement", "threads", "affinity", "gpu_offload", "speculation", "prefill_batch", "capacity_policy"), "fixture"),
+               "comparison": {"id": "fixture", "equivalent": False, "note": "test only"}}
+        result = releases.collect({"measurements": [row, {**row, "csv": "bad.csv"}]}, self.root)
+        self.assertEqual(len(result["records"]), 1)
+        self.assertEqual(len(result["excluded"]), 1)
+        self.assertEqual(result["comparisons"], [])
+        releases.graphs(result, self.root)
+        self.assertTrue(list(self.root.glob("context-*.svg")))
+        self.assertEqual(result["records"][0]["prompt_tokens"], 512)
+        ids.write_text("1 2")
+        result = releases.collect({"measurements": [row]}, self.root)
+        self.assertEqual(result["records"], [])
+
+    def test_different_precision_or_prompt_cannot_be_called_equivalent(self):
+        row = {"release": "fixture", "date": "2026-10-20", "engine": "guild", "hardware": "fixture",
+               "source_weights_sha256": "a" * 64, "quantization": "fp16", "prompt_sha256": "b" * 64,
+               "prompt_tokens": 512, "generated_tokens": 128, "engine_commit": "c" * 40,
+               "settings": {"kv_format": "fp16", "speculation": 0},
+               "comparison": {"id": "fixture", "equivalent": True, "note": "test"},
+               "metrics": {"decode_tps": {"median": 10}, "prefill_tps": {"median": 20}}}
+        llama = {**row, "engine": "llama-pinned"}
+        self.assertEqual(len(releases.comparisons([row, llama])), 1)
+        self.assertEqual(releases.comparisons([row, {**llama, "prompt_sha256": "d" * 64}]), [])
+        self.assertEqual(releases.comparisons([row, {**llama, "settings": {"kv_format": "int8", "speculation": 0}}]), [])
+
+
+class CommandProcessCleanup(TemporaryFiles):
 
     def test_privileged_cleanup_targets_only_the_created_group_noninteractively(self):
         with mock.patch.object(runner.os, "killpg", side_effect=PermissionError), \
@@ -403,7 +455,7 @@ class CommandCleanup(TemporaryFiles):
             for _ in range(50):
                 try:
                     status = Path(f"/proc/{grandchild}/status").read_text()
-                except FileNotFoundError:
+                except (FileNotFoundError, ProcessLookupError):
                     break
                 if "State:\tZ" in status:
                     break
