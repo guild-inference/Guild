@@ -19,7 +19,7 @@ flowchart TB
     c -->|"GGUF shards"| e["shards open"]
     d --> f["Runner resolution<br/>architecture + capability checks"]
     e --> f
-    f --> g["Process-wide kernel settings<br/>RoPE, KV precision, shared layers, KV-Resident size"]
+    f --> g["Model-scoped kernel settings (ModelExecutionState)<br/>RoPE, KV precision, shared layers, KV-Resident size"]
     g --> h["CPU expert pool<br/>worker affinity installed"]
     h --> i["CUDA stream + kernel lease<br/>providers pinned"]
     i --> j[".gexec resolution<br/>never fails the load"]
@@ -34,9 +34,12 @@ flowchart TB
 Notes on the stages that are easy to get wrong:
 
 * **Ordering is a contract.** The pool installs worker affinity before any expert page is touched, so pages land
-  on the intended NUMA node; the process-wide kernel settings are set before any weight is prepared, because the
-  kernels read them while building quantized layouts and KV buffers; the kernel lease is taken before GEXEC
-  resolution, so nothing can be unloaded underneath an artifact.
+  on the intended NUMA node; the model-scoped kernel settings (`core::ModelExecutionState`, bound via
+  `core::ScopedModelExecution`) are set before any weight is prepared, because the kernels read them while building
+  quantized layouts and KV buffers; the kernel lease is taken before GEXEC resolution, so nothing can be unloaded
+  underneath an artifact. Each `GuildModel` owns its own `ModelExecutionState` (shared with its `SessionState`) and
+  its own `ExpertSource::layout()`, so multiple differently configured models can coexist in one process without
+  overwriting each other's settings ([../quality/PHASE5.6_VALIDATION.md](../quality/PHASE5.6_VALIDATION.md)).
 * **Failure semantics.** A load failure returns `nullptr` with a message - it never throws to the caller, since
   the entry points are C ABI. An explicitly named `.gpack` must open; a `model.gpack` sidecar found next to a
   pack directory is a convenience and falls back to the shards. A `.gexec` can never fail a load: an unusable

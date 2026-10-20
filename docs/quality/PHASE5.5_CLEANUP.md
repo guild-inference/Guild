@@ -67,7 +67,7 @@ would be extract-the-body-only helpers (no ownership changes), each with its own
 index, dense index, native dense index, expert layout), each of which can become a private method with its own
 bounds-checked unit test, and it has no device state to preserve.
 
-### P1 - Process-wide kernel settings are globals
+### P1 - Process-wide kernel settings are globals (Resolved in [PHASE5.6_VALIDATION.md](PHASE5.6_VALIDATION.md))
 
 `core::layer_set_shared_early()` and `core::qsa_set_kv_resident()` (`include/guild/core/layer.hpp`) configure
 behaviour for the whole process, and `GuildModel::load` sets them while loading. A second `GuildModel` in the
@@ -75,9 +75,10 @@ same process - a second model, or a test that loads two - would silently run wit
 Today the CLI, the server and the tests all load one model per process, so this is latent rather than live, but
 it is exactly the kind of coupling that is invisible until someone adds a second load. Either move these to a
 per-load context object threaded through the kernels, or make the setters refuse a second, conflicting call so
-the limitation is enforced rather than assumed.
+the limitation is enforced rather than assumed. *(Resolved in Phase 5.6 via `core::ModelExecutionState` and
+`core::ScopedModelExecution`; see [PHASE5.6_VALIDATION.md](PHASE5.6_VALIDATION.md).)*
 
-### P1 - `Server::stop()` races the listener on the listening fd
+### P1 - `Server::stop()` races the listener on the listening fd (Resolved in [PHASE5.6_VALIDATION.md](PHASE5.6_VALIDATION.md))
 
 ThreadSanitizer reports a data race on `listen_fd_` in `src/server/server.cpp`: `stop()` closes the socket and
 writes `listen_fd_ = -1` (line 179) while `listener_loop()` reads it to fill in `poll` (line 203). `running_` and
@@ -87,7 +88,8 @@ closed, and a descriptor number can be reused by an unrelated `open` in the same
 listener thread ownership of the descriptor (or make it atomic) and signal shutdown through an eventfd/pipe that
 `poll` watches, so no thread reads a descriptor another thread may close. Once it is fixed, add `server_test` to
 the TSan CI gate - today the gate is `modular_abi_test` + `gkmodule_test` only, which is why this has never been
-caught there.
+caught there. *(Resolved in Phase 5.6 via `lifecycle_mutex_`, `wake_pipe_`, `active_clients_`, and post-join
+`listen_fd_` close; see [PHASE5.6_VALIDATION.md](PHASE5.6_VALIDATION.md).)*
 
 This was found while validating this phase, and the race is pre-existing: `src/server/server.cpp` changed here by
 a 16-line comment block only, and a per-function comparison of the compiled object against pristine `92f0600`
