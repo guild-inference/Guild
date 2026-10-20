@@ -1106,13 +1106,26 @@ template <> struct Iq512Fmt<21> {
     }
 };
 
+bool native_iq512_policy(int nt) {
+    static const bool enabled = cpu_avx512_ok() && std::getenv("GUILD_NO_IQ512") == nullptr;
+    static const int mt_min = [] {
+        const char* e = std::getenv("GUILD_IQ_MT_MIN");
+        return e ? std::atoi(e) : 2;
+    }();
+    return enabled && nt >= mt_min;
+}
+
 template <int TY, int NT>
 GEXEC_AVX512BW_TARGET void iq512_row_dot_2rows(const uint8_t* row0, const uint8_t* row1, int nblocks,
                                                const block_q8_K* const* y, float* res0, float* res1) {
+    const bool use_512_reduce = native_iq512_policy(NT);
     __m512 accf0[NT], accf1[NT];
+    __m256 acc256_0[NT], acc256_1[NT];
     for (int t = 0; t < NT; ++t) {
         accf0[t] = _mm512_setzero_ps();
         accf1[t] = _mm512_setzero_ps();
+        acc256_0[t] = _mm256_setzero_ps();
+        acc256_1[t] = _mm256_setzero_ps();
     }
     const __m512i zero = _mm512_setzero_si512();
     for (int i = 0; i < nblocks; ++i) {
@@ -1140,17 +1153,43 @@ GEXEC_AVX512BW_TARGET void iq512_row_dot_2rows(const uint8_t* row0, const uint8_
                 acci1[t] = _mm512_add_epi32(acci1[t], _mm512_madd_epi16(_mm512_maddubs_epi16(g1, ys1), sc1));
             }
         }
-        const float dx0 = fp16_to_fp32(read_u16(blk0)) * Iq512Fmt<TY>::K;
-        const float dx1 = fp16_to_fp32(read_u16(blk1)) * Iq512Fmt<TY>::K;
-        for (int t = 0; t < NT; ++t) {
-            const float yd = y[t][i].d;
-            accf0[t] = _mm512_fmadd_ps(_mm512_set1_ps(dx0 * yd), _mm512_cvtepi32_ps(acci0[t]), accf0[t]);
-            accf1[t] = _mm512_fmadd_ps(_mm512_set1_ps(dx1 * yd), _mm512_cvtepi32_ps(acci1[t]), accf1[t]);
+        if (use_512_reduce) {
+            const float dx0 = fp16_to_fp32(read_u16(blk0)) * Iq512Fmt<TY>::K;
+            const float dx1 = fp16_to_fp32(read_u16(blk1)) * Iq512Fmt<TY>::K;
+            for (int t = 0; t < NT; ++t) {
+                const float yd = y[t][i].d;
+                accf0[t] = _mm512_fmadd_ps(_mm512_set1_ps(dx0 * yd), _mm512_cvtepi32_ps(acci0[t]), accf0[t]);
+                accf1[t] = _mm512_fmadd_ps(_mm512_set1_ps(dx1 * yd), _mm512_cvtepi32_ps(acci1[t]), accf1[t]);
+            }
+        } else {
+            const float dx0 =
+                (NT == 1) ? fp16_to_fp32(read_u16(blk0)) : (fp16_to_fp32(read_u16(blk0)) * Iq512Fmt<TY>::K);
+            const float dx1 =
+                (NT == 1) ? fp16_to_fp32(read_u16(blk1)) : (fp16_to_fp32(read_u16(blk1)) * Iq512Fmt<TY>::K);
+            for (int t = 0; t < NT; ++t) {
+                const float yd = y[t][i].d;
+                const __m256i sum256_0 =
+                    _mm256_add_epi32(_mm512_castsi512_si256(acci0[t]), _mm512_extracti32x8_epi32(acci0[t], 1));
+                const __m256i sum256_1 =
+                    _mm256_add_epi32(_mm512_castsi512_si256(acci1[t]), _mm512_extracti32x8_epi32(acci1[t], 1));
+                acc256_0[t] = _mm256_fmadd_ps(_mm256_set1_ps(dx0 * yd), _mm256_cvtepi32_ps(sum256_0), acc256_0[t]);
+                acc256_1[t] = _mm256_fmadd_ps(_mm256_set1_ps(dx1 * yd), _mm256_cvtepi32_ps(sum256_1), acc256_1[t]);
+            }
         }
     }
-    for (int t = 0; t < NT; ++t) {
-        res0[t] = _mm512_reduce_add_ps(accf0[t]);
-        res1[t] = _mm512_reduce_add_ps(accf1[t]);
+    if (use_512_reduce) {
+        for (int t = 0; t < NT; ++t) {
+            res0[t] = _mm512_reduce_add_ps(accf0[t]);
+            res1[t] = _mm512_reduce_add_ps(accf1[t]);
+        }
+    } else if constexpr (NT == 1) {
+        res0[0] = Iq512Fmt<TY>::K * hsum_f32_8(acc256_0[0]);
+        res1[0] = Iq512Fmt<TY>::K * hsum_f32_8(acc256_1[0]);
+    } else {
+        for (int t = 0; t < NT; ++t) {
+            res0[t] = hsum8_hadd(acc256_0[t]);
+            res1[t] = hsum8_hadd(acc256_1[t]);
+        }
     }
 }
 
@@ -1216,6 +1255,12 @@ GEXEC_AVX2_INLINE void decode_iq4xs_subblock(const uint8_t* b, int j, int half, 
 template <int NT, bool INTERLEAVED>
 GEXEC_AVX2_TARGET void gexec_iq4xs_gu_rows_nt(const uint8_t* blob, size_t gu_row, size_t up_off, int n,
                                               const void* const* act, float* const* ff, int r0, int r1) {
+    static const bool no_iq256 = std::getenv("GUILD_NO_IQ256") != nullptr;
+    static const int mt_min = [] {
+        const char* e = std::getenv("GUILD_IQ_MT_MIN");
+        return e ? std::atoi(e) : 2;
+    }();
+    const bool use_ggml_reduce = (NT == 1) || cpu_avx512_ok() || no_iq256 || (NT < mt_min);
     const __m128i values = _mm_loadu_si128((const __m128i*) kvalues_iq4nl);
     const __m128i m4b = _mm_set1_epi8(0x0f);
     const block_q8_K* y[NT];
@@ -1234,8 +1279,10 @@ GEXEC_AVX2_TARGET void gexec_iq4xs_gu_rows_nt(const uint8_t* blob, size_t gu_row
         for (int i = 0; i < nblocks; ++i) {
             const uint8_t* blk0 = row0 + (size_t) i * 136;
             const uint8_t* blk1 = row1 + (size_t) i * 136;
-            _mm_prefetch((const char*) (blk0 + 1024), _MM_HINT_T0);
-            _mm_prefetch((const char*) (blk1 + 1024), _MM_HINT_T0);
+            _mm_prefetch((const char*) (blk0 + 2048), _MM_HINT_T0);
+            _mm_prefetch((const char*) (blk0 + 2048 + 64), _MM_HINT_T0);
+            _mm_prefetch((const char*) (blk1 + 2048), _MM_HINT_T0);
+            _mm_prefetch((const char*) (blk1 + 2048 + 64), _MM_HINT_T0);
             __m256i acci0[NT], acci1[NT];
             for (int t = 0; t < NT; ++t) {
                 acci0[t] = _mm256_setzero_si256();
@@ -1263,11 +1310,9 @@ GEXEC_AVX2_TARGET void gexec_iq4xs_gu_rows_nt(const uint8_t* blob, size_t gu_row
                 accf1[t] = _mm256_fmadd_ps(_mm256_set1_ps(dx1 * yd), _mm256_cvtepi32_ps(acci1[t]), accf1[t]);
             }
         }
-        const bool use_512_reduce = (NT >= 2) && cpu_avx512_ok();
         for (int t = 0; t < NT; ++t) {
-            const float g = (NT == 1 || cpu_avx512_ok()) ? hsum_f32_8(accf0[t]) : hsum8_hadd(accf0[t]);
-            const float u = (NT == 1 || cpu_avx512_ok()) ? hsum_f32_8(accf1[t]) : hsum8_hadd(accf1[t]);
-            (void) use_512_reduce;
+            const float g = use_ggml_reduce ? hsum_f32_8(accf0[t]) : hsum8_hadd(accf0[t]);
+            const float u = use_ggml_reduce ? hsum_f32_8(accf1[t]) : hsum8_hadd(accf1[t]);
             ff[t][r] = (g / (1.f + std::exp(-g))) * u;
         }
     }
@@ -1297,17 +1342,6 @@ void dispatch_iq4xs_gu(int nt, const uint8_t* blob, size_t gu_row, size_t up_off
 // ============================================================================
 // 6. Top-Level GEXEC Gate+Up and Down Entry Points
 // ============================================================================
-
-// Match native_gu_rows' arithmetic policy, including its diagnostic overrides.
-// A wider ISA alone does not permit changing the floating-point reduction tree.
-bool native_iq512_policy(int nt) {
-    static const bool enabled = cpu_avx512_ok() && std::getenv("GUILD_NO_IQ512") == nullptr;
-    static const int mt_min = [] {
-        const char* e = std::getenv("GUILD_IQ_MT_MIN");
-        return e ? std::atoi(e) : 2;
-    }();
-    return enabled && nt >= mt_min;
-}
 
 template <bool USE_AVX512, bool INTERLEAVED>
 void gexec_gu_rows_impl(const NativeFmt* f_ptr, const uint8_t* blob, const void* const* act, int nt, float* const* ff,
@@ -1360,55 +1394,37 @@ void gexec_gu_rows_impl(const NativeFmt* f_ptr, const uint8_t* blob, const void*
         return;
     }
 
-    // 3. I-Quants on AVX-512BW: 2-row fused on interleaved layout; contiguous delegates to 1-row iq512_gu_rows.
-    if constexpr (INTERLEAVED) {
-        if (avx512_ok && native_iq512_policy(nt)) {
-            switch (f.gu_type) {
-            case 16: dispatch_iq512_gu<16, INTERLEAVED>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); return;
-            case 17: dispatch_iq512_gu<17, INTERLEAVED>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); return;
-            case 18: dispatch_iq512_gu<18, INTERLEAVED>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); return;
-            case 21: dispatch_iq512_gu<21, INTERLEAVED>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); return;
-            case 22: dispatch_iq512_gu<22, INTERLEAVED>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); return;
-            default: break;
-            }
+    // 3. I-Quants: use 512-bit 2-row fused when cpu_avx512_ok() (AVX-512 VNNI hosts where ZMM does not
+    // trigger Skylake-SP heavy-license downclocking across adjacent AVX2 IQ4_XS/IQ4_NL layers).
+    if (USE_AVX512 && cpu_avx512_ok()) {
+        switch (f.gu_type) {
+        case 16: dispatch_iq512_gu<16, INTERLEAVED>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); return;
+        case 17: dispatch_iq512_gu<17, INTERLEAVED>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); return;
+        case 18: dispatch_iq512_gu<18, INTERLEAVED>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); return;
+        case 21: dispatch_iq512_gu<21, INTERLEAVED>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); return;
+        case 22: dispatch_iq512_gu<22, INTERLEAVED>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); return;
+        default: break;
         }
     }
 
-    // 4. Fallback for non-AVX512 I-Quants or other formats:
+    // 4. Fallback for non-VNNI I-Quants or other formats (uses iq256_gu_rows in 256-bit AVX2):
 #if defined(GUILD_NATIVE_EXPERTS)
     if constexpr (!INTERLEAVED) {
         native_gu_rows(f, blob, act, nt, ff, r0, r1);
+    } else {
+        NativeFmt row_fmt = f;
+        row_fmt.gu_row = 2 * f.gu_row;
+        row_fmt.up_off = f.gu_row;
+        native_gu_rows(row_fmt, blob, act, nt, ff, r0, r1);
     }
 #endif
 }
 
-// Helper for interleaved fallback when !avx512_ok on I-quants (e.g. AVX2-only hosts)
+// Helper for interleaved layout dispatch
 template <bool USE_AVX512>
 void gexec_gu_rows_interleaved_safe(const NativeFmt* f_ptr, const uint8_t* blob, const void* const* act, int nt,
                                     float* const* ff, int r0, int r1) {
-    const NativeFmt& f = *f_ptr;
-    const bool avx512_ok = USE_AVX512 && cpu_avx512bw_ok();
-    if (f.gu_type == 12 || f.gu_type == 14 || f.gu_type == 8 || f.gu_type == 7 || (f.gu_type == 23 && cpu_avx2_ok()) ||
-        (avx512_ok && native_iq512_policy(nt) &&
-         (f.gu_type == 16 || f.gu_type == 17 || f.gu_type == 18 || f.gu_type == 21 || f.gu_type == 22))) {
-        gexec_gu_rows_impl<USE_AVX512, true>(f_ptr, blob, act, nt, ff, r0, r1);
-        return;
-    }
-#if defined(GUILD_NATIVE_EXPERTS)
-    // Generic fallback for interleaved layout: each row r has gate at 2*r*gu_row and up at (2*r+1)*gu_row
-    NativeFmt row_fmt = f;
-    row_fmt.up_off = f.gu_row;
-    for (int r = r0; r < r1; ++r) {
-        const uint8_t* pair_base = blob + (size_t) (2 * r) * f.gu_row;
-        for (int t0 = 0; t0 < nt; t0 += MAXT) {
-            const int m = std::min(MAXT, nt - t0);
-            float* ff_shifted[MAXT];
-            for (int t = 0; t < m; ++t)
-                ff_shifted[t] = ff[t0 + t] + r;
-            native_gu_rows(row_fmt, pair_base, act + t0, m, ff_shifted, 0, 1);
-        }
-    }
-#endif
+    gexec_gu_rows_impl<USE_AVX512, true>(f_ptr, blob, act, nt, ff, r0, r1);
 }
 
 template <bool USE_AVX512>
@@ -1424,7 +1440,8 @@ void gexec_down_rows_impl(const NativeFmt* f_ptr, const uint8_t* blob, const voi
     const int n = (int) f.n_ff;
     const uint8_t* w = blob + f.down_off;
     const size_t row_bytes = f.d_row;
-    const bool avx512_ok = USE_AVX512 && cpu_avx512bw_ok();
+    const bool avx512_ok =
+        USE_AVX512 && (cpu_avx512_ok() || (cpu_avx512bw_ok() && (f.gu_type == 12 || f.gu_type == 14)));
 
     // 1. IQ4_NL (type 20): 4-row fused for all nt >= 1!
     if (f.d_type == 20 && cpu_avx2_ok()) {

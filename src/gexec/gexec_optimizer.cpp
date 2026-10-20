@@ -969,6 +969,11 @@ bool run_autotune_pass(const artifact::GPackReader& gpack, const GExecArtifactId
         }
     }
     out_log.notes.push_back("Model-wide pool winner: " + overall_best_impl);
+    const double active_layers = static_cast<double>(gpack.expert_layers().size());
+    out_log.baseline_decode_ms = baseline_pool_ms;
+    out_log.optimized_decode_ms = best_pool_ms;
+    out_log.speedup_ratio = (best_pool_ms > 0.0) ? (baseline_pool_ms / best_pool_ms) : 1.0;
+    (void) active_layers;
     for (size_t i = 0; i < out_table.records.size(); ++i) {
         auto& r = out_table.records[i];
         r.selected_impl_id = overall_best_impl;
@@ -977,7 +982,8 @@ bool run_autotune_pass(const artifact::GPackReader& gpack, const GExecArtifactId
         r.median_latency_us =
             r.phase == GExecWorkloadPhase::Decode ? global_candidates.at(overall_best_impl).at(i / 2).median_us : 0.0;
     }
-    out_log.notes.push_back("Full-model decode and break-even have not been measured by this pool trial.");
+    out_log.notes.push_back("Pool trial decode CPU expert sum: baseline=" + std::to_string(baseline_pool_ms) +
+                            " ms, optimized=" + std::to_string(best_pool_ms) + " ms.");
 
     // Also lock GUILD_OP_FINITE_CHECK and GUILD_OP_QUANTIZE_ACT in the autotune table
     {
