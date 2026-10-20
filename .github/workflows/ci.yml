@@ -104,9 +104,9 @@ jobs:
           -DCMAKE_CXX_FLAGS="${{ matrix.flags }}"
           -DCMAKE_EXE_LINKER_FLAGS="${{ matrix.flags }}"
           -DCMAKE_SHARED_LINKER_FLAGS="${{ matrix.flags }}"
-      - run: cmake --build build-${{ matrix.sanitizer }} --target guild modular_abi_test gkmodule_test --parallel 2
+      - run: cmake --build build-${{ matrix.sanitizer }} --target guild modular_abi_test gkmodule_test server_test multi_model_isolation_test --parallel 2
       - env:
           ASAN_OPTIONS: detect_leaks=0
-        run: setarch $(uname -m) -R ctest --test-dir build-${{ matrix.sanitizer }} -R '^(modular_abi_test|gkmodule_test)$' --output-on-failure -V
+        run: setarch $(uname -m) -R ctest --test-dir build-${{ matrix.sanitizer }} -R '^(modular_abi_test|gkmodule_test|server_test|multi_model_isolation_test)$' --output-on-failure -V
   integration:
     uses: ./.github/workflows/backend-integration.yml

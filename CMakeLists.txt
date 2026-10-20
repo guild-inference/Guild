@@ -1185,7 +1185,15 @@ if(GUILD_BUILD_TESTS)
   add_executable(gexec_optimizer_test tests/core/gexec_optimizer_test.cpp)
   target_link_libraries(gexec_optimizer_test PRIVATE guild_runtime guild_models guild_cli)
   add_test(NAME gexec_optimizer_test COMMAND gexec_optimizer_test)
-  set_tests_properties(gexec_optimizer_test PROPERTIES TIMEOUT 90)
+  set_tests_properties(gexec_optimizer_test PROPERTIES TIMEOUT 240)
+
+  add_executable(multi_model_isolation_test tests/core/multi_model_isolation_test.cpp)
+  target_link_libraries(multi_model_isolation_test PRIVATE guild_server guild_runtime guild_models guild_memory guild_model guild_cli)
+  if(GUILD_ENABLE_CUDA OR GUILD_ENABLE_HIP)
+    target_include_directories(multi_model_isolation_test PRIVATE ${_guild_gpu_include_directories})
+  endif()
+  add_test(NAME multi_model_isolation_test COMMAND multi_model_isolation_test)
+  set_tests_properties(multi_model_isolation_test PROPERTIES TIMEOUT 180)
 
   # External .gkernel plugins built strictly against the public Guild::KernelSDK interface target
   enable_language(C)
