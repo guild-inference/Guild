@@ -2,6 +2,7 @@
 #include "guild/artifact/gguf_reader.hpp"
 #include "guild/kernels/cpu/pool.hpp"
 #include "guild/kernels/cpu/expert_layout.hpp"
+#include "guild/kernels/cpu/gexec_expert.hpp"
 #include <chrono>
 #include <cstring>
 #include <fstream>
@@ -13,12 +14,21 @@
 namespace cpu = guild::kernels::cpu;
 using Clock = std::chrono::steady_clock;
 int main(int argc, char** argv) try {
-    if (argc != 9)
+    if (argc != 9 && argc != 10)
         throw std::invalid_argument(
-            "usage: cpu_expert_workload MODEL LAYER GROUPS TOKENS ITERATIONS CORES CSV REPETITIONS");
+            "usage: cpu_expert_workload MODEL LAYER GROUPS TOKENS ITERATIONS CORES CSV REPETITIONS "
+            "[native|fused-avx2|fused-avx512]");
     // argv[8] is the number of repetitions (kept explicit for counter runs).
     const int layer = std::stoi(argv[2]), groups = std::stoi(argv[3]), tokens = std::stoi(argv[4]);
     const int iterations = std::stoi(argv[5]), cores = std::stoi(argv[6]), repeats = std::stoi(argv[8]);
+    const std::string provider = argc == 10 ? argv[9] : "native";
+    const guild_cpu_backend_ext_v2_t* backend = nullptr;
+    if (provider == "fused-avx2" && cpu::cpu_avx2_ok())
+        backend = cpu::guild_cpu_gexec_fused_avx2_table_v2();
+    else if (provider == "fused-avx512" && cpu::cpu_avx512bw_ok())
+        backend = cpu::guild_cpu_gexec_fused_avx512_table_v2();
+    else if (provider != "native")
+        throw std::invalid_argument("unknown or unsupported CPU provider");
     if (groups < 1 || groups > 256 || tokens < 1 || tokens > 8 || iterations < 1 || cores < 1 || repeats < 1)
         throw std::invalid_argument("invalid workload shape");
     guild::GgufModel model(guild::gguf_split_paths(argv[1]));
@@ -69,12 +79,21 @@ int main(int argc, char** argv) try {
         }
     } restore{previous};
     auto run = [&] { pool.run_split_multi_native(fmt, jobs.data(), groups, tokens > 1); };
+    if (backend) {
+        run();
+        const auto reference = out;
+        pool.bind_backend_kernels(*backend);
+        pool.set_fused_pipeline(true);
+        run();
+        if (std::memcmp(reference.data(), out.data(), out.size() * sizeof(float)) != 0)
+            throw std::runtime_error("provider output differs from native expert pool");
+    }
     for (int i = 0; i < 10; ++i)
         run();
     std::ofstream csv(argv[7]);
     if (!csv)
         throw std::runtime_error("cannot open CSV");
-    csv << "run,layer,groups,tokens,cores,iterations,weight_bytes_per_iteration,wall_ms,avx512bw\n"
+    csv << "run,layer,groups,tokens,cores,iterations,weight_bytes_per_iteration,wall_ms,avx512bw,provider\n"
         << std::setprecision(12);
     for (int r = 0; r < repeats; ++r) {
         auto start = Clock::now();
@@ -82,7 +101,8 @@ int main(int argc, char** argv) try {
             run();
         const double elapsed = std::chrono::duration<double, std::milli>(Clock::now() - start).count();
         csv << r << ',' << layer << ',' << groups << ',' << tokens << ',' << cores << ',' << iterations << ','
-            << uint64_t(groups) * fmt.bytes << ',' << elapsed << ',' << cpu::cpu_avx512bw_ok() << '\n';
+            << uint64_t(groups) * fmt.bytes << ',' << elapsed << ',' << cpu::cpu_avx512bw_ok() << ',' << provider
+            << '\n';
         csv.flush();
     }
     std::cout << "CPU expert workload complete; checksum " << out.front() << '\n';

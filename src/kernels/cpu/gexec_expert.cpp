@@ -1233,6 +1233,257 @@ void dispatch_iq512_gu(int nt, const uint8_t* blob, size_t gu_row, size_t up_off
 }
 
 // ============================================================================
+// 4b. I-Quant Gate/Up 2-Row Fused AVX2 Kernels (16, 17, 18, 21, 22)
+// ============================================================================
+
+struct GExecEvenSigns {
+    uint64_t v[128];
+    constexpr GExecEvenSigns() : v{} {
+        for (int i = 0; i < 128; ++i) {
+            int par = 0;
+            for (int k = 0; k < 7; ++k)
+                par ^= (i >> k) & 1;
+            const int s = i | (par << 7);
+            uint64_t r = 0;
+            for (int k = 0; k < 8; ++k)
+                r |= (uint64_t) (((s >> k) & 1) ? 0xFF : 0x01) << (8 * k);
+            v[i] = r;
+        }
+    }
+};
+static constexpr GExecEvenSigns gexec_even_signs{};
+
+GEXEC_AVX2_INLINE __m256i iq256_sgn_mask(uint32_t m) noexcept {
+    const __m256i bm = _mm256_set1_epi32((int) m);
+    const __m256i shuf = _mm256_setr_epi8(0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2, 3, 3,
+                                          3, 3, 3, 3, 3, 3);
+    const __m256i bits = _mm256_shuffle_epi8(bm, shuf);
+    const __m256i sel = _mm256_setr_epi8(1, 2, 4, 8, 16, 32, 64, (char) 0x80, 1, 2, 4, 8, 16, 32, 64, (char) 0x80, 1, 2,
+                                         4, 8, 16, 32, 64, (char) 0x80, 1, 2, 4, 8, 16, 32, 64, (char) 0x80);
+    return _mm256_cmpeq_epi8(_mm256_and_si256(bits, sel), sel);
+}
+
+GEXEC_AVX2_INLINE __m256i iq256_sgn_vec(uint32_t m) noexcept {
+    return _mm256_or_si256(iq256_sgn_mask(m), _mm256_set1_epi8(1));
+}
+
+GEXEC_AVX2_INLINE __m256i iq256_sc16(int a, int b) noexcept {
+    return _mm256_inserti128_si256(_mm256_castsi128_si256(_mm_set1_epi16((short) a)), _mm_set1_epi16((short) b), 1);
+}
+
+GEXEC_AVX2_INLINE __m256i iq256_sc32(int s) noexcept {
+    return _mm256_set1_epi16((short) s);
+}
+
+template <int TY> struct Iq256Fmt;
+
+template <> struct Iq256Fmt<16> {
+    static constexpr int bytes = 66;
+    static constexpr float K = 0.125f;
+    static GEXEC_AVX2_INLINE void decode(const uint8_t* b, int j, int half, __m256i& g, __m256i& sgn,
+                                         __m256i& sc) noexcept {
+        const uint8_t* q = b + 2 + 16 * j + 8 * half;
+        const uint32_t w0 = read_u32(q), w1 = read_u32(q + 4);
+        g = _mm256_set_epi64x((long long) iq2xxs_grid[w0 >> 24], (long long) iq2xxs_grid[(w0 >> 16) & 255],
+                              (long long) iq2xxs_grid[(w0 >> 8) & 255], (long long) iq2xxs_grid[w0 & 255]);
+        sgn = _mm256_set_epi64x(
+            (long long) gexec_even_signs.v[(w1 >> 21) & 127], (long long) gexec_even_signs.v[(w1 >> 14) & 127],
+            (long long) gexec_even_signs.v[(w1 >> 7) & 127], (long long) gexec_even_signs.v[w1 & 127]);
+        sc = iq256_sc32(2 * (int) (w1 >> 28) + 1);
+    }
+};
+
+template <> struct Iq256Fmt<17> {
+    static constexpr int bytes = 74;
+    static constexpr float K = 0.125f;
+    static GEXEC_AVX2_INLINE void decode(const uint8_t* b, int j, int half, __m256i& g, __m256i& sgn,
+                                         __m256i& sc) noexcept {
+        uint16_t v[4];
+        std::memcpy(v, b + 2 + 16 * j + 8 * half, 8);
+        g = _mm256_set_epi64x((long long) iq2xs_grid[v[3] & 511], (long long) iq2xs_grid[v[2] & 511],
+                              (long long) iq2xs_grid[v[1] & 511], (long long) iq2xs_grid[v[0] & 511]);
+        sgn = _mm256_set_epi64x((long long) gexec_even_signs.v[v[3] >> 9], (long long) gexec_even_signs.v[v[2] >> 9],
+                                (long long) gexec_even_signs.v[v[1] >> 9], (long long) gexec_even_signs.v[v[0] >> 9]);
+        const uint8_t sb = b[66 + 2 * j + half];
+        sc = iq256_sc16(2 * (sb & 15) + 1, 2 * (sb >> 4) + 1);
+    }
+};
+
+template <> struct Iq256Fmt<22> {
+    static constexpr int bytes = 82;
+    static constexpr float K = 0.125f;
+    static GEXEC_AVX2_INLINE void decode(const uint8_t* b, int j, int half, __m256i& g, __m256i& sgn,
+                                         __m256i& sc) noexcept {
+        const uint8_t* qs = b + 2 + 8 * j;
+        const uint8_t h = b[66 + 2 * j + half];
+        const int o = 4 * half;
+        g = _mm256_set_epi64x((long long) iq2s_grid[qs[o + 3] | ((h << 2) & 0x300)],
+                              (long long) iq2s_grid[qs[o + 2] | ((h << 4) & 0x300)],
+                              (long long) iq2s_grid[qs[o + 1] | ((h << 6) & 0x300)],
+                              (long long) iq2s_grid[qs[o + 0] | ((h << 8) & 0x300)]);
+        const uint32_t m = read_u32(b + 2 + 32 + 8 * j + 4 * half);
+        sgn = iq256_sgn_vec(m);
+        const uint8_t sb = b[74 + 2 * j + half];
+        sc = iq256_sc16(2 * (sb & 15) + 1, 2 * (sb >> 4) + 1);
+    }
+};
+
+template <> struct Iq256Fmt<18> {
+    static constexpr int bytes = 98;
+    static constexpr float K = 0.25f;
+    static GEXEC_AVX2_INLINE void decode(const uint8_t* b, int j, int half, __m256i& g, __m256i& sgn,
+                                         __m256i& sc) noexcept {
+        const uint8_t* q = b + 2 + 16 * j + 8 * half;
+        g = _mm256_set_epi32((int) iq3xxs_grid[q[7]], (int) iq3xxs_grid[q[6]], (int) iq3xxs_grid[q[5]],
+                             (int) iq3xxs_grid[q[4]], (int) iq3xxs_grid[q[3]], (int) iq3xxs_grid[q[2]],
+                             (int) iq3xxs_grid[q[1]], (int) iq3xxs_grid[q[0]]);
+        const uint32_t w = read_u32(b + 2 + 64 + 8 * j + 4 * half);
+        sgn = _mm256_set_epi64x(
+            (long long) gexec_even_signs.v[(w >> 21) & 127], (long long) gexec_even_signs.v[(w >> 14) & 127],
+            (long long) gexec_even_signs.v[(w >> 7) & 127], (long long) gexec_even_signs.v[w & 127]);
+        sc = iq256_sc32(2 * (int) (w >> 28) + 1);
+    }
+};
+
+template <> struct Iq256Fmt<21> {
+    static constexpr int bytes = 110;
+    static constexpr float K = 1.0f;
+    static GEXEC_AVX2_INLINE void decode(const uint8_t* b, int j, int half, __m256i& g, __m256i& sgn,
+                                         __m256i& sc) noexcept {
+        const uint8_t* q = b + 2 + 16 * j + 8 * half;
+        const uint32_t h = b[66 + 2 * j + half];
+#define GEXEC_G256_3(k) (int) iq3s_grid[q[k] | (((h >> k) & 1u) << 8)]
+        g = _mm256_set_epi32(GEXEC_G256_3(7), GEXEC_G256_3(6), GEXEC_G256_3(5), GEXEC_G256_3(4), GEXEC_G256_3(3),
+                             GEXEC_G256_3(2), GEXEC_G256_3(1), GEXEC_G256_3(0));
+#undef GEXEC_G256_3
+        const uint32_t m = read_u32(b + 74 + 8 * j + 4 * half);
+        sgn = iq256_sgn_vec(m);
+        const uint8_t s = b[106 + j];
+        sc = iq256_sc32(half ? 2 * (s >> 4) + 1 : 2 * (s & 15) + 1);
+    }
+};
+
+template <int TY, int NT>
+GEXEC_AVX2_TARGET void iq256_row_dot_1row(const uint8_t* row, int nblocks, const block_q8_K* const* y, float* res) {
+    static const bool no_iq256 = std::getenv("GUILD_NO_IQ256") != nullptr;
+    static const int mt_min = [] {
+        const char* e = std::getenv("GUILD_IQ_MT_MIN");
+        return e ? std::atoi(e) : 2;
+    }();
+    const bool use_ggml_reduce = (NT == 1) || cpu_avx512_ok() || no_iq256 || (NT < mt_min);
+    __m256 accf[NT];
+    for (int t = 0; t < NT; ++t)
+        accf[t] = _mm256_setzero_ps();
+    for (int i = 0; i < nblocks; ++i) {
+        const uint8_t* blk = row + (size_t) i * Iq256Fmt<TY>::bytes;
+        _mm_prefetch((const char*) (blk + 2048), _MM_HINT_T0);
+        _mm_prefetch((const char*) (blk + 2048 + 64), _MM_HINT_T0);
+        __m256i sumi0[NT], sumi1[NT];
+        for (int t = 0; t < NT; ++t) {
+            sumi0[t] = _mm256_setzero_si256();
+            sumi1[t] = _mm256_setzero_si256();
+        }
+        if constexpr (TY == 21) {
+#pragma GCC unroll 4
+            for (int j = 0; j < 4; ++j) {
+                const uint8_t* q0 = blk + 2 + 16 * j;
+                const uint8_t* q1 = q0 + 8;
+                const uint32_t h0 = blk[66 + 2 * j], h1 = blk[66 + 2 * j + 1];
+#define GEXEC_G3_0(k) (int) iq3s_grid[q0[k] | ((h0 << (8 - (k))) & 0x100u)]
+#define GEXEC_G3_1(k) (int) iq3s_grid[q1[k] | ((h1 << (8 - (k))) & 0x100u)]
+                const __m256i g0 = _mm256_set_epi32(GEXEC_G3_0(7), GEXEC_G3_0(6), GEXEC_G3_0(5), GEXEC_G3_0(4),
+                                                    GEXEC_G3_0(3), GEXEC_G3_0(2), GEXEC_G3_0(1), GEXEC_G3_0(0));
+                const __m256i g1 = _mm256_set_epi32(GEXEC_G3_1(7), GEXEC_G3_1(6), GEXEC_G3_1(5), GEXEC_G3_1(4),
+                                                    GEXEC_G3_1(3), GEXEC_G3_1(2), GEXEC_G3_1(1), GEXEC_G3_1(0));
+#undef GEXEC_G3_0
+#undef GEXEC_G3_1
+                const __m256i s2_0 = iq256_sgn_mask(read_u32(blk + 74 + 8 * j));
+                const __m256i s2_1 = iq256_sgn_mask(read_u32(blk + 74 + 8 * j + 4));
+                const uint8_t s = blk[106 + j];
+                const __m256i sc0 = iq256_sc32(2 * (s & 15) + 1);
+                const __m256i sc1 = iq256_sc32(2 * (s >> 4) + 1);
+                for (int t = 0; t < NT; ++t) {
+                    const __m256i y0 = _mm256_loadu_si256((const __m256i*) (y[t][i].qs + 64 * j));
+                    const __m256i y1 = _mm256_loadu_si256((const __m256i*) (y[t][i].qs + 64 * j + 32));
+                    const __m256i ys0 = _mm256_sub_epi8(_mm256_xor_si256(y0, s2_0), s2_0);
+                    const __m256i ys1 = _mm256_sub_epi8(_mm256_xor_si256(y1, s2_1), s2_1);
+                    sumi0[t] = _mm256_add_epi32(sumi0[t], _mm256_madd_epi16(_mm256_maddubs_epi16(g0, ys0), sc0));
+                    sumi1[t] = _mm256_add_epi32(sumi1[t], _mm256_madd_epi16(_mm256_maddubs_epi16(g1, ys1), sc1));
+                }
+            }
+        } else {
+            for (int j = 0; j < 4; ++j) {
+                __m256i g0, sgn0, sc0, g1, sgn1, sc1;
+                Iq256Fmt<TY>::decode(blk, j, 0, g0, sgn0, sc0);
+                Iq256Fmt<TY>::decode(blk, j, 1, g1, sgn1, sc1);
+                for (int t = 0; t < NT; ++t) {
+                    const __m256i y0 = _mm256_loadu_si256((const __m256i*) (y[t][i].qs + 64 * j));
+                    const __m256i y1 = _mm256_loadu_si256((const __m256i*) (y[t][i].qs + 64 * j + 32));
+                    sumi0[t] = _mm256_add_epi32(
+                        sumi0[t], _mm256_madd_epi16(_mm256_maddubs_epi16(g0, _mm256_sign_epi8(y0, sgn0)), sc0));
+                    sumi1[t] = _mm256_add_epi32(
+                        sumi1[t], _mm256_madd_epi16(_mm256_maddubs_epi16(g1, _mm256_sign_epi8(y1, sgn1)), sc1));
+                }
+            }
+        }
+        const float dx =
+            use_ggml_reduce ? fp16_to_fp32(read_u16(blk)) : (fp16_to_fp32(read_u16(blk)) * Iq256Fmt<TY>::K);
+        for (int t = 0; t < NT; ++t) {
+            const float yd = y[t][i].d;
+            const __m256i sumi = _mm256_add_epi32(sumi0[t], sumi1[t]);
+            accf[t] = _mm256_fmadd_ps(_mm256_set1_ps(dx * yd), _mm256_cvtepi32_ps(sumi), accf[t]);
+        }
+    }
+    if (use_ggml_reduce) {
+        for (int t = 0; t < NT; ++t)
+            res[t] = Iq256Fmt<TY>::K * hsum_f32_8(accf[t]);
+    } else {
+        for (int t = 0; t < NT; ++t)
+            res[t] = hsum8_hadd(accf[t]);
+    }
+}
+
+template <int TY, int NT, bool INTERLEAVED>
+GEXEC_AVX2_TARGET void gexec_iq256_gu_rows_nt(const uint8_t* blob, size_t gu_row, size_t up_off, int n,
+                                              const void* const* act, float* const* ff, int r0, int r1) {
+    const block_q8_K* y[NT];
+    for (int t = 0; t < NT; ++t)
+        y[t] = (const block_q8_K*) act[t];
+    const int nb = n / QK_K;
+    for (int r = r0; r < r1; ++r) {
+        const uint8_t* gr = INTERLEAVED ? (blob + (size_t) (2 * r + 0) * gu_row) : (blob + (size_t) r * gu_row);
+        const uint8_t* ur =
+            INTERLEAVED ? (blob + (size_t) (2 * r + 1) * gu_row) : (blob + up_off + (size_t) r * gu_row);
+        float g[NT], u[NT];
+        iq256_row_dot_1row<TY, NT>(gr, nb, y, g);
+        iq256_row_dot_1row<TY, NT>(ur, nb, y, u);
+        for (int t = 0; t < NT; ++t)
+            ff[t][r] = (g[t] / (1.f + std::exp(-g[t]))) * u[t];
+    }
+}
+
+template <int TY, bool INTERLEAVED>
+void dispatch_iq256_gu(int nt, const uint8_t* blob, size_t gu_row, size_t up_off, int n, const void* const* act,
+                       float* const* ff, int r0, int r1) {
+    switch (nt) {
+    case 1: gexec_iq256_gu_rows_nt<TY, 1, INTERLEAVED>(blob, gu_row, up_off, n, act, ff, r0, r1); break;
+    case 2: gexec_iq256_gu_rows_nt<TY, 2, INTERLEAVED>(blob, gu_row, up_off, n, act, ff, r0, r1); break;
+    case 3: gexec_iq256_gu_rows_nt<TY, 3, INTERLEAVED>(blob, gu_row, up_off, n, act, ff, r0, r1); break;
+    case 4: gexec_iq256_gu_rows_nt<TY, 4, INTERLEAVED>(blob, gu_row, up_off, n, act, ff, r0, r1); break;
+    case 5: gexec_iq256_gu_rows_nt<TY, 5, INTERLEAVED>(blob, gu_row, up_off, n, act, ff, r0, r1); break;
+    case 6: gexec_iq256_gu_rows_nt<TY, 6, INTERLEAVED>(blob, gu_row, up_off, n, act, ff, r0, r1); break;
+    case 7: gexec_iq256_gu_rows_nt<TY, 7, INTERLEAVED>(blob, gu_row, up_off, n, act, ff, r0, r1); break;
+    case 8: gexec_iq256_gu_rows_nt<TY, 8, INTERLEAVED>(blob, gu_row, up_off, n, act, ff, r0, r1); break;
+    default:
+        for (int t0 = 0; t0 < nt; t0 += 8) {
+            const int m = std::min(8, nt - t0);
+            dispatch_iq256_gu<TY, INTERLEAVED>(m, blob, gu_row, up_off, n, act + t0, ff + t0, r0, r1);
+        }
+        break;
+    }
+}
+
+// ============================================================================
 // 5. IQ4_XS (type 23): 2-Row & 4-Row Fused AVX2 Kernel (Bit-Exact for all nt >= 1)
 // ============================================================================
 
@@ -1395,7 +1646,7 @@ void gexec_gu_rows_impl(const NativeFmt* f_ptr, const uint8_t* blob, const void*
     }
 
     // 3. I-Quants: use 512-bit 2-row fused when cpu_avx512_ok() (AVX-512 VNNI hosts where ZMM does not
-    // trigger Skylake-SP heavy-license downclocking across adjacent AVX2 IQ4_XS/IQ4_NL layers).
+    // trigger Skylake-SP heavy-license downclocking), and 256-bit AVX2 otherwise.
     if (USE_AVX512 && cpu_avx512_ok()) {
         switch (f.gu_type) {
         case 16: dispatch_iq512_gu<16, INTERLEAVED>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); return;
@@ -1403,6 +1654,16 @@ void gexec_gu_rows_impl(const NativeFmt* f_ptr, const uint8_t* blob, const void*
         case 18: dispatch_iq512_gu<18, INTERLEAVED>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); return;
         case 21: dispatch_iq512_gu<21, INTERLEAVED>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); return;
         case 22: dispatch_iq512_gu<22, INTERLEAVED>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); return;
+        default: break;
+        }
+    }
+    if (cpu_avx2_ok()) {
+        switch (f.gu_type) {
+        case 16: dispatch_iq256_gu<16, INTERLEAVED>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); return;
+        case 17: dispatch_iq256_gu<17, INTERLEAVED>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); return;
+        case 18: dispatch_iq256_gu<18, INTERLEAVED>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); return;
+        case 21: dispatch_iq256_gu<21, INTERLEAVED>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); return;
+        case 22: dispatch_iq256_gu<22, INTERLEAVED>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); return;
         default: break;
         }
     }

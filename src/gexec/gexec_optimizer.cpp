@@ -957,6 +957,15 @@ bool run_autotune_pass(const artifact::GPackReader& gpack, const GExecArtifactId
                  "failed multi-thread ExpertPool bitwise parity check", cand_max_err[ci], cand_pool_ms[ci] * 1000.0});
             continue;
         }
+        if (!budget.embed_packed_experts &&
+            kernels::cpu::is_gexec_interleaved_impl(pool_candidates[ci].impl_id.c_str())) {
+            out_log.rejected_candidates.push_back({GUILD_OP_BATCHED_EXPERT_EXEC, "batched_expert_exec",
+                                                   pool_candidates[ci].impl_id, "pool",
+                                                   "GateUpRowInterleaved requires --embed-experts (PackedExpertsBlob) "
+                                                   "to preserve PortableContiguous compatibility",
+                                                   0.0, cand_pool_ms[ci] * 1000.0});
+            continue;
+        }
         if (cand_pool_ms[ci] < best_pool_ms) {
             best_pool_ms = cand_pool_ms[ci];
             overall_best_impl = pool_candidates[ci].impl_id;
