@@ -124,6 +124,30 @@ void unit_tests() {
         int32_t out[4];
         check(d.propose(4, out) > 0, "propose after overflow of nominal capacity");
     }
+    { // frequency-aware tie-breaking: equal-length matches prefer the more frequent continuation
+        SuffixDrafter d(3, 32, 1024);
+        const std::vector<int32_t> doc = {10, 20, 30, 77, 78, 1,  10, 20, 30, 77, 78,
+                                          2,  10, 20, 30, 99, 98, 3,  10, 20, 30};
+        d.append(doc.data(), doc.size());
+        int32_t out[2] = {};
+        const int n = d.propose(2, out);
+        check(n == 2 && out[0] == 77 && out[1] == 78 && d.last_freq() == 2,
+              "frequency-aware tie-breaking selects continuation [77, 78] (freq=2) over single recent [99, 98]");
+    }
+    { // min_match = 2 bigram support and sliding-window compaction
+        SuffixDrafter d(2, 16, 128);
+        d.set_max_history(256);
+        std::vector<int32_t> stream;
+        for (int i = 0; i < 600; ++i)
+            stream.push_back(i * 3 + 1); // all distinct trigrams -> exercises bounded probe + eviction + compaction
+        const int32_t tail[] = {5000, 5001, 5002, 5003, 999, 5000, 5001};
+        d.append(stream.data(), stream.size());
+        d.append(tail, 7);
+        int32_t out[2] = {};
+        const int n = d.propose(2, out);
+        check(d.size() <= 256 && n == 2 && out[0] == 5002 && out[1] == 5003 && d.last_match() == 2,
+              "min_match=2 bigram proposal and sliding-window history bound work after table saturation");
+    }
     std::printf("suffix_drafter unit tests: %s\n", g_fail ? "FAILED" : "OK");
 }
 } // namespace

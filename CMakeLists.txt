@@ -940,13 +940,22 @@ endif()
 #     test drivers must NOT be in it - otherwise the fallback is not a fallback, it is the same bet with
 #     worse opt-out.  `cpu_require_expert_support()` therefore refuses at startup on a CPU without the
 #     features, and the fallback exists for tests, exactly as P2.S3 specifies.
-# Plan v0.3 P6: speculation components that need no GPU.
-add_library(guild_spec STATIC src/spec/suffix_drafter.cpp src/spec/controller.cpp src/spec/draft_policy.cpp)
+find_package(Threads REQUIRED)
+# Plan v0.3 P6 & Phase 6.6: speculation components that need no GPU.
+add_library(guild_spec STATIC
+  src/spec/suffix_drafter.cpp
+  src/spec/retrieval_drafter.cpp
+  src/spec/adaptive_scheduler.cpp
+  src/spec/controller.cpp
+  src/spec/draft_policy.cpp)
 target_include_directories(guild_spec PUBLIC include)
 if(GUILD_BUILD_TESTS)
   add_executable(suffix_drafter_test src/spec/suffix_drafter_test.cpp)
   target_link_libraries(suffix_drafter_test PRIVATE guild_spec)
   add_test(NAME suffix_drafter_test COMMAND suffix_drafter_test)
+  add_executable(adaptive_scheduler_test src/spec/adaptive_scheduler_test.cpp)
+  target_link_libraries(adaptive_scheduler_test PRIVATE guild_spec Threads::Threads)
+  add_test(NAME adaptive_scheduler_test COMMAND adaptive_scheduler_test)
   add_executable(controller_test src/spec/controller_test.cpp)
   target_link_libraries(controller_test PRIVATE guild_spec)
   add_test(NAME controller_test COMMAND controller_test)
@@ -1066,7 +1075,7 @@ else()
     src/runtime/chat_template.cpp
     src/runtime/tokenizer.cpp)
   target_include_directories(guild_runtime PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
-  target_link_libraries(guild_runtime PUBLIC guild_model guild_memory guild_warnings ${CMAKE_DL_LIBS})
+  target_link_libraries(guild_runtime PUBLIC guild_spec guild_model guild_memory guild_warnings ${CMAKE_DL_LIBS})
 endif()
 
 include(cmake/QwenRunnersBackend.cmake)
