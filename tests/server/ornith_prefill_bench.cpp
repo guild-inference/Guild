@@ -36,11 +36,21 @@ int main(int argc, char** argv) try {
     double pcie_frac = -1.0;
     int pool_workers = 0;
     float spec_min_p = 0.5f;
+    std::string decode_strategy = "auto";
+    int spec_max_draft = 0;
+    int spec_lookup_window = 65536;
+    int spec_cost_window = 16;
+    bool spec_trace = false;
+    float temperature = 0.0f;
+    float top_p = 1.0f;
+    float min_p = 0.0f;
+    int top_k = 0;
+    uint64_t seed = 0;
     memory::KvPrecision kv_format = memory::KvPrecision::FP16;
     memory::KvMode kv_mode = memory::KvMode::HostOnly;
     std::string csv, write_ids, dump, activity, json_summary, startup_json, model_arg = "ornith:35b", gpack_path,
                                                                             gexec_path;
-    std::string prompt_ids, latencies;
+    std::string prompt_ids, prompt_file, corpus_ids, corpus_file, latencies;
     std::string activity_library = "./build-cuda12/libguild_activity.so";
     bool sequential = false, full_warmup = false, concurrent_pkg_ops = false, ignore_eos = false, disable_gexec = false;
     for (int i = 1; i < argc; ++i) {
@@ -64,6 +74,28 @@ int main(int argc, char** argv) try {
             n_sessions = std::stoi(value());
         else if (a == "--spec")
             spec_tokens = std::stoi(value());
+        else if (a == "--decode-strategy")
+            decode_strategy = value();
+        else if (a == "--spec-max-draft")
+            spec_max_draft = std::stoi(value());
+        else if (a == "--spec-lookup-window")
+            spec_lookup_window = std::stoi(value());
+        else if (a == "--spec-cost-window")
+            spec_cost_window = std::stoi(value());
+        else if (a == "--spec-trace")
+            spec_trace = true;
+        else if (a == "--corpus-ids")
+            corpus_ids = value();
+        else if (a == "--temperature")
+            temperature = std::stof(value());
+        else if (a == "--top-p")
+            top_p = std::stof(value());
+        else if (a == "--min-p")
+            min_p = std::stof(value());
+        else if (a == "--top-k")
+            top_k = std::stoi(value());
+        else if (a == "--seed")
+            seed = std::stoull(value());
         else if (a == "--pcie-frac")
             pcie_frac = std::stod(value());
         else if (a == "--pool-workers")
@@ -82,6 +114,10 @@ int main(int argc, char** argv) try {
             kv_mode = memory::kv_mode_from_string(v);
         } else if (a == "--prompt-ids")
             prompt_ids = value();
+        else if (a == "--prompt-file")
+            prompt_file = value();
+        else if (a == "--corpus-file")
+            corpus_file = value();
         else if (a == "--latencies")
             latencies = value();
         else if (a == "--ignore-eos")
@@ -145,7 +181,7 @@ int main(int argc, char** argv) try {
         paths.expert_profile_path = manifest->metadata.at("expert_profile");
     else if (manifest->name == "qwen3.8-flash-next")
         paths.expert_profile_path = "/home/ubuntu/Guild/data/expert-profile.bin";
-    if (spec_tokens > 0) {
+    if (spec_tokens > 0 || ((decode_strategy == "mtp" || decode_strategy == "adaptive") && spec_max_draft > 0)) {
         if (manifest->metadata.count("mtp_dir"))
             paths.mtp_dir = manifest->metadata.at("mtp_dir");
         else if (manifest->name == "qwen3.8-flash-next")
@@ -156,6 +192,11 @@ int main(int argc, char** argv) try {
     plan.prefill_batch = 512;
     plan.prefill_chunk = only_batch > 0 ? only_batch : 512;
     plan.mtp_spec_tokens = spec_tokens;
+    plan.decode_strategy = decode_strategy;
+    plan.spec_max_draft = spec_max_draft;
+    plan.spec_lookup_window = spec_lookup_window;
+    plan.spec_cost_window = spec_cost_window;
+    plan.spec_trace = spec_trace;
     plan.pcie_expert_fraction = pcie_frac;
     plan.pool_workers = pool_workers;
     plan.spec_min_p = spec_min_p;
@@ -178,7 +219,23 @@ int main(int argc, char** argv) try {
     std::vector<int32_t> ids(prompt);
     for (int i = 0; i < prompt; ++i)
         ids[i] = base[i % base.size()];
-    if (!prompt_ids.empty()) {
+    if (!prompt_file.empty()) {
+        std::ifstream pf(prompt_file);
+        CHECK(pf);
+        const std::string text((std::istreambuf_iterator<char>(pf)), std::istreambuf_iterator<char>());
+        std::vector<int32_t> enc;
+        CHECK(model->tokenizer().encode(text, enc, false, err));
+        CHECK(!enc.empty());
+        if ((int) enc.size() >= prompt) {
+            ids.assign(enc.end() - prompt, enc.end());
+        } else {
+            const int pad = prompt - (int) enc.size();
+            for (int i = 0; i < pad; ++i)
+                ids[i] = enc[i % enc.size()];
+            for (size_t i = 0; i < enc.size(); ++i)
+                ids[pad + i] = enc[i];
+        }
+    } else if (!prompt_ids.empty()) {
         std::ifstream f(prompt_ids);
         CHECK(f);
         for (auto& id : ids) {
@@ -244,12 +301,36 @@ int main(int argc, char** argv) try {
         runtime::GenerationRequest warm;
         warm.prompt_tokens = {9419, 11, 220};
         warm.max_new_tokens = 4;
+        warm.temperature = temperature;
+        warm.top_p = top_p;
+        warm.min_p = min_p;
+        warm.top_k = top_k;
+        warm.seed = seed;
         if (full_warmup) {
             warm.prompt_tokens = ids;
             warm.max_new_tokens = generated;
         }
+        std::vector<int32_t> corpus_vec;
+        if (!corpus_file.empty()) {
+            std::ifstream cf(corpus_file);
+            CHECK(cf);
+            const std::string ctext((std::istreambuf_iterator<char>(cf)), std::istreambuf_iterator<char>());
+            CHECK(model->tokenizer().encode(ctext, corpus_vec, false, err));
+            CHECK(!corpus_vec.empty());
+        } else if (!corpus_ids.empty()) {
+            std::ifstream cf(corpus_ids);
+            CHECK(cf);
+            int32_t cid = 0;
+            while (cf >> cid) {
+                CHECK(cid >= 0 && cid < model->descriptor().attn.vocab_size);
+                corpus_vec.push_back(cid);
+            }
+            CHECK(!corpus_vec.empty());
+        }
         runtime::RuntimeTelemetry warm_t;
         auto session = model->create_session();
+        if (!corpus_vec.empty())
+            session->ingest_retrieval_tokens(corpus_vec.data(), corpus_vec.size());
         std::vector<int32_t> warm_out;
         CHECK(session->generate(
             warm,
@@ -272,6 +353,11 @@ int main(int argc, char** argv) try {
                 runtime::GenerationRequest req;
                 req.prompt_tokens = ids;
                 req.max_new_tokens = generated;
+                req.temperature = temperature;
+                req.top_p = top_p;
+                req.min_p = min_p;
+                req.top_k = top_k;
+                req.seed = seed;
                 runtime::RuntimeTelemetry t;
                 std::vector<int32_t> output;
                 std::vector<double> arrival_ms;
@@ -312,7 +398,10 @@ int main(int argc, char** argv) try {
                     activity_mark("end");
                     activity_stop();
                 }
-                if (spec_tokens == 0)
+                const bool no_spec_expected =
+                    (spec_tokens == 0 && (decode_strategy == "auto" || decode_strategy == "normal")) ||
+                    decode_strategy == "normal";
+                if (no_spec_expected)
                     CHECK(t.completion_tokens == int(output.size()) && t.drafts_offered == 0 && t.drafts_accepted == 0);
                 else
                     CHECK(t.completion_tokens == int(output.size()));
@@ -435,6 +524,26 @@ int main(int argc, char** argv) try {
                        << "    \"decode_windows\": " << t.decode_windows << ",\n"
                        << "    \"drafts_offered\": " << t.drafts_offered << ",\n"
                        << "    \"drafts_accepted\": " << t.drafts_accepted << ",\n"
+                       << "    \"decode_strategy_mode\": \"" << t.decode_strategy_mode << "\",\n"
+                       << "    \"decode_strategy_initial\": \"" << t.decode_strategy_initial << "\",\n"
+                       << "    \"decode_strategy_final\": \"" << t.decode_strategy_final << "\",\n"
+                       << "    \"spec_fallback_reason\": \"" << t.spec_fallback_reason << "\",\n"
+                       << "    \"decode_lookup_draft_ms\": " << t.decode_lookup_draft_ms << ",\n"
+                       << "    \"decode_retrieval_draft_ms\": " << t.decode_retrieval_draft_ms << ",\n"
+                       << "    \"decode_scheduler_ms\": " << t.decode_scheduler_ms << ",\n"
+                       << "    \"spec_ms_per_committed_token\": " << t.spec_ms_per_committed_token << ",\n"
+                       << "    \"spec_estimated_normal_ms_per_token\": " << t.spec_estimated_normal_ms_per_token
+                       << ",\n"
+                       << "    \"spec_estimated_speedup\": " << t.spec_estimated_speedup << ",\n"
+                       << "    \"spec_avg_proposed_draft\": " << t.spec_avg_proposed_draft << ",\n"
+                       << "    \"spec_avg_accepted_prefix\": " << t.spec_avg_accepted_prefix << ",\n"
+                       << "    \"spec_strategy_switches\": " << t.spec_strategy_switches << ",\n"
+                       << "    \"spec_fallback_count\": " << t.spec_fallback_count << ",\n"
+                       << "    \"spec_normal_windows\": " << t.spec_normal_windows << ",\n"
+                       << "    \"spec_mtp_windows\": " << t.spec_mtp_windows << ",\n"
+                       << "    \"spec_lookup_windows\": " << t.spec_lookup_windows << ",\n"
+                       << "    \"spec_retrieval_windows\": " << t.spec_retrieval_windows << ",\n"
+                       << "    \"spec_drafter_memory_bytes\": " << t.spec_drafter_memory_bytes << ",\n"
                        << "    \"vram_sample_bytes\": " << (total - free) << ",\n"
                        << "    \"host_peak_bytes\": " << (uint64_t(usage.ru_maxrss) * 1024ULL) << "\n"
                        << "  }\n"
@@ -447,12 +556,19 @@ int main(int argc, char** argv) try {
             for (int s = 1; s < n_sessions; ++s) {
                 auto ns = model->create_session(context);
                 CHECK(ns != nullptr);
+                if (!corpus_vec.empty())
+                    ns->ingest_retrieval_tokens(corpus_vec.data(), corpus_vec.size());
                 sessions_vec.push_back(std::move(ns));
             }
             if (expected.empty()) {
                 runtime::GenerationRequest ref_req;
                 ref_req.prompt_tokens = ids;
                 ref_req.max_new_tokens = generated;
+                ref_req.temperature = temperature;
+                ref_req.top_p = top_p;
+                ref_req.min_p = min_p;
+                ref_req.top_k = top_k;
+                ref_req.seed = seed;
                 runtime::RuntimeTelemetry ref_t;
                 CHECK(sessions_vec[0]->generate(
                     ref_req,
@@ -512,6 +628,11 @@ int main(int argc, char** argv) try {
                         runtime::GenerationRequest req;
                         req.prompt_tokens = ids;
                         req.max_new_tokens = generated;
+                        req.temperature = temperature;
+                        req.top_p = top_p;
+                        req.min_p = min_p;
+                        req.top_k = top_k;
+                        req.seed = seed;
                         runtime::RuntimeTelemetry t;
                         std::vector<int32_t> output;
                         const auto start = Clock::now();

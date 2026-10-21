@@ -110,9 +110,14 @@ struct ExecutionPlan {
     uint64_t pinned_host_bytes = 0;
     uint64_t dense_gpu_bytes = 0;
 
-    // Speculative decoding / MTP
+    // Speculative decoding / MTP / Cost-aware scheduling
     uint64_t mtp_bytes = 0;
     int mtp_spec_tokens = 0;
+    std::string decode_strategy = "auto";
+    int spec_max_draft = 0;
+    int spec_lookup_window = 65536;
+    int spec_cost_window = 16;
+    bool spec_trace = false;
 
     // Prefill scratch and safety margins
     uint64_t prompt_scratch_bytes = 0;

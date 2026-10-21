@@ -29,6 +29,11 @@ struct RuntimeConfig {
     uint64_t resident_budget_gib = 56;
     int spec = 4;
     float spec_min_p = 0.5f;
+    std::string decode_strategy = "auto";
+    int spec_max_draft = 0;
+    int spec_lookup_window = 65536;
+    int spec_cost_window = 16;
+    bool spec_trace = false;
     int expert_cache_slots = 0; // -1 for auto, 0 for off, >0 explicit
     int64_t prefill_chunk = 512;
     int pool_workers = 0;
@@ -45,8 +50,15 @@ struct GenerationRequest {
     int max_new_tokens = 512;
     float temperature = 0.0f; // 0.0 = greedy
     float top_p = 1.0f;
+    float min_p = 0.0f;
     int top_k = 0;
+    int penalty_last_n = 0;
+    float penalty_repeat = 1.0f;
+    float penalty_freq = 0.0f;
+    float penalty_present = 0.0f;
     uint64_t seed = 0;
+    std::string decode_strategy; // Optional per-request override ("normal", "mtp", "lookup", "retrieval", "adaptive")
+    int spec_max_draft = -1;     // Optional per-request override (-1 = use model config)
     std::vector<std::string> stop;
     std::shared_ptr<std::atomic<bool>> cancel_flag;
 };
@@ -114,6 +126,27 @@ struct RuntimeTelemetry {
     double decode_commit_ms = 0.0;
     double decode_logit_validation_ms = 0.0;
     int64_t decode_windows = 0;
+
+    // Phase 6.6: Adaptive speculative decoding & cost-aware scheduler telemetry
+    std::string decode_strategy_mode = "auto";
+    std::string decode_strategy_initial = "normal";
+    std::string decode_strategy_final = "normal";
+    std::string spec_fallback_reason = "none";
+    double decode_lookup_draft_ms = 0.0;
+    double decode_retrieval_draft_ms = 0.0;
+    double decode_scheduler_ms = 0.0;
+    double spec_ms_per_committed_token = 0.0;
+    double spec_estimated_normal_ms_per_token = 0.0;
+    double spec_estimated_speedup = 1.0;
+    double spec_avg_proposed_draft = 0.0;
+    double spec_avg_accepted_prefix = 0.0;
+    int64_t spec_strategy_switches = 0;
+    int64_t spec_fallback_count = 0;
+    int64_t spec_normal_windows = 0;
+    int64_t spec_mtp_windows = 0;
+    int64_t spec_lookup_windows = 0;
+    int64_t spec_retrieval_windows = 0;
+    uint64_t spec_drafter_memory_bytes = 0;
 };
 
 struct StartupProfile {

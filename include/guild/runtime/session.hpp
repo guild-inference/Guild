@@ -24,6 +24,11 @@ public:
     // Resets session conversation/KV history
     void reset();
 
+    // Session-local retrieval datastore controls (strictly isolated to this session)
+    void ingest_retrieval_tokens(const int32_t* ids, size_t n);
+    void clear_retrieval_corpus();
+    size_t retrieval_corpus_tokens() const;
+
     // Signals in-flight generation to cancel immediately
     void cancel();
 

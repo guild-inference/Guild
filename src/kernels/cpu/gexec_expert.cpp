@@ -957,7 +957,11 @@ GEXEC_AVX2_TARGET void gexec_iq4nl_rows_nt(const uint8_t* w, size_t row_bytes, i
 
 void gexec_iq4nl_down_rows(const uint8_t* w, size_t row_bytes, int n, const void* const* hq, int nt, float* const* out,
                            int r0, int r1) {
-    if (nt == 1) {
+    static const int mt_min = [] {
+        const char* e = std::getenv("GUILD_IQ_MT_MIN");
+        return e ? std::atoi(e) : 2;
+    }();
+    if (nt < mt_min) {
         const auto* y0 = (const block_q8_0*) hq[0];
         const int nb = n / QK4_NL;
         int r = r0;
@@ -975,6 +979,7 @@ void gexec_iq4nl_down_rows(const uint8_t* w, size_t row_bytes, int n, const void
     for (int t = 0; t < std::min(nt, 4); ++t)
         y[t] = (const block_q8_0*) hq[t];
     switch (nt) {
+    case 1: gexec_iq4nl_rows_nt<1>(w, row_bytes, n, y, out, r0, r1); break;
     case 2: gexec_iq4nl_rows_nt<2>(w, row_bytes, n, y, out, r0, r1); break;
     case 3: gexec_iq4nl_rows_nt<3>(w, row_bytes, n, y, out, r0, r1); break;
     case 4: gexec_iq4nl_rows_nt<4>(w, row_bytes, n, y, out, r0, r1); break;
@@ -1370,7 +1375,7 @@ GEXEC_AVX2_TARGET void iq256_row_dot_1row(const uint8_t* row, int nblocks, const
         const char* e = std::getenv("GUILD_IQ_MT_MIN");
         return e ? std::atoi(e) : 2;
     }();
-    const bool use_ggml_reduce = (NT == 1) || cpu_avx512_ok() || no_iq256 || (NT < mt_min);
+    const bool use_ggml_reduce = cpu_avx512_ok() || no_iq256 || (NT < mt_min);
     __m256 accf[NT];
     for (int t = 0; t < NT; ++t)
         accf[t] = _mm256_setzero_ps();
@@ -1511,7 +1516,7 @@ GEXEC_AVX2_TARGET void gexec_iq4xs_gu_rows_nt(const uint8_t* blob, size_t gu_row
         const char* e = std::getenv("GUILD_IQ_MT_MIN");
         return e ? std::atoi(e) : 2;
     }();
-    const bool use_ggml_reduce = (NT == 1) || cpu_avx512_ok() || no_iq256 || (NT < mt_min);
+    const bool use_ggml_reduce = cpu_avx512_ok() || no_iq256 || (NT < mt_min);
     const __m128i values = _mm_loadu_si128((const __m128i*) kvalues_iq4nl);
     const __m128i m4b = _mm_set1_epi8(0x0f);
     const block_q8_K* y[NT];

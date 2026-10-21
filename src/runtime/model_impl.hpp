@@ -30,6 +30,7 @@
 #include "guild/kernels/ple.hpp"
 #include "guild/kernels/s2_expert_grouped.hpp"
 #include "guild/kernels/shared_expert.hpp"
+#include "guild/kernels/gdn_multi.hpp"
 #include "guild/kernels/native_moe.hpp"
 #include "guild/kernels/native_gdn.hpp"
 #include "guild/kernels/native_router.hpp"
@@ -43,7 +44,9 @@
 #include "guild/prefill/prefill.hpp"
 #include "guild/runtime/batched_prefill.hpp"
 #include "guild/runtime/performance.hpp"
+#include "guild/spec/adaptive_scheduler.hpp"
 #include "guild/spec/draft_policy.hpp"
+#include "guild/spec/retrieval_drafter.hpp"
 #include "guild/spec/suffix_drafter.hpp"
 
 #include <chrono>
@@ -157,6 +160,8 @@ struct GuildModel::Impl {
     std::unique_ptr<core::MtpDrafter> mtp;
     std::unique_ptr<core::Verifier> ver;
     Drive drive;
+    spec::GExecSpecCalibration spec_calibration;
+    std::atomic<int> active_sessions{0};
 
     // Primary session state & prefill engine
     std::shared_ptr<core::ModelExecutionState> exec_state;

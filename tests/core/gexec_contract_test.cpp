@@ -204,12 +204,26 @@ void test_autotune_and_heterogeneous_plan() {
     hplan.gpu_layers = {1, 1, 1, 1};
     hplan.pcie_numerators = {0, 0, 0, 0};
     hplan.expert_cache_slots = 2496;
+    hplan.spec_calibrated = true;
+    hplan.verify_window_ms = {20.1, 27.5, 34.9, 42.3, 49.7, 57.1, 64.5, 71.9};
+    hplan.verify_cpu_expert_ms = {12.5, 19.8, 27.0, 34.2, 41.4, 48.6, 55.8, 63.0};
+    hplan.distinct_expert_ratio = {1.0, 1.79, 2.56, 3.31, 4.04, 4.75, 5.44, 6.11};
+    hplan.mtp_draft_step_ms = 1.55;
+    hplan.mtp_kv_catchup_ms = 0.35;
+    hplan.lookup_draft_ms = 0.012;
+    hplan.retrieval_draft_ms = 0.024;
+    hplan.kv_commit_ms = 0.12;
 
     const std::string hjson = hplan.to_json();
     GExecHeterogeneousPlan loaded_hplan;
     CHECK(GExecHeterogeneousPlan::from_json(hjson, loaded_hplan, err));
     CHECK(loaded_hplan.expert_cache_slots == 2496);
     CHECK(loaded_hplan.numa_policy == "interleave");
+    CHECK(loaded_hplan.spec_calibrated);
+    CHECK(loaded_hplan.verify_window_ms.size() == 8);
+    CHECK(std::abs(loaded_hplan.verify_window_ms[0] - 20.1) < 1e-6);
+    CHECK(std::abs(loaded_hplan.lookup_draft_ms - 0.012) < 1e-6);
+    CHECK(std::abs(loaded_hplan.retrieval_draft_ms - 0.024) < 1e-6);
 
     std::string bad_hjson = hjson;
     const auto hpos = bad_hjson.find("2496");

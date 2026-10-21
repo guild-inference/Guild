@@ -467,6 +467,30 @@ std::string GExecHeterogeneousPlan::to_json() const {
         pn.arr_val.push_back(JsonValue(static_cast<int64_t>(v)));
     root["pcie_numerators"] = std::move(pn);
 
+    if (spec_calibrated || !verify_window_ms.empty()) {
+        root["spec_calibrated"] = spec_calibrated;
+        JsonValue vwm(std::vector<JsonValue>{});
+        for (double v : verify_window_ms)
+            vwm.arr_val.push_back(JsonValue(v));
+        root["verify_window_ms"] = std::move(vwm);
+
+        JsonValue vcm(std::vector<JsonValue>{});
+        for (double v : verify_cpu_expert_ms)
+            vcm.arr_val.push_back(JsonValue(v));
+        root["verify_cpu_expert_ms"] = std::move(vcm);
+
+        JsonValue der(std::vector<JsonValue>{});
+        for (double v : distinct_expert_ratio)
+            der.arr_val.push_back(JsonValue(v));
+        root["distinct_expert_ratio"] = std::move(der);
+
+        root["mtp_draft_step_ms"] = mtp_draft_step_ms;
+        root["mtp_kv_catchup_ms"] = mtp_kv_catchup_ms;
+        root["lookup_draft_ms"] = lookup_draft_ms;
+        root["retrieval_draft_ms"] = retrieval_draft_ms;
+        root["kv_commit_ms"] = kv_commit_ms;
+    }
+
     root["digest"] = models::Sha256::hash_string(root.dump());
     return root.dump_pretty();
 }
@@ -512,6 +536,31 @@ bool GExecHeterogeneousPlan::from_json(const std::string& json_str, GExecHeterog
             out.pcie_numerators.push_back(static_cast<int32_t>(v.as_int(0)));
         }
     }
+    if (root.contains("spec_calibrated")) {
+        out.spec_calibrated = root["spec_calibrated"].as_bool(false);
+    }
+    if (root.contains("verify_window_ms") && root["verify_window_ms"].is_array()) {
+        for (const auto& v : root["verify_window_ms"].arr_val)
+            out.verify_window_ms.push_back(v.as_double(0.0));
+    }
+    if (root.contains("verify_cpu_expert_ms") && root["verify_cpu_expert_ms"].is_array()) {
+        for (const auto& v : root["verify_cpu_expert_ms"].arr_val)
+            out.verify_cpu_expert_ms.push_back(v.as_double(0.0));
+    }
+    if (root.contains("distinct_expert_ratio") && root["distinct_expert_ratio"].is_array()) {
+        for (const auto& v : root["distinct_expert_ratio"].arr_val)
+            out.distinct_expert_ratio.push_back(v.as_double(0.0));
+    }
+    if (root.contains("mtp_draft_step_ms"))
+        out.mtp_draft_step_ms = root["mtp_draft_step_ms"].as_double(0.0);
+    if (root.contains("mtp_kv_catchup_ms"))
+        out.mtp_kv_catchup_ms = root["mtp_kv_catchup_ms"].as_double(0.0);
+    if (root.contains("lookup_draft_ms"))
+        out.lookup_draft_ms = root["lookup_draft_ms"].as_double(0.0);
+    if (root.contains("retrieval_draft_ms"))
+        out.retrieval_draft_ms = root["retrieval_draft_ms"].as_double(0.0);
+    if (root.contains("kv_commit_ms"))
+        out.kv_commit_ms = root["kv_commit_ms"].as_double(0.0);
     return true;
 }
 

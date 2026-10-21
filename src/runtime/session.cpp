@@ -32,7 +32,10 @@ struct GuildSession::Impl {
     GuildModel* model = nullptr;
     int64_t max_context = 262144;
     std::unique_ptr<spec::SuffixDrafter> sfx;
+    std::unique_ptr<spec::RetrievalDrafter> retrieval;
+    std::unique_ptr<spec::AdaptiveDecodeScheduler> scheduler;
     std::unique_ptr<spec::DraftPolicy> policy;
+    std::mutex spec_mutex;
     model::SessionRunnerLease runner_lease;
     kernels::SessionKernelLease kernel_lease;
     std::atomic<bool> cancelled{false};
@@ -45,10 +48,26 @@ GuildSession::GuildSession(GuildModel* model, int64_t max_context)
     impl_->model = model;
     impl_->model_impl = model ? model->impl_ : nullptr;
     auto* m_impl = impl_->model_impl.get();
+    if (m_impl)
+        m_impl->active_sessions.fetch_add(1);
     impl_->max_context = max_context > 0 ? max_context : (m_impl ? m_impl->config.max_context : 262144);
+    const size_t lookup_win =
+        (size_t) std::clamp<int64_t>(m_impl ? m_impl->config.spec_lookup_window : 65536, 256, 1 << 20);
     // Speculative state is sized for this session's context; the leases are re-taken here (not inherited) so that
     // a session created after the model was loaded is just as protected against a package swap as the model is.
-    impl_->sfx = std::make_unique<spec::SuffixDrafter>(3, 64, (size_t) impl_->max_context + 4096);
+    impl_->sfx = std::make_unique<spec::SuffixDrafter>(3, 64, lookup_win);
+    impl_->sfx->set_max_history(lookup_win);
+    impl_->retrieval = std::make_unique<spec::RetrievalDrafter>(3, 64, lookup_win, lookup_win);
+    spec::SchedulerConfig scfg;
+    if (m_impl) {
+        spec::parse_decode_strategy_mode(m_impl->config.decode_strategy, scfg.mode);
+        scfg.max_draft = std::max(0, m_impl->config.spec - 1);
+        scfg.cost_window = std::max(4, m_impl->config.spec_cost_window);
+        scfg.mtp_min_prob = m_impl->config.spec_min_p;
+        impl_->scheduler = std::make_unique<spec::AdaptiveDecodeScheduler>(scfg, m_impl->spec_calibration);
+    } else {
+        impl_->scheduler = std::make_unique<spec::AdaptiveDecodeScheduler>(scfg);
+    }
     impl_->policy = std::make_unique<spec::DraftPolicy>(m_impl ? m_impl->config.spec : 2);
     impl_->runner_lease = model::SessionRunnerLease(
         &model::ModelRunnerRegistry::instance(),
@@ -57,10 +76,24 @@ GuildSession::GuildSession(GuildModel* model, int64_t max_context)
         &kernels::KernelRegistry::instance(), m_impl ? m_impl->kernel_lease.package_ids() : std::vector<std::string>{});
 }
 
-GuildSession::~GuildSession() = default;
+GuildSession::~GuildSession() {
+    if (impl_ && impl_->model_impl)
+        impl_->model_impl->active_sessions.fetch_sub(1);
+}
 
 void GuildSession::reset() {
-    if (!impl_ || !impl_->model_impl)
+    if (!impl_)
+        return;
+    {
+        std::lock_guard<std::mutex> slock(impl_->spec_mutex);
+        if (impl_->sfx)
+            impl_->sfx->reset();
+        if (impl_->retrieval)
+            impl_->retrieval->reset_all();
+        if (impl_->scheduler)
+            impl_->scheduler->reset_session_stats();
+    }
+    if (!impl_->model_impl)
         return;
     auto* m_impl = impl_->model_impl.get();
     // The model-wide generation lock: reset rewrites state (KV, MTP, cache counters) that an in-flight generation
@@ -85,6 +118,27 @@ void GuildSession::reset() {
         core::qsa_state_zero(m_impl->mtp->kv_state(), m_impl->g, m_impl->main_stream);
     if (cudaStreamSynchronize(m_impl->main_stream) != cudaSuccess)
         m_impl->ready->store(false);
+}
+
+void GuildSession::ingest_retrieval_tokens(const int32_t* ids, size_t n) {
+    if (!impl_ || !impl_->retrieval || ids == nullptr || n == 0)
+        return;
+    std::lock_guard<std::mutex> slock(impl_->spec_mutex);
+    impl_->retrieval->ingest_corpus(ids, n);
+}
+
+void GuildSession::clear_retrieval_corpus() {
+    if (!impl_ || !impl_->retrieval)
+        return;
+    std::lock_guard<std::mutex> slock(impl_->spec_mutex);
+    impl_->retrieval->clear_corpus();
+}
+
+size_t GuildSession::retrieval_corpus_tokens() const {
+    if (!impl_ || !impl_->retrieval)
+        return 0;
+    std::lock_guard<std::mutex> slock(impl_->spec_mutex);
+    return impl_->retrieval->corpus_size();
 }
 
 // Lock-free on purpose: cancel is called from a signal handler path and from the server's shutdown thread while a
@@ -203,11 +257,66 @@ bool GuildSession::generate(const GenerationRequest& req, TokenStreamCallback on
         return runtime_failure();
     }
 
+    // Resolve speculative decoding strategy and maximum draft depth for this request
+    spec::DecodeStrategyMode eff_mode = spec::DecodeStrategyMode::Auto;
+    spec::parse_decode_strategy_mode(m_impl->config.decode_strategy, eff_mode);
+    if (!req.decode_strategy.empty() && !spec::parse_decode_strategy_mode(req.decode_strategy, eff_mode)) {
+        error_msg = "invalid request decode_strategy '" + req.decode_strategy + "'";
+        return false;
+    }
+
+    const int S = std::max(1, m_impl->config.spec);
+    int max_draft = 0;
+    if (req.spec_max_draft >= 0) {
+        max_draft = std::min(req.spec_max_draft, S - 1);
+    } else if (m_impl->config.spec_max_draft > 0) {
+        max_draft = std::min(m_impl->config.spec_max_draft, S - 1);
+    } else if (eff_mode == spec::DecodeStrategyMode::Auto) {
+        max_draft = (m_impl->plan.mtp_spec_tokens > 0 && m_impl->mtp != nullptr) ? (S - 1) : 0;
+    } else if (eff_mode == spec::DecodeStrategyMode::Normal) {
+        max_draft = 0;
+    } else {
+        max_draft = S - 1;
+    }
+
+    const bool use_mtp = (m_impl->mtp != nullptr) && (max_draft > 0) &&
+                         (eff_mode == spec::DecodeStrategyMode::Auto || eff_mode == spec::DecodeStrategyMode::Mtp ||
+                          eff_mode == spec::DecodeStrategyMode::Adaptive);
+    const bool need_lookup = (max_draft > 0) && (eff_mode == spec::DecodeStrategyMode::Lookup ||
+                                                 eff_mode == spec::DecodeStrategyMode::Adaptive);
+    const bool need_retrieval = (max_draft > 0) && (eff_mode == spec::DecodeStrategyMode::Retrieval ||
+                                                    eff_mode == spec::DecodeStrategyMode::Adaptive);
+
+    {
+        std::lock_guard<std::mutex> slock(impl_->spec_mutex);
+        spec::SchedulerConfig scfg;
+        scfg.mode = eff_mode;
+        scfg.max_draft = max_draft;
+        scfg.cost_window = std::max(4, m_impl->config.spec_cost_window);
+        scfg.mtp_min_prob = m_impl->config.spec_min_p;
+        impl_->scheduler->configure(scfg);
+        impl_->scheduler->reset_session_stats();
+
+        if (impl_->retrieval)
+            impl_->retrieval->reset_stream();
+        if (impl_->sfx)
+            impl_->sfx->reset();
+
+        if (need_lookup || need_retrieval || (impl_->retrieval && impl_->retrieval->corpus_size() > 0)) {
+            std::vector<int32_t> prompt_i32(ids.size());
+            for (size_t i = 0; i < ids.size(); ++i)
+                prompt_i32[i] = static_cast<int32_t>(ids[i]);
+            if (need_lookup && impl_->sfx)
+                impl_->sfx->append(prompt_i32.data(), prompt_i32.size());
+            if ((need_retrieval || (impl_->retrieval && impl_->retrieval->corpus_size() > 0)) && impl_->retrieval)
+                impl_->retrieval->append_stream(prompt_i32.data(), prompt_i32.size());
+        }
+    }
+
     // Reset prefill stats
     auto t_req_start = Clock::now();
     auto t_prefill_start = Clock::now();
 
-    bool use_mtp = m_impl->mtp != nullptr;
     if (use_mtp)
         m_impl->mtp->set_prompt_len(n_prompt);
     if (m_impl->prefill) {
@@ -335,9 +444,12 @@ bool GuildSession::generate(const GenerationRequest& req, TokenStreamCallback on
     int32_t x = static_cast<int32_t>(ids.back());
     int64_t p = n_prompt - 1;
 
-    const int S = std::max(1, m_impl->config.spec);
+    const bool spec_trace = m_impl->config.spec_trace || (std::getenv("GUILD_SPEC_TRACE") != nullptr &&
+                                                          std::atoi(std::getenv("GUILD_SPEC_TRACE")) != 0);
     std::vector<int32_t> window(static_cast<size_t>(S), 0);
     std::vector<int32_t> drafts(static_cast<size_t>(S), 0);
+    std::vector<int32_t> lookup_drafts(static_cast<size_t>(S), 0);
+    std::vector<int32_t> retrieval_drafts(static_cast<size_t>(S), 0);
     std::vector<int32_t> outv(static_cast<size_t>(S), 0);
     std::vector<float> dprob(static_cast<size_t>(S), 1.0f);
 
@@ -346,19 +458,69 @@ bool GuildSession::generate(const GenerationRequest& req, TokenStreamCallback on
     bool eos = false;
     bool client_aborted = false;
 
-    // Set sampling parameters
+    // Set sampling parameters and optional repetition/frequency/presence penalty history
+    const int pen_h = (req.penalty_last_n > 0 &&
+                       (req.penalty_repeat != 1.0f || req.penalty_freq != 0.0f || req.penalty_present != 0.0f))
+                          ? std::min(req.penalty_last_n, 4096)
+                          : 0;
     kernels::SamplerParams sp_params;
     sp_params.temperature = req.temperature;
     sp_params.top_p = req.top_p;
+    sp_params.min_p = req.min_p;
     sp_params.top_k = req.top_k;
+    sp_params.penalty_last_n = pen_h;
+    sp_params.penalty_repeat = req.penalty_repeat;
+    sp_params.penalty_freq = req.penalty_freq;
+    sp_params.penalty_present = req.penalty_present;
     sp_params.seed = req.seed;
-    sp_params.greedy = req.temperature <= 0;
+    sp_params.greedy = (req.temperature <= 0.0f) && (pen_h == 0);
     m_impl->ver->set_sampling(sp_params);
-    if (use_mtp)
+    if (use_mtp) {
         m_impl->mtp->set_draft_sampling(sp_params);
+        m_impl->mtp->set_max_drafts(max_draft);
+    }
+
+    struct PenaltyHistoryGuard {
+        core::Verifier* ver = nullptr;
+        int32_t* d_rows = nullptr;
+        ~PenaltyHistoryGuard() {
+            if (ver)
+                ver->set_history(nullptr, 0);
+            if (d_rows)
+                cudaFree(d_rows);
+        }
+    } pen_guard{m_impl->ver.get(), nullptr};
+    std::vector<int32_t> pen_consumed;
+    std::vector<int32_t> pen_rows_host;
+    if (pen_h > 0) {
+        if (cudaMalloc((void**) &pen_guard.d_rows, (size_t) kernels::kVerifyMaxT * (size_t) pen_h * sizeof(int32_t)) !=
+            cudaSuccess) {
+            error_msg = "failed to allocate device penalty history buffer";
+            return runtime_failure();
+        }
+        pen_rows_host.assign((size_t) kernels::kVerifyMaxT * (size_t) pen_h, -1);
+        pen_consumed.reserve((size_t) (n_prompt + req.max_new_tokens));
+        for (int64_t i = 0; i < n_prompt - 1; ++i)
+            pen_consumed.push_back(static_cast<int32_t>(ids[(size_t) i]));
+        m_impl->ver->set_history(pen_guard.d_rows, pen_h);
+    } else {
+        m_impl->ver->set_history(nullptr, 0);
+    }
 
     std::string text_accum;
     auto decoder = m_impl->tokenizer->create_incremental_decoder(true);
+
+    spec::CandidateSource cur_source = spec::CandidateSource::Normal;
+    int cur_proposed_k = 0;
+    int cur_match_len = 0;
+    double cur_draft_ms = 0.0;
+    double cur_lookup_ms = 0.0;
+    double cur_retrieval_ms = 0.0;
+    double cur_sched_ms = 0.0;
+    float mtp_prob_ema = 0.85f;
+    const int mtp_cap_k = (m_impl->plan.mtp_spec_tokens > 0)
+                              ? std::min(max_draft, std::max(1, m_impl->plan.mtp_spec_tokens - 1))
+                              : max_draft;
 
     while (produced_n < req.max_new_tokens && !eos) {
         if (impl_->cancelled.load() || (req.cancel_flag && req.cancel_flag->load())) {
@@ -366,16 +528,10 @@ bool GuildSession::generate(const GenerationRequest& req, TokenStreamCallback on
             break;
         }
 
-        int T = S;
-        if (use_mtp && m_impl->config.spec_min_p > 0.0f) {
-            T = 1;
-            while (T < S && dprob[static_cast<size_t>(T - 1)] >= m_impl->config.spec_min_p)
-                ++T;
-        }
-        // There are no valid draft IDs before the first round or without a drafter.
-        if (first_window || !use_mtp)
-            T = 1;
+        int T = first_window ? 1 : (1 + cur_proposed_k);
+        T = std::clamp(T, 1, S);
         T = std::min(T, req.max_new_tokens - produced_n);
+        const int actual_proposed_k = T - 1;
 
         if (p + T > impl_->max_context) {
             telemetry.finish_reason = "length";
@@ -387,31 +543,65 @@ bool GuildSession::generate(const GenerationRequest& req, TokenStreamCallback on
             window[static_cast<size_t>(i)] = drafts[static_cast<size_t>(i - 1)];
         }
 
+        if (pen_h > 0) {
+            kernels::penalty_rows(pen_consumed.data(), (int64_t) pen_consumed.size(), window.data(), T, pen_h,
+                                  pen_rows_host.data());
+            if (cudaMemcpy(pen_guard.d_rows, pen_rows_host.data(), (size_t) T * (size_t) pen_h * sizeof(int32_t),
+                           cudaMemcpyHostToDevice) != cudaSuccess) {
+                error_msg = "failed to upload penalty history rows";
+                return runtime_failure();
+            }
+        }
+
         m_impl->drive.d.layers = 0;
         m_impl->drive.d.experts = 0;
+        const int64_t misses_w0 = m_impl->drive.d.multi_misses;
+        const double cpu_w0 = m_impl->drive.cpu_ms;
         const double cap_w0 = m_impl->ver->ms_capture;
+        const auto t_ver0 = Clock::now();
         if (!m_impl->ver->run(T, window.data(), p, drive_pool_multi, &m_impl->drive, outv.data(), error_msg)) {
             return runtime_failure();
         }
+        const auto t_ver1 = Clock::now();
         verified_entries += int64_t(T) * m_impl->K * m_impl->g.n_layers;
 
         int a = 0;
         while (a < T - 1 && window[static_cast<size_t>(a + 1)] == outv[static_cast<size_t>(a)])
             ++a;
 
+        const auto t_com0 = Clock::now();
         if (!m_impl->ver->commit(a + 1, error_msg)) {
             return runtime_failure();
         }
+        const auto t_com1 = Clock::now();
+
+        const double cap_delta_ms = std::max(0.0, m_impl->ver->ms_capture - cap_w0);
+        const double raw_ver_ms = std::chrono::duration<double, std::milli>(t_ver1 - t_ver0).count();
+        const double exec_ver_ms = std::max(0.05, raw_ver_ms - cap_delta_ms);
+        const double com_ms = std::chrono::duration<double, std::milli>(t_com1 - t_com0).count();
+        const double win_cpu_ms = std::max(0.0, m_impl->drive.cpu_ms - cpu_w0);
+        const int64_t win_distinct_experts = std::max<int64_t>(0, m_impl->drive.d.multi_misses - misses_w0);
+
+        const bool was_first_window = first_window;
         if (first_window) {
-            telemetry.first_window_capture_ms = m_impl->ver->ms_capture - cap_w0;
+            telemetry.first_window_capture_ms = cap_delta_ms;
             telemetry.ttft_ms = std::chrono::duration<double, std::milli>(Clock::now() - t_req_start).count();
+            impl_->scheduler->seed_single_token_verify(exec_ver_ms + com_ms, win_distinct_experts);
         }
 
-        telemetry.drafts_offered += (T - 1);
+        telemetry.drafts_offered += actual_proposed_k;
         telemetry.drafts_accepted += a;
         first_window = false;
 
+        if (pen_h > 0) {
+            for (int i = 0; i <= a; ++i)
+                pen_consumed.push_back(window[(size_t) i]);
+        }
+
         // Emit accepted tokens
+        int committed_in_win = 0;
+        const bool track_stream =
+            need_lookup || need_retrieval || (impl_->retrieval && impl_->retrieval->corpus_size() > 0);
         for (int i = 0; i <= a && produced_n < req.max_new_tokens && !eos; ++i) {
             int32_t tid = outv[static_cast<size_t>(i)];
             std::string tok_str = decoder->add(tid);
@@ -438,19 +628,162 @@ bool GuildSession::generate(const GenerationRequest& req, TokenStreamCallback on
             }
 
             ++produced_n;
-            if (impl_->sfx)
+            ++committed_in_win;
+            if (need_lookup && impl_->sfx)
                 impl_->sfx->append(tid);
+            if (track_stream && impl_->retrieval)
+                impl_->retrieval->append_stream(tid);
         }
 
-        if (client_aborted || eos)
+        if (!was_first_window) {
+            spec::IterationObservation obs;
+            obs.source = cur_source;
+            obs.proposed_k = actual_proposed_k;
+            obs.accepted_k = a;
+            obs.committed_tokens = std::max(1, committed_in_win);
+            obs.match_len = cur_match_len;
+            obs.draft_ms = cur_draft_ms;
+            obs.lookup_probe_ms = cur_lookup_ms;
+            obs.retrieval_probe_ms = cur_retrieval_ms;
+            obs.verify_ms = exec_ver_ms;
+            obs.commit_ms = com_ms;
+            obs.cpu_expert_ms = win_cpu_ms;
+            obs.scheduler_ms = cur_sched_ms;
+            obs.distinct_experts = win_distinct_experts;
+            impl_->scheduler->observe(obs);
+        }
+
+        if (client_aborted || eos || produced_n >= req.max_new_tokens)
             break;
 
-        // MTP Draft for next round
-        if (use_mtp && produced_n < req.max_new_tokens) {
+        // Safe verification boundary: select strategy and prepare draft tokens for the next window
+        int lookup_k = 0;
+        double lookup_ms = 0.0;
+        if (need_lookup && impl_->sfx) {
+            const auto tl0 = Clock::now();
+            lookup_k = impl_->sfx->propose(max_draft, lookup_drafts.data());
+            lookup_ms = std::chrono::duration<double, std::milli>(Clock::now() - tl0).count();
+        }
+
+        int retrieval_k = 0;
+        double retrieval_ms = 0.0;
+        const bool do_retrieval_probe =
+            need_retrieval && impl_->retrieval &&
+            (eff_mode == spec::DecodeStrategyMode::Retrieval || impl_->retrieval->corpus_size() > 0);
+        if (do_retrieval_probe) {
+            const auto tr0 = Clock::now();
+            retrieval_k = impl_->retrieval->propose(max_draft, retrieval_drafts.data());
+            retrieval_ms = std::chrono::duration<double, std::milli>(Clock::now() - tr0).count();
+        }
+
+        const auto ts0 = Clock::now();
+        spec::ProposalAvailability avail;
+        avail.mtp_available = use_mtp;
+        avail.mtp_max_k = use_mtp ? mtp_cap_k : 0;
+        avail.mtp_first_prob = (eff_mode == spec::DecodeStrategyMode::Mtp || eff_mode == spec::DecodeStrategyMode::Auto)
+                                   ? 1.0f
+                                   : mtp_prob_ema;
+        avail.lookup_k = lookup_k;
+        avail.lookup_match_len = (need_lookup && impl_->sfx) ? impl_->sfx->last_match() : 0;
+        avail.lookup_freq = (need_lookup && impl_->sfx) ? impl_->sfx->last_freq() : 1;
+        avail.retrieval_k = retrieval_k;
+        avail.retrieval_match_len = do_retrieval_probe ? impl_->retrieval->last_match() : 0;
+        avail.retrieval_candidates = do_retrieval_probe ? impl_->retrieval->last_candidates() : 0;
+        avail.retrieval_confidence = do_retrieval_probe ? impl_->retrieval->last_confidence() : 0.0f;
+        avail.context_tokens = p + a + 1;
+        avail.active_sessions = std::max(1, m_impl->active_sessions.load());
+
+        const spec::ScheduleDecision dec = impl_->scheduler->choose(avail);
+        cur_sched_ms = std::chrono::duration<double, std::milli>(Clock::now() - ts0).count();
+
+        cur_source = dec.source;
+        cur_proposed_k = dec.draft_k;
+        cur_match_len = 0;
+        cur_lookup_ms = lookup_ms;
+        cur_retrieval_ms = retrieval_ms;
+        cur_draft_ms = lookup_ms + retrieval_ms;
+
+        if (dec.source == spec::CandidateSource::Mtp && dec.draft_k > 0 && use_mtp) {
+            m_impl->mtp->set_max_drafts(dec.draft_k);
+            if (pen_h > 0 && m_impl->mtp->coupled()) {
+                m_impl->mtp->set_draft_history(pen_consumed.data(), (int64_t) pen_consumed.size(),
+                                               outv[static_cast<size_t>(a)]);
+            }
+            int n_drafted = 0;
+            const double mtp_ms_before = m_impl->mtp->ms_draft;
             if (!m_impl->mtp->draft(T, outv.data(), p, a, drafts.data(), error_msg, dprob.data(),
-                                    m_impl->config.spec_min_p)) {
+                                    m_impl->config.spec_min_p, &n_drafted)) {
                 return runtime_failure();
             }
+            cur_draft_ms += std::max(0.0, m_impl->mtp->ms_draft - mtp_ms_before);
+            mtp_prob_ema = 0.70f * mtp_prob_ema + 0.30f * dprob[0];
+
+            // Honor MTP confidence threshold (spec_min_p)
+            int valid_mtp_k = 0;
+            if (m_impl->config.spec_min_p > 0.0f) {
+                while (valid_mtp_k < dec.draft_k && valid_mtp_k < n_drafted &&
+                       dprob[(size_t) valid_mtp_k] >= m_impl->config.spec_min_p) {
+                    ++valid_mtp_k;
+                }
+            } else {
+                valid_mtp_k = std::min(dec.draft_k, n_drafted);
+            }
+            cur_proposed_k = valid_mtp_k;
+            if (cur_proposed_k == 0) {
+                // MTP draft confidence fell below spec_min_p; in Adaptive mode, allow high-confidence Lookup fallback.
+                if (eff_mode == spec::DecodeStrategyMode::Adaptive && lookup_k > 0 && avail.lookup_match_len >= 4) {
+                    cur_source = spec::CandidateSource::Lookup;
+                    cur_proposed_k = std::min(max_draft, lookup_k);
+                    cur_match_len = avail.lookup_match_len;
+                    for (int i = 0; i < cur_proposed_k; ++i)
+                        drafts[(size_t) i] = lookup_drafts[(size_t) i];
+                } else {
+                    cur_source = spec::CandidateSource::Normal;
+                }
+            }
+        } else if (dec.source == spec::CandidateSource::Lookup && dec.draft_k > 0) {
+            mtp_prob_ema = 0.85f * mtp_prob_ema + 0.15f * 0.85f;
+            cur_proposed_k = std::min(dec.draft_k, lookup_k);
+            cur_match_len = avail.lookup_match_len;
+            for (int i = 0; i < cur_proposed_k; ++i)
+                drafts[(size_t) i] = lookup_drafts[(size_t) i];
+            if (use_mtp) {
+                const auto tm0 = Clock::now();
+                if (!m_impl->mtp->prefill(m_impl->ver->final_R_all(), outv.data(), a + 1, p, error_msg))
+                    return runtime_failure();
+                cur_draft_ms += std::chrono::duration<double, std::milli>(Clock::now() - tm0).count();
+            }
+        } else if (dec.source == spec::CandidateSource::Retrieval && dec.draft_k > 0) {
+            mtp_prob_ema = 0.85f * mtp_prob_ema + 0.15f * 0.85f;
+            cur_proposed_k = std::min(dec.draft_k, retrieval_k);
+            cur_match_len = avail.retrieval_match_len;
+            for (int i = 0; i < cur_proposed_k; ++i)
+                drafts[(size_t) i] = retrieval_drafts[(size_t) i];
+            if (use_mtp) {
+                const auto tm0 = Clock::now();
+                if (!m_impl->mtp->prefill(m_impl->ver->final_R_all(), outv.data(), a + 1, p, error_msg))
+                    return runtime_failure();
+                cur_draft_ms += std::chrono::duration<double, std::milli>(Clock::now() - tm0).count();
+            }
+        } else {
+            mtp_prob_ema = 0.85f * mtp_prob_ema + 0.15f * 0.85f;
+            cur_source = spec::CandidateSource::Normal;
+            cur_proposed_k = 0;
+            if (use_mtp) {
+                const auto tm0 = Clock::now();
+                if (!m_impl->mtp->prefill(m_impl->ver->final_R_all(), outv.data(), a + 1, p, error_msg))
+                    return runtime_failure();
+                cur_draft_ms += std::chrono::duration<double, std::milli>(Clock::now() - tm0).count();
+            }
+        }
+
+        if (spec_trace) {
+            std::fprintf(stderr,
+                         "guild spec trace [pos=%lld]: src=%s k=%d exp_tok=%.2f exp_ms/tok=%.2f norm_ms/tok=%.2f "
+                         "speedup=%.2fx switched=%d reason=%s\n",
+                         (long long) (p + a + 1), spec::candidate_source_to_string(cur_source), cur_proposed_k,
+                         dec.expected_tokens, dec.expected_ms_per_token, dec.normal_ms_per_token, dec.estimated_speedup,
+                         (int) dec.switched, dec.reason);
         }
 
         p += (a + 1);
@@ -495,7 +828,36 @@ bool GuildSession::generate(const GenerationRequest& req, TokenStreamCallback on
     telemetry.decode_cpu_quant_ms = m_impl->pool ? (m_impl->pool->ms_multi_q - quant_before) : 0.0;
     telemetry.decode_cpu_down_ms = m_impl->pool ? (m_impl->pool->ms_multi_down - down_before) : 0.0;
     telemetry.decode_logit_validation_ms = m_impl->ver->ms_logit_validation - logits_validation_before;
-    telemetry.decode_verify_ms = std::max(0.0, telemetry.decode_ms - telemetry.decode_mtp_draft_ms);
+    if (impl_->scheduler) {
+        const auto st = impl_->scheduler->snapshot();
+        telemetry.decode_strategy_mode = st.mode_name;
+        telemetry.decode_strategy_initial = st.initial_strategy;
+        telemetry.decode_strategy_final = st.final_strategy;
+        telemetry.spec_fallback_reason = st.last_switch_reason;
+        telemetry.decode_lookup_draft_ms = st.total_lookup_ms;
+        telemetry.decode_retrieval_draft_ms = st.total_retrieval_ms;
+        telemetry.decode_scheduler_ms = st.total_scheduler_ms;
+        telemetry.spec_ms_per_committed_token =
+            (produced_n > 0 && telemetry.decode_ms > 0.0) ? (telemetry.decode_ms / (double) produced_n) : 0.0;
+        telemetry.spec_estimated_normal_ms_per_token = st.estimated_normal_ms_per_token;
+        telemetry.spec_estimated_speedup =
+            (telemetry.spec_ms_per_committed_token > 1e-6)
+                ? (st.estimated_normal_ms_per_token / telemetry.spec_ms_per_committed_token)
+                : 1.0;
+        telemetry.spec_avg_proposed_draft = st.avg_proposed_draft_len;
+        telemetry.spec_avg_accepted_prefix = st.avg_accepted_prefix_len;
+        telemetry.spec_strategy_switches = st.strategy_switches;
+        telemetry.spec_fallback_count = st.fallback_to_normal_count;
+        telemetry.spec_normal_windows = st.normal_iterations + 1; // +1 for initial TTFT single-token window
+        telemetry.spec_mtp_windows = st.mtp_iterations;
+        telemetry.spec_lookup_windows = st.lookup_iterations;
+        telemetry.spec_retrieval_windows = st.retrieval_iterations;
+    }
+    telemetry.spec_drafter_memory_bytes =
+        (impl_->sfx ? impl_->sfx->memory_bytes() : 0) + (impl_->retrieval ? impl_->retrieval->memory_bytes() : 0);
+    telemetry.decode_verify_ms =
+        std::max(0.0, telemetry.decode_ms - telemetry.decode_mtp_draft_ms - telemetry.decode_lookup_draft_ms -
+                          telemetry.decode_retrieval_draft_ms - telemetry.decode_scheduler_ms);
     (void) capture_before;
     if (decode_timing) {
         const int64_t windows = m_impl->ver->windows - windows_before;

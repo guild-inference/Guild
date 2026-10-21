@@ -168,8 +168,14 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
         sp.runner_and_plan_ms += ms_since(run_t0);
     }
     if (plan.context_length <= 0 || plan.context_length > desc.attn.context_length || plan.mtp_spec_tokens < 0 ||
-        plan.mtp_spec_tokens > kernels::kVerifyMaxT) {
+        plan.mtp_spec_tokens > kernels::kVerifyMaxT || plan.spec_max_draft < 0 ||
+        plan.spec_max_draft >= kernels::kVerifyMaxT) {
         error_msg = "model load: invalid context or verification capacity";
+        return nullptr;
+    }
+    spec::DecodeStrategyMode parsed_mode = spec::DecodeStrategyMode::Auto;
+    if (!plan.decode_strategy.empty() && !spec::parse_decode_strategy_mode(plan.decode_strategy, parsed_mode)) {
+        error_msg = "model load: unknown decode strategy '" + plan.decode_strategy + "'";
         return nullptr;
     }
     if (!std::isfinite(plan.pcie_expert_fraction) ||
@@ -198,7 +204,20 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
     impl->config.kv_host_only = (plan.kv_mode == memory::KvMode::HostOnly);
     impl->config.kv_resident = plan.kv_resident;
     impl->config.shared_early = plan.shared_early;
-    impl->config.spec = std::max(2, plan.mtp_spec_tokens);
+    impl->config.decode_strategy = spec::decode_strategy_mode_to_string(parsed_mode);
+    impl->config.spec_max_draft = plan.spec_max_draft;
+    impl->config.spec_lookup_window = plan.spec_lookup_window > 0 ? plan.spec_lookup_window : 65536;
+    impl->config.spec_cost_window = plan.spec_cost_window > 0 ? plan.spec_cost_window : 16;
+    impl->config.spec_trace = plan.spec_trace;
+    if (plan.spec_max_draft > 0) {
+        impl->config.spec = std::clamp(1 + plan.spec_max_draft, 2, kernels::kVerifyMaxT);
+    } else if (parsed_mode == spec::DecodeStrategyMode::Lookup || parsed_mode == spec::DecodeStrategyMode::Retrieval ||
+               parsed_mode == spec::DecodeStrategyMode::Adaptive) {
+        const int base_draft = (plan.mtp_spec_tokens >= 2) ? (plan.mtp_spec_tokens - 1) : 4;
+        impl->config.spec = std::clamp(1 + base_draft, 2, kernels::kVerifyMaxT);
+    } else {
+        impl->config.spec = std::max(2, plan.mtp_spec_tokens);
+    }
     impl->config.spec_min_p = plan.spec_min_p;
     impl->config.pool_workers = plan.pool_workers;
     impl->config.expert_cache_slots = plan.routed_experts_in_gpu;
@@ -902,7 +921,14 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
 
     // MTP Drafter
     const auto mtp_t0 = Clock::now();
-    bool use_mtp = !paths.mtp_dir.empty() && plan.mtp_spec_tokens > 0;
+    const bool mode_wants_mtp =
+        (parsed_mode == spec::DecodeStrategyMode::Auto || parsed_mode == spec::DecodeStrategyMode::Mtp ||
+         parsed_mode == spec::DecodeStrategyMode::Adaptive);
+    const bool use_mtp =
+        !paths.mtp_dir.empty() && mode_wants_mtp &&
+        (plan.mtp_spec_tokens > 0 ||
+         ((parsed_mode == spec::DecodeStrategyMode::Mtp || parsed_mode == spec::DecodeStrategyMode::Adaptive) &&
+          plan.spec_max_draft > 0));
     if (use_mtp) {
         impl->mtp = std::make_unique<core::MtpDrafter>();
         if (!impl->mtp->load(paths.mtp_dir, impl->g, impl->ss, impl->config.spec, error_msg)) {
@@ -911,6 +937,52 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
         }
     }
     sp.mtp_init_ms += ms_since(mtp_t0);
+
+    // Initialize speculative cost calibration (from GEXEC artifact when present, or model geometry priors).
+    {
+        auto& cal = impl->spec_calibration;
+        const int64_t n_layers = std::max<int64_t>(1, impl->g.n_layers);
+        const int64_t n_exp = std::max<int64_t>(1, impl->g.n_expert);
+        const int64_t k_act = std::max<int64_t>(1, impl->K);
+        const double p_single = std::clamp((double) k_act / (double) n_exp, 0.001, 0.5);
+        const double cpu_1 = (n_exp >= 512) ? (0.46 * (double) n_layers) : (0.31 * (double) n_layers);
+        const double gpu_1 = (n_exp >= 512) ? (0.30 * (double) n_layers) : (0.18 * (double) n_layers);
+        for (int T = 1; T <= spec::GExecSpecCalibration::kMaxWindowT; ++T) {
+            const double eff_trials = 1.0 + 0.80 * (double) (T - 1);
+            const double u_ratio =
+                (T == 1) ? 1.0 : std::clamp((1.0 - std::pow(1.0 - p_single, eff_trials)) / p_single, 1.0, (double) T);
+            const double uses_per_expert = (double) T / u_ratio;
+            const double cpu_T = cpu_1 * u_ratio * (1.0 + 0.22 * (uses_per_expert - 1.0));
+            const double gpu_T = gpu_1 * (1.0 + 0.14 * (double) (T - 1));
+            cal.distinct_expert_ratio[T] = u_ratio;
+            cal.verify_cpu_expert_ms[T] = cpu_T;
+            cal.verify_window_ms[T] = cpu_T + gpu_T;
+        }
+        if (impl->gexec && impl->gexec->has_section(gexec::GExecSectionKind::HeterogeneousPlan)) {
+            const auto& hp = impl->gexec->heterogeneous_plan();
+            if (hp.spec_calibrated && hp.verify_window_ms.size() >= 8) {
+                cal.calibrated = true;
+                for (int T = 1; T <= 8; ++T) {
+                    if (hp.verify_window_ms[(size_t) (T - 1)] > 0.0)
+                        cal.verify_window_ms[T] = hp.verify_window_ms[(size_t) (T - 1)];
+                    if (hp.verify_cpu_expert_ms.size() >= 8 && hp.verify_cpu_expert_ms[(size_t) (T - 1)] > 0.0)
+                        cal.verify_cpu_expert_ms[T] = hp.verify_cpu_expert_ms[(size_t) (T - 1)];
+                    if (hp.distinct_expert_ratio.size() >= 8 && hp.distinct_expert_ratio[(size_t) (T - 1)] > 0.0)
+                        cal.distinct_expert_ratio[T] = hp.distinct_expert_ratio[(size_t) (T - 1)];
+                }
+                if (hp.mtp_draft_step_ms > 0.0)
+                    cal.mtp_draft_step_ms = hp.mtp_draft_step_ms;
+                if (hp.mtp_kv_catchup_ms > 0.0)
+                    cal.mtp_kv_catchup_ms = hp.mtp_kv_catchup_ms;
+                if (hp.lookup_draft_ms > 0.0)
+                    cal.lookup_draft_ms = hp.lookup_draft_ms;
+                if (hp.retrieval_draft_ms > 0.0)
+                    cal.retrieval_draft_ms = hp.retrieval_draft_ms;
+                if (hp.kv_commit_ms > 0.0)
+                    cal.kv_commit_ms = hp.kv_commit_ms;
+            }
+        }
+    }
 
     // Verifier
     const auto ver_t0 = Clock::now();

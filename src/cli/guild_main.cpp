@@ -240,6 +240,21 @@ int cmd_inspect(int argc, char** argv) {
                           << std::setprecision(1) << r.median_latency_us << " us)\n";
             }
         }
+        if (greader.has_section(guild::gexec::GExecSectionKind::HeterogeneousPlan)) {
+            const auto& hp = greader.heterogeneous_plan();
+            if (hp.spec_calibrated && hp.verify_window_ms.size() >= 4) {
+                std::cout << "\n"
+                          << bold() << "Speculative Cost Calibration:" << reset() << "\n"
+                          << "  Verify T=1..4    " << std::fixed << std::setprecision(2) << hp.verify_window_ms[0]
+                          << " / " << hp.verify_window_ms[1] << " / " << hp.verify_window_ms[2] << " / "
+                          << hp.verify_window_ms[3] << " ms\n"
+                          << "  Distinct Experts " << std::fixed << std::setprecision(2) << hp.distinct_expert_ratio[0]
+                          << "x / " << hp.distinct_expert_ratio[1] << "x / " << hp.distinct_expert_ratio[2] << "x / "
+                          << hp.distinct_expert_ratio[3] << "x\n"
+                          << "  Lookup / Retr    " << std::fixed << std::setprecision(4) << hp.lookup_draft_ms
+                          << " ms / " << hp.retrieval_draft_ms << " ms\n";
+            }
+        }
         if (greader.has_section(guild::gexec::GExecSectionKind::DiagnosticLog)) {
             const auto& dlog = greader.diagnostic_log();
             std::cout << "\n"
@@ -341,6 +356,11 @@ int cmd_serve(int argc, char** argv) {
     bool force_mock = false;
     std::string gexec_path;
     std::string optimize_mode_str;
+    std::string decode_strategy = "auto";
+    int spec_max_draft = 0;
+    int spec_lookup_window = 65536;
+    int spec_cost_window = 16;
+    bool spec_trace = false;
 
     int64_t prefill_batch = 0;
 
@@ -358,6 +378,16 @@ int cmd_serve(int argc, char** argv) {
             gexec_path = argv[++i];
         else if (arg == "--optimize-mode" && i + 1 < argc)
             optimize_mode_str = argv[++i];
+        else if (arg == "--decode-strategy" && i + 1 < argc)
+            decode_strategy = argv[++i];
+        else if (arg == "--spec-max-draft" && i + 1 < argc)
+            spec_max_draft = std::atoi(argv[++i]);
+        else if (arg == "--spec-lookup-window" && i + 1 < argc)
+            spec_lookup_window = std::atoi(argv[++i]);
+        else if (arg == "--spec-cost-window" && i + 1 < argc)
+            spec_cost_window = std::atoi(argv[++i]);
+        else if (arg == "--spec-trace")
+            spec_trace = true;
         else if (arg == "--verbose")
             verbose = true;
         else if (arg == "--quiet")
@@ -386,7 +416,12 @@ int cmd_serve(int argc, char** argv) {
                       << "  --json          Output machine-readable JSON status & JSONL telemetry\n"
                       << "  --no-tui        Disable ANSI terminal dashboard, emit sequential logs\n"
                       << "  --mock          Run with mock inference engine for testing\n";
-            std::cout << "  --prefill-batch N Generic prompt batch (0 auto, 1..512)\n";
+            std::cout << "  --prefill-batch N Generic prompt batch (0 auto, 1..512)\n"
+                      << "  --decode-strategy <auto|normal|mtp|lookup|retrieval|adaptive>\n"
+                      << "  --spec-max-draft N      Maximum speculative draft tokens (1..7)\n"
+                      << "  --spec-lookup-window N  Token history capacity for lookup/retrieval\n"
+                      << "  --spec-cost-window N    Sliding window for online cost estimation\n"
+                      << "  --spec-trace            Emit per-iteration speculative scheduler diagnostics\n";
             return 0;
         }
     }
@@ -412,6 +447,11 @@ int cmd_serve(int argc, char** argv) {
     planner_opts.context_length = desc.attn.context_length;
     auto plan = guild::memory::MemoryPlanner::plan(desc, hw, planner_opts);
     plan.prefill_batch = prefill_batch;
+    plan.decode_strategy = decode_strategy;
+    plan.spec_max_draft = spec_max_draft;
+    plan.spec_lookup_window = spec_lookup_window;
+    plan.spec_cost_window = spec_cost_window;
+    plan.spec_trace = spec_trace;
     auto val = guild::memory::MemoryPlanner::validate(plan, hw, desc);
     if (!force_mock && !val.valid) {
         std::cerr << "guild serve: memory plan validation failed: "
@@ -1055,6 +1095,11 @@ int cmd_run(int argc, char** argv) {
     std::string data_dir;
     std::string gexec_path;
     std::string optimize_mode_str;
+    std::string decode_strategy = "auto";
+    int spec_max_draft = 0;
+    int spec_lookup_window = 65536;
+    int spec_cost_window = 16;
+    bool spec_trace = false;
     bool force_mock = false;
     int64_t prefill_batch = 0;
 
@@ -1066,6 +1111,16 @@ int cmd_run(int argc, char** argv) {
             gexec_path = argv[++i];
         else if (arg == "--optimize-mode" && i + 1 < argc)
             optimize_mode_str = argv[++i];
+        else if (arg == "--decode-strategy" && i + 1 < argc)
+            decode_strategy = argv[++i];
+        else if (arg == "--spec-max-draft" && i + 1 < argc)
+            spec_max_draft = std::atoi(argv[++i]);
+        else if (arg == "--spec-lookup-window" && i + 1 < argc)
+            spec_lookup_window = std::atoi(argv[++i]);
+        else if (arg == "--spec-cost-window" && i + 1 < argc)
+            spec_cost_window = std::atoi(argv[++i]);
+        else if (arg == "--spec-trace")
+            spec_trace = true;
         else if (arg == "--prefill-batch") {
             if (i + 1 >= argc || !parse_prefill_batch(argv[++i], prefill_batch)) {
                 std::cerr << "--prefill-batch requires 0(auto) or an integer in 1..512\n";
@@ -1079,7 +1134,12 @@ int cmd_run(int argc, char** argv) {
             std::cout << "Usage: guild run [model] [options]\n"
                       << "  --mock          Run with mock inference engine for testing\n"
                       << "  --data-dir PATH Custom data directory for Guild model store\n";
-            std::cout << "  --prefill-batch N Generic prompt batch (0 auto, 1..512)\n";
+            std::cout << "  --prefill-batch N Generic prompt batch (0 auto, 1..512)\n"
+                      << "  --decode-strategy <auto|normal|mtp|lookup|retrieval|adaptive>\n"
+                      << "  --spec-max-draft N      Maximum speculative draft tokens (1..7)\n"
+                      << "  --spec-lookup-window N  Token history capacity for lookup/retrieval\n"
+                      << "  --spec-cost-window N    Sliding window for online cost estimation\n"
+                      << "  --spec-trace            Emit per-iteration speculative scheduler diagnostics\n";
             return 0;
         }
     }
@@ -1124,6 +1184,11 @@ int cmd_run(int argc, char** argv) {
     popts.context_length = desc.attn.context_length;
     auto plan = guild::memory::MemoryPlanner::plan(desc, hw, popts);
     plan.prefill_batch = prefill_batch;
+    plan.decode_strategy = decode_strategy;
+    plan.spec_max_draft = spec_max_draft;
+    plan.spec_lookup_window = spec_lookup_window;
+    plan.spec_cost_window = spec_cost_window;
+    plan.spec_trace = spec_trace;
     auto val = guild::memory::MemoryPlanner::validate(plan, hw, desc);
     if (!force_mock && !val.valid) {
         std::cerr << "guild run: execution plan validation failed:\n";

@@ -26,6 +26,15 @@ bool GuildSession::generate(const GenerationRequest& req, TokenStreamCallback on
 
 void GuildSession::reset() {
 }
+void GuildSession::ingest_retrieval_tokens(const int32_t* ids, size_t n) {
+    (void) ids;
+    (void) n;
+}
+void GuildSession::clear_retrieval_corpus() {
+}
+size_t GuildSession::retrieval_corpus_tokens() const {
+    return 0;
+}
 void GuildSession::cancel() {
 }
 

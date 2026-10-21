@@ -30,6 +30,8 @@
 #include "guild/model/runner.hpp"
 #include "guild/models/sha256.hpp"
 #include "guild/server/json.hpp"
+#include "guild/spec/retrieval_drafter.hpp"
+#include "guild/spec/suffix_drafter.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -1023,6 +1025,78 @@ bool run_autotune_pass(const artifact::GPackReader& gpack, const GExecArtifactId
     return true;
 }
 
+void calibrate_speculative_costs(const artifact::GPackReader& gpack, double optimized_cpu_decode_ms,
+                                 GExecHeterogeneousPlan& hp) {
+    const auto& desc = gpack.descriptor();
+    const int64_t n_layers = std::max<int64_t>(1, desc.attn.n_layers);
+    const int64_t n_expert = std::max<int64_t>(1, desc.moe.n_routed_experts);
+    const int64_t k_active = std::max<int64_t>(1, desc.moe.k_active_experts);
+
+    // 1. Measure draftless lookup and retrieval proposal latencies on this CPU over a 4096-token sequence.
+    spec::SuffixDrafter sfx(3, 32, 4096);
+    spec::RetrievalDrafter ret(3, 48, 4096, 4096);
+    std::vector<int32_t> synth(4096);
+    for (size_t i = 0; i < synth.size(); ++i)
+        synth[i] = static_cast<int32_t>((i % 251) + 100);
+    // Repeat a 16-token suffix at the end so lookup/retrieval exercise full candidate matching and ranking.
+    for (size_t i = 0; i < 16; ++i)
+        synth[4080 + i] = synth[1024 + i];
+    sfx.append(synth.data(), synth.size());
+    ret.ingest_corpus(synth.data(), 2048);
+    ret.append_stream(synth.data() + 2048, 2048);
+
+    int32_t draft_out[8] = {};
+    for (int w = 0; w < 8; ++w) {
+        (void) sfx.propose(4, draft_out);
+        (void) ret.propose(4, draft_out);
+    }
+    std::vector<double> sfx_samples(32), ret_samples(32);
+    for (size_t it = 0; it < 32; ++it) {
+        const auto t0 = std::chrono::steady_clock::now();
+        (void) sfx.propose(4, draft_out);
+        const auto t1 = std::chrono::steady_clock::now();
+        (void) ret.propose(4, draft_out);
+        const auto t2 = std::chrono::steady_clock::now();
+        sfx_samples[it] = std::chrono::duration<double, std::milli>(t1 - t0).count();
+        ret_samples[it] = std::chrono::duration<double, std::milli>(t2 - t1).count();
+    }
+    std::sort(sfx_samples.begin(), sfx_samples.end());
+    std::sort(ret_samples.begin(), ret_samples.end());
+    hp.lookup_draft_ms = std::max(0.001, sfx_samples[sfx_samples.size() / 2]);
+    hp.retrieval_draft_ms = std::max(0.001, ret_samples[ret_samples.size() / 2]);
+
+    // 2. Calibrate MoE multi-token verification cost curve for window sizes T = 1..8.
+    const double cpu_1 = (optimized_cpu_decode_ms > 0.5) ? optimized_cpu_decode_ms : (0.28 * (double) n_layers);
+    // Estimate single-token GPU dense + attention + sync overhead from layer count and architecture.
+    const double gpu_per_layer_ms = (n_expert >= 512) ? 0.30 : 0.18;
+    const double gpu_1 = std::max(2.0, gpu_per_layer_ms * (double) n_layers);
+
+    hp.calibrated_cpu_ms = cpu_1;
+    hp.calibrated_gpu_ms = gpu_1;
+    hp.verify_window_ms.resize(8);
+    hp.verify_cpu_expert_ms.resize(8);
+    hp.distinct_expert_ratio.resize(8);
+
+    const double p_single = std::clamp((double) k_active / (double) n_expert, 0.001, 0.5);
+    const double corr = 0.20; // Adjacent token routing correlation in autoregressive text.
+    for (int T = 1; T <= 8; ++T) {
+        const double eff_trials = 1.0 + (1.0 - corr) * (double) (T - 1);
+        const double u_ratio =
+            (T == 1) ? 1.0 : std::clamp((1.0 - std::pow(1.0 - p_single, eff_trials)) / p_single, 1.0, (double) T);
+        const double uses_per_expert = (double) T / u_ratio;
+        const double cpu_T = cpu_1 * u_ratio * (1.0 + 0.22 * (uses_per_expert - 1.0));
+        const double gpu_T = gpu_1 * (1.0 + 0.14 * (double) (T - 1));
+        hp.distinct_expert_ratio[(size_t) (T - 1)] = u_ratio;
+        hp.verify_cpu_expert_ms[(size_t) (T - 1)] = cpu_T;
+        hp.verify_window_ms[(size_t) (T - 1)] = cpu_T + gpu_T;
+    }
+
+    hp.mtp_draft_step_ms = 1.55;
+    hp.mtp_kv_catchup_ms = 0.35;
+    hp.kv_commit_ms = 0.12;
+    hp.spec_calibrated = true;
+}
+
 } // namespace
 
 GExecOptimizeResult optimize_gpack(const GExecOptimizeOptions& opts,
@@ -1225,6 +1299,7 @@ GExecOptimizeResult optimize_gpack(const GExecOptimizeOptions& opts,
         const size_t n_layers = gpack.expert_layers().size();
         hp.gpu_layers.assign(n_layers, 1u);
         hp.pcie_numerators.assign(n_layers, 0);
+        calibrate_speculative_costs(gpack, ckpt.diag_log.optimized_decode_ms, hp);
         ckpt.hplan = std::move(hp);
         ckpt.last_completed_pass = 4;
         save_checkpoint_atomic(progress_path, ckpt);
@@ -1423,6 +1498,7 @@ bool regenerate_gexec_section(const std::string& gexec_path, const std::string& 
         hp.identity = id;
         hp.numa_policy = (id.hardware.numa_nodes > 1) ? "interleave" : "process";
         hp.use_thp_hugepages = id.hardware.thp_madvise_available || (gpack.total_expert_bytes() >= (1ull << 30));
+        calibrate_speculative_costs(gpack, reader.diagnostic_log().optimized_decode_ms, hp);
         builder.set_heterogeneous_plan(hp);
     } else if (section_kind == GExecSectionKind::WorkspaceRecipe) {
         GExecWorkspaceRecipe wr = reader.workspace_recipe();
