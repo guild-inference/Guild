@@ -258,3 +258,149 @@ All runs executed with `GUILD_IQ_MT_MIN=1`, `--gexec qwen-65k-s0.gexec` / `qwen-
 - **Remaining Limitations**:
   - Secondary workstation validation (AMD Ryzen 5 5600X + NVIDIA RTX 5070) remains pending physical hardware access.
   - On Qwen3.8-Flash-Next, exact bit-for-bit greedy parity across different verification window sizes ($T=1$ vs $T \ge 2$) requires `GUILD_IQ_MT_MIN=1` so `IQ3_S`/`IQ2_S`/`IQ4_NL` CPU expert kernels use the same SIMD reduction tree at `nt == 1` and `nt >= 2`.
+
+---
+
+## 8. Phase 6.6.1: Hardware-Calibrated Adaptive Decode Optimization
+
+Following Phase 6.6 (`ed7a5db`), we executed a focused, measurement-driven optimization pass on the adaptive decoding scheduler, GEXEC hardware calibration, and MTP catch-up path.
+
+### 8.1 Audit of Performance-Sensitive Constants & Heuristics
+
+Every parameter in `AdaptiveDecodeScheduler`, `SuffixDrafter`, `RetrievalDrafter`, `GExecSpecCalibration`, and `GuildSession::generate` was audited and classified into:
+- **A**: Correctness, ABI, or bounded-$O(1)$ memory/latency safety invariant.
+- **B**: Explicit user-configurable policy.
+- **C**: Hardware-dependent performance estimate (measured in `guild optimize` and refined online).
+- **D**: Workload-dependent statistical estimate (learned online per session via Beta-Binomial posteriors).
+- **E**: Unnecessary or poorly justified heuristic (replaced or eliminated).
+
+| Parameter / Constant | Phase 6.6 Value | Category | Phase 6.6.1 Treatment & Justification |
+| :--- | :--- | :---: | :--- |
+| `kVerifyMaxT = 8`, `kMaxDraft = 7` | `8` / `7` | **A** | **Retained**: Fixed CUDA graph and device verification buffer capacity bound. |
+| `SuffixDrafter::WAYS = 4`, `RetrievalDrafter::WAYS = 8`, `kMaxProbe = 16`, `kMaxCandidates = 16` | `4, 8, 16, 16` | **A** | **Retained**: Guarantees zero heap allocations and $O(1)$ worst-case lookup latency (`< 0.005 ms`) on the token path. |
+| `mode`, `max_draft`, `spec_lookup_window`, `spec_cost_window`, `mtp_min_prob` | CLI defaults | **B** | **Retained**: Explicit CLI and per-request user controls (`--decode-strategy`, `--spec-max-draft`, etc.). |
+| `verify_window_ms[1..8]`, `verify_cpu_expert_ms[1..8]` | Analytic formula with fixed `0.22` `nt=2` multiplier and `pool_nt=2` inflation when `--spec 2` | **C** | **Measured in `guild optimize` + decomposed online**: `calibrate_speculative_costs` now benchmarks the host `ExpertPool` on the model's real expert layer at `nt=1`, `nt=2` (`alpha_nt2`), and `2 * k_active` (`pool_2k_scale`). At runtime, `seed_single_token_verify(verify_ms, experts, cpu_expert_ms)` measures the live CPU-vs-GPU verification split (`live_cpu_fraction_`) on window 0. |
+| `concurrency_slope` | Fixed `0.15` per extra session | **C** | **Measured in `guild optimize`**: Derived from measured `ExpertPool` oversubscription (`2 * k_active` vs `k_active` task dispatch latency) and persisted in `.gexec` (`+2.0%` per extra session on 32C Xeon). |
+| ` hysteresis_margin = 0.05` | Fixed `5%` | **C / D** | **Calibrated from hardware timing noise CV**: `guild optimize` records IQR/median dispersion `verify_noise_cv` in `.gexec`, and `AdaptiveDecodeScheduler` updates `online_verify_cv_` from live verification residuals (`effective_hysteresis_margin = clamp(1.25 * online_verify_cv_, 0.018, 0.10)`). |
+| `rej_penalty = std::pow(0.68, rej)` and `reexplore_interval = 24` | Fixed `0.68^rej` and `24`-step exile | **E** | **Replaced with sample-size-aware Beta-Binomial posterior**: Tracks decayed successes $S_i$ and trials $N_i$ with virtual failure weight $0.55\,r(r+1)$ in the denominator ($\hat{p}_i = S_i / (N_i + 0.55\,r(r+1))$). Cold-start drafters ($N_0 \approx 3$) back off after 2 misses, while established high-acceptance drafters ($N_0 \approx 20$, e.g. `Qwen W3` at `80.6%`) survive normal Bernoulli misses without 24-step exile. |
+| Coarse 4-bucket lookup table (`match_bucket`) | Ignored candidate agreement ratio `freq / candidates` | **D / E** | **Upgraded to continuous match-length + consensus-prefix scoring**: `SuffixDrafter` now computes `last_candidates()` (among equal-length peers `cand_len[j] == best_len`) and `last_consensus_k()`, flagging variable counter slots (`3/3` divergent continuations $\implies \text{consensus\_k} = 0$) while immediately boosting unanimous template spans (`freq >= 2, agreement == 1.0`). |
+| `MtpDrafter::prefill` E-4 branch on decode catch-up (`n <= max_t_`) | Entered multi-group heap `std::vector` + `cudaFree`/`cudaMalloc` path for `n = 1..5` | **E** | **Eliminated for `n <= max_t_`**: Changed gate in `src/core/mtp.cpp` to `if (!per_group_sync && n > max_t_)` so decode-time MTP KV catch-up uses the zero-allocation mapped-memory graph `prefill_exec_[T]` and excludes one-time graph capture from `ms_prefill`. |
+
+---
+
+### 8.2 Root-Cause Resolution of Targeted Phase 6.6 Gaps
+
+1. **Qwen W3 (JSON Schema): `21.66 tok/s` (Phase 6.6) $\rightarrow$ `23.52 tok/s` (Phase 6.6.1), matching/beating Fixed MTP (`23.43 tok/s`)**:
+   - **Root Cause**: In Phase 6.6, `MTP` achieved `80.6%` (`25/31`) acceptance on `W3`, but hit two consecutive Bernoulli rejections mid-stream (which occurs with probability $1 - (1 - 0.194^2)^{31} = 69.5\%$ over 32 windows). Multiplying by `0.68^2 = 0.46` and enforcing `reexplore_interval = 24` locked `Adaptive` in `Normal` for `25` windows (`+220 ms`).
+   - **Fix**: Sample-size-aware Beta-Binomial posterior (`mtp_succ_[0] / (mtp_trials_[0] + 0.55 * r * (r + 1))`) + `SuffixDrafter` counter-slot consensus filtering (`last_consensus_k() == 0` after `{"record_id": `). `Adaptive` now executes all `32` MTP windows (`0` wasted Lookup windows), improving throughput from `21.66 tok/s` (`46.17 ms/tok`) to **`23.52 tok/s` (`42.52 ms/tok`, `+8.6%`)**.
+2. **Qwen W2 (Summarization) & W4 (RAG Q&A)**:
+   - **Root Cause**: During `Lookup(k=4)` windows (`a + 1 = 5`), `MtpDrafter::prefill` entered the multi-group prompt-prefill path (`n > 0`), allocating a heap `std::vector`, reallocating `pf_dev_` via `cudaFree`/`cudaMalloc`, and capturing `prefill_dev_exec_[5]` inside the timed decode loop.
+   - **Fix**: Routing `n <= max_t_` to the mapped-memory `prefill_exec_[T]` graph in `src/core/mtp.cpp` improved `Qwen W2` `Adaptive` from `33.70 tok/s` to **`34.16`–`34.49 tok/s`** and `Qwen W4` `Adaptive` from `32.02 tok/s` to **`32.15`–`32.37 tok/s`**.
+3. **Qwen W9 (Short Interactive Chat `p=64, g=64`): `18.61 tok/s` (Phase 6.6) $\rightarrow$ `22.07 tok/s` (Phase 6.6.1, `+18.6%`)**:
+   - **Root Cause**: Early misses in short interactive responses triggered the 24-step `Normal` lock before `g=64` completed.
+   - **Fix**: Scaling neural MTP re-exploration as `clamp(2 * r, 2, 6)` allows rapid recovery after opening-token uncertainty, lifting `W9` `Adaptive` from `18.61 tok/s` to **`22.07 tok/s` (`45.30 ms/tok`)**.
+
+---
+
+### 8.3 Controlled Phase 6.6 vs Phase 6.6.1 Benchmark Comparison
+
+#### A. Ornith 1.5 35B (`ornith:35b`, GEXEC Calibrated — `100%` Bitwise Greedy Parity)
+
+| Workload | Strategy | Phase 6.6 (tok/s) | **Phase 6.6.1 (tok/s)** | **Phase 6.6.1 (ms/tok)** | Verify Windows | Drafts Off / Acc | Acc Rate | Mean Cost Pred Err (ms/tok) | Switches / Fallbacks |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **W1: Code Editing** | `normal` | `50.29` | `50.40` | `19.84` | `128` | `0 / 0` | `0.0%` | `0.08` | `0 / 0` |
+| | `lookup` | `50.91` | `51.28` | `19.50` | `86` | `79 / 42` | `53.2%` | `3.33` | `21 / 10` |
+| | **`adaptive`** | `52.98` | **`53.58`** | **`18.66`** | `99` | `37 / 29` | **`78.4%`** | **`1.13`** | `13 / 6` |
+| **W2: Summarization** | `normal` | `50.16` | `50.27` | `19.89` | `128` | `0 / 0` | `0.0%` | `0.07` | `0 / 0` |
+| | `lookup` | `81.93` | `82.19` | `12.17` | `27` | `104 / 101` | `97.1%` | `0.85` | `0 / 0` |
+| | **`adaptive`** | `80.65` | **`80.08`–`80.84`** | **`12.37`** | `28` | `100 / 100` | **`100.0%`** | **`0.65`** | `0 / 0` |
+| **W3: JSON Schema** | `normal` | `50.05` | `50.22` | `19.91` | `128` | `0 / 0` | `0.0%` | `0.09` | `0 / 0` |
+| | `lookup` | `76.87` | `77.12` | `12.97` | `31` | `104 / 97` | `93.3%` | `2.69` | `3 / 1` |
+| | **`adaptive`** | `75.54` | **`75.69`** | **`13.21`** | `33` | `99 / 95` | **`96.0%`** | **`2.05`** | `3 / 1` |
+| **W4: RAG Q&A** | `normal` | `49.93` | `50.19` | `19.93` | `128` | `0 / 0` | `0.0%` | `0.07` | `0 / 0` |
+| | `lookup` | `82.32` | `82.65` | `12.10` | `29` | `100 / 99` | `99.0%` | `2.10` | `2 / 1` |
+| | `retrieval` | `82.43` | `82.47` | `12.13` | `29` | `100 / 99` | `99.0%` | `1.98` | `2 / 1` |
+| | **`adaptive`** | `77.75` | **`77.98`** | **`12.82`** | `32` | `99 / 96` | **`97.0%`** | **`1.56`** | `2 / 1` |
+| **W5: Multi-Turn** | `normal` | `50.02` | `50.03` | `19.99` | `128` | `0 / 0` | `0.0%` | `0.10` | `0 / 0` |
+| | `lookup` | `68.27` | `68.32` | `14.64` | `40` | `107 / 88` | `82.2%` | `5.62` | `9 / 4` |
+| | `retrieval` | `68.38` | `68.31` | `14.64` | `40` | `107 / 88` | `82.2%` | `5.75` | `9 / 4` |
+| | **`adaptive`** | `69.79` | **`70.02`–`71.43`** | **`14.00`** | `43` | `91 / 85` | **`93.4%`** | **`2.12`** | `9 / 4` |
+| **W6: Boilerplate** | `normal` | `50.08` | `50.13` | `19.95` | `128` | `0 / 0` | `0.0%` | `0.08` | `0 / 0` |
+| | `lookup` | `76.99` | `77.17` | `12.96` | `34` | `94 / 94` | `100.0%` | `0.55` | `6 / 3` |
+| | **`adaptive`** | `74.18` | **`74.11`–`74.50`** | **`13.42`** | `39` | `89 / 89` | **`100.0%`** | **`0.65`** | `6 / 3` |
+| **W7: Creative Novel** | `normal` | `49.55` | `49.75` | `20.10` | `128` | `0 / 0` | `0.0%` | `0.30` | `0 / 0` |
+| | `lookup` | `48.84` | `48.84` | `20.48` | `127` | `8 / 1` | `12.5%` | `0.48` | `4 / 2` |
+| | **`adaptive`** | `49.53` | **`49.10`–`49.18`** | **`20.33`** | `128` | `3 / 0` | `0.0%` | **`0.31`** | `4 / 2` |
+| **W8: Math Reasoning** | `normal` | `50.15` | `50.28` | `19.89` | `128` | `0 / 0` | `0.0%` | `0.07` | `0 / 0` |
+| | `lookup` | `47.91` | `48.11` | `20.78` | `98` | `73 / 30` | `41.1%` | `3.96` | `29 / 14` |
+| | **`adaptive`** | `50.01` | **`49.42`–`50.41`** | **`19.84`** | `110` | `29 / 18` | `62.1%` | **`1.33`** | `19 / 9` |
+
+#### B. Qwen3.8-Flash-Next (`qwen3.8-flash-next`, GEXEC Calibrated — `100%` Bitwise Greedy Parity)
+
+| Workload | Strategy | Phase 6.6 (tok/s) | **Phase 6.6.1 (tok/s)** | **Phase 6.6.1 (ms/tok)** | Delta vs 6.6 | Verify Windows | Drafts Off / Acc | Acc Rate | Windows (`MTP / Lkp / Ret`) |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **W1: Code Editing** | `normal` | `18.42` | `18.46` | `54.17` | `+0.2%` | `64` | `0 / 0` | `0.0%` | `0 / 0 / 0` |
+| | `mtp` | `25.41` | `25.30` | `39.52` | `-0.4%` | `34` | `33 / 30` | `90.9%` | `33 / 0 / 0` |
+| | `lookup` | `17.85` | `17.75` | `56.32` | `-0.6%` | `57` | `24 / 7` | `29.2%` | `0 / 7 / 0` |
+| | **`adaptive`** | `25.39` | **`25.40`–`25.92`** | **`38.58`–`39.37`** | **`+0.0%` to `+2.1%`** | `32` | `35 / 32` | **`91.4%`** | **`29 / 2 / 0`** |
+| **W2: Summarization** | `normal` | `18.29` | `18.42` | `54.29` | `+0.7%` | `64` | `0 / 0` | `0.0%` | `0 / 0 / 0` |
+| | `mtp` | `25.72` | `25.37` | `39.42` | `-1.4%` | `33` | `31 / 31` | `100.0%` | `32 / 0 / 0` |
+| | `lookup` | `34.48` | `34.42` | `29.05` | `-0.2%` | `14` | `50 / 50` | `100.0%` | `0 / 13 / 0` |
+| | **`adaptive`** | `33.70` | **`34.16`–`34.49`** | **`28.99`–`29.28`** | **`+1.4%` to `+2.3%`** | `14` | `50 / 50` | **`100.0%`** | **`0 / 13 / 0`** |
+| **W3: JSON Schema** | `normal` | `18.42` | `18.33` | `54.56` | `-0.5%` | `64` | `0 / 0` | `0.0%` | `0 / 0 / 0` |
+| | `mtp` | `23.40` | `23.43` | `42.68` | `+0.1%` | `39` | `31 / 25` | `80.6%` | `32 / 0 / 0` |
+| | `lookup` | `17.40` | `17.39` | `57.51` | `-0.1%` | `64` | `9 / 0` | `0.0%` | `0 / 4 / 0` |
+| | **`adaptive`** | `21.66` | **`23.52`** | **`42.52`** | **`+8.6%`** | `39` | `31 / 25` | **`80.6%`** | **`32 / 0 / 0`** |
+| **W4: RAG Q&A** | `normal` | `18.34` | `18.32` | `54.58` | `-0.1%` | `64` | `0 / 0` | `0.0%` | `0 / 0 / 0` |
+| | `mtp` | `24.18` | `24.09` | `41.50` | `-0.4%` | `36` | `30 / 28` | `93.3%` | `31 / 0 / 0` |
+| | `lookup` | `32.92` | `32.81` | `30.48` | `-0.3%` | `17` | `48 / 47` | `97.9%` | `0 / 13 / 0` |
+| | **`adaptive`** | `32.02` | **`32.15`–`32.37`** | **`30.90`–`31.10`** | **`+0.4%` to `+1.1%`** | `17` | `49 / 47` | **`95.9%`** | **`2 / 13 / 0`** |
+| **W7: Creative Novel** | `normal` | `18.46` | `18.30` | `54.66` | `-0.9%` | `64` | `0 / 0` | `0.0%` | `0 / 0 / 0` |
+| | `mtp` | `22.41` | `22.47` | `44.51` | `+0.3%` | `41` | `30 / 23` | `76.7%` | `31 / 0 / 0` |
+| | `lookup` | `17.88` | `17.84` | `56.05` | `-0.2%` | `64` | `4 / 0` | `0.0%` | `0 / 1 / 0` |
+| | **`adaptive`** | `22.15` | **`22.43`** | **`44.58`** | **`+1.3%`** | `41` | `30 / 23` | **`76.7%`** | **`31 / 0 / 0`** |
+| **W8: Math Reasoning** | `normal` | `18.46` | `18.40` | `54.36` | `-0.3%` | `64` | `0 / 0` | `0.0%` | `0 / 0 / 0` |
+| | `mtp` | `23.92` | `23.94` | `41.76` | `+0.1%` | `37` | `32 / 27` | `84.4%` | `32 / 0 / 0` |
+| | `lookup` | `15.91` | `15.87` | `63.03` | `-0.3%` | `61` | `36 / 3` | `8.3%` | `0 / 9 / 0` |
+| | **`adaptive`** | `24.31` | **`23.68`** | **`42.23`** | `-2.6%` (`+49.2%` vs `lookup`) | `37` | `33 / 27` | `81.8%` | `31 / 1 / 0` |
+| **W9: Short Chat** | `normal` | `18.41` | `18.27` | `54.74` | `-0.8%` | `64` | `0 / 0` | `0.0%` | `0 / 0 / 0` |
+| | `mtp` | `23.27` | `23.24` | `43.03` | `-0.1%` | `39` | `31 / 25` | `80.6%` | `31 / 0 / 0` |
+| | `lookup` | `18.48` | `18.42` | `54.30` | `-0.3%` | `59` | `12 / 5` | `41.7%` | `0 / 3 / 0` |
+| | **`adaptive`** | `18.61` | **`22.07`** | **`45.30`** | **`+18.6%`** | `41` | `31 / 23` | **`74.2%`** | **`24 / 2 / 0`** |
+
+---
+
+### 8.4 Held-Out Validation Workload Suite (`H1`–`H4`, Unseen During Tuning)
+
+To verify that Phase 6.6.1 generalizes without overfitting to `W1`–`W10`, we evaluated 4 held-out prompts (`H1: SQL Migration View`, `H2: Linux Kernel/Daemon Syslog Extraction`, `H3: Deep-Space Sci-Fi Dialogue`, `H4: 2-Sphere Riemann Curvature Tensor Derivation`):
+
+| Model & Held-Out Workload | `normal` (tok/s) | `mtp` (tok/s) | `lookup` (tok/s) | **`adaptive` (tok/s)** | **`adaptive` vs `normal`** | **`adaptive` vs `lookup`** | Notes |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :--- |
+| **Ornith `H1`: SQL Migration** | `50.14` | — | `47.02` (`-6.2%`) | **`51.92`** | **`+3.6%`** | **`+10.4%`** | Beats both `normal` and `lookup` |
+| **Ornith `H2`: Syslog Extraction** | `49.54` | — | `65.68` | **`63.86`** | **`+28.9%`** | `-2.8%` | `87.3%` draft acceptance |
+| **Ornith `H3`: Sci-Fi Dialogue** | `50.15` | — | `51.48` | **`50.77`** | **`+1.2%`** | `-1.4%` | Beats `normal` on novel dialogue |
+| **Ornith `H4`: Riemann Tensor** | `50.16` | — | `42.07` (`-16.1%`) | **`47.92`** | `-4.5%` | **`+13.9%`** | Eliminates `lookup`'s `-16.1%` crash |
+| **Qwen `H1`: SQL Migration** | `18.42` | `25.66` | `18.33` | **`24.38`** | **`+32.4%`** | **`+33.0%`** | `84.2%` acceptance (`27` MTP + `4` Lkp) |
+| **Qwen `H2`: Syslog Extraction** | `18.36` | `23.43` | `21.44` | **`23.24`** | **`+26.6%`** | **`+8.4%`** | `83.9%` acceptance (`13` MTP + `7` Lkp) |
+| **Qwen `H3`: Sci-Fi Dialogue** | `18.41` | `20.82` | `18.29` | **`20.08`** | **`+9.1%`** | **`+9.8%`** | Selects `MTP` (`20` MTP, `0` Lkp) |
+| **Qwen `H4`: Riemann Tensor** | `18.38` | `24.85` | `21.68` | **`25.99`** | **`+41.4%`** | **`+19.9%`** | **Beats `normal`, `lookup`, AND `mtp` (`+4.6%`)** |
+
+---
+
+### 8.5 Reproducible Calibration & Validation Instructions for the Secondary Desktop (`Ryzen 5 5600X + RTX 5070`)
+
+When running on the secondary workstation (`AMD Ryzen 5 5600X 6C/12T AVX2, 32 GiB DDR4 + NVIDIA RTX 5070 Founders Edition 12 GiB GDDR7, sm_120`), server `.gexec` files are automatically rejected by `GExecArtifactIdentity::validate` (`CpuIsaMismatch` / `NumaTopologyMismatch` / `GpuArchitectureMismatch`) and regenerated locally:
+
+```bash
+# 1. Configure & build for RTX 5070 (Blackwell sm_120) + Ryzen 5 5600X (AVX2)
+cmake -S . -B build -DGUILD_ENABLE_CUDA=ON -DGUILD_BUILD_TESTS=ON -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j12
+
+# 2. Generate hardware-calibrated GEXEC artifacts on the desktop (measures Ryzen 5600X AVX2 ExpertPool T=1..8,
+#    6-core concurrency contention slope, lookup/retrieval latency, and timing noise CV)
+./build/guild optimize <path/to/model.gpack> --mode auto --context 32768 --prefill-batch 512 --spec 0 -o desktop-s0.gexec
+./build/guild inspect desktop-s0.gexec --plan
+
+# 3. Run adaptive decoding with live GPU+CPU T=1 split seeding
+./build/guild run <model> --gexec desktop-s0.gexec --decode-strategy adaptive --spec-max-draft 4
+```
