@@ -16,6 +16,7 @@
 #include "guild/kernels/rope.hpp"
 #include "guild/kernels/kv_q4.hpp"
 #include "guild/kernels/kv_q8.hpp"
+#include "guild/prefill/kernels.hpp"
 #include "guild/kernels/qsa_decode_attn.hpp"
 #include "guild/kernels/shared_expert.hpp"
 #include "guild/kernels/elementwise.hpp"
@@ -474,21 +475,29 @@ bool BatchedPrefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::st
                     // and st.host instead of round-tripping through st.host over PCIe.
                     core::qsa_kv_resolve(st, g, m.ident, m.steps + (T - 1) * kStepCount, 1, m.cap, cs);
                 }
-                for (int t = 0; t < T; ++t) {
-                    float* kt = m.k + size_t(t) * NK * HD;
-                    float* vt = m.v + size_t(t) * NK * HD;
-                    const int32_t* step_t = m.steps + t * kStepCount;
-                    if (st.kv_hybrid) {
-                        kv_append_q8_step(st.k_q, st.k_q, st.k_scale, st.k_scale, st.page_table, step_t, kt, kt, s, cs,
-                                          nullptr);
-                        kv_append_q4_step(st.v_q4, st.v_q4, st.page_table, step_t, vt, vt, s, cs, nullptr);
-                    } else if (st.kv_q4) {
-                        kv_append_q4_step(st.k_q4, st.v_q4, st.page_table, step_t, kt, vt, s, cs, &st.host);
-                    } else if (st.kv_int8) {
-                        kv_append_q8_step(st.k_q, st.v_q, st.k_scale, st.v_scale, st.page_table, step_t, kt, vt, s, cs,
-                                          &st.host);
-                    } else {
-                        kv_append_step(st.k_pool, st.v_pool, st.page_table, step_t, kt, vt, s, cs, &st.host);
+                if (!st.kv_hybrid && st.kv_q4 && HD == 256) {
+                    kv_append_q4(st.k_q4, st.v_q4, st.page_table, p0, T, m.k, m.v, s, cs, &st.host);
+                } else if (!st.kv_hybrid && !st.kv_q4 && NK == 2 && HD == 256) {
+                    prefill::kv_append(m.k, m.v, T, p0, st.page_table, s.page_size, st.kv_int8 ? nullptr : st.k_pool,
+                                       st.kv_int8 ? nullptr : st.v_pool, st.k_q, st.v_q, st.k_scale, st.v_scale, cs,
+                                       &st.host);
+                } else {
+                    for (int t = 0; t < T; ++t) {
+                        float* kt = m.k + size_t(t) * NK * HD;
+                        float* vt = m.v + size_t(t) * NK * HD;
+                        const int32_t* step_t = m.steps + t * kStepCount;
+                        if (st.kv_hybrid) {
+                            kv_append_q8_step(st.k_q, st.k_q, st.k_scale, st.k_scale, st.page_table, step_t, kt, kt, s,
+                                              cs, nullptr);
+                            kv_append_q4_step(st.v_q4, st.v_q4, st.page_table, step_t, vt, vt, s, cs, nullptr);
+                        } else if (st.kv_q4) {
+                            kv_append_q4_step(st.k_q4, st.v_q4, st.page_table, step_t, kt, vt, s, cs, &st.host);
+                        } else if (st.kv_int8) {
+                            kv_append_q8_step(st.k_q, st.v_q, st.k_scale, st.v_scale, st.page_table, step_t, kt, vt, s,
+                                              cs, &st.host);
+                        } else {
+                            kv_append_step(st.k_pool, st.v_pool, st.page_table, step_t, kt, vt, s, cs, &st.host);
+                        }
                     }
                 }
                 if (!(st.kv_mode == 3 && !st.shares_staging)) {
@@ -531,10 +540,6 @@ bool BatchedPrefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::st
                 stats_.gpu_attention_ms += mixer_ms;
             else
                 stats_.gpu_gdn_ms += mixer_ms;
-            std::string e;
-            if (!core::validate_finite(m.hact, size_t(T) * N, "prefill expert input", e) ||
-                !core::validate_finite(m.hweights, size_t(T) * K, "prefill routing weights", e))
-                throw std::runtime_error(e);
             NativeSharedWeights sw;
             const auto& wg = need(lv, "ffn_gate_shexp.weight");
             const auto& wu = need(lv, "ffn_up_shexp.weight");
@@ -549,6 +554,9 @@ bool BatchedPrefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::st
             shared_expert_multi(T, m.mixed, m.bf, sw,
                                 static_cast<const uint16_t*>(need(lv, "ffn_gate_inp_shexp.weight").data), m.sg, m.su,
                                 m.scalar, m.shared, N, F, cs);
+            std::string e;
+            if (!core::validate_finite(m.hweights, size_t(T) * K, "prefill routing weights", e))
+                throw std::runtime_error(e);
             // Group by expert, but write every result to its original token/routing rank.
             const auto group_start = Clock::now();
             for (auto& list : m.entries)
@@ -561,7 +569,11 @@ bool BatchedPrefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::st
                 m.job_out.reserve(size_t(T * K));
             }
             const auto& fmt = layout.fmt[size_t(l)];
-            m.pool->quant_act_multi_native(fmt, m.hact, m.act.data(), T);
+            if (!m.pool->quant_act_multi_native(fmt, m.hact, m.act.data(), T)) {
+                if (!core::validate_finite(m.hact, size_t(T) * N, "prefill expert input", e))
+                    throw std::runtime_error(e);
+                throw std::runtime_error("prefill expert input: nonfinite value");
+            }
             for (int i = 0; i < T * K; ++i) {
                 if (m.hids[i] < 0 || m.hids[i] >= NE)
                     throw std::runtime_error("prefill routed expert ID outside vocabulary");

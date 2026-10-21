@@ -1090,6 +1090,7 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
         std::any_of(impl->drive.d.pcie_layer_numerators.begin(), impl->drive.d.pcie_layer_numerators.end(),
                     [](int value) { return value > 0; });
     impl->ver->set_pcie_mode(any_offload ? 2 : 0);
+    impl->ver->set_pcie_enabled(any_offload);
     if (plan.pcie_expert_fraction < 0 && any_offload &&
         !tune_expert_split(*impl->ver, impl->ss, impl->g, impl->drive.d, drive_pool_multi, &impl->drive,
                            impl->config.spec, impl->main_stream, impl->expert_performance, error_msg))

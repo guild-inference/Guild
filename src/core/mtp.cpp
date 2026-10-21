@@ -7,6 +7,7 @@
 #include "guild/core/peer_experts.hpp"
 #include "guild/kernels/bf16_gemv.hpp"
 #include "guild/kernels/cpu/expert.hpp"
+#include "guild/kernels/cpu/pool.hpp"
 #include "guild/kernels/elementwise.hpp"
 #include "guild/kernels/fused_gr.hpp"
 #include "guild/kernels/gr.hpp"
@@ -361,6 +362,14 @@ bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, Session
     const uint64_t T = (uint64_t) max_t, N = (uint64_t) g.n_embd, HC = (uint64_t) g.hc, K = (uint64_t) ss.k;
     const uint64_t NH = (uint64_t) g.n_head, HD = (uint64_t) g.head_dim, NKV = (uint64_t) g.n_head_kv;
     const uint64_t R2 = 2 * T; // step/pos rows: T catch-up rows + up to T-2 chain steps
+    struct HostAllocAffinity {
+        kernels::cpu::ThreadAffinity prev;
+        explicit HostAllocAffinity(int dev) : prev(kernels::cpu::pin_current_thread_if_allowed(dev >= 0 ? dev : 0)) {
+        }
+        ~HostAllocAffinity() {
+            kernels::cpu::restore_thread_affinity(prev);
+        }
+    } local_alloc(device_);
     bool ok = mapped(T * 4 + 64, (void**) &h_tok_, (void**) &m_tok_) &&
               mapped(R2 * 4 * 4 + 64, (void**) &h_step_, (void**) &m_step_) &&
               mapped(R2 * NH * 4 + 64, (void**) &h_pos_, (void**) &m_pos_) &&

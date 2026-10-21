@@ -11,6 +11,7 @@
 #include "guild/core/peer_experts.hpp"
 #include "guild/kernels/iq_kernels.hpp"
 #include "guild/kernels/cpu/expert_layout.hpp"
+#include "guild/kernels/cpu/pool.hpp"
 #include "guild/kernels/bf16_gemv.hpp"
 #include "guild/kernels/native_router.hpp"
 #include "guild/kernels/native_moe.hpp"
@@ -430,6 +431,14 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
     const int max_in = (int) std::max<uint64_t>(std::max<uint64_t>(N, ZV), NH * HD);
 
     // ---- mapped staging
+    struct HostAllocAffinity {
+        kernels::cpu::ThreadAffinity prev;
+        explicit HostAllocAffinity(int dev) : prev(kernels::cpu::pin_current_thread_if_allowed(dev >= 0 ? dev : 0)) {
+        }
+        ~HostAllocAffinity() {
+            kernels::cpu::restore_thread_affinity(prev);
+        }
+    } local_alloc(device_);
     bool ok = mapped(T * 4, (void**) &h_tok_, (void**) &m_tok_) &&
               mapped(T * guild::kernels::kStepCount * 4, (void**) &h_step_, (void**) &m_step_) &&
               mapped(T * (NH + NKV + IQ) * 4, (void**) &h_pos_, (void**) &m_pos_) &&
@@ -727,6 +736,10 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
     const int tb_[2] = {0, (T + 1) / 2}, te_[2] = {G == 2 ? (T + 1) / 2 : T, T};
     if (!batch_rec_)
         groups_[T] = G;
+    const bool has_vram_hits = hits_.n_slots > 0 && hits_.cache_base != nullptr;
+    const bool has_pcie_hits = pcie_on_;
+    const bool has_gpu_experts = all_resident_ || device_plan_ || has_vram_hits || has_pcie_hits;
+    const bool need_gpu_plan = has_gpu_experts || remote_opt_ != nullptr;
     const int64_t nQall = g.n_qsa_layers();
     // a batch window: row t is slot t, whose state lives in its own session
     auto slot_ss = [&](int t) -> SessionState& { return batch_rec_ ? *slots_[(size_t) brow_[t]] : ss; };
@@ -1281,11 +1294,13 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             if (sh_fork)
                 cudaEventRecord(ev_join_, sh_cs_);
         }
-        if (guild::kernels::cpu::expert_layout().native)
-            quantize_q8_1_rows(xm, n, N, nat_xq_ + (size_t) tb * (N / 32) * 36, cs);
-        else
-            quantize_q8_0_scaled(xm, hit_xq_ + (size_t) tb * (N / 32) * 34, hit_xs_ + (size_t) tb * (N / 32),
-                                 (int64_t) n * N, cs);
+        if (has_gpu_experts) {
+            if (guild::kernels::cpu::expert_layout().native)
+                quantize_q8_1_rows(xm, n, N, nat_xq_ + (size_t) tb * (N / 32) * 36, cs);
+            else
+                quantize_q8_0_scaled(xm, hit_xq_ + (size_t) tb * (N / 32) * 34, hit_xs_ + (size_t) tb * (N / 32),
+                                     (int64_t) n * N, cs);
+        }
         stamp(l, 18, grp);
         return true;
     };
@@ -1335,6 +1350,10 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             stamp(l, 19, grp);
             grouped(p_ptr, p_start, p_counts, 0, parts_out);
             stamp(l, 20, grp);
+        } else if (!need_gpu_plan) {
+            wait_flag_ge(m_flag_, ring, cs); // all routed experts are served by the CPU pool
+            stamp(l, 23, grp);
+            copy_from_mapped(parts_out, m_ymiss_ + (size_t) tb * K * N, (int64_t) n * K * N, cs);
         } else {
             if (device_plan_) { // E-6: skipped when the device planned this group (all its experts resident)
                 wait_flag_ge_or(m_flagA_, ring, skip_ + grp, cs);
@@ -1345,23 +1364,27 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 copy_i32_from_mapped(pl, m_plan_ + (size_t) grp * (size_t) plan_i32_, plan_i32_, cs);
             }
             stamp(l, 19, grp);
-            grouped(p_ptr, p_start, p_counts, 0, hit_out);
+            if (has_vram_hits || device_plan_)
+                grouped(p_ptr, p_start, p_counts, 0, hit_out);
             stamp(l, 20, grp);
-            if (device_plan_)
-                wait_flag_ge_or(m_flagB_, ring, skip_ + grp, cs);
-            else
-                wait_flag_ge(m_flagB_, ring, cs); // the PCIe share is in staging (DMA) or mapped
-            if (sink_.pcie_mode == 2) {           // stage it with a copy kernel, then point at staging
-                const int64_t per = G == 2 ? kStagingBlobs / 2 : kStagingBlobs;
-                uint8_t* stage = staging_ + (size_t) (grp * per) * lay.max_blob;
-                fetch_blobs(p_ptr2, p_counts + 2, stage, (int64_t) lay.blob_bytes(l), (int) per, cs);
-                rebase_ptrs((unsigned long long*) p_ptr2, p_counts + 2, stage, (int64_t) lay.blob_bytes(l), cs);
+            if (has_pcie_hits) {
+                if (device_plan_)
+                    wait_flag_ge_or(m_flagB_, ring, skip_ + grp, cs);
+                else
+                    wait_flag_ge(m_flagB_, ring, cs); // the PCIe share is in staging (DMA) or mapped
+                if (sink_.pcie_mode == 2) {           // stage it with a copy kernel, then point at staging
+                    const int64_t per = G == 2 ? kStagingBlobs / 2 : kStagingBlobs;
+                    uint8_t* stage = staging_ + (size_t) (grp * per) * lay.max_blob;
+                    fetch_blobs(p_ptr2, p_counts + 2, stage, (int64_t) lay.blob_bytes(l), (int) per, cs);
+                    rebase_ptrs((unsigned long long*) p_ptr2, p_counts + 2, stage, (int64_t) lay.blob_bytes(l), cs);
+                }
+                stamp(l, 21, grp);
+                // the PCIe share is pcie_frac of the misses: a few groups when the cache is cold, usually none (always
+                // none at pcie_frac 0), so its launch is kPcieGroupRows block rows striding over the groups, not cap of
+                // them
+                grouped(p_ptr2, p_start2, p_counts + 2, kPcieGroupRows, hit_out);
+                stamp(l, 22, grp);
             }
-            stamp(l, 21, grp);
-            // the PCIe share is pcie_frac of the misses: a few groups when the cache is cold, usually none (always none
-            // at pcie_frac 0), so its launch is kPcieGroupRows block rows striding over the groups, not cap of them
-            grouped(p_ptr2, p_start2, p_counts + 2, kPcieGroupRows, hit_out);
-            stamp(l, 22, grp);
             if (device_plan_) { // no CPU share when the device planned the group: its rows are zeros
                 wait_flag_ge_or(m_flag_, ring, skip_ + grp, cs);
                 copy_or_zero_from_mapped(parts_out, m_ymiss_ + (size_t) tb * K * N, (long long) n * K * N, skip_ + grp,
@@ -1377,7 +1400,8 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 else
                     copy_from_mapped(parts_out, m_ymiss_ + (size_t) tb * K * N, (int64_t) n * K * N, cs);
             }
-            moe_hit_add(parts_out, hit_out, p_dst, p_counts + 1, cap, N, cs);
+            if (has_gpu_experts)
+                moe_hit_add(parts_out, hit_out, p_dst, p_counts + 1, cap, N, cs);
         }
         if (!prof_on_ && sh_cs_ != nullptr && ev_fork_ != nullptr && ev_join_ != nullptr) {
             cudaStreamWaitEvent(cs, ev_join_, 0);

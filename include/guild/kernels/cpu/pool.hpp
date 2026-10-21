@@ -224,7 +224,7 @@ public:
     // Per-token quantizer and reductions are unchanged. Decode defaults to its
     // existing two-phase schedule; prompt uses a third barrier for larger groups.
     void run_split_multi_native(const NativeFmt& f, ExpertJobMulti* jobs, int n, bool parallel_quant = false);
-    void quant_act_multi_native(const NativeFmt& f, const float* x, uint8_t* dst, int n_tok);
+    bool quant_act_multi_native(const NativeFmt& f, const float* x, uint8_t* dst, int n_tok);
     bool combine_multi_native(const float* parts, const float* weights, float* out, int n_tok, int k, int n_embd);
     static constexpr int kMaxSplitMulti = 256;
     /// run_split_multi's phases, accumulated ms: gate/up rows, the intermediate quantization, down rows.
@@ -457,6 +457,7 @@ private:
     const NativeFmt* nfmt_ = nullptr;
     const float* qact_x_ = nullptr;
     uint8_t* qact_dst_ = nullptr;
+    std::atomic<bool> qact_nonfinite_{false};
     const float* comb_parts_ = nullptr;
     const float* comb_weights_ = nullptr;
     float* comb_out_ = nullptr;

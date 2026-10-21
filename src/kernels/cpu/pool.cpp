@@ -713,8 +713,11 @@ void ExpertPool::drain(int id, ExpertScratch& scratch, uint32_t epoch) {
             const int r0 = H * part / parts_b_, r1 = H * (part + 1) / parts_b_;
             s2_expert_down_rows(jobs_[e].blob, split_[(size_t) e].a2, jobs_[e].out, r0, r1);
         } else if (mode_ == 9) {
-            native_quant_act(*nfmt_, qact_x_ + (size_t) i * (size_t) nfmt_->n_embd,
-                             qact_dst_ + (size_t) i * kNativeActBytes);
+            const float* row_x = qact_x_ + (size_t) i * (size_t) nfmt_->n_embd;
+            if (!slice_all_finite(row_x, (int) nfmt_->n_embd))
+                qact_nonfinite_.store(true, std::memory_order_relaxed);
+            else
+                native_quant_act(*nfmt_, row_x, qact_dst_ + (size_t) i * kNativeActBytes);
         } else if (mode_ == 10) {
             const int K = comb_k_;
             const int N = comb_n_embd_;
@@ -1066,19 +1069,25 @@ void ExpertPool::run_split_multi(ExpertJobMulti* jobs, int n) {
     ms_drain_ += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
 }
 
-void ExpertPool::quant_act_multi_native(const NativeFmt& f, const float* x, uint8_t* dst, int n_tok) {
+bool ExpertPool::quant_act_multi_native(const NativeFmt& f, const float* x, uint8_t* dst, int n_tok) {
     if (n_tok <= 0)
-        return;
+        return true;
     if (n_tok < 8 || n_ <= 1) {
-        for (int t = 0; t < n_tok; ++t)
-            native_quant_act(f, x + (size_t) t * (size_t) f.n_embd, dst + (size_t) t * kNativeActBytes);
-        return;
+        for (int t = 0; t < n_tok; ++t) {
+            const float* row_x = x + (size_t) t * (size_t) f.n_embd;
+            if (!slice_all_finite(row_x, (int) f.n_embd))
+                return false;
+            native_quant_act(f, row_x, dst + (size_t) t * kNativeActBytes);
+        }
+        return true;
     }
     nfmt_ = &f;
     qact_x_ = x;
     qact_dst_ = dst;
+    qact_nonfinite_.store(false, std::memory_order_relaxed);
     run_phase(9, n_tok);
     mode_ = 0;
+    return !qact_nonfinite_.load(std::memory_order_relaxed);
 }
 
 bool ExpertPool::combine_multi_native(const float* parts, const float* weights, float* out, int n_tok, int k,

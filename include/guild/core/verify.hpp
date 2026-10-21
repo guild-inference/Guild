@@ -258,6 +258,9 @@ public:
         sink_.pcie_mode = mode;
     }
     /// the pool never plans a PCIe share (--pcie-frac 0): the window skips that path.  Before the first run.
+    void set_pcie_enabled(bool on) {
+        pcie_on_ = on;
+    }
 
     double ms_wait = 0, ms_pool = 0, ms_host = 0, ms_commit = 0;
     double ms_capture = 0;
@@ -314,6 +317,7 @@ private:
     int device_ = -1;                   ///< the device `init` ran on: run/commit switch to it (layer split)
     std::atomic<bool> released_{false}; ///< #267: release_gpu_waits ran (maybe on the watchdog thread): no more windows
     bool all_resident_ = false;         ///< 100% of experts in [lb_, le_) resident in VRAM: zero-doorbell graph
+    bool pcie_on_ = true;               ///< false when --pcie-frac 0 (no PCIe expert share is ever planned)
     bool device_plan_ = false;          ///< E-6: resident-only layers planned on the device (GUILD_VERIFY_DEVICE_PLAN)
     uint32_t* skip_ = nullptr;          ///< E-6: per group, the ring whose plan the device built (0: the host's)
     unsigned long long* slot_off_d_ = nullptr; ///< E-6: the slot offsets on the device

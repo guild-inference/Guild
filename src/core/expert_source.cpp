@@ -997,6 +997,21 @@ const uint8_t* FileExpertSource::staged_blob(int64_t layer, int64_t expert) {
 void FileExpertSource::prefetch(int64_t layer, const int64_t* experts, int64_t n) {
     if (!staged() || n <= 0 || layer < 0 || layer >= n_layers_)
         return;
+    if (complement_ready_) {
+        bool any_missing = false;
+        for (int64_t i = 0; i < n; ++i) {
+            const int64_t e = experts[i];
+            if (e < 0 || e >= n_expert_)
+                continue;
+            const size_t index = (size_t) layer * (size_t) n_expert_ + (size_t) e;
+            if (index >= complement_offsets_.size() || complement_offsets_[index] == kNoComplement) {
+                any_missing = true;
+                break;
+            }
+        }
+        if (!any_missing)
+            return;
+    }
     std::vector<Fill> todo;
     {
         std::lock_guard<std::mutex> lk(stage_mu_);
@@ -2461,7 +2476,27 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
     // Distinct experts in routing order; resident ones and the last pcie_num/256 of the missed ones go to the GPU.
     const int64_t n = n_tok * k;
     int32_t kind[kMaxWindowEntries]; // per entry: -1 CPU, 0 VRAM, 1 PCIe
-    if (d.plan != nullptr && n <= kMaxWindowEntries && n <= d.plan->cap) {
+    const int numerator =
+        size_t(d.layers) < d.pcie_layer_numerators.size() ? d.pcie_layer_numerators[size_t(d.layers)] : d.pcie_num;
+    const bool pcie_ok = numerator > 0 && d.src->pcie_layer(d.layers);
+    const bool all_cpu =
+        (d.cache == nullptr && d.cache_base == nullptr && !pcie_ok && d.peer == nullptr && d.remote_count == 0);
+    if (all_cpu) {
+        if (d.plan != nullptr && n <= kMaxWindowEntries && n <= d.plan->cap) {
+            GpuPlanSink& P = *d.plan;
+            P.counts[0] = 0;
+            P.counts[1] = 0;
+            P.counts[2] = 0;
+            P.start[0] = 0;
+            P.start2[0] = 0;
+            if (P.publish)
+                P.publish(P.ctx);
+            if (P.fetch)
+                P.fetch(P.ctx, nullptr, 0, 0);
+        }
+        for (int64_t i = 0; i < n; ++i)
+            kind[i] = -1;
+    } else if (d.plan != nullptr && n <= kMaxWindowEntries && n <= d.plan->cap) {
         int64_t distinct[kMaxWindowEntries], first_of[kMaxWindowEntries];
         int nd = 0, nmiss = 0;
         for (int64_t i = 0; i < n; ++i) {
@@ -2479,9 +2514,6 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
                     ++nmiss;
             }
         }
-        const int numerator =
-            size_t(d.layers) < d.pcie_layer_numerators.size() ? d.pcie_layer_numerators[size_t(d.layers)] : d.pcie_num;
-        const bool pcie_ok = numerator > 0 && d.src->pcie_layer(d.layers);
         const int m = pcie_ok ? (nmiss * numerator) >> 8 : 0;
         int miss_rank = 0, groups = 0, entries = 0, fetches = 0;
         GpuPlanSink& P = *d.plan;
