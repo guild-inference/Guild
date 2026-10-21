@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "label": "qwen-gexec-c128k",
+  "model": "qwen3.8-flash-next",
+  "population": "real_prompt_prefill",
+  "full_warmup": false,
+  "cases": [
+    {
+      "name": "qwen-gexec-c128k-p65536",
+      "prompt_tokens": 65536,
+      "context_capacity": 131072,
+      "status": "complete",
+      "exit_code": 0,
+      "command_metadata": "bench/results/phase65-general-optimization/optimized/qwen-gexec-c128k-p65536.command.json"
+    }
+  ]
+}

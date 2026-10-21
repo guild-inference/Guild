@@ -1,0 +1,20 @@
+FileExpertSource: RAM budget 55.43 GiB: 24576 of the 55.43 GiB of experts the GPU cache does not hold, by profile rank; the rest are read from the files
+FileExpertSource: allocating 55.43 GiB pageable resident cache complement
+FileExpertSource: resident NUMA interleave across 2 allowed nodes: applied
+FileExpertSource: copied cache complement through layer 8/48 (12.58 GiB)
+FileExpertSource: copied cache complement through layer 16/48 (21.90 GiB)
+FileExpertSource: copied cache complement through layer 24/48 (31.16 GiB)
+FileExpertSource: copied cache complement through layer 32/48 (42.04 GiB)
+FileExpertSource: copied cache complement through layer 40/48 (50.15 GiB)
+FileExpertSource: copied cache complement through layer 48/48 (55.43 GiB)
+FileExpertSource: pageable resident cache complement ready: resident 55.43 GiB, pinned 0.00 GiB; mlock
+guild runtime: required PLE connected (GPACK, 320001536 rows)
+guild mtp: draft layer loaded, 864 MiB of VRAM (experts 675, dense 111), files read in 0.65 s (1217 MiB/s)
+guild hc: CUDA0: the hyper-connection read runs as staged (the norm per token and stream, the down projection's activations staged ahead by cp.async); checked bit for bit against the plain read on this card (GUILD_HC_SPLIT=1 or 0 for the earlier ones)
+guild verify: window up to 2 tokens, 64.6 MiB of device buffers
+guild mtp: draft head over 106299 tokens (212.9 MiB)
+guild performance: 0 measured formats, CPU 0.000 ms, GPU 0.000 ms, copy 0.000 ms; PCIe up to 0/256, GPU cache 0 slots (0 bytes)
+guild performance: CPU workers 31 + host 1; verifier capacity 2; MTP on; min draft probability 0.500; RAM expert backing 59519795200 bytes
+guild verify: captured the 1-token window (upload no error, sync no error)
+guild verify: captured the 2-token window (upload no error, sync no error)
+batch=512 prompt=65536 generated=64 pp=89.5327 tg=23.8659

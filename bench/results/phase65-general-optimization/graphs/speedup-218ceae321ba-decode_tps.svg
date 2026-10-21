@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="464" viewBox="0 0 1000 464">
+<rect width="100%" height="100%" fill="white"/>
+<g font-family="sans-serif" font-size="13" fill="#222">
+<text x="30" y="28" font-size="17">Equivalent workloads: 218ceae321ba (decode_tps)</text>
+<text x="15" y="54">Guild / llama.cpp throughput</text>
+<path d="M90 360.00 H910" stroke="#ddd"/>
+<text x="30" y="364.00">0.00</text>
+<path d="M90 302.00 H910" stroke="#ddd"/>
+<text x="30" y="306.00">1.49</text>
+<path d="M90 244.00 H910" stroke="#ddd"/>
+<text x="30" y="248.00">2.99</text>
+<path d="M90 186.00 H910" stroke="#ddd"/>
+<text x="30" y="190.00">4.48</text>
+<path d="M90 128.00 H910" stroke="#ddd"/>
+<text x="30" y="132.00">5.98</text>
+<path d="M90 70.00 H910" stroke="#ddd"/>
+<text x="30" y="74.00">7.47</text>
+<text x="90.00" y="382" text-anchor="middle">2026-10-19 v0.5.6-baseline</text>
+<text x="500.00" y="382" text-anchor="middle">2026-10-20 v0.6.0-phase6</text>
+<text x="910.00" y="382" text-anchor="middle">2026-10-20 v0.6.5-phase65</text>
+<text x="500" y="410" text-anchor="middle">Guild release date and identifier</text>
+<polyline points="90.00,101.79 500.00,102.86 910.00,101.07" fill="none" stroke="#1565c0" stroke-width="2"/>
+<path d="M90.00 101.79 V101.79" stroke="#1565c0"/>
+<circle cx="90.00" cy="101.79" r="4" fill="#1565c0"><title>6.6500</title></circle>
+<path d="M500.00 102.86 V102.86" stroke="#1565c0"/>
+<circle cx="500.00" cy="102.86" r="4" fill="#1565c0"><title>6.6224</title></circle>
+<path d="M910.00 101.07 V101.07" stroke="#1565c0"/>
+<circle cx="910.00" cy="101.07" r="4" fill="#1565c0"><title>6.6685</title></circle>
+<text x="90" y="440" fill="#1565c0">guild-portable / llama.cpp-pinned</text>
+</g></svg>

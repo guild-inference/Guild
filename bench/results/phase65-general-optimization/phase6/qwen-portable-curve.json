@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "label": "qwen-portable",
+  "model": "qwen3.8-flash-next",
+  "population": "real_prompt_prefill",
+  "full_warmup": false,
+  "cases": [
+    {
+      "name": "qwen-portable-p512",
+      "prompt_tokens": 512,
+      "context_capacity": 32768,
+      "status": "complete",
+      "exit_code": 0,
+      "command_metadata": "build-cuda12/phase6/optimized/qwen-portable-p512.command.json"
+    },
+    {
+      "name": "qwen-portable-p4096",
+      "prompt_tokens": 4096,
+      "context_capacity": 32768,
+      "status": "complete",
+      "exit_code": 0,
+      "command_metadata": "build-cuda12/phase6/optimized/qwen-portable-p4096.command.json"
+    },
+    {
+      "name": "qwen-portable-p8192",
+      "prompt_tokens": 8192,
+      "context_capacity": 32768,
+      "status": "complete",
+      "exit_code": 0,
+      "command_metadata": "build-cuda12/phase6/optimized/qwen-portable-p8192.command.json"
+    },
+    {
+      "name": "qwen-portable-p16384",
+      "prompt_tokens": 16384,
+      "context_capacity": 32768,
+      "status": "complete",
+      "exit_code": 0,
+      "command_metadata": "build-cuda12/phase6/optimized/qwen-portable-p16384.command.json"
+    }
+  ]
+}

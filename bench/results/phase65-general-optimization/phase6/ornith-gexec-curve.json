@@ -1,0 +1,77 @@
+{
+  "schema_version": 1,
+  "label": "ornith-gexec",
+  "model": "ornith:35b",
+  "population": "real_prompt_prefill",
+  "full_warmup": false,
+  "cases": [
+    {
+      "name": "ornith-gexec-p512",
+      "prompt_tokens": 512,
+      "context_capacity": 32768,
+      "status": "complete",
+      "exit_code": 0,
+      "command_metadata": "build-cuda12/phase6/optimized/ornith-gexec-p512.command.json"
+    },
+    {
+      "name": "ornith-gexec-p4096",
+      "prompt_tokens": 4096,
+      "context_capacity": 32768,
+      "status": "complete",
+      "exit_code": 0,
+      "command_metadata": "build-cuda12/phase6/optimized/ornith-gexec-p4096.command.json"
+    },
+    {
+      "name": "ornith-gexec-p8192",
+      "prompt_tokens": 8192,
+      "context_capacity": 32768,
+      "status": "complete",
+      "exit_code": 0,
+      "command_metadata": "build-cuda12/phase6/optimized/ornith-gexec-p8192.command.json"
+    },
+    {
+      "name": "ornith-gexec-p16384",
+      "prompt_tokens": 16384,
+      "context_capacity": 32768,
+      "status": "complete",
+      "exit_code": 0,
+      "command_metadata": "build-cuda12/phase6/optimized/ornith-gexec-p16384.command.json"
+    },
+    {
+      "name": "ornith-gexec-p32704",
+      "prompt_tokens": 32704,
+      "context_capacity": 32768,
+      "status": "complete",
+      "exit_code": 0,
+      "command_metadata": "build-cuda12/phase6/optimized/ornith-gexec-p32704.command.json"
+    },
+    {
+      "name": "ornith-gexec-p32768",
+      "prompt_tokens": 32768,
+      "context_capacity": 32768,
+      "status": "unsupported",
+      "reason": "prompt plus requested output exceeds supported capacity"
+    },
+    {
+      "name": "ornith-gexec-p65536",
+      "prompt_tokens": 65536,
+      "context_capacity": 32768,
+      "status": "unsupported",
+      "reason": "prompt plus requested output exceeds supported capacity"
+    },
+    {
+      "name": "ornith-gexec-p131072",
+      "prompt_tokens": 131072,
+      "context_capacity": 32768,
+      "status": "unsupported",
+      "reason": "prompt plus requested output exceeds supported capacity"
+    },
+    {
+      "name": "ornith-gexec-p262144",
+      "prompt_tokens": 262144,
+      "context_capacity": 32768,
+      "status": "unsupported",
+      "reason": "prompt plus requested output exceeds supported capacity"
+    }
+  ]
+}

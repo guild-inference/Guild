@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="464" viewBox="0 0 1000 464">
+<rect width="100%" height="100%" fill="white"/>
+<g font-family="sans-serif" font-size="13" fill="#222">
+<text x="30" y="28" font-size="17">Release history: 29f78bd4cb30 (decode_tps)</text>
+<text x="15" y="54">tokens / second</text>
+<path d="M90 360.00 H910" stroke="#ddd"/>
+<text x="30" y="364.00">0.00</text>
+<path d="M90 302.00 H910" stroke="#ddd"/>
+<text x="30" y="306.00">5.35</text>
+<path d="M90 244.00 H910" stroke="#ddd"/>
+<text x="30" y="248.00">10.69</text>
+<path d="M90 186.00 H910" stroke="#ddd"/>
+<text x="30" y="190.00">16.04</text>
+<path d="M90 128.00 H910" stroke="#ddd"/>
+<text x="30" y="132.00">21.38</text>
+<path d="M90 70.00 H910" stroke="#ddd"/>
+<text x="30" y="74.00">26.73</text>
+<text x="90.00" y="382" text-anchor="middle">2026-10-20 v0.6.0-phase6</text>
+<text x="910.00" y="382" text-anchor="middle">2026-10-20 v0.6.5-phase65</text>
+<text x="500" y="410" text-anchor="middle">Release date and identifier</text>
+<polyline points="90.00,109.87 910.00,101.07" fill="none" stroke="#1565c0" stroke-width="2"/>
+<path d="M90.00 109.87 V109.87" stroke="#1565c0"/>
+<circle cx="90.00" cy="109.87" r="4" fill="#1565c0"><title>23.0545</title></circle>
+<path d="M910.00 101.07 V101.07" stroke="#1565c0"/>
+<circle cx="910.00" cy="101.07" r="4" fill="#1565c0"><title>23.8659</title></circle>
+<text x="90" y="440" fill="#1565c0">guild-gexec</text>
+</g></svg>

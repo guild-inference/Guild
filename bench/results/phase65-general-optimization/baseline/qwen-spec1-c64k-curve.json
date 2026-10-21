@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "label": "qwen-spec1-c64k",
+  "model": "qwen3.8-flash-next",
+  "population": "real_prompt_prefill",
+  "full_warmup": false,
+  "cases": [
+    {
+      "name": "qwen-spec1-c64k-p32768",
+      "prompt_tokens": 32768,
+      "context_capacity": 65536,
+      "status": "complete",
+      "exit_code": 0,
+      "command_metadata": "build-cuda12/phase6/baseline/qwen-spec1-c64k-p32768.command.json"
+    }
+  ]
+}

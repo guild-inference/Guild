@@ -1,0 +1,1761 @@
+{
+  "schema_version": 1,
+  "measurements": [
+    {
+      "csv": "baseline/ornith-spec0-p512.csv",
+      "release": "v0.5.6-baseline",
+      "date": "2026-10-19",
+      "engine": "guild-portable",
+      "engine_commit": "e11e0905df3f5ffdad293b32c74f059d5cea09df",
+      "hardware": "2x Intel Xeon Gold 6130 (32C/64T, 2 NUMA nodes, 376 GiB RAM) + NVIDIA GTX 1070 8 GiB (SM 6.1, CUDA 12.0)",
+      "model": "ornith:35b",
+      "source_weights_sha256": "42739874cc2ccfdb8523b23fbe52e29b2a7555c8176737ca9ca0b5d59859d41f",
+      "quantization": "Q4_K_M",
+      "workload": "populated_context_curve",
+      "settings": {
+        "kv_format": "fp16",
+        "kv_placement": "host_only",
+        "threads": "32",
+        "affinity": "all_cores_host_pinned",
+        "gpu_offload": "dense_gpu_experts_cpu",
+        "speculation": 0,
+        "prefill_batch": 256,
+        "capacity_policy": "fixed_32768"
+      },
+      "comparison": {
+        "id": "ornith-q4km-p512",
+        "equivalent": true,
+        "note": "Identical Q4_K_M weights, frozen prompt IDs, greedy 64 tokens, dense GPU + CPU experts + host FP16 KV"
+      }
+    },
+    {
+      "csv": "baseline/ornith-spec0-p4096.csv",
+      "release": "v0.5.6-baseline",
+      "date": "2026-10-19",
+      "engine": "guild-portable",
+      "engine_commit": "e11e0905df3f5ffdad293b32c74f059d5cea09df",
+      "hardware": "2x Intel Xeon Gold 6130 (32C/64T, 2 NUMA nodes, 376 GiB RAM) + NVIDIA GTX 1070 8 GiB (SM 6.1, CUDA 12.0)",
+      "model": "ornith:35b",
+      "source_weights_sha256": "42739874cc2ccfdb8523b23fbe52e29b2a7555c8176737ca9ca0b5d59859d41f",
+      "quantization": "Q4_K_M",
+      "workload": "populated_context_curve",
+      "settings": {
+        "kv_format": "fp16",
+        "kv_placement": "host_only",
+        "threads": "32",
+        "affinity": "all_cores_host_pinned",
+        "gpu_offload": "dense_gpu_experts_cpu",
+        "speculation": 0,
+        "prefill_batch": 256,
+        "capacity_policy": "fixed_32768"
+      },
+      "comparison": {
+        "id": "ornith-q4km-p4096",
+        "equivalent": true,
+        "note": "Identical Q4_K_M weights, frozen prompt IDs, greedy 64 tokens, dense GPU + CPU experts + host FP16 KV"
+      }
+    },
+    {
+      "csv": "baseline/ornith-spec0-p8192.csv",
+      "release": "v0.5.6-baseline",
+      "date": "2026-10-19",
+      "engine": "guild-portable",
+      "engine_commit": "e11e0905df3f5ffdad293b32c74f059d5cea09df",
+      "hardware": "2x Intel Xeon Gold 6130 (32C/64T, 2 NUMA nodes, 376 GiB RAM) + NVIDIA GTX 1070 8 GiB (SM 6.1, CUDA 12.0)",
+      "model": "ornith:35b",
+      "source_weights_sha256": "42739874cc2ccfdb8523b23fbe52e29b2a7555c8176737ca9ca0b5d59859d41f",
+      "quantization": "Q4_K_M",
+      "workload": "populated_context_curve",
+      "settings": {
+        "kv_format": "fp16",
+        "kv_placement": "host_only",
+        "threads": "32",
+        "affinity": "all_cores_host_pinned",
+        "gpu_offload": "dense_gpu_experts_cpu",
+        "speculation": 0,
+        "prefill_batch": 256,
+        "capacity_policy": "fixed_32768"
+      },
+      "comparison": {
+        "id": "ornith-q4km-p8192",
+        "equivalent": true,
+        "note": "Identical Q4_K_M weights, frozen prompt IDs, greedy 64 tokens, dense GPU + CPU experts + host FP16 KV"
+      }
+    },
+    {
+      "csv": "baseline/ornith-spec0-p16384.csv",
+      "release": "v0.5.6-baseline",
+      "date": "2026-10-19",
+      "engine": "guild-portable",
+      "engine_commit": "e11e0905df3f5ffdad293b32c74f059d5cea09df",
+      "hardware": "2x Intel Xeon Gold 6130 (32C/64T, 2 NUMA nodes, 376 GiB RAM) + NVIDIA GTX 1070 8 GiB (SM 6.1, CUDA 12.0)",
+      "model": "ornith:35b",
+      "source_weights_sha256": "42739874cc2ccfdb8523b23fbe52e29b2a7555c8176737ca9ca0b5d59859d41f",
+      "quantization": "Q4_K_M",
+      "workload": "populated_context_curve",
+      "settings": {
+        "kv_format": "fp16",
+        "kv_placement": "host_only",
+        "threads": "32",
+        "affinity": "all_cores_host_pinned",
+        "gpu_offload": "dense_gpu_experts_cpu",
+        "speculation": 0,
+        "prefill_batch": 256,
+        "capacity_policy": "fixed_32768"
+      },
+      "comparison": {
+        "id": "ornith-q4km-p16384",
+        "equivalent": true,
+        "note": "Identical Q4_K_M weights, frozen prompt IDs, greedy 64 tokens, dense GPU + CPU experts + host FP16 KV"
+      }
+    },
+    {
+      "csv": "phase6/ornith-portable-p512.csv",
+      "release": "v0.6.0-phase6",
+      "date": "2026-10-20",
+      "engine": "guild-portable",
+      "engine_commit": "e11e0905df3f5ffdad293b32c74f059d5cea09df",
+      "hardware": "2x Intel Xeon Gold 6130 (32C/64T, 2 NUMA nodes, 376 GiB RAM) + NVIDIA GTX 1070 8 GiB (SM 6.1, CUDA 12.0)",
+      "model": "ornith:35b",
+      "source_weights_sha256": "42739874cc2ccfdb8523b23fbe52e29b2a7555c8176737ca9ca0b5d59859d41f",
+      "quantization": "Q4_K_M",
+      "workload": "populated_context_curve",
+      "settings": {
+        "kv_format": "fp16",
+        "kv_placement": "host_only",
+        "threads": "32",
+        "affinity": "all_cores_host_pinned",
+        "gpu_offload": "dense_gpu_experts_cpu",
+        "speculation": 0,
+        "prefill_batch": 256,
+        "capacity_policy": "fixed_32768"
+      },
+      "comparison": {
+        "id": "ornith-q4km-p512",
+        "equivalent": true,
+        "note": "Identical Q4_K_M weights, frozen prompt IDs, greedy 64 tokens, dense GPU + CPU experts + host FP16 KV"
+      }
+    },
+    {
+      "csv": "phase6/ornith-gexec-p512.csv",
+      "release": "v0.6.0-phase6",
+      "date": "2026-10-20",
+      "engine": "guild-gexec",
+      "engine_commit": "e11e0905df3f5ffdad293b32c74f059d5cea09df",
+      "hardware": "2x Intel Xeon Gold 6130 (32C/64T, 2 NUMA nodes, 376 GiB RAM) + NVIDIA GTX 1070 8 GiB (SM 6.1, CUDA 12.0)",
+      "model": "ornith:35b",
+      "source_weights_sha256": "42739874cc2ccfdb8523b23fbe52e29b2a7555c8176737ca9ca0b5d59859d41f",
+      "quantization": "Q4_K_M",
+      "workload": "populated_context_curve",
+      "settings": {
+        "kv_format": "fp16",
+        "kv_placement": "host_only",
+        "threads": "32",
+        "affinity": "all_cores_host_pinned",
+        "gpu_offload": "dense_gpu_experts_cpu",
+        "speculation": 0,
+        "prefill_batch": 256,
+        "capacity_policy": "fixed_32768",
+        "gexec": "ornith-c32k-s0.gexec"
+      },
+      "comparison": {
+        "id": "ornith-q4km-p512",
+        "equivalent": true,
+        "note": "Identical Q4_K_M weights, frozen prompt IDs, greedy 64 tokens, dense GPU + CPU experts + host FP16 KV"
+      }
+    },
+    {
+      "csv": "phase6/ornith-portable-p4096.csv",
+      "release": "v0.6.0-phase6",
+      "date": "2026-10-20",
+      "engine": "guild-portable",
+      "engine_commit": "e11e0905df3f5ffdad293b32c74f059d5cea09df",
+      "hardware": "2x Intel Xeon Gold 6130 (32C/64T, 2 NUMA nodes, 376 GiB RAM) + NVIDIA GTX 1070 8 GiB (SM 6.1, CUDA 12.0)",
+      "model": "ornith:35b",
+      "source_weights_sha256": "42739874cc2ccfdb8523b23fbe52e29b2a7555c8176737ca9ca0b5d59859d41f",
+      "quantization": "Q4_K_M",
+      "workload": "populated_context_curve",
+      "settings": {
+        "kv_format": "fp16",
+        "kv_placement": "host_only",
+        "threads": "32",
+        "affinity": "all_cores_host_pinned",
+        "gpu_offload": "dense_gpu_experts_cpu",
+        "speculation": 0,
+        "prefill_batch": 256,
+        "capacity_policy": "fixed_32768"
+      },
+      "comparison": {
+        "id": "ornith-q4km-p4096",
+        "equivalent": true,
+        "note": "Identical Q4_K_M weights, frozen prompt IDs, greedy 64 tokens, dense GPU + CPU experts + host FP16 KV"
+      }
+    },
+    {
+      "csv": "phase6/ornith-gexec-p4096.csv",
+      "release": "v0.6.0-phase6",
+      "date": "2026-10-20",
+      "engine": "guild-gexec",
+      "engine_commit": "e11e0905df3f5ffdad293b32c74f059d5cea09df",
+      "hardware": "2x Intel Xeon Gold 6130 (32C/64T, 2 NUMA nodes, 376 GiB RAM) + NVIDIA GTX 1070 8 GiB (SM 6.1, CUDA 12.0)",
+      "model": "ornith:35b",
+      "source_weights_sha256": "42739874cc2ccfdb8523b23fbe52e29b2a7555c8176737ca9ca0b5d59859d41f",
+      "quantization": "Q4_K_M",
+      "workload": "populated_context_curve",
+      "settings": {
+        "kv_format": "fp16",
+        "kv_placement": "host_only",
+        "threads": "32",
+        "affinity": "all_cores_host_pinned",
+        "gpu_offload": "dense_gpu_experts_cpu",
+        "speculation": 0,
+        "prefill_batch": 256,
+        "capacity_policy": "fixed_32768",
+        "gexec": "ornith-c32k-s0.gexec"
+      },
+      "comparison": {
+        "id": "ornith-q4km-p4096",
+        "equivalent": true,
+        "note": "Identical Q4_K_M weights, frozen prompt IDs, greedy 64 tokens, dense GPU + CPU experts + host FP16 KV"
+      }
+    },
+    {
+      "csv": "phase6/ornith-portable-p8192.csv",
+      "release": "v0.6.0-phase6",
+      "date": "2026-10-20",
+      "engine": "guild-portable",
+      "engine_commit": "e11e0905df3f5ffdad293b32c74f059d5cea09df",
+      "hardware": "2x Intel Xeon Gold 6130 (32C/64T, 2 NUMA nodes, 376 GiB RAM) + NVIDIA GTX 1070 8 GiB (SM 6.1, CUDA 12.0)",
+      "model": "ornith:35b",
+      "source_weights_sha256": "42739874cc2ccfdb8523b23fbe52e29b2a7555c8176737ca9ca0b5d59859d41f",
+      "quantization": "Q4_K_M",
+      "workload": "populated_context_curve",
+      "settings": {
+        "kv_format": "fp16",
+        "kv_placement": "host_only",
+        "threads": "32",
+        "affinity": "all_cores_host_pinned",
+        "gpu_offload": "dense_gpu_experts_cpu",
+        "speculation": 0,
+        "prefill_batch": 256,
+        "capacity_policy": "fixed_32768"
+      },
+      "comparison": {
+        "id": "ornith-q4km-p8192",
+        "equivalent": true,
+        "note": "Identical Q4_K_M weights, frozen prompt IDs, greedy 64 tokens, dense GPU + CPU experts + host FP16 KV"
+      }
+    },
+    {
+      "csv": "phase6/ornith-gexec-p8192.csv",
+      "release": "v0.6.0-phase6",
+      "date": "2026-10-20",
+      "engine": "guild-gexec",
+      "engine_commit": "e11e0905df3f5ffdad293b32c74f059d5cea09df",
+      "hardware": "2x Intel Xeon Gold 6130 (32C/64T, 2 NUMA nodes, 376 GiB RAM) + NVIDIA GTX 1070 8 GiB (SM 6.1, CUDA 12.0)",
+      "model": "ornith:35b",
+      "source_weights_sha256": "42739874cc2ccfdb8523b23fbe52e29b2a7555c8176737ca9ca0b5d59859d41f",
+      "quantization": "Q4_K_M",
+      "workload": "populated_context_curve",
+      "settings": {
+        "kv_format": "fp16",
+        "kv_placement": "host_only",
+        "threads": "32",
+        "affinity": "all_cores_host_pinned",
+        "gpu_offload": "dense_gpu_experts_cpu",
+        "speculation": 0,
+        "prefill_batch": 256,
+        "capacity_policy": "fixed_32768",
+        "gexec": "ornith-c32k-s0.gexec"
+      },
+      "comparison": {
+        "id": "ornith-q4km-p8192",
+        "equivalent": true,
+        "note": "Identical Q4_K_M weights, frozen prompt IDs, greedy 64 tokens, dense GPU + CPU experts + host FP16 KV"
+      }
+    },
+    {
+      "csv": "phase6/ornith-portable-p16384.csv",
+      "release": "v0.6.0-phase6",
+      "date": "2026-10-20",
+      "engine": "guild-portable",
+      "engine_commit": "e11e0905df3f5ffdad293b32c74f059d5cea09df",
+      "hardware": "2x Intel Xeon Gold 6130 (32C/64T, 2 NUMA nodes, 376 GiB RAM) + NVIDIA GTX 1070 8 GiB (SM 6.1, CUDA 12.0)",
+      "model": "ornith:35b",
+      "source_weights_sha256": "42739874cc2ccfdb8523b23fbe52e29b2a7555c8176737ca9ca0b5d59859d41f",
+      "quantization": "Q4_K_M",
+      "workload": "populated_context_curve",
+      "settings": {
+        "kv_format": "fp16",
+        "kv_placement": "host_only",
+        "threads": "32",
+        "affinity": "all_cores_host_pinned",
+        "gpu_offload": "dense_gpu_experts_cpu",
+        "speculation": 0,
+        "prefill_batch": 256,
+        "capacity_policy": "fixed_32768"
+      },
+      "comparison": {
+        "id": "ornith-q4km-p16384",
+        "equivalent": true,
+        "note": "Identical Q4_K_M weights, frozen prompt IDs, greedy 64 tokens, dense GPU + CPU experts + host FP16 KV"
+      }
+    },
+    {
+      "csv": "phase6/ornith-gexec-p16384.csv",
+      "release": "v0.6.0-phase6",
+      "date": "2026-10-20",
+      "engine": "guild-gexec",
+      "engine_commit": "e11e0905df3f5ffdad293b32c74f059d5cea09df",
+      "hardware": "2x Intel Xeon Gold 6130 (32C/64T, 2 NUMA nodes, 376 GiB RAM) + NVIDIA GTX 1070 8 GiB (SM 6.1, CUDA 12.0)",
+      "model": "ornith:35b",
+      "source_weights_sha256": "42739874cc2ccfdb8523b23fbe52e29b2a7555c8176737ca9ca0b5d59859d41f",
+      "quantization": "Q4_K_M",
+      "workload": "populated_context_curve",
+      "settings": {
+        "kv_format": "fp16",
+        "kv_placement": "host_only",
+        "threads": "32",
+        "affinity": "all_cores_host_pinned",
+        "gpu_offload": "dense_gpu_experts_cpu",
+        "speculation": 0,
+        "prefill_batch": 256,
+        "capacity_policy": "fixed_32768",
+        "gexec": "ornith-c32k-s0.gexec"
+      },
+      "comparison": {
+        "id": "ornith-q4km-p16384",
+        "equivalent": true,
+        "note": "Identical Q4_K_M weights, frozen prompt IDs, greedy 64 tokens, dense GPU + CPU experts + host FP16 KV"
+      }
+    },
+    {
+      "csv": "phase6/ornith-portable-p32704.csv",
+      "release": "v0.6.0-phase6",
+      "date": "2026-10-20",
+      "engine": "guild-portable",
+      "engine_commit": "e11e0905df3f5ffdad293b32c74f059d5cea09df",
+      "hardware": "2x Intel Xeon Gold 6130 (32C/64T, 2 NUMA nodes, 376 GiB RAM) + NVIDIA GTX 1070 8 GiB (SM 6.1, CUDA 12.0)",
+      "model": "ornith:35b",
+      "source_weights_sha256": "42739874cc2ccfdb8523b23fbe52e29b2a7555c8176737ca9ca0b5d59859d41f",
+      "quantization": "Q4_K_M",
+      "workload": "populated_context_curve",
+      "settings": {
+        "kv_format": "fp16",
+        "kv_placement": "host_only",
+        "threads": "32",
+        "affinity": "all_cores_host_pinned",
+        "gpu_offload": "dense_gpu_experts_cpu",
+        "speculation": 0,
+        "prefill_batch": 256,
+        "capacity_policy": "fixed_32768"
+      },
+      "comparison": {
+        "id": "ornith-q4km-p32704",
+        "equivalent": true,
+        "note": "Identical Q4_K_M weights, frozen prompt IDs, greedy 64 tokens, dense GPU + CPU experts + host FP16 KV"
+      }
+    },
+    {
+      "csv": "phase6/ornith-gexec-p32704.csv",
+      "release": "v0.6.0-phase6",
+      "date": "2026-10-20",
+      "engine": "guild-gexec",
+      "engine_commit": "e11e0905df3f5ffdad293b32c74f059d5cea09df",
+      "hardware": "2x Intel Xeon Gold 6130 (32C/64T, 2 NUMA nodes, 376 GiB RAM) + NVIDIA GTX 1070 8 GiB (SM 6.1, CUDA 12.0)",
+      "model": "ornith:35b",
+      "source_weights_sha256": "42739874cc2ccfdb8523b23fbe52e29b2a7555c8176737ca9ca0b5d59859d41f",
+      "quantization": "Q4_K_M",
+      "workload": "populated_context_curve",
+      "settings": {
+        "kv_format": "fp16",
+        "kv_placement": "host_only",
+        "threads": "32",
+        "affinity": "all_cores_host_pinned",
+        "gpu_offload": "dense_gpu_experts_cpu",
+        "speculation": 0,
+        "prefill_batch": 256,
+        "capacity_policy": "fixed_32768",
+        "gexec": "ornith-c32k-s0.gexec"
+      },
+      "comparison": {
+        "id": "ornith-q4km-p32704",
+        "equivalent": true,
+        "note": "Identical Q4_K_M weights, frozen prompt IDs, greedy 64 tokens, dense GPU + CPU experts + host FP16 KV"
+      }
+    },
+    {
+      "csv": "phase6/llama-pinned-p512.csv",
+      "release": "v0.6.0-phase6",
+      "date": "2026-10-20",
+      "engine": "llama.cpp-pinned",
+      "engine_commit": "3cf03257f219afbe7334045ff7c6a06ac68c627d",
+      "hardware": "2x Intel Xeon Gold 6130 (32C/64T, 2 NUMA nodes, 376 GiB RAM) + NVIDIA GTX 1070 8 GiB (SM 6.1, CUDA 12.0)",
+      "model": "ornith:35b",
+      "source_weights_sha256": "42739874cc2ccfdb8523b23fbe52e29b2a7555c8176737ca9ca0b5d59859d41f",
+      "quantization": "Q4_K_M",
+      "workload": "populated_context_curve",
+      "settings": {
+        "kv_format": "fp16",
+        "kv_placement": "host_only",
+        "threads": "32",
+        "affinity": "all_cores_host_pinned",
+        "gpu_offload": "dense_gpu_experts_cpu",
+        "speculation": 0,
+        "prefill_batch": 256,
+        "capacity_policy": "fixed_32768"
+      },
+      "comparison": {
+        "id": "ornith-q4km-p512",
+        "equivalent": true,
+        "note": "Identical Q4_K_M GGUF, frozen prompt IDs, greedy 64 tokens, -ngl 99 -ot exps=CPU --host-kv -b 256 -t 32"
+      }
+    },
+    {
+      "csv": "phase6/llama-newer-p512.csv",
+      "release": "v0.6.0-phase6",
+      "date": "2026-10-20",
+      "engine": "llama.cpp-newer",
+      "engine_commit": "11fe02151f79c41d0d4af7da708755d73b9c0da6",
+      "hardware": "2x Intel Xeon Gold 6130 (32C/64T, 2 NUMA nodes, 376 GiB RAM) + NVIDIA GTX 1070 8 GiB (SM 6.1, CUDA 12.0)",
+      "model": "ornith:35b",
+      "source_weights_sha256": "42739874cc2ccfdb8523b23fbe52e29b2a7555c8176737ca9ca0b5d59859d41f",
+      "quantization": "Q4_K_M",
+      "workload": "populated_context_curve",
+      "settings": {
+        "kv_format": "fp16",
+        "kv_placement": "host_only",
+        "threads": "32",
+        "affinity": "all_cores_host_pinned",
+        "gpu_offload": "dense_gpu_experts_cpu",
+        "speculation": 0,
+        "prefill_batch": 256,
+        "capacity_policy": "fixed_32768"
+      },
+      "comparison": {
+        "id": "ornith-q4km-p512",
+        "equivalent": true,
+        "note": "Identical Q4_K_M GGUF, frozen prompt IDs, greedy 64 tokens, -ngl 99 -ot exps=CPU --host-kv -b 256 -t 32"
+      }
+    },
+    {
+      "csv": "phase6/llama-pinned-p4096.csv",
+      "release": "v0.6.0-phase6",
+      "date": "2026-10-20",
+      "engine": "llama.cpp-pinned",
+      "engine_commit": "3cf03257f219afbe7334045ff7c6a06ac68c627d",
+      "hardware": "2x Intel Xeon Gold 6130 (32C/64T, 2 NUMA nodes, 376 GiB RAM) + NVIDIA GTX 1070 8 GiB (SM 6.1, CUDA 12.0)",
+      "model": "ornith:35b",
+      "source_weights_sha256": "42739874cc2ccfdb8523b23fbe52e29b2a7555c8176737ca9ca0b5d59859d41f",
+      "quantization": "Q4_K_M",
+      "workload": "populated_context_curve",
+      "settings": {
+        "kv_format": "fp16",
+        "kv_placement": "host_only",
+        "threads": "32",
+        "affinity": "all_cores_host_pinned",
+        "gpu_offload": "dense_gpu_experts_cpu",
+        "speculation": 0,
+        "prefill_batch": 256,
+        "capacity_policy": "fixed_32768"
+      },
+      "comparison": {
+        "id": "ornith-q4km-p4096",
+        "equivalent": true,
+        "note": "Identical Q4_K_M GGUF, frozen prompt IDs, greedy 64 tokens, -ngl 99 -ot exps=CPU --host-kv -b 256 -t 32"
+      }
+    },
+    {
+      "csv": "phase6/llama-newer-p4096.csv",
+      "release": "v0.6.0-phase6",
+      "date": "2026-10-20",
+      "engine": "llama.cpp-newer",
+      "engine_commit": "11fe02151f79c41d0d4af7da708755d73b9c0da6",
+      "hardware": "2x Intel Xeon Gold 6130 (32C/64T, 2 NUMA nodes, 376 GiB RAM) + NVIDIA GTX 1070 8 GiB (SM 6.1, CUDA 12.0)",
+      "model": "ornith:35b",
+      "source_weights_sha256": "42739874cc2ccfdb8523b23fbe52e29b2a7555c8176737ca9ca0b5d59859d41f",
+      "quantization": "Q4_K_M",
+      "workload": "populated_context_curve",
+      "settings": {
+        "kv_format": "fp16",
+        "kv_placement": "host_only",
+        "threads": "32",
+        "affinity": "all_cores_host_pinned",
+        "gpu_offload": "dense_gpu_experts_cpu",
+        "speculation": 0,
+        "prefill_batch": 256,
+        "capacity_policy": "fixed_32768"
+      },
+      "comparison": {
+        "id": "ornith-q4km-p4096",
+        "equivalent": true,
+        "note": "Identical Q4_K_M GGUF, frozen prompt IDs, greedy 64 tokens, -ngl 99 -ot exps=CPU --host-kv -b 256 -t 32"
+      }
+    },
+    {
+      "csv": "phase6/llama-pinned-p8192.csv",
+      "release": "v0.6.0-phase6",
+      "date": "2026-10-20",
+      "engine": "llama.cpp-pinned",
+      "engine_commit": "3cf03257f219afbe7334045ff7c6a06ac68c627d",
+      "hardware": "2x Intel Xeon Gold 6130 (32C/64T, 2 NUMA nodes, 376 GiB RAM) + NVIDIA GTX 1070 8 GiB (SM 6.1, CUDA 12.0)",
+      "model": "ornith:35b",
+      "source_weights_sha256": "42739874cc2ccfdb8523b23fbe52e29b2a7555c8176737ca9ca0b5d59859d41f",
+      "quantization": "Q4_K_M",
+      "workload": "populated_context_curve",
+      "settings": {
+        "kv_format": "fp16",
+        "kv_placement": "host_only",
+        "threads": "32",
+        "affinity": "all_cores_host_pinned",
+        "gpu_offload": "dense_gpu_experts_cpu",
+        "speculation": 0,
+        "prefill_batch": 256,
+        "capacity_policy": "fixed_32768"
+      },
+      "comparison": {
+        "id": "ornith-q4km-p8192",
+        "equivalent": true,
+        "note": "Identical Q4_K_M GGUF, frozen prompt IDs, greedy 64 tokens, -ngl 99 -ot exps=CPU --host-kv -b 256 -t 32"
+      }
+    },
+    {
+      "csv": "phase6/llama-newer-p8192.csv",
+      "release": "v0.6.0-phase6",
+      "date": "2026-10-20",
+      "engine": "llama.cpp-newer",
+      "engine_commit": "11fe02151f79c41d0d4af7da708755d73b9c0da6",
+      "hardware": "2x Intel Xeon Gold 6130 (32C/64T, 2 NUMA nodes, 376 GiB RAM) + NVIDIA GTX 1070 8 GiB (SM 6.1, CUDA 12.0)",
+      "model": "ornith:35b",
+      "source_weights_sha256": "42739874cc2ccfdb8523b23fbe52e29b2a7555c8176737ca9ca0b5d59859d41f",
+      "quantization": "Q4_K_M",
+      "workload": "populated_context_curve",
+      "settings": {
+        "kv_format": "fp16",
+        "kv_placement": "host_only",
+        "threads": "32",
+        "affinity": "all_cores_host_pinned",
+        "gpu_offload": "dense_gpu_experts_cpu",
+        "speculation": 0,
+        "prefill_batch": 256,
+        "capacity_policy": "fixed_32768"
+      },
+      "comparison": {
+        "id": "ornith-q4km-p8192",
+        "equivalent": true,
+        "note": "Identical Q4_K_M GGUF, frozen prompt IDs, greedy 64 tokens, -ngl 99 -ot exps=CPU --host-kv -b 256 -t 32"
+      }
+    },
+    {
+      "csv": "phase6/llama-pinned-p16384.csv",
+      "release": "v0.6.0-phase6",
+      "date": "2026-10-20",
+      "engine": "llama.cpp-pinned",
+      "engine_commit": "3cf03257f219afbe7334045ff7c6a06ac68c627d",
+      "hardware": "2x Intel Xeon Gold 6130 (32C/64T, 2 NUMA nodes, 376 GiB RAM) + NVIDIA GTX 1070 8 GiB (SM 6.1, CUDA 12.0)",
+      "model": "ornith:35b",
+      "source_weights_sha256": "42739874cc2ccfdb8523b23fbe52e29b2a7555c8176737ca9ca0b5d59859d41f",
+      "quantization": "Q4_K_M",
+      "workload": "populated_context_curve",
+      "settings": {
+        "kv_format": "fp16",
+        "kv_placement": "host_only",
+        "threads": "32",
+        "affinity": "all_cores_host_pinned",
+        "gpu_offload": "dense_gpu_experts_cpu",
+        "speculation": 0,
+        "prefill_batch": 256,
+        "capacity_policy": "fixed_32768"
+      },
+      "comparison": {
+        "id": "ornith-q4km-p16384",
+        "equivalent": true,
+        "note": "Identical Q4_K_M GGUF, frozen prompt IDs, greedy 64 tokens, -ngl 99 -ot exps=CPU --host-kv -b 256 -t 32"
+      }
+    },
+    {
+      "csv": "phase6/llama-newer-p16384.csv",
+      "release": "v0.6.0-phase6",
+      "date": "2026-10-20",
+      "engine": "llama.cpp-newer",
+      "engine_commit": "11fe02151f79c41d0d4af7da708755d73b9c0da6",
+      "hardware": "2x Intel Xeon Gold 6130 (32C/64T, 2 NUMA nodes, 376 GiB RAM) + NVIDIA GTX 1070 8 GiB (SM 6.1, CUDA 12.0)",
+      "model": "ornith:35b",
+      "source_weights_sha256": "42739874cc2ccfdb8523b23fbe52e29b2a7555c8176737ca9ca0b5d59859d41f",
+      "quantization": "Q4_K_M",
+      "workload": "populated_context_curve",
+      "settings": {
+        "kv_format": "fp16",
+        "kv_placement": "host_only",
+        "threads": "32",
+        "affinity": "all_cores_host_pinned",
+        "gpu_offload": "dense_gpu_experts_cpu",
+        "speculation": 0,
+        "prefill_batch": 256,
+        "capacity_policy": "fixed_32768"
+      },
+      "comparison": {
+        "id": "ornith-q4km-p16384",
+        "equivalent": true,
+        "note": "Identical Q4_K_M GGUF, frozen prompt IDs, greedy 64 tokens, -ngl 99 -ot exps=CPU --host-kv -b 256 -t 32"
+      }
+    },
+    {
+      "csv": "baseline/qwen-spec1-p512.csv",
+      "release": "v0.5.6-baseline",
+      "date": "2026-10-19",
+      "engine": "guild-portable",
+      "engine_commit": "e11e0905df3f5ffdad293b32c74f059d5cea09df",
+      "hardware": "2x Intel Xeon Gold 6130 (32C/64T, 2 NUMA nodes, 376 GiB RAM) + NVIDIA GTX 1070 8 GiB (SM 6.1, CUDA 12.0)",
+      "model": "qwen3.8-flash-next",
+      "source_weights_sha256": "93f3fcd86786870c487ee72b8dbd362973bdd71c1b0d94bdad6ee689b98856e5",
+      "quantization": "UD-IQ4_XS",
+      "workload": "populated_context_curve",
+      "settings": {
+        "kv_format": "fp16",
+        "kv_placement": "host_only",
+        "threads": "32",
+        "affinity": "all_cores_host_pinned",
+        "gpu_offload": "dense_gpu_experts_cpu",
+        "speculation": 2,
+        "prefill_batch": 512,
+        "capacity_policy": "populated_plus_headroom"
+      },
+      "comparison": {
+        "id": "qwen-iq4xs-p512",
+        "equivalent": false,
+        "note": "Qwen3.8-Flash-Next hybrid GDN+QSA+PLE+MTP architecture"
+      }
+    },
+    {
+      "csv": "baseline/qwen-spec1-p4096.csv",
+      "release": "v0.5.6-baseline",
+      "date": "2026-10-19",
+      "engine": "guild-portable",
+      "engine_commit": "e11e0905df3f5ffdad293b32c74f059d5cea09df",
+      "hardware": "2x Intel Xeon Gold 6130 (32C/64T, 2 NUMA nodes, 376 GiB RAM) + NVIDIA GTX 1070 8 GiB (SM 6.1, CUDA 12.0)",
+      "model": "qwen3.8-flash-next",
+      "source_weights_sha256": "93f3fcd86786870c487ee72b8dbd362973bdd71c1b0d94bdad6ee689b98856e5",
+      "quantization": "UD-IQ4_XS",
+      "workload": "populated_context_curve",
+      "settings": {
+        "kv_format": "fp16",
+        "kv_placement": "host_only",
+        "threads": "32",
+        "affinity": "all_cores_host_pinned",
+        "gpu_offload": "dense_gpu_experts_cpu",
+        "speculation": 2,
+        "prefill_batch": 512,
+        "capacity_policy": "populated_plus_headroom"
+      },
+      "comparison": {
+        "id": "qwen-iq4xs-p4096",
+        "equivalent": false,
+        "note": "Qwen3.8-Flash-Next hybrid GDN+QSA+PLE+MTP architecture"
+      }
+    },
+    {
+      "csv": "baseline/qwen-spec1-p8192.csv",
+      "release": "v0.5.6-baseline",
+      "date": "2026-10-19",
+      "engine": "guild-portable",
+      "engine_commit": "e11e0905df3f5ffdad293b32c74f059d5cea09df",
+      "hardware": "2x Intel Xeon Gold 6130 (32C/64T, 2 NUMA nodes, 376 GiB RAM) + NVIDIA GTX 1070 8 GiB (SM 6.1, CUDA 12.0)",
+      "model": "qwen3.8-flash-next",
+      "source_weights_sha256": "93f3fcd86786870c487ee72b8dbd362973bdd71c1b0d94bdad6ee689b98856e5",
+      "quantization": "UD-IQ4_XS",
+      "workload": "populated_context_curve",
+      "settings": {
+        "kv_format": "fp16",
+        "kv_placement": "host_only",
+        "threads": "32",
+        "affinity": "all_cores_host_pinned",
+        "gpu_offload": "dense_gpu_experts_cpu",
+        "speculation": 2,
+        "prefill_batch": 512,
+        "capacity_policy": "populated_plus_headroom"
+      },
+      "comparison": {
+        "id": "qwen-iq4xs-p8192",
+        "equivalent": false,
+        "note": "Qwen3.8-Flash-Next hybrid GDN+QSA+PLE+MTP architecture"
+      }
+    },
+    {
+      "csv": "baseline/qwen-spec1-p16384.csv",
+      "release": "v0.5.6-baseline",
+      "date": "2026-10-19",
+      "engine": "guild-portable",
+      "engine_commit": "e11e0905df3f5ffdad293b32c74f059d5cea09df",
+      "hardware": "2x Intel Xeon Gold 6130 (32C/64T, 2 NUMA nodes, 376 GiB RAM) + NVIDIA GTX 1070 8 GiB (SM 6.1, CUDA 12.0)",
+      "model": "qwen3.8-flash-next",
+      "source_weights_sha256": "93f3fcd86786870c487ee72b8dbd362973bdd71c1b0d94bdad6ee689b98856e5",
+      "quantization": "UD-IQ4_XS",
+      "workload": "populated_context_curve",
+      "settings": {
+        "kv_format": "fp16",
+        "kv_placement": "host_only",
+        "threads": "32",
+        "affinity": "all_cores_host_pinned",
+        "gpu_offload": "dense_gpu_experts_cpu",
+        "speculation": 2,
+        "prefill_batch": 512,
+        "capacity_policy": "populated_plus_headroom"
+      },
+      "comparison": {
+        "id": "qwen-iq4xs-p16384",
+        "equivalent": false,
+        "note": "Qwen3.8-Flash-Next hybrid GDN+QSA+PLE+MTP architecture"
+      }
+    },
+    {
+      "csv": "baseline/qwen-spec1-c64k-p32768.csv",
+      "release": "v0.5.6-baseline",
+      "date": "2026-10-19",
+      "engine": "guild-portable",
+      "engine_commit": "e11e0905df3f5ffdad293b32c74f059d5cea09df",
+      "hardware": "2x Intel Xeon Gold 6130 (32C/64T, 2 NUMA nodes, 376 GiB RAM) + NVIDIA GTX 1070 8 GiB (SM 6.1, CUDA 12.0)",
+      "model": "qwen3.8-flash-next",
+      "source_weights_sha256": "93f3fcd86786870c487ee72b8dbd362973bdd71c1b0d94bdad6ee689b98856e5",
+      "quantization": "UD-IQ4_XS",
+      "workload": "populated_context_curve",
+      "settings": {
+        "kv_format": "fp16",
+        "kv_placement": "host_only",
+        "threads": "32",
+        "affinity": "all_cores_host_pinned",
+        "gpu_offload": "dense_gpu_experts_cpu",
+        "speculation": 2,
+        "prefill_batch": 512,
+        "capacity_policy": "populated_plus_headroom"
+      },
+      "comparison": {
+        "id": "qwen-iq4xs-p32768",
+        "equivalent": false,
+        "note": "Qwen3.8-Flash-Next hybrid GDN+QSA+PLE+MTP architecture"
+      }
+    },
+    {
+      "csv": "phase6/qwen-portable-p512.csv",
+      "release": "v0.6.0-phase6",
+      "date": "2026-10-20",
+      "engine": "guild-portable",
+      "engine_commit": "e11e0905df3f5ffdad293b32c74f059d5cea09df",
+      "hardware": "2x Intel Xeon Gold 6130 (32C/64T, 2 NUMA nodes, 376 GiB RAM) + NVIDIA GTX 1070 8 GiB (SM 6.1, CUDA 12.0)",
+      "model": "qwen3.8-flash-next",
+      "source_weights_sha256": "93f3fcd86786870c487ee72b8dbd362973bdd71c1b0d94bdad6ee689b98856e5",
+      "quantization": "UD-IQ4_XS",
+      "workload": "populated_context_curve",
+      "settings": {
+        "kv_format": "fp16",
+        "kv_placement": "host_only",
+        "threads": "32",
+        "affinity": "all_cores_host_pinned",
+        "gpu_offload": "dense_gpu_experts_cpu",
+        "speculation": 2,
+        "prefill_batch": 512,
+        "capacity_policy": "populated_plus_headroom"
+      },
+      "comparison": {
+        "id": "qwen-iq4xs-p512",
+        "equivalent": false,
+        "note": "Qwen3.8-Flash-Next hybrid GDN+QSA+PLE+MTP architecture"
+      }
+    },
+    {
+      "csv": "phase6/qwen-portable-p4096.csv",
+      "release": "v0.6.0-phase6",
+      "date": "2026-10-20",
+      "engine": "guild-portable",
+      "engine_commit": "e11e0905df3f5ffdad293b32c74f059d5cea09df",
+      "hardware": "2x Intel Xeon Gold 6130 (32C/64T, 2 NUMA nodes, 376 GiB RAM) + NVIDIA GTX 1070 8 GiB (SM 6.1, CUDA 12.0)",
+      "model": "qwen3.8-flash-next",
+      "source_weights_sha256": "93f3fcd86786870c487ee72b8dbd362973bdd71c1b0d94bdad6ee689b98856e5",
+      "quantization": "UD-IQ4_XS",
+      "workload": "populated_context_curve",
+      "settings": {
+        "kv_format": "fp16",
+        "kv_placement": "host_only",
+        "threads": "32",
+        "affinity": "all_cores_host_pinned",
+        "gpu_offload": "dense_gpu_experts_cpu",
+        "speculation": 2,
+        "prefill_batch": 512,
+        "capacity_policy": "populated_plus_headroom"
+      },
+      "comparison": {
+        "id": "qwen-iq4xs-p4096",
+        "equivalent": false,
+        "note": "Qwen3.8-Flash-Next hybrid GDN+QSA+PLE+MTP architecture"
+      }
+    },
+    {
+      "csv": "phase6/qwen-portable-p8192.csv",
+      "release": "v0.6.0-phase6",
+      "date": "2026-10-20",
+      "engine": "guild-portable",
+      "engine_commit": "e11e0905df3f5ffdad293b32c74f059d5cea09df",
+      "hardware": "2x Intel Xeon Gold 6130 (32C/64T, 2 NUMA nodes, 376 GiB RAM) + NVIDIA GTX 1070 8 GiB (SM 6.1, CUDA 12.0)",
+      "model": "qwen3.8-flash-next",
+      "source_weights_sha256": "93f3fcd86786870c487ee72b8dbd362973bdd71c1b0d94bdad6ee689b98856e5",
+      "quantization": "UD-IQ4_XS",
+      "workload": "populated_context_curve",
+      "settings": {
+        "kv_format": "fp16",
+        "kv_placement": "host_only",
+        "threads": "32",
+        "affinity": "all_cores_host_pinned",
+        "gpu_offload": "dense_gpu_experts_cpu",
+        "speculation": 2,
+        "prefill_batch": 512,
+        "capacity_policy": "populated_plus_headroom"
+      },
+      "comparison": {
+        "id": "qwen-iq4xs-p8192",
+        "equivalent": false,
+        "note": "Qwen3.8-Flash-Next hybrid GDN+QSA+PLE+MTP architecture"
+      }
+    },
+    {
+      "csv": "phase6/qwen-portable-p16384.csv",
+      "release": "v0.6.0-phase6",
+      "date": "2026-10-20",
+      "engine": "guild-portable",
+      "engine_commit": "e11e0905df3f5ffdad293b32c74f059d5cea09df",
+      "hardware": "2x Intel Xeon Gold 6130 (32C/64T, 2 NUMA nodes, 376 GiB RAM) + NVIDIA GTX 1070 8 GiB (SM 6.1, CUDA 12.0)",
+      "model": "qwen3.8-flash-next",
+      "source_weights_sha256": "93f3fcd86786870c487ee72b8dbd362973bdd71c1b0d94bdad6ee689b98856e5",
+      "quantization": "UD-IQ4_XS",
+      "workload": "populated_context_curve",
+      "settings": {
+        "kv_format": "fp16",
+        "kv_placement": "host_only",
+        "threads": "32",
+        "affinity": "all_cores_host_pinned",
+        "gpu_offload": "dense_gpu_experts_cpu",
+        "speculation": 2,
+        "prefill_batch": 512,
+        "capacity_policy": "populated_plus_headroom"
+      },
+      "comparison": {
+        "id": "qwen-iq4xs-p16384",
+        "equivalent": false,
+        "note": "Qwen3.8-Flash-Next hybrid GDN+QSA+PLE+MTP architecture"
+      }
+    },
+    {
+      "csv": "phase6/qwen-portable-c64k-p32768.csv",
+      "release": "v0.6.0-phase6",
+      "date": "2026-10-20",
+      "engine": "guild-portable",
+      "engine_commit": "e11e0905df3f5ffdad293b32c74f059d5cea09df",
+      "hardware": "2x Intel Xeon Gold 6130 (32C/64T, 2 NUMA nodes, 376 GiB RAM) + NVIDIA GTX 1070 8 GiB (SM 6.1, CUDA 12.0)",
+      "model": "qwen3.8-flash-next",
+      "source_weights_sha256": "93f3fcd86786870c487ee72b8dbd362973bdd71c1b0d94bdad6ee689b98856e5",
+      "quantization": "UD-IQ4_XS",
+      "workload": "populated_context_curve",
+      "settings": {
+        "kv_format": "fp16",
+        "kv_placement": "host_only",
+        "threads": "32",
+        "affinity": "all_cores_host_pinned",
+        "gpu_offload": "dense_gpu_experts_cpu",
+        "speculation": 2,
+        "prefill_batch": 512,
+        "capacity_policy": "populated_plus_headroom"
+      },
+      "comparison": {
+        "id": "qwen-iq4xs-p32768",
+        "equivalent": false,
+        "note": "Qwen3.8-Flash-Next hybrid GDN+QSA+PLE+MTP architecture"
+      }
+    },
+    {
+      "csv": "phase6/qwen-gexec-p512.csv",
+      "release": "v0.6.0-phase6",
+      "date": "2026-10-20",
+      "engine": "guild-gexec",
+      "engine_commit": "e11e0905df3f5ffdad293b32c74f059d5cea09df",
+      "hardware": "2x Intel Xeon Gold 6130 (32C/64T, 2 NUMA nodes, 376 GiB RAM) + NVIDIA GTX 1070 8 GiB (SM 6.1, CUDA 12.0)",
+      "model": "qwen3.8-flash-next",
+      "source_weights_sha256": "93f3fcd86786870c487ee72b8dbd362973bdd71c1b0d94bdad6ee689b98856e5",
+      "quantization": "UD-IQ4_XS",
+      "workload": "populated_context_curve",
+      "settings": {
+        "kv_format": "fp16",
+        "kv_placement": "host_only",
+        "threads": "32",
+        "affinity": "all_cores_host_pinned",
+        "gpu_offload": "dense_gpu_experts_cpu",
+        "speculation": 2,
+        "prefill_batch": 512,
+        "capacity_policy": "populated_plus_headroom",
+        "gexec": "qwen-s2.gexec"
+      },
+      "comparison": {
+        "id": "qwen-iq4xs-p512",
+        "equivalent": false,
+        "note": "Qwen3.8-Flash-Next hybrid GDN+QSA+PLE+MTP architecture"
+      }
+    },
+    {
+      "csv": "phase6/qwen-gexec-p4096.csv",
+      "release": "v0.6.0-phase6",
+      "date": "2026-10-20",
+      "engine": "guild-gexec",
+      "engine_commit": "e11e0905df3f5ffdad293b32c74f059d5cea09df",
+      "hardware": "2x Intel Xeon Gold 6130 (32C/64T, 2 NUMA nodes, 376 GiB RAM) + NVIDIA GTX 1070 8 GiB (SM 6.1, CUDA 12.0)",
+      "model": "qwen3.8-flash-next",
+      "source_weights_sha256": "93f3fcd86786870c487ee72b8dbd362973bdd71c1b0d94bdad6ee689b98856e5",
+      "quantization": "UD-IQ4_XS",
+      "workload": "populated_context_curve",
+      "settings": {
+        "kv_format": "fp16",
+        "kv_placement": "host_only",
+        "threads": "32",
+        "affinity": "all_cores_host_pinned",
+        "gpu_offload": "dense_gpu_experts_cpu",
+        "speculation": 2,
+        "prefill_batch": 512,
+        "capacity_policy": "populated_plus_headroom",
+        "gexec": "qwen-s2.gexec"
+      },
+      "comparison": {
+        "id": "qwen-iq4xs-p4096",
+        "equivalent": false,
+        "note": "Qwen3.8-Flash-Next hybrid GDN+QSA+PLE+MTP architecture"
+      }
+    },
+    {
+      "csv": "phase6/qwen-gexec-p8192.csv",
+      "release": "v0.6.0-phase6",
+      "date": "2026-10-20",
+      "engine": "guild-gexec",
+      "engine_commit": "e11e0905df3f5ffdad293b32c74f059d5cea09df",
+      "hardware": "2x Intel Xeon Gold 6130 (32C/64T, 2 NUMA nodes, 376 GiB RAM) + NVIDIA GTX 1070 8 GiB (SM 6.1, CUDA 12.0)",
+      "model": "qwen3.8-flash-next",
+      "source_weights_sha256": "93f3fcd86786870c487ee72b8dbd362973bdd71c1b0d94bdad6ee689b98856e5",
+      "quantization": "UD-IQ4_XS",
+      "workload": "populated_context_curve",
+      "settings": {
+        "kv_format": "fp16",
+        "kv_placement": "host_only",
+        "threads": "32",
+        "affinity": "all_cores_host_pinned",
+        "gpu_offload": "dense_gpu_experts_cpu",
+        "speculation": 2,
+        "prefill_batch": 512,
+        "capacity_policy": "populated_plus_headroom",
+        "gexec": "qwen-s2.gexec"
+      },
+      "comparison": {
+        "id": "qwen-iq4xs-p8192",
+        "equivalent": false,
+        "note": "Qwen3.8-Flash-Next hybrid GDN+QSA+PLE+MTP architecture"
+      }
+    },
+    {
+      "csv": "phase6/qwen-gexec-p16384.csv",
+      "release": "v0.6.0-phase6",
+      "date": "2026-10-20",
+      "engine": "guild-gexec",
+      "engine_commit": "e11e0905df3f5ffdad293b32c74f059d5cea09df",
+      "hardware": "2x Intel Xeon Gold 6130 (32C/64T, 2 NUMA nodes, 376 GiB RAM) + NVIDIA GTX 1070 8 GiB (SM 6.1, CUDA 12.0)",
+      "model": "qwen3.8-flash-next",
+      "source_weights_sha256": "93f3fcd86786870c487ee72b8dbd362973bdd71c1b0d94bdad6ee689b98856e5",
+      "quantization": "UD-IQ4_XS",
+      "workload": "populated_context_curve",
+      "settings": {
+        "kv_format": "fp16",
+        "kv_placement": "host_only",
+        "threads": "32",
+        "affinity": "all_cores_host_pinned",
+        "gpu_offload": "dense_gpu_experts_cpu",
+        "speculation": 2,
+        "prefill_batch": 512,
+        "capacity_policy": "populated_plus_headroom",
+        "gexec": "qwen-s2.gexec"
+      },
+      "comparison": {
+        "id": "qwen-iq4xs-p16384",
+        "equivalent": false,
+        "note": "Qwen3.8-Flash-Next hybrid GDN+QSA+PLE+MTP architecture"
+      }
+    },
+    {
+      "csv": "phase6/qwen-gexec-c64k-p32768.csv",
+      "release": "v0.6.0-phase6",
+      "date": "2026-10-20",
+      "engine": "guild-gexec",
+      "engine_commit": "e11e0905df3f5ffdad293b32c74f059d5cea09df",
+      "hardware": "2x Intel Xeon Gold 6130 (32C/64T, 2 NUMA nodes, 376 GiB RAM) + NVIDIA GTX 1070 8 GiB (SM 6.1, CUDA 12.0)",
+      "model": "qwen3.8-flash-next",
+      "source_weights_sha256": "93f3fcd86786870c487ee72b8dbd362973bdd71c1b0d94bdad6ee689b98856e5",
+      "quantization": "UD-IQ4_XS",
+      "workload": "populated_context_curve",
+      "settings": {
+        "kv_format": "fp16",
+        "kv_placement": "host_only",
+        "threads": "32",
+        "affinity": "all_cores_host_pinned",
+        "gpu_offload": "dense_gpu_experts_cpu",
+        "speculation": 2,
+        "prefill_batch": 512,
+        "capacity_policy": "populated_plus_headroom",
+        "gexec": "qwen-s2.gexec"
+      },
+      "comparison": {
+        "id": "qwen-iq4xs-p32768",
+        "equivalent": false,
+        "note": "Qwen3.8-Flash-Next hybrid GDN+QSA+PLE+MTP architecture"
+      }
+    },
+    {
+      "csv": "phase6/qwen-gexec-c128k-p65536.csv",
+      "release": "v0.6.0-phase6",
+      "date": "2026-10-20",
+      "engine": "guild-gexec",
+      "engine_commit": "e11e0905df3f5ffdad293b32c74f059d5cea09df",
+      "hardware": "2x Intel Xeon Gold 6130 (32C/64T, 2 NUMA nodes, 376 GiB RAM) + NVIDIA GTX 1070 8 GiB (SM 6.1, CUDA 12.0)",
+      "model": "qwen3.8-flash-next",
+      "source_weights_sha256": "93f3fcd86786870c487ee72b8dbd362973bdd71c1b0d94bdad6ee689b98856e5",
+      "quantization": "UD-IQ4_XS",
+      "workload": "populated_context_curve",
+      "settings": {
+        "kv_format": "fp16",
+        "kv_placement": "host_only",
+        "threads": "32",
+        "affinity": "all_cores_host_pinned",
+        "gpu_offload": "dense_gpu_experts_cpu",
+        "speculation": 2,
+        "prefill_batch": 512,
+        "capacity_policy": "populated_plus_headroom",
+        "gexec": "qwen-s2.gexec"
+      },
+      "comparison": {
+        "id": "qwen-iq4xs-p65536",
+        "equivalent": false,
+        "note": "Qwen3.8-Flash-Next hybrid GDN+QSA+PLE+MTP architecture"
+      }
+    },
+    {
+      "csv": "optimized/ornith-portable-p512.csv",
+      "release": "v0.6.5-phase65",
+      "date": "2026-10-20",
+      "engine": "guild-portable",
+      "engine_commit": "98b2e5e8570925f8ce4e8a585a9f5df26723cb52",
+      "hardware": "2x Intel Xeon Gold 6130 (32C/64T, 2 NUMA nodes, 376 GiB RAM) + NVIDIA GTX 1070 8 GiB (SM 6.1, CUDA 12.0)",
+      "model": "ornith:35b",
+      "source_weights_sha256": "42739874cc2ccfdb8523b23fbe52e29b2a7555c8176737ca9ca0b5d59859d41f",
+      "quantization": "Q4_K_M",
+      "workload": "populated_context_curve",
+      "settings": {
+        "kv_format": "fp16",
+        "kv_placement": "host_only",
+        "threads": "32",
+        "affinity": "all_cores_host_pinned",
+        "gpu_offload": "dense_gpu_experts_cpu",
+        "speculation": 0,
+        "prefill_batch": 256,
+        "capacity_policy": "fixed_32768"
+      },
+      "comparison": {
+        "id": "ornith-q4km-p512",
+        "equivalent": true,
+        "note": "Identical Q4_K_M weights, frozen prompt IDs, greedy 64 tokens, dense GPU + CPU experts + host FP16 KV"
+      }
+    },
+    {
+      "csv": "optimized/ornith-gexec-p512.csv",
+      "release": "v0.6.5-phase65",
+      "date": "2026-10-20",
+      "engine": "guild-gexec",
+      "engine_commit": "98b2e5e8570925f8ce4e8a585a9f5df26723cb52",
+      "hardware": "2x Intel Xeon Gold 6130 (32C/64T, 2 NUMA nodes, 376 GiB RAM) + NVIDIA GTX 1070 8 GiB (SM 6.1, CUDA 12.0)",
+      "model": "ornith:35b",
+      "source_weights_sha256": "42739874cc2ccfdb8523b23fbe52e29b2a7555c8176737ca9ca0b5d59859d41f",
+      "quantization": "Q4_K_M",
+      "workload": "populated_context_curve",
+      "settings": {
+        "kv_format": "fp16",
+        "kv_placement": "host_only",
+        "threads": "32",
+        "affinity": "all_cores_host_pinned",
+        "gpu_offload": "dense_gpu_experts_cpu",
+        "speculation": 0,
+        "prefill_batch": 256,
+        "capacity_policy": "fixed_32768",
+        "gexec": "ornith-c32k-s0.gexec"
+      },
+      "comparison": {
+        "id": "ornith-q4km-p512",
+        "equivalent": true,
+        "note": "Identical Q4_K_M weights, frozen prompt IDs, greedy 64 tokens, dense GPU + CPU experts + host FP16 KV"
+      }
+    },
+    {
+      "csv": "optimized/ornith-portable-p4096.csv",
+      "release": "v0.6.5-phase65",
+      "date": "2026-10-20",
+      "engine": "guild-portable",
+      "engine_commit": "98b2e5e8570925f8ce4e8a585a9f5df26723cb52",
+      "hardware": "2x Intel Xeon Gold 6130 (32C/64T, 2 NUMA nodes, 376 GiB RAM) + NVIDIA GTX 1070 8 GiB (SM 6.1, CUDA 12.0)",
+      "model": "ornith:35b",
+      "source_weights_sha256": "42739874cc2ccfdb8523b23fbe52e29b2a7555c8176737ca9ca0b5d59859d41f",
+      "quantization": "Q4_K_M",
+      "workload": "populated_context_curve",
+      "settings": {
+        "kv_format": "fp16",
+        "kv_placement": "host_only",
+        "threads": "32",
+        "affinity": "all_cores_host_pinned",
+        "gpu_offload": "dense_gpu_experts_cpu",
+        "speculation": 0,
+        "prefill_batch": 256,
+        "capacity_policy": "fixed_32768"
+      },
+      "comparison": {
+        "id": "ornith-q4km-p4096",
+        "equivalent": true,
+        "note": "Identical Q4_K_M weights, frozen prompt IDs, greedy 64 tokens, dense GPU + CPU experts + host FP16 KV"
+      }
+    },
+    {
+      "csv": "optimized/ornith-gexec-p4096.csv",
+      "release": "v0.6.5-phase65",
+      "date": "2026-10-20",
+      "engine": "guild-gexec",
+      "engine_commit": "98b2e5e8570925f8ce4e8a585a9f5df26723cb52",
+      "hardware": "2x Intel Xeon Gold 6130 (32C/64T, 2 NUMA nodes, 376 GiB RAM) + NVIDIA GTX 1070 8 GiB (SM 6.1, CUDA 12.0)",
+      "model": "ornith:35b",
+      "source_weights_sha256": "42739874cc2ccfdb8523b23fbe52e29b2a7555c8176737ca9ca0b5d59859d41f",
+      "quantization": "Q4_K_M",
+      "workload": "populated_context_curve",
+      "settings": {
+        "kv_format": "fp16",
+        "kv_placement": "host_only",
+        "threads": "32",
+        "affinity": "all_cores_host_pinned",
+        "gpu_offload": "dense_gpu_experts_cpu",
+        "speculation": 0,
+        "prefill_batch": 256,
+        "capacity_policy": "fixed_32768",
+        "gexec": "ornith-c32k-s0.gexec"
+      },
+      "comparison": {
+        "id": "ornith-q4km-p4096",
+        "equivalent": true,
+        "note": "Identical Q4_K_M weights, frozen prompt IDs, greedy 64 tokens, dense GPU + CPU experts + host FP16 KV"
+      }
+    },
+    {
+      "csv": "optimized/ornith-portable-p8192.csv",
+      "release": "v0.6.5-phase65",
+      "date": "2026-10-20",
+      "engine": "guild-portable",
+      "engine_commit": "98b2e5e8570925f8ce4e8a585a9f5df26723cb52",
+      "hardware": "2x Intel Xeon Gold 6130 (32C/64T, 2 NUMA nodes, 376 GiB RAM) + NVIDIA GTX 1070 8 GiB (SM 6.1, CUDA 12.0)",
+      "model": "ornith:35b",
+      "source_weights_sha256": "42739874cc2ccfdb8523b23fbe52e29b2a7555c8176737ca9ca0b5d59859d41f",
+      "quantization": "Q4_K_M",
+      "workload": "populated_context_curve",
+      "settings": {
+        "kv_format": "fp16",
+        "kv_placement": "host_only",
+        "threads": "32",
+        "affinity": "all_cores_host_pinned",
+        "gpu_offload": "dense_gpu_experts_cpu",
+        "speculation": 0,
+        "prefill_batch": 256,
+        "capacity_policy": "fixed_32768"
+      },
+      "comparison": {
+        "id": "ornith-q4km-p8192",
+        "equivalent": true,
+        "note": "Identical Q4_K_M weights, frozen prompt IDs, greedy 64 tokens, dense GPU + CPU experts + host FP16 KV"
+      }
+    },
+    {
+      "csv": "optimized/ornith-gexec-p8192.csv",
+      "release": "v0.6.5-phase65",
+      "date": "2026-10-20",
+      "engine": "guild-gexec",
+      "engine_commit": "98b2e5e8570925f8ce4e8a585a9f5df26723cb52",
+      "hardware": "2x Intel Xeon Gold 6130 (32C/64T, 2 NUMA nodes, 376 GiB RAM) + NVIDIA GTX 1070 8 GiB (SM 6.1, CUDA 12.0)",
+      "model": "ornith:35b",
+      "source_weights_sha256": "42739874cc2ccfdb8523b23fbe52e29b2a7555c8176737ca9ca0b5d59859d41f",
+      "quantization": "Q4_K_M",
+      "workload": "populated_context_curve",
+      "settings": {
+        "kv_format": "fp16",
+        "kv_placement": "host_only",
+        "threads": "32",
+        "affinity": "all_cores_host_pinned",
+        "gpu_offload": "dense_gpu_experts_cpu",
+        "speculation": 0,
+        "prefill_batch": 256,
+        "capacity_policy": "fixed_32768",
+        "gexec": "ornith-c32k-s0.gexec"
+      },
+      "comparison": {
+        "id": "ornith-q4km-p8192",
+        "equivalent": true,
+        "note": "Identical Q4_K_M weights, frozen prompt IDs, greedy 64 tokens, dense GPU + CPU experts + host FP16 KV"
+      }
+    },
+    {
+      "csv": "optimized/ornith-portable-p16384.csv",
+      "release": "v0.6.5-phase65",
+      "date": "2026-10-20",
+      "engine": "guild-portable",
+      "engine_commit": "98b2e5e8570925f8ce4e8a585a9f5df26723cb52",
+      "hardware": "2x Intel Xeon Gold 6130 (32C/64T, 2 NUMA nodes, 376 GiB RAM) + NVIDIA GTX 1070 8 GiB (SM 6.1, CUDA 12.0)",
+      "model": "ornith:35b",
+      "source_weights_sha256": "42739874cc2ccfdb8523b23fbe52e29b2a7555c8176737ca9ca0b5d59859d41f",
+      "quantization": "Q4_K_M",
+      "workload": "populated_context_curve",
+      "settings": {
+        "kv_format": "fp16",
+        "kv_placement": "host_only",
+        "threads": "32",
+        "affinity": "all_cores_host_pinned",
+        "gpu_offload": "dense_gpu_experts_cpu",
+        "speculation": 0,
+        "prefill_batch": 256,
+        "capacity_policy": "fixed_32768"
+      },
+      "comparison": {
+        "id": "ornith-q4km-p16384",
+        "equivalent": true,
+        "note": "Identical Q4_K_M weights, frozen prompt IDs, greedy 64 tokens, dense GPU + CPU experts + host FP16 KV"
+      }
+    },
+    {
+      "csv": "optimized/ornith-gexec-p16384.csv",
+      "release": "v0.6.5-phase65",
+      "date": "2026-10-20",
+      "engine": "guild-gexec",
+      "engine_commit": "98b2e5e8570925f8ce4e8a585a9f5df26723cb52",
+      "hardware": "2x Intel Xeon Gold 6130 (32C/64T, 2 NUMA nodes, 376 GiB RAM) + NVIDIA GTX 1070 8 GiB (SM 6.1, CUDA 12.0)",
+      "model": "ornith:35b",
+      "source_weights_sha256": "42739874cc2ccfdb8523b23fbe52e29b2a7555c8176737ca9ca0b5d59859d41f",
+      "quantization": "Q4_K_M",
+      "workload": "populated_context_curve",
+      "settings": {
+        "kv_format": "fp16",
+        "kv_placement": "host_only",
+        "threads": "32",
+        "affinity": "all_cores_host_pinned",
+        "gpu_offload": "dense_gpu_experts_cpu",
+        "speculation": 0,
+        "prefill_batch": 256,
+        "capacity_policy": "fixed_32768",
+        "gexec": "ornith-c32k-s0.gexec"
+      },
+      "comparison": {
+        "id": "ornith-q4km-p16384",
+        "equivalent": true,
+        "note": "Identical Q4_K_M weights, frozen prompt IDs, greedy 64 tokens, dense GPU + CPU experts + host FP16 KV"
+      }
+    },
+    {
+      "csv": "optimized/ornith-portable-p32704.csv",
+      "release": "v0.6.5-phase65",
+      "date": "2026-10-20",
+      "engine": "guild-portable",
+      "engine_commit": "98b2e5e8570925f8ce4e8a585a9f5df26723cb52",
+      "hardware": "2x Intel Xeon Gold 6130 (32C/64T, 2 NUMA nodes, 376 GiB RAM) + NVIDIA GTX 1070 8 GiB (SM 6.1, CUDA 12.0)",
+      "model": "ornith:35b",
+      "source_weights_sha256": "42739874cc2ccfdb8523b23fbe52e29b2a7555c8176737ca9ca0b5d59859d41f",
+      "quantization": "Q4_K_M",
+      "workload": "populated_context_curve",
+      "settings": {
+        "kv_format": "fp16",
+        "kv_placement": "host_only",
+        "threads": "32",
+        "affinity": "all_cores_host_pinned",
+        "gpu_offload": "dense_gpu_experts_cpu",
+        "speculation": 0,
+        "prefill_batch": 256,
+        "capacity_policy": "fixed_32768"
+      },
+      "comparison": {
+        "id": "ornith-q4km-p32704",
+        "equivalent": true,
+        "note": "Identical Q4_K_M weights, frozen prompt IDs, greedy 64 tokens, dense GPU + CPU experts + host FP16 KV"
+      }
+    },
+    {
+      "csv": "optimized/ornith-gexec-p32704.csv",
+      "release": "v0.6.5-phase65",
+      "date": "2026-10-20",
+      "engine": "guild-gexec",
+      "engine_commit": "98b2e5e8570925f8ce4e8a585a9f5df26723cb52",
+      "hardware": "2x Intel Xeon Gold 6130 (32C/64T, 2 NUMA nodes, 376 GiB RAM) + NVIDIA GTX 1070 8 GiB (SM 6.1, CUDA 12.0)",
+      "model": "ornith:35b",
+      "source_weights_sha256": "42739874cc2ccfdb8523b23fbe52e29b2a7555c8176737ca9ca0b5d59859d41f",
+      "quantization": "Q4_K_M",
+      "workload": "populated_context_curve",
+      "settings": {
+        "kv_format": "fp16",
+        "kv_placement": "host_only",
+        "threads": "32",
+        "affinity": "all_cores_host_pinned",
+        "gpu_offload": "dense_gpu_experts_cpu",
+        "speculation": 0,
+        "prefill_batch": 256,
+        "capacity_policy": "fixed_32768",
+        "gexec": "ornith-c32k-s0.gexec"
+      },
+      "comparison": {
+        "id": "ornith-q4km-p32704",
+        "equivalent": true,
+        "note": "Identical Q4_K_M weights, frozen prompt IDs, greedy 64 tokens, dense GPU + CPU experts + host FP16 KV"
+      }
+    },
+    {
+      "csv": "optimized/qwen-portable-p512.csv",
+      "release": "v0.6.5-phase65",
+      "date": "2026-10-20",
+      "engine": "guild-portable",
+      "engine_commit": "98b2e5e8570925f8ce4e8a585a9f5df26723cb52",
+      "hardware": "2x Intel Xeon Gold 6130 (32C/64T, 2 NUMA nodes, 376 GiB RAM) + NVIDIA GTX 1070 8 GiB (SM 6.1, CUDA 12.0)",
+      "model": "qwen3.8-flash-next",
+      "source_weights_sha256": "93f3fcd86786870c487ee72b8dbd362973bdd71c1b0d94bdad6ee689b98856e5",
+      "quantization": "UD-IQ4_XS",
+      "workload": "populated_context_curve",
+      "settings": {
+        "kv_format": "fp16",
+        "kv_placement": "host_only",
+        "threads": "32",
+        "affinity": "all_cores_host_pinned",
+        "gpu_offload": "dense_gpu_experts_cpu",
+        "speculation": 2,
+        "prefill_batch": 512,
+        "capacity_policy": "populated_plus_headroom"
+      },
+      "comparison": {
+        "id": "qwen-iq4xs-p512",
+        "equivalent": false,
+        "note": "Qwen3.8-Flash-Next hybrid GDN+QSA+PLE+MTP architecture"
+      }
+    },
+    {
+      "csv": "optimized/qwen-gexec-p512.csv",
+      "release": "v0.6.5-phase65",
+      "date": "2026-10-20",
+      "engine": "guild-gexec",
+      "engine_commit": "98b2e5e8570925f8ce4e8a585a9f5df26723cb52",
+      "hardware": "2x Intel Xeon Gold 6130 (32C/64T, 2 NUMA nodes, 376 GiB RAM) + NVIDIA GTX 1070 8 GiB (SM 6.1, CUDA 12.0)",
+      "model": "qwen3.8-flash-next",
+      "source_weights_sha256": "93f3fcd86786870c487ee72b8dbd362973bdd71c1b0d94bdad6ee689b98856e5",
+      "quantization": "UD-IQ4_XS",
+      "workload": "populated_context_curve",
+      "settings": {
+        "kv_format": "fp16",
+        "kv_placement": "host_only",
+        "threads": "32",
+        "affinity": "all_cores_host_pinned",
+        "gpu_offload": "dense_gpu_experts_cpu",
+        "speculation": 2,
+        "prefill_batch": 512,
+        "capacity_policy": "populated_plus_headroom",
+        "gexec": "qwen-s2.gexec"
+      },
+      "comparison": {
+        "id": "qwen-iq4xs-p512",
+        "equivalent": false,
+        "note": "Qwen3.8-Flash-Next hybrid GDN+QSA+PLE+MTP architecture"
+      }
+    },
+    {
+      "csv": "optimized/qwen-portable-p4096.csv",
+      "release": "v0.6.5-phase65",
+      "date": "2026-10-20",
+      "engine": "guild-portable",
+      "engine_commit": "98b2e5e8570925f8ce4e8a585a9f5df26723cb52",
+      "hardware": "2x Intel Xeon Gold 6130 (32C/64T, 2 NUMA nodes, 376 GiB RAM) + NVIDIA GTX 1070 8 GiB (SM 6.1, CUDA 12.0)",
+      "model": "qwen3.8-flash-next",
+      "source_weights_sha256": "93f3fcd86786870c487ee72b8dbd362973bdd71c1b0d94bdad6ee689b98856e5",
+      "quantization": "UD-IQ4_XS",
+      "workload": "populated_context_curve",
+      "settings": {
+        "kv_format": "fp16",
+        "kv_placement": "host_only",
+        "threads": "32",
+        "affinity": "all_cores_host_pinned",
+        "gpu_offload": "dense_gpu_experts_cpu",
+        "speculation": 2,
+        "prefill_batch": 512,
+        "capacity_policy": "populated_plus_headroom"
+      },
+      "comparison": {
+        "id": "qwen-iq4xs-p4096",
+        "equivalent": false,
+        "note": "Qwen3.8-Flash-Next hybrid GDN+QSA+PLE+MTP architecture"
+      }
+    },
+    {
+      "csv": "optimized/qwen-gexec-p4096.csv",
+      "release": "v0.6.5-phase65",
+      "date": "2026-10-20",
+      "engine": "guild-gexec",
+      "engine_commit": "98b2e5e8570925f8ce4e8a585a9f5df26723cb52",
+      "hardware": "2x Intel Xeon Gold 6130 (32C/64T, 2 NUMA nodes, 376 GiB RAM) + NVIDIA GTX 1070 8 GiB (SM 6.1, CUDA 12.0)",
+      "model": "qwen3.8-flash-next",
+      "source_weights_sha256": "93f3fcd86786870c487ee72b8dbd362973bdd71c1b0d94bdad6ee689b98856e5",
+      "quantization": "UD-IQ4_XS",
+      "workload": "populated_context_curve",
+      "settings": {
+        "kv_format": "fp16",
+        "kv_placement": "host_only",
+        "threads": "32",
+        "affinity": "all_cores_host_pinned",
+        "gpu_offload": "dense_gpu_experts_cpu",
+        "speculation": 2,
+        "prefill_batch": 512,
+        "capacity_policy": "populated_plus_headroom",
+        "gexec": "qwen-s2.gexec"
+      },
+      "comparison": {
+        "id": "qwen-iq4xs-p4096",
+        "equivalent": false,
+        "note": "Qwen3.8-Flash-Next hybrid GDN+QSA+PLE+MTP architecture"
+      }
+    },
+    {
+      "csv": "optimized/qwen-portable-p8192.csv",
+      "release": "v0.6.5-phase65",
+      "date": "2026-10-20",
+      "engine": "guild-portable",
+      "engine_commit": "98b2e5e8570925f8ce4e8a585a9f5df26723cb52",
+      "hardware": "2x Intel Xeon Gold 6130 (32C/64T, 2 NUMA nodes, 376 GiB RAM) + NVIDIA GTX 1070 8 GiB (SM 6.1, CUDA 12.0)",
+      "model": "qwen3.8-flash-next",
+      "source_weights_sha256": "93f3fcd86786870c487ee72b8dbd362973bdd71c1b0d94bdad6ee689b98856e5",
+      "quantization": "UD-IQ4_XS",
+      "workload": "populated_context_curve",
+      "settings": {
+        "kv_format": "fp16",
+        "kv_placement": "host_only",
+        "threads": "32",
+        "affinity": "all_cores_host_pinned",
+        "gpu_offload": "dense_gpu_experts_cpu",
+        "speculation": 2,
+        "prefill_batch": 512,
+        "capacity_policy": "populated_plus_headroom"
+      },
+      "comparison": {
+        "id": "qwen-iq4xs-p8192",
+        "equivalent": false,
+        "note": "Qwen3.8-Flash-Next hybrid GDN+QSA+PLE+MTP architecture"
+      }
+    },
+    {
+      "csv": "optimized/qwen-gexec-p8192.csv",
+      "release": "v0.6.5-phase65",
+      "date": "2026-10-20",
+      "engine": "guild-gexec",
+      "engine_commit": "98b2e5e8570925f8ce4e8a585a9f5df26723cb52",
+      "hardware": "2x Intel Xeon Gold 6130 (32C/64T, 2 NUMA nodes, 376 GiB RAM) + NVIDIA GTX 1070 8 GiB (SM 6.1, CUDA 12.0)",
+      "model": "qwen3.8-flash-next",
+      "source_weights_sha256": "93f3fcd86786870c487ee72b8dbd362973bdd71c1b0d94bdad6ee689b98856e5",
+      "quantization": "UD-IQ4_XS",
+      "workload": "populated_context_curve",
+      "settings": {
+        "kv_format": "fp16",
+        "kv_placement": "host_only",
+        "threads": "32",
+        "affinity": "all_cores_host_pinned",
+        "gpu_offload": "dense_gpu_experts_cpu",
+        "speculation": 2,
+        "prefill_batch": 512,
+        "capacity_policy": "populated_plus_headroom",
+        "gexec": "qwen-s2.gexec"
+      },
+      "comparison": {
+        "id": "qwen-iq4xs-p8192",
+        "equivalent": false,
+        "note": "Qwen3.8-Flash-Next hybrid GDN+QSA+PLE+MTP architecture"
+      }
+    },
+    {
+      "csv": "optimized/qwen-portable-p16384.csv",
+      "release": "v0.6.5-phase65",
+      "date": "2026-10-20",
+      "engine": "guild-portable",
+      "engine_commit": "98b2e5e8570925f8ce4e8a585a9f5df26723cb52",
+      "hardware": "2x Intel Xeon Gold 6130 (32C/64T, 2 NUMA nodes, 376 GiB RAM) + NVIDIA GTX 1070 8 GiB (SM 6.1, CUDA 12.0)",
+      "model": "qwen3.8-flash-next",
+      "source_weights_sha256": "93f3fcd86786870c487ee72b8dbd362973bdd71c1b0d94bdad6ee689b98856e5",
+      "quantization": "UD-IQ4_XS",
+      "workload": "populated_context_curve",
+      "settings": {
+        "kv_format": "fp16",
+        "kv_placement": "host_only",
+        "threads": "32",
+        "affinity": "all_cores_host_pinned",
+        "gpu_offload": "dense_gpu_experts_cpu",
+        "speculation": 2,
+        "prefill_batch": 512,
+        "capacity_policy": "populated_plus_headroom"
+      },
+      "comparison": {
+        "id": "qwen-iq4xs-p16384",
+        "equivalent": false,
+        "note": "Qwen3.8-Flash-Next hybrid GDN+QSA+PLE+MTP architecture"
+      }
+    },
+    {
+      "csv": "optimized/qwen-gexec-p16384.csv",
+      "release": "v0.6.5-phase65",
+      "date": "2026-10-20",
+      "engine": "guild-gexec",
+      "engine_commit": "98b2e5e8570925f8ce4e8a585a9f5df26723cb52",
+      "hardware": "2x Intel Xeon Gold 6130 (32C/64T, 2 NUMA nodes, 376 GiB RAM) + NVIDIA GTX 1070 8 GiB (SM 6.1, CUDA 12.0)",
+      "model": "qwen3.8-flash-next",
+      "source_weights_sha256": "93f3fcd86786870c487ee72b8dbd362973bdd71c1b0d94bdad6ee689b98856e5",
+      "quantization": "UD-IQ4_XS",
+      "workload": "populated_context_curve",
+      "settings": {
+        "kv_format": "fp16",
+        "kv_placement": "host_only",
+        "threads": "32",
+        "affinity": "all_cores_host_pinned",
+        "gpu_offload": "dense_gpu_experts_cpu",
+        "speculation": 2,
+        "prefill_batch": 512,
+        "capacity_policy": "populated_plus_headroom",
+        "gexec": "qwen-s2.gexec"
+      },
+      "comparison": {
+        "id": "qwen-iq4xs-p16384",
+        "equivalent": false,
+        "note": "Qwen3.8-Flash-Next hybrid GDN+QSA+PLE+MTP architecture"
+      }
+    },
+    {
+      "csv": "optimized/qwen-gexec-c64k-p32768.csv",
+      "release": "v0.6.5-phase65",
+      "date": "2026-10-20",
+      "engine": "guild-gexec",
+      "engine_commit": "98b2e5e8570925f8ce4e8a585a9f5df26723cb52",
+      "hardware": "2x Intel Xeon Gold 6130 (32C/64T, 2 NUMA nodes, 376 GiB RAM) + NVIDIA GTX 1070 8 GiB (SM 6.1, CUDA 12.0)",
+      "model": "qwen3.8-flash-next",
+      "source_weights_sha256": "93f3fcd86786870c487ee72b8dbd362973bdd71c1b0d94bdad6ee689b98856e5",
+      "quantization": "UD-IQ4_XS",
+      "workload": "populated_context_curve",
+      "settings": {
+        "kv_format": "fp16",
+        "kv_placement": "host_only",
+        "threads": "32",
+        "affinity": "all_cores_host_pinned",
+        "gpu_offload": "dense_gpu_experts_cpu",
+        "speculation": 2,
+        "prefill_batch": 512,
+        "capacity_policy": "populated_plus_headroom",
+        "gexec": "qwen-s2.gexec"
+      },
+      "comparison": {
+        "id": "qwen-iq4xs-p32768",
+        "equivalent": false,
+        "note": "Qwen3.8-Flash-Next hybrid GDN+QSA+PLE+MTP architecture"
+      }
+    },
+    {
+      "csv": "optimized/qwen-gexec-c128k-p65536.csv",
+      "release": "v0.6.5-phase65",
+      "date": "2026-10-20",
+      "engine": "guild-gexec",
+      "engine_commit": "98b2e5e8570925f8ce4e8a585a9f5df26723cb52",
+      "hardware": "2x Intel Xeon Gold 6130 (32C/64T, 2 NUMA nodes, 376 GiB RAM) + NVIDIA GTX 1070 8 GiB (SM 6.1, CUDA 12.0)",
+      "model": "qwen3.8-flash-next",
+      "source_weights_sha256": "93f3fcd86786870c487ee72b8dbd362973bdd71c1b0d94bdad6ee689b98856e5",
+      "quantization": "UD-IQ4_XS",
+      "workload": "populated_context_curve",
+      "settings": {
+        "kv_format": "fp16",
+        "kv_placement": "host_only",
+        "threads": "32",
+        "affinity": "all_cores_host_pinned",
+        "gpu_offload": "dense_gpu_experts_cpu",
+        "speculation": 2,
+        "prefill_batch": 512,
+        "capacity_policy": "populated_plus_headroom",
+        "gexec": "qwen-s2.gexec"
+      },
+      "comparison": {
+        "id": "qwen-iq4xs-p65536",
+        "equivalent": false,
+        "note": "Qwen3.8-Flash-Next hybrid GDN+QSA+PLE+MTP architecture"
+      }
+    },
+    {
+      "csv": "optimized/ornith-kv-int8-p4096.csv",
+      "release": "v0.6.5-phase65",
+      "date": "2026-10-20",
+      "engine": "guild-gexec",
+      "engine_commit": "98b2e5e8570925f8ce4e8a585a9f5df26723cb52",
+      "hardware": "2x Intel Xeon Gold 6130 (32C/64T, 2 NUMA nodes, 376 GiB RAM) + NVIDIA GTX 1070 8 GiB (SM 6.1, CUDA 12.0)",
+      "model": "ornith:35b",
+      "source_weights_sha256": "42739874cc2ccfdb8523b23fbe52e29b2a7555c8176737ca9ca0b5d59859d41f",
+      "quantization": "Q4_K_M",
+      "workload": "kv_precision_sweep",
+      "settings": {
+        "kv_format": "int8",
+        "kv_placement": "host_only",
+        "threads": "32",
+        "affinity": "all_cores_host_pinned",
+        "gpu_offload": "dense_gpu_experts_cpu",
+        "speculation": 0,
+        "prefill_batch": 256,
+        "capacity_policy": "fixed_32768",
+        "gexec": "ornith-kv-int8.gexec"
+      },
+      "comparison": {
+        "id": "ornith-kv-int8-p4096",
+        "equivalent": false,
+        "note": "Ornith-1.5-35B KV precision int8 (host_only) with GEXEC"
+      }
+    },
+    {
+      "csv": "optimized/qwen-kv-int8-p4096.csv",
+      "release": "v0.6.5-phase65",
+      "date": "2026-10-20",
+      "engine": "guild-gexec",
+      "engine_commit": "98b2e5e8570925f8ce4e8a585a9f5df26723cb52",
+      "hardware": "2x Intel Xeon Gold 6130 (32C/64T, 2 NUMA nodes, 376 GiB RAM) + NVIDIA GTX 1070 8 GiB (SM 6.1, CUDA 12.0)",
+      "model": "qwen3.8-flash-next",
+      "source_weights_sha256": "93f3fcd86786870c487ee72b8dbd362973bdd71c1b0d94bdad6ee689b98856e5",
+      "quantization": "UD-IQ4_XS",
+      "workload": "kv_precision_sweep",
+      "settings": {
+        "kv_format": "int8",
+        "kv_placement": "host_only",
+        "threads": "32",
+        "affinity": "all_cores_host_pinned",
+        "gpu_offload": "dense_gpu_experts_cpu",
+        "speculation": 2,
+        "prefill_batch": 512,
+        "capacity_policy": "fixed_32768",
+        "gexec": "qwen-kv-int8.gexec"
+      },
+      "comparison": {
+        "id": "qwen-kv-int8-p4096",
+        "equivalent": false,
+        "note": "Qwen3.8-Flash-Next KV precision int8 (host_only) with GEXEC"
+      }
+    },
+    {
+      "csv": "optimized/ornith-kv-q4_0-p4096.csv",
+      "release": "v0.6.5-phase65",
+      "date": "2026-10-20",
+      "engine": "guild-gexec",
+      "engine_commit": "98b2e5e8570925f8ce4e8a585a9f5df26723cb52",
+      "hardware": "2x Intel Xeon Gold 6130 (32C/64T, 2 NUMA nodes, 376 GiB RAM) + NVIDIA GTX 1070 8 GiB (SM 6.1, CUDA 12.0)",
+      "model": "ornith:35b",
+      "source_weights_sha256": "42739874cc2ccfdb8523b23fbe52e29b2a7555c8176737ca9ca0b5d59859d41f",
+      "quantization": "Q4_K_M",
+      "workload": "kv_precision_sweep",
+      "settings": {
+        "kv_format": "q4_0",
+        "kv_placement": "host_only",
+        "threads": "32",
+        "affinity": "all_cores_host_pinned",
+        "gpu_offload": "dense_gpu_experts_cpu",
+        "speculation": 0,
+        "prefill_batch": 256,
+        "capacity_policy": "fixed_32768",
+        "gexec": "ornith-kv-q4_0.gexec"
+      },
+      "comparison": {
+        "id": "ornith-kv-q4_0-p4096",
+        "equivalent": false,
+        "note": "Ornith-1.5-35B KV precision q4_0 (host_only) with GEXEC"
+      }
+    },
+    {
+      "csv": "optimized/qwen-kv-q4_0-p4096.csv",
+      "release": "v0.6.5-phase65",
+      "date": "2026-10-20",
+      "engine": "guild-gexec",
+      "engine_commit": "98b2e5e8570925f8ce4e8a585a9f5df26723cb52",
+      "hardware": "2x Intel Xeon Gold 6130 (32C/64T, 2 NUMA nodes, 376 GiB RAM) + NVIDIA GTX 1070 8 GiB (SM 6.1, CUDA 12.0)",
+      "model": "qwen3.8-flash-next",
+      "source_weights_sha256": "93f3fcd86786870c487ee72b8dbd362973bdd71c1b0d94bdad6ee689b98856e5",
+      "quantization": "UD-IQ4_XS",
+      "workload": "kv_precision_sweep",
+      "settings": {
+        "kv_format": "q4_0",
+        "kv_placement": "host_only",
+        "threads": "32",
+        "affinity": "all_cores_host_pinned",
+        "gpu_offload": "dense_gpu_experts_cpu",
+        "speculation": 2,
+        "prefill_batch": 512,
+        "capacity_policy": "fixed_32768",
+        "gexec": "qwen-kv-q4_0.gexec"
+      },
+      "comparison": {
+        "id": "qwen-kv-q4_0-p4096",
+        "equivalent": false,
+        "note": "Qwen3.8-Flash-Next KV precision q4_0 (host_only) with GEXEC"
+      }
+    },
+    {
+      "csv": "optimized/ornith-kv-k8v4-p4096.csv",
+      "release": "v0.6.5-phase65",
+      "date": "2026-10-20",
+      "engine": "guild-gexec",
+      "engine_commit": "98b2e5e8570925f8ce4e8a585a9f5df26723cb52",
+      "hardware": "2x Intel Xeon Gold 6130 (32C/64T, 2 NUMA nodes, 376 GiB RAM) + NVIDIA GTX 1070 8 GiB (SM 6.1, CUDA 12.0)",
+      "model": "ornith:35b",
+      "source_weights_sha256": "42739874cc2ccfdb8523b23fbe52e29b2a7555c8176737ca9ca0b5d59859d41f",
+      "quantization": "Q4_K_M",
+      "workload": "kv_precision_sweep",
+      "settings": {
+        "kv_format": "k8v4",
+        "kv_placement": "resident",
+        "threads": "32",
+        "affinity": "all_cores_host_pinned",
+        "gpu_offload": "dense_gpu_experts_cpu",
+        "speculation": 0,
+        "prefill_batch": 256,
+        "capacity_policy": "fixed_32768",
+        "gexec": "ornith-kv-k8v4.gexec"
+      },
+      "comparison": {
+        "id": "ornith-kv-k8v4-p4096",
+        "equivalent": false,
+        "note": "Ornith-1.5-35B KV precision k8v4 (resident) with GEXEC"
+      }
+    },
+    {
+      "csv": "optimized/qwen-kv-k8v4-p4096.csv",
+      "release": "v0.6.5-phase65",
+      "date": "2026-10-20",
+      "engine": "guild-gexec",
+      "engine_commit": "98b2e5e8570925f8ce4e8a585a9f5df26723cb52",
+      "hardware": "2x Intel Xeon Gold 6130 (32C/64T, 2 NUMA nodes, 376 GiB RAM) + NVIDIA GTX 1070 8 GiB (SM 6.1, CUDA 12.0)",
+      "model": "qwen3.8-flash-next",
+      "source_weights_sha256": "93f3fcd86786870c487ee72b8dbd362973bdd71c1b0d94bdad6ee689b98856e5",
+      "quantization": "UD-IQ4_XS",
+      "workload": "kv_precision_sweep",
+      "settings": {
+        "kv_format": "k8v4",
+        "kv_placement": "resident",
+        "threads": "32",
+        "affinity": "all_cores_host_pinned",
+        "gpu_offload": "dense_gpu_experts_cpu",
+        "speculation": 2,
+        "prefill_batch": 512,
+        "capacity_policy": "fixed_32768",
+        "gexec": "qwen-kv-k8v4.gexec"
+      },
+      "comparison": {
+        "id": "qwen-kv-k8v4-p4096",
+        "equivalent": false,
+        "note": "Qwen3.8-Flash-Next KV precision k8v4 (resident) with GEXEC"
+      }
+    }
+  ]
+}

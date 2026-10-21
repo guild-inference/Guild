@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="512" viewBox="0 0 1000 512">
+<rect width="100%" height="100%" fill="white"/>
+<g font-family="sans-serif" font-size="13" fill="#222">
+<text x="30" y="28" font-size="17">Populated context: 4861cba71689 (decode_tps; median, p05–p95)</text>
+<text x="15" y="54">tokens / second</text>
+<path d="M90 360.00 H910" stroke="#ddd"/>
+<text x="30" y="364.00">0.00</text>
+<path d="M90 302.00 H910" stroke="#ddd"/>
+<text x="30" y="306.00">5.01</text>
+<path d="M90 244.00 H910" stroke="#ddd"/>
+<text x="30" y="248.00">10.03</text>
+<path d="M90 186.00 H910" stroke="#ddd"/>
+<text x="30" y="190.00">15.04</text>
+<path d="M90 128.00 H910" stroke="#ddd"/>
+<text x="30" y="132.00">20.05</text>
+<path d="M90 70.00 H910" stroke="#ddd"/>
+<text x="30" y="74.00">25.06</text>
+<text x="90.00" y="382" text-anchor="middle">4096</text>
+<text x="500" y="410" text-anchor="middle">Real prompt tokens</text>
+<polyline points="90.00,101.07" fill="none" stroke="#1565c0" stroke-width="2"/>
+<path d="M90.00 101.07 V101.07" stroke="#1565c0"/>
+<circle cx="90.00" cy="101.07" r="4" fill="#1565c0"><title>22.3781</title></circle>
+<text x="90" y="440" fill="#1565c0">guild-gexec / v0.6.5-phase65 / 3e83be31c649</text>
+<polyline points="90.00,108.55" fill="none" stroke="#c62828" stroke-width="2"/>
+<path d="M90.00 108.55 V108.55" stroke="#c62828"/>
+<circle cx="90.00" cy="108.55" r="4" fill="#c62828"><title>21.7314</title></circle>
+<text x="90" y="464" fill="#c62828">guild-gexec / v0.6.5-phase65 / 58401e1cec87</text>
+<polyline points="90.00,103.99" fill="none" stroke="#2e7d32" stroke-width="2"/>
+<path d="M90.00 103.99 V103.99" stroke="#2e7d32"/>
+<circle cx="90.00" cy="103.99" r="4" fill="#2e7d32"><title>22.1258</title></circle>
+<text x="90" y="488" fill="#2e7d32">guild-gexec / v0.6.5-phase65 / 9de504ecf86d</text>
+</g></svg>

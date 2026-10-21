@@ -1,0 +1,4 @@
+batch,run,prompt_tokens,prefill_tokens,generated_tokens,prefill_ms,decode_ms,wall_ms,ttft_ms,prefill_tps,decode_tps,load_ms,vram_sample_bytes,host_peak_bytes,host_kv_allocated_bytes,kv_staging_bytes,prefill_scratch_bytes,expert_groups,expert_weight_bytes,activation_transfer_bytes,cpu_gu_ms,cpu_quant_ms,cpu_down_ms,cpu_group_ms,host_wait_ms,gpu_dense_ms,gpu_gdn_ms,gpu_attention_ms,file_reads,gpu_groups,finish
+512,0,512,511,64,5387.557035,2853.518936,8244.348595,5453.241526,94.8481838207,22.4284476239,9810.330925,7663190016,70920548352,805318656,33685504,0,0,0,0,0,0,0,0,0,0,0,0,0,0,length
+512,1,512,511,64,5390.194227,2855.926476,8249.436749,5455.557314,94.8017786521,22.4095404899,9810.330925,7663190016,70920548352,805318656,33685504,0,0,0,0,0,0,0,0,0,0,0,0,0,0,length
+512,2,512,511,64,5388.990325,2838.764166,8231.075434,5454.614495,94.8229573969,22.5450217973,9810.330925,7663190016,70920548352,805318656,33685504,0,0,0,0,0,0,0,0,0,0,0,0,0,0,length
