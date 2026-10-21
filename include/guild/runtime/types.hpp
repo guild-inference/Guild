@@ -140,6 +140,10 @@ struct RuntimeTelemetry {
     double spec_estimated_speedup = 1.0;
     double spec_avg_proposed_draft = 0.0;
     double spec_avg_accepted_prefix = 0.0;
+    double spec_mean_abs_cost_pred_error_ms = 0.0;
+    double spec_mean_abs_acc_pred_error = 0.0;
+    double spec_effective_hysteresis_margin = 0.05;
+    double spec_measured_verify_cv = 0.0;
     int64_t spec_strategy_switches = 0;
     int64_t spec_fallback_count = 0;
     int64_t spec_normal_windows = 0;

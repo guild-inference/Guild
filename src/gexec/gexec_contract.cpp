@@ -489,6 +489,9 @@ std::string GExecHeterogeneousPlan::to_json() const {
         root["lookup_draft_ms"] = lookup_draft_ms;
         root["retrieval_draft_ms"] = retrieval_draft_ms;
         root["kv_commit_ms"] = kv_commit_ms;
+        root["verify_noise_cv"] = verify_noise_cv;
+        root["concurrency_slope"] = concurrency_slope;
+        root["context_attn_ms_per_1k"] = context_attn_ms_per_1k;
     }
 
     root["digest"] = models::Sha256::hash_string(root.dump());
@@ -561,6 +564,12 @@ bool GExecHeterogeneousPlan::from_json(const std::string& json_str, GExecHeterog
         out.retrieval_draft_ms = root["retrieval_draft_ms"].as_double(0.0);
     if (root.contains("kv_commit_ms"))
         out.kv_commit_ms = root["kv_commit_ms"].as_double(0.0);
+    if (root.contains("verify_noise_cv"))
+        out.verify_noise_cv = root["verify_noise_cv"].as_double(0.0);
+    if (root.contains("concurrency_slope"))
+        out.concurrency_slope = root["concurrency_slope"].as_double(0.0);
+    if (root.contains("context_attn_ms_per_1k"))
+        out.context_attn_ms_per_1k = root["context_attn_ms_per_1k"].as_double(0.0);
     return true;
 }
 

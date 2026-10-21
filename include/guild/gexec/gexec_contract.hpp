@@ -155,7 +155,7 @@ struct GExecHeterogeneousPlan {
     std::vector<int32_t> pcie_numerators;
     int32_t expert_cache_slots = 0;
 
-    // Phase 6.6: Speculative verification & drafting cost calibration (window sizes T = 1..8).
+    // Phase 6.6 / 6.6.1: Speculative verification & drafting cost calibration (window sizes T = 1..8).
     bool spec_calibrated = false;
     std::vector<double> verify_window_ms;
     std::vector<double> verify_cpu_expert_ms;
@@ -165,6 +165,9 @@ struct GExecHeterogeneousPlan {
     double lookup_draft_ms = 0.0;
     double retrieval_draft_ms = 0.0;
     double kv_commit_ms = 0.0;
+    double verify_noise_cv = 0.0;
+    double concurrency_slope = 0.0;
+    double context_attn_ms_per_1k = 0.0;
 
     std::string to_json() const;
     static bool from_json(const std::string& json_str, GExecHeterogeneousPlan& out, std::string& err);

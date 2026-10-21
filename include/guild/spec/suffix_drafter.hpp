@@ -46,6 +46,19 @@ public:
     int last_freq() const {
         return last_freq_;
     }
+    /// Total number of qualifying suffix matches inspected for the last proposal (1..WAYS).
+    int last_candidates() const {
+        return last_candidates_;
+    }
+    /// Empirical agreement ratio (last_freq / last_candidates) on the first continuation token.
+    float last_agreement() const {
+        return last_candidates_ > 0 ? (float) last_freq_ / (float) last_candidates_ : 0.0f;
+    }
+    /// Number of proposed tokens that maintain multi-candidate continuation consensus before diverging at a variable
+    /// slot.
+    int last_consensus_k() const {
+        return last_consensus_k_;
+    }
     size_t size() const {
         return hist_.size();
     }
@@ -72,6 +85,8 @@ private:
     size_t mask_ = 0;
     int last_match_ = 0;
     int last_freq_ = 0;
+    int last_candidates_ = 0;
+    int last_consensus_k_ = 0;
 };
 
 } // namespace guild::spec

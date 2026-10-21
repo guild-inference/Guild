@@ -39,6 +39,8 @@ void SuffixDrafter::reset() {
     std::fill(table_.begin(), table_.end(), Slot{});
     last_match_ = 0;
     last_freq_ = 0;
+    last_candidates_ = 0;
+    last_consensus_k_ = 0;
 }
 
 uint64_t SuffixDrafter::key_at(size_t end) const {
@@ -129,12 +131,20 @@ void SuffixDrafter::append(const int32_t* tokens, size_t n) {
 int SuffixDrafter::propose(int max_k, int32_t* out) {
     last_match_ = 0;
     last_freq_ = 0;
+    last_candidates_ = 0;
+    last_consensus_k_ = 0;
     const size_t n = hist_.size();
     if (n < (size_t) (min_match_ + 1) || max_k <= 0 || out == nullptr)
         return 0;
     const size_t cur = n - 1;
 
-    auto eval_slot = [&](const Slot* s, size_t& best_end, int& best_len, int& best_freq) {
+    size_t best_end = 0;
+    int best_len = 0;
+    int best_freq = 0;
+    size_t peer_ends[WAYS] = {};
+    int n_peers = 0;
+
+    auto eval_slot = [&](const Slot* s) {
         if (s == nullptr || s->n == 0)
             return;
         int cand_len[WAYS] = {};
@@ -158,9 +168,14 @@ int SuffixDrafter::propose(int max_k, int32_t* out) {
             const size_t p = cand_end[i];
             const int32_t next_tok = hist_[p + 1];
             int freq = 0;
+            int same_len_count = 0;
+            size_t same_len_ends[WAYS] = {};
             for (int j = 0; j < valid; ++j) {
-                if (hist_[cand_end[j] + 1] == next_tok)
-                    ++freq;
+                if (cand_len[j] == len) {
+                    same_len_ends[same_len_count++] = cand_end[j];
+                    if (hist_[cand_end[j] + 1] == next_tok)
+                        ++freq;
+                }
             }
             // Prefer longer match; on equal match length, prefer higher continuation frequency, then most recent
             // (smaller i).
@@ -168,26 +183,52 @@ int SuffixDrafter::propose(int max_k, int32_t* out) {
                 best_len = len;
                 best_freq = freq;
                 best_end = p;
+                n_peers = same_len_count;
+                for (int j = 0; j < same_len_count; ++j)
+                    peer_ends[j] = same_len_ends[j];
             }
         }
     };
 
-    size_t best_end = 0;
-    int best_len = 0;
-    int best_freq = 0;
     if (cur >= 2)
-        eval_slot(find_slot(key_at(cur), false), best_end, best_len, best_freq);
+        eval_slot(find_slot(key_at(cur), false));
     if (best_len < min_match_ && min_match_ == 2 && cur >= 1)
-        eval_slot(find_slot(key2_at(cur), false), best_end, best_len, best_freq);
+        eval_slot(find_slot(key2_at(cur), false));
 
     if (best_len < min_match_)
         return 0;
     last_match_ = best_len;
     last_freq_ = best_freq;
+    last_candidates_ = std::max(1, n_peers);
     int k = 0;
     // The continuation may run into the current suffix (periodic text); reading history up to `cur` is valid.
     for (size_t q = best_end + 1; q <= cur && k < max_k; ++q)
         out[k++] = hist_[q];
+
+    if (n_peers >= 3 && best_freq == 1) {
+        // Every earlier occurrence of this suffix was followed by a different token (e.g. a variable counter slot).
+        last_consensus_k_ = 0;
+    } else if (n_peers >= 3 && best_freq >= 2) {
+        int cons = 0;
+        for (int s = 0; s < k; ++s) {
+            int active_peers = 0;
+            int step_agree = 0;
+            for (int j = 0; j < n_peers; ++j) {
+                const size_t pos_s = peer_ends[j] + 1 + (size_t) s;
+                if (pos_s <= cur) {
+                    ++active_peers;
+                    if (hist_[pos_s] == out[s])
+                        ++step_agree;
+                }
+            }
+            if (active_peers >= 3 && step_agree == 1)
+                break;
+            ++cons;
+        }
+        last_consensus_k_ = cons;
+    } else {
+        last_consensus_k_ = k;
+    }
     return k;
 }
 

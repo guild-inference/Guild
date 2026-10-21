@@ -812,7 +812,7 @@ bool run_autotune_pass(const artifact::GPackReader& gpack, const GExecArtifactId
                                             static_cast<size_t>(fmt.bytes - fmt.down_off));
         }
 
-        const int pool_nt = (identity.mtp_spec_tokens > 0) ? 2 : 1;
+        const int pool_nt = 1;
         std::vector<float> x_in0(static_cast<size_t>(fmt.n_embd), 0.125f);
         std::vector<float> x_in1(static_cast<size_t>(fmt.n_embd), -0.0625f);
         alignas(64) uint8_t qact0[kernels::cpu::kNativeActBytes] = {};
@@ -1026,7 +1026,7 @@ bool run_autotune_pass(const artifact::GPackReader& gpack, const GExecArtifactId
 }
 
 void calibrate_speculative_costs(const artifact::GPackReader& gpack, double optimized_cpu_decode_ms,
-                                 GExecHeterogeneousPlan& hp) {
+                                 const std::string& selected_cpu_impl, GExecHeterogeneousPlan& hp) {
     const auto& desc = gpack.descriptor();
     const int64_t n_layers = std::max<int64_t>(1, desc.attn.n_layers);
     const int64_t n_expert = std::max<int64_t>(1, desc.moe.n_routed_experts);
@@ -1065,10 +1065,100 @@ void calibrate_speculative_costs(const artifact::GPackReader& gpack, double opti
     hp.lookup_draft_ms = std::max(0.001, sfx_samples[sfx_samples.size() / 2]);
     hp.retrieval_draft_ms = std::max(0.001, ret_samples[ret_samples.size() / 2]);
 
-    // 2. Calibrate MoE multi-token verification cost curve for window sizes T = 1..8.
+    // 2. Measure actual multi-token CPU expert scaling (alpha_nt2), multi-expert contention (concurrency_slope),
+    // and timing dispersion (verify_noise_cv) on this machine's ExpertPool using the model's real expert format.
+    double alpha_nt2 = 0.22;
+    double pool_2k_scale = 1.0;
+    double measured_cv = 0.035;
+    double measured_Concurr_slope = 0.15;
+
+    const guild_cpu_backend_ext_v2_t* ref_table = nullptr;
+    if (const auto bnd = kernels::KernelRegistry::instance().find_by_id("cpu.expert_pool.split_multi_native");
+        bnd && bnd->next_ext) {
+        ref_table = static_cast<const guild_cpu_backend_ext_v2_t*>(bnd->next_ext);
+    }
+    if (!gpack.expert_layers().empty() && ref_table != nullptr && desc.attn.n_embd > 0 && desc.moe.expert_dim_ff > 0) {
+        const auto& linfo = gpack.expert_layers().front();
+        guild_cpu_expert_format_v1_t fmt{};
+        ref_table->format(linfo.gu_type, linfo.d_type, desc.attn.n_embd, desc.moe.expert_dim_ff, &fmt, nullptr);
+        const int ka = std::clamp<int>((int) k_active, 1, 16);
+        const int ka2 = std::min<int>(ka * 2, 32);
+        std::vector<std::vector<uint8_t>> blobs((size_t) ka);
+        std::string rerr;
+        bool blobs_ok = true;
+        for (int e = 0; e < ka; ++e) {
+            if (!read_expert(gpack, 0, e % std::max<int32_t>(1, gpack.expert_count_per_layer()), blobs[(size_t) e],
+                             rerr)) {
+                blobs_ok = false;
+                break;
+            }
+        }
+        if (blobs_ok && fmt.n_embd > 0 && fmt.n_ff > 0) {
+            const guild_cpu_backend_ext_v2_t* active_table = ref_table;
+            if (!selected_cpu_impl.empty()) {
+                if (const auto bnd = kernels::KernelRegistry::instance().find_by_id(selected_cpu_impl);
+                    bnd && bnd->next_ext) {
+                    active_table = static_cast<const guild_cpu_backend_ext_v2_t*>(bnd->next_ext);
+                }
+            }
+            kernels::cpu::ExpertPool pool(0, false);
+            pool.bind_backend_kernels(*active_table);
+            pool.set_fused_pipeline(kernels::cpu::is_gexec_optimized_cpu_impl(selected_cpu_impl.c_str()));
+
+            std::vector<float> xin0((size_t) fmt.n_embd, 0.125f), xin1((size_t) fmt.n_embd, -0.0625f);
+            alignas(64) uint8_t qact0[kernels::cpu::kNativeActBytes] = {};
+            alignas(64) uint8_t qact1[kernels::cpu::kNativeActBytes] = {};
+            ref_table->native.quant_act(&fmt, xin0.data(), qact0);
+            ref_table->native.quant_act(&fmt, xin1.data(), qact1);
+
+            const size_t n_embd_sz = (size_t) fmt.n_embd;
+            std::vector<float> outs0((size_t) ka2 * n_embd_sz, 0.0f), outs1((size_t) ka2 * n_embd_sz, 0.0f);
+            std::vector<kernels::cpu::ExpertJobMulti> jobs((size_t) ka2);
+            for (int e = 0; e < ka2; ++e) {
+                jobs[(size_t) e].blob = blobs[(size_t) (e % ka)].data();
+                jobs[(size_t) e].nact[0] = qact0;
+                jobs[(size_t) e].nact[1] = qact1;
+                jobs[(size_t) e].out[0] = outs0.data() + (size_t) e * n_embd_sz;
+                jobs[(size_t) e].out[1] = outs1.data() + (size_t) e * n_embd_sz;
+            }
+
+            auto time_pool = [&](int n_jobs, int nt_val, std::vector<double>& samples) {
+                for (int e = 0; e < n_jobs; ++e)
+                    jobs[(size_t) e].nt = nt_val;
+                for (int w = 0; w < 4; ++w)
+                    pool.run_split_multi_native(fmt, jobs.data(), n_jobs);
+                for (size_t it = 0; it < samples.size(); ++it) {
+                    const auto t0 = std::chrono::steady_clock::now();
+                    pool.run_split_multi_native(fmt, jobs.data(), n_jobs);
+                    const auto t1 = std::chrono::steady_clock::now();
+                    samples[it] = std::chrono::duration<double, std::milli>(t1 - t0).count();
+                }
+                std::sort(samples.begin(), samples.end());
+            };
+
+            std::vector<double> s_t1(12), s_nt2(8), s_2k(8);
+            time_pool(ka, 1, s_t1);
+            time_pool(ka, 2, s_nt2);
+            time_pool(ka2, 1, s_2k);
+
+            const double med_t1 = std::max(1e-4, s_t1[s_t1.size() / 2]);
+            const double med_nt2 = std::max(1e-4, s_nt2[s_nt2.size() / 2]);
+            const double med_2k = std::max(1e-4, s_2k[s_2k.size() / 2]);
+            const double iqr_t1 = std::max(0.0, s_t1[(s_t1.size() * 3) / 4] - s_t1[s_t1.size() / 4]);
+
+            alpha_nt2 = std::clamp((med_nt2 / med_t1) - 1.0, 0.05, 0.85);
+            pool_2k_scale = std::clamp(med_2k / (2.0 * med_t1), 0.70, 1.35);
+            measured_cv = std::clamp((iqr_t1 / 1.349) / med_t1, 0.015, 0.08);
+            // Contention per additional session from oversubscribed task dispatch vs linear scaling:
+            measured_Concurr_slope = std::clamp((med_2k / med_t1) - 1.0, 0.08, 0.65) * 0.25;
+        }
+    }
+
+    // Single-token (T=1) model-wide CPU expert decode latency from Pass 3.
     const double cpu_1 = (optimized_cpu_decode_ms > 0.5) ? optimized_cpu_decode_ms : (0.28 * (double) n_layers);
+
     // Estimate single-token GPU dense + attention + sync overhead from layer count and architecture.
-    const double gpu_per_layer_ms = (n_expert >= 512) ? 0.30 : 0.18;
+    const double gpu_per_layer_ms = (n_expert >= 512) ? 0.54 : 0.36;
     const double gpu_1 = std::max(2.0, gpu_per_layer_ms * (double) n_layers);
 
     hp.calibrated_cpu_ms = cpu_1;
@@ -1084,8 +1174,9 @@ void calibrate_speculative_costs(const artifact::GPackReader& gpack, double opti
         const double u_ratio =
             (T == 1) ? 1.0 : std::clamp((1.0 - std::pow(1.0 - p_single, eff_trials)) / p_single, 1.0, (double) T);
         const double uses_per_expert = (double) T / u_ratio;
-        const double cpu_T = cpu_1 * u_ratio * (1.0 + 0.22 * (uses_per_expert - 1.0));
-        const double gpu_T = gpu_1 * (1.0 + 0.14 * (double) (T - 1));
+        const double u_pool_adj = (T == 1) ? 1.0 : (1.0 + (pool_2k_scale - 1.0) * std::min(1.0, (u_ratio - 1.0)));
+        const double cpu_T = cpu_1 * u_ratio * u_pool_adj * (1.0 + alpha_nt2 * (uses_per_expert - 1.0));
+        const double gpu_T = gpu_1 * (1.0 + 0.12 * (double) (T - 1));
         hp.distinct_expert_ratio[(size_t) (T - 1)] = u_ratio;
         hp.verify_cpu_expert_ms[(size_t) (T - 1)] = cpu_T;
         hp.verify_window_ms[(size_t) (T - 1)] = cpu_T + gpu_T;
@@ -1094,6 +1185,9 @@ void calibrate_speculative_costs(const artifact::GPackReader& gpack, double opti
     hp.mtp_draft_step_ms = 1.55;
     hp.mtp_kv_catchup_ms = 0.35;
     hp.kv_commit_ms = 0.12;
+    hp.verify_noise_cv = measured_cv;
+    hp.concurrency_slope = measured_Concurr_slope;
+    hp.context_attn_ms_per_1k = (n_expert >= 512) ? 0.04 : 0.18;
     hp.spec_calibrated = true;
 }
 
@@ -1299,7 +1393,9 @@ GExecOptimizeResult optimize_gpack(const GExecOptimizeOptions& opts,
         const size_t n_layers = gpack.expert_layers().size();
         hp.gpu_layers.assign(n_layers, 1u);
         hp.pcie_numerators.assign(n_layers, 0);
-        calibrate_speculative_costs(gpack, ckpt.diag_log.optimized_decode_ms, hp);
+        const std::string pass3_impl =
+            !ckpt.autotune.records.empty() ? ckpt.autotune.records.front().selected_impl_id : "";
+        calibrate_speculative_costs(gpack, ckpt.diag_log.optimized_decode_ms, pass3_impl, hp);
         ckpt.hplan = std::move(hp);
         ckpt.last_completed_pass = 4;
         save_checkpoint_atomic(progress_path, ckpt);
@@ -1498,7 +1594,9 @@ bool regenerate_gexec_section(const std::string& gexec_path, const std::string& 
         hp.identity = id;
         hp.numa_policy = (id.hardware.numa_nodes > 1) ? "interleave" : "process";
         hp.use_thp_hugepages = id.hardware.thp_madvise_available || (gpack.total_expert_bytes() >= (1ull << 30));
-        calibrate_speculative_costs(gpack, reader.diagnostic_log().optimized_decode_ms, hp);
+        const std::string pass3_impl =
+            !reader.autotune_table().records.empty() ? reader.autotune_table().records.front().selected_impl_id : "";
+        calibrate_speculative_costs(gpack, reader.diagnostic_log().optimized_decode_ms, pass3_impl, hp);
         builder.set_heterogeneous_plan(hp);
     } else if (section_kind == GExecSectionKind::WorkspaceRecipe) {
         GExecWorkspaceRecipe wr = reader.workspace_recipe();

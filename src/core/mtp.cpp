@@ -1016,7 +1016,7 @@ bool MtpDrafter::prefill(const float* R_rows, const int32_t* next_tokens, int64_
 #endif
     }();
     const int64_t NHp = g_->n_head, per_row = 1 + 4 + NHp;
-    if (!per_group_sync && n > 0) {
+    if (!per_group_sync && n > max_t_) {
         if (pf_cap_ < n * per_row) {
             if (pf_dev_)
                 cudaFree(pf_dev_);
@@ -1080,6 +1080,7 @@ bool MtpDrafter::prefill(const float* R_rows, const int32_t* next_tokens, int64_
             continue;
         if (!capture_prefill(T, err))
             return false;
+        const Clock::time_point tg = Clock::now();
         for (int t = 0; t < T; ++t) {
             const int64_t cell = cell0 + c + t;
             h_tok_[t] = next_tokens[c + t];
@@ -1096,8 +1097,8 @@ bool MtpDrafter::prefill(const float* R_rows, const int32_t* next_tokens, int64_
             err = std::string("mtp prefill: ") + cudaGetErrorString(cudaGetLastError());
             return false;
         }
+        ms_prefill += ms_since(tg);
     }
-    ms_prefill += ms_since(t0);
     return true;
 }
 

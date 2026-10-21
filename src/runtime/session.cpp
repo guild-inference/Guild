@@ -586,7 +586,7 @@ bool GuildSession::generate(const GenerationRequest& req, TokenStreamCallback on
         if (first_window) {
             telemetry.first_window_capture_ms = cap_delta_ms;
             telemetry.ttft_ms = std::chrono::duration<double, std::milli>(Clock::now() - t_req_start).count();
-            impl_->scheduler->seed_single_token_verify(exec_ver_ms + com_ms, win_distinct_experts);
+            impl_->scheduler->seed_single_token_verify(exec_ver_ms + com_ms, win_distinct_experts, win_cpu_ms);
         }
 
         telemetry.drafts_offered += actual_proposed_k;
@@ -686,12 +686,16 @@ bool GuildSession::generate(const GenerationRequest& req, TokenStreamCallback on
         avail.lookup_k = lookup_k;
         avail.lookup_match_len = (need_lookup && impl_->sfx) ? impl_->sfx->last_match() : 0;
         avail.lookup_freq = (need_lookup && impl_->sfx) ? impl_->sfx->last_freq() : 1;
+        avail.lookup_candidates = (need_lookup && impl_->sfx) ? impl_->sfx->last_candidates() : 1;
+        avail.lookup_consensus_k = (need_lookup && impl_->sfx) ? impl_->sfx->last_consensus_k() : -1;
         avail.retrieval_k = retrieval_k;
         avail.retrieval_match_len = do_retrieval_probe ? impl_->retrieval->last_match() : 0;
         avail.retrieval_candidates = do_retrieval_probe ? impl_->retrieval->last_candidates() : 0;
         avail.retrieval_confidence = do_retrieval_probe ? impl_->retrieval->last_confidence() : 0.0f;
+        avail.retrieval_from_corpus = do_retrieval_probe ? impl_->retrieval->last_from_corpus() : false;
         avail.context_tokens = p + a + 1;
         avail.active_sessions = std::max(1, m_impl->active_sessions.load());
+        avail.remaining_tokens = std::max(0, req.max_new_tokens - produced_n);
 
         const spec::ScheduleDecision dec = impl_->scheduler->choose(avail);
         cur_sched_ms = std::chrono::duration<double, std::milli>(Clock::now() - ts0).count();
@@ -731,9 +735,11 @@ bool GuildSession::generate(const GenerationRequest& req, TokenStreamCallback on
             cur_proposed_k = valid_mtp_k;
             if (cur_proposed_k == 0) {
                 // MTP draft confidence fell below spec_min_p; in Adaptive mode, allow high-confidence Lookup fallback.
-                if (eff_mode == spec::DecodeStrategyMode::Adaptive && lookup_k > 0 && avail.lookup_match_len >= 4) {
+                if (eff_mode == spec::DecodeStrategyMode::Adaptive && lookup_k > 0 &&
+                    (avail.lookup_match_len >= 4 || (avail.lookup_freq >= 3 && avail.lookup_consensus_k >= 2))) {
                     cur_source = spec::CandidateSource::Lookup;
-                    cur_proposed_k = std::min(max_draft, lookup_k);
+                    const int cons_k = (avail.lookup_consensus_k > 0) ? avail.lookup_consensus_k : lookup_k;
+                    cur_proposed_k = std::min({max_draft, lookup_k, cons_k});
                     cur_match_len = avail.lookup_match_len;
                     for (int i = 0; i < cur_proposed_k; ++i)
                         drafts[(size_t) i] = lookup_drafts[(size_t) i];
@@ -748,10 +754,10 @@ bool GuildSession::generate(const GenerationRequest& req, TokenStreamCallback on
             for (int i = 0; i < cur_proposed_k; ++i)
                 drafts[(size_t) i] = lookup_drafts[(size_t) i];
             if (use_mtp) {
-                const auto tm0 = Clock::now();
+                const double mtp_pf_before = m_impl->mtp->ms_prefill;
                 if (!m_impl->mtp->prefill(m_impl->ver->final_R_all(), outv.data(), a + 1, p, error_msg))
                     return runtime_failure();
-                cur_draft_ms += std::chrono::duration<double, std::milli>(Clock::now() - tm0).count();
+                cur_draft_ms += std::max(0.0, m_impl->mtp->ms_prefill - mtp_pf_before);
             }
         } else if (dec.source == spec::CandidateSource::Retrieval && dec.draft_k > 0) {
             mtp_prob_ema = 0.85f * mtp_prob_ema + 0.15f * 0.85f;
@@ -760,20 +766,20 @@ bool GuildSession::generate(const GenerationRequest& req, TokenStreamCallback on
             for (int i = 0; i < cur_proposed_k; ++i)
                 drafts[(size_t) i] = retrieval_drafts[(size_t) i];
             if (use_mtp) {
-                const auto tm0 = Clock::now();
+                const double mtp_pf_before = m_impl->mtp->ms_prefill;
                 if (!m_impl->mtp->prefill(m_impl->ver->final_R_all(), outv.data(), a + 1, p, error_msg))
                     return runtime_failure();
-                cur_draft_ms += std::chrono::duration<double, std::milli>(Clock::now() - tm0).count();
+                cur_draft_ms += std::max(0.0, m_impl->mtp->ms_prefill - mtp_pf_before);
             }
         } else {
             mtp_prob_ema = 0.85f * mtp_prob_ema + 0.15f * 0.85f;
             cur_source = spec::CandidateSource::Normal;
             cur_proposed_k = 0;
             if (use_mtp) {
-                const auto tm0 = Clock::now();
+                const double mtp_pf_before = m_impl->mtp->ms_prefill;
                 if (!m_impl->mtp->prefill(m_impl->ver->final_R_all(), outv.data(), a + 1, p, error_msg))
                     return runtime_failure();
-                cur_draft_ms += std::chrono::duration<double, std::milli>(Clock::now() - tm0).count();
+                cur_draft_ms += std::max(0.0, m_impl->mtp->ms_prefill - mtp_pf_before);
             }
         }
 
@@ -846,6 +852,10 @@ bool GuildSession::generate(const GenerationRequest& req, TokenStreamCallback on
                 : 1.0;
         telemetry.spec_avg_proposed_draft = st.avg_proposed_draft_len;
         telemetry.spec_avg_accepted_prefix = st.avg_accepted_prefix_len;
+        telemetry.spec_mean_abs_cost_pred_error_ms = st.mean_abs_cost_pred_error_ms;
+        telemetry.spec_mean_abs_acc_pred_error = st.mean_abs_acc_pred_error;
+        telemetry.spec_effective_hysteresis_margin = st.effective_hysteresis_margin;
+        telemetry.spec_measured_verify_cv = st.measured_verify_cv;
         telemetry.spec_strategy_switches = st.strategy_switches;
         telemetry.spec_fallback_count = st.fallback_to_normal_count;
         telemetry.spec_normal_windows = st.normal_iterations + 1; // +1 for initial TTFT single-token window

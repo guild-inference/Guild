@@ -213,6 +213,9 @@ void test_autotune_and_heterogeneous_plan() {
     hplan.lookup_draft_ms = 0.012;
     hplan.retrieval_draft_ms = 0.024;
     hplan.kv_commit_ms = 0.12;
+    hplan.verify_noise_cv = 0.028;
+    hplan.concurrency_slope = 0.19;
+    hplan.context_attn_ms_per_1k = 0.16;
 
     const std::string hjson = hplan.to_json();
     GExecHeterogeneousPlan loaded_hplan;
@@ -224,6 +227,9 @@ void test_autotune_and_heterogeneous_plan() {
     CHECK(std::abs(loaded_hplan.verify_window_ms[0] - 20.1) < 1e-6);
     CHECK(std::abs(loaded_hplan.lookup_draft_ms - 0.012) < 1e-6);
     CHECK(std::abs(loaded_hplan.retrieval_draft_ms - 0.024) < 1e-6);
+    CHECK(std::abs(loaded_hplan.verify_noise_cv - 0.028) < 1e-6);
+    CHECK(std::abs(loaded_hplan.concurrency_slope - 0.19) < 1e-6);
+    CHECK(std::abs(loaded_hplan.context_attn_ms_per_1k - 0.16) < 1e-6);
 
     std::string bad_hjson = hjson;
     const auto hpos = bad_hjson.find("2496");

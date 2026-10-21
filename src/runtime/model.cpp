@@ -980,6 +980,12 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
                     cal.retrieval_draft_ms = hp.retrieval_draft_ms;
                 if (hp.kv_commit_ms > 0.0)
                     cal.kv_commit_ms = hp.kv_commit_ms;
+                if (hp.verify_noise_cv > 0.0)
+                    cal.verify_noise_cv = hp.verify_noise_cv;
+                if (hp.concurrency_slope > 0.0)
+                    cal.concurrency_slope = hp.concurrency_slope;
+                if (hp.context_attn_ms_per_1k > 0.0)
+                    cal.context_attn_ms_per_1k = hp.context_attn_ms_per_1k;
             }
         }
     }

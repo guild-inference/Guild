@@ -47,13 +47,8 @@ void test_retrieval_drafter() {
     {
         RetrievalDrafter rd(3, 32, 4096, 4096, 0.35f);
         // Pattern [1, 2, 3] followed by [90, 91] three times, and once by [80, 81]
-        const int32_t hist[] = {
-            1, 2, 3, 90, 91, 7,
-            1, 2, 3, 90, 91, 8,
-            1, 2, 3, 90, 91, 9,
-            1, 2, 3, 80, 81, 6,
-            1, 2, 3
-        };
+        const int32_t hist[] = {1, 2,  3,  90, 91, 7, 1, 2,  3,  90, 91, 8, 1, 2,
+                                3, 90, 91, 9,  1,  2, 3, 80, 81, 6,  1,  2, 3};
         rd.append_stream(hist, sizeof(hist) / sizeof(hist[0]));
         int32_t out[4] = {};
         const int k = rd.propose(2, out);
@@ -303,6 +298,70 @@ void test_adaptive_scheduler() {
         check(dec.source == CandidateSource::Normal && dec.draft_k == 0,
               "MTP mode safely falls back to Normal when draft confidence is below spec_min_p");
     }
+
+    // 2.6 Sample-size-aware Beta-Binomial posterior: established 80% MTP drafter survives 2 Bernoulli misses
+    {
+        SchedulerConfig cfg;
+        cfg.mode = DecodeStrategyMode::Adaptive;
+        cfg.max_draft = 1;
+        AdaptiveDecodeScheduler sched(cfg);
+        sched.seed_single_token_verify(54.0, 480, 27.0);
+
+        ProposalAvailability avail;
+        avail.mtp_available = true;
+        avail.mtp_max_k = 1;
+        avail.mtp_first_prob = 0.85f;
+
+        // 20 windows at 85% acceptance (17 hits, 3 scattered misses)
+        for (int step = 0; step < 20; ++step) {
+            const ScheduleDecision dec = sched.choose(avail);
+            IterationObservation obs;
+            obs.source = dec.source;
+            obs.proposed_k = dec.draft_k;
+            obs.accepted_k = (step % 6 == 5) ? 0 : 1;
+            obs.committed_tokens = obs.accepted_k + 1;
+            obs.draft_ms = 1.5;
+            obs.verify_ms = 68.0;
+            obs.commit_ms = 0.12;
+            sched.observe(obs);
+        }
+        // Now 2 consecutive Bernoulli misses occur (probability (1-0.85)^2 = 2.25% per step)
+        for (int miss = 0; miss < 2; ++miss) {
+            const ScheduleDecision dec = sched.choose(avail);
+            IterationObservation obs;
+            obs.source = dec.source;
+            obs.proposed_k = dec.draft_k;
+            obs.accepted_k = 0;
+            obs.committed_tokens = 1;
+            obs.draft_ms = 1.5;
+            obs.verify_ms = 68.0;
+            obs.commit_ms = 0.12;
+            sched.observe(obs);
+        }
+        const ScheduleDecision after_two_misses = sched.choose(avail);
+        check(after_two_misses.source == CandidateSource::Mtp && after_two_misses.draft_k == 1,
+              "established high-acceptance MTP drafter is not exiled to Normal by 2 Bernoulli misses");
+    }
+
+    // 2.7 SuffixDrafter consensus prefix detection on template with variable counter slot
+    {
+        SuffixDrafter sfx(3, 32, 4096);
+        // 4 records where [10, 20, 30] is followed by different IDs (101..104), then [50, 60, 70, 80] is invariant
+        const int32_t recs[] = {10, 20,  30, 101, 50, 60, 70, 80, 90, 10, 20,  30, 102, 50, 60, 70, 80, 90, 10, 20,
+                                30, 103, 50, 60,  70, 80, 90, 10, 20, 30, 104, 50, 60,  70, 80, 90, 10, 20, 30};
+        sfx.append(recs, sizeof(recs) / sizeof(recs[0]));
+        int32_t out[4] = {};
+        const int k1 = sfx.propose(4, out);
+        check(k1 == 4 && sfx.last_candidates() == 3 && sfx.last_freq() == 1 && sfx.last_consensus_k() == 0,
+              "SuffixDrafter flags variable counter slot (3 stored candidates, freq=1 -> consensus_k=0)");
+
+        // Emit new counter 105 and invariant trigram [50, 60, 70]
+        const int32_t next_part[] = {105, 50, 60, 70};
+        sfx.append(next_part, 4);
+        const int k2 = sfx.propose(4, out);
+        check(k2 == 4 && sfx.last_candidates() == 3 && sfx.last_freq() == 3 && sfx.last_consensus_k() >= 2,
+              "SuffixDrafter identifies invariant template span (3/3 agreement) and stops before next counter");
+    }
 }
 
 void test_sampling_distributional_correctness() {
@@ -431,8 +490,8 @@ void test_sampling_distributional_correctness() {
         if (probs[i] == 0.0 && counts[i] != 0)
             zero_outside_support = false;
     }
-    check(zero_outside_support && max_tvd < 0.01,
-          "empirical distribution matches filtered target distribution (TVD < 0.01, zero mass outside top-k/top-p/min-p)");
+    check(zero_outside_support && max_tvd < 0.01, "empirical distribution matches filtered target distribution (TVD < "
+                                                  "0.01, zero mass outside top-k/top-p/min-p)");
 }
 
 } // namespace

@@ -52,15 +52,18 @@ struct GExecSpecCalibration {
     double lookup_draft_ms = 0.015;
     double retrieval_draft_ms = 0.030;
     double kv_commit_ms = 0.12;
+    double verify_noise_cv = 0.035;
+    double concurrency_slope = 0.15;
+    double context_attn_ms_per_1k = 0.15;
 };
 
 struct SchedulerConfig {
     DecodeStrategyMode mode = DecodeStrategyMode::Auto;
     int max_draft = 4;               // Maximum draft tokens k (window T = 1 + k <= 8)
     int cost_window = 16;            // Effective sliding/decay window for cumulative cost ratios
-    double hysteresis_margin = 0.05; // 5% cost improvement required to switch strategies
+    double hysteresis_margin = 0.05; // Cost improvement margin (noise-calibrated when left at default 0.05)
     int min_dwell_steps = 3;         // Minimum iterations before switching away from a working strategy
-    int reexplore_interval = 24;     // Steps in Normal before gently decaying MTP rejection penalty
+    int reexplore_interval = 8;      // Maximum steps in Normal before decaying rejection streak
     float mtp_min_prob = 0.5f;       // Minimum confidence for MTP draft step 1
 };
 
@@ -72,14 +75,18 @@ struct ProposalAvailability {
     int lookup_k = 0;
     int lookup_match_len = 0;
     int lookup_freq = 1;
+    int lookup_candidates = 1;
+    int lookup_consensus_k = -1; // -1 = use lookup_k; 0 = divergent variable slot; >0 = consensus prefix length
 
     int retrieval_k = 0;
     int retrieval_match_len = 0;
     int retrieval_candidates = 0;
     float retrieval_confidence = 0.0f;
+    bool retrieval_from_corpus = false;
 
     int64_t context_tokens = 0;
     int active_sessions = 1;
+    int remaining_tokens = 128;
 };
 
 struct ScheduleDecision {
@@ -142,6 +149,12 @@ struct SchedulerTelemetry {
     double estimated_normal_ms_per_token = 0.0;
     double estimated_speedup_vs_normal = 1.0;
 
+    // Phase 6.6.1: Prediction accuracy & noise-calibrated hysteresis diagnostics
+    double mean_abs_cost_pred_error_ms = 0.0;
+    double mean_abs_acc_pred_error = 0.0;
+    double effective_hysteresis_margin = 0.05;
+    double measured_verify_cv = 0.035;
+
     int64_t strategy_switches = 0;
     int64_t fallback_to_normal_count = 0;
 };
@@ -165,8 +178,8 @@ public:
         return cal_;
     }
 
-    /// Seed the live T=1 verification latency from the request's initial single-token window (excluding graph capture).
-    void seed_single_token_verify(double verify_ms, int64_t distinct_experts = 0);
+    /// Seed the live T=1 verification latency and CPU expert split from the request's initial single-token window.
+    void seed_single_token_verify(double verify_ms, int64_t distinct_experts = 0, double cpu_expert_ms = 0.0);
 
     /// Choose the best decoding strategy and draft depth for the upcoming verification window.
     ScheduleDecision choose(const ProposalAvailability& avail);
@@ -180,7 +193,10 @@ public:
     /// Estimated ms per committed token for a strategy at depth `k`.
     double estimate_strategy_cost(CandidateSource src, int k, int match_len, float confidence, bool mtp_active_in_model,
                                   int active_sessions, double* out_expected_tokens = nullptr,
-                                  double* out_expected_iter_ms = nullptr) const;
+                                  double* out_expected_iter_ms = nullptr, int lookup_candidates = 1) const;
+
+    /// Noise-calibrated switching hysteresis margin for the current hardware/session.
+    double effective_hysteresis_margin() const noexcept;
 
     CandidateSource current_source() const {
         return current_source_;
@@ -199,6 +215,7 @@ public:
 
 private:
     static int match_bucket(int match_len) noexcept;
+    static double continuous_match_prior(int match_len, float freq_or_conf, int candidates, bool is_retrieval) noexcept;
 
     SchedulerConfig cfg_;
     GExecSpecCalibration cal_;
@@ -208,6 +225,8 @@ private:
     double ver_decayed_rounds_[kMaxWindowT + 1] = {};
     double ver_decayed_experts_[kMaxWindowT + 1] = {};
     int64_t ver_obs_count_[kMaxWindowT + 1] = {};
+    double live_cpu_fraction_ = -1.0; // Measured CPU expert fraction of T=1 verify (-1 = use calibrated curve)
+    double online_verify_cv_ = 0.035; // Online relative dispersion of verification window latency
 
     // Online drafting latencies (EMA in ms).
     double mtp_step_ms_ = 1.60;
@@ -215,10 +234,12 @@ private:
     double lookup_ms_ = 0.015;
     double retrieval_ms_ = 0.030;
 
-    // MTP conditional acceptance p[0..kMaxDraft-1]: P(draft i+1 accepted | drafts 1..i accepted).
+    // MTP conditional acceptance Beta-Binomial posterior (decayed successes and trials per draft step 0..kMaxDraft-1).
     double mtp_cond_p_[kMaxDraft] = {};
+    double mtp_succ_[kMaxDraft] = {};
+    double mtp_trials_[kMaxDraft] = {};
 
-    // Lookup and Retrieval per-bucket token acceptance rates (decayed accepted / decayed proposed).
+    // Lookup and Retrieval per-bucket token acceptance Beta-Binomial posteriors (decayed accepted / decayed proposed).
     double lookup_acc_[kMatchBuckets] = {};
     double lookup_prop_[kMatchBuckets] = {};
     double retrieval_acc_[kMatchBuckets] = {};
@@ -242,6 +263,13 @@ private:
     int64_t switches_ = 0;
     int64_t fallbacks_ = 0;
     const char* last_switch_reason_ = "none";
+
+    // Last decision's predictions (for online prediction error tracking).
+    double last_pred_ms_per_tok_ = 0.0;
+    double last_pred_exp_tok_ = 1.0;
+    double sum_abs_cost_err_ms_ = 0.0;
+    double sum_abs_acc_err_ = 0.0;
+    int64_t pred_eval_count_ = 0;
 
     // Cumulative telemetry counters.
     int64_t total_iters_ = 0;

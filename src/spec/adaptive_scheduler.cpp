@@ -8,9 +8,8 @@ namespace guild::spec {
 
 namespace {
 constexpr double kDefaultMtpCondP[AdaptiveDecodeScheduler::kMaxDraft] = {0.78, 0.74, 0.70, 0.66, 0.62, 0.58, 0.54};
-constexpr double kPriorLookupQ[AdaptiveDecodeScheduler::kMatchBuckets] = {0.32, 0.78, 0.90, 0.95};
-constexpr double kPriorRetrievalQ[AdaptiveDecodeScheduler::kMatchBuckets] = {0.32, 0.75, 0.88, 0.94};
-constexpr double kPriorWeight = 3.0;
+constexpr double kMtpPriorTrials = 3.0;
+constexpr double kLookupPriorWeight = 2.5;
 } // namespace
 
 const char* decode_strategy_mode_to_string(DecodeStrategyMode mode) noexcept {
@@ -75,7 +74,7 @@ void AdaptiveDecodeScheduler::configure(const SchedulerConfig& cfg) {
     cfg_.cost_window = std::max(4, cfg_.cost_window);
     cfg_.hysteresis_margin = std::clamp(cfg_.hysteresis_margin, 0.0, 0.5);
     cfg_.min_dwell_steps = std::max(1, cfg_.min_dwell_steps);
-    cfg_.reexplore_interval = std::max(4, cfg_.reexplore_interval);
+    cfg_.reexplore_interval = std::max(2, cfg_.reexplore_interval);
 }
 
 void AdaptiveDecodeScheduler::set_calibration(const GExecSpecCalibration& cal) {
@@ -83,13 +82,18 @@ void AdaptiveDecodeScheduler::set_calibration(const GExecSpecCalibration& cal) {
     for (int t = 1; t <= kMaxWindowT; ++t) {
         if (cal_.verify_window_ms[t] <= 0.0)
             cal_.verify_window_ms[t] = 20.0 + 7.6 * (double) (t - 1);
+        if (cal_.verify_cpu_expert_ms[t] <= 0.0)
+            cal_.verify_cpu_expert_ms[t] = 14.0 + 7.0 * (double) (t - 1);
         if (cal_.distinct_expert_ratio[t] <= 0.0)
             cal_.distinct_expert_ratio[t] = 1.0 + 0.65 * (double) (t - 1);
     }
+    cal_.verify_noise_cv = std::clamp(cal_.verify_noise_cv > 0.0 ? cal_.verify_noise_cv : 0.035, 0.01, 0.25);
+    cal_.concurrency_slope = std::clamp(cal_.concurrency_slope > 0.0 ? cal_.concurrency_slope : 0.15, 0.02, 1.0);
     mtp_step_ms_ = std::max(0.05, cal_.mtp_draft_step_ms);
     mtp_catchup_ms_ = std::max(0.01, cal_.mtp_kv_catchup_ms);
     lookup_ms_ = std::max(0.001, cal_.lookup_draft_ms);
     retrieval_ms_ = std::max(0.001, cal_.retrieval_draft_ms);
+    online_verify_cv_ = cal_.verify_noise_cv;
 }
 
 void AdaptiveDecodeScheduler::reset_session_stats() {
@@ -99,19 +103,25 @@ void AdaptiveDecodeScheduler::reset_session_stats() {
         ver_decayed_experts_[t] = 0.0;
         ver_obs_count_[t] = 0;
     }
+    live_cpu_fraction_ = -1.0;
+    online_verify_cv_ = cal_.verify_noise_cv;
+
     mtp_step_ms_ = std::max(0.05, cal_.mtp_draft_step_ms);
     mtp_catchup_ms_ = std::max(0.01, cal_.mtp_kv_catchup_ms);
     lookup_ms_ = std::max(0.001, cal_.lookup_draft_ms);
     retrieval_ms_ = std::max(0.001, cal_.retrieval_draft_ms);
 
-    for (int i = 0; i < kMaxDraft; ++i)
+    for (int i = 0; i < kMaxDraft; ++i) {
         mtp_cond_p_[i] = kDefaultMtpCondP[i];
+        mtp_succ_[i] = kDefaultMtpCondP[i] * kMtpPriorTrials;
+        mtp_trials_[i] = kMtpPriorTrials;
+    }
 
     for (int b = 0; b < kMatchBuckets; ++b) {
-        lookup_acc_[b] = kPriorLookupQ[b] * kPriorWeight;
-        lookup_prop_[b] = kPriorWeight;
-        retrieval_acc_[b] = kPriorRetrievalQ[b] * kPriorWeight;
-        retrieval_prop_[b] = kPriorWeight;
+        lookup_acc_[b] = 0.0;
+        lookup_prop_[b] = 0.0;
+        retrieval_acc_[b] = 0.0;
+        retrieval_prop_[b] = 0.0;
     }
 
     for (int s = 0; s < 4; ++s) {
@@ -132,6 +142,12 @@ void AdaptiveDecodeScheduler::reset_session_stats() {
     switches_ = 0;
     fallbacks_ = 0;
     last_switch_reason_ = "none";
+
+    last_pred_ms_per_tok_ = 0.0;
+    last_pred_exp_tok_ = 1.0;
+    sum_abs_cost_err_ms_ = 0.0;
+    sum_abs_acc_err_ = 0.0;
+    pred_eval_count_ = 0;
 
     total_iters_ = 0;
     total_proposed_ = 0;
@@ -156,7 +172,61 @@ int AdaptiveDecodeScheduler::match_bucket(int match_len) noexcept {
     return 3;
 }
 
-void AdaptiveDecodeScheduler::seed_single_token_verify(double verify_ms, int64_t distinct_experts) {
+double AdaptiveDecodeScheduler::continuous_match_prior(int match_len, float freq_or_conf, int candidates,
+                                                       bool is_retrieval) noexcept {
+    if (is_retrieval) {
+        const double conf = std::clamp((double) freq_or_conf, 0.1, 1.0);
+        double base = 0.32;
+        if (match_len <= 3) {
+            base = (candidates >= 2 && conf >= 0.70) ? 0.78 : 0.32;
+        } else {
+            base = 1.0 - (0.65 / (1.0 + 0.65 * (double) (match_len - 3)));
+        }
+        return std::clamp(base * (0.78 + 0.22 * conf), 0.05, 0.97);
+    }
+
+    const int cands = std::max(1, candidates);
+    const double freq = std::max(1.0, (double) freq_or_conf);
+    const double agree_ratio = std::clamp(freq / (double) cands, 0.0, 1.0);
+
+    // If 3+ earlier occurrences of this suffix were all followed by different tokens, it is a variable/counter slot.
+    if (cands >= 3 && freq <= 1.0)
+        return 0.15;
+
+    // Unanimous continuation agreement across multiple historical occurrences (invariant template/boilerplate span).
+    if (freq >= 2.0 && agree_ratio >= 0.99) {
+        return std::min(0.96, 0.91 + 0.02 * std::min(3.0, freq - 1.0));
+    }
+
+    if (match_len <= 3) {
+        if (freq >= 2.0 && agree_ratio >= 0.66)
+            return 0.84;
+        return 0.32;
+    }
+
+    if (match_len == 4) {
+        if (freq >= 2.0 && agree_ratio >= 0.66)
+            return 0.88;
+        return 0.48;
+    }
+
+    double base = 1.0 - (0.42 / (1.0 + 0.65 * (double) (match_len - 4)));
+    if (freq >= 2.0 && agree_ratio >= 0.66) {
+        base = std::min(0.97, base + 0.08 * agree_ratio);
+    } else if (cands >= 2 && agree_ratio < 0.66) {
+        base *= (0.45 + 0.55 * agree_ratio);
+    }
+    return std::clamp(base, 0.05, 0.98);
+}
+
+double AdaptiveDecodeScheduler::effective_hysteresis_margin() const noexcept {
+    if (std::abs(cfg_.hysteresis_margin - 0.05) > 1e-6)
+        return cfg_.hysteresis_margin;
+    return std::clamp(1.25 * online_verify_cv_, 0.018, 0.10);
+}
+
+void AdaptiveDecodeScheduler::seed_single_token_verify(double verify_ms, int64_t distinct_experts,
+                                                       double cpu_expert_ms) {
     if (verify_ms <= 0.05)
         return;
     ver_decayed_ms_[1] = verify_ms;
@@ -164,6 +234,8 @@ void AdaptiveDecodeScheduler::seed_single_token_verify(double verify_ms, int64_t
     if (distinct_experts > 0)
         ver_decayed_experts_[1] = (double) distinct_experts;
     ver_obs_count_[1] = 1;
+    if (cpu_expert_ms > 0.05 && cpu_expert_ms < verify_ms)
+        live_cpu_fraction_ = std::clamp(cpu_expert_ms / verify_ms, 0.15, 0.90);
 }
 
 double AdaptiveDecodeScheduler::estimate_verify_ms(int T, int active_sessions) const {
@@ -172,6 +244,14 @@ double AdaptiveDecodeScheduler::estimate_verify_ms(int T, int active_sessions) c
 
     if (ver_obs_count_[tc] > 0 && ver_decayed_rounds_[tc] > 1e-9) {
         est = ver_decayed_ms_[tc] / ver_decayed_rounds_[tc];
+    } else if (ver_obs_count_[1] > 0 && ver_decayed_rounds_[1] > 1e-9 && live_cpu_fraction_ > 0.0 &&
+               cal_.verify_cpu_expert_ms[1] > 1e-6) {
+        // Decompose live T=1 latency into measured CPU expert share and GPU dense/attention share,
+        // scaling each component by its hardware-calibrated expansion curve.
+        const double t1 = ver_decayed_ms_[1] / ver_decayed_rounds_[1];
+        const double cpu_ratio = cal_.verify_cpu_expert_ms[tc] / cal_.verify_cpu_expert_ms[1];
+        const double gpu_ratio = 1.0 + 0.12 * (double) (tc - 1);
+        est = t1 * (live_cpu_fraction_ * cpu_ratio + (1.0 - live_cpu_fraction_) * gpu_ratio);
     } else {
         // Infer from any observed window sizes using the calibrated MoE window cost curve.
         double weighted_scale = 0.0;
@@ -192,7 +272,7 @@ double AdaptiveDecodeScheduler::estimate_verify_ms(int T, int active_sessions) c
     if (active_sessions > 1 && tc > 1) {
         const double t1 = (tc == 1) ? est : estimate_verify_ms(1, 1);
         const double extra = std::max(0.0, est - t1);
-        const double conc_factor = 1.0 + 0.15 * (double) (active_sessions - 1);
+        const double conc_factor = 1.0 + cal_.concurrency_slope * (double) (active_sessions - 1);
         est = t1 + extra * conc_factor;
     }
     return std::max(0.05, est);
@@ -200,8 +280,8 @@ double AdaptiveDecodeScheduler::estimate_verify_ms(int T, int active_sessions) c
 
 double AdaptiveDecodeScheduler::estimate_strategy_cost(CandidateSource src, int k, int match_len, float confidence,
                                                        bool mtp_active_in_model, int active_sessions,
-                                                       double* out_expected_tokens,
-                                                       double* out_expected_iter_ms) const {
+                                                       double* out_expected_tokens, double* out_expected_iter_ms,
+                                                       int lookup_candidates) const {
     const int kc = std::clamp(k, 0, kMaxDraft);
     double exp_tok = 1.0;
     double exp_ms = estimate_verify_ms(1, active_sessions) + (mtp_active_in_model ? mtp_catchup_ms_ : 0.0);
@@ -216,48 +296,54 @@ double AdaptiveDecodeScheduler::estimate_strategy_cost(CandidateSource src, int 
 
     const int sidx = (int) src;
     const int rej = consecutive_rejects_[sidx];
-    const double rej_penalty = (rej > 0) ? std::pow(0.68, (double) std::min(rej, 6)) : 1.0;
+    const double virtual_fail = (rej > 0) ? (0.55 * (double) rej * (double) (rej + 1)) : 0.0;
 
     if (src == CandidateSource::Mtp) {
         double reach = 1.0;
         exp_tok = 1.0;
         for (int i = 0; i < kc; ++i) {
-            double p = mtp_cond_p_[i] * rej_penalty;
-            if (i == 0 && confidence > 0.0f && confidence < 1.0f)
-                p = 0.65 * p + 0.35 * (double) confidence * rej_penalty;
+            const double denom = std::max(1.0, mtp_trials_[i] + virtual_fail);
+            double p = mtp_succ_[i] / denom;
+            if (i == 0 && confidence > 0.0f && confidence < 1.0f) {
+                const double streak_scale = mtp_trials_[0] / denom;
+                p = 0.75 * p + 0.25 * (double) confidence * streak_scale;
+            }
             reach *= std::clamp(p, 0.01, 0.99);
             exp_tok += reach;
         }
         exp_ms = estimate_verify_ms(kc + 1, active_sessions) + (double) kc * mtp_step_ms_;
     } else if (src == CandidateSource::Lookup) {
         const int b = match_bucket(match_len);
-        double q = lookup_acc_[b] / std::max(1e-6, lookup_prop_[b]);
-        if (confidence > 1.0f) { // lookup_freq > 1
-            const double freq_boost = (b == 0) ? 0.22 : 0.04;
-            q = std::min(0.98, q + freq_boost * std::min(2.0, (double) (confidence - 1.0f)));
-        }
-        q = std::clamp(q * rej_penalty, 0.01, 0.99);
+        const double q0 = continuous_match_prior(match_len, confidence, lookup_candidates, false);
+        const bool high_consensus = (match_len >= 6) || (lookup_candidates >= 3 && confidence >= 3.0f);
+        const double eff_fail = high_consensus ? (0.35 * virtual_fail) : virtual_fail;
+        const double q = std::clamp((kLookupPriorWeight * q0 + lookup_acc_[b]) /
+                                        std::max(1e-6, kLookupPriorWeight + lookup_prop_[b] + eff_fail),
+                                    0.01, 0.99);
         double reach = 1.0;
         exp_tok = 1.0;
         for (int i = 0; i < kc; ++i) {
             reach *= q;
             exp_tok += reach;
         }
-        exp_ms = estimate_verify_ms(kc + 1, active_sessions) + lookup_ms_ +
-                 (mtp_active_in_model ? mtp_catchup_ms_ : 0.0);
+        exp_ms =
+            estimate_verify_ms(kc + 1, active_sessions) + lookup_ms_ + (mtp_active_in_model ? mtp_catchup_ms_ : 0.0);
     } else if (src == CandidateSource::Retrieval) {
         const int b = match_bucket(match_len);
-        double q = retrieval_acc_[b] / std::max(1e-6, retrieval_prop_[b]);
-        const double conf_scale = std::clamp(0.75 + 0.25 * (double) confidence, 0.50, 1.05);
-        q = std::clamp(q * conf_scale * rej_penalty, 0.01, 0.99);
+        const double q0 = continuous_match_prior(match_len, confidence, lookup_candidates, true);
+        const bool high_consensus = (match_len >= 6) || (lookup_candidates >= 3 && confidence >= 0.80f);
+        const double eff_fail = high_consensus ? (0.35 * virtual_fail) : virtual_fail;
+        const double q = std::clamp((kLookupPriorWeight * q0 + retrieval_acc_[b]) /
+                                        std::max(1e-6, kLookupPriorWeight + retrieval_prop_[b] + eff_fail),
+                                    0.01, 0.99);
         double reach = 1.0;
         exp_tok = 1.0;
         for (int i = 0; i < kc; ++i) {
             reach *= q;
             exp_tok += reach;
         }
-        exp_ms = estimate_verify_ms(kc + 1, active_sessions) + retrieval_ms_ +
-                 (mtp_active_in_model ? mtp_catchup_ms_ : 0.0);
+        exp_ms =
+            estimate_verify_ms(kc + 1, active_sessions) + retrieval_ms_ + (mtp_active_in_model ? mtp_catchup_ms_ : 0.0);
     }
 
     double cost = exp_ms / std::max(1.0, exp_tok);
@@ -267,7 +353,7 @@ double AdaptiveDecodeScheduler::estimate_strategy_cost(CandidateSource src, int 
     if (strat_iters_[sidx] >= 2 && strat_decayed_tok_[sidx] >= 1.0) {
         const double emp_ratio = strat_decayed_ms_[sidx] / strat_decayed_tok_[sidx];
         if (emp_ratio > cost) {
-            const double blend = std::min(0.65, 0.15 * (double) strat_iters_[sidx]);
+            const double blend = std::min(0.60, 0.12 * (double) strat_iters_[sidx]);
             cost = (1.0 - blend) * cost + blend * emp_ratio;
         }
     }
@@ -297,6 +383,9 @@ ScheduleDecision AdaptiveDecodeScheduler::choose(const ProposalAvailability& ava
         d.expected_ms_per_token = cost;
         d.estimated_speedup = (cost > 1e-6) ? (normal_cost / cost) : 1.0;
         d.reason = why;
+
+        last_pred_ms_per_tok_ = cost;
+        last_pred_exp_tok_ = exp_tok;
 
         if (!has_started_) {
             has_started_ = true;
@@ -358,9 +447,9 @@ ScheduleDecision AdaptiveDecodeScheduler::choose(const ProposalAvailability& ava
         const int k = std::min({cfg_.max_draft, avail.lookup_k, kMaxDraft});
         if (k > 0) {
             double et = 1.0, ems = normal_cost;
-            const double c = estimate_strategy_cost(CandidateSource::Lookup, k, avail.lookup_match_len,
-                                                    (float) avail.lookup_freq, avail.mtp_available,
-                                                    avail.active_sessions, &et, &ems);
+            const double c =
+                estimate_strategy_cost(CandidateSource::Lookup, k, avail.lookup_match_len, (float) avail.lookup_freq,
+                                       avail.mtp_available, avail.active_sessions, &et, &ems, avail.lookup_candidates);
             return finalize(CandidateSource::Lookup, k, et, ems, c, "fixed_lookup");
         }
         return finalize(CandidateSource::Normal, 0, 1.0, normal_cost, normal_cost, "lookup_no_match_fallback");
@@ -372,20 +461,30 @@ ScheduleDecision AdaptiveDecodeScheduler::choose(const ProposalAvailability& ava
             double et = 1.0, ems = normal_cost;
             const double c = estimate_strategy_cost(CandidateSource::Retrieval, k, avail.retrieval_match_len,
                                                     avail.retrieval_confidence, avail.mtp_available,
-                                                    avail.active_sessions, &et, &ems);
+                                                    avail.active_sessions, &et, &ems, avail.retrieval_candidates);
             return finalize(CandidateSource::Retrieval, k, et, ems, c, "fixed_retrieval");
         }
         return finalize(CandidateSource::Normal, 0, 1.0, normal_cost, normal_cost, "retrieval_no_match_fallback");
     }
 
     // 2. Adaptive cost-aware selection across Normal, Mtp(1..K), Lookup(1..K), Retrieval(1..K)
-    // Gentle decay of consecutive rejection penalty after prolonged stay in Normal so recovery is possible.
-    if (current_source_ == CandidateSource::Normal && steps_in_normal_ >= cfg_.reexplore_interval) {
+    // Scale re-exploration interval: neural MTP recovers in 2*r (<=6) steps; pattern drafters recover in 3 steps when
+    // session-proven and 16 steps when unproven/hostile.
+    if (current_source_ == CandidateSource::Normal) {
+        bool decayed_any = false;
         for (int s = 1; s < 4; ++s) {
-            if (consecutive_rejects_[s] > 0)
+            if (consecutive_rejects_[s] <= 0)
+                continue;
+            const bool proven = (strat_total_tok_[s] > strat_iters_[s] + 1);
+            const int wait_steps =
+                (s == (int) CandidateSource::Mtp) ? std::clamp(2 * consecutive_rejects_[s], 2, 6) : (proven ? 3 : 16);
+            if (steps_in_normal_ >= wait_steps) {
                 --consecutive_rejects_[s];
+                decayed_any = true;
+            }
         }
-        steps_in_normal_ = 0;
+        if (decayed_any)
+            steps_in_normal_ = 0;
     }
 
     CandidateSource best_src = CandidateSource::Normal;
@@ -395,21 +494,21 @@ ScheduleDecision AdaptiveDecodeScheduler::choose(const ProposalAvailability& ava
     double best_ems = normal_cost;
     const char* best_reason = "normal_lowest_cost";
 
-    // Also track current strategy's best available (k, cost) if current_source_ is still eligible.
     bool cur_eligible = (current_source_ == CandidateSource::Normal);
     int cur_best_k = 0;
     double cur_best_cost = normal_cost;
     double cur_best_et = 1.0;
     double cur_best_ems = normal_cost;
 
-    auto consider = [&](CandidateSource src, int max_avail_k, int match_len, float conf, const char* reason_tag) {
+    auto consider = [&](CandidateSource src, int max_avail_k, int match_len, float conf, int cands,
+                        const char* reason_tag) {
         const int lim_k = std::min({cfg_.max_draft, max_avail_k, kMaxDraft});
         if (lim_k <= 0)
             return;
         for (int k = 1; k <= lim_k; ++k) {
             double et = 1.0, ems = normal_cost;
             const double c = estimate_strategy_cost(src, k, match_len, conf, avail.mtp_available, avail.active_sessions,
-                                                    &et, &ems);
+                                                    &et, &ems, cands);
             if (src == current_source_) {
                 if (!cur_eligible || c < cur_best_cost) {
                     cur_eligible = true;
@@ -431,19 +530,33 @@ ScheduleDecision AdaptiveDecodeScheduler::choose(const ProposalAvailability& ava
     };
 
     if (mtp_ok && avail.mtp_first_prob >= cfg_.mtp_min_prob) {
-        consider(CandidateSource::Mtp, avail.mtp_max_k, 0, avail.mtp_first_prob, "adaptive_mtp_lowest_cost");
-    }
-    if (avail.lookup_k > 0) {
-        consider(CandidateSource::Lookup, avail.lookup_k, avail.lookup_match_len, (float) avail.lookup_freq,
-                 "adaptive_lookup_lowest_cost");
-    }
-    if (avail.retrieval_k > 0) {
-        consider(CandidateSource::Retrieval, avail.retrieval_k, avail.retrieval_match_len, avail.retrieval_confidence,
-                 "adaptive_retrieval_lowest_cost");
+        consider(CandidateSource::Mtp, avail.mtp_max_k, 0, avail.mtp_first_prob, 1, "adaptive_mtp_lowest_cost");
     }
 
-    // Require speculative candidates to beat Normal by hysteresis_margin when currently in Normal.
-    if (best_src != CandidateSource::Normal && best_cost > normal_cost * (1.0 - cfg_.hysteresis_margin)) {
+    const int eff_lookup_k =
+        (avail.lookup_consensus_k >= 0) ? std::min(avail.lookup_k, avail.lookup_consensus_k) : avail.lookup_k;
+    if (eff_lookup_k > 0) {
+        consider(CandidateSource::Lookup, eff_lookup_k, avail.lookup_match_len, (float) avail.lookup_freq,
+                 avail.lookup_candidates, "adaptive_lookup_lowest_cost");
+    }
+
+    // Only consider Retrieval separately in Adaptive mode when it retrieves from the session corpus or finds a strictly
+    // longer match than Lookup, avoiding redundant ping-ponging on identical active-stream matches.
+    const bool retrieval_distinct =
+        avail.retrieval_k > 0 &&
+        (avail.retrieval_from_corpus || avail.retrieval_match_len > avail.lookup_match_len || eff_lookup_k == 0);
+    if (retrieval_distinct) {
+        consider(CandidateSource::Retrieval, avail.retrieval_k, avail.retrieval_match_len, avail.retrieval_confidence,
+                 avail.retrieval_candidates, "adaptive_retrieval_lowest_cost");
+    }
+
+    double margin = effective_hysteresis_margin();
+    if (avail.remaining_tokens > 0 && avail.remaining_tokens < 4) {
+        margin = std::min(0.20, margin * 1.5);
+    }
+
+    // Require speculative candidates to beat Normal by the noise-calibrated margin when currently in Normal.
+    if (best_src != CandidateSource::Normal && best_cost > normal_cost * (1.0 - margin)) {
         return finalize(CandidateSource::Normal, 0, 1.0, normal_cost, normal_cost, "spec_within_noise_of_normal");
     }
 
@@ -451,13 +564,17 @@ ScheduleDecision AdaptiveDecodeScheduler::choose(const ProposalAvailability& ava
     if (has_started_ && best_src != current_source_ && cur_eligible) {
         const int cur_rej = consecutive_rejects_[(int) current_source_];
         const bool urgent_backoff = (current_source_ != CandidateSource::Normal && cur_rej >= 2);
-        if (!urgent_backoff) {
-            const bool significant_gain = (best_cost <= cur_best_cost * (1.0 - cfg_.hysteresis_margin));
+        const bool high_conf_pattern =
+            (best_src == CandidateSource::Lookup || best_src == CandidateSource::Retrieval) &&
+            (avail.lookup_match_len >= 5 || avail.retrieval_match_len >= 5 ||
+             (avail.lookup_freq >= 3 && eff_lookup_k >= 2));
+        if (!urgent_backoff && !high_conf_pattern) {
+            const bool significant_gain = (best_cost <= cur_best_cost * (1.0 - margin));
             if (!significant_gain || dwell_steps_ < cfg_.min_dwell_steps) {
                 return finalize(current_source_, cur_best_k, cur_best_et, cur_best_ems, cur_best_cost,
                                 "hysteresis_keep_current");
             }
-        } else if (best_src == CandidateSource::Normal) {
+        } else if (urgent_backoff && best_src == CandidateSource::Normal) {
             best_reason = "rejection_backoff_to_normal";
         }
     }
@@ -474,6 +591,22 @@ void AdaptiveDecodeScheduler::observe(const IterationObservation& obs) {
     const double iter_total_ms = std::max(0.001, obs.draft_ms + ver_total_ms + obs.scheduler_ms);
     const double decay = 1.0 - (1.0 / (double) std::max(4, cfg_.cost_window));
 
+    // Track online prediction error and verification timing noise CV before updating posteriors.
+    if (ver_obs_count_[T] > 0 && ver_decayed_rounds_[T] > 1e-6) {
+        const double prev_ver_est = ver_decayed_ms_[T] / ver_decayed_rounds_[T];
+        if (prev_ver_est > 0.1) {
+            const double rel_dev = std::clamp(std::abs(ver_total_ms - prev_ver_est) / prev_ver_est, 0.0, 0.50);
+            online_verify_cv_ = 0.85 * online_verify_cv_ + 0.15 * rel_dev;
+        }
+    }
+    if (last_pred_ms_per_tok_ > 0.0) {
+        const double actual_ms_per_tok = iter_total_ms / (double) committed;
+        sum_abs_cost_err_ms_ += std::abs(actual_ms_per_tok - last_pred_ms_per_tok_);
+        if (k > 0)
+            sum_abs_acc_err_ += std::abs((double) a - (last_pred_exp_tok_ - 1.0));
+        ++pred_eval_count_;
+    }
+
     // 1. Update per-window-size verification cost and distinct MoE expert counts.
     ver_decayed_ms_[T] = ver_decayed_ms_[T] * decay + ver_total_ms;
     ver_decayed_rounds_[T] = ver_decayed_rounds_[T] * decay + 1.0;
@@ -481,42 +614,56 @@ void AdaptiveDecodeScheduler::observe(const IterationObservation& obs) {
         ver_decayed_experts_[T] = ver_decayed_experts_[T] * decay + (double) obs.distinct_experts;
     ++ver_obs_count_[T];
 
+    if (T == 1 && obs.cpu_expert_ms > 0.05 && obs.cpu_expert_ms < ver_total_ms) {
+        const double frac = std::clamp(obs.cpu_expert_ms / ver_total_ms, 0.15, 0.90);
+        live_cpu_fraction_ = (live_cpu_fraction_ < 0.0) ? frac : (0.80 * live_cpu_fraction_ + 0.20 * frac);
+    }
+
     // Refine MoE distinct-expert ratio if both T=1 and T>1 have been observed.
     if (T > 1 && ver_obs_count_[1] > 0 && ver_decayed_experts_[1] > 1.0 && ver_decayed_experts_[T] > 1.0) {
         const double e1 = ver_decayed_experts_[1] / ver_decayed_rounds_[1];
         const double eT = ver_decayed_experts_[T] / ver_decayed_rounds_[T];
         if (e1 > 0.0)
-            cal_.distinct_expert_ratio[T] = 0.8 * cal_.distinct_expert_ratio[T] + 0.2 * std::clamp(eT / e1, 1.0, (double) T);
+            cal_.distinct_expert_ratio[T] =
+                0.8 * cal_.distinct_expert_ratio[T] + 0.2 * std::clamp(eT / e1, 1.0, (double) T);
     }
 
-    // 2. Update drafting overhead EMAs and conditional acceptance rates.
+    // 2. Update drafting overhead EMAs and Beta-Binomial conditional acceptance posteriors.
     const int sidx = (int) obs.source;
     if (obs.source == CandidateSource::Mtp && k > 0) {
-        if (obs.draft_ms > 0.0)
-            mtp_step_ms_ = 0.85 * mtp_step_ms_ + 0.15 * (obs.draft_ms / (double) k);
-        const double alpha = 0.12;
+        const double mtp_only_ms = std::max(0.0, obs.draft_ms - obs.lookup_probe_ms - obs.retrieval_probe_ms);
+        if (mtp_only_ms > 0.0)
+            mtp_step_ms_ = 0.85 * mtp_step_ms_ + 0.15 * (mtp_only_ms / (double) k);
         const int checked = std::min(k, a + 1);
         for (int i = 0; i < checked; ++i) {
             const double hit = (i < a) ? 1.0 : 0.0;
-            mtp_cond_p_[i] = (1.0 - alpha) * mtp_cond_p_[i] + alpha * hit;
+            mtp_succ_[i] = mtp_succ_[i] * decay + hit;
+            mtp_trials_[i] = mtp_trials_[i] * decay + 1.0;
+            mtp_cond_p_[i] = mtp_succ_[i] / std::max(1e-6, mtp_trials_[i]);
         }
     } else if (obs.source == CandidateSource::Lookup && k > 0) {
-        if (obs.draft_ms > 0.0)
-            lookup_ms_ = 0.85 * lookup_ms_ + 0.15 * obs.draft_ms;
+        if (obs.lookup_probe_ms > 0.0)
+            lookup_ms_ = 0.85 * lookup_ms_ + 0.15 * obs.lookup_probe_ms;
         const int b = match_bucket(obs.match_len);
         const int checked = std::min(k, a + 1);
         lookup_acc_[b] = lookup_acc_[b] * decay + (double) a;
         lookup_prop_[b] = lookup_prop_[b] * decay + (double) checked;
+        // Share n-gram acceptance evidence with Retrieval's same match-length bucket.
+        retrieval_acc_[b] = retrieval_acc_[b] * decay + 0.5 * (double) a;
+        retrieval_prop_[b] = retrieval_prop_[b] * decay + 0.5 * (double) checked;
     } else if (obs.source == CandidateSource::Retrieval && k > 0) {
-        if (obs.draft_ms > 0.0)
-            retrieval_ms_ = 0.85 * retrieval_ms_ + 0.15 * obs.draft_ms;
+        if (obs.retrieval_probe_ms > 0.0)
+            retrieval_ms_ = 0.85 * retrieval_ms_ + 0.15 * obs.retrieval_probe_ms;
         const int b = match_bucket(obs.match_len);
         const int checked = std::min(k, a + 1);
         retrieval_acc_[b] = retrieval_acc_[b] * decay + (double) a;
         retrieval_prop_[b] = retrieval_prop_[b] * decay + (double) checked;
+        lookup_acc_[b] = lookup_acc_[b] * decay + 0.5 * (double) a;
+        lookup_prop_[b] = lookup_prop_[b] * decay + 0.5 * (double) checked;
     } else if (obs.source == CandidateSource::Normal) {
-        if (obs.draft_ms > 0.0)
-            mtp_catchup_ms_ = 0.85 * mtp_catchup_ms_ + 0.15 * obs.draft_ms;
+        const double catchup = std::max(0.0, obs.draft_ms - obs.lookup_probe_ms - obs.retrieval_probe_ms);
+        if (catchup > 0.0)
+            mtp_catchup_ms_ = 0.85 * mtp_catchup_ms_ + 0.15 * catchup;
     }
 
     // 3. Track consecutive rejections and cumulative time/token ratios per strategy.
@@ -592,6 +739,11 @@ SchedulerTelemetry AdaptiveDecodeScheduler::snapshot() const {
     t.estimated_normal_ms_per_token = estimate_verify_ms(1, 1);
     t.estimated_speedup_vs_normal =
         (t.measured_ms_per_token > 1e-6) ? (t.estimated_normal_ms_per_token / t.measured_ms_per_token) : 1.0;
+
+    t.mean_abs_cost_pred_error_ms = pred_eval_count_ > 0 ? (sum_abs_cost_err_ms_ / (double) pred_eval_count_) : 0.0;
+    t.mean_abs_acc_pred_error = pred_eval_count_ > 0 ? (sum_abs_acc_err_ / (double) pred_eval_count_) : 0.0;
+    t.effective_hysteresis_margin = effective_hysteresis_margin();
+    t.measured_verify_cv = online_verify_cv_;
 
     t.strategy_switches = switches_;
     t.fallback_to_normal_count = fallbacks_;

@@ -248,9 +248,14 @@ int cmd_inspect(int argc, char** argv) {
                           << "  Verify T=1..4    " << std::fixed << std::setprecision(2) << hp.verify_window_ms[0]
                           << " / " << hp.verify_window_ms[1] << " / " << hp.verify_window_ms[2] << " / "
                           << hp.verify_window_ms[3] << " ms\n"
+                          << "  CPU Exp T=1..4   " << std::fixed << std::setprecision(2) << hp.verify_cpu_expert_ms[0]
+                          << " / " << hp.verify_cpu_expert_ms[1] << " / " << hp.verify_cpu_expert_ms[2] << " / "
+                          << hp.verify_cpu_expert_ms[3] << " ms\n"
                           << "  Distinct Experts " << std::fixed << std::setprecision(2) << hp.distinct_expert_ratio[0]
                           << "x / " << hp.distinct_expert_ratio[1] << "x / " << hp.distinct_expert_ratio[2] << "x / "
                           << hp.distinct_expert_ratio[3] << "x\n"
+                          << "  Noise CV / Conc  " << std::fixed << std::setprecision(3) << hp.verify_noise_cv << " / +"
+                          << (hp.concurrency_slope * 100.0) << "% per extra session\n"
                           << "  Lookup / Retr    " << std::fixed << std::setprecision(4) << hp.lookup_draft_ms
                           << " ms / " << hp.retrieval_draft_ms << " ms\n";
             }
