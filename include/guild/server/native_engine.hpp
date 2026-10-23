@@ -8,6 +8,7 @@
 #include "guild/memory/plan.hpp"
 
 #include <memory>
+#include <mutex>
 #include <string>
 
 namespace guild::server {
@@ -45,6 +46,7 @@ public:
     const runtime::ChatTemplate* chat_template() const override;
     const runtime::Tokenizer* tokenizer() const override;
     runtime::RuntimeTelemetry last_telemetry() const override {
+        std::lock_guard<std::mutex> lock(telem_mutex_);
         return last_telem_;
     }
 
@@ -65,6 +67,7 @@ private:
     NativeInferenceEngineOptions options_;
     std::unique_ptr<guild::runtime::GuildModel> model_;
     std::unique_ptr<guild::runtime::GuildSession> session_;
+    mutable std::mutex telem_mutex_;
     guild::runtime::RuntimeTelemetry last_telem_;
     bool ready_ = false;
 };

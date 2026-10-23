@@ -136,23 +136,27 @@ bool MockInferenceEngine::generate_stream(const InferenceRequest& req, StreamCal
     result.drafts_accepted = 4;
     result.drafts_offered = 5;
 
-    last_telem_ = runtime::RuntimeTelemetry{};
-    last_telem_.prompt_tokens = result.prompt_tokens;
-    last_telem_.completion_tokens = result.completion_tokens;
-    last_telem_.prompt_ms = result.prompt_ms;
-    last_telem_.decode_ms = result.decode_ms;
-    last_telem_.prompt_tok_s = result.prompt_tok_s;
-    last_telem_.decode_tok_s = result.decode_tok_s;
-    last_telem_.finish_reason = result.finish_reason;
-    last_telem_.drafts_accepted = result.drafts_accepted;
-    last_telem_.drafts_offered = result.drafts_offered;
-    last_telem_.ram_expert_hits = result.ram_blobs;
-    last_telem_.decode_strategy_mode = "adaptive";
-    last_telem_.decode_strategy_initial = "lookup";
-    last_telem_.decode_strategy_final = "lookup";
-    last_telem_.spec_lookup_windows = 4;
-    last_telem_.spec_ms_per_committed_token = result.decode_tok_s > 0.0 ? (1000.0 / result.decode_tok_s) : 0.0;
-    last_telem_.spec_estimated_speedup = 1.58;
+    runtime::RuntimeTelemetry telem{};
+    telem.prompt_tokens = result.prompt_tokens;
+    telem.completion_tokens = result.completion_tokens;
+    telem.prompt_ms = result.prompt_ms;
+    telem.decode_ms = result.decode_ms;
+    telem.prompt_tok_s = result.prompt_tok_s;
+    telem.decode_tok_s = result.decode_tok_s;
+    telem.finish_reason = result.finish_reason;
+    telem.drafts_accepted = result.drafts_accepted;
+    telem.drafts_offered = result.drafts_offered;
+    telem.ram_expert_hits = result.ram_blobs;
+    telem.decode_strategy_mode = "adaptive";
+    telem.decode_strategy_initial = "lookup";
+    telem.decode_strategy_final = "lookup";
+    telem.spec_lookup_windows = 4;
+    telem.spec_ms_per_committed_token = result.decode_tok_s > 0.0 ? (1000.0 / result.decode_tok_s) : 0.0;
+    telem.spec_estimated_speedup = 1.58;
+    {
+        std::lock_guard<std::mutex> lock(telem_mutex_);
+        last_telem_ = std::move(telem);
+    }
 
     return true;
 }

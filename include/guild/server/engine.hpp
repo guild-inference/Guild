@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -129,6 +130,7 @@ public:
         delay_ms_.store(ms, std::memory_order_relaxed);
     }
     runtime::RuntimeTelemetry last_telemetry() const override {
+        std::lock_guard<std::mutex> lock(telem_mutex_);
         return last_telem_;
     }
 
@@ -138,6 +140,7 @@ private:
     std::string script_;
     std::atomic<int> delay_ms_{0};
     std::atomic<bool> cancel_requested_{false};
+    mutable std::mutex telem_mutex_;
     runtime::RuntimeTelemetry last_telem_;
 };
 

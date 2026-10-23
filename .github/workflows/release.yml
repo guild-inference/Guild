@@ -1,8 +1,9 @@
 name: Immutable Core release
 on:
   push:
-    tags: ['v[0-9]*.[0-9]*.[0-9]*']
-    tags-ignore: ['v*-preview.*']
+    tags:
+      - 'v[0-9]*.[0-9]*.[0-9]*'
+      - '!v*-preview.*'
 permissions:
   contents: read
 concurrency:
