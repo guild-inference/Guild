@@ -137,7 +137,7 @@ function Copy-OrDownload([string]$Url, [string]$Destination) {
 }
 
 New-Item -ItemType Directory -Force -Path $InstallRoot | Out-Null
-$StageRoot = Join-Path $InstallRoot ("staging-" + [PID] + "-" + [Guid]::NewGuid().ToString("N").Substring(0, 8))
+$StageRoot = Join-Path $InstallRoot ("staging-" + $PID + "-" + [Guid]::NewGuid().ToString("N").Substring(0, 8))
 New-Item -ItemType Directory -Force -Path $StageRoot | Out-Null
 
 try {

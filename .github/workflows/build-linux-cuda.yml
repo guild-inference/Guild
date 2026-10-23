@@ -41,7 +41,7 @@ jobs:
             -DGUILD_BUILD_TESTS=OFF -DGUILD_ENABLE_CUDA=ON -DGUILD_PORTABLE=ON \
             '-DCMAKE_CUDA_ARCHITECTURES=75-real;86-real;89-real;120' \
             -DCMAKE_CUDA_RUNTIME_LIBRARY=Shared -DGUILD_RELEASE_TAG="$RELEASE_TAG"
-          cmake --build build --target guild --parallel 2
+          cmake --build build --target guild --parallel 4
       - name: Package exact linked CUDA libraries and licenses; launcher smoke test
         run: |
           python3 tools/test_version_report.py --build build
