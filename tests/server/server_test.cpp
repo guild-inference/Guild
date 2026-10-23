@@ -993,6 +993,103 @@ int main() {
         std::cout << "  -> PASSED\n";
     }
 
+    // -------------------------------------------------------------------------
+    // Test 21: Agentic tool call edge cases (unclosed <think>, bare <function=...>,
+    //          multi-function <tool_call>, namespace/custom tools, and Responses SSE)
+    // -------------------------------------------------------------------------
+    std::cout << "[server_test] Test 21: Agentic tool edge cases & Responses SSE tool streaming\n";
+    {
+        // Case A: Model emits <tool_call> with two <function=...> blocks without closing </think>
+        auto edge_engine = std::make_shared<guild::server::MockInferenceEngine>(
+            "Qwen3.8-Flash-Next", 262144,
+            "<think>\nReading two files in parallel.\n"
+            "<tool_call>\n"
+            "<function=read_file>\n<parameter=path>\n123\n</parameter>\n</function>\n"
+            "<function=read_file>\n<parameter=path>\n456\n</parameter>\n</function>\n"
+            "</tool_call>");
+        guild::server::Server edge_server(edge_engine, opts);
+        CHECK(edge_server.start());
+        const int eport = edge_server.bound_port();
+
+        std::string req_a = R"({
+            "model": "Qwen3.8-Flash-Next",
+            "messages": [{"role": "user", "content": "Read files 123 and 456"}],
+            "prompt_cache_key": "agent-session-1",
+            "include_reasoning": true,
+            "tools": [{
+                "type": "function",
+                "function": {
+                    "name": "read_file",
+                    "description": "Read a file",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "path": {"anyOf": [{"type": "string"}, {"type": "null"}]}
+                        }
+                    }
+                }
+            }]
+        })";
+        auto resp_a =
+            send_http_request(eport, "POST", "/v1/chat/completions", req_a, {{"Content-Type", "application/json"}});
+        CHECK(resp_a.status_code == 200);
+        // Verify canonical {"type":"function","function":{...}} wrapper in <tools>
+        CHECK(edge_engine->last_prompt().find("{\"type\":\"function\",\"function\":{\"name\":\"read_file\"") !=
+              std::string::npos);
+
+        guild::server::json::JsonValue root_a;
+        std::string err;
+        CHECK(guild::server::json::JsonValue::parse(resp_a.body, root_a, err));
+        CHECK(root_a["choices"][0]["finish_reason"].as_string() == "tool_calls");
+        const auto& msg_a = root_a["choices"][0]["message"];
+        CHECK(msg_a["reasoning_content"].as_string() == "Reading two files in parallel.");
+        CHECK(msg_a["tool_calls"].size() == 2);
+        // Because path uses anyOf:[string, null], "123" and "456" must remain JSON strings, not numbers!
+        CHECK(msg_a["tool_calls"][0]["function"]["arguments"].as_string() == "{\"path\":\"123\"}");
+        CHECK(msg_a["tool_calls"][1]["function"]["arguments"].as_string() == "{\"path\":\"456\"}");
+
+        // Case B: Streaming POST /v1/responses with namespace and custom tools
+        edge_engine->set_script(
+            "<think>\nCalling mcp.search.\n</think>\n\n"
+            "<tool_call>\n<function=mcp.search>\n<parameter=query>\nguild\n</parameter>\n</function>\n</tool_call>");
+        std::string req_b = R"({
+            "model": "Qwen3.8-Flash-Next",
+            "input": "Search for guild",
+            "stream": true,
+            "tools": [
+                {
+                    "type": "namespace",
+                    "name": "mcp",
+                    "description": "MCP tools",
+                    "tools": [{
+                        "type": "function",
+                        "name": "search",
+                        "description": "Search query",
+                        "parameters": {"type": "object", "properties": {"query": {"type": "string"}}}
+                    }]
+                },
+                {
+                    "type": "custom",
+                    "name": "apply_patch",
+                    "description": "Apply a patch"
+                }
+            ]
+        })";
+        auto resp_b = send_http_request(eport, "POST", "/v1/responses", req_b, {{"Content-Type", "application/json"}});
+        CHECK(resp_b.status_code == 200);
+        CHECK(resp_b.body.find("event: response.created") != std::string::npos);
+        CHECK(resp_b.body.find("event: response.in_progress") != std::string::npos);
+        CHECK(resp_b.body.find("event: response.output_item.added") != std::string::npos);
+        CHECK(resp_b.body.find("\"name\":\"mcp.search\"") != std::string::npos);
+        CHECK(resp_b.body.find("event: response.function_call_arguments.delta") != std::string::npos);
+        CHECK(resp_b.body.find("event: response.function_call_arguments.done") != std::string::npos);
+        CHECK(resp_b.body.find("event: response.output_item.done") != std::string::npos);
+        CHECK(resp_b.body.find("event: response.completed") != std::string::npos);
+
+        edge_server.stop();
+        std::cout << "  -> PASSED\n";
+    }
+
     std::cout << "\n[server_test] lifecycle, success and failure checks PASSED (Release-active)\n";
     return 0;
 }

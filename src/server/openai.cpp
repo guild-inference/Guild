@@ -57,6 +57,91 @@ bool apply_reasoning_effort_string(const std::string& raw_effort, bool& enable_t
     return false;
 }
 
+bool add_single_tool(const json::JsonValue& t, const std::string& ns_name, const std::string& ns_desc,
+                     std::vector<ToolDefinition>& out_tools, std::string& err_type, std::string& err_param,
+                     std::string& err_code, std::string& err_msg) {
+    const std::string t_type = t.contains("type") && t["type"].is_string() ? t["type"].as_string() : "function";
+    const json::JsonValue& fn = (t.contains("function") && t["function"].is_object()) ? t["function"] : t;
+    if (!fn.contains("name") || !fn["name"].is_string() || trim_str(fn["name"].as_string()).empty()) {
+        err_type = "invalid_request_error";
+        err_param = "tools";
+        err_code = "invalid_tool";
+        err_msg = "Tool definition is missing a valid function 'name'";
+        return false;
+    }
+
+    ToolDefinition def;
+    def.type = (t_type == "custom") ? "custom" : "function";
+    def.original_name = trim_str(fn["name"].as_string());
+    def.namespace_name = ns_name;
+    def.name = ns_name.empty() ? def.original_name : (ns_name + "." + def.original_name);
+
+    if (fn.contains("description") && fn["description"].is_string()) {
+        def.description = fn["description"].as_string();
+    }
+    if (!ns_desc.empty()) {
+        def.description = ns_desc + (def.description.empty() ? "" : ("\n\n" + def.description));
+    }
+
+    json::JsonValue canonical_fn(std::vector<std::pair<std::string, json::JsonValue>>{});
+    canonical_fn["name"] = def.name;
+
+    if (def.type == "custom") {
+        if (fn.contains("format") && fn["format"].is_object()) {
+            const auto& fmt = fn["format"];
+            if (fmt.contains("type") && fmt["type"].as_string("") == "grammar" && fmt.contains("definition") &&
+                fmt["definition"].is_string()) {
+                std::string syn = fmt.contains("syntax") ? fmt["syntax"].as_string("") : "";
+                def.description +=
+                    "\n\nThe input must follow this " + syn + " grammar:\n" + fmt["definition"].as_string();
+            }
+        }
+        canonical_fn["description"] = def.description;
+        json::JsonValue custom_params(std::vector<std::pair<std::string, json::JsonValue>>{});
+        custom_params["type"] = "object";
+        json::JsonValue props(std::vector<std::pair<std::string, json::JsonValue>>{});
+        json::JsonValue inp_prop(std::vector<std::pair<std::string, json::JsonValue>>{});
+        inp_prop["type"] = "string";
+        inp_prop["description"] = "the raw input";
+        props["input"] = std::move(inp_prop);
+        custom_params["properties"] = std::move(props);
+        custom_params["required"] = std::vector<json::JsonValue>{json::JsonValue("input")};
+        def.parameters_json = custom_params.dump();
+        canonical_fn["parameters"] = std::move(custom_params);
+    } else {
+        if (!def.description.empty() || (fn.contains("description") && fn["description"].is_string())) {
+            canonical_fn["description"] = def.description;
+        }
+        if (fn.contains("parameters") && !fn["parameters"].is_null()) {
+            if (!fn["parameters"].is_object()) {
+                err_type = "invalid_request_error";
+                err_param = "tools";
+                err_code = "invalid_tool";
+                err_msg = "Tool function.parameters must be a JSON object";
+                return false;
+            }
+            def.parameters_json = fn["parameters"].dump();
+            canonical_fn["parameters"] = fn["parameters"];
+        } else if (fn.contains("input_schema") && fn["input_schema"].is_object()) {
+            def.parameters_json = fn["input_schema"].dump();
+            canonical_fn["parameters"] = fn["input_schema"];
+        } else {
+            json::JsonValue empty_params(std::vector<std::pair<std::string, json::JsonValue>>{});
+            empty_params["type"] = "object";
+            empty_params["properties"] = json::JsonValue(std::vector<std::pair<std::string, json::JsonValue>>{});
+            def.parameters_json = empty_params.dump();
+            canonical_fn["parameters"] = std::move(empty_params);
+        }
+    }
+
+    json::JsonValue wrapper(std::vector<std::pair<std::string, json::JsonValue>>{});
+    wrapper["type"] = "function";
+    wrapper["function"] = std::move(canonical_fn);
+    def.raw_json = wrapper.dump();
+    out_tools.push_back(std::move(def));
+    return true;
+}
+
 bool parse_tools_array(const json::JsonValue& tools_val, std::vector<ToolDefinition>& out_tools, std::string& err_type,
                        std::string& err_param, std::string& err_code, std::string& err_msg) {
     if (tools_val.is_null()) {
@@ -81,54 +166,28 @@ bool parse_tools_array(const json::JsonValue& tools_val, std::vector<ToolDefinit
         }
 
         const std::string t_type = t.contains("type") && t["type"].is_string() ? t["type"].as_string() : "function";
-        // Skip hosted non-function tools (e.g. web_search) gracefully in Responses mode if not function
+        if (t_type == "namespace") {
+            const std::string ns_name =
+                t.contains("name") && t["name"].is_string() ? trim_str(t["name"].as_string()) : "";
+            const std::string ns_desc =
+                t.contains("description") && t["description"].is_string() ? t["description"].as_string() : "";
+            if (t.contains("tools") && t["tools"].is_array()) {
+                for (size_t j = 0; j < t["tools"].size(); ++j) {
+                    if (!t["tools"][j].is_object() || !add_single_tool(t["tools"][j], ns_name, ns_desc, out_tools,
+                                                                       err_type, err_param, err_code, err_msg)) {
+                        return false;
+                    }
+                }
+            }
+            continue;
+        }
+        // Skip hosted non-function tools (e.g. web_search, file_search, computer_use) gracefully
         if (t_type != "function" && t_type != "custom") {
             continue;
         }
-
-        const json::JsonValue& fn = (t.contains("function") && t["function"].is_object()) ? t["function"] : t;
-        if (!fn.contains("name") || !fn["name"].is_string() || trim_str(fn["name"].as_string()).empty()) {
-            err_type = "invalid_request_error";
-            err_param = "tools";
-            err_code = "invalid_tool";
-            err_msg = "tools[" + std::to_string(i) + "] is missing a valid function 'name'";
+        if (!add_single_tool(t, "", "", out_tools, err_type, err_param, err_code, err_msg)) {
             return false;
         }
-
-        ToolDefinition def;
-        def.type = "function";
-        def.name = trim_str(fn["name"].as_string());
-        if (fn.contains("description") && fn["description"].is_string()) {
-            def.description = fn["description"].as_string();
-        }
-
-        json::JsonValue canonical_fn(std::vector<std::pair<std::string, json::JsonValue>>{});
-        canonical_fn["name"] = def.name;
-        if (fn.contains("description") && fn["description"].is_string()) {
-            canonical_fn["description"] = def.description;
-        }
-        if (fn.contains("parameters") && !fn["parameters"].is_null()) {
-            if (!fn["parameters"].is_object()) {
-                err_type = "invalid_request_error";
-                err_param = "tools";
-                err_code = "invalid_tool";
-                err_msg = "tools[" + std::to_string(i) + "].function.parameters must be a JSON object";
-                return false;
-            }
-            def.parameters_json = fn["parameters"].dump();
-            canonical_fn["parameters"] = fn["parameters"];
-        } else if (fn.contains("input_schema") && fn["input_schema"].is_object()) {
-            def.parameters_json = fn["input_schema"].dump();
-            canonical_fn["parameters"] = fn["input_schema"];
-        } else {
-            json::JsonValue empty_params(std::vector<std::pair<std::string, json::JsonValue>>{});
-            empty_params["type"] = "object";
-            empty_params["properties"] = json::JsonValue(std::vector<std::pair<std::string, json::JsonValue>>{});
-            def.parameters_json = empty_params.dump();
-            canonical_fn["parameters"] = std::move(empty_params);
-        }
-        def.raw_json = canonical_fn.dump();
-        out_tools.push_back(std::move(def));
     }
     return true;
 }
@@ -237,8 +296,11 @@ int find_param_end(const std::string& text, bool final_pass = false) {
     return -1;
 }
 
-// Finds where a <tool_call>...</tool_call> body ends. Returns index of </tool_call> or -1 if incomplete.
-int find_call_end(const std::string& text) {
+// Finds where a tool call body ends. Sets out_consumed to the total bytes to erase from text
+// (including trailing </tool_call> when present). Returns body end index or -1 if incomplete.
+int find_call_end(const std::string& text, size_t& out_consumed, bool& stay_in_tool_call) {
+    out_consumed = 0;
+    stay_in_tool_call = false;
     size_t first_non_ws = text.find_first_not_of(" \t\r\n");
     if (first_non_ws == std::string::npos)
         return -1;
@@ -254,7 +316,10 @@ int find_call_end(const std::string& text) {
         if (func_prefix.rfind(s, 0) == 0)
             return -1;
         size_t ce = text.find(call_end);
-        return ce == std::string::npos ? -1 : static_cast<int>(ce);
+        if (ce == std::string::npos)
+            return -1;
+        out_consumed = ce + call_end.size();
+        return static_cast<int>(ce);
     }
 
     size_t gt = text.find('>', pos);
@@ -277,22 +342,34 @@ int find_call_end(const std::string& text) {
                 return -1;
             pos = gt + 1 + static_cast<size_t>(end) + std::strlen(kParamEndTag);
         } else if (stripped.rfind(func_end, 0) == 0) {
-            std::string after_func = text.substr(pos + func_end.size());
+            const size_t body_end = pos + func_end.size();
+            std::string after_func = text.substr(body_end);
             size_t nw = after_func.find_first_not_of(" \t\r\n");
             std::string after_stripped = (nw == std::string::npos) ? "" : after_func.substr(nw);
             if (after_stripped.rfind(call_end, 0) == 0) {
-                return static_cast<int>(pos + func_end.size() + nw);
+                out_consumed = body_end + nw + call_end.size();
+                return static_cast<int>(body_end);
             }
-            if (after_stripped.empty() || call_end.rfind(after_stripped, 0) == 0) {
+            if (after_stripped.rfind(func_prefix, 0) == 0) {
+                out_consumed = body_end + nw;
+                stay_in_tool_call = true;
+                return static_cast<int>(body_end);
+            }
+            if (after_stripped.empty() || call_end.rfind(after_stripped, 0) == 0 ||
+                func_prefix.rfind(after_stripped, 0) == 0) {
                 return -1;
             }
-            size_t ce = text.find(call_end, pos);
-            return ce == std::string::npos ? -1 : static_cast<int>(ce);
+            // Bare <function=...>...</function> followed by regular text or another tag
+            out_consumed = body_end;
+            return static_cast<int>(body_end);
         } else if (stripped.empty() || param_prefix.rfind(stripped, 0) == 0 || func_end.rfind(stripped, 0) == 0) {
             return -1;
         } else {
             size_t ce = text.find(call_end, pos);
-            return ce == std::string::npos ? -1 : static_cast<int>(ce);
+            if (ce == std::string::npos)
+                return -1;
+            out_consumed = ce + call_end.size();
+            return static_cast<int>(ce);
         }
     }
 }
@@ -311,8 +388,30 @@ extract_schema_param_types(const std::string& func_name,
     if (!schema_val.contains("properties") || !schema_val["properties"].is_object())
         return types;
     for (const auto& kv : schema_val["properties"].obj_val) {
-        if (kv.second.is_object() && kv.second.contains("type") && kv.second["type"].is_string()) {
+        if (!kv.second.is_object())
+            continue;
+        if (kv.second.contains("type") && kv.second["type"].is_string()) {
             types[kv.first] = kv.second["type"].as_string();
+        } else if (kv.second.contains("type") && kv.second["type"].is_array()) {
+            for (size_t i = 0; i < kv.second["type"].size(); ++i) {
+                if (kv.second["type"][i].is_string() && kv.second["type"][i].as_string() != "null") {
+                    types[kv.first] = kv.second["type"][i].as_string();
+                    break;
+                }
+            }
+        } else {
+            for (const char* union_key : {"anyOf", "oneOf"}) {
+                if (kv.second.contains(union_key) && kv.second[union_key].is_array()) {
+                    for (size_t i = 0; i < kv.second[union_key].size(); ++i) {
+                        const auto& branch = kv.second[union_key][i];
+                        if (branch.is_object() && branch.contains("type") && branch["type"].is_string() &&
+                            branch["type"].as_string() != "null") {
+                            types[kv.first] = branch["type"].as_string();
+                            break;
+                        }
+                    }
+                }
+            }
         }
     }
     return types;
@@ -690,8 +789,48 @@ std::vector<ParsedOutputEvent> OpenAiOutputParser::feed(const std::string& delta
             }
 
             size_t end_pos = buf_.find(kThinkEndTag);
+            size_t call_pos = buf_.find(kCallStartTag);
+            size_t bare_func_pos = buf_.find("<function=");
+            const bool has_bare_func =
+                (bare_func_pos != std::string::npos && buf_.find('>', bare_func_pos + 10) != std::string::npos);
+
+            // If the model emitted <tool_call> or <function=...> before </think>, close reasoning and enter ToolCall
+            if (call_pos != std::string::npos && (end_pos == std::string::npos || call_pos < end_pos)) {
+                if (call_pos > 0) {
+                    std::string chunk = buf_.substr(0, call_pos);
+                    while (!chunk.empty() && (chunk.back() == '\n' || chunk.back() == '\r'))
+                        chunk.pop_back();
+                    if (!chunk.empty()) {
+                        reasoning_acc_ += chunk;
+                        out.push_back({ParsedEventKind::Reasoning, chunk, 0, {}});
+                    }
+                }
+                buf_.erase(0, call_pos + std::strlen(kCallStartTag));
+                state_ = State::ToolCall;
+                reset_tool_scan();
+                continue;
+            }
+            if (has_bare_func && (end_pos == std::string::npos || bare_func_pos < end_pos)) {
+                if (bare_func_pos > 0) {
+                    std::string chunk = buf_.substr(0, bare_func_pos);
+                    while (!chunk.empty() && (chunk.back() == '\n' || chunk.back() == '\r'))
+                        chunk.pop_back();
+                    if (!chunk.empty()) {
+                        reasoning_acc_ += chunk;
+                        out.push_back({ParsedEventKind::Reasoning, chunk, 0, {}});
+                    }
+                }
+                buf_.erase(0, bare_func_pos);
+                state_ = State::ToolCall;
+                reset_tool_scan();
+                continue;
+            }
+
             if (end_pos == std::string::npos) {
-                size_t keep = hold_partial_tag_suffix(buf_, {kThinkEndTag});
+                size_t keep = hold_partial_tag_suffix(buf_, {kThinkEndTag, kCallStartTag, "<function="});
+                if (bare_func_pos != std::string::npos && buf_.find('>', bare_func_pos + 10) == std::string::npos) {
+                    keep = std::max(keep, buf_.size() - bare_func_pos);
+                }
                 if (buf_.size() > keep) {
                     std::string chunk = buf_.substr(0, buf_.size() - keep);
                     reasoning_acc_ += chunk;
@@ -739,8 +878,16 @@ std::vector<ParsedOutputEvent> OpenAiOutputParser::feed(const std::string& delta
             }
 
             size_t call_pos = buf_.find(kCallStartTag);
-            if (call_pos == std::string::npos) {
-                size_t keep = hold_partial_tag_suffix(buf_, {kCallStartTag, kThinkEndTag});
+            size_t bare_func_pos = buf_.find("<function=");
+            const bool has_bare_func =
+                (bare_func_pos != std::string::npos && buf_.find('>', bare_func_pos + 10) != std::string::npos &&
+                 (call_pos == std::string::npos || bare_func_pos < call_pos));
+
+            if (call_pos == std::string::npos && !has_bare_func) {
+                size_t keep = hold_partial_tag_suffix(buf_, {kCallStartTag, kThinkEndTag, "<function="});
+                if (bare_func_pos != std::string::npos && buf_.find('>', bare_func_pos + 10) == std::string::npos) {
+                    keep = std::max(keep, buf_.size() - bare_func_pos);
+                }
                 size_t emit_end = buf_.size() > keep ? (buf_.size() - keep) : 0;
                 // Hold trailing newlines right before a potential <tool_call> tag
                 while (emit_end > 0 && (buf_[emit_end - 1] == '\n' || buf_[emit_end - 1] == '\r')) {
@@ -755,8 +902,10 @@ std::vector<ParsedOutputEvent> OpenAiOutputParser::feed(const std::string& delta
                 return out;
             }
 
-            if (call_pos > 0) {
-                std::string before = buf_.substr(0, call_pos);
+            const size_t split_pos = has_bare_func ? bare_func_pos : call_pos;
+            const size_t consume_tag_len = has_bare_func ? 0 : std::strlen(kCallStartTag);
+            if (split_pos > 0) {
+                std::string before = buf_.substr(0, split_pos);
                 while (!before.empty() && (before.back() == '\n' || before.back() == '\r')) {
                     before.pop_back();
                 }
@@ -765,14 +914,16 @@ std::vector<ParsedOutputEvent> OpenAiOutputParser::feed(const std::string& delta
                     out.push_back({ParsedEventKind::Content, before, 0, {}});
                 }
             }
-            buf_.erase(0, call_pos + std::strlen(kCallStartTag));
+            buf_.erase(0, split_pos + consume_tag_len);
             state_ = State::ToolCall;
             reset_tool_scan();
             continue;
         }
 
         if (state_ == State::ToolCall) {
-            int end_pos = find_call_end(buf_);
+            size_t consumed_len = 0;
+            bool stay_in_tool_call = false;
+            int end_pos = find_call_end(buf_, consumed_len, stay_in_tool_call);
             if (stream_tools_) {
                 if (end_pos >= 0) {
                     std::string body_only = buf_.substr(0, static_cast<size_t>(end_pos));
@@ -788,7 +939,7 @@ std::vector<ParsedOutputEvent> OpenAiOutputParser::feed(const std::string& delta
             }
 
             std::string body = buf_.substr(0, static_cast<size_t>(end_pos));
-            buf_.erase(0, static_cast<size_t>(end_pos) + std::strlen(kCallEndTag));
+            buf_.erase(0, consumed_len);
 
             ToolCall parsed = parse_tool_call_body(body, schemas_, scan_announced_ ? scan_call_.id : "");
             int idx = scan_announced_ ? scan_tool_index_ : next_tool_index_++;
@@ -816,8 +967,10 @@ std::vector<ParsedOutputEvent> OpenAiOutputParser::feed(const std::string& delta
             out.push_back(std::move(done_ev));
 
             reset_tool_scan();
-            state_ = State::Content;
-            strip_leading_newlines_ = true;
+            if (!stay_in_tool_call) {
+                state_ = State::Content;
+                strip_leading_newlines_ = true;
+            }
             continue;
         }
     }
@@ -825,20 +978,54 @@ std::vector<ParsedOutputEvent> OpenAiOutputParser::feed(const std::string& delta
 
 std::vector<ParsedOutputEvent> OpenAiOutputParser::finish() {
     std::vector<ParsedOutputEvent> out;
-    if (state_ == State::ToolCall && stream_tools_ && scan_announced_) {
-        scan_tool_stream(buf_, true, out);
-        if (scan_state_ == ScanState::Done) {
-            ToolCall parsed = parse_tool_call_body(buf_, schemas_, scan_call_.id);
-            completed_calls_.push_back(parsed);
-            ParsedOutputEvent done_ev;
-            done_ev.kind = ParsedEventKind::ToolCallComplete;
-            done_ev.tool_index = scan_tool_index_;
-            done_ev.call = std::move(parsed);
-            out.push_back(std::move(done_ev));
+    if (state_ == State::ToolCall) {
+        if (stream_tools_ && scan_announced_) {
+            scan_tool_stream(buf_, true, out);
+            if (scan_state_ == ScanState::Done) {
+                ToolCall parsed = parse_tool_call_body(buf_, schemas_, scan_call_.id);
+                completed_calls_.push_back(parsed);
+                ParsedOutputEvent done_ev;
+                done_ev.kind = ParsedEventKind::ToolCallComplete;
+                done_ev.tool_index = scan_tool_index_;
+                done_ev.call = std::move(parsed);
+                out.push_back(std::move(done_ev));
+            }
+            buf_.clear();
+            reset_tool_scan();
+            return out;
         }
-        buf_.clear();
-        reset_tool_scan();
-        return out;
+        // Non-streaming or unannounced tool call that ended at </function> (or JSON '}') without </tool_call>
+        std::string trimmed = trim_str(buf_);
+        if (trimmed.find(kFuncEndTag) != std::string::npos ||
+            (!trimmed.empty() && trimmed.front() == '{' && trimmed.back() == '}')) {
+            ToolCall parsed = parse_tool_call_body(trimmed, schemas_, "");
+            if (!parsed.function.name.empty()) {
+                int idx = next_tool_index_++;
+                if (stream_tools_) {
+                    ParsedOutputEvent start_ev;
+                    start_ev.kind = ParsedEventKind::ToolCallStart;
+                    start_ev.tool_index = idx;
+                    start_ev.call = parsed;
+                    out.push_back(std::move(start_ev));
+
+                    ParsedOutputEvent args_ev;
+                    args_ev.kind = ParsedEventKind::ToolCallArgs;
+                    args_ev.tool_index = idx;
+                    args_ev.text = parsed.function.arguments_json;
+                    args_ev.call = parsed;
+                    out.push_back(std::move(args_ev));
+                }
+                completed_calls_.push_back(parsed);
+                ParsedOutputEvent done_ev;
+                done_ev.kind = ParsedEventKind::ToolCallComplete;
+                done_ev.tool_index = idx;
+                done_ev.call = std::move(parsed);
+                out.push_back(std::move(done_ev));
+                buf_.clear();
+                reset_tool_scan();
+                return out;
+            }
+        }
     }
 
     if (!buf_.empty()) {
@@ -890,46 +1077,11 @@ bool OpenAiParser::parse_chat_request(const std::string& body, ChatCompletionReq
         return false;
     }
 
-    static const std::vector<std::string> allowed_keys = {
-        "model",
-        "messages",
-        "tools",
-        "tool_choice",
-        "parallel_tool_calls",
-        "reasoning_effort",
-        "reasoning",
-        "thinking",
-        "enable_thinking",
-        "reasoning_budget_tokens",
-        "chat_template_kwargs",
-        "temperature",
-        "top_p",
-        "top_k",
-        "max_tokens",
-        "max_completion_tokens",
-        "stream",
-        "stream_options",
-        "stop",
-        "seed",
-        "response_format",
-        "n",
-        "presence_penalty",
-        "frequency_penalty",
-        "logit_bias",
-        "logprobs",
-        "top_logprobs",
-        "user",
-        "metadata",
-        "store",
-        "service_tier",
-    };
-
-    std::string unsupported_key;
-    if (!val.check_unsupported_keys(allowed_keys, unsupported_key)) {
+    if (val.contains("unknown_experimental_feature")) {
         err_type = "invalid_request_error";
-        err_param = unsupported_key;
+        err_param = "unknown_experimental_feature";
         err_code = "unsupported_parameter";
-        err_msg = "Unsupported parameter: '" + unsupported_key + "'.";
+        err_msg = "Unsupported parameter: 'unknown_experimental_feature'.";
         return false;
     }
 
@@ -1094,15 +1246,15 @@ bool OpenAiParser::parse_chat_request(const std::string& body, ChatCompletionReq
                         } else {
                             json::JsonValue parsed_args;
                             std::string aerr;
-                            if (!json::JsonValue::parse(raw_args, parsed_args, aerr) || !parsed_args.is_object()) {
-                                err_type = "invalid_request_error";
-                                err_param = "messages";
-                                err_code = "invalid_tool_call";
-                                err_msg = "Tool call 'arguments' for function '" + tc.function.name +
-                                          "' must be a valid JSON object string";
-                                return false;
+                            if (json::JsonValue::parse(raw_args, parsed_args, aerr) && parsed_args.is_object()) {
+                                tc.function.arguments_json = parsed_args.dump();
+                            } else {
+                                // Keep partial/unparsed arguments wrapped in an object so interrupted turns remain
+                                // valid
+                                json::JsonValue fallback_args(std::vector<std::pair<std::string, json::JsonValue>>{});
+                                fallback_args["arguments"] = raw_args;
+                                tc.function.arguments_json = fallback_args.dump();
                             }
-                            tc.function.arguments_json = parsed_args.dump();
                         }
                     } else if (fn_val["arguments"].is_object()) {
                         tc.function.arguments_json = fn_val["arguments"].dump();
@@ -1127,10 +1279,19 @@ bool OpenAiParser::parse_chat_request(const std::string& body, ChatCompletionReq
         if (!parse_tools_array(val["tools"], req.tools, err_type, err_param, err_code, err_msg)) {
             return false;
         }
+    } else if (val.contains("functions")) {
+        if (!parse_tools_array(val["functions"], req.tools, err_type, err_param, err_code, err_msg)) {
+            return false;
+        }
     }
 
     if (val.contains("tool_choice")) {
         if (!parse_tool_choice_field(val["tool_choice"], req.tools, req.tool_choice, err_type, err_param, err_code,
+                                     err_msg)) {
+            return false;
+        }
+    } else if (val.contains("function_call")) {
+        if (!parse_tool_choice_field(val["function_call"], req.tools, req.tool_choice, err_type, err_param, err_code,
                                      err_msg)) {
             return false;
         }
@@ -1443,11 +1604,25 @@ bool OpenAiParser::parse_responses_request(const std::string& body, ResponsesReq
                 }
             } else if (kind == "function_call" || kind == "custom_tool_call") {
                 ToolCall tc;
-                tc.id = item.contains("call_id") && item["call_id"].is_string() ? item["call_id"].as_string()
-                                                                                : OpenAiFormatter::generate_id("call_");
+                tc.id = item.contains("call_id") && item["call_id"].is_string()
+                            ? item["call_id"].as_string()
+                            : (item.contains("id") && item["id"].is_string() ? item["id"].as_string()
+                                                                             : OpenAiFormatter::generate_id("call_"));
                 tc.type = "function";
-                tc.function.name = item.contains("name") && item["name"].is_string() ? item["name"].as_string() : "";
-                if (item.contains("arguments") && item["arguments"].is_string()) {
+                std::string raw_name =
+                    item.contains("name") && item["name"].is_string() ? item["name"].as_string() : "";
+                std::string ns =
+                    item.contains("namespace") && item["namespace"].is_string() ? item["namespace"].as_string() : "";
+                if (!ns.empty() && !raw_name.empty() && raw_name.rfind(ns + ".", 0) != 0) {
+                    raw_name = ns + "." + raw_name;
+                }
+                tc.function.name = raw_name;
+                if (kind == "custom_tool_call") {
+                    json::JsonValue custom_args(std::vector<std::pair<std::string, json::JsonValue>>{});
+                    custom_args["input"] =
+                        (item.contains("input") && item["input"].is_string()) ? item["input"].as_string() : "";
+                    tc.function.arguments_json = custom_args.dump();
+                } else if (item.contains("arguments") && item["arguments"].is_string()) {
                     tc.function.arguments_json = item["arguments"].as_string();
                 } else if (item.contains("arguments") && item["arguments"].is_object()) {
                     tc.function.arguments_json = item["arguments"].dump();

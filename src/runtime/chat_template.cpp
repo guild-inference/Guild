@@ -55,22 +55,25 @@ std::string serialize_tool_definition(const ToolDefinition& tool) {
     if (!tool.raw_json.empty()) {
         return tool.raw_json;
     }
-    server::json::JsonValue obj(std::vector<std::pair<std::string, server::json::JsonValue>>{});
-    obj["name"] = tool.name;
-    obj["description"] = tool.description;
+    server::json::JsonValue fn_obj(std::vector<std::pair<std::string, server::json::JsonValue>>{});
+    fn_obj["name"] = tool.name;
+    fn_obj["description"] = tool.description;
     server::json::JsonValue params;
     std::string perr;
     if (!tool.parameters_json.empty() && server::json::JsonValue::parse(tool.parameters_json, params, perr) &&
         params.is_object()) {
-        obj["parameters"] = std::move(params);
+        fn_obj["parameters"] = std::move(params);
     } else {
         server::json::JsonValue empty_params(std::vector<std::pair<std::string, server::json::JsonValue>>{});
         empty_params["type"] = "object";
         empty_params["properties"] =
             server::json::JsonValue(std::vector<std::pair<std::string, server::json::JsonValue>>{});
-        obj["parameters"] = std::move(empty_params);
+        fn_obj["parameters"] = std::move(empty_params);
     }
-    return obj.dump();
+    server::json::JsonValue wrapper(std::vector<std::pair<std::string, server::json::JsonValue>>{});
+    wrapper["type"] = "function";
+    wrapper["function"] = std::move(fn_obj);
+    return wrapper.dump();
 }
 
 std::vector<ToolDefinition> filter_tools_by_choice(const std::vector<ToolDefinition>& tools,

@@ -69,7 +69,7 @@ bool NativeInferenceEngine::generate_stream(const InferenceRequest& req, StreamC
     g_req.request_id = req.request_id;
     g_req.prompt = req.prompt;
     g_req.prompt_tokens = req.prompt_tokens;
-    g_req.max_new_tokens = req.max_tokens > 0 ? req.max_tokens : 4096;
+    g_req.max_new_tokens = req.max_tokens > 0 ? req.max_tokens : 32768;
     g_req.temperature = req.sampling.temperature;
     g_req.top_p = req.sampling.top_p;
     g_req.top_k = req.sampling.top_k;

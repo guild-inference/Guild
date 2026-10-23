@@ -17,8 +17,10 @@ struct ToolCall {
 };
 
 struct ToolDefinition {
-    std::string type = "function";
-    std::string name;
+    std::string type = "function"; // "function" or "custom"
+    std::string name;              // flat name seen by model (e.g. "get_weather" or "ns.tool")
+    std::string original_name;     // unqualified tool name when inside a namespace
+    std::string namespace_name;    // optional namespace name
     std::string description;
     std::string parameters_json = "{}";
     std::string raw_json;

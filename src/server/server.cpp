@@ -972,14 +972,120 @@ void Server::process_responses(int client_fd, const HttpRequest& req) {
 
         bool stream_started = false;
         bool client_alive = true;
+        int seq_num = 0;
+        int output_index = -1;
+        std::string open_item_kind;
+        std::string open_item_id;
+        std::string open_item_text;
+        ToolCall open_tool_call;
         OpenAiOutputParser output_parser(prompt_opened_think, chat_req.tools, /*stream_tools=*/true);
 
-        auto send_sse_event = [&](const std::string& event_name, const std::string& data_json) -> bool {
-            std::string pkt = "event: " + event_name + "\ndata: " + data_json + "\n\n";
+        auto send_sse_event = [&](const std::string& event_name, json::JsonValue data_obj) -> bool {
+            data_obj["sequence_number"] = static_cast<int64_t>(seq_num++);
+            std::string pkt = "event: " + event_name + "\ndata: " + data_obj.dump() + "\n\n";
             if (!send_all(client_fd, pkt.data(), pkt.size())) {
                 client_alive = false;
                 return false;
             }
+            return true;
+        };
+
+        auto close_open_item = [&]() -> bool {
+            if (open_item_kind.empty())
+                return true;
+            if (open_item_kind == "reasoning") {
+                json::JsonValue rdone(std::vector<std::pair<std::string, json::JsonValue>>{});
+                rdone["type"] = "response.reasoning_text.done";
+                rdone["item_id"] = open_item_id;
+                rdone["output_index"] = static_cast<int64_t>(output_index);
+                rdone["content_index"] = static_cast<int64_t>(0);
+                rdone["text"] = open_item_text;
+                if (!send_sse_event("response.reasoning_text.done", std::move(rdone)))
+                    return false;
+
+                json::JsonValue item_obj(std::vector<std::pair<std::string, json::JsonValue>>{});
+                item_obj["id"] = open_item_id;
+                item_obj["type"] = "reasoning";
+                item_obj["status"] = "completed";
+                item_obj["summary"] = std::vector<json::JsonValue>{};
+                json::JsonValue rpart(std::vector<std::pair<std::string, json::JsonValue>>{});
+                rpart["type"] = "reasoning_text";
+                rpart["text"] = open_item_text;
+                item_obj["content"] = std::vector<json::JsonValue>{std::move(rpart)};
+
+                json::JsonValue idone(std::vector<std::pair<std::string, json::JsonValue>>{});
+                idone["type"] = "response.output_item.done";
+                idone["output_index"] = static_cast<int64_t>(output_index);
+                idone["item"] = std::move(item_obj);
+                if (!send_sse_event("response.output_item.done", std::move(idone)))
+                    return false;
+            } else if (open_item_kind == "message") {
+                json::JsonValue tdone(std::vector<std::pair<std::string, json::JsonValue>>{});
+                tdone["type"] = "response.output_text.done";
+                tdone["item_id"] = open_item_id;
+                tdone["output_index"] = static_cast<int64_t>(output_index);
+                tdone["content_index"] = static_cast<int64_t>(0);
+                tdone["text"] = open_item_text;
+                tdone["logprobs"] = std::vector<json::JsonValue>{};
+                if (!send_sse_event("response.output_text.done", std::move(tdone)))
+                    return false;
+
+                json::JsonValue tpart(std::vector<std::pair<std::string, json::JsonValue>>{});
+                tpart["type"] = "output_text";
+                tpart["text"] = open_item_text;
+                tpart["annotations"] = std::vector<json::JsonValue>{};
+                tpart["logprobs"] = std::vector<json::JsonValue>{};
+
+                json::JsonValue pdone(std::vector<std::pair<std::string, json::JsonValue>>{});
+                pdone["type"] = "response.content_part.done";
+                pdone["item_id"] = open_item_id;
+                pdone["output_index"] = static_cast<int64_t>(output_index);
+                pdone["content_index"] = static_cast<int64_t>(0);
+                pdone["part"] = tpart;
+                if (!send_sse_event("response.content_part.done", std::move(pdone)))
+                    return false;
+
+                json::JsonValue item_obj(std::vector<std::pair<std::string, json::JsonValue>>{});
+                item_obj["id"] = open_item_id;
+                item_obj["type"] = "message";
+                item_obj["status"] = "completed";
+                item_obj["role"] = "assistant";
+                item_obj["content"] = std::vector<json::JsonValue>{std::move(tpart)};
+
+                json::JsonValue idone(std::vector<std::pair<std::string, json::JsonValue>>{});
+                idone["type"] = "response.output_item.done";
+                idone["output_index"] = static_cast<int64_t>(output_index);
+                idone["item"] = std::move(item_obj);
+                if (!send_sse_event("response.output_item.done", std::move(idone)))
+                    return false;
+            } else if (open_item_kind == "function_call") {
+                json::JsonValue fdone(std::vector<std::pair<std::string, json::JsonValue>>{});
+                fdone["type"] = "response.function_call_arguments.done";
+                fdone["item_id"] = open_item_id;
+                fdone["output_index"] = static_cast<int64_t>(output_index);
+                fdone["name"] = open_tool_call.function.name;
+                fdone["arguments"] = open_item_text;
+                if (!send_sse_event("response.function_call_arguments.done", std::move(fdone)))
+                    return false;
+
+                json::JsonValue item_obj(std::vector<std::pair<std::string, json::JsonValue>>{});
+                item_obj["id"] = open_item_id;
+                item_obj["type"] = "function_call";
+                item_obj["status"] = "completed";
+                item_obj["call_id"] = open_tool_call.id;
+                item_obj["name"] = open_tool_call.function.name;
+                item_obj["arguments"] = open_item_text;
+
+                json::JsonValue idone(std::vector<std::pair<std::string, json::JsonValue>>{});
+                idone["type"] = "response.output_item.done";
+                idone["output_index"] = static_cast<int64_t>(output_index);
+                idone["item"] = std::move(item_obj);
+                if (!send_sse_event("response.output_item.done", std::move(idone)))
+                    return false;
+            }
+            open_item_kind.clear();
+            open_item_id.clear();
+            open_item_text.clear();
             return true;
         };
 
@@ -991,37 +1097,148 @@ void Server::process_responses(int client_fd, const HttpRequest& req) {
                 client_alive = false;
                 return false;
             }
-            json::JsonValue created_ev(std::vector<std::pair<std::string, json::JsonValue>>{});
-            created_ev["type"] = "response.created";
             json::JsonValue r_obj(std::vector<std::pair<std::string, json::JsonValue>>{});
             r_obj["id"] = inf_req.request_id;
             r_obj["object"] = "response";
+            r_obj["created_at"] = created;
             r_obj["status"] = "in_progress";
             r_obj["model"] = inf_req.model;
-            created_ev["response"] = std::move(r_obj);
-            return send_sse_event("response.created", created_ev.dump());
+            r_obj["output"] = std::vector<json::JsonValue>{};
+
+            json::JsonValue created_ev(std::vector<std::pair<std::string, json::JsonValue>>{});
+            created_ev["type"] = "response.created";
+            created_ev["response"] = r_obj;
+            if (!send_sse_event("response.created", std::move(created_ev)))
+                return false;
+
+            json::JsonValue inprog_ev(std::vector<std::pair<std::string, json::JsonValue>>{});
+            inprog_ev["type"] = "response.in_progress";
+            inprog_ev["response"] = std::move(r_obj);
+            return send_sse_event("response.in_progress", std::move(inprog_ev));
         };
 
         auto emit_events = [&](const std::vector<ParsedOutputEvent>& evs) -> bool {
             for (const auto& ev : evs) {
                 if (ev.kind == ParsedEventKind::Reasoning && !ev.text.empty()) {
+                    if (open_item_kind != "reasoning") {
+                        if (!close_open_item())
+                            return false;
+                        open_item_kind = "reasoning";
+                        open_item_id = OpenAiFormatter::generate_id("rs_");
+                        open_item_text.clear();
+                        ++output_index;
+
+                        json::JsonValue item_obj(std::vector<std::pair<std::string, json::JsonValue>>{});
+                        item_obj["id"] = open_item_id;
+                        item_obj["type"] = "reasoning";
+                        item_obj["status"] = "in_progress";
+                        item_obj["summary"] = std::vector<json::JsonValue>{};
+                        json::JsonValue rpart(std::vector<std::pair<std::string, json::JsonValue>>{});
+                        rpart["type"] = "reasoning_text";
+                        rpart["text"] = "";
+                        item_obj["content"] = std::vector<json::JsonValue>{std::move(rpart)};
+
+                        json::JsonValue added(std::vector<std::pair<std::string, json::JsonValue>>{});
+                        added["type"] = "response.output_item.added";
+                        added["output_index"] = static_cast<int64_t>(output_index);
+                        added["item"] = std::move(item_obj);
+                        if (!send_sse_event("response.output_item.added", std::move(added)))
+                            return false;
+                    }
+                    open_item_text += ev.text;
                     json::JsonValue d(std::vector<std::pair<std::string, json::JsonValue>>{});
                     d["type"] = "response.reasoning_text.delta";
+                    d["item_id"] = open_item_id;
+                    d["output_index"] = static_cast<int64_t>(output_index);
+                    d["content_index"] = static_cast<int64_t>(0);
                     d["delta"] = ev.text;
-                    if (!send_sse_event("response.reasoning_text.delta", d.dump()))
+                    if (!send_sse_event("response.reasoning_text.delta", std::move(d)))
                         return false;
                 } else if (ev.kind == ParsedEventKind::Content && !ev.text.empty()) {
+                    if (open_item_kind != "message") {
+                        if (!close_open_item())
+                            return false;
+                        open_item_kind = "message";
+                        open_item_id = OpenAiFormatter::generate_id("msg_");
+                        open_item_text.clear();
+                        ++output_index;
+
+                        json::JsonValue item_obj(std::vector<std::pair<std::string, json::JsonValue>>{});
+                        item_obj["id"] = open_item_id;
+                        item_obj["type"] = "message";
+                        item_obj["status"] = "in_progress";
+                        item_obj["role"] = "assistant";
+                        item_obj["content"] = std::vector<json::JsonValue>{};
+
+                        json::JsonValue added(std::vector<std::pair<std::string, json::JsonValue>>{});
+                        added["type"] = "response.output_item.added";
+                        added["output_index"] = static_cast<int64_t>(output_index);
+                        added["item"] = std::move(item_obj);
+                        if (!send_sse_event("response.output_item.added", std::move(added)))
+                            return false;
+
+                        json::JsonValue tpart(std::vector<std::pair<std::string, json::JsonValue>>{});
+                        tpart["type"] = "output_text";
+                        tpart["text"] = "";
+                        tpart["annotations"] = std::vector<json::JsonValue>{};
+                        tpart["logprobs"] = std::vector<json::JsonValue>{};
+
+                        json::JsonValue padded(std::vector<std::pair<std::string, json::JsonValue>>{});
+                        padded["type"] = "response.content_part.added";
+                        padded["item_id"] = open_item_id;
+                        padded["output_index"] = static_cast<int64_t>(output_index);
+                        padded["content_index"] = static_cast<int64_t>(0);
+                        padded["part"] = std::move(tpart);
+                        if (!send_sse_event("response.content_part.added", std::move(padded)))
+                            return false;
+                    }
+                    open_item_text += ev.text;
                     json::JsonValue d(std::vector<std::pair<std::string, json::JsonValue>>{});
                     d["type"] = "response.output_text.delta";
+                    d["item_id"] = open_item_id;
+                    d["output_index"] = static_cast<int64_t>(output_index);
+                    d["content_index"] = static_cast<int64_t>(0);
                     d["delta"] = ev.text;
-                    if (!send_sse_event("response.output_text.delta", d.dump()))
+                    d["logprobs"] = std::vector<json::JsonValue>{};
+                    if (!send_sse_event("response.output_text.delta", std::move(d)))
+                        return false;
+                } else if (ev.kind == ParsedEventKind::ToolCallStart) {
+                    if (!close_open_item())
+                        return false;
+                    open_item_kind = "function_call";
+                    open_item_id = OpenAiFormatter::generate_id("fc_");
+                    open_item_text.clear();
+                    open_tool_call = ev.call;
+                    ++output_index;
+
+                    json::JsonValue item_obj(std::vector<std::pair<std::string, json::JsonValue>>{});
+                    item_obj["id"] = open_item_id;
+                    item_obj["type"] = "function_call";
+                    item_obj["status"] = "in_progress";
+                    item_obj["call_id"] = ev.call.id;
+                    item_obj["name"] = ev.call.function.name;
+                    item_obj["arguments"] = "";
+
+                    json::JsonValue added(std::vector<std::pair<std::string, json::JsonValue>>{});
+                    added["type"] = "response.output_item.added";
+                    added["output_index"] = static_cast<int64_t>(output_index);
+                    added["item"] = std::move(item_obj);
+                    if (!send_sse_event("response.output_item.added", std::move(added)))
                         return false;
                 } else if (ev.kind == ParsedEventKind::ToolCallArgs && !ev.text.empty()) {
+                    open_item_text += ev.text;
                     json::JsonValue d(std::vector<std::pair<std::string, json::JsonValue>>{});
                     d["type"] = "response.function_call_arguments.delta";
+                    d["item_id"] = open_item_id;
+                    d["output_index"] = static_cast<int64_t>(output_index);
                     d["call_id"] = ev.call.id;
                     d["delta"] = ev.text;
-                    if (!send_sse_event("response.function_call_arguments.delta", d.dump()))
+                    if (!send_sse_event("response.function_call_arguments.delta", std::move(d)))
+                        return false;
+                } else if (ev.kind == ParsedEventKind::ToolCallComplete) {
+                    open_item_text = ev.call.function.arguments_json;
+                    open_tool_call = ev.call;
+                    if (!close_open_item())
                         return false;
                 }
             }
@@ -1041,6 +1258,7 @@ void Server::process_responses(int client_fd, const HttpRequest& req) {
         if (client_alive && ok) {
             start_stream();
             emit_events(output_parser.finish());
+            close_open_item();
             remember_assistant_reasoning(output_parser.reasoning_content(), output_parser.content(),
                                          output_parser.tool_calls(), output_parser.raw_output());
             std::string final_resp = OpenAiFormatter::format_responses_object(
@@ -1053,7 +1271,7 @@ void Server::process_responses(int client_fd, const HttpRequest& req) {
             json::JsonValue comp_ev(std::vector<std::pair<std::string, json::JsonValue>>{});
             comp_ev["type"] = "response.completed";
             comp_ev["response"] = std::move(parsed_resp);
-            send_sse_event("response.completed", comp_ev.dump());
+            send_sse_event("response.completed", std::move(comp_ev));
         } else if (client_alive && !stream_started) {
             send_response(client_fd,
                           HttpResponse::json(500, OpenAiFormatter::format_error(gen_res.error_message, "server_error",
