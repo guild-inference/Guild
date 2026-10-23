@@ -5,7 +5,7 @@
 #   curl -fsSL https://raw.githubusercontent.com/guild-inference/Guild/main/install.sh | bash
 #
 # Version-pinned installation:
-#   curl -fsSL https://raw.githubusercontent.com/guild-inference/Guild/main/install.sh | GUILD_VERSION=v0.2.0-preview.1 bash
+#   curl -fsSL https://raw.githubusercontent.com/guild-inference/Guild/main/install.sh | GUILD_VERSION=v0.2.0-preview.2 bash
 #
 # Options (via flags or environment variables):
 #   --version <tag>          Pin release tag (env: GUILD_VERSION)

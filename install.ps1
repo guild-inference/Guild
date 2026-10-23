@@ -4,7 +4,7 @@
 #   irm https://raw.githubusercontent.com/guild-inference/Guild/main/install.ps1 | iex
 #
 # Version-pinned installation:
-#   $env:GUILD_VERSION = "v0.2.0-preview.1"; irm https://raw.githubusercontent.com/guild-inference/Guild/main/install.ps1 | iex
+#   $env:GUILD_VERSION = "v0.2.0-preview.2"; irm https://raw.githubusercontent.com/guild-inference/Guild/main/install.ps1 | iex
 #
 # Direct script options:
 #   .\install.ps1 [-Version <tag>] [-Channel <preview|stable>] [-Variant <auto|cuda12|cpu>]
