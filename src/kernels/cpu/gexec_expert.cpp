@@ -1666,7 +1666,7 @@ void gexec_gu_rows_impl(const NativeFmt* f_ptr, const uint8_t* blob, const void*
         }
     }
 #endif
-    if (cpu_avx2_ok()) {
+    if (!cpu_avx512_ok() && cpu_avx2_ok()) {
         switch (f.gu_type) {
         case 16: dispatch_iq256_gu<16, INTERLEAVED>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); return;
         case 17: dispatch_iq256_gu<17, INTERLEAVED>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); return;
