@@ -85,13 +85,13 @@ irm https://raw.githubusercontent.com/guild-inference/Guild/main/install.ps1 | i
 ### Version-pinned installation
 
 ```bash
-# Linux (pinned to v0.2.0-preview.2)
-curl -fsSL https://raw.githubusercontent.com/guild-inference/Guild/main/install.sh | GUILD_VERSION=v0.2.0-preview.2 bash
+# Linux (pinned to v0.2.0-preview.3)
+curl -fsSL https://raw.githubusercontent.com/guild-inference/Guild/main/install.sh | GUILD_VERSION=v0.2.0-preview.3 bash
 ```
 
 ```powershell
-# Windows PowerShell (pinned to v0.2.0-preview.2)
-$env:GUILD_VERSION = "v0.2.0-preview.2"; irm https://raw.githubusercontent.com/guild-inference/Guild/main/install.ps1 | iex
+# Windows PowerShell (pinned to v0.2.0-preview.3)
+$env:GUILD_VERSION = "v0.2.0-preview.3"; irm https://raw.githubusercontent.com/guild-inference/Guild/main/install.ps1 | iex
 ```
 
 You can also download and inspect [`install.sh`](install.sh) or [`install.ps1`](install.ps1) directly before running (`bash install.sh --dry-run` / `.\install.ps1 -DryRun`).

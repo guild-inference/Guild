@@ -414,6 +414,8 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
         }
         if (impl->gexec) {
             impl->pool->set_fused_pipeline(impl->gexec->expert_pack_meta().fused_single_barrier_pipeline);
+        } else {
+            impl->pool->set_fused_pipeline(true);
         }
         if (selected->next_ext) {
             impl->cpu_binding = selected;

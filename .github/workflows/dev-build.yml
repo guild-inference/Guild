@@ -126,7 +126,7 @@ jobs:
       - name: Validate install.ps1 in a clean PowerShell user environment
         shell: pwsh
         run: |
-          $relTag = if ($env:GITHUB_REF -like "refs/tags/v*") { $env:GITHUB_REF_NAME } else { "v0.2.0-preview.2" }
+          $relTag = if ($env:GITHUB_REF -like "refs/tags/v*") { $env:GITHUB_REF_NAME } else { "v0.2.0-preview.3" }
           $man = Get-Content build-dist/guild-release-windows-cpu.json -Raw | ConvertFrom-Json
           $man | Add-Member -NotePropertyName release_tag -NotePropertyValue $relTag -Force
           $archSha = ((Get-Content build-dist/guild-windows-x86_64-cpu.zip.sha256 -Raw).Trim() -split '\s+')[0]

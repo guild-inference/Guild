@@ -455,13 +455,27 @@ private:
                     idx += 4;
                     try {
                         uint32_t codepoint = static_cast<uint32_t>(std::stoul(hex, nullptr, 16));
+                        if (codepoint >= 0xD800 && codepoint <= 0xDBFF && idx + 6 <= s.size() && s[idx] == '\\' &&
+                            s[idx + 1] == 'u') {
+                            std::string low_hex = s.substr(idx + 2, 4);
+                            uint32_t low = static_cast<uint32_t>(std::stoul(low_hex, nullptr, 16));
+                            if (low >= 0xDC00 && low <= 0xDFFF) {
+                                idx += 6;
+                                codepoint = 0x10000 + ((codepoint - 0xD800) << 10) + (low - 0xDC00);
+                            }
+                        }
                         if (codepoint <= 0x7F) {
                             out += static_cast<char>(codepoint);
                         } else if (codepoint <= 0x7FF) {
                             out += static_cast<char>(0xC0 | ((codepoint >> 6) & 0x1F));
                             out += static_cast<char>(0x80 | (codepoint & 0x3F));
-                        } else {
+                        } else if (codepoint <= 0xFFFF) {
                             out += static_cast<char>(0xE0 | ((codepoint >> 12) & 0x0F));
+                            out += static_cast<char>(0x80 | ((codepoint >> 6) & 0x3F));
+                            out += static_cast<char>(0x80 | (codepoint & 0x3F));
+                        } else {
+                            out += static_cast<char>(0xF0 | ((codepoint >> 18) & 0x07));
+                            out += static_cast<char>(0x80 | ((codepoint >> 12) & 0x3F));
                             out += static_cast<char>(0x80 | ((codepoint >> 6) & 0x3F));
                             out += static_cast<char>(0x80 | (codepoint & 0x3F));
                         }

@@ -59,6 +59,14 @@ bool MockInferenceEngine::generate_stream(const InferenceRequest& req, StreamCal
     std::string active_script;
     {
         std::lock_guard<std::mutex> lock(telem_mutex_);
+        size_t match_chars = 0;
+        const size_t max_c = std::min(last_prompt_.size(), req.prompt.size());
+        while (match_chars < max_c && last_prompt_[match_chars] == req.prompt[match_chars]) {
+            ++match_chars;
+        }
+        if (match_chars > 0 && result.prompt_tokens > 1) {
+            result.reused_tokens = std::min(result.prompt_tokens - 1, static_cast<int>(match_chars / 4));
+        }
         last_prompt_ = req.prompt;
         active_script = script_;
     }

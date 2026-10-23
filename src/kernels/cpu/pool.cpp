@@ -1072,7 +1072,7 @@ void ExpertPool::run_split_multi(ExpertJobMulti* jobs, int n) {
 bool ExpertPool::quant_act_multi_native(const NativeFmt& f, const float* x, uint8_t* dst, int n_tok) {
     if (n_tok <= 0)
         return true;
-    if (n_tok < 8 || n_ <= 1) {
+    if (n_tok < 2 || n_ <= 1) {
         for (int t = 0; t < n_tok; ++t) {
             const float* row_x = x + (size_t) t * (size_t) f.n_embd;
             if (!slice_all_finite(row_x, (int) f.n_embd))
@@ -1117,7 +1117,14 @@ void ExpertPool::run_split_multi_native(const NativeFmt& f, ExpertJobMulti* jobs
         const char* v = std::getenv("GUILD_POOL_WHOLE_EXPERT");
         return v == nullptr || std::atoi(v) != 0;
     }();
-    if (parallel_quant && whole_expert && n >= threads) {
+    bool has_ext_jobs = false;
+    for (int i = 0; i < n; ++i) {
+        if (jobs[i].nt > MAXT || jobs[i].nact_ext != nullptr || jobs[i].out_ext != nullptr) {
+            has_ext_jobs = true;
+            break;
+        }
+    }
+    if (parallel_quant && whole_expert && (has_ext_jobs || n >= 4 * threads)) {
         mjobs_ = jobs;
         nfmt_ = &f;
         host_gu_ms_ = 0.0;
@@ -1194,7 +1201,7 @@ void ExpertPool::run_split_multi_native(const NativeFmt& f, ExpertJobMulti* jobs
         const auto a = std::chrono::steady_clock::now();
         run_phase(5, mtasks_);
         const auto b = std::chrono::steady_clock::now();
-        if (parallel_quant && nb >= 32)
+        if (parallel_quant && nb >= 2)
             run_phase(7, nb);
         else {
             const double cpu_start = profile_file_ ? thread_cpu_ms() : 0;

@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <fstream>
 #include <sstream>
+#include <thread>
 
 namespace guild::runtime {
 
@@ -981,13 +982,63 @@ bool Tokenizer::encode(const std::string& text, std::vector<int32_t>& ids, bool 
     size_t pos = 0;
     const size_t n = text.size();
 
+    auto encode_segment = [&](const std::string& segment) {
+        std::vector<std::string> words = pre_tokenize_qwen(segment);
+        if (words.size() >= 16384) {
+            const size_t hw = std::max(1u, std::thread::hardware_concurrency());
+            const size_t n_threads = std::min<size_t>(std::min<size_t>(hw, 16), words.size() / 2048);
+            if (n_threads > 1) {
+                std::vector<std::vector<int32_t>> chunk_out(n_threads);
+                std::vector<std::thread> workers;
+                workers.reserve(n_threads - 1);
+                for (size_t t = 0; t < n_threads; ++t) {
+                    const size_t w0 = (words.size() * t) / n_threads;
+                    const size_t w1 = (words.size() * (t + 1)) / n_threads;
+                    auto run_chunk = [this, &words, &chunk_out, t, w0, w1]() {
+                        auto& out = chunk_out[t];
+                        out.reserve((w1 - w0) * 2);
+                        for (size_t i = w0; i < w1; ++i) {
+                            std::vector<int32_t> w_ids = bpe_merge_word(words[i]);
+                            out.insert(out.end(), w_ids.begin(), w_ids.end());
+                        }
+                    };
+                    if (t + 1 < n_threads) {
+                        workers.emplace_back(run_chunk);
+                    } else {
+                        run_chunk();
+                    }
+                }
+                for (auto& th : workers) {
+                    th.join();
+                }
+                for (const auto& out : chunk_out) {
+                    ids.insert(ids.end(), out.begin(), out.end());
+                }
+                return;
+            }
+        }
+        for (const auto& w : words) {
+            std::vector<int32_t> w_ids = bpe_merge_word(w);
+            ids.insert(ids.end(), w_ids.begin(), w_ids.end());
+        }
+    };
+
+    std::vector<std::pair<std::string, int32_t>> active_specials;
+    if (allow_special && !special_tokens_.empty()) {
+        for (const auto& sp : special_tokens_) {
+            if (text.find(sp.first) != std::string::npos) {
+                active_specials.push_back(sp);
+            }
+        }
+    }
+
     while (pos < n) {
-        if (allow_special && !special_tokens_.empty()) {
+        if (!active_specials.empty()) {
             size_t next_pos = std::string::npos;
             size_t spec_len = 0;
             int32_t spec_id = -1;
 
-            for (const auto& sp : special_tokens_) {
+            for (const auto& sp : active_specials) {
                 size_t f = text.find(sp.first, pos);
                 if (f != std::string::npos) {
                     if (next_pos == std::string::npos || f < next_pos ||
@@ -1001,12 +1052,7 @@ bool Tokenizer::encode(const std::string& text, std::vector<int32_t>& ids, bool 
 
             if (next_pos != std::string::npos) {
                 if (next_pos > pos) {
-                    std::string segment = text.substr(pos, next_pos - pos);
-                    std::vector<std::string> words = pre_tokenize_qwen(segment);
-                    for (const auto& w : words) {
-                        std::vector<int32_t> w_ids = bpe_merge_word(w);
-                        ids.insert(ids.end(), w_ids.begin(), w_ids.end());
-                    }
+                    encode_segment(text.substr(pos, next_pos - pos));
                 }
                 ids.push_back(spec_id);
                 pos = next_pos + spec_len;
@@ -1015,12 +1061,7 @@ bool Tokenizer::encode(const std::string& text, std::vector<int32_t>& ids, bool 
         }
 
         // No more special tokens or allow_special == false
-        std::string segment = text.substr(pos);
-        std::vector<std::string> words = pre_tokenize_qwen(segment);
-        for (const auto& w : words) {
-            std::vector<int32_t> w_ids = bpe_merge_word(w);
-            ids.insert(ids.end(), w_ids.begin(), w_ids.end());
-        }
+        encode_segment(text.substr(pos));
         break;
     }
 

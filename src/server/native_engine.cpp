@@ -110,6 +110,7 @@ bool NativeInferenceEngine::generate_stream(const InferenceRequest& req, StreamC
         last_telem_ = telem;
     }
     result.prompt_tokens = telem.prompt_tokens;
+    result.reused_tokens = telem.cached_prompt_tokens;
     result.completion_tokens = telem.completion_tokens;
     result.prompt_ms = telem.prompt_ms;
     result.decode_ms = telem.decode_ms;

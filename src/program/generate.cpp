@@ -373,10 +373,12 @@ int main(int argc, char** argv) try {
                 } else {
                     std::cout << "DONE " << telem.completion_tokens << " " << telem.prompt_tokens << " "
                               << telem.prompt_ms << " " << telem.decode_ms << " " << telem.finish_reason << " "
-                              << telem.drafts_accepted << " " << telem.drafts_offered << " 0 " << telem.gpu_cache_hits
-                              << " " << telem.gpu_cache_lookups << " " << telem.ram_expert_hits << " "
+                              << telem.drafts_accepted << " " << telem.drafts_offered << " "
+                              << telem.cached_prompt_tokens << " " << telem.gpu_cache_hits << " "
+                              << telem.gpu_cache_lookups << " " << telem.ram_expert_hits << " "
                               << telem.file_expert_reads << " " << double(telem.file_read_bytes) / 1e6 << " "
-                              << telem.prompt_tokens << " " << telem.offload_entries << "\n"
+                              << (telem.prompt_tokens - telem.cached_prompt_tokens) << " " << telem.offload_entries
+                              << "\n"
                               << std::flush;
                 }
             }

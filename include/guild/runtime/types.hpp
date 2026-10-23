@@ -82,6 +82,7 @@ using PrefillProgressCallback = std::function<void(const PrefillProgressEvent& e
 
 struct RuntimeTelemetry {
     int prompt_tokens = 0;
+    int cached_prompt_tokens = 0;
     int completion_tokens = 0;
     double prompt_ms = 0.0;
     double decode_ms = 0.0;

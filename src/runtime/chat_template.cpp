@@ -2,6 +2,7 @@
 #include "guild/server/json.hpp"
 
 #include <algorithm>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -133,6 +134,10 @@ bool render_turns(const std::vector<ChatMessage>& messages, size_t num_sys, std:
         if (msg.role == "user") {
             out << kImStart << "user\n" << content << kImEnd << "\n";
         } else if (msg.role == "assistant") {
+            if (!msg.raw_model_output.empty()) {
+                out << kImStart << "assistant\n" << kThinkStart << "\n" << msg.raw_model_output << kImEnd << "\n";
+                continue;
+            }
             out << kImStart << "assistant\n";
             if (!msg.reasoning_content.empty()) {
                 out << kThinkStart << "\n"
@@ -141,8 +146,13 @@ bool render_turns(const std::vector<ChatMessage>& messages, size_t num_sys, std:
                     << content;
             } else {
                 size_t t_pos = content.find(kThinkStart);
+                size_t end_pos = content.find(kThinkEnd);
                 if (t_pos != std::string::npos) {
                     out << content;
+                } else if (end_pos != std::string::npos) {
+                    std::string r_part = trim_string(content.substr(0, end_pos));
+                    std::string a_part = trim_string(content.substr(end_pos + std::strlen(kThinkEnd)));
+                    out << kThinkStart << "\n" << r_part << "\n" << kThinkEnd << "\n\n" << a_part;
                 } else {
                     out << kThinkStart << "\n\n" << kThinkEnd << "\n\n" << content;
                 }

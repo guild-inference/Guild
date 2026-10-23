@@ -116,6 +116,7 @@ void GuildSession::reset() {
     core::session_zero(m_impl->ss, m_impl->g, nullptr, m_impl->main_stream);
     if (m_impl->mtp)
         core::qsa_state_zero(m_impl->mtp->kv_state(), m_impl->g, m_impl->main_stream);
+    m_impl->clear_prefix_cache();
     if (cudaStreamSynchronize(m_impl->main_stream) != cudaSuccess)
         m_impl->ready->store(false);
 }
@@ -227,12 +228,6 @@ bool GuildSession::generate(const GenerationRequest& req, TokenStreamCallback on
             kernels::cpu::restore_thread_affinity(previous);
         }
     } affinity;
-    // Pin the calling thread to the pool's host core for the duration of the request (GUILD_HOST_AFFINITY=0 opts
-    // out).  The expert workers run on dedicated cores; leaving the request thread free to migrate between sockets
-    // makes the host-side marshalling unpredictable and steals cycles from the pool.
-    const char* host_affinity = std::getenv("GUILD_HOST_AFFINITY");
-    if (!host_affinity || std::atoi(host_affinity) != 0)
-        affinity.previous = kernels::cpu::pin_current_thread_if_allowed(m_impl->pool->host_core());
     core::ScopedModelExecution exec_scope(m_impl->exec_state);
     std::optional<kernels::ScopedCudaDense> dense_scope;
     if (m_impl->cuda_dense)
@@ -244,18 +239,68 @@ bool GuildSession::generate(const GenerationRequest& req, TokenStreamCallback on
     if (m_impl->cuda_moe)
         moe_scope.emplace(*m_impl->cuda_moe);
 
-    // Reset KV state for fresh generation
     if (!m_impl->ver->wait_commit(error_msg))
         return runtime_failure();
     if (m_impl->mtp && !m_impl->mtp->idle(error_msg))
         return runtime_failure();
-    core::session_zero(m_impl->ss, m_impl->g, nullptr, m_impl->main_stream);
-    if (m_impl->mtp)
-        core::qsa_state_zero(m_impl->mtp->kv_state(), m_impl->g, m_impl->main_stream);
-    if (cudaStreamSynchronize(m_impl->main_stream) != cudaSuccess) {
-        error_msg = "failed to reset inference state";
-        return runtime_failure();
+
+    // KV + Recurrent State Prefix Cache Resolution:
+    // The last prompt token (ids[n_prompt - 1]) is evaluated by the first decode/verify window,
+    // so up to max_reusable = n_prompt - 1 tokens can be reused directly from the KV cache.
+    const bool kv_cache_enabled =
+        (std::getenv("GUILD_NO_KV_CACHE") == nullptr || std::atoi(std::getenv("GUILD_NO_KV_CACHE")) == 0);
+    const size_t max_reusable = n_prompt > 1 ? static_cast<size_t>(n_prompt - 1) : 0;
+    int64_t reused_pos = 0;
+
+    auto prefix_matches = [&](const std::vector<int32_t>& candidate) -> bool {
+        if (candidate.empty() || candidate.size() > max_reusable)
+            return false;
+        for (size_t i = 0; i < candidate.size(); ++i) {
+            if (static_cast<int64_t>(candidate[i]) != ids[i])
+                return false;
+        }
+        return true;
+    };
+
+    if (kv_cache_enabled && max_reusable > 0) {
+        if (prefix_matches(m_impl->live_committed_tokens)) {
+            // Fast path: the live session state in m_impl->ss already ends at the exact prefix!
+            reused_pos = static_cast<int64_t>(m_impl->live_committed_tokens.size());
+        } else {
+            // Search saved checkpoints for the longest matching prefix <= max_reusable
+            const GuildModel::Impl::PrefixStateCheckpoint* best_cp = nullptr;
+            for (const auto& cp : m_impl->prefix_checkpoints) {
+                if (prefix_matches(cp.tokens)) {
+                    if (!best_cp || cp.tokens.size() > best_cp->tokens.size()) {
+                        best_cp = &cp;
+                    }
+                }
+            }
+            if (best_cp != nullptr && m_impl->restore_prefix_checkpoint(*best_cp)) {
+                reused_pos = static_cast<int64_t>(best_cp->tokens.size());
+                m_impl->live_committed_tokens = best_cp->tokens;
+                // Prune any checkpoints beyond reused_pos whose KV cells will be overwritten
+                m_impl->prefix_checkpoints.erase(
+                    std::remove_if(m_impl->prefix_checkpoints.begin(), m_impl->prefix_checkpoints.end(),
+                                   [reused_pos](const GuildModel::Impl::PrefixStateCheckpoint& c) {
+                                       return c.tokens.size() > static_cast<size_t>(reused_pos);
+                                   }),
+                    m_impl->prefix_checkpoints.end());
+            }
+        }
     }
+
+    if (reused_pos == 0) {
+        m_impl->clear_prefix_cache();
+        core::session_zero(m_impl->ss, m_impl->g, nullptr, m_impl->main_stream);
+        if (m_impl->mtp)
+            core::qsa_state_zero(m_impl->mtp->kv_state(), m_impl->g, m_impl->main_stream);
+        if (cudaStreamSynchronize(m_impl->main_stream) != cudaSuccess) {
+            error_msg = "failed to reset inference state";
+            return runtime_failure();
+        }
+    }
+    telemetry.cached_prompt_tokens = static_cast<int>(reused_pos);
 
     // Resolve speculative decoding strategy and maximum draft depth for this request
     spec::DecodeStrategyMode eff_mode = spec::DecodeStrategyMode::Auto;
@@ -340,10 +385,12 @@ bool GuildSession::generate(const GenerationRequest& req, TokenStreamCallback on
             };
         }
 
-        // Prefill prompt tokens [0, n_prompt - 1)
-        if (n_prompt > 1) {
-            if (!m_impl->prefill->run(ids.data(), n_prompt - 1, 0, error_msg)) {
+        // Prefill uncached prompt tokens [reused_pos, n_prompt - 1)
+        const int64_t n_to_prefill = (n_prompt - 1) - reused_pos;
+        if (n_to_prefill > 0) {
+            if (!m_impl->prefill->run(ids.data() + reused_pos, n_to_prefill, reused_pos, error_msg)) {
                 if (error_msg == "cancelled") {
+                    m_impl->clear_prefix_cache();
                     telemetry.finish_reason = "cancel";
                     return true;
                 }
@@ -354,9 +401,11 @@ bool GuildSession::generate(const GenerationRequest& req, TokenStreamCallback on
         m_impl->batched_prefill->should_stop = [this, &req] {
             return impl_->cancelled.load() || (req.cancel_flag && req.cancel_flag->load());
         };
-        if (n_prompt > 1) {
-            if (!m_impl->batched_prefill->run(ids.data(), n_prompt - 1, 0, error_msg)) {
+        const int64_t n_to_prefill = (n_prompt - 1) - reused_pos;
+        if (n_to_prefill > 0) {
+            if (!m_impl->batched_prefill->run(ids.data() + reused_pos, n_to_prefill, reused_pos, error_msg)) {
                 if (error_msg == "cancelled") {
+                    m_impl->clear_prefix_cache();
                     telemetry.finish_reason = "cancel";
                     return true;
                 }
@@ -365,10 +414,11 @@ bool GuildSession::generate(const GenerationRequest& req, TokenStreamCallback on
         }
     } else {
         // Architecture-independent prompt ingestion via Verifier (sequential fallback)
-        if (n_prompt > 1) {
+        if (n_prompt - 1 > reused_pos) {
             std::vector<int32_t> sink_out(1);
-            for (int64_t pos = 0; pos < n_prompt - 1; ++pos) {
+            for (int64_t pos = reused_pos; pos < n_prompt - 1; ++pos) {
                 if (impl_->cancelled.load() || (req.cancel_flag && req.cancel_flag->load())) {
+                    m_impl->clear_prefix_cache();
                     telemetry.finish_reason = "cancel";
                     return true;
                 }
@@ -391,11 +441,24 @@ bool GuildSession::generate(const GenerationRequest& req, TokenStreamCallback on
         }
     }
 
+    if (kv_cache_enabled && n_prompt > 1) {
+        if (static_cast<int64_t>(m_impl->live_committed_tokens.size()) < n_prompt - 1) {
+            m_impl->live_committed_tokens.reserve(static_cast<size_t>(n_prompt + req.max_new_tokens));
+            for (int64_t pos = static_cast<int64_t>(m_impl->live_committed_tokens.size()); pos < n_prompt - 1; ++pos) {
+                m_impl->live_committed_tokens.push_back(static_cast<int32_t>(ids[static_cast<size_t>(pos)]));
+            }
+            m_impl->save_prefix_checkpoint(m_impl->live_committed_tokens);
+        }
+    }
+
     auto t_prefill_end = Clock::now();
     telemetry.prompt_ms = std::chrono::duration<double, std::milli>(t_prefill_end - t_prefill_start).count();
     telemetry.prompt_tokens = static_cast<int>(n_prompt);
+    const int64_t newly_prefilled = std::max<int64_t>(0, (n_prompt - 1) - reused_pos);
     telemetry.prompt_tok_s =
-        (n_prompt > 1 && telemetry.prompt_ms > 0) ? ((n_prompt - 1) / (telemetry.prompt_ms / 1000.0)) : 0.0;
+        (newly_prefilled > 0 && telemetry.prompt_ms > 0)
+            ? (newly_prefilled / (telemetry.prompt_ms / 1000.0))
+            : ((n_prompt > 1 && telemetry.prompt_ms > 0) ? ((n_prompt - 1) / (telemetry.prompt_ms / 1000.0)) : 0.0);
     if (m_impl->batched_prefill && std::getenv("GUILD_PREFILL_SEQUENTIAL") == nullptr) {
         const auto& st = m_impl->batched_prefill->stats();
         telemetry.prefill_embed_ms = st.ms_embed;
@@ -417,6 +480,12 @@ bool GuildSession::generate(const GenerationRequest& req, TokenStreamCallback on
         pev.tok_s = telemetry.prompt_tok_s;
         on_prefill(pev);
     }
+
+    // Pin the calling thread to the pool's host core during the decode loop (GUILD_HOST_AFFINITY=0 opts out)
+    // so prefill threads above can use all CPU cores before decode begins.
+    const char* host_affinity = std::getenv("GUILD_HOST_AFFINITY");
+    if (!host_affinity || std::atoi(host_affinity) != 0)
+        affinity.previous = kernels::cpu::pin_current_thread_if_allowed(m_impl->pool->host_core());
 
     // Speculative decode loop starting from last prompt token
     auto t_decode_start = Clock::now();
@@ -569,11 +638,28 @@ bool GuildSession::generate(const GenerationRequest& req, TokenStreamCallback on
         while (a < T - 1 && window[static_cast<size_t>(a + 1)] == outv[static_cast<size_t>(a)])
             ++a;
 
+        // Cap accepted window before commit if an earlier accepted token hits EOS or max_new_tokens
+        for (int i = 0; i <= a; ++i) {
+            const int32_t cand_tid = outv[static_cast<size_t>(i)];
+            const bool is_eos_tok = std::find(m_impl->config.eos_token_ids.begin(), m_impl->config.eos_token_ids.end(),
+                                              static_cast<int64_t>(cand_tid)) != m_impl->config.eos_token_ids.end();
+            if (is_eos_tok || (produced_n + i + 1 >= req.max_new_tokens)) {
+                a = i;
+                break;
+            }
+        }
+
         const auto t_com0 = Clock::now();
         if (!m_impl->ver->commit(a + 1, error_msg)) {
             return runtime_failure();
         }
         const auto t_com1 = Clock::now();
+
+        if (kv_cache_enabled) {
+            for (int i = 0; i <= a; ++i) {
+                m_impl->live_committed_tokens.push_back(window[static_cast<size_t>(i)]);
+            }
+        }
 
         const double cap_delta_ms = std::max(0.0, m_impl->ver->ms_capture - cap_w0);
         const double raw_ver_ms = std::chrono::duration<double, std::milli>(t_ver1 - t_ver0).count();
@@ -653,8 +739,13 @@ bool GuildSession::generate(const GenerationRequest& req, TokenStreamCallback on
             impl_->scheduler->observe(obs);
         }
 
-        if (client_aborted || eos || produced_n >= req.max_new_tokens)
+        if (client_aborted || eos || produced_n >= req.max_new_tokens) {
+            if (use_mtp && !client_aborted) {
+                if (!m_impl->mtp->prefill(m_impl->ver->final_R_all(), outv.data(), a + 1, p, error_msg))
+                    return runtime_failure();
+            }
             break;
+        }
 
         // Safe verification boundary: select strategy and prepare draft tokens for the next window
         int lookup_k = 0;
@@ -799,6 +890,9 @@ bool GuildSession::generate(const GenerationRequest& req, TokenStreamCallback on
     // A successful request must leave completed state before reset, another session, or teardown.
     if (!m_impl->ver->wait_commit(error_msg))
         return runtime_failure();
+    if (kv_cache_enabled && !m_impl->live_committed_tokens.empty()) {
+        m_impl->save_prefix_checkpoint(m_impl->live_committed_tokens);
+    }
     std::string flushed = decoder->flush();
     if (!flushed.empty() && on_token && !client_aborted) {
         on_token(TokenEvent{0, flushed, false});

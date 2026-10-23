@@ -31,6 +31,7 @@ struct ChatMessage {
     std::vector<ToolCall> tool_calls;
     std::string tool_call_id;
     std::string name;
+    std::string raw_model_output;
 
     ChatMessage() = default;
     ChatMessage(std::string r, std::string c) : role(std::move(r)), content(std::move(c)) {

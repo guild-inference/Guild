@@ -938,6 +938,61 @@ int main() {
         std::cout << "  -> PASSED\n";
     }
 
+    // -------------------------------------------------------------------------
+    // Test 20: KV Prefix Cache telemetry (cached_tokens) & automatic reasoning restoration
+    // -------------------------------------------------------------------------
+    std::cout << "[server_test] Test 20: Multi-turn KV prefix cache & reasoning restoration\n";
+    {
+        auto kv_engine = std::make_shared<guild::server::MockInferenceEngine>(
+            "Qwen3.8-Flash-Next", 262144,
+            "<think>\nNeed to call get_temp.\n</think>\n\n"
+            "<tool_call>\n<function=get_temp>\n<parameter=city>\nTokyo\n</parameter>\n</function>\n</tool_call>");
+        guild::server::Server kv_server(kv_engine, opts);
+        CHECK(kv_server.start());
+        const int kport = kv_server.bound_port();
+
+        std::string turn1_req = R"({
+            "model": "Qwen3.8-Flash-Next",
+            "messages": [{"role": "user", "content": "Temperature in Tokyo \ud83c\udf21\ufe0f?"}],
+            "tools": [{"type": "function", "function": {"name": "get_temp", "parameters": {"type": "object", "properties": {"city": {"type": "string"}}}}}]
+        })";
+        auto r1 =
+            send_http_request(kport, "POST", "/v1/chat/completions", turn1_req, {{"Content-Type", "application/json"}});
+        CHECK(r1.status_code == 200);
+        guild::server::json::JsonValue root1;
+        std::string err;
+        CHECK(guild::server::json::JsonValue::parse(r1.body, root1, err));
+        CHECK(root1["usage"]["prompt_tokens_details"]["cached_tokens"].as_int() == 0);
+        const std::string call_id = root1["choices"][0]["message"]["tool_calls"][0]["id"].as_string();
+
+        // Turn 2: Omit reasoning_content on the assistant message; verify server restores it and reports cached_tokens
+        // > 0
+        kv_engine->set_script("<think>\nTool returned 21C.\n</think>\n\nIt is 21C in Tokyo.");
+        std::string turn2_req =
+            "{\"model\":\"Qwen3.8-Flash-Next\",\"messages\":["
+            "{\"role\":\"user\",\"content\":\"Temperature in Tokyo \\ud83c\\udf21\\ufe0f?\"},"
+            "{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"id\":\"" +
+            call_id +
+            "\",\"type\":\"function\",\"function\":{\"name\":\"get_temp\",\"arguments\":\"{\\\"city\\\":\\\"Tokyo\\\"}"
+            "\"}}]},"
+            "{\"role\":\"tool\",\"tool_call_id\":\"" +
+            call_id +
+            "\",\"content\":\"21C\"}"
+            "],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"get_temp\",\"parameters\":{\"type\":"
+            "\"object\",\"properties\":{\"city\":{\"type\":\"string\"}}}}}]}";
+        auto r2 =
+            send_http_request(kport, "POST", "/v1/chat/completions", turn2_req, {{"Content-Type", "application/json"}});
+        CHECK(r2.status_code == 200);
+        guild::server::json::JsonValue root2;
+        CHECK(guild::server::json::JsonValue::parse(r2.body, root2, err));
+        CHECK(root2["usage"]["prompt_tokens_details"]["cached_tokens"].as_int() > 0);
+        // Verify restored reasoning_content was rendered into Turn 2's prompt
+        CHECK(kv_engine->last_prompt().find("Need to call get_temp.") != std::string::npos);
+
+        kv_server.stop();
+        std::cout << "  -> PASSED\n";
+    }
+
     std::cout << "\n[server_test] lifecycle, success and failure checks PASSED (Release-active)\n";
     return 0;
 }

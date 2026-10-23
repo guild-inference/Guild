@@ -633,6 +633,8 @@ void Server::process_chat_completions(int client_fd, const HttpRequest& req) {
     inf_req.request_id = OpenAiFormatter::generate_id();
     inf_req.model = chat_req.model.empty() ? engine_->model_name() : chat_req.model;
 
+    restore_assistant_reasoning(chat_req.messages);
+
     runtime::ChatTemplateOptions tpl_opts;
     tpl_opts.add_generation_prompt = true;
     tpl_opts.enable_thinking = chat_req.enable_thinking;
@@ -772,6 +774,8 @@ void Server::process_chat_completions(int client_fd, const HttpRequest& req) {
             start_stream();
             auto tail_evs = output_parser.finish();
             emit_parsed_events(tail_evs);
+            remember_assistant_reasoning(output_parser.reasoning_content(), output_parser.content(),
+                                         output_parser.tool_calls(), output_parser.raw_output());
 
             const std::string effective_finish = (output_parser.has_tool_calls() && gen_res.finish_reason == "stop")
                                                      ? "tool_calls"
@@ -781,7 +785,7 @@ void Server::process_chat_completions(int client_fd, const HttpRequest& req) {
                 (chat_req.stream_include_usage
                      ? OpenAiFormatter::format_chat_usage_chunk(
                            inf_req.request_id, inf_req.model, created, effective_finish, gen_res.prompt_tokens,
-                           gen_res.completion_tokens, output_parser.reasoning_tokens())
+                           gen_res.completion_tokens, output_parser.reasoning_tokens(), gen_res.reused_tokens)
                      : OpenAiFormatter::format_chat_chunk(inf_req.request_id, inf_req.model, created, "", "",
                                                           effective_finish)) +
                 "\n\n";
@@ -842,13 +846,15 @@ void Server::process_chat_completions(int client_fd, const HttpRequest& req) {
                 output_parser.feed(gen_res.text, true);
             }
             output_parser.finish();
+            remember_assistant_reasoning(output_parser.reasoning_content(), output_parser.content(),
+                                         output_parser.tool_calls(), output_parser.raw_output());
         }
 
         std::string json_res =
             ok ? OpenAiFormatter::format_chat_completion(
                      inf_req.request_id, inf_req.model, created, output_parser.content(), gen_res.finish_reason,
                      gen_res.prompt_tokens, gen_res.completion_tokens, output_parser.reasoning_content(),
-                     output_parser.tool_calls(), output_parser.reasoning_tokens())
+                     output_parser.tool_calls(), output_parser.reasoning_tokens(), gen_res.reused_tokens)
                : OpenAiFormatter::format_error(gen_res.error_message, "server_error", "", "inference_failed");
 
         send_response(client_fd, HttpResponse::json(ok ? 200 : 500, json_res));
@@ -909,7 +915,8 @@ void Server::process_responses(int client_fd, const HttpRequest& req) {
         return;
     }
 
-    const auto& chat_req = resp_req.chat;
+    auto& chat_req = resp_req.chat;
+    restore_assistant_reasoning(chat_req.messages);
     InferenceRequest inf_req;
     inf_req.request_id = OpenAiFormatter::generate_id("resp_");
     inf_req.model = chat_req.model.empty() ? engine_->model_name() : chat_req.model;
@@ -1034,10 +1041,12 @@ void Server::process_responses(int client_fd, const HttpRequest& req) {
         if (client_alive && ok) {
             start_stream();
             emit_events(output_parser.finish());
+            remember_assistant_reasoning(output_parser.reasoning_content(), output_parser.content(),
+                                         output_parser.tool_calls(), output_parser.raw_output());
             std::string final_resp = OpenAiFormatter::format_responses_object(
                 inf_req.request_id, inf_req.model, created, output_parser.content(), output_parser.reasoning_content(),
                 output_parser.tool_calls(), gen_res.finish_reason, gen_res.prompt_tokens, gen_res.completion_tokens,
-                output_parser.reasoning_tokens());
+                output_parser.reasoning_tokens(), gen_res.reused_tokens);
             json::JsonValue parsed_resp;
             std::string perr;
             json::JsonValue::parse(final_resp, parsed_resp, perr);
@@ -1060,14 +1069,84 @@ void Server::process_responses(int client_fd, const HttpRequest& req) {
                     output_parser.feed(tok.text, true);
             }
             output_parser.finish();
+            remember_assistant_reasoning(output_parser.reasoning_content(), output_parser.content(),
+                                         output_parser.tool_calls(), output_parser.raw_output());
         }
         std::string json_res =
-            ok ? OpenAiFormatter::format_responses_object(
-                     inf_req.request_id, inf_req.model, created, output_parser.content(),
-                     output_parser.reasoning_content(), output_parser.tool_calls(), gen_res.finish_reason,
-                     gen_res.prompt_tokens, gen_res.completion_tokens, output_parser.reasoning_tokens())
+            ok ? OpenAiFormatter::format_responses_object(inf_req.request_id, inf_req.model, created,
+                                                          output_parser.content(), output_parser.reasoning_content(),
+                                                          output_parser.tool_calls(), gen_res.finish_reason,
+                                                          gen_res.prompt_tokens, gen_res.completion_tokens,
+                                                          output_parser.reasoning_tokens(), gen_res.reused_tokens)
                : OpenAiFormatter::format_error(gen_res.error_message, "server_error", "", "inference_failed");
         send_response(client_fd, HttpResponse::json(ok ? 200 : 500, json_res));
+    }
+}
+
+void Server::remember_assistant_reasoning(const std::string& reasoning, const std::string& content,
+                                          const std::vector<runtime::ToolCall>& tool_calls,
+                                          const std::string& raw_output) {
+    if (reasoning.empty() && raw_output.empty())
+        return;
+    std::lock_guard<std::mutex> lock(reasoning_cache_mutex_);
+    if (reasoning_cache_.size() >= 256) {
+        reasoning_cache_.clear();
+    }
+    const CachedAssistantTurn entry{reasoning, raw_output};
+    for (const auto& tc : tool_calls) {
+        if (!tc.id.empty()) {
+            reasoning_cache_["tc:" + tc.id] = entry;
+        }
+        if (!tc.function.name.empty()) {
+            reasoning_cache_["fn:" + tc.function.name + ":" + tc.function.arguments_json] = entry;
+        }
+    }
+    if (!content.empty()) {
+        reasoning_cache_["txt:" + content] = entry;
+    }
+}
+
+void Server::restore_assistant_reasoning(std::vector<runtime::ChatMessage>& messages) {
+    std::lock_guard<std::mutex> lock(reasoning_cache_mutex_);
+    if (reasoning_cache_.empty())
+        return;
+    for (auto& m : messages) {
+        if (m.role != "assistant")
+            continue;
+        bool restored = false;
+        for (const auto& tc : m.tool_calls) {
+            if (!tc.id.empty()) {
+                auto it = reasoning_cache_.find("tc:" + tc.id);
+                if (it != reasoning_cache_.end()) {
+                    if (m.reasoning_content.empty()) {
+                        m.reasoning_content = it->second.reasoning;
+                    }
+                    m.raw_model_output = it->second.raw_output;
+                    restored = true;
+                    break;
+                }
+            }
+            if (!tc.function.name.empty()) {
+                auto it = reasoning_cache_.find("fn:" + tc.function.name + ":" + tc.function.arguments_json);
+                if (it != reasoning_cache_.end()) {
+                    if (m.reasoning_content.empty()) {
+                        m.reasoning_content = it->second.reasoning;
+                    }
+                    m.raw_model_output = it->second.raw_output;
+                    restored = true;
+                    break;
+                }
+            }
+        }
+        if (!restored && !m.content.empty()) {
+            auto it = reasoning_cache_.find("txt:" + m.content);
+            if (it != reasoning_cache_.end()) {
+                if (m.reasoning_content.empty()) {
+                    m.reasoning_content = it->second.reasoning;
+                }
+                m.raw_model_output = it->second.raw_output;
+            }
+        }
     }
 }
 

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "guild/server/engine.hpp"
+#include "guild/server/openai.hpp"
 #include "guild/server/request.hpp"
 #include "guild/server/response.hpp"
 #include "guild/server/telemetry.hpp"
@@ -11,6 +12,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 namespace guild::server {
@@ -74,6 +76,13 @@ private:
     std::vector<int> client_queue_;
     std::vector<int> active_clients_;
 
+    struct CachedAssistantTurn {
+        std::string reasoning;
+        std::string raw_output;
+    };
+    std::mutex reasoning_cache_mutex_;
+    std::unordered_map<std::string, CachedAssistantTurn> reasoning_cache_;
+
     void listener_loop(int listen_fd, int wake_fd);
     void worker_loop();
     void handle_client(int client_fd);
@@ -81,6 +90,9 @@ private:
     void process_chat_completions(int client_fd, const HttpRequest& req);
     void process_completions(int client_fd, const HttpRequest& req);
     void process_responses(int client_fd, const HttpRequest& req);
+    void remember_assistant_reasoning(const std::string& reasoning, const std::string& content,
+                                      const std::vector<runtime::ToolCall>& tool_calls, const std::string& raw_output);
+    void restore_assistant_reasoning(std::vector<runtime::ChatMessage>& messages);
     void log_request(const RequestMetrics& m);
 };
 

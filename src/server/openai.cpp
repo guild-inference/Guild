@@ -628,6 +628,9 @@ void OpenAiOutputParser::close_unfinished_tool_scan(const std::string& call_buf,
 }
 
 std::vector<ParsedOutputEvent> OpenAiOutputParser::feed(const std::string& delta, bool is_generated_token) {
+    if (is_generated_token && !delta.empty()) {
+        raw_acc_ += delta;
+    }
     if (is_generated_token && !delta.empty() &&
         (state_ == State::Reasoning || (state_ == State::DetectStart && delta.find('<') != std::string::npos))) {
         ++reasoning_tokens_;
@@ -1642,7 +1645,8 @@ std::string OpenAiFormatter::format_chat_completion(const std::string& id, const
                                                     const std::string& content, const std::string& finish_reason,
                                                     int prompt_tokens, int completion_tokens,
                                                     const std::string& reasoning_content,
-                                                    const std::vector<ToolCall>& tool_calls, int reasoning_tokens) {
+                                                    const std::vector<ToolCall>& tool_calls, int reasoning_tokens,
+                                                    int cached_tokens) {
     const std::string effective_finish =
         (!tool_calls.empty() && finish_reason == "stop") ? "tool_calls" : finish_reason;
 
@@ -1695,6 +1699,9 @@ std::string OpenAiFormatter::format_chat_completion(const std::string& id, const
        << "    \"prompt_tokens\": " << prompt_tokens << ",\n"
        << "    \"completion_tokens\": " << completion_tokens << ",\n"
        << "    \"total_tokens\": " << (prompt_tokens + completion_tokens) << ",\n"
+       << "    \"prompt_tokens_details\": {\n"
+       << "      \"cached_tokens\": " << cached_tokens << "\n"
+       << "    },\n"
        << "    \"completion_tokens_details\": {\n"
        << "      \"reasoning_tokens\": " << reasoning_tokens << "\n"
        << "    }\n"
@@ -1766,7 +1773,7 @@ std::string OpenAiFormatter::format_chat_tool_call_chunk(const std::string& id, 
 
 std::string OpenAiFormatter::format_chat_usage_chunk(const std::string& id, const std::string& model, int64_t created,
                                                      const std::string& finish_reason, int prompt_tokens,
-                                                     int completion_tokens, int reasoning_tokens) {
+                                                     int completion_tokens, int reasoning_tokens, int cached_tokens) {
     std::ostringstream ss;
     ss << "{\"id\":\"" << json::JsonValue::escape_string(id)
        << "\",\"object\":\"chat.completion.chunk\",\"created\":" << created << ",\"model\":\""
@@ -1778,7 +1785,8 @@ std::string OpenAiFormatter::format_chat_usage_chunk(const std::string& id, cons
     }
     ss << "}],\"usage\":{\"prompt_tokens\":" << prompt_tokens << ",\"completion_tokens\":" << completion_tokens
        << ",\"total_tokens\":" << (prompt_tokens + completion_tokens)
-       << ",\"completion_tokens_details\":{\"reasoning_tokens\":" << reasoning_tokens << "}}}";
+       << ",\"prompt_tokens_details\":{\"cached_tokens\":" << cached_tokens
+       << "},\"completion_tokens_details\":{\"reasoning_tokens\":" << reasoning_tokens << "}}}";
     return ss.str();
 }
 
@@ -1786,7 +1794,7 @@ std::string OpenAiFormatter::format_responses_object(const std::string& id, cons
                                                      const std::string& content, const std::string& reasoning_content,
                                                      const std::vector<ToolCall>& tool_calls,
                                                      const std::string& finish_reason, int prompt_tokens,
-                                                     int completion_tokens, int reasoning_tokens) {
+                                                     int completion_tokens, int reasoning_tokens, int cached_tokens) {
     json::JsonValue root(std::vector<std::pair<std::string, json::JsonValue>>{});
     root["id"] = id;
     root["object"] = "response";
@@ -1838,6 +1846,9 @@ std::string OpenAiFormatter::format_responses_object(const std::string& id, cons
 
     json::JsonValue usage(std::vector<std::pair<std::string, json::JsonValue>>{});
     usage["input_tokens"] = static_cast<int64_t>(prompt_tokens);
+    json::JsonValue in_details(std::vector<std::pair<std::string, json::JsonValue>>{});
+    in_details["cached_tokens"] = static_cast<int64_t>(cached_tokens);
+    usage["input_tokens_details"] = std::move(in_details);
     usage["output_tokens"] = static_cast<int64_t>(completion_tokens);
     usage["total_tokens"] = static_cast<int64_t>(prompt_tokens + completion_tokens);
     json::JsonValue out_details(std::vector<std::pair<std::string, json::JsonValue>>{});

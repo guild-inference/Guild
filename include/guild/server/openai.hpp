@@ -83,6 +83,9 @@ public:
     const std::string& content() const {
         return content_acc_;
     }
+    const std::string& raw_output() const {
+        return raw_acc_;
+    }
     const std::vector<ToolCall>& tool_calls() const {
         return completed_calls_;
     }
@@ -124,6 +127,7 @@ private:
     bool stream_tools_ = true;
 
     std::string buf_;
+    std::string raw_acc_;
     std::string reasoning_acc_;
     std::string content_acc_;
     std::vector<ToolCall> completed_calls_;
@@ -170,7 +174,8 @@ public:
                                               const std::string& content, const std::string& finish_reason,
                                               int prompt_tokens, int completion_tokens,
                                               const std::string& reasoning_content = "",
-                                              const std::vector<ToolCall>& tool_calls = {}, int reasoning_tokens = 0);
+                                              const std::vector<ToolCall>& tool_calls = {}, int reasoning_tokens = 0,
+                                              int cached_tokens = 0);
 
     static std::string format_chat_chunk(const std::string& id, const std::string& model, int64_t created,
                                          const std::string& delta_role, const std::string& delta_content,
@@ -183,13 +188,13 @@ public:
 
     static std::string format_chat_usage_chunk(const std::string& id, const std::string& model, int64_t created,
                                                const std::string& finish_reason, int prompt_tokens,
-                                               int completion_tokens, int reasoning_tokens = 0);
+                                               int completion_tokens, int reasoning_tokens = 0, int cached_tokens = 0);
 
     static std::string format_responses_object(const std::string& id, const std::string& model, int64_t created,
                                                const std::string& content, const std::string& reasoning_content,
                                                const std::vector<ToolCall>& tool_calls,
                                                const std::string& finish_reason, int prompt_tokens,
-                                               int completion_tokens, int reasoning_tokens = 0);
+                                               int completion_tokens, int reasoning_tokens = 0, int cached_tokens = 0);
 
     static std::string format_completion(const std::string& id, const std::string& model, int64_t created,
                                          const std::string& text, const std::string& finish_reason, int prompt_tokens,
