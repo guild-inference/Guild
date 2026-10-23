@@ -56,9 +56,15 @@ bool MockInferenceEngine::generate_stream(const InferenceRequest& req, StreamCal
     result.finish_reason = "stop";
 
     // Split script into words/tokens
+    std::string active_script;
+    {
+        std::lock_guard<std::mutex> lock(telem_mutex_);
+        last_prompt_ = req.prompt;
+        active_script = script_;
+    }
     std::vector<std::string> words;
     std::string current;
-    for (char c : script_) {
+    for (char c : active_script) {
         if (c == ' ' || c == '\n') {
             if (!current.empty()) {
                 words.push_back(current);

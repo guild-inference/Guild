@@ -554,13 +554,31 @@ void Server::handle_client(int client_fd) {
         return;
     }
 
-    if (req.method == "POST" && req.path == "/v1/chat/completions") {
+    if (req.method == "GET" && req.path.rfind("/v1/models/", 0) == 0) {
+        std::string requested_id = req.path.substr(11);
+        std::string active_id = engine_ ? engine_->model_name() : "Qwen3.8-Flash-Next";
+        if (requested_id == active_id) {
+            send_response(client_fd, HttpResponse::json(200, OpenAiFormatter::format_model(active_id)));
+        } else {
+            send_response(client_fd, HttpResponse::json(404, OpenAiFormatter::format_error(
+                                                                 "The model '" + requested_id + "' does not exist",
+                                                                 "invalid_request_error", "model", "model_not_found")));
+        }
+        return;
+    }
+
+    if (req.method == "POST" && (req.path == "/v1/chat/completions" || req.path == "/chat/completions")) {
         process_chat_completions(client_fd, req);
         return;
     }
 
-    if (req.method == "POST" && req.path == "/v1/completions") {
+    if (req.method == "POST" && (req.path == "/v1/completions" || req.path == "/completions")) {
         process_completions(client_fd, req);
+        return;
+    }
+
+    if (req.method == "POST" && (req.path == "/v1/responses" || req.path == "/responses")) {
+        process_responses(client_fd, req);
         return;
     }
 
@@ -615,14 +633,18 @@ void Server::process_chat_completions(int client_fd, const HttpRequest& req) {
     inf_req.request_id = OpenAiFormatter::generate_id();
     inf_req.model = chat_req.model.empty() ? engine_->model_name() : chat_req.model;
 
-    if (const auto* tpl = engine_->chat_template(); tpl && tpl->is_loaded()) {
-        std::vector<runtime::ChatMessage> msgs;
-        msgs.reserve(chat_req.messages.size());
-        for (const auto& m_item : chat_req.messages) {
-            msgs.push_back({m_item.role, m_item.content});
-        }
+    runtime::ChatTemplateOptions tpl_opts;
+    tpl_opts.add_generation_prompt = true;
+    tpl_opts.enable_thinking = chat_req.enable_thinking;
+    tpl_opts.reasoning_effort = chat_req.reasoning_effort;
+    tpl_opts.tools = chat_req.tools;
+    tpl_opts.tool_choice = chat_req.tool_choice;
+
+    const auto* tpl = engine_->chat_template();
+    const bool has_loaded_tpl = (tpl != nullptr && tpl->is_loaded());
+    if (has_loaded_tpl) {
         std::string tpl_err;
-        if (!tpl->render(msgs, true, inf_req.prompt, tpl_err)) {
+        if (!tpl->render(chat_req.messages, tpl_opts, inf_req.prompt, tpl_err)) {
             RequestMetrics m;
             m.method = req.method;
             m.path = req.path;
@@ -637,8 +659,11 @@ void Server::process_chat_completions(int client_fd, const HttpRequest& req) {
             return;
         }
     } else {
-        inf_req.prompt = OpenAiFormatter::render_chatml(chat_req.messages);
+        inf_req.prompt = OpenAiFormatter::render_chatml(chat_req.messages, tpl_opts);
     }
+
+    const bool prompt_opened_think =
+        has_loaded_tpl && chat_req.enable_thinking && (chat_req.reasoning_effort != "none");
 
     std::string enc_err;
     if (!engine_->encode(inf_req.prompt, inf_req.prompt_tokens, enc_err)) {
@@ -665,6 +690,9 @@ void Server::process_chat_completions(int client_fd, const HttpRequest& req) {
     if (chat_req.top_p.has_value()) {
         inf_req.sampling.top_p = chat_req.top_p.value();
     }
+    if (chat_req.top_k.has_value()) {
+        inf_req.sampling.top_k = chat_req.top_k.value();
+    }
     if (chat_req.seed.has_value()) {
         inf_req.sampling.seed = chat_req.seed.value();
     }
@@ -685,6 +713,8 @@ void Server::process_chat_completions(int client_fd, const HttpRequest& req) {
         // initialization/prefill failure must still be an HTTP error response.
         bool stream_started = false;
         bool client_alive = true;
+        OpenAiOutputParser output_parser(prompt_opened_think, chat_req.tools, /*stream_tools=*/true);
+
         std::string first_chunk =
             "data: " +
             OpenAiFormatter::format_chat_chunk(inf_req.request_id, inf_req.model, created, "assistant", "", "") +
@@ -697,18 +727,42 @@ void Server::process_chat_completions(int client_fd, const HttpRequest& req) {
                            send_all(client_fd, first_chunk.data(), first_chunk.size());
             return client_alive;
         };
+
+        auto emit_parsed_events = [&](const std::vector<ParsedOutputEvent>& events) -> bool {
+            for (const auto& ev : events) {
+                std::string chunk_json;
+                if (ev.kind == ParsedEventKind::Reasoning && !ev.text.empty()) {
+                    chunk_json = OpenAiFormatter::format_chat_chunk(inf_req.request_id, inf_req.model, created, "", "",
+                                                                    "", ev.text);
+                } else if (ev.kind == ParsedEventKind::Content && !ev.text.empty()) {
+                    chunk_json =
+                        OpenAiFormatter::format_chat_chunk(inf_req.request_id, inf_req.model, created, "", ev.text, "");
+                } else if (ev.kind == ParsedEventKind::ToolCallStart) {
+                    chunk_json = OpenAiFormatter::format_chat_tool_call_chunk(inf_req.request_id, inf_req.model,
+                                                                              created, ev.tool_index, ev.call.id,
+                                                                              ev.call.function.name, "");
+                } else if (ev.kind == ParsedEventKind::ToolCallArgs && !ev.text.empty()) {
+                    chunk_json = OpenAiFormatter::format_chat_tool_call_chunk(inf_req.request_id, inf_req.model,
+                                                                              created, ev.tool_index, "", "", ev.text);
+                } else {
+                    continue;
+                }
+                std::string chunk_data = "data: " + chunk_json + "\n\n";
+                if (!send_all(client_fd, chunk_data.data(), chunk_data.size())) {
+                    client_alive = false;
+                    return false;
+                }
+            }
+            return true;
+        };
+
         auto stream_cb = [&](const TokenOutput& tok) -> bool {
             if (!start_stream())
                 return false;
-            std::string chunk_data =
-                "data: " +
-                OpenAiFormatter::format_chat_chunk(inf_req.request_id, inf_req.model, created, "", tok.text, "") +
-                "\n\n";
-            if (!send_all(client_fd, chunk_data.data(), chunk_data.size())) {
-                client_alive = false;
-                return false;
-            }
-            return true;
+            if (tok.is_special)
+                return true;
+            auto evs = output_parser.feed(tok.text, true);
+            return emit_parsed_events(evs);
         };
 
         GenerationResult gen_res;
@@ -716,10 +770,21 @@ void Server::process_chat_completions(int client_fd, const HttpRequest& req) {
 
         if (client_alive && ok) {
             start_stream();
-            std::string final_chunk = "data: " +
-                                      OpenAiFormatter::format_chat_chunk(inf_req.request_id, inf_req.model, created, "",
-                                                                         "", gen_res.finish_reason) +
-                                      "\n\n";
+            auto tail_evs = output_parser.finish();
+            emit_parsed_events(tail_evs);
+
+            const std::string effective_finish = (output_parser.has_tool_calls() && gen_res.finish_reason == "stop")
+                                                     ? "tool_calls"
+                                                     : gen_res.finish_reason;
+            std::string final_chunk =
+                "data: " +
+                (chat_req.stream_include_usage
+                     ? OpenAiFormatter::format_chat_usage_chunk(
+                           inf_req.request_id, inf_req.model, created, effective_finish, gen_res.prompt_tokens,
+                           gen_res.completion_tokens, output_parser.reasoning_tokens())
+                     : OpenAiFormatter::format_chat_chunk(inf_req.request_id, inf_req.model, created, "", "",
+                                                          effective_finish)) +
+                "\n\n";
             send_all(client_fd, final_chunk.data(), final_chunk.size());
 
             const char done_msg[] = "data: [DONE]\n\n";
@@ -765,10 +830,25 @@ void Server::process_chat_completions(int client_fd, const HttpRequest& req) {
         GenerationResult gen_res;
         const bool ok = generate_checked(*engine_, inf_req, nullptr, gen_res);
 
+        OpenAiOutputParser output_parser(prompt_opened_think, chat_req.tools, /*stream_tools=*/false);
+        if (ok) {
+            if (!gen_res.tokens.empty()) {
+                for (const auto& tok : gen_res.tokens) {
+                    if (!tok.is_special) {
+                        output_parser.feed(tok.text, true);
+                    }
+                }
+            } else {
+                output_parser.feed(gen_res.text, true);
+            }
+            output_parser.finish();
+        }
+
         std::string json_res =
-            ok ? OpenAiFormatter::format_chat_completion(inf_req.request_id, inf_req.model, created, gen_res.text,
-                                                         gen_res.finish_reason, gen_res.prompt_tokens,
-                                                         gen_res.completion_tokens)
+            ok ? OpenAiFormatter::format_chat_completion(
+                     inf_req.request_id, inf_req.model, created, output_parser.content(), gen_res.finish_reason,
+                     gen_res.prompt_tokens, gen_res.completion_tokens, output_parser.reasoning_content(),
+                     output_parser.tool_calls(), output_parser.reasoning_tokens())
                : OpenAiFormatter::format_error(gen_res.error_message, "server_error", "", "inference_failed");
 
         send_response(client_fd, HttpResponse::json(ok ? 200 : 500, json_res));
@@ -799,6 +879,195 @@ void Server::process_chat_completions(int client_fd, const HttpRequest& req) {
 
         telemetry_.record_request_finish(m);
         log_request(m);
+    }
+}
+
+void Server::process_responses(int client_fd, const HttpRequest& req) {
+    auto start_time = std::chrono::steady_clock::now();
+    telemetry_.record_request_start();
+
+    ResponsesRequest resp_req;
+    std::string err_type, err_param, err_code, err_msg;
+    if (!OpenAiParser::parse_responses_request(req.body, resp_req, err_type, err_param, err_code, err_msg)) {
+        RequestMetrics m;
+        m.method = req.method;
+        m.path = req.path;
+        m.status_code = 400;
+        m.outcome = "error";
+        m.duration_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - start_time).count();
+        send_response(client_fd,
+                      HttpResponse::json(400, OpenAiFormatter::format_error(err_msg, err_type, err_param, err_code)));
+        telemetry_.record_request_finish(m);
+        log_request(m);
+        return;
+    }
+
+    if (!engine_ || !engine_->is_ready()) {
+        send_response(client_fd,
+                      HttpResponse::json(503, OpenAiFormatter::format_error("Engine not ready", "server_error", "",
+                                                                            "engine_not_ready")));
+        return;
+    }
+
+    const auto& chat_req = resp_req.chat;
+    InferenceRequest inf_req;
+    inf_req.request_id = OpenAiFormatter::generate_id("resp_");
+    inf_req.model = chat_req.model.empty() ? engine_->model_name() : chat_req.model;
+
+    runtime::ChatTemplateOptions tpl_opts;
+    tpl_opts.add_generation_prompt = true;
+    tpl_opts.enable_thinking = chat_req.enable_thinking;
+    tpl_opts.reasoning_effort = chat_req.reasoning_effort;
+    tpl_opts.tools = chat_req.tools;
+    tpl_opts.tool_choice = chat_req.tool_choice;
+
+    const auto* tpl = engine_->chat_template();
+    const bool has_loaded_tpl = (tpl != nullptr && tpl->is_loaded());
+    if (has_loaded_tpl) {
+        std::string tpl_err;
+        if (!tpl->render(chat_req.messages, tpl_opts, inf_req.prompt, tpl_err)) {
+            send_response(client_fd,
+                          HttpResponse::json(400, OpenAiFormatter::format_error(tpl_err, "invalid_request_error",
+                                                                                "input", "template_error")));
+            return;
+        }
+    } else {
+        inf_req.prompt = OpenAiFormatter::render_chatml(chat_req.messages, tpl_opts);
+    }
+
+    const bool prompt_opened_think =
+        has_loaded_tpl && chat_req.enable_thinking && (chat_req.reasoning_effort != "none");
+
+    std::string enc_err;
+    if (!engine_->encode(inf_req.prompt, inf_req.prompt_tokens, enc_err)) {
+        send_response(client_fd,
+                      HttpResponse::json(400, OpenAiFormatter::format_error(enc_err, "invalid_request_error", "input",
+                                                                            "tokenization_failed")));
+        return;
+    }
+
+    if (chat_req.max_tokens.has_value())
+        inf_req.max_tokens = chat_req.max_tokens.value();
+    if (chat_req.temperature.has_value())
+        inf_req.sampling.temperature = chat_req.temperature.value();
+    if (chat_req.top_p.has_value())
+        inf_req.sampling.top_p = chat_req.top_p.value();
+
+    int64_t created =
+        std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+
+    if (chat_req.stream) {
+        const char sse_header[] = "HTTP/1.1 200 OK\r\n"
+                                  "Content-Type: text/event-stream; charset=utf-8\r\n"
+                                  "Cache-Control: no-cache\r\n"
+                                  "Connection: keep-alive\r\n"
+                                  "Access-Control-Allow-Origin: *\r\n\r\n";
+
+        bool stream_started = false;
+        bool client_alive = true;
+        OpenAiOutputParser output_parser(prompt_opened_think, chat_req.tools, /*stream_tools=*/true);
+
+        auto send_sse_event = [&](const std::string& event_name, const std::string& data_json) -> bool {
+            std::string pkt = "event: " + event_name + "\ndata: " + data_json + "\n\n";
+            if (!send_all(client_fd, pkt.data(), pkt.size())) {
+                client_alive = false;
+                return false;
+            }
+            return true;
+        };
+
+        auto start_stream = [&]() {
+            if (stream_started)
+                return client_alive;
+            stream_started = true;
+            if (!send_all(client_fd, sse_header, sizeof(sse_header) - 1)) {
+                client_alive = false;
+                return false;
+            }
+            json::JsonValue created_ev(std::vector<std::pair<std::string, json::JsonValue>>{});
+            created_ev["type"] = "response.created";
+            json::JsonValue r_obj(std::vector<std::pair<std::string, json::JsonValue>>{});
+            r_obj["id"] = inf_req.request_id;
+            r_obj["object"] = "response";
+            r_obj["status"] = "in_progress";
+            r_obj["model"] = inf_req.model;
+            created_ev["response"] = std::move(r_obj);
+            return send_sse_event("response.created", created_ev.dump());
+        };
+
+        auto emit_events = [&](const std::vector<ParsedOutputEvent>& evs) -> bool {
+            for (const auto& ev : evs) {
+                if (ev.kind == ParsedEventKind::Reasoning && !ev.text.empty()) {
+                    json::JsonValue d(std::vector<std::pair<std::string, json::JsonValue>>{});
+                    d["type"] = "response.reasoning_text.delta";
+                    d["delta"] = ev.text;
+                    if (!send_sse_event("response.reasoning_text.delta", d.dump()))
+                        return false;
+                } else if (ev.kind == ParsedEventKind::Content && !ev.text.empty()) {
+                    json::JsonValue d(std::vector<std::pair<std::string, json::JsonValue>>{});
+                    d["type"] = "response.output_text.delta";
+                    d["delta"] = ev.text;
+                    if (!send_sse_event("response.output_text.delta", d.dump()))
+                        return false;
+                } else if (ev.kind == ParsedEventKind::ToolCallArgs && !ev.text.empty()) {
+                    json::JsonValue d(std::vector<std::pair<std::string, json::JsonValue>>{});
+                    d["type"] = "response.function_call_arguments.delta";
+                    d["call_id"] = ev.call.id;
+                    d["delta"] = ev.text;
+                    if (!send_sse_event("response.function_call_arguments.delta", d.dump()))
+                        return false;
+                }
+            }
+            return true;
+        };
+
+        auto stream_cb = [&](const TokenOutput& tok) -> bool {
+            if (!start_stream())
+                return false;
+            if (tok.is_special)
+                return true;
+            return emit_events(output_parser.feed(tok.text, true));
+        };
+
+        GenerationResult gen_res;
+        bool ok = generate_checked(*engine_, inf_req, stream_cb, gen_res);
+        if (client_alive && ok) {
+            start_stream();
+            emit_events(output_parser.finish());
+            std::string final_resp = OpenAiFormatter::format_responses_object(
+                inf_req.request_id, inf_req.model, created, output_parser.content(), output_parser.reasoning_content(),
+                output_parser.tool_calls(), gen_res.finish_reason, gen_res.prompt_tokens, gen_res.completion_tokens,
+                output_parser.reasoning_tokens());
+            json::JsonValue parsed_resp;
+            std::string perr;
+            json::JsonValue::parse(final_resp, parsed_resp, perr);
+            json::JsonValue comp_ev(std::vector<std::pair<std::string, json::JsonValue>>{});
+            comp_ev["type"] = "response.completed";
+            comp_ev["response"] = std::move(parsed_resp);
+            send_sse_event("response.completed", comp_ev.dump());
+        } else if (client_alive && !stream_started) {
+            send_response(client_fd,
+                          HttpResponse::json(500, OpenAiFormatter::format_error(gen_res.error_message, "server_error",
+                                                                                "", "inference_failed")));
+        }
+    } else {
+        GenerationResult gen_res;
+        const bool ok = generate_checked(*engine_, inf_req, nullptr, gen_res);
+        OpenAiOutputParser output_parser(prompt_opened_think, chat_req.tools, /*stream_tools=*/false);
+        if (ok) {
+            for (const auto& tok : gen_res.tokens) {
+                if (!tok.is_special)
+                    output_parser.feed(tok.text, true);
+            }
+            output_parser.finish();
+        }
+        std::string json_res =
+            ok ? OpenAiFormatter::format_responses_object(
+                     inf_req.request_id, inf_req.model, created, output_parser.content(),
+                     output_parser.reasoning_content(), output_parser.tool_calls(), gen_res.finish_reason,
+                     gen_res.prompt_tokens, gen_res.completion_tokens, output_parser.reasoning_tokens())
+               : OpenAiFormatter::format_error(gen_res.error_message, "server_error", "", "inference_failed");
+        send_response(client_fd, HttpResponse::json(ok ? 200 : 500, json_res));
     }
 }
 

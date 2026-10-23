@@ -124,10 +124,15 @@ public:
     bool encode(const std::string& text, std::vector<int32_t>& tokens, std::string& err) override;
 
     void set_script(const std::string& s) {
+        std::lock_guard<std::mutex> lock(telem_mutex_);
         script_ = s;
     }
     void set_delay_ms(int ms) {
         delay_ms_.store(ms, std::memory_order_relaxed);
+    }
+    std::string last_prompt() const {
+        std::lock_guard<std::mutex> lock(telem_mutex_);
+        return last_prompt_;
     }
     runtime::RuntimeTelemetry last_telemetry() const override {
         std::lock_guard<std::mutex> lock(telem_mutex_);
@@ -138,6 +143,7 @@ private:
     std::string model_;
     int64_t max_context_;
     std::string script_;
+    std::string last_prompt_;
     std::atomic<int> delay_ms_{0};
     std::atomic<bool> cancel_requested_{false};
     mutable std::mutex telem_mutex_;

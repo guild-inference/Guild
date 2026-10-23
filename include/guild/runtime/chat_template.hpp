@@ -5,9 +5,44 @@
 
 namespace guild::runtime {
 
+struct ToolCallFunction {
+    std::string name;
+    std::string arguments_json = "{}";
+};
+
+struct ToolCall {
+    std::string id;
+    std::string type = "function";
+    ToolCallFunction function;
+};
+
+struct ToolDefinition {
+    std::string type = "function";
+    std::string name;
+    std::string description;
+    std::string parameters_json = "{}";
+    std::string raw_json;
+};
+
 struct ChatMessage {
     std::string role;
     std::string content;
+    std::string reasoning_content;
+    std::vector<ToolCall> tool_calls;
+    std::string tool_call_id;
+    std::string name;
+
+    ChatMessage() = default;
+    ChatMessage(std::string r, std::string c) : role(std::move(r)), content(std::move(c)) {
+    }
+};
+
+struct ChatTemplateOptions {
+    bool add_generation_prompt = true;
+    bool enable_thinking = true;
+    std::string reasoning_effort = "xhigh";
+    std::vector<ToolDefinition> tools;
+    std::string tool_choice = "auto"; // "auto", "none", "required", or function name
 };
 
 enum class TemplateType {
@@ -39,16 +74,20 @@ public:
     bool render(const std::vector<ChatMessage>& messages, bool add_generation_prompt, std::string& rendered,
                 std::string& err_msg) const;
 
+    // Renders messages with full tool definitions, tool_choice, and reasoning controls
+    bool render(const std::vector<ChatMessage>& messages, const ChatTemplateOptions& options, std::string& rendered,
+                std::string& err_msg) const;
+
 private:
     bool loaded_ = false;
     TemplateType type_ = TemplateType::Unknown;
     std::string source_;
 
-    bool render_qwen(const std::vector<ChatMessage>& messages, bool add_generation_prompt, std::string& rendered,
-                     std::string& err_msg) const;
+    bool render_qwen(const std::vector<ChatMessage>& messages, const ChatTemplateOptions& options,
+                     std::string& rendered, std::string& err_msg) const;
 
-    bool render_ornith(const std::vector<ChatMessage>& messages, bool add_generation_prompt, std::string& rendered,
-                       std::string& err_msg) const;
+    bool render_ornith(const std::vector<ChatMessage>& messages, const ChatTemplateOptions& options,
+                       std::string& rendered, std::string& err_msg) const;
 };
 
 } // namespace guild::runtime

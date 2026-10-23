@@ -267,6 +267,8 @@ def openai_to_messages(req: dict) -> tuple[list[dict], list[dict] | None, dict]:
         out = {"role": role, "content": _parts_of(m.get("content")) if role in ("user", "tool", "assistant") else _text_of(m.get("content"))}
         if m.get("reasoning_content"):
             out["reasoning_content"] = m["reasoning_content"]
+        elif isinstance(m.get("reasoning"), str) and m["reasoning"]:
+            out["reasoning_content"] = m["reasoning"]
         if m.get("tool_calls"):
             calls = []
             for c in _object_list(m["tool_calls"], "tool_calls"):
@@ -281,10 +283,21 @@ def openai_to_messages(req: dict) -> tuple[list[dict], list[dict] | None, dict]:
         messages.append(out)
     tools = [t.get("function", t) if t.get("type") == "function" else t
              for t in _tool_list(req.get("tools"), "function")] or None
+    tc = req.get("tool_choice")
+    if tc == "none":
+        tools = None
+    elif isinstance(tc, dict):
+        tc_name = (tc.get("function") or {}).get("name") if isinstance(tc.get("function"), dict) else tc.get("name")
+        if tc_name and tools:
+            filtered = [t for t in tools if t.get("name") == tc_name]
+            if filtered:
+                tools = filtered
     kwargs = {}
     # OpenAI Chat Completions: "reasoning_effort"; Responses style: "reasoning": {"effort": ...}
     reasoning = req.get("reasoning") if isinstance(req.get("reasoning"), dict) else {}
     kwargs.update(effort_kwargs(req.get("reasoning_effort") or reasoning.get("effort")))
+    if req.get("enable_thinking") is False:
+        kwargs = {"enable_thinking": False}
     # the vLLM / llama.cpp convention: {"chat_template_kwargs": {"enable_thinking": false, "reasoning_effort": "low"}}
     for k, v in (req.get("chat_template_kwargs") or {}).items():
         if k == "enable_thinking" and not v:

@@ -80,6 +80,7 @@ private:
 
     void process_chat_completions(int client_fd, const HttpRequest& req);
     void process_completions(int client_fd, const HttpRequest& req);
+    void process_responses(int client_fd, const HttpRequest& req);
     void log_request(const RequestMetrics& m);
 };
 

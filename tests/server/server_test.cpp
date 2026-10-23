@@ -609,6 +609,335 @@ int main() {
         std::cout << "  -> PASSED\n";
     }
 
+    // -------------------------------------------------------------------------
+    // Test 16: Reasoning separation (<think>...</think>), reasoning_effort & usage details
+    // -------------------------------------------------------------------------
+    std::cout << "[server_test] Test 16: OpenAI reasoning_content separation (non-stream & SSE stream)\n";
+    {
+        auto think_engine = std::make_shared<guild::server::MockInferenceEngine>(
+            "Qwen3.8-Flash-Next", 262144,
+            "<think>\nLet me analyze the user's question carefully.\nStep 1: check parity.\n</think>\n\nThe final "
+            "verified answer is 42.");
+        guild::server::Server think_server(think_engine, opts);
+        CHECK(think_server.start());
+        const int tport = think_server.bound_port();
+
+        // Non-streaming request with reasoning_effort
+        std::string req_body = R"({
+            "model": "Qwen3.8-Flash-Next",
+            "messages": [{"role": "user", "content": "What is the answer?"}],
+            "reasoning_effort": "low",
+            "stream": false
+        })";
+        auto resp =
+            send_http_request(tport, "POST", "/v1/chat/completions", req_body, {{"Content-Type", "application/json"}});
+        CHECK(resp.status_code == 200);
+
+        guild::server::json::JsonValue root;
+        std::string err;
+        CHECK(guild::server::json::JsonValue::parse(resp.body, root, err));
+        const auto& msg = root["choices"][0]["message"];
+        CHECK(msg["role"].as_string() == "assistant");
+        CHECK(msg["reasoning_content"].as_string() ==
+              "Let me analyze the user's question carefully.\nStep 1: check parity.");
+        CHECK(msg["content"].as_string() == "The final verified answer is 42.");
+        CHECK(root["choices"][0]["finish_reason"].as_string() == "stop");
+        CHECK(root["usage"]["completion_tokens_details"]["reasoning_tokens"].as_int() > 0);
+        CHECK(think_engine->last_prompt().find("Reasoning effort is set to low.") != std::string::npos);
+
+        // Streaming SSE request: verify reasoning_content deltas and content deltas never leak <think> or </think>
+        std::string stream_body = R"({
+            "model": "Qwen3.8-Flash-Next",
+            "messages": [{"role": "user", "content": "What is the answer?"}],
+            "stream": true
+        })";
+        auto sresp = send_http_request(tport, "POST", "/v1/chat/completions", stream_body,
+                                       {{"Content-Type", "application/json"}});
+        CHECK(sresp.status_code == 200);
+        CHECK(sresp.body.find("<think>") == std::string::npos);
+        CHECK(sresp.body.find("</think>") == std::string::npos);
+        CHECK(sresp.body.find("\"reasoning_content\":") != std::string::npos);
+        CHECK(sresp.body.find("\"reasoning_tokens\":") != std::string::npos);
+
+        std::string streamed_reasoning, streamed_content;
+        std::istringstream sse_lines(sresp.body);
+        std::string sline;
+        while (std::getline(sse_lines, sline)) {
+            if (!sline.empty() && sline.back() == '\r')
+                sline.pop_back();
+            if (sline.rfind("data: {", 0) == 0) {
+                guild::server::json::JsonValue chunk;
+                if (guild::server::json::JsonValue::parse(sline.substr(6), chunk, err) && chunk["choices"].size() > 0) {
+                    const auto& delta = chunk["choices"][0]["delta"];
+                    if (delta.contains("reasoning_content") && delta["reasoning_content"].is_string()) {
+                        streamed_reasoning += delta["reasoning_content"].as_string();
+                    }
+                    if (delta.contains("content") && delta["content"].is_string()) {
+                        streamed_content += delta["content"].as_string();
+                    }
+                }
+            }
+        }
+        CHECK(streamed_reasoning == "Let me analyze the user's question carefully.\nStep 1: check parity.\n");
+        CHECK(streamed_content == "The final verified answer is 42.");
+
+        think_server.stop();
+        std::cout << "  -> PASSED\n";
+    }
+
+    // -------------------------------------------------------------------------
+    // Test 17: Tool registration, XML tool_call parsing, schema typing & streaming tool_calls
+    // -------------------------------------------------------------------------
+    std::cout << "[server_test] Test 17: OpenAI tool registration and tool_calls (non-stream & SSE stream)\n";
+    {
+        auto tool_engine = std::make_shared<guild::server::MockInferenceEngine>(
+            "Qwen3.8-Flash-Next", 262144,
+            "<think>\nThe user asked for weather in San Francisco for 3 days. Calling get_weather.\n</think>\n\n"
+            "<tool_call>\n"
+            "<function=get_weather>\n"
+            "<parameter=location>\n"
+            "San Francisco, CA\n"
+            "</parameter>\n"
+            "<parameter=days>\n"
+            "3\n"
+            "</parameter>\n"
+            "<parameter=include_forecast>\n"
+            "true\n"
+            "</parameter>\n"
+            "</function>\n"
+            "</tool_call>");
+        guild::server::Server tool_server(tool_engine, opts);
+        CHECK(tool_server.start());
+        const int tport = tool_server.bound_port();
+
+        std::string tool_req = R"({
+            "model": "Qwen3.8-Flash-Next",
+            "messages": [{"role": "user", "content": "What is the 3-day weather forecast in San Francisco?"}],
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "get_weather",
+                        "description": "Get weather forecast for a city",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "location": {"type": "string"},
+                                "days": {"type": "integer"},
+                                "include_forecast": {"type": "boolean"}
+                            },
+                            "required": ["location"]
+                        }
+                    }
+                }
+            ],
+            "tool_choice": "auto",
+            "stream": false
+        })";
+
+        auto resp =
+            send_http_request(tport, "POST", "/v1/chat/completions", tool_req, {{"Content-Type", "application/json"}});
+        CHECK(resp.status_code == 200);
+
+        // Verify <tools> block was injected into the engine prompt
+        const std::string rendered_prompt = tool_engine->last_prompt();
+        CHECK(rendered_prompt.find("<tools>") != std::string::npos);
+        CHECK(rendered_prompt.find("\"name\":\"get_weather\"") != std::string::npos);
+
+        guild::server::json::JsonValue root;
+        std::string err;
+        CHECK(guild::server::json::JsonValue::parse(resp.body, root, err));
+        CHECK(root["choices"][0]["finish_reason"].as_string() == "tool_calls");
+
+        const auto& msg = root["choices"][0]["message"];
+        CHECK(msg["content"].is_null());
+        CHECK(msg["reasoning_content"].as_string() ==
+              "The user asked for weather in San Francisco for 3 days. Calling get_weather.");
+        CHECK(msg["tool_calls"].is_array());
+        CHECK(msg["tool_calls"].size() == 1);
+        CHECK(msg["tool_calls"][0]["id"].as_string().rfind("call_", 0) == 0);
+        CHECK(msg["tool_calls"][0]["type"].as_string() == "function");
+        CHECK(msg["tool_calls"][0]["function"]["name"].as_string() == "get_weather");
+
+        guild::server::json::JsonValue parsed_args;
+        CHECK(guild::server::json::JsonValue::parse(msg["tool_calls"][0]["function"]["arguments"].as_string(),
+                                                    parsed_args, err));
+        CHECK(parsed_args["location"].as_string() == "San Francisco, CA");
+        CHECK(parsed_args["days"].as_int() == 3);
+        CHECK(parsed_args["include_forecast"].as_bool() == true);
+
+        // Streaming SSE tool_calls test
+        std::string stream_tool_req = R"({
+            "model": "Qwen3.8-Flash-Next",
+            "messages": [{"role": "user", "content": "What is the 3-day weather forecast in San Francisco?"}],
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "get_weather",
+                        "description": "Get weather forecast for a city",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "location": {"type": "string"},
+                                "days": {"type": "integer"},
+                                "include_forecast": {"type": "boolean"}
+                            }
+                        }
+                    }
+                }
+            ],
+            "stream": true
+        })";
+        auto sresp = send_http_request(tport, "POST", "/v1/chat/completions", stream_tool_req,
+                                       {{"Content-Type", "application/json"}});
+        CHECK(sresp.status_code == 200);
+        CHECK(sresp.body.find("\"tool_calls\":[{\"index\":0,\"id\":\"call_") != std::string::npos);
+        CHECK(sresp.body.find("\"name\":\"get_weather\"") != std::string::npos);
+        CHECK(sresp.body.find("\"finish_reason\":\"tool_calls\"") != std::string::npos);
+
+        // Reconstruct streamed tool call arguments from SSE chunks
+        std::string streamed_args;
+        std::istringstream sse_stream(sresp.body);
+        std::string line;
+        while (std::getline(sse_stream, line)) {
+            if (!line.empty() && line.back() == '\r')
+                line.pop_back();
+            if (line.rfind("data: {", 0) == 0) {
+                guild::server::json::JsonValue chunk;
+                if (guild::server::json::JsonValue::parse(line.substr(6), chunk, err) && chunk["choices"].size() > 0) {
+                    const auto& delta = chunk["choices"][0]["delta"];
+                    if (delta.contains("tool_calls") && delta["tool_calls"].is_array() &&
+                        delta["tool_calls"].size() > 0) {
+                        const auto& fn = delta["tool_calls"][0]["function"];
+                        if (fn.contains("arguments") && fn["arguments"].is_string()) {
+                            streamed_args += fn["arguments"].as_string();
+                        }
+                    }
+                }
+            }
+        }
+        guild::server::json::JsonValue reconstructed_args;
+        CHECK(guild::server::json::JsonValue::parse(streamed_args, reconstructed_args, err));
+        CHECK(reconstructed_args["location"].as_string() == "San Francisco, CA");
+        CHECK(reconstructed_args["days"].as_int() == 3);
+        CHECK(reconstructed_args["include_forecast"].as_bool() == true);
+
+        tool_server.stop();
+        std::cout << "  -> PASSED\n";
+    }
+
+    // -------------------------------------------------------------------------
+    // Test 18: Multi-turn conversation with assistant tool_calls & role:"tool" responses
+    // -------------------------------------------------------------------------
+    std::cout << "[server_test] Test 18: Multi-turn assistant tool_calls & tool response ordering\n";
+    {
+        auto multi_engine = std::make_shared<guild::server::MockInferenceEngine>(
+            "Qwen3.8-Flash-Next", 262144, "<think>\nBoth tool results arrived.\n</think>\n\nSF is 18C and NYC is 22C.");
+        guild::server::Server multi_server(multi_engine, opts);
+        CHECK(multi_server.start());
+        const int mport = multi_server.bound_port();
+
+        std::string followup_req = R"({
+            "model": "Qwen3.8-Flash-Next",
+            "messages": [
+                {"role": "user", "content": "Compare weather in SF and NYC"},
+                {
+                    "role": "assistant",
+                    "content": null,
+                    "reasoning_content": "Calling get_weather for SF and NYC.",
+                    "tool_calls": [
+                        {
+                            "id": "call_sf_1",
+                            "type": "function",
+                            "function": {"name": "get_weather", "arguments": "{\"location\":\"SF\"}"}
+                        },
+                        {
+                            "id": "call_nyc_2",
+                            "type": "function",
+                            "function": {"name": "get_weather", "arguments": "{\"location\":\"NYC\"}"}
+                        }
+                    ]
+                },
+                {"role": "tool", "tool_call_id": "call_nyc_2", "content": "{\"temp_c\": 22}"},
+                {"role": "tool", "tool_call_id": "call_sf_1", "content": "{\"temp_c\": 18}"}
+            ]
+        })";
+
+        auto resp = send_http_request(mport, "POST", "/v1/chat/completions", followup_req,
+                                      {{"Content-Type", "application/json"}});
+        CHECK(resp.status_code == 200);
+
+        const std::string prompt = multi_engine->last_prompt();
+        CHECK(prompt.find("<function=get_weather>\n<parameter=location>\nSF\n</parameter>\n</function>") !=
+              std::string::npos);
+        CHECK(prompt.find("<tool_response>\n{\"temp_c\": 18}\n</tool_response>") != std::string::npos);
+        CHECK(prompt.find("<tool_response>\n{\"temp_c\": 22}\n</tool_response>") != std::string::npos);
+        // Verify tool responses were ordered to match [call_sf_1, call_nyc_2]
+        CHECK(prompt.find("{\"temp_c\": 18}") < prompt.find("{\"temp_c\": 22}"));
+
+        multi_server.stop();
+        std::cout << "  -> PASSED\n";
+    }
+
+    // -------------------------------------------------------------------------
+    // Test 19: OpenAI Responses API (POST /v1/responses) & GET /v1/models/{id}
+    // -------------------------------------------------------------------------
+    std::cout << "[server_test] Test 19: POST /v1/responses and GET /v1/models/{id}\n";
+    {
+        auto resp_engine = std::make_shared<guild::server::MockInferenceEngine>(
+            "Qwen3.8-Flash-Next", 262144,
+            "<think>\nChecking status via tool.\n</think>\n\n"
+            "<tool_call>\n<function=check_host>\n<parameter=host>\n192.168.4.22\n</parameter>\n</function>\n</"
+            "tool_call>");
+        guild::server::Server resp_server(resp_engine, opts);
+        CHECK(resp_server.start());
+        const int rport = resp_server.bound_port();
+
+        // Single model lookup
+        auto m_ok = send_http_request(rport, "GET", "/v1/models/Qwen3.8-Flash-Next");
+        CHECK(m_ok.status_code == 200);
+        auto m_404 = send_http_request(rport, "GET", "/v1/models/unknown-model");
+        CHECK(m_404.status_code == 404);
+
+        // Responses API with reasoning + function_call output
+        std::string r_body = R"({
+            "model": "Qwen3.8-Flash-Next",
+            "instructions": "You are a systems assistant.",
+            "input": "Check host 192.168.4.22",
+            "reasoning": {"effort": "high"},
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "check_host",
+                    "description": "Check a host IP",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"host": {"type": "string"}}
+                    }
+                }
+            ]
+        })";
+        auto r_resp = send_http_request(rport, "POST", "/v1/responses", r_body, {{"Content-Type", "application/json"}});
+        CHECK(r_resp.status_code == 200);
+
+        guild::server::json::JsonValue root;
+        std::string err;
+        CHECK(guild::server::json::JsonValue::parse(r_resp.body, root, err));
+        CHECK(root["object"].as_string() == "response");
+        CHECK(root["status"].as_string() == "completed");
+        CHECK(root["output"].is_array());
+        CHECK(root["output"].size() == 2);
+        CHECK(root["output"][0]["type"].as_string() == "reasoning");
+        CHECK(root["output"][0]["content"][0]["text"].as_string() == "Checking status via tool.");
+        CHECK(root["output"][1]["type"].as_string() == "function_call");
+        CHECK(root["output"][1]["name"].as_string() == "check_host");
+        CHECK(root["output"][1]["arguments"].as_string() == "{\"host\":\"192.168.4.22\"}");
+
+        resp_server.stop();
+        std::cout << "  -> PASSED\n";
+    }
+
     std::cout << "\n[server_test] lifecycle, success and failure checks PASSED (Release-active)\n";
     return 0;
 }

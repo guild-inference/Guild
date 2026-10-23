@@ -508,7 +508,7 @@ bool GuildSession::generate(const GenerationRequest& req, TokenStreamCallback on
     }
 
     std::string text_accum;
-    auto decoder = m_impl->tokenizer->create_incremental_decoder(true);
+    auto decoder = m_impl->tokenizer->create_incremental_decoder(false);
 
     spec::CandidateSource cur_source = spec::CandidateSource::Normal;
     int cur_proposed_k = 0;
@@ -604,12 +604,12 @@ bool GuildSession::generate(const GenerationRequest& req, TokenStreamCallback on
             need_lookup || need_retrieval || (impl_->retrieval && impl_->retrieval->corpus_size() > 0);
         for (int i = 0; i <= a && produced_n < req.max_new_tokens && !eos; ++i) {
             int32_t tid = outv[static_cast<size_t>(i)];
-            std::string tok_str = decoder->add(tid);
-            text_accum += tok_str;
 
-            // Check EOS
+            // Check EOS before decoding so EOS control tokens (<|im_end|>, <|endoftext|>) are not emitted as text
             eos = std::find(m_impl->config.eos_token_ids.begin(), m_impl->config.eos_token_ids.end(),
                             static_cast<int64_t>(tid)) != m_impl->config.eos_token_ids.end();
+            std::string tok_str = eos ? "" : decoder->add(tid);
+            text_accum += tok_str;
 
             // Check custom stop sequence
             for (const auto& stop_word : req.stop) {
