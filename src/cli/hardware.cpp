@@ -4,12 +4,27 @@
 #include "guild/kernels/cpu/expert_layout.hpp"
 #include "guild/platform/device_policy.hpp"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <set>
 #include <sstream>
 #include <string>
+#include <thread>
+#include <vector>
+
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <intrin.h>
+#include <windows.h>
+#endif
 
 #if defined(GUILD_ENABLE_CUDA)
 #include <cuda_runtime.h>
@@ -27,6 +42,64 @@ std::string trim(const std::string& str) {
     return str.substr(first, (last - first + 1));
 }
 
+#if defined(_WIN32)
+void probe_windows_cpu_and_ram(HardwareInfo& hw) {
+    int cpuInfo[4] = {0, 0, 0, 0};
+    __cpuid(cpuInfo, 0x80000000);
+    unsigned int nExIds = static_cast<unsigned int>(cpuInfo[0]);
+    char brand[64] = {0};
+    if (nExIds >= 0x80000004) {
+        __cpuid(reinterpret_cast<int*>(brand), 0x80000002);
+        __cpuid(reinterpret_cast<int*>(brand + 16), 0x80000003);
+        __cpuid(reinterpret_cast<int*>(brand + 32), 0x80000004);
+        hw.cpu_model = trim(std::string(brand));
+    }
+
+    SYSTEM_INFO sysInfo{};
+    GetSystemInfo(&sysInfo);
+    hw.cpu_logical_threads = static_cast<int>(sysInfo.dwNumberOfProcessors);
+    if (hw.cpu_logical_threads <= 0) {
+        hw.cpu_logical_threads = static_cast<int>(std::max(1u, std::thread::hardware_concurrency()));
+    }
+
+    DWORD len = 0;
+    GetLogicalProcessorInformationEx(RelationAll, nullptr, &len);
+    if (len > 0) {
+        std::vector<uint8_t> buffer(len);
+        if (GetLogicalProcessorInformationEx(
+                RelationAll, reinterpret_cast<PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX>(buffer.data()), &len)) {
+            int phys_cores = 0;
+            int packages = 0;
+            size_t offset = 0;
+            while (offset < len) {
+                auto* info = reinterpret_cast<PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX>(buffer.data() + offset);
+                if (info->Size == 0)
+                    break;
+                if (info->Relationship == RelationProcessorCore)
+                    ++phys_cores;
+                else if (info->Relationship == RelationProcessorPackage)
+                    ++packages;
+                offset += info->Size;
+            }
+            if (phys_cores > 0)
+                hw.cpu_physical_cores = phys_cores;
+            if (packages > 0)
+                hw.cpu_sockets = packages;
+        }
+    }
+    if (hw.cpu_physical_cores <= 0)
+        hw.cpu_physical_cores = hw.cpu_logical_threads;
+
+    MEMORYSTATUSEX memStatus{};
+    memStatus.dwLength = sizeof(memStatus);
+    if (GlobalMemoryStatusEx(&memStatus)) {
+        hw.ram_total_bytes = static_cast<uint64_t>(memStatus.ullTotalPhys);
+        hw.ram_free_bytes = static_cast<uint64_t>(memStatus.ullAvailPhys);
+        hw.ram_total_gib = static_cast<double>(hw.ram_total_bytes) / (1024.0 * 1024.0 * 1024.0);
+        hw.ram_free_gib = static_cast<double>(hw.ram_free_bytes) / (1024.0 * 1024.0 * 1024.0);
+    }
+}
+#else
 void probe_linux_cpu(HardwareInfo& hw) {
     std::ifstream cpuinfo("/proc/cpuinfo");
     if (!cpuinfo.is_open())
@@ -90,6 +163,7 @@ void probe_linux_ram(HardwareInfo& hw) {
     hw.ram_total_gib = (double) total_kb / (1024.0 * 1024.0);
     hw.ram_free_gib = (double) avail_kb / (1024.0 * 1024.0);
 }
+#endif
 
 void probe_gpu(HardwareInfo& hw) {
 #if defined(GUILD_ENABLE_CUDA)
@@ -103,27 +177,62 @@ void probe_gpu(HardwareInfo& hw) {
             hw.gpu_name = prop.name;
             hw.gpu_vram_bytes = prop.totalGlobalMem;
             hw.gpu_vram_gib = (double) prop.totalGlobalMem / (1024.0 * 1024.0 * 1024.0);
+            hw.gpu_cc_major = prop.major;
+            hw.gpu_cc_minor = prop.minor;
+        }
+        size_t free_b = 0, total_b = 0;
+        if (cudaMemGetInfo(&free_b, &total_b) == cudaSuccess && total_b > 0) {
+            hw.gpu_vram_free_bytes = static_cast<uint64_t>(free_b);
+            hw.gpu_vram_free_gib = static_cast<double>(free_b) / (1024.0 * 1024.0 * 1024.0);
         }
         return;
     }
 #endif
-    // Basic fallback: check nvidia-smi if runtime not linked
-    std::FILE* pipe = popen("nvidia-smi --query-gpu=name,memory.total --format=csv,noheader,nounits 2>/dev/null", "r");
+    // Fallback: query nvidia-smi if CUDA runtime is not linked
+#if defined(_WIN32)
+    std::FILE* pipe = _popen(
+        "nvidia-smi --query-gpu=name,memory.total,memory.free,compute_cap --format=csv,noheader,nounits 2>NUL", "r");
+#else
+    std::FILE* pipe = popen(
+        "nvidia-smi --query-gpu=name,memory.total,memory.free,compute_cap --format=csv,noheader,nounits 2>/dev/null",
+        "r");
+#endif
     if (pipe) {
         char buf[256];
         if (std::fgets(buf, sizeof(buf), pipe)) {
             std::string s(buf);
-            auto comma = s.find(',');
-            if (comma != std::string::npos) {
+            std::vector<std::string> parts;
+            std::stringstream ss(s);
+            std::string item;
+            while (std::getline(ss, item, ',')) {
+                parts.push_back(trim(item));
+            }
+            if (parts.size() >= 2 && !parts[0].empty()) {
                 hw.gpu_count = 1;
                 hw.has_cuda = true;
-                hw.gpu_name = trim(s.substr(0, comma));
-                double mib = std::atof(trim(s.substr(comma + 1)).c_str());
-                hw.gpu_vram_bytes = (uint64_t) (mib * 1024.0 * 1024.0);
-                hw.gpu_vram_gib = mib / 1024.0;
+                hw.gpu_name = parts[0];
+                double total_mib = std::atof(parts[1].c_str());
+                hw.gpu_vram_bytes = (uint64_t) (total_mib * 1024.0 * 1024.0);
+                hw.gpu_vram_gib = total_mib / 1024.0;
+                if (parts.size() >= 3) {
+                    double free_mib = std::atof(parts[2].c_str());
+                    hw.gpu_vram_free_bytes = (uint64_t) (free_mib * 1024.0 * 1024.0);
+                    hw.gpu_vram_free_gib = free_mib / 1024.0;
+                }
+                if (parts.size() >= 4) {
+                    auto dot = parts[3].find('.');
+                    if (dot != std::string::npos) {
+                        hw.gpu_cc_major = std::atoi(parts[3].substr(0, dot).c_str());
+                        hw.gpu_cc_minor = std::atoi(parts[3].substr(dot + 1).c_str());
+                    }
+                }
             }
         }
+#if defined(_WIN32)
+        _pclose(pipe);
+#else
         pclose(pipe);
+#endif
     }
 }
 
@@ -132,8 +241,12 @@ void probe_gpu(HardwareInfo& hw) {
 HardwareInfo detect_hardware() {
     platform::configure_device_runtime_policy();
     HardwareInfo hw;
+#if defined(_WIN32)
+    probe_windows_cpu_and_ram(hw);
+#else
     probe_linux_cpu(hw);
     probe_linux_ram(hw);
+#endif
     probe_gpu(hw);
 
     const auto feat = kernels::cpu::cpu_features();

@@ -19,28 +19,72 @@
 #include "guild/runtime/chat_template.hpp"
 
 #include <algorithm>
-#include <arpa/inet.h>
 #include <cerrno>
 #include <chrono>
 #include <csignal>
 #include <cstring>
 #include <exception>
-#include <fcntl.h>
 #include <iostream>
+
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#else
+#include <arpa/inet.h>
+#include <fcntl.h>
 #include <netinet/in.h>
 #include <poll.h>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <unistd.h>
+#endif
 
 namespace guild::server {
 
 namespace {
 
+#if defined(_WIN32)
+void ensure_winsock() {
+    static bool initialized = false;
+    if (!initialized) {
+        WSADATA wsa{};
+        WSAStartup(MAKEWORD(2, 2), &wsa);
+        initialized = true;
+    }
+}
+inline void close_socket_fd(int fd) {
+    if (fd >= 0)
+        closesocket(static_cast<SOCKET>(fd));
+}
+inline void shutdown_socket_rw(int fd) {
+    if (fd >= 0)
+        shutdown(static_cast<SOCKET>(fd), SD_BOTH);
+}
+constexpr int kSendNoSig = 0;
+#else
+inline void ensure_winsock() {
+}
+inline void close_socket_fd(int fd) {
+    if (fd >= 0)
+        close(fd);
+}
+inline void shutdown_socket_rw(int fd) {
+    if (fd >= 0)
+        shutdown(fd, SHUT_RDWR);
+}
+constexpr int kSendNoSig = MSG_NOSIGNAL;
+#endif
+
 bool send_all(int fd, const char* data, size_t len) {
     size_t total_sent = 0;
     while (total_sent < len) {
-        ssize_t sent = send(fd, data + total_sent, len - total_sent, MSG_NOSIGNAL);
+        const auto sent = send(fd, data + total_sent, static_cast<int>(len - total_sent), kSendNoSig);
         if (sent <= 0) {
             return false;
         }
@@ -84,6 +128,11 @@ bool generate_checked(IInferenceEngine& engine, const InferenceRequest& req, Str
 Server::Server(std::shared_ptr<IInferenceEngine> engine, ServerOptions options)
     : engine_(std::move(engine)),
       options_(std::move(options)) {
+    ensure_winsock();
+#if defined(_WIN32)
+    wake_pipe_[0] = 0;
+    wake_pipe_[1] = 0;
+#else
     if (pipe(wake_pipe_) == 0) {
         for (int i = 0; i < 2; ++i) {
             const int flags = fcntl(wake_pipe_[i], F_GETFL, 0);
@@ -95,25 +144,30 @@ Server::Server(std::shared_ptr<IInferenceEngine> engine, ServerOptions options)
         wake_pipe_[0] = -1;
         wake_pipe_[1] = -1;
     }
+#endif
 }
 
 Server::~Server() {
     stop();
+#if !defined(_WIN32)
     for (int i = 0; i < 2; ++i) {
         if (wake_pipe_[i] >= 0) {
             close(wake_pipe_[i]);
             wake_pipe_[i] = -1;
         }
     }
+#endif
 }
 
 void Server::request_stop() {
     running_.store(false, std::memory_order_release);
+#if !defined(_WIN32)
     if (wake_pipe_[1] >= 0) {
         const char byte = 1;
         const ssize_t ignored = ::write(wake_pipe_[1], &byte, 1);
         (void) ignored;
     }
+#endif
 }
 
 bool Server::start() {
@@ -129,12 +183,12 @@ bool Server::start() {
             return true;
         // A prior run exited via request_stop() without stop(); join and close before restarting.
         if (listen_fd_ >= 0)
-            shutdown(listen_fd_, SHUT_RDWR);
+            shutdown_socket_rw(listen_fd_);
         queue_cv_.notify_all();
         if (listener_thread_.joinable())
             listener_thread_.join();
         if (listen_fd_ >= 0) {
-            close(listen_fd_);
+            close_socket_fd(listen_fd_);
             listen_fd_ = -1;
         }
         for (auto& w : workers_) {
@@ -145,23 +199,27 @@ bool Server::start() {
         started_ = false;
     }
 
+#if !defined(_WIN32)
     // Drain any residual wakeup bytes from a previous stop()/request_stop().
     char drain[64];
     while (::read(wake_pipe_[0], drain, sizeof(drain)) > 0) {}
 
     signal(SIGPIPE, SIG_IGN);
+#endif
 
-    int sock_fd = socket(AF_INET, SOCK_STREAM, 0);
+    int sock_fd = static_cast<int>(socket(AF_INET, SOCK_STREAM, 0));
     if (sock_fd < 0) {
         if (options_.verbose) {
             std::cerr << "[server] Failed to create socket: " << std::strerror(errno) << "\n";
         }
         return false;
     }
+#if !defined(_WIN32)
     fcntl(sock_fd, F_SETFD, FD_CLOEXEC);
+#endif
 
     int opt = 1;
-    setsockopt(sock_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    setsockopt(sock_fd, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char*>(&opt), sizeof(opt));
 
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
@@ -170,7 +228,7 @@ bool Server::start() {
         if (options_.verbose) {
             std::cerr << "[server] Invalid host address: " << options_.host << "\n";
         }
-        close(sock_fd);
+        close_socket_fd(sock_fd);
         return false;
     }
 
@@ -179,7 +237,7 @@ bool Server::start() {
             std::cerr << "[server] Bind failed on " << options_.host << ":" << options_.port << ": "
                       << std::strerror(errno) << "\n";
         }
-        close(sock_fd);
+        close_socket_fd(sock_fd);
         return false;
     }
 
@@ -199,7 +257,7 @@ bool Server::start() {
         if (options_.verbose) {
             std::cerr << "[server] Listen failed: " << std::strerror(errno) << "\n";
         }
-        close(sock_fd);
+        close_socket_fd(sock_fd);
         return false;
     }
 
@@ -233,7 +291,7 @@ void Server::stop() {
         return;
 
     if (listen_fd_ >= 0) {
-        shutdown(listen_fd_, SHUT_RDWR);
+        shutdown_socket_rw(listen_fd_);
     }
 
     // Cancel any in-flight engine generation before waiting for worker threads.
@@ -244,13 +302,13 @@ void Server::stop() {
     {
         std::lock_guard<std::mutex> lock(queue_mutex_);
         for (int fd : client_queue_) {
-            close(fd);
+            close_socket_fd(fd);
         }
         client_queue_.clear();
         // Shutdown (but do not close) active client sockets so workers blocked in recv()/send()
         // wake immediately while retaining exclusive ownership of close(client_fd).
         for (int fd : active_clients_) {
-            shutdown(fd, SHUT_RDWR);
+            shutdown_socket_rw(fd);
         }
     }
 
@@ -263,11 +321,13 @@ void Server::stop() {
     // Only close listen_fd_ after listener_thread_ has exited, preventing use-after-close
     // and file-descriptor number reuse while poll()/accept() can run.
     if (listen_fd_ >= 0) {
-        close(listen_fd_);
+        close_socket_fd(listen_fd_);
         listen_fd_ = -1;
     }
+#if !defined(_WIN32)
     char drain[64];
     while (::read(wake_pipe_[0], drain, sizeof(drain)) > 0) {}
+#endif
 
     for (auto& w : workers_) {
         if (w.joinable()) {
@@ -280,6 +340,22 @@ void Server::stop() {
 
 void Server::listener_loop(int listen_fd, int wake_fd) {
     while (running_.load(std::memory_order_acquire)) {
+#if defined(_WIN32)
+        (void) wake_fd;
+        WSAPOLLFD pfd{};
+        pfd.fd = static_cast<SOCKET>(listen_fd);
+        pfd.events = POLLRDNORM;
+        int ret = WSAPoll(&pfd, 1, 50);
+        if (ret < 0)
+            break;
+        if (!running_.load(std::memory_order_acquire))
+            break;
+        if (ret == 0)
+            continue;
+        if (pfd.revents & (POLLERR | POLLHUP | POLLNVAL))
+            break;
+        const bool ready_to_accept = (pfd.revents & POLLRDNORM) != 0;
+#else
         struct pollfd pfds[2]{};
         pfds[0].fd = listen_fd;
         pfds[0].events = POLLIN;
@@ -302,12 +378,21 @@ void Server::listener_loop(int listen_fd, int wake_fd) {
         if (pfds[0].revents & (POLLERR | POLLHUP | POLLNVAL)) {
             break;
         }
+        const bool ready_to_accept = (pfds[0].revents & POLLIN) != 0;
+#endif
 
-        if (pfds[0].revents & POLLIN) {
+        if (ready_to_accept) {
             sockaddr_in client_addr{};
             socklen_t client_len = sizeof(client_addr);
-            int client_fd = accept(listen_fd, reinterpret_cast<sockaddr*>(&client_addr), &client_len);
+            int client_fd = static_cast<int>(accept(listen_fd, reinterpret_cast<sockaddr*>(&client_addr), &client_len));
             if (client_fd >= 0) {
+#if defined(_WIN32)
+                DWORD timeout_ms = 30000;
+                setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeout_ms),
+                           sizeof(timeout_ms));
+                setsockopt(client_fd, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&timeout_ms),
+                           sizeof(timeout_ms));
+#else
                 fcntl(client_fd, F_SETFD, FD_CLOEXEC);
                 // Set send/recv timeouts
                 struct timeval tv {};
@@ -315,11 +400,12 @@ void Server::listener_loop(int listen_fd, int wake_fd) {
                 tv.tv_usec = 0;
                 setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
                 setsockopt(client_fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+#endif
 
                 {
                     std::lock_guard<std::mutex> lock(queue_mutex_);
                     if (!running_.load(std::memory_order_acquire)) {
-                        close(client_fd);
+                        close_socket_fd(client_fd);
                         break;
                     }
                     if (client_queue_.size() < 64) {
@@ -329,8 +415,8 @@ void Server::listener_loop(int listen_fd, int wake_fd) {
                         // Queue full: reject immediately
                         const char busy_msg[] =
                             "HTTP/1.1 503 Service Unavailable\r\nRetry-After: 1\r\nContent-Length: 0\r\n\r\n";
-                        send(client_fd, busy_msg, sizeof(busy_msg) - 1, MSG_NOSIGNAL);
-                        close(client_fd);
+                        send(client_fd, busy_msg, static_cast<int>(sizeof(busy_msg) - 1), kSendNoSig);
+                        close_socket_fd(client_fd);
                     }
                 }
             } else if (errno != EINTR && errno != EAGAIN && errno != EWOULDBLOCK) {
@@ -351,7 +437,7 @@ void Server::worker_loop() {
 
             if (!running_.load(std::memory_order_acquire)) {
                 while (!client_queue_.empty()) {
-                    close(client_queue_.back());
+                    close_socket_fd(client_queue_.back());
                     client_queue_.pop_back();
                 }
                 return;
@@ -371,7 +457,7 @@ void Server::worker_loop() {
                     active_clients_.erase(it);
                 }
             }
-            close(client_fd);
+            close_socket_fd(client_fd);
         }
     }
 }
@@ -382,7 +468,7 @@ void Server::handle_client(int client_fd) {
     size_t header_end = std::string::npos;
 
     while (header_end == std::string::npos) {
-        ssize_t n = recv(client_fd, buf, sizeof(buf), 0);
+        const auto n = recv(client_fd, buf, static_cast<int>(sizeof(buf)), 0);
         if (n <= 0)
             return;
         raw_buffer.append(buf, static_cast<size_t>(n));
@@ -411,7 +497,7 @@ void Server::handle_client(int client_fd) {
     req.body = raw_buffer.substr(header_end + 4);
 
     while (req.body.size() < content_len) {
-        ssize_t n = recv(client_fd, buf, sizeof(buf), 0);
+        const auto n = recv(client_fd, buf, static_cast<int>(sizeof(buf)), 0);
         if (n <= 0)
             break;
         req.body.append(buf, static_cast<size_t>(n));

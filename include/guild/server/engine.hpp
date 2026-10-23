@@ -1,5 +1,7 @@
 #pragma once
 
+#include "guild/runtime/types.hpp"
+
 #include <atomic>
 #include <cstdint>
 #include <functional>
@@ -92,6 +94,9 @@ public:
     virtual const runtime::Tokenizer* tokenizer() const {
         return nullptr;
     }
+    virtual runtime::RuntimeTelemetry last_telemetry() const {
+        return {};
+    }
 };
 
 class MockInferenceEngine : public IInferenceEngine {
@@ -112,6 +117,7 @@ public:
     bool generate(const InferenceRequest& req, GenerationResult& result) override;
     bool generate_stream(const InferenceRequest& req, StreamCallback on_token, GenerationResult& result) override;
     void stop() override {
+        cancel_requested_.store(true, std::memory_order_relaxed);
     }
 
     bool encode(const std::string& text, std::vector<int32_t>& tokens, std::string& err) override;
@@ -122,12 +128,17 @@ public:
     void set_delay_ms(int ms) {
         delay_ms_.store(ms, std::memory_order_relaxed);
     }
+    runtime::RuntimeTelemetry last_telemetry() const override {
+        return last_telem_;
+    }
 
 private:
     std::string model_;
     int64_t max_context_;
     std::string script_;
     std::atomic<int> delay_ms_{0};
+    std::atomic<bool> cancel_requested_{false};
+    runtime::RuntimeTelemetry last_telem_;
 };
 
 struct GuildProcessEngineOptions {

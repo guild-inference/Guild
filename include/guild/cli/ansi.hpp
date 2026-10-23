@@ -1,14 +1,46 @@
 #pragma once
 
+#include <cstdio>
 #include <iostream>
 #include <string>
+
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <io.h>
+#include <windows.h>
+#else
 #include <unistd.h>
+#endif
 
 namespace guild::cli {
 
+inline void enable_virtual_terminal() {
+#if defined(_WIN32)
+    static bool initialized = false;
+    if (!initialized) {
+        initialized = true;
+        HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
+        if (hOut != INVALID_HANDLE_VALUE) {
+            DWORD mode = 0;
+            if (GetConsoleMode(hOut, &mode)) {
+                SetConsoleMode(hOut, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
+            }
+        }
+        SetConsoleOutputCP(CP_UTF8);
+        SetConsoleCP(CP_UTF8);
+    }
+#endif
+}
+
 inline bool is_tty() {
 #if defined(_WIN32)
-    return true;
+    enable_virtual_terminal();
+    return _isatty(_fileno(stdout)) != 0;
 #else
     return isatty(fileno(stdout)) != 0;
 #endif

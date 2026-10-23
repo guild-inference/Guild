@@ -1,15 +1,232 @@
-name: Development builds
+name: Development builds & preview releases
 on:
   push:
     branches: [main]
+    tags: ['v[0-9]*.[0-9]*.[0-9]*-preview.*']
   workflow_dispatch:
 permissions:
   contents: read
 concurrency:
   group: dev-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 jobs:
+  checks:
+    uses: ./.github/workflows/ci.yml
+
   linux-cuda:
+    needs: checks
     uses: ./.github/workflows/build-linux-cuda.yml
     with:
-      artifact_name: guild-linux-cuda-development-${{ github.sha }}
+      release_tag: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '' }}
+      artifact_name: guild-linux-cuda13-${{ github.sha }}
+
+  linux-cuda12-sm61:
+    name: Linux CUDA 12 Pascal/Volta/Turing/Ampere/Ada compilation and packaging
+    needs: checks
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    container: nvidia/cuda:12.2.2-devel-ubuntu22.04
+    env:
+      RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '' }}
+      GIT_CONFIG_COUNT: '1'
+      GIT_CONFIG_KEY_0: safe.directory
+      GIT_CONFIG_VALUE_0: ${{ github.workspace }}
+    steps:
+      - run: apt-get update && apt-get install -y git g++ ninja-build libcurl4-openssl-dev python3-pip && pip3 install cmake==3.28.4
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Reproducible timestamp and tag validation
+        run: |
+          git show -s --format='SOURCE_DATE_EPOCH=%ct' HEAD >> "$GITHUB_ENV"
+          if [ -n "$RELEASE_TAG" ]; then
+            python3 tools/validate_release.py --tag "$RELEASE_TAG" --require-tag
+          fi
+      - name: Build CUDA 12 Pascal-compatible inference executable
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DGUILD_BUILD_TESTS=OFF -DGUILD_ENABLE_CUDA=ON -DGUILD_EXPERIMENTAL_SM60=ON \
+            -DGUILD_PORTABLE=ON '-DCMAKE_CUDA_ARCHITECTURES=61-real;70-real;75-real;86-real;89' \
+            -DCMAKE_CUDA_RUNTIME_LIBRARY=Shared -DGUILD_RELEASE_TAG="$RELEASE_TAG"
+          cmake --build build --target guild --parallel 2
+      - name: Package CUDA 12 distribution and smoke test launcher
+        run: |
+          python3 tools/test_version_report.py --build build
+          python3 tools/package_linux_cuda.py --build build --output build-dist/guild-linux-x86_64-cuda12-sm61
+          cp build-dist/guild-linux-x86_64-cuda12-sm61/guild-release.json build-dist/guild-release-linux-cuda12-sm61.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: guild-linux-cuda12-sm61-${{ github.sha }}
+          if-no-files-found: error
+          path: |
+            build-dist/*.tar.gz
+            build-dist/*.sha256
+            build-dist/guild-release-linux-cuda12-sm61.json
+
+  linux-cpu:
+    name: Linux x86-64 portable CPU management & TUI distribution
+    needs: checks
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - run: sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev ninja-build
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install cmake==3.28.4
+      - name: Build portable Linux CPU executable and run TUI test suite
+        env:
+          RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '' }}
+        run: |
+          git show -s --format='SOURCE_DATE_EPOCH=%ct' HEAD >> "$GITHUB_ENV"
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DGUILD_BUILD_TESTS=ON -DGUILD_ENABLE_CUDA=OFF -DGUILD_PORTABLE=ON \
+            -DGUILD_RELEASE_TAG="$RELEASE_TAG"
+          cmake --build build --target guild tui_test --parallel 2
+          ./build/tui_test
+          python3 tools/package_preview_variant.py linux-cpu --build build --output build-dist/guild-linux-x86_64-cpu
+          cp build-dist/guild-linux-x86_64-cpu/guild-release.json build-dist/guild-release-linux-cpu.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: guild-linux-cpu-${{ github.sha }}
+          if-no-files-found: error
+          path: |
+            build-dist/*.tar.gz
+            build-dist/*.sha256
+            build-dist/guild-release-linux-cpu.json
+
+  windows-cpu:
+    name: Windows x86-64 native MSVC build, TUI test, and PowerShell installer validation
+    needs: checks
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Configure and build native Windows x86-64 guild.exe and tui_test.exe
+        env:
+          RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '' }}
+        shell: pwsh
+        run: |
+          $epoch = git show -s --format='%ct' HEAD
+          "SOURCE_DATE_EPOCH=$epoch" | Out-File -FilePath $env:GITHUB_ENV -Append
+          cmake -S . -B build-win -DCMAKE_BUILD_TYPE=Release `
+            -DGUILD_BUILD_TESTS=ON -DGUILD_ENABLE_CUDA=OFF -DGUILD_PORTABLE=ON `
+            -DGUILD_RELEASE_TAG="$env:RELEASE_TAG"
+          cmake --build build-win --config Release --target guild tui_test --parallel 2
+          .\build-win\Release\tui_test.exe
+          .\build-win\Release\guild.exe --version
+          .\build-win\Release\guild.exe --help
+          python tools/package_preview_variant.py windows --build build-win --output build-dist/guild-windows-x86_64-cpu --variant-id windows-x86_64-cpu
+          Copy-Item build-dist/guild-windows-x86_64-cpu/guild-release.json build-dist/guild-release-windows-cpu.json
+      - name: Validate install.ps1 in a clean PowerShell user environment
+        shell: pwsh
+        run: |
+          $relTag = if ($env:GITHUB_REF -like "refs/tags/v*") { $env:GITHUB_REF_NAME } else { "v0.2.0-preview.1" }
+          $man = Get-Content build-dist/guild-release-windows-cpu.json -Raw | ConvertFrom-Json
+          $man | Add-Member -NotePropertyName release_tag -NotePropertyValue $relTag -Force
+          $archSha = ((Get-Content build-dist/guild-windows-x86_64-cpu.zip.sha256 -Raw).Trim() -split '\s+')[0]
+          $man | Add-Member -NotePropertyName variants -NotePropertyValue @{
+            "windows-x86_64-cpu" = @{
+              variant_id = "windows-x86_64-cpu"
+              archive = "guild-windows-x86_64-cpu.zip"
+              sha256 = $archSha
+              executable_sha256 = $man.executable_sha256
+            }
+          } -Force
+          $man | ConvertTo-Json -Depth 6 | Set-Content build-dist/guild-release.json -Encoding UTF8
+
+          $testRoot = Join-Path $env:RUNNER_TEMP "guild-win-install-test"
+          $absDist = (Resolve-Path build-dist).Path
+          $env:GUILD_INSTALL_ROOT = $testRoot
+          $env:GUILD_VERSION = $relTag
+          $env:GUILD_RELEASE_BASE_URL = "file://$absDist"
+
+          # Test piped execution (`Get-Content install.ps1 -Raw | Invoke-Expression`)
+          Get-Content .\install.ps1 -Raw | Invoke-Expression
+          $installedExe = Join-Path $testRoot "bin\guild.exe"
+          if (-not (Test-Path $installedExe)) { throw "install.ps1 did not install guild.exe" }
+          & $installedExe --version
+          & $installedExe tui --mock --cols 120 --rows 32 --script "Hello from Windows PowerShell" --dump-screen
+          .\install.ps1 -Uninstall -InstallRoot $testRoot
+      - uses: actions/upload-artifact@v4
+        with:
+          name: guild-windows-cpu-${{ github.sha }}
+          if-no-files-found: error
+          path: |
+            build-dist/*.zip
+            build-dist/*.sha256
+            build-dist/guild-release-windows-cpu.json
+
+  publish-preview:
+    if: startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-preview.')
+    needs: [linux-cuda, linux-cuda12-sm61, linux-cpu, windows-cpu]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: guild-linux-cuda13-${{ github.sha }}
+          path: build-dist
+      - uses: actions/download-artifact@v4
+        with:
+          name: guild-linux-cuda12-sm61-${{ github.sha }}
+          path: build-dist
+      - uses: actions/download-artifact@v4
+        with:
+          name: guild-linux-cpu-${{ github.sha }}
+          path: build-dist
+      - uses: actions/download-artifact@v4
+        with:
+          name: guild-windows-cpu-${{ github.sha }}
+          path: build-dist
+      - name: Verify all archive checksums and merge multi-variant guild-release.json
+        run: |
+          (cd build-dist && sha256sum --check ./*.sha256)
+          cp build-dist/guild-release.json build-dist/guild-release-linux-cuda13.json
+          python3 tools/package_preview_variant.py merge \
+            --primary build-dist/guild-release-linux-cuda13.json \
+            --variant linux-x86_64-cuda13=build-dist/guild-linux-x86_64-cuda13.tar.gz:build-dist/guild-release-linux-cuda13.json \
+            --variant linux-x86_64-cuda12-sm61=build-dist/guild-linux-x86_64-cuda12-sm61.tar.gz:build-dist/guild-release-linux-cuda12-sm61.json \
+            --variant linux-x86_64-cpu=build-dist/guild-linux-x86_64-cpu.tar.gz:build-dist/guild-release-linux-cpu.json \
+            --variant windows-x86_64-cpu=build-dist/guild-windows-x86_64-cpu.zip:build-dist/guild-release-windows-cpu.json \
+            --output build-dist/guild-release.json
+      - name: Attest preview release binaries and manifest using GitHub OIDC
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            build-dist/*.tar.gz
+            build-dist/*.zip
+            build-dist/guild-release.json
+      - name: Publish development preview release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$RELEASE_TAG" --verify-tag --prerelease \
+            --title "Guild $RELEASE_TAG (Development Preview)" \
+            --generate-notes \
+            build-dist/guild-linux-x86_64-cuda13.tar.gz \
+            build-dist/guild-linux-x86_64-cuda13.tar.gz.sha256 \
+            build-dist/guild-linux-x86_64-cuda12-sm61.tar.gz \
+            build-dist/guild-linux-x86_64-cuda12-sm61.tar.gz.sha256 \
+            build-dist/guild-linux-x86_64-cpu.tar.gz \
+            build-dist/guild-linux-x86_64-cpu.tar.gz.sha256 \
+            build-dist/guild-windows-x86_64-cpu.zip \
+            build-dist/guild-windows-x86_64-cpu.zip.sha256 \
+            build-dist/guild-release.json

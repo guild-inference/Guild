@@ -44,6 +44,9 @@ public:
     bool decode(const std::vector<int32_t>& tokens, std::string& text) const override;
     const runtime::ChatTemplate* chat_template() const override;
     const runtime::Tokenizer* tokenizer() const override;
+    runtime::RuntimeTelemetry last_telemetry() const override {
+        return last_telem_;
+    }
 
     guild::runtime::GuildModel* model() {
         return model_.get();
@@ -62,6 +65,7 @@ private:
     NativeInferenceEngineOptions options_;
     std::unique_ptr<guild::runtime::GuildModel> model_;
     std::unique_ptr<guild::runtime::GuildSession> session_;
+    guild::runtime::RuntimeTelemetry last_telem_;
     bool ready_ = false;
 };
 

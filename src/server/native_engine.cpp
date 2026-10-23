@@ -105,6 +105,7 @@ bool NativeInferenceEngine::generate_stream(const InferenceRequest& req, StreamC
         gen_err = std::string("Native generation failed: ") + e.what();
     }
 
+    last_telem_ = telem;
     result.prompt_tokens = telem.prompt_tokens;
     result.completion_tokens = telem.completion_tokens;
     result.prompt_ms = telem.prompt_ms;

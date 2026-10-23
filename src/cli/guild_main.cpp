@@ -16,6 +16,7 @@
 #include "guild/artifact/gpack.hpp"
 #include "guild/cli/ansi.hpp"
 #include "guild/cli/hardware.hpp"
+#include "guild/cli/tui.hpp"
 #include "guild/gexec/gexec_contract.hpp"
 #include "guild/gexec/gexec_optimizer.hpp"
 #include "guild/kernels/registry.hpp"
@@ -124,6 +125,8 @@ void print_usage() {
               << bold() << "Usage:" << reset() << "\n"
               << "  guild [command] [options]\n\n"
               << bold() << "Available Commands:" << reset() << "\n"
+              << "  " << cyan() << "tui" << reset()
+              << " [model]       Launch interactive native Terminal User Interface (TUI)\n"
               << "  " << cyan() << "run" << reset() << " <model>       Run a model and start interactive conversation\n"
               << "  " << cyan() << "pull" << reset() << " <model>      Download and install a model into local store\n"
               << "  " << cyan() << "list" << reset() << "              List locally installed models in Guild store\n"
@@ -2250,6 +2253,9 @@ int main(int argc, char** argv) {
     }
     if (cmd == "run") {
         return cmd_run(argc, argv);
+    }
+    if (cmd == "tui") {
+        return guild::cli::cmd_tui(argc, argv);
     }
 
     std::cerr << "Unknown command: " << cmd << "\n\n";

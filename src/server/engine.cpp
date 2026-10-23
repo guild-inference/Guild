@@ -6,14 +6,16 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <fcntl.h>
 #include <fstream>
 #include <iostream>
 #include <sstream>
 #include <thread>
+#if !defined(_WIN32)
+#include <fcntl.h>
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#endif
 
 namespace guild::server {
 
@@ -45,6 +47,7 @@ bool MockInferenceEngine::generate(const InferenceRequest& req, GenerationResult
 
 bool MockInferenceEngine::generate_stream(const InferenceRequest& req, StreamCallback on_token,
                                           GenerationResult& result) {
+    cancel_requested_.store(false, std::memory_order_relaxed);
     result = GenerationResult{};
     result.prompt_tokens = req.prompt_tokens.empty() ? static_cast<int>(req.prompt.size() / 4 + 1)
                                                      : static_cast<int>(req.prompt_tokens.size());
@@ -73,6 +76,10 @@ bool MockInferenceEngine::generate_stream(const InferenceRequest& req, StreamCal
     int token_id_counter = 1000;
 
     for (size_t i = 0; i < words.size(); ++i) {
+        if (cancel_requested_.load(std::memory_order_relaxed)) {
+            result.finish_reason = "cancel";
+            break;
+        }
         if (req.max_tokens > 0 && static_cast<int>(result.tokens.size()) >= req.max_tokens) {
             result.finish_reason = "length";
             break;
@@ -128,6 +135,24 @@ bool MockInferenceEngine::generate_stream(const InferenceRequest& req, StreamCal
     result.file_mb = 0.0;
     result.drafts_accepted = 4;
     result.drafts_offered = 5;
+
+    last_telem_ = runtime::RuntimeTelemetry{};
+    last_telem_.prompt_tokens = result.prompt_tokens;
+    last_telem_.completion_tokens = result.completion_tokens;
+    last_telem_.prompt_ms = result.prompt_ms;
+    last_telem_.decode_ms = result.decode_ms;
+    last_telem_.prompt_tok_s = result.prompt_tok_s;
+    last_telem_.decode_tok_s = result.decode_tok_s;
+    last_telem_.finish_reason = result.finish_reason;
+    last_telem_.drafts_accepted = result.drafts_accepted;
+    last_telem_.drafts_offered = result.drafts_offered;
+    last_telem_.ram_expert_hits = result.ram_blobs;
+    last_telem_.decode_strategy_mode = "adaptive";
+    last_telem_.decode_strategy_initial = "lookup";
+    last_telem_.decode_strategy_final = "lookup";
+    last_telem_.spec_lookup_windows = 4;
+    last_telem_.spec_ms_per_committed_token = result.decode_tok_s > 0.0 ? (1000.0 / result.decode_tok_s) : 0.0;
+    last_telem_.spec_estimated_speedup = 1.58;
 
     return true;
 }
@@ -187,6 +212,9 @@ const runtime::Tokenizer* GuildProcessEngine::tokenizer() const {
 }
 
 bool GuildProcessEngine::start() {
+#if defined(_WIN32)
+    return false;
+#else
     if (options_.executable.empty())
         return false;
 
@@ -261,9 +289,11 @@ bool GuildProcessEngine::start() {
 
     load_tokenizer();
     return ready_;
+#endif
 }
 
 void GuildProcessEngine::stop() {
+#if !defined(_WIN32)
     if (pid_ > 0) {
         if (in_pipe_[1] >= 0) {
             const char quit_cmd[] = "QUIT\n";
@@ -281,6 +311,7 @@ void GuildProcessEngine::stop() {
         pid_ = -1;
         ready_ = false;
     }
+#endif
 }
 
 bool GuildProcessEngine::generate(const InferenceRequest& req, GenerationResult& result) {
@@ -289,6 +320,11 @@ bool GuildProcessEngine::generate(const InferenceRequest& req, GenerationResult&
 
 bool GuildProcessEngine::generate_stream(const InferenceRequest& req, StreamCallback on_token,
                                          GenerationResult& result) {
+#if defined(_WIN32)
+    (void) req;
+    (void) on_token;
+    return result.fail("Process inference engine is not supported on Windows; use NativeInferenceEngine");
+#else
     result = GenerationResult{};
     if (!ready_ || in_pipe_[1] < 0 || out_pipe_[0] < 0) {
         return result.fail("Process inference engine is not ready");
@@ -400,6 +436,7 @@ bool GuildProcessEngine::generate_stream(const InferenceRequest& req, StreamCall
         return result.fail("Process engine exited before DONE");
     }
     return true; // Client cancellation is a completed request, not an inference failure.
+#endif
 }
 
 } // namespace guild::server

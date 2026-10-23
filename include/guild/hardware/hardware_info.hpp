@@ -17,6 +17,9 @@ struct HardwareInfo {
     int gpu_count = 0;
     std::string gpu_name;
     uint64_t gpu_vram_bytes = 0;
+    uint64_t gpu_vram_free_bytes = 0;
+    int gpu_cc_major = 0;
+    int gpu_cc_minor = 0;
     bool has_cuda = false;
 
     bool isa_avx512 = false;
@@ -30,6 +33,7 @@ struct HardwareInfo {
     double ram_total_gib = 0.0;
     double ram_free_gib = 0.0;
     double gpu_vram_gib = 0.0;
+    double gpu_vram_free_gib = 0.0;
 
     void sync_gib() {
         if (ram_total_bytes > 0 && ram_total_gib == 0.0) {
@@ -46,6 +50,11 @@ struct HardwareInfo {
             gpu_vram_gib = (double) gpu_vram_bytes / (1024.0 * 1024.0 * 1024.0);
         } else if (gpu_vram_gib > 0.0 && gpu_vram_bytes == 0) {
             gpu_vram_bytes = (uint64_t) (gpu_vram_gib * 1024.0 * 1024.0 * 1024.0);
+        }
+        if (gpu_vram_free_bytes > 0 && gpu_vram_free_gib == 0.0) {
+            gpu_vram_free_gib = (double) gpu_vram_free_bytes / (1024.0 * 1024.0 * 1024.0);
+        } else if (gpu_vram_free_gib > 0.0 && gpu_vram_free_bytes == 0) {
+            gpu_vram_free_bytes = (uint64_t) (gpu_vram_free_gib * 1024.0 * 1024.0 * 1024.0);
         }
     }
 

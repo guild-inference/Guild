@@ -37,6 +37,16 @@ std::string ModelStore::default_data_dir() {
         return (fs::path(home) / ".local" / "share" / "guild").string();
     }
 
+    std::string local_appdata = get_env_var("LOCALAPPDATA");
+    if (!local_appdata.empty()) {
+        return (fs::path(local_appdata) / "Guild" / "data").string();
+    }
+
+    std::string userprofile = get_env_var("USERPROFILE");
+    if (!userprofile.empty()) {
+        return (fs::path(userprofile) / ".guild").string();
+    }
+
     return "./.guild_data";
 }
 

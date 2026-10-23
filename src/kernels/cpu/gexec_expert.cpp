@@ -1002,6 +1002,7 @@ void gexec_iq4nl_down_rows(const uint8_t* w, size_t row_bytes, int n, const void
 //    Formats: IQ2_XXS (16), IQ2_XS (17), IQ3_XXS (18), IQ3_S (21), IQ2_S (22), IQ4_XS (23)
 // ============================================================================
 
+#if !defined(_MSC_VER) || defined(__AVX512BW__)
 GEXEC_AVX512_INLINE __m512i iq512_scales4(int s0, int s1, int s2, int s3) noexcept {
     const __m512i idx = _mm512_set_epi16(3, 3, 3, 3, 3, 3, 3, 3, 2, 2, 2, 2, 2, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0,
                                          0, 0, 0, 0, 0, 0);
@@ -1236,6 +1237,7 @@ void dispatch_iq512_gu(int nt, const uint8_t* blob, size_t gu_row, size_t up_off
         break;
     }
 }
+#endif
 
 // ============================================================================
 // 4b. I-Quant Gate/Up 2-Row Fused AVX2 Kernels (16, 17, 18, 21, 22)
@@ -1652,6 +1654,7 @@ void gexec_gu_rows_impl(const NativeFmt* f_ptr, const uint8_t* blob, const void*
 
     // 3. I-Quants: use 512-bit 2-row fused when cpu_avx512_ok() (AVX-512 VNNI hosts where ZMM does not
     // trigger Skylake-SP heavy-license downclocking), and 256-bit AVX2 otherwise.
+#if !defined(_MSC_VER) || defined(__AVX512BW__)
     if (USE_AVX512 && cpu_avx512_ok()) {
         switch (f.gu_type) {
         case 16: dispatch_iq512_gu<16, INTERLEAVED>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); return;
@@ -1662,6 +1665,7 @@ void gexec_gu_rows_impl(const NativeFmt* f_ptr, const uint8_t* blob, const void*
         default: break;
         }
     }
+#endif
     if (cpu_avx2_ok()) {
         switch (f.gu_type) {
         case 16: dispatch_iq256_gu<16, INTERLEAVED>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); return;

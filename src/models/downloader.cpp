@@ -4,11 +4,23 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
-#include <curl/curl.h>
 #include <filesystem>
 #include <iomanip>
 #include <sstream>
 #include <thread>
+
+#if defined(GUILD_USE_WINHTTP)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <winhttp.h>
+#else
+#include <curl/curl.h>
+#endif
 
 namespace guild::models {
 
@@ -16,6 +28,7 @@ namespace fs = std::filesystem;
 
 namespace {
 
+#if !defined(GUILD_USE_WINHTTP)
 struct CurlProgressContext {
     Downloader* downloader{nullptr};
     const DownloadOptions* options{nullptr};
@@ -65,15 +78,20 @@ int curl_xfer_cb(void* clientp, curl_off_t dltotal, curl_off_t dlnow, curl_off_t
 
     return 0;
 }
+#endif
 
 } // namespace
 
 Downloader::Downloader() {
+#if !defined(GUILD_USE_WINHTTP)
     curl_global_init(CURL_GLOBAL_DEFAULT);
+#endif
 }
 
 Downloader::~Downloader() {
+#if !defined(GUILD_USE_WINHTTP)
     curl_global_cleanup();
+#endif
 }
 
 void Downloader::cancel() {
@@ -186,6 +204,113 @@ bool Downloader::download_file(const std::string& url, const std::string& destin
             return false;
         }
 
+#if defined(GUILD_USE_WINHTTP)
+        bool transfer_ok = false;
+        if (url.rfind("file://", 0) == 0) {
+            std::string src_file = url.substr(7);
+            if (src_file.size() >= 3 && src_file[0] == '/' && src_file[2] == ':')
+                src_file.erase(0, 1);
+            FILE* in_fp = std::fopen(src_file.c_str(), "rb");
+            if (in_fp) {
+                if (resume_offset > 0)
+                    std::fseek(in_fp, static_cast<long>(resume_offset), SEEK_SET);
+                char buf[65536];
+                size_t n = 0;
+                uint64_t dlnow = 0;
+                transfer_ok = true;
+                while ((n = std::fread(buf, 1, sizeof(buf), in_fp)) > 0) {
+                    if (cancel_requested_.load()) {
+                        transfer_ok = false;
+                        break;
+                    }
+                    std::fwrite(buf, 1, n, fp);
+                    dlnow += n;
+                    progress.file_downloaded_bytes = resume_offset + dlnow;
+                    if (options.progress_cb && !options.progress_cb(progress)) {
+                        transfer_ok = false;
+                        break;
+                    }
+                }
+                std::fclose(in_fp);
+            } else {
+                err_msg = "Cannot open file URL: " + src_file;
+            }
+        } else {
+            int wlen = MultiByteToWideChar(CP_UTF8, 0, url.c_str(), -1, nullptr, 0);
+            std::wstring wurl(static_cast<size_t>(std::max(1, wlen)), L'\0');
+            MultiByteToWideChar(CP_UTF8, 0, url.c_str(), -1, &wurl[0], wlen);
+            URL_COMPONENTS uc{};
+            uc.dwStructSize = sizeof(uc);
+            wchar_t host[256] = {0};
+            wchar_t path[2048] = {0};
+            uc.lpszHostName = host;
+            uc.dwHostNameLength = 255;
+            uc.lpszUrlPath = path;
+            uc.dwUrlPathLength = 2047;
+            if (WinHttpCrackUrl(wurl.c_str(), 0, 0, &uc)) {
+                HINTERNET hSession = WinHttpOpen(L"guild/0.2.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+                                                 WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+                if (hSession) {
+                    HINTERNET hConnect = WinHttpConnect(hSession, host, uc.nPort, 0);
+                    if (hConnect) {
+                        DWORD flags = (uc.nScheme == INTERNET_SCHEME_HTTPS) ? WINHTTP_FLAG_SECURE : 0;
+                        HINTERNET hReq = WinHttpOpenRequest(hConnect, L"GET", path, nullptr, WINHTTP_NO_REFERER,
+                                                            WINHTTP_DEFAULT_ACCEPT_TYPES, flags);
+                        if (hReq) {
+                            if (resume_offset > 0) {
+                                std::wstring range_hdr = L"Range: bytes=" + std::to_wstring(resume_offset) + L"-";
+                                WinHttpAddRequestHeaders(hReq, range_hdr.c_str(), static_cast<DWORD>(-1L),
+                                                         WINHTTP_ADDREQ_FLAG_ADD);
+                            }
+                            if (WinHttpSendRequest(hReq, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0,
+                                                   0, 0) &&
+                                WinHttpReceiveResponse(hReq, nullptr)) {
+                                DWORD status_code = 0;
+                                DWORD sc_size = sizeof(status_code);
+                                WinHttpQueryHeaders(hReq, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+                                                    WINHTTP_HEADER_NAME_BY_INDEX, &status_code, &sc_size,
+                                                    WINHTTP_NO_HEADER_INDEX);
+                                if (status_code >= 200 && status_code < 300) {
+                                    transfer_ok = true;
+                                    DWORD avail = 0;
+                                    uint64_t dlnow = 0;
+                                    char buf[65536];
+                                    while (WinHttpQueryDataAvailable(hReq, &avail) && avail > 0) {
+                                        if (cancel_requested_.load()) {
+                                            transfer_ok = false;
+                                            break;
+                                        }
+                                        DWORD to_read = std::min<DWORD>(avail, sizeof(buf));
+                                        DWORD read_bytes = 0;
+                                        if (!WinHttpReadData(hReq, buf, to_read, &read_bytes) || read_bytes == 0)
+                                            break;
+                                        std::fwrite(buf, 1, read_bytes, fp);
+                                        dlnow += read_bytes;
+                                        progress.file_downloaded_bytes = resume_offset + dlnow;
+                                        if (options.progress_cb && !options.progress_cb(progress)) {
+                                            transfer_ok = false;
+                                            break;
+                                        }
+                                    }
+                                } else {
+                                    err_msg = "HTTP status " + std::to_string(status_code);
+                                }
+                            } else {
+                                err_msg = "WinHTTP request failed";
+                            }
+                            WinHttpCloseHandle(hReq);
+                        }
+                        WinHttpCloseHandle(hConnect);
+                    }
+                    WinHttpCloseHandle(hSession);
+                }
+            } else {
+                err_msg = "Invalid URL: " + url;
+            }
+        }
+        std::fclose(fp);
+        const bool ok_res = transfer_ok;
+#else
         CURL* curl = curl_easy_init();
         if (!curl) {
             std::fclose(fp);
@@ -220,13 +345,18 @@ bool Downloader::download_file(const std::string& url, const std::string& destin
         CURLcode res = curl_easy_perform(curl);
         curl_easy_cleanup(curl);
         std::fclose(fp);
+        if (res != CURLE_OK) {
+            err_msg = curl_easy_strerror(res);
+        }
+        const bool ok_res = (res == CURLE_OK);
+#endif
 
         if (cancel_requested_.load()) {
             err_msg = "Download cancelled by user";
             return false;
         }
 
-        if (res == CURLE_OK) {
+        if (ok_res) {
             // Validate downloaded size
             uint64_t actual_size = fs::file_size(part, ec);
             if (expected_size > 0 && actual_size != expected_size) {
@@ -265,7 +395,6 @@ bool Downloader::download_file(const std::string& url, const std::string& destin
         }
 
         // Handle error & retry
-        err_msg = curl_easy_strerror(res);
         retries++;
         if (retries <= options.max_retries) {
             std::this_thread::sleep_for(std::chrono::seconds(1 << retries));

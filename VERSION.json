@@ -1,6 +1,6 @@
 {
   "version": "0.2.0",
-  "prerelease": "dev",
+  "prerelease": "preview.1",
   "revision": 0,
-  "channel": "development"
+  "channel": "preview"
 }
