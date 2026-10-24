@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cerrno>
 #include <condition_variable>
 #include <cstdint>
@@ -19,6 +20,7 @@
 #include <deque>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #include <memory>
 #include <mutex>
 #include <sstream>
@@ -77,8 +79,68 @@ void usage() {
               << "  --say <text>               The text to speak (<|speaker:N|> tags, [laughs] ...)\n"
               << "  --wav <path>               Where the audio goes (16-bit PCM, 44.1 kHz; default speech.wav)\n"
               << "  --ref-text <text>          A reference voice's transcript ...\n"
-              << "  --ref-codes <path>         ... and its codes, one frame of 10 per line\n"
+              << "  --ref-wav <path>           ... and its audio (a WAV file, any rate), or\n"
+              << "  --ref-codes <path>         ... its codes, one frame of 10 per line\n"
+              << "  --save-codes <path>        Write the reference's codes (from --ref-wav) for --ref-codes\n"
               << "  (sampling defaults to the model card's: --temperature 1.0 --top-p 0.9 --top-k 30)\n";
+}
+
+// a WAV file's samples, mono (channels averaged) in [-1, 1]: PCM 16 / 24 / 32-bit or IEEE float 32-bit
+bool read_wav(const std::string& path, std::vector<float>& out, int& rate, std::string& err) {
+    std::ifstream f(path, std::ios::binary);
+    std::vector<unsigned char> b((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    auto u16 = [&](size_t at) { return (uint32_t) b[at] | ((uint32_t) b[at + 1] << 8); };
+    auto u32 = [&](size_t at) { return u16(at) | (u16(at + 2) << 16); };
+    if (b.size() < 12 || std::memcmp(b.data(), "RIFF", 4) || std::memcmp(b.data() + 8, "WAVE", 4)) {
+        err = path + " is not a WAV file";
+        return false;
+    }
+    int fmt = 0, channels = 0, bits = 0;
+    for (size_t at = 12; at + 8 <= b.size();) {
+        const uint32_t size = u32(at + 4);
+        const size_t body = at + 8;
+        if (body + size > b.size())
+            break;
+        if (!std::memcmp(b.data() + at, "fmt ", 4) && size >= 16) {
+            fmt = (int) u16(body);
+            channels = (int) u16(body + 2);
+            rate = (int) u32(body + 4);
+            bits = (int) u16(body + 14);
+            if (fmt == 0xFFFE && size >= 26)
+                fmt = (int) u16(body + 24); // WAVE_FORMAT_EXTENSIBLE: the subformat's first two bytes
+        } else if (!std::memcmp(b.data() + at, "data", 4)) {
+            const int bytes = bits / 8;
+            if (channels < 1 || !((fmt == 1 && (bits == 16 || bits == 24 || bits == 32)) || (fmt == 3 && bits == 32))) {
+                err = path + ": only 16/24/32-bit PCM and 32-bit float WAV are read";
+                return false;
+            }
+            const size_t frames = size / (size_t) (bytes * channels);
+            out.assign(frames, 0.0f);
+            for (size_t i = 0; i < frames; ++i) {
+                double acc = 0.0;
+                for (int c = 0; c < channels; ++c) {
+                    const size_t p = body + (i * channels + c) * bytes;
+                    if (fmt == 3) {
+                        float v;
+                        std::memcpy(&v, &b[p], 4);
+                        acc += v;
+                    } else if (bits == 16) {
+                        acc += (int16_t) u16(p) / 32768.0;
+                    } else if (bits == 24) {
+                        const int32_t v = (int32_t) ((u16(p) | ((uint32_t) b[p + 2] << 16)) << 8) >> 8;
+                        acc += v / 8388608.0;
+                    } else {
+                        acc += (int32_t) u32(p) / 2147483648.0;
+                    }
+                }
+                out[i] = (float) (acc / channels);
+            }
+            return true;
+        }
+        at = body + size + (size & 1);
+    }
+    err = path + ": no audio data";
+    return false;
 }
 
 // 16-bit PCM mono WAV
@@ -338,7 +400,7 @@ int main(int argc, char** argv) try {
     bool greedy = true;
     bool serve_mode = false;
     bool sampling_given = false; // --temperature / --top-p / --top-k / --greedy: the speech path keeps the card's
-    std::string drama3_dir, say, wav_path = "speech.wav", ref_text, ref_codes_path;
+    std::string drama3_dir, say, wav_path = "speech.wav", ref_text, ref_codes_path, ref_wav_path, save_codes_path;
 
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
@@ -371,6 +433,10 @@ int main(int argc, char** argv) try {
             ref_text = next("--ref-text");
         } else if (a == "--ref-codes") {
             ref_codes_path = next("--ref-codes");
+        } else if (a == "--ref-wav") {
+            ref_wav_path = next("--ref-wav");
+        } else if (a == "--save-codes") {
+            save_codes_path = next("--save-codes");
         } else if (a == "--tokenizer") {
             tokenizer_dir = next("--tokenizer");
         } else if (a == "--max-context") {
@@ -666,13 +732,36 @@ int main(int argc, char** argv) try {
             sreq.top_k = top_k > 0 ? top_k : 30;
         }
         sreq.seed = seed;
-        if (!ref_codes_path.empty()) {
+        if (!ref_codes_path.empty() || !ref_wav_path.empty()) {
             SpeechReference r;
             r.text = ref_text;
-            std::ifstream in(ref_codes_path);
-            int32_t v = 0;
-            while (in >> v)
-                r.codes.push_back(v);
+            if (!ref_codes_path.empty()) {
+                std::ifstream in(ref_codes_path);
+                int32_t v = 0;
+                while (in >> v)
+                    r.codes.push_back(v);
+            } else {
+                std::vector<float> audio;
+                int rate = 0;
+                std::string werr;
+                if (!read_wav(ref_wav_path, audio, rate, werr)) {
+                    std::fprintf(stderr, "guild-generate: %s\n", werr.c_str());
+                    return 1;
+                }
+                const auto t0 = std::chrono::steady_clock::now();
+                if (!model->encode_voice(audio.data(), audio.size(), rate, r.codes, werr)) {
+                    std::fprintf(stderr, "guild-generate: encoding the reference failed: %s\n", werr.c_str());
+                    return 1;
+                }
+                std::fprintf(stderr, "guild-generate: %s: %.2f s at %d Hz -> %zu frames in %.0f ms\n",
+                             ref_wav_path.c_str(), (double) audio.size() / rate, rate, r.codes.size() / 10,
+                             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+                if (!save_codes_path.empty()) {
+                    std::ofstream out(save_codes_path);
+                    for (size_t i = 0; i < r.codes.size(); ++i)
+                        out << r.codes[i] << ((i + 1) % 10 ? ' ' : '\n');
+                }
+            }
             sreq.references.push_back(std::move(r));
         }
         std::vector<float> audio;

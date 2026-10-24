@@ -15,6 +15,8 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
+#include <numeric>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -95,7 +97,59 @@ std::string with_speaker_tag(const std::string& text) {
     return speaker_tag(text, white_prefix(text)) ? text : "<|speaker:0|> " + text;
 }
 
+// torchaudio.functional.resample's default (sinc_interp_hann, lowpass_filter_width 6, rolloff 0.99), in double:
+// fish-speech resamples a reference clip this way before encoding it.
+std::vector<float> resample(const float* x, size_t n, int from, int to) {
+    if (from == to)
+        return std::vector<float>(x, x + n);
+    const int g = std::gcd(from, to);
+    const int64_t orig = from / g, nw = to / g;
+    const double lpw = 6.0, base = (double) std::min(orig, nw) * 0.99;
+    const int64_t width = (int64_t) std::ceil(lpw * (double) orig / base);
+    const int64_t taps = 2 * width + orig;
+    std::vector<double> k((size_t) (nw * taps));
+    for (int64_t j = 0; j < nw; ++j) {
+        for (int64_t i = 0; i < taps; ++i) {
+            double t = (-(double) j / (double) nw + (double) (i - width) / (double) orig) * base;
+            t = std::clamp(t, -lpw, lpw);
+            const double w = std::cos(t * M_PI / lpw / 2.0);
+            const double tp = t * M_PI;
+            k[(size_t) (j * taps + i)] = (tp == 0.0 ? 1.0 : std::sin(tp) / tp) * w * w * base / (double) orig;
+        }
+    }
+    const size_t out_n = (size_t) std::ceil((double) nw * (double) n / (double) orig);
+    std::vector<float> y(out_n);
+    for (size_t o = 0; o < out_n; ++o) {
+        const int64_t frame = (int64_t) (o / (size_t) nw), j = (int64_t) (o % (size_t) nw);
+        // the input padded with `width` zeros on the left: frame f's window starts at sample f * orig - width
+        const int64_t start = frame * orig - width;
+        double acc = 0.0;
+        for (int64_t i = 0; i < taps; ++i) {
+            const int64_t at = start + i;
+            if (at >= 0 && at < (int64_t) n)
+                acc += k[(size_t) (j * taps + i)] * x[at];
+        }
+        y[o] = (float) acc;
+    }
+    return y;
+}
+
 } // namespace
+
+bool GuildModel::encode_voice(const float* pcm, size_t n, int sample_rate, std::vector<int32_t>& codes,
+                              std::string& error_msg) {
+    Impl& m = *impl_;
+    if (!m.codec) {
+        error_msg = "this model was not loaded as a speech model (--drama3)";
+        return false;
+    }
+    if (n == 0 || sample_rate <= 0) {
+        error_msg = "the reference audio is empty";
+        return false;
+    }
+    const std::vector<float> x = resample(pcm, n, sample_rate, m.codec->sample_rate());
+    return m.codec->encode(x.data(), x.size(), codes, error_msg);
+}
 
 bool GuildModel::is_speech_model() const {
     return impl_ && impl_->tower != nullptr;
@@ -139,7 +193,14 @@ bool GuildModel::synthesize(const SpeechRequest& req, const SpeechCallback& on_a
         if (!validate_text(r.text, where, error_msg))
             return false;
         const int nc = tg.n_codebooks;
-        if (r.codes.empty() || r.codes.size() % (size_t) nc) {
+        std::vector<int32_t> encoded;
+        const std::vector<int32_t>* codes = &r.codes;
+        if (r.codes.empty() && !r.audio.empty()) {
+            if (!encode_voice(r.audio.data(), r.audio.size(), r.sample_rate, encoded, error_msg))
+                return false;
+            codes = &encoded;
+        }
+        if (codes->empty() || codes->size() % (size_t) nc) {
             error_msg = where + ": codes must be [frames >= 1][" + std::to_string(nc) + "]";
             return false;
         }

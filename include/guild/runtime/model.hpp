@@ -34,6 +34,9 @@ public:
     bool synthesize(const SpeechRequest& req, const SpeechCallback& on_audio, SpeechTelemetry& telemetry,
                     std::string& error_msg);
     bool is_speech_model() const;
+    /// A reference voice's codes ([frames][10]) from its audio (mono, [-1, 1], any sample rate): encode once, pass
+    /// the codes in SpeechReference.codes for every request in that voice.
+    bool encode_voice(const float* pcm, size_t n, int sample_rate, std::vector<int32_t>& codes, std::string& error_msg);
 
     const model::ModelDescriptor& descriptor() const {
         return desc_;

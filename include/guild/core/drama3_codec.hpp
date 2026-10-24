@@ -41,12 +41,19 @@ public:
     /// Decodes the next `n` frames (host, [n][10] codes) of the utterance into `pcm` (host, n * frame_samples floats
     /// in [-1, 1]).  n > max_chunk is decoded in pieces.
     bool decode(const int32_t* codes, int n, float* pcm, std::string& err);
+    /// A reference voice: 44.1 kHz mono samples in [-1, 1] -> codes [ceil(n / frame_samples)][10] (the last frame
+    /// padded with zeros).  The encoder's weights (~0.8 GB) are on the device only during the call.
+    bool encode(const float* pcm, size_t n_samples, std::vector<int32_t>& codes, std::string& err);
+    bool can_encode() const {
+        return can_encode_;
+    }
 
     struct Impl;
 
 private:
     Impl* impl_ = nullptr;
     int sample_rate_ = 44100, frame_samples_ = 2048;
+    bool can_encode_ = false;
     uint64_t vram_ = 0;
 };
 

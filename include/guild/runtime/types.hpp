@@ -69,10 +69,13 @@ struct GenerationRequest {
     std::shared_ptr<std::atomic<bool>> cancel_flag;
 };
 
-/// A voice to clone: its transcript and its codes ([frames][10], from the codec's encoder)
+/// A voice to clone: its transcript, and its codes ([frames][10], GuildModel::encode_voice) or its audio (mono
+/// samples in [-1, 1] at `sample_rate`; synthesize encodes it, resampled to 44.1 kHz as torchaudio does)
 struct SpeechReference {
     std::string text;
     std::vector<int32_t> codes;
+    std::vector<float> audio;
+    int sample_rate = 44100;
 };
 
 /// One text-to-speech request (Drama 3).  `text` may carry <|speaker:N|> tags (0..15) and the model's inline tags

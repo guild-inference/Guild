@@ -70,6 +70,14 @@ def main() -> int:
         put(name + ".w", w.permute(2, 0, 1).reshape(-1, w.shape[1]))
         put(name + ".b", b)
 
+    def conv_s(name: str, w: torch.Tensor, b: torch.Tensor, s: int) -> None:
+        """strided conv, w [out, in, k] with k = s or 2s: wa[o][r * in + c] = w[o][c][r], wb the taps s..2s-1"""
+        k = w.shape[2]
+        put(name + ".wa", w[:, :, :s].permute(0, 2, 1).reshape(w.shape[0], -1))
+        if k == 2 * s:
+            put(name + ".wb", w[:, :, s:].permute(0, 2, 1).reshape(w.shape[0], -1))
+        put(name + ".b", b)
+
     def conv_t(name: str, w: torch.Tensor, b: torch.Tensor) -> None:  # w [in, out, k] -> [out][k][in]
         put(name + ".w", w.permute(1, 2, 0).reshape(-1, w.shape[0]))
         put(name + ".b", b)
@@ -81,17 +89,61 @@ def main() -> int:
         w = fold(q + ".out_proj")[:, :, 0]                          # [1024, 8]
         put(f"vq.{i}", cb @ w.T + sd[q + ".out_proj.bias"].float())  # [n, 1024]
 
-    pm = "quantizer.post_module"
-    n_layers = 1 + max(int(k.split(".")[3]) for k in sd if k.startswith(pm + ".layers."))
-    for l in range(n_layers):
-        p = f"{pm}.layers.{l}."
-        for n in ("attention.wqkv", "attention.wo", "feed_forward.w1", "feed_forward.w2", "feed_forward.w3"):
-            put(f"post.{l}.{n.split('.')[1]}", sd[p + n + ".weight"].float())
-        for n in ("attention_norm", "ffn_norm"):
-            put(f"post.{l}.{n}", sd[p + n + ".weight"].float())
-        put(f"post.{l}.attn_scale", sd[p + "attention_layer_scale.gamma"].float())
-        put(f"post.{l}.ffn_scale", sd[p + "ffn_layer_scale.gamma"].float())
-    put("post.norm", sd[pm + ".norm.weight"].float())
+    def transformer(name: str, pm: str) -> int:
+        n_layers = 1 + max(int(k[len(pm) + 8:].split(".")[0]) for k in sd if k.startswith(pm + ".layers."))
+        for l in range(n_layers):
+            p = f"{pm}.layers.{l}."
+            for n in ("attention.wqkv", "attention.wo", "feed_forward.w1", "feed_forward.w2", "feed_forward.w3"):
+                put(f"{name}.{l}.{n.split('.')[1]}", sd[p + n + ".weight"].float())
+            for n in ("attention_norm", "ffn_norm"):
+                put(f"{name}.{l}.{n}", sd[p + n + ".weight"].float())
+            put(f"{name}.{l}.attn_scale", sd[p + "attention_layer_scale.gamma"].float())
+            put(f"{name}.{l}.ffn_scale", sd[p + "ffn_layer_scale.gamma"].float())
+        put(f"{name}.norm", sd[pm + ".norm.weight"].float())
+        return n_layers
+
+    n_layers = transformer("post", "quantizer.post_module")
+
+    def convnext(name: str, p: str) -> None:
+        put(f"{name}.dw.w", sd[p + "dwconv.conv.weight"].float()[:, 0, :])
+        put(f"{name}.dw.b", sd[p + "dwconv.conv.bias"].float())
+        put(f"{name}.ln.w", sd[p + "norm.weight"].float())
+        put(f"{name}.ln.b", sd[p + "norm.bias"].float())
+        put(f"{name}.pw1.w", sd[p + "pwconv1.weight"].float())
+        put(f"{name}.pw1.b", sd[p + "pwconv1.bias"].float())
+        put(f"{name}.pw2.w", sd[p + "pwconv2.weight"].float())
+        put(f"{name}.pw2.b", sd[p + "pwconv2.bias"].float())
+        put(f"{name}.gamma", sd[p + "gamma"].float())
+
+    # ---- the encode path (reference voices): encoder, downsample, pre_module, the quantizers' in_proj
+    conv("enc.in", fold("encoder.block.0.conv"), sd["encoder.block.0.conv.bias"].float())
+    enc_rates = []
+    for blk in range(1, 5):
+        p = f"encoder.block.{blk}.block."
+        for r in range(3):
+            q = f"{p}{r}.block."
+            put(f"enc.{blk}.ru{r}.snake1", sd[q + "0.alpha"].float().reshape(-1))
+            conv(f"enc.{blk}.ru{r}.conv1", fold(q + "1.conv"), sd[q + "1.conv.bias"].float())
+            put(f"enc.{blk}.ru{r}.snake2", sd[q + "2.alpha"].float().reshape(-1))
+            conv(f"enc.{blk}.ru{r}.conv2", fold(q + "3.conv"), sd[q + "3.conv.bias"].float())
+        put(f"enc.{blk}.snake", sd[p + "3.alpha"].float().reshape(-1))
+        w = fold(p + "4.conv")
+        enc_rates.append(w.shape[2] // 2)
+        conv_s(f"enc.{blk}.down", w, sd[p + "4.conv.bias"].float(), w.shape[2] // 2)
+    enc_t_layers = transformer("enct", "encoder.block.4.block.5")
+    put("enc.out.snake", sd["encoder.block.5.alpha"].float().reshape(-1))
+    conv("enc.out", fold("encoder.block.6.conv"), sd["encoder.block.6.conv.bias"].float())
+    for u in range(2):
+        p = f"quantizer.downsample.{u}."
+        conv_s(f"down.{u}.conv", sd[p + "0.conv.weight"].float(), sd[p + "0.conv.bias"].float(), 2)
+        convnext(f"down.{u}", p + "1.")
+    pre_layers = transformer("pre", "quantizer.pre_module")
+    for i, q in enumerate(qs):
+        put(f"vqe.{i}.in.w", fold(q + ".in_proj")[:, :, 0])           # [8, 1024]
+        put(f"vqe.{i}.in.b", sd[q + ".in_proj.bias"].float())
+        put(f"vqe.{i}.cb", sd[q + ".codebook.weight"].float())        # [n, 8]
+        put(f"vqe.{i}.out.w", fold(q + ".out_proj")[:, :, 0])         # [1024, 8]
+        put(f"vqe.{i}.out.b", sd[q + ".out_proj.bias"].float())
 
     for u in range(2):
         p = f"quantizer.upsample.{u}."
@@ -137,7 +189,8 @@ def main() -> int:
     (args.out / "dense.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
     meta = {"arch": "drama3-codec", "sample_rate": 44100, "frame_samples": 2048, "n_codebooks": len(qs),
             "post_layers": n_layers, "post_dim": 1024, "post_heads": 16, "post_window": 128, "post_rope_base": 10000,
-            "post_eps": 1e-5, "rates": ",".join(map(str, rates))}
+            "post_eps": 1e-5, "rates": ",".join(map(str, rates)), "enc_rates": ",".join(map(str, enc_rates)),
+            "enc_transformer_layers": enc_t_layers, "enc_window": 512, "pre_layers": pre_layers}
     (args.out / "codec.txt").write_text("".join(f"{k} {v}\n" for k, v in meta.items()), encoding="utf-8")
     print(f"wrote {len(out)} tensors, {off / 2**20:.0f} MiB, to {args.out}")
     return 0
