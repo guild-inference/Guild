@@ -41,6 +41,8 @@ int main() {
     fs::remove_all(temp_root);
     fs::create_directories(temp_root / "pkg_src" / "lib");
     setenv("GUILD_DATA_DIR", (temp_root / "data").c_str(), 1);
+    // Every phase prefills the same prompt and counts the router calls it makes: the prefix cache would skip them.
+    setenv("GUILD_NO_KV_CACHE", "1", 1);
 
     std::string err;
     CHECK(abi::GKernelPackageManager::instance().init(err));
