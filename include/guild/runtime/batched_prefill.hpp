@@ -60,6 +60,10 @@ public:
     std::function<bool()> should_stop;
     // Diagnostic only: device rows [T,N], routing [T,K]; stream is synchronized.
     std::function<void(int64_t, int64_t, int64_t, const float*, const int32_t*, const float*)> on_layer;
+    /// After each chunk: its T rows' final residuals (device, [T,N], before the output norm) at positions p0..; the
+    /// stream is synchronized and the rows are overwritten by the next chunk.  The MTP drafter's prompt K/V.  false
+    /// stops the run with `err`.
+    std::function<bool(const float* R_rows, int64_t T, int64_t p0, std::string& err)> on_chunk;
 
 private:
     struct Impl;

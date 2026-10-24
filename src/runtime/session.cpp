@@ -375,26 +375,42 @@ bool GuildSession::generate(const GenerationRequest& req, TokenStreamCallback on
     const char* vmax_env = std::getenv("GUILD_PREFILL_VERIFY_MAX");
     const int64_t verify_max = vmax_env != nullptr ? std::atoll(vmax_env) : 64;
     const bool verify_ingest = m_impl->prefill != nullptr && n_tail > 0 && n_tail <= verify_max;
+    // The MTP drafter's prompt K/V from each prompt chunk's final residuals.  Set for this request or cleared: the
+    // callback holds this request's `ids`, so one left from an earlier request with drafts would read freed memory
+    // (and fill the drafter for nothing) when this one has none.
+    auto mtp_chunk = [this, m_impl, &ids](bool engine) {
+        return [this, m_impl, &ids, engine](const float* R_rows, int64_t T, int64_t p0, std::string& e) -> bool {
+            std::vector<int32_t> next_tokens(static_cast<size_t>(T));
+            for (int64_t i = 0; i < T; ++i) {
+                if (p0 + i + 1 < static_cast<int64_t>(ids.size())) {
+                    next_tokens[static_cast<size_t>(i)] = static_cast<int32_t>(ids[static_cast<size_t>(p0 + i + 1)]);
+                }
+            }
+            if (engine && m_impl->prefill->draft_kv(*m_impl->mtp, R_rows, next_tokens.data(), T, p0, e))
+                return true;
+            return e.empty() && m_impl->mtp->prefill(R_rows, next_tokens.data(), T, p0, e);
+        };
+    };
+    struct ClearChunkCallbacks {
+        GuildModel::Impl* m;
+        ~ClearChunkCallbacks() {
+            if (m->prefill)
+                m->prefill->on_chunk = nullptr;
+            if (m->batched_prefill)
+                m->batched_prefill->on_chunk = nullptr;
+        }
+    } clear_chunk_callbacks{m_impl};
+    if (m_impl->prefill)
+        m_impl->prefill->on_chunk = nullptr;
+    if (m_impl->batched_prefill)
+        m_impl->batched_prefill->on_chunk = nullptr;
     if (m_impl->prefill && !verify_ingest) {
         m_impl->prefill->should_stop = [this, &req] {
             return impl_->cancelled.load() || (req.cancel_flag && req.cancel_flag->load());
         };
 
-        if (use_mtp) {
-            m_impl->prefill->on_chunk = [this, m_impl, &ids](const float* R_rows, int64_t T, int64_t p0,
-                                                             std::string& e) -> bool {
-                std::vector<int32_t> next_tokens(static_cast<size_t>(T));
-                for (int64_t i = 0; i < T; ++i) {
-                    if (p0 + i + 1 < static_cast<int64_t>(ids.size())) {
-                        next_tokens[static_cast<size_t>(i)] =
-                            static_cast<int32_t>(ids[static_cast<size_t>(p0 + i + 1)]);
-                    }
-                }
-                if (m_impl->prefill->draft_kv(*m_impl->mtp, R_rows, next_tokens.data(), T, p0, e))
-                    return true;
-                return e.empty() && m_impl->mtp->prefill(R_rows, next_tokens.data(), T, p0, e);
-            };
-        }
+        if (use_mtp)
+            m_impl->prefill->on_chunk = mtp_chunk(true);
 
         // Prefill uncached prompt tokens [reused_pos, n_prompt - 1)
         const int64_t n_to_prefill = (n_prompt - 1) - reused_pos;
@@ -412,6 +428,8 @@ bool GuildSession::generate(const GenerationRequest& req, TokenStreamCallback on
         m_impl->batched_prefill->should_stop = [this, &req] {
             return impl_->cancelled.load() || (req.cancel_flag && req.cancel_flag->load());
         };
+        if (use_mtp)
+            m_impl->batched_prefill->on_chunk = mtp_chunk(false);
         const int64_t n_to_prefill = (n_prompt - 1) - reused_pos;
         if (n_to_prefill > 0) {
             if (!m_impl->batched_prefill->run(ids.data() + reused_pos, n_to_prefill, reused_pos, error_msg)) {

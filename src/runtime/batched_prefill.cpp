@@ -696,6 +696,14 @@ bool BatchedPrefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::st
             }
         }
         m.finite(m.R, size_t(T) * N, "prefill residual");
+        if (on_chunk) {
+            ck(cudaStreamSynchronize(cs));
+            if (!on_chunk(m.R, T, p0, err)) {
+                if (err.empty())
+                    err = "batched prefill: the chunk callback failed";
+                return false;
+            }
+        }
         ++stats_.chunks_processed;
     }
     ck(cudaStreamSynchronize(m.cs));

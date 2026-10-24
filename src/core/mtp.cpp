@@ -11,6 +11,7 @@
 #include "guild/kernels/elementwise.hpp"
 #include "guild/kernels/fused_gr.hpp"
 #include "guild/kernels/gr.hpp"
+#include "guild/kernels/iq_kernels.hpp"
 #include "guild/kernels/kv_q4.hpp"
 #include "guild/kernels/kv_q8.hpp"
 #include "guild/kernels/native_moe.hpp"
@@ -249,9 +250,48 @@ bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, Session
         cudaMemcpy(dense_, blob.data(), blob.size(), cudaMemcpyHostToDevice);
         vram_ += blob.size();
     }
-    // ---- the 512 routed experts, one blob each
+    // ---- what the files are: Qwen's layer (Q2_0 experts, hyper-connections) or, with an mtp.txt saying `experts
+    // native`, the single-stream layer of a qwen35moe GGUF (tools/ornith_mtp_rt.py)
     {
-        const uint64_t bytes = (uint64_t) g.n_expert * guild::kernels::cpu::BLOB;
+        std::ifstream meta(rt_dir + "/mtp.txt");
+        std::string key, value, experts;
+        int64_t n_embd = 0, n_ff = 0, n_expert = 0;
+        while (meta >> key >> value) {
+            if (key == "experts")
+                experts = value;
+            else if (key == "expert_gu_type")
+                nat_gu_type_ = std::atoi(value.c_str());
+            else if (key == "expert_d_type")
+                nat_d_type_ = std::atoi(value.c_str());
+            else if (key == "n_embd")
+                n_embd = std::atoll(value.c_str());
+            else if (key == "n_ff")
+                n_ff = std::atoll(value.c_str());
+            else if (key == "n_expert")
+                n_expert = std::atoll(value.c_str());
+            else if (key == "expert_bytes")
+                expert_bytes_ = (uint64_t) std::atoll(value.c_str());
+        }
+        native_ = experts == "native";
+        if (native_ != (g.hc == 1)) {
+            err = native_ ? "mtp: " + rt_dir + " is a single-stream draft layer, this model has hyper-connections"
+                          : "mtp: " + rt_dir + " is Qwen's draft layer; for this model run tools/ornith_mtp_rt.py";
+            return false;
+        }
+        if (native_) {
+            const auto L = guild::kernels::native_expert_layout(nat_gu_type_, nat_d_type_, g.n_embd, g.n_ff);
+            if (n_embd != g.n_embd || n_ff != g.n_ff || n_expert != g.n_expert || L.bytes != expert_bytes_ ||
+                !guild::kernels::native_expert_supported(nat_gu_type_, nat_d_type_, g.n_embd, g.n_ff)) {
+                err = "mtp: " + rt_dir + "/mtp.txt does not describe this model's draft layer, or its expert " +
+                      "formats have no grouped GPU kernel";
+                return false;
+            }
+        } else
+            expert_bytes_ = guild::kernels::cpu::BLOB;
+    }
+    // ---- the routed experts, one blob each
+    {
+        const uint64_t bytes = (uint64_t) g.n_expert * expert_bytes_;
         // Loader fix (0.1.15+loaderfix.2): each 64 MiB read below reached the disk as ~16k 4095-byte reads under
         // MSVC's `basic_filebuf::xsgetn`, which is what made 675 MiB of drafter experts take minutes.
         FILE* f = std::fopen((rt_dir + "/experts.bin").c_str(), "rb");
@@ -267,7 +307,7 @@ bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, Session
             }
         } closer{f};
         if (cudaMalloc((void**) &experts_, bytes) != cudaSuccess) {
-            err = "mtp: the 512 experts do not fit in VRAM";
+            err = "mtp: the " + std::to_string(g.n_expert) + " experts do not fit in VRAM";
             return false;
         }
         std::vector<uint8_t> chunk(64u << 20);
@@ -296,6 +336,22 @@ bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, Session
             err = std::string("mtp: ") + n + " is missing (q8_0)";
             return false;
         }
+    if (native_) {
+        const char* f32s[] = {"pre_fc_norm_embedding.weight", "pre_fc_norm_hidden.weight",
+                              "input_layernorm.weight",       "self_attn.q_norm.weight",
+                              "self_attn.k_norm.weight",      "post_attention_layernorm.weight",
+                              "shared_head_norm.weight"};
+        for (const char* n : f32s)
+            if (!f32(n)) {
+                err = std::string("mtp: ") + n + " is missing (f32)";
+                return false;
+            }
+        for (const char* n : {"mlp.gate.weight", "mlp.shared_expert_gate.weight"})
+            if (!bf16(n)) {
+                err = std::string("mtp: ") + n + " is missing (bf16)";
+                return false;
+            }
+    }
 
     // ---- the layer's own K/V (dense attention: no indexer state is read)
     const guild::kernels::QsaShapes s = shapes_of(g);
@@ -430,6 +486,10 @@ bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, Session
         out_ids_ = b.take<int32_t>(T + 4);
         probs_ = b.take<float>(T + 4);
         dummy_inj_ = b.take<float>(HC);
+        if (native_) {
+            nat_xq_ = b.take<uint8_t>(T * (N / 32) * 36);
+            nat_scratch_ = b.take<uint8_t>(guild::kernels::native_expert_scratch_bytes((int64_t) (T * K), g.n_ff));
+        }
     };
     Bump count;
     carve(count);
@@ -457,9 +517,9 @@ bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, Session
     std::fprintf(stderr,
                  "guild mtp: draft layer loaded, %.0f MiB of VRAM (experts %.0f, dense %.0f), files read in %.2f s "
                  "(%.0f MiB/s)\n",
-                 (double) vram_ / 1048576.0, (double) g.n_expert * guild::kernels::cpu::BLOB / 1048576.0,
+                 (double) vram_ / 1048576.0, (double) g.n_expert * (double) expert_bytes_ / 1048576.0,
                  (double) tensors_.back().off / 1048576.0, files_s,
-                 files_s > 0 ? ((double) g.n_expert * guild::kernels::cpu::BLOB + (double) tensors_.back().off) /
+                 files_s > 0 ? ((double) g.n_expert * (double) expert_bytes_ + (double) tensors_.back().off) /
                                    1048576.0 / files_s
                              : 0.0);
     return true;
@@ -636,6 +696,8 @@ bool MtpDrafter::bind(const WeightTable& wt, const NativeHead* head, const float
 
 // The layer for T rows.  full = false stops after the K/V append (the prompt only needs the cache).
 bool MtpDrafter::record_forward(int T, int step_row0, cudaStream_t cs, std::string& err) {
+    if (native_)
+        return record_forward_single(T, step_row0, cs, err);
     using namespace guild::kernels;
     const ModelGeometry& g = *g_;
     SessionState& ss = *ss_;
@@ -847,6 +909,158 @@ bool MtpDrafter::record_forward(int T, int step_row0, cudaStream_t cs, std::stri
         if (coupled_rec_) {
             // coupled draft sampling: the target's chain and Philox draw for the row that will verify this draft
             // (counter = this cell + 1, from its step record), penalties over the ring; T == 1 (full layer)
+            coupled_draft_sample(head_logits_, (int) nv, sub ? dvocab_ : nullptr, sub ? dinv_ : nullptr, (int) n_vocab_,
+                                 cparams_, cring_, kCoupledHistCap, coupled_j_, step, cscratch_, out_ids_, probs_, cs);
+            return true;
+        }
+        SamplerParams sp;
+        sp.greedy = true;
+        sp.temperature = 0.0f;
+        sample_tokens(head_logits_, T, (int) nv, nullptr, 0, sp, out_ids_, cs);
+        row_top_prob(head_logits_, T, (int) nv, out_ids_, probs_, cs);
+        if (sub)
+            map_ids(out_ids_, dvocab_, T, cs);
+    } catch (const std::exception& e) {
+        err = std::string("mtp: ") + e.what();
+        return false;
+    }
+    return true;
+}
+
+// The single-stream layer (mtp.hpp, `native_`) for T rows; step_row0 as in record_forward.
+bool MtpDrafter::record_forward_single(int T, int step_row0, cudaStream_t cs, std::string& err) {
+    using namespace guild::kernels;
+    const ModelGeometry& g = *g_;
+    SessionState& ss = *ss_;
+    const bool full = step_row0 >= 0;
+    const int row0 = full ? step_row0 : -1 - step_row0;
+    if (full && T != 1) {
+        err = "mtp: the full layer runs one row at a time (its attention scratch is sized for one)";
+        return false;
+    }
+    const int64_t N = g.n_embd, K = ss.k, NH = g.n_head, HD = g.head_dim, NKV = g.n_head_kv, NE = g.n_expert;
+    const QsaShapes s = shapes_of(g);
+    const int32_t* step = step_ + row0 * 4;
+    const int32_t* pos = pos_ + row0 * NH;
+    try {
+        // ---- the two inputs, R = fc_embedding(rms(embed(tok))) + fc_hidden(rms(h))
+        const WeightRef* we = wt_->find("token_embd.weight");
+        if (!we) {
+            err = "mtp: token_embd.weight is missing";
+            return false;
+        }
+        if (const NativeEmbed* ne = native_embed()) {
+            ne->gather_dev(tok_, T, emb_, cs);
+        } else {
+            const auto* codes = (const uint8_t*) we->data;
+            const auto* scales = (const float*) (codes + we->codes_bytes);
+            const auto* offsets =
+                we->has_offset ? (const float*) (codes + we->codes_bytes + we->scales_bytes) : nullptr;
+            embedding_gather_dev(codes, scales, offsets, tok_, T, we->ne0, we->code_bits, we->code_bias,
+                                 we->group_elems, (uint64_t) (we->ne0 / (8 / we->code_bits)),
+                                 (uint64_t) (we->ne0 / we->group_elems), emb_, cs);
+        }
+        native_qsa_rms_norm_weighted(emb_, f32("pre_fc_norm_embedding.weight"), en_, (int) N, T, EPS, cs);
+        native_quantize_q8_1(en_, xq_, (int) N, T, cs);
+        native_mmvq(GGML_Q8_0, q8("fc_embedding.weight"), xq_, e2_, (int) N, (int) N, T, cs);
+        native_qsa_rms_norm_weighted(Rin_, f32("pre_fc_norm_hidden.weight"), hn_, (int) N, T, EPS, cs);
+        native_quantize_q8_1(hn_, xq_, (int) N, T, cs);
+        native_mmvq(GGML_Q8_0, q8("fc_hidden.weight"), xq_, R_, (int) N, (int) N, T, cs);
+        add_inplace(R_, e2_, (int64_t) T * N, cs);
+        // ---- attention: K/V into the layer's own cache, then (full) dense attention over every cell
+        native_qsa_rms_norm_weighted(R_, f32("input_layernorm.weight"), mixed_, (int) N, T, EPS, cs);
+        auto norm_rope = [&](float* data, const float* gamma, int rows, int cols, const int32_t* p) {
+            native_qsa_rms_norm_weighted(data, gamma, data, cols, rows, EPS, cs);
+            if (native_rope_enabled())
+                native_rope_apply(data, data, rows, cols, (int) s.n_rot, rope_scaling(), p, cs);
+            else
+                rope_neox_apply(data, data, rows, cols, (int) s.n_rot, st_.cos_tab, st_.sin_tab, p, cs);
+        };
+        native_quantize_q8_1(mixed_, xq_, (int) N, T, cs);
+        native_mmvq(GGML_Q8_0, q8("self_attn.k_proj.weight"), xq_, kcur_, (int) N, (int) (NKV * HD), T, cs);
+        native_mmvq(GGML_Q8_0, q8("self_attn.v_proj.weight"), xq_, vcur_, (int) N, (int) (NKV * HD), T, cs);
+        for (int t = 0; t < T; ++t) {
+            norm_rope(kcur_ + t * NKV * HD, f32("self_attn.k_norm.weight"), (int) NKV, (int) HD, pos + t * NH);
+            if (st_.kv_rot) {
+                fwht256_inplace_cuda(kcur_ + t * NKV * HD, NKV, cs);
+                fwht256_inplace_cuda(vcur_ + t * NKV * HD, NKV, cs);
+            }
+            if (st_.kv_q4)
+                kv_append_q4_step(st_.k_q4, st_.v_q4, st_.page_table, step + t * 4, kcur_ + t * NKV * HD,
+                                  vcur_ + t * NKV * HD, s, cs, &st_.host);
+            else if (st_.kv_int8)
+                kv_append_q8_step(st_.k_q, st_.v_q, st_.k_scale, st_.v_scale, st_.page_table, step + t * 4,
+                                  kcur_ + t * NKV * HD, vcur_ + t * NKV * HD, s, cs, &st_.host);
+            else
+                kv_append_step(st_.k_pool, st_.v_pool, st_.page_table, step + t * 4, kcur_ + t * NKV * HD,
+                               vcur_ + t * NKV * HD, s, cs, &st_.host);
+        }
+        if (!full)
+            return true;
+        native_mmvq(GGML_Q8_0, q8("self_attn.q_proj.weight"), xq_, qfull_, (int) N, (int) (NH * 2 * HD), T, cs);
+        for (int t = 0; t < T; ++t) {
+            float* qc = qcur_ + t * NH * HD;
+            if (cudaMemcpy2DAsync(qc, (size_t) HD * 4, qfull_ + t * NH * 2 * HD, (size_t) HD * 2 * 4, (size_t) HD * 4,
+                                  (size_t) NH, cudaMemcpyDeviceToDevice, cs) != cudaSuccess) {
+                err = "mtp: q split failed";
+                return false;
+            }
+            norm_rope(qc, f32("self_attn.q_norm.weight"), (int) NH, (int) HD, pos + t * NH);
+            if (st_.kv_rot)
+                fwht256_inplace_cuda(qc, NH, cs);
+        }
+        const QsaAttnPools pools = qsa_attn_pools(st_);
+        if (window_ > 0)
+            window_ids(const_cast<int32_t*>(step), T, (int) window_, ident_, cap_, cs);
+        qsa_decode_attn_batch(qcur_, pools, ident_, step, cap_, s, attn_scratch_, attn_, T, cs);
+        if (st_.kv_rot)
+            fwht256_inplace_cuda(attn_, (int64_t) T * NH, cs);
+        for (int t = 0; t < T; ++t)
+            native_qsa_gate_apply(attn_ + t * NH * HD, qfull_ + t * NH * 2 * HD, attn32_ + t * NH * HD, (int) NH,
+                                  (int) HD, cs);
+        native_quantize_q8_1(attn32_, xq_, (int) (NH * HD), T, cs);
+        native_mmvq(GGML_Q8_0, q8("self_attn.o_proj.weight"), xq_, bo_, (int) (NH * HD), (int) N, T, cs);
+        add_inplace(R_, bo_, (int64_t) T * N, cs);
+        // ---- MoE: softmax top-k router, the resident experts in their GGUF form, the shared expert, the combine
+        native_qsa_rms_norm_weighted(R_, f32("post_attention_layernorm.weight"), mixed_, (int) N, T, EPS, cs);
+        for (int t = 0; t < T; ++t)
+            bf16_gemv_fp32_mmvf(mixed_ + t * N, bf16("mlp.gate.weight"), logits_ + t * NE, (int) N, (int) NE, cs);
+        router_top10(logits_, T, (int) NE, (int) K, ids_, w_, cs);
+        const NativeExpertLayout L = native_expert_layout(nat_gu_type_, nat_d_type_, N, g.n_ff);
+        moe_group_resident(ids_, (int) (T * K), (int) K, experts_, (int64_t) L.bytes, grp_ptr_, grp_start_, grp_counts_,
+                           hit_dst_, hit_slot_, cs);
+        quantize_q8_1_rows(mixed_, T, N, nat_xq_, cs);
+        native_expert_grouped(L, grp_ptr_, grp_start_, grp_counts_, hit_dst_, hit_slot_, (int64_t) T * K,
+                              (int64_t) T * K, nat_xq_, nat_scratch_, parts_, cs);
+        NativeSharedWeights nsw;
+        nsw.gate_type = GGML_Q8_0;
+        nsw.gate_data = q8("mlp.shared_expert.gate_proj.weight");
+        nsw.up_type = GGML_Q8_0;
+        nsw.up_data = q8("mlp.shared_expert.up_proj.weight");
+        nsw.down_type = GGML_Q8_0;
+        nsw.down_data = q8("mlp.shared_expert.down_proj.weight");
+        nsw.q8_1 = xq_;
+        const SForm none{};
+        const bool need_bf16_x = !shared_expert_native_bf16_enabled();
+        for (int t = 0; t < T; ++t) {
+            if (need_bf16_x)
+                f32_to_bf16_bulk(mixed_ + t * N, x_bf16_, N, cs);
+            shared_expert(nullptr, nullptr, x_bf16_, none, nullptr, nullptr, nullptr, none, nullptr, nullptr, nullptr,
+                          none, nullptr, nullptr, nullptr, bf16("mlp.shared_expert_gate.weight"), sh_scratch_,
+                          shared_ + t * N, N, g.n_ff, 32, cs, mixed_ + t * N, &nsw);
+            if (native_moe_combine_enabled())
+                native_moe_combine(parts_ + (size_t) t * K * N, w_ + t * K, shared_ + t * N, y_ + t * N, N, K, cs);
+            else
+                moe_combine(parts_ + (size_t) t * K * N, w_ + t * K, shared_ + t * N, y_ + t * N, N, K, cs);
+        }
+        add_inplace(R_, y_, (int64_t) T * N, cs);
+        // ---- the head norm and the main model's head
+        native_qsa_rms_norm_weighted(R_, f32("shared_head_norm.weight"), sample_, (int) N, T, EPS, cs);
+        native_quantize_q8_1(sample_, xq_, (int) N, T, cs);
+        const bool sub = dhead_ != nullptr;
+        const int64_t nv = sub ? n_dvocab_ : n_vocab_;
+        native_mmvq(head_->type(), sub ? dhead_ : head_->weights(), xq_, head_logits_, (int) N, (int) nv, T, cs);
+        if (coupled_rec_) {
             coupled_draft_sample(head_logits_, (int) nv, sub ? dvocab_ : nullptr, sub ? dinv_ : nullptr, (int) n_vocab_,
                                  cparams_, cring_, kCoupledHistCap, coupled_j_, step, cscratch_, out_ids_, probs_, cs);
             return true;
