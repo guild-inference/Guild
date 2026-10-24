@@ -85,6 +85,113 @@ void usage() {
               << "  (sampling defaults to the model card's: --temperature 1.0 --top-p 0.9 --top-k 30)\n";
 }
 
+std::string b64_encode(const unsigned char* p, size_t n) {
+    static const char* k = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string out;
+    out.reserve((n + 2) / 3 * 4);
+    for (size_t i = 0; i < n; i += 3) {
+        const uint32_t v =
+            (uint32_t) p[i] << 16 | (i + 1 < n ? (uint32_t) p[i + 1] << 8 : 0) | (i + 2 < n ? p[i + 2] : 0);
+        out += k[v >> 18];
+        out += k[(v >> 12) & 63];
+        out += i + 1 < n ? k[(v >> 6) & 63] : '=';
+        out += i + 2 < n ? k[v & 63] : '=';
+    }
+    return out;
+}
+
+bool b64_decode(const std::string& in, std::string& out) {
+    out.clear();
+    uint32_t v = 0;
+    int bits = 0;
+    for (char c : in) {
+        int d;
+        if (c >= 'A' && c <= 'Z')
+            d = c - 'A';
+        else if (c >= 'a' && c <= 'z')
+            d = c - 'a' + 26;
+        else if (c >= '0' && c <= '9')
+            d = c - '0' + 52;
+        else if (c == '+' || c == '-')
+            d = 62;
+        else if (c == '/' || c == '_')
+            d = 63;
+        else if (c == '=')
+            break;
+        else
+            return false;
+        v = v << 6 | (uint32_t) d;
+        bits += 6;
+        if (bits >= 8) {
+            bits -= 8;
+            out += (char) ((v >> bits) & 0xFF);
+        }
+    }
+    return true;
+}
+
+// SAY [max_new=N] [temperature=T] [top_p=P] [top_k=K] [seed=S] [chunk=F] text=<base64 UTF-8>
+//     [ref=<base64 transcript>:<comma-separated codes, [frames][10]>]...
+bool parse_say_line(const std::string& rest, SpeechRequest& req, std::string& err) {
+    std::istringstream iss(rest);
+    std::string part, raw;
+    bool have_text = false;
+    try {
+        while (iss >> part) {
+            const size_t eq = part.find('=');
+            if (eq == std::string::npos) {
+                err = "SAY: expected key=value, got '" + part + "'";
+                return false;
+            }
+            const std::string key = part.substr(0, eq), value = part.substr(eq + 1);
+            if (key == "max_new")
+                req.max_new_frames = std::stoi(value);
+            else if (key == "temperature")
+                req.temperature = std::stof(value);
+            else if (key == "top_p")
+                req.top_p = std::stof(value);
+            else if (key == "top_k")
+                req.top_k = std::stoi(value);
+            else if (key == "seed")
+                req.seed = std::stoull(value);
+            else if (key == "chunk")
+                req.chunk_frames = std::stoi(value);
+            else if (key == "text") {
+                if (!b64_decode(value, req.text)) {
+                    err = "SAY: text is not base64";
+                    return false;
+                }
+                have_text = true;
+            } else if (key == "ref") {
+                const size_t colon = value.find(':');
+                SpeechReference r;
+                if (colon == std::string::npos || !b64_decode(value.substr(0, colon), r.text)) {
+                    err = "SAY: ref=<base64 transcript>:<codes>";
+                    return false;
+                }
+                std::string codes = value.substr(colon + 1);
+                std::replace(codes.begin(), codes.end(), ',', ' ');
+                std::istringstream cs(codes);
+                int32_t c;
+                while (cs >> c)
+                    r.codes.push_back(c);
+                req.references.push_back(std::move(r));
+            } else {
+                err = "SAY: unknown key " + key;
+                return false;
+            }
+        }
+    } catch (const std::exception&) {
+        err = "SAY: bad value in '" + part + "'";
+        return false;
+    }
+    if (!have_text) {
+        err = "SAY needs text=<base64>";
+        return false;
+    }
+    return true;
+}
+
 // a WAV file's samples, mono (channels averaged) in [-1, 1]: PCM 16 / 24 / 32-bit or IEEE float 32-bit
 bool read_wav(const std::string& path, std::vector<float>& out, int& rate, std::string& err) {
     std::ifstream f(path, std::ios::binary);
@@ -671,7 +778,8 @@ int main(int argc, char** argv) try {
     }
 
     if (serve_mode) {
-        std::cout << "READY " << plan.context_length << " stop\n" << std::flush;
+        std::cout << "READY " << plan.context_length << " stop" << (model->is_speech_model() ? " speech" : "") << "\n"
+                  << std::flush;
 
         ServeInput input;
         std::string line;
@@ -680,6 +788,72 @@ int main(int argc, char** argv) try {
                 continue;
             if (line == "QUIT") {
                 break;
+            }
+            // Text to speech (a --drama3 model).  VOICE <sample rate> <base64 float32 samples> -> CODES <frames>
+            // <codes>; SAY ... -> A <base64 16-bit PCM> per chunk, then SDONE <frames> <prompt rows> <prompt ms>
+            // <decode ms> <finish reason> <sample rate>
+            if (line.rfind("VOICE ", 0) == 0 || line.rfind("SAY ", 0) == 0) {
+                if (!model->is_speech_model()) {
+                    std::cout << "ERR this model does not speak (start it with --drama3)\n" << std::flush;
+                    continue;
+                }
+                if (line.rfind("VOICE ", 0) == 0) {
+                    std::istringstream vs(line.substr(6));
+                    int rate = 0;
+                    std::string b64, bytes, verr;
+                    std::vector<int32_t> codes;
+                    if (!(vs >> rate >> b64) || !b64_decode(b64, bytes) || bytes.size() % 4) {
+                        std::cout << "ERR VOICE <rate> <base64 float32 samples>\n" << std::flush;
+                        continue;
+                    }
+                    std::vector<float> pcm(bytes.size() / 4);
+                    std::memcpy(pcm.data(), bytes.data(), bytes.size());
+                    if (!model->encode_voice(pcm.data(), pcm.size(), rate, codes, verr)) {
+                        std::cout << "ERR " << verr << "\n" << std::flush;
+                        continue;
+                    }
+                    std::cout << "CODES " << codes.size() / 10 << " ";
+                    for (size_t i = 0; i < codes.size(); ++i)
+                        std::cout << (i ? "," : "") << codes[i];
+                    std::cout << "\n" << std::flush;
+                    continue;
+                }
+                SpeechRequest sreq;
+                std::string perr;
+                if (!parse_say_line(line.substr(4), sreq, perr)) {
+                    std::cout << "ERR " << perr << "\n" << std::flush;
+                    continue;
+                }
+                sreq.cancel_flag = std::make_shared<std::atomic<bool>>(false);
+                SpeechTelemetry st;
+                std::string serr;
+                int rate = 44100;
+                std::vector<int16_t> pcm16;
+                input.begin(sreq.cancel_flag);
+                const bool ok = model->synthesize(
+                    sreq,
+                    [&](const SpeechChunk& c) {
+                        rate = c.sample_rate;
+                        if (c.samples == 0)
+                            return true;
+                        pcm16.resize(c.samples);
+                        for (size_t i = 0; i < c.samples; ++i)
+                            pcm16[i] = (int16_t) std::lrint(std::max(-1.0f, std::min(1.0f, c.pcm[i])) * 32767.0f);
+                        std::cout << "A "
+                                  << b64_encode(reinterpret_cast<const unsigned char*>(pcm16.data()), c.samples * 2)
+                                  << "\n"
+                                  << std::flush;
+                        return true;
+                    },
+                    st, serr);
+                input.end();
+                if (!ok)
+                    std::cout << "ERR " << serr << "\n" << std::flush;
+                else
+                    std::cout << "SDONE " << st.frames << " " << st.prompt_rows << " " << st.prompt_ms << " "
+                              << st.decode_ms << " " << st.finish_reason << " " << rate << "\n"
+                              << std::flush;
+                continue;
             }
             if (line.rfind("GEN ", 0) == 0) {
                 GenerationRequest req;
