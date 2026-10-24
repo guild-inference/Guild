@@ -218,6 +218,23 @@ http://127.0.0.1:11434/v1
 
 Supported API functionality is still evolving.
 
+### Ornith-1.5-35B with its MTP draft layer
+
+Ornith's GGUF ships a multi-token-prediction layer that drafts tokens for the verify window. Write it in the
+engine's form once, then pass the folder to `guild-generate` (or `"mtp_dir"` in the model's manifest):
+
+```bash
+python tools/ornith_mtp_rt.py --gguf Ornith-1.5-35B-Q4_K_M.gguf --out <dir>    # ~630 MB
+guild-generate --serve --native Ornith-1.5-35B-Q4_K_M.gguf --pack <pack> --mtp <dir> ...
+```
+
+Every emitted token is still the model's own: the drafts only decide how many tokens a step checks at once. On a
+dual Xeon Gold 6130 with a GTX 1070, decode went from 54.9 / 54.7 to 64.7 / 74.7 tok/s (prose / code) and used
+794 MiB more VRAM ([bench/results/2026-10-24-numa-iq3s](bench/results/2026-10-24-numa-iq3s/README.md)).
+The tool's `--draft-vocab data/draft_vocab_en.bin` (an English-and-code draft vocabulary) took it to 68.2 / 79.1,
+at the cost of never drafting tokens outside that subset. Without the folder, `--decode-strategy auto` drafts from the prompt and
+the answer so far instead.
+
 ## Performance philosophy
 
 Guild is not intended to be a generic wrapper around every model architecture.

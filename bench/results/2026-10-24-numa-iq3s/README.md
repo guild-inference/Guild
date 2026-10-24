@@ -143,6 +143,18 @@ The session set the prefill engine's chunk callback only for requests with draft
 request's token list: a request without drafts after one with them would have run the drafter's prompt pass over
 freed memory. The callbacks are now set or cleared for every request, and cleared after it.
 
+The English-and-code draft vocabulary (`data/draft_vocab_en.bin`, 40525 tokens) through the same files: 68.18 /
+79.11 tok/s, the same draft counts and text, 3.2 ms of drafting per window. For Qwen it measured 26.43 / 34.62 against
+25.96 / 34.38 (its freed VRAM went to GPU cache slots, whose rounding changes the text).
+
+## Contexts past the trained one, and the setup's other flags
+
+setup.py's 393216 and 524288 contexts write `--rope-scaling yarn --rope-scale F`, which guild-generate ignored, so
+those configs failed to load. With them read, Qwen on the GTX 1070 starts at 524288 without the MTP drafter (20.17 /
+20.00 tok/s); with `--mtp-optional` (now in --help, so setup writes it for small cards) the drafter is kept at
+262144 (832 MiB of VRAM left) and dropped at 393216 and 524288 (600 and 368 MiB), where the load used to fail or end
+in a kernel's exit. No long-context recall test was run here.
+
 ## The engine's exit with its pipe open
 
 The serve loop's stdin thread (added in `b9cff45` today) read `std::cin`; `exit()` takes every stdio stream's lock to
@@ -168,6 +180,7 @@ exits in 2.2 s either way.
 | Idea | Measurement | Verdict |
 | --- | --- | --- |
 | Refreshing the GPU expert cache at run time | Qwen's cache holds 58 of 24576 experts; Ornith's formats have no grouped GPU kernel | Nothing to gain on this card. |
+| A GPU expert cache for Ornith: Q6_K down rows in the grouped GPU expert kernels (llama.cpp's `vec_dot_q6_K_q8_1`; `native_expert_parity --synthetic q4_K/q6_K` passed, GPU 1.34% from the float reference) and a profile from `--dump-routing` traces (the hottest 1900 of 10240 experts held 35% of a held-out workload's uses) | Ornith, 3 x 256 tokens: 53.12 / 51.26 tok/s with it against 54.86 / 54.72; with MTP 57.61 / 61.16 against 68.18 / 79.11. CPU dispatch fell (5.0 -> 4.3, 14.5 -> 11.3 ms) but each window grew (18.3 -> 20.3, 32.6 -> 39.9 ms): Ornith's window is GPU-bound on the GTX 1070. Its automatic offload also page-locked the arena, losing the NUMA split (8.4 ms of CPU dispatch) | Reverted: with the kernel the automatic policy turns the cache on for Ornith. Automatic offload is now single-node only. |
 | Expert budgets in the verify window (MoE-Spec, AcceptMoE) or expert deferral (KTransformers) | - | They change the target's arithmetic, so a draft would no longer be accepted exactly when greedy decode produces it. Not done. |
 
 ## Reproduce
