@@ -304,6 +304,12 @@ bool GuildSession::generate(const GenerationRequest& req, TokenStreamCallback on
         error_msg = "invalid request decode_strategy '" + req.decode_strategy + "'";
         return false;
     }
+    // Without an MTP drafter `auto` drafts from the context (adaptive: lookup and retrieval, back to one token when
+    // they miss) instead of not drafting.  Every emitted token is the verify window's, so outputs are unchanged.
+    // Ornith-1.5-35B on the dual Xeon + GTX 1070: 54.86 / 54.72 tok/s normal, 54.68 / 55.00 adaptive on the
+    // bench prose / code prompts; 54.02 against 109.24 tok/s on a 512-token repeating prompt.
+    if (eff_mode == spec::DecodeStrategyMode::Auto && m_impl->mtp == nullptr)
+        eff_mode = spec::DecodeStrategyMode::Adaptive;
 
     const int S = std::max(1, m_impl->config.spec);
     int max_draft = 0;
