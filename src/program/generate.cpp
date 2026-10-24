@@ -55,6 +55,7 @@ void usage() {
               << "  --decode-strategy <s>      auto|normal|mtp|lookup|retrieval|adaptive (default auto: MTP when\n"
               << "                             --mtp is given, otherwise none)\n"
               << "  --pool-workers <n>         CPU expert pool worker count\n"
+              << "  --dump-routing <file>      Append every decode layer's routed experts (tools/make_profile.py)\n"
               << "  --prompt <string>          Input prompt text\n"
               << "  --tokens <ids>             Comma-separated prompt token IDs\n"
               << "  --tokens-file <path>       File containing token IDs\n"
@@ -342,6 +343,13 @@ int main(int argc, char** argv) try {
             spec_min_p = std::stof(next("--spec-min-p"));
         } else if (a == "--decode-strategy") {
             decode_strategy = next("--decode-strategy");
+        } else if (a == "--dump-routing") {
+            const std::string path = next("--dump-routing");
+#if defined(_WIN32)
+            _putenv_s("GUILD_DUMP_ROUTING", path.c_str());
+#else
+            setenv("GUILD_DUMP_ROUTING", path.c_str(), 1);
+#endif
         } else if (a == "--pool-workers") {
             pool_workers = std::stoi(next("--pool-workers"));
         } else if (a == "--prompt") {

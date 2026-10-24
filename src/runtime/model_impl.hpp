@@ -81,6 +81,16 @@ inline void drive_pool_multi(void* user, const float* x_f, const int32_t* ids, i
         throw std::runtime_error(error);
     }
     t->d.layers = layer;
+    if (t->routing) { // tools/make_profile.py's record: layer, k, k ids, k weights (not known here: zeros)
+        static const float zeros[64] = {};
+        for (int64_t i = 0; i < n_tok; ++i) {
+            const int32_t head[2] = {int32_t(layer), int32_t(k)};
+            std::fwrite(head, sizeof head, 1, t->routing);
+            std::fwrite(ids + i * k, sizeof(int32_t), size_t(k), t->routing);
+            for (int64_t w = 0; w < k; w += 64)
+                std::fwrite(zeros, sizeof(float), size_t(std::min<int64_t>(k - w, 64)), t->routing);
+        }
+    }
     const Clock::time_point a = Clock::now();
     t->validation_ms += std::chrono::duration<double, std::milli>(a - validation_begin).count();
     guild::core::expert_pool_dispatch_multi(t->d, x_f, ids, n_tok, k, out);
@@ -414,6 +424,8 @@ struct GuildModel::Impl {
     std::mutex generation_mutex;
 
     ~Impl() {
+        if (drive.routing)
+            std::fclose(drive.routing);
         core::ScopedModelExecution exec_scope(exec_state);
         std::optional<kernels::ScopedCudaDense> dense_scope;
         if (cuda_dense)

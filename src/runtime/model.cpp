@@ -1,4 +1,5 @@
 #include "guild/runtime/model.hpp"
+#include "guild/kernels/cpu/numa.hpp"
 #include "guild/runtime/session.hpp"
 
 #if defined(GUILD_ENABLE_CUDA) || defined(GUILD_ENABLE_HIP)
@@ -834,8 +835,12 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
         const uint64_t budget = ram_budget;
         const char* pin_env = std::getenv("GUILD_PIN_EXPERTS");
         const bool force_pin = (pin_env != nullptr && std::atoi(pin_env) != 0);
-        const bool pcie_offload_requested = force_pin || (plan.pcie_expert_fraction > 0.0) ||
-                                            (plan.pcie_expert_fraction < 0.0 && budget <= (24ull << 30));
+        // Automatic offload page-locks the arena, which then cannot be NUMA-placed: on a multi-node machine that costs
+        // the CPU more than the offload gives (dual Xeon Gold 6130: Qwen 21.21 / 26.44 tok/s page-locked against
+        // 21.53 / 27.30; Ornith's CPU experts 8.4 ms per token against 5.0).  The GEXEC path above has the same rule.
+        const bool pcie_offload_requested =
+            force_pin || (plan.pcie_expert_fraction > 0.0) ||
+            (plan.pcie_expert_fraction < 0.0 && budget <= (24ull << 30) && kernels::cpu::numa_topology().nodes <= 1);
         const bool gpu_needs_pinned = pcie_offload_requested && std::any_of(impl->expert_performance.gpu_layers.begin(),
                                                                             impl->expert_performance.gpu_layers.end(),
                                                                             [](uint8_t v) { return v != 0; });
@@ -1154,6 +1159,16 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
     impl->drive.d.n_expert = impl->g.n_expert;
     impl->drive.d.n_embd = impl->g.n_embd;
     impl->drive.d.jobs.resize(static_cast<size_t>(impl->K));
+    // GUILD_DUMP_ROUTING=FILE (guild-generate --dump-routing): every decode layer's routed experts, appended in the
+    // record form tools/make_profile.py reads, for an expert-cache profile of a workload or of a model that has none
+    if (const char* path = std::getenv("GUILD_DUMP_ROUTING"); path != nullptr && *path) {
+        impl->drive.routing = std::fopen(path, "ab");
+        if (impl->drive.routing == nullptr) {
+            error_msg = std::string("cannot open GUILD_DUMP_ROUTING file ") + path;
+            return nullptr;
+        }
+        std::fprintf(stderr, "guild: routing of every decode layer is appended to %s\n", path);
+    }
     impl->drive.d.split_rows = true;
     impl->drive.d.cache = slots > 0 ? &impl->xcache : nullptr;
     impl->drive.d.cache_base = slots > 0 ? static_cast<const uint8_t*>(impl->xcache.device_slot(0)) : nullptr;
