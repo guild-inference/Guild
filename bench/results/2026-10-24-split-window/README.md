@@ -76,6 +76,25 @@ the split did. Decode rates were unchanged (25.68 / 34.26 tok/s). Time to first 
 prompt fell from 2347 to 932 ms, and of the cached ones from about 90-200 to 76 ms. In `prefix_seq.py`, a
 continuation turn took 744 ms instead of 1582 and a branch with a checkpoint restore 788 ms instead of 1559.
 
+The old engine had the same rule: the Qwen parity gate passes `--short-read 0` to its reference. The gate's
+candidate now sets `GUILD_PREFILL_VERIFY_MAX=0` and `GUILD_NO_KV_CACHE=1` to match, and with `GUILD_IQ_MT_MIN=2`
+all 248320 first-token logits are bitwise identical to the stored reference row again.
+
+## Prefix-cache checkpoints
+
+Every request saves the recurrent state twice, with the model lock held: 118 MB on this model (36 GDN layers of
+128 x 48 x 128 FP32 plus the conv state). Short requests with no reusable prefix took 1749 ms with the cache on and
+1516 ms with `GUILD_NO_KV_CACHE=1` (median of ten), about 115 ms per save. The buffers are now page-locked, not
+zero-filled and recycled. Over the six requests of `prefix_seq.py` the tokens and reused counts were identical to
+the previous commit's and each request took 64-230 ms less.
+
+## The pipe protocol (`guild-generate --serve`)
+
+`serve/server.py --engine guild` drives this binary. Before the fix, measured through the pipe: a GEN line with a
+seed above 2^31 made the engine exit; `top_k`, `min_p` and the penalty keys were dropped; and STOP was read only
+after the request had run to its `max_new`. After it, a STOP one second into a 2000-token request ended it after 25
+tokens (1.3 s), a malformed value is answered with ERR, and the engine stays up.
+
 ## Measured and rejected
 
 | Idea | Measurement | Verdict |
