@@ -1,0 +1,3 @@
+  Decode: 256 tokens, 4750.06 ms (53.89 tok/s)
+  Decode: 256 tokens, 4738.75 ms (54.02 tok/s)
+Median Decode Tok/s:   54.02 tok/s

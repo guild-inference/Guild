@@ -92,14 +92,40 @@ CPU dispatch fell from 48-50 to 29 ms per verify window, but the window only fro
 now the limit. A one-group window profile (`GUILD_VERIFY_PROFILE=1 GUILD_SPEC_SPLIT=0`) spent about 51 of 82 ms in
 GPU kernels and the rest waiting for the CPU.
 
+## Drafting from the context by default without an MTP drafter
+
+`auto`, the default strategy of `guild-generate` and `guild serve`, meant MTP when a drafter is loaded and no
+drafting otherwise, so Ornith never used the lookup and retrieval drafters. Without a drafter (and with drafts
+allowed, so not with `--spec 0`) `auto` now runs as `adaptive`. Ornith, the bench prompts through
+`guild-generate --decode-strategy` (new; also `decode_strategy=` per GEN line), three runs each:
+
+| Strategy | Prose | Code |
+| --- | ---: | ---: |
+| normal | 54.86 tok/s | 54.72 tok/s |
+| adaptive | 54.68 tok/s | 55.00 tok/s |
+| lookup | 54.20 tok/s | 54.84 tok/s |
+
+All nine pairs of texts were identical. `ornith_bench --prompt-len 512` (its prompt repeats one sentence):
+54.02 tok/s normal, 108.74 lookup, 109.24 adaptive. Through the pipe, greedy and two sampled configurations with
+fixed seeds gave the same 160 tokens with normal, adaptive and lookup, on the code prompt and on a 512-token
+repeating prompt. Qwen keeps MTP for `auto`.
+
+## The engine's exit with its pipe open
+
+The serve loop's stdin thread (added in `b9cff45` today) read `std::cin`; `exit()` takes every stdio stream's lock to
+flush it, and the blocked reader held stdin's, so an engine sent `QUIT` by a client that kept the pipe open never
+exited (Ornith: still running after 300 s; 2.2 s with the pipe closed). It now reads file descriptor 0 directly and
+exits in 2.2 s either way.
+
 ## Checked
 
 - `pool_numa_test` (new): random batches of 1-40 experts and 1-4 tokens through the fused and two-phase pool
   paths, with and without the repacked rows, split on and off, bitwise equal to the row kernels called directly.
 - `iq3s_nl4_exact` (new, `guild-kernels-cpu`): the repacked rows against ggml-cpu's dot and iq256 for 1-8 tokens,
   also with `GUILD_FORCE_AVX2=1`.
-- The full CTest suite on this build: 102 of 102 passed with `ple_parity` excluded (its Q2_0 fixtures are absent),
-  four hardware skips as before; the Ornith prefill, Qwen parity and pool tests again after the prompt-path change.
+- The full CTest suite: 102 of 102 passed with `ple_parity` excluded (its Q2_0 fixtures are absent) and four
+  hardware skips as before; the Ornith prefill, Qwen parity and pool tests again after the prompt-path change; and
+  103 of 103 (with `pool_numa_test`) after the decode-strategy change.
 - `expert_source.cpp` and `pool.cpp` compile against the pinned `guild-kernels-cpu` revision, without the repack
   (`GUILD_CPU_HAS_IQ3S_NL4`).
 
