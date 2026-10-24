@@ -19,6 +19,12 @@ from serve.responses import (ENCRYPTED_PREFIX, ResponsesError, input_messages, r
                              template_kwargs, text_format)
 from serve.server import ByteTokenizer, MockEngine, Service, serve  # noqa: E402
 
+try:
+    import jsonschema  # noqa: F401
+    HAVE_JSONSCHEMA = True
+except ImportError:                  # optional (serve/structured.py): json_schema answers are then only one object
+    HAVE_JSONSCHEMA = False
+
 ROOT = Path(__file__).resolve().parents[1]
 TEMPLATE = ChatTemplate(ROOT / "serve/chat_template.jinja")
 
@@ -264,19 +270,26 @@ class OverHttp(Server):
         code, r = self.post({"model": "m", "input": "hi"}, headers={"Origin": "https://evil.example.com"})
         self.assertEqual(code, 403)
 
+    NUM = {"type": "json_schema", "name": "num", "strict": True,
+           "schema": {"type": "object", "properties": {"n": {"type": "integer"}}, "required": ["n"]}}
+
     def test_json_schema_text_format(self):
         self.engine.scripts = [self.tok.encode("</think>\n\n{\"n\": 3}<|im_end|>", parse_special=True)]
         self.engine.script = self.engine.scripts[0]
-        fmt = {"type": "json_schema", "name": "num", "strict": True,
-               "schema": {"type": "object", "properties": {"n": {"type": "integer"}}, "required": ["n"]}}
+        fmt = self.NUM
         code, r = self.post({"model": "m", "input": "a number", "text": {"format": fmt}})
         self.assertEqual(code, 200, r)
         self.assertEqual(r["output"][-1]["content"][0]["text"], "{\"n\":3}")
         code, events = self.post({"model": "m", "input": "a number", "text": {"format": fmt}, "stream": True})
         self.assertEqual([e["delta"] for e in events if e["type"] == "response.output_text.delta"], ["{\"n\":3}"])
         self.assertEqual(events[-1]["type"], "response.completed")
+
+    @unittest.skipUnless(HAVE_JSONSCHEMA, "jsonschema is not installed: a schema is then only checked to be an object")
+    def test_json_schema_violation(self):
+        self.engine.scripts = [self.tok.encode("</think>\n\n{\"n\": 3}<|im_end|>", parse_special=True)]
+        self.engine.script = self.engine.scripts[0]
         # an answer that fails the schema
-        bad = {**fmt, "schema": {**fmt["schema"], "properties": {"n": {"type": "string"}}}}
+        bad = {**self.NUM, "schema": {**self.NUM["schema"], "properties": {"n": {"type": "string"}}}}
         code, r = self.post({"model": "m", "input": "a number", "text": {"format": bad}})
         self.assertEqual((code, r["error"]["code"]), (502, "structured_output_failed"))
         code, events = self.post({"model": "m", "input": "a number", "text": {"format": bad}, "stream": True})

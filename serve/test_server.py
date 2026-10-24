@@ -1039,6 +1039,19 @@ class PcieShare(unittest.TestCase):
         self.assertEqual([r["hit_rate"] for r in rows], [0.6, 0.6, 0.6])
         self.assertEqual([r["pcie_share"] for r in rows], [0.2, 0.0, None])
         self.assertIn("expert cache 60.0% hit (+20.0% of the routed experts over PCIe)", out.getvalue())
+        self.assertIn("drafts 3/5 accepted", out.getvalue())
+
+    def test_no_cache_no_hit_rate(self):
+        # a model whose experts no GPU kernel takes (Ornith) still counts lookups: its 0% is not printed
+        tok = ByteTokenizer()
+        engine = DoneLineEngine(tok, "</think>\n\nok", max_context=CTX,
+                                done_lines=["DONE 4 20 40.0 30.0 stop 0 0 0 0 100 0 0 0.0 20 0"])
+        svc = Service(engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            list(svc.run(tok.encode("hi"), False, None, 10, {}, threading.Event()))
+        self.assertIn("[guild] done:", out.getvalue())
+        self.assertNotIn("expert cache", out.getvalue())
+        self.assertNotIn("drafts", out.getvalue())
 
 
 class LearnedProfile(unittest.TestCase):

@@ -9,7 +9,11 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import socket
+import subprocess
+import sys
 import tempfile
+import time
 import unittest
 import urllib.error
 import urllib.request
@@ -159,6 +163,38 @@ class Http(unittest.TestCase):
         for el in ("cfg-card", "cfg-form", "cfg-save", "cfg-msg"):
             self.assertIn(f'id="{el}"', html)
         self.assertIn('fetch("config", {method: "POST", headers: headers(true)', js)
+
+
+class ConfigPort(unittest.TestCase):
+    """The config's "port" is the server's port, as its "host" is the address; --port still wins."""
+
+    @staticmethod
+    def free_port():
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            return s.getsockname()[1]
+
+    def ready_line(self, args):
+        p = subprocess.Popen([sys.executable, "-m", "serve.server", "--engine", "mock", *args], cwd=ROOT,
+                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        try:
+            deadline = time.time() + 60
+            while time.time() < deadline:
+                line = p.stdout.readline()
+                if line.startswith("ready:") or not line:
+                    return line
+        finally:
+            p.terminate()
+            p.wait(timeout=30)
+        return ""
+
+    def test_config_port_and_override(self):
+        cfg_port, cli_port = self.free_port(), self.free_port()
+        with tempfile.TemporaryDirectory() as d:
+            cfg = Path(d) / "guild.json"
+            cfg.write_text(json.dumps({"port": cfg_port}), encoding="utf-8")
+            self.assertIn(f"127.0.0.1:{cfg_port}/v1", self.ready_line(["--config", str(cfg)]))
+            self.assertIn(f"127.0.0.1:{cli_port}/v1", self.ready_line(["--config", str(cfg), "--port", str(cli_port)]))
 
 
 if __name__ == "__main__":

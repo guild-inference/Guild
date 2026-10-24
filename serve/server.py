@@ -2433,9 +2433,14 @@ class Service:
                             el = now - st.get("started", now)
                             ft = st.get("first_token")
                             rate = n / max(1e-6, now - ft) if ft else 0.0
-                            hit_msg = f", expert cache {hit_rate*100:.1f}% hit" if hit_rate is not None else ""
+                            # no hits at all is a model without GPU-cached experts (Ornith's formats), not news
+                            hit_msg = (f", expert cache {hit_rate*100:.1f}% hit"
+                                       if hit_rate is not None and (last.get("hits") or pcie_share) else "")
                             if hit_msg and pcie_share:
                                 hit_msg += f" (+{pcie_share*100:.1f}% of the routed experts over PCIe)"
+                            if last.get("drafts_offered"):
+                                hit_msg += (f", drafts {last.get('drafts_accepted') or 0}/{last['drafts_offered']} "
+                                            "accepted")
                             print(f"[guild] done: {n} tokens in {el:.0f} s ({rate:.1f} tok/s) "
                                   f"({finish}, cancel={cancel.is_set()}){hit_msg}", flush=True)
                             if finish == "length" and parser.state == "reasoning":   # #530
@@ -3907,7 +3912,8 @@ def main() -> int:
     ap.add_argument("--script", action="append",
                     help="the mock engine's answer (default: a short greeting); given more than once, requests get "
                          "them in turn and the last one repeats")
-    ap.add_argument("--port", type=int, default=8095)
+    ap.add_argument("--port", type=int, default=None,
+                    help="the port to listen on (default 8095; also \"port\" in the config)")
     ap.add_argument("--gpu", help="the GPU to run on, as nvidia-smi numbers them, or several for a layer split "
                                   "(\"0,2\"; also \"gpu\" in the config)")
     ap.add_argument("--tokenizer", default=str(ROOT / "pack/full/tokenizer"),
@@ -3939,6 +3945,7 @@ def main() -> int:
     if a.gpu is not None:
         cfg["gpu"] = int(a.gpu) if a.gpu.strip().isdigit() else a.gpu
     a.host = a.host or cfg.get("host") or "127.0.0.1"   # issue #26: the run scripts pass no --host, the config can
+    a.port = a.port or int(cfg.get("port") or 8095)     # as "host": a config's "port" was read only by setup's scripts
     try:                                                # before the minutes of loading: is the port free?
         Server((a.host, a.port), BaseHTTPRequestHandler).server_close()
     except OSError:
