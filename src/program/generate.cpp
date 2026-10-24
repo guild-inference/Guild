@@ -8,16 +8,21 @@
 #include "guild/artifact/gguf_reader.hpp"
 
 #include <algorithm>
+#include <atomic>
+#include <condition_variable>
 #include <cstdint>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <fstream>
 #include <iostream>
 #include <memory>
+#include <mutex>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 using namespace guild::runtime;
@@ -75,6 +80,120 @@ bool parse_token_list(const std::string& str, std::vector<int32_t>& tokens) {
     }
     return !tokens.empty();
 }
+
+// `GEN <max_new> [key=value ...] <ids>`: the keys serve/server.py's sampling_keys() writes.  Keys this engine has no
+// setting for (cvec, pcie_frac, spec_min_p) are accepted and ignored; the field without '=' is the token list.  A
+// malformed number is a refused request, never an exception out of the serve loop.
+bool parse_gen_line(const std::string& rest, GenerationRequest& req, std::string& err) {
+    std::istringstream iss(rest);
+    std::string part, tok_str;
+    req.max_new_tokens = 4096;
+    if (!(iss >> part)) {
+        err = "GEN needs a token count";
+        return false;
+    }
+    try {
+        size_t used = 0;
+        req.max_new_tokens = std::stoi(part, &used);
+        if (used != part.size() || req.max_new_tokens < 1) {
+            err = "invalid max_new '" + part + "'";
+            return false;
+        }
+        while (iss >> part) {
+            const size_t eq = part.find('=');
+            if (eq == std::string::npos) {
+                tok_str = part;
+                continue;
+            }
+            const std::string key = part.substr(0, eq), value = part.substr(eq + 1);
+            if (key == "temperature")
+                req.temperature = std::stof(value);
+            else if (key == "top_p")
+                req.top_p = std::stof(value);
+            else if (key == "top_k")
+                req.top_k = std::stoi(value);
+            else if (key == "min_p")
+                req.min_p = std::stof(value);
+            else if (key == "penalty_repeat")
+                req.penalty_repeat = std::stof(value);
+            else if (key == "penalty_freq")
+                req.penalty_freq = std::stof(value);
+            else if (key == "penalty_present")
+                req.penalty_present = std::stof(value);
+            else if (key == "penalty_last_n")
+                req.penalty_last_n = std::stoi(value);
+            else if (key == "seed")
+                req.seed = std::stoull(value);
+        }
+    } catch (const std::exception&) {
+        err = "invalid value in '" + part + "'";
+        return false;
+    }
+    if (!tok_str.empty() && !parse_token_list(tok_str, req.prompt_tokens)) {
+        err = "invalid prompt token list";
+        return false;
+    }
+    return true;
+}
+
+// The serve loop's stdin.  A reader thread owns it, so a STOP reaches the request that is running (the generation
+// holds the main thread for its whole length); every other line is queued for the main thread.  A STOP with no
+// request running is dropped: it was meant for one that has already finished.  End of input cancels the running
+// request and ends the loop.
+class ServeInput {
+public:
+    ServeInput() {
+        // The reader blocks in getline until the parent closes the pipe, so it is detached and co-owns the state.
+        std::thread([s = s_] { read(*s); }).detach();
+    }
+    bool next(std::string& line) {
+        std::unique_lock<std::mutex> lk(s_->mu);
+        s_->cv.wait(lk, [&] { return !s_->lines.empty() || s_->eof; });
+        if (s_->lines.empty())
+            return false;
+        line = std::move(s_->lines.front());
+        s_->lines.pop_front();
+        return true;
+    }
+    void begin(std::shared_ptr<std::atomic<bool>> flag) {
+        std::lock_guard<std::mutex> lk(s_->mu);
+        s_->active = std::move(flag);
+        if (s_->eof)
+            s_->active->store(true);
+    }
+    void end() {
+        std::lock_guard<std::mutex> lk(s_->mu);
+        s_->active.reset();
+    }
+
+private:
+    struct State {
+        std::mutex mu;
+        std::condition_variable cv;
+        std::deque<std::string> lines;
+        std::shared_ptr<std::atomic<bool>> active;
+        bool eof = false;
+    };
+    static void read(State& s) {
+        std::string line;
+        while (std::getline(std::cin, line)) {
+            std::lock_guard<std::mutex> lk(s.mu);
+            if (line == "STOP") {
+                if (s.active)
+                    s.active->store(true);
+                continue;
+            }
+            s.lines.push_back(std::move(line));
+            s.cv.notify_one();
+        }
+        std::lock_guard<std::mutex> lk(s.mu);
+        s.eof = true;
+        if (s.active)
+            s.active->store(true);
+        s.cv.notify_one();
+    }
+    std::shared_ptr<State> s_ = std::make_shared<State>();
+};
 
 guild::model::ModelDescriptor make_default_descriptor(const std::string& path) {
     guild::model::ModelDescriptor desc;
@@ -311,50 +430,22 @@ int main(int argc, char** argv) try {
     if (serve_mode) {
         std::cout << "READY " << plan.context_length << " stop\n" << std::flush;
 
+        ServeInput input;
         std::string line;
-        while (std::getline(std::cin, line)) {
+        while (input.next(line)) {
             if (line.empty())
                 continue;
             if (line == "QUIT") {
                 break;
             }
-            if (line == "STOP") {
-                session->cancel();
-                continue;
-            }
             if (line.rfind("GEN ", 0) == 0) {
-                std::istringstream iss(line.substr(4));
-                int req_max_new = 4096;
-                iss >> req_max_new;
-                float req_temp = 0.0f;
-                float req_top_p = 1.0f;
-                int req_seed = 0;
-                std::string tok_str;
-                std::string part;
-                while (iss >> part) {
-                    if (part.rfind("temperature=", 0) == 0) {
-                        req_temp = std::stof(part.substr(12));
-                    } else if (part.rfind("top_p=", 0) == 0) {
-                        req_top_p = std::stof(part.substr(6));
-                    } else if (part.rfind("seed=", 0) == 0) {
-                        req_seed = std::stoi(part.substr(5));
-                    } else {
-                        tok_str = part;
-                    }
-                }
-
                 GenerationRequest req;
-                req.max_new_tokens = req_max_new;
-                req.temperature = req_temp;
-                req.top_p = req_top_p;
-                req.seed = req_seed;
-
-                if (!tok_str.empty()) {
-                    if (!parse_token_list(tok_str, req.prompt_tokens)) {
-                        std::cout << "ERR invalid prompt token list\n" << std::flush;
-                        continue;
-                    }
+                std::string parse_err;
+                if (!parse_gen_line(line.substr(4), req, parse_err)) {
+                    std::cout << "ERR " << parse_err << "\n" << std::flush;
+                    continue;
                 }
+                req.cancel_flag = std::make_shared<std::atomic<bool>>(false);
 
                 RuntimeTelemetry telem;
                 std::string gen_err;
@@ -367,7 +458,9 @@ int main(int argc, char** argv) try {
                               << std::flush;
                 };
 
+                input.begin(req.cancel_flag);
                 bool ok = session->generate(req, on_tok, telem, gen_err, on_pref);
+                input.end();
                 if (!ok) {
                     std::cout << "ERR " << gen_err << "\n" << std::flush;
                 } else {
