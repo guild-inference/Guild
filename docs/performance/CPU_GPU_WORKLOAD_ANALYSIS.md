@@ -624,6 +624,16 @@ No remote-DRAM/UPI counter result or replica-local expert-placement experiment
 is available here. NUMA costs should not be assigned a percentage from these
 end-to-end deltas alone.
 
+Since 2026-10-24 the default on a two-node machine with the default process
+policy is the NUMA row split instead: each node holds half of every native
+expert's rows and the pool's threads compute their own node's half, with the
+same kernel calls, so outputs are unchanged. `GUILD_EXPERT_NUMA=interleave` (or
+`process`) is the earlier placement. On this PC the split read 214 GB/s against
+125 GB/s interleaved in a 32-thread streaming test, and took Ornith decode from
+50.2 to 54.6 tok/s; Qwen did not change, since its IQ3_S rows are limited by
+their codebook lookups. See
+[2026-10-24-numa-iq3s](../../bench/results/2026-10-24-numa-iq3s/README.md).
+
 ## 9. CPU streaming, instruction count, and frequency
 
 ### Real-expert microbenchmark shape

@@ -1,0 +1,2 @@
+batch=256 prompt=64 generated=256 pp=197.832 tg=54.4967
+batch=256 prompt=64 generated=256 pp=198.326 tg=54.3689
