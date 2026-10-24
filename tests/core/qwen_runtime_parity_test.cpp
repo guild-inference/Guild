@@ -116,6 +116,10 @@ int main(int argc, char** argv) {
     opts.plan.kv_mode = memory::KvMode::HostOnly;
     opts.plan.prefill_chunk = 512;
     opts.plan.pcie_expert_fraction = 0; // reference explicitly uses CPU-only experts
+    // The reference's --short-read 0 and --prompt-cache 0: the prompt goes through the prefill engine, not the
+    // verifier's short-tail path, and no request reuses another's state.
+    setenv("GUILD_PREFILL_VERIFY_MAX", "0", 1);
+    setenv("GUILD_NO_KV_CACHE", "1", 1);
     server::NativeInferenceEngine candidate(opts);
     std::string err;
     if (!candidate.init(err)) {
