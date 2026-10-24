@@ -17,6 +17,9 @@ struct ModelPaths {
     std::string mtp_dir;
     std::string tokenizer_dir;
     std::string ple_gguf;
+    /// How the PLE table is read: "" or "direct" (unbuffered reads and a row cache), "mmap", or "ram" (mapped and
+    /// locked in RAM at open: no disk read on the token path; for a model on a rotational disk).
+    std::string ple_io;
     std::string gexec_path;
 };
 

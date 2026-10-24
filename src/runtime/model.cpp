@@ -168,6 +168,13 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
         }
         sp.runner_and_plan_ms += ms_since(run_t0);
     }
+    // A rope extension (linear or YaRN, guild-generate --rope-scaling) lets the model serve factor x its trained
+    // context; the descriptor the runner just rebuilt from the GGUF still says the trained one.
+    if (desc.rope.type != "none" && desc.rope.factor > 1.0) {
+        const double trained = desc.rope.orig_ctx > 0 ? desc.rope.orig_ctx : (double) desc.attn.context_length;
+        desc.attn.context_length =
+            std::max<int64_t>(desc.attn.context_length, (int64_t) std::llround(trained * desc.rope.factor));
+    }
     if (plan.context_length <= 0 || plan.context_length > desc.attn.context_length || plan.mtp_spec_tokens < 0 ||
         plan.mtp_spec_tokens > kernels::kVerifyMaxT || plan.spec_max_draft < 0 ||
         plan.spec_max_draft >= kernels::kVerifyMaxT) {
@@ -258,9 +265,10 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
         rope_cfg.orig_ctx = desc.rope.orig_ctx;
     if (desc.rope.type == "linear")
         rope_cfg.type = kernels::RopeScalingType::Linear;
-    else if (desc.rope.type == "yarn")
+    else if (desc.rope.type == "yarn") {
         rope_cfg.type = kernels::RopeScalingType::YaRN;
-    else
+        rope_cfg.ext_factor = 1.0; // llama.cpp's default for YaRN (yarn_ext_factor -1 -> 1): the correction on
+    } else
         rope_cfg.type = kernels::RopeScalingType::None;
     kernels::rope_scaling_set(rope_cfg);
 
@@ -1040,6 +1048,20 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
             return nullptr;
         }
         sp.mtp_init_ms += ms_since(mtpb_t0);
+        // What still has to fit is the prompt scratch and the verify graphs.  Measured with Qwen on the GTX 1070:
+        // 832 MiB free (380 of scratch) started at 262144 cells; 600 failed instantiating the graphs (393216) and
+        // 368 ended in a kernel's out-of-memory exit (524288), past where an error can be returned.
+        size_t free_vram = 0, total_vram = 0;
+        if (cudaMemGetInfo(&free_vram, &total_vram) == cudaSuccess) {
+            const uint64_t need = plan.prompt_scratch_bytes + (384ull << 20);
+            std::fprintf(stderr, "guild mtp: %zu MiB of VRAM free after the draft layer, %llu MiB still needed\n",
+                         free_vram >> 20, (unsigned long long) (need >> 20));
+            if (plan.mtp_optional && free_vram < need) {
+                error_msg = "out of memory: the MTP draft layer leaves " + std::to_string(free_vram >> 20) +
+                            " MiB of VRAM, the rest needs about " + std::to_string(need >> 20);
+                return nullptr;
+            }
+        }
     }
 
     // Prefill initialization

@@ -217,7 +217,9 @@ bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, Session
     {
         std::ifstream idx(rt_dir + "/dense.txt");
         if (!idx) {
-            err = "mtp: cannot open " + rt_dir + "/dense.txt (run tools/mtp_rt.py)";
+            err = "mtp: cannot open " + rt_dir + "/dense.txt (run " +
+                  (g.hc == 1 ? "tools/ornith_mtp_rt.py --gguf <the model's GGUF> --out <dir>" : "tools/mtp_rt.py") +
+                  ")";
             return false;
         }
         std::string line;

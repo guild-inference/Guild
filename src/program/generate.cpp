@@ -42,6 +42,9 @@ void usage() {
               << "  --native <file>            Primary model GGUF file\n"
               << "  --expert-profile <file>    Expert profile binary\n"
               << "  --mtp <dir>                MTP speculative draft directory\n"
+              << "  --mtp-optional             Start without the MTP draft layer when VRAM cannot also hold it\n"
+              << "  --ple-gguf <file>          The GGUF shard holding the PLE table (default: found in --native's)\n"
+              << "  --ple-io <direct|mmap|ram> How the PLE table is read; ram locks it in RAM (rotational disks)\n"
               << "  --tokenizer <dir>          Tokenizer directory\n"
               << "  --max-context <n>          Maximum context length (default 262144)\n"
               << "  --kv <fp16|q8_0|...>       KV cache precision\n"
@@ -52,6 +55,8 @@ void usage() {
               << "  --prefill <auto|n>         Prefill chunk size\n"
               << "  --spec <n>                 Speculative draft length (default 4)\n"
               << "  --spec-min-p <p>           Speculative min probability (default 0.5)\n"
+              << "  --rope-scaling <s>         none|linear|yarn: a --max-context past the model's trained context\n"
+              << "  --rope-scale <f>           the extension factor (default: --max-context / trained context)\n"
               << "  --decode-strategy <s>      auto|normal|mtp|lookup|retrieval|adaptive (default auto: MTP when\n"
               << "                             --mtp is given, otherwise none)\n"
               << "  --pool-workers <n>         CPU expert pool worker count\n"
@@ -283,6 +288,10 @@ int main(int argc, char** argv) try {
     int spec = 4;
     float spec_min_p = 0.5f;
     std::string decode_strategy;
+    std::string rope_scaling;
+    bool mtp_optional = false;
+    std::string ple_gguf, ple_io;
+    double rope_scale = 0;
     int pool_workers = 0;
     std::string prompt;
     std::vector<int32_t> prompt_tokens;
@@ -290,7 +299,7 @@ int main(int argc, char** argv) try {
     float temperature = 0.0f;
     float top_p = 1.0f;
     int top_k = 0;
-    int seed = 0;
+    uint64_t seed = 0;
     bool greedy = true;
     bool serve_mode = false;
 
@@ -343,6 +352,27 @@ int main(int argc, char** argv) try {
             spec_min_p = std::stof(next("--spec-min-p"));
         } else if (a == "--decode-strategy") {
             decode_strategy = next("--decode-strategy");
+        } else if (a == "--mtp-optional") {
+            mtp_optional = true;
+        } else if (a == "--ple-gguf") {
+            ple_gguf = next("--ple-gguf");
+        } else if (a == "--ple-io") {
+            ple_io = next("--ple-io");
+            if (ple_io != "direct" && ple_io != "mmap" && ple_io != "ram") {
+                std::fprintf(stderr, "guild-generate: --ple-io takes direct, mmap or ram\n");
+                return 2;
+            }
+        } else if (a == "--mmap-experts" || a == "--resident-experts") {
+            // setup.py's low-RAM modes for the earlier engine; this one copies the experts it has RAM for and reads
+            // the rest from the files either way (--resident-budget-gib caps the copy)
+            std::fprintf(stderr,
+                         "guild-generate: %s: the RAM copy of the experts is sized to the free RAM "
+                         "(--resident-budget-gib caps it)\n",
+                         a.c_str());
+        } else if (a == "--rope-scaling") {
+            rope_scaling = next("--rope-scaling");
+        } else if (a == "--rope-scale") {
+            rope_scale = std::stod(next("--rope-scale"));
         } else if (a == "--dump-routing") {
             const std::string path = next("--dump-routing");
 #if defined(_WIN32)
@@ -382,18 +412,23 @@ int main(int argc, char** argv) try {
         } else if (a == "--top-k") {
             top_k = std::stoi(next("--top-k"));
         } else if (a == "--seed") {
-            seed = std::stoi(next("--seed"));
+            seed = std::stoull(next("--seed")); // a 64-bit seed, as a GEN line's
         } else if (a == "--greedy") {
             greedy = true;
             temperature = 0.0f;
         } else if (a == "--serve") {
             serve_mode = true;
         }
-        // Other legacy / engine flags are accepted silently
-        else if (a.rfind("--", 0) == 0 && i + 1 < argc && argv[i + 1][0] != '-') {
-            // Check if option was followed by a value
-            // If unknown option without value, it won't consume
-        }
+        // Flags of the earlier engine stay accepted (configs still pass them), but said: a mistyped option used to
+        // be dropped without a word and the run went on with the default.  Its value, if it has one, is skipped.
+        else if (a.rfind("--", 0) == 0) {
+            const bool has_value = i + 1 < argc && argv[i + 1][0] != '-';
+            std::fprintf(stderr, "guild-generate: ignoring unknown option %s%s%s (see --help)\n", a.c_str(),
+                         has_value ? " " : "", has_value ? argv[i + 1] : "");
+            if (has_value)
+                ++i;
+        } else
+            std::fprintf(stderr, "guild-generate: ignoring argument %s (see --help)\n", a.c_str());
     }
 
     if (tokenizer_dir.empty() && !pack_dir.empty()) {
@@ -414,6 +449,25 @@ int main(int argc, char** argv) try {
                 desc = parsed;
             }
         } catch (...) {}
+    }
+    // setup.py writes these for a context past the trained one (393216, 524288): the rope is extended and the
+    // model's context grows with it.  Without them such a --max-context is refused, as before.
+    if (!rope_scaling.empty() && rope_scaling != "none") {
+        if (rope_scaling != "linear" && rope_scaling != "yarn") {
+            std::fprintf(stderr, "guild-generate: --rope-scaling takes none, linear or yarn\n");
+            return 2;
+        }
+        if (desc.rope.orig_ctx <= 0)
+            desc.rope.orig_ctx = (double) desc.attn.context_length;
+        const double factor = rope_scale > 0 ? rope_scale : std::max(1.0, (double) max_context / desc.rope.orig_ctx);
+        desc.rope.type = rope_scaling;
+        desc.rope.factor = factor;
+        desc.attn.context_length = (int64_t) std::llround(desc.rope.orig_ctx * factor);
+        std::fprintf(stderr, "guild-generate: rope %s x%.3g, context %lld (trained %.0f)\n", rope_scaling.c_str(),
+                     factor, (long long) desc.attn.context_length, desc.rope.orig_ctx);
+    } else if (rope_scale > 0 && rope_scale != 1) {
+        std::fprintf(stderr, "guild-generate: --rope-scale needs --rope-scaling linear or yarn\n");
+        return 2;
     }
 
     // Execution Plan
@@ -453,6 +507,7 @@ int main(int argc, char** argv) try {
     auto plan = guild::memory::MemoryPlanner::plan(desc, hw, popts);
     if (!decode_strategy.empty())
         plan.decode_strategy = decode_strategy; // checked by the model load
+    plan.mtp_optional = mtp_optional;
 
     // Model Paths
     ModelPaths paths;
@@ -461,17 +516,39 @@ int main(int argc, char** argv) try {
     paths.expert_profile_path = profile_path;
     paths.mtp_dir = mtp_dir;
     paths.tokenizer_dir = tokenizer_dir;
+    paths.ple_gguf = ple_gguf;
+    paths.ple_io = ple_io;
 
     std::string err_msg;
-    auto model = GuildModel::load(paths, desc, plan, err_msg);
-    if (!model) {
-        std::fprintf(stderr, "guild-generate: model load failed: %s\n", err_msg.c_str());
-        return 1;
+    // The model and its session, an exception as an error: a VRAM shortfall can surface either way.
+    std::unique_ptr<GuildModel> model;
+    std::unique_ptr<GuildSession> session;
+    auto load = [&]() {
+        session.reset();
+        model.reset();
+        try {
+            model = GuildModel::load(paths, desc, plan, err_msg);
+            if (model) {
+                session = model->create_session(plan.context_length);
+                if (!session)
+                    err_msg = "session creation failed";
+            }
+        } catch (const std::exception& e) {
+            err_msg = e.what();
+        }
+        return model != nullptr && session != nullptr;
+    };
+    bool loaded = load();
+    // --mtp-optional (setup.py writes it for small cards): the MTP draft layer is dropped, not the start, when the
+    // VRAM does not hold it with the rest.  The model then drafts from the context (decode strategy auto).
+    if (!loaded && mtp_optional && !paths.mtp_dir.empty() && err_msg.find("out of memory") != std::string::npos) {
+        std::fprintf(stderr, "guild-generate: %s; --mtp-optional: loading again without the MTP draft layer\n",
+                     err_msg.c_str());
+        paths.mtp_dir.clear();
+        loaded = load();
     }
-
-    auto session = model->create_session(plan.context_length);
-    if (!session) {
-        std::fprintf(stderr, "guild-generate: session creation failed\n");
+    if (!loaded) {
+        std::fprintf(stderr, "guild-generate: model load failed: %s\n", err_msg.c_str());
         return 1;
     }
 

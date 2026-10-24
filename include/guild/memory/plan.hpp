@@ -113,6 +113,9 @@ struct ExecutionPlan {
     // Speculative decoding / MTP / Cost-aware scheduling
     uint64_t mtp_bytes = 0;
     int mtp_spec_tokens = 0;
+    /// --mtp-optional: a draft layer that leaves too little VRAM for the rest fails the load with "out of memory"
+    /// while it still can (guild-generate then loads again without it), instead of an exit later in a kernel.
+    bool mtp_optional = false;
     std::string decode_strategy = "auto";
     int spec_max_draft = 0;
     int spec_lookup_window = 65536;

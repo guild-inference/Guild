@@ -4,6 +4,16 @@
 
 namespace guild::runtime {
 
+namespace {
+guild::kernels::PleIoOptions ple_io_options(const std::string& mode) {
+    guild::kernels::PleIoOptions io{};
+    if (mode == "mmap" || mode == "ram")
+        io.mode = guild::kernels::PleIo::Mmap;
+    io.lock = mode == "ram";
+    return io;
+}
+} // namespace
+
 bool bind_required_ple(GuildModel::Impl& m, const std::vector<std::string>& shards, std::string& err) {
     using namespace guild::core;
     using namespace guild::kernels;
@@ -123,7 +133,7 @@ bool bind_required_ple(GuildModel::Impl& m, const std::vector<std::string>& shar
         err = "required PLE convolution must have the existing F16 engine form";
         return false;
     }
-    if (!m.ple_table.open(table_path, err))
+    if (!m.ple_table.open(table_path, err, ple_io_options(m.paths.ple_io)))
         return false;
     m.ss.ple.consts = ple_artifact_consts();
     for (int h = 0; h < PLE_N_HEADS; ++h) {
@@ -255,7 +265,7 @@ bool bind_required_ple_gpack(GuildModel::Impl& m, const artifact::GPackReader& g
             err = "required PLE table is absent from GPACK and no external PLE shard was found";
             return false;
         }
-        if (!m.ple_table.open(table_path, err))
+        if (!m.ple_table.open(table_path, err, ple_io_options(m.paths.ple_io)))
             return false;
     }
 
