@@ -755,6 +755,7 @@ private:
     std::vector<uint64_t> complement_offsets_;
     void* cpu_repack_ = nullptr; ///< build_cpu_repack's copy (mmap'd)
     uint64_t cpu_repack_bytes_ = 0;
+    uint64_t cpu_repack_locked_ = 0;
     std::vector<uint64_t> cpu_repack_off_; ///< per layer: where its experts start, ~0 when not repacked
     std::vector<uint64_t> cpu_repack_blob_;
     std::vector<kernels::cpu::NativeFmt> cpu_fmt_;

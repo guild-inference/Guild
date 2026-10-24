@@ -725,11 +725,15 @@ bool FileExpertSource::open_gpack(const uint8_t* exp_base, uint64_t exp_bytes, i
 
 void FileExpertSource::close() {
 #if !defined(_WIN32)
-    if (cpu_repack_ != nullptr)
+    if (cpu_repack_ != nullptr) {
+        if (cpu_repack_locked_ > 0)
+            guild::platform::unlock_resident(cpu_repack_, cpu_repack_locked_);
         (void) munmap(cpu_repack_, (size_t) cpu_repack_bytes_);
+    }
 #endif
     cpu_repack_ = nullptr;
     cpu_repack_bytes_ = 0;
+    cpu_repack_locked_ = 0;
     cpu_repack_off_.clear();
     cpu_repack_blob_.clear();
     cpu_fmt_.clear();
@@ -2424,14 +2428,17 @@ void FileExpertSource::build_cpu_repack(uint64_t headroom_bytes, std::string& no
             f.gu_row = (uint64_t) (f.n_embd / 256) * kc::kIq3sNl4Block;
             f.up_off = f.gu_row * (uint64_t) f.n_ff; // down_off and d_row stay the stored blob's
         }
+    // Held in RAM like the arena: a decode that pages its expert rows in from swap is not one anyone wants.
+    const guild::platform::LockResult lr = guild::platform::lock_resident(mem, total);
+    cpu_repack_locked_ = lr.locked_bytes;
     cpu_repack_ = mem;
     cpu_repack_bytes_ = total;
     cpu_repack_off_ = std::move(off);
     cpu_repack_blob_ = std::move(per);
-    std::snprintf(msg, sizeof msg, "%d layers, %.2f GiB, %s, in %.1f s", layers, (double) total / 1073741824.0,
+    std::snprintf(msg, sizeof msg, "%d layers, %.2f GiB, %s, in %.1f s; ", layers, (double) total / 1073741824.0,
                   split ? "rows split by NUMA node" : "interleaved",
                   std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
-    note = msg;
+    note = msg + lr.note;
 #else
     (void) headroom_bytes;
     note = "not in this build (needs guild-kernels-cpu with iq3s_nl4, on Linux)";

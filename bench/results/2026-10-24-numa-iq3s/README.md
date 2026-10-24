@@ -73,8 +73,9 @@ At load, every IQ3_S expert's gate/up rows are copied once into a second, CPU-on
 The integer sums and float steps are those of the kernels the IQ3_S rows take (ggml-cpu's dot for one token, iq256
 from `GUILD_IQ_MT_MIN` tokens), so the pool's outputs are bitwise those of the IQ3_S rows. The GPU cache, PCIe
 offload and the prompt path keep the IQ3_S bytes. On Qwen: 47 layers, 38.44 GiB more RAM, 5.8 s more load time.
-It runs only with the bundled CPU kernels, on an AVX2 CPU without the AVX-512 set the AVX-512 kernels need, and
-with 16 GiB of RAM to spare after it; `GUILD_IQ3S_REPACK=0` turns it off.
+It runs only with the bundled CPU kernels, on an AVX2 CPU without the AVX-512 set the AVX-512 kernels need, when
+`--resident-budget-gib` holds every expert (a smaller budget is a request to use less RAM) and 16 GiB of RAM remain
+after it; the copy is locked in RAM like the arena. `GUILD_IQ3S_REPACK=0` turns it off.
 
 One thread, 48 random experts (`micro/iq3s_repacked.cpp`): 5.40 -> 19.96 G weights/s for one token, 4.56 -> 13.27
 for two, 3.72 -> 8.47 for four.

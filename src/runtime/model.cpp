@@ -861,11 +861,13 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
         sp.numa_expert_pin_ms += ms_since(pin_t0);
     }
     // IQ3_S gate/up rows repacked for the CPU pool (FileExpertSource::build_cpu_repack), with 16 GiB of RAM to spare:
-    // only with the bundled CPU kernels, the ones that compute the repacked rows.
+    // only with the bundled CPU kernels, the ones that compute the repacked rows, and only when the RAM budget holds
+    // every expert (a smaller --resident-budget-gib is a request to use less RAM, not more).
     if (impl->native_cpu_package == "builtin.guild-kernels-cpu" &&
         sp.gexec_cpu_expert_impl == "cpu.expert_pool.split_multi_native") {
-        std::string note;
-        impl->src.build_cpu_repack(16ull << 30, note);
+        std::string note = "skipped: the RAM budget holds only part of the experts";
+        if (impl->config.resident_budget_gib > 0 && !sp.expert_zero_copy && ram_budget >= layout.total)
+            impl->src.build_cpu_repack(16ull << 30, note);
         std::fprintf(stderr, "guild experts: IQ3_S gate/up rows repacked for the CPU: %s\n", note.c_str());
     }
 
