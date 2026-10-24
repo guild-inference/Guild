@@ -860,6 +860,14 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
         }
         sp.numa_expert_pin_ms += ms_since(pin_t0);
     }
+    // IQ3_S gate/up rows repacked for the CPU pool (FileExpertSource::build_cpu_repack), with 16 GiB of RAM to spare:
+    // only with the bundled CPU kernels, the ones that compute the repacked rows.
+    if (impl->native_cpu_package == "builtin.guild-kernels-cpu" &&
+        sp.gexec_cpu_expert_impl == "cpu.expert_pool.split_multi_native") {
+        std::string note;
+        impl->src.build_cpu_repack(16ull << 30, note);
+        std::fprintf(stderr, "guild experts: IQ3_S gate/up rows repacked for the CPU: %s\n", note.c_str());
+    }
 
     // Session state initialization (with resource-aware QSA staging fallback under tight VRAM)
     // Shared session state.  The device staging buffer is sized for the full context and shared by all sessions;
@@ -1212,10 +1220,12 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
                  impl->expert_performance.gpu_ms, impl->expert_performance.copy_ms, impl->drive.d.pcie_num,
                  static_cast<long long>(slots), static_cast<long long>(impl->xcache.bytes()));
     std::fprintf(stderr,
-                 "guild performance: CPU workers %d + host %d; verifier capacity %d; "
+                 "guild performance: CPU workers %d + host %d%s; verifier capacity %d; "
                  "MTP %s; min draft probability %.3f; RAM expert backing %llu bytes\n",
-                 impl->pool->workers(), int(impl->pool->host_works()), impl->config.spec, use_mtp ? "on" : "off",
-                 double(impl->config.spec_min_p), static_cast<unsigned long long>(impl->src.resident_bytes()));
+                 impl->pool->workers(), int(impl->pool->host_works()),
+                 impl->pool->numa_split() ? " (rows split by NUMA node)" : "", impl->config.spec,
+                 use_mtp ? "on" : "off", double(impl->config.spec_min_p),
+                 static_cast<unsigned long long>(impl->src.resident_bytes()));
     model->config_ = impl->config;
 
     // Load tokenizer (from GPACK binary section if available, else tokenizer_dir)

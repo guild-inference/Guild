@@ -66,6 +66,12 @@ struct ExpertJobMulti {
     /// Extended token pointers when `nt > MAXT` (up to `kMaxMultiExt`, used by whole-expert prefill).
     const void* const* nact_ext = nullptr;
     float* const* out_ext = nullptr;
+    /// The gate/up rows when they are not `blob`'s (ExpertSource::cpu_gu_blob, the IQ3_S rows repacked for the CPU,
+    /// whose format the batch's NativeFmt describes); the down rows are always `blob`'s.
+    const uint8_t* gu_blob = nullptr;
+    const uint8_t* gu() const {
+        return gu_blob ? gu_blob : blob;
+    }
 };
 
 inline constexpr int kMaxMultiExt = 8;
@@ -154,6 +160,10 @@ public:
 
     int workers() const {
         return n_;
+    }
+    /// Whether the pool gives each NUMA node's threads the half of every expert's rows that node holds.
+    bool numa_split() const {
+        return numa_;
     }
     // Called while workers are parked, before this model publishes its first job.
     void bind_native_kernels(const guild_cpu_expert_ext_v1_t& table) {
@@ -357,10 +367,18 @@ private:
     void worker(int id);
     void drain(int id, ExpertScratch& scratch, uint32_t epoch);
     void run_phase(int mode, int n_tasks);
+    /// The NUMA split's phase (numa.hpp): node q's `n[q]` tasks in their own queue, of which the first `first[q]`
+    /// must all be claimed, in both queues, before any later one is (mode 11's down tasks wait on gate/up tasks).
+    void run_phase_numa(int mode, const int n[2], const int first[2]);
     /// Claim the next job of batch `epoch`, or -1 (that batch is exhausted, or it is not the current one).
     int claim(uint32_t epoch);
+    /// The same on one queue, refusing indices at or past `limit`.
+    static int claim_from(std::atomic<uint64_t>& head, uint32_t epoch, uint32_t limit);
+    /// A NUMA batch's claim for a thread on `node`: `queue << 16 | index`, or -1.
+    int claim_numa(uint32_t epoch, int node);
     /// Publish the batch whose description the caller has just written: reset `done`, then `head`, then the epoch.
-    uint32_t begin_batch(int n);
+    /// `n1 >= 0` publishes a NUMA batch with `n` tasks in node 0's queue and `n1` in node 1's.
+    uint32_t begin_batch(int n, int n1 = -1);
     /// The host's waits, bounded by `kStall`.
     void wait_parked(const char* what);
     void wait_done(int n);
@@ -405,6 +423,12 @@ private:
     std::atomic<int32_t> hstate_{kIdle};
     std::atomic<int64_t> hstate_ms_{0};
     alignas(64) std::atomic<uint64_t> head_{0}; // epoch << 32 | njobs << 16 | next index (issue #29)
+    // The NUMA split (numa.hpp): node 1's queue of a NUMA batch, in the same form as `head_` (node 0's).
+    alignas(64) std::atomic<uint64_t> head1_{0};
+    bool numa_ = false;                           ///< workers on both nodes of a two-node machine, split requested
+    std::atomic<bool> numa_batch_{false};         ///< the current batch is two node queues
+    uint32_t numa_first_[2] = {0xffffu, 0xffffu}; ///< see run_phase_numa
+    int numa_nb_ = 0;                             ///< mode 11: experts in the batch
     alignas(64) std::atomic<uint32_t> done_{0};
     alignas(64) std::atomic<uint32_t> parked_{0};
     alignas(64) std::atomic<uint32_t> epoch_{0};
