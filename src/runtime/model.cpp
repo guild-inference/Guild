@@ -979,7 +979,7 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
             return nullptr;
         }
         impl->codec = std::make_unique<core::Drama3Codec>();
-        if (!impl->codec->load(paths.drama3_dir + "/codec", 32, error_msg))
+        if (!impl->codec->load(paths.drama3_dir + "/codec", 16, error_msg))
             return nullptr;
         std::fprintf(stderr, "guild drama3: tower %llu MiB (K/V for %lld frames), codec %llu MiB of VRAM\n",
                      (unsigned long long) (impl->tower->vram_bytes() >> 20), (long long) tower_frames,
