@@ -1011,6 +1011,10 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
         return nullptr;
     }
     impl->ver->set_async_commit(true);
+    // Two token groups per window, so the CPU's experts of one overlap the GPU's layer work of the other.  Exact per
+    // token; GUILD_SPEC_SPLIT=0 is the one-group control.
+    const char* split_env = std::getenv("GUILD_SPEC_SPLIT");
+    impl->ver->set_split(split_env == nullptr || std::atoi(split_env) != 0);
     sp.verifier_init_ms += ms_since(ver_t0);
 
     if (use_mtp) {

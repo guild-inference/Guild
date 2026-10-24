@@ -722,7 +722,8 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
     const int64_t TS = (s.idx_block - 1) * ID;
     const bool ple_on = ss.ple.ready() && ple_stage();
     auto Rt = [&](int t) { return R_ + (size_t) t * HC * N; };
-    const int G = (split_ && T >= 2 && !batch_rec_) ? 2 : 1; // a batch window is one group
+    // a batch window is one group; with every expert in VRAM there is no CPU work for the other group to hide
+    const int G = (split_ && !all_resident_ && T >= 2 && !batch_rec_) ? 2 : 1;
     static const bool dec_batch = [] {
         const char* v = std::getenv("GUILD_DEC_BATCH");
         return v == nullptr || std::atoi(v) != 0;

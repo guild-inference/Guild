@@ -415,7 +415,9 @@ private:
     uint32_t cur_layer_ = 0;
     static void publish_plan(void* ctx);
     void set_plan_slot(int grp);
-    bool split_ = false; // opt-in (--spec-split): exact but slower, see the overlap study
+    // The runtime turns it on (GUILD_SPEC_SPLIT=0 keeps one group): exact, and faster once the CPU pool's experts no
+    // longer wait for the GPU's layer work (bench/results/2026-10-24-split-window).
+    bool split_ = false;
     int groups_[9] = {};
     float* h_ymiss_ = nullptr;
     float* m_ymiss_ = nullptr; // T * k * n_embd
