@@ -70,7 +70,42 @@ void usage() {
               << "  --top-k <k>                Top-k sampling (default 0)\n"
               << "  --seed <s>                 Random seed (default 0)\n"
               << "  --greedy                   Enforce greedy argmax sampling\n"
-              << "  --serve                    Run in pipe-based server mode\n";
+              << "  --serve                    Run in pipe-based server mode\n"
+              << "Text to speech (Fish Audio Drama 3: tools/drama3_backbone_gguf.py, drama3_tower_rt.py, "
+                 "drama3_codec_rt.py):\n"
+              << "  --drama3 <dir>             The tower/ and codec/ runtime files: the model speaks\n"
+              << "  --say <text>               The text to speak (<|speaker:N|> tags, [laughs] ...)\n"
+              << "  --wav <path>               Where the audio goes (16-bit PCM, 44.1 kHz; default speech.wav)\n"
+              << "  --ref-text <text>          A reference voice's transcript ...\n"
+              << "  --ref-codes <path>         ... and its codes, one frame of 10 per line\n"
+              << "  (sampling defaults to the model card's: --temperature 1.0 --top-p 0.9 --top-k 30)\n";
+}
+
+// 16-bit PCM mono WAV
+bool write_wav(const std::string& path, const std::vector<float>& pcm, int rate) {
+    std::ofstream f(path, std::ios::binary);
+    if (!f)
+        return false;
+    auto u32 = [&](uint32_t v) { f.write(reinterpret_cast<const char*>(&v), 4); };
+    auto u16 = [&](uint16_t v) { f.write(reinterpret_cast<const char*>(&v), 2); };
+    const uint32_t data = (uint32_t) pcm.size() * 2;
+    f.write("RIFF", 4);
+    u32(36 + data);
+    f.write("WAVEfmt ", 8);
+    u32(16);
+    u16(1);
+    u16(1);
+    u32((uint32_t) rate);
+    u32((uint32_t) rate * 2);
+    u16(2);
+    u16(16);
+    f.write("data", 4);
+    u32(data);
+    for (float x : pcm) {
+        const float c = std::max(-1.0f, std::min(1.0f, x));
+        u16((uint16_t) (int16_t) std::lrint(c * 32767.0f));
+    }
+    return (bool) f;
 }
 
 bool parse_token_list(const std::string& str, std::vector<int32_t>& tokens) {
@@ -302,6 +337,8 @@ int main(int argc, char** argv) try {
     uint64_t seed = 0;
     bool greedy = true;
     bool serve_mode = false;
+    bool sampling_given = false; // --temperature / --top-p / --top-k / --greedy: the speech path keeps the card's
+    std::string drama3_dir, say, wav_path = "speech.wav", ref_text, ref_codes_path;
 
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
@@ -324,6 +361,16 @@ int main(int argc, char** argv) try {
             profile_path = next("--expert-profile");
         } else if (a == "--mtp") {
             mtp_dir = next("--mtp");
+        } else if (a == "--drama3") {
+            drama3_dir = next("--drama3");
+        } else if (a == "--say") {
+            say = next("--say");
+        } else if (a == "--wav") {
+            wav_path = next("--wav");
+        } else if (a == "--ref-text") {
+            ref_text = next("--ref-text");
+        } else if (a == "--ref-codes") {
+            ref_codes_path = next("--ref-codes");
         } else if (a == "--tokenizer") {
             tokenizer_dir = next("--tokenizer");
         } else if (a == "--max-context") {
@@ -405,16 +452,20 @@ int main(int argc, char** argv) try {
             max_new = std::stoi(next("--max-new"));
         } else if (a == "--temperature") {
             temperature = std::stof(next("--temperature"));
+            sampling_given = true;
             if (temperature > 0.0f)
                 greedy = false;
         } else if (a == "--top-p") {
             top_p = std::stof(next("--top-p"));
+            sampling_given = true;
         } else if (a == "--top-k") {
             top_k = std::stoi(next("--top-k"));
+            sampling_given = true;
         } else if (a == "--seed") {
             seed = std::stoull(next("--seed")); // a 64-bit seed, as a GEN line's
         } else if (a == "--greedy") {
             greedy = true;
+            sampling_given = true;
             temperature = 0.0f;
         } else if (a == "--serve") {
             serve_mode = true;
@@ -515,6 +566,7 @@ int main(int argc, char** argv) try {
     paths.pack_dir = pack_dir;
     paths.expert_profile_path = profile_path;
     paths.mtp_dir = mtp_dir;
+    paths.drama3_dir = drama3_dir;
     paths.tokenizer_dir = tokenizer_dir;
     paths.ple_gguf = ple_gguf;
     paths.ple_io = ple_io;
@@ -601,6 +653,54 @@ int main(int argc, char** argv) try {
                 }
             }
         }
+        return 0;
+    }
+
+    if (model->is_speech_model()) {
+        SpeechRequest sreq;
+        sreq.text = say.empty() ? prompt : say;
+        sreq.max_new_frames = max_new;
+        if (sampling_given) {
+            sreq.temperature = greedy ? 0.0f : temperature;
+            sreq.top_p = top_p;
+            sreq.top_k = top_k > 0 ? top_k : 30;
+        }
+        sreq.seed = seed;
+        if (!ref_codes_path.empty()) {
+            SpeechReference r;
+            r.text = ref_text;
+            std::ifstream in(ref_codes_path);
+            int32_t v = 0;
+            while (in >> v)
+                r.codes.push_back(v);
+            sreq.references.push_back(std::move(r));
+        }
+        std::vector<float> audio;
+        SpeechTelemetry st;
+        std::string serr;
+        const bool ok = model->synthesize(
+            sreq,
+            [&](const SpeechChunk& c) {
+                audio.insert(audio.end(), c.pcm, c.pcm + c.samples);
+                return true;
+            },
+            st, serr);
+        if (!ok) {
+            std::fprintf(stderr, "guild-generate: speech failed: %s\n", serr.c_str());
+            return 1;
+        }
+        if (!write_wav(wav_path, audio, 44100)) {
+            std::fprintf(stderr, "guild-generate: cannot write %s\n", wav_path.c_str());
+            return 1;
+        }
+        const double secs = (double) audio.size() / 44100.0;
+        std::fprintf(stderr,
+                     "guild-generate: %s: %.2f s of audio, %d frames (%s) in %.0f ms (%.2f frames/s, %.2fx real "
+                     "time; tower %.0f ms, codec %.0f ms), prompt %d rows in %.0f ms\n",
+                     wav_path.c_str(), secs, st.frames, st.finish_reason.c_str(), st.decode_ms,
+                     st.decode_ms > 0 ? st.frames / (st.decode_ms / 1000.0) : 0.0,
+                     st.decode_ms > 0 ? secs / (st.decode_ms / 1000.0) : 0.0, st.tower_ms, st.codec_ms, st.prompt_rows,
+                     st.prompt_ms);
         return 0;
     }
 

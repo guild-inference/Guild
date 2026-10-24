@@ -13,6 +13,8 @@
 #include "guild/core/expert_cache.hpp"
 #include "guild/core/expert_source.hpp"
 #include "guild/core/layer.hpp"
+#include "guild/core/drama3_codec.hpp"
+#include "guild/core/drama3_tower.hpp"
 #include "guild/core/mtp.hpp"
 #include "guild/core/native_dense.hpp"
 #include "guild/core/native_head.hpp"
@@ -171,6 +173,8 @@ struct GuildModel::Impl {
     float* ple_emb_dev = nullptr;
     void* ple_scratch = nullptr;
     std::unique_ptr<core::MtpDrafter> mtp;
+    std::unique_ptr<core::Drama3Tower> tower; ///< Drama 3 (ModelPaths::drama3_dir): the codebook tower
+    std::unique_ptr<core::Drama3Codec> codec; ///< ... and the codec that turns frames into audio
     std::unique_ptr<core::Verifier> ver;
     Drive drive;
     spec::GExecSpecCalibration spec_calibration;

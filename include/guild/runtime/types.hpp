@@ -21,6 +21,9 @@ struct ModelPaths {
     /// locked in RAM at open: no disk read on the token path; for a model on a rotational disk).
     std::string ple_io;
     std::string gexec_path;
+    /// Fish Audio Drama 3: the directory with `tower/` (tools/drama3_tower_rt.py) and `codec/`
+    /// (tools/drama3_codec_rt.py).  Set, the model is a text-to-speech model: GuildModel::synthesize.
+    std::string drama3_dir;
 };
 
 struct RuntimeConfig {
@@ -64,6 +67,43 @@ struct GenerationRequest {
     int spec_max_draft = -1;     // Optional per-request override (-1 = use model config)
     std::vector<std::string> stop;
     std::shared_ptr<std::atomic<bool>> cancel_flag;
+};
+
+/// A voice to clone: its transcript and its codes ([frames][10], from the codec's encoder)
+struct SpeechReference {
+    std::string text;
+    std::vector<int32_t> codes;
+};
+
+/// One text-to-speech request (Drama 3).  `text` may carry <|speaker:N|> tags (0..15) and the model's inline tags
+/// ([laughs], [whisper] ...); without a leading speaker tag it is speaker 0.
+struct SpeechRequest {
+    std::string text;
+    std::vector<SpeechReference> references;
+    int max_new_frames = 2048; ///< 21.5 frames per second of audio
+    float temperature = 1.0f;
+    float top_p = 0.9f;
+    int top_k = 30;
+    uint64_t seed = 0;
+    int chunk_frames = 16; ///< audio is handed out every this many frames
+    std::shared_ptr<std::atomic<bool>> cancel_flag;
+};
+
+struct SpeechChunk {
+    const float* pcm = nullptr; ///< mono, [-1, 1]
+    size_t samples = 0;
+    int sample_rate = 44100;
+    bool last = false;
+};
+
+/// Return false to stop the generation.
+using SpeechCallback = std::function<bool(const SpeechChunk& chunk)>;
+
+struct SpeechTelemetry {
+    int prompt_rows = 0;
+    int frames = 0;
+    double prompt_ms = 0.0, decode_ms = 0.0, tower_ms = 0.0, codec_ms = 0.0;
+    std::string finish_reason; ///< "eos", "length", "cancel"
 };
 
 struct TokenEvent {

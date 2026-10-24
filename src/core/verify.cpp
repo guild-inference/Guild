@@ -1,5 +1,6 @@
 // src/core/verify.cpp - see include/guild/core/verify.hpp.
 #include "guild/core/verify.hpp"
+#include "guild/core/drama3_tower_kernels.hpp"
 #include "guild/core/validation.hpp"
 #include "guild/core/remote_expert_opt.hpp"
 #if defined(_WIN32)
@@ -349,8 +350,8 @@ Verifier::~Verifier() {
         cudaFree(slot_off_d_);
     if (arena_)
         cudaFree(arena_);
-    void* hosts[] = {h_tok_, h_step_, h_pos_,  h_commit_, h_ple_,   h_out_,  h_x_,     h_ids_,
-                     h_w_,   h_seq_,  h_flag_, h_ymiss_,  h_flagA_, h_plan_, h_flagB_, h_finite_status_};
+    void* hosts[] = {h_tok_,  h_step_,  h_pos_,   h_commit_, h_ple_,   h_out_,           h_x_,   h_ids_, h_w_, h_seq_,
+                     h_flag_, h_ymiss_, h_flagA_, h_plan_,   h_flagB_, h_finite_status_, h_code_};
     for (void* h : hosts)
         if (h)
             cudaFreeHost(h);
@@ -439,19 +440,19 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
             kernels::cpu::restore_thread_affinity(prev);
         }
     } local_alloc(device_);
-    bool ok = mapped(T * 4, (void**) &h_tok_, (void**) &m_tok_) &&
-              mapped(T * guild::kernels::kStepCount * 4, (void**) &h_step_, (void**) &m_step_) &&
-              mapped(T * (NH + NKV + IQ) * 4, (void**) &h_pos_, (void**) &m_pos_) &&
-              mapped((2 + T) * 4 + 16, (void**) &h_commit_, (void**) &m_commit_) &&
-              mapped(T * N * 4, (void**) &h_ple_, (void**) &m_ple_) &&
-              mapped(T * 4 + 16, (void**) &h_out_, (void**) &m_out_) &&
-              mapped(sizeof(*h_finite_status_), (void**) &h_finite_status_, (void**) &m_finite_status_) &&
-              mapped(T * N * 4, (void**) &h_x_, (void**) &m_x_) &&
-              mapped(T * K * 4, (void**) &h_ids_, (void**) &m_ids_) &&
-              mapped(T * K * 4, (void**) &h_w_, (void**) &m_w_) && mapped(64, (void**) &h_seq_, (void**) &m_seq_) &&
-              mapped(64, (void**) &h_flag_, (void**) &m_flag_) && mapped(64, (void**) &h_flagA_, (void**) &m_flagA_) &&
-              mapped(64, (void**) &h_flagB_, (void**) &m_flagB_) &&
-              mapped(T * K * N * 4, (void**) &h_ymiss_, (void**) &m_ymiss_);
+    bool ok =
+        mapped(T * 4, (void**) &h_tok_, (void**) &m_tok_) && mapped(T * 4, (void**) &h_code_, (void**) &m_code_) &&
+        mapped(T * guild::kernels::kStepCount * 4, (void**) &h_step_, (void**) &m_step_) &&
+        mapped(T * (NH + NKV + IQ) * 4, (void**) &h_pos_, (void**) &m_pos_) &&
+        mapped((2 + T) * 4 + 16, (void**) &h_commit_, (void**) &m_commit_) &&
+        mapped(T * N * 4, (void**) &h_ple_, (void**) &m_ple_) &&
+        mapped(T * 4 + 16, (void**) &h_out_, (void**) &m_out_) &&
+        mapped(sizeof(*h_finite_status_), (void**) &h_finite_status_, (void**) &m_finite_status_) &&
+        mapped(T * N * 4, (void**) &h_x_, (void**) &m_x_) && mapped(T * K * 4, (void**) &h_ids_, (void**) &m_ids_) &&
+        mapped(T * K * 4, (void**) &h_w_, (void**) &m_w_) && mapped(64, (void**) &h_seq_, (void**) &m_seq_) &&
+        mapped(64, (void**) &h_flag_, (void**) &m_flag_) && mapped(64, (void**) &h_flagA_, (void**) &m_flagA_) &&
+        mapped(64, (void**) &h_flagB_, (void**) &m_flagB_) &&
+        mapped(T * K * N * 4, (void**) &h_ymiss_, (void**) &m_ymiss_);
     if (!ok) {
         err = "verify: mapped staging allocation failed";
         return false;
@@ -482,6 +483,7 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
     // ---- the device arena: the same sequence counted, then carved
     auto carve = [&](Bump& b) {
         tok_ = b.take<int32_t>(T);
+        code_ = b.take<int32_t>(T);
         step_ = b.take<int32_t>(T * guild::kernels::kStepCount);
         pos_ = b.take<int32_t>(T * (NH + NKV + IQ));
         commit_ = b.take<int32_t>(2 + T);
@@ -695,6 +697,17 @@ const float* Verifier::final_R(int t) const {
     return R_ + (size_t) t * (size_t) (g_->hc * g_->n_embd);
 }
 
+const float* Verifier::head_input(int t) const {
+    return next_ ? next_->head_input(t) : head_mixed_ + (size_t) t * (size_t) g_->n_embd;
+}
+
+void Verifier::audio_embed(int T, cudaStream_t cs) {
+    if (audio_rows_ == nullptr)
+        return;
+    guild::kernels::copy_i32_from_mapped(code_, m_code_, T, cs);
+    drama3::backbone_embed_add(emb_, tok_, code_, audio_rows_, audio_lo_, audio_hi_, (int) g_->n_embd, T, cs);
+}
+
 // ================================ THE WINDOW, AS CAPTURED ================================
 //
 // Plan v0.3 P6 (split window): with `groups_ == 2` the window's tokens are cut into two groups A = [0, T/2 up) and
@@ -764,6 +777,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         copy_from_mapped(inj2_, hin + (size_t) T * (HC + 1) * N, (int64_t) T * HC, cs);
     } else if (const NativeEmbed* ne = native_embed()) { // plan v0.3 P6: the GGUF-form table
         ne->gather_dev(tok_, T, emb_, cs);
+        audio_embed(T, cs);
         if (HC > 1)
             broadcast_streams(emb_, R_, N, (int) HC, T, cs);
         else if (cudaMemcpyAsync(R_, emb_, (size_t) T * N * 4, cudaMemcpyDeviceToDevice, cs) != cudaSuccess) {
@@ -783,6 +797,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         const uint64_t row_groups = (uint64_t) (w->ne0 / w->group_elems);
         embedding_gather_dev(codes, scales, offsets, tok_, T, w->ne0, w->code_bits, w->code_bias, w->group_elems,
                              row_codes, row_groups, emb_, cs);
+        audio_embed(T, cs);
         if (HC > 1)
             broadcast_streams(emb_, R_, N, (int) HC, T, cs);
         else if (cudaMemcpyAsync(R_, emb_, (size_t) T * N * 4, cudaMemcpyDeviceToDevice, cs) != cudaSuccess) {
@@ -1523,6 +1538,10 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 }
             }
         }
+        if (no_head_) {
+            stamp(g.n_layers, 1, 0);
+            return true;
+        }
         if (head_ != nullptr && head_->loaded()) {
             try {
                 native_quantize_q8_1(head_mixed_, xq_, (int) N, T, cs);
@@ -1774,6 +1793,8 @@ void Verifier::stage_inputs(int T, const int32_t* tokens, int64_t pos0) {
     int32_t* const pi = pk + (size_t) max_t_ * g.n_head_kv;
     for (int t = 0; t < T; ++t) {
         h_tok_[t] = tokens[t];
+        if (audio_rows_ != nullptr)
+            h_code_[t] = t < (int) codes_.size() ? codes_[(size_t) t] : 0;
         qsa_step_fill(h_step_ + t * kStepCount, pos0 + t, s);
         const int32_t pos_t = (int32_t) (pos0 + t);
         for (int64_t h = 0; h < g.n_head; ++h)
@@ -2034,6 +2055,14 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
     if (le_ < g.n_layers) { // a layer split's earlier stage: the hand-off is written (synced above)
         ++windows;
         return next_ == nullptr || next_->run(T, tokens, pos0, pool, next_user_, out, err);
+    }
+    if (no_head_) { // the caller runs its own head on head_input()
+        for (int t = 0; t < T; ++t)
+            out[t] = -1;
+        ++windows;
+        progress_at("decode");
+        progress_beat();
+        return true;
     }
     if (!validate_logits(T, pos0, err))
         return false;
@@ -2545,6 +2574,8 @@ bool Verifier::stage_batch(const int* rows, int S, int hbase, const int32_t* tok
     const QsaShapes s = shapes_of(g);
     for (int t = 0; t < S; ++t) {
         h_tok_[t] = tokens[t];
+        if (audio_rows_ != nullptr)
+            h_code_[t] = t < (int) codes_.size() ? codes_[(size_t) t] : 0;
         qsa_step_fill(h_step_ + t * kStepCount, pos[t], s);
         for (int64_t h = 0; h < g.n_head; ++h)
             h_pos_[t * g.n_head + h] = (int32_t) pos[t];

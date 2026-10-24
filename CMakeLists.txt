@@ -270,7 +270,7 @@ endif()
 # Only built when a GPU backend is on, so the Phase 1 targets keep working without a toolkit.
 if(GUILD_ENABLE_CUDA OR GUILD_ENABLE_HIP)
   add_library(guild_core STATIC src/core/device.cu src/core/pinned.cu src/platform/memory.cpp src/core/graph.cpp src/core/weights.cpp
-                               src/core/layout.cpp)
+                               src/core/layout.cpp src/core/drama3_tower.cu)
   target_include_directories(guild_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
   if(GUILD_ENABLE_CUDA AND GUILD_EXPERIMENTAL_SM60)
     # the runtime device check (src/core/device.cu) admits the cards this build was made for (#236)
@@ -460,10 +460,17 @@ if(GUILD_ENABLE_CUDA OR GUILD_ENABLE_HIP)
   add_library(guild_engine STATIC src/core/layer.cpp src/core/session.cpp src/core/expert_source.cpp src/core/remote_experts.cpp
     src/core/remote_expert_opt.cpp
     src/core/expert_cache.cpp src/core/native_head.cpp src/core/native_dense.cpp src/core/verify.cpp src/core/mtp.cpp
-    src/core/conversation_snapshot.cpp src/core/conversation_state.cpp src/core/conversation_memory.cpp src/core/peer_experts.cpp)
+    src/core/conversation_snapshot.cpp src/core/conversation_state.cpp src/core/conversation_memory.cpp src/core/peer_experts.cpp
+    src/core/drama3_tower.cpp src/core/drama3_codec.cu)
   target_include_directories(guild_engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
-  target_link_libraries(guild_engine PUBLIC guild_core guild_model guild_kernels guild_kernels_cpu ${_guild_gpu_runtime_target})
+  target_link_libraries(guild_engine PUBLIC guild_core guild_model guild_kernels guild_kernels_cpu ${_guild_gpu_runtime_target}
+    ${_guild_gpu_blas_target})
   enable_testing()
+  # Drama 3's tower against reference vectors (scratch tools write them); skipped (77) without them
+  add_executable(drama3_tower_test tests/core/drama3_tower_test.cpp)
+  target_link_libraries(drama3_tower_test PRIVATE guild_engine)
+  add_executable(drama3_codec_test tests/core/drama3_codec_test.cpp)
+  target_link_libraries(drama3_codec_test PRIVATE guild_engine)
   add_executable(kv_host_only_test tests/core/kv_host_only_test.cpp)
   target_link_libraries(kv_host_only_test PRIVATE guild_engine)
   add_test(NAME kv_host_only_test COMMAND kv_host_only_test)
@@ -1056,6 +1063,7 @@ if(GUILD_ENABLE_CUDA OR GUILD_ENABLE_HIP)
     src/kernels/registry.cpp
     src/model/runner.cpp
     src/runtime/model.cpp
+    src/runtime/drama3.cpp
     src/runtime/ple.cpp
     src/runtime/session.cpp
     src/runtime/performance.cpp

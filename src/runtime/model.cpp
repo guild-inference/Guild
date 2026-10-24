@@ -963,6 +963,29 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
     }
     sp.mtp_init_ms += ms_since(mtp_t0);
 
+    // Fish Audio Drama 3: the codebook tower and the codec, before the VRAM expert tier is sized.  The tower's K/V
+    // covers the reference's largest request (8192 prompt rows + 2048 frames), or the context when it is smaller.
+    if (!paths.drama3_dir.empty()) {
+        if (impl->g.hc != 1) {
+            error_msg = "--drama3 needs a single-stream (qwen35moe) backbone";
+            return nullptr;
+        }
+        impl->tower = std::make_unique<core::Drama3Tower>();
+        const int64_t tower_frames = std::min<int64_t>(impl->config.max_context, 10240);
+        if (!impl->tower->load(paths.drama3_dir + "/tower", tower_frames, error_msg))
+            return nullptr;
+        if (impl->tower->geometry().dim != impl->g.n_embd) {
+            error_msg = "drama3: the tower's width differs from the backbone's";
+            return nullptr;
+        }
+        impl->codec = std::make_unique<core::Drama3Codec>();
+        if (!impl->codec->load(paths.drama3_dir + "/codec", 32, error_msg))
+            return nullptr;
+        std::fprintf(stderr, "guild drama3: tower %llu MiB (K/V for %lld frames), codec %llu MiB of VRAM\n",
+                     (unsigned long long) (impl->tower->vram_bytes() >> 20), (long long) tower_frames,
+                     (unsigned long long) (impl->codec->vram_bytes() >> 20));
+    }
+
     // Initialize speculative cost calibration (from GEXEC artifact when present, or model geometry priors).
     {
         auto& cal = impl->spec_calibration;
@@ -1034,6 +1057,11 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
         return nullptr;
     }
     impl->ver->set_async_commit(true);
+    if (impl->tower) { // before any window is captured (the warm-up below runs some)
+        const core::Drama3TowerGeometry& tg = impl->tower->geometry();
+        impl->ver->set_audio_embed(impl->tower->code1_rows(), tg.semantic_start, tg.semantic_end);
+        impl->ver->set_no_head(true);
+    }
     // Two token groups per window, so the CPU's experts of one overlap the GPU's layer work of the other.  Exact per
     // token; GUILD_SPEC_SPLIT=0 is the one-group control.
     const char* split_env = std::getenv("GUILD_SPEC_SPLIT");

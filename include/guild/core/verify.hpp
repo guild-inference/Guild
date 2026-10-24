@@ -236,6 +236,27 @@ public:
 
     /// Token t's residual after the last layer, (hc, n_embd) on the device, valid until the next `run`.
     const float* final_R(int t) const;
+    /// Token t's input to the head (the final norm's output, n_embd on the device; hc == 1), valid until the next
+    /// `run`.
+    const float* head_input(int t) const;
+
+    /// Fish Audio Drama 3: a row whose token lies in [band_lo, band_hi] (the audio band) takes
+    /// (embed(token) + code1_rows[code1]) / sqrt(2) as its input, code1 from `set_codes` (code1_rows: BF16
+    /// [n][n_embd], device).  Set before `init`.
+    void set_audio_embed(const uint16_t* code1_rows, int32_t band_lo, int32_t band_hi) {
+        audio_rows_ = code1_rows;
+        audio_lo_ = band_lo;
+        audio_hi_ = band_hi;
+    }
+    /// The next `run`'s per-row codebook-1 codes (rows outside the audio band ignore theirs)
+    void set_codes(const int32_t* code1, int T) {
+        codes_.assign(code1, code1 + T);
+    }
+    /// Stop each window at the final norm: no head, no sampling, `run` returns -1 per row (Drama 3 runs its own head
+    /// over `head_input`).
+    void set_no_head(bool on) {
+        no_head_ = on;
+    }
     const float* final_R_all() const {
         return next_ ? next_->final_R_all() : R_;
     }
@@ -367,6 +388,14 @@ private:
     // mapped staging (host pointer, device alias)
     int32_t* h_tok_ = nullptr;
     int32_t* m_tok_ = nullptr; // T
+    int32_t* h_code_ = nullptr;
+    int32_t* m_code_ = nullptr; // T (Drama 3's codebook-1 codes)
+    int32_t* code_ = nullptr;
+    const uint16_t* audio_rows_ = nullptr;
+    int32_t audio_lo_ = 0, audio_hi_ = -1;
+    std::vector<int32_t> codes_;
+    bool no_head_ = false;
+    void audio_embed(int T, cudaStream_t cs);
     int32_t* h_step_ = nullptr;
     int32_t* m_step_ = nullptr; // T * kStepCount
     int32_t* h_pos_ = nullptr;
