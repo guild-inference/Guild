@@ -2,7 +2,8 @@
 
 The main native runtime now consumes CPU arithmetic from the independent
 `guild-inference/guild-kernels-cpu` repository. The pinned source revision is
-`264227c74d0151b914d826b0fa35a0f576a117b8` (implementation/package 1.1.1).
+`629817c477d6a864e794770d7b74933c8dff1fbb` (implementation/package 1.1.1 plus the repacked IQ3_S rows,
+branch `perf/iq3s-nl4`; the earlier pin was `264227c74d0151b914d826b0fa35a0f576a117b8`).
 `cmake/GuildCPUSources.cmake` in that repository owns both source lists and the
 per-translation-unit SIMD flags for bundled and standalone builds.
 
