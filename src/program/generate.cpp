@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cerrno>
 #include <condition_variable>
 #include <cstdint>
 #include <cmath>
@@ -24,6 +25,12 @@
 #include <string>
 #include <thread>
 #include <vector>
+
+#if defined(_WIN32)
+#include <io.h>
+#else
+#include <unistd.h>
+#endif
 
 using namespace guild::runtime;
 
@@ -45,6 +52,8 @@ void usage() {
               << "  --prefill <auto|n>         Prefill chunk size\n"
               << "  --spec <n>                 Speculative draft length (default 4)\n"
               << "  --spec-min-p <p>           Speculative min probability (default 0.5)\n"
+              << "  --decode-strategy <s>      auto|normal|mtp|lookup|retrieval|adaptive (default auto: MTP when\n"
+              << "                             --mtp is given, otherwise none)\n"
               << "  --pool-workers <n>         CPU expert pool worker count\n"
               << "  --prompt <string>          Input prompt text\n"
               << "  --tokens <ids>             Comma-separated prompt token IDs\n"
@@ -81,7 +90,8 @@ bool parse_token_list(const std::string& str, std::vector<int32_t>& tokens) {
     return !tokens.empty();
 }
 
-// `GEN <max_new> [key=value ...] <ids>`: the keys serve/server.py's sampling_keys() writes.  Keys this engine has no
+// `GEN <max_new> [key=value ...] <ids>`: the keys serve/server.py's sampling_keys() writes, and decode_strategy
+// (the request's speculative strategy, as --decode-strategy).  Keys this engine has no
 // setting for (cvec, pcie_frac, spec_min_p) are accepted and ignored; the field without '=' is the token list.  A
 // malformed number is a refused request, never an exception out of the serve loop.
 bool parse_gen_line(const std::string& rest, GenerationRequest& req, std::string& err) {
@@ -124,6 +134,8 @@ bool parse_gen_line(const std::string& rest, GenerationRequest& req, std::string
                 req.penalty_last_n = std::stoi(value);
             else if (key == "seed")
                 req.seed = std::stoull(value);
+            else if (key == "decode_strategy")
+                req.decode_strategy = value; // checked by the session: an unknown one is refused
         }
     } catch (const std::exception&) {
         err = "invalid value in '" + part + "'";
@@ -175,17 +187,40 @@ private:
         bool eof = false;
     };
     static void read(State& s) {
-        std::string line;
-        while (std::getline(std::cin, line)) {
+        // fd 0 itself, not std::cin: exit() flushes every stdio stream under its lock, and a reader blocked inside
+        // getline holds stdin's, so a client that sent QUIT and kept the pipe open waited on the engine forever.
+        std::string pending;
+        char chunk[4096];
+        auto take = [&](std::string line) {
+            if (!line.empty() && line.back() == '\r')
+                line.pop_back();
             std::lock_guard<std::mutex> lk(s.mu);
             if (line == "STOP") {
                 if (s.active)
                     s.active->store(true);
-                continue;
+                return;
             }
             s.lines.push_back(std::move(line));
             s.cv.notify_one();
+        };
+        for (;;) {
+#if defined(_WIN32)
+            const int n = _read(0, chunk, (unsigned) sizeof chunk);
+#else
+            const ssize_t n = ::read(0, chunk, sizeof chunk);
+            if (n < 0 && errno == EINTR)
+                continue;
+#endif
+            if (n <= 0)
+                break;
+            pending.append(chunk, (size_t) n);
+            for (size_t nl; (nl = pending.find('\n')) != std::string::npos;) {
+                take(pending.substr(0, nl));
+                pending.erase(0, nl + 1);
+            }
         }
+        if (!pending.empty())
+            take(std::move(pending)); // a last line without its newline, as getline gave it
         std::lock_guard<std::mutex> lk(s.mu);
         s.eof = true;
         if (s.active)
@@ -246,6 +281,7 @@ int main(int argc, char** argv) try {
     std::string prefill = "auto";
     int spec = 4;
     float spec_min_p = 0.5f;
+    std::string decode_strategy;
     int pool_workers = 0;
     std::string prompt;
     std::vector<int32_t> prompt_tokens;
@@ -304,6 +340,8 @@ int main(int argc, char** argv) try {
             spec = std::stoi(next("--spec"));
         } else if (a == "--spec-min-p") {
             spec_min_p = std::stof(next("--spec-min-p"));
+        } else if (a == "--decode-strategy") {
+            decode_strategy = next("--decode-strategy");
         } else if (a == "--pool-workers") {
             pool_workers = std::stoi(next("--pool-workers"));
         } else if (a == "--prompt") {
@@ -405,6 +443,8 @@ int main(int argc, char** argv) try {
     popts.pool_workers = pool_workers;
 
     auto plan = guild::memory::MemoryPlanner::plan(desc, hw, popts);
+    if (!decode_strategy.empty())
+        plan.decode_strategy = decode_strategy; // checked by the model load
 
     // Model Paths
     ModelPaths paths;
