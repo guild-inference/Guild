@@ -359,7 +359,16 @@ bool GuildSession::generate(const GenerationRequest& req, TokenStreamCallback on
 
     if (use_mtp)
         m_impl->mtp->set_prompt_len(n_prompt);
-    if (m_impl->prefill) {
+    // A short prompt tail - an agentic turn after a reused prefix - goes through the verifier's windows: the prefill
+    // engine streams every selected expert to the GPU first (~460 ms here before its first token), the verifier's CPU
+    // experts start at once (~21 ms a token).  They cross near 110 tokens on the GTX 1070 PC
+    // (bench/results/2026-10-24-split-window); GUILD_PREFILL_VERIFY_MAX moves the bound, 0 turns it off.  The batched
+    // prefill computes CPU experts itself and keeps every length.
+    const int64_t n_tail = (n_prompt - 1) - reused_pos;
+    const char* vmax_env = std::getenv("GUILD_PREFILL_VERIFY_MAX");
+    const int64_t verify_max = vmax_env != nullptr ? std::atoll(vmax_env) : 64;
+    const bool verify_ingest = m_impl->prefill != nullptr && n_tail > 0 && n_tail <= verify_max;
+    if (m_impl->prefill && !verify_ingest) {
         m_impl->prefill->should_stop = [this, &req] {
             return impl_->cancelled.load() || (req.cancel_flag && req.cancel_flag->load());
         };
@@ -392,7 +401,7 @@ bool GuildSession::generate(const GenerationRequest& req, TokenStreamCallback on
                 return runtime_failure();
             }
         }
-    } else if (m_impl->batched_prefill && std::getenv("GUILD_PREFILL_SEQUENTIAL") == nullptr) {
+    } else if (m_impl->batched_prefill && !verify_ingest && std::getenv("GUILD_PREFILL_SEQUENTIAL") == nullptr) {
         m_impl->batched_prefill->should_stop = [this, &req] {
             return impl_->cancelled.load() || (req.cancel_flag && req.cancel_flag->load());
         };
@@ -409,29 +418,33 @@ bool GuildSession::generate(const GenerationRequest& req, TokenStreamCallback on
         }
     } else {
         // Architecture-independent prompt ingestion via Verifier (sequential fallback)
+        // in windows of up to the verifier's S tokens, as decode runs them
         if (n_prompt - 1 > reused_pos) {
-            std::vector<int32_t> sink_out(1);
-            for (int64_t pos = reused_pos; pos < n_prompt - 1; ++pos) {
+            std::vector<int32_t> window_tok(static_cast<size_t>(S)), next(static_cast<size_t>(S)),
+                sink_out(static_cast<size_t>(S));
+            for (int64_t pos = reused_pos; pos < n_prompt - 1;) {
                 if (impl_->cancelled.load() || (req.cancel_flag && req.cancel_flag->load())) {
                     m_impl->clear_prefix_cache();
                     telemetry.finish_reason = "cancel";
                     return true;
                 }
-                int32_t prompt_tok = static_cast<int32_t>(ids[static_cast<size_t>(pos)]);
+                const int T = static_cast<int>(std::min<int64_t>(S, n_prompt - 1 - pos));
+                for (int t = 0; t < T; ++t) {
+                    window_tok[static_cast<size_t>(t)] = static_cast<int32_t>(ids[static_cast<size_t>(pos + t)]);
+                    next[static_cast<size_t>(t)] = static_cast<int32_t>(ids[static_cast<size_t>(pos + t + 1)]);
+                }
                 m_impl->drive.d.layers = 0;
                 m_impl->drive.d.experts = 0;
-                if (!m_impl->ver->run(1, &prompt_tok, pos, drive_pool_multi, &m_impl->drive, sink_out.data(),
+                if (!m_impl->ver->run(T, window_tok.data(), pos, drive_pool_multi, &m_impl->drive, sink_out.data(),
                                       error_msg)) {
                     return runtime_failure();
                 }
-                if (!m_impl->ver->commit(1, error_msg)) {
+                if (!m_impl->ver->commit(T, error_msg)) {
                     return runtime_failure();
                 }
-                if (use_mtp) {
-                    const int32_t next = int32_t(ids[size_t(pos + 1)]);
-                    if (!m_impl->mtp->prefill(m_impl->ver->final_R_all(), &next, 1, pos, error_msg))
-                        return runtime_failure();
-                }
+                if (use_mtp && !m_impl->mtp->prefill(m_impl->ver->final_R_all(), next.data(), T, pos, error_msg))
+                    return runtime_failure();
+                pos += T;
             }
         }
     }
