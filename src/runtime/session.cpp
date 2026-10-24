@@ -280,12 +280,7 @@ bool GuildSession::generate(const GenerationRequest& req, TokenStreamCallback on
                 reused_pos = static_cast<int64_t>(best_cp->tokens.size());
                 m_impl->live_committed_tokens = best_cp->tokens;
                 // Prune any checkpoints beyond reused_pos whose KV cells will be overwritten
-                m_impl->prefix_checkpoints.erase(
-                    std::remove_if(m_impl->prefix_checkpoints.begin(), m_impl->prefix_checkpoints.end(),
-                                   [reused_pos](const GuildModel::Impl::PrefixStateCheckpoint& c) {
-                                       return c.tokens.size() > static_cast<size_t>(reused_pos);
-                                   }),
-                    m_impl->prefix_checkpoints.end());
+                m_impl->prune_prefix_checkpoints(static_cast<size_t>(reused_pos));
             }
         }
     }
