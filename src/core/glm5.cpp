@@ -1,6 +1,6 @@
 // src/core/glm5.cpp - GLM-5.3-Flash on one GPU and the CPU (see include/guild/core/glm5.hpp).
 //
-// One forward pass over a window of T <= 64 tokens, layer by layer, in the order of llama.cpp's glm5next graph:
+// One forward pass over a window of T <= kMaxT tokens, layer by layer, in the order of llama.cpp's glm5next graph:
 // mHC pre-mix -> attention (KDA or DSA) -> mHC post-mix -> mHC pre-mix -> FFN (dense or MoE) -> mHC post-mix.
 // The MoE layer hands the normed activations and the router's choice to the CPU, which computes the routed experts
 // while the GPU computes the shared one.
@@ -263,7 +263,14 @@ struct Glm5Engine::Impl {
     std::unique_ptr<Pool> pool;
     double cpu_ms = 0.0;
     double phase_ms[4] = {0, 0, 0, 0}; // GUILD_GLM_TIMING: activations, gate/up, hidden, down
-    std::vector<void*> allocs;
+    // device memory: cudaMalloc rounds each allocation up to 2 MiB, which over a thousand weights and vectors of odd
+    // sizes (Q6_K rows of 210-byte blocks) wasted ~560 MiB the placement did not count; dalloc carves 256-byte
+    // aligned pieces out of the chunk the placement reserves (and, past it, chunks of their own)
+    struct Chunk {
+        uint8_t* base;
+        size_t size, used;
+    };
+    std::vector<Chunk> chunks;
     std::vector<uint8_t> actbuf, hbuf, hqbuf; // the CPU experts' activations
     uint8_t* snap = nullptr;                  // pinned host copy of the recurrent states (snapshot / restore)
     uint8_t* arena[2] = {nullptr, nullptr};   // the experts' NUMA halves
@@ -298,8 +305,8 @@ struct Glm5Engine::Impl {
     ~Impl() {
         if (st)
             cudaStreamSynchronize(st);
-        for (void* p : allocs)
-            cudaFree(p);
+        for (const Chunk& c : chunks)
+            cudaFree(c.base);
         for (void* p :
              {(void*) h_x, (void*) h_y, (void*) h_w, (void*) h_emb, (void*) h_ids, (void*) snap, (void*) h_arg})
             if (p)
@@ -314,15 +321,35 @@ struct Glm5Engine::Impl {
             cudaStreamDestroy(st);
     }
 
-    template <class T> T* dalloc(size_t n, std::string& err) {
+    bool add_chunk(size_t bytes, std::string& err) {
+        constexpr size_t kPage = 2ull << 20;
+        const size_t size = (bytes + kPage - 1) / kPage * kPage;
         void* p = nullptr;
-        if (cudaMalloc(&p, n * sizeof(T)) != cudaSuccess) {
-            err = "glm5: out of GPU memory (" + std::to_string((n * sizeof(T)) >> 20) + " MiB more)";
-            return nullptr;
+        if (cudaMalloc(&p, size) != cudaSuccess) {
+            cudaGetLastError();
+            err = "glm5: out of GPU memory (" + std::to_string(bytes >> 20) + " MiB more)";
+            return false;
         }
-        allocs.push_back(p);
-        vram += n * sizeof(T);
-        return (T*) p;
+        chunks.push_back({(uint8_t*) p, size, 0});
+        return true;
+    }
+    template <class T> T* dalloc(size_t n, std::string& err) {
+        const size_t bytes = (n * sizeof(T) + 255) & ~(size_t) 255;
+        Chunk* c = nullptr;
+        for (Chunk& k : chunks)
+            if (k.size - k.used >= bytes) {
+                c = &k;
+                break;
+            }
+        if (!c) {
+            if (!add_chunk(bytes, err))
+                return nullptr;
+            c = &chunks.back();
+        }
+        T* p = (T*) (c->base + c->used);
+        c->used += bytes;
+        vram += bytes;
+        return p;
     }
 
     // ---- tensors ----
@@ -776,7 +803,7 @@ bool Glm5Engine::Impl::load(const std::string& path, const Glm5Options& o, std::
         state_bytes += (uint64_t) g.n_expert * N * 4 + 64 * 1024;
     }
     const uint64_t scratch_bytes = 176ull << 20; // a window of kMaxT tokens: ~1.1 MB of scratch a token
-    uint64_t need = state_bytes + scratch_bytes + head.bytes;
+    uint64_t need = state_bytes + scratch_bytes + head.bytes + (1ull << 20); // + every piece's 256-byte alignment
     for (const Layer& y : L)
         for (const Mat* m : {&y.hc_attn_fn, &y.hc_ffn_fn, &y.wo, &y.wq, &y.wk, &y.wv, &y.f_a, &y.f_b, &y.g_a, &y.g_b,
                              &y.beta, &y.q_a, &y.q_b, &y.kv_a, &y.k_b, &y.v_b, &y.idx_k, &y.idx_gate, &y.idx_qb})
@@ -789,8 +816,10 @@ bool Glm5Engine::Impl::load(const std::string& path, const Glm5Options& o, std::
               " MiB are free";
         return false;
     }
-    // up to 16k tokens of context first, then the FFNs (the shared experts, the dense layers) while they fit, then
-    // the rest of the context asked for
+    // up to 16k tokens of context first, then the FFNs while they fit, then the rest of the context asked for.  The
+    // shared experts go first: one runs on the GPU while the CPU computes its layer's routed experts, so it takes
+    // its time off the CPU's (a dense layer's FFN moves its whole time from the CPU to the GPU instead).
+
     const int64_t want = std::max<int64_t>(kMinContext, opt.max_context);
     const int64_t first = std::min<int64_t>(want, 16384);
     const uint64_t avail = free_b - opt.vram_reserve - need;
@@ -799,9 +828,13 @@ bool Glm5Engine::Impl::load(const std::string& path, const Glm5Options& o, std::
     int ffn_on_gpu = 0;
     std::vector<Layer*> ffn_order;
     for (Layer& y : L)
-        ffn_order.push_back(&y);
+        if (y.moe)
+            ffn_order.push_back(&y);
     if (has_mtp)
         ffn_order.push_back(&mtp);
+    for (Layer& y : L)
+        if (!y.moe)
+            ffn_order.push_back(&y);
     for (Layer* yp : ffn_order) {
         Layer& y = *yp;
         const uint64_t b = y.gate.bytes + y.up.bytes + y.down.bytes;
@@ -820,6 +853,9 @@ bool Glm5Engine::Impl::load(const std::string& path, const Glm5Options& o, std::
         std::fprintf(stderr, "guild glm5: context %lld -> %lld tokens (what the VRAM holds next to the weights)\n",
                      (long long) opt.max_context, (long long) ctx);
     opt.max_context = ctx;
+    // everything the placement counted, in one chunk
+    if (!add_chunk(free_b - opt.vram_reserve - left, err))
+        return false;
 
     for (int64_t l = 0; l < g.n_layer; ++l) {
         Layer& y = L[(size_t) l];

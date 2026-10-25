@@ -116,10 +116,17 @@ int main(int argc, char** argv) {
     std::vector<int32_t> out;
     int64_t pos = (int64_t) ids.size();
     double cpu_ms = 0.0;
+    std::vector<double> step_ms, step_cpu; // per forward: wall time, and the CPU experts' part
+    auto tstep = std::chrono::steady_clock::now();
+    auto mark = [&] {
+        step_ms.push_back(since(tstep));
+        step_cpu.push_back(eng.last_cpu_ms());
+        tstep = std::chrono::steady_clock::now();
+    };
     int offered = 0, accepted = 0;
     auto argmax = [](const float* l, size_t n) { return (int32_t) (std::max_element(l, l + n) - l); };
     auto is_eos = [&](int32_t t) { return std::find(g.eos_ids.begin(), g.eos_ids.end(), t) != g.eos_ids.end(); };
-    t1 = std::chrono::steady_clock::now();
+    t1 = tstep = std::chrono::steady_clock::now();
     int32_t next = argmax(logits.data(), logits.size());
     std::vector<float> rows(2 * logits.size());
     while ((int) out.size() < n_new) {
@@ -141,6 +148,7 @@ int main(int argc, char** argv) {
                 return 1;
             }
             cpu_ms += eng.last_cpu_ms();
+            mark();
             const int32_t y1 = argmax(rows.data(), logits.size());
             ++offered;
             if (y1 == d) {
@@ -165,12 +173,24 @@ int main(int argc, char** argv) {
             return 1;
         }
         cpu_ms += eng.last_cpu_ms();
+        mark();
         next = argmax(logits.data(), logits.size());
     }
     const double dec_ms = since(t1);
     eng.print_timing("prompt + decode");
     if (offered)
         std::fprintf(stderr, "MTP: %d of %d drafts accepted (%.0f%%)\n", accepted, offered, 100.0 * accepted / offered);
+    if (step_ms.size() >= 4) {
+        auto pct = [](std::vector<double> v, double q) {
+            std::sort(v.begin(), v.end());
+            return v[(size_t) (q * (double) (v.size() - 1))];
+        };
+        std::fprintf(stderr,
+                     "per step: %.1f / %.1f / %.1f ms (10th / 50th / 90th percentile), CPU experts %.1f / %.1f / "
+                     "%.1f\n",
+                     pct(step_ms, 0.1), pct(step_ms, 0.5), pct(step_ms, 0.9), pct(step_cpu, 0.1), pct(step_cpu, 0.5),
+                     pct(step_cpu, 0.9));
+    }
     for (size_t i = 0; i < out.size(); ++i)
         std::printf("%s%d", i ? "," : "", out[i]);
     std::printf("\n");
