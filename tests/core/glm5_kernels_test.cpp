@@ -521,6 +521,55 @@ static void test_route() {
     check("route weights", w, rw, 1e-5);
 }
 
+// q6k_mmvq / q8_0_mmvq: bitwise guild::kernels::native_mmvq's one-column result for every token, on random rows
+static void test_staged_mmvq(int type) {
+    cudaStream_t st;
+    cudaStreamCreate(&st);
+    struct Shape {
+        int n_in, n_out;
+    } shapes[] = {{4096, 1000}, {1536, 515}, {8192, 64}, {16384, 33}};
+    std::uniform_int_distribution<int> byte(0, 255);
+    for (const Shape& sh : shapes) {
+        const bool q6 = type == 14;
+        const int bs = q6 ? 210 : 34, nb = sh.n_in / (q6 ? 256 : 32);
+        std::vector<uint8_t> W((size_t) sh.n_out * nb * bs);
+        for (size_t blk = 0; blk < (size_t) sh.n_out * nb; ++blk) {
+            uint8_t* b = &W[blk * bs];
+            for (int i = 0; i < bs; ++i)
+                b[i] = (uint8_t) byte(rng);
+            const __half d = __float2half(0.001f * (float) (1 + byte(rng) % 50));
+            std::memcpy(b + (q6 ? 208 : 0), &d, 2);
+        }
+        uint8_t* dW = up(W);
+        for (const int T : {1, 2}) {
+            if (!(q6 ? k::q6k_mmvq_supported(sh.n_in, T) : k::q8_0_mmvq_supported(sh.n_in, T)))
+                continue;
+            auto x = rnd((size_t) T * sh.n_in);
+            float* dx = up(x);
+            void* xq;
+            cudaMalloc(&xq, guild::kernels::native_q8_1_bytes(sh.n_in, T));
+            guild::kernels::native_quantize_q8_1(dx, xq, sh.n_in, T, st);
+            float *dy, *dr;
+            cudaMalloc(&dy, (size_t) T * sh.n_out * 4);
+            cudaMalloc(&dr, (size_t) T * sh.n_out * 4);
+            (q6 ? k::q6k_mmvq : k::q8_0_mmvq)(dW, xq, dy, sh.n_in, sh.n_out, T, st);
+            const size_t qrow = guild::kernels::native_q8_1_bytes(sh.n_in, 1);
+            for (int t = 0; t < T; ++t)
+                guild::kernels::native_mmvq(type, dW, (const uint8_t*) xq + (size_t) t * qrow,
+                                            dr + (size_t) t * sh.n_out, sh.n_in, sh.n_out, 1, st);
+            const auto got = down(dy, (size_t) T * sh.n_out), ref = down(dr, (size_t) T * sh.n_out);
+            const std::string what = std::string(q6 ? "q6k_mmvq " : "q8_0_mmvq ") + std::to_string(sh.n_in) + "x" +
+                                     std::to_string(sh.n_out) + " T " + std::to_string(T) + " (bitwise)";
+            check(what.c_str(), got, ref, 0);
+            cudaFree(dx);
+            cudaFree(xq);
+            cudaFree(dy);
+            cudaFree(dr);
+        }
+        cudaFree(dW);
+    }
+}
+
 // `glm5_kernels_test bench`: the GPU products at GLM-5.3-Flash's shapes (Q8_0 and Q6_K), GB/s of weights read
 static int bench() {
     struct Shape {
@@ -560,6 +609,17 @@ static int bench() {
                 cudaEventElapsedTime(&ms, a, b);
                 std::printf("%-6s %-22s ncols %d: %7.1f us  %6.1f GB/s\n", type == 8 ? "Q8_0" : "Q6_K", sh.what, ncols,
                             1000.0 * ms / reps, wb / (ms / reps * 1e-3) / 1e9);
+                if (type == 14 ? k::q6k_mmvq_supported(sh.n_in, ncols) : k::q8_0_mmvq_supported(sh.n_in, ncols)) {
+                    cudaEventRecord(a, st);
+                    for (int i = 0; i < reps; ++i)
+                        (type == 14 ? k::q6k_mmvq : k::q8_0_mmvq)(w, xq, y, sh.n_in, sh.n_out, ncols, st);
+                    cudaEventRecord(b, st);
+                    cudaEventSynchronize(b);
+                    cudaEventElapsedTime(&ms, a, b);
+                    std::printf("%-6s %-22s ncols %d: %7.1f us  %6.1f GB/s  (glm5k, staged)\n",
+                                type == 14 ? "Q6_K" : "Q8_0", sh.what, ncols, 1000.0 * ms / reps,
+                                wb / (ms / reps * 1e-3) / 1e9);
+                }
             }
             cudaFree(w);
             cudaFree(x);
@@ -578,6 +638,8 @@ int main(int argc, char** argv) {
     test_heads_and_attention();
     test_route();
     test_f32_matvec();
+    test_staged_mmvq(14);
+    test_staged_mmvq(8);
     test_indexer();
     const cudaError_t e = cudaDeviceSynchronize();
     if (e != cudaSuccess) {

@@ -56,7 +56,7 @@ using glm5k::kMaxT;
 constexpr int kMaxVerify = 4; ///< tokens of a verify window (logits for each)
 namespace kcpu = guild::kernels::cpu;
 
-constexpr int kQ8_0 = 8, kF32 = 0;
+constexpr int kQ8_0 = 8, kQ6_K = 14, kF32 = 0;
 
 /// A weight matrix in its GGUF form: n_out rows of n_in values
 struct Mat {
@@ -127,6 +127,39 @@ struct Layer {
 };
 
 // ---- the CPU pool: persistent workers, one queue per NUMA node, a parallel_for that the calling thread joins ------
+
+/// Pins the calling thread to `cpu` (the core the pool leaves it) for one call into the engine and gives it back its
+/// affinity afterwards.  It runs a share of every phase; unpinned, the scheduler sometimes kept it on a hyper-thread
+/// sibling of a worker or on the other node for a whole run (2x Xeon Gold 6130: CPU experts 33 -> 41 ms a token).
+class PinCaller {
+public:
+    explicit PinCaller(int cpu) {
+#if defined(__linux__)
+        if (cpu < 0 || pthread_getaffinity_np(pthread_self(), sizeof(saved_), &saved_) != 0)
+            return;
+        cpu_set_t one;
+        CPU_ZERO(&one);
+        CPU_SET(cpu, &one);
+        pinned_ = pthread_setaffinity_np(pthread_self(), sizeof(one), &one) == 0;
+#else
+        (void) cpu;
+#endif
+    }
+    ~PinCaller() {
+#if defined(__linux__)
+        if (pinned_)
+            pthread_setaffinity_np(pthread_self(), sizeof(saved_), &saved_);
+#endif
+    }
+    PinCaller(const PinCaller&) = delete;
+    PinCaller& operator=(const PinCaller&) = delete;
+
+private:
+#if defined(__linux__)
+    cpu_set_t saved_;
+    bool pinned_ = false;
+#endif
+};
 
 class Pool {
 public:
@@ -261,6 +294,7 @@ struct Glm5Engine::Impl {
     uint64_t vram = 0;
     std::string placement;
     std::unique_ptr<Pool> pool;
+    int caller_cpu = -1; // the core the pool leaves to the calling thread
     double cpu_ms = 0.0;
     double phase_ms[4] = {0, 0, 0, 0}; // GUILD_GLM_TIMING: activations, gate/up, hidden, down
     // device memory: cudaMalloc rounds each allocation up to 2 MiB, which over a thousand weights and vectors of odd
@@ -483,7 +517,13 @@ struct Glm5Engine::Impl {
             return;
         }
 #endif
-        guild::kernels::native_mmvq(m.type, m.dev, xq_, out, (int) m.n_in, (int) m.n_out, T, st);
+        // one or two tokens of Q6_K / Q8_0: the staged kernels (bitwise native_mmvq's, fewer load instructions)
+        if (m.type == kQ6_K && glm5k::q6k_mmvq_supported((int) m.n_in, T))
+            glm5k::q6k_mmvq(m.dev, xq_, out, (int) m.n_in, (int) m.n_out, T, st);
+        else if (m.type == kQ8_0 && glm5k::q8_0_mmvq_supported((int) m.n_in, T))
+            glm5k::q8_0_mmvq(m.dev, xq_, out, (int) m.n_in, (int) m.n_out, T, st);
+        else
+            guild::kernels::native_mmvq(m.type, m.dev, xq_, out, (int) m.n_in, (int) m.n_out, T, st);
         debug_check(out, (size_t) T * m.n_out, m, T, "mmvq");
     }
     // GUILD_GLM_DEBUG=2: every product's output checked; the first non-finite one is reported
@@ -749,9 +789,11 @@ bool Glm5Engine::Impl::load(const std::string& path, const Glm5Options& o, std::
             const int node = split && cpu < (int) topo.cpu_node.size() && topo.cpu_node[(size_t) cpu] == 1 ? 1 : 0;
             cpus[(size_t) node].push_back(cpu);
         }
-        // the calling thread runs on the first core; a thread budget trims both nodes alike
-        if (!cpus[0].empty())
+        // the calling thread runs on the first core (PinCaller); a thread budget trims both nodes alike
+        if (!cpus[0].empty()) {
+            caller_cpu = cpus[0].front();
             cpus[0].erase(cpus[0].begin());
+        }
         if (opt.threads > 0)
             for (auto& c : cpus)
                 c.resize(std::min(c.size(), (size_t) std::max(1, opt.threads / (int) cpus.size())));
@@ -1813,6 +1855,7 @@ bool Glm5Engine::Impl::mtp_catch_up(const int32_t* tokens, int T, int64_t pos0, 
 
 bool Glm5Engine::forward(const int32_t* tokens, int n, int64_t pos0, float* logits, std::string& err) {
     Impl& m = *p_;
+    const PinCaller pin(m.caller_cpu);
     const int64_t N = m.g.n_embd;
     m.cpu_ms = 0.0;
     m.win_tok.clear();
@@ -1845,6 +1888,7 @@ bool Glm5Engine::has_mtp() const {
 
 bool Glm5Engine::draft(int32_t last, int64_t pos, int32_t& draft, std::string& err) {
     Impl& m = *p_;
+    const PinCaller pin(m.caller_cpu);
     if (!m.has_mtp) {
         err = "glm5: no NextN block";
         return false;
@@ -1865,6 +1909,7 @@ bool Glm5Engine::draft(int32_t last, int64_t pos, int32_t& draft, std::string& e
 
 bool Glm5Engine::verify(const int32_t* tokens, int n, int64_t pos0, float* logits_rows, std::string& err) {
     Impl& m = *p_;
+    const PinCaller pin(m.caller_cpu);
     m.cpu_ms = 0.0;
     if (n < 1 || n > kMaxVerify || pos0 + n > m.opt.max_context) {
         err = "glm5: a verify window of " + std::to_string(n) + " tokens at " + std::to_string(pos0) + " does not fit";
@@ -1887,6 +1932,7 @@ bool Glm5Engine::verify(const int32_t* tokens, int n, int64_t pos0, float* logit
 
 bool Glm5Engine::accept(int n_keep, std::string& err) {
     Impl& m = *p_;
+    const PinCaller pin(m.caller_cpu);
     const int n = (int) m.win_tok.size();
     if (n == 0 || n_keep < 1 || n_keep > n) {
         err = "glm5: accept without a verify window";

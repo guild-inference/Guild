@@ -374,6 +374,200 @@ __global__ void q8_0_heads_k(const int8_t* qs, const __half* d, const float* x, 
     }
 }
 
+// Q6_K rows (ggml's layout) times Q8_1 activations, one or two tokens: llama.cpp's vec_dot_q6_K_q8_1 in the order of
+// guild::kernels::native_mmvq (a lane per quarter-block slot, four sums over every fourth block, added in order, then
+// the lanes), so the result is bitwise that kernel's.  Q6_K's 210-byte blocks are only 2-byte aligned, and the plain
+// kernel's 2-byte loads were more load instructions than the bandwidth (151 against Q8_0's 188 GB/s on a GTX 1070):
+// here a warp per row stages 8 blocks (1680 bytes) at a time in shared memory with 16-byte loads, the next 8 loading
+// while it reads the last, and the block's warps share the activations from shared memory.
+constexpr int kQ6Block = 210, kQ6Chunk = 8, kQ6Q81 = 36;
+
+struct Q81 { // ggml's block_q8_1
+    __half2 ds;
+    int8_t qs[32];
+};
+
+__device__ __forceinline__ int ld_b2(const uint8_t* p, int i32) {
+    const uint16_t* h = reinterpret_cast<const uint16_t*>(p);
+    return (int) h[2 * i32] | ((int) h[2 * i32 + 1] << 16);
+}
+
+template <int T, int NW>
+__global__ void __launch_bounds__(NW * 32) q6k_mmvq_k(const uint8_t* __restrict__ W, const uint8_t* __restrict__ x,
+                                                      float* __restrict__ y, int n_in, int n_out) {
+    extern __shared__ __align__(16) uint8_t smem[];
+    const int nb = n_in / 256, xb = n_in / 32, xbytes = T * xb * kQ6Q81;
+    for (int o = threadIdx.x * 16; o < xbytes; o += NW * 32 * 16)
+        *reinterpret_cast<int4*>(smem + o) = __ldg(reinterpret_cast<const int4*>(x + o));
+    __syncthreads();
+    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
+    const int row = blockIdx.x * NW + warp;
+    if (row >= n_out)
+        return;
+    const size_t rb = (size_t) nb * kQ6Block;
+    const uint8_t* wr = W + (size_t) row * rb;
+    uint8_t* sm = smem + xbytes + warp * (kQ6Chunk * kQ6Block);
+    const bool v16 = rb % 16 == 0;
+    // the lane's fixed slot in every block (iqs = lane)
+    const int iqs = lane, bq8 = 4 * (iqs / 16) + (iqs % 16) / 8, so = 8 * (iqs / 16) + (iqs % 16) / 4;
+    const int vh_shift = 2 * ((iqs % 16) / 8), qh_i = 8 * (iqs / 16) + iqs % 8;
+    float acc[T][4];
+#pragma unroll
+    for (int t = 0; t < T; ++t)
+        acc[t][0] = acc[t][1] = acc[t][2] = acc[t][3] = 0.f;
+    constexpr int kV = (kQ6Chunk * kQ6Block / 16 + 31) / 32; // 16-byte pieces a lane carries per chunk (4)
+    int4 pf[kV];
+    auto fetch = [&](int c0) {
+        const int bytes = min(kQ6Chunk, nb - c0) * kQ6Block;
+        const uint8_t* src = wr + (size_t) c0 * kQ6Block;
+#pragma unroll
+        for (int k = 0; k < kV; ++k) {
+            const int o = (lane + 32 * k) * 16;
+            if (o < bytes)
+                pf[k] = __ldg(reinterpret_cast<const int4*>(src + o));
+        }
+    };
+    if (v16)
+        fetch(0);
+    for (int c0 = 0; c0 < nb; c0 += kQ6Chunk) {
+        const int cn = min(kQ6Chunk, nb - c0), bytes = cn * kQ6Block;
+        __syncwarp();
+        if (v16) {
+#pragma unroll
+            for (int k = 0; k < kV; ++k) {
+                const int o = (lane + 32 * k) * 16;
+                if (o < bytes)
+                    *reinterpret_cast<int4*>(sm + o) = pf[k];
+            }
+            if (c0 + kQ6Chunk < nb)
+                fetch(c0 + kQ6Chunk);
+        } else { // rows of an odd number of 8-block chunks' bytes: 2-byte pieces
+            const uint8_t* src = wr + (size_t) c0 * kQ6Block;
+            for (int o = lane * 2; o < bytes; o += 64)
+                *reinterpret_cast<unsigned short*>(sm + o) = __ldg(reinterpret_cast<const unsigned short*>(src + o));
+        }
+        __syncwarp();
+#pragma unroll 2
+        for (int b = 0; b < cn; ++b) {
+            const uint8_t* blk = sm + b * kQ6Block; // ql[128] qh[64] scales[16] d
+            const int kbx = c0 + b;
+            const int vl = ld_b2(blk, iqs);
+            const int vh = ld_b2(blk + 128, qh_i) >> vh_shift;
+            const int8_t* sc = reinterpret_cast<const int8_t*>(blk + 192) + so;
+            const float d = __half2float(*reinterpret_cast<const __half*>(blk + 208));
+            int vi[2];
+#pragma unroll
+            for (int i = 0; i < 2; ++i) {
+                const int vil = (vl >> (4 * i)) & 0x0f0f0f0f;
+                const int vih = ((vh >> (4 * i)) << 4) & 0x30303030;
+                vi[i] = __vsubss4(vil | vih, 0x20202020);
+            }
+#pragma unroll
+            for (int t = 0; t < T; ++t) {
+                const uint8_t* xt = smem + ((size_t) t * xb + kbx * 8) * kQ6Q81;
+                float sumf = 0.0f;
+#pragma unroll
+                for (int i = 0; i < 2; ++i) {
+                    const Q81& q = *reinterpret_cast<const Q81*>(xt + (bq8 + 2 * i) * kQ6Q81);
+                    const int u = reinterpret_cast<const int*>(q.qs)[iqs % 8];
+                    sumf += __low2float(q.ds) * (__dp4a(vi[i], u, 0) * (int) sc[4 * i]);
+                }
+                acc[t][kbx & 3] += d * sumf;
+            }
+        }
+    }
+#pragma unroll
+    for (int t = 0; t < T; ++t) {
+        float v = acc[t][0];
+        v += acc[t][1];
+        v += acc[t][2];
+        v += acc[t][3];
+        v = warp_sum(v);
+        if (lane == 0)
+            y[(size_t) t * n_out + row] = v;
+    }
+}
+
+// Q8_0 rows times Q8_1 activations, the same way: native_mmvq's order (four lanes a block, a lane's two ints at
+// 2 * (lane % 4), blocks lane / 4 + 8 y + 32 i for its four sums y, added in order, then the lanes), so bitwise its
+// one-token result, with a warp per row staging 32 blocks (1088 bytes) at a time with 16-byte loads.
+constexpr int kQ8Block = 34, kQ8Chunk = 32;
+
+template <int T, int NW>
+__global__ void __launch_bounds__(NW * 32) q8_0_mmvq_k(const uint8_t* __restrict__ W, const uint8_t* __restrict__ x,
+                                                       float* __restrict__ y, int n_in, int n_out) {
+    extern __shared__ __align__(16) uint8_t smem[];
+    const int nb = n_in / 32, xbytes = T * nb * kQ6Q81;
+    for (int o = threadIdx.x * 16; o < xbytes; o += NW * 32 * 16)
+        *reinterpret_cast<int4*>(smem + o) = __ldg(reinterpret_cast<const int4*>(x + o));
+    __syncthreads();
+    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
+    const int row = blockIdx.x * NW + warp;
+    if (row >= n_out)
+        return;
+    const uint8_t* wr = W + (size_t) row * nb * kQ8Block;
+    uint8_t* sm = smem + xbytes + warp * (kQ8Chunk * kQ8Block);
+    const int kqs = 2 * (lane % 4), slot = lane / 4;
+    float acc[T][4];
+#pragma unroll
+    for (int t = 0; t < T; ++t)
+        acc[t][0] = acc[t][1] = acc[t][2] = acc[t][3] = 0.f;
+    constexpr int kV = (kQ8Chunk * kQ8Block / 16 + 31) / 32; // 16-byte pieces a lane carries per chunk (3)
+    int4 pf[kV];
+    auto fetch = [&](int c0) {
+        const int bytes = min(kQ8Chunk, nb - c0) * kQ8Block;
+        const uint8_t* src = wr + (size_t) c0 * kQ8Block;
+#pragma unroll
+        for (int k = 0; k < kV; ++k) {
+            const int o = (lane + 32 * k) * 16;
+            if (o < bytes)
+                pf[k] = __ldg(reinterpret_cast<const int4*>(src + o));
+        }
+    };
+    fetch(0);
+    for (int c0 = 0; c0 < nb; c0 += kQ8Chunk) {
+        const int bytes = min(kQ8Chunk, nb - c0) * kQ8Block;
+        __syncwarp();
+#pragma unroll
+        for (int k = 0; k < kV; ++k) {
+            const int o = (lane + 32 * k) * 16;
+            if (o < bytes)
+                *reinterpret_cast<int4*>(sm + o) = pf[k];
+        }
+        if (c0 + kQ8Chunk < nb)
+            fetch(c0 + kQ8Chunk);
+        __syncwarp();
+#pragma unroll
+        for (int yy = 0; yy < 4; ++yy) {
+            const int b = slot + 8 * yy, kbx = c0 + b;
+            if (kbx >= nb)
+                break;
+            const uint8_t* blk = sm + b * kQ8Block; // d, qs[32]
+            const float d0 = __half2float(*reinterpret_cast<const __half*>(blk));
+            const int v0 = ld_b2(blk + 2, kqs);
+            const int v1 = ld_b2(blk + 2, kqs + 1);
+#pragma unroll
+            for (int t = 0; t < T; ++t) {
+                const Q81& q = *reinterpret_cast<const Q81*>(smem + ((size_t) t * nb + kbx) * kQ6Q81);
+                const int* u = reinterpret_cast<const int*>(q.qs);
+                int sumi = __dp4a(v0, u[kqs], 0);
+                sumi = __dp4a(v1, u[kqs + 1], sumi);
+                acc[t][yy] += d0 * __low2float(q.ds) * (float) sumi;
+            }
+        }
+    }
+#pragma unroll
+    for (int t = 0; t < T; ++t) {
+        float v = acc[t][0];
+        v += acc[t][1];
+        v += acc[t][2];
+        v += acc[t][3];
+        v = warp_sum(v);
+        if (lane == 0)
+            y[(size_t) t * n_out + row] = v;
+    }
+}
+
 // one block (128 threads) per row and tile of kTile tokens: float4 loads, a shuffle-then-shared reduction
 __global__ void __launch_bounds__(128)
     f32_matvec_k(const float* W, const float* x, float* y, int n_in, int n_out, int T) {
@@ -851,6 +1045,43 @@ void q8_0_split(const uint8_t* q8, uint8_t* out, int64_t rows, int n_in) {
             std::memcpy(d + ((size_t) r * nb + b) * 2, blk, 2);
             std::memcpy(qs + (size_t) r * n_in + b * 32, blk + 2, 32);
         }
+}
+
+bool q6k_mmvq_supported(int n_in, int T) {
+    // native_mmvq's path for four or more blocks a row; the activations of T tokens fit in shared memory beside the
+    // staged rows (48 KiB a block before Volta)
+    return n_in % 256 == 0 && n_in >= 1024 && T >= 1 && T <= 2 &&
+           (size_t) T * (n_in / 32) * kQ6Q81 + 8 * kQ6Chunk * kQ6Block <= 48 * 1024;
+}
+
+void q6k_mmvq(const void* W, const void* xq8_1, float* y, int n_in, int n_out, int T, void* st) {
+    const size_t xbytes = (size_t) T * (n_in / 32) * kQ6Q81;
+    const auto* w = (const uint8_t*) W;
+    const auto* x = (const uint8_t*) xq8_1;
+    // eight rows a block: the activations are read once per block (four rows a block, which two tokens 16384 wide
+    // would need, lost to native_mmvq: 117 against 146 GB/s)
+    const dim3 grid((unsigned) ((n_out + 7) / 8));
+    const size_t sh = xbytes + 8 * kQ6Chunk * kQ6Block;
+    if (T == 1)
+        q6k_mmvq_k<1, 8><<<grid, 256, sh, S(st)>>>(w, x, y, n_in, n_out);
+    else
+        q6k_mmvq_k<2, 8><<<grid, 256, sh, S(st)>>>(w, x, y, n_in, n_out);
+}
+
+bool q8_0_mmvq_supported(int n_in, int T) {
+    return n_in % 256 == 0 && n_in >= 1024 && T >= 1 && T <= 2 &&
+           (size_t) T * (n_in / 32) * kQ6Q81 + 8 * kQ8Chunk * kQ8Block <= 48 * 1024;
+}
+
+void q8_0_mmvq(const void* W, const void* xq8_1, float* y, int n_in, int n_out, int T, void* st) {
+    const size_t sh = (size_t) T * (n_in / 32) * kQ6Q81 + 8 * kQ8Chunk * kQ8Block;
+    const dim3 grid((unsigned) ((n_out + 7) / 8));
+    const auto* w = (const uint8_t*) W;
+    const auto* x = (const uint8_t*) xq8_1;
+    if (T == 1)
+        q8_0_mmvq_k<1, 8><<<grid, 256, sh, S(st)>>>(w, x, y, n_in, n_out);
+    else
+        q8_0_mmvq_k<2, 8><<<grid, 256, sh, S(st)>>>(w, x, y, n_in, n_out);
 }
 
 void f32_matvec(const float* W, const float* x, float* y, int n_in, int n_out, int T, void* st) {

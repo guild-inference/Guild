@@ -50,6 +50,14 @@ bool q8_0_heads_supported(int n_in);
 /// Host: `rows` GGUF Q8_0 rows of n_in values -> all the int8 values (rows x n_in, row-major), then all the FP16
 /// scales (rows x n_in / 32): the same bytes, aligned for wide loads
 void q8_0_split(const uint8_t* q8, uint8_t* out, int64_t rows, int n_in);
+
+/// Q6_K rows (ggml's layout) times one or two tokens of Q8_1 activations (q6k_mmvq_supported): y[t][r], bitwise
+/// guild::kernels::native_mmvq's one-token result, with fewer load instructions (Pascal is bound by them on Q6_K)
+bool q6k_mmvq_supported(int n_in, int T);
+void q6k_mmvq(const void* W, const void* xq8_1, float* y, int n_in, int n_out, int T, void* st);
+/// The same for Q8_0 rows (bitwise native_mmvq's one-token result)
+bool q8_0_mmvq_supported(int n_in, int T);
+void q8_0_mmvq(const void* W, const void* xq8_1, float* y, int n_in, int n_out, int T, void* st);
 /// y[t][r] = W[r] . x[t], W [n_out][n_in] F32
 void f32_matvec(const float* W, const float* x, float* y, int n_in, int n_out, int T, void* st);
 
