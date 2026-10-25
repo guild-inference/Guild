@@ -9,7 +9,7 @@
 
 namespace guild::core::glm5k {
 
-inline constexpr int kMaxT = 64; ///< tokens per window (prompt windows; decode runs 1)
+inline constexpr int kMaxT = 128; ///< tokens per window (prompt windows; decode runs 1 or 2)
 inline constexpr int kKdaDim = 128;
 inline constexpr int kHc = 4;
 

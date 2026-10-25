@@ -729,7 +729,7 @@ bool Glm5Engine::Impl::load(const std::string& path, const Glm5Options& o, std::
             state_bytes += m->bytes;
         state_bytes += (uint64_t) g.n_expert * N * 4 + 64 * 1024;
     }
-    const uint64_t scratch_bytes = 128ull << 20;
+    const uint64_t scratch_bytes = 176ull << 20; // a window of kMaxT tokens: ~1.1 MB of scratch a token
     uint64_t need = state_bytes + scratch_bytes + head.bytes;
     for (const Layer& y : L)
         for (const Mat* m : {&y.hc_attn_fn, &y.hc_ffn_fn, &y.wo, &y.wq, &y.wk, &y.wv, &y.f_a, &y.f_b, &y.g_a, &y.g_b,
@@ -894,12 +894,16 @@ bool Glm5Engine::Impl::load(const std::string& path, const Glm5Options& o, std::
 
     // scratch
     const int64_t QB = (int64_t) H * g.qk_dim, VB = (int64_t) H * g.v_dim, LB = (int64_t) H * g.kv_lora;
-    const int64_t widest = std::max<int64_t>({N * 4, D * 3, QB, LB, g.n_ff});
+    // each scratch row as wide as its widest use (a: the flat streams, q, the FFN gate; b: k, the latent, the FFN up;
+    // c: v, the KDA scan, v_b, the SwiGLU; d: beta, the KDA output; the quantized inputs: any product's input)
+    const int64_t wa = std::max<int64_t>({N * 4, D, QB, g.n_ff}), wb = std::max<int64_t>({D, LB, g.n_ff});
+    const int64_t wc = std::max<int64_t>({D, VB, g.n_ff}), wd = std::max<int64_t>(D, H);
+    const int64_t widest = std::max<int64_t>({N * 4, D, VB, g.n_ff, 2 * N, g.q_lora});
     if (!(R = dalloc<float>((size_t) T * 4 * N, err)) || !(xn = dalloc<float>((size_t) T * N, err)) ||
         !(mix = dalloc<float>((size_t) T * 24, err)) || !(post = dalloc<float>((size_t) T * 4, err)) ||
         !(comb = dalloc<float>((size_t) T * 16, err)) || !(y = dalloc<float>((size_t) T * N, err)) ||
-        !(a = dalloc<float>((size_t) T * widest, err)) || !(b = dalloc<float>((size_t) T * widest, err)) ||
-        !(c = dalloc<float>((size_t) T * widest, err)) || !(d = dalloc<float>((size_t) T * widest, err)) ||
+        !(a = dalloc<float>((size_t) T * wa, err)) || !(b = dalloc<float>((size_t) T * wb, err)) ||
+        !(c = dalloc<float>((size_t) T * wc, err)) || !(d = dalloc<float>((size_t) T * wd, err)) ||
         !(e = dalloc<float>((size_t) T * std::max(LB, VB), err)) || !(f = dalloc<float>((size_t) T * N, err)) ||
         !(qkv = dalloc<float>((size_t) T * 3 * D, err)) || !(small1 = dalloc<float>((size_t) T * 4096, err)) ||
         !(small2 = dalloc<float>((size_t) T * 4096, err)) || !(gk = dalloc<float>((size_t) T * D, err)) ||

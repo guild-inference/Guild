@@ -8,6 +8,7 @@
 // when it extends that (a chat's next turn whose rendering of the last answer differs from the tokens generated),
 // and prefills from the start otherwise.
 #include "guild/core/glm5.hpp"
+#include "guild/core/glm5_kernels.hpp"
 #include "guild/runtime/model.hpp"
 #include "guild/runtime/session.hpp"
 #include "guild/runtime/tokenizer.hpp"
@@ -178,7 +179,7 @@ bool glm5_generate(GuildModel::Impl& m, const GenerationRequest& req, const std:
 
     // prefill the rest, in windows, reporting progress
     if (start < prompt.size()) {
-        constexpr int kChunk = 64;
+        constexpr int kChunk = core::glm5k::kMaxT; // the engine's widest window
         for (size_t at = start; at < prompt.size();) {
             if (cancelled_now()) { // the state matches glm_ctx; its logits are unknown, so the next request feeds more
                 tel.finish_reason = "cancel";

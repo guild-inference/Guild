@@ -386,7 +386,7 @@ __global__ void kv_store_k(const float* kv, __half* cache, int64_t pos0, int L, 
 constexpr int kCh = 16, kHg = 8, kMaxL = 512;
 // splits of a query's cells: many for a short window (the blocks a decode step needs), few for a long one
 inline int splits_for(int T) {
-    return T >= 16 ? 2 : T >= 4 ? 4 : 16;
+    return T >= 32 ? 1 : T >= 16 ? 2 : T >= 4 ? 4 : 16;
 }
 
 __global__ void __launch_bounds__(256)
