@@ -1,0 +1,734 @@
+{
+ "model": "GLM-5.3-Flash (glm4 pre-tokenizer)",
+ "source": "llama.cpp llama-tokenize",
+ "cases": [
+  {
+   "text": "Hello, world! 12345 tokens.",
+   "allow_special": false,
+   "tokens": [
+    9703,
+    11,
+    1879,
+    0,
+    220,
+    108714,
+    100461,
+    11206,
+    13
+   ]
+  },
+  {
+   "text": "你好，世界！这是一个测试。",
+   "allow_special": false,
+   "tokens": [
+    109377,
+    3837,
+    99011,
+    6313,
+    103974,
+    100838,
+    1773
+   ]
+  },
+  {
+   "text": "def f(x):\n    return x*2  # 2024-10-25\n",
+   "allow_special": false,
+   "tokens": [
+    750,
+    282,
+    2075,
+    982,
+    262,
+    470,
+    856,
+    9,
+    17,
+    220,
+    671,
+    220,
+    115937,
+    19,
+    12,
+    98668,
+    12,
+    99446,
+    198
+   ]
+  },
+  {
+   "text": "Ça va? naïve café — 1,234,567.89",
+   "allow_special": false,
+   "tokens": [
+    45639,
+    64,
+    11159,
+    30,
+    94083,
+    586,
+    51609,
+    1959,
+    220,
+    16,
+    11,
+    99619,
+    19,
+    11,
+    101917,
+    22,
+    13,
+    103502
+   ]
+  },
+  {
+   "text": "<|user|>\nhi<|assistant|>",
+   "allow_special": false,
+   "tokens": [
+    27,
+    91,
+    872,
+    91,
+    397,
+    6023,
+    27,
+    91,
+    76478,
+    91,
+    29
+   ]
+  },
+  {
+   "text": "é कि emoji 🎉🎉 tabs\t\tand\r\nlines",
+   "allow_special": false,
+   "tokens": [
+    68,
+    53481,
+    47512,
+    38643,
+    42123,
+    11157,
+    236,
+    231,
+    151705,
+    22340,
+    197,
+    52133,
+    319,
+    7968
+   ]
+  },
+  {
+   "text": "   leading spaces and 999999 numbers 3.14159",
+   "allow_special": false,
+   "tokens": [
+    256,
+    6388,
+    12615,
+    323,
+    220,
+    116583,
+    116583,
+    5109,
+    220,
+    18,
+    13,
+    122804,
+    102573
+   ]
+  },
+  {
+   "text": "mixed中文English混合text123abc",
+   "allow_special": false,
+   "tokens": [
+    56303,
+    102169,
+    22515,
+    101969,
+    1318,
+    108714,
+    13674
+   ]
+  },
+  {
+   "text": "https://example.com/a?b=c&d=e",
+   "allow_special": false,
+   "tokens": [
+    2428,
+    1110,
+    8686,
+    905,
+    14177,
+    30,
+    65,
+    19498,
+    5,
+    67,
+    40169
+   ]
+  },
+  {
+   "text": "'s 're 'VE don't I'LL",
+   "allow_special": false,
+   "tokens": [
+    594,
+    364,
+    265,
+    364,
+    4491,
+    1513,
+    944,
+    358,
+    6,
+    4086
+   ]
+  },
+  {
+   "text": "[gMASK]<sop><|system|>\nYou are helpful.<|user|>\nWhat is 2+2?<|assistant|>\n<think>",
+   "allow_special": false,
+   "tokens": [
+    32365,
+    49544,
+    33974,
+    82,
+    453,
+    1784,
+    91,
+    8945,
+    91,
+    397,
+    2610,
+    525,
+    10945,
+    15745,
+    91,
+    872,
+    91,
+    397,
+    3838,
+    374,
+    220,
+    17,
+    10,
+    17,
+    74816,
+    91,
+    76478,
+    91,
+    397,
+    154841
+   ]
+  },
+  {
+   "text": " non-breaking space and  line sep",
+   "allow_special": false,
+   "tokens": [
+    4102,
+    6280,
+    53945,
+    4102,
+    8745,
+    323,
+    220,
+    378,
+    101,
+    1056,
+    20970
+   ]
+  },
+  {
+   "text": "1234567890 0.5 -3e10",
+   "allow_special": false,
+   "tokens": [
+    108714,
+    100461,
+    21,
+    100928,
+    24,
+    15,
+    220,
+    15,
+    13,
+    20,
+    481,
+    18,
+    68,
+    98668
+   ]
+  },
+  {
+   "text": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "allow_special": false,
+   "tokens": [
+    43847,
+    43847,
+    43847,
+    43847,
+    43847,
+    43847,
+    43847,
+    43847,
+    43847,
+    43847,
+    43847,
+    43847,
+    43847,
+    43847,
+    43847,
+    43847,
+    43847,
+    43847,
+    43847,
+    43847,
+    43847,
+    43847,
+    43847,
+    43847,
+    43847,
+    43847,
+    43847,
+    43847,
+    43847,
+    43847,
+    43847,
+    43847,
+    43847,
+    43847,
+    43847,
+    43847,
+    43847,
+    18485
+   ]
+  },
+  {
+   "text": "Привет, мир! Γειά σου Κόσμε",
+   "allow_special": false,
+   "tokens": [
+    148366,
+    8177,
+    11,
+    130422,
+    0,
+    83521,
+    127513,
+    73558,
+    143537,
+    128461,
+    136807,
+    127797
+   ]
+  },
+  {
+   "text": "مرحبا بالعالم",
+   "allow_special": false,
+   "tokens": [
+    128593,
+    29710,
+    132131,
+    127893,
+    23161,
+    129360
+   ]
+  },
+  {
+   "text": "日本語のテキストとカタカナ",
+   "allow_special": false,
+   "tokens": [
+    99799,
+    131513,
+    15755,
+    56451,
+    61369,
+    70008,
+    19146,
+    69868,
+    45928,
+    69868,
+    94551
+   ]
+  },
+  {
+   "text": "    indented\n\tcode\n\n\n",
+   "allow_special": false,
+   "tokens": [
+    262,
+    1257,
+    15852,
+    198,
+    43094,
+    1406
+   ]
+  },
+  {
+   "text": "</think>\n\nThe answer is 4.<|endoftext|>",
+   "allow_special": false,
+   "tokens": [
+    154842,
+    271,
+    785,
+    4226,
+    374,
+    220,
+    19,
+    15745,
+    91,
+    8690,
+    723,
+    427,
+    91,
+    29
+   ]
+  },
+  {
+   "text": "Hello, world! 12345 tokens.",
+   "allow_special": true,
+   "tokens": [
+    9703,
+    11,
+    1879,
+    0,
+    220,
+    108714,
+    100461,
+    11206,
+    13
+   ]
+  },
+  {
+   "text": "你好，世界！这是一个测试。",
+   "allow_special": true,
+   "tokens": [
+    109377,
+    3837,
+    99011,
+    6313,
+    103974,
+    100838,
+    1773
+   ]
+  },
+  {
+   "text": "def f(x):\n    return x*2  # 2024-10-25\n",
+   "allow_special": true,
+   "tokens": [
+    750,
+    282,
+    2075,
+    982,
+    262,
+    470,
+    856,
+    9,
+    17,
+    220,
+    671,
+    220,
+    115937,
+    19,
+    12,
+    98668,
+    12,
+    99446,
+    198
+   ]
+  },
+  {
+   "text": "Ça va? naïve café — 1,234,567.89",
+   "allow_special": true,
+   "tokens": [
+    45639,
+    64,
+    11159,
+    30,
+    94083,
+    586,
+    51609,
+    1959,
+    220,
+    16,
+    11,
+    99619,
+    19,
+    11,
+    101917,
+    22,
+    13,
+    103502
+   ]
+  },
+  {
+   "text": "<|user|>\nhi<|assistant|>",
+   "allow_special": true,
+   "tokens": [
+    154827,
+    198,
+    6023,
+    154828
+   ]
+  },
+  {
+   "text": "é कि emoji 🎉🎉 tabs\t\tand\r\nlines",
+   "allow_special": true,
+   "tokens": [
+    68,
+    53481,
+    47512,
+    38643,
+    42123,
+    11157,
+    236,
+    231,
+    151705,
+    22340,
+    197,
+    52133,
+    319,
+    7968
+   ]
+  },
+  {
+   "text": "   leading spaces and 999999 numbers 3.14159",
+   "allow_special": true,
+   "tokens": [
+    256,
+    6388,
+    12615,
+    323,
+    220,
+    116583,
+    116583,
+    5109,
+    220,
+    18,
+    13,
+    122804,
+    102573
+   ]
+  },
+  {
+   "text": "mixed中文English混合text123abc",
+   "allow_special": true,
+   "tokens": [
+    56303,
+    102169,
+    22515,
+    101969,
+    1318,
+    108714,
+    13674
+   ]
+  },
+  {
+   "text": "https://example.com/a?b=c&d=e",
+   "allow_special": true,
+   "tokens": [
+    2428,
+    1110,
+    8686,
+    905,
+    14177,
+    30,
+    65,
+    19498,
+    5,
+    67,
+    40169
+   ]
+  },
+  {
+   "text": "'s 're 'VE don't I'LL",
+   "allow_special": true,
+   "tokens": [
+    594,
+    364,
+    265,
+    364,
+    4491,
+    1513,
+    944,
+    358,
+    6,
+    4086
+   ]
+  },
+  {
+   "text": "[gMASK]<sop><|system|>\nYou are helpful.<|user|>\nWhat is 2+2?<|assistant|>\n<think>",
+   "allow_special": true,
+   "tokens": [
+    154822,
+    154824,
+    154826,
+    198,
+    2610,
+    525,
+    10945,
+    13,
+    154827,
+    198,
+    3838,
+    374,
+    220,
+    17,
+    10,
+    17,
+    30,
+    154828,
+    198,
+    154841
+   ]
+  },
+  {
+   "text": " non-breaking space and  line sep",
+   "allow_special": true,
+   "tokens": [
+    4102,
+    6280,
+    53945,
+    4102,
+    8745,
+    323,
+    220,
+    378,
+    101,
+    1056,
+    20970
+   ]
+  },
+  {
+   "text": "1234567890 0.5 -3e10",
+   "allow_special": true,
+   "tokens": [
+    108714,
+    100461,
+    21,
+    100928,
+    24,
+    15,
+    220,
+    15,
+    13,
+    20,
+    481,
+    18,
+    68,
+    98668
+   ]
+  },
+  {
+   "text": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "allow_special": true,
+   "tokens": [
+    43847,
+    43847,
+    43847,
+    43847,
+    43847,
+    43847,
+    43847,
+    43847,
+    43847,
+    43847,
+    43847,
+    43847,
+    43847,
+    43847,
+    43847,
+    43847,
+    43847,
+    43847,
+    43847,
+    43847,
+    43847,
+    43847,
+    43847,
+    43847,
+    43847,
+    43847,
+    43847,
+    43847,
+    43847,
+    43847,
+    43847,
+    43847,
+    43847,
+    43847,
+    43847,
+    43847,
+    43847,
+    18485
+   ]
+  },
+  {
+   "text": "Привет, мир! Γειά σου Κόσμε",
+   "allow_special": true,
+   "tokens": [
+    148366,
+    8177,
+    11,
+    130422,
+    0,
+    83521,
+    127513,
+    73558,
+    143537,
+    128461,
+    136807,
+    127797
+   ]
+  },
+  {
+   "text": "مرحبا بالعالم",
+   "allow_special": true,
+   "tokens": [
+    128593,
+    29710,
+    132131,
+    127893,
+    23161,
+    129360
+   ]
+  },
+  {
+   "text": "日本語のテキストとカタカナ",
+   "allow_special": true,
+   "tokens": [
+    99799,
+    131513,
+    15755,
+    56451,
+    61369,
+    70008,
+    19146,
+    69868,
+    45928,
+    69868,
+    94551
+   ]
+  },
+  {
+   "text": "    indented\n\tcode\n\n\n",
+   "allow_special": true,
+   "tokens": [
+    262,
+    1257,
+    15852,
+    198,
+    43094,
+    1406
+   ]
+  },
+  {
+   "text": "</think>\n\nThe answer is 4.<|endoftext|>",
+   "allow_special": true,
+   "tokens": [
+    154842,
+    271,
+    785,
+    4226,
+    374,
+    220,
+    19,
+    13,
+    154820
+   ]
+  }
+ ]
+}

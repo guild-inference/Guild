@@ -101,6 +101,14 @@ void GuildSession::reset() {
     std::lock_guard<std::mutex> lock(m_impl->generation_mutex);
     if (!m_impl->ready || !m_impl->ready->load())
         return;
+    if (m_impl->glm) { // forget the context and the snapshot
+        m_impl->glm->reset();
+        m_impl->glm_ctx.clear();
+        m_impl->glm_snap.clear();
+        m_impl->glm_ctx_logits.clear();
+        m_impl->glm_snap_logits.clear();
+        return;
+    }
     core::ScopedModelExecution exec_scope(m_impl->exec_state);
     std::optional<kernels::ScopedCudaAttn> attn_scope;
     if (m_impl->cuda_attn)
@@ -212,6 +220,14 @@ bool GuildSession::generate(const GenerationRequest& req, TokenStreamCallback on
         error_msg = "prompt (" + std::to_string(n_prompt) + ") + max_tokens (" + std::to_string(req.max_new_tokens) +
                     ") exceeds max context (" + std::to_string(impl_->max_context) + ")";
         return false;
+    }
+    if (m_impl->glm) {
+        for (int64_t id : ids)
+            if (id < 0 || id >= m_impl->glm->geometry().n_vocab) {
+                error_msg = "prompt token id " + std::to_string(id) + " is outside the model vocabulary";
+                return false;
+            }
+        return glm5_generate(*m_impl, req, ids, on_token, telemetry, error_msg, on_prefill, impl_->cancelled);
     }
     for (int64_t id : ids) {
         if (id < 0 || id >= m_impl->ver->vocab()) {

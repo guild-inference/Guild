@@ -270,7 +270,7 @@ endif()
 # Only built when a GPU backend is on, so the Phase 1 targets keep working without a toolkit.
 if(GUILD_ENABLE_CUDA OR GUILD_ENABLE_HIP)
   add_library(guild_core STATIC src/core/device.cu src/core/pinned.cu src/platform/memory.cpp src/core/graph.cpp src/core/weights.cpp
-                               src/core/layout.cpp src/core/drama3_tower.cu)
+                               src/core/layout.cpp src/core/drama3_tower.cu src/core/glm5.cu)
   target_include_directories(guild_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
   if(GUILD_ENABLE_CUDA AND GUILD_EXPERIMENTAL_SM60)
     # the runtime device check (src/core/device.cu) admits the cards this build was made for (#236)
@@ -461,7 +461,7 @@ if(GUILD_ENABLE_CUDA OR GUILD_ENABLE_HIP)
     src/core/remote_expert_opt.cpp
     src/core/expert_cache.cpp src/core/native_head.cpp src/core/native_dense.cpp src/core/verify.cpp src/core/mtp.cpp
     src/core/conversation_snapshot.cpp src/core/conversation_state.cpp src/core/conversation_memory.cpp src/core/peer_experts.cpp
-    src/core/drama3_tower.cpp src/core/drama3_codec.cu)
+    src/core/drama3_tower.cpp src/core/drama3_codec.cu src/core/glm5.cpp)
   target_include_directories(guild_engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
   target_link_libraries(guild_engine PUBLIC guild_core guild_model guild_kernels guild_kernels_cpu ${_guild_gpu_runtime_target}
     ${_guild_gpu_blas_target})
@@ -471,6 +471,12 @@ if(GUILD_ENABLE_CUDA OR GUILD_ENABLE_HIP)
   target_link_libraries(drama3_tower_test PRIVATE guild_engine)
   add_executable(drama3_codec_test tests/core/drama3_codec_test.cpp)
   target_link_libraries(drama3_codec_test PRIVATE guild_engine)
+  # GLM-5.3-Flash: greedy decode from token ids, and the last prompt token's logits for comparisons
+  add_executable(glm5_run tests/core/glm5_run.cpp)
+  target_link_libraries(glm5_run PRIVATE guild_engine)
+  add_executable(glm5_kernels_test tests/core/glm5_kernels_test.cpp)
+  target_link_libraries(glm5_kernels_test PRIVATE guild_engine)
+  add_test(NAME glm5_kernels_test COMMAND glm5_kernels_test)
   add_executable(kv_host_only_test tests/core/kv_host_only_test.cpp)
   target_link_libraries(kv_host_only_test PRIVATE guild_engine)
   add_test(NAME kv_host_only_test COMMAND kv_host_only_test)
@@ -1064,6 +1070,7 @@ if(GUILD_ENABLE_CUDA OR GUILD_ENABLE_HIP)
     src/model/runner.cpp
     src/runtime/model.cpp
     src/runtime/drama3.cpp
+    src/runtime/glm5.cpp
     src/runtime/ple.cpp
     src/runtime/session.cpp
     src/runtime/performance.cpp
@@ -1190,6 +1197,13 @@ if(GUILD_BUILD_TESTS)
   target_link_libraries(parity_test PRIVATE guild_server guild_runtime guild_models guild_memory guild_model guild_cli)
   add_test(NAME parity_test COMMAND parity_test)
 
+  # GLM-5.3-Flash's glm4 rules against llama.cpp's ids (skipped without the extracted tokenizer)
+  add_executable(glm5_tokenizer_test tests/core/glm5_tokenizer_test.cpp)
+  target_link_libraries(glm5_tokenizer_test PRIVATE guild_runtime guild_server)
+  set(GUILD_GLM5_TOKENIZER_DIR "$ENV{HOME}/models/GLM-5.3-Flash/pack/tokenizer" CACHE PATH "GLM-5.3-Flash tokenizer assets")
+  add_test(NAME glm5_tokenizer_test COMMAND glm5_tokenizer_test
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/glm5_tokenizer_golden.json ${GUILD_GLM5_TOKENIZER_DIR})
+  set_tests_properties(glm5_tokenizer_test PROPERTIES SKIP_RETURN_CODE 77)
   add_executable(tokenizer_parity_test tests/core/tokenizer_parity_test.cpp)
   target_link_libraries(tokenizer_parity_test PRIVATE guild_runtime guild_server guild_cli)
   add_test(NAME tokenizer_fail_closed_test COMMAND tokenizer_parity_test --unloaded-only)

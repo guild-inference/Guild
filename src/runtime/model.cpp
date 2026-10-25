@@ -76,6 +76,33 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
         error_msg = "model load: primary model path is required";
         return nullptr;
     }
+    // GLM-5.3-Flash has its own engine: no pack, runner or verifier (src/runtime/glm5.cpp)
+    if (glm5_is_model(paths.primary_model_path)) {
+        auto model = std::unique_ptr<GuildModel>(new GuildModel());
+        auto* impl = model->impl_.get();
+        impl->paths = paths;
+        impl->plan = plan;
+        impl->desc = requested_desc;
+        if (!glm5_load(*impl, paths, plan, error_msg))
+            return nullptr;
+        if (!paths.tokenizer_dir.empty()) {
+            std::string tok_err;
+            if (!model->tokenizer_->load(paths.tokenizer_dir, tok_err)) {
+                error_msg = "model load: tokenizer: " + tok_err;
+                return nullptr;
+            }
+        }
+        model->desc_ = requested_desc;
+        model->plan_ = plan;
+        model->plan_.context_length = impl->config.max_context;
+        model->paths_ = paths;
+        model->config_ = impl->config;
+        sp.total_load_ms = ms_since(load_t0);
+        impl->startup_profile = sp;
+        model->startup_profile_ = sp;
+        model->ready_->store(true);
+        return model;
+    }
     {
         const auto pkg_t0 = Clock::now();
         std::string pkg_err;

@@ -15,6 +15,7 @@
 #include "guild/core/layer.hpp"
 #include "guild/core/drama3_codec.hpp"
 #include "guild/core/drama3_tower.hpp"
+#include "guild/core/glm5.hpp"
 #include "guild/core/mtp.hpp"
 #include "guild/core/native_dense.hpp"
 #include "guild/core/native_head.hpp"
@@ -175,6 +176,10 @@ struct GuildModel::Impl {
     std::unique_ptr<core::MtpDrafter> mtp;
     std::unique_ptr<core::Drama3Tower> tower; ///< Drama 3 (ModelPaths::drama3_dir): the codebook tower
     std::unique_ptr<core::Drama3Codec> codec; ///< ... and the codec that turns frames into audio
+    /// GLM-5.3-Flash (a glm5-next GGUF) runs on its own engine (src/runtime/glm5.cpp); the rest stays empty
+    std::unique_ptr<core::Glm5Engine> glm;
+    std::vector<int32_t> glm_ctx, glm_snap;             ///< the tokens of the live context and of the snapshot
+    std::vector<float> glm_ctx_logits, glm_snap_logits; ///< their last logits, when known
     std::unique_ptr<core::Verifier> ver;
     Drive drive;
     spec::GExecSpecCalibration spec_calibration;
@@ -518,6 +523,13 @@ struct GuildModel::Impl {
 
 bool bind_required_ple(GuildModel::Impl& model, const std::vector<std::string>& shards, std::string& err);
 bool bind_required_ple_gpack(GuildModel::Impl& model, const artifact::GPackReader& gpack, std::string& err);
+
+/// GLM-5.3-Flash (src/runtime/glm5.cpp)
+bool glm5_is_model(const std::string& gguf_path);
+bool glm5_load(GuildModel::Impl& m, const ModelPaths& paths, const memory::ExecutionPlan& plan, std::string& err);
+bool glm5_generate(GuildModel::Impl& m, const GenerationRequest& req, const std::vector<int64_t>& prompt,
+                   TokenStreamCallback on_token, RuntimeTelemetry& tel, std::string& err,
+                   PrefillProgressCallback on_prefill, std::atomic<bool>& cancelled);
 
 } // namespace guild::runtime
 
