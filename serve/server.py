@@ -4146,7 +4146,9 @@ def main() -> int:
             tokens[i] = t
         merges = (tpath / "merges.txt").read_text(encoding="utf-8").split("\n")
         types = json.loads((tpath / "token_type.json").read_text())
-        tok = ST.Tokenizer(tokens, merges, types)
+        info = tpath / "tokenizer.json"   # the pre-tokenizer rule (qwen35, or glm4 for GLM-5.3-Flash)
+        pre = json.loads(info.read_text(encoding="utf-8")).get("pre", "qwen35") if info.exists() else "qwen35"
+        tok = ST.Tokenizer(tokens, merges, types, pre=pre)
     hub = hub_from_config(cfg, a.mcp_config)            # before the minutes of loading: a bad entry stops here
     if a.engine == "guild":
         if not cfg:

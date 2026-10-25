@@ -87,6 +87,8 @@ public:
 
 private:
     bool loaded_ = false;
+    bool glm4_ = false;          ///< pre "glm4": no \p{M} classes, digits in runs of up to 3
+    bool ignore_merges_ = false; ///< a pre-token that is a vocabulary entry is that token (glm4)
     int32_t eos_token_id_ = 248046;
     std::vector<int32_t> eos_token_ids_ = {248046, 248044};
     std::vector<std::string> vocab_tokens_;

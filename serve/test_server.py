@@ -482,6 +482,42 @@ class ToolCallTerminators(unittest.TestCase):
                         self.assertEqual(json.loads(streamed), {"path": "doc.md", "content": self.CONTENT})
 
 
+class GlmToolCalls(unittest.TestCase):
+    """GLM-5.3-Flash writes `<tool_call>NAME<arg_key>K</arg_key><arg_value>V</arg_value>...</tool_call>`: strings as
+    themselves, other values as JSON; a value may contain the closing tag as text."""
+    SCHEMA = [{"name": "get_weather", "parameters": {"properties": {"city": {"type": "string"},
+                                                                    "days": {"type": "integer"},
+                                                                    "note": {"type": "string"}}}}]
+    NOTE = "close with </arg_value> later"
+
+    def test_calls_parse_in_any_split(self):
+        from serve.frontend import OutputParser
+        text = ("Need the forecast.</think>Checking.<tool_call>get_weather<arg_key>city</arg_key><arg_value>Paris"
+                "</arg_value><arg_key>days</arg_key><arg_value>3</arg_value><arg_key>note</arg_key><arg_value>"
+                f"{self.NOTE}</arg_value></tool_call><tool_call>get_weather<arg_key>city</arg_key><arg_value>Oslo"
+                "</arg_value></tool_call>")
+        for stream_tools in (False, True):
+            for step in (1, 5, 10_000):
+                with self.subTest(stream_tools=stream_tools, step=step):
+                    p = OutputParser(thinking=True, tools=self.SCHEMA, stream_tools=stream_tools)
+                    evs = []
+                    for i in range(0, len(text), step):
+                        evs += p.feed(text[i:i + step])
+                    evs += p.finish()
+                    calls = [e.call for e in evs if e.kind == "tool_call"]
+                    self.assertEqual([c.name for c in calls], ["get_weather", "get_weather"])
+                    self.assertEqual(calls[0].arguments, {"city": "Paris", "days": 3, "note": self.NOTE})
+                    self.assertEqual(calls[1].arguments, {"city": "Oslo"})
+                    self.assertEqual("".join(e.text for e in evs if e.kind == "reasoning"), "Need the forecast.")
+                    self.assertEqual("".join(e.text for e in evs if e.kind == "content"), "Checking.")
+
+    def test_untyped_values_decode_as_json(self):
+        from serve.frontend import parse_tool_call
+        call = parse_tool_call("run<arg_key>n</arg_key><arg_value>2</arg_value><arg_key>flags</arg_key>"
+                               "<arg_value>[\"-v\"]</arg_value><arg_key>name</arg_key><arg_value>x y</arg_value>")
+        self.assertEqual((call.name, call.arguments), ("run", {"n": 2, "flags": ["-v"], "name": "x y"}))
+
+
 class UnfinishedToolCall(unittest.TestCase):
     """#211: a call the output ends inside is not reported as a whole one - its streamed JSON is not closed and the
     finish reason is not "tool_calls" / "tool_use" - so a client can tell it from a call to run."""
