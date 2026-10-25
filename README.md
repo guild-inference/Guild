@@ -60,7 +60,7 @@ Current work includes:
 | Qwen3.8 / qwen4exp | Supported / primary development target |
 | Qwen3.5 MoE / Ornith | Experimental / active development |
 | Fish Audio Drama 3 (text to speech) | Experimental: speech and voice cloning on the GPU + CPU pool |
-| GLM MoE | Planned |
+| GLM-5.3-Flash (`glm5-next` GGUF) | Experimental: its own engine, attention on the GPU, experts on the CPU |
 | DeepSeek-style MoE | Planned |
 | Mixtral-style MoE | Planned |
 | Other architectures | Experimental as added |
@@ -264,6 +264,29 @@ distribution, not the reference's exact draws. Drama 3's weights are under the F
 (free for research and non-commercial use; commercial use only below USD 500,000 annual revenue, and any hosted
 service needs a separate license from Fish Audio).  Guild does not ship them.  The HIP (AMD) build compiles the
 speech parts but has not been run on an AMD card.
+
+### GLM-5.3-Flash
+
+[GLM-5.3-Flash](https://huggingface.co/zai-org/GLM-5.3-Flash) (MIT license) runs from Unsloth's GGUF
+([unsloth/GLM-5.3-Flash-GGUF](https://huggingface.co/unsloth/GLM-5.3-Flash-GGUF), UD-IQ4_XS, 5 shards, 147 GiB) on its
+own engine: attention, mHC and the head on the GPU, the 288 routed experts on the CPU (copied into node-local memory,
+so about 160 GiB of RAM), the NextN layer drafting a token per step. Export the tokenizer from the first shard once,
+then pass both to `guild-generate` (or a server config with those `args`):
+
+```bash
+python tools/guild_tokenizer.py --gguf GLM-5.3-Flash-UD-IQ4_XS-00001-of-00005.gguf --out <dir>
+guild-generate --serve --native GLM-5.3-Flash-UD-IQ4_XS-00001-of-00005.gguf --tokenizer <dir> --max-context 32768
+```
+
+The engine fits the context to the VRAM and says how much it holds. When the GGUF's Q8_0 attention matrices would
+leave less than the context asked for (up to 16k tokens), it re-quantizes them to Q6_K at load (about 16 s);
+`GUILD_GLM_DENSE=q8_0` keeps Q8_0, `q6_k` always converts. `GUILD_GLM_MTP=0` decodes without the drafts.
+
+On a dual Xeon Gold 6130 with a GTX 1070 (8 GB): 16384 tokens of context, 13.8 tok/s plain and 16.9 tok/s with the
+drafts (87% accepted), prompts of 640 to 2967 tokens at 36 to 45 tok/s, and a conversation's next turn reads only
+what is new. Guild's decode steps match llama.cpp's logits on the same GGUF to a mean KL of 0.012 to 0.027 nats, with
+the same top token on 92% to 95% of them ([bench/results/2026-10-25-glm5](bench/results/2026-10-25-glm5/README.md)).
+It has run on CUDA only so far; the server parses GLM's tool calls and its `<think>` blocks.
 
 ## Performance philosophy
 

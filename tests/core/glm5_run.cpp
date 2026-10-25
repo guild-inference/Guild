@@ -6,6 +6,7 @@
 //   --oracle <file>: --spec with the drafts replaced by a plain greedy output (tests the accept path)
 //   --step: the prompt one token at a time, as decode runs, instead of windows of 64
 //   --no-numa: the experts stay in the GGUF mapping instead of half of each on either NUMA node
+//   --dump <file>: append every plain decode step's logits (the row that picks the next token) to <file>
 //   --q6k / --q8: the attention's Q8_0 matrices re-quantized to Q6_K, or kept (default: Q6_K when Q8_0 would hold
 //   less context than --ctx, up to 16k tokens)
 //
@@ -36,7 +37,7 @@ int main(int argc, char** argv) {
                 ids.push_back((int32_t) std::atol(tok.c_str()));
     }
     int n_new = 32;
-    std::string logits_path;
+    std::string logits_path, dump_path;
     bool step = false, spec = false;
     std::vector<int32_t> oracle;
     guild::core::Glm5Options opt;
@@ -44,6 +45,8 @@ int main(int argc, char** argv) {
         const std::string a = argv[i];
         if (a == "--logits" && i + 1 < argc)
             logits_path = argv[++i];
+        else if (a == "--dump" && i + 1 < argc) // every plain decode step's logits, one row each
+            dump_path = argv[++i];
         else if (a == "--threads" && i + 1 < argc)
             opt.threads = std::atoi(argv[++i]);
         else if (a == "--ctx" && i + 1 < argc)
@@ -178,6 +181,10 @@ int main(int argc, char** argv) {
         }
         cpu_ms += eng.last_cpu_ms();
         mark();
+        if (!dump_path.empty()) {
+            std::ofstream o(dump_path, std::ios::binary | std::ios::app);
+            o.write((const char*) logits.data(), (std::streamsize)(logits.size() * 4));
+        }
         next = argmax(logits.data(), logits.size());
     }
     const double dec_ms = since(t1);
