@@ -753,13 +753,17 @@ int main(int argc, char** argv) try {
     // The model and its session, an exception as an error: a VRAM shortfall can surface either way.
     std::unique_ptr<GuildModel> model;
     std::unique_ptr<GuildSession> session;
+    int64_t context = plan.context_length;
     auto load = [&]() {
         session.reset();
         model.reset();
         try {
             model = GuildModel::load(paths, desc, plan, err_msg);
             if (model) {
-                session = model->create_session(plan.context_length);
+                // the context the model holds, at most the one asked for (GLM-5.3-Flash's engine fits it to the VRAM)
+                const int64_t held = model->plan().context_length;
+                context = held > 0 ? std::min<int64_t>(plan.context_length, held) : plan.context_length;
+                session = model->create_session(context);
                 if (!session)
                     err_msg = "session creation failed";
             }
@@ -783,7 +787,7 @@ int main(int argc, char** argv) try {
     }
 
     if (serve_mode) {
-        std::cout << "READY " << plan.context_length << " stop" << (model->is_speech_model() ? " speech" : "") << "\n"
+        std::cout << "READY " << context << " stop" << (model->is_speech_model() ? " speech" : "") << "\n"
                   << std::flush;
 
         ServeInput input;
