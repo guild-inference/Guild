@@ -389,6 +389,19 @@ def btrace(*a):
 EOS_IDS = {248044, 248046}   # <|endoftext|>, <|im_end|>: the engine's default --eos-ids
 
 
+def end_of_turn_ids(tokenizer) -> set:
+    """The ids that end a reply: the end-of-turn strings this vocabulary has as one special token (Qwen's <|im_end|>
+    and <|endoftext|>, GLM-5's <|endoftext|>, <|user|> and <|observation|>).  A string the vocabulary lacks - GLM has
+    no <|im_end|> - encodes to ordinary pieces ('<', '|', 'im', ...), which would end every reply that writes one."""
+    special = getattr(tokenizer, "special_tokens", None)
+    ids = set()
+    for s in (IM_END, "<|endoftext|>", "<|user|>", "<|observation|>"):
+        enc = tokenizer.encode(s, parse_special=True)
+        if len(enc) == 1 and (special is None or s in special):
+            ids.add(enc[0])
+    return ids
+
+
 class GuildEngine:
     """The resident engine: `guild --serve` reads `GEN <max_new> <ids>` lines and streams `T <id>` lines, then
     `DONE ...`.  Requests are serialized by the service's FIFO, so one pipe is enough.
@@ -1780,8 +1793,7 @@ class Service:
         self.reasoning_budget_tokens = 0                 # #123: the config's default thinking budget (0: none)
         self.repeat_stop_tokens = REPEAT_STOP_TOKENS     # #606: one token this many times in a row ends a reply (0: off)
         self.anthropic_think_unasked = True               # #278: "anthropic_thinking": "on_request" -> False
-        self.stop_ids = set(tokenizer.encode(IM_END, parse_special=True) +
-                            tokenizer.encode("<|endoftext|>", parse_special=True))
+        self.stop_ids = end_of_turn_ids(tokenizer)
 
     def loaded(self) -> bool:
         return not hasattr(self.engine, "alive") or self.engine.alive()

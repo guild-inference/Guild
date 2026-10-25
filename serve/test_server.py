@@ -21,7 +21,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from serve.frontend import ChatTemplate  # noqa: E402
 from serve.server import (CTX_SLACK, ByteTokenizer, EngineDied, GpuBusy, MockEngine, Service, GuildEngine,  # noqa: E402
-                          engine_args, layer_split_value, prompt_tokens_seen, request_timings, serve,
+                          end_of_turn_ids, engine_args, layer_split_value, prompt_tokens_seen, request_timings, serve,
                           start_failure_hint)
 from types import SimpleNamespace  # noqa: E402
 
@@ -494,6 +494,22 @@ class OpenThinkPrompt(unittest.TestCase):
         self.assertTrue(svc._opens_think([5, 6] + think))
         self.assertFalse(svc._opens_think([5, 6]))
         self.assertFalse(svc._opens_think([]))
+
+
+class EndOfTurnIds(unittest.TestCase):
+    """A reply ends at the vocabulary's own end-of-turn specials; a string it lacks (GLM-5 has no <|im_end|>) adds no
+    ids - its ordinary pieces ('<', '|', ...) would end every reply that writes one."""
+
+    def test_qwen_vocabulary(self):
+        tok = ByteTokenizer()
+        self.assertEqual(end_of_turn_ids(tok), {tok.encode(s, parse_special=True)[0]
+                                                for s in ("<|im_end|>", "<|endoftext|>")})
+
+    def test_glm_vocabulary(self):
+        class GlmBytes(ByteTokenizer):
+            SPECIALS = ["<|endoftext|>", "<|user|>", "<|observation|>", "<|assistant|>"]
+        self.assertEqual(end_of_turn_ids(GlmBytes()), {256, 257, 258})
+        self.assertFalse(end_of_turn_ids(GlmBytes()) & set(b"<|im_end|>"))
 
 
 class GlmToolCalls(unittest.TestCase):
