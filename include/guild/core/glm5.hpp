@@ -30,6 +30,12 @@ struct Glm5Geometry {
     std::vector<int32_t> eos_ids;
 };
 
+enum class Glm5Dense {
+    Auto,
+    Q8_0,
+    Q6_K
+};
+
 struct Glm5Options {
     int64_t max_context = 32768;
     int threads = 0;                      ///< CPU expert threads (0: the physical cores)
@@ -38,7 +44,9 @@ struct Glm5Options {
     bool numa_split = true; ///< on two NUMA nodes, copy half of every expert's rows into each node's memory
     bool mtp = true;        ///< load the NextN block for speculative decoding (draft / verify / accept)
     bool nl4 = true;        ///< IQ3_S expert gate/up rows repacked for the CPU's faster decode (AVX2)
-    bool dense_q6k = false; ///< re-quantize the attention's largest Q8_0 matrices to Q6_K (less VRAM and GPU time)
+    /// the attention's largest Q8_0 matrices: as the GGUF has them, re-quantized to Q6_K (less VRAM and GPU time,
+    /// ~15 s more load), or Q6_K only when Q8_0 would hold less context than max_context (up to 16k tokens)
+    Glm5Dense dense = Glm5Dense::Auto;
 };
 
 class Glm5Engine {

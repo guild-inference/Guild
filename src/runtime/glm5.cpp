@@ -123,8 +123,10 @@ bool glm5_load(GuildModel::Impl& m, const ModelPaths& paths, const memory::Execu
     core::Glm5Options o;
     o.max_context = plan.context_length > 0 ? plan.context_length : o.max_context;
     o.threads = plan.pool_workers;
-    if (const char* d = std::getenv("GUILD_GLM_DENSE"))
-        o.dense_q6k = std::string(d) == "q6_k";
+    if (const char* d = std::getenv("GUILD_GLM_DENSE")) // auto (the default), q8_0 or q6_k
+        o.dense = std::string(d) == "q6_k"   ? guild::core::Glm5Dense::Q6_K
+                  : std::string(d) == "q8_0" ? guild::core::Glm5Dense::Q8_0
+                                             : guild::core::Glm5Dense::Auto;
     if (const char* n = std::getenv("GUILD_GLM_MTP"))
         o.mtp = std::string(n) != "0";
     m.glm = std::make_unique<core::Glm5Engine>();

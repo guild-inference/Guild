@@ -420,7 +420,7 @@ struct Glm5Engine::Impl {
         glm5k::q8_0_split(m.host, m.owned.data(), m.n_out, (int) m.n_in);
         m.host = m.owned.data();
     }
-    /// Q8_0 -> Q6_K on the host (Glm5Options::dense_q6k): 6.56 instead of 8.5 bits a weight for the GPU's largest
+    /// Q8_0 -> Q6_K on the host (Glm5Options::dense): 6.56 instead of 8.5 bits a weight for the GPU's largest
     /// matrices.  The rows are dequantized exactly, then quantized as llama-quantize would (no importance matrix).
     void requant_q6k(Mat& m) {
         if (m.type != kQ8_0 || m.n_in % 256 != 0)
@@ -801,8 +801,54 @@ bool Glm5Engine::Impl::load(const std::string& path, const Glm5Options& o, std::
     pool = std::make_unique<Pool>(cpus);
     const int threads = pool->size();
 
-    // GUILD_GLM_DENSE=q6_k (or Glm5Options::dense_q6k): the attention's largest Q8_0 matrices as Q6_K
-    if (opt.dense_q6k) {
+    // ---- the VRAM everything but the context and the FFNs takes (the attention weights, the routers, the recurrent
+    // states and their rollback copies, the NextN block, the scratch, the head) and what a token of context adds
+    // (each DSA layer's latent K/V row (FP16), the indexer's key and gate (FP16) and a quarter of a pooled key (FP32))
+    uint64_t per_token = 0;
+    auto fixed_need = [&] {
+        uint64_t state_bytes = 0;
+        per_token = 0;
+        for (const Layer& y : L) {
+            if (y.kda)
+                state_bytes += (uint64_t) H * 128 * 128 * 4 + (uint64_t) 3 * D * 3 * 4;
+            else
+                per_token +=
+                    (uint64_t) g.kv_lora * 2 + (uint64_t) g.idx_dim * 2 * 2 + (uint64_t) g.idx_dim * 4 / glm5k::kKpool;
+        }
+        if (has_mtp) {
+            // its K/V and indexer rows, its weights, and every KDA layer's rollback state for a verify window
+            per_token +=
+                (uint64_t) g.kv_lora * 2 + (uint64_t) g.idx_dim * 2 * 2 + (uint64_t) g.idx_dim * 4 / glm5k::kKpool;
+            state_bytes += state_bytes; // the mid states equal the states
+            for (const Mat* m : {&mtp.wo, &mtp.q_a, &mtp.q_b, &mtp.kv_a, &mtp.k_b, &mtp.v_b, &mtp.idx_k, &mtp.idx_gate,
+                                 &mtp.idx_qb, &mtp.eh_proj})
+                state_bytes += m->bytes;
+            state_bytes += (uint64_t) g.n_expert * N * 4 + 64 * 1024;
+        }
+        const uint64_t scratch_bytes = 176ull << 20; // a window of kMaxT tokens: ~1.1 MB of scratch a token
+        uint64_t need = state_bytes + scratch_bytes + head.bytes + (1ull << 20); // + every piece's 256-byte alignment
+        for (const Layer& y : L)
+            for (const Mat* m :
+                 {&y.hc_attn_fn, &y.hc_ffn_fn, &y.wo, &y.wq, &y.wk, &y.wv, &y.f_a, &y.f_b, &y.g_a, &y.g_b, &y.beta,
+                  &y.q_a, &y.q_b, &y.kv_a, &y.k_b, &y.v_b, &y.idx_k, &y.idx_gate, &y.idx_qb})
+                need += m->host ? m->bytes : 0;
+        need += (uint64_t) L.size() * (g.n_expert * N * 4 + 64 * 1024); // routers and the small vectors
+        return need;
+    };
+    size_t free_b = 0, total_b = 0;
+    cudaMemGetInfo(&free_b, &total_b);
+    constexpr int64_t kMinContext = 2048;
+    const int64_t want = std::max<int64_t>(kMinContext, opt.max_context);
+    const int64_t first = std::min<int64_t>(want, 16384);
+
+    // Glm5Dense::Auto: the attention's largest Q8_0 matrices as Q6_K when the GGUF's Q8_0 leave less context than asked
+    // for, up to 16k tokens (an 8 GB card: 6400 tokens with Q8_0, 17664 with Q6_K, and Q6_K decodes faster there)
+    bool q6 = opt.dense == Glm5Dense::Q6_K;
+    if (opt.dense == Glm5Dense::Auto) {
+        const uint64_t need = fixed_need(), budget = free_b > opt.vram_reserve ? free_b - opt.vram_reserve : 0;
+        q6 = budget < need || (int64_t) ((budget - need) / per_token) < first;
+    }
+    if (q6) {
         const auto tq = std::chrono::steady_clock::now();
         uint64_t before = 0, after = 0;
         std::vector<Layer*> all_layers;
@@ -818,40 +864,13 @@ bool Glm5Engine::Impl::load(const std::string& path, const Glm5Options& o, std::
                 requant_q6k(*m);
                 after += m->bytes;
             }
-        std::fprintf(stderr, "guild glm5: attention matrices Q8_0 -> Q6_K: %llu -> %llu MiB in %.1f s\n",
+        std::fprintf(stderr, "guild glm5: attention matrices Q8_0 -> Q6_K%s: %llu -> %llu MiB in %.1f s\n",
+                     opt.dense == Glm5Dense::Auto ? " (for the context; GUILD_GLM_DENSE=q8_0 keeps Q8_0)" : "",
                      (unsigned long long) (before >> 20), (unsigned long long) (after >> 20), ms_since(tq) / 1000.0);
     }
 
     // ---- placement: everything but the FFNs must be on the GPU; then the FFNs, layer by layer --------------------
-    size_t free_b = 0, total_b = 0;
-    cudaMemGetInfo(&free_b, &total_b);
-    // per token of context, each DSA layer keeps a latent K/V row (FP16), the indexer's key and gate (FP16) and a
-    // quarter of a pooled key (FP32); the context is what the VRAM left after the weights holds
-    uint64_t per_token = 0, state_bytes = 0;
-    for (const Layer& y : L) {
-        if (y.kda)
-            state_bytes += (uint64_t) H * 128 * 128 * 4 + (uint64_t) 3 * D * 3 * 4;
-        else
-            per_token +=
-                (uint64_t) g.kv_lora * 2 + (uint64_t) g.idx_dim * 2 * 2 + (uint64_t) g.idx_dim * 4 / glm5k::kKpool;
-    }
-    if (has_mtp) {
-        // its K/V and indexer rows, its weights, and every KDA layer's rollback state for a verify window
-        per_token += (uint64_t) g.kv_lora * 2 + (uint64_t) g.idx_dim * 2 * 2 + (uint64_t) g.idx_dim * 4 / glm5k::kKpool;
-        state_bytes += state_bytes; // the mid states equal the states
-        for (const Mat* m : {&mtp.wo, &mtp.q_a, &mtp.q_b, &mtp.kv_a, &mtp.k_b, &mtp.v_b, &mtp.idx_k, &mtp.idx_gate,
-                             &mtp.idx_qb, &mtp.eh_proj})
-            state_bytes += m->bytes;
-        state_bytes += (uint64_t) g.n_expert * N * 4 + 64 * 1024;
-    }
-    const uint64_t scratch_bytes = 176ull << 20; // a window of kMaxT tokens: ~1.1 MB of scratch a token
-    uint64_t need = state_bytes + scratch_bytes + head.bytes + (1ull << 20); // + every piece's 256-byte alignment
-    for (const Layer& y : L)
-        for (const Mat* m : {&y.hc_attn_fn, &y.hc_ffn_fn, &y.wo, &y.wq, &y.wk, &y.wv, &y.f_a, &y.f_b, &y.g_a, &y.g_b,
-                             &y.beta, &y.q_a, &y.q_b, &y.kv_a, &y.k_b, &y.v_b, &y.idx_k, &y.idx_gate, &y.idx_qb})
-            need += m->host ? m->bytes : 0;
-    need += (uint64_t) L.size() * (g.n_expert * N * 4 + 64 * 1024); // routers and the small vectors
-    constexpr int64_t kMinContext = 2048;
+    const uint64_t need = fixed_need();
     if (need + opt.vram_reserve + kMinContext * per_token > free_b) {
         err = "glm5: the attention weights need " + std::to_string((need + kMinContext * per_token) >> 20) +
               " MiB of VRAM with a 2048-token context, " + std::to_string((free_b - opt.vram_reserve) >> 20) +
@@ -861,9 +880,6 @@ bool Glm5Engine::Impl::load(const std::string& path, const Glm5Options& o, std::
     // up to 16k tokens of context first, then the FFNs while they fit, then the rest of the context asked for.  The
     // shared experts go first: one runs on the GPU while the CPU computes its layer's routed experts, so it takes
     // its time off the CPU's (a dense layer's FFN moves its whole time from the CPU to the GPU instead).
-
-    const int64_t want = std::max<int64_t>(kMinContext, opt.max_context);
-    const int64_t first = std::min<int64_t>(want, 16384);
     const uint64_t avail = free_b - opt.vram_reserve - need;
     int64_t ctx = std::min<int64_t>(first, (int64_t) (avail / per_token)) / 256 * 256;
     uint64_t left = avail - (uint64_t) ctx * per_token;

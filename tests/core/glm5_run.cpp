@@ -1,11 +1,13 @@
 // tests/core/glm5_run.cpp - GLM-5.3-Flash from token ids: greedy decode, timings, and the prompt's last logits.
 //
 //   glm5_run <gguf shard> <comma-separated prompt ids> [new tokens] [--logits out.f32] [--threads N] [--ctx N]
-//            [--step] [--spec] [--no-mtp] [--no-numa] [--no-prefault]
+//            [--step] [--spec] [--no-mtp] [--no-numa] [--no-prefault] [--q6k | --q8]
 //   --spec: decode with the NextN block's drafts (greedy; the output equals plain greedy decoding)
 //   --oracle <file>: --spec with the drafts replaced by a plain greedy output (tests the accept path)
 //   --step: the prompt one token at a time, as decode runs, instead of windows of 64
 //   --no-numa: the experts stay in the GGUF mapping instead of half of each on either NUMA node
+//   --q6k / --q8: the attention's Q8_0 matrices re-quantized to Q6_K, or kept (default: Q6_K when Q8_0 would hold
+//   less context than --ctx, up to 16k tokens)
 //
 // Prints the generated ids (one line) for a tokenizer to decode, then prompt and decode rates.
 #include "guild/core/glm5.hpp"
@@ -57,7 +59,9 @@ int main(int argc, char** argv) {
         else if (a == "--no-mtp")
             opt.mtp = false;
         else if (a == "--q6k")
-            opt.dense_q6k = true;
+            opt.dense = guild::core::Glm5Dense::Q6_K;
+        else if (a == "--q8")
+            opt.dense = guild::core::Glm5Dense::Q8_0;
         else if (a == "--oracle" && i + 1 < argc) { // test: drafts are this greedy output's tokens (all accepted)
             std::ifstream f(argv[++i]);
             std::string line, tok;
