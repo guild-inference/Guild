@@ -43,12 +43,12 @@ void kda_step(float* S, const float* qkv, const float* g, const float* beta, flo
 /// y = rms_norm(o per head) * norm_w * sigmoid(gate)
 void kda_out(const float* o, const float* gate, const float* norm_w, float* y, int H, int T, float eps, void* st);
 
-/// Per-head Q8_0 products: y[t][h][r] = W[h][r] . x[t][h], W [H][n_out][n_in] in q8_0_split's layout; n_in 64,
-/// 128, 256, 512 or 1024 (q8_0_heads_supported)
+/// Per-head Q8_0 products: y[t][h][r] = W[h][r] . x[t][h], W [H][n_out][n_in] in q8_0_split's layout
+/// (q8_0_heads_supported: n_in a multiple of 32 up to 1024, n_out a multiple of 32)
 void q8_0_heads(const void* W, const float* x, float* y, int H, int n_in, int n_out, int T, void* st);
-bool q8_0_heads_supported(int n_in);
-/// Host: `rows` GGUF Q8_0 rows of n_in values -> all the int8 values (rows x n_in, row-major), then all the FP16
-/// scales (rows x n_in / 32): the same bytes, aligned for wide loads
+bool q8_0_heads_supported(int n_in, int n_out);
+/// Host: `rows` GGUF Q8_0 rows of n_in values (rows a multiple of 32) -> the int8 values, 32 rows interleaved 16 at a
+/// time, then the FP16 scales, 32 rows interleaved a block at a time: the same bytes, for a lane per row
 void q8_0_split(const uint8_t* q8, uint8_t* out, int64_t rows, int n_in);
 
 /// Q6_K rows (ggml's layout) times one or two tokens of Q8_1 activations (q6k_mmvq_supported): y[t][r], bitwise

@@ -285,7 +285,7 @@ static void test_f32_matvec() {
 }
 
 static void test_heads_and_attention() {
-    for (const int T : {11, 1}) // two token tiles, and a decode step
+    for (const int T : {11, 1, 2}) // two token tiles, a decode step, a verify window
         for (const int n_in : {256, 512, 64}) {
             // q8_0_heads: H heads of [n_out][n_in] Q8_0
             const int H = 8, n_out = 512;
@@ -581,6 +581,36 @@ static int bench() {
                   {"head 4096x154880", 4096, 154880}};
     cudaStream_t st;
     cudaStreamCreate(&st);
+    for (const int n_in : {256, 512}) { // attn_k_b and attn_v_b: 64 heads of [512][256] and [256][512]
+        const int H = 64, n_out = 131072 / n_in;
+        const size_t wb = (size_t) H * n_out * n_in / 32 * 34;
+        void* w;
+        float *x, *y;
+        cudaMalloc(&w, wb);
+        cudaMemset(w, 0, wb);
+        cudaMalloc(&x, (size_t) 8 * H * n_in * 4);
+        cudaMemset(x, 0, (size_t) 8 * H * n_in * 4);
+        cudaMalloc(&y, (size_t) 8 * H * n_out * 4);
+        for (const int T : {1, 2, 8}) {
+            cudaEvent_t a, b;
+            cudaEventCreate(&a);
+            cudaEventCreate(&b);
+            k::q8_0_heads(w, x, y, H, n_in, n_out, T, st);
+            cudaEventRecord(a, st);
+            const int reps = 50;
+            for (int i = 0; i < reps; ++i)
+                k::q8_0_heads(w, x, y, H, n_in, n_out, T, st);
+            cudaEventRecord(b, st);
+            cudaEventSynchronize(b);
+            float ms = 0;
+            cudaEventElapsedTime(&ms, a, b);
+            std::printf("q8_0_heads 64 x [%d][%d] T %d: %7.1f us  %6.1f GB/s\n", n_out, n_in, T, 1000.0 * ms / reps,
+                        wb / (ms / reps * 1e-3) / 1e9);
+        }
+        cudaFree(w);
+        cudaFree(x);
+        cudaFree(y);
+    }
     for (int type : {8, 14}) {
         for (const Shape& sh : shapes) {
             const size_t wb = guild::kernels::native_mmvq_weight_bytes(type, sh.n_in, sh.n_out);

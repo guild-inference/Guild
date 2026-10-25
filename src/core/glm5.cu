@@ -319,59 +319,58 @@ __device__ __forceinline__ float q8_0_scale(const uint8_t* b) {
 // n_in / 32 consecutive values l P .. l P + P - 1 (one 8- or 16-byte load), all inside one 32-value block
 constexpr int kTile = 8;
 
-template <int P>
-__global__ void q8_0_heads_k(const int8_t* qs, const __half* d, const float* x, float* y, int H, int n_in, int n_out,
-                             int T) {
-    const int warp = (blockIdx.x * blockDim.x + threadIdx.x) >> 5, lane = threadIdx.x & 31;
-    if (warp >= H * n_out)
-        return;
-    const int t0 = blockIdx.y * kTile;
-    T = min(kTile, T - t0);
-    const int h = warp / n_out;
-    const int8_t* q = qs + (size_t) warp * n_in + lane * P;
-    const float sc = __half2float(d[(size_t) warp * (n_in / 32) + (lane * P) / 32]);
-    float w[P];
-    if constexpr (P < 8) {
+// Per-head Q8_0 products in q8_0_split's layout: a lane per row, so no sum across lanes.  The split interleaves 32 rows
+// 16 values at a time, so a warp's 16-byte loads read 512 contiguous bytes; the head's activations (TT tokens) sit in
+// shared memory, where the warp's lanes all read the same value (a broadcast).  A warp per row with a lane reduction
+// per row read the GTX 1070's memory at 46 (rows of 256) and 69 GB/s (512).
+template <int TT>
+__global__ void __launch_bounds__(256)
+    q8_0_heads_k(const int8_t* __restrict__ qs, const __half* __restrict__ d, const float* __restrict__ x,
+                 float* __restrict__ y, int H, int n_in, int n_out, int T) {
+    extern __shared__ __align__(16) float xs[]; // [TT][n_in]
+    const int nw = blockDim.x >> 5, warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
+    const int row0 = blockIdx.x * nw * 32, h = row0 / n_out; // a block's rows lie in one head
+    const int t0 = blockIdx.y * TT, nt = min(TT, T - t0);
+    for (int i = threadIdx.x; i < nt * n_in / 4; i += blockDim.x) {
+        const int t = i / (n_in / 4), k = i % (n_in / 4);
+        reinterpret_cast<float4*>(xs)[i] = reinterpret_cast<const float4*>(x + ((size_t) (t0 + t) * H + h) * n_in)[k];
+    }
+    __syncthreads();
+    const int g = row0 / 32 + warp, nc = n_in / 16;
+    const int4* wq = reinterpret_cast<const int4*>(qs) + (size_t) g * nc * 32 + lane;
+    const __half* wd = d + (size_t) g * (n_in / 32) * 32 + lane;
+    float acc[TT];
 #pragma unroll
-        for (int i = 0; i < P; ++i)
-            w[i] = sc * (float) q[i];
-    } else if constexpr (P == 8) {
-        const int2 v = *reinterpret_cast<const int2*>(q);
+    for (int t = 0; t < TT; ++t)
+        acc[t] = 0.f;
+#pragma unroll 2
+    for (int c = 0; c < nc; ++c) {
+        const int4 v = __ldg(wq + (size_t) c * 32);
+        const float sc = __half2float(wd[(size_t) (c / 2) * 32]);
         const int8_t* b = reinterpret_cast<const int8_t*>(&v);
+        float w[16];
 #pragma unroll
-        for (int i = 0; i < 8; ++i)
-            w[i] = sc * (float) b[i];
-    } else {
+        for (int i = 0; i < 16; ++i)
+            w[i] = (float) b[i];
 #pragma unroll
-        for (int c = 0; c < P / 16; ++c) {
-            const int4 v = *reinterpret_cast<const int4*>(q + 16 * c);
-            const int8_t* b = reinterpret_cast<const int8_t*>(&v);
+        for (int t = 0; t < TT; ++t) {
+            if (t >= nt)
+                break;
+            const float4* xr = reinterpret_cast<const float4*>(xs + t * n_in + c * 16);
+            float s = 0.f;
 #pragma unroll
-            for (int i = 0; i < 16; ++i)
-                w[16 * c + i] = sc * (float) b[i];
-        }
-    }
-#pragma unroll
-    for (int t = 0; t < kTile; ++t) {
-        if (t >= T)
-            break;
-        const float* xr = x + ((size_t) (t0 + t) * H + h) * n_in + lane * P;
-        float acc = 0.f;
-        if constexpr (P < 4) {
-#pragma unroll
-            for (int i = 0; i < P; ++i)
-                acc += w[i] * xr[i];
-        } else {
-#pragma unroll
-            for (int i = 0; i < P; i += 4) {
-                const float4 xv = *reinterpret_cast<const float4*>(xr + i);
-                acc += w[i] * xv.x + w[i + 1] * xv.y + w[i + 2] * xv.z + w[i + 3] * xv.w;
+            for (int i = 0; i < 4; ++i) {
+                const float4 xv = xr[i];
+                s += w[4 * i] * xv.x + w[4 * i + 1] * xv.y + w[4 * i + 2] * xv.z + w[4 * i + 3] * xv.w;
             }
+            acc[t] += sc * s;
         }
-        acc = warp_sum(acc);
-        if (lane == 0)
-            y[((size_t) (t0 + t) * H + h) * n_out + (warp - h * n_out)] = acc;
     }
+    const int r = g * 32 + lane - h * n_out;
+#pragma unroll
+    for (int t = 0; t < TT; ++t)
+        if (t < nt)
+            y[((size_t) (t0 + t) * H + h) * n_out + r] = acc[t];
 }
 
 // Q6_K rows (ggml's layout) times Q8_1 activations, one or two tokens: llama.cpp's vec_dot_q6_K_q8_1 in the order of
@@ -1015,36 +1014,44 @@ void kda_out(const float* o, const float* gate, const float* norm_w, float* y, i
 }
 
 void q8_0_heads(const void* W, const float* x, float* y, int H, int n_in, int n_out, int T, void* st) {
-    const int warps = H * n_out;
     const int8_t* qs = (const int8_t*) W;
-    const __half* d = (const __half*) ((const uint8_t*) W + (size_t) warps * n_in);
-    const dim3 grid((warps + 7) / 8, (T + kTile - 1) / kTile);
-    if (n_in == 64)
-        q8_0_heads_k<2><<<grid, 256, 0, S(st)>>>(qs, d, x, y, H, n_in, n_out, T);
-    else if (n_in == 128)
-        q8_0_heads_k<4><<<grid, 256, 0, S(st)>>>(qs, d, x, y, H, n_in, n_out, T);
-    else if (n_in == 256)
-        q8_0_heads_k<8><<<grid, 256, 0, S(st)>>>(qs, d, x, y, H, n_in, n_out, T);
-    else if (n_in == 512)
-        q8_0_heads_k<16><<<grid, 256, 0, S(st)>>>(qs, d, x, y, H, n_in, n_out, T);
-    else if (n_in == 1024)
-        q8_0_heads_k<32><<<grid, 256, 0, S(st)>>>(qs, d, x, y, H, n_in, n_out, T);
+    const __half* d = (const __half*) ((const uint8_t*) W + (size_t) H * n_out * n_in);
+    // rows a block: 256, or fewer so that a block stays in one head
+    const int nw = n_out % 256 == 0 ? 8 : n_out % 128 == 0 ? 4 : n_out % 64 == 0 ? 2 : 1;
+    const unsigned blocks = (unsigned) ((size_t) H * n_out / (32 * nw));
+    if (T <= 2) {
+        const size_t sh = (size_t) T * n_in * 4;
+        if (T == 1)
+            q8_0_heads_k<1><<<dim3(blocks, 1), nw * 32, sh, S(st)>>>(qs, d, x, y, H, n_in, n_out, T);
+        else
+            q8_0_heads_k<2><<<dim3(blocks, 1), nw * 32, sh, S(st)>>>(qs, d, x, y, H, n_in, n_out, T);
+    } else {
+        const size_t sh = (size_t) 8 * n_in * 4;
+        q8_0_heads_k<8><<<dim3(blocks, (T + 7) / 8), nw * 32, sh, S(st)>>>(qs, d, x, y, H, n_in, n_out, T);
+    }
 }
 
-bool q8_0_heads_supported(int n_in) {
-    return n_in == 64 || n_in == 128 || n_in == 256 || n_in == 512 || n_in == 1024;
+bool q8_0_heads_supported(int n_in, int n_out) {
+    return n_in % 32 == 0 && n_in >= 32 && n_in <= 1024 && n_out % 32 == 0;
 }
 
 void q8_0_split(const uint8_t* q8, uint8_t* out, int64_t rows, int n_in) {
-    const int nb = n_in / 32;
+    // values: group of 32 rows, then 16-value chunk, then the row in the group (16 bytes each); scales: group,
+    // then 32-value block, then the row
+    const int nb = n_in / 32, nc = n_in / 16;
     int8_t* qs = (int8_t*) out;
     uint8_t* d = out + (size_t) rows * n_in;
-    for (int64_t r = 0; r < rows; ++r)
+    for (int64_t r = 0; r < rows; ++r) {
+        const int64_t gr = r / 32, l = r % 32;
         for (int b = 0; b < nb; ++b) {
             const uint8_t* blk = q8 + ((size_t) r * nb + b) * 34;
-            std::memcpy(d + ((size_t) r * nb + b) * 2, blk, 2);
-            std::memcpy(qs + (size_t) r * n_in + b * 32, blk + 2, 32);
+            std::memcpy(d + (((size_t) gr * nb + b) * 32 + l) * 2, blk, 2);
+            for (int half = 0; half < 2; ++half) {
+                const int c = 2 * b + half;
+                std::memcpy(qs + (((size_t) gr * nc + c) * 32 + l) * 16, blk + 2 + 16 * half, 16);
+            }
         }
+    }
 }
 
 bool q6k_mmvq_supported(int n_in, int T) {

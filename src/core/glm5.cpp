@@ -698,9 +698,10 @@ bool Glm5Engine::Impl::load(const std::string& path, const Glm5Options& o, std::
                 !mat(p + "attn_kv_a_mqa.weight", y.kv_a, err) || !mat(p + "attn_k_b.weight", y.k_b, err) ||
                 !mat(p + "attn_v_b.weight", y.v_b, err))
                 return false;
-            if (y.k_b.type != kQ8_0 || y.v_b.type != kQ8_0 || !glm5k::q8_0_heads_supported((int) y.k_b.n_in) ||
-                !glm5k::q8_0_heads_supported((int) y.v_b.n_in)) {
-                err = "glm5: attn_k_b / attn_v_b must be Q8_0 with rows of 64 .. 1024 (a power of two)";
+            if (y.k_b.type != kQ8_0 || y.v_b.type != kQ8_0 ||
+                !glm5k::q8_0_heads_supported((int) y.k_b.n_in, (int) (y.k_b.n_out / g.n_head)) ||
+                !glm5k::q8_0_heads_supported((int) y.v_b.n_in, (int) (y.v_b.n_out / g.n_head))) {
+                err = "glm5: attn_k_b / attn_v_b must be Q8_0 with rows of 32 .. 1024 values, a multiple of 32 a head";
                 return false;
             }
             split_heads(y.k_b);
