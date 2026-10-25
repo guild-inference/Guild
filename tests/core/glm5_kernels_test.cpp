@@ -527,7 +527,7 @@ static void test_staged_mmvq(int type) {
     cudaStreamCreate(&st);
     struct Shape {
         int n_in, n_out;
-    } shapes[] = {{4096, 1000}, {1536, 515}, {8192, 64}, {16384, 33}};
+    } shapes[] = {{4096, 1000}, {1536, 515}, {8192, 520}, {16384, 513}};
     std::uniform_int_distribution<int> byte(0, 255);
     for (const Shape& sh : shapes) {
         const bool q6 = type == 14;
@@ -542,7 +542,7 @@ static void test_staged_mmvq(int type) {
         }
         uint8_t* dW = up(W);
         for (const int T : {1, 2}) {
-            if (!(q6 ? k::q6k_mmvq_supported(sh.n_in, T) : k::q8_0_mmvq_supported(sh.n_in, T)))
+            if (!(q6 ? k::q6k_mmvq_supported(sh.n_in, sh.n_out, T) : k::q8_0_mmvq_supported(sh.n_in, sh.n_out, T)))
                 continue;
             auto x = rnd((size_t) T * sh.n_in);
             float* dx = up(x);
@@ -570,15 +570,53 @@ static void test_staged_mmvq(int type) {
     }
 }
 
+// q8_0_narrow: rows of 64 / 128 / 256 values against native_mmvq (a different order: within FP32 rounding)
+static void test_narrow() {
+    cudaStream_t st;
+    cudaStreamCreate(&st);
+    std::uniform_int_distribution<int> byte(0, 255);
+    for (const int n_in : {64, 128, 256})
+        for (const int T : {1, 2}) {
+            const int n_out = 1000, nb = n_in / 32;
+            std::vector<uint8_t> W((size_t) n_out * nb * 34);
+            for (size_t blk = 0; blk < (size_t) n_out * nb; ++blk) {
+                for (int i = 0; i < 34; ++i)
+                    W[blk * 34 + i] = (uint8_t) byte(rng);
+                const __half d = __float2half(0.001f * (float) (1 + byte(rng) % 50));
+                std::memcpy(&W[blk * 34], &d, 2);
+            }
+            uint8_t* dW = up(W);
+            auto x = rnd((size_t) T * n_in);
+            float* dx = up(x);
+            void* xq;
+            cudaMalloc(&xq, guild::kernels::native_q8_1_bytes(n_in, T));
+            guild::kernels::native_quantize_q8_1(dx, xq, n_in, T, st);
+            float *dy, *dr;
+            cudaMalloc(&dy, (size_t) T * n_out * 4);
+            cudaMalloc(&dr, (size_t) T * n_out * 4);
+            k::q8_0_narrow(dW, xq, dy, n_in, n_out, T, st);
+            guild::kernels::native_mmvq(8, dW, xq, dr, n_in, n_out, T, st);
+            const std::string what = "q8_0_narrow " + std::to_string(n_in) + " T " + std::to_string(T);
+            check(what.c_str(), down(dy, (size_t) T * n_out), down(dr, (size_t) T * n_out), 1e-5);
+            cudaFree(dW);
+            cudaFree(dx);
+            cudaFree(xq);
+            cudaFree(dy);
+            cudaFree(dr);
+        }
+}
+
 // `glm5_kernels_test bench`: the GPU products at GLM-5.3-Flash's shapes (Q8_0 and Q6_K), GB/s of weights read
 static int bench() {
     struct Shape {
         const char* what;
         int n_in, n_out;
-    } shapes[] = {{"KDA q/k/v 4096x8192", 4096, 8192},
-                  {"KDA out 8192x4096", 8192, 4096},
-                  {"DSA out 16384x4096", 16384, 4096},
-                  {"head 4096x154880", 4096, 154880}};
+    } shapes[] = {
+        {"hc mix 16384x24", 16384, 24},      {"KDA beta 4096x64", 4096, 64},       {"KDA f_a 4096x128", 4096, 128},
+        {"KDA f_b 128x8192", 128, 8192},     {"DSA kv_a 4096x512", 4096, 512},     {"DSA q_a 4096x1536", 4096, 1536},
+        {"idx q_b 1536x4096", 1536, 4096},   {"shexp gate 4096x2048", 4096, 2048}, {"shexp down 2048x4096", 2048, 4096},
+        {"KDA q/k/v 4096x8192", 4096, 8192}, {"KDA out 8192x4096", 8192, 4096},    {"DSA out 16384x4096", 16384, 4096},
+        {"head 4096x154880", 4096, 154880}};
     cudaStream_t st;
     cudaStreamCreate(&st);
     for (const int n_in : {256, 512}) { // attn_k_b and attn_v_b: 64 heads of [512][256] and [256][512]
@@ -613,6 +651,8 @@ static int bench() {
     }
     for (int type : {8, 14}) {
         for (const Shape& sh : shapes) {
+            if (type == 14 && sh.n_in % 256 != 0)
+                continue;
             const size_t wb = guild::kernels::native_mmvq_weight_bytes(type, sh.n_in, sh.n_out);
             void *w, *xq;
             float *x, *y;
@@ -623,7 +663,7 @@ static int bench() {
             cudaMalloc(&xq, guild::kernels::native_q8_1_bytes(sh.n_in, 64));
             cudaMalloc(&y, (size_t) sh.n_out * 4 * 64);
             guild::kernels::native_quantize_q8_1(x, xq, sh.n_in, 64, st);
-            for (int ncols : {1, 2, 8, 64}) {
+            for (int ncols : {1, 2}) {
                 cudaEvent_t a, b;
                 cudaEventCreate(&a);
                 cudaEventCreate(&b);
@@ -639,7 +679,18 @@ static int bench() {
                 cudaEventElapsedTime(&ms, a, b);
                 std::printf("%-6s %-22s ncols %d: %7.1f us  %6.1f GB/s\n", type == 8 ? "Q8_0" : "Q6_K", sh.what, ncols,
                             1000.0 * ms / reps, wb / (ms / reps * 1e-3) / 1e9);
-                if (type == 14 ? k::q6k_mmvq_supported(sh.n_in, ncols) : k::q8_0_mmvq_supported(sh.n_in, ncols)) {
+                if (type == 8 && k::q8_0_narrow_supported(sh.n_in, ncols)) {
+                    cudaEventRecord(a, st);
+                    for (int i = 0; i < reps; ++i)
+                        k::q8_0_narrow(w, xq, y, sh.n_in, sh.n_out, ncols, st);
+                    cudaEventRecord(b, st);
+                    cudaEventSynchronize(b);
+                    cudaEventElapsedTime(&ms, a, b);
+                    std::printf("%-6s %-22s ncols %d: %7.1f us  %6.1f GB/s  (glm5k, narrow)\n", "Q8_0", sh.what, ncols,
+                                1000.0 * ms / reps, wb / (ms / reps * 1e-3) / 1e9);
+                }
+                if (type == 14 ? k::q6k_mmvq_supported(sh.n_in, sh.n_out, ncols)
+                               : k::q8_0_mmvq_supported(sh.n_in, sh.n_out, ncols)) {
                     cudaEventRecord(a, st);
                     for (int i = 0; i < reps; ++i)
                         (type == 14 ? k::q6k_mmvq : k::q8_0_mmvq)(w, xq, y, sh.n_in, sh.n_out, ncols, st);
@@ -670,6 +721,7 @@ int main(int argc, char** argv) {
     test_f32_matvec();
     test_staged_mmvq(14);
     test_staged_mmvq(8);
+    test_narrow();
     test_indexer();
     const cudaError_t e = cudaDeviceSynchronize();
     if (e != cudaSuccess) {

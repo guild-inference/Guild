@@ -567,6 +567,61 @@ __global__ void __launch_bounds__(NW * 32) q8_0_mmvq_k(const uint8_t* __restrict
     }
 }
 
+// Q8_0 rows of 64, 128 or 256 values (the KDA gates' second halves, 128 -> 8192) times Q8_1 activations: a warp stages
+// 32 blocks (1088 bytes: 32 / nb whole rows) with 16-byte loads, a lane takes one block's 32 products and the row's nb
+// lanes add up with shuffles.  native_mmvq read these rows at 48 GB/s.
+template <int T, int NB>
+__global__ void __launch_bounds__(256)
+    q8_0_narrow_k(const uint8_t* __restrict__ W, const uint8_t* __restrict__ x, float* __restrict__ y, int n_out) {
+    __shared__ __align__(16) uint8_t stage[8][kQ8Chunk * kQ8Block];
+    __shared__ __align__(16) uint8_t xs[T * NB * kQ6Q81];
+    for (int o = threadIdx.x * 4; o < T * NB * kQ6Q81; o += 256 * 4)
+        *reinterpret_cast<int*>(xs + o) = __ldg(reinterpret_cast<const int*>(x + o));
+    __syncthreads();
+    constexpr int R = 32 / NB; // rows a warp
+    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
+    const int row0 = (blockIdx.x * 8 + warp) * R;
+    if (row0 >= n_out)
+        return;
+    const int rows = min(R, n_out - row0), bytes = rows * NB * kQ8Block;
+    const uint8_t* src = W + (size_t) row0 * NB * kQ8Block;
+    uint8_t* sm = stage[warp];
+    for (int o = lane * 16; o < bytes; o += 512)
+        *reinterpret_cast<int4*>(sm + o) = __ldg(reinterpret_cast<const int4*>(src + o));
+    __syncwarp();
+    const int r = lane / NB, b = lane % NB;
+    float acc[T];
+#pragma unroll
+    for (int t = 0; t < T; ++t)
+        acc[t] = 0.f;
+    if (r < rows) {
+        const uint8_t* blk = sm + lane * kQ8Block;
+        const float d0 = __half2float(*reinterpret_cast<const __half*>(blk));
+        int v[8];
+#pragma unroll
+        for (int i = 0; i < 8; ++i)
+            v[i] = ld_b2(blk + 2, i);
+#pragma unroll
+        for (int t = 0; t < T; ++t) {
+            const Q81& q = *reinterpret_cast<const Q81*>(xs + (t * NB + b) * kQ6Q81);
+            const int* u = reinterpret_cast<const int*>(q.qs);
+            int sumi = 0;
+#pragma unroll
+            for (int i = 0; i < 8; ++i)
+                sumi = __dp4a(v[i], u[i], sumi);
+            acc[t] = d0 * __low2float(q.ds) * (float) sumi;
+        }
+    }
+#pragma unroll
+    for (int t = 0; t < T; ++t) {
+#pragma unroll
+        for (int o = NB / 2; o > 0; o >>= 1)
+            acc[t] += __shfl_xor_sync(0xffffffffu, acc[t], o);
+        if (b == 0 && r < rows)
+            y[(size_t) t * n_out + row0 + r] = acc[t];
+    }
+}
+
 // one block (128 threads) per row and tile of kTile tokens: float4 loads, a shuffle-then-shared reduction
 __global__ void __launch_bounds__(128)
     f32_matvec_k(const float* W, const float* x, float* y, int n_in, int n_out, int T) {
@@ -1054,10 +1109,10 @@ void q8_0_split(const uint8_t* q8, uint8_t* out, int64_t rows, int n_in) {
     }
 }
 
-bool q6k_mmvq_supported(int n_in, int T) {
+bool q6k_mmvq_supported(int n_in, int n_out, int T) {
     // native_mmvq's path for four or more blocks a row; the activations of T tokens fit in shared memory beside the
     // staged rows (48 KiB a block before Volta)
-    return n_in % 256 == 0 && n_in >= 1024 && T >= 1 && T <= 2 &&
+    return n_in % 256 == 0 && n_in >= 1024 && n_out >= 512 && T >= 1 && T <= 2 &&
            (size_t) T * (n_in / 32) * kQ6Q81 + 8 * kQ6Chunk * kQ6Block <= 48 * 1024;
 }
 
@@ -1075,8 +1130,9 @@ void q6k_mmvq(const void* W, const void* xq8_1, float* y, int n_in, int n_out, i
         q6k_mmvq_k<2, 8><<<grid, 256, sh, S(st)>>>(w, x, y, n_in, n_out);
 }
 
-bool q8_0_mmvq_supported(int n_in, int T) {
-    return n_in % 256 == 0 && n_in >= 1024 && T >= 1 && T <= 2 &&
+bool q8_0_mmvq_supported(int n_in, int n_out, int T) {
+    // fewer than 512 rows are too few blocks of 8 for the GPU (16384 x 24: 12.4 us against native_mmvq's 5.4)
+    return n_in % 256 == 0 && n_in >= 1024 && n_out >= 512 && T >= 1 && T <= 2 &&
            (size_t) T * (n_in / 32) * kQ6Q81 + 8 * kQ8Chunk * kQ8Block <= 48 * 1024;
 }
 
@@ -1089,6 +1145,23 @@ void q8_0_mmvq(const void* W, const void* xq8_1, float* y, int n_in, int n_out, 
         q8_0_mmvq_k<1, 8><<<grid, 256, sh, S(st)>>>(w, x, y, n_in, n_out);
     else
         q8_0_mmvq_k<2, 8><<<grid, 256, sh, S(st)>>>(w, x, y, n_in, n_out);
+}
+
+bool q8_0_narrow_supported(int n_in, int T) {
+    return (n_in == 64 || n_in == 128 || n_in == 256) && T >= 1 && T <= 2;
+}
+
+void q8_0_narrow(const void* W, const void* xq8_1, float* y, int n_in, int n_out, int T, void* st) {
+    const int nb = n_in / 32, rows_per_block = 8 * (32 / nb);
+    const dim3 grid((unsigned) ((n_out + rows_per_block - 1) / rows_per_block));
+    const auto* w = (const uint8_t*) W;
+    const auto* x = (const uint8_t*) xq8_1;
+#define GLM5_NARROW(TT, NB) q8_0_narrow_k<TT, NB><<<grid, 256, 0, S(st)>>>(w, x, y, n_out)
+    if (T == 1)
+        nb == 2 ? GLM5_NARROW(1, 2) : nb == 4 ? GLM5_NARROW(1, 4) : GLM5_NARROW(1, 8);
+    else
+        nb == 2 ? GLM5_NARROW(2, 2) : nb == 4 ? GLM5_NARROW(2, 4) : GLM5_NARROW(2, 8);
+#undef GLM5_NARROW
 }
 
 void f32_matvec(const float* W, const float* x, float* y, int n_in, int n_out, int T, void* st) {

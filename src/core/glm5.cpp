@@ -518,10 +518,12 @@ struct Glm5Engine::Impl {
         }
 #endif
         // one or two tokens of Q6_K / Q8_0: the staged kernels (bitwise native_mmvq's, fewer load instructions)
-        if (m.type == kQ6_K && glm5k::q6k_mmvq_supported((int) m.n_in, T))
+        if (m.type == kQ6_K && glm5k::q6k_mmvq_supported((int) m.n_in, (int) m.n_out, T))
             glm5k::q6k_mmvq(m.dev, xq_, out, (int) m.n_in, (int) m.n_out, T, st);
-        else if (m.type == kQ8_0 && glm5k::q8_0_mmvq_supported((int) m.n_in, T))
+        else if (m.type == kQ8_0 && glm5k::q8_0_mmvq_supported((int) m.n_in, (int) m.n_out, T))
             glm5k::q8_0_mmvq(m.dev, xq_, out, (int) m.n_in, (int) m.n_out, T, st);
+        else if (m.type == kQ8_0 && glm5k::q8_0_narrow_supported((int) m.n_in, T))
+            glm5k::q8_0_narrow(m.dev, xq_, out, (int) m.n_in, (int) m.n_out, T, st);
         else
             guild::kernels::native_mmvq(m.type, m.dev, xq_, out, (int) m.n_in, (int) m.n_out, T, st);
         debug_check(out, (size_t) T * m.n_out, m, T, "mmvq");
