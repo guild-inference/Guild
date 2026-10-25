@@ -61,6 +61,28 @@ __global__ void rms_norm_k(const float* x, const float* w, float* y, int n, floa
     for (int i = threadIdx.x; i < n; i += blockDim.x)
         yr[i] = xr[i] * inv * (w ? w[i] : 1.f);
 }
+// rows of 4096 values or more (the mHC pre-mix's 4 x 4096): 1024 threads and float4 loads.  256 threads read the
+// 16384 floats in 16.7 us on a GTX 1070.
+__global__ void __launch_bounds__(1024) rms_norm4_k(const float* x, const float* w, float* y, int n, float eps) {
+    const float4* xr = reinterpret_cast<const float4*>(x + (size_t) blockIdx.x * n);
+    float4* yr = reinterpret_cast<float4*>(y + (size_t) blockIdx.x * n);
+    const float4* w4 = reinterpret_cast<const float4*>(w);
+    float ss = 0.f;
+    for (int i = threadIdx.x; i < n / 4; i += blockDim.x) {
+        const float4 v = xr[i];
+        ss += v.x * v.x + v.y * v.y + v.z * v.z + v.w * v.w;
+    }
+    const float inv = rsqrtf(block_sum(ss) / n + eps);
+    for (int i = threadIdx.x; i < n / 4; i += blockDim.x) {
+        float4 v = xr[i];
+        const float4 g = w ? w4[i] : make_float4(1.f, 1.f, 1.f, 1.f);
+        v.x = v.x * inv * g.x;
+        v.y = v.y * inv * g.y;
+        v.z = v.z * inv * g.z;
+        v.w = v.w * inv * g.w;
+        yr[i] = v;
+    }
+}
 
 // one block per token: the 4x4 Sinkhorn mix in shared memory, then the pre-weighted stream sum and its RMS norm
 __global__ void hc_pre_k(const float* mixes, const float* scale, const float* base, const float* R, const float* nw,
@@ -1027,7 +1049,10 @@ __global__ void add_k(float* y, const float* x, int64_t n) {
 } // namespace
 
 void rms_norm(const float* x, const float* w, float* y, int n, int rows, float eps, void* st) {
-    rms_norm_k<<<rows, 256, 0, S(st)>>>(x, w, y, n, eps);
+    if (n >= 4096 && n % 4 == 0)
+        rms_norm4_k<<<rows, 1024, 0, S(st)>>>(x, w, y, n, eps);
+    else
+        rms_norm_k<<<rows, 256, 0, S(st)>>>(x, w, y, n, eps);
 }
 
 void hc_pre(const float* mixes, const float* scale, const float* base, const float* R, const float* norm_w, float* post,

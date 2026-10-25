@@ -267,6 +267,29 @@ static void test_kda() {
     check("kda_out", y, ry, 1e-4);
 }
 
+static void test_rms_norm() {
+    for (const int n : {512, 4096, 16384}) {
+        const int T = 3;
+        auto x = rnd((size_t) T * n), w = rnd(n, 0.3f);
+        float *dx = up(x), *dw = up(w), *dy;
+        cudaMalloc(&dy, (size_t) T * n * 4);
+        for (const bool weighted : {false, true}) {
+            k::rms_norm(dx, weighted ? dw : nullptr, dy, n, T, 1e-6f, nullptr);
+            std::vector<float> ref((size_t) T * n);
+            for (int t = 0; t < T; ++t) {
+                double ss = 0;
+                for (int i = 0; i < n; ++i)
+                    ss += (double) x[(size_t) t * n + i] * x[(size_t) t * n + i];
+                const double inv = 1.0 / std::sqrt(ss / n + 1e-6);
+                for (int i = 0; i < n; ++i)
+                    ref[(size_t) t * n + i] = (float) (x[(size_t) t * n + i] * inv * (weighted ? w[i] : 1.f));
+            }
+            const std::string what = "rms_norm " + std::to_string(n) + (weighted ? " weighted" : "");
+            check(what.c_str(), down(dy, (size_t) T * n), ref, 1e-5);
+        }
+    }
+}
+
 static void test_f32_matvec() {
     const int n_in = 4096, n_out = 288, T = 11;
     auto W = rnd((size_t) n_out * n_in, 0.05f), x = rnd((size_t) T * n_in);
@@ -718,6 +741,7 @@ int main(int argc, char** argv) {
     test_kda();
     test_heads_and_attention();
     test_route();
+    test_rms_norm();
     test_f32_matvec();
     test_staged_mmvq(14);
     test_staged_mmvq(8);
