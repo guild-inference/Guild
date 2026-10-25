@@ -1076,8 +1076,11 @@ bool Glm5Engine::Impl::load(const std::string& path, const Glm5Options& o, std::
             mmq_ctx = std::make_unique<mmq::Context>();
             int n_mmq = 0;
             auto mark = [&](Mat& m) {
-                // MMQ steps through a row 256 values at a time: a narrower row (the KDA gates' 128) reads past it
-                m.mmq = m.dev && m.type == kQ8_0 && m.n_in % 256 == 0 && mmq::fits(kQ8_0, m.n_out);
+                // MMQ steps through a row 256 values at a time: a narrower row (the KDA gates' 128) reads past it.
+                // Q6_K (GLM's re-quantized matrices, when the build has its MMQ) takes the activations Q8_0 does:
+                // llama.cpp quantizes both to q8_1 in the same D4 layout
+                const bool type_ok = m.type == kQ8_0 || (m.type == kQ6_K && mmq::supported(kQ6_K));
+                m.mmq = m.dev && type_ok && m.n_in % 256 == 0 && mmq::fits(m.type, m.n_out);
                 n_mmq += m.mmq;
             };
             std::vector<Layer*> all_layers;
