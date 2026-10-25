@@ -34,21 +34,26 @@ constexpr int kWidth = 11;           // [main, c0..c9]
 constexpr int kMaxPromptRows = 8192; // the reference's DRAMA3_MAX_PROMPT_ROWS
 constexpr int kMaxSpeaker = 15;
 
-// leading white space (ASCII, NBSP, ideographic space, U+2000..U+200A)
+// leading white space: the Unicode White_Space set, as the reference's UNICODE_WHITE_SPACE (U+0009..U+000D, space,
+// U+0085, U+00A0, U+1680, U+2000..U+200A, U+2028, U+2029, U+202F, U+205F, U+3000)
 size_t white_prefix(const std::string& s) {
     size_t i = 0;
+    auto at = [&](size_t k) { return k < s.size() ? (unsigned char) s[k] : 0u; };
     while (i < s.size()) {
-        const unsigned char c = (unsigned char) s[i];
+        const unsigned c = at(i);
         if (c == ' ' || (c >= 0x09 && c <= 0x0D)) {
             ++i;
-        } else if (c == 0xC2 && i + 1 < s.size() &&
-                   ((unsigned char) s[i + 1] == 0xA0 || (unsigned char) s[i + 1] == 0x85)) {
+        } else if (c == 0xC2 && (at(i + 1) == 0xA0 || at(i + 1) == 0x85)) {
             i += 2;
-        } else if (c == 0xE3 && i + 2 < s.size() && (unsigned char) s[i + 1] == 0x80 &&
-                   (unsigned char) s[i + 2] == 0x80) {
+        } else if (c == 0xE1 && at(i + 1) == 0x9A && at(i + 2) == 0x80) { // U+1680
             i += 3;
-        } else if (c == 0xE2 && i + 2 < s.size() && (unsigned char) s[i + 1] == 0x80 &&
-                   (unsigned char) s[i + 2] >= 0x80 && (unsigned char) s[i + 2] <= 0x8A) {
+        } else if (c == 0xE2 && at(i + 1) == 0x80 &&
+                   ((at(i + 2) >= 0x80 && at(i + 2) <= 0x8A) || at(i + 2) == 0xA8 || at(i + 2) == 0xA9 ||
+                    at(i + 2) == 0xAF)) { // U+2000..U+200A, U+2028, U+2029, U+202F
+            i += 3;
+        } else if (c == 0xE2 && at(i + 1) == 0x81 && at(i + 2) == 0x9F) { // U+205F
+            i += 3;
+        } else if (c == 0xE3 && at(i + 1) == 0x80 && at(i + 2) == 0x80) { // U+3000
             i += 3;
         } else {
             break;
@@ -99,26 +104,37 @@ std::string with_speaker_tag(const std::string& text) {
 
 // torchaudio.functional.resample's default (sinc_interp_hann, lowpass_filter_width 6, rolloff 0.99), in double:
 // fish-speech resamples a reference clip this way before encoding it.
-std::vector<float> resample(const float* x, size_t n, int from, int to) {
-    if (from == to)
-        return std::vector<float>(x, x + n);
+// The kernel holds (to / gcd) * taps doubles: rates sharing few factors with 44.1 kHz would take gigabytes
+// (44101 Hz: 15.6 GB), so a ratio past kMaxKernel is refused.  Every usual rate is small (48 kHz: 147 x 172).
+constexpr int64_t kMaxKernel = 4 << 20;
+constexpr double kPi = 3.14159265358979323846;
+bool resample(const float* x, size_t n, int from, int to, std::vector<float>& y, std::string& err) {
+    if (from == to) {
+        y.assign(x, x + n);
+        return true;
+    }
     const int g = std::gcd(from, to);
     const int64_t orig = from / g, nw = to / g;
     const double lpw = 6.0, base = (double) std::min(orig, nw) * 0.99;
     const int64_t width = (int64_t) std::ceil(lpw * (double) orig / base);
     const int64_t taps = 2 * width + orig;
+    if (nw * taps > kMaxKernel) {
+        err = "the reference audio's sample rate (" + std::to_string(from) +
+              " Hz) cannot be resampled to 44.1 kHz cheaply: use 8, 11.025, 16, 22.05, 24, 32, 44.1, 48 or 96 kHz";
+        return false;
+    }
     std::vector<double> k((size_t) (nw * taps));
     for (int64_t j = 0; j < nw; ++j) {
         for (int64_t i = 0; i < taps; ++i) {
             double t = (-(double) j / (double) nw + (double) (i - width) / (double) orig) * base;
             t = std::clamp(t, -lpw, lpw);
-            const double w = std::cos(t * M_PI / lpw / 2.0);
-            const double tp = t * M_PI;
+            const double w = std::cos(t * kPi / lpw / 2.0);
+            const double tp = t * kPi;
             k[(size_t) (j * taps + i)] = (tp == 0.0 ? 1.0 : std::sin(tp) / tp) * w * w * base / (double) orig;
         }
     }
     const size_t out_n = (size_t) std::ceil((double) nw * (double) n / (double) orig);
-    std::vector<float> y(out_n);
+    y.assign(out_n, 0.0f);
     for (size_t o = 0; o < out_n; ++o) {
         const int64_t frame = (int64_t) (o / (size_t) nw), j = (int64_t) (o % (size_t) nw);
         // the input padded with `width` zeros on the left: frame f's window starts at sample f * orig - width
@@ -131,7 +147,7 @@ std::vector<float> resample(const float* x, size_t n, int from, int to) {
         }
         y[o] = (float) acc;
     }
-    return y;
+    return true;
 }
 
 } // namespace
@@ -143,12 +159,17 @@ bool GuildModel::encode_voice(const float* pcm, size_t n, int sample_rate, std::
         error_msg = "this model was not loaded as a speech model (--drama3)";
         return false;
     }
-    if (n == 0 || sample_rate <= 0) {
+    if (n == 0) {
         error_msg = "the reference audio is empty";
         return false;
     }
-    const std::vector<float> x = resample(pcm, n, sample_rate, m.codec->sample_rate());
-    return m.codec->encode(x.data(), x.size(), codes, error_msg);
+    if (sample_rate < 4000 || sample_rate > 384000) {
+        error_msg = "the reference audio's sample rate (" + std::to_string(sample_rate) + " Hz) is out of range";
+        return false;
+    }
+    std::vector<float> x;
+    return resample(pcm, n, sample_rate, m.codec->sample_rate(), x, error_msg) &&
+           m.codec->encode(x.data(), x.size(), codes, error_msg);
 }
 
 bool GuildModel::is_speech_model() const {
@@ -210,15 +231,16 @@ bool GuildModel::synthesize(const SpeechRequest& req, const SpeechCallback& on_a
         const std::string transcript = tagged.substr(lead, tag) + tagged.substr(0, lead) + tagged.substr(lead + tag);
         if (!text_rows("\n\n[Reference " + std::to_string(i + 1) + "]\nText: " + transcript + "\nSpeech: "))
             return false;
-        for (size_t f = 0; f < r.codes.size(); f += (size_t) nc) {
+        const std::vector<int32_t>& cv = *codes; // the given codes, or the ones just encoded from r.audio
+        for (size_t f = 0; f < cv.size(); f += (size_t) nc) {
             for (int k = 0; k < nc; ++k) {
-                if (r.codes[f + k] < 0 || r.codes[f + k] >= CS) {
+                if (cv[f + k] < 0 || cv[f + k] >= CS) {
                     error_msg = where + ": codes must lie in [0, " + std::to_string(CS) + ")";
                     return false;
                 }
             }
-            rows.push_back(tg.semantic_start + r.codes[f]);
-            rows.insert(rows.end(), r.codes.begin() + (std::ptrdiff_t) f, r.codes.begin() + (std::ptrdiff_t)(f + nc));
+            rows.push_back(tg.semantic_start + cv[f]);
+            rows.insert(rows.end(), cv.begin() + (std::ptrdiff_t) f, cv.begin() + (std::ptrdiff_t)(f + nc));
         }
     }
     if (!text_rows("<|im_end|>\n") || !text_rows("<|im_start|>user\n") || !text_rows(with_speaker_tag(req.text)) ||
@@ -328,9 +350,22 @@ bool GuildModel::synthesize(const SpeechRequest& req, const SpeechCallback& on_a
                    : nullptr;
     };
 
-    // ---- the prompt: windows of up to `spec` rows; the tower learns each row's next row
+    // ---- the prompt: the backbone in windows of up to `spec` rows, every row's state kept; then the tower learns
+    // each row's next row in one batched pass (Drama3Tower::prefill), and the last row samples the first frame
     const auto t_prompt = Clock::now();
     const int S = std::max(1, m.config.spec);
+    const size_t D = (size_t) m.g.n_embd;
+    struct DeviceRows {
+        float* p = nullptr;
+        ~DeviceRows() {
+            cudaFree(p);
+        }
+    } prompt_hidden;
+    if (cudaMalloc(&prompt_hidden.p, (size_t) R * D * 4) != cudaSuccess) {
+        cudaGetLastError();
+        error_msg = "drama3: no VRAM for the prompt's " + std::to_string(R) + " hidden rows";
+        return false;
+    }
     std::vector<int32_t> tok((size_t) S), c1((size_t) S);
     for (int p0 = 0; p0 < R; p0 += S) {
         if (cancelled()) {
@@ -344,14 +379,21 @@ bool GuildModel::synthesize(const SpeechRequest& req, const SpeechCallback& on_a
         }
         if (!backbone(tok.data(), c1.data(), T, p0))
             return false;
-        for (int t = 0; t < T; ++t) {
-            const int p = p0 + t;
-            const int32_t* forced = p + 1 < R ? &rows[(size_t) (p + 1) * kWidth] : forced_at(0);
-            dump_hidden(m.ver->head_input(t));
-            if (!tower_step(m.ver->head_input(t), p, &rows[(size_t) p * kWidth], forced))
+        for (int t = 0; t < T; ++t) { // the head inputs are one row apart: one copy per row keeps no layout assumption
+            if (cudaMemcpy(prompt_hidden.p + (size_t) (p0 + t) * D, m.ver->head_input(t), D * 4,
+                           cudaMemcpyDeviceToDevice) != cudaSuccess) {
+                error_msg = "drama3: copying the prompt's hidden states failed";
                 return false;
+            }
+            dump_hidden(m.ver->head_input(t));
         }
     }
+    const auto t_tower = Clock::now();
+    if (R > 1 && !m.tower->prefill(prompt_hidden.p, 0, R - 1, rows.data(), error_msg))
+        return false;
+    tower_ms += ms_since(t_tower);
+    if (!tower_step(prompt_hidden.p + (size_t) (R - 1) * D, R - 1, &rows[(size_t) (R - 1) * kWidth], forced_at(0)))
+        return false;
     telemetry.prompt_ms = ms_since(t_prompt);
 
     // ---- decode: `frame` holds the frame after row R - 1

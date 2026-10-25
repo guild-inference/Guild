@@ -53,6 +53,9 @@ Drama3Tower::~Drama3Tower() {
          {(void*) h_, (void*) e_, (void*) cat_, (void*) x_, (void*) xn_, (void*) qkv_, (void*) q_, (void*) att_,
           (void*) proj_, (void*) ff1_, (void*) ff3_, (void*) logits_, (void*) part_, xq_, dense_})
         cudaFree(p);
+    for (void* p : {(void*) bh_, (void*) be_, (void*) bcat_, (void*) bx_, (void*) bxn_, (void*) bqkv_, (void*) bq_,
+                    (void*) batt_, (void*) bproj_, (void*) bff1_, (void*) bff3_, bxq_, (void*) bidx_})
+        cudaFree(p);
     if (host_logits_)
         cudaFreeHost(host_logits_);
     if (stream_)
@@ -212,7 +215,36 @@ bool Drama3Tower::load(const std::string& dir, int64_t max_frames, std::string& 
             return false;
         vram_ += b.n * 4;
     }
-    const size_t xq_bytes = guild::kernels::native_q8_1_bytes(std::max(2 * D, g_.ffn), 1);
+    {
+        const size_t P = kPrefillCols;
+        struct PBuf {
+            float** p;
+            size_t n;
+        } pb[] = {{&bh_, P * D},
+                  {&be_, P * D},
+                  {&bcat_, P * 2 * D},
+                  {&bx_, P * D},
+                  {&bxn_, P * D},
+                  {&bq_, P * Q},
+                  {&bqkv_, P * (2 * Q + 2 * KV)},
+                  {&batt_, P * Q},
+                  {&bproj_, P * D},
+                  {&bff1_, P * g_.ffn},
+                  {&bff3_, P * g_.ffn}};
+        for (const PBuf& b : pb) {
+            if (!cuda_ok(cudaMalloc((void**) b.p, b.n * 4), "prefill scratch", err))
+                return false;
+            vram_ += b.n * 4;
+        }
+        const size_t bxq = guild::kernels::native_q8_1_bytes(std::max({2 * D, g_.ffn, Q}), kPrefillCols);
+        const size_t idx = ((size_t) layers_.size() + 11) * P;
+        if (!cuda_ok(cudaMalloc(&bxq_, bxq), "prefill q8_1 scratch", err) ||
+            !cuda_ok(cudaMalloc((void**) &bidx_, idx * 4), "prefill rows", err))
+            return false;
+        vram_ += bxq + idx * 4;
+        bidx_host_.assign(idx, 0);
+    }
+    const size_t xq_bytes = guild::kernels::native_q8_1_bytes(std::max({2 * D, g_.ffn, Q}), 1);
     if (!cuda_ok(cudaMalloc(&xq_, xq_bytes), "q8_1 scratch", err) ||
         !cuda_ok(cudaMallocHost((void**) &host_logits_, (size_t) (CS + 1) * 4), "pinned logits", err))
         return false;
@@ -223,10 +255,11 @@ bool Drama3Tower::load(const std::string& dir, int64_t max_frames, std::string& 
     return true;
 }
 
-bool Drama3Tower::matvec(const Mat& m, const float* x, float* y, std::string& err) {
+bool Drama3Tower::matvec(const Mat& m, const float* x, float* y, std::string& err, int ncols) {
+    void* xq = ncols > 1 ? bxq_ : xq_;
     try {
-        guild::kernels::native_quantize_q8_1(x, xq_, m.cols, 1, stream_);
-        guild::kernels::native_mmvq(kQ8_0, m.w, xq_, y, m.cols, m.rows, 1, stream_);
+        guild::kernels::native_quantize_q8_1(x, xq, m.cols, ncols, stream_);
+        guild::kernels::native_mmvq(kQ8_0, m.w, xq, y, m.cols, m.rows, ncols, stream_);
     } catch (const std::exception& e) {
         err = std::string("drama3 tower matvec: ") + e.what();
         return false;
@@ -393,8 +426,9 @@ bool Drama3Tower::step(const float* hidden, int64_t pos, const int32_t* frame, c
             return false;
         if (shared)
             continue;
-        if (!matvec(heads_[(size_t) j], h_, logits_, err) ||
-            !read_logits(CS, code_logits ? code_logits + (size_t) j * CS : nullptr))
+        // a teacher-forced step takes the next code from `forced`, and runs the head only when its logits are asked for
+        if ((!forced || code_logits) && (!matvec(heads_[(size_t) j], h_, logits_, err) ||
+                                         !read_logits(CS, code_logits ? code_logits + (size_t) j * CS : nullptr)))
             return false;
         if (forced) {
             codes[j + 1] = forced[2 + j];
@@ -411,6 +445,110 @@ bool Drama3Tower::step(const float* hidden, int64_t pos, const int32_t* frame, c
     for (int k = 0; k < NC; ++k)
         out[1 + k] = codes[k];
     return true;
+}
+
+bool Drama3Tower::prefill(const float* hidden, int64_t pos0, int n, const int32_t* rows, std::string& err,
+                          float* layer_out) {
+    if (pos0 < 0 || n < 0 || pos0 + n > max_frames_) {
+        err = "drama3 tower: the prompt runs past the tower's " + std::to_string(max_frames_) + " frames";
+        return false;
+    }
+    for (int c0 = 0; c0 < n; c0 += kPrefillCols) {
+        const int m = std::min(kPrefillCols, n - c0);
+        if (!prefill_chunk(hidden + (size_t) c0 * g_.dim, pos0 + c0, m, rows + (size_t) c0 * g_.width(), err,
+                           layer_out ? layer_out + (size_t) c0 * layers_.size() * g_.dim : nullptr))
+            return false;
+    }
+    return true;
+}
+
+bool Drama3Tower::prefill_chunk(const float* hidden, int64_t pos0, int n, const int32_t* rows, std::string& err,
+                                float* layer_out) {
+    const auto st = (cudaStream_t) stream_;
+    const int D = g_.dim, W = g_.width(), CS = g_.codebook_size, NC = g_.n_codebooks;
+    const int Q = g_.n_head * g_.head_dim, KV = g_.n_kv_head * g_.head_dim, QKV = 2 * Q + 2 * KV;
+    const int NL = (int) layers_.size(), P = kPrefillCols;
+    const float eps = g_.norm_eps;
+    // bidx_: [NL][P] each (layer, row)'s embedding row, [P][9] the first shared layer's adds, [P] their counts, and
+    // [P] zero counts for the other layers
+    int32_t* const idx = bidx_host_.data();
+    int32_t* const add = idx + (size_t) NL * P;
+    int32_t* const add_n = add + (size_t) 9 * P;
+    for (int i = 0; i < n; ++i) {
+        const int32_t* frame = rows + (size_t) i * W;
+        const int32_t* next = frame + W; // the forced frame: `step`'s `forced`
+        const bool semantic = g_.is_semantic(next[0]);
+        const int c0 = std::clamp(next[0] - g_.semantic_start, 0, CS - 1);
+        for (int l = 0; l < NL; ++l) {
+            const int j = l - g_.n_shared; // residual j embeds code j (code 0 = c0, code j = next[1 + j])
+            const int code = l < g_.n_shared || j == 0 ? c0 : next[1 + j];
+            idx[(size_t) l * P + i] = semantic ? std::clamp(code, 0, CS - 1) : -1;
+        }
+        int na = 0;
+        if (g_.is_semantic(frame[0]))
+            for (int k = 2; k < NC; ++k)
+                add[(size_t) i * 9 + na++] = k * CS + std::clamp(frame[1 + k], 0, CS - 1);
+        add_n[i] = na;
+        add_n[P + i] = 0;
+    }
+    if (!cuda_ok(cudaMemcpyAsync(bidx_, idx, bidx_host_.size() * 4, cudaMemcpyHostToDevice, st), "prefill rows", err) ||
+        !cuda_ok(cudaMemcpyAsync(bh_, hidden, (size_t) n * D * 4, cudaMemcpyDeviceToDevice, st), "prefill hidden", err))
+        return false;
+    const int32_t* const d_add = bidx_ + (size_t) NL * P;
+    const int32_t* const d_add_n = d_add + (size_t) 9 * P;
+    const drama3::QkvShape qs{g_.n_head, g_.n_kv_head, g_.head_dim, g_.rope_dim, g_.rope_base, eps};
+    for (int l = 0; l < NL; ++l) {
+        Layer& L = layers_[(size_t) l];
+        drama3::embed_rows(L.embedding, bidx_ + (size_t) l * P, d_add, l == 0 ? d_add_n : d_add_n + P,
+                           codebook_embeddings_, be_, D, n, st);
+        drama3::rms_norm(be_, L.enorm, bcat_, D, eps, st, n, D, 2 * D);
+        drama3::rms_norm(bh_, L.hnorm, bcat_ + D, D, eps, st, n, D, 2 * D);
+        if (!matvec(L.eh_proj, bcat_, bx_, err, n))
+            return false;
+        drama3::rms_norm(bx_, L.attn_norm, bxn_, D, eps, st, n);
+        if (!matvec(L.wqkv, bxn_, bqkv_, err, n))
+            return false;
+        drama3::qk_norm_rope(bqkv_, L.q_norm, L.k_norm, bq_, L.k_cache, L.v_cache, qs, pos0, st, n);
+        for (int i = 0; i < n; ++i) // row i sees positions 0 .. pos0 + i
+            if (!drama3::attention(bq_ + (size_t) i * Q, L.k_cache, L.v_cache, bqkv_ + (size_t) i * QKV + Q, part_,
+                                   batt_ + (size_t) i * Q, qs, pos0 + i + 1, st)) {
+                err = "drama3 tower: unsupported attention shape";
+                return false;
+            }
+        if (!matvec(L.wo, batt_, bproj_, err, n))
+            return false;
+        drama3::add(bx_, bproj_, n * D, st);
+        drama3::rms_norm(bx_, L.ffn_norm, bxn_, D, eps, st, n);
+        if (!matvec(L.w1, bxn_, bff1_, err, n) || !matvec(L.w3, bxn_, bff3_, err, n))
+            return false;
+        try {
+            guild::kernels::native_swiglu_quantize_q8_1(bff1_, bff3_, bxq_, g_.ffn, n, stream_);
+            guild::kernels::native_mmvq(kQ8_0, L.w2.w, bxq_, bproj_, g_.ffn, D, n, stream_);
+        } catch (const std::exception& ex) {
+            err = std::string("drama3 tower ffn: ") + ex.what();
+            return false;
+        }
+        drama3::add(bx_, bproj_, n * D, st);
+        drama3::rms_norm(bx_, L.final_norm, bh_, D, eps, st, n);
+        if (layer_out) // tests: [row][layer][dim]
+            for (int i = 0; i < n; ++i)
+                if (!cuda_ok(cudaMemcpyAsync(layer_out + ((size_t) i * NL + l) * D, bh_ + (size_t) i * D,
+                                             (size_t) D * 4, cudaMemcpyDeviceToHost, st),
+                             "layer readback", err))
+                    return false;
+    }
+    // the host arrays are reused by the next chunk: wait for this one
+    return cuda_ok(cudaStreamSynchronize(st), "tower prefill", err);
+}
+
+bool Drama3Tower::read_kv(int l, int64_t pos, uint16_t* k, uint16_t* v) const {
+    if (l < 0 || l >= (int) layers_.size() || pos < 0 || pos >= max_frames_)
+        return false;
+    const size_t row = (size_t) g_.n_kv_head * g_.head_dim;
+    return cudaMemcpy(k, layers_[(size_t) l].k_cache + (size_t) pos * row, row * 2, cudaMemcpyDeviceToHost) ==
+               cudaSuccess &&
+           cudaMemcpy(v, layers_[(size_t) l].v_cache + (size_t) pos * row, row * 2, cudaMemcpyDeviceToHost) ==
+               cudaSuccess;
 }
 
 } // namespace guild::core

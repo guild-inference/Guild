@@ -94,11 +94,23 @@ class SayLine(unittest.TestCase):
         self.assertEqual((base64.b64decode(transcript).decode(), codes), ("ref text", "1,2,3"))
 
     def test_params(self):
-        self.assertEqual(speech.speech_params({"temperature": 0.7, "max_new_tokens": 300, "voice": "x"}),
-                         {"temperature": 0.7, "max_new": 300})
-        for bad in ({"top_k": 0}, {"temperature": "hot"}, {"max_new_tokens": 0}, {"seed": True}):
+        self.assertEqual(speech.speech_params({"temperature": 0.7, "max_new_tokens": 300, "seed": 5, "voice": "x"}),
+                         {"temperature": 0.7, "max_new": 300, "seed": 5})
+        drawn = {speech.speech_params({})["seed"] for _ in range(4)}            # no seed: a random one each time
+        self.assertTrue(len(drawn) > 1 and all(0 <= d < 2 ** 63 for d in drawn))
+        for bad in ({"top_k": 0}, {"temperature": "hot"}, {"max_new_tokens": 0}, {"seed": True}, {"seed": -1},
+                    {"top_p": 0}, {"top_p": 1.5}, {"temperature": -0.1}, {"temperature": float("nan")},
+                    {"top_k": float("inf")}):
             with self.assertRaises(ValueError, msg=bad):
                 speech.speech_params(bad)
+
+
+class Direction(unittest.TestCase):
+    def test_placement(self):
+        self.assertEqual(speech.with_direction("Hello.", "whisper"), "[whisper] Hello.")
+        self.assertEqual(speech.with_direction("<|speaker:1|>Hello.", "calm"), "<|speaker:1|> [calm] Hello.")
+        self.assertEqual(speech.with_direction("Hello.", " [sad] tone "), "[(sad) tone] Hello.")
+        self.assertEqual(speech.with_direction("Hello.", "  "), "Hello.")
 
 
 class Voices(unittest.TestCase):

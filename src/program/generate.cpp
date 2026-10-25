@@ -204,10 +204,13 @@ bool read_wav(const std::string& path, std::vector<float>& out, int& rate, std::
     }
     int fmt = 0, channels = 0, bits = 0;
     for (size_t at = 12; at + 8 <= b.size();) {
-        const uint32_t size = u32(at + 4);
+        uint32_t size = u32(at + 4);
         const size_t body = at + 8;
-        if (body + size > b.size())
-            break;
+        if (body + size > b.size()) {
+            if (std::memcmp(b.data() + at, "data", 4))
+                break;
+            size = (uint32_t) (b.size() - body); // a streamed WAV's open-ended data chunk (size 0xFFFFFFFF): the rest
+        }
         if (!std::memcmp(b.data() + at, "fmt ", 4) && size >= 16) {
             fmt = (int) u16(body);
             channels = (int) u16(body + 2);
@@ -506,7 +509,8 @@ int main(int argc, char** argv) try {
     uint64_t seed = 0;
     bool greedy = true;
     bool serve_mode = false;
-    bool sampling_given = false; // --temperature / --top-p / --top-k / --greedy: the speech path keeps the card's
+    // the flags given: the speech path keeps the model card's sampling (1.0 / 0.9 / 30) and 2048 frames for the rest
+    bool temperature_given = false, top_p_given = false, top_k_given = false, max_new_given = false;
     std::string drama3_dir, say, wav_path = "speech.wav", ref_text, ref_codes_path, ref_wav_path, save_codes_path;
 
     for (int i = 1; i < argc; ++i) {
@@ -623,22 +627,23 @@ int main(int argc, char** argv) try {
             }
         } else if (a == "--max-new") {
             max_new = std::stoi(next("--max-new"));
+            max_new_given = true;
         } else if (a == "--temperature") {
             temperature = std::stof(next("--temperature"));
-            sampling_given = true;
+            temperature_given = true;
             if (temperature > 0.0f)
                 greedy = false;
         } else if (a == "--top-p") {
             top_p = std::stof(next("--top-p"));
-            sampling_given = true;
+            top_p_given = true;
         } else if (a == "--top-k") {
             top_k = std::stoi(next("--top-k"));
-            sampling_given = true;
+            top_k_given = true;
         } else if (a == "--seed") {
             seed = std::stoull(next("--seed")); // a 64-bit seed, as a GEN line's
         } else if (a == "--greedy") {
             greedy = true;
-            sampling_given = true;
+            temperature_given = true;
             temperature = 0.0f;
         } else if (a == "--serve") {
             serve_mode = true;
@@ -855,6 +860,11 @@ int main(int argc, char** argv) try {
                               << std::flush;
                 continue;
             }
+            if (model->is_speech_model() && (line.rfind("GEN", 0) == 0 || line.rfind("BGEN", 0) == 0)) {
+                std::cout << "ERR this is a text-to-speech model: send SAY (/v1/audio/speech), not text generation\n"
+                          << std::flush;
+                continue;
+            }
             if (line.rfind("GEN ", 0) == 0) {
                 GenerationRequest req;
                 std::string parse_err;
@@ -899,12 +909,14 @@ int main(int argc, char** argv) try {
     if (model->is_speech_model()) {
         SpeechRequest sreq;
         sreq.text = say.empty() ? prompt : say;
-        sreq.max_new_frames = max_new;
-        if (sampling_given) {
+        if (max_new_given)
+            sreq.max_new_frames = max_new;
+        if (temperature_given)
             sreq.temperature = greedy ? 0.0f : temperature;
+        if (top_p_given)
             sreq.top_p = top_p;
-            sreq.top_k = top_k > 0 ? top_k : 30;
-        }
+        if (top_k_given)
+            sreq.top_k = top_k;
         sreq.seed = seed;
         if (!ref_codes_path.empty() || !ref_wav_path.empty()) {
             SpeechReference r;

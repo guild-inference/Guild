@@ -3425,8 +3425,10 @@ def make_handler(svc: Service):
             import base64 as b64
             if path == "/v1/audio/speech":
                 text, voice, fmt = req.get("input"), req.get("voice") or None, req.get("response_format") or "wav"
+                if not isinstance(text, str) or not text.strip():
+                    raise ValueError("input: the text to speak")
                 if req.get("instructions"):              # Drama 3 takes direction in brackets before the line
-                    text = f"[{str(req['instructions']).strip()}] {text}"
+                    text = speech_api.with_direction(text, str(req["instructions"]))
                 refs = []
                 stream = req.get("stream_format") == "audio"
                 if req.get("speed") not in (None, 1, 1.0):
@@ -3445,6 +3447,7 @@ def make_handler(svc: Service):
             if fmt not in ("wav", "pcm"):
                 raise ValueError("response_format: wav or pcm (16-bit mono, 44.1 kHz)")
             params = speech_api.speech_params(req)
+            seed = str(int(params["seed"]))                    # sent back, so a take can be replayed
             cancel = threading.Event()
             self._watch_client(cancel)
             chunks = svc.speak(text, voice, refs, params, cancel)
@@ -3453,19 +3456,27 @@ def make_handler(svc: Service):
                 body = (speech_api.wav_header(44100, len(pcm) // 2) if fmt == "wav" else b"") + pcm
                 self.send_response(200)
                 self.send_header("Content-Type", "audio/wav" if fmt == "wav" else "audio/pcm")
+                self.send_header("X-Guild-Seed", seed)
                 self._cors()
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
                 return
-            first = next((c for c in chunks if c), None)   # errors before the answer starts are a JSON error
-            self.send_response(200)
-            self.send_header("Content-Type", "audio/wav" if fmt == "wav" else "audio/pcm")
-            self.send_header("Cache-Control", "no-cache")
-            self.send_header("X-Accel-Buffering", "no")
-            self._cors()
-            self.end_headers()
             try:
+                first = next((c for c in chunks if c), None)   # errors before the answer starts are a JSON error
+            except BaseException:
+                chunks.close()
+                raise
+            # From here the answer has started: an error can only end the connection (a JSON error written now would
+            # land inside the audio), and the generator is closed whatever happens, so its fifo is released at once.
+            try:
+                self.send_response(200)
+                self.send_header("Content-Type", "audio/wav" if fmt == "wav" else "audio/pcm")
+                self.send_header("Cache-Control", "no-cache")
+                self.send_header("X-Accel-Buffering", "no")
+                self.send_header("X-Guild-Seed", seed)
+                self._cors()
+                self.end_headers()
                 if fmt == "wav":
                     self.wfile.write(speech_api.wav_header(44100, None))
                 if first:
@@ -3477,8 +3488,12 @@ def make_handler(svc: Service):
                         self.wfile.flush()
             except OSError:
                 cancel.set()
-                chunks.close()
                 raise
+            except Exception as e:                       # the engine failed mid-stream (ERR, or it died)
+                print(f"[guild] speech stream ended early: {e}", flush=True)
+                self.close_connection = True
+            finally:
+                chunks.close()
 
         def _sse(self):
             self._note(http_status=200)

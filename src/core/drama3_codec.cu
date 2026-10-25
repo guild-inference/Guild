@@ -9,7 +9,6 @@
 #include "guild/core/drama3_codec.hpp"
 
 #include <cublas_v2.h>
-#include <cuda_bf16.h>
 #include <cuda_runtime.h>
 
 #include <algorithm>
@@ -109,6 +108,15 @@ __global__ void layer_norm_cols_kernel(const float* x, int ldx, const float* w, 
         out[(size_t) c * ldo + t] = (x[(size_t) c * ldx + t] - mean) * inv * w[c] + b[c];
 }
 
+// round to BF16 (nearest even) and back, as __float2bfloat16_rn: the reference's RoPE table is stored in BF16.  By
+// bits, so the file needs no cuda_bf16.h (HIP builds have no shim for it).
+__device__ __forceinline__ float bf16_round(float x) {
+    uint32_t u = __float_as_uint(x);
+    if ((u & 0x7f800000u) != 0x7f800000u) // finite: round; inf / NaN keep their bits
+        u += 0x7fffu + ((u >> 16) & 1u);
+    return __uint_as_float(u & 0xffff0000u);
+}
+
 // q, k of one column: pairwise RoPE on each head's 64 channels (cos / sin rounded to BF16, as the reference's table),
 // q in place, k and v to row `row` of the caches ([pos][dim])
 __global__ void rope_append_kernel(float* qkv, int ld, float* kc, float* vc, int row0, int64_t pos0, int dim,
@@ -119,8 +127,8 @@ __global__ void rope_append_kernel(float* qkv, int ld, float* kc, float* vc, int
     const int d = c % head_dim, i = d >> 1, partner = c ^ 1;
     const float freq = 1.0f / powf(base, (float) (2 * i) / (float) head_dim);
     const float ang = (float) (pos0 + t) * freq;
-    const float cs = __bfloat162float(__float2bfloat16_rn(cosf(ang)));
-    const float sn = __bfloat162float(__float2bfloat16_rn(sinf(ang)));
+    const float cs = bf16_round(cosf(ang));
+    const float sn = bf16_round(sinf(ang));
     const float q = qkv[(size_t) c * ld + t], qp = qkv[(size_t) partner * ld + t];
     const float k = qkv[(size_t) (dim + c) * ld + t], kp = qkv[(size_t) (dim + partner) * ld + t];
     const float v = qkv[(size_t) (2 * dim + c) * ld + t];

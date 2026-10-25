@@ -226,6 +226,10 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
     } else {
         impl->config.spec = std::max(2, plan.mtp_spec_tokens);
     }
+    // a speech model drafts nothing, so its windows only carry the prompt: the widest reads it in the fewest
+    // (a 153-row prompt: 2.18 s at 8 rows, 2.41 at 4, GTX 1070)
+    if (!paths.drama3_dir.empty())
+        impl->config.spec = kernels::kVerifyMaxT;
     impl->config.spec_min_p = plan.spec_min_p;
     impl->config.pool_workers = plan.pool_workers;
     impl->config.expert_cache_slots = plan.routed_experts_in_gpu;

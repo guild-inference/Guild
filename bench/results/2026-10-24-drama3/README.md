@@ -26,7 +26,8 @@ second of audio:
 | tower | GPU, `Drama3Tower` | Q8_0 projections, BF16 embeddings, FP16 K/V | 1525 MiB for 10240 frames of K/V |
 | codec | GPU, `Drama3Codec`, cuBLAS SGEMM per convolution tap | FP32 | 0.75 GiB weights + activations |
 
-Whole engine, peak while speaking: 5023 MiB used on the 8 GiB card.
+Whole engine, peak while speaking: 5163 MiB used on the 8 GiB card (5023 MiB before the batched prompt of
+2026-10-25, whose buffers and wider decode window take the difference).
 
 ## Checks against the reference
 
@@ -52,21 +53,31 @@ the model card's sampling (T 1.0, top-p 0.9, top-k 30), a 290-character passage,
 
 | Voice | Audio | Frames/s | Real time | Prompt |
 | --- | --- | ---: | ---: | --- |
-| none | 22.24 / 19.78 / 22.06 s | 37.58 / 37.88 / 37.43 | 1.75x / 1.76x / 1.74x | 86 rows, 1.42 / 1.38 / 1.44 s |
-| the model card's 3.9 s clip | 18.67 / 17.14 / 16.49 s | 37.55 / 37.86 / 37.69 | 1.74x / 1.76x / 1.75x | 206 rows, 3.31 / 3.22 / 3.23 s |
+| none | 22.24 / 19.78 / 22.06 s | 37.70 / 38.00 / 38.01 | 1.75x / 1.76x / 1.77x | 86 rows, 0.70 / 0.69 / 0.68 s |
+| the model card's 3.9 s clip | 18.67 / 17.14 / 16.49 s | 37.60 / 37.23 / 37.57 | 1.75x / 1.73x / 1.74x | 206 rows, 1.57 / 1.58 / 1.59 s |
+
+Measured 2026-10-25, after the prompt was batched (below); the same seeds give the same audio as before.  The first
+measurement, 2026-10-24, had the same frame rates and prompts of 1.42 / 1.38 / 1.44 s (86 rows) and
+3.31 / 3.22 / 3.23 s (206 rows).
+
+The prompt: the backbone runs it through decode windows of 8 rows (4 before; `kVerifyMaxT`), and the tower takes
+all its rows but the last in one batched pass (`Drama3Tower::prefill`, 64 columns per projection call) instead of a
+step per row.  The batched pass writes K/V bit-identical to the row-by-row steps (`drama3_tower_test` checks every
+layer and position).
 
 Per frame, about 26.5 ms: the tower 9.7 ms (12.1 with the 206-row voice prompt: more K/V to attend), the codec
 2.6 ms, the backbone the rest.  Encoding a reference
 clip took 330 ms for 3.9 s of audio (the encoder's weights are uploaded for the call and freed after).
 
 Through the server (`serve/server.py`, the same engine): a sentence in the `en0` voice from `/v1/audio/speech` in
-4.5 s, a streamed sentence (`stream_format: audio`) in 2.0 s, and a `/v1/tts` request bringing its own reference clip
+4.5 s (2.2 s on 2026-10-25 for "The storm passed before midnight.", streamed or not), a streamed sentence (`stream_format: audio`) in 2.0 s, and a `/v1/tts` request bringing its own reference clip
 in 4.2 s, end to end.
 
 ## Not done yet
 
-- The prompt runs through the decode windows (4 rows each) and the tower one row at a time: 206 rows take 3.2 s
-  before the first frame.  A batched prompt for both would cut the time to the first audio.
+- The backbone still takes the prompt 8 rows at a time: 206 rows take 1.6 s before the first frame, most of it
+  the backbone.  A prefill path for its audio rows would cut the time to the first audio again.
+- The HIP build is not tested on an AMD card; the tower's and codec's kernels assume 32-wide warps in places.
 - The tower's 10 samplings per frame read their logits back to the host; on the GPU, with the tower in a CUDA graph,
   each frame would save the launches and the round trips.
 - `guild pull` / setup.py do not know Drama 3 yet; the model is converted by hand (see the README).

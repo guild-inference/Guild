@@ -30,10 +30,12 @@ __device__ __forceinline__ float block_sum(float v, float* red) {
     return s;
 }
 
-// out = x * rsqrt(mean(x^2) + eps) * w, one row of n
+// out = x * rsqrt(mean(x^2) + eps) * w, one row of n per block (rows at strides xs / os)
 __global__ void rms_norm_kernel(const float* __restrict__ x, const float* __restrict__ w, float* __restrict__ out,
-                                int n, float eps) {
+                                int n, float eps, int xs, int os) {
     __shared__ float red[32];
+    x += (size_t) blockIdx.x * xs;
+    out += (size_t) blockIdx.x * os;
     float ss = 0.0f;
     for (int i = threadIdx.x; i < n; i += blockDim.x)
         ss += x[i] * x[i];
@@ -57,6 +59,24 @@ __global__ void embed_kernel(const uint16_t* __restrict__ table, int row, EmbedA
     }
 }
 
+// row r of out = table row rows[r] (zeros when < 0) + the sum of add_table's rows add[r * 9 .. + add_n[r]]
+__global__ void embed_rows_kernel(const uint16_t* __restrict__ table, const int32_t* __restrict__ rows,
+                                  const int32_t* __restrict__ add, const int32_t* __restrict__ add_n,
+                                  const uint16_t* __restrict__ add_table, float* __restrict__ out, int n) {
+    const int r = blockIdx.y;
+    const int row = rows[r], na = add_n[r];
+    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n; i += gridDim.x * blockDim.x) {
+        float v = row >= 0 ? bf16_to_f32(table[(size_t) row * n + i]) : 0.0f;
+        if (na > 0) {
+            float sum = 0.0f;
+            for (int k = 0; k < na; ++k)
+                sum += bf16_to_f32(add_table[(size_t) add[r * 9 + k] * n + i]);
+            v += sum;
+        }
+        out[(size_t) r * n + i] = v;
+    }
+}
+
 __global__ void add_kernel(float* __restrict__ x, const float* __restrict__ y, int n) {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i < n)
@@ -73,6 +93,10 @@ __global__ void qk_norm_rope_kernel(const float* __restrict__ qkv, const float* 
     __shared__ float red[32];
     __shared__ float buf[512];
     const int b = blockIdx.x, d = threadIdx.x, hd = s.head_dim;
+    // row blockIdx.y of a batch: its own qkv row, q row and position
+    qkv += (size_t) blockIdx.y * (2 * s.n_head + 2 * s.n_kv) * hd;
+    q_out += (size_t) blockIdx.y * s.n_head * hd;
+    pos += blockIdx.y;
     const int q_width = s.n_head * hd;
     const bool is_q = b < s.n_head, is_k = !is_q && b < s.n_head + s.n_kv;
     const float* src;
@@ -228,8 +252,14 @@ void backbone_embed_add(float* emb, const int32_t* tok, const int32_t* code1, co
                                                                                            hi, n);
 }
 
-void rms_norm(const float* x, const float* w, float* out, int n, float eps, cudaStream_t st) {
-    rms_norm_kernel<<<1, kThreads, 0, st>>>(x, w, out, n, eps);
+void rms_norm(const float* x, const float* w, float* out, int n, float eps, cudaStream_t st, int rows, int xs, int os) {
+    rms_norm_kernel<<<rows, kThreads, 0, st>>>(x, w, out, n, eps, xs ? xs : n, os ? os : n);
+}
+
+void embed_rows(const uint16_t* table, const int32_t* rows, const int32_t* add, const int32_t* add_n,
+                const uint16_t* add_table, float* out, int n, int n_rows, cudaStream_t st) {
+    embed_rows_kernel<<<dim3((n + kThreads - 1) / kThreads, n_rows), kThreads, 0, st>>>(table, rows, add, add_n,
+                                                                                        add_table, out, n);
 }
 
 void embed(const uint16_t* table, int row, const EmbedAdd& add, const uint16_t* add_table, float* out, int n,
@@ -242,9 +272,9 @@ void add(float* x, const float* y, int n, cudaStream_t st) {
 }
 
 void qk_norm_rope(const float* qkv, const float* q_w, const float* k_w, float* q_out, uint16_t* k_cache,
-                  uint16_t* v_cache, const QkvShape& s, int64_t pos, cudaStream_t st) {
-    qk_norm_rope_kernel<<<s.n_head + 2 * s.n_kv, s.head_dim, 0, st>>>(qkv, q_w, k_w, q_out, (__half*) k_cache,
-                                                                      (__half*) v_cache, s, pos);
+                  uint16_t* v_cache, const QkvShape& s, int64_t pos, cudaStream_t st, int rows) {
+    qk_norm_rope_kernel<<<dim3(s.n_head + 2 * s.n_kv, rows), s.head_dim, 0, st>>>(
+        qkv, q_w, k_w, q_out, (__half*) k_cache, (__half*) v_cache, s, pos);
 }
 
 int attn_chunks(int64_t n_pos) {

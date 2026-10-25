@@ -165,6 +165,10 @@ bool GuildSession::generate(const GenerationRequest& req, TokenStreamCallback on
     }
 
     auto* m_impl = impl_->model_impl.get();
+    if (m_impl->tower) { // its verifier stops at the final norm (no head): there are no text tokens to generate
+        error_msg = "this is a text-to-speech model (--drama3): use GuildModel::synthesize";
+        return false;
+    }
     std::lock_guard<std::mutex> lock(m_impl->generation_mutex);
     if (!m_impl->ready || !m_impl->ready->load()) {
         error_msg = "model is not ready or an earlier inference failed; reload the model";

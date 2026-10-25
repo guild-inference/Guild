@@ -16,6 +16,7 @@ from __future__ import annotations
 import array
 import io
 import re
+import secrets
 import struct
 import sys
 import threading
@@ -33,10 +34,13 @@ def wav_samples(data: bytes) -> tuple[bytes, int]:
     except (wave.Error, EOFError) as e:
         raise ValueError(f"reference audio: not a PCM WAV file ({e})") from None
     with w:
-        ch, width, rate, n = w.getnchannels(), w.getsampwidth(), w.getframerate(), w.getnframes()
-        if n / max(rate, 1) > MAX_REFERENCE_S:
+        ch, width, rate = w.getnchannels(), w.getsampwidth(), w.getframerate()
+        if not 4000 <= rate <= 384000:
+            raise ValueError(f"reference audio: sample rate {rate} Hz")
+        # what is there, not the header's count: a streamed WAV says 0xFFFFFFFF bytes
+        raw = w.readframes(int(MAX_REFERENCE_S * rate) + 1)
+        if len(raw) // (width * ch) > MAX_REFERENCE_S * rate:
             raise ValueError(f"reference audio: longer than {MAX_REFERENCE_S:.0f} s")
-        raw = w.readframes(n)
     if width == 1:
         vals = [(b - 128) / 128.0 for b in raw]
     elif width == 2:
@@ -101,6 +105,21 @@ class Voices:
             return text, codes
 
 
+SPEAKER = re.compile(r"^\s*<\|speaker:[0-9]+\|>")
+
+
+def with_direction(text: str, direction: str) -> str:
+    """`text` with a bracketed direction before its line - after a leading <|speaker:N|> tag, which must stay first
+    (the engine adds <|speaker:0|> to a text that does not start with one)"""
+    direction = direction.strip().replace("[", "(").replace("]", ")")
+    if not direction:
+        return text
+    m = SPEAKER.match(text)
+    if m:
+        return f"{text[:m.end()]} [{direction}] {text[m.end():].lstrip()}"
+    return f"[{direction}] {text}"
+
+
 def say_line(text: str, refs: list[tuple[str, str]], params: dict) -> str:
     """The SAY command for `text`, the reference voices (transcript, codes) and the sampling `params`"""
     import base64
@@ -119,18 +138,28 @@ def say_line(text: str, refs: list[tuple[str, str]], params: dict) -> str:
 
 
 def speech_params(req: dict) -> dict:
-    """The sampling of a speech request (both APIs' names); unset keys keep the model card's (1.0 / 0.9 / 30)"""
+    """The sampling of a speech request (both APIs' names); unset keys keep the model card's (1.0 / 0.9 / 30), and
+    an unset seed is drawn at random"""
     out = {}
     for key, names in (("temperature", ("temperature",)), ("top_p", ("top_p",)), ("top_k", ("top_k",)),
                        ("seed", ("seed",)), ("max_new", ("max_new_tokens", "max_frames"))):
         for n in names:
             v = req.get(n)
             if v is not None:
-                if isinstance(v, bool) or not isinstance(v, (int, float)):
-                    raise ValueError(f"{n}: a number")
+                if isinstance(v, bool) or not isinstance(v, (int, float)) or v != v or v in (float("inf"),
+                                                                                             float("-inf")):
+                    raise ValueError(f"{n}: a finite number")
                 out[key] = v
     if "top_k" in out and int(out["top_k"]) < 1:
         raise ValueError("top_k: at least 1")
+    if "top_p" in out and not 0 < out["top_p"] <= 1:
+        raise ValueError("top_p: in (0, 1]")
+    if "temperature" in out and out["temperature"] < 0:
+        raise ValueError("temperature: 0 or more")
     if "max_new" in out and not 1 <= int(out["max_new"]) <= 8192:
         raise ValueError("max_new_tokens: 1..8192 frames (21.5 per second of audio)")
+    if "seed" not in out:          # a fresh take each time; the seed goes back in X-Guild-Seed to replay it
+        out["seed"] = secrets.randbits(63)
+    elif not 0 <= int(out["seed"]) < 2 ** 64:
+        raise ValueError("seed: 0 .. 2^64 - 1")
     return out

@@ -4,17 +4,19 @@
 //
 // The reference dir holds raw arrays from fish-speech's modules run in float32 (meta.txt names them and their shapes):
 // the prompt rows, the frames it sampled, the backbone's final-norm hidden state at every position, and per decode
-// step the main token's 4097 candidate logits, the 13 tower layers' outputs and the 9 heads' logits.  The tower is fed
-// the reference's hidden states and teacher-forced with its frames, so each step sees exactly the reference's inputs;
-// what differs is only the tower's own arithmetic (Q8_0 weights, Q8_1 activations, FP16 K/V).  Pass: every compared
-// vector has cosine >= 0.999 to the reference, and the sampling distributions (softmax at temperature 1) are close:
-// mean KL(reference || tower) <= 0.01 nats and the worst row <= 0.1.  (The argmax is printed, not judged: rows of
-// near-equal logits, common in the late codebooks, flip it under any rounding.)
+// step the main token's 4097 candidate logits, the 13 tower layers' outputs and the 9 heads' logits.  The prompt goes
+// through the batched path (Drama3Tower::prefill), whose K/V must equal one step per row's bit for bit.  The tower is
+// fed the reference's hidden states and teacher-forced with its frames, so each step sees exactly the reference's
+// inputs; what differs is only the tower's own arithmetic (Q8_0 weights, Q8_1 activations, FP16 K/V).  Pass: every
+// compared vector has cosine >= 0.999 to the reference, and the sampling distributions (softmax at temperature 1) are
+// close: mean KL(reference || tower) <= 0.01 nats and the worst row <= 0.1.  (The argmax is printed, not judged: rows
+// of near-equal logits, common in the late codebooks, flip it under any rounding.)
 #include "guild/core/drama3_tower.hpp"
 
 #include <cuda_runtime.h>
 
 #include <cmath>
+#include <cstdlib>
 #include <cstdio>
 #include <fstream>
 #include <map>
@@ -126,16 +128,54 @@ int main(int argc, char** argv) {
     cudaMalloc(&h_dev, (size_t) D * 4);
     std::vector<int32_t> out((size_t) W);
     guild::core::Drama3Sampling sp;
-    auto run = [&](int p, const int32_t* row, const int32_t* forced, float* c, float* cl, float* lo) {
-        cudaMemcpy(h_dev, hidden.as<float>() + (size_t) p * D, (size_t) D * 4, cudaMemcpyHostToDevice);
-        if (!tower.step(h_dev, p, row, forced, nullptr, 0, sp, out.data(), err, c, cl, lo)) {
+    // cudaMemcpy from pageable memory may return before the bytes land; the tower reads on its own stream, so wait
+    auto upload = [](float* dst, const float* src, size_t floats) {
+        cudaMemcpy(dst, src, floats * 4, cudaMemcpyHostToDevice);
+        cudaDeviceSynchronize();
+    };
+    auto run = [&](guild::core::Drama3Tower& t, int p, const int32_t* row, const int32_t* forced, float* c, float* cl,
+                   float* lo) {
+        upload(h_dev, hidden.as<float>() + (size_t) p * D, (size_t) D);
+        if (!t.step(h_dev, p, row, forced, nullptr, 0, sp, out.data(), err, c, cl, lo)) {
             std::fprintf(stderr, "step %d: %s\n", p, err.c_str());
             std::exit(1);
         }
     };
-    for (int p = 0; p + 1 < R; ++p)
-        run(p, prompt.as<int32_t>() + (size_t) p * W, prompt.as<int32_t>() + (size_t) (p + 1) * W, nullptr, nullptr,
-            nullptr);
+    // The prompt through the batched path, and through one step per row on a second tower: their K/V must be the
+    // same bits (the multi-column MMVQ equals a one-column call; the attention runs per row either way).
+    {
+        float* hp = nullptr;
+        cudaMalloc(&hp, (size_t) R * D * 4);
+        upload(hp, hidden.as<float>(), (size_t) R * D);
+        if (!tower.prefill(hp, 0, R - 1, prompt.as<int32_t>(), err)) {
+            std::fprintf(stderr, "prefill: %s\n", err.c_str());
+            return 1;
+        }
+        cudaFree(hp);
+        guild::core::Drama3Tower rowwise;
+        if (!rowwise.load(argv[1], 4096, err)) {
+            std::fprintf(stderr, "load: %s\n", err.c_str());
+            return 1;
+        }
+        for (int p = 0; p + 1 < R; ++p)
+            run(rowwise, p, prompt.as<int32_t>() + (size_t) p * W, prompt.as<int32_t>() + (size_t) (p + 1) * W, nullptr,
+                nullptr, nullptr);
+        const int KV = g.n_kv_head * g.head_dim;
+        std::vector<uint16_t> ka(KV), va(KV), kb(KV), vb(KV);
+        int bad = 0;
+        for (int l = 0; l < NL; ++l)
+            for (int p = 0; p + 1 < R; ++p) {
+                tower.read_kv(l, p, ka.data(), va.data());
+                rowwise.read_kv(l, p, kb.data(), vb.data());
+                bad += ka != kb || va != vb;
+            }
+        std::printf("prompt K/V, batched against one step per row: %d of %d (layer, position) rows differ\n", bad,
+                    NL * (R - 1));
+        if (bad) {
+            std::printf("FAIL\n");
+            return 1;
+        }
+    }
     std::vector<float> c((size_t) CS + 1), cl((size_t) (g.n_codebooks - 1) * CS), lo((size_t) NL * D);
     double worst_cos = 1.0;
     int argmax_rows = 0, argmax_same = 0;
@@ -151,7 +191,7 @@ int main(int argc, char** argv) {
         const int p = R - 1 + s;
         const int32_t* row =
             s == 0 ? prompt.as<int32_t>() + (size_t) (R - 1) * W : frames.as<int32_t>() + (size_t) (s - 1) * W;
-        run(p, row, frames.as<int32_t>() + (size_t) s * W, c.data(), cl.data(), lo.data());
+        run(tower, p, row, frames.as<int32_t>() + (size_t) s * W, c.data(), cl.data(), lo.data());
         const float* rc = cand.as<float>() + (size_t) s * (CS + 1);
         worst_cos = std::min(worst_cos, cosine(c.data(), rc, CS + 1));
         argmax_same += argmax(c.data(), CS + 1) == argmax(rc, CS + 1);

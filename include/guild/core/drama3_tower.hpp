@@ -80,6 +80,16 @@ public:
               int n_history, const Drama3Sampling& sp, int32_t* out, std::string& err, float* cand_logits = nullptr,
               float* code_logits = nullptr, float* layer_out = nullptr);
 
+    /// The prompt: teacher-forces positions pos0 .. pos0 + n - 1 at once.  Row i of `hidden` (device, [n][dim]) is the
+    /// backbone's state at pos0 + i; `rows` (host, [n + 1][width]) are frames pos0 .. pos0 + n.  Each row gets
+    /// `step`'s arithmetic with `forced` = the next row (the projections are the multi-column MMVQ, equal to a
+    /// one-column call); no logits are computed.
+    bool prefill(const float* hidden, int64_t pos0, int n, const int32_t* rows, std::string& err,
+                 float* layer_out = nullptr);
+
+    /// Tests: layer `l`'s K and V rows at `pos` (FP16 bits, n_kv_head * head_dim each)
+    bool read_kv(int l, int64_t pos, uint16_t* k, uint16_t* v) const;
+
     void* stream() const {
         return stream_;
     }
@@ -101,7 +111,10 @@ private:
         uint16_t *k_cache = nullptr, *v_cache = nullptr; // [max_frames][n_kv_head][head_dim] FP16
     };
     bool layer_forward(Layer& L, const float* e_dev, int64_t pos, std::string& err);
-    bool matvec(const Mat& m, const float* x, float* y, std::string& err);
+    bool matvec(const Mat& m, const float* x, float* y, std::string& err, int ncols = 1);
+    bool prefill_chunk(const float* hidden, int64_t pos0, int n, const int32_t* rows, std::string& err,
+                       float* layer_out);
+    static constexpr int kPrefillCols = 64;
     int sample(const float* logits, int n, const Drama3Sampling& sp, std::string& err);
 
     Drama3TowerGeometry g_;
@@ -117,6 +130,13 @@ private:
     float *h_ = nullptr, *e_ = nullptr, *cat_ = nullptr, *x_ = nullptr, *xn_ = nullptr, *qkv_ = nullptr, *q_ = nullptr,
           *att_ = nullptr, *proj_ = nullptr, *ff1_ = nullptr, *ff3_ = nullptr, *logits_ = nullptr, *part_ = nullptr;
     void* xq_ = nullptr;
+    // the prompt's batch (kPrefillCols rows)
+    float *bh_ = nullptr, *be_ = nullptr, *bcat_ = nullptr, *bx_ = nullptr, *bxn_ = nullptr, *bqkv_ = nullptr,
+          *bq_ = nullptr, *batt_ = nullptr, *bproj_ = nullptr, *bff1_ = nullptr, *bff3_ = nullptr;
+    void* bxq_ = nullptr;
+    int32_t* bidx_ =
+        nullptr; // [layers][kPrefillCols] embedding rows, then [kPrefillCols][9] adds, [kPrefillCols] counts
+    std::vector<int32_t> bidx_host_;
     float* host_logits_ = nullptr; // pinned
     uint64_t draws_ = 0;
 };

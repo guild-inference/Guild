@@ -255,13 +255,15 @@ guild-generate --native Drama3-Q4_K_M.gguf --pack <pack> --drama3 <dir> --max-co
 
 The server (`--config` with those `args`) answers `POST /v1/audio/speech` (OpenAI: `input`, `voice`, `instructions`,
 `response_format` wav or pcm, `stream_format: audio`) and `POST /v1/tts` (Fish Audio: `text`, `references` with a
-base64 WAV and its transcript); `voices_dir` in the config names voices (`<name>.wav` + `<name>.txt`). On a dual Xeon
-Gold 6130 with a GTX 1070 it speaks at 1.75x real time and uses 5.0 GB of VRAM; the tower, the codec and the
+base64 WAV and its transcript); `voices_dir` in the config names voices (`<name>.wav` + `<name>.txt`). A request
+without a `seed` gets a random one, sent back in the `X-Guild-Seed` header so the take can be replayed. On a dual Xeon
+Gold 6130 with a GTX 1070 it speaks at 1.75x real time and uses 5.2 GB of VRAM; the tower, the codec and the
 voice encoder match fish-speech's float32 modules
 ([bench/results/2026-10-24-drama3](bench/results/2026-10-24-drama3/README.md)). Sampled audio is the model's own
 distribution, not the reference's exact draws. Drama 3's weights are under the Fish Audio Community License
 (free for research and non-commercial use; commercial use only below USD 500,000 annual revenue, and any hosted
-service needs a separate license from Fish Audio).  Guild does not ship them.
+service needs a separate license from Fish Audio).  Guild does not ship them.  The HIP (AMD) build compiles the
+speech parts but has not been run on an AMD card.
 
 ## Performance philosophy
 
