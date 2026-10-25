@@ -1,6 +1,7 @@
 // tests/core/glm5_kernels_test.cpp - GLM-5.3-Flash's GPU kernels (src/core/glm5.cu) against plain CPU code that
 // follows llama.cpp's glm5next graph, on random inputs.  No model needed.
 #include "guild/core/glm5_kernels.hpp"
+#include "guild/kernels/native_mmvq.hpp"
 
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
@@ -10,6 +11,7 @@
 #include <cstdio>
 #include <cstring>
 #include <random>
+#include <string>
 #include <vector>
 
 namespace k = guild::core::glm5k;
@@ -494,7 +496,58 @@ static void test_route() {
     check("route weights", w, rw, 1e-5);
 }
 
-int main() {
+// `glm5_kernels_test bench`: the GPU products at GLM-5.3-Flash's shapes (Q8_0 and Q6_K), GB/s of weights read
+static int bench() {
+    struct Shape {
+        const char* what;
+        int n_in, n_out;
+    } shapes[] = {{"KDA q/k/v 4096x8192", 4096, 8192},
+                  {"KDA out 8192x4096", 8192, 4096},
+                  {"DSA out 16384x4096", 16384, 4096},
+                  {"head 4096x154880", 4096, 154880}};
+    cudaStream_t st;
+    cudaStreamCreate(&st);
+    for (int type : {8, 14}) {
+        for (const Shape& sh : shapes) {
+            const size_t wb = guild::kernels::native_mmvq_weight_bytes(type, sh.n_in, sh.n_out);
+            void *w, *xq;
+            float *x, *y;
+            cudaMalloc(&w, wb);
+            cudaMemset(w, 0, wb);
+            cudaMalloc(&x, (size_t) sh.n_in * 4 * 64);
+            cudaMemset(x, 0, (size_t) sh.n_in * 4 * 64);
+            cudaMalloc(&xq, guild::kernels::native_q8_1_bytes(sh.n_in, 64));
+            cudaMalloc(&y, (size_t) sh.n_out * 4 * 64);
+            guild::kernels::native_quantize_q8_1(x, xq, sh.n_in, 64, st);
+            for (int ncols : {1, 2, 8, 64}) {
+                cudaEvent_t a, b;
+                cudaEventCreate(&a);
+                cudaEventCreate(&b);
+                for (int i = 0; i < 3; ++i)
+                    guild::kernels::native_mmvq(type, w, xq, y, sh.n_in, sh.n_out, ncols, st);
+                cudaEventRecord(a, st);
+                const int reps = 50;
+                for (int i = 0; i < reps; ++i)
+                    guild::kernels::native_mmvq(type, w, xq, y, sh.n_in, sh.n_out, ncols, st);
+                cudaEventRecord(b, st);
+                cudaEventSynchronize(b);
+                float ms = 0;
+                cudaEventElapsedTime(&ms, a, b);
+                std::printf("%-6s %-22s ncols %d: %7.1f us  %6.1f GB/s\n", type == 8 ? "Q8_0" : "Q6_K", sh.what, ncols,
+                            1000.0 * ms / reps, wb / (ms / reps * 1e-3) / 1e9);
+            }
+            cudaFree(w);
+            cudaFree(x);
+            cudaFree(xq);
+            cudaFree(y);
+        }
+    }
+    return 0;
+}
+
+int main(int argc, char** argv) {
+    if (argc > 1 && std::string(argv[1]) == "bench")
+        return bench();
     test_hc();
     test_kda();
     test_heads_and_attention();

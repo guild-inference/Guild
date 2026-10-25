@@ -8,6 +8,9 @@
 #include "guild/core/glm5_kernels.hpp"
 #include "guild/artifact/gguf_reader.hpp"
 #include "guild/kernels/native_mmvq.hpp"
+#if defined(GUILD_GLM_MMQ)
+#include "guild/prefill/moe_mmq.hpp"
+#endif
 #include "guild/kernels/cpu/expert.hpp"
 #include "guild/kernels/cpu/features.hpp"
 #include "guild/kernels/cpu/iq_avx2.hpp"
@@ -62,6 +65,7 @@ struct Mat {
     void* dev = nullptr;
     size_t bytes = 0;
     std::vector<uint8_t> owned; ///< host bytes of a re-quantized copy (until uploaded)
+    bool mmq = false;           ///< prompt windows multiply it with llama.cpp's MMQ (int8 tiles) instead of MMVQ
     size_t row_bytes() const {
         return ggml_row_size((ggml_type) type, n_in);
     }
@@ -274,6 +278,12 @@ struct Glm5Engine::Impl {
     int32_t *sel = nullptr, *nsel = nullptr;
     int score_stride = 0, sel_stride = 0;
     void *xq = nullptr, *xq2 = nullptr;
+    // prompt windows (more than kMmvqCols tokens): the activations in MMQ's layout too, and its launch tables
+#if defined(GUILD_GLM_MMQ)
+    std::unique_ptr<guild::prefill::mmq::Context> mmq_ctx;
+#endif
+    void *xqm = nullptr, *xqm2 = nullptr;
+    int32_t *mmq_bounds = nullptr, *mmq_ids = nullptr;
     // pinned host
     float *h_x = nullptr, *h_y = nullptr, *h_w = nullptr, *h_emb = nullptr;
     int32_t* h_ids = nullptr;
@@ -400,10 +410,38 @@ struct Glm5Engine::Impl {
     }
 
     // ---- the GPU products ----
+    // MMVQ reads the weights once for up to 8 columns; beyond that each column costs about as much again (GTX 1070:
+    // 0.20 ms for one column of a 4096 x 8192 Q8_0 matrix, 0.31 for 8, 2.75 for 64), so wider windows use MMQ
+    static constexpr int kMmvqCols = 8;
     void quant(const float* x, int64_t n, int T, void* dst) {
         guild::kernels::native_quantize_q8_1(x, dst, (int) n, T, st);
+#if defined(GUILD_GLM_MMQ)
+        if (T > kMmvqCols && mmq_ctx)
+            guild::prefill::mmq::quantize(x, nullptr, dst == xq ? xqm : xqm2, kQ8_0, n, n, T, st);
+#endif
     }
     void mm(const Mat& m, const void* xq_, float* out, int T) {
+#if defined(GUILD_GLM_MMQ)
+        if (T > kMmvqCols && m.mmq && mmq_ctx && (xq_ == xq || xq_ == xq2)) {
+            namespace mmq = guild::prefill::mmq;
+            mmq::Product p;
+            p.w = m.dev;
+            p.type = m.type;
+            p.w_rows = m.n_out;
+            p.w_cols = m.n_in;
+            p.expert_bytes = mmq::matrix_bytes(m.type, m.n_out, m.n_in);
+            p.n = 1;
+            p.xq = xq_ == xq ? xqm : xqm2;
+            p.bounds = mmq_bounds + 2 * T;
+            p.ids = mmq_ids;
+            p.total_rows = T;
+            p.max_rows = T;
+            p.dst = out;
+            p.ld_dst = m.n_out;
+            mmq_ctx->run(p, st);
+            return;
+        }
+#endif
         guild::kernels::native_mmvq(m.type, m.dev, xq_, out, (int) m.n_in, (int) m.n_out, T, st);
     }
 
@@ -892,6 +930,42 @@ bool Glm5Engine::Impl::load(const std::string& path, const Glm5Options& o, std::
     const size_t qbytes = guild::kernels::native_q8_1_bytes((int) widest, T);
     if (!(xq = dalloc<uint8_t>(qbytes, err)) || !(xq2 = dalloc<uint8_t>(qbytes, err)))
         return false;
+#if defined(GUILD_GLM_MMQ)
+    {
+        namespace mmq = guild::prefill::mmq;
+        if (mmq::built() && std::getenv("GUILD_GLM_MMQ") == nullptr) { // GUILD_GLM_MMQ=0: MMVQ for every window
+            const size_t mb = mmq::q8_bytes(T, widest);
+            std::vector<int32_t> bounds((size_t) 2 * (T + 1));
+            for (int t = 0; t <= T; ++t) {
+                bounds[(size_t) 2 * t] = 0;
+                bounds[(size_t) 2 * t + 1] = t;
+            }
+            if (!(xqm = dalloc<uint8_t>(mb, err)) || !(xqm2 = dalloc<uint8_t>(mb, err)) ||
+                !(mmq_bounds = dalloc<int32_t>(bounds.size(), err)) || !(mmq_ids = dalloc<int32_t>((size_t) T, err)))
+                return false;
+            cudaMemcpy(mmq_bounds, bounds.data(), bounds.size() * 4, cudaMemcpyHostToDevice);
+            mmq::iota(mmq_ids, T, st);
+            mmq_ctx = std::make_unique<mmq::Context>();
+            int n_mmq = 0;
+            auto mark = [&](Mat& m) {
+                m.mmq = m.dev && m.type == kQ8_0 && mmq::fits(kQ8_0, m.n_out);
+                n_mmq += m.mmq;
+            };
+            std::vector<Layer*> all_layers;
+            for (Layer& y : L)
+                all_layers.push_back(&y);
+            if (has_mtp)
+                all_layers.push_back(&mtp);
+            for (Layer* yp : all_layers)
+                for (Mat* m :
+                     {&yp->hc_attn_fn, &yp->hc_ffn_fn, &yp->wo,     &yp->wq,   &yp->wk,  &yp->wv,   &yp->f_a,
+                      &yp->f_b,        &yp->g_a,       &yp->g_b,    &yp->beta, &yp->q_a, &yp->q_b,  &yp->kv_a,
+                      &yp->idx_k,      &yp->idx_gate,  &yp->idx_qb, &yp->gate, &yp->up,  &yp->down, &yp->eh_proj})
+                    mark(*m);
+            std::fprintf(stderr, "guild glm5: %d matrices take MMQ in prompt windows\n", n_mmq);
+        }
+    }
+#endif
     if (cudaMallocHost(&h_x, (size_t) T * N * 4) != cudaSuccess ||
         cudaMallocHost(&h_y, (size_t) T * N * 4) != cudaSuccess ||
         cudaMallocHost(&h_w, (size_t) T * g.n_used * 4) != cudaSuccess ||
