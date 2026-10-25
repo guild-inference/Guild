@@ -482,6 +482,20 @@ class ToolCallTerminators(unittest.TestCase):
                         self.assertEqual(json.loads(streamed), {"path": "doc.md", "content": self.CONTENT})
 
 
+class OpenThinkPrompt(unittest.TestCase):
+    """A template that ends the prompt inside <think> (GLM-5's, even with enable_thinking false) is parsed as
+    reasoning first; a closed block or none follows enable_thinking."""
+
+    def test_open_think_means_reasoning(self):
+        tok = ThinkTokenizer()
+        svc = Service(MockEngine(tok, "hi"), tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        think = tok.encode("<think>", parse_special=True)
+        self.assertEqual(len(think), 1)
+        self.assertTrue(svc._opens_think([5, 6] + think))
+        self.assertFalse(svc._opens_think([5, 6]))
+        self.assertFalse(svc._opens_think([]))
+
+
 class GlmToolCalls(unittest.TestCase):
     """GLM-5.3-Flash writes `<tool_call>NAME<arg_key>K</arg_key><arg_value>V</arg_value>...</tool_call>`: strings as
     themselves, other values as JSON; a value may contain the closing tag as text."""

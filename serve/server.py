@@ -2297,7 +2297,15 @@ class Service:
                                  f"max_tokens (at most {max(0, room)} here), or add \"fit_max_tokens\": true to the "
                                  "model's guild-<model>.json to shorten it to the room left (#545)")
             max_new = max(1, room)          # --fit-max-tokens: a shorter completion beats a 400
-        return ids, kwargs.get("enable_thinking", True) is not False, max_new
+        # a prompt that ends inside an open <think> (GLM-5's template opens one whatever enable_thinking says) is
+        # answered with reasoning first
+        return ids, kwargs.get("enable_thinking", True) is not False or self._opens_think(ids), max_new
+
+    def _opens_think(self, ids) -> bool:
+        if not hasattr(self, "_think_id"):
+            enc = self.tok.encode("<think>", parse_special=True)
+            self._think_id = enc[0] if len(enc) == 1 else None
+        return bool(ids) and self._think_id is not None and ids[-1] == self._think_id
 
     def _note(self, n, evs, st=None, rate=None):
         with self.status_lock:
