@@ -91,6 +91,14 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
                 error_msg = "model load: tokenizer: " + tok_err;
                 return nullptr;
             }
+            // another model's tokenizer (a default pack path) would encode every prompt wrongly
+            if ((int64_t) model->tokenizer_->vocab_size() != impl->glm->geometry().n_vocab) {
+                error_msg = "model load: the tokenizer at " + paths.tokenizer_dir + " has " +
+                            std::to_string(model->tokenizer_->vocab_size()) + " tokens, this model " +
+                            std::to_string(impl->glm->geometry().n_vocab) +
+                            "; export its own: python tools/guild_tokenizer.py --gguf <shard 1> --out <dir>";
+                return nullptr;
+            }
         }
         model->desc_ = requested_desc;
         model->plan_ = plan;
