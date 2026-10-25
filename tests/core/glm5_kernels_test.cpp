@@ -267,99 +267,124 @@ static void test_kda() {
     check("kda_out", y, ry, 1e-4);
 }
 
-static void test_heads_and_attention() {
-    // q8_0_heads: H heads of [n_out][n_in] Q8_0
-    const int H = 8, n_in = 256, n_out = 512, T = 11; // two token tiles
-    std::vector<uint8_t> W((size_t) H * n_out * (n_in / 32) * 34);
-    std::vector<float> Wf((size_t) H * n_out * n_in);
-    std::uniform_int_distribution<int> qd(-127, 127);
-    for (size_t r = 0; r < (size_t) H * n_out; ++r)
-        for (int b = 0; b < n_in / 32; ++b) {
-            uint8_t* blk = &W[(r * (n_in / 32) + b) * 34];
-            const __half d = __float2half(0.01f + 0.001f * (float) (b % 7));
-            std::memcpy(blk, &d, 2);
-            for (int i = 0; i < 32; ++i) {
-                const int8_t q = (int8_t) qd(rng);
-                blk[2 + i] = (uint8_t) q;
-                Wf[r * n_in + b * 32 + i] = __half2float(d) * q;
-            }
-        }
-    auto x = rnd((size_t) T * H * n_in);
-    uint8_t* dW = up(W);
-    float* dx = up(x);
-    float* dyv;
-    cudaMalloc(&dyv, (size_t) T * H * n_out * 4);
-    k::q8_0_heads(dW, dx, dyv, H, n_in, n_out, T, nullptr);
-    auto yv = down(dyv, (size_t) T * H * n_out);
-    std::vector<float> ry((size_t) T * H * n_out);
+static void test_f32_matvec() {
+    const int n_in = 4096, n_out = 288, T = 11;
+    auto W = rnd((size_t) n_out * n_in, 0.05f), x = rnd((size_t) T * n_in);
+    float *dW = up(W), *dx = up(x), *dy;
+    cudaMalloc(&dy, (size_t) T * n_out * 4);
+    k::f32_matvec(dW, dx, dy, n_in, n_out, T, nullptr);
+    std::vector<float> ref((size_t) T * n_out);
     for (int t = 0; t < T; ++t)
-        for (int h = 0; h < H; ++h)
-            for (int r = 0; r < n_out; ++r) {
-                double s = 0;
-                for (int i = 0; i < n_in; ++i)
-                    s += (double) Wf[((size_t) h * n_out + r) * n_in + i] * x[((size_t) t * H + h) * n_in + i];
-                ry[((size_t) t * H + h) * n_out + r] = (float) s;
-            }
-    check("q8_0_heads", yv, ry, 1e-4);
-
-    // MLA attention: 64 heads over a latent of 512, causal for a window of 3 at position 37, then a selection
-    const int AH = 64, L = 512, AT = 20, pos0 = 37, cells = pos0 + AT; // a prompt window (2 splits)
-    auto q = rnd((size_t) AT * AH * L), kvf = rnd((size_t) cells * L);
-    std::vector<__half> kvh(kvf.size());
-    for (size_t i = 0; i < kvf.size(); ++i) {
-        kvh[i] = __float2half(kvf[i]);
-        kvf[i] = __half2float(kvh[i]);
-    }
-    float* dq = up(q);
-    __half* dc = up(kvh);
-    float *dlat, *dpart;
-    cudaMalloc(&dlat, (size_t) AT * AH * L * 4);
-    cudaMalloc(&dpart, (size_t) k::attend_scratch_floats(cells, AH, L, AT) * 4);
-    const float scale = 1.f / 16.f;
-    auto ref_attend = [&](const std::vector<std::vector<int>>& sets) {
-        std::vector<float> out((size_t) AT * AH * L);
-        for (int t = 0; t < AT; ++t)
-            for (int h = 0; h < AH; ++h) {
-                const float* qh = &q[((size_t) t * AH + h) * L];
-                std::vector<double> s;
-                for (int c : sets[t]) {
-                    double v = 0;
-                    for (int d = 0; d < L; ++d)
-                        v += (double) qh[d] * kvf[(size_t) c * L + d];
-                    s.push_back(v * scale);
-                }
-                const double mx = *std::max_element(s.begin(), s.end());
-                double den = 0;
-                for (auto& v : s)
-                    den += (v = std::exp(v - mx));
-                for (int d = 0; d < L; ++d) {
-                    double v = 0;
-                    for (size_t i = 0; i < s.size(); ++i)
-                        v += s[i] * kvf[(size_t) sets[t][i] * L + d];
-                    out[((size_t) t * AH + h) * L + d] = (float) (v / den);
-                }
-            }
-        return out;
-    };
-    k::mla_attend(dq, dc, pos0, AH, L, AT, scale, nullptr, nullptr, 0, dlat, dpart, nullptr);
-    std::vector<std::vector<int>> causal(AT);
-    for (int t = 0; t < AT; ++t)
-        for (int c = 0; c <= pos0 + t; ++c)
-            causal[t].push_back(c);
-    check("mla_attend (causal)", down(dlat, (size_t) AT * AH * L), ref_attend(causal), 1e-4);
-    const int n_sel = 21;
-    std::vector<int32_t> sel((size_t) AT * n_sel);
-    std::vector<std::vector<int>> sets(AT);
-    for (int t = 0; t < AT; ++t)
-        for (int i = 0; i < n_sel; ++i) {
-            const int c = (i * 7 + t) % cells;
-            sel[(size_t) t * n_sel + i] = c;
-            sets[t].push_back(c);
+        for (int r = 0; r < n_out; ++r) {
+            double s = 0;
+            for (int i = 0; i < n_in; ++i)
+                s += (double) W[(size_t) r * n_in + i] * x[(size_t) t * n_in + i];
+            ref[(size_t) t * n_out + r] = (float) s;
         }
-    int32_t* dsel = up(sel);
-    int32_t* dnsel = up(std::vector<int32_t>(AT, n_sel));
-    k::mla_attend(dq, dc, pos0, AH, L, AT, scale, dsel, dnsel, n_sel, dlat, dpart, nullptr);
-    check("mla_attend (selected cells)", down(dlat, (size_t) AT * AH * L), ref_attend(sets), 1e-4);
+    check("f32_matvec", down(dy, (size_t) T * n_out), ref, 1e-4);
+}
+
+static void test_heads_and_attention() {
+    for (const int T : {11, 1}) // two token tiles, and a decode step
+        for (const int n_in : {256, 512, 64}) {
+            // q8_0_heads: H heads of [n_out][n_in] Q8_0
+            const int H = 8, n_out = 512;
+            std::vector<uint8_t> W((size_t) H * n_out * (n_in / 32) * 34);
+            std::vector<float> Wf((size_t) H * n_out * n_in);
+            std::uniform_int_distribution<int> qd(-127, 127);
+            for (size_t r = 0; r < (size_t) H * n_out; ++r)
+                for (int b = 0; b < n_in / 32; ++b) {
+                    uint8_t* blk = &W[(r * (n_in / 32) + b) * 34];
+                    const __half d = __float2half(0.01f + 0.001f * (float) (b % 7));
+                    std::memcpy(blk, &d, 2);
+                    for (int i = 0; i < 32; ++i) {
+                        const int8_t q = (int8_t) qd(rng);
+                        blk[2 + i] = (uint8_t) q;
+                        Wf[r * n_in + b * 32 + i] = __half2float(d) * q;
+                    }
+                }
+            auto x = rnd((size_t) T * H * n_in);
+            std::vector<uint8_t> Ws(W.size());
+            k::q8_0_split(W.data(), Ws.data(), (int64_t) H * n_out, n_in);
+            uint8_t* dW = up(Ws);
+            float* dx = up(x);
+            float* dyv;
+            cudaMalloc(&dyv, (size_t) T * H * n_out * 4);
+            k::q8_0_heads(dW, dx, dyv, H, n_in, n_out, T, nullptr);
+            auto yv = down(dyv, (size_t) T * H * n_out);
+            std::vector<float> ry((size_t) T * H * n_out);
+            for (int t = 0; t < T; ++t)
+                for (int h = 0; h < H; ++h)
+                    for (int r = 0; r < n_out; ++r) {
+                        double s = 0;
+                        for (int i = 0; i < n_in; ++i)
+                            s += (double) Wf[((size_t) h * n_out + r) * n_in + i] * x[((size_t) t * H + h) * n_in + i];
+                        ry[((size_t) t * H + h) * n_out + r] = (float) s;
+                    }
+            check(("q8_0_heads n_in " + std::to_string(n_in) + " T " + std::to_string(T)).c_str(), yv, ry, 1e-4);
+        }
+    for (const int AT : {20, 1, 2}) { // a prompt window (2 splits), a decode step, a verify window
+
+        // MLA attention: 64 heads over a latent of 512, causal for a window of 3 at position 37, then a selection
+        const int AH = 64, L = 512, pos0 = 37 + 600 * (AT < 4), cells = pos0 + AT;
+        auto q = rnd((size_t) AT * AH * L), kvf = rnd((size_t) cells * L);
+        std::vector<__half> kvh(kvf.size());
+        for (size_t i = 0; i < kvf.size(); ++i) {
+            kvh[i] = __float2half(kvf[i]);
+            kvf[i] = __half2float(kvh[i]);
+        }
+        float* dq = up(q);
+        __half* dc = up(kvh);
+        float *dlat, *dpart;
+        cudaMalloc(&dlat, (size_t) AT * AH * L * 4);
+        cudaMalloc(&dpart, (size_t) k::attend_scratch_floats(cells, AH, L, AT) * 4);
+        const float scale = 1.f / 16.f;
+        auto ref_attend = [&](const std::vector<std::vector<int>>& sets) {
+            std::vector<float> out((size_t) AT * AH * L);
+            for (int t = 0; t < AT; ++t)
+                for (int h = 0; h < AH; ++h) {
+                    const float* qh = &q[((size_t) t * AH + h) * L];
+                    std::vector<double> s;
+                    for (int c : sets[t]) {
+                        double v = 0;
+                        for (int d = 0; d < L; ++d)
+                            v += (double) qh[d] * kvf[(size_t) c * L + d];
+                        s.push_back(v * scale);
+                    }
+                    const double mx = *std::max_element(s.begin(), s.end());
+                    double den = 0;
+                    for (auto& v : s)
+                        den += (v = std::exp(v - mx));
+                    for (int d = 0; d < L; ++d) {
+                        double v = 0;
+                        for (size_t i = 0; i < s.size(); ++i)
+                            v += s[i] * kvf[(size_t) sets[t][i] * L + d];
+                        out[((size_t) t * AH + h) * L + d] = (float) (v / den);
+                    }
+                }
+            return out;
+        };
+        k::mla_attend(dq, dc, pos0, AH, L, AT, scale, nullptr, nullptr, 0, dlat, dpart, nullptr);
+        std::vector<std::vector<int>> causal(AT);
+        for (int t = 0; t < AT; ++t)
+            for (int c = 0; c <= pos0 + t; ++c)
+                causal[t].push_back(c);
+        const std::string at = " T " + std::to_string(AT);
+        check(("mla_attend (causal)" + at).c_str(), down(dlat, (size_t) AT * AH * L), ref_attend(causal), 1e-4);
+        const int n_sel = 21;
+        std::vector<int32_t> sel((size_t) AT * n_sel);
+        std::vector<std::vector<int>> sets(AT);
+        for (int t = 0; t < AT; ++t)
+            for (int i = 0; i < n_sel; ++i) {
+                const int c = (i * 7 + t) % cells;
+                sel[(size_t) t * n_sel + i] = c;
+                sets[t].push_back(c);
+            }
+        int32_t* dsel = up(sel);
+        int32_t* dnsel = up(std::vector<int32_t>(AT, n_sel));
+        k::mla_attend(dq, dc, pos0, AH, L, AT, scale, dsel, dnsel, n_sel, dlat, dpart, nullptr);
+        check(("mla_attend (selected cells)" + at).c_str(), down(dlat, (size_t) AT * AH * L), ref_attend(sets), 1e-4);
+    }
 }
 
 static void test_indexer() {
@@ -552,6 +577,7 @@ int main(int argc, char** argv) {
     test_kda();
     test_heads_and_attention();
     test_route();
+    test_f32_matvec();
     test_indexer();
     const cudaError_t e = cudaDeviceSynchronize();
     if (e != cudaSuccess) {

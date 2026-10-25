@@ -96,6 +96,8 @@ int main(int argc, char** argv) {
         return 1;
     }
     const double prompt_ms = since(t1);
+    std::fprintf(stderr, "prompt: CPU experts %.0f ms of %.0f\n", eng.last_cpu_ms(), prompt_ms);
+    eng.print_timing("prompt");
     if (!logits_path.empty()) {
         std::ofstream o(logits_path, std::ios::binary);
         o.write((const char*) logits.data(), (std::streamsize)(logits.size() * 4));
@@ -166,6 +168,7 @@ int main(int argc, char** argv) {
         next = argmax(logits.data(), logits.size());
     }
     const double dec_ms = since(t1);
+    eng.print_timing("prompt + decode");
     if (offered)
         std::fprintf(stderr, "MTP: %d of %d drafts accepted (%.0f%%)\n", accepted, offered, 100.0 * accepted / offered);
     for (size_t i = 0; i < out.size(); ++i)

@@ -461,7 +461,13 @@ if(GUILD_ENABLE_CUDA OR GUILD_ENABLE_HIP)
     src/core/remote_expert_opt.cpp
     src/core/expert_cache.cpp src/core/native_head.cpp src/core/native_dense.cpp src/core/verify.cpp src/core/mtp.cpp
     src/core/conversation_snapshot.cpp src/core/conversation_state.cpp src/core/conversation_memory.cpp src/core/peer_experts.cpp
-    src/core/drama3_tower.cpp src/core/drama3_codec.cu src/core/glm5.cpp)
+    src/core/drama3_tower.cpp src/core/drama3_codec.cu src/core/glm5.cpp src/core/glm5_nl4.cpp)
+  # AVX2 kernels behind a runtime check (cpu_avx2_ok), as guild-kernels-cpu builds its own
+  if(MSVC)
+    set_source_files_properties(src/core/glm5_nl4.cpp PROPERTIES COMPILE_OPTIONS /arch:AVX2)
+  else()
+    set_source_files_properties(src/core/glm5_nl4.cpp PROPERTIES COMPILE_OPTIONS "-mavx2;-mfma;-mf16c")
+  endif()
   target_include_directories(guild_engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
   target_link_libraries(guild_engine PUBLIC guild_core guild_model guild_kernels guild_kernels_cpu ${_guild_gpu_runtime_target}
     ${_guild_gpu_blas_target})
@@ -474,6 +480,8 @@ if(GUILD_ENABLE_CUDA OR GUILD_ENABLE_HIP)
   # GLM-5.3-Flash: greedy decode from token ids, and the last prompt token's logits for comparisons
   add_executable(glm5_run tests/core/glm5_run.cpp)
   target_link_libraries(glm5_run PRIVATE guild_engine)
+  add_executable(glm5_cpu_bench tests/core/glm5_cpu_bench.cpp)
+  target_link_libraries(glm5_cpu_bench PRIVATE guild_engine)
   add_executable(glm5_kernels_test tests/core/glm5_kernels_test.cpp)
   target_link_libraries(glm5_kernels_test PRIVATE guild_engine)
   add_test(NAME glm5_kernels_test COMMAND glm5_kernels_test)

@@ -6,6 +6,7 @@
 // while the GPU computes the shared one.
 #include "guild/core/glm5.hpp"
 #include "guild/core/glm5_kernels.hpp"
+#include "guild/core/glm5_nl4.hpp"
 #include "guild/artifact/gguf_reader.hpp"
 #include "guild/kernels/native_mmvq.hpp"
 #if defined(GUILD_GLM_MMQ)
@@ -235,6 +236,11 @@ const ggml_type_traits_cpu* cpu_traits(int type) {
     return ggml_get_type_traits_cpu((ggml_type) type);
 }
 
+/// the activation format a gate/up weight type multiplies (NL4 rows are IQ3_S's: Q8_K)
+int act_type(int gu_type) {
+    return gu_type == kcpu::kIq3sNl4Type ? (int) GGML_TYPE_Q8_K : (int) cpu_traits(gu_type)->vec_dot_type;
+}
+
 double ms_since(std::chrono::steady_clock::time_point t0) {
     return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
 }
@@ -256,6 +262,7 @@ struct Glm5Engine::Impl {
     std::string placement;
     std::unique_ptr<Pool> pool;
     double cpu_ms = 0.0;
+    double phase_ms[4] = {0, 0, 0, 0}; // GUILD_GLM_TIMING: activations, gate/up, hidden, down
     std::vector<void*> allocs;
     std::vector<uint8_t> actbuf, hbuf, hqbuf; // the CPU experts' activations
     uint8_t* snap = nullptr;                  // pinned host copy of the recurrent states (snapshot / restore)
@@ -345,6 +352,12 @@ struct Glm5Engine::Impl {
             m.n_out *= (int64_t) t->shape[i];
         m.bytes = m.row_bytes() * (size_t) m.n_out;
         return true;
+    }
+    /// the per-head Q8_0 matrices (attn_k_b, attn_v_b) in q8_0_split's layout, for glm5k::q8_0_heads
+    void split_heads(Mat& m) {
+        m.owned.resize(m.bytes);
+        glm5k::q8_0_split(m.host, m.owned.data(), m.n_out, (int) m.n_in);
+        m.host = m.owned.data();
     }
     /// Q8_0 -> Q6_K on the host (Glm5Options::dense_q6k): 6.56 instead of 8.5 bits a weight for the GPU's largest
     /// matrices.  The rows are dequantized exactly, then quantized as llama-quantize would (no importance matrix).
@@ -439,10 +452,37 @@ struct Glm5Engine::Impl {
             p.dst = out;
             p.ld_dst = m.n_out;
             mmq_ctx->run(p, st);
+            debug_check(out, (size_t) T * m.n_out, m, T, "mmq");
             return;
         }
 #endif
         guild::kernels::native_mmvq(m.type, m.dev, xq_, out, (int) m.n_in, (int) m.n_out, T, st);
+        debug_check(out, (size_t) T * m.n_out, m, T, "mmvq");
+    }
+    // GUILD_GLM_DEBUG=2: every product's output checked; the first non-finite one is reported
+    void debug_check(const float* out, size_t n, const Mat& m, int T, const char* path) {
+        static const bool on = [] {
+            const char* d = std::getenv("GUILD_GLM_DEBUG");
+            return d && d[0] == '2';
+        }();
+        static bool said = false;
+        if (!on || said)
+            return;
+        std::vector<float> h(n);
+        cudaMemcpyAsync(h.data(), out, n * 4, cudaMemcpyDeviceToHost, st);
+        cudaStreamSynchronize(st);
+        float mx = 0.f;
+        size_t bad = 0;
+        for (float v : h)
+            if (!std::isfinite(v))
+                ++bad;
+            else
+                mx = std::max(mx, std::fabs(v));
+        if (bad) {
+            said = true;
+            std::fprintf(stderr, "glm5 debug: %s product %lld x %lld (type %d, T %d): %zu non-finite, max |y| %.4g\n",
+                         path, (long long) m.n_in, (long long) m.n_out, m.type, T, bad, mx);
+        }
     }
 
     bool load(const std::string& path, const Glm5Options& o, std::string& err);
@@ -451,6 +491,7 @@ struct Glm5Engine::Impl {
     bool ffn(const Layer& Y, int T, std::string& err);
     bool layer_attention(int l, int T, int64_t pos0, bool save_mid, std::string& err);
     bool embed_rows(const int32_t* tokens, int T, std::string& err);
+    const char* Y_kind(int l) const;
     bool main_window(const int32_t* tokens, int T, int64_t pos0, bool save_mid, std::string& err);
     bool mtp_window(const int32_t* tokens, int T, int64_t pos0, const float* h_rows, bool draft, std::string& err);
     bool mtp_catch_up(const int32_t* tokens, int T, int64_t pos0, std::string& err);
@@ -590,10 +631,13 @@ bool Glm5Engine::Impl::load(const std::string& path, const Glm5Options& o, std::
                 !mat(p + "attn_kv_a_mqa.weight", y.kv_a, err) || !mat(p + "attn_k_b.weight", y.k_b, err) ||
                 !mat(p + "attn_v_b.weight", y.v_b, err))
                 return false;
-            if (y.k_b.type != kQ8_0 || y.v_b.type != kQ8_0) {
-                err = "glm5: attn_k_b / attn_v_b must be Q8_0";
+            if (y.k_b.type != kQ8_0 || y.v_b.type != kQ8_0 || !glm5k::q8_0_heads_supported((int) y.k_b.n_in) ||
+                !glm5k::q8_0_heads_supported((int) y.v_b.n_in)) {
+                err = "glm5: attn_k_b / attn_v_b must be Q8_0 with rows of 64 .. 1024 (a power of two)";
                 return false;
             }
+            split_heads(y.k_b);
+            split_heads(y.v_b);
             if (!mat(p + "indexer.attn_k.weight", y.idx_k, err) ||
                 !mat(p + "indexer_compressor_gate.weight", y.idx_gate, err) ||
                 !mat(p + "indexer.attn_q_b.weight", y.idx_qb, err))
@@ -649,6 +693,8 @@ bool Glm5Engine::Impl::load(const std::string& path, const Glm5Options& o, std::
         y.down_exps = data(p + "ffn_down_exps.weight", &td);
         has_mtp = has_mtp && y.gate_exps && y.up_exps && y.down_exps && tg->type == tu->type;
         if (has_mtp) {
+            split_heads(y.k_b);
+            split_heads(y.v_b);
             y.gate_exps_type = (int) tg->type;
             y.down_exps_type = (int) td->type;
         } else {
@@ -952,7 +998,8 @@ bool Glm5Engine::Impl::load(const std::string& path, const Glm5Options& o, std::
             mmq_ctx = std::make_unique<mmq::Context>();
             int n_mmq = 0;
             auto mark = [&](Mat& m) {
-                m.mmq = m.dev && m.type == kQ8_0 && mmq::fits(kQ8_0, m.n_out);
+                // MMQ steps through a row 256 values at a time: a narrower row (the KDA gates' 128) reads past it
+                m.mmq = m.dev && m.type == kQ8_0 && m.n_in % 256 == 0 && mmq::fits(kQ8_0, m.n_out);
                 n_mmq += m.mmq;
             };
             std::vector<Layer*> all_layers;
@@ -1009,18 +1056,51 @@ bool Glm5Engine::Impl::load(const std::string& path, const Glm5Options& o, std::
             expert_bytes += 2 * g.n_ff_exp * gu_row + N * d_row;
         }
     }
-    if (split) {
-        // node n holds gate/up rows [n h, (n + 1) h) and down rows [n N / 2, (n + 1) N / 2) of every expert
-        const int64_t h = g.n_ff_exp / 2, dh = N / 2;
+    // IQ3_S gate/up rows repacked as NL4 (glm5_nl4.hpp): the grid lookup done once here, decode 3.9x faster
+    // (one Xeon Gold 6130 core: 9.1 GB/s of IQ3_S rows against ggml-cpu's 2.3)
+    bool nl4 = false;
+    if (opt.nl4 && kcpu::cpu_avx2_ok()) {
+        const char* e = std::getenv("GUILD_GLM_NL4");
+        nl4 = !(e && e[0] == '0');
+    }
+    bool any_iq3s = false;
+    for (Layer* yp : moe_layers)
+        any_iq3s |= yp->gate_exps_type == GGML_TYPE_IQ3_S;
+    nl4 = nl4 && any_iq3s;
+    if (split || nl4) {
+        // node n holds gate/up rows [n h, (n + 1) h) and down rows [n dh, (n + 1) dh) of every routed expert and of
+        // the FFNs the CPU computes (shared experts, dense layers) (one node: all of them)
+        const int nn = split ? 2 : 1;
+        const int64_t dh = split ? N / 2 : N;
+        auto h_of = [&](const CpuFfn& f) { return split ? f.n_ff / 2 : f.n_ff; };
+        std::vector<CpuFfn*> all;
+        for (Layer* yp : moe_layers)
+            for (CpuFfn& f : yp->experts)
+                all.push_back(&f);
+        std::vector<Layer*> ffn_layers;
+        for (Layer& y : L)
+            ffn_layers.push_back(&y);
+        if (has_mtp)
+            ffn_layers.push_back(&mtp);
+        for (Layer* yp : ffn_layers)
+            if (!yp->ffn_gpu)
+                all.push_back(&yp->ffn_cpu);
+        auto repacked = [&](const CpuFfn& f) { return nl4 && f.gu_type == GGML_TYPE_IQ3_S; };
+        auto gu_row_of = [&](const CpuFfn& f) {
+            return repacked(f) ? (size_t) (N / 256) * kcpu::kIq3sNl4Block : f.gu_row;
+        };
         size_t node_bytes[2] = {0, 0};
-        std::vector<std::array<size_t, 2>> at; // per (layer, expert): the offset of its half in each arena
-        for (const Layer* yp : moe_layers)
-            for (const CpuFfn& f : yp->experts) {
-                at.push_back({node_bytes[0], node_bytes[1]});
-                node_bytes[0] += 2 * (size_t) h * f.gu_row + (size_t) dh * f.d_row;
-                node_bytes[1] += 2 * (size_t) (f.n_ff - h) * f.gu_row + (size_t) (N - dh) * f.d_row;
-            }
-        for (int node = 0; node < 2; ++node) {
+        std::vector<std::array<size_t, 2>> at; // per FFN in `all`: the offset of its part in each arena
+        for (const CpuFfn* fp : all) {
+            const CpuFfn& f = *fp;
+            const size_t gr = gu_row_of(f);
+            const int64_t h = h_of(f);
+            at.push_back({node_bytes[0], node_bytes[1]});
+            node_bytes[0] += 2 * (size_t) h * gr + (size_t) dh * f.d_row;
+            if (nn == 2)
+                node_bytes[1] += 2 * (size_t) (f.n_ff - h) * gr + (size_t) (N - dh) * f.d_row;
+        }
+        for (int node = 0; node < nn; ++node) {
             void* p = mmap(nullptr, node_bytes[node], PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
             if (p == MAP_FAILED) {
                 err = "glm5: no memory for the experts (" + std::to_string(node_bytes[node] >> 30) + " GiB on node " +
@@ -1028,50 +1108,80 @@ bool Glm5Engine::Impl::load(const std::string& path, const Glm5Options& o, std::
                 return false;
             }
             unsigned long mask = 1ul << node;
-            if (syscall(SYS_mbind, p, node_bytes[node], 2 /* MPOL_BIND */, &mask, 64ul, 0u) != 0)
+            if (split && syscall(SYS_mbind, p, node_bytes[node], 2 /* MPOL_BIND */, &mask, 64ul, 0u) != 0)
                 std::fprintf(stderr, "guild glm5: mbind to node %d failed; the experts' halves go where they land\n",
                              node);
             madvise(p, node_bytes[node], MADV_HUGEPAGE);
             arena[node] = (uint8_t*) p;
             arena_bytes[node] = node_bytes[node];
         }
-        std::vector<CpuFfn*> all;
-        for (Layer* yp : moe_layers)
-            for (CpuFfn& f : yp->experts)
-                all.push_back(&f);
         const int n_all = (int) all.size();
-        pool->run_nodes(n_all, n_all, [&](int node, int i) {
+        std::atomic<bool> repack_ok{true};
+        pool->run_nodes(n_all, nn == 2 ? n_all : 0, [&](int node, int i) {
             CpuFfn& f = *all[(size_t) i];
+            const int64_t h = h_of(f);
             const int64_t r0 = node ? h : 0, rg = node ? f.n_ff - h : h;
             const int64_t d0 = node ? dh : 0, rd = node ? N - dh : dh;
+            const size_t gr = gu_row_of(f);
             uint8_t* dst = arena[node] + at[(size_t) i][(size_t) node];
-            std::memcpy(dst, f.gate[0] + (size_t) r0 * f.gu_row, (size_t) rg * f.gu_row);
-            std::memcpy(dst + (size_t) rg * f.gu_row, f.up[0] + (size_t) r0 * f.gu_row, (size_t) rg * f.gu_row);
-            std::memcpy(dst + 2 * (size_t) rg * f.gu_row, f.down[0] + (size_t) d0 * f.d_row, (size_t) rd * f.d_row);
+            if (repacked(f)) {
+                for (int64_t r = 0; r < rg; ++r) {
+                    bool ok = kcpu::iq3s_nl4_repack(f.gate[0] + (size_t) (r0 + r) * f.gu_row, (int) (N / 256),
+                                                    dst + (size_t) r * gr);
+                    ok &= kcpu::iq3s_nl4_repack(f.up[0] + (size_t) (r0 + r) * f.gu_row, (int) (N / 256),
+                                                dst + (size_t) (rg + r) * gr);
+                    if (!ok)
+                        repack_ok = false;
+                }
+            } else {
+                std::memcpy(dst, f.gate[0] + (size_t) r0 * f.gu_row, (size_t) rg * f.gu_row);
+                std::memcpy(dst + (size_t) rg * gr, f.up[0] + (size_t) r0 * f.gu_row, (size_t) rg * f.gu_row);
+            }
+            std::memcpy(dst + 2 * (size_t) rg * gr, f.down[0] + (size_t) d0 * f.d_row, (size_t) rd * f.d_row);
         });
-        // the pointers, once both halves are copied (the copies read the mapping through gate[0] and friends)
+        if (!repack_ok) {
+            err = "glm5: an IQ3_S expert row does not repack (a grid value outside the NL4 codes); run with "
+                  "GUILD_GLM_NL4=0";
+            return false;
+        }
+        // the pointers, once every part is copied (the copies read the mapping through gate[0] and friends)
         for (int i = 0; i < n_all; ++i) {
             CpuFfn& f = *all[(size_t) i];
+            const size_t gr = gu_row_of(f);
+            const int64_t h = h_of(f);
             for (int node = 0; node < 2; ++node) {
-                const int64_t r0 = node ? h : 0, rg = node ? f.n_ff - h : h, d0 = node ? dh : 0;
-                const uint8_t* base = arena[node] + at[(size_t) i][(size_t) node];
-                f.gate[node] = rebase(base, r0, f.gu_row);
-                f.up[node] = rebase(base + (size_t) rg * f.gu_row, r0, f.gu_row);
-                f.down[node] = rebase(base + 2 * (size_t) rg * f.gu_row, d0, f.d_row);
+                const int src = node < nn ? node : 0;
+                const int64_t r0 = src ? h : 0, rg = src ? f.n_ff - h : h, d0 = src ? dh : 0;
+                const uint8_t* base = arena[src] + at[(size_t) i][(size_t) src];
+                f.gate[node] = rebase(base, r0, gr);
+                f.up[node] = rebase(base + (size_t) rg * gr, r0, gr);
+                f.down[node] = rebase(base + 2 * (size_t) rg * gr, d0, f.d_row);
             }
+            if (repacked(f))
+                f.gu_type = kcpu::kIq3sNl4Type;
+            f.gu_row = gr;
             f.gu_split = h;
             f.d_split = dh;
         }
-        // the shards' pages of the experts are no longer read: let the kernel drop them
+        // the routed experts' pages of the shards are no longer read: let the kernel drop them (only theirs: the
+        // embeddings stay read from the mapping)
         for (size_t sh = 0; sh < gguf->size(); ++sh) {
             const int fd = ::open(gguf->shard(sh).path().c_str(), O_RDONLY);
-            if (fd >= 0) {
-                posix_fadvise(fd, 0, 0, POSIX_FADV_DONTNEED);
-                ::close(fd);
-            }
+            if (fd < 0)
+                continue;
+            const GgufFile& gf = gguf->shard(sh);
+            for (const TensorInfo& t : gf.tensors())
+                if (t.name.find("_exps.weight") != std::string::npos)
+                    posix_fadvise(fd, (off_t) (gf.data_start() + t.offset), (off_t) tensor_payload_bytes(t),
+                                  POSIX_FADV_DONTNEED);
+            ::close(fd);
         }
-        std::fprintf(stderr, "guild glm5: experts split across 2 NUMA nodes: %.1f + %.1f GiB in %.1f s\n",
-                     node_bytes[0] / 1073741824.0, node_bytes[1] / 1073741824.0, ms_since(t0) / 1000.0);
+        char second[32] = "";
+        if (split)
+            std::snprintf(second, sizeof second, " + %.1f", node_bytes[1] / 1073741824.0);
+        std::fprintf(stderr, "guild glm5: experts%s%s: %.1f%s GiB in %.1f s\n",
+                     split ? " split across 2 NUMA nodes" : "", nl4 ? ", IQ3_S gate/up as NL4" : "",
+                     node_bytes[0] / 1073741824.0, second, ms_since(t0) / 1000.0);
     } else if (opt.prefault) {
         // read the routed experts once, so the first tokens do not wait on the disk
         std::vector<std::pair<const uint8_t*, size_t>> spans;
@@ -1237,7 +1347,7 @@ void Glm5Engine::Impl::cpu_ffn(const Layer& Y, int T) {
     std::vector<size_t> act_at((size_t) U);
     size_t total = 0;
     for (int u = 0; u < U; ++u) {
-        const int at = (int) cpu_traits(groups[(size_t) unit_g[(size_t) u]].f.gu_type)->vec_dot_type;
+        const int at = act_type(groups[(size_t) unit_g[(size_t) u]].f.gu_type);
         const int key = at * kMaxT + unit_t[(size_t) u];
         auto it = act_off.find(key);
         if (it == act_off.end()) {
@@ -1246,6 +1356,15 @@ void Glm5Engine::Impl::cpu_ffn(const Layer& Y, int T) {
         }
         act_at[(size_t) u] = it->second;
     }
+    static const bool timing = std::getenv("GUILD_GLM_TIMING") != nullptr;
+    auto tp = std::chrono::steady_clock::now();
+    auto lap = [&](int k) {
+        if (!timing)
+            return;
+        const auto now = std::chrono::steady_clock::now();
+        phase_ms[k] += std::chrono::duration<double, std::milli>(now - tp).count();
+        tp = now;
+    };
     actbuf.resize(total + 64);
     for (const auto& kv : act_off) {
         const int at = kv.first / kMaxT, t = kv.first % kMaxT;
@@ -1275,6 +1394,7 @@ void Glm5Engine::Impl::cpu_ffn(const Layer& Y, int T) {
     };
     constexpr int RB = 64, MT = kcpu::MAXT;
 
+    lap(0);
     // phase 1: gate/up, each row block on the queue of the node that holds it
     std::vector<std::pair<int, int>> items[2];
     for (int gi = 0; gi < (int) groups.size(); ++gi) {
@@ -1292,8 +1412,9 @@ void Glm5Engine::Impl::cpu_ffn(const Layer& Y, int T) {
         const int r1 = (int) std::min<int64_t>(r0 + RB, node ? f.n_ff : f.gu_split), nr = r1 - r0;
         const uint8_t* wg = f.gate[node];
         const uint8_t* wu = f.up[node];
-        const ggml_type_traits_cpu* tr = cpu_traits(f.gu_type);
-        const RowsFn mt = gr.units.size() >= 2 ? multi(f.gu_type) : nullptr;
+        const bool nl4 = f.gu_type == kcpu::kIq3sNl4Type;
+        const ggml_type_traits_cpu* tr = nl4 ? nullptr : cpu_traits(f.gu_type);
+        const RowsFn mt = !nl4 && gr.units.size() >= 2 ? multi(f.gu_type) : nullptr;
         float gbuf[MT][RB], ubuf[MT][RB];
         for (size_t c0 = 0; c0 < gr.units.size(); c0 += MT) {
             const int nt = (int) std::min<size_t>(MT, gr.units.size() - c0);
@@ -1305,7 +1426,10 @@ void Glm5Engine::Impl::cpu_ffn(const Layer& Y, int T) {
                 go[k] = gbuf[k] - r0; // the kernels index outputs by row
                 uo[k] = ubuf[k] - r0;
             }
-            if (mt && nt >= 2) {
+            if (nl4) {
+                glm5cpu::nl4_rows(wg, f.gu_row, (int) N, act, nt, go, r0, r1);
+                glm5cpu::nl4_rows(wu, f.gu_row, (int) N, act, nt, uo, r0, r1);
+            } else if (mt && nt >= 2) {
                 mt(f.gu_type, wg, f.gu_row, (int) N, act, nt, go, r0, r1);
                 mt(f.gu_type, wu, f.gu_row, (int) N, act, nt, uo, r0, r1);
             } else {
@@ -1328,12 +1452,14 @@ void Glm5Engine::Impl::cpu_ffn(const Layer& Y, int T) {
             }
         }
     });
+    lap(1);
     // phase 2: the hidden activations
     pool->run(U, [&](int u) {
         const CpuFfn& f = groups[(size_t) unit_g[(size_t) u]].f;
         cpu_traits(cpu_traits(f.d_type)->vec_dot_type)
             ->from_float(hv + h_off[(size_t) u], hqbuf.data() + hq_off[(size_t) u], f.n_ff);
     });
+    lap(2);
     // phase 3: down rows, summed over each token's units; the first half of the rows on node 0 (where the split puts
     // them), the second on node 1
     const int64_t half = (N / 2 + RB - 1) / RB * RB;
@@ -1375,6 +1501,7 @@ void Glm5Engine::Impl::cpu_ffn(const Layer& Y, int T) {
             }
         }
     });
+    lap(3);
 }
 
 bool Glm5Engine::Impl::ffn(const Layer& Y, int T, std::string& err) {
@@ -1457,6 +1584,12 @@ uint64_t Glm5Engine::vram_bytes() const {
 const std::string& Glm5Engine::placement() const {
     return p_->placement;
 }
+void Glm5Engine::print_timing(const char* what) const {
+    if (std::getenv("GUILD_GLM_TIMING"))
+        std::fprintf(stderr, "glm5 timing (%s): activations %.0f ms, gate/up %.0f, hidden %.0f, down %.0f\n", what,
+                     p_->phase_ms[0], p_->phase_ms[1], p_->phase_ms[2], p_->phase_ms[3]);
+}
+
 double Glm5Engine::last_cpu_ms() const {
     return p_->cpu_ms;
 }
@@ -1549,14 +1682,43 @@ bool Glm5Engine::Impl::embed_rows(const int32_t* tokens, int T, std::string& err
     return true;
 }
 
+const char* Glm5Engine::Impl::Y_kind(int l) const {
+    return L[(size_t) l].kda ? "kda" : "dsa";
+}
+
 bool Glm5Engine::Impl::main_window(const int32_t* tokens, int T, int64_t pos0, bool save_mid, std::string& err) {
     const int64_t N = g.n_embd;
     if (!embed_rows(tokens, T, err))
         return false;
     glm5k::hc_init(f, R, (int) N, T, st);
-    for (int l = 0; l < (int) g.n_layer; ++l)
-        if (!layer_attention(l, T, pos0, save_mid, err) || !layer_ffn(l, T, err))
+    // GUILD_GLM_DEBUG=1: the streams' largest magnitude after every half layer, and where a non-finite value appears
+    static const bool debug = std::getenv("GUILD_GLM_DEBUG") != nullptr;
+    std::vector<float> dbg;
+    auto check = [&](int l, const char* half) {
+        if (!debug)
+            return;
+        dbg.resize((size_t) T * 4 * N);
+        cudaMemcpyAsync(dbg.data(), R, dbg.size() * 4, cudaMemcpyDeviceToHost, st);
+        cudaStreamSynchronize(st);
+        float mx = 0.f;
+        size_t bad = 0;
+        for (float v : dbg) {
+            if (!std::isfinite(v))
+                ++bad;
+            else
+                mx = std::max(mx, std::fabs(v));
+        }
+        std::fprintf(stderr, "glm5 debug: layer %2d %-4s max |R| %.4g%s\n", l, half, mx,
+                     bad ? (" NON-FINITE x" + std::to_string(bad)).c_str() : "");
+    };
+    for (int l = 0; l < (int) g.n_layer; ++l) {
+        if (!layer_attention(l, T, pos0, save_mid, err))
             return false;
+        check(l, Y_kind(l));
+        if (!layer_ffn(l, T, err))
+            return false;
+        check(l, "ffn");
+    }
     // the final hidden rows (the head's input, and the NextN block's)
     glm5k::hc_mean_norm(R, out_norm, hn, (int) N, T, g.rms_eps, st);
     return true;

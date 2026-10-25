@@ -37,6 +37,7 @@ struct Glm5Options {
     bool prefault = true;                 ///< read the routed experts into memory at load
     bool numa_split = true; ///< on two NUMA nodes, copy half of every expert's rows into each node's memory
     bool mtp = true;        ///< load the NextN block for speculative decoding (draft / verify / accept)
+    bool nl4 = true;        ///< IQ3_S expert gate/up rows repacked for the CPU's faster decode (AVX2)
     bool dense_q6k = false; ///< re-quantize the attention's largest Q8_0 matrices to Q6_K (less VRAM and GPU time)
 };
 
@@ -76,6 +77,8 @@ public:
 
     /// Time spent in the last forward: GPU+orchestration and CPU experts, milliseconds
     double last_cpu_ms() const;
+    /// GUILD_GLM_TIMING=1: the CPU experts' phases so far (activations, gate/up, hidden, down), to stderr
+    void print_timing(const char* what) const;
 
 private:
     struct Impl;
