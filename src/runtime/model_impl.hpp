@@ -180,6 +180,7 @@ struct GuildModel::Impl {
     std::unique_ptr<core::Glm5Engine> glm;
     std::vector<int32_t> glm_ctx, glm_snap;             ///< the tokens of the live context and of the snapshot
     std::vector<float> glm_ctx_logits, glm_snap_logits; ///< their last logits, when known
+    int32_t glm_turn_id = -2; ///< <|assistant|>, where a prompt's snapshot is taken (-1: none; -2: not looked up)
     std::unique_ptr<core::Verifier> ver;
     Drive drive;
     spec::GExecSpecCalibration spec_calibration;

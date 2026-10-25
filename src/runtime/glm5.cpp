@@ -156,7 +156,7 @@ bool glm5_generate(GuildModel::Impl& m, const GenerationRequest& req, const std:
     const auto t0 = Clock::now();
     auto cancelled_now = [&] { return cancelled.load() || (req.cancel_flag && req.cancel_flag->load()); };
 
-    // where to start: the live context, the snapshot after the last prompt, or nothing
+    // where to start: the live context, the snapshot (after the last prompt's <|assistant|>), or nothing
     std::vector<float> logits((size_t) V);
     size_t start = 0;
     const size_t live = common_prefix(m.glm_ctx, prompt), snap = common_prefix(m.glm_snap, prompt);
@@ -179,7 +179,34 @@ bool glm5_generate(GuildModel::Impl& m, const GenerationRequest& req, const std:
     tel.cached_prompt_tokens = (int) start;
     tel.prompt_tokens = (int) prompt.size();
 
-    // prefill the rest, in windows, reporting progress
+    // The snapshot for the next turn is taken just after the prompt's last <|assistant|>: the next prompt renders this
+    // turn's reply after it (with or without the reasoning a client sends back), while the generation prompt's own
+    // tail (<think>) differs from the reply's - a snapshot at the prompt's end would rarely be a prefix again.
+    if (m.glm_turn_id == -2) {
+        std::vector<int32_t> ids;
+        std::string e;
+        m.glm_turn_id = m.tokenizer && m.tokenizer->is_loaded() && m.tokenizer->encode("<|assistant|>", ids, true, e) &&
+                                ids.size() == 1
+                            ? ids[0]
+                            : -1;
+    }
+    size_t cut = prompt.size();
+    if (m.glm_turn_id >= 0) {
+        const auto it = std::find(prompt.rbegin(), prompt.rend(), m.glm_turn_id);
+        if (it != prompt.rend())
+            cut = (size_t) (prompt.rend() - it); // one past it
+    }
+    bool snapped = false;
+    auto snap_here = [&](size_t at, const std::vector<float>* at_logits) {
+        if (!eng.snapshot(err))
+            return false;
+        m.glm_snap.assign(prompt.begin(), prompt.begin() + (std::ptrdiff_t) at);
+        m.glm_snap_logits = at_logits ? *at_logits : std::vector<float>();
+        snapped = true;
+        return true;
+    };
+
+    // prefill the rest, in windows (one ends at the cut), reporting progress
     if (start < prompt.size()) {
         constexpr int kChunk = core::glm5k::kMaxT; // the engine's widest window
         for (size_t at = start; at < prompt.size();) {
@@ -188,7 +215,8 @@ bool glm5_generate(GuildModel::Impl& m, const GenerationRequest& req, const std:
                 tel.prompt_ms = ms_since(t0);
                 return true;
             }
-            const int n = (int) std::min<size_t>(kChunk, prompt.size() - at);
+            const size_t end = at < cut ? cut : prompt.size();
+            const int n = (int) std::min<size_t>(kChunk, end - at);
             const bool last = at + (size_t) n == prompt.size();
             if (!eng.forward(&prompt[at], n, (int64_t) at, last ? logits.data() : nullptr, err)) {
                 m.ready->store(false);
@@ -196,6 +224,8 @@ bool glm5_generate(GuildModel::Impl& m, const GenerationRequest& req, const std:
             }
             at += (size_t) n;
             m.glm_ctx.assign(prompt.begin(), prompt.begin() + (std::ptrdiff_t) at);
+            if (at == cut && !snap_here(at, last ? &logits : nullptr))
+                return false;
             if (on_prefill) {
                 PrefillProgressEvent ev;
                 ev.pos = (int64_t) at;
@@ -209,11 +239,10 @@ bool glm5_generate(GuildModel::Impl& m, const GenerationRequest& req, const std:
         logits = m.glm_ctx_logits;
     }
     m.glm_ctx_logits.clear();
-    // the state after the prompt, for the next turn
-    if (!eng.snapshot(err))
+    // no cut in what this prompt fed (the reuse started past it): the snapshot held stays (it is a prefix of the live
+    // context, so still valid); with none, the state after the prompt
+    if (!snapped && m.glm_snap.empty() && !snap_here(prompt.size(), &logits))
         return false;
-    m.glm_snap = prompt;
-    m.glm_snap_logits = logits;
     tel.prompt_ms = ms_since(t0);
     tel.prompt_tok_s = (double) (prompt.size() - start) * 1000.0 / std::max(1e-3, tel.prompt_ms);
     tel.ttft_ms = tel.prompt_ms;
