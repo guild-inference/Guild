@@ -722,6 +722,11 @@ if(GUILD_ENABLE_CUDA OR GUILD_ENABLE_HIP)
     add_test(NAME mmvq_staged_parity
              COMMAND mmvq_staged_parity --compare ${CMAKE_CURRENT_BINARY_DIR}/mmvq_staged_reference.bin)
     set_tests_properties(mmvq_staged_parity PROPERTIES FIXTURES_REQUIRED mmvq_staged_reference)
+    # hip_router_fast on the CUDA runtime: the fast top-k router (the CUDA default) against the block kernel, bitwise
+    add_executable(router_fast_parity src/kernels/router_fast_parity.cpp)
+    target_include_directories(router_fast_parity PRIVATE ${_guild_gpu_include_directories})
+    target_link_libraries(router_fast_parity PRIVATE guild_kernels ${_guild_gpu_runtime_target})
+    add_test(NAME router_fast_parity COMMAND router_fast_parity)
   endif()
   # the IQ kernels that decode a weight part once for every column/entry, bitwise vs the per-column ones
   # (GPU, synthetic, no model; --bench adds old/new timings)
