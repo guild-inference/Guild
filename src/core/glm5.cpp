@@ -98,12 +98,14 @@ struct Layer {
     float *hc_attn_scale = nullptr, *hc_attn_base = nullptr, *hc_ffn_scale = nullptr, *hc_ffn_base = nullptr;
     // KDA
     Mat wq, wk, wv, f_a, f_b, g_a, g_b, beta;
+    Mat fgb; ///< f_a, g_a and beta's rows, one after the other in VRAM: one product for a token
     float *conv_q = nullptr, *conv_k = nullptr, *conv_v = nullptr, *dt_b = nullptr, *ssm_a = nullptr,
           *ssm_norm = nullptr;
     float *kda_state = nullptr, *conv_state = nullptr;
     float *kda_mid = nullptr, *conv_mid = nullptr; ///< the states after a verify window's first token
     // DSA
     Mat q_a, q_b, kv_a, k_b, v_b;
+    Mat qkvi; ///< q_a, kv_a and the indexer's key and gate rows, one after the other: one product for a token
     float *q_a_norm = nullptr, *kv_a_norm = nullptr;
     void* kv_cache = nullptr;
     // its indexer
@@ -544,6 +546,33 @@ struct Glm5Engine::Impl {
         m.host = m.owned.data();
         m.bytes = m.owned.size();
     }
+    /// matrices of one type and width that read the same input, uploaded one after the other, and `all` the product of
+    /// their rows together (a single launch for a token); each keeps its own view for windows
+    bool upload_together(std::initializer_list<Mat*> ms, Mat& all, std::string& err) {
+        const Mat& m0 = **ms.begin();
+        size_t bytes = 0;
+        for (const Mat* m : ms) {
+            if (!m->host || m->dev || m->type != m0.type || m->n_in != m0.n_in || m->bytes != m->row_bytes() * m->n_out)
+                return true; // not mergeable: each is uploaded on its own
+            bytes += m->bytes;
+        }
+        uint8_t* p = dalloc<uint8_t>(bytes, err);
+        if (!p)
+            return false;
+        all = Mat();
+        all.type = m0.type;
+        all.n_in = m0.n_in;
+        all.dev = p;
+        all.bytes = bytes;
+        for (Mat* m : ms) {
+            cudaMemcpy(p, m->host, m->bytes, cudaMemcpyHostToDevice);
+            m->dev = p;
+            p += m->bytes;
+            all.n_out += m->n_out;
+            std::vector<uint8_t>().swap(m->owned);
+        }
+        return true;
+    }
     bool upload(Mat& m, std::string& err) {
         if (m.dev)
             return true;
@@ -737,7 +766,7 @@ bool Glm5Engine::Impl::load(const std::string& path, const Glm5Options& o, std::
         return false;
     }
     if (g.hc != glm5k::kHc || g.kda_dim != glm5k::kKdaDim || g.kv_lora > 512 || g.n_head % 8 != 0 ||
-        num("rope.dimension_count", 0) != 0) {
+        g.n_expert > glm5k::kMaxExperts || g.n_used > 32 || num("rope.dimension_count", 0) != 0) {
         err = "glm5: unexpected geometry (hc " + std::to_string(g.hc) + ", KDA head " + std::to_string(g.kda_dim) +
               ", kv_lora " + std::to_string(g.kv_lora) + ")";
         return false;
@@ -1067,6 +1096,8 @@ bool Glm5Engine::Impl::load(const std::string& path, const Glm5Options& o, std::
             !(y.hc_ffn_base = f32(p + "hc_ffn_base.weight", 24, err)))
             return false;
         if (y.kda) {
+            if (!upload_together({&y.f_a, &y.g_a, &y.beta}, y.fgb, err))
+                return false;
             for (Mat* m : {&y.wq, &y.wk, &y.wv, &y.f_a, &y.f_b, &y.g_a, &y.g_b, &y.beta})
                 if (!upload(*m, err))
                     return false;
@@ -1080,6 +1111,8 @@ bool Glm5Engine::Impl::load(const std::string& path, const Glm5Options& o, std::
                 !(y.conv_state = dalloc<float>((size_t) 3 * D * 3, err)))
                 return false;
         } else {
+            if (!upload_together({&y.q_a, &y.kv_a, &y.idx_k, &y.idx_gate}, y.qkvi, err))
+                return false;
             for (Mat* m : {&y.q_a, &y.q_b, &y.kv_a, &y.k_b, &y.v_b, &y.idx_k, &y.idx_gate, &y.idx_qb})
                 if (!upload(*m, err))
                     return false;
@@ -1467,14 +1500,21 @@ void Glm5Engine::Impl::attn_kda(Layer& Y, int T, float* mid_state, float* mid_co
     mm(Y.wq, xq, a, T);
     mm(Y.wk, xq, b, T);
     mm(Y.wv, xq, c, T);
-    mm(Y.f_a, xq, small1, T);
-    mm(Y.g_a, xq, small2, T);
-    mm(Y.beta, xq, d, T); // [T][H] beta logits
+    float *fa = small1, *ga = small2, *bl = d; // f_a, g_a and beta outputs: [T][128], [T][128], [T][H]
+    if (T == 1 && Y.fgb.dev) {
+        mm(Y.fgb, xq, small1, 1);
+        ga = small1 + Y.f_a.n_out;
+        bl = ga + Y.g_a.n_out;
+    } else {
+        mm(Y.f_a, xq, small1, T);
+        mm(Y.g_a, xq, small2, T);
+        mm(Y.beta, xq, d, T);
+    }
     glm5k::kda_conv(a, b, c, Y.conv_state, Y.conv_q, Y.conv_k, Y.conv_v, qkv, (int) D, T, mid_conv, st);
-    quant(small1, Y.f_a.n_out, T, xq2);
+    quant(fa, Y.f_a.n_out, T, xq2);
     mm(Y.f_b, xq2, a, T); // fpre [T][D]
-    glm5k::kda_gates(a, Y.dt_b, Y.ssm_a, gk, d, beta, (int) D, (int) H, T, g.kda_lower_bound, st);
-    quant(small2, Y.g_a.n_out, T, xq2);
+    glm5k::kda_gates(a, Y.dt_b, Y.ssm_a, gk, bl, beta, (int) D, (int) H, T, g.kda_lower_bound, st);
+    quant(ga, Y.g_a.n_out, T, xq2);
     mm(Y.g_b, xq2, b, T); // output gate [T][D]
     glm5k::kda_step(Y.kda_state, qkv, gk, beta, c, (int) H, T, mid_state, st);
     glm5k::kda_out(c, b, Y.ssm_norm, d, (int) H, T, g.rms_eps, st);
@@ -1485,18 +1525,26 @@ void Glm5Engine::Impl::attn_kda(Layer& Y, int T, float* mid_state, float* mid_co
 void Glm5Engine::Impl::attn_dsa(Layer& Y, int T, int64_t pos0) {
     const int64_t N = g.n_embd, H = g.n_head, QL = g.q_lora, KL = g.kv_lora;
     quant(xn, N, T, xq);
-    mm(Y.q_a, xq, small1, T);
-    mm(Y.kv_a, xq, small2, T);
-    mm(Y.idx_k, xq, ikr, T);
-    mm(Y.idx_gate, xq, igr, T);
+    float *qa = small1, *kva = small2, *ik = ikr, *ig = igr; // [T][QL], [T][KL], [T][128], [T][128]
+    if (T == 1 && Y.qkvi.dev) {
+        mm(Y.qkvi, xq, small1, 1);
+        kva = qa + QL;
+        ik = kva + KL;
+        ig = ik + Y.idx_k.n_out;
+    } else {
+        mm(Y.q_a, xq, small1, T);
+        mm(Y.kv_a, xq, small2, T);
+        mm(Y.idx_k, xq, ikr, T);
+        mm(Y.idx_gate, xq, igr, T);
+    }
     glm5k::f32_matvec(Y.idx_proj, xn, iw, (int) N, (int) g.idx_heads, T, st);
-    glm5k::rms_norm(small1, Y.q_a_norm, small1, (int) QL, T, g.rms_eps, st);
-    glm5k::rms_norm(small2, Y.kv_a_norm, small2, (int) KL, T, g.rms_eps, st);
-    quant(small1, QL, T, xq2);
+    glm5k::rms_norm(qa, Y.q_a_norm, qa, (int) QL, T, g.rms_eps, st);
+    glm5k::rms_norm(kva, Y.kv_a_norm, kva, (int) KL, T, g.rms_eps, st);
+    quant(qa, QL, T, xq2);
     mm(Y.q_b, xq2, a, T); // q [T][H][qk_dim]
-    glm5k::kv_store(small2, Y.kv_cache, pos0, (int) KL, T, st);
+    glm5k::kv_store(kva, Y.kv_cache, pos0, (int) KL, T, st);
     // the indexer's key and gate are stored for every cell, dense or not, and pooled as pools complete
-    glm5k::idx_store(ikr, Y.idx_ln_w, Y.idx_ln_b, igr, Y.idx_kc, Y.idx_gc, pos0, T, g.ln_eps, st);
+    glm5k::idx_store(ik, Y.idx_ln_w, Y.idx_ln_b, ig, Y.idx_kc, Y.idx_gc, pos0, T, g.ln_eps, st);
     glm5k::idx_pool(Y.idx_kc, Y.idx_gc, Y.idx_ape, Y.pooled, pos0, T, st);
     glm5k::q8_0_heads(Y.k_b.dev, a, e, (int) H, (int) g.qk_dim, (int) KL, T, st); // absorbed q [T][H][KL]
     const float scale = 1.f / std::sqrt((float) g.qk_dim);

@@ -1049,44 +1049,58 @@ __global__ void __launch_bounds__(1024) idx_select_k(const float* scores, int st
 }
 
 // one warp per token: k rounds of a warp argmax over the selection scores (ties to the lower expert)
-__global__ void route_k(const float* logits, const float* bias, int E, int k, bool norm, float scale, int32_t* ids,
-                        float* w) {
-    extern __shared__ float sc[]; // 2E: the sigmoid scores, then the selection scores
+// One warp per token, the scores in registers (E <= 32 * kRouteMax): k rounds of a warp argmax over the biased
+// scores, ties to the lower index; the owner lane drops its pick.  (Shared memory and a sync a round took 11 us.)
+constexpr int kRouteMax = kMaxExperts / 32;
+
+__global__ void __launch_bounds__(32)
+    route_k(const float* logits, const float* bias, int E, int k, bool norm, float scale, int32_t* ids, float* w) {
     const int t = blockIdx.x, lane = threadIdx.x;
-    for (int e = lane; e < E; e += 32) {
-        const float s = sigmoidf_(logits[(size_t) t * E + e]);
-        sc[e] = s;
-        sc[E + e] = s + bias[e];
+    float sg[kRouteMax], sel[kRouteMax];
+#pragma unroll
+    for (int i = 0; i < kRouteMax; ++i) {
+        const int e = lane + 32 * i;
+        sg[i] = e < E ? sigmoidf_(logits[(size_t) t * E + e]) : 0.f;
+        sel[i] = e < E ? sg[i] + bias[e] : -FLT_MAX;
     }
-    __syncwarp();
-    float sum = 0.f;
+    float sum = 0.f, mine = 0.f;
+    int mine_id = 0;
     for (int j = 0; j < k; ++j) {
-        float bv = -FLT_MAX;
+        float bv = -FLT_MAX, bw = 0.f;
         int best = E;
-        for (int e = lane; e < E; e += 32)
-            if (sc[E + e] > bv) {
-                bv = sc[E + e];
-                best = e;
+#pragma unroll
+        for (int i = 0; i < kRouteMax; ++i)
+            if (sel[i] > bv) { // indices rise with i: a tie keeps the lower one
+                bv = sel[i];
+                bw = sg[i];
+                best = lane + 32 * i;
             }
 #pragma unroll
         for (int o = 16; o > 0; o >>= 1) {
-            const float v2 = __shfl_xor_sync(0xffffffffu, bv, o);
+            const float v2 = __shfl_xor_sync(0xffffffffu, bv, o), w2 = __shfl_xor_sync(0xffffffffu, bw, o);
             const int b2 = __shfl_xor_sync(0xffffffffu, best, o);
             if (v2 > bv || (v2 == bv && b2 < best)) {
                 bv = v2;
+                bw = w2;
                 best = b2;
             }
         }
-        if (lane == 0) {
-            sc[E + best] = -FLT_MAX;
-            ids[t * k + j] = best;
-            w[t * k + j] = sc[best];
+        if ((best & 31) == lane) {
+#pragma unroll
+            for (int i = 0; i < kRouteMax; ++i)
+                if (best == lane + 32 * i)
+                    sel[i] = -FLT_MAX;
         }
-        sum += sc[best];
-        __syncwarp();
+        sum += bw;
+        if (lane == j) {
+            mine = bw;
+            mine_id = best;
+        }
     }
-    if (lane < k)
-        w[t * k + lane] = (norm ? w[t * k + lane] / sum : w[t * k + lane]) * scale;
+    if (lane < k) {
+        ids[t * k + lane] = mine_id;
+        w[t * k + lane] = (norm ? mine / sum : mine) * scale;
+    }
 }
 
 __global__ void swiglu_clamp_k(const float* gate, const float* up, float* y, int64_t n, float lim) {
@@ -1354,7 +1368,7 @@ void idx_select(const float* scores, int stride, int64_t pos0, int T, int k_pool
 
 void route(const float* logits, const float* bias, int E, int k, bool norm, float scale, int32_t* ids, float* w, int T,
            void* st) {
-    route_k<<<T, 32, (size_t) 2 * E * sizeof(float), S(st)>>>(logits, bias, E, k, norm, scale, ids, w);
+    route_k<<<T, 32, 0, S(st)>>>(logits, bias, E, k, norm, scale, ids, w);
 }
 
 void swiglu_clamp(const float* gate, const float* up, float* y, int n, int T, float lim, void* st) {

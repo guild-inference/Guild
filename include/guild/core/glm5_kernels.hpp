@@ -10,7 +10,8 @@
 
 namespace guild::core::glm5k {
 
-inline constexpr int kMaxT = 128; ///< tokens per window (prompt windows; decode runs 1 or 2)
+inline constexpr int kMaxT = 128;       ///< tokens per window (prompt windows; decode runs 1 or 2)
+inline constexpr int kMaxExperts = 288; ///< route: the experts a router may have (32 lanes x 9), at most 32 used
 inline constexpr int kKdaDim = 128;
 inline constexpr int kHc = 4;
 
