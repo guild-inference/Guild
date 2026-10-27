@@ -461,12 +461,14 @@ if(GUILD_ENABLE_CUDA OR GUILD_ENABLE_HIP)
     src/core/remote_expert_opt.cpp
     src/core/expert_cache.cpp src/core/native_head.cpp src/core/native_dense.cpp src/core/verify.cpp src/core/mtp.cpp
     src/core/conversation_snapshot.cpp src/core/conversation_state.cpp src/core/conversation_memory.cpp src/core/peer_experts.cpp
-    src/core/drama3_tower.cpp src/core/drama3_codec.cu src/core/glm5.cpp src/core/glm5_nl4.cpp)
+    src/core/drama3_tower.cpp src/core/drama3_codec.cu src/core/glm5.cpp src/core/glm5_nl4.cpp src/core/host_combine.cpp)
   # AVX2 kernels behind a runtime check (cpu_avx2_ok), as guild-kernels-cpu builds its own
   if(MSVC)
-    set_source_files_properties(src/core/glm5_nl4.cpp PROPERTIES COMPILE_OPTIONS /arch:AVX2)
+    set_source_files_properties(src/core/glm5_nl4.cpp src/core/host_combine.cpp PROPERTIES COMPILE_OPTIONS /arch:AVX2)
   else()
     set_source_files_properties(src/core/glm5_nl4.cpp PROPERTIES COMPILE_OPTIONS "-mavx2;-mfma;-mf16c")
+    # -ffp-contract=off: the mul and fma intrinsics stay what they are (host_combine.hpp: the GPU kernel's order)
+    set_source_files_properties(src/core/host_combine.cpp PROPERTIES COMPILE_OPTIONS "-mavx2;-mfma;-ffp-contract=off")
   endif()
   target_include_directories(guild_engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
   target_link_libraries(guild_engine PUBLIC guild_core guild_model guild_kernels guild_kernels_cpu ${_guild_gpu_runtime_target}
@@ -727,6 +729,12 @@ if(GUILD_ENABLE_CUDA OR GUILD_ENABLE_HIP)
     target_include_directories(router_fast_parity PRIVATE ${_guild_gpu_include_directories})
     target_link_libraries(router_fast_parity PRIVATE guild_kernels ${_guild_gpu_runtime_target})
     add_test(NAME router_fast_parity COMMAND router_fast_parity)
+    # the verify window's host combine (the CPU sums the expert rows) against the GPU combine it replaces, bitwise
+    add_executable(host_combine_parity src/kernels/host_combine_parity.cpp)
+    target_include_directories(host_combine_parity PRIVATE ${_guild_gpu_include_directories})
+    target_link_libraries(host_combine_parity PRIVATE guild_engine guild_kernels ${_guild_gpu_runtime_target})
+    add_test(NAME host_combine_parity COMMAND host_combine_parity)
+    set_tests_properties(host_combine_parity PROPERTIES SKIP_RETURN_CODE 77)
   endif()
   # the IQ kernels that decode a weight part once for every column/entry, bitwise vs the per-column ones
   # (GPU, synthetic, no model; --bench adds old/new timings)

@@ -450,6 +450,12 @@ private:
     int groups_[9] = {};
     float* h_ymiss_ = nullptr;
     float* m_ymiss_ = nullptr; // T * k * n_embd
+    // When the CPU serves every routed expert, it also does the combine's weighted sum (host_combine.hpp) and only
+    // the sums cross PCIe; set per captured window size (GUILD_HOST_COMBINE=0: the GPU combines the rows as before).
+    bool host_combine_[9] = {};
+    float* h_ysum_ = nullptr;
+    float* m_ysum_ = nullptr; // T * n_embd
+    float* ones_ = nullptr;   // device: T weights of 1.0 (the k = 1 combine that adds the shared expert)
 
     // device
     void* arena_ = nullptr;

@@ -10,6 +10,7 @@
 #include "guild/core/native_head.hpp"
 #include "guild/core/on_device.hpp"
 #include "guild/core/peer_experts.hpp"
+#include "guild/core/host_combine.hpp"
 #include "guild/kernels/iq_kernels.hpp"
 #include "guild/kernels/cpu/expert_layout.hpp"
 #include "guild/kernels/cpu/pool.hpp"
@@ -350,8 +351,8 @@ Verifier::~Verifier() {
         cudaFree(slot_off_d_);
     if (arena_)
         cudaFree(arena_);
-    void* hosts[] = {h_tok_,  h_step_,  h_pos_,   h_commit_, h_ple_,   h_out_,           h_x_,   h_ids_, h_w_, h_seq_,
-                     h_flag_, h_ymiss_, h_flagA_, h_plan_,   h_flagB_, h_finite_status_, h_code_};
+    void* hosts[] = {h_tok_,  h_step_,  h_pos_,   h_commit_, h_ple_,   h_out_,           h_x_,    h_ids_, h_w_, h_seq_,
+                     h_flag_, h_ymiss_, h_flagA_, h_plan_,   h_flagB_, h_finite_status_, h_code_, h_ysum_};
     for (void* h : hosts)
         if (h)
             cudaFreeHost(h);
@@ -452,7 +453,8 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
         mapped(T * K * 4, (void**) &h_w_, (void**) &m_w_) && mapped(64, (void**) &h_seq_, (void**) &m_seq_) &&
         mapped(64, (void**) &h_flag_, (void**) &m_flag_) && mapped(64, (void**) &h_flagA_, (void**) &m_flagA_) &&
         mapped(64, (void**) &h_flagB_, (void**) &m_flagB_) &&
-        mapped(T * K * N * 4, (void**) &h_ymiss_, (void**) &m_ymiss_);
+        mapped(T * K * N * 4, (void**) &h_ymiss_, (void**) &m_ymiss_) &&
+        mapped(T * N * 4, (void**) &h_ysum_, (void**) &m_ysum_);
     if (!ok) {
         err = "verify: mapped staging allocation failed";
         return false;
@@ -520,6 +522,7 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
         tail_snap_ = b.take<float>(nQ * TS);
         logits_ = b.take<float>(T * (uint64_t) g.n_expert);
         w_ = b.take<float>(T * K);
+        ones_ = b.take<float>(T);
         ids_ = b.take<int32_t>(T * K);
         shared_ = b.take<float>(T * N);
         parts_ = b.take<float>(T * K * N);
@@ -593,6 +596,10 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
     Bump real;
     real.base = (uint8_t*) arena_;
     carve(real);
+    {
+        const std::vector<float> ones((size_t) T, 1.0f);
+        cudaMemcpy(ones_, ones.data(), ones.size() * sizeof(float), cudaMemcpyHostToDevice);
+    }
     if (g.idx_q_heads == 0 && cap_ > 0) {
         std::vector<int32_t> id((size_t) (T * (uint64_t) cap_));
         for (uint64_t t = 0; t < T; ++t) {
@@ -754,6 +761,22 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
     const bool has_pcie_hits = pcie_on_;
     const bool has_gpu_experts = all_resident_ || device_plan_ || has_vram_hits || has_pcie_hits;
     const bool need_gpu_plan = has_gpu_experts || remote_opt_ != nullptr;
+    // every routed expert on the CPU: it sums each token's K rows itself (host_combine.hpp) and only the sums cross
+    // PCIe (n_embd floats a token, not K * n_embd); GUILD_HOST_COMBINE=0: the rows cross and the GPU sums them
+    static const bool host_combine_env = [] {
+        const char* v = std::getenv("GUILD_HOST_COMBINE");
+        return v == nullptr || std::atoi(v) != 0;
+    }();
+    const bool host_combine =
+        host_combine_env && !need_gpu_plan && !batch_rec_ && native_moe_combine_enabled() && host_combine_supported();
+    if (!batch_rec_)
+        host_combine_[T] = host_combine;
+    static std::atomic<bool> host_combine_said{false};
+    if (host_combine && !host_combine_said.exchange(true))
+        std::fprintf(stderr,
+                     "guild verify: the CPU sums its experts' rows and %lld floats a token cross PCIe, not %lld "
+                     "(GUILD_HOST_COMBINE=0: the GPU sums them)\n",
+                     (long long) N, (long long) (K * N));
     const int64_t nQall = g.n_qsa_layers();
     // a batch window: row t is slot t, whose state lives in its own session
     auto slot_ss = [&](int t) -> SessionState& { return batch_rec_ ? *slots_[(size_t) brow_[t]] : ss; };
@@ -1259,7 +1282,8 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                                        cs);
             else
 #endif
-                if (remote_opt_) // #578: the helper GPUs reduce with the routing weights - publish them
+                if (remote_opt_ || host_combine) // #578: the helper GPUs reduce with the routing weights - publish
+                                                 // them (and the host combine sums with them)
                 doorbell_publish(xm, ids_ + tb * K, w_ + tb * K, (int64_t) n * N, (int64_t) n * K, m_x_ + tb * N,
                                  m_ids_ + tb * K, m_w_ + tb * K, m_seq_, cs);
             else {
@@ -1368,7 +1392,10 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         } else if (!need_gpu_plan) {
             wait_flag_ge(m_flag_, ring, cs); // all routed experts are served by the CPU pool
             stamp(l, 23, grp);
-            copy_from_mapped(parts_out, m_ymiss_ + (size_t) tb * K * N, (int64_t) n * K * N, cs);
+            if (host_combine) // the CPU's weighted sums, n_embd floats a token
+                copy_from_mapped(parts_out, m_ysum_ + (size_t) tb * N, (int64_t) n * N, cs);
+            else
+                copy_from_mapped(parts_out, m_ymiss_ + (size_t) tb * K * N, (int64_t) n * K * N, cs);
         } else {
             if (device_plan_) { // E-6: skipped when the device planned this group (all its experts resident)
                 wait_flag_ge_or(m_flagA_, ring, skip_ + grp, cs);
@@ -1421,7 +1448,15 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         if (!prof_on_ && sh_cs_ != nullptr && ev_fork_ != nullptr && ev_join_ != nullptr) {
             cudaStreamWaitEvent(cs, ev_join_, 0);
         }
-        if (dec_batch && n > 1 && native_moe_combine_enabled()) { // one launch for the window's rows
+        if (host_combine) { // the shared expert added to the CPU's sums: the combine kernel at k = 1, weight 1.0
+            try {
+                native_moe_combine_multi(parts_ + (size_t) tb * K * N, ones_, shared_ + tb * N, bo_ + tb * N, N, 1, n,
+                                         cs);
+            } catch (const std::exception& e) {
+                err = "verify combine: " + std::string(e.what());
+                return false;
+            }
+        } else if (dec_batch && n > 1 && native_moe_combine_enabled()) { // one launch for the window's rows
             try {
                 native_moe_combine_multi(parts_ + (size_t) tb * K * N, w_ + tb * K, shared_ + tb * N, bo_ + tb * N, N,
                                          K, n, cs);
@@ -1988,6 +2023,9 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
             if (pool != nullptr)
                 pool(user, h_x_ + (size_t) tb * g.n_embd, h_ids_ + (size_t) tb * ss.k, n, ss.k,
                      h_ymiss_ + (size_t) tb * ss.k * g.n_embd, l);
+            if (host_combine_[T]) // the combine's weighted sums; the GPU reads n_embd floats a token
+                host_moe_combine(h_ymiss_ + (size_t) tb * ss.k * g.n_embd, h_w_ + (size_t) tb * ss.k,
+                                 h_ysum_ + (size_t) tb * g.n_embd, n, (int) ss.k, (int) g.n_embd);
             if (remote_opt_)
                 remote_opt_->end();
             VDBG("layer %lld served\n", (long long) l);
