@@ -233,8 +233,9 @@ Every emitted token is still the model's own: the drafts only decide how many to
 dual Xeon Gold 6130 with a GTX 1070, decode went from 54.9 / 54.7 to 64.7 / 74.7 tok/s (prose / code) and used
 794 MiB more VRAM ([bench/results/2026-10-24-numa-iq3s](bench/results/2026-10-24-numa-iq3s/README.md)).
 The tool's `--draft-vocab data/draft_vocab_en.bin` (an English-and-code draft vocabulary) took it to 68.2 / 79.1,
-at the cost of never drafting tokens outside that subset. Without the folder, `--decode-strategy auto` drafts from the prompt and
-the answer so far instead.
+at the cost of never drafting tokens outside that subset; staged MMVQ kernels and batched routing, to 72.8 / 85.2
+([bench/results/2026-10-27-staged-mmvq](bench/results/2026-10-27-staged-mmvq/README.md)).
+Without the folder, `--decode-strategy auto` drafts from the prompt and the answer so far instead.
 
 ### Fish Audio Drama 3 (text to speech)
 
