@@ -5,6 +5,7 @@
 // in the window (1..kMaxT); per-token rows are contiguous: token t's row of width n starts at t * n.
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 
 namespace guild::core::glm5k {
@@ -20,6 +21,12 @@ void rms_norm(const float* x, const float* w, float* y, int n, int rows, float e
 /// Sinkhorn, `iters` iterations), xn[t] = rms_norm(sum_h pre[h] R[t][h]) * norm_w.  post [T][4], comb [T][16].
 void hc_pre(const float* mixes, const float* scale, const float* base, const float* R, const float* norm_w, float* post,
             float* comb, float* xn, int N, int T, int iters, float hc_eps, float rms_eps, void* st);
+/// The pre-mix without the separate norm and product: hc_mix from hc_fn (Q8_0, 24 x 4N, the GGUF's blocks) and the
+/// streams writes hc_mix_floats(T) partial sums, which hc_pre_mixed turns into the mixes (the RMS norm of R as a scale)
+void hc_mix(const void* hc_fn, const float* R, float* part, int N, int T, void* st);
+size_t hc_mix_floats(int T);
+void hc_pre_mixed(const float* part, const float* scale, const float* base, const float* R, const float* norm_w,
+                  float* post, float* comb, float* xn, int N, int T, int iters, float hc_eps, float rms_eps, void* st);
 /// R[t][dst] = y[t] * post[t][dst] + sum_src R[t][src] * comb[t][dst + 4 * src], in place
 void hc_post(const float* y, float* R, const float* post, const float* comb, int N, int T, void* st);
 /// out[t] = rms_norm(mean_h R[t][h]) * w

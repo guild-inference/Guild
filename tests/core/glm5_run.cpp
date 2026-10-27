@@ -131,6 +131,7 @@ int main(int argc, char** argv) {
         tstep = std::chrono::steady_clock::now();
     };
     int offered = 0, accepted = 0;
+    double draft_ms = 0, verify_ms = 0, accept_ms = 0; // --spec: wall time in each call
     auto argmax = [](const float* l, size_t n) { return (int32_t) (std::max_element(l, l + n) - l); };
     auto is_eos = [&](int32_t t) { return std::find(g.eos_ids.begin(), g.eos_ids.end(), t) != g.eos_ids.end(); };
     t1 = tstep = std::chrono::steady_clock::now();
@@ -143,6 +144,7 @@ int main(int argc, char** argv) {
         if (spec && eng.has_mtp()) { // greedy speculation: the main model's argmax over the first row decides
             int32_t d = 0;
             const int32_t win[2] = {next, 0};
+            auto tc = std::chrono::steady_clock::now();
             if (!eng.draft(next, pos, d, err)) {
                 std::fprintf(stderr, "glm5_run: %s\n", err.c_str());
                 return 1;
@@ -150,18 +152,23 @@ int main(int argc, char** argv) {
             if (out.size() < oracle.size())
                 d = oracle[out.size()];
             const int32_t w2[2] = {win[0], d};
+            draft_ms += since(tc);
+            tc = std::chrono::steady_clock::now();
             if (!eng.verify(w2, 2, pos, rows.data(), err)) {
                 std::fprintf(stderr, "glm5_run: %s\n", err.c_str());
                 return 1;
             }
             cpu_ms += eng.last_cpu_ms();
-            mark();
+            verify_ms += since(tc);
+            tc = std::chrono::steady_clock::now();
             const int32_t y1 = argmax(rows.data(), logits.size());
             ++offered;
             if (y1 == d) {
                 ++accepted;
                 if (!eng.accept(2, err))
                     return 1;
+                accept_ms += since(tc);
+                mark();
                 pos += 2;
                 out.push_back(d);
                 if (is_eos(d) || (int) out.size() >= n_new)
@@ -170,6 +177,8 @@ int main(int argc, char** argv) {
             } else {
                 if (!eng.accept(1, err))
                     return 1;
+                accept_ms += since(tc);
+                mark();
                 pos += 1;
                 next = y1;
             }
@@ -190,7 +199,10 @@ int main(int argc, char** argv) {
     const double dec_ms = since(t1);
     eng.print_timing("prompt + decode");
     if (offered)
-        std::fprintf(stderr, "MTP: %d of %d drafts accepted (%.0f%%)\n", accepted, offered, 100.0 * accepted / offered);
+        std::fprintf(stderr,
+                     "MTP: %d of %d drafts accepted (%.0f%%); per step: draft %.1f ms, verify %.1f, accept %.1f\n",
+                     accepted, offered, 100.0 * accepted / offered, draft_ms / offered, verify_ms / offered,
+                     accept_ms / offered);
     if (step_ms.size() >= 4) {
         auto pct = [](std::vector<double> v, double q) {
             std::sort(v.begin(), v.end());

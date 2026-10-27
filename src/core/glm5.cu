@@ -85,16 +85,76 @@ __global__ void __launch_bounds__(1024) rms_norm4_k(const float* x, const float*
 }
 
 // one block per token: the 4x4 Sinkhorn mix in shared memory, then the pre-weighted stream sum and its RMS norm
-__global__ void hc_pre_k(const float* mixes, const float* scale, const float* base, const float* R, const float* nw,
-                         float* post, float* comb, float* xn, int N, int iters, float hc_eps, float rms_eps) {
+// The mHC mixes from hc_fn (Q8_0, `rows` x K) and the streams R (K floats a token) in one pass, the norm left as a
+// scale: part[t][r][ks] = row r . R[t] over slice ks of kMixSplit, and part[t][rows][ks] the slice's sum of squares
+// (hc_pre takes mix = sum_ks part[r] * rsqrt(sum_ks part[rows] / K + eps)).  It replaces an RMS norm, a quantization
+// and a 24-row product that kept a block or two of the GPU busy each (~15 us a call on a GTX 1070).
+constexpr int kMixSplit = 8;
+
+__global__ void __launch_bounds__(128)
+    hc_mix_k(const uint8_t* __restrict__ W, const float* __restrict__ R, float* __restrict__ part, int K, int rows) {
+    const int r = blockIdx.x, ks = blockIdx.y, t = blockIdx.z;
+    const int slice = K / kMixSplit, k0 = ks * slice;
+    const float* x = R + (size_t) t * K + k0;
+    float acc = 0.f;
+    if (r < rows) {
+        const uint8_t* w = W + ((size_t) r * (K / 32) + k0 / 32) * 34;
+        for (int i = threadIdx.x; i < slice / 16; i += blockDim.x) { // half blocks of 16 values
+            const int b = i >> 1, h = i & 1;
+            const uint8_t* blk = w + (size_t) b * 34;
+            const float d = __half2float(*reinterpret_cast<const __half*>(blk));
+            const uint16_t* q = reinterpret_cast<const uint16_t*>(blk + 2 + 16 * h);
+            const float4* xv = reinterpret_cast<const float4*>(x + b * 32 + 16 * h);
+            float sum = 0.f;
+#pragma unroll
+            for (int j = 0; j < 4; ++j) {
+                const float4 v = xv[j];
+                const uint16_t q01 = q[2 * j], q23 = q[2 * j + 1];
+                sum += (float) (int8_t) (q01 & 0xff) * v.x + (float) (int8_t) (q01 >> 8) * v.y +
+                       (float) (int8_t) (q23 & 0xff) * v.z + (float) (int8_t) (q23 >> 8) * v.w;
+            }
+            acc += d * sum;
+        }
+    } else {
+        for (int i = threadIdx.x; i < slice / 4; i += blockDim.x) {
+            const float4 v = reinterpret_cast<const float4*>(x)[i];
+            acc += v.x * v.x + v.y * v.y + v.z * v.z + v.w * v.w;
+        }
+    }
+    acc = block_sum(acc);
+    if (threadIdx.x == 0)
+        part[((size_t) t * (rows + 1) + r) * kMixSplit + ks] = acc;
+}
+
+__global__ void hc_pre_k(const float* mixes, const float* part, int K, const float* scale, const float* base,
+                         const float* R, const float* nw, float* post, float* comb, float* xn, int N, int iters,
+                         float hc_eps, float rms_eps) {
     extern __shared__ float xs[]; // N floats
-    __shared__ float pre_s[kHc], c[kHc * kHc];
+    __shared__ float pre_s[kHc], c[kHc * kHc], msh[(2 + kHc) * kHc];
     const int t = blockIdx.x;
     // lanes 0..15 of warp 0 own comb element (dst = lane % 4, src = lane / 4): a row (fixed src) is 4 adjacent lanes
     // (shuffles 1, 2), a column (fixed dst) lanes 4 apart (shuffles 4, 8)
     if (threadIdx.x < 32) {
         const int lane = threadIdx.x;
-        const float* m = mixes + (size_t) t * (2 + kHc) * kHc;
+        constexpr int M = (2 + kHc) * kHc;
+        const float* m = mixes + (size_t) t * M;
+        if (part) { // hc_mix's slices: the products, then the norm
+            const float* pt = part + (size_t) t * (M + 1) * kMixSplit;
+            float ss = 0.f;
+#pragma unroll
+            for (int ks = 0; ks < kMixSplit; ++ks)
+                ss += pt[M * kMixSplit + ks];
+            const float inv = rsqrtf(ss / K + rms_eps);
+            if (lane < M) {
+                float v = 0.f;
+#pragma unroll
+                for (int ks = 0; ks < kMixSplit; ++ks)
+                    v += pt[lane * kMixSplit + ks];
+                msh[lane] = v * inv;
+            }
+            __syncwarp();
+            m = msh;
+        }
         const unsigned mask = 0xffffu;
         if (lane < kHc) {
             pre_s[lane] = sigmoidf_(m[lane] * scale[0] + base[lane]) + hc_eps;
@@ -1057,8 +1117,23 @@ void rms_norm(const float* x, const float* w, float* y, int n, int rows, float e
 
 void hc_pre(const float* mixes, const float* scale, const float* base, const float* R, const float* norm_w, float* post,
             float* comb, float* xn, int N, int T, int iters, float hc_eps, float rms_eps, void* st) {
-    hc_pre_k<<<T, 1024, (size_t) N * sizeof(float), S(st)>>>(mixes, scale, base, R, norm_w, post, comb, xn, N, iters,
-                                                             hc_eps, rms_eps);
+    hc_pre_k<<<T, 1024, (size_t) N * sizeof(float), S(st)>>>(mixes, nullptr, 0, scale, base, R, norm_w, post, comb, xn,
+                                                             N, iters, hc_eps, rms_eps);
+}
+
+void hc_mix(const void* hc_fn, const float* R, float* part, int N, int T, void* st) {
+    const int K = kHc * N, rows = (2 + kHc) * kHc;
+    hc_mix_k<<<dim3(rows + 1, kMixSplit, T), 128, 0, S(st)>>>((const uint8_t*) hc_fn, R, part, K, rows);
+}
+
+size_t hc_mix_floats(int T) {
+    return (size_t) T * ((2 + kHc) * kHc + 1) * kMixSplit;
+}
+
+void hc_pre_mixed(const float* part, const float* scale, const float* base, const float* R, const float* norm_w,
+                  float* post, float* comb, float* xn, int N, int T, int iters, float hc_eps, float rms_eps, void* st) {
+    hc_pre_k<<<T, 1024, (size_t) N * sizeof(float), S(st)>>>(nullptr, part, kHc * N, scale, base, R, norm_w, post, comb,
+                                                             xn, N, iters, hc_eps, rms_eps);
 }
 
 void hc_post(const float* y, float* R, const float* post, const float* comb, int N, int T, void* st) {

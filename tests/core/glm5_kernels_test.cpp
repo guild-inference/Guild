@@ -152,6 +152,56 @@ static void test_hc() {
     check("hc_mean_norm", mean, rmean, 1e-4);
 }
 
+// hc_mix + hc_pre_mixed (the fused pre-mix) against hc_pre given mixes = W . rms_norm(R) computed in double
+static void test_hc_mix() {
+    const int N = 4096, K = 4 * N, T = 3, iters = 20;
+    const float eps = 1e-6f, rms = 1e-5f;
+    std::uniform_int_distribution<int> qd(-127, 127);
+    std::vector<uint8_t> W((size_t) 24 * K / 32 * 34);
+    std::vector<float> Wf((size_t) 24 * K);
+    for (size_t b = 0; b < (size_t) 24 * K / 32; ++b) {
+        const __half d = __float2half(0.0005f * (float) (1 + b % 9));
+        std::memcpy(&W[b * 34], &d, 2);
+        for (int i = 0; i < 32; ++i) {
+            const int8_t q = (int8_t) qd(rng);
+            W[b * 34 + 2 + i] = (uint8_t) q;
+            Wf[b * 32 + i] = __half2float(d) * q;
+        }
+    }
+    auto R = rnd((size_t) T * K), scale = rnd(3, 0.5f), base = rnd(24, 0.5f), nw = rnd(N, 0.2f);
+    for (auto& x : nw)
+        x += 1.f;
+    std::vector<float> mixes((size_t) T * 24);
+    for (int t = 0; t < T; ++t) {
+        double ss = 0;
+        for (int i = 0; i < K; ++i)
+            ss += (double) R[(size_t) t * K + i] * R[(size_t) t * K + i];
+        const double inv = 1.0 / std::sqrt(ss / K + rms);
+        for (int r = 0; r < 24; ++r) {
+            double v = 0;
+            for (int i = 0; i < K; ++i)
+                v += (double) Wf[(size_t) r * K + i] * R[(size_t) t * K + i];
+            mixes[(size_t) t * 24 + r] = (float) (v * inv);
+        }
+    }
+    uint8_t* dW = up(W);
+    float *dR = up(R), *dm = up(mixes), *ds = up(scale), *db = up(base), *dn = up(nw), *dpart;
+    cudaMalloc(&dpart, k::hc_mix_floats(T) * 4);
+    float *p1, *c1, *x1, *p2, *c2, *x2;
+    for (float** q : {&p1, &p2})
+        cudaMalloc(q, T * 4 * 4);
+    for (float** q : {&c1, &c2})
+        cudaMalloc(q, T * 16 * 4);
+    for (float** q : {&x1, &x2})
+        cudaMalloc(q, (size_t) T * N * 4);
+    k::hc_pre(dm, ds, db, dR, dn, p1, c1, x1, N, T, iters, eps, rms, nullptr);
+    k::hc_mix(dW, dR, dpart, N, T, nullptr);
+    k::hc_pre_mixed(dpart, ds, db, dR, dn, p2, c2, x2, N, T, iters, eps, rms, nullptr);
+    check("hc_mix + hc_pre: post", down(p2, T * 4), down(p1, T * 4), 1e-5);
+    check("hc_mix + hc_pre: comb", down(c2, T * 16), down(c1, T * 16), 1e-5);
+    check("hc_mix + hc_pre: x", down(x2, (size_t) T * N), down(x1, (size_t) T * N), 1e-5);
+}
+
 static void test_kda() {
     const int H = 4, DK = 128, D = H * DK, T = 3;
     auto xq = rnd((size_t) T * D), xk = rnd((size_t) T * D), xv = rnd((size_t) T * D), st0 = rnd((size_t) 3 * D * 3),
@@ -738,6 +788,7 @@ int main(int argc, char** argv) {
     if (argc > 1 && std::string(argv[1]) == "bench")
         return bench();
     test_hc();
+    test_hc_mix();
     test_kda();
     test_heads_and_attention();
     test_route();
