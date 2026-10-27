@@ -116,7 +116,8 @@ struct Layer {
     // FFN: the dense one (lead layers) or the shared expert, on the GPU when `ffn_gpu`
     Mat gate, up, down;
     bool ffn_gpu = false;
-    CpuFfn ffn_cpu;
+    CpuFfn ffn_cpu; ///< on the CPU, or (a MoE layer's shared expert on the GPU) its twin for a pipelined group
+    bool ffn_twin = false;
     float lim_ffn = 0.f, lim_exp = 0.f;
     // routing
     float *router = nullptr, *exp_bias = nullptr;
@@ -406,8 +407,10 @@ struct Glm5Engine::Impl {
         float *R, *post, *comb, *y, *ycpu, *h_x, *h_y, *h_w;
         int32_t* h_ids;
         cudaEvent_t ev;
+        bool twin; ///< the CPU computes the shared expert (its twin) for these rows
     } rows0{};
-    void group_rows(int t0, cudaEvent_t e) {
+    bool twin = false;
+    void group_rows(int t0, cudaEvent_t e, bool tw = false) {
         const int64_t N = g.n_embd, U = g.n_used;
         R = rows0.R + (size_t) t0 * 4 * N;
         post = rows0.post + (size_t) t0 * 4;
@@ -419,9 +422,10 @@ struct Glm5Engine::Impl {
         h_w = rows0.h_w + (size_t) t0 * U;
         h_ids = rows0.h_ids + (size_t) t0 * U;
         ev = e;
+        twin = tw;
     }
     Rows rows() const {
-        return {R, post, comb, y, ycpu, h_x, h_y, h_w, h_ids, ev};
+        return {R, post, comb, y, ycpu, h_x, h_y, h_w, h_ids, ev, twin};
     }
     std::unique_ptr<Launcher> launcher; // the pipelined window's GPU launches, beside the calling thread's CPU work
 
@@ -1139,7 +1143,11 @@ bool Glm5Engine::Impl::load(const std::string& path, const Glm5Options& o, std::
         if (y.ffn_gpu) {
             if (!upload(y.gate, err) || !upload(y.up, err) || !upload(y.down, err))
                 return false;
-        } else {
+        }
+        // a MoE layer's shared expert on the GPU has a twin on the CPU: one group of a pipelined window computes it
+        // there, which evens the GPU's and the CPU's halves of a layer
+        if (!y.ffn_gpu || y.moe) {
+            y.ffn_twin = y.ffn_gpu;
             CpuFfn& f = y.ffn_cpu;
             f.gu_type = y.gate.type;
             f.d_type = y.down.type;
@@ -1295,7 +1303,7 @@ bool Glm5Engine::Impl::load(const std::string& path, const Glm5Options& o, std::
         err = "glm5: no pinned host memory";
         return false;
     }
-    rows0 = {R, post, comb, y, ycpu, h_x, h_y, h_w, h_ids, ev};
+    rows0 = {R, post, comb, y, ycpu, h_x, h_y, h_w, h_ids, ev, false};
 
     // the routed experts: halves of every expert's rows in memory bound to each node, or the GGUF mapping itself
     const auto t0 = std::chrono::steady_clock::now();
@@ -1354,7 +1362,7 @@ bool Glm5Engine::Impl::load(const std::string& path, const Glm5Options& o, std::
         if (has_mtp)
             ffn_layers.push_back(&mtp);
         for (Layer* yp : ffn_layers)
-            if (!yp->ffn_gpu)
+            if (!yp->ffn_gpu || yp->ffn_twin)
                 all.push_back(&yp->ffn_cpu);
         auto repacked = [&](const CpuFfn& f) { return nl4 && f.gu_type == GGML_TYPE_IQ3_S; };
         auto gu_row_of = [&](const CpuFfn& f) {
@@ -1610,7 +1618,7 @@ void Glm5Engine::Impl::cpu_ffn(const Layer& Y, int T, const Rows& io) {
                 unit_w.push_back(io.h_w[t * g.n_used + j]);
             }
     }
-    if (!Y.ffn_gpu) {
+    if (!Y.ffn_gpu || (io.twin && Y.ffn_twin)) {
         Group gr;
         gr.f = Y.ffn_cpu;
         const int gi = (int) groups.size();
@@ -1788,7 +1796,7 @@ void Glm5Engine::Impl::cpu_ffn(const Layer& Y, int T, const Rows& io) {
 
 void Glm5Engine::Impl::ffn_begin(const Layer& Y, int T) {
     const int64_t N = g.n_embd;
-    const bool cpu = Y.moe || !Y.ffn_gpu;
+    const bool cpu = Y.moe || !Y.ffn_gpu, gpu_ffn = Y.ffn_gpu && !(twin && Y.ffn_twin);
     if (Y.moe) {
         glm5k::f32_matvec(Y.router, xn, rlog, (int) N, (int) g.n_expert, T, st);
         glm5k::route(rlog, Y.exp_bias, (int) g.n_expert, (int) g.n_used, g.expert_norm, g.expert_scale, rids, rw, T,
@@ -1800,7 +1808,7 @@ void Glm5Engine::Impl::ffn_begin(const Layer& Y, int T) {
         cudaMemcpyAsync(h_x, xn, (size_t) T * N * 4, cudaMemcpyDeviceToHost, st);
         cudaEventRecord(ev, st);
     }
-    if (Y.ffn_gpu) { // the shared expert or the dense FFN, while the CPU computes the routed experts
+    if (gpu_ffn) { // the shared expert or the dense FFN, while the CPU computes the routed experts
         const int64_t F = Y.gate.n_out;
         quant(xn, N, T, xq);
         mm(Y.gate, xq, a, T);
@@ -1821,7 +1829,7 @@ bool Glm5Engine::Impl::ffn_end(const Layer& Y, int T, const Rows& io, std::strin
         const auto t0 = std::chrono::steady_clock::now();
         cpu_ffn(Y, T, io);
         cpu_ms += ms_since(t0);
-        if (Y.ffn_gpu) {
+        if (Y.ffn_gpu && !(io.twin && Y.ffn_twin)) {
             cudaMemcpyAsync(io.ycpu, io.h_y, (size_t) T * N * 4, cudaMemcpyHostToDevice, st);
             glm5k::add(io.y, io.ycpu, T * N, st);
         } else {
@@ -2006,7 +2014,13 @@ bool Glm5Engine::Impl::main_window(const int32_t* tokens, int T, int64_t pos0, b
     }();
     if (pipe_on && !debug && T >= 2) {
         const int TA = T / 2, TB = T - TA;
-        group_rows(TA, ev2);
+        // group B's shared experts on the CPU (GUILD_GLM_SHEXP_SPLIT=0: both on the GPU): the GPU's half of a layer was
+        // the longer one, by about a shared expert
+        static const bool split_shexp = [] {
+            const char* e = std::getenv("GUILD_GLM_SHEXP_SPLIT");
+            return !(e && e[0] == '0');
+        }();
+        group_rows(TA, ev2, split_shexp);
         const Rows rB = rows();
         group_rows(0, rows0.ev);
         const Rows rA = rows();
@@ -2016,7 +2030,7 @@ bool Glm5Engine::Impl::main_window(const int32_t* tokens, int T, int64_t pos0, b
         std::string launch_err;
         auto launch = [&](int l, bool a) {
             const auto tq = std::chrono::steady_clock::now();
-            group_rows(a ? 0 : TA, a ? rA.ev : rB.ev);
+            group_rows(a ? 0 : TA, a ? rA.ev : rB.ev, a ? rA.twin : rB.twin);
             if (!layer_attention(l, a ? TA : TB, a ? pos0 : pos0 + TA, a && save_mid, launch_err))
                 launch_ok = false;
             layer_ffn_begin(l, a ? TA : TB);
