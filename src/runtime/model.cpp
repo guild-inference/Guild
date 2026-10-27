@@ -1195,11 +1195,29 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
                         if (impl->expert_performance.gpu_layers[size_t(l)])
                             cache_ranking.emplace_back(l, e);
         }
+        // A cache that holds a sliver of the experts serves too few lookups to pay for itself: every layer's GPU plan
+        // (a wait for the CPU pool's plan, its copy, the expert kernels) sits on the verify window's critical path
+        // whatever the hits.  On a GTX 1070, Qwen3.8's 113 slots (0.46% of its experts, 0.3% of the lookups) made
+        // verify windows 1.8% (prose) and 3.9% (code) slower than none, and 356 slots (1.45%) slower still.  Below
+        // 5% of the GPU-capable experts `auto` keeps none; an explicit --expert-cache N still gets its slots.
+        int64_t capable = 0;
+        for (int64_t l = 0; l < layout.n_layers; ++l)
+            if (impl->expert_performance.gpu_layers[size_t(l)])
+                capable += layout.n_expert;
         for (int attempt = 0; attempt < 8 && budget; ++attempt) {
             const auto sizing = size_expert_cache(layout, cache_ranking, impl->expert_performance.gpu_layers, budget,
                                                   int64_t(cache_ranking.size()));
             if (sizing.pairs.empty())
                 break;
+            if (int64_t(sizing.pairs.size()) * 20 < capable) {
+                std::fprintf(stderr,
+                             "guild experts: a GPU cache of %zu slots would hold %.2f%% of the %lld GPU-capable "
+                             "experts, too few to pay for its per-layer plan; none is kept (--expert-cache N "
+                             "forces one)\n",
+                             sizing.pairs.size(), 100.0 * double(sizing.pairs.size()) / double(capable),
+                             (long long) capable);
+                break;
+            }
             if (!fill_cache(sizing)) {
                 if (!cache_allocation_failed)
                     return false;
