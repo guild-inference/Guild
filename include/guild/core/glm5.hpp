@@ -60,6 +60,8 @@ public:
     bool load(const std::string& gguf, const Glm5Options& opt, std::string& err);
     const Glm5Geometry& geometry() const;
     int64_t max_context() const;
+    /// the tokens forward() takes in one window (more are split): two pipelined groups of up to glm5k::kMaxT
+    int max_window() const;
     uint64_t vram_bytes() const;
     /// one line per placement decision, for the startup log
     const std::string& placement() const;

@@ -208,7 +208,7 @@ bool glm5_generate(GuildModel::Impl& m, const GenerationRequest& req, const std:
 
     // prefill the rest, in windows (one ends at the cut), reporting progress
     if (start < prompt.size()) {
-        constexpr int kChunk = core::glm5k::kMaxT; // the engine's widest window
+        const int kChunk = eng.max_window(); // the engine's widest window
         for (size_t at = start; at < prompt.size();) {
             if (cancelled_now()) { // the state matches glm_ctx; its logits are unknown, so the next request feeds more
                 tel.finish_reason = "cancel";

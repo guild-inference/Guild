@@ -1,9 +1,9 @@
 // src/core/glm5.cpp - GLM-5.3-Flash on one GPU and the CPU (see include/guild/core/glm5.hpp).
 //
-// One forward pass over a window of T <= kMaxT tokens, layer by layer, in the order of llama.cpp's glm5next graph:
-// mHC pre-mix -> attention (KDA or DSA) -> mHC post-mix -> mHC pre-mix -> FFN (dense or MoE) -> mHC post-mix.
-// The MoE layer hands the normed activations and the router's choice to the CPU, which computes the routed experts
-// while the GPU computes the shared one.
+// One forward pass over a window of up to two groups of kMaxT tokens (pipelined: see main_window), layer by layer, in
+// the order of llama.cpp's glm5next graph: mHC pre-mix -> attention (KDA or DSA) -> mHC post-mix -> mHC pre-mix -> FFN
+// (dense or MoE) -> mHC post-mix. The MoE layer hands the normed activations and the router's choice to the CPU, which
+// computes the routed experts while the GPU computes the shared one.
 #include "guild/core/glm5.hpp"
 #include "guild/core/glm5_kernels.hpp"
 #include "guild/core/glm5_nl4.hpp"
@@ -609,6 +609,11 @@ struct Glm5Engine::Impl {
     // MMVQ reads the weights once for up to 8 columns; beyond that each column costs about as much again (GTX 1070:
     // 0.20 ms for one column of a 4096 x 8192 Q8_0 matrix, 0.31 for 8, 2.75 for 64), so wider windows use MMQ
     static constexpr int kMmvqCols = 8;
+    static constexpr int kMaxWindow = 2 * kMaxT; ///< a window's tokens: two pipelined groups of up to kMaxT
+    const bool pipe = [] {                       // GUILD_GLM_PIPE=0 (and GUILD_GLM_DEBUG): one group, windows of kMaxT
+        const char* e = std::getenv("GUILD_GLM_PIPE");
+        return !(e && e[0] == '0') && std::getenv("GUILD_GLM_DEBUG") == nullptr;
+    }();
     void quant(const float* x, int64_t n, int T, void* dst) {
         guild::kernels::native_quantize_q8_1(x, dst, (int) n, T, st);
 #if defined(GUILD_GLM_MMQ)
@@ -997,7 +1002,8 @@ bool Glm5Engine::Impl::load(const std::string& path, const Glm5Options& o, std::
                 state_bytes += m->bytes;
             state_bytes += (uint64_t) g.n_expert * N * 4 + 64 * 1024;
         }
-        const uint64_t scratch_bytes = 176ull << 20; // a window of kMaxT tokens: ~1.1 MB of scratch a token
+        // a group of kMaxT tokens' scratch (~1.1 MB a token) and a window of kMaxWindow tokens' rows (~64 KB a token)
+        const uint64_t scratch_bytes = (176ull << 20) + (uint64_t) (kMaxWindow - kMaxT) * 4 * N * 4 * 2;
         uint64_t need = state_bytes + scratch_bytes + head.bytes + (1ull << 20); // + every piece's 256-byte alignment
         for (const Layer& y : L)
             for (const Mat* m :
@@ -1219,22 +1225,25 @@ bool Glm5Engine::Impl::load(const std::string& path, const Glm5Options& o, std::
     const int64_t wa = std::max<int64_t>({N * 4, D, QB, g.n_ff}), wb = std::max<int64_t>({D, LB, g.n_ff});
     const int64_t wc = std::max<int64_t>({D, VB, g.n_ff}), wd = std::max<int64_t>(D, H);
     const int64_t widest = std::max<int64_t>({N * 4, D, VB, g.n_ff, 2 * N, g.q_lora});
-    if (!(R = dalloc<float>((size_t) T * 4 * N, err)) || !(xn = dalloc<float>((size_t) T * N, err)) ||
-        !(mix = dalloc<float>((size_t) T * 24, err)) || !(post = dalloc<float>((size_t) T * 4, err)) ||
-        !(comb = dalloc<float>((size_t) T * 16, err)) || !(y = dalloc<float>((size_t) T * N, err)) ||
+    // the rows a window keeps across its two pipelined groups (streams, embeddings, mixes, FFN output, final rows)
+    // hold kMaxWindow tokens; the scratch a group uses and frees, kMaxT
+    const int64_t TW = kMaxWindow;
+    if (!(R = dalloc<float>((size_t) TW * 4 * N, err)) || !(xn = dalloc<float>((size_t) T * N, err)) ||
+        !(mix = dalloc<float>((size_t) T * 24, err)) || !(post = dalloc<float>((size_t) TW * 4, err)) ||
+        !(comb = dalloc<float>((size_t) TW * 16, err)) || !(y = dalloc<float>((size_t) TW * N, err)) ||
         !(a = dalloc<float>((size_t) T * wa, err)) || !(b = dalloc<float>((size_t) T * wb, err)) ||
         !(c = dalloc<float>((size_t) T * wc, err)) || !(d = dalloc<float>((size_t) T * wd, err)) ||
-        !(e = dalloc<float>((size_t) T * std::max(LB, VB), err)) || !(f = dalloc<float>((size_t) T * N, err)) ||
+        !(e = dalloc<float>((size_t) T * std::max(LB, VB), err)) || !(f = dalloc<float>((size_t) TW * N, err)) ||
         !(qkv = dalloc<float>((size_t) T * 3 * D, err)) || !(small1 = dalloc<float>((size_t) T * 4096, err)) ||
         !(small2 = dalloc<float>((size_t) T * 4096, err)) || !(gk = dalloc<float>((size_t) T * D, err)) ||
         !(beta = dalloc<float>((size_t) T * H, err)) ||
         !(part = dalloc<float>((size_t) glm5k::attend_scratch_floats(ctx, (int) H, (int) g.kv_lora, T), err)) ||
         !(logits = dalloc<float>((size_t) kMaxVerify * g.n_vocab, err)) ||
         !(rlog = dalloc<float>((size_t) T * g.n_expert, err)) || !(rw = dalloc<float>((size_t) T * g.n_used, err)) ||
-        !(rids = dalloc<int32_t>((size_t) T * g.n_used, err)) || !(ycpu = dalloc<float>((size_t) T * N, err)) ||
+        !(rids = dalloc<int32_t>((size_t) T * g.n_used, err)) || !(ycpu = dalloc<float>((size_t) TW * N, err)) ||
         !(hcpart = dalloc<float>(glm5k::hc_mix_floats(kMmvqCols), err)))
         return false;
-    if (!(hn = dalloc<float>((size_t) T * N, err)) || !(pending = dalloc<float>((size_t) N, err)) ||
+    if (!(hn = dalloc<float>((size_t) TW * N, err)) || !(pending = dalloc<float>((size_t) N, err)) ||
         !(hin = dalloc<float>((size_t) T * N, err)) || !(mx = dalloc<float>((size_t) T * N, err)) ||
         !(me = dalloc<float>((size_t) T * N, err)) || !(mh = dalloc<float>((size_t) T * N, err)) ||
         !(d_arg = dalloc<int32_t>(4, err)))
@@ -1295,11 +1304,11 @@ bool Glm5Engine::Impl::load(const std::string& path, const Glm5Options& o, std::
         }
     }
 #endif
-    if (cudaMallocHost(&h_x, (size_t) T * N * 4) != cudaSuccess ||
-        cudaMallocHost(&h_y, (size_t) T * N * 4) != cudaSuccess ||
-        cudaMallocHost(&h_w, (size_t) T * g.n_used * 4) != cudaSuccess ||
-        cudaMallocHost(&h_ids, (size_t) T * g.n_used * 4) != cudaSuccess ||
-        cudaMallocHost(&h_emb, (size_t) T * N * 4) != cudaSuccess) {
+    if (cudaMallocHost(&h_x, (size_t) kMaxWindow * N * 4) != cudaSuccess ||
+        cudaMallocHost(&h_y, (size_t) kMaxWindow * N * 4) != cudaSuccess ||
+        cudaMallocHost(&h_w, (size_t) kMaxWindow * g.n_used * 4) != cudaSuccess ||
+        cudaMallocHost(&h_ids, (size_t) kMaxWindow * g.n_used * 4) != cudaSuccess ||
+        cudaMallocHost(&h_emb, (size_t) kMaxWindow * N * 4) != cudaSuccess) {
         err = "glm5: no pinned host memory";
         return false;
     }
@@ -1871,6 +1880,9 @@ const Glm5Geometry& Glm5Engine::geometry() const {
 int64_t Glm5Engine::max_context() const {
     return p_->opt.max_context;
 }
+int Glm5Engine::max_window() const {
+    return p_->pipe ? Impl::kMaxWindow : kMaxT;
+}
 uint64_t Glm5Engine::vram_bytes() const {
     return p_->vram;
 }
@@ -2008,11 +2020,7 @@ bool Glm5Engine::Impl::main_window(const int32_t* tokens, int T, int64_t pos0, b
     // Two groups (GUILD_GLM_PIPE=0: one): a layer's attention for group B runs on the GPU while the CPU computes
     // group A's experts, and A's next attention while it computes B's.  B's attention needs A's keys and recurrent
     // state at the same layer, both written before it in stream order; neither group waits for the other's FFN.
-    static const bool pipe_on = [] {
-        const char* e = std::getenv("GUILD_GLM_PIPE");
-        return !(e && e[0] == '0');
-    }();
-    if (pipe_on && !debug && T >= 2) {
+    if (pipe && T >= 2) {
         const int TA = T / 2, TB = T - TA;
         // group B's shared experts on the CPU (GUILD_GLM_SHEXP_SPLIT=0: both on the GPU): the GPU's half of a layer was
         // the longer one, by about a shared expert
@@ -2111,13 +2119,19 @@ bool Glm5Engine::Impl::mtp_window(const int32_t* tokens, int T, int64_t pos0, co
 }
 
 bool Glm5Engine::Impl::mtp_catch_up(const int32_t* tokens, int T, int64_t pos0, std::string& err) {
-    // the NextN block reads (token p, hidden p - 1): the window's rows shifted by one, the pending row first
+    // the NextN block reads (token p, hidden p - 1): the window's rows shifted by one, the pending row first; in
+    // pieces of kMaxT (its scratch's size)
     const int64_t N = g.n_embd;
-    cudaMemcpyAsync(hin, pending, (size_t) N * 4, cudaMemcpyDeviceToDevice, st);
-    if (T > 1)
-        cudaMemcpyAsync(hin + N, hn, (size_t) (T - 1) * N * 4, cudaMemcpyDeviceToDevice, st);
+    for (int b = 0; b < T; b += kMaxT) {
+        const int n = std::min(kMaxT, T - b);
+        cudaMemcpyAsync(hin, b ? hn + (size_t) (b - 1) * N : pending, (size_t) N * 4, cudaMemcpyDeviceToDevice, st);
+        if (n > 1)
+            cudaMemcpyAsync(hin + N, hn + (size_t) b * N, (size_t) (n - 1) * N * 4, cudaMemcpyDeviceToDevice, st);
+        if (!mtp_window(tokens + b, n, pos0 + b, hin, false, err))
+            return false;
+    }
     cudaMemcpyAsync(pending, hn + (size_t) (T - 1) * N, (size_t) N * 4, cudaMemcpyDeviceToDevice, st);
-    return mtp_window(tokens, T, pos0, hin, false, err);
+    return true;
 }
 
 bool Glm5Engine::forward(const int32_t* tokens, int n, int64_t pos0, float* logits, std::string& err) {
@@ -2132,8 +2146,9 @@ bool Glm5Engine::forward(const int32_t* tokens, int n, int64_t pos0, float* logi
         err = "glm5: the context is full (" + std::to_string(m.opt.max_context) + " tokens)";
         return false;
     }
-    for (int base = 0; base < n; base += kMaxT) {
-        const int T = std::min(kMaxT, n - base);
+    const int W = m.pipe ? Impl::kMaxWindow : kMaxT;
+    for (int base = 0; base < n; base += W) {
+        const int T = std::min(W, n - base);
         if (!m.main_window(tokens + base, T, pos0 + base, false, err))
             return false;
         if (logits && base + T == n && !m.head_rows(T - 1, 1, logits, err))
