@@ -6,6 +6,42 @@ Measured 2026-10-25 on this PC: Ubuntu, two Xeon Gold 6130 (2 NUMA nodes, 32 cor
 at 629817c). The model is [unsloth/GLM-5.3-Flash-GGUF](https://huggingface.co/unsloth/GLM-5.3-Flash-GGUF), UD-IQ4_XS
 (5 shards, 147 GiB). The reference is llama.cpp at 86ebfef (the glm5next branch), on the CPU.
 
+## Update 2026-10-27: the GPU and the CPU at once
+
+Measured on the same PC at 0430a78 + 08c36dc (feat/glm5), with other users' jobs on the box (load average ~20):
+
+| Dense matrices | Context | Plain decode | `--spec` | Drafts accepted | Prompt, 640 tokens | Prompt, 2967 tokens |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Q6_K (`--ctx 32768`, auto) | 16640 | 14.3 tok/s (69.8 ms a step) | 21.7 tok/s (verify 79.0 ms) | 86% | 54.2 tok/s | 49.7 tok/s |
+| Q8_0 (`--ctx 6400 --q8`) | 5632 | 12.1 tok/s | 20.5 tok/s | 86% | 50.1 tok/s | |
+
+Through the server (Q6_K, context 16896): replies at 20.8 to 21.6 tok/s, a 1192-token prompt at 53 tok/s and
+the next turns' prompts in about a second. Against the measurements below: speculative decoding 16.9 -> 21.7 tok/s,
+plain 13.8 -> 14.3, the 2967-token prompt 39.8 -> 49.7 tok/s.
+
+What changed:
+
+- A window of two or more tokens runs as two groups (`main_window`): the GPU computes one group's attention while
+  the CPU computes the other group's experts. A verify window's two tokens are the groups; a prompt window of up to
+  256 tokens is two groups of up to 128. `GUILD_GLM_PIPE=0` turns it off.
+- The GPU's ~35 kernel launches a group and layer come from a thread of their own, so the calling thread starts
+  the other group's experts at once (they took 10 ms of a 93 ms verify step).
+- One group's shared experts run on the CPU (a copy in the arenas, 1.15 GB of RAM): the GPU's half of a layer was
+  the longer one by about a shared expert.
+- Smaller GPU kernels: the mHC pre-mix's norm, quantization and product in one kernel; the routers' F32 product a
+  warp per row (130 -> 197 GB/s); f_a / g_a / beta and q_a / kv_a / the indexer's inputs each one product for a
+  token. GPU kernel time a decode step 44.5 -> 42.7 ms.
+
+Tried and dropped: one CPU phase per layer instead of three (gate/up, hidden, down with a barrier between them).
+A phase costs the pool ~40 us of ramp and tail (`phase.cpp`-style test: 162 GB/s in 111 us phases, 211 GB/s in
+1.4 ms ones), but with down rows running beside other experts' gate/up rows, some stretches of decode ran their
+down rows 3 to 5x slower, depending on memory addresses, for about 1% gained elsewhere. The gate/up phase reads
+3.27 GB a token at ~165 GB/s whatever its kernel does (a kernel that only reads the rows takes as long), so faster
+NL4 arithmetic would not help decode.
+
+Against llama.cpp after these changes, 64 replayed decode steps: KL mean 0.015 / 0.028 (5-token / 640-token
+prompt), top-1 equal on 98% of the steps.
+
 ## What GLM-5.3-Flash is, and how Guild runs it
 
 45 layers: 34 KDA (gated linear attention with a 128 x 128 state per head) and 11 DSA (MLA attention with the latent

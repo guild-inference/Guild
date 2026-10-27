@@ -282,10 +282,11 @@ The engine fits the context to the VRAM and says how much it holds. When the GGU
 leave less than the context asked for (up to 16k tokens), it re-quantizes them to Q6_K at load (about 16 s);
 `GUILD_GLM_DENSE=q8_0` keeps Q8_0, `q6_k` always converts. `GUILD_GLM_MTP=0` decodes without the drafts.
 
-On a dual Xeon Gold 6130 with a GTX 1070 (8 GB): 16384 tokens of context, 13.8 tok/s plain and 16.9 tok/s with the
-drafts (87% accepted), prompts of 640 to 2967 tokens at 36 to 45 tok/s, and a conversation's next turn reads only
-what is new. Guild's decode steps match llama.cpp's logits on the same GGUF to a mean KL of 0.012 to 0.027 nats, with
-the same top token on 92% to 95% of them ([bench/results/2026-10-25-glm5](bench/results/2026-10-25-glm5/README.md)).
+On a dual Xeon Gold 6130 with a GTX 1070 (8 GB): about 16.6k tokens of context, 14.3 tok/s plain and 21.7 tok/s
+with the drafts (86% accepted), prompts of 640 to 2967 tokens at 50 to 54 tok/s, and a conversation's next turn
+reads only what is new. The GPU computes one token's (or half a prompt window's) attention while the CPU computes
+the other's experts. Guild's decode steps match llama.cpp's logits on the same GGUF to a mean KL of 0.015 to 0.028
+nats, with the same top token on 98% of them ([bench/results/2026-10-25-glm5](bench/results/2026-10-25-glm5/README.md)).
 It has run on CUDA only so far; the server parses GLM's tool calls and its `<think>` blocks.
 
 ## Performance philosophy
