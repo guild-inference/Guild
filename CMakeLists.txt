@@ -710,6 +710,18 @@ if(GUILD_ENABLE_CUDA OR GUILD_ENABLE_HIP)
       add_test(NAME mmvq_multi_parity_cuda_layout COMMAND mmvq_multi_parity)
       set_tests_properties(mmvq_multi_parity_cuda_layout PROPERTIES ENVIRONMENT "GUILD_MMVQ_WAVE=0")
     endif()
+    # the staged rows (Q4_K, Q6_K, Q8_0) against the kernels without them, bitwise: two processes, since the switch
+    # is an environment variable read once
+    add_executable(mmvq_staged_parity src/kernels/mmvq_staged_parity.cpp)
+    target_include_directories(mmvq_staged_parity PRIVATE ${_guild_gpu_include_directories})
+    target_link_libraries(mmvq_staged_parity PRIVATE guild_kernels ${_guild_gpu_runtime_target})
+    add_test(NAME mmvq_staged_reference
+             COMMAND mmvq_staged_parity --dump ${CMAKE_CURRENT_BINARY_DIR}/mmvq_staged_reference.bin)
+    set_tests_properties(mmvq_staged_reference PROPERTIES ENVIRONMENT "GUILD_MMVQ_STAGED=0"
+                         FIXTURES_SETUP mmvq_staged_reference)
+    add_test(NAME mmvq_staged_parity
+             COMMAND mmvq_staged_parity --compare ${CMAKE_CURRENT_BINARY_DIR}/mmvq_staged_reference.bin)
+    set_tests_properties(mmvq_staged_parity PROPERTIES FIXTURES_REQUIRED mmvq_staged_reference)
   endif()
   # the IQ kernels that decode a weight part once for every column/entry, bitwise vs the per-column ones
   # (GPU, synthetic, no model; --bench adds old/new timings)

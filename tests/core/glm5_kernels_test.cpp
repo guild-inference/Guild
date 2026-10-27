@@ -810,9 +810,74 @@ static int bench() {
     return 0;
 }
 
+// `glm5_kernels_test shapes`: guild::kernels::native_mmvq at the other models' dense shapes (Qwen3.8: Q8_0, 2560
+// wide; Ornith: Q4_K / Q6_K, 2048 wide; both heads Q6_K), GB/s of weights read, 1 / 2 / 4 columns
+static int bench_shapes() {
+    struct Shape {
+        const char* what;
+        int type, n_in, n_out;
+    } shapes[] = {
+        {"qwen qkv", 8, 2560, 10240},      {"qwen gate", 8, 2560, 6144},       {"qwen ssm_out", 8, 6144, 2560},
+        {"qwen q", 8, 2560, 12288},        {"qwen kv", 8, 2560, 512},          {"qwen shexp gu", 8, 2560, 640},
+        {"qwen shexp down", 8, 640, 2560}, {"qwen hc down", 8, 10240, 320},    {"qwen hc up", 8, 320, 10240},
+        {"qwen head", 14, 2560, 248320},   {"ornith qkv", 12, 2048, 8192},     {"ornith qkv q6", 14, 2048, 8192},
+        {"ornith gate", 12, 2048, 4096},   {"ornith out", 12, 4096, 2048},     {"ornith kv", 12, 2048, 512},
+        {"ornith v q6", 14, 2048, 512},    {"ornith shexp gu", 12, 2048, 512}, {"ornith shexp dn", 14, 512, 2048},
+        {"ornith head", 14, 2048, 248320}};
+    cudaStream_t st;
+    cudaStreamCreate(&st);
+    for (const Shape& sh : shapes) {
+        const size_t wb = guild::kernels::native_mmvq_weight_bytes(sh.type, sh.n_in, sh.n_out);
+        // copies of the matrix cycled through, 64 MB or more of them, so the reads come from DRAM and not the L2
+        // cache, as in a model's forward pass (a GTX 1070's L2 holds 2 MB)
+        const int copies = (int) std::min<size_t>(64, (64u << 20) / wb + 1);
+        std::vector<void*> w(copies);
+        for (void*& p : w) {
+            cudaMalloc(&p, wb);
+            cudaMemset(p, 0, wb);
+        }
+        void* xq;
+        float *x, *y;
+        cudaMalloc(&x, (size_t) sh.n_in * 8 * 4);
+        cudaMemset(x, 0, (size_t) sh.n_in * 8 * 4);
+        cudaMalloc(&xq, guild::kernels::native_q8_1_bytes(sh.n_in, 8));
+        cudaMalloc(&y, (size_t) sh.n_out * 8 * 4);
+        guild::kernels::native_quantize_q8_1(x, xq, sh.n_in, 8, st);
+        std::printf("%-16s %-5s %6d x %-6d", sh.what,
+                    sh.type == 8    ? "Q8_0"
+                    : sh.type == 12 ? "Q4_K"
+                                    : "Q6_K",
+                    sh.n_in, sh.n_out);
+        for (int ncols : {1, 2, 3, 4, 5, 8}) {
+            cudaEvent_t a, b;
+            cudaEventCreate(&a);
+            cudaEventCreate(&b);
+            guild::kernels::native_mmvq(sh.type, w[0], xq, y, sh.n_in, sh.n_out, ncols, st);
+            const int reps = sh.n_out > 100000 ? 10 : 200;
+            cudaEventRecord(a, st);
+            for (int i = 0; i < reps; ++i)
+                guild::kernels::native_mmvq(sh.type, w[i % copies], xq, y, sh.n_in, sh.n_out, ncols, st);
+            cudaEventRecord(b, st);
+            cudaEventSynchronize(b);
+            float ms = 0;
+            cudaEventElapsedTime(&ms, a, b);
+            std::printf("  T%d %6.1f us %4.0f", ncols, 1000.0 * ms / reps, wb / (ms / reps * 1e-3) / 1e9);
+        }
+        std::printf("\n");
+        for (void* p : w)
+            cudaFree(p);
+        cudaFree(x);
+        cudaFree(xq);
+        cudaFree(y);
+    }
+    return 0;
+}
+
 int main(int argc, char** argv) {
     if (argc > 1 && std::string(argv[1]) == "bench")
         return bench();
+    if (argc > 1 && std::string(argv[1]) == "shapes")
+        return bench_shapes();
     test_hc();
     test_hc_mix();
     test_kda();
