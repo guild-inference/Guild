@@ -203,6 +203,12 @@ int main(int argc, char** argv) {
                      "MTP: %d of %d drafts accepted (%.0f%%); per step: draft %.1f ms, verify %.1f, accept %.1f\n",
                      accepted, offered, 100.0 * accepted / offered, draft_ms / offered, verify_ms / offered,
                      accept_ms / offered);
+    if (std::getenv("GLM5_RUN_STEPS")) {
+        std::fprintf(stderr, "steps (ms, CPU ms):");
+        for (size_t i = 0; i < step_ms.size(); ++i)
+            std::fprintf(stderr, " %.0f/%.0f", step_ms[i], step_cpu[i]);
+        std::fprintf(stderr, "\n");
+    }
     if (step_ms.size() >= 4) {
         auto pct = [](std::vector<double> v, double q) {
             std::sort(v.begin(), v.end());

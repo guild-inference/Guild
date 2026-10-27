@@ -737,6 +737,38 @@ __global__ void __launch_bounds__(128)
             red[threadIdx.x][0] + red[threadIdx.x][1] + red[threadIdx.x][2] + red[threadIdx.x][3];
 }
 
+// one or two tokens (the routers, 4096 -> 288): a warp per row, four rows a block, eight float4 loads in flight a lane.
+// A block per row read the routers at 130 GB/s on a GTX 1070 (288 blocks: a wave and a fifth).
+template <int T>
+__global__ void __launch_bounds__(128)
+    f32_rows_k(const float* __restrict__ W, const float* __restrict__ x, float* __restrict__ y, int n_in, int n_out) {
+    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
+    const int r = blockIdx.x * 4 + warp;
+    if (r >= n_out)
+        return;
+    const float4* wr = reinterpret_cast<const float4*>(W + (size_t) r * n_in);
+    const int n4 = n_in / 4;
+    float acc[T];
+#pragma unroll
+    for (int t = 0; t < T; ++t)
+        acc[t] = 0.f;
+#pragma unroll 8
+    for (int k = lane; k < n4; k += 32) {
+        const float4 w = __ldg(wr + k);
+#pragma unroll
+        for (int t = 0; t < T; ++t) {
+            const float4 xv = __ldg(reinterpret_cast<const float4*>(x + (size_t) t * n_in) + k);
+            acc[t] += w.x * xv.x + w.y * xv.y + w.z * xv.z + w.w * xv.w;
+        }
+    }
+#pragma unroll
+    for (int t = 0; t < T; ++t) {
+        const float v = warp_sum(acc[t]);
+        if (lane == 0)
+            y[(size_t) t * n_out + r] = v;
+    }
+}
+
 __global__ void kv_store_k(const float* kv, __half* cache, int64_t pos0, int L, int T) {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= L * T)
@@ -1265,7 +1297,13 @@ void q8_0_narrow(const void* W, const void* xq8_1, float* y, int n_in, int n_out
 }
 
 void f32_matvec(const float* W, const float* x, float* y, int n_in, int n_out, int T, void* st) {
-    f32_matvec_k<<<dim3(n_out, (T + kTile - 1) / kTile), 128, 0, S(st)>>>(W, x, y, n_in, n_out, T);
+    const unsigned blocks = (unsigned) ((n_out + 3) / 4);
+    if (T == 1 && n_in % 4 == 0)
+        f32_rows_k<1><<<blocks, 128, 0, S(st)>>>(W, x, y, n_in, n_out);
+    else if (T == 2 && n_in % 4 == 0)
+        f32_rows_k<2><<<blocks, 128, 0, S(st)>>>(W, x, y, n_in, n_out);
+    else
+        f32_matvec_k<<<dim3(n_out, (T + kTile - 1) / kTile), 128, 0, S(st)>>>(W, x, y, n_in, n_out, T);
 }
 
 void kv_store(const float* kv, void* cache, int64_t pos0, int L, int T, void* st) {

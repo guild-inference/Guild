@@ -341,20 +341,22 @@ static void test_rms_norm() {
 }
 
 static void test_f32_matvec() {
-    const int n_in = 4096, n_out = 288, T = 11;
-    auto W = rnd((size_t) n_out * n_in, 0.05f), x = rnd((size_t) T * n_in);
-    float *dW = up(W), *dx = up(x), *dy;
-    cudaMalloc(&dy, (size_t) T * n_out * 4);
-    k::f32_matvec(dW, dx, dy, n_in, n_out, T, nullptr);
-    std::vector<float> ref((size_t) T * n_out);
-    for (int t = 0; t < T; ++t)
-        for (int r = 0; r < n_out; ++r) {
-            double s = 0;
-            for (int i = 0; i < n_in; ++i)
-                s += (double) W[(size_t) r * n_in + i] * x[(size_t) t * n_in + i];
-            ref[(size_t) t * n_out + r] = (float) s;
-        }
-    check("f32_matvec", down(dy, (size_t) T * n_out), ref, 1e-4);
+    for (const int T : {11, 1, 2}) {
+        const int n_in = 4096, n_out = 288;
+        auto W = rnd((size_t) n_out * n_in, 0.05f), x = rnd((size_t) T * n_in);
+        float *dW = up(W), *dx = up(x), *dy;
+        cudaMalloc(&dy, (size_t) T * n_out * 4);
+        k::f32_matvec(dW, dx, dy, n_in, n_out, T, nullptr);
+        std::vector<float> ref((size_t) T * n_out);
+        for (int t = 0; t < T; ++t)
+            for (int r = 0; r < n_out; ++r) {
+                double s = 0;
+                for (int i = 0; i < n_in; ++i)
+                    s += (double) W[(size_t) r * n_in + i] * x[(size_t) t * n_in + i];
+                ref[(size_t) t * n_out + r] = (float) s;
+            }
+        check(("f32_matvec T " + std::to_string(T)).c_str(), down(dy, (size_t) T * n_out), ref, 1e-4);
+    }
 }
 
 static void test_heads_and_attention() {
@@ -558,7 +560,8 @@ static void test_indexer() {
         std::sort(got.begin(), got.end());
         sel_bad += got != want;
     }
-    check("idx_score", got_sc, ref_sc, 1e-4);
+    // a pooled key element can round to the next FP16 value in one sum order and not the other: ~1e-4 of a score
+    check("idx_score", got_sc, ref_sc, 1e-3);
     failures += sel_bad != 0;
     std::printf("%-28s %s (%d, %d, %d cells)\n", "idx_select", sel_bad ? "FAIL" : "ok", gn[0], gn[1], gn[2]);
 }
@@ -692,6 +695,29 @@ static int bench() {
         {"head 4096x154880", 4096, 154880}};
     cudaStream_t st;
     cudaStreamCreate(&st);
+    { // the routers: F32 4096 x 288
+        float *w, *x, *y;
+        cudaMalloc(&w, (size_t) 4096 * 288 * 4);
+        cudaMemset(w, 0, (size_t) 4096 * 288 * 4);
+        cudaMalloc(&x, 4096 * 2 * 4);
+        cudaMemset(x, 0, 4096 * 2 * 4);
+        cudaMalloc(&y, 288 * 2 * 4);
+        for (const int T : {1, 2}) {
+            cudaEvent_t a, b;
+            cudaEventCreate(&a);
+            cudaEventCreate(&b);
+            k::f32_matvec(w, x, y, 4096, 288, T, st);
+            cudaEventRecord(a, st);
+            for (int i = 0; i < 100; ++i)
+                k::f32_matvec(w, x, y, 4096, 288, T, st);
+            cudaEventRecord(b, st);
+            cudaEventSynchronize(b);
+            float ms = 0;
+            cudaEventElapsedTime(&ms, a, b);
+            std::printf("f32_matvec 4096 x 288 T %d: %6.1f us  %6.1f GB/s\n", T, 10.0 * ms,
+                        4096.0 * 288 * 4 / (ms / 100 * 1e-3) / 1e9);
+        }
+    }
     for (const int n_in : {256, 512}) { // attn_k_b and attn_v_b: 64 heads of [512][256] and [256][512]
         const int H = 64, n_out = 131072 / n_in;
         const size_t wb = (size_t) H * n_out * n_in / 32 * 34;
