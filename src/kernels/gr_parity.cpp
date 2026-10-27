@@ -291,9 +291,9 @@ int scalar_activation_contract() {
 }
 
 int fused_multi_lds_parity(const float* d_norm, const uint16_t* d_down, const uint16_t* d_up, const uint16_t* d_inject,
-                           float eps) {
+                           float eps, int T) {
     using namespace guild::kernels;
-    constexpr int N = 2560, HC = 4, LR = 320, D = N * HC, T = kFusedGrMaxT;
+    constexpr int N = 2560, HC = 4, LR = 320, D = N * HC;
     std::mt19937 rng(0x6f8a);
     std::normal_distribution<float> normal(0.0f, 0.3f);
     std::vector<float> r((size_t) T * D), bo((size_t) T * N), inj((size_t) T * HC);
@@ -387,9 +387,9 @@ int fused_multi_lds_parity(const float* d_norm, const uint16_t* d_down, const ui
 
     cudaStream_t stream = nullptr;
     check(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking), "multi stream");
-    // Max T forces the HIP kernel's full dynamic-LDS request: 8 * 1280 * sizeof(float) = 40 KiB.
+    // At max T this forces the HIP kernel's full dynamic-LDS request: 8 * 1280 * sizeof(float) = 40 KiB.
     fused_gr_read_multi(args.data(), T, d_xn, stream);
-    check(cudaStreamSynchronize(stream), "multi max-T sync");
+    check(cudaStreamSynchronize(stream), "multi sync");
     const Snapshot multi = snapshot();
     for (int t = 0; t < T; ++t)
         fused_gr_read(args[t], stream);
@@ -397,7 +397,7 @@ int fused_multi_lds_parity(const float* d_norm, const uint16_t* d_down, const ui
     const Snapshot single = snapshot();
     int bad = 0;
     if (!same(multi, single)) {
-        std::printf("  fused GR multi max-T differs from single-token calls\n");
+        std::printf("  fused GR multi T=%d differs from single-token calls\n", T);
         ++bad;
     }
 
@@ -411,7 +411,7 @@ int fused_multi_lds_parity(const float* d_norm, const uint16_t* d_down, const ui
     check(cudaStreamSynchronize(stream), "multi graph initial sync");
     const Snapshot captured = snapshot();
     if (!same(multi, captured)) {
-        std::printf("  fused GR multi captured graph differs from direct max-T call\n");
+        std::printf("  fused GR multi T=%d captured graph differs from the direct call\n", T);
         ++bad;
     }
 
@@ -442,7 +442,7 @@ int fused_multi_lds_parity(const float* d_norm, const uint16_t* d_down, const ui
         ++bad;
     }
 
-    std::printf("  fused GR multi max-T=8 LDS launch and changing graph replay %s\n", bad == 0 ? "pass" : "FAIL");
+    std::printf("  fused GR multi T=%d launch and changing graph replay %s\n", T, bad == 0 ? "pass" : "FAIL");
     check(cudaGraphExecDestroy(graph_exec), "multi graph exec destroy");
     check(cudaGraphDestroy(graph), "multi graph destroy");
     check(cudaStreamDestroy(stream), "multi stream destroy");
@@ -827,7 +827,10 @@ int main(int argc, char** argv) {
             if (!ok)
                 ++bad;
         }
-        bad += fused_multi_lds_parity(dN, dD, dU, dJ, eps);
+        // 8 tokens: the HIP kernel's full dynamic-LDS request; 1 and 2: a verify group's reads (the direct kernels
+        // before sm_70 under GUILD_HC_SPLIT=2, the gr_parity_staged test)
+        for (const int T : {1, 2, (int) guild::kernels::kFusedGrMaxT})
+            bad += fused_multi_lds_parity(dN, dD, dU, dJ, eps, T);
         select_activation_mode(0);
         cudaFree(rws_raw);
         cudaFree(dR);
