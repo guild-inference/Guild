@@ -878,13 +878,21 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 const char* e = std::getenv("GUILD_PLE_BATCH");
                 return !e || e[0] != '0';
             }();
-            const bool ple_batch_kv = ple_batch_env && dec_batch && n > 1 && ss.ple.w.key_bf16 != nullptr &&
-                                      ss.ple.w.value_bf16 != nullptr && ple_native_bf16_enabled() &&
-                                      ple_native_postops_enabled();
+            // the key in BF16, or quantized (ple_block's native path: the row to Q8_1, then the native MMVQ, whose
+            // n-column call is each column's single one bit for bit)
+            const bool ple_native_key = ss.ple.w.key_bf16 == nullptr && ss.ple.w.key_native_data != nullptr;
+            const bool ple_batch_kv =
+                ple_batch_env && dec_batch && n > 1 && (ss.ple.w.key_bf16 != nullptr || ple_native_key) &&
+                ss.ple.w.value_bf16 != nullptr && ple_native_bf16_enabled() && ple_native_postops_enabled();
             if (ple_batch_kv) {
                 try {
-                    bf16_gemv_fp32_mmvf_multi(ple_ + (size_t) tb * N, N, ss.ple.w.key_bf16, xn_ + (size_t) tb * HC * N,
-                                              HC * N, N, HC * N, n, cs);
+                    if (ple_native_key) {
+                        native_quantize_q8_1(ple_ + (size_t) tb * N, xq_, (int) N, n, cs);
+                        native_mmvq(ss.ple.w.key_native_type, ss.ple.w.key_native_data, xq_, xn_ + (size_t) tb * HC * N,
+                                    (int) N, (int) (HC * N), n, cs);
+                    } else
+                        bf16_gemv_fp32_mmvf_multi(ple_ + (size_t) tb * N, N, ss.ple.w.key_bf16,
+                                                  xn_ + (size_t) tb * HC * N, HC * N, N, HC * N, n, cs);
                     bf16_gemv_fp32_mmvf_multi(ple_ + (size_t) tb * N, N, ss.ple.w.value_bf16, z_ + (size_t) tb * N, N,
                                               N, N, n, cs);
                 } catch (const std::exception& e) {
