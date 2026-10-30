@@ -135,6 +135,30 @@ void numa_split_touch(uint8_t* arena, uint64_t bytes, const guild::kernels::cpu:
         t.join();
 }
 
+// Takes a placed region out of Linux's automatic NUMA balancing (/proc/sys/kernel/numa_balancing).  The balancer
+// samples a process's pages by unmapping them, so the next read of each takes a "hinting" fault, and it migrates the
+// pages another node reads more.  The split already put every row on the node whose threads compute it, so the
+// sampling only adds faults (and TLB flushes on every pool thread).  The scanner skips a mapping that has its own
+// memory policy; MPOL_LOCAL is what first touch did, and without MPOL_MF_MOVE no page moves.
+// GUILD_EXPERT_AUTONUMA=1 leaves the region to the balancer, as before.
+void exclude_from_numa_balancing(void* p, uint64_t bytes) {
+#if defined(SYS_mbind)
+    static const bool keep = [] {
+        const char* v = std::getenv("GUILD_EXPERT_AUTONUMA");
+        return v != nullptr && std::atoi(v) != 0;
+    }();
+    if (keep || p == nullptr || bytes == 0)
+        return;
+    const uint64_t page = (uint64_t) std::max(4096l, sysconf(_SC_PAGESIZE));
+    const uint64_t a = (uint64_t) (uintptr_t) p & ~(page - 1);
+    const uint64_t len = ((uint64_t) (uintptr_t) p + bytes - a + page - 1) & ~(page - 1);
+    (void) syscall(SYS_mbind, (unsigned long) a, (unsigned long) len, MPOL_LOCAL, nullptr, 0ul, 0u);
+#else
+    (void) p;
+    (void) bytes;
+#endif
+}
+
 // Where the split's pages ended up: a sample of each node's spans, through move_pages(2) without moving anything.
 void numa_split_report(const uint8_t* arena, uint64_t bytes, const guild::kernels::cpu::ExpertLayout& lay,
                        bool gate_up_interleaved, int64_t n_expert, const std::vector<uint64_t>& layer_blob_bytes,
@@ -2003,6 +2027,7 @@ bool FileExpertSource::pin_cache_complement(const ExpertCache& cache, std::strin
 #endif
                     numa_split_touch((uint8_t*) arena, bytes, layout(), interleave_on_copy_, n_expert_,
                                      layer_blob_bytes_, offsets, kNoComplement);
+                    exclude_from_numa_balancing(arena, bytes);
                 } else if (!process && known && (force || mode == MPOL_DEFAULT) && nodes > 1) {
                     const size_t mbind_align = base_align;
                     const size_t aligned_bytes = ((size_t) bytes + mbind_align - 1) & ~(mbind_align - 1);
@@ -2415,6 +2440,8 @@ void FileExpertSource::build_cpu_repack(uint64_t headroom_bytes, std::string& no
     }
     for (auto& t : threads)
         t.join();
+    if (split)
+        exclude_from_numa_balancing(mem, total);
     if (failed.load()) {
         (void) munmap(mem, (size_t) total);
         note = "skipped: an expert could not be read or repacked";
