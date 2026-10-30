@@ -724,6 +724,19 @@ if(GUILD_ENABLE_CUDA OR GUILD_ENABLE_HIP)
     add_test(NAME mmvq_staged_parity
              COMMAND mmvq_staged_parity --compare ${CMAKE_CURRENT_BINARY_DIR}/mmvq_staged_reference.bin)
     set_tests_properties(mmvq_staged_parity PROPERTIES FIXTURES_REQUIRED mmvq_staged_reference)
+    # the verify windows' GDN recurrence and commit (column-block kernels) against the kernels before them, bitwise:
+    # two processes, since the switch is an environment variable read once
+    add_executable(gdn_step_parity src/kernels/gdn_step_parity.cpp)
+    target_include_directories(gdn_step_parity PRIVATE ${_guild_gpu_include_directories})
+    target_link_libraries(gdn_step_parity PRIVATE guild_kernels ${_guild_gpu_runtime_target})
+    add_test(NAME gdn_step_reference
+             COMMAND gdn_step_parity --dump ${CMAKE_CURRENT_BINARY_DIR}/gdn_step_reference.bin)
+    set_tests_properties(gdn_step_reference PROPERTIES ENVIRONMENT "GUILD_GDN_STEP_COLS=0"
+                         FIXTURES_SETUP gdn_step_reference)
+    add_test(NAME gdn_step_parity
+             COMMAND gdn_step_parity --compare ${CMAKE_CURRENT_BINARY_DIR}/gdn_step_reference.bin)
+    set_tests_properties(gdn_step_parity PROPERTIES ENVIRONMENT "GUILD_GDN_STEP_COLS=1"
+                         FIXTURES_REQUIRED gdn_step_reference)
     # hip_router_fast on the CUDA runtime: the fast top-k router (the CUDA default) against the block kernel, bitwise
     add_executable(router_fast_parity src/kernels/router_fast_parity.cpp)
     target_include_directories(router_fast_parity PRIVATE ${_guild_gpu_include_directories})
