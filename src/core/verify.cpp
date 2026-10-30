@@ -143,6 +143,51 @@ bool native_of(const WeightRef* w, const std::string& name, std::string& err) {
 } // namespace
 
 namespace {
+// The kernel node just captured on `s` gets priority `prio`, which the graph honors when it is instantiated with
+// cudaGraphInstantiateFlagUseNodePriority.  For gdn_cs_'s small kernels: their blocks are dispatched before the
+// remaining blocks of the large product the main stream runs beside them (without it they started near that product's
+// end: nsys, 77 us after the fork of an 84 us gate product).
+void prioritize_captured(cudaStream_t s, int prio) {
+#if defined(GUILD_USE_HIP) || defined(GUILD_HIP_GFX906)
+    (void) s; // the HIP builds create gdn_cs_ without a priority
+    (void) prio;
+#else
+    cudaStreamCaptureStatus st = cudaStreamCaptureStatusNone;
+    const cudaGraphNode_t* deps = nullptr;
+    size_t nd = 0;
+    if (prio == 0 || cudaStreamGetCaptureInfo(s, &st, nullptr, nullptr, &deps, &nd) != cudaSuccess ||
+        st != cudaStreamCaptureStatusActive)
+        return;
+    for (size_t i = 0; i < nd; ++i) {
+        cudaGraphNodeType ty = cudaGraphNodeTypeEmpty;
+        if (cudaGraphNodeGetType(deps[i], &ty) != cudaSuccess || ty != cudaGraphNodeTypeKernel)
+            continue;
+        cudaKernelNodeAttrValue v{};
+        v.priority = prio;
+        cudaGraphKernelNodeSetAttribute(deps[i], cudaKernelNodeAttributePriority, &v);
+    }
+#endif
+}
+
+// gdn_cs_: at the device's greatest stream priority on CUDA (prioritize_captured), a plain stream on HIP
+bool create_gdn_stream(cudaStream_t* s, int* prio) {
+    *prio = 0;
+#if defined(GUILD_USE_HIP) || defined(GUILD_HIP_GFX906)
+    return cudaStreamCreateWithFlags(s, cudaStreamNonBlocking) == cudaSuccess;
+#else
+    int least = 0, greatest = 0;
+    if (cudaDeviceGetStreamPriorityRange(&least, &greatest) == cudaSuccess)
+        *prio = greatest;
+    return cudaStreamCreateWithPriority(s, cudaStreamNonBlocking, *prio) == cudaSuccess;
+#endif
+}
+
+#if defined(GUILD_USE_HIP) || defined(GUILD_HIP_GFX906)
+constexpr unsigned kUseNodePriority = 0;
+#else
+constexpr unsigned kUseNodePriority = cudaGraphInstantiateFlagUseNodePriority;
+#endif
+
 std::atomic<const Verifier*> g_diag_verifier{nullptr};
 void diag_active_verifier(std::FILE* f) {
     if (const Verifier* v = g_diag_verifier.load())
@@ -316,6 +361,8 @@ Verifier::~Verifier() {
         cudaStreamSynchronize(cs_);
     if (sh_cs_)
         cudaStreamSynchronize(sh_cs_);
+    if (gdn_cs_)
+        cudaStreamSynchronize(gdn_cs_);
     for (auto& e : exec_)
         if (e)
             cudaGraphExecDestroy(e);
@@ -335,6 +382,8 @@ Verifier::~Verifier() {
         cudaStreamDestroy(cs_);
     if (sh_cs_)
         cudaStreamDestroy(sh_cs_);
+    if (gdn_cs_)
+        cudaStreamDestroy(gdn_cs_);
     if (copy_) {
         cudaStreamSynchronize(copy_);
         cudaStreamDestroy(copy_);
@@ -345,6 +394,10 @@ Verifier::~Verifier() {
         cudaEventDestroy(ev_fork_);
     if (ev_join_)
         cudaEventDestroy(ev_join_);
+    if (ev_gdn_fork_)
+        cudaEventDestroy(ev_gdn_fork_);
+    if (ev_gdn_join_)
+        cudaEventDestroy(ev_gdn_join_);
     if (skip_)
         cudaFree(skip_);
     if (slot_off_d_)
@@ -617,13 +670,16 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
         return false;
     }
     if (cudaStreamCreateWithFlags(&cs_, cudaStreamNonBlocking) != cudaSuccess ||
-        cudaStreamCreateWithFlags(&sh_cs_, cudaStreamNonBlocking) != cudaSuccess) {
+        cudaStreamCreateWithFlags(&sh_cs_, cudaStreamNonBlocking) != cudaSuccess ||
+        !create_gdn_stream(&gdn_cs_, &gdn_prio_)) {
         err = "verify: stream create failed";
         return false;
     }
     if (cudaEventCreateWithFlags(&commit_done_, cudaEventDisableTiming) != cudaSuccess ||
         cudaEventCreateWithFlags(&ev_fork_, cudaEventDisableTiming) != cudaSuccess ||
-        cudaEventCreateWithFlags(&ev_join_, cudaEventDisableTiming) != cudaSuccess) {
+        cudaEventCreateWithFlags(&ev_join_, cudaEventDisableTiming) != cudaSuccess ||
+        cudaEventCreateWithFlags(&ev_gdn_fork_, cudaEventDisableTiming) != cudaSuccess ||
+        cudaEventCreateWithFlags(&ev_gdn_join_, cudaEventDisableTiming) != cudaSuccess) {
         err = "verify: event create failed";
         return false;
     }
@@ -864,6 +920,18 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
 #endif
     }();
     const bool sh_fork = sh_stream_env && !prof_on_ && sh_cs_ != nullptr && ev_fork_ != nullptr && ev_join_ != nullptr;
+    // GUILD_GDN_FORK=0: a GDN layer's conv and alpha/beta projection on the main stream, before its gate product
+    static const bool gdn_fork_env = [] {
+        const char* e = std::getenv("GUILD_GDN_FORK");
+#if defined(GUILD_USE_HIP) || defined(GUILD_HIP_GFX906)
+        return e != nullptr && e[0] != '0'; // measured on CUDA only: opt-in (both HIP builds)
+#else
+        return !e || e[0] != '0';
+#endif
+    }();
+    const bool gdn_fork =
+        gdn_fork_env && !prof_on_ && gdn_cs_ != nullptr && ev_gdn_fork_ != nullptr && ev_gdn_join_ != nullptr;
+    gdn_node_prio_ = gdn_fork;
     const bool sh_defer = sh_fork && sh_fork_late && G == 2;
     int64_t sh_pending_l = -1; // the shared expert pre() left to the next post() (sh_defer)
     int sh_pending_grp = 0;
@@ -1062,26 +1130,45 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 native_quantize_q8_1(xm, xq_, (int) N, n, cs);
                 native_mmvq(wqkv->native_type, wqkv->native_data, xq_, qkv + (size_t) tb * C, (int) N, (int) C, n, cs);
                 stamp(l, 2, grp);
+                // the conv and the alpha/beta projection run on gdn_cs_ beside the gate product, which reads neither
+                // their inputs' writers nor their outputs; the recurrence joins both
+                cudaStream_t gs = cs;
+                if (gdn_fork) {
+                    cudaEventRecord(ev_gdn_fork_, cs);
+                    cudaStreamWaitEvent(gdn_cs_, ev_gdn_fork_, 0);
+                    gs = gdn_cs_;
+                }
                 if (batch_rec_) { // each row from its own slot's conv history, one row each
                     for (int t = tb; t < te; ++t) {
                         SessionState& sx = slot_ss(t);
                         const float* cx = sx.gdn_state + (size_t) (gi - sx.gdn_ord0) * gdn_floats +
                                           (uint64_t) g.ssm_state_size * g.ssm_v_heads * g.ssm_state_size;
                         gdn_conv_l2_multi(cx, qkv + (size_t) t * C, (const float*) wc->data, hb + (size_t) t * C,
-                                          (int) C, (int) (2 * HK), EPS, 1, cs, 0);
+                                          (int) C, (int) (2 * HK), EPS, 1, gs, 0);
+                        if (gdn_fork)
+                            prioritize_captured(gs, gdn_prio_);
                     }
-                } else
-                    gdn_conv_l2_multi(conv, qkv, (const float*) wc->data, hb, (int) C, (int) (2 * HK), EPS, n, cs, tb);
+                } else {
+                    gdn_conv_l2_multi(conv, qkv, (const float*) wc->data, hb, (int) C, (int) (2 * HK), EPS, n, gs, tb);
+                    if (gdn_fork)
+                        prioritize_captured(gs, gdn_prio_);
+                }
                 stamp(l, 3, grp);
                 gdn_ab_multi(xm, (const uint16_t*) wa->data, (const uint16_t*) wb->data, (const float*) wdt->data,
                              (const float*) wsa->data, gate + (size_t) tb * HV, beta + (size_t) tb * HV, (int) N,
-                             (int) HV, n, cs);
+                             (int) HV, n, gs);
+                if (gdn_fork) {
+                    prioritize_captured(gs, gdn_prio_);
+                    cudaEventRecord(ev_gdn_join_, gdn_cs_);
+                }
                 stamp(l, 4, grp);
                 native_mmvq(wg->native_type, wg->native_data, xq_, z_ + (size_t) tb * ZV, (int) N, (int) ZV, n, cs);
                 if (l == 0 && grp == 0 && dbg_l0_z_) {
                     cudaMemcpyAsync(dbg_l0_z_, z_ + (size_t) tb * ZV, (size_t) ZV * sizeof(float),
                                     cudaMemcpyDeviceToDevice, cs);
                 }
+                if (gdn_fork)
+                    cudaStreamWaitEvent(cs, ev_gdn_join_, 0);
                 stamp(l, 5, grp);
                 // the recurrence from the untouched state over tokens [0, te); outputs only for this group's
                 if (batch_rec_) { // each row's recurrence from its own slot's state, one token
@@ -1785,7 +1872,7 @@ bool Verifier::capture(int T, std::string& err) {
         std::fprintf(stderr, "\n");
     }
 #endif
-    const cudaError_t ie = cudaGraphInstantiate(&exec_[T], graph, 0);
+    const cudaError_t ie = cudaGraphInstantiate(&exec_[T], graph, gdn_node_prio_ ? kUseNodePriority : 0);
     cudaGraphDestroy(graph);
     if (ie != cudaSuccess) {
         err = std::string("verify: instantiate: ") + cudaGetErrorString(ie);
@@ -1818,8 +1905,31 @@ bool Verifier::capture_commit(std::string& err) {
         return false;
     }
     bool ok = true;
+    // GUILD_GDN_COMMIT_FORK=0 runs the whole commit on cs_.  Otherwise the small commits (the GDN layers' conv
+    // histories, the QSA layers' indexer appends, the PLE history) run on gdn_cs_, at its priority, beside the GDN
+    // state commits on cs_: they touch disjoint state and all read commit_, copied before the fork.  nsys of the
+    // short-context decode: the commit graph's span 2.26 ms -> 1.75 ms (median; 1.95 ms without the priority).
+    static const bool commit_fork_env = [] {
+        const char* e = std::getenv("GUILD_GDN_COMMIT_FORK");
+#if defined(GUILD_USE_HIP) || defined(GUILD_HIP_GFX906)
+        return e != nullptr && e[0] != '0'; // measured on CUDA only: opt-in (both HIP builds)
+#else
+        return !e || e[0] != '0';
+#endif
+    }();
+    const bool commit_fork =
+        commit_fork_env && gdn_cs_ != nullptr && ev_gdn_fork_ != nullptr && ev_gdn_join_ != nullptr;
+    cudaStream_t side = commit_fork ? gdn_cs_ : cs_;
+    const auto mark = [&] {
+        if (commit_fork)
+            prioritize_captured(gdn_cs_, gdn_prio_);
+    };
     try {
         copy_i32_from_mapped(commit_, m_commit_, 2 + MT, cs_);
+        if (commit_fork) {
+            cudaEventRecord(ev_gdn_fork_, cs_);
+            cudaStreamWaitEvent(gdn_cs_, ev_gdn_fork_, 0);
+        }
         int64_t qsa_index = 0, gdn_index = 0;
         for (int64_t l = 0; l < lb_; ++l)
             (is_qsa_layer(g, l) ? qsa_index : gdn_index) += 1;
@@ -1834,7 +1944,8 @@ bool Verifier::capture_commit(std::string& err) {
                 float* state = ss.gdn_state + (size_t) (gdn_index - ss.gdn_ord0) * gdn_floats;
                 float* conv = state + (uint64_t) g.ssm_state_size * g.ssm_v_heads * g.ssm_state_size;
                 const float* qkv = qkv_L_ + (size_t) gdn_index * MT * C;
-                gdn_conv_commit(conv, qkv, (int) C, commit_, cs_);
+                gdn_conv_commit(conv, qkv, (int) C, commit_, side);
+                mark();
                 gdn_step_norm_multi(state, h_L_ + (size_t) gdn_index * MT * C, (int) C,
                                     gate_L_ + (size_t) gdn_index * MT * HV, beta_L_ + (size_t) gdn_index * MT * HV, z_,
                                     (const float*) wnm->data, EPS, y_dummy_, (int) g.ssm_k_heads, (int) HV, (int) MT,
@@ -1848,21 +1959,30 @@ bool Verifier::capture_commit(std::string& err) {
                         ok = false;
                         break;
                     }
-                    copy_from_mapped(st.idx_tail, tail_snap_ + (size_t) qsa_index * TS, TS, cs_);
+                    copy_from_mapped(st.idx_tail, tail_snap_ + (size_t) qsa_index * TS, TS, side);
+                    mark();
                     const QsaIndexerBuffers ib{st.idx_tail, st.idx_dead, st.idx_pooled, st.idx_block_pos};
-                    for (int64_t t = 0; t < MT; ++t)
+                    for (int64_t t = 0; t < MT; ++t) {
                         native_qsa_indexer_append(idx_raw_L_ + (size_t) (qsa_index * MT + t) * ID, commit_ + 2 + t, 0,
                                                   (const float*) wikn->data, EPS, ib, s, st.max_cells, rope_scaling(),
-                                                  cs_);
+                                                  side);
+                        mark();
+                    }
                 }
                 ++qsa_index;
             }
         }
-        if (ok && ss.ple.ready() && ple_stage())
-            copy_indexed(ss.ple.hist, hist_snap_, HS, commit_ + 1, HS, cs_);
+        if (ok && ss.ple.ready() && ple_stage()) {
+            copy_indexed(ss.ple.hist, hist_snap_, HS, commit_ + 1, HS, side);
+            mark();
+        }
     } catch (const std::exception& e) {
         err = std::string("verify commit: ") + e.what();
         ok = false;
+    }
+    if (commit_fork) {
+        cudaEventRecord(ev_gdn_join_, gdn_cs_);
+        cudaStreamWaitEvent(cs_, ev_gdn_join_, 0);
     }
     cudaGraph_t graph = nullptr;
     const cudaError_t ce = cudaStreamEndCapture(cs_, &graph);
@@ -1871,7 +1991,8 @@ bool Verifier::capture_commit(std::string& err) {
             cudaGraphDestroy(graph);
         return false;
     }
-    if (ce != cudaSuccess || cudaGraphInstantiate(&commit_exec_, graph, 0) != cudaSuccess) {
+    if (ce != cudaSuccess ||
+        cudaGraphInstantiate(&commit_exec_, graph, commit_fork ? kUseNodePriority : 0) != cudaSuccess) {
         if (graph)
             cudaGraphDestroy(graph);
         err = std::string("verify: commit capture: ") + cudaGetErrorString(ce);
@@ -2384,7 +2505,7 @@ bool Verifier::reset_graphs(std::string& err) {
     if (!wait_commit(err))
         return false;
     if (cudaStreamSynchronize(cs_) != cudaSuccess || cudaStreamSynchronize(sh_cs_) != cudaSuccess ||
-        cudaStreamSynchronize(copy_) != cudaSuccess) {
+        cudaStreamSynchronize(gdn_cs_) != cudaSuccess || cudaStreamSynchronize(copy_) != cudaSuccess) {
         err = "verify: graph reset synchronization failed";
         return false;
     }
@@ -2538,7 +2659,7 @@ bool Verifier::capture_batch(const int* rows, int S, int hbase, std::string& err
         err = !ok ? rerr : std::string("verify: end batch capture: ") + cudaGetErrorString(ce);
         return false;
     }
-    const cudaError_t ie = cudaGraphInstantiate(&ex, graph, 0);
+    const cudaError_t ie = cudaGraphInstantiate(&ex, graph, gdn_node_prio_ ? kUseNodePriority : 0);
     cudaGraphDestroy(graph);
     if (ie != cudaSuccess) {
         err = std::string("verify: batch instantiate: ") + cudaGetErrorString(ie);

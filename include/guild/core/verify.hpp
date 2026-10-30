@@ -383,6 +383,13 @@ private:
     cudaStream_t cs_ = nullptr;
     cudaStream_t sh_cs_ = nullptr;
     cudaEvent_t ev_fork_ = nullptr, ev_join_ = nullptr;
+    // a GDN layer's conv and alpha/beta beside its gate product (GUILD_GDN_FORK), the commit's small commits beside
+    // the GDN state commits (GUILD_GDN_COMMIT_FORK); created at the device's greatest stream priority, which its
+    // captured kernels carry as node priorities (gdn_node_prio_: the window graph was recorded with the fork)
+    cudaStream_t gdn_cs_ = nullptr;
+    int gdn_prio_ = 0;
+    bool gdn_node_prio_ = false;
+    cudaEvent_t ev_gdn_fork_ = nullptr, ev_gdn_join_ = nullptr;
     cudaGraphExec_t exec_[9] = {};
     cudaGraphExec_t commit_exec_ = nullptr;
 
