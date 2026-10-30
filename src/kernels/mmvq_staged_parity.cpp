@@ -11,8 +11,9 @@
 //
 // THE CASES.  Rows of one piece, of a partial last piece of blocks (n_in not a multiple of the 8 or 32 blocks a
 // warp stages), rows that start inside a 16-byte piece (Q6_K and Q8_0 rows of 2100 and 340 bytes), matrices whose
-// end is not 16-byte aligned (the last piece read in 2-byte parts), fewer rows than a block's 8 warps, and the
-// shapes of the models' products; every column count from 1 to 8 on the same Q8_1 bytes.  The data is random with
+// end is not 16-byte aligned (the last piece read in 2-byte parts), fewer rows than a block's 8 warps, Q6_K rows of
+// 9 to 12 blocks (staged as one piece a row) and of 13, and the shapes of the models' products; every column count
+// from 1 to 8 on the same Q8_1 bytes.  The data is random with
 // finite fp16 scales (mmvq_multi_parity's THE DATA), and a non-finite output fails the test.
 #include "guild/kernels/iq_kernels.hpp"
 #include "guild/kernels/native_mmvq.hpp"
@@ -44,7 +45,11 @@ const Case CASES[] = {
     {"Q4_K 4096", 12, 4096, 2048, 256, 144, {0, 2}},
     {"Q6_K 512", 14, 512, 13, 256, 210, {208, -1}},
     {"Q6_K 2048", 14, 2048, 512, 256, 210, {208, -1}},
+    {"Q6_K 2304 (9 blocks)", 14, 2304, 1003, 256, 210, {208, -1}},
     {"Q6_K 2560 (2100 B rows)", 14, 2560, 1001, 256, 210, {208, -1}},
+    {"Q6_K 2560 x 4099", 14, 2560, 4099, 256, 210, {208, -1}},
+    {"Q6_K 3072 (12 blocks)", 14, 3072, 777, 256, 210, {208, -1}},
+    {"Q6_K 3328 (13 blocks)", 14, 3328, 700, 256, 210, {208, -1}},
     {"Q6_K 4352 (17 blocks)", 14, 4352, 64, 256, 210, {208, -1}},
     {"Q8_0 320 (340 B rows)", 8, 320, 999, 32, 34, {0, -1}},
     {"Q8_0 640", 8, 640, 2560, 32, 34, {0, -1}},
