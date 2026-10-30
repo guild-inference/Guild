@@ -11,10 +11,17 @@
 #include "guild/models/sha256.hpp"
 #include "guild/server/json.hpp"
 
+#if defined(GUILD_NATIVE_EXPERTS)
+#include "ggml-cpu.h"
+#include "ggml.h"
+#endif
+
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -254,6 +261,129 @@ void test_all_gexec_cpu_expert_kernels(int64_t n_embd, int64_t n_ff) {
         CHECK(gtbl->combine(parts.data(), weights.data(), out_gexec.data(), k, n) == GUILD_STATUS_ERR_NONFINITE_OUTPUT);
     }
 }
+
+#if defined(GUILD_NATIVE_EXPERTS)
+// 1b. #152, verify == greedy decode: every GEXEC provider's rows for a group of 1..8 tokens against ggml-cpu's own
+// vec_dot per token, bit for bit (the gate/up rows through silu(g) * u, the down rows on the same quantized
+// activations), and against the same provider run on each token alone.  A token's expert rows must not depend on
+// how many tokens of a verify window share the expert.  GUILD_IQ_GGML_ORDER=0 (the kernels' earlier order) reports
+// the differences without failing; GUILD_GEXEC_IQ512=1 runs the 512-bit i-quant kernels on any AVX-512 BW CPU.
+void test_gexec_rows_vs_ggml(int64_t n_embd, int64_t n_ff, const std::vector<std::pair<int32_t, int32_t>>& pairs) {
+    const char* order_env = std::getenv("GUILD_IQ_GGML_ORDER");
+    const bool legacy = order_env != nullptr && std::atoi(order_env) == 0;
+    const auto caps = kernels::query_host_device_capabilities();
+    const auto ref_bind = kernels::KernelRegistry::instance().find_by_id("cpu.expert_pool.split_multi_native");
+    CHECK(static_cast<bool>(ref_bind));
+    if (!ref_bind || !ref_bind->next_ext)
+        return;
+    const auto* ref_tbl = static_cast<const guild_cpu_backend_ext_v2_t*>(ref_bind->next_ext);
+    ggml_cpu_init();
+    struct Prov {
+        const char* impl_id;
+        const guild_cpu_backend_ext_v2_t* tbl;
+        bool interleaved;
+        bool needs_avx512;
+    };
+    const Prov provs[] = {
+        {kernels::cpu::kGExecFusedAvx2ImplId, kernels::cpu::guild_cpu_gexec_fused_avx2_table_v2(), false, false},
+        {kernels::cpu::kGExecInterleavedAvx2ImplId, kernels::cpu::guild_cpu_gexec_interleaved_avx2_table_v2(), true,
+         false},
+        {kernels::cpu::kGExecFusedAvx512ImplId, kernels::cpu::guild_cpu_gexec_fused_avx512_table_v2(), false, true},
+        {kernels::cpu::kGExecInterleavedAvx512ImplId, kernels::cpu::guild_cpu_gexec_interleaved_avx512_table_v2(), true,
+         true},
+    };
+    const uint32_t avx512_mask = GUILD_ISA_AVX512F | GUILD_ISA_AVX512BW | GUILD_ISA_AVX512DQ | GUILD_ISA_AVX512VL;
+    const bool host_has_avx512 = ((caps.cpu_isa_flags & avx512_mask) == avx512_mask);
+    constexpr int T = 8;
+    const size_t FF = static_cast<size_t>(n_ff), H = static_cast<size_t>(n_embd);
+    std::vector<float> x_in(T * H);
+    for (size_t i = 0; i < x_in.size(); ++i)
+        x_in[i] = std::sin(static_cast<float>(i) * 0.053f + 0.3f) * 0.9f;
+    for (const auto& [gu_type, d_type] : pairs) {
+        guild_cpu_expert_format_v1_t fmt{};
+        guild_error_info_t einfo{};
+        if (ref_tbl->format(gu_type, d_type, n_embd, n_ff, &fmt, &einfo) != GUILD_STATUS_OK) {
+            CHECK_MSG(false, "format " + std::to_string(gu_type) + "/" + std::to_string(d_type));
+            continue;
+        }
+        std::vector<uint8_t> blob, blob_inter;
+        fill_synthetic_blob(fmt, gu_type * 41 + d_type + 7, blob);
+        blob_inter.resize(blob.size());
+        pack_expert_gate_up_interleaved(blob.data(), blob_inter.data(), FF, static_cast<size_t>(fmt.gu_row),
+                                        static_cast<size_t>(fmt.gu_row), static_cast<size_t>(fmt.bytes - fmt.down_off));
+        std::vector<std::vector<uint8_t>> act(T, std::vector<uint8_t>(kernels::cpu::kNativeActBytes));
+        std::vector<std::vector<uint8_t>> hq(T, std::vector<uint8_t>(kernels::cpu::kNativeHBytes));
+        const void* a[T] = {};
+        const void* h[T] = {};
+        const auto* tg = ggml_get_type_traits_cpu(static_cast<ggml_type>(gu_type));
+        const auto* td = ggml_get_type_traits_cpu(static_cast<ggml_type>(d_type));
+        // ggml's reference per token: gate/up rows, silu(g) * u, its quantized h (the down rows' input), down rows
+        std::vector<float> want_ff(T * FF), want_out(T * H);
+        for (int t = 0; t < T; ++t) {
+            ref_tbl->native.quant_act(&fmt, x_in.data() + t * H, act[static_cast<size_t>(t)].data());
+            a[t] = act[static_cast<size_t>(t)].data();
+            for (size_t r = 0; r < FF; ++r) {
+                float g = 0.f, u = 0.f;
+                tg->vec_dot(static_cast<int>(n_embd), &g, 0, blob.data() + r * fmt.gu_row, 0, a[t], 0, 1);
+                tg->vec_dot(static_cast<int>(n_embd), &u, 0, blob.data() + fmt.up_off + r * fmt.gu_row, 0, a[t], 0, 1);
+                want_ff[t * FF + r] = (g / (1.f + std::exp(-g))) * u;
+            }
+            ref_tbl->native.quant_h(&fmt, want_ff.data() + t * FF, hq[static_cast<size_t>(t)].data());
+            h[t] = hq[static_cast<size_t>(t)].data();
+            for (size_t r = 0; r < H; ++r)
+                td->vec_dot(static_cast<int>(n_ff), &want_out[t * H + r], 0, blob.data() + fmt.down_off + r * fmt.d_row,
+                            0, h[t], 0, 1);
+        }
+        for (const auto& prov : provs) {
+            if (prov.needs_avx512 && !host_has_avx512)
+                continue;
+            const uint8_t* w = prov.interleaved ? blob_inter.data() : blob.data();
+            std::vector<float> got_ff(T * FF), got_out(T * H), one_ff(T * FF), one_out(T * H);
+            float* fp[T];
+            float* op[T];
+            for (int t = 0; t < T; ++t) { // each token alone
+                fp[0] = one_ff.data() + t * FF;
+                op[0] = one_out.data() + t * H;
+                prov.tbl->native.gate_up(&fmt, w, a + t, 1, fp, 0, static_cast<int>(n_ff));
+                prov.tbl->native.down(&fmt, w, h + t, 1, op, 0, static_cast<int>(n_embd));
+            }
+            int gu_vs_ggml = 0, down_vs_ggml = 0, gu_vs_one = 0, down_vs_one = 0, sets = 0;
+            for (int nt = 1; nt <= T; ++nt) {
+                std::fill(got_ff.begin(), got_ff.end(), std::numeric_limits<float>::quiet_NaN());
+                std::fill(got_out.begin(), got_out.end(), std::numeric_limits<float>::quiet_NaN());
+                for (int t = 0; t < nt; ++t) {
+                    fp[t] = got_ff.data() + t * FF;
+                    op[t] = got_out.data() + t * H;
+                }
+                // split row ranges, as the pool's workers call them
+                for (const auto& [r0, r1] : {std::pair<int, int>{0, 3}, {3, int(n_ff) - 1}, {int(n_ff) - 1, int(n_ff)}})
+                    prov.tbl->native.gate_up(&fmt, w, a, nt, fp, r0, r1);
+                for (const auto& [r0, r1] :
+                     {std::pair<int, int>{0, 5}, {5, int(n_embd) - 1}, {int(n_embd) - 1, int(n_embd)}})
+                    prov.tbl->native.down(&fmt, w, h, nt, op, r0, r1);
+                for (int t = 0; t < nt; ++t, ++sets) {
+                    gu_vs_ggml += std::memcmp(fp[t], want_ff.data() + t * FF, FF * sizeof(float)) != 0;
+                    down_vs_ggml += std::memcmp(op[t], want_out.data() + t * H, H * sizeof(float)) != 0;
+                    gu_vs_one += std::memcmp(fp[t], one_ff.data() + t * FF, FF * sizeof(float)) != 0;
+                    down_vs_one += std::memcmp(op[t], one_out.data() + t * H, H * sizeof(float)) != 0;
+                }
+            }
+            std::printf("  %-41s gu=%2d d=%2d n_ff=%4d, 1..%d tokens (%d token-sets): vs ggml vec_dot %d gate/up %d "
+                        "down differ; vs one token alone %d / %d\n",
+                        prov.impl_id, gu_type, d_type, static_cast<int>(n_ff), T, sets, gu_vs_ggml, down_vs_ggml,
+                        gu_vs_one, down_vs_one);
+            if (!legacy) {
+                const std::string tag = std::string(prov.impl_id) + " gu=" + std::to_string(gu_type) +
+                                        " d=" + std::to_string(d_type) + " n_ff=" + std::to_string(n_ff);
+                CHECK_MSG(gu_vs_ggml == 0, "gate/up vs ggml vec_dot: " + tag);
+                CHECK_MSG(down_vs_ggml == 0, "down vs ggml vec_dot: " + tag);
+                CHECK_MSG(gu_vs_one == 0, "gate/up group vs one token: " + tag);
+                CHECK_MSG(down_vs_one == 0, "down group vs one token: " + tag);
+            }
+        }
+    }
+}
+#endif
 
 // 2. Test ExpertPool mode_ == 11 single-barrier fused pipeline + in-worker L1 finiteness check
 void test_expert_pool_fused_pipeline() {
@@ -826,9 +956,28 @@ void test_optimizer_lifecycle_and_concurrency(const fs::path& work_dir) {
     }
 }
 
+#if defined(GUILD_NATIVE_EXPERTS)
+// the formats of test_all_gexec_cpu_expert_kernels; then an odd count of 32-value down blocks (17: ggml's last block
+// is its scalar step) with the 32-value down formats
+const std::vector<std::pair<int32_t, int32_t>> kGgmlPairs = {
+    {12, 12}, {12, 14}, {12, 20}, {14, 14}, {8, 8}, {7, 7}, {23, 20}, {21, 20}, {16, 20}, {17, 20}, {18, 20}, {22, 20}};
+const std::vector<std::pair<int32_t, int32_t>> kGgmlOddPairs = {{23, 20}, {21, 20}, {16, 20}, {12, 20}, {8, 8}, {7, 7}};
+#endif
+
 } // namespace
 
-int main() {
+int main(int argc, char** argv) {
+    // --kernels: only the kernel parity checks (the ctest with GUILD_GEXEC_IQ512=1 runs them so)
+    const bool kernels_only = argc > 1 && std::strcmp(argv[1], "--kernels") == 0;
+    if (kernels_only) {
+        test_all_gexec_cpu_expert_kernels(512, 256);
+#if defined(GUILD_NATIVE_EXPERTS)
+        test_gexec_rows_vs_ggml(2048, 512, kGgmlPairs);
+        test_gexec_rows_vs_ggml(1024, 544, kGgmlOddPairs);
+#endif
+        std::cout << "[gexec_optimizer_test --kernels] passed=" << g_passed << " failed=" << g_failed << "\n";
+        return g_failed == 0 ? 0 : 1;
+    }
     const fs::path work_dir = fs::current_path() / "gexec_optimizer_test_tmp";
     std::error_code ec;
     fs::remove_all(work_dir, ec);
@@ -836,6 +985,10 @@ int main() {
 
     test_all_gexec_cpu_expert_kernels(512, 256);
     test_all_gexec_cpu_expert_kernels(2048, 512);
+#if defined(GUILD_NATIVE_EXPERTS)
+    test_gexec_rows_vs_ggml(2048, 512, kGgmlPairs);
+    test_gexec_rows_vs_ggml(1024, 544, kGgmlOddPairs);
+#endif
     test_expert_pool_fused_pipeline();
     test_gexec_binary_container_and_corruption(work_dir);
     test_optimizer_lifecycle_and_concurrency(work_dir);

@@ -40,6 +40,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <exception>
 
@@ -317,6 +318,20 @@ GEXEC_AVX2_INLINE float hsum8_hadd(__m256 v) noexcept {
     s = _mm_hadd_ps(s, s);
     return _mm_cvtss_f32(s);
 }
+
+// #152, verify == greedy decode (verify.hpp): a token's expert rows must round the same alone and in a group of a
+// window's tokens.  The i-quant and IQ4_NL kernels below take ggml-cpu's float steps for every group size, as
+// guild-kernels-cpu's multi-token kernels do (their integer lanes already were ggml's: bytes 4l..4l+3 of each 32-value
+// half in int32 lane l): per block one 8-lane fmadd of d_x * d_y, at the end hsum_f32_8 (ggml's hsum_float_8) times
+// the format's constant; IQ4_NL in ggml's two chains (even and odd blocks) and its scalar step, an fma (ggml-cpu is
+// C compiled as gnu11, which contracts it), for an odd last block.  So a token's rows are ggml-cpu's vec_dot to the
+// bit, alone or in a group.  GUILD_IQ_GGML_ORDER=0 (the switch guild-kernels-cpu reads too) restores the earlier
+// order from GUILD_IQ_MT_MIN tokens: the constant folded into d_x and hsum8_hadd, 16-lane fmadds for the 512-bit
+// kernels, one IQ4_NL chain.
+const bool gexec_ggml_order = [] {
+    const char* v = std::getenv("GUILD_IQ_GGML_ORDER");
+    return v == nullptr || std::atoi(v) != 0;
+}();
 
 GEXEC_AVX2_INLINE __m256 mul_sum_i8_pairs_f32(__m256i ax, __m256i sy) noexcept {
     const __m256i ones = _mm256_set1_epi16(1);
@@ -889,9 +904,110 @@ void gexec_iq4nl_1row_nt1(const uint8_t* r0_ptr, int nb, const block_q8_0* y, fl
     }
 }
 
+// One IQ4_NL block of two rows (or one: blk1 == nullptr) against NT tokens' Q8_0 blocks `ib`, into acc0 / acc1:
+// ggml's integer lanes and its one fmadd of d_y * d_x a block.
+template <int NT>
+GEXEC_AVX2_INLINE void iq4nl_block_nt(const uint8_t* blk0, const uint8_t* blk1, const block_q8_0* const* y, int ib,
+                                      __m128i values, __m128i m4b, __m256i ones, __m256* acc0, __m256* acc1) noexcept {
+    _mm_prefetch((const char*) (blk0 + 2048), _MM_HINT_T0);
+    _mm_prefetch((const char*) (blk0 + 2048 + 64), _MM_HINT_T0);
+    __m256i aq0, q4_0, aq1 = _mm256_setzero_si256(), q4_1 = _mm256_setzero_si256();
+    float dx0, dx1 = 0.f;
+    decode_iq4nl_block(blk0, values, m4b, aq0, q4_0, dx0);
+    if (blk1) {
+        _mm_prefetch((const char*) (blk1 + 2048), _MM_HINT_T0);
+        _mm_prefetch((const char*) (blk1 + 2048 + 64), _MM_HINT_T0);
+        decode_iq4nl_block(blk1, values, m4b, aq1, q4_1, dx1);
+    }
+    for (int t = 0; t < NT; ++t) {
+        const block_q8_0& b = y[t][ib];
+        const float yd = fp16_to_fp32(b.d);
+        const __m256i q8 = _mm256_loadu_si256((const __m256i*) b.qs);
+        const __m256i p0 = _mm256_madd_epi16(_mm256_maddubs_epi16(aq0, _mm256_sign_epi8(q8, q4_0)), ones);
+        acc0[t] = _mm256_fmadd_ps(_mm256_set1_ps(yd * dx0), _mm256_cvtepi32_ps(p0), acc0[t]);
+        if (blk1) {
+            const __m256i p1 = _mm256_madd_epi16(_mm256_maddubs_epi16(aq1, _mm256_sign_epi8(q8, q4_1)), ones);
+            acc1[t] = _mm256_fmadd_ps(_mm256_set1_ps(yd * dx1), _mm256_cvtepi32_ps(p1), acc1[t]);
+        }
+    }
+}
+
+// ggml's scalar step for an odd last block (ggml_vec_dot_iq4_nl_q8_0's tail): `sumf += d * (sumi1 + sumi2)`, which
+// gnu11 contracts to an fma.
+GEXEC_AVX2_INLINE float iq4nl_tail(const uint8_t* blk, const block_q8_0& yb, float sumf) noexcept {
+    const auto* xb = (const block_iq4_nl*) blk;
+    const float d = fp16_to_fp32(yb.d) * fp16_to_fp32(xb->d);
+    int s1 = 0, s2 = 0;
+    for (int j = 0; j < QK4_NL / 2; ++j) {
+        s1 += yb.qs[j + 0] * kvalues_iq4nl[xb->qs[j] & 0xf];
+        s2 += yb.qs[j + QK4_NL / 2] * kvalues_iq4nl[xb->qs[j] >> 4];
+    }
+    return std::fma(d, (float) (s1 + s2), sumf);
+}
+
+// IQ4_NL down rows for NT tokens in ggml's order (#152, gexec_ggml_order): per row and token the even blocks in one
+// 8-lane chain and the odd blocks in another, as ggml_vec_dot_iq4_nl_q8_0 and gexec_iq4nl_4rows_nt1 do, then
+// hsum_f32_8 of their sum and the scalar step for an odd last block.  Two rows a pass share the token loads.
 template <int NT>
 GEXEC_AVX2_TARGET void gexec_iq4nl_rows_nt(const uint8_t* w, size_t row_bytes, int n, const block_q8_0* const* y,
                                            float* const* out, int r0, int r1) {
+    const __m128i values = _mm_loadu_si128((const __m128i*) kvalues_iq4nl);
+    const __m128i m4b = _mm_set1_epi8(0x0f);
+    const __m256i ones = _mm256_set1_epi16(1);
+    const int nb = n / QK4_NL;
+    constexpr size_t B = sizeof(block_iq4_nl);
+    int r = r0;
+    for (; r + 2 <= r1; r += 2) {
+        const uint8_t* row0 = w + (size_t) (r + 0) * row_bytes;
+        const uint8_t* row1 = w + (size_t) (r + 1) * row_bytes;
+        __m256 e0[NT], o0[NT], e1[NT], o1[NT];
+        for (int t = 0; t < NT; ++t) {
+            e0[t] = _mm256_setzero_ps();
+            o0[t] = _mm256_setzero_ps();
+            e1[t] = _mm256_setzero_ps();
+            o1[t] = _mm256_setzero_ps();
+        }
+        int ib = 0;
+        for (; ib + 1 < nb; ib += 2) {
+            iq4nl_block_nt<NT>(row0 + ib * B, row1 + ib * B, y, ib, values, m4b, ones, e0, e1);
+            iq4nl_block_nt<NT>(row0 + (ib + 1) * B, row1 + (ib + 1) * B, y, ib + 1, values, m4b, ones, o0, o1);
+        }
+        for (int t = 0; t < NT; ++t) {
+            float s0 = hsum_f32_8(_mm256_add_ps(e0[t], o0[t]));
+            float s1 = hsum_f32_8(_mm256_add_ps(e1[t], o1[t]));
+            if (ib < nb) {
+                s0 = iq4nl_tail(row0 + ib * B, y[t][ib], s0);
+                s1 = iq4nl_tail(row1 + ib * B, y[t][ib], s1);
+            }
+            out[t][r + 0] = s0;
+            out[t][r + 1] = s1;
+        }
+    }
+    for (; r < r1; ++r) {
+        const uint8_t* row = w + (size_t) r * row_bytes;
+        __m256 e[NT], o[NT];
+        for (int t = 0; t < NT; ++t) {
+            e[t] = _mm256_setzero_ps();
+            o[t] = _mm256_setzero_ps();
+        }
+        int ib = 0;
+        for (; ib + 1 < nb; ib += 2) {
+            iq4nl_block_nt<NT>(row + ib * B, nullptr, y, ib, values, m4b, ones, e, nullptr);
+            iq4nl_block_nt<NT>(row + (ib + 1) * B, nullptr, y, ib + 1, values, m4b, ones, o, nullptr);
+        }
+        for (int t = 0; t < NT; ++t) {
+            float sum = hsum_f32_8(_mm256_add_ps(e[t], o[t]));
+            if (ib < nb)
+                sum = iq4nl_tail(row + ib * B, y[t][ib], sum);
+            out[t][r] = sum;
+        }
+    }
+}
+
+// The earlier order (GUILD_IQ_GGML_ORDER=0): one fmadd chain over all blocks and hsum8_hadd.
+template <int NT>
+GEXEC_AVX2_TARGET void gexec_iq4nl_rows_nt_legacy(const uint8_t* w, size_t row_bytes, int n, const block_q8_0* const* y,
+                                                  float* const* out, int r0, int r1) {
     const __m128i values = _mm_loadu_si128((const __m128i*) kvalues_iq4nl);
     const __m128i m4b = _mm_set1_epi8(0x0f);
     const __m256i ones = _mm256_set1_epi16(1);
@@ -978,6 +1094,15 @@ void gexec_iq4nl_down_rows(const uint8_t* w, size_t row_bytes, int n, const void
     const block_q8_0* y[4];
     for (int t = 0; t < std::min(nt, 4); ++t)
         y[t] = (const block_q8_0*) hq[t];
+    if (!gexec_ggml_order) {
+        switch (nt) {
+        case 1: gexec_iq4nl_rows_nt_legacy<1>(w, row_bytes, n, y, out, r0, r1); return;
+        case 2: gexec_iq4nl_rows_nt_legacy<2>(w, row_bytes, n, y, out, r0, r1); return;
+        case 3: gexec_iq4nl_rows_nt_legacy<3>(w, row_bytes, n, y, out, r0, r1); return;
+        case 4: gexec_iq4nl_rows_nt_legacy<4>(w, row_bytes, n, y, out, r0, r1); return;
+        default: break;
+        }
+    }
     switch (nt) {
     case 1: gexec_iq4nl_rows_nt<1>(w, row_bytes, n, y, out, r0, r1); break;
     case 2: gexec_iq4nl_rows_nt<2>(w, row_bytes, n, y, out, r0, r1); break;
@@ -986,12 +1111,7 @@ void gexec_iq4nl_down_rows(const uint8_t* w, size_t row_bytes, int n, const void
     default:
         for (int t0 = 0; t0 < nt; t0 += 4) {
             const int k = std::min(4, nt - t0);
-            if (k == 1) {
-                const block_q8_0* y1[1] = {(const block_q8_0*) hq[t0]};
-                gexec_iq4nl_rows_nt<1>(w, row_bytes, n, y1, out + t0, r0, r1);
-            } else {
-                gexec_iq4nl_down_rows(w, row_bytes, n, hq + t0, k, out + t0, r0, r1);
-            }
+            gexec_iq4nl_down_rows(w, row_bytes, n, hq + t0, k, out + t0, r0, r1);
         }
         break;
     }
@@ -1112,6 +1232,14 @@ template <> struct Iq512Fmt<21> {
     }
 };
 
+// The 512-bit i-quant kernels run where cpu_avx512_ok() (VNNI and VBMI hosts, where 512-bit code does not cost the
+// heavy-license downclock).  GUILD_GEXEC_IQ512=1 also runs them on any AVX-512 BW CPU (they use F, BW, DQ and VL
+// instructions only), for the parity test (gexec_optimizer_test --kernels) on a Skylake-SP host.
+bool gexec_iq512_ok() noexcept {
+    static const bool ok = cpu_avx512_ok() || (std::getenv("GUILD_GEXEC_IQ512") != nullptr && cpu_avx512bw_ok());
+    return ok;
+}
+
 bool native_iq512_policy(int nt) {
     static const bool enabled = cpu_avx512_ok() && std::getenv("GUILD_NO_IQ512") == nullptr;
     static const int mt_min = [] {
@@ -1124,7 +1252,12 @@ bool native_iq512_policy(int nt) {
 template <int TY, int NT>
 GEXEC_AVX512BW_TARGET void iq512_row_dot_2rows(const uint8_t* row0, const uint8_t* row1, int nblocks,
                                                const block_q8_K* const* y, float* res0, float* res1) {
-    const bool use_512_reduce = native_iq512_policy(NT);
+    // ggml's order (gexec_ggml_order, #152): 8-lane fmadds of d_x * d_y on lane l plus lane 8 + l (ggml's lane l,
+    // integers add exactly), the format's constant times hsum_f32_8 at the end, for every NT.  The earlier order
+    // (GUILD_IQ_GGML_ORDER=0) from two tokens: 16-lane fmadds and a 16-lane reduction where native_iq512_policy, else
+    // the constant folded into d_x and hsum8_hadd.
+    const bool use_512_reduce = !gexec_ggml_order && native_iq512_policy(NT);
+    const bool fold_k = !gexec_ggml_order && NT != 1;
     __m512 accf0[NT], accf1[NT];
     __m256 acc256_0[NT], acc256_1[NT];
     for (int t = 0; t < NT; ++t) {
@@ -1168,10 +1301,8 @@ GEXEC_AVX512BW_TARGET void iq512_row_dot_2rows(const uint8_t* row0, const uint8_
                 accf1[t] = _mm512_fmadd_ps(_mm512_set1_ps(dx1 * yd), _mm512_cvtepi32_ps(acci1[t]), accf1[t]);
             }
         } else {
-            const float dx0 =
-                (NT == 1) ? fp16_to_fp32(read_u16(blk0)) : (fp16_to_fp32(read_u16(blk0)) * Iq512Fmt<TY>::K);
-            const float dx1 =
-                (NT == 1) ? fp16_to_fp32(read_u16(blk1)) : (fp16_to_fp32(read_u16(blk1)) * Iq512Fmt<TY>::K);
+            const float dx0 = fold_k ? fp16_to_fp32(read_u16(blk0)) * Iq512Fmt<TY>::K : fp16_to_fp32(read_u16(blk0));
+            const float dx1 = fold_k ? fp16_to_fp32(read_u16(blk1)) * Iq512Fmt<TY>::K : fp16_to_fp32(read_u16(blk1));
             for (int t = 0; t < NT; ++t) {
                 const float yd = y[t][i].d;
                 const __m256i sum256_0 =
@@ -1188,9 +1319,11 @@ GEXEC_AVX512BW_TARGET void iq512_row_dot_2rows(const uint8_t* row0, const uint8_
             res0[t] = _mm512_reduce_add_ps(accf0[t]);
             res1[t] = _mm512_reduce_add_ps(accf1[t]);
         }
-    } else if constexpr (NT == 1) {
-        res0[0] = Iq512Fmt<TY>::K * hsum_f32_8(acc256_0[0]);
-        res1[0] = Iq512Fmt<TY>::K * hsum_f32_8(acc256_1[0]);
+    } else if (!fold_k) {
+        for (int t = 0; t < NT; ++t) {
+            res0[t] = Iq512Fmt<TY>::K * hsum_f32_8(acc256_0[t]);
+            res1[t] = Iq512Fmt<TY>::K * hsum_f32_8(acc256_1[t]);
+        }
     } else {
         for (int t = 0; t < NT; ++t) {
             res0[t] = hsum8_hadd(acc256_0[t]);
@@ -1377,7 +1510,8 @@ GEXEC_AVX2_TARGET void iq256_row_dot_1row(const uint8_t* row, int nblocks, const
         const char* e = std::getenv("GUILD_IQ_MT_MIN");
         return e ? std::atoi(e) : 2;
     }();
-    const bool use_ggml_reduce = cpu_avx512_ok() || no_iq256 || (NT < mt_min);
+    // ggml's order for every NT (gexec_ggml_order, #152); GUILD_IQ_GGML_ORDER=0: the earlier one from mt_min tokens
+    const bool use_ggml_reduce = gexec_ggml_order || cpu_avx512_ok() || no_iq256 || (NT < mt_min);
     __m256 accf[NT];
     for (int t = 0; t < NT; ++t)
         accf[t] = _mm256_setzero_ps();
@@ -1518,7 +1652,8 @@ GEXEC_AVX2_TARGET void gexec_iq4xs_gu_rows_nt(const uint8_t* blob, size_t gu_row
         const char* e = std::getenv("GUILD_IQ_MT_MIN");
         return e ? std::atoi(e) : 2;
     }();
-    const bool use_ggml_reduce = cpu_avx512_ok() || no_iq256 || (NT < mt_min);
+    // ggml's hsum_float_8 for every NT (gexec_ggml_order, #152); GUILD_IQ_GGML_ORDER=0: hsum8_hadd from mt_min tokens
+    const bool use_ggml_reduce = gexec_ggml_order || cpu_avx512_ok() || no_iq256 || (NT < mt_min);
     const __m128i values = _mm_loadu_si128((const __m128i*) kvalues_iq4nl);
     const __m128i m4b = _mm_set1_epi8(0x0f);
     const block_q8_K* y[NT];
@@ -1655,7 +1790,7 @@ void gexec_gu_rows_impl(const NativeFmt* f_ptr, const uint8_t* blob, const void*
     // 3. I-Quants: use 512-bit 2-row fused when cpu_avx512_ok() (AVX-512 VNNI hosts where ZMM does not
     // trigger Skylake-SP heavy-license downclocking), and 256-bit AVX2 otherwise.
 #if !defined(_MSC_VER) || defined(__AVX512BW__)
-    if (USE_AVX512 && cpu_avx512_ok()) {
+    if (USE_AVX512 && gexec_iq512_ok()) {
         switch (f.gu_type) {
         case 16: dispatch_iq512_gu<16, INTERLEAVED>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); return;
         case 17: dispatch_iq512_gu<17, INTERLEAVED>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); return;
