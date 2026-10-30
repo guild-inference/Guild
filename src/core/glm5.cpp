@@ -497,6 +497,15 @@ struct Glm5Engine::Impl {
     std::vector<int> qneed;
     std::unique_ptr<std::atomic<int>[]> qcnt;
     size_t qcnt_cap = 0;
+    // token_embd in anonymous memory on the calling thread's node: embed_rows reads a row per token, and read from the
+    // GGUF mapping, the first use of a token whose page the page cache had dropped waited on the disk (a draft or
+    // verify step took 11-68 ms longer).  A thread copies it while the rest loads (embd_copy_start / _finish).
+    uint8_t* embd_copy = nullptr;
+    size_t embd_copy_bytes = 0;
+    std::thread embd_thread;
+    double embd_copy_ms = 0;
+    void embd_copy_start();
+    void embd_copy_finish();
 
     // device scratch, sized for kMaxT tokens
     float *R = nullptr, *xn = nullptr, *mix = nullptr, *post = nullptr, *comb = nullptr, *y = nullptr;
@@ -569,6 +578,10 @@ struct Glm5Engine::Impl {
     std::unique_ptr<Launcher> launcher; // the pipelined window's GPU launches, beside the calling thread's CPU work
 
     ~Impl() {
+        if (embd_thread.joinable()) // a load that failed after embd_copy_start
+            embd_thread.join();
+        if (embd_copy)
+            munmap(embd_copy, embd_copy_bytes);
         if (st)
             cudaStreamSynchronize(st);
         for (const Chunk& c : chunks)
@@ -1120,6 +1133,7 @@ bool Glm5Engine::Impl::load(const std::string& path, const Glm5Options& o, std::
         launcher = std::make_unique<Launcher>(sib, dev);
     }
     const int threads = pool->size();
+    embd_copy_start();
 
     // ---- the VRAM everything but the context and the FFNs takes (the attention weights, the routers, the recurrent
     // states and their rollback copies, the NextN block, the scratch, the head) and what a token of context adds
@@ -1623,7 +1637,7 @@ bool Glm5Engine::Impl::load(const std::string& path, const Glm5Options& o, std::
             f.d_split = dh;
         }
         // the routed experts' pages of the shards are no longer read: let the kernel drop them (only theirs: the
-        // embeddings stay read from the mapping)
+        // embedding copy may still be reading token_embd's)
         for (size_t sh = 0; sh < gguf->size(); ++sh) {
             const int fd = ::open(gguf->shard(sh).path().c_str(), O_RDONLY);
             if (fd < 0)
@@ -1667,6 +1681,8 @@ bool Glm5Engine::Impl::load(const std::string& path, const Glm5Options& o, std::
         std::fprintf(stderr, "guild glm5: experts read into memory: %.1f GiB in %.1f s\n", expert_bytes / 1073741824.0,
                      ms_since(t0) / 1000.0);
     }
+
+    embd_copy_finish();
 
     char line[256];
     std::snprintf(line, sizeof line,
@@ -2236,6 +2252,67 @@ bool Glm5Engine::restore(std::string& err) {
         return false;
     }
     return true;
+}
+
+void Glm5Engine::Impl::embd_copy_start() {
+    // GUILD_GLM_EMBED_COPY=0: embed_rows reads token_embd from the mapping, as before
+    if (const char* e = std::getenv("GUILD_GLM_EMBED_COPY"); e && e[0] == '0')
+        return;
+    size_t shard = 0;
+    const TensorInfo* t = gguf->find("token_embd.weight", &shard);
+    if (!t || !embd.host || embd.bytes == 0)
+        return;
+    constexpr size_t kHuge = 2ull << 20;
+    const size_t bytes = (embd.bytes + kHuge - 1) / kHuge * kHuge;
+    void* p = mmap(nullptr, bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (p == MAP_FAILED)
+        return; // the mapping still works
+    // preferred, not bound: a full node falls back to the other; a policy of its own also keeps the region out of NUMA
+    // balancing's sampling faults
+    const kcpu::NumaTopology& topo = kcpu::numa_topology();
+    if (topo.nodes > 1 && caller_cpu >= 0 && caller_cpu < (int) topo.cpu_node.size() &&
+        topo.cpu_node[(size_t) caller_cpu] >= 0) {
+        unsigned long mask = 1ul << topo.cpu_node[(size_t) caller_cpu];
+        syscall(SYS_mbind, p, bytes, 1 /* MPOL_PREFERRED */, &mask, 64ul, 0u);
+    }
+    madvise(p, bytes, MADV_HUGEPAGE);
+    embd_copy = (uint8_t*) p;
+    embd_copy_bytes = bytes;
+    const GgufFile& gf = gguf->shard(shard);
+    const std::string file = gf.path();
+    const off_t off = (off_t) (gf.data_start() + t->offset);
+    const size_t n = embd.bytes;
+    const uint8_t* mapped = embd.host;
+    // pread rather than through the mapping: large sequential reads, and no page of the mapping faulted in
+    embd_thread = std::thread([this, file, off, n, mapped] {
+        const auto t0 = std::chrono::steady_clock::now();
+        size_t done = 0;
+        const int fd = ::open(file.c_str(), O_RDONLY | O_CLOEXEC);
+        if (fd >= 0) {
+            posix_fadvise(fd, off, (off_t) n, POSIX_FADV_SEQUENTIAL);
+            while (done < n) {
+                const ssize_t r = pread(fd, embd_copy + done, std::min<size_t>(n - done, 8u << 20), off + (off_t) done);
+                if (r <= 0)
+                    break;
+                done += (size_t) r;
+            }
+            ::close(fd);
+        }
+        if (done < n)
+            std::memcpy(embd_copy + done, mapped + done, n - done); // the same bytes, through the mapping
+        embd_copy_ms = ms_since(t0);
+    });
+}
+
+void Glm5Engine::Impl::embd_copy_finish() {
+    if (!embd_thread.joinable())
+        return;
+    const auto t0 = std::chrono::steady_clock::now();
+    embd_thread.join();
+    embd.host = embd_copy;
+    std::fprintf(stderr,
+                 "guild glm5: token_embd copied to memory: %.0f MiB in %.2f s (the load waited %.2f s for it)\n",
+                 embd.bytes / 1048576.0, embd_copy_ms / 1000.0, ms_since(t0) / 1000.0);
 }
 
 bool Glm5Engine::Impl::embed_rows(const int32_t* tokens, int T, std::string& err) {
