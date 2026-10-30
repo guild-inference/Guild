@@ -1268,6 +1268,15 @@ if(GUILD_BUILD_TESTS)
   add_test(NAME glm5_tokenizer_test COMMAND glm5_tokenizer_test
     ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/glm5_tokenizer_golden.json ${GUILD_GLM5_TOKENIZER_DIR})
   set_tests_properties(glm5_tokenizer_test PROPERTIES SKIP_RETURN_CODE 77)
+  # GLM-5.3-Flash at a 32k context on a long real text (a GGUF shard and a text file given; ~20 min on an 8 GB card):
+  # the decode after a 32,000-token prompt, from a snapshot, with the indexer's new and legacy kernels (the same ids)
+  set(GUILD_GLM5_MODEL "" CACHE FILEPATH "GLM-5.3-Flash GGUF (any shard) for glm5_ctx32k_test")
+  set(GUILD_GLM5_LONG_TEXT "" CACHE FILEPATH "A text of 130k characters or more for glm5_ctx32k_test")
+  if(TARGET glm5_run AND GUILD_GLM5_MODEL AND GUILD_GLM5_LONG_TEXT)
+    add_test(NAME glm5_ctx32k_test COMMAND glm5_run ${GUILD_GLM5_MODEL} text:${GUILD_GLM5_LONG_TEXT} 64 --spec
+      --ctx 32768 --prompt-tokens 32000 --tokenizer ${GUILD_GLM5_TOKENIZER_DIR} --ab GUILD_GLM_IDX_LEGACY=0,1
+      --reps 1)
+  endif()
   add_executable(tokenizer_parity_test tests/core/tokenizer_parity_test.cpp)
   target_link_libraries(tokenizer_parity_test PRIVATE guild_runtime guild_server guild_cli)
   add_test(NAME tokenizer_fail_closed_test COMMAND tokenizer_parity_test --unloaded-only)

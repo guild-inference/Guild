@@ -934,7 +934,7 @@ __global__ void idx_pool_k(const __half* kc, const __half* gc, int ring, const f
     pooled[(size_t) p * kIdxDim + d] = __float2half(v / den);
 }
 
-// block (8 warps) per 8 pools x token: warp w scores pool 8 * blockIdx.x + w over all heads
+// block (8 warps) per 8 pools x token: warp w scores pool 8 * blockIdx.x + w over all heads (GUILD_GLM_IDX_LEGACY=1)
 __global__ void idx_score_k(const float* iq, const float* w, const __half* pooled, int64_t pos0, int heads,
                             float wscale, float* scores, int stride) {
     const int t = blockIdx.y;
@@ -961,6 +961,73 @@ __global__ void idx_score_k(const float* iq, const float* w, const __half* poole
         scores[(size_t) t * stride + p] = score;
 }
 
+// The same scores with the query read once per block, from shared memory, instead of once per pool (16 KiB each).
+// Two threads per pool, one per parity of idx_score_k's lane slots: slot j = 2 s + e holds the key dims j, j + 32,
+// j + 64 and j + 96, so a head's dot product is idx_score_k's to the bit - the same per-slot sums, warp_sum's
+// butterfly over the slots (masks 16, 8, 4 and 2 inside a thread, 1 across the pair), the same sum over the heads.
+constexpr int kScorePools = 128, kScoreHeads = 32;
+__global__ void __launch_bounds__(2 * kScorePools)
+    idx_score_pairs_k(const float* iq, const float* w, const __half* pooled, int64_t pos0, int heads, float wscale,
+                      float* scores, int stride) {
+    __shared__ float4 qs[kScoreHeads][32]; // [head][slot j]: q[j], q[j + 32], q[j + 64], q[j + 96]
+    __shared__ float ws[kScoreHeads];
+    const int t = blockIdx.y;
+    const int64_t n_vis = (pos0 + t + 1) / kKpool, pool0 = (int64_t) blockIdx.x * kScorePools;
+    if (pool0 >= n_vis)
+        return;
+    const float* q = iq + (size_t) t * heads * kIdxDim;
+    for (int i = threadIdx.x; i < heads * 32; i += blockDim.x) {
+        const float* qh = q + (size_t) (i >> 5) * kIdxDim + (i & 31);
+        qs[i >> 5][i & 31] = make_float4(qh[0], qh[32], qh[64], qh[96]);
+    }
+    if (threadIdx.x < heads)
+        ws[threadIdx.x] = w[(size_t) t * heads + threadIdx.x] * wscale;
+    __syncthreads();
+    const int64_t p = pool0 + (threadIdx.x >> 1);
+    const int e = threadIdx.x & 1;
+    // the key: 16 loads of 8 FP16 dims (8 c .. 8 c + 7 = slots 4 (c % 4) .. 4 (c % 4) + 3, both parities, of dim
+    // row c / 4); this thread keeps its parity's
+    float k[16][4];
+    const uint4* kp = reinterpret_cast<const uint4*>(pooled + (size_t) min(p, n_vis - 1) * kIdxDim);
+#pragma unroll
+    for (int c = 0; c < 16; ++c) {
+        const uint4 v = __ldg(kp + c);
+        const uint32_t word[4] = {v.x, v.y, v.z, v.w};
+#pragma unroll
+        for (int r = 0; r < 4; ++r)
+            k[4 * (c & 3) + r][c >> 2] =
+                __half2float(__ushort_as_half((unsigned short) (e ? word[r] >> 16 : word[r] & 0xFFFFu)));
+    }
+    float score = 0.f;
+    for (int h = 0; h < heads; ++h) {
+        float d[16];
+#pragma unroll
+        for (int s = 0; s < 16; ++s) {
+            const float4 qv = qs[h][2 * s + e];
+            float dot = 0.f;
+            dot += qv.x * k[s][0];
+            dot += qv.y * k[s][1];
+            dot += qv.z * k[s][2];
+            dot += qv.w * k[s][3];
+            d[s] = dot;
+        }
+#pragma unroll
+        for (int s = 0; s < 8; ++s) // slot j and j ^ 16
+            d[s] += d[s + 8];
+#pragma unroll
+        for (int s = 0; s < 4; ++s) // j ^ 8
+            d[s] += d[s + 4];
+#pragma unroll
+        for (int s = 0; s < 2; ++s) // j ^ 4
+            d[s] += d[s + 2];
+        d[0] += d[1]; // j ^ 2
+        const float dot = d[0] + __shfl_xor_sync(0xffffffffu, d[0], 1);
+        score += ws[h] * fmaxf(dot, 0.f);
+    }
+    if (e == 0 && p < n_vis)
+        scores[(size_t) t * stride + p] = score;
+}
+
 __device__ __forceinline__ uint32_t ord_key(float f) {
     const uint32_t u = __float_as_uint(f);
     return (u & 0x80000000u) ? ~u : (u | 0x80000000u);
@@ -968,6 +1035,7 @@ __device__ __forceinline__ uint32_t ord_key(float f) {
 
 // one block (1024 threads) per token: radix-free top-k by a binary search for the k-th largest key, then a
 // deterministic, index-ordered compaction (keys above the threshold, then ties from the lowest pool up)
+// (GUILD_GLM_IDX_LEGACY=1)
 __global__ void __launch_bounds__(1024) idx_select_k(const float* scores, int stride, int64_t pos0, int k_pools,
                                                      int32_t* sel, int32_t* n_sel, int sel_stride) {
     const int t = blockIdx.x, tid = threadIdx.x, nt = blockDim.x;
@@ -1028,6 +1096,162 @@ __global__ void __launch_bounds__(1024) idx_select_k(const float* scores, int st
     const int above = (int) thr_s;
     // pools above the threshold first (index order), then the first need_eq ties
     int o_gt = cnt[tid], o_eq = cnt2[tid];
+    for (int i = i0; i < i1; ++i) {
+        int slot = -1;
+        if (all) {
+            slot = o_gt++;
+        } else {
+            const uint32_t kk = ord_key(s[i]);
+            if (kk > thr)
+                slot = o_gt++;
+            else if (kk == thr) {
+                if (o_eq < need_eq)
+                    slot = above + o_eq;
+                ++o_eq;
+            }
+        }
+        if (slot >= 0)
+            for (int r = 0; r < kKpool; ++r)
+                out[slot * kKpool + r] = (int32_t) (i * kKpool + r);
+    }
+    const int chosen = all ? n : k_pools;
+    const int n_tail = (int) (q + 1 - tail_start);
+    if (tid < n_tail)
+        out[chosen * kKpool + tid] = (int32_t) (tail_start + tid);
+    if (tid == 0)
+        n_sel[t] = chosen * kKpool + n_tail;
+}
+
+// an exclusive scan of two counts over the block's threads, in thread order (blockDim.x a multiple of 32, at most
+// 1024); `tot` gets the totals
+__device__ __forceinline__ void block_scan2(int& a, int& b, int* tot) {
+    __shared__ int part[2][32];
+    const int lane = threadIdx.x & 31, warp = threadIdx.x >> 5, nw = (int) (blockDim.x >> 5);
+    int ia = a, ib = b;
+#pragma unroll
+    for (int o = 1; o < 32; o <<= 1) {
+        const int x = __shfl_up_sync(0xffffffffu, ia, o), y = __shfl_up_sync(0xffffffffu, ib, o);
+        if (lane >= o) {
+            ia += x;
+            ib += y;
+        }
+    }
+    if (lane == 31) {
+        part[0][warp] = ia;
+        part[1][warp] = ib;
+    }
+    __syncthreads();
+    if (warp == 0) {
+        const int x0 = lane < nw ? part[0][lane] : 0, y0 = lane < nw ? part[1][lane] : 0;
+        int x = x0, y = y0;
+#pragma unroll
+        for (int o = 1; o < 32; o <<= 1) {
+            const int u = __shfl_up_sync(0xffffffffu, x, o), v = __shfl_up_sync(0xffffffffu, y, o);
+            if (lane >= o) {
+                x += u;
+                y += v;
+            }
+        }
+        part[0][lane] = x - x0;
+        part[1][lane] = y - y0;
+        if (lane == 31) {
+            tot[0] = x;
+            tot[1] = y;
+        }
+    }
+    __syncthreads();
+    a = part[0][warp] + ia - a;
+    b = part[1][warp] + ib - b;
+}
+
+// idx_select_k's selection, faster: the threshold (the k_pools-th largest key) found a byte at a time from the top -
+// four histogram passes instead of 32 bisection rounds, each histogram kept per lane so that a warp's increments
+// never meet on one address - and the output slots by a parallel scan; the same threshold and the same index-ordered
+// compaction, so the same cells in the same order
+__global__ void __launch_bounds__(1024) idx_select_radix_k(const float* scores, int stride, int64_t pos0, int k_pools,
+                                                           int32_t* sel, int32_t* n_sel, int sel_stride) {
+    const int t = blockIdx.x, tid = threadIdx.x, nt = blockDim.x, lane = tid & 31, warp = tid >> 5;
+    const int64_t q = pos0 + t;
+    const int64_t tail_start = (q + 1) / kKpool * kKpool;
+    const int n = (int) (tail_start / kKpool); // visible complete pools
+    const float* s = scores + (size_t) t * stride;
+    int32_t* out = sel + (size_t) t * sel_stride;
+    __shared__ int hist[256][33]; // [digit][lane], padded: the lanes of a warp land in different banks
+    __shared__ int bins[256];
+    __shared__ uint32_t thr_s;
+    __shared__ int want_s, tot[2];
+    const bool all = n <= k_pools;
+    uint32_t thr = 0;
+    if (!all) {
+        uint32_t prefix = 0, mask = 0;
+        int want = k_pools; // the rank of the threshold among the keys matching the prefix
+        for (int shift = 24; shift >= 0; shift -= 8) {
+            for (int i = tid; i < 256 * 33; i += nt)
+                (&hist[0][0])[i] = 0;
+            __syncthreads();
+            for (int i = tid; i < n; i += nt) {
+                const uint32_t kk = ord_key(s[i]);
+                if ((kk & mask) == prefix)
+                    atomicAdd(&hist[(kk >> shift) & 255u][lane], 1);
+            }
+            __syncthreads();
+            if (tid < 256) {
+                int c = 0;
+                for (int l = 0; l < 32; ++l)
+                    c += hist[tid][l];
+                bins[tid] = c;
+            }
+            __syncthreads();
+            if (warp == 0) {
+                // lane l: digits 255 - 8 l down to 248 - 8 l, counted from the top digit down
+                int c[8], sum = 0;
+#pragma unroll
+                for (int r = 0; r < 8; ++r) {
+                    c[r] = bins[255 - 8 * lane - r];
+                    sum += c[r];
+                }
+                int incl = sum;
+#pragma unroll
+                for (int o = 1; o < 32; o <<= 1) {
+                    const int v = __shfl_up_sync(0xffffffffu, incl, o);
+                    if (lane >= o)
+                        incl += v;
+                }
+                const unsigned hit = __ballot_sync(0xffffffffu, incl >= want);
+                if (lane == __ffs((int) hit) - 1) {
+                    int run = incl - sum;
+                    for (int r = 0; r < 8; ++r) {
+                        if (run + c[r] >= want) {
+                            thr_s = prefix | ((uint32_t) (255 - 8 * lane - r) << shift);
+                            want_s = want - run;
+                            break;
+                        }
+                        run += c[r];
+                    }
+                }
+            }
+            __syncthreads();
+            prefix = thr_s;
+            want = want_s;
+            mask |= 255u << shift;
+        }
+        thr = prefix;
+    }
+    // counts above / at the threshold per thread (a contiguous range of pools each), then exclusive scans
+    const int per = (n + nt - 1) / nt, i0 = min(n, tid * per), i1 = min(n, i0 + per);
+    int gt = 0, eq = 0;
+    if (all)
+        gt = i1 - i0;
+    else
+        for (int i = i0; i < i1; ++i) {
+            const uint32_t kk = ord_key(s[i]);
+            gt += kk > thr;
+            eq += kk == thr;
+        }
+    int o_gt = gt, o_eq = eq;
+    block_scan2(o_gt, o_eq, tot);
+    const int above = tot[0], need_eq = all ? 0 : k_pools - above;
+    // pools above the threshold first (index order), then the first need_eq ties
     for (int i = i0; i < i1; ++i) {
         int slot = -1;
         if (all) {
@@ -1368,16 +1592,24 @@ void idx_pool(const void* kcache, const void* gcache, int ring, const float* ape
 }
 
 void idx_score(const float* iq, const float* w, const void* pooled, int64_t pos0, int T, int heads, float wscale,
-               float* scores, int stride, void* st) {
+               float* scores, int stride, bool legacy, void* st) {
     const int64_t n = (pos0 + T) / kKpool;
-    if (n > 0)
+    if (n <= 0)
+        return;
+    if (legacy || heads > kScoreHeads)
         idx_score_k<<<dim3((unsigned) ((n + 7) / 8), T), 256, 0, S(st)>>>(iq, w, (const __half*) pooled, pos0, heads,
                                                                           wscale, scores, stride);
+    else
+        idx_score_pairs_k<<<dim3((unsigned) ((n + kScorePools - 1) / kScorePools), T), 2 * kScorePools, 0, S(st)>>>(
+            iq, w, (const __half*) pooled, pos0, heads, wscale, scores, stride);
 }
 
 void idx_select(const float* scores, int stride, int64_t pos0, int T, int k_pools, int32_t* sel, int32_t* n_sel,
-                int sel_stride, void* st) {
-    idx_select_k<<<T, 1024, 0, S(st)>>>(scores, stride, pos0, k_pools, sel, n_sel, sel_stride);
+                int sel_stride, bool legacy, void* st) {
+    if (legacy)
+        idx_select_k<<<T, 1024, 0, S(st)>>>(scores, stride, pos0, k_pools, sel, n_sel, sel_stride);
+    else
+        idx_select_radix_k<<<T, 1024, 0, S(st)>>>(scores, stride, pos0, k_pools, sel, n_sel, sel_stride);
 }
 
 void route(const float* logits, const float* bias, int E, int k, bool norm, float scale, int32_t* ids, float* w, int T,

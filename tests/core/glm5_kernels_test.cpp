@@ -462,9 +462,59 @@ static void test_heads_and_attention() {
     }
 }
 
+// the indexer's kernels against their legacy versions, which must agree to the bit: scores over `n` pools of random
+// FP16 keys (`levels` > 0: every score rounded to one of that many values, for ties), then the selections
 template <class T> static bool same_bits(const std::vector<T>& a, const std::vector<T>& b) {
     return a.size() == b.size() && std::memcmp(a.data(), b.data(), a.size() * sizeof(T)) == 0;
 }
+static void test_indexer_bits(int n, int T, int levels) {
+    const int H = 32, D = k::kIdxDim, K = 512, SEL = 2048 + 8, stride = n + 8;
+    std::vector<__half> keys((size_t) n * D);
+    {
+        auto r = rnd((size_t) n * D);
+        for (size_t i = 0; i < keys.size(); ++i)
+            keys[i] = __float2half(r[i]);
+    }
+    auto iq = rnd((size_t) T * H * D), w = rnd((size_t) T * H);
+    __half* dk = up(keys);
+    float *diq = up(iq), *dw = up(w), *s0, *s1;
+    cudaMalloc(&s0, (size_t) T * stride * 4);
+    cudaMalloc(&s1, (size_t) T * stride * 4);
+    cudaMemset(s0, 0, (size_t) T * stride * 4);
+    cudaMemset(s1, 0, (size_t) T * stride * 4);
+    const int64_t pos0 = (int64_t) n * k::kKpool - T + 1; // the last query sees all n pools, the first n - 1 or so
+    const float ws = 1.f / std::sqrt((float) (D * H));
+    k::idx_score(diq, dw, dk, pos0, T, H, ws, s0, stride, true, nullptr);
+    k::idx_score(diq, dw, dk, pos0, T, H, ws, s1, stride, false, nullptr);
+    auto g0 = down(s0, (size_t) T * stride), g1 = down(s1, (size_t) T * stride);
+    const bool score_ok = same_bits(g0, g1);
+    if (levels > 0) { // ties: the legacy scores rounded to a few values, for both selections
+        float lo = 1e30f, hi = -1e30f;
+        for (float v : g0)
+            lo = std::min(lo, v), hi = std::max(hi, v);
+        for (float& v : g0)
+            v = lo + std::floor((v - lo) / (hi - lo + 1e-30f) * levels) * (hi - lo) / levels;
+        cudaMemcpy(s0, g0.data(), g0.size() * 4, cudaMemcpyHostToDevice);
+    }
+    int32_t *sel0, *sel1, *n0, *n1;
+    cudaMalloc(&sel0, (size_t) T * SEL * 4);
+    cudaMalloc(&sel1, (size_t) T * SEL * 4);
+    cudaMalloc(&n0, T * 4);
+    cudaMalloc(&n1, T * 4);
+    cudaMemset(sel0, 0xff, (size_t) T * SEL * 4);
+    cudaMemset(sel1, 0xff, (size_t) T * SEL * 4);
+    k::idx_select(s0, stride, pos0, T, K, sel0, n0, SEL, true, nullptr);
+    k::idx_select(s0, stride, pos0, T, K, sel1, n1, SEL, false, nullptr);
+    const bool sel_ok =
+        same_bits(down(sel0, (size_t) T * SEL), down(sel1, (size_t) T * SEL)) && same_bits(down(n0, T), down(n1, T));
+    failures += !score_ok + !sel_ok;
+    std::printf("%-28s scores %s, selection %s (%d pools, T %d%s)\n", "idx legacy == new", score_ok ? "ok" : "FAIL",
+                sel_ok ? "ok" : "FAIL", n, T, levels > 0 ? (", " + std::to_string(levels) + " levels").c_str() : "");
+    for (void* p : {(void*) dk, (void*) diq, (void*) dw, (void*) s0, (void*) s1, (void*) sel0, (void*) sel1, (void*) n0,
+                    (void*) n1})
+        cudaFree(p);
+}
+
 static void test_indexer() {
     const int NP = 2203, T = 3, H = 32, D = k::kIdxDim, K = 512, SEL = 2048 + 8;
     const int RING = (NP + 3) / 4 * 4, SMALL = 16; // the whole context, and a ring of two windows of 8
@@ -534,11 +584,11 @@ static void test_indexer() {
     auto iq = rnd((size_t) T * H * D), w = rnd((size_t) T * H);
     float *diq = up(iq), *dw = up(w);
     const float ws = 1.f / std::sqrt((float) (D * H));
-    k::idx_score(diq, dw, pooled, pos0, T, H, ws, scores, stride, nullptr);
+    k::idx_score(diq, dw, pooled, pos0, T, H, ws, scores, stride, false, nullptr);
     int32_t *sel, *nsel;
     cudaMalloc(&sel, (size_t) T * SEL * 4);
     cudaMalloc(&nsel, T * 4);
-    k::idx_select(scores, stride, pos0, T, K, sel, nsel, SEL, nullptr);
+    k::idx_select(scores, stride, pos0, T, K, sel, nsel, SEL, false, nullptr);
     auto gs = down(scores, (size_t) T * stride);
     auto gsel = down(sel, (size_t) T * SEL);
     auto gn = down(nsel, T);
@@ -580,6 +630,65 @@ static void test_indexer() {
     check("idx_score", got_sc, ref_sc, 1e-3);
     failures += sel_bad != 0;
     std::printf("%-28s %s (%d, %d, %d cells)\n", "idx_select", sel_bad ? "FAIL" : "ok", gn[0], gn[1], gn[2]);
+    // the new kernels against the legacy ones: short and long contexts, a window of 1 to 4 queries, and ties
+    test_indexer_bits(npools, T, 0);
+    test_indexer_bits(300, 2, 0); // fewer pools than the selection: all of them
+    test_indexer_bits(4100, 1, 0);
+    test_indexer_bits(8197, 2, 0);
+    test_indexer_bits(8197, 4, 7);
+    test_indexer_bits(33000, 2, 0);
+    test_indexer_bits(5000, 2, 1); // every score equal
+}
+
+// `glm5_kernels_test indexer`: the indexer's scores and selection, legacy and new, at 4K to 128K tokens of context
+static int bench_indexer() {
+    const int H = 32, D = k::kIdxDim, K = 512, SEL = 2048 + 8;
+    cudaStream_t st;
+    cudaStreamCreate(&st);
+    for (const int ctx : {4096, 16384, 32768, 131072}) {
+        const int n = ctx / k::kKpool, stride = n + 8;
+        std::vector<__half> keys((size_t) n * D);
+        auto r = rnd((size_t) n * D);
+        for (size_t i = 0; i < keys.size(); ++i)
+            keys[i] = __float2half(r[i]);
+        __half* dk = up(keys);
+        auto iq = rnd((size_t) 4 * H * D), w = rnd((size_t) 4 * H);
+        float *diq = up(iq), *dw = up(w), *sc;
+        cudaMalloc(&sc, (size_t) 4 * stride * 4);
+        int32_t *sel, *nsel;
+        cudaMalloc(&sel, (size_t) 4 * SEL * 4);
+        cudaMalloc(&nsel, 4 * 4);
+        for (const int T : {1, 2}) {
+            const int64_t pos0 = (int64_t) ctx - T;
+            for (const bool legacy : {true, false}) {
+                cudaEvent_t a, b, c;
+                cudaEventCreate(&a);
+                cudaEventCreate(&b);
+                cudaEventCreate(&c);
+                const int reps = 50;
+                float ms_s = 0, ms_k = 0;
+                for (int i = 0; i < 3; ++i) {
+                    k::idx_score(diq, dw, dk, pos0, T, H, 0.01f, sc, stride, legacy, st);
+                    k::idx_select(sc, stride, pos0, T, K, sel, nsel, SEL, legacy, st);
+                }
+                cudaEventRecord(a, st);
+                for (int i = 0; i < reps; ++i)
+                    k::idx_score(diq, dw, dk, pos0, T, H, 0.01f, sc, stride, legacy, st);
+                cudaEventRecord(b, st);
+                for (int i = 0; i < reps; ++i)
+                    k::idx_select(sc, stride, pos0, T, K, sel, nsel, SEL, legacy, st);
+                cudaEventRecord(c, st);
+                cudaEventSynchronize(c);
+                cudaEventElapsedTime(&ms_s, a, b);
+                cudaEventElapsedTime(&ms_k, b, c);
+                std::printf("indexer ctx %6d T %d %-6s: idx_score %7.1f us, idx_select %7.1f us\n", ctx, T,
+                            legacy ? "legacy" : "new", 1000.0 * ms_s / reps, 1000.0 * ms_k / reps);
+            }
+        }
+        for (void* p : {(void*) dk, (void*) diq, (void*) dw, (void*) sc, (void*) sel, (void*) nsel})
+            cudaFree(p);
+    }
+    return 0;
 }
 
 static void test_route() {
@@ -955,6 +1064,8 @@ int main(int argc, char** argv) {
         return bench();
     if (argc > 1 && std::string(argv[1]) == "shapes")
         return bench_shapes();
+    if (argc > 1 && std::string(argv[1]) == "indexer")
+        return bench_indexer();
     test_hc();
     test_hc_mix();
     test_kda();

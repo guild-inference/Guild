@@ -1739,10 +1739,13 @@ void Glm5Engine::Impl::attn_dsa(Layer& Y, int T, int64_t pos0) {
     // a query sees at most idx_topk / kpool pools before the selection is anything but all of them
     const int k_pools = (int) (g.idx_topk / glm5k::kKpool);
     if ((pos0 + T) / glm5k::kKpool > k_pools) {
+        // GUILD_GLM_IDX_LEGACY=1: the slower kernels that give the same bits (read each window, for A/Bs in one run)
+        const char* lg = std::getenv("GUILD_GLM_IDX_LEGACY");
+        const bool legacy = lg && lg[0] == '1';
         mm(Y.idx_qb, xq2, iq, T);
         glm5k::idx_score(iq, iw, Y.pooled, pos0, T, (int) g.idx_heads,
-                         1.f / std::sqrt((float) (g.idx_dim * g.idx_heads)), scores, score_stride, st);
-        glm5k::idx_select(scores, score_stride, pos0, T, k_pools, sel, nsel, sel_stride, st);
+                         1.f / std::sqrt((float) (g.idx_dim * g.idx_heads)), scores, score_stride, legacy, st);
+        glm5k::idx_select(scores, score_stride, pos0, T, k_pools, sel, nsel, sel_stride, legacy, st);
         glm5k::mla_attend(e, Y.kv_cache, pos0, (int) H, (int) KL, T, scale, sel, nsel, sel_stride, b, part, st);
     } else {
         glm5k::mla_attend(e, Y.kv_cache, pos0, (int) H, (int) KL, T, scale, nullptr, nullptr, 0, b, part, st);

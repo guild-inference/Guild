@@ -96,13 +96,15 @@ void idx_store(const float* kraw, const float* ln_w, const float* ln_b, const fl
 void idx_pool(const void* kcache, const void* gcache, int ring, const float* ape, void* pooled, int64_t pos0, int T,
               void* st);
 /// scores[t][p] = sum_h w[t][h] * relu(iq[t][h] . pooled[p]) * wscale for the pools visible to query t
-/// ((pos0 + t + 1) / kKpool of them); rows of `stride`
+/// ((pos0 + t + 1) / kKpool of them); rows of `stride`.  `legacy`: the kernel that reads the query once per pool
+/// (the same bits, slower at long contexts)
 void idx_score(const float* iq, const float* w, const void* pooled, int64_t pos0, int T, int heads, float wscale,
-               float* scores, int stride, void* st);
+               float* scores, int stride, bool legacy, void* st);
 /// The cells query t attends: the members of its top `k_pools` pools (all of them when fewer are visible, ties to
-/// the lower pool) and its tail (the incomplete pool's cells up to itself); sel [T][sel_stride], n_sel [T]
+/// the lower pool) and its tail (the incomplete pool's cells up to itself); sel [T][sel_stride], n_sel [T].
+/// `legacy`: the threshold by bisection (the same cells in the same order, slower)
 void idx_select(const float* scores, int stride, int64_t pos0, int T, int k_pools, int32_t* sel, int32_t* n_sel,
-                int sel_stride, void* st);
+                int sel_stride, bool legacy, void* st);
 int64_t attend_scratch_floats(int64_t max_cells, int H, int L, int T);
 
 /// Sigmoid routing with a selection bias (noaux_tc): ids/w [T][k], w normalised (when norm) and scaled
