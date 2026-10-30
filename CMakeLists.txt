@@ -729,6 +729,21 @@ if(GUILD_ENABLE_CUDA OR GUILD_ENABLE_HIP)
     target_include_directories(router_fast_parity PRIVATE ${_guild_gpu_include_directories})
     target_link_libraries(router_fast_parity PRIVATE guild_kernels ${_guild_gpu_runtime_target})
     add_test(NAME router_fast_parity COMMAND router_fast_parity)
+    # the FP32-activation BF16 products with R rows a block (the routers) against the one-row kernels, bitwise: two
+    # processes, since the switch is an environment variable read once; then each other row count
+    add_executable(mmvf_rows_parity src/kernels/mmvf_rows_parity.cpp)
+    target_include_directories(mmvf_rows_parity PRIVATE ${_guild_gpu_include_directories})
+    target_link_libraries(mmvf_rows_parity PRIVATE guild_kernels ${_guild_gpu_runtime_target})
+    add_test(NAME mmvf_rows_reference
+             COMMAND mmvf_rows_parity --dump ${CMAKE_CURRENT_BINARY_DIR}/mmvf_rows_reference.bin)
+    set_tests_properties(mmvf_rows_reference PROPERTIES ENVIRONMENT "GUILD_MMVF_ROWS=0"
+                         FIXTURES_SETUP mmvf_rows_reference)
+    foreach(_rows 1 2 4 8)
+      add_test(NAME mmvf_rows_parity_${_rows}
+               COMMAND mmvf_rows_parity --compare ${CMAKE_CURRENT_BINARY_DIR}/mmvf_rows_reference.bin)
+      set_tests_properties(mmvf_rows_parity_${_rows} PROPERTIES ENVIRONMENT "GUILD_MMVF_ROWS=${_rows}"
+                           FIXTURES_REQUIRED mmvf_rows_reference)
+    endforeach()
     # the verify window's host combine (the CPU sums the expert rows) against the GPU combine it replaces, bitwise
     add_executable(host_combine_parity src/kernels/host_combine_parity.cpp)
     target_include_directories(host_combine_parity PRIVATE ${_guild_gpu_include_directories})
