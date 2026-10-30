@@ -803,6 +803,9 @@ if(GUILD_ENABLE_CUDA OR GUILD_ENABLE_HIP)
   # the same comparisons with the staged read (on a pre-Volta card, the direct down and column up kernels at 1-2 tokens)
   add_test(NAME gr_parity_staged COMMAND gr_parity --selftest)
   set_tests_properties(gr_parity_staged PROPERTIES ENVIRONMENT "GUILD_HC_SPLIT=2")
+  # the norm's L2 prefetch at a GUILD_HC_PF far above a row's 20,480 bytes: clamped to one row, the same bits
+  add_test(NAME gr_parity_staged_pf COMMAND gr_parity --selftest)
+  set_tests_properties(gr_parity_staged_pf PROPERTIES ENVIRONMENT "GUILD_HC_SPLIT=2;GUILD_HC_PF=1048576")
 
   add_executable(gdn_parity src/kernels/gdn_parity.cpp)
   target_include_directories(gdn_parity PRIVATE ${_guild_gpu_include_directories})
