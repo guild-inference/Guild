@@ -462,24 +462,33 @@ static void test_heads_and_attention() {
     }
 }
 
+template <class T> static bool same_bits(const std::vector<T>& a, const std::vector<T>& b) {
+    return a.size() == b.size() && std::memcmp(a.data(), b.data(), a.size() * sizeof(T)) == 0;
+}
 static void test_indexer() {
     const int NP = 2203, T = 3, H = 32, D = k::kIdxDim, K = 512, SEL = 2048 + 8;
+    const int RING = (NP + 3) / 4 * 4, SMALL = 16; // the whole context, and a ring of two windows of 8
     auto kraw = rnd((size_t) NP * D), gate = rnd((size_t) NP * D), lw = rnd(D, 0.2f), lb = rnd(D, 0.2f),
          ape = rnd((size_t) k::kKpool * D, 0.5f);
     for (auto& v : lw)
         v += 1.f;
     float *dk = up(kraw), *dg = up(gate), *dlw = up(lw), *dlb = up(lb), *dape = up(ape);
-    __half *kc, *gc;
-    float *pooled, *scores;
-    cudaMalloc(&kc, (size_t) NP * D * 2);
-    cudaMalloc(&gc, (size_t) NP * D * 2);
-    cudaMalloc(&pooled, (size_t) (NP / 4 + 1) * D * 4);
+    __half *kc, *gc, *kr, *gr, *pooled, *pooled_r;
+    float* scores;
+    cudaMalloc(&kc, (size_t) RING * D * 2);
+    cudaMalloc(&gc, (size_t) RING * D * 2);
+    cudaMalloc(&kr, (size_t) SMALL * D * 2);
+    cudaMalloc(&gr, (size_t) SMALL * D * 2);
+    cudaMalloc(&pooled, (size_t) (NP / 4 + 1) * D * 2);
+    cudaMalloc(&pooled_r, (size_t) (NP / 4 + 1) * D * 2);
     const int stride = NP / 4 + 8;
     cudaMalloc(&scores, (size_t) T * stride * 4);
     for (int p0 = 0; p0 < NP; p0 += 8) { // the cache as decode windows would fill it
         const int n = std::min(8, NP - p0);
-        k::idx_store(dk + (size_t) p0 * D, dlw, dlb, dg + (size_t) p0 * D, kc, gc, p0, n, 1e-6f, nullptr);
-        k::idx_pool(kc, gc, dape, pooled, p0, n, nullptr);
+        k::idx_store(dk + (size_t) p0 * D, dlw, dlb, dg + (size_t) p0 * D, kc, gc, p0, n, RING, 1e-6f, nullptr);
+        k::idx_pool(kc, gc, RING, dape, pooled, p0, n, nullptr);
+        k::idx_store(dk + (size_t) p0 * D, dlw, dlb, dg + (size_t) p0 * D, kr, gr, p0, n, SMALL, 1e-6f, nullptr);
+        k::idx_pool(kr, gr, SMALL, dape, pooled_r, p0, n, nullptr);
     }
     // reference caches (FP16 rounded, as stored)
     std::vector<float> rk((size_t) NP * D), rg((size_t) NP * D);
@@ -511,7 +520,14 @@ static void test_indexer() {
             }
             rp[(size_t) p * D + d] = __half2float(__float2half(v / den)); // stored as FP16
         }
-    check("idx_pool", down(pooled, (size_t) npools * D), rp, 1e-3);
+    const auto gp = down(pooled, (size_t) npools * D);
+    std::vector<float> gpf(gp.size());
+    for (size_t i = 0; i < gp.size(); ++i)
+        gpf[i] = __half2float(gp[i]);
+    check("idx_pool", gpf, rp, 1e-3);
+    const bool ring_ok = same_bits(gp, down(pooled_r, (size_t) npools * D));
+    failures += !ring_ok;
+    std::printf("%-28s %s\n", "idx_pool, ring of 16 rows", ring_ok ? "ok (the same bits)" : "FAIL");
 
     // a window at the end of the context: scores and the selected cells
     const int pos0 = NP - T;

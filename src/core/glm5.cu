@@ -886,9 +886,10 @@ __global__ void mla_reduce_k(const float* part, float* lat, int H, int L, int kS
 
 // ---- the DSA indexer ----
 
-// one block (128 threads) per token: LayerNorm of the key, then both rows to FP16
+// one block (128 threads) per token: LayerNorm of the key, then both rows to FP16 at the cell's row of the rings
+// (cell c at row c % ring)
 __global__ void idx_store_k(const float* kraw, const float* ln_w, const float* ln_b, const float* gate, __half* kc,
-                            __half* gc, int64_t pos0, float eps) {
+                            __half* gc, int64_t pos0, int ring, float eps) {
     const int t = blockIdx.x, d = threadIdx.x;
     const float x = kraw[(size_t) t * kIdxDim + d];
     __shared__ float red[4];
@@ -904,19 +905,22 @@ __global__ void idx_store_k(const float* kraw, const float* ln_w, const float* l
         red[d >> 5] = s;
     __syncthreads();
     const float var = (red[0] + red[1] + red[2] + red[3]) / kIdxDim;
-    const size_t row = (size_t) (pos0 + t) * kIdxDim + d;
+    const size_t row = (size_t) ((pos0 + t) % ring) * kIdxDim + d;
     kc[row] = __float2half(c * rsqrtf(var + eps) * ln_w[d] + ln_b[d]);
     gc[row] = __float2half(gate[(size_t) t * kIdxDim + d]);
 }
 
-// one block (128 threads, one per dim) per pool completed in the window
-__global__ void idx_pool_k(const __half* kc, const __half* gc, const float* ape, float* pooled, int64_t first_pool) {
+// one block (128 threads, one per dim) per pool completed in the window; a pool's cells are consecutive rows of the
+// rings (a ring is a multiple of kKpool rows)
+__global__ void idx_pool_k(const __half* kc, const __half* gc, int ring, const float* ape, __half* pooled,
+                           int64_t first_pool) {
     const int64_t p = first_pool + blockIdx.x;
     const int d = threadIdx.x;
+    const size_t r0 = (size_t) ((p * kKpool) % ring);
     float g[kKpool], mx = -FLT_MAX;
 #pragma unroll
     for (int s = 0; s < kKpool; ++s) {
-        g[s] = __half2float(gc[(size_t) (p * kKpool + s) * kIdxDim + d]) + ape[s * kIdxDim + d];
+        g[s] = __half2float(gc[(r0 + s) * kIdxDim + d]) + ape[s * kIdxDim + d];
         mx = fmaxf(mx, g[s]);
     }
     float den = 0.f, v = 0.f;
@@ -924,15 +928,15 @@ __global__ void idx_pool_k(const __half* kc, const __half* gc, const float* ape,
     for (int s = 0; s < kKpool; ++s) {
         const float e = expf(g[s] - mx);
         den += e;
-        v += e * __half2float(kc[(size_t) (p * kKpool + s) * kIdxDim + d]);
+        v += e * __half2float(kc[(r0 + s) * kIdxDim + d]);
     }
-    // rounded to FP16 as the reference's indexer cache keeps it (its scores are taken against the rounded key)
-    pooled[(size_t) p * kIdxDim + d] = __half2float(__float2half(v / den));
+    // FP16, as the reference's indexer cache keeps it (its scores are taken against the rounded key)
+    pooled[(size_t) p * kIdxDim + d] = __float2half(v / den);
 }
 
 // block (8 warps) per 8 pools x token: warp w scores pool 8 * blockIdx.x + w over all heads
-__global__ void idx_score_k(const float* iq, const float* w, const float* pooled, int64_t pos0, int heads, float wscale,
-                            float* scores, int stride) {
+__global__ void idx_score_k(const float* iq, const float* w, const __half* pooled, int64_t pos0, int heads,
+                            float wscale, float* scores, int stride) {
     const int t = blockIdx.y;
     const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
     const int64_t p = (int64_t) blockIdx.x * 8 + warp;
@@ -942,7 +946,7 @@ __global__ void idx_score_k(const float* iq, const float* w, const float* pooled
     float k4[kIdxDim / 32];
 #pragma unroll
     for (int i = 0; i < kIdxDim / 32; ++i)
-        k4[i] = pooled[(size_t) p * kIdxDim + lane + 32 * i];
+        k4[i] = __half2float(pooled[(size_t) p * kIdxDim + lane + 32 * i]);
     float score = 0.f;
     for (int h = 0; h < heads; ++h) {
         const float* q = iq + ((size_t) t * heads + h) * kIdxDim;
@@ -1349,25 +1353,26 @@ void mla_attend(const float* q, const void* cache, int64_t pos0, int H, int L, i
 }
 
 void idx_store(const float* kraw, const float* ln_w, const float* ln_b, const float* gate, void* kcache, void* gcache,
-               int64_t pos0, int T, float eps, void* st) {
-    idx_store_k<<<T, kIdxDim, 0, S(st)>>>(kraw, ln_w, ln_b, gate, (__half*) kcache, (__half*) gcache, pos0, eps);
+               int64_t pos0, int T, int ring, float eps, void* st) {
+    idx_store_k<<<T, kIdxDim, 0, S(st)>>>(kraw, ln_w, ln_b, gate, (__half*) kcache, (__half*) gcache, pos0, ring, eps);
 }
 
-void idx_pool(const void* kcache, const void* gcache, const float* ape, float* pooled, int64_t pos0, int T, void* st) {
+void idx_pool(const void* kcache, const void* gcache, int ring, const float* ape, void* pooled, int64_t pos0, int T,
+              void* st) {
     // pool p is complete once position kKpool * p + kKpool - 1 is stored
     const int64_t first = pos0 / kKpool;      // the first pool whose last member (kKpool p + kKpool - 1) is >= pos0
     const int64_t last = (pos0 + T) / kKpool; // pools [first, last) end inside the window
     if (last > first)
         idx_pool_k<<<(unsigned) (last - first), kIdxDim, 0, S(st)>>>((const __half*) kcache, (const __half*) gcache,
-                                                                     ape, pooled, first);
+                                                                     ring, ape, (__half*) pooled, first);
 }
 
-void idx_score(const float* iq, const float* w, const float* pooled, int64_t pos0, int T, int heads, float wscale,
+void idx_score(const float* iq, const float* w, const void* pooled, int64_t pos0, int T, int heads, float wscale,
                float* scores, int stride, void* st) {
     const int64_t n = (pos0 + T) / kKpool;
     if (n > 0)
-        idx_score_k<<<dim3((unsigned) ((n + 7) / 8), T), 256, 0, S(st)>>>(iq, w, pooled, pos0, heads, wscale, scores,
-                                                                          stride);
+        idx_score_k<<<dim3((unsigned) ((n + 7) / 8), T), 256, 0, S(st)>>>(iq, w, (const __half*) pooled, pos0, heads,
+                                                                          wscale, scores, stride);
 }
 
 void idx_select(const float* scores, int stride, int64_t pos0, int T, int k_pools, int32_t* sel, int32_t* n_sel,

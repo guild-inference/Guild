@@ -86,15 +86,18 @@ void mla_attend(const float* q, const void* cache, int64_t pos0, int H, int L, i
 
 // ---- the DSA indexer (pools of kKpool cells; cell = position) ----
 inline constexpr int kKpool = 4, kIdxDim = 128;
-/// LayerNorm(kraw) * w + b and the compressor gate, stored per cell as FP16 ([cells][128] each)
+/// LayerNorm(kraw) * w + b and the compressor gate, stored per cell as FP16 in rings of `ring` rows ([ring][128]
+/// each, cell c at row c % ring; a multiple of kKpool rows): only the pools a window completes read them, so a ring
+/// needs the window's cells and the kKpool - 1 before it
 void idx_store(const float* kraw, const float* ln_w, const float* ln_b, const float* gate, void* kcache, void* gcache,
-               int64_t pos0, int T, float eps, void* st);
+               int64_t pos0, int T, int ring, float eps, void* st);
 /// The pools that positions pos0 .. pos0 + T - 1 complete: pooled[p][d] = sum_s softmax_s(gate + ape)[s][d] k[s][d]
-/// (ape [kKpool][128]); pooled [cells / kKpool][128] FP32
-void idx_pool(const void* kcache, const void* gcache, const float* ape, float* pooled, int64_t pos0, int T, void* st);
+/// (ape [kKpool][128]); pooled [cells / kKpool][128] FP16
+void idx_pool(const void* kcache, const void* gcache, int ring, const float* ape, void* pooled, int64_t pos0, int T,
+              void* st);
 /// scores[t][p] = sum_h w[t][h] * relu(iq[t][h] . pooled[p]) * wscale for the pools visible to query t
 /// ((pos0 + t + 1) / kKpool of them); rows of `stride`
-void idx_score(const float* iq, const float* w, const float* pooled, int64_t pos0, int T, int heads, float wscale,
+void idx_score(const float* iq, const float* w, const void* pooled, int64_t pos0, int T, int heads, float wscale,
                float* scores, int stride, void* st);
 /// The cells query t attends: the members of its top `k_pools` pools (all of them when fewer are visible, ties to
 /// the lower pool) and its tail (the incomplete pool's cells up to itself); sel [T][sel_stride], n_sel [T]
