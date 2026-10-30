@@ -43,5 +43,34 @@ class Coverage(unittest.TestCase):
             self.assertEqual(DV.corpus_counts(Tok(), [a, b]), Counter({ord("é"): 3, ord("t"): 2, ord("e"): 1}))
 
 
+class TokenClasses(unittest.TestCase):
+    class Tok:                                                # token_types: 1 normal, 3 control, 4 user-defined
+        token_types = [1, 1, 1, 3, 4, 1]
+
+    def test_classes(self):
+        tok = self.Tok()
+        self.assertEqual(DV.classes_of(tok, 0, "123"), {"digits"})
+        self.assertEqual(DV.classes_of(tok, 1, " 12"), set())       # a space and digits: an ordinary token
+        self.assertEqual(DV.classes_of(tok, 2, None), {"bytes"})   # a piece of a character
+        self.assertEqual(DV.classes_of(tok, 3, "<|user|>"), {"special"})
+        self.assertEqual(DV.classes_of(tok, 4, "</think>"), {"special"})
+        self.assertEqual(DV.classes_of(tok, 5, "abc"), set())
+
+
+class TokenizerDir(unittest.TestCase):
+    def test_reads_a_pack_tokenizer_export(self):
+        import json
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d)
+            (p / "vocab.json").write_text(json.dumps({"a": 0, "b": 1, "ab": 2, "<|user|>": 3}), encoding="utf-8")
+            (p / "merges.txt").write_text("a b\n", encoding="utf-8")
+            (p / "token_type.json").write_text(json.dumps([1, 1, 1, 3]), encoding="utf-8")
+            (p / "tokenizer.json").write_text(json.dumps({"pre": "glm4", "special_ids": {"x": 3}}), encoding="utf-8")
+            tok = DV.load_tokenizer_dir(p)
+            self.assertEqual(tok.pre, "glm4")
+            self.assertEqual(tok.encode("ab"), [2])
+            self.assertEqual(DV.classes_of(tok, 3, DV.token_text(tok, 3)), {"special"})
+
+
 if __name__ == "__main__":
     unittest.main()

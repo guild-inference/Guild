@@ -20,11 +20,23 @@ frequent ones that together cover --coverage (default 0.99) of the corpus's toke
 
 It prints the share of the corpus's occurrences outside the base and outside the new subset.  --add and --corpus
 can be combined.
+
+GLM-5.3-Flash drafts with its NextN block over the same kind of subset (draft_vocab.bin in the model's tokenizer
+directory, glm5_run --draft-vocab, or GUILD_GLM_DRAFT_VOCAB).  Its tokenizer is the pack's tokenizer/ export, which
+--tokenizer reads in place of --gguf.  GLM's vocabulary has no subset to extend, so the subset is built whole: the
+tokens covering 99.9% of each of several corpora of English prose and code (--per-file: each file a kind of text), the
+whole CJK and Cyrillic scripts, every token of digits, the control tokens (special) and the pieces of characters
+(bytes: what a rare character or an emoji is spelled with):
+
+    python tools/draft_vocab.py --tokenizer <GLM pack>/tokenizer --corpus code_and_docs.txt wiki.txt books.txt \
+        --per-file --coverage 0.999 --add cjk,cyrillic,digits,special,bytes --out draft_vocab.bin
 """
 from __future__ import annotations
 
 import argparse
+import json
 import sys
+import unicodedata
 from array import array
 from collections import Counter
 from pathlib import Path
@@ -41,6 +53,9 @@ SCRIPTS = {
     "cyrillic": [(0x0400, 0x04FF), (0x0500, 0x052F), (0x1C80, 0x1C8F), (0x2DE0, 0x2DFF), (0xA640, 0xA69F)],
 }
 GROUPS = {"cjk": ["han", "kana", "hangul", "cjk_punct"]}
+# token classes --add also takes: digits (every character a number), special (the control and user-defined tokens:
+# <|user|>, </think>, <tool_call>...), bytes (pieces of a character: not whole UTF-8 characters, not special)
+CLASSES = ["digits", "special", "bytes"]
 
 
 def scripts_of(text: str) -> set[str]:
@@ -53,6 +68,34 @@ def scripts_of(text: str) -> set[str]:
     return found
 
 
+def classes_of(tok, i: int, text: str | None) -> set[str]:
+    special = bool(tok.token_types) and tok.token_types[i] in (3, 4)
+    if special:
+        return {"special"}
+    if text is None:
+        return {"bytes"}
+    if text and all(unicodedata.category(ch).startswith("N") for ch in text):
+        return {"digits"}
+    return set()
+
+
+def load_tokenizer_dir(path) -> ST.Tokenizer:
+    """A pack's tokenizer/ export (guild_tokenizer.extract): vocab.json, merges.txt, token_type.json and
+    tokenizer.json (its pre-tokenizer)."""
+    p = Path(path)
+    cfg = json.loads((p / "tokenizer.json").read_text(encoding="utf-8"))
+    vocab = json.loads((p / "vocab.json").read_text(encoding="utf-8"))
+    tokens = [None] * len(vocab)
+    for t, i in vocab.items():
+        tokens[i] = t
+    if any(t is None for t in tokens):
+        raise ValueError(f"{p / 'vocab.json'}: the ids are not 0 .. {len(vocab) - 1}")
+    merges = [m for m in (p / "merges.txt").read_text(encoding="utf-8").split("\n") if m]
+    types = json.loads((p / "token_type.json").read_text(encoding="utf-8")) if (p / "token_type.json").exists() else None
+    special = {k: int(v) for k, v in (cfg.get("special_ids") or {}).items()}
+    return ST.Tokenizer(tokens, merges, types, cfg.get("pre", "qwen35"), special)
+
+
 def token_text(tok, i: int) -> str | None:
     """A token's text, or None when its bytes are not whole UTF-8 characters (a piece of one) or it is special."""
     try:
@@ -62,10 +105,21 @@ def token_text(tok, i: int) -> str | None:
 
 
 def corpus_counts(tok, paths) -> Counter:
-    """Token occurrences over the corpus files (UTF-8 text, tokenized as plain text: no special tokens)."""
+    """Token occurrences over the corpus files (UTF-8 text, tokenized as plain text: no special tokens), read in
+    pieces of whole lines so a large file does not have to be held as one string's tokens."""
     counts: Counter = Counter()
     for path in paths:
-        counts.update(tok.encode(Path(path).read_text(encoding="utf-8")))
+        with open(path, encoding="utf-8") as f:
+            piece: list[str] = []
+            size = 0
+            for line in f:
+                piece.append(line)
+                size += len(line)
+                if size >= 1 << 20:
+                    counts.update(tok.encode("".join(piece)))
+                    piece, size = [], 0
+            if piece:
+                counts.update(tok.encode("".join(piece)))
     return counts
 
 
@@ -90,19 +144,26 @@ def outside(counts: Counter, ids) -> float:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--gguf", required=True, help="the model's (first) GGUF file: its vocabulary")
+    src = ap.add_mutually_exclusive_group(required=True)
+    src.add_argument("--gguf", help="the model's (first) GGUF file: its vocabulary")
+    src.add_argument("--tokenizer", help="a pack's tokenizer/ directory (vocab.json, merges.txt, ...) instead")
     ap.add_argument("--base", help="the subset to extend (int32 ids)")
-    ap.add_argument("--add", default="", help="comma list: han, kana, hangul, cjk_punct, cjk, cyrillic")
+    ap.add_argument("--add", default="",
+                    help="comma list: han, kana, hangul, cjk_punct, cjk, cyrillic, digits, special, bytes")
     ap.add_argument("--corpus", nargs="+", default=[], help="UTF-8 text files in the language to add (#597)")
     ap.add_argument("--coverage", type=float, default=0.99,
                     help="with --corpus: the share of its token occurrences the added tokens cover (default 0.99)")
+    ap.add_argument("--per-file", action="store_true",
+                    help="with --corpus: cover --coverage of each file's occurrences (each file a kind of text), "
+                         "not of all of them together")
     ap.add_argument("--out", help="where to write the new subset")
     ap.add_argument("--stats", action="store_true", help="print what the base (and the new) subset holds")
     a = ap.parse_args()
 
-    tok = ST.Tokenizer.from_gguf(a.gguf)
+    tok = ST.Tokenizer.from_gguf(a.gguf) if a.gguf else load_tokenizer_dir(a.tokenizer)
     n = len(tok.tokens)
-    kinds = [scripts_of(t) if (t := token_text(tok, i)) is not None else set() for i in range(n)]
+    kinds = [(scripts_of(t) if t is not None else set()) | classes_of(tok, i, t)
+             for i, t in ((i, token_text(tok, i)) for i in range(n))]
     base = list(array("i", Path(a.base).read_bytes())) if a.base else []
     if any(i < 0 or i >= n for i in base):
         sys.exit(f"{a.base} has ids outside the vocabulary ({n})")
@@ -110,21 +171,25 @@ def main() -> int:
     want = set()
     for x in filter(None, (s.strip() for s in a.add.split(","))):
         names = GROUPS.get(x, [x])
-        if any(nm not in SCRIPTS for nm in names):
-            sys.exit(f"--add {x}: expected one of {', '.join([*SCRIPTS, *GROUPS])}")
+        if any(nm not in SCRIPTS and nm not in CLASSES for nm in names):
+            sys.exit(f"--add {x}: expected one of {', '.join([*SCRIPTS, *GROUPS, *CLASSES])}")
         want.update(names)
     if not 0 < a.coverage <= 1:
         sys.exit("--coverage: expected a share in (0, 1]")
-    counts = corpus_counts(tok, a.corpus) if a.corpus else Counter()
-    from_corpus = set(covering(counts, a.coverage)) if counts else set()
+    per_file = [corpus_counts(tok, [f]) for f in a.corpus] if a.per_file else []
+    counts = sum(per_file, Counter()) if a.per_file else corpus_counts(tok, a.corpus) if a.corpus else Counter()
+    if a.per_file:
+        from_corpus = set().union(*(covering(c, a.coverage) for c in per_file))
+    else:
+        from_corpus = set(covering(counts, a.coverage)) if counts else set()
     have = set(base)
     added = [i for i in range(n) if i not in have and (kinds[i] & want or i in from_corpus)]
     ids = base + added
 
     def stats(label, sel):
-        counts = {nm: sum(1 for i in sel if nm in kinds[i]) for nm in SCRIPTS}
-        full = {nm: sum(1 for k in kinds if nm in k) for nm in SCRIPTS}
-        print(f"{label}: {len(sel)} ids; " + ", ".join(f"{nm} {counts[nm]}/{full[nm]}" for nm in SCRIPTS))
+        counts = {nm: sum(1 for i in sel if nm in kinds[i]) for nm in [*SCRIPTS, *CLASSES]}
+        full = {nm: sum(1 for k in kinds if nm in k) for nm in [*SCRIPTS, *CLASSES]}
+        print(f"{label}: {len(sel)} ids; " + ", ".join(f"{nm} {counts[nm]}/{full[nm]}" for nm in counts))
 
     if a.stats or not a.out:
         if base:
