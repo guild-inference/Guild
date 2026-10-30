@@ -40,6 +40,10 @@
 #include <mutex>
 #include <thread>
 
+#if defined(__x86_64__)
+#include <immintrin.h>
+#endif
+
 #if defined(__linux__)
 #include <pthread.h>
 #include <sched.h>
@@ -223,6 +227,12 @@ private:
 #endif
 };
 
+/// The pool: a worker per CPU of the node lists it is given (the calling thread joins every phase as node 0's) and a
+/// queue per NUMA node.  A queue is one 64-bit word on a cache line of its own - the phase's generation, its item
+/// count and the next item - so a worker claims an item of the phase it woke for with a compare-and-swap, or none: one
+/// that wakes late never takes the next phase's items.  Workers count the items they finish on their node's line, and
+/// the calling thread returns once every item is done, without waiting for the workers that found none (a worker the
+/// scheduler parked behind another process holds up only an item it has claimed).
 class Pool {
 public:
     /// cpus[n]: the logical CPUs of node n's workers (a worker per CPU)
@@ -232,11 +242,9 @@ public:
                 workers_.emplace_back([this, node, cpu] { loop(node, cpu); });
     }
     ~Pool() {
-        {
-            std::lock_guard<std::mutex> lk(mu_);
-            stop_ = true;
-            ++gen_;
-        }
+        stop_.store(true);
+        publish(0, 0);
+        { std::lock_guard<std::mutex> lk(mu_); }
         cv_.notify_all();
         for (auto& w : workers_)
             w.join();
@@ -253,23 +261,45 @@ public:
     void run_nodes(int n0, int n1, const std::function<void(int, int)>& fn) {
         if (n0 + n1 <= 0)
             return;
-        fn_ = &fn;
-        n_[0] = n0;
-        n_[1] = n1;
-        next_[0].store(0);
-        next_[1].store(0);
-        done_.store(0);
-        {
-            std::lock_guard<std::mutex> lk(mu_);
-            ++gen_;
+        constexpr int kMax = (int) kIdx; // a queue's items in one phase; more go in several phases
+        if (n0 > kMax || n1 > kMax) {
+            for (int b = 0; b < n0 || b < n1; b += kMax)
+                run_nodes(std::clamp(n0 - b, 0, kMax), std::clamp(n1 - b, 0, kMax),
+                          [&](int node, int i) { fn(node, b + i); });
+            return;
         }
-        cv_.notify_all();
-        work(0);
-        while (done_.load(std::memory_order_acquire) < (int) workers_.size())
-            std::this_thread::yield();
+        fn_.p = &fn;
+        done_[0].v.store(0, std::memory_order_relaxed);
+        done_[1].v.store(0, std::memory_order_relaxed);
+        const uint64_t g = publish(n0, n1);
+        if (sleepers_.v.load(std::memory_order_seq_cst) > 0) {
+            {
+                std::lock_guard<std::mutex> lk(mu_);
+            }
+            cv_.notify_all();
+        }
+        work(0, g);
+        while (done_[0].v.load(std::memory_order_acquire) + done_[1].v.load(std::memory_order_acquire) < n0 + n1)
+            relax();
     }
 
 private:
+    // a queue word: generation (24 bits) | item count (20) | next item (20)
+    static constexpr uint64_t kIdx = (1u << 20) - 1;
+    static uint64_t gen_of(uint64_t w) {
+        return w >> 40;
+    }
+    static uint64_t n_of(uint64_t w) {
+        return (w >> 20) & kIdx;
+    }
+    static uint64_t idx_of(uint64_t w) {
+        return w & kIdx;
+    }
+    static void relax() {
+#if defined(__x86_64__)
+        __builtin_ia32_pause();
+#endif
+    }
 #if defined(__linux__)
     static void pin(int cpu) {
         cpu_set_t set;
@@ -278,14 +308,26 @@ private:
         pthread_setaffinity_np(pthread_self(), sizeof(set), &set);
     }
 #endif
-    void work(int node) {
-        for (int q : {node, 1 - node})
-            for (;;) {
-                const int i = next_[q].fetch_add(1, std::memory_order_relaxed);
-                if (i >= n_[q])
-                    break;
-                (*fn_)(q, i);
+    /// the calling thread's: the next generation (never 0, which no phase has) on both queues
+    uint64_t publish(int n0, int n1) {
+        gen_ = gen_ % ((1u << 24) - 1) + 1;
+        q_[0].w.store(gen_ << 40 | (uint64_t) n0 << 20, std::memory_order_seq_cst);
+        q_[1].w.store(gen_ << 40 | (uint64_t) n1 << 20, std::memory_order_seq_cst);
+        return gen_;
+    }
+    /// the items of generation g: node's queue first, then the other's
+    void work(int node, uint64_t g) {
+        for (int q : {node, 1 - node}) {
+            std::atomic<uint64_t>& w = q_[q].w;
+            uint64_t v = w.load(std::memory_order_acquire);
+            while (gen_of(v) == g && idx_of(v) < n_of(v)) {
+                if (!w.compare_exchange_weak(v, v + 1, std::memory_order_acq_rel, std::memory_order_acquire))
+                    continue;
+                (*fn_.p)(q, (int) idx_of(v));
+                done_[node].v.fetch_add(1, std::memory_order_release);
+                v = w.load(std::memory_order_acquire);
             }
+        }
     }
     void loop(int node, int cpu) {
 #if defined(__linux__)
@@ -293,42 +335,119 @@ private:
 #endif
         (void) cpu;
         uint64_t seen = 0;
+        std::atomic<uint64_t>& w = q_[node].w;
         for (;;) {
             // spin a while for the next phase (a layer's phases follow each other within microseconds), then sleep
-            bool got = false;
-            for (int s = 0; s < 200000; ++s) {
-                if (gen_.load(std::memory_order_acquire) != seen) {
-                    got = true;
-                    break;
-                }
-#if defined(__x86_64__)
-                __builtin_ia32_pause();
-#endif
+            uint64_t g = gen_of(w.load(std::memory_order_acquire));
+            for (int s = 0; g == seen && s < 200000; ++s) {
+                relax();
+                g = gen_of(w.load(std::memory_order_acquire));
             }
-            if (!got) {
+            if (g == seen) {
                 std::unique_lock<std::mutex> lk(mu_);
-                cv_.wait(lk, [&] { return gen_.load() != seen; });
+                sleepers_.v.fetch_add(1, std::memory_order_seq_cst);
+                while ((g = gen_of(w.load(std::memory_order_seq_cst))) == seen)
+                    cv_.wait(lk);
+                sleepers_.v.fetch_sub(1, std::memory_order_relaxed);
             }
-            seen = gen_.load(std::memory_order_acquire);
-            if (stop_)
+            if (stop_.load())
                 return;
-            work(node);
-            done_.fetch_add(1, std::memory_order_acq_rel);
+            seen = g;
+            work(node, g);
         }
     }
-    std::vector<std::thread> workers_;
+    // what workers read or write on every item, a cache line each (the two nodes' sockets share none)
+    struct alignas(128) Word {
+        std::atomic<uint64_t> w{0};
+    };
+    struct alignas(128) Count {
+        std::atomic<int> v{0};
+    };
+    struct alignas(128) Fn {
+        const std::function<void(int, int)>* p = nullptr;
+    };
+    Word q_[2];
+    Count done_[2];
+    Fn fn_;
+    Count sleepers_;
+    uint64_t gen_ = 0;
+    std::atomic<bool> stop_{false};
     std::mutex mu_;
     std::condition_variable cv_;
-    std::atomic<uint64_t> gen_{0};
-    bool stop_ = false;
-    const std::function<void(int, int)>* fn_ = nullptr;
-    int n_[2] = {0, 0};
-    std::atomic<int> next_[2];
-    std::atomic<int> done_{0};
+    std::vector<std::thread> workers_;
 };
 
 const ggml_type_traits_cpu* cpu_traits(int type) {
     return ggml_get_type_traits_cpu((ggml_type) type);
+}
+
+#if defined(__x86_64__)
+/// ggml's Q8_K block (ggml-common.h)
+struct Q8KBlock {
+    float d;
+    int8_t qs[256];
+    int16_t bsums[16];
+};
+static_assert(sizeof(Q8KBlock) == 292, "block_q8_K");
+
+/// quantize_row_q8_K_ref (the CPU backend's Q8_K from_float, scalar) with AVX-512, the same bytes: the scale from the
+/// first value of the largest magnitude, nearest_int (round half to even, which a conversion in the default rounding
+/// mode does) of the same single-precision product, and a block of zeros left as the reference leaves it (d and qs
+/// written, bsums not).  A block with a NaN goes to the reference.  One Xeon Gold 6130 core: 4.8 ns a value for the
+/// reference, 0.7 for this.
+__attribute__((target("avx512f,avx512bw"))) void q8k_row_avx512(const float* x, void* vy, int64_t k) {
+    static const ggml_from_float_t ref = ggml_get_type_traits_cpu(GGML_TYPE_Q8_K)->from_float;
+    Q8KBlock* y = (Q8KBlock*) vy;
+    for (int64_t i = 0; i < k / 256; ++i, x += 256, ++y) {
+        __m512 v[16];
+        __m512 m = _mm512_setzero_ps();
+        __mmask16 nan = 0;
+        for (int j = 0; j < 16; ++j) {
+            v[j] = _mm512_loadu_ps(x + 16 * j);
+            nan |= _mm512_cmp_ps_mask(v[j], v[j], _CMP_UNORD_Q);
+            m = _mm512_max_ps(m, _mm512_abs_ps(v[j]));
+        }
+        if (nan) {
+            ref(x, y, 256);
+            continue;
+        }
+        const float amax = _mm512_reduce_max_ps(m);
+        if (amax == 0.f) {
+            y->d = 0.f;
+            std::memset(y->qs, 0, sizeof y->qs);
+            continue;
+        }
+        int at = 0;
+        const __m512 va = _mm512_set1_ps(amax);
+        for (int j = 0; j < 16; ++j) {
+            const __mmask16 e = _mm512_cmp_ps_mask(_mm512_abs_ps(v[j]), va, _CMP_EQ_OQ);
+            if (e) {
+                at = 16 * j + __builtin_ctz((unsigned) e);
+                break;
+            }
+        }
+        const float iscale = -127.f / x[at];
+        const __m512 vs = _mm512_set1_ps(iscale);
+        const __m512i lim = _mm512_set1_epi32(127);
+        for (int j = 0; j < 16; ++j) {
+            const __m512i q = _mm512_min_epi32(_mm512_cvtps_epi32(_mm512_mul_ps(vs, v[j])), lim);
+            const __m128i q8 = _mm512_cvtepi32_epi8(q);
+            _mm_storeu_si128((__m128i*) (y->qs + 16 * j), q8);
+            y->bsums[j] = (int16_t) _mm512_reduce_add_epi32(_mm512_cvtepi8_epi32(q8));
+        }
+        y->d = 1.f / iscale;
+    }
+}
+#endif
+
+/// a type's from_float (q8k_row_avx512 for Q8_K where the CPU has AVX-512BW)
+ggml_from_float_t from_float_of(int type) {
+#if defined(__x86_64__)
+    if (type == (int) GGML_TYPE_Q8_K && kcpu::cpu_avx512bw_ok() &&
+        ggml_row_size(GGML_TYPE_Q8_K, 256) == sizeof(Q8KBlock))
+        return &q8k_row_avx512;
+#endif
+    return cpu_traits(type)->from_float;
 }
 
 /// the activation format a gate/up weight type multiplies (NL4 rows are IQ3_S's: Q8_K)
@@ -372,6 +491,11 @@ struct Glm5Engine::Impl {
     uint8_t* snap = nullptr;                  // pinned host copy of the recurrent states (snapshot / restore)
     uint8_t* arena[2] = {nullptr, nullptr};   // the experts' NUMA halves
     size_t arena_bytes[2] = {0, 0};
+    // cpu_ffn's hidden quantization: the gate/up items that write each (group, 256-row block) of hbuf, and how many
+    // have
+    std::vector<int> qneed;
+    std::unique_ptr<std::atomic<int>[]> qcnt;
+    size_t qcnt_cap = 0;
 
     // device scratch, sized for kMaxT tokens
     float *R = nullptr, *xn = nullptr, *mix = nullptr, *post = nullptr, *comb = nullptr, *y = nullptr;
@@ -1599,8 +1723,9 @@ void Glm5Engine::Impl::cpu_ffn(const Layer& Y, int T, const Rows& io) {
     // Groups: one FFN slice and the tokens it serves (a routed expert and the tokens routed to it, or the layer's own
     // FFN for every token when it lives on the CPU).  Units: (group, token) pairs, each with its hidden activation.
     // Phase 1, gate/up, over (group, row block): a group's tokens share the weight decode (multi-token kernels from
-    // two tokens up).  Phase 2 quantizes the hidden activations.  Phase 3, down, over row blocks of the output, each
-    // summing its rows over every unit of every token, so no two threads write one row.
+    // two tokens up), and the item that completes a 256-row block of a group's hidden activations quantizes it.
+    // Phase 2, down, over row blocks of the output, each summing its rows over every unit of every token, so no two
+    // threads write one row.
     const int64_t N = g.n_embd;
     struct Group {
         CpuFfn f;
@@ -1667,7 +1792,7 @@ void Glm5Engine::Impl::cpu_ffn(const Layer& Y, int T, const Rows& io) {
     actbuf.resize(total + 64);
     for (const auto& kv : act_off) {
         const int at = kv.first / kMaxT, t = kv.first % kMaxT;
-        cpu_traits(at)->from_float(io.h_x + (size_t) t * N, actbuf.data() + kv.second, N);
+        from_float_of(at)(io.h_x + (size_t) t * N, actbuf.data() + kv.second, N);
     }
     std::vector<size_t> h_off((size_t) U + 1, 0), hq_off((size_t) U + 1, 0);
     for (int u = 0; u < U; ++u) {
@@ -1692,6 +1817,9 @@ void Glm5Engine::Impl::cpu_ffn(const Layer& Y, int T, const Rows& io) {
         return nullptr;
     };
     constexpr int RB = 64, MT = kcpu::MAXT;
+    // a down item's rows: with 64 a phase's last items kept a few threads busy while the rest waited (2x Xeon Gold
+    // 6130, 32 threads: a thread's last item ended 35 us before the phase on average, 16 us with 16 rows)
+    constexpr int DRB = 16;
 
     lap(0);
     // phase 1: gate/up, each row block on the queue of the node that holds it
@@ -1704,8 +1832,40 @@ void Glm5Engine::Impl::cpu_ffn(const Layer& Y, int T, const Rows& io) {
                 items[node].emplace_back(gi, (int) r);
         }
     }
+    // The hidden activations' quantization: from_float quantizes each 256-row block on its own (Q8_K's blocks are
+    // 256, Q8_0's 32), so the item that completes a group's block of 256 rows quantizes that block for the group's
+    // units, and the bytes are those of a whole-row from_float.  qneed: the items that write each (group, block);
+    // qcnt: how many have.
+    constexpr int QB = 256;
+    bool fuse = true;
+    for (const Group& gr : groups) {
+        const int dt = (int) cpu_traits(gr.f.d_type)->vec_dot_type;
+        if (gr.f.n_ff % QB != 0 || QB % ggml_blck_size((ggml_type) dt) != 0)
+            fuse = false;
+    }
+    std::vector<int> qbase(groups.size() + 1, 0);
+    if (fuse) {
+        for (size_t gi = 0; gi < groups.size(); ++gi)
+            qbase[gi + 1] = qbase[gi] + (int) (groups[gi].f.n_ff / QB);
+        const size_t nb = (size_t) qbase.back();
+        qneed.assign(nb, 0);
+        for (int node = 0; node < 2; ++node)
+            for (const auto& it : items[node]) {
+                const CpuFfn& f = groups[(size_t) it.first].f;
+                const int r1 = (int) std::min<int64_t>(it.second + RB, node ? f.n_ff : f.gu_split);
+                for (int b = it.second / QB; b <= (r1 - 1) / QB; ++b)
+                    ++qneed[(size_t) (qbase[(size_t) it.first] + b)];
+            }
+        if (qcnt_cap < nb) {
+            qcnt.reset(new std::atomic<int>[nb]);
+            qcnt_cap = nb;
+        }
+        for (size_t k = 0; k < nb; ++k)
+            qcnt[k].store(0, std::memory_order_relaxed);
+    }
     pool->run_nodes((int) items[0].size(), (int) items[1].size(), [&](int node, int i) {
-        const Group& gr = groups[(size_t) items[node][(size_t) i].first];
+        const int gi = items[node][(size_t) i].first;
+        const Group& gr = groups[(size_t) gi];
         const CpuFfn& f = gr.f;
         const int r0 = items[node][(size_t) i].second;
         const int r1 = (int) std::min<int64_t>(r0 + RB, node ? f.n_ff : f.gu_split), nr = r1 - r0;
@@ -1750,21 +1910,35 @@ void Glm5Engine::Impl::cpu_ffn(const Layer& Y, int T, const Rows& io) {
                 }
             }
         }
+        if (fuse) {
+            const int dt = (int) cpu_traits(f.d_type)->vec_dot_type;
+            const size_t qb_bytes = ggml_row_size((ggml_type) dt, QB);
+            const ggml_from_float_t from_float = from_float_of(dt);
+            for (int b = r0 / QB; b <= (r1 - 1) / QB; ++b) {
+                const size_t k = (size_t) (qbase[(size_t) gi] + b);
+                if (qcnt[k].fetch_add(1, std::memory_order_acq_rel) + 1 != qneed[k])
+                    continue;
+                for (int u : gr.units)
+                    from_float(hv + h_off[(size_t) u] + (size_t) b * QB,
+                               hqbuf.data() + hq_off[(size_t) u] + (size_t) b * qb_bytes, QB);
+            }
+        }
     });
     lap(1);
-    // phase 2: the hidden activations
-    pool->run(U, [&](int u) {
-        const CpuFfn& f = groups[(size_t) unit_g[(size_t) u]].f;
-        cpu_traits(cpu_traits(f.d_type)->vec_dot_type)
-            ->from_float(hv + h_off[(size_t) u], hqbuf.data() + hq_off[(size_t) u], f.n_ff);
-    });
+    // the hidden activations, unless gate/up quantized them
+    if (!fuse)
+        pool->run(U, [&](int u) {
+            const CpuFfn& f = groups[(size_t) unit_g[(size_t) u]].f;
+            from_float_of((int) cpu_traits(f.d_type)->vec_dot_type)(hv + h_off[(size_t) u],
+                                                                    hqbuf.data() + hq_off[(size_t) u], f.n_ff);
+        });
     lap(2);
-    // phase 3: down rows, summed over each token's units; the first half of the rows on node 0 (where the split puts
+    // phase 2: down rows, summed over each token's units; the first half of the rows on node 0 (where the split puts
     // them), the second on node 1
     const int64_t half = (N / 2 + RB - 1) / RB * RB;
-    const int nrb0 = (int) (half / RB), nrb1 = (int) ((N - half + RB - 1) / RB);
+    const int nrb0 = (int) (half / DRB), nrb1 = (int) ((N - half + DRB - 1) / DRB);
     pool->run_nodes(nrb0, nrb1, [&](int node, int i) {
-        const int r0 = (int) (node ? half : 0) + i * RB, r1 = (int) std::min<int64_t>(r0 + RB, node ? N : half),
+        const int r0 = (int) (node ? half : 0) + i * DRB, r1 = (int) std::min<int64_t>(r0 + DRB, node ? N : half),
                   nr = r1 - r0;
         for (int t = 0; t < T; ++t)
             std::fill(io.h_y + (size_t) t * N + r0, io.h_y + (size_t) t * N + r1, 0.f);
