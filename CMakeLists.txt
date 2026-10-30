@@ -481,7 +481,7 @@ if(GUILD_ENABLE_CUDA OR GUILD_ENABLE_HIP)
   target_link_libraries(drama3_codec_test PRIVATE guild_engine)
   # GLM-5.3-Flash: greedy decode from token ids, and the last prompt token's logits for comparisons
   add_executable(glm5_run tests/core/glm5_run.cpp)
-  target_link_libraries(glm5_run PRIVATE guild_engine)
+  target_link_libraries(glm5_run PRIVATE guild_engine guild_runtime guild_server)
   add_executable(glm5_cpu_bench tests/core/glm5_cpu_bench.cpp)
   target_link_libraries(glm5_cpu_bench PRIVATE guild_engine)
   add_executable(glm5_kernels_test tests/core/glm5_kernels_test.cpp)
