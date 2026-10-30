@@ -2233,7 +2233,11 @@ bool Glm5Engine::Impl::main_window(const int32_t* tokens, int T, int64_t pos0, b
     if (pipe && T >= 2) {
         const int TA = T / 2, TB = T - TA;
         // group B's shared experts on the CPU (GUILD_GLM_SHEXP_SPLIT=0: both on the GPU): the GPU's half of a layer was
-        // the longer one, by about a shared expert
+        // the longer one, by about a shared expert.  The CPU twin rounds differently from the GPU's shared expert
+        // (Q8_1 activations, MMVQ, the GPU's expf), so a 2-token verify window's second row is not what one-token
+        // decode computes and --spec leaves plain greedy decode.  With GUILD_GLM_SHEXP_SPLIT=0 every row of 128
+        // 2-token windows equals greedy decode's logits bit for bit (5-token prompt, 256 tokens; GTX 1070 + 2x Xeon
+        // Gold 6130), at 20.8 against 21.5 tok/s (verify 83.7 against 79.6 ms a step).
         static const bool split_shexp = [] {
             const char* e = std::getenv("GUILD_GLM_SHEXP_SPLIT");
             return !(e && e[0] == '0');

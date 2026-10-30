@@ -2,7 +2,8 @@
 //
 //   glm5_run <gguf shard> <comma-separated prompt ids> [new tokens] [--logits out.f32] [--threads N] [--ctx N]
 //            [--step] [--spec] [--no-mtp] [--no-numa] [--no-prefault] [--q6k | --q8]
-//   --spec: decode with the NextN block's drafts (greedy; the output equals plain greedy decoding)
+//   --spec: decode with the NextN block's drafts (greedy; the output equals plain greedy decoding with
+//   GUILD_GLM_SHEXP_SPLIT=0, and leaves it by default: see main_window in src/core/glm5.cpp)
 //   --oracle <file>: --spec with the drafts replaced by a plain greedy output (tests the accept path)
 //   --step: the prompt one token at a time, as decode runs, instead of windows of 64
 //   --no-numa: the experts stay in the GGUF mapping instead of half of each on either NUMA node
