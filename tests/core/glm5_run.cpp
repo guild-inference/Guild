@@ -9,6 +9,12 @@
 //   --dump <file>: append every plain decode step's logits (the row that picks the next token) to <file>
 //   --q6k / --q8: the attention's Q8_0 matrices re-quantized to Q6_K, or kept (default: Q6_K when Q8_0 would hold
 //   less context than --ctx, up to 16k tokens)
+//   --draft-vocab <file>: drafts over this token subset of the head (tools/draft_vocab.py; GUILD_GLM_DRAFT_VOCAB
+//   overrides it, 0 for the whole head)
+//   --prompts <file>: instead of <ids>, one prompt a line ("name id,id,..."), each decoded with --spec from a reset
+//   context; --repeat N rounds of them; --ab: each prompt twice a round, drafting over the --draft-vocab subset and
+//   over the whole head (which goes first alternates by round); --plain: each prompt also decoded without drafts.  A
+//   line a generation, then its ids, then its drafts (id:accepted:ms).
 //
 // Prints the generated ids (one line) for a tokenizer to decode, then prompt and decode rates.
 #include "guild/core/glm5.hpp"
@@ -23,6 +29,147 @@
 #include <string>
 #include <vector>
 
+// --prompts: every prompt of `file`, `repeat` rounds, greedy with the NextN block's drafts (and with --plain, without:
+// the reference a speculative decode should equal)
+static int run_prompts(guild::core::Glm5Engine& eng, const std::string& file, int n_new, int repeat, bool ab,
+                       bool plain) {
+    std::vector<std::pair<std::string, std::vector<int32_t>>> prompts;
+    {
+        std::ifstream f(file);
+        std::string line;
+        while (std::getline(f, line)) {
+            std::stringstream ls(line);
+            std::string name, list, tok;
+            if (!(ls >> name >> list))
+                continue;
+            std::vector<int32_t> ids;
+            std::stringstream ss(list);
+            while (std::getline(ss, tok, ','))
+                if (!tok.empty())
+                    ids.push_back((int32_t) std::atol(tok.c_str()));
+            prompts.emplace_back(name, ids);
+        }
+    }
+    if (prompts.empty() || !eng.has_mtp()) {
+        std::fprintf(stderr, "glm5_run: --prompts needs prompt lines and the NextN block\n");
+        return 2;
+    }
+    const auto& g = eng.geometry();
+    const size_t V = (size_t) g.n_vocab;
+    std::vector<float> logits(V), rows(2 * V);
+    auto argmax = [V](const float* l) { return (int32_t) (std::max_element(l, l + V) - l); };
+    auto is_eos = [&](int32_t t) { return std::find(g.eos_ids.begin(), g.eos_ids.end(), t) != g.eos_ids.end(); };
+    using clk = std::chrono::steady_clock;
+    auto ms = [](clk::time_point t) { return std::chrono::duration<double, std::milli>(clk::now() - t).count(); };
+    auto pct = [](std::vector<double> v, double q) {
+        if (v.empty())
+            return 0.0;
+        std::sort(v.begin(), v.end());
+        return v[(size_t) (q * (double) (v.size() - 1))];
+    };
+    std::string err;
+    for (int r = 0; r < repeat; ++r)
+        for (const auto& [name, ids] : prompts) {
+            std::vector<std::string> arms;
+            if (ab && r % 2 == 0)
+                arms = {"subset", "full"};
+            else if (ab)
+                arms = {"full", "subset"};
+            else
+                arms = {eng.use_draft_vocab(true) ? "subset" : "full"};
+            if (plain)
+                arms.push_back("plain");
+            for (const std::string& arm : arms) {
+                eng.use_draft_vocab(arm == "subset");
+                eng.reset();
+                if (!eng.forward(ids.data(), (int) ids.size(), 0, logits.data(), err)) {
+                    std::fprintf(stderr, "glm5_run: %s\n", err.c_str());
+                    return 1;
+                }
+                std::vector<int32_t> out;
+                std::vector<std::pair<int32_t, bool>> drafts; // each step's draft and whether it was accepted
+                std::vector<double> dms, sms;                 // each step's draft and whole time
+                int64_t pos = (int64_t) ids.size();
+                int offered = 0, accepted = 0;
+                double verify_ms = 0, accept_ms = 0, cpu_ms = 0;
+                const auto t1 = clk::now();
+                int32_t next = argmax(logits.data());
+                while ((int) out.size() < n_new) {
+                    out.push_back(next);
+                    if (is_eos(next) || (int) out.size() >= n_new)
+                        break;
+                    const auto ts = clk::now();
+                    if (arm == "plain") {
+                        if (!eng.forward(&next, 1, pos++, logits.data(), err)) {
+                            std::fprintf(stderr, "glm5_run: %s\n", err.c_str());
+                            return 1;
+                        }
+                        next = argmax(logits.data());
+                        sms.push_back(ms(ts));
+                        continue;
+                    }
+                    int32_t d = 0;
+                    if (!eng.draft(next, pos, d, err)) {
+                        std::fprintf(stderr, "glm5_run: %s\n", err.c_str());
+                        return 1;
+                    }
+                    dms.push_back(ms(ts));
+                    auto tc = clk::now();
+                    const int32_t w[2] = {next, d};
+                    if (!eng.verify(w, 2, pos, rows.data(), err)) {
+                        std::fprintf(stderr, "glm5_run: %s\n", err.c_str());
+                        return 1;
+                    }
+                    verify_ms += ms(tc);
+                    cpu_ms += eng.last_cpu_ms();
+                    tc = clk::now();
+                    const int32_t y1 = argmax(rows.data());
+                    const bool ok = y1 == d;
+                    drafts.emplace_back(d, ok);
+                    ++offered;
+                    if (!eng.accept(ok ? 2 : 1, err)) {
+                        std::fprintf(stderr, "glm5_run: %s\n", err.c_str());
+                        return 1;
+                    }
+                    accept_ms += ms(tc);
+                    sms.push_back(ms(ts));
+                    if (ok) {
+                        ++accepted;
+                        pos += 2;
+                        out.push_back(d);
+                        if (is_eos(d) || (int) out.size() >= n_new)
+                            break;
+                        next = argmax(rows.data() + V);
+                    } else {
+                        pos += 1;
+                        next = y1;
+                    }
+                }
+                const double dec_ms = ms(t1);
+                const int steps = std::max(1, offered);
+                double dsum = 0;
+                for (double x : dms)
+                    dsum += x;
+                std::printf("gen %s %s round %d: %zu tokens, %zu steps, %d drafts accepted (%.1f%%); per step: draft "
+                            "%.3f ms (median %.3f, 90th %.3f), verify %.2f, accept %.2f, CPU experts %.1f, step median "
+                            "%.2f; %.2f tok/s\n",
+                            name.c_str(), arm.c_str(), r, out.size(), sms.size(), accepted, 100.0 * accepted / steps,
+                            dsum / steps, pct(dms, 0.5), pct(dms, 0.9), verify_ms / steps, accept_ms / steps,
+                            cpu_ms / steps, pct(sms, 0.5),
+                            out.size() > 1 ? (double) (out.size() - 1) * 1000.0 / dec_ms : 0.0);
+                std::printf("ids %s %s round %d:", name.c_str(), arm.c_str(), r);
+                for (size_t i = 0; i < out.size(); ++i)
+                    std::printf("%s%d", i ? "," : " ", out[i]);
+                std::printf("\ndrafts %s %s round %d:", name.c_str(), arm.c_str(), r);
+                for (size_t i = 0; i < drafts.size(); ++i)
+                    std::printf("%s%d:%d:%.2f", i ? "," : " ", drafts[i].first, (int) drafts[i].second, dms[i]);
+                std::printf("\n");
+                std::fflush(stdout);
+            }
+        }
+    return 0;
+}
+
 int main(int argc, char** argv) {
     if (argc < 3) {
         std::fprintf(stderr, "usage: glm5_run <gguf> <ids> [new] [--logits f] [--threads n] [--ctx n] [--step]\n");
@@ -36,9 +183,9 @@ int main(int argc, char** argv) {
             if (!tok.empty())
                 ids.push_back((int32_t) std::atol(tok.c_str()));
     }
-    int n_new = 32;
-    std::string logits_path, dump_path;
-    bool step = false, spec = false;
+    int n_new = 32, repeat = 1;
+    std::string logits_path, dump_path, prompts_path;
+    bool step = false, spec = false, ab = false, plain = false;
     std::vector<int32_t> oracle;
     guild::core::Glm5Options opt;
     for (int i = 3; i < argc; ++i) {
@@ -65,6 +212,16 @@ int main(int argc, char** argv) {
             opt.dense = guild::core::Glm5Dense::Q6_K;
         else if (a == "--q8")
             opt.dense = guild::core::Glm5Dense::Q8_0;
+        else if (a == "--draft-vocab" && i + 1 < argc)
+            opt.draft_vocab = argv[++i];
+        else if (a == "--prompts" && i + 1 < argc)
+            prompts_path = argv[++i];
+        else if (a == "--repeat" && i + 1 < argc)
+            repeat = std::atoi(argv[++i]);
+        else if (a == "--ab")
+            ab = true;
+        else if (a == "--plain")
+            plain = true;
         else if (a == "--oracle" && i + 1 < argc) { // test: drafts are this greedy output's tokens (all accepted)
             std::ifstream f(argv[++i]);
             std::string line, tok;
@@ -88,6 +245,8 @@ int main(int argc, char** argv) {
         return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t).count();
     };
     std::fprintf(stderr, "%sglm5_run: loaded in %.1f s\n", eng.placement().c_str(), since(t0) / 1000.0);
+    if (!prompts_path.empty())
+        return run_prompts(eng, prompts_path, n_new, std::max(1, repeat), ab, plain);
     const auto& g = eng.geometry();
     std::vector<float> logits((size_t) g.n_vocab);
 

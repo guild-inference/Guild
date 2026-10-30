@@ -473,9 +473,11 @@ __device__ __forceinline__ int ld_b2(const uint8_t* p, int i32) {
     return (int) h[2 * i32] | ((int) h[2 * i32 + 1] << 16);
 }
 
-template <int T, int NW>
-__global__ void __launch_bounds__(NW * 32) q6k_mmvq_k(const uint8_t* __restrict__ W, const uint8_t* __restrict__ x,
-                                                      float* __restrict__ y, int n_in, int n_out) {
+// Ids: output row r is the product of row ids[r] of W (a subset of the rows, any order)
+template <int T, int NW, bool Ids = false>
+__global__ void __launch_bounds__(NW * 32)
+    q6k_mmvq_k(const uint8_t* __restrict__ W, const uint8_t* __restrict__ x, float* __restrict__ y, int n_in, int n_out,
+               const int32_t* __restrict__ ids = nullptr) {
     extern __shared__ __align__(16) uint8_t smem[];
     const int nb = n_in / 256, xb = n_in / 32, xbytes = T * xb * kQ6Q81;
     for (int o = threadIdx.x * 16; o < xbytes; o += NW * 32 * 16)
@@ -486,7 +488,7 @@ __global__ void __launch_bounds__(NW * 32) q6k_mmvq_k(const uint8_t* __restrict_
     if (row >= n_out)
         return;
     const size_t rb = (size_t) nb * kQ6Block;
-    const uint8_t* wr = W + (size_t) row * rb;
+    const uint8_t* wr = W + (size_t) (Ids ? __ldg(ids + row) : row) * rb;
     uint8_t* sm = smem + xbytes + warp * (kQ6Chunk * kQ6Block);
     const bool v16 = rb % 16 == 0;
     // the lane's fixed slot in every block (iqs = lane)
@@ -1112,7 +1114,8 @@ __global__ void swiglu_clamp_k(const float* gate, const float* up, float* y, int
     y[i] = g / (1.f + expf(-g)) * u;
 }
 
-__global__ void __launch_bounds__(1024) argmax_k(const float* x, int n, int32_t* out) {
+// ids: out[0] = ids[the index] (x holds the rows of a subset, ids their token ids)
+__global__ void __launch_bounds__(1024) argmax_k(const float* x, int n, int32_t* out, const int32_t* ids) {
     __shared__ float bv[32];
     __shared__ int bi[32];
     float v = -FLT_MAX;
@@ -1142,7 +1145,7 @@ __global__ void __launch_bounds__(1024) argmax_k(const float* x, int n, int32_t*
                 v = bv[w];
                 idx = bi[w];
             }
-        out[0] = idx;
+        out[0] = ids ? ids[idx] : idx;
     }
 }
 
@@ -1276,6 +1279,12 @@ void q6k_mmvq(const void* W, const void* xq8_1, float* y, int n_in, int n_out, i
         q6k_mmvq_k<2, 8><<<grid, 256, sh, S(st)>>>(w, x, y, n_in, n_out);
 }
 
+void q6k_mmvq_rows(const void* W, const int32_t* ids, int n_ids, const void* xq8_1, float* y, int n_in, void* st) {
+    const size_t sh = (size_t) (n_in / 32) * kQ6Q81 + 8 * kQ6Chunk * kQ6Block;
+    q6k_mmvq_k<1, 8, true><<<(unsigned) ((n_ids + 7) / 8), 256, sh, S(st)>>>((const uint8_t*) W, (const uint8_t*) xq8_1,
+                                                                             y, n_in, n_ids, ids);
+}
+
 bool q8_0_mmvq_supported(int n_in, int n_out, int T) {
     // fewer than 512 rows are too few blocks of 8 for the GPU (16384 x 24: 12.4 us against native_mmvq's 5.4)
     return n_in % 256 == 0 && n_in >= 1024 && n_out >= 512 && T >= 1 && T <= 2 &&
@@ -1376,8 +1385,8 @@ void swiglu_clamp(const float* gate, const float* up, float* y, int n, int T, fl
     swiglu_clamp_k<<<(unsigned) ((total + 255) / 256), 256, 0, S(st)>>>(gate, up, y, total, lim);
 }
 
-void argmax(const float* x, int n, int32_t* out, void* st) {
-    argmax_k<<<1, 1024, 0, S(st)>>>(x, n, out);
+void argmax(const float* x, int n, int32_t* out, void* st, const int32_t* ids) {
+    argmax_k<<<1, 1024, 0, S(st)>>>(x, n, out, ids);
 }
 
 void add(float* y, const float* x, int64_t n, void* st) {

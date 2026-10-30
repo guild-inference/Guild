@@ -646,6 +646,67 @@ static void test_staged_mmvq(int type) {
     }
 }
 
+// q6k_mmvq_rows (the draft head over a token subset): bitwise q6k_mmvq's rows, picked in id order and shuffled
+static void test_mmvq_rows() {
+    cudaStream_t st;
+    cudaStreamCreate(&st);
+    const int n_in = 4096, n_out = 3001, nb = n_in / 256;
+    std::uniform_int_distribution<int> byte(0, 255);
+    std::vector<uint8_t> W((size_t) n_out * nb * 210);
+    for (size_t blk = 0; blk < (size_t) n_out * nb; ++blk) {
+        uint8_t* b = &W[blk * 210];
+        for (int i = 0; i < 210; ++i)
+            b[i] = (uint8_t) byte(rng);
+        const __half d = __float2half(0.001f * (float) (1 + byte(rng) % 50));
+        std::memcpy(b + 208, &d, 2);
+    }
+    uint8_t* dW = up(W);
+    auto x = rnd((size_t) n_in);
+    float* dx = up(x);
+    void* xq;
+    cudaMalloc(&xq, guild::kernels::native_q8_1_bytes(n_in, 1));
+    guild::kernels::native_quantize_q8_1(dx, xq, n_in, 1, st);
+    float* dfull;
+    cudaMalloc(&dfull, (size_t) n_out * 4);
+    k::q6k_mmvq(dW, xq, dfull, n_in, n_out, 1, st);
+    const auto full = down(dfull, (size_t) n_out);
+    std::vector<int32_t> sorted, shuffled;
+    for (int r = 0; r < n_out; ++r)
+        if (byte(rng) < 100 || r == n_out - 1)
+            sorted.push_back(r);
+    shuffled = sorted;
+    std::shuffle(shuffled.begin(), shuffled.end(), rng);
+    for (const auto* ids : {&sorted, &shuffled}) {
+        int32_t* dids = up(*ids);
+        float* dy;
+        const int n = (int) ids->size();
+        cudaMalloc(&dy, (size_t) n * 4);
+        k::q6k_mmvq_rows(dW, dids, n, xq, dy, n_in, st);
+        std::vector<float> ref((size_t) n);
+        for (int i = 0; i < n; ++i)
+            ref[(size_t) i] = full[(size_t) (*ids)[(size_t) i]];
+        const std::string what = "q6k_mmvq_rows " + std::to_string(n) + " of " + std::to_string(n_out) +
+                                 (ids == &sorted ? " (bitwise)" : " shuffled (bitwise)");
+        check(what.c_str(), down(dy, (size_t) n), ref, 0);
+        // the argmax over the subset's rows mapped to its id (the first of the largest: with ascending ids, the lowest)
+        int32_t* darg;
+        cudaMalloc(&darg, 4);
+        k::argmax(dy, n, darg, st, dids);
+        const int32_t want = (*ids)[(size_t) (std::max_element(ref.begin(), ref.end()) - ref.begin())];
+        int32_t got = -1;
+        cudaMemcpy(&got, darg, 4, cudaMemcpyDeviceToHost);
+        std::printf("%-28s %d (want %d) %s\n", "argmax over ids", got, want, got == want ? "ok" : "FAIL");
+        failures += got != want;
+        cudaFree(darg);
+        cudaFree(dids);
+        cudaFree(dy);
+    }
+    cudaFree(dW);
+    cudaFree(dx);
+    cudaFree(xq);
+    cudaFree(dfull);
+}
+
 // q8_0_narrow: rows of 64 / 128 / 256 values against native_mmvq (a different order: within FP32 rounding)
 static void test_narrow() {
     cudaStream_t st;
@@ -887,6 +948,7 @@ int main(int argc, char** argv) {
     test_f32_matvec();
     test_staged_mmvq(14);
     test_staged_mmvq(8);
+    test_mmvq_rows();
     test_narrow();
     test_indexer();
     const cudaError_t e = cudaDeviceSynchronize();

@@ -509,6 +509,12 @@ struct Glm5Engine::Impl {
     // NextN block's own rows
     float *hn = nullptr, *pending = nullptr, *hin = nullptr, *mx = nullptr, *me = nullptr, *mh = nullptr;
     int32_t *d_arg = nullptr, *h_arg = nullptr;
+    // the draft head's token subset (read_draft_vocab): ascending token ids until they are on the GPU, where the draft
+    // maps its argmax to a token id
+    std::vector<int32_t> dvocab;
+    int32_t* d_dvocab = nullptr;
+    int n_dvocab = 0;
+    bool dvocab_on = true;        ///< Glm5Engine::use_draft_vocab
     std::vector<int32_t> win_tok; ///< the last verify window, until accept()
     int64_t win_pos = 0;
     int32_t *sel = nullptr, *nsel = nullptr;
@@ -836,6 +842,7 @@ struct Glm5Engine::Impl {
     bool mtp_window(const int32_t* tokens, int T, int64_t pos0, const float* h_rows, bool draft, std::string& err);
     bool mtp_catch_up(const int32_t* tokens, int T, int64_t pos0, std::string& err);
     bool head_rows(int first, int n, float* host, std::string& err);
+    bool read_draft_vocab(std::string& err);
     void layer_ffn_begin(int l, int T);
     bool layer_ffn_end(int l, int T, const Rows& io, std::string& err);
     bool layer_ffn(int l, int T, std::string& err) {
@@ -1044,6 +1051,8 @@ bool Glm5Engine::Impl::load(const std::string& path, const Glm5Options& o, std::
             split_heads(y.v_b);
             y.gate_exps_type = (int) tg->type;
             y.down_exps_type = (int) td->type;
+            if (!read_draft_vocab(err))
+                return false;
         } else {
             std::fprintf(stderr, "guild glm5: no usable NextN block (%s); decoding without MTP\n", why.c_str());
         }
@@ -1128,7 +1137,8 @@ bool Glm5Engine::Impl::load(const std::string& path, const Glm5Options& o, std::
         }
         // a group of kMaxT tokens' scratch (~1.1 MB a token) and a window of kMaxWindow tokens' rows (~64 KB a token)
         const uint64_t scratch_bytes = (176ull << 20) + (uint64_t) (kMaxWindow - kMaxT) * 4 * N * 4 * 2;
-        uint64_t need = state_bytes + scratch_bytes + head.bytes + (1ull << 20); // + every piece's 256-byte alignment
+        uint64_t need = state_bytes + scratch_bytes + head.bytes + dvocab.size() * 4 +
+                        (1ull << 20); // + every piece's 256-byte alignment
         for (const Layer& y : L)
             for (const Mat* m :
                  {&y.hc_attn_fn, &y.hc_ffn_fn, &y.wo, &y.wq, &y.wk, &y.wv, &y.f_a, &y.f_b, &y.g_a, &y.g_b, &y.beta,
@@ -1341,6 +1351,13 @@ bool Glm5Engine::Impl::load(const std::string& path, const Glm5Options& o, std::
     }
     if (!upload(head, err) || !(out_norm = f32("output_norm.weight", N, err)))
         return false;
+    if (!dvocab.empty()) {
+        if (!(d_dvocab = dalloc<int32_t>(dvocab.size(), err)))
+            return false;
+        cudaMemcpy(d_dvocab, dvocab.data(), dvocab.size() * 4, cudaMemcpyHostToDevice);
+        n_dvocab = (int) dvocab.size();
+        std::vector<int32_t>().swap(dvocab);
+    }
 
     // scratch
     const int64_t QB = (int64_t) H * g.qk_dim, VB = (int64_t) H * g.v_dim, LB = (int64_t) H * g.kv_lora;
@@ -2279,6 +2296,47 @@ bool Glm5Engine::Impl::head_rows(int first, int n, float* host, std::string& err
     return true;
 }
 
+// The draft head's token subset (tools/draft_vocab.py: int32 token ids): Glm5Options::draft_vocab, or
+// GUILD_GLM_DRAFT_VOCAB (a file, or 0 for the whole head).  A draft is the argmax over these rows of the head only;
+// verify multiplies the whole head, so the subset changes which drafts are offered and how many are accepted.  With
+// GUILD_GLM_SHEXP_SPLIT=0 verify equals greedy decode and the output does not change; by default a window's second
+// row takes its shared expert on the CPU, so the output depends on the window shapes and any change in the drafts can
+// change it.  The rows are read where the head has them (no copy: VRAM is what limits the context); the ids are kept
+// ascending so a tie goes to the lower token id, as the whole head's argmax does.
+bool Glm5Engine::Impl::read_draft_vocab(std::string& err) {
+    std::string path = opt.draft_vocab;
+    if (const char* e = std::getenv("GUILD_GLM_DRAFT_VOCAB"))
+        path = std::string(e) == "0" ? std::string() : std::string(e);
+    if (path.empty())
+        return true;
+    if (head.type != kQ6_K || !glm5k::q6k_mmvq_supported((int) head.n_in, (int) head.n_out, 1)) {
+        std::fprintf(stderr, "guild glm5: the draft head's token subset needs a Q6_K head; drafting over all of it\n");
+        return true;
+    }
+    std::ifstream f(path, std::ios::binary | std::ios::ate);
+    const std::streamoff size = f ? (std::streamoff) f.tellg() : -1;
+    if (size > 0 && size % 4 == 0) {
+        dvocab.resize((size_t) size / 4);
+        f.seekg(0);
+        f.read((char*) dvocab.data(), size);
+    }
+    if (size <= 0 || size % 4 != 0 || !f) {
+        err = "glm5: the draft vocabulary " + path + " is missing or not a list of int32 token ids";
+        return false;
+    }
+    std::sort(dvocab.begin(), dvocab.end());
+    dvocab.erase(std::unique(dvocab.begin(), dvocab.end()), dvocab.end());
+    if (dvocab.front() < 0 || dvocab.back() >= g.n_vocab) {
+        err = "glm5: the draft vocabulary " + path + " has ids outside the vocabulary (" + std::to_string(g.n_vocab) +
+              ")";
+        return false;
+    }
+    std::fprintf(stderr, "guild glm5: draft head over %zu of %lld tokens (%s; %.0f of %.0f MiB of rows)\n",
+                 dvocab.size(), (long long) g.n_vocab, path.c_str(),
+                 (double) dvocab.size() * (double) head.row_bytes() / 1048576.0, (double) head.bytes / 1048576.0);
+    return true;
+}
+
 bool Glm5Engine::Impl::mtp_window(const int32_t* tokens, int T, int64_t pos0, const float* h_rows, bool draft,
                                   std::string& err) {
     // x = eh_proj [enorm(embed(token)) | hnorm(h)]; x += attn(norm x); x += ffn(norm x); the draft from the shared
@@ -2304,8 +2362,13 @@ bool Glm5Engine::Impl::mtp_window(const int32_t* tokens, int T, int64_t pos0, co
     if (draft) {
         glm5k::rms_norm(mx + (size_t) (T - 1) * N, Y.head_norm, xn, (int) N, 1, g.rms_eps, st);
         quant(xn, N, 1, xq);
-        mm(head, xq, logits, 1);
-        glm5k::argmax(logits, (int) g.n_vocab, d_arg, st);
+        if (d_dvocab && dvocab_on) { // the subset's rows, the argmax mapped to its token id on the GPU
+            glm5k::q6k_mmvq_rows(head.dev, d_dvocab, n_dvocab, xq, logits, (int) N, st);
+            glm5k::argmax(logits, n_dvocab, d_arg, st, d_dvocab);
+        } else {
+            mm(head, xq, logits, 1);
+            glm5k::argmax(logits, (int) g.n_vocab, d_arg, st);
+        }
         cudaMemcpyAsync(h_arg, d_arg, 4, cudaMemcpyDeviceToHost, st);
     }
     return true;
@@ -2359,6 +2422,11 @@ bool Glm5Engine::forward(const int32_t* tokens, int n, int64_t pos0, float* logi
 
 bool Glm5Engine::has_mtp() const {
     return p_->has_mtp;
+}
+
+bool Glm5Engine::use_draft_vocab(bool on) {
+    p_->dvocab_on = on;
+    return p_->d_dvocab != nullptr;
 }
 
 bool Glm5Engine::draft(int32_t last, int64_t pos, int32_t& draft, std::string& err) {

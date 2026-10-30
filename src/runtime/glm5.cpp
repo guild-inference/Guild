@@ -20,6 +20,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <numeric>
 #include <random>
 
@@ -129,6 +130,14 @@ bool glm5_load(GuildModel::Impl& m, const ModelPaths& paths, const memory::Execu
                                              : guild::core::Glm5Dense::Auto;
     if (const char* n = std::getenv("GUILD_GLM_MTP"))
         o.mtp = std::string(n) != "0";
+    // the draft head's token subset (data/draft_vocab_glm.bin copied there): draft_vocab.bin in the tokenizer's
+    // directory; GUILD_GLM_DRAFT_VOCAB (a file, or 0) overrides it
+    if (!paths.tokenizer_dir.empty()) {
+        std::error_code ec;
+        const std::filesystem::path dv = std::filesystem::path(paths.tokenizer_dir) / "draft_vocab.bin";
+        if (std::filesystem::is_regular_file(dv, ec))
+            o.draft_vocab = dv.string();
+    }
     m.glm = std::make_unique<core::Glm5Engine>();
     if (!m.glm->load(paths.primary_model_path, o, err))
         return false;

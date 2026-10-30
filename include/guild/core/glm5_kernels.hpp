@@ -63,6 +63,9 @@ void q8_0_split(const uint8_t* q8, uint8_t* out, int64_t rows, int n_in);
 /// guild::kernels::native_mmvq's one-token result, with fewer load instructions (Pascal is bound by them on Q6_K)
 bool q6k_mmvq_supported(int n_in, int n_out, int T);
 void q6k_mmvq(const void* W, const void* xq8_1, float* y, int n_in, int n_out, int T, void* st);
+/// One token over a subset of the rows (q6k_mmvq_supported(n_in, n, 1)): y[i] = row ids[i] times the token, bitwise
+/// q6k_mmvq's y[ids[i]] (the draft head over a token subset)
+void q6k_mmvq_rows(const void* W, const int32_t* ids, int n_ids, const void* xq8_1, float* y, int n_in, void* st);
 /// The same for Q8_0 rows (bitwise native_mmvq's one-token result)
 bool q8_0_mmvq_supported(int n_in, int n_out, int T);
 void q8_0_mmvq(const void* W, const void* xq8_1, float* y, int n_in, int n_out, int T, void* st);
@@ -106,7 +109,7 @@ void route(const float* logits, const float* bias, int E, int k, bool norm, floa
 void swiglu_clamp(const float* gate, const float* up, float* y, int n, int T, float lim, void* st);
 /// y += x (n floats)
 void add(float* y, const float* x, int64_t n, void* st);
-/// out[0] = the index of the largest of x[0 .. n) (the lowest on ties)
-void argmax(const float* x, int n, int32_t* out, void* st);
+/// out[0] = the index of the largest of x[0 .. n) (the lowest on ties); with ids, ids[that index]
+void argmax(const float* x, int n, int32_t* out, void* st, const int32_t* ids = nullptr);
 
 } // namespace guild::core::glm5k

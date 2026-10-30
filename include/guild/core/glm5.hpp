@@ -47,6 +47,9 @@ struct Glm5Options {
     /// the attention's largest Q8_0 matrices: as the GGUF has them, re-quantized to Q6_K (less VRAM and GPU time,
     /// ~15 s more load), or Q6_K only when Q8_0 would hold less context than max_context (up to 16k tokens)
     Glm5Dense dense = Glm5Dense::Auto;
+    /// the draft head's token subset (tools/draft_vocab.py: int32 token ids; GUILD_GLM_DRAFT_VOCAB overrides it, 0
+    /// for none): drafts are the argmax over these rows of the output head only.  Empty: the whole head.
+    std::string draft_vocab;
 };
 
 class Glm5Engine {
@@ -84,6 +87,9 @@ public:
     bool draft(int32_t last, int64_t pos, int32_t& draft, std::string& err);
     bool verify(const int32_t* tokens, int n, int64_t pos0, float* logits_rows, std::string& err);
     bool accept(int n_keep, std::string& err);
+    /// Drafts over the token subset Glm5Options::draft_vocab loaded (on, the default) or over the whole head (off),
+    /// for A/B runs in one process; returns whether a subset is loaded
+    bool use_draft_vocab(bool on);
 
     /// Time spent in the last forward: GPU+orchestration and CPU experts, milliseconds
     double last_cpu_ms() const;
