@@ -6,7 +6,8 @@
 //   --oracle <file>: --spec with the drafts replaced by a plain greedy output (tests the accept path)
 //   --step: the prompt one token at a time, as decode runs, instead of windows of 64
 //   --no-numa: the experts stay in the GGUF mapping instead of half of each on either NUMA node
-//   --dump <file>: append every plain decode step's logits (the row that picks the next token) to <file>
+//   --dump <file>: append every decode step's logits (the row that picks the next token) to <file>; with --spec
+//   a window's rows that pick tokens (the first, and the second when the draft is accepted), so the files compare
 //   --q6k / --q8: the attention's Q8_0 matrices re-quantized to Q6_K, or kept (default: Q6_K when Q8_0 would hold
 //   less context than --ctx, up to 16k tokens)
 //   --draft-vocab <file>: drafts over this token subset of the head (tools/draft_vocab.py; GUILD_GLM_DRAFT_VOCAB
@@ -322,6 +323,10 @@ int main(int argc, char** argv) {
             tc = std::chrono::steady_clock::now();
             const int32_t y1 = argmax(rows.data(), logits.size());
             ++offered;
+            if (!dump_path.empty()) { // the rows that pick tokens, as plain decode's --dump writes them
+                std::ofstream o(dump_path, std::ios::binary | std::ios::app);
+                o.write((const char*) rows.data(), (std::streamsize)((y1 == d ? 2 : 1) * logits.size() * 4));
+            }
             if (y1 == d) {
                 ++accepted;
                 if (!eng.accept(2, err))
