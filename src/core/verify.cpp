@@ -841,6 +841,77 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         }
     }
 
+    // The shared expert runs on sh_cs_ beside the main stream.  In a split window (GUILD_SH_FORK; on by default on
+    // CUDA) the shared expert of (l, g) is forked in the next post(), the other group's, right after that post() has
+    // joined its own: pre(l + 1, A) leaves A's to post(l, B), pre(l + 1, B) leaves B's to post(l + 1, A).  It then runs
+    // beside the other group's wait for the CPU, its combine and its next mixer, and joins in post(l, g) long after
+    // it is done; the router, top-k and ring run alone.  GUILD_SH_FORK=0, and one-group windows: forked before the
+    // router in pre(l, g) and joined before the combine, where post(l, B), captured after pre(l + 1, A), also
+    // waited for A's layer-(l + 1) shared expert forked just before it.  The shared expert reads only its group's
+    // mixed_ rows, which nothing writes before its join.  GTX 1070, 256-token decodes with --spec 4: 70.7 -> 69.6
+    // ms a prose window and 73.8 -> 72.6 a code window, 68.4 and 71.7 with the two-row BF16 router as well (nsys:
+    // the router, top-k and ring 44.7 -> 33.4 us a group and layer).
+    static const bool sh_stream_env = [] {
+        const char* e = std::getenv("GUILD_SH_STREAM");
+        return !e || e[0] != '0';
+    }();
+    static const bool sh_fork_late = [] {
+        const char* e = std::getenv("GUILD_SH_FORK");
+#if defined(GUILD_USE_HIP)
+        return e != nullptr && e[0] != '0'; // measured on CUDA only: opt-in
+#else
+        return !e || e[0] != '0';
+#endif
+    }();
+    const bool sh_fork = sh_stream_env && !prof_on_ && sh_cs_ != nullptr && ev_fork_ != nullptr && ev_join_ != nullptr;
+    const bool sh_defer = sh_fork && sh_fork_late && G == 2;
+    int64_t sh_pending_l = -1; // the shared expert pre() left to the next post() (sh_defer)
+    int sh_pending_grp = 0;
+    // the shared expert of (l, grp): on sh_cs_ when `fork` (forked off cs by the caller), else on cs
+    auto issue_shared = [&](int64_t l, int grp, bool fork) -> bool {
+        const int tb = tb_[grp], te = te_[grp], n = te - tb;
+        const LayerView v(wt, l);
+        float* xm = mixed_ + tb * N;
+        cudaStream_t sh_stream = fork ? sh_cs_ : cs;
+        const WeightRef *wgi = need(v, "ffn_gate_inp_shexp.weight", err), *wsg = need(v, "ffn_gate_shexp.weight", err),
+                        *wsu = need(v, "ffn_up_shexp.weight", err), *wsd = need(v, "ffn_down_shexp.weight", err);
+        if (!wgi || !wsg || !wsu || !wsd)
+            return false;
+        if (!native_of(wsg, v.name("ffn_gate_shexp.weight"), err) ||
+            !native_of(wsu, v.name("ffn_up_shexp.weight"), err) ||
+            !native_of(wsd, v.name("ffn_down_shexp.weight"), err))
+            return false;
+        NativeSharedWeights nsw;
+        nsw.gate_type = wsg->native_type;
+        nsw.gate_data = wsg->native_data;
+        nsw.up_type = wsu->native_type;
+        nsw.up_data = wsu->native_data;
+        nsw.down_type = wsd->native_type;
+        nsw.down_data = wsd->native_data;
+        nsw.q8_1 = fork ? sh_xq_ : xq_;
+        if (!shared_expert_native_bf16_enabled()) {
+            if (dec_batch)
+                f32_to_bf16_bulk(mixed_ + tb * N, sh_bf16_ + tb * N, (int64_t) n * N, sh_stream); // contiguous rows
+            else
+                for (int t = tb; t < te; ++t)
+                    f32_to_bf16_bulk(mixed_ + t * N, sh_bf16_ + t * N, N, sh_stream);
+        }
+        try {
+            shared_expert_multi(n, xm, sh_bf16_ + tb * N, nsw, (const uint16_t*) wgi->data,
+                                sh_gate_ + (size_t) tb * g.n_ff, sh_up_ + (size_t) tb * g.n_ff, sh_g_ + tb,
+                                shared_ + tb * N, N, g.n_ff, sh_stream);
+        } catch (const std::exception& e) {
+            err = std::string("verify shared expert: ") + e.what();
+            return false;
+        }
+        if (l == 0 && grp == 0 && dbg_l0_shared_) {
+            cudaMemcpyAsync(dbg_l0_shared_, shared_ + tb * N, (size_t) N * sizeof(float), cudaMemcpyDeviceToDevice,
+                            sh_stream);
+        }
+        if (fork)
+            cudaEventRecord(ev_join_, sh_cs_);
+        return true;
+    };
     // ---------------------------------------------------------------- pre(l, group): up to the ring
     auto pre = [&](int64_t l, int grp) -> bool {
         const int tb = tb_[grp], te = te_[grp], n = te - tb;
@@ -1243,14 +1314,9 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             cudaMemcpyAsync(dbg_l0_post_norm_, mixed_ + tb * N, (size_t) N * sizeof(float), cudaMemcpyDeviceToDevice,
                             cs);
         }
-        static const bool sh_stream_env = [] {
-            const char* e = std::getenv("GUILD_SH_STREAM");
-            return !e || e[0] != '0';
-        }();
-        const bool sh_fork =
-            sh_stream_env && !prof_on_ && sh_cs_ != nullptr && ev_fork_ != nullptr && ev_join_ != nullptr;
-        cudaStream_t sh_stream = sh_fork ? sh_cs_ : cs;
-        if (sh_fork) {
+        // left to the next post() (sh_defer), except group A's first layer, whose next call is pre(l, B)
+        const bool defer = sh_defer && !(l == lb_ && grp == 0);
+        if (sh_fork && !defer) {
             cudaEventRecord(ev_fork_, cs);
             cudaStreamWaitEvent(sh_cs_, ev_fork_, 0);
         }
@@ -1314,45 +1380,11 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             }
         }
         stamp(l, 17, grp);
-        {
-            const WeightRef *wgi = need(v, "ffn_gate_inp_shexp.weight", err),
-                            *wsg = need(v, "ffn_gate_shexp.weight", err), *wsu = need(v, "ffn_up_shexp.weight", err),
-                            *wsd = need(v, "ffn_down_shexp.weight", err);
-            if (!wgi || !wsg || !wsu || !wsd)
-                return false;
-            if (!native_of(wsg, v.name("ffn_gate_shexp.weight"), err) ||
-                !native_of(wsu, v.name("ffn_up_shexp.weight"), err) ||
-                !native_of(wsd, v.name("ffn_down_shexp.weight"), err))
-                return false;
-            NativeSharedWeights nsw;
-            nsw.gate_type = wsg->native_type;
-            nsw.gate_data = wsg->native_data;
-            nsw.up_type = wsu->native_type;
-            nsw.up_data = wsu->native_data;
-            nsw.down_type = wsd->native_type;
-            nsw.down_data = wsd->native_data;
-            nsw.q8_1 = sh_fork ? sh_xq_ : xq_;
-            if (!shared_expert_native_bf16_enabled()) {
-                if (dec_batch)
-                    f32_to_bf16_bulk(mixed_ + tb * N, sh_bf16_ + tb * N, (int64_t) n * N, sh_stream); // contiguous rows
-                else
-                    for (int t = tb; t < te; ++t)
-                        f32_to_bf16_bulk(mixed_ + t * N, sh_bf16_ + t * N, N, sh_stream);
-            }
-            try {
-                shared_expert_multi(n, xm, sh_bf16_ + tb * N, nsw, (const uint16_t*) wgi->data,
-                                    sh_gate_ + (size_t) tb * g.n_ff, sh_up_ + (size_t) tb * g.n_ff, sh_g_ + tb,
-                                    shared_ + tb * N, N, g.n_ff, sh_stream);
-            } catch (const std::exception& e) {
-                err = std::string("verify shared expert: ") + e.what();
-                return false;
-            }
-            if (l == 0 && grp == 0 && dbg_l0_shared_) {
-                cudaMemcpyAsync(dbg_l0_shared_, shared_ + tb * N, (size_t) N * sizeof(float), cudaMemcpyDeviceToDevice,
-                                sh_stream);
-            }
-            if (sh_fork)
-                cudaEventRecord(ev_join_, sh_cs_);
+        if (defer) {
+            sh_pending_l = l;
+            sh_pending_grp = grp;
+        } else if (!issue_shared(l, grp, sh_fork)) {
+            return false;
         }
         if (has_gpu_experts) {
             if (guild::kernels::cpu::expert_layout().native)
@@ -1388,6 +1420,16 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         float* hit_out = hit_out_ + (size_t) tb * K * N;
         float* parts_out = parts_ + (size_t) tb * K * N;
         const auto& lay = guild::kernels::cpu::expert_layout();
+        if (sh_defer) { // this group's shared expert joined, then the other group's forked (see sh_defer)
+            cudaStreamWaitEvent(cs, ev_join_, 0);
+            if (sh_pending_l >= 0) {
+                cudaEventRecord(ev_fork_, cs);
+                cudaStreamWaitEvent(sh_cs_, ev_fork_, 0);
+                if (!issue_shared(sh_pending_l, sh_pending_grp, true))
+                    return false;
+                sh_pending_l = -1;
+            }
+        }
         // plan v0.3 P6: the VRAM groups now; the PCIe groups once the copy engine has landed them in staging.
         // `gy`: the native launch's groups side by side (0: cap, one block row per possible group).
         auto grouped = [&](const unsigned long long* gp, const int32_t* gs, const int32_t* gn, int64_t gy,
@@ -1466,7 +1508,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             if (has_gpu_experts)
                 moe_hit_add(parts_out, hit_out, p_dst, p_counts + 1, cap, N, cs);
         }
-        if (!prof_on_ && sh_cs_ != nullptr && ev_fork_ != nullptr && ev_join_ != nullptr) {
+        if (!sh_defer && !prof_on_ && sh_cs_ != nullptr && ev_fork_ != nullptr && ev_join_ != nullptr) {
             cudaStreamWaitEvent(cs, ev_join_, 0);
         }
         if (host_combine) { // the shared expert added to the CPU's sums: the combine kernel at k = 1, weight 1.0
