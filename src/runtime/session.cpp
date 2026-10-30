@@ -299,6 +299,14 @@ bool GuildSession::generate(const GenerationRequest& req, TokenStreamCallback on
             if (best_cp != nullptr && m_impl->restore_prefix_checkpoint(*best_cp)) {
                 reused_pos = static_cast<int64_t>(best_cp->tokens.size());
                 m_impl->live_committed_tokens = best_cp->tokens;
+                // With KV streaming (--kv-host-only, --kv-resident) the draft layer's K/V is a ring of its 32K-cell
+                // window, and the request before this one wrote its cells past the prefix into the slots of the
+                // window's oldest cells: refill the window from the host copy, or the drafts, and with them the
+                // window shapes and the tokens, depend on the requests that ran before.  On a 64K-token prompt (GTX
+                // 1070, --spec 4) the second 256-token request took other windows from window 12 and other tokens
+                // from token 154 without it; with it, every repeat matches the first request bit for bit.
+                if (m_impl->mtp)
+                    m_impl->mtp->kv_restore(reused_pos);
                 // Prune any checkpoints beyond reused_pos whose KV cells will be overwritten
                 m_impl->prune_prefix_checkpoints(static_cast<size_t>(reused_pos));
             }
