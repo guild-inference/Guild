@@ -1192,8 +1192,21 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                                        cap_, s, sel_ + (size_t) tb * cap_, cs);
                     }
                     stamp(l, 11, grp);
-                    // KV streaming: the n selections' blocks resident (device-side, inside the graph)
-                    qsa_kv_resolve(st, *g_, sel_ + (size_t) tb * cap_, step_ + tb * kStepCount, n, cap_, cs);
+                    // KV streaming: the n selections' blocks resident (device-side, inside the graph).  With one
+                    // staging pool shared by the QSA layers, a resolve normally clears this layer's map first,
+                    // because the layer before it has refilled the slots.  Group 1 is the exception: the stream
+                    // runs pre(l, 0), post(l - 1, 1), pre(l, 1), and post has no attention, so nothing has touched
+                    // the pool since group 0 of this same layer filled it, and group 1's own K/V append went
+                    // through this map.  Keeping the map, group 1 copies only the blocks group 0 did not select.
+                    // Measured on the GTX 1070 with a 7K-token prompt: 8,380 instead of 13,393 8 KiB blocks a
+                    // window over PCIe, and the copy kernel 5.8 instead of 9.1 ms a window.
+                    // GUILD_KV_STAGING_REUSE=0: clear it as group 0 does.
+                    static const bool staging_reuse = [] {
+                        const char* e = std::getenv("GUILD_KV_STAGING_REUSE");
+                        return !e || e[0] != '0';
+                    }();
+                    qsa_kv_resolve(st, *g_, sel_ + (size_t) tb * cap_, step_ + tb * kStepCount, n, cap_, cs,
+                                   /*invalidate_shared=*/!(staging_reuse && grp > 0));
                     stamp(l, 12, grp);
                     const QsaAttnPools pools = qsa_attn_pools(st);
                     qsa_decode_attn_batch(

@@ -7,7 +7,9 @@
 //   1. the attention outputs are BITWISE equal (the streamed readers see exactly the resident values);
 //   2. the residency map is consistent after every call (slot_block and page_table invert each other);
 //   3. no call overflowed, and the hit/miss counters add up;
-//   4. a ring (the MTP drafter's layout) restored from the host copy reads the same values as the resident pool.
+//   4. a ring (the MTP drafter's layout) restored from the host copy reads the same values as the resident pool;
+//   5. two layers sharing one slot pool (host-only staging), group 1 of a window keeping group 0's map, read the
+//      same values as their resident pools.
 // INT8, FP16 and Q4_0 (PR #21) pools.
 #include "guild/kernels/kv_q4.hpp"
 #include "guild/kernels/kv_q8.hpp"
@@ -264,6 +266,130 @@ bool run(int fmt) {
     }
     return bad == 0;
 }
+
+// 5. Host-only staging: two layers share one slot pool, each with its own map and host copy, in the verify
+// window's order pre(A, 0), pre(A, 1), pre(B, 0), pre(B, 1). Each group appends its cells first. Group 0 clears its
+// layer's map, because the other layer has refilled the pool; group 1 keeps the map group 0 left, since nothing
+// else wrote the pool in between, and copies only its misses. Both must read exactly the resident values, with a
+// pool that has to evict group 0's blocks for group 1 (clock) and with one that holds every block (direct map).
+bool run_shared(int fmt, int64_t N, int64_t n_slots) {
+    const char* name = fmt == k::kKvQ4 ? "q4_0" : fmt == k::kKvInt8 ? "int8" : "fp16";
+    const k::QsaShapes s = k::qsa_real_shapes();
+    const int64_t n_blocks = (N + 3) / 4, NQ = 2, P = N - 600;
+    const int64_t cap = k::qsa_selection_width(k::kTopkMaxCells, s);
+    const int64_t H = s.n_head_kv, D = s.head_dim, NH = s.n_head;
+    std::mt19937 rng(11 + 4 * fmt + (int) (n_slots >= n_blocks));
+    std::normal_distribution<float> nd(0.f, 1.f);
+
+    Pools slots, ref[2], host[2];
+    slots.alloc(n_slots, s, fmt, false);
+    k::KvStreamMap m[2];
+    for (int L = 0; L < 2; ++L) {
+        ref[L].alloc(n_blocks, s, fmt, false);
+        host[L].alloc(n_blocks, s, fmt, true);
+        m[L].page_table = dalloc<int32_t>(n_blocks);
+        m[L].slot_block = dalloc<int32_t>(n_slots);
+        m[L].slot_stamp = dalloc<int32_t>(n_slots);
+        m[L].slot_ref = dalloc<int32_t>(n_slots);
+        m[L].miss_block = dalloc<int32_t>(n_slots);
+        m[L].miss_slot = dalloc<int32_t>(n_slots);
+        m[L].ctl = dalloc<int32_t>(k::kKvCtlInts);
+        m[L].n_blocks = n_blocks;
+        m[L].n_slots = n_slots;
+        k::kv_stream_reset(m[L], nullptr);
+    }
+    int32_t* ident = dalloc<int32_t>(n_blocks);
+    {
+        std::vector<int32_t> t(n_blocks);
+        for (int64_t i = 0; i < n_blocks; ++i)
+            t[i] = (int32_t) i;
+        ck(cudaMemcpy(ident, t.data(), n_blocks * 4, cudaMemcpyHostToDevice), "ident");
+    }
+    float* kc = dalloc<float>(H * D);
+    float* vc = dalloc<float>(H * D);
+    int32_t* step = dalloc<int32_t>(k::kStepCount);
+    int32_t* steps = dalloc<int32_t>(NQ * k::kStepCount);
+    int32_t* ids = dalloc<int32_t>(NQ * cap);
+    float* q = dalloc<float>(NQ * NH * D);
+    float* scratch = dalloc<float>(NQ * k::qsa_decode_attn_scratch_floats(cap, s));
+    float* out_ref = dalloc<float>(NQ * NH * D);
+    float* out_str = dalloc<float>(NQ * NH * D);
+    std::vector<float> hk(H * D), hv(H * D), hq(NQ * NH * D), a((size_t) NQ * NH * D), b2((size_t) NQ * NH * D);
+
+    auto append_cell = [&](int L, int64_t pos) {
+        for (auto& x : hk)
+            x = nd(rng) * ((pos % 17 == 0) ? 30.f : 1.f);
+        for (auto& x : hv)
+            x = nd(rng);
+        const int32_t st[4] = {(int32_t) pos, (int32_t) (pos + 1), (int32_t) ((pos + 1) / 4), 0};
+        ck(cudaMemcpy(kc, hk.data(), hk.size() * 4, cudaMemcpyHostToDevice), "k");
+        ck(cudaMemcpy(vc, hv.data(), hv.size() * 4, cudaMemcpyHostToDevice), "v");
+        ck(cudaMemcpy(step, st, sizeof(st), cudaMemcpyHostToDevice), "step");
+        append(ref[L], ident, step, kc, vc, s, fmt, nullptr);
+        append(slots, m[L].page_table, step, kc, vc, s, fmt, &host[L].p);
+    };
+    uint64_t lookups[2] = {0, 0}, misses[2] = {0, 0};
+    int groups = 0, bad = 0;
+    // one group: n queries at positions p0.., their cells appended first; group 0 clears the map, group 1 keeps it
+    auto group = [&](int L, int64_t p0, int n, int g) {
+        for (int t = 0; t < n; ++t)
+            append_cell(L, p0 + t);
+        std::vector<int32_t> hids((size_t) NQ * cap, 0), hst(NQ * 4, 0);
+        for (int t = 0; t < n; ++t) {
+            const int64_t n_kv = p0 + t + 1, width = std::min<int64_t>(n_kv, cap);
+            const std::vector<int32_t> sel = selection(n_kv, width, rng);
+            std::copy(sel.begin(), sel.end(), hids.begin() + (size_t) t * cap);
+            hst[t * 4 + 0] = (int32_t) (p0 + t);
+            hst[t * 4 + 1] = (int32_t) n_kv;
+            hst[t * 4 + 2] = (int32_t) (n_kv / 4);
+            hst[t * 4 + 3] = (int32_t) width;
+        }
+        for (auto& x : hq)
+            x = nd(rng);
+        ck(cudaMemcpy(ids, hids.data(), hids.size() * 4, cudaMemcpyHostToDevice), "ids");
+        ck(cudaMemcpy(steps, hst.data(), hst.size() * 4, cudaMemcpyHostToDevice), "steps");
+        ck(cudaMemcpy(q, hq.data(), hq.size() * 4, cudaMemcpyHostToDevice), "q");
+        const k::KvStreamCounters c0 = k::kv_stream_counters(m[L]);
+        if (g == 0)
+            k::kv_stream_invalidate(m[L], nullptr);
+        k::kv_stream_resolve(m[L], slots.attn(m[L].page_table), host[L].p, fmt, ids, steps, n, cap, s, nullptr);
+        k::qsa_decode_attn_batch(q, ref[L].attn(ident), ids, steps, cap, s, scratch, out_ref, n, nullptr);
+        k::qsa_decode_attn_batch(q, slots.attn(m[L].page_table), ids, steps, cap, s, scratch, out_str, n, nullptr);
+        ck(cudaDeviceSynchronize(), "shared group");
+        const k::KvStreamCounters c1 = k::kv_stream_counters(m[L]);
+        lookups[g] += c1.lookups - c0.lookups;
+        misses[g] += c1.misses - c0.misses;
+        if (c1.overflow)
+            ++bad;
+        ck(cudaMemcpy(a.data(), out_ref, (size_t) n * NH * D * 4, cudaMemcpyDeviceToHost), "a");
+        ck(cudaMemcpy(b2.data(), out_str, (size_t) n * NH * D * 4, cudaMemcpyDeviceToHost), "b");
+        if (std::memcmp(a.data(), b2.data(), (size_t) n * NH * D * 4) != 0 && bad++ < 5)
+            std::fprintf(stderr, "  %s shared pool, layer %d group %d at %lld: streamed attention differs\n", name, L,
+                         g, (long long) p0);
+        ++groups;
+    };
+    // the prompt: host copies only (the maps are empty), then windows of 2-4 tokens split 2+2, 2+1 or 1+1
+    for (int L = 0; L < 2; ++L)
+        for (int64_t pos = 0; pos < P; ++pos)
+            append_cell(L, pos);
+    for (int64_t pos = P; pos + 4 <= N;) {
+        const int T = 2 + (int) (rng() % 3), n0 = (T + 1) / 2;
+        for (int L = 0; L < 2; ++L) {
+            group(L, pos, n0, 0);
+            group(L, pos + n0, T - n0, 1);
+        }
+        pos += T;
+    }
+    std::printf("  %s shared pool (%lld slots, %lld blocks, %s): %d groups; group 0 %llu misses of %llu lookups, "
+                "group 1 %llu of %llu; %d failures\n",
+                name, (long long) n_slots, (long long) n_blocks, n_slots >= n_blocks ? "direct map" : "clock", groups,
+                (unsigned long long) misses[0], (unsigned long long) lookups[0], (unsigned long long) misses[1],
+                (unsigned long long) lookups[1], bad);
+    // group 1 copies fewer blocks than it looks up: the cells group 0 made resident are hits
+    if (misses[1] >= lookups[1] || misses[0] == 0)
+        ++bad;
+    return bad == 0;
+}
 } // namespace
 
 int main() {
@@ -271,6 +397,11 @@ int main() {
     const bool a = run(k::kKvInt8), b = run(k::kKvF16), c = run(k::kKvQ4);
     if (!a || !b || !c)
         ++g_fail;
+    for (int fmt : {k::kKvF16, k::kKvInt8, k::kKvQ4}) {
+        const bool clock = run_shared(fmt, 12000, 1100), direct = run_shared(fmt, 3200, 1100);
+        if (!clock || !direct)
+            ++g_fail;
+    }
     std::printf(g_fail ? "FAIL\n" : "PASS\n");
     return g_fail ? 1 : 0;
 }
