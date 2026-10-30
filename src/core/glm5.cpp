@@ -1820,17 +1820,32 @@ void Glm5Engine::Impl::cpu_ffn(const Layer& Y, int T, const Rows& io) {
     // a down item's rows: with 64 a phase's last items kept a few threads busy while the rest waited (2x Xeon Gold
     // 6130, 32 threads: a thread's last item ended 35 us before the phase on average, 16 us with 16 rows)
     constexpr int DRB = 16;
+    // and the last items of each node's queue, about one a worker, are split in four, so that the phase ends with
+    // short items (2x Xeon Gold 6130: CPU experts -0.9 ms a 2-token step)
+    constexpr int kTail = 16, GTR = RB / 4, DTR = DRB / 4;
 
     lap(0);
     // phase 1: gate/up, each row block on the queue of the node that holds it
-    std::vector<std::pair<int, int>> items[2];
+    struct Item {
+        int gi, r0, r1; // group, rows
+    };
+    std::vector<Item> items[2];
     for (int gi = 0; gi < (int) groups.size(); ++gi) {
         const CpuFfn& f = groups[(size_t) gi].f;
         for (int node = 0; node < 2; ++node) {
             const int64_t a = node ? f.gu_split : 0, b = node ? f.n_ff : f.gu_split;
             for (int64_t r = a; r < b; r += RB)
-                items[node].emplace_back(gi, (int) r);
+                items[node].push_back({gi, (int) r, (int) std::min<int64_t>(r + RB, b)});
         }
+    }
+    for (auto& v : items) {
+        const size_t k0 = v.size() > (size_t) kTail ? v.size() - kTail : 0;
+        std::vector<Item> tail;
+        for (size_t k = k0; k < v.size(); ++k)
+            for (int r = v[k].r0; r < v[k].r1; r += GTR)
+                tail.push_back({v[k].gi, r, std::min(r + GTR, v[k].r1)});
+        v.resize(k0);
+        v.insert(v.end(), tail.begin(), tail.end());
     }
     // The hidden activations' quantization: from_float quantizes each 256-row block on its own (Q8_K's blocks are
     // 256, Q8_0's 32), so the item that completes a group's block of 256 rows quantizes that block for the group's
@@ -1850,12 +1865,9 @@ void Glm5Engine::Impl::cpu_ffn(const Layer& Y, int T, const Rows& io) {
         const size_t nb = (size_t) qbase.back();
         qneed.assign(nb, 0);
         for (int node = 0; node < 2; ++node)
-            for (const auto& it : items[node]) {
-                const CpuFfn& f = groups[(size_t) it.first].f;
-                const int r1 = (int) std::min<int64_t>(it.second + RB, node ? f.n_ff : f.gu_split);
-                for (int b = it.second / QB; b <= (r1 - 1) / QB; ++b)
-                    ++qneed[(size_t) (qbase[(size_t) it.first] + b)];
-            }
+            for (const Item& it : items[node])
+                for (int b = it.r0 / QB; b <= (it.r1 - 1) / QB; ++b)
+                    ++qneed[(size_t) (qbase[(size_t) it.gi] + b)];
         if (qcnt_cap < nb) {
             qcnt.reset(new std::atomic<int>[nb]);
             qcnt_cap = nb;
@@ -1864,11 +1876,11 @@ void Glm5Engine::Impl::cpu_ffn(const Layer& Y, int T, const Rows& io) {
             qcnt[k].store(0, std::memory_order_relaxed);
     }
     pool->run_nodes((int) items[0].size(), (int) items[1].size(), [&](int node, int i) {
-        const int gi = items[node][(size_t) i].first;
+        const Item& it = items[node][(size_t) i];
+        const int gi = it.gi;
         const Group& gr = groups[(size_t) gi];
         const CpuFfn& f = gr.f;
-        const int r0 = items[node][(size_t) i].second;
-        const int r1 = (int) std::min<int64_t>(r0 + RB, node ? f.n_ff : f.gu_split), nr = r1 - r0;
+        const int r0 = it.r0, r1 = it.r1, nr = r1 - r0;
         const uint8_t* wg = f.gate[node];
         const uint8_t* wu = f.up[node];
         const bool nl4 = f.gu_type == kcpu::kIq3sNl4Type;
@@ -1936,10 +1948,17 @@ void Glm5Engine::Impl::cpu_ffn(const Layer& Y, int T, const Rows& io) {
     // phase 2: down rows, summed over each token's units; the first half of the rows on node 0 (where the split puts
     // them), the second on node 1
     const int64_t half = (N / 2 + RB - 1) / RB * RB;
-    const int nrb0 = (int) (half / DRB), nrb1 = (int) ((N - half + DRB - 1) / DRB);
-    pool->run_nodes(nrb0, nrb1, [&](int node, int i) {
-        const int r0 = (int) (node ? half : 0) + i * DRB, r1 = (int) std::min<int64_t>(r0 + DRB, node ? N : half),
-                  nr = r1 - r0;
+    const int64_t d0[2] = {0, half}, d1[2] = {half, N};
+    int dmain[2], dn[2]; // a node's items of DRB rows, and of all
+    for (int node = 0; node < 2; ++node) {
+        const int64_t rows = d1[node] - d0[node];
+        dmain[node] = (int) std::max<int64_t>(0, rows / DRB - kTail);
+        dn[node] = dmain[node] + (int) ((rows - (int64_t) dmain[node] * DRB + DTR - 1) / DTR);
+    }
+    pool->run_nodes(dn[0], dn[1], [&](int node, int i) {
+        const int m = dmain[node];
+        const int r0 = (int) d0[node] + (i < m ? i * DRB : m * DRB + (i - m) * DTR);
+        const int r1 = (int) std::min<int64_t>(r0 + (i < m ? DRB : DTR), d1[node]), nr = r1 - r0;
         for (int t = 0; t < T; ++t)
             std::fill(io.h_y + (size_t) t * N + r0, io.h_y + (size_t) t * N + r1, 0.f);
         float dbuf[MT][RB];
