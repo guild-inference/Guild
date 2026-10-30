@@ -1077,17 +1077,20 @@ void gexec_iq4nl_down_rows(const uint8_t* w, size_t row_bytes, int n, const void
         const char* e = std::getenv("GUILD_IQ_MT_MIN");
         return e ? std::atoi(e) : 2;
     }();
-    if (nt < mt_min) {
-        const auto* y0 = (const block_q8_0*) hq[0];
+    if (nt < mt_min) { // each token alone (GUILD_IQ_MT_MIN above 2 sends groups of 2 or more here too)
         const int nb = n / QK4_NL;
-        int r = r0;
-        for (; r + 4 <= r1; r += 4) {
-            gexec_iq4nl_4rows_nt1(w + (size_t) (r + 0) * row_bytes, w + (size_t) (r + 1) * row_bytes,
-                                  w + (size_t) (r + 2) * row_bytes, w + (size_t) (r + 3) * row_bytes, nb, y0,
-                                  out[0][r + 0], out[0][r + 1], out[0][r + 2], out[0][r + 3]);
-        }
-        for (; r < r1; ++r) {
-            gexec_iq4nl_1row_nt1(w + (size_t) r * row_bytes, nb, y0, out[0][r]);
+        for (int t = 0; t < nt; ++t) {
+            const auto* yt = (const block_q8_0*) hq[t];
+            float* o = out[t];
+            int r = r0;
+            for (; r + 4 <= r1; r += 4) {
+                gexec_iq4nl_4rows_nt1(w + (size_t) (r + 0) * row_bytes, w + (size_t) (r + 1) * row_bytes,
+                                      w + (size_t) (r + 2) * row_bytes, w + (size_t) (r + 3) * row_bytes, nb, yt,
+                                      o[r + 0], o[r + 1], o[r + 2], o[r + 3]);
+            }
+            for (; r < r1; ++r) {
+                gexec_iq4nl_1row_nt1(w + (size_t) r * row_bytes, nb, yt, o[r]);
+            }
         }
         return;
     }

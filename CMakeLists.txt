@@ -1312,6 +1312,11 @@ if(GUILD_BUILD_TESTS)
   # the kernel parity checks again with the 512-bit i-quant kernels on any AVX-512 BW CPU (not only VNNI/VBMI hosts)
   add_test(NAME gexec_kernels_iq512 COMMAND gexec_optimizer_test --kernels)
   set_tests_properties(gexec_kernels_iq512 PROPERTIES TIMEOUT 240 ENVIRONMENT "GUILD_GEXEC_IQ512=1")
+  # GUILD_IQ_MT_MIN above 2: groups smaller than it run each token alone, groups of 1..8 still give ggml's bits
+  add_test(NAME gexec_kernels_mt3 COMMAND gexec_optimizer_test --kernels)
+  set_tests_properties(gexec_kernels_mt3 PROPERTIES TIMEOUT 240 ENVIRONMENT "GUILD_IQ_MT_MIN=3")
+  add_test(NAME gexec_kernels_mt4 COMMAND gexec_optimizer_test --kernels)
+  set_tests_properties(gexec_kernels_mt4 PROPERTIES TIMEOUT 240 ENVIRONMENT "GUILD_IQ_MT_MIN=4")
 
   add_executable(multi_model_isolation_test tests/core/multi_model_isolation_test.cpp)
   target_link_libraries(multi_model_isolation_test PRIVATE guild_server guild_runtime guild_models guild_memory guild_model guild_cli)
