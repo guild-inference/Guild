@@ -5,7 +5,8 @@
 // what plain greedy decode would produce after token t, BIT FOR BIT: every kernel here is either the single-token
 // kernel applied per token, or a multi-token kernel whose per-token arithmetic is the single-token kernel's
 // (multi-column MMVQ in exact mode, the T-token GDN kernels, the per-token hit activation, the multi-token CPU
-// expert rows).  So a draft is accepted exactly when greedy decode would have produced it.
+// expert rows, which sum in ggml-cpu's float order: guild-kernels-cpu GUILD_IQ_GGML_ORDER, #152).  So a draft is
+// accepted exactly when greedy decode would have produced it.
 //
 // What the window costs is the dense weights read ONCE for T tokens and the union of the T tokens' missed
 // experts on the CPU (measured on decode traces: 1.75x one token's misses for T=2, 2.4x for 3, 3.05x for 4).
@@ -166,7 +167,7 @@ public:
     // Everything that is per row already (hyper-connections, dense projections, router, shared expert, the
     // routed experts on the GPU and the CPU, the head) runs once over the S rows, so the weights are read once
     // per window for all the sequences.  Row s's arithmetic is the single-token window's, so a slot's greedy
-    // tokens are its solo greedy tokens (modulo the multi-token CPU kernel choice: GUILD_IQ_MT_MIN=1).
+    // tokens are its solo greedy tokens (the multi-token CPU expert kernels sum in ggml-cpu's order, #152).
     //
     // Greedy only, no drafts (MTP) in a batch window.  `init_slots` once after `init` (S <= max_t); a layer
     // split's stages each get their own sessions, and run_slots/commit_slots continue into the next stage.

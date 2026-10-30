@@ -1,12 +1,15 @@
 // src/core/glm5_nl4.cpp - GLM-5.3-Flash's IQ3_S expert rows in guild-kernels-cpu's NL4 form (iq_avx2.hpp:
 // kIq3sNl4Type, 134 bytes per 256 values, the grid lookup done at load), dotted one row at a time against Q8_K
 // activations: the gate and the up products separately, so the SwiGLU clamp can follow (the library's NL4 kernel
-// fuses them into silu(g) * u).  The arithmetic is the library's nl4_row_dot: one token sums its 8 lanes in ggml's
-// order (bitwise ggml-cpu's ggml_vec_dot_iq3_s_q8_K), several tokens in the library's own.  AVX2 + FMA + F16C.
+// fuses them into silu(g) * u).  The arithmetic is the library's nl4_row_dot, and every token sums its 8 lanes in
+// ggml's order (bitwise ggml-cpu's ggml_vec_dot_iq3_s_q8_K), alone or in a group, so a verify window computes what
+// one-token decode does (#152).  GUILD_IQ_GGML_ORDER=0 restores the earlier rule: one token in ggml's order, several
+// tokens in the library's own (hsum8 below), which rounds differently.  AVX2 + FMA + F16C.
 #include "guild/core/glm5_nl4.hpp"
 
 #include <immintrin.h>
 
+#include <cstdlib>
 #include <cstring>
 
 namespace guild::core::glm5cpu {
@@ -85,14 +88,19 @@ inline void row_dot(const uint8_t* row, int nblocks, const BlockQ8K* const* y, f
         res[t] = GGML ? hsum_ggml(accf[t]) : hsum8(accf[t]);
 }
 
-template <int NT>
+const bool ggml_order = [] {
+    const char* v = std::getenv("GUILD_IQ_GGML_ORDER");
+    return v == nullptr || std::atoi(v) != 0;
+}();
+
+template <int NT, bool GGML>
 void rows(const uint8_t* w, size_t row_bytes, int n, const void* const* act, float* const* out, int r0, int r1) {
     const BlockQ8K* y[NT];
     for (int t = 0; t < NT; ++t)
         y[t] = (const BlockQ8K*) act[t];
     float res[NT];
     for (int r = r0; r < r1; ++r) {
-        row_dot<NT, NT == 1>(w + (size_t) r * row_bytes, n / kQK, y, res);
+        row_dot<NT, GGML>(w + (size_t) r * row_bytes, n / kQK, y, res);
         for (int t = 0; t < NT; ++t)
             out[t][r] = res[t];
     }
@@ -104,11 +112,20 @@ void nl4_rows(const uint8_t* w, size_t row_bytes, int n, const void* const* act,
               int r1) {
     for (int t0 = 0; t0 < nt; t0 += 4) {
         const int k = nt - t0 < 4 ? nt - t0 : 4;
+        if (ggml_order) {
+            switch (k) {
+            case 1: rows<1, true>(w, row_bytes, n, act + t0, out + t0, r0, r1); break;
+            case 2: rows<2, true>(w, row_bytes, n, act + t0, out + t0, r0, r1); break;
+            case 3: rows<3, true>(w, row_bytes, n, act + t0, out + t0, r0, r1); break;
+            default: rows<4, true>(w, row_bytes, n, act + t0, out + t0, r0, r1); break;
+            }
+            continue;
+        }
         switch (k) {
-        case 1: rows<1>(w, row_bytes, n, act + t0, out + t0, r0, r1); break;
-        case 2: rows<2>(w, row_bytes, n, act + t0, out + t0, r0, r1); break;
-        case 3: rows<3>(w, row_bytes, n, act + t0, out + t0, r0, r1); break;
-        default: rows<4>(w, row_bytes, n, act + t0, out + t0, r0, r1); break;
+        case 1: rows<1, true>(w, row_bytes, n, act + t0, out + t0, r0, r1); break;
+        case 2: rows<2, false>(w, row_bytes, n, act + t0, out + t0, r0, r1); break;
+        case 3: rows<3, false>(w, row_bytes, n, act + t0, out + t0, r0, r1); break;
+        default: rows<4, false>(w, row_bytes, n, act + t0, out + t0, r0, r1); break;
         }
     }
 }

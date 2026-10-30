@@ -48,6 +48,11 @@ static double rel(const std::vector<float>& a, const std::vector<float>& b) {
 
 namespace {
 constexpr int NT = 3, E = 7;
+// GUILD_IQ_GGML_ORDER (guild-kernels-cpu iq_avx512.cpp / iq_avx2.cpp): the multi-token kernels sum in ggml's order
+const bool ggml_order = [] {
+    const char* v = std::getenv("GUILD_IQ_GGML_ORDER");
+    return v == nullptr || std::atoi(v) != 0;
+}();
 constexpr int64_t H = 2560, FF = 640;
 
 // The three ways and the dequantizers for one expert blob; returns the number of failed checks.
@@ -106,8 +111,8 @@ int check_blob(const cpu::NativeFmt& f, const std::vector<uint8_t>& blob, int se
         // either multi-token kernel: IQ4_XS has an AVX-2 one and no AVX-512 one, so the gate cannot be
         // iq512_supported alone - that would leave the format untested on every CPU.
         if (cpu::iq512_supported(f.gu_type) || cpu::iq256_supported(f.gu_type)) {
-            // ggml's own vec_dot, same Q8_K activations: the reference for both multi-token kernels
-            // (float-order differences only)
+            // ggml's own vec_dot, same Q8_K activations: the reference for both multi-token kernels, bit for bit
+            // since they sum in ggml's order (#152; GUILD_IQ_GGML_ORDER=0: their earlier order, rel only)
             const auto* tc = ggml_get_type_traits_cpu((ggml_type) f.gu_type);
             std::vector<float> gref((size_t) NT * FF);
             for (int k = 0; k < NT; ++k)
@@ -135,8 +140,16 @@ int check_blob(const cpu::NativeFmt& f, const std::vector<uint8_t>& blob, int se
                 (is512 ? cpu::iq512_rows : cpu::iq256_rows)(f.gu_type, blob.data(), f.gu_row, (int) H, a, NT, gp, 0,
                                                             (int) FF);
                 const double rg = rel(g, gref);
-                std::printf("          %s %s gate rows vs ggml vec_dot: rel %.2e\n",
-                            ggml_type_name((ggml_type) f.gu_type), tag, rg);
+                size_t bits = 0;
+                for (size_t i = 0; i < g.size(); ++i)
+                    bits += std::memcmp(&g[i], &gref[i], 4) != 0;
+                std::printf("          %s %s gate rows vs ggml vec_dot: rel %.2e, %zu of %zu rows differ in any bit\n",
+                            ggml_type_name((ggml_type) f.gu_type), tag, rg, bits, g.size());
+                if (bits && ggml_order) {
+                    std::printf("          %s %s gate rows MISMATCH (not ggml's float order)\n",
+                                ggml_type_name((ggml_type) f.gu_type), tag);
+                    ++failures;
+                }
                 if (rg > 1e-5) { // ggml's own vec_dot is the reference: above 1e-5 it is a real mismatch,
                     std::printf("          %s %s gate rows MISMATCH (rel %.2e > 1e-5)\n",
                                 ggml_type_name((ggml_type) f.gu_type), tag, rg); // not rounding (measured 3e-8)
@@ -283,7 +296,16 @@ int check_blob(const cpu::NativeFmt& f, const std::vector<uint8_t>& blob, int se
                     tdc->vec_dot((int) FF, refd.data() + k * H + r, 0, blob.data() + f.down_off + (size_t) r * f.d_row,
                                  0, hp[k], 0, 1);
             const double rdn = rel(alt, refd);
-            std::printf("          iq4_nl AVX-2 multi-token down vs ggml down: rel %.2e\n", rdn);
+            size_t bits = 0;
+            for (size_t i = 0; i < alt.size(); ++i)
+                bits += std::memcmp(&alt[i], &refd[i], 4) != 0;
+            std::printf("          iq4_nl AVX-2 multi-token down vs ggml down: rel %.2e, %zu of %zu rows differ in any "
+                        "bit\n",
+                        rdn, bits, alt.size());
+            if (bits && ggml_order && FF % 64 == 0) {
+                std::printf("          iq4_nl down MISMATCH (not ggml's float order)\n");
+                ++failures;
+            }
             if (rdn > 1e-5) { // measured 1e-7; same reasoning as the gate/up rows above
                 std::printf("          iq4_nl down MISMATCH (rel %.2e > 1e-5)\n", rdn);
                 ++failures;
@@ -617,8 +639,10 @@ int main(int argc, char** argv) {
                              "       native_expert_parity --bf16-embd\n");
         return 2;
     }
-    // #152's width check tests the opt-in rule (the multi-token kernels from one token on)
-    if (std::getenv("GUILD_IQ_MT_MIN") == nullptr) {
+    // #152's width check tests the dispatch as shipped (ggml-cpu's dot for one token, the multi-token kernels from
+    // two, both in ggml's float order); with GUILD_IQ_GGML_ORDER=0 (the kernels' earlier order) it tests the opt-in
+    // rule that kept output independent of the drafting then, the multi-token kernels from one token on
+    if (!ggml_order && std::getenv("GUILD_IQ_MT_MIN") == nullptr) {
 #ifdef _WIN32
         _putenv_s("GUILD_IQ_MT_MIN", "1");
 #else
