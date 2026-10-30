@@ -857,8 +857,8 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
     }();
     static const bool sh_fork_late = [] {
         const char* e = std::getenv("GUILD_SH_FORK");
-#if defined(GUILD_USE_HIP)
-        return e != nullptr && e[0] != '0'; // measured on CUDA only: opt-in
+#if defined(GUILD_USE_HIP) || defined(GUILD_HIP_GFX906)
+        return e != nullptr && e[0] != '0'; // measured on CUDA only: opt-in (both HIP builds)
 #else
         return !e || e[0] != '0';
 #endif
