@@ -1194,6 +1194,9 @@ if(GUILD_ENABLE_CUDA OR GUILD_ENABLE_HIP)
 
   add_executable(decision_run src/program/decision_run.cpp)
   target_link_libraries(decision_run PRIVATE guild_decision guild_program_options)
+  # GuildSession::score on any model guild-generate loads (model options as arguments; not a ctest: needs a model)
+  add_executable(session_score_test tests/core/session_score_test.cpp)
+  target_link_libraries(session_score_test PRIVATE guild_program_options)
 endif()
 
 # ---- guild_server (Native HTTP & OpenAI serving layer) --------------------
