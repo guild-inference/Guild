@@ -106,6 +106,22 @@ int main() {
         TEST_CHECK(parsed->files[0].name == "shard-01.gguf", "File 0 name mismatch");
         TEST_CHECK(parsed->files[0].sha256 == f1.sha256, "File 0 sha256 mismatch");
         TEST_CHECK(parsed->files[1].size_bytes == 50000, "File 1 size mismatch");
+        TEST_CHECK(parsed->license.empty() && parsed->commercial_use, "Unrecorded license must stay unrecorded");
+
+        // the license and its commercial-use flag survive the round trip; an older manifest without them reads as
+        // unrecorded and commercial use allowed
+        ModelManifest nc = orig;
+        nc.license = "cc-by-nc-4.0";
+        nc.commercial_use = false;
+        auto nc_parsed = ModelManifest::from_json(nc.to_json());
+        TEST_CHECK(nc_parsed.has_value() && nc_parsed->license == "cc-by-nc-4.0" && !nc_parsed->commercial_use,
+                   "License round trip");
+        auto old_parsed = ModelManifest::from_json(R"({"name": "old", "architecture": "qwen35moe"})");
+        TEST_CHECK(old_parsed.has_value() && old_parsed->license.empty() && old_parsed->commercial_use,
+                   "A manifest without a license reads as unrecorded");
+        auto builtin = ModelRegistry::instance().find_builtin("startlux-decision");
+        TEST_CHECK(builtin.has_value() && builtin->license == "cc-by-nc-4.0" && !builtin->commercial_use,
+                   "StartLux-Decision is marked non-commercial");
 
         std::cout << "  -> PASSED" << std::endl;
     }

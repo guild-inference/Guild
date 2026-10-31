@@ -896,7 +896,9 @@ int cmd_show(int argc, char** argv) {
               << "Quantization  " << m.quantization << "\n"
               << "Source        " << m.source << "\n"
               << "Total Size    " << guild::models::Downloader::format_bytes(m.total_size_bytes()) << "\n"
-              << "Context       " << m.context_length << " tokens\n";
+              << "Context       " << m.context_length << " tokens\n"
+              << "License       " << (m.license.empty() ? "not recorded" : m.license)
+              << (m.commercial_use ? "" : " (non-commercial: no commercial serving)") << "\n";
 
     if (m.n_routed_experts > 0) {
         std::cout << "\n"

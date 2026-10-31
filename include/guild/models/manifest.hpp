@@ -29,6 +29,10 @@ struct ModelManifest {
     std::string description;          // "Unsloth UD-IQ4_XS ~4-bit dynamic quant"
     uint64_t expected_size_bytes{0};  // expected total disk size
     uint32_t context_length{262144};  // native context length
+    // The weights' license (an SPDX-style id such as "cc-by-nc-4.0"; empty when not recorded) and whether it allows
+    // commercial use: a commercial deployment excludes the models with commercial_use false.
+    std::string license;
+    bool commercial_use{true};
 
     // Optional auxiliary assets
     std::string tokenizer_source;
