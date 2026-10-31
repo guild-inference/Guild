@@ -1,4 +1,5 @@
 // src/program/generate.cpp - Thin CLI / process wrapper around GuildModel and GuildSession
+#include "guild/program/model_options.hpp"
 #include "guild/runtime/model.hpp"
 #include "guild/runtime/session.hpp"
 #include "guild/model/model_descriptor.hpp"
@@ -40,30 +41,7 @@ namespace {
 
 void usage() {
     std::cout << "Usage: guild-generate [options]\n"
-              << "  --pack <dir>               Model pack directory\n"
-              << "  --native <file>            Primary model GGUF file\n"
-              << "  --expert-profile <file>    Expert profile binary\n"
-              << "  --mtp <dir>                MTP speculative draft directory\n"
-              << "  --mtp-optional             Start without the MTP draft layer when VRAM cannot also hold it\n"
-              << "  --ple-gguf <file>          The GGUF shard holding the PLE table (default: found in --native's)\n"
-              << "  --ple-io <direct|mmap|ram> How the PLE table is read; ram locks it in RAM (rotational disks)\n"
-              << "  --tokenizer <dir>          Tokenizer directory\n"
-              << "  --max-context <n>          Maximum context length (default 262144)\n"
-              << "  --kv <fp16|q8_0|...>       KV cache precision\n"
-              << "  --kv-host-only             Host-only KV cache with bounded GPU staging\n"
-              << "  --resident-budget-gib <n>  RAM expert residency budget in GiB\n"
-              << "  --expert-cache <auto|n>    GPU expert cache slots\n"
-              << "  --pcie-frac <f>            Fraction of missed experts offloaded from RAM (0..1; default auto)\n"
-              << "  --prefill <auto|n>         Prefill chunk size\n"
-              << "  --spec <n>                 Speculative draft length (default 4)\n"
-              << "  --spec-min-p <p>           Speculative min probability (default 0.5)\n"
-              << "  --rope-scaling <s>         none|linear|yarn: a --max-context past the model's trained context\n"
-              << "  --rope-scale <f>           the extension factor (default: --max-context / trained context)\n"
-              << "  --decode-strategy <s>      auto|normal|mtp|lookup|retrieval|adaptive (default auto: MTP when\n"
-              << "                             --mtp is given, otherwise none)\n"
-              << "  --pool-workers <n>         CPU expert pool worker count\n"
-              << "  --dump-routing <file>      Append every decode layer's routed experts (tools/make_profile.py)\n"
-              << "  --prompt <string>          Input prompt text\n"
+              << guild::program::model_options_usage() << "  --prompt <string>          Input prompt text\n"
               << "  --tokens <ids>             Comma-separated prompt token IDs\n"
               << "  --tokens-file <path>       File containing token IDs\n"
               << "  --max-new <n>              Maximum tokens to generate (default 512)\n"
@@ -443,30 +421,6 @@ private:
     std::shared_ptr<State> s_ = std::make_shared<State>();
 };
 
-guild::model::ModelDescriptor make_default_descriptor(const std::string& path) {
-    guild::model::ModelDescriptor desc;
-    desc.name = "Qwen3.8-Flash-Next";
-    desc.archetype = guild::model::ModelArchetype::Qwen4Exp;
-    desc.arch_name = "qwen4exp";
-    desc.file_path = path.empty() ? "Qwen3.8-Flash-Next" : path;
-    desc.attn.n_embd = 2560;
-    desc.attn.n_layers = 48;
-    desc.attn.n_heads = 24;
-    desc.attn.n_kv_heads = 2;
-    desc.attn.head_dim = 256;
-    desc.attn.context_length = 262144;
-    desc.attn.vocab_size = 151936;
-    desc.attn.pattern = guild::model::AttentionPattern::HybridGDN;
-    desc.attn.full_attn_interval = 4;
-    desc.moe.n_routed_experts = 512;
-    desc.moe.k_active_experts = 10;
-    desc.moe.expert_dim_ff = 640;
-    desc.moe.n_shared_experts = 1;
-    desc.moe.shared_dim_ff = 2560;
-    desc.moe.expert_blob_bytes = 2421813;
-    return desc;
-}
-
 } // namespace
 
 int main(int argc, char** argv) try {
@@ -480,26 +434,7 @@ int main(int argc, char** argv) try {
 #endif
     }
 
-    std::string pack_dir;
-    std::string native_path;
-    std::string profile_path;
-    std::string mtp_dir;
-    std::string tokenizer_dir;
-    int64_t max_context = 262144;
-    std::string kv_precision = "fp16";
-    bool kv_host_only = false;
-    int resident_budget_gib = 0;
-    std::string expert_cache = "auto";
-    double pcie_fraction = -1.0;
-    std::string prefill = "auto";
-    int spec = 4;
-    float spec_min_p = 0.5f;
-    std::string decode_strategy;
-    std::string rope_scaling;
-    bool mtp_optional = false;
-    std::string ple_gguf, ple_io;
-    double rope_scale = 0;
-    int pool_workers = 0;
+    guild::program::ModelOptions mo;
     std::string prompt;
     std::vector<int32_t> prompt_tokens;
     int max_new = 512;
@@ -511,7 +446,7 @@ int main(int argc, char** argv) try {
     bool serve_mode = false;
     // the flags given: the speech path keeps the model card's sampling (1.0 / 0.9 / 30) and 2048 frames for the rest
     bool temperature_given = false, top_p_given = false, top_k_given = false, max_new_given = false;
-    std::string drama3_dir, say, wav_path = "speech.wav", ref_text, ref_codes_path, ref_wav_path, save_codes_path;
+    std::string say, wav_path = "speech.wav", ref_text, ref_codes_path, ref_wav_path, save_codes_path;
 
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
@@ -523,19 +458,14 @@ int main(int argc, char** argv) try {
             return argv[++i];
         };
 
+        if (const int r = guild::program::parse_model_option(argc, argv, i, mo, "guild-generate"); r == 2) {
+            return 2;
+        } else if (r == 1) {
+            continue;
+        }
         if (a == "-h" || a == "--help") {
             usage();
             return 0;
-        } else if (a == "--pack") {
-            pack_dir = next("--pack");
-        } else if (a == "--native") {
-            native_path = next("--native");
-        } else if (a == "--expert-profile") {
-            profile_path = next("--expert-profile");
-        } else if (a == "--mtp") {
-            mtp_dir = next("--mtp");
-        } else if (a == "--drama3") {
-            drama3_dir = next("--drama3");
         } else if (a == "--say") {
             say = next("--say");
         } else if (a == "--wav") {
@@ -548,64 +478,6 @@ int main(int argc, char** argv) try {
             ref_wav_path = next("--ref-wav");
         } else if (a == "--save-codes") {
             save_codes_path = next("--save-codes");
-        } else if (a == "--tokenizer") {
-            tokenizer_dir = next("--tokenizer");
-        } else if (a == "--max-context") {
-            max_context = std::stoll(next("--max-context"));
-        } else if (a == "--kv") {
-            kv_precision = next("--kv");
-        } else if (a == "--kv-host-only") {
-            kv_host_only = true;
-        } else if (a == "--resident-budget-gib") {
-            resident_budget_gib = std::stoi(next("--resident-budget-gib"));
-        } else if (a == "--expert-cache") {
-            expert_cache = next("--expert-cache");
-        } else if (a == "--pcie-frac") {
-            const std::string value = next("--pcie-frac");
-            size_t used = 0;
-            pcie_fraction = std::stod(value, &used);
-            if (used != value.size() || !std::isfinite(pcie_fraction) || pcie_fraction < 0 || pcie_fraction > 1) {
-                std::fprintf(stderr, "--pcie-frac requires a finite number in 0..1\n");
-                return 2;
-            }
-        } else if (a == "--prefill") {
-            prefill = next("--prefill");
-        } else if (a == "--spec") {
-            spec = std::stoi(next("--spec"));
-        } else if (a == "--spec-min-p") {
-            spec_min_p = std::stof(next("--spec-min-p"));
-        } else if (a == "--decode-strategy") {
-            decode_strategy = next("--decode-strategy");
-        } else if (a == "--mtp-optional") {
-            mtp_optional = true;
-        } else if (a == "--ple-gguf") {
-            ple_gguf = next("--ple-gguf");
-        } else if (a == "--ple-io") {
-            ple_io = next("--ple-io");
-            if (ple_io != "direct" && ple_io != "mmap" && ple_io != "ram") {
-                std::fprintf(stderr, "guild-generate: --ple-io takes direct, mmap or ram\n");
-                return 2;
-            }
-        } else if (a == "--mmap-experts" || a == "--resident-experts") {
-            // setup.py's low-RAM modes for the earlier engine; this one copies the experts it has RAM for and reads
-            // the rest from the files either way (--resident-budget-gib caps the copy)
-            std::fprintf(stderr,
-                         "guild-generate: %s: the RAM copy of the experts is sized to the free RAM "
-                         "(--resident-budget-gib caps it)\n",
-                         a.c_str());
-        } else if (a == "--rope-scaling") {
-            rope_scaling = next("--rope-scaling");
-        } else if (a == "--rope-scale") {
-            rope_scale = std::stod(next("--rope-scale"));
-        } else if (a == "--dump-routing") {
-            const std::string path = next("--dump-routing");
-#if defined(_WIN32)
-            _putenv_s("GUILD_DUMP_ROUTING", path.c_str());
-#else
-            setenv("GUILD_DUMP_ROUTING", path.c_str(), 1);
-#endif
-        } else if (a == "--pool-workers") {
-            pool_workers = std::stoi(next("--pool-workers"));
         } else if (a == "--prompt") {
             prompt = next("--prompt");
         } else if (a == "--tokens") {
@@ -660,131 +532,12 @@ int main(int argc, char** argv) try {
             std::fprintf(stderr, "guild-generate: ignoring argument %s (see --help)\n", a.c_str());
     }
 
-    if (tokenizer_dir.empty() && !pack_dir.empty()) {
-        tokenizer_dir = pack_dir + "/tokenizer";
-    }
-
-    // Hardware detection
-    const auto hw = guild::cli::detect_hardware();
-
-    // Model Descriptor
-    guild::model::ModelDescriptor desc = make_default_descriptor(native_path);
-    if (!native_path.empty()) {
-        try {
-            guild::GgufFile gguf(native_path);
-            std::string d_err;
-            guild::model::ModelDescriptor parsed;
-            if (guild::model::ArchetypeRegistry::instance().describe_gguf(gguf, parsed, d_err)) {
-                desc = parsed;
-            }
-        } catch (...) {}
-    }
-    // setup.py writes these for a context past the trained one (393216, 524288): the rope is extended and the
-    // model's context grows with it.  Without them such a --max-context is refused, as before.
-    if (!rope_scaling.empty() && rope_scaling != "none") {
-        if (rope_scaling != "linear" && rope_scaling != "yarn") {
-            std::fprintf(stderr, "guild-generate: --rope-scaling takes none, linear or yarn\n");
-            return 2;
-        }
-        if (desc.rope.orig_ctx <= 0)
-            desc.rope.orig_ctx = (double) desc.attn.context_length;
-        const double factor = rope_scale > 0 ? rope_scale : std::max(1.0, (double) max_context / desc.rope.orig_ctx);
-        desc.rope.type = rope_scaling;
-        desc.rope.factor = factor;
-        desc.attn.context_length = (int64_t) std::llround(desc.rope.orig_ctx * factor);
-        std::fprintf(stderr, "guild-generate: rope %s x%.3g, context %lld (trained %.0f)\n", rope_scaling.c_str(),
-                     factor, (long long) desc.attn.context_length, desc.rope.orig_ctx);
-    } else if (rope_scale > 0 && rope_scale != 1) {
-        std::fprintf(stderr, "guild-generate: --rope-scale needs --rope-scaling linear or yarn\n");
-        return 2;
-    }
-
-    // Execution Plan
-    guild::memory::PlannerOptions popts;
-    popts.context_length = max_context;
-    popts.kv_format = guild::memory::kv_precision_from_string(kv_precision);
-    if (kv_host_only) {
-        popts.kv_mode = guild::memory::KvMode::HostOnly;
-    }
-    if (resident_budget_gib > 0) {
-        popts.resident_budget_gib = resident_budget_gib;
-    }
-    if (expert_cache != "auto") {
-        if (expert_cache == "off")
-            popts.gpu_cache_slots = 0;
-        else {
-            try {
-                popts.gpu_cache_slots = std::stoi(expert_cache);
-            } catch (...) {}
-        }
-    }
-    if (pcie_fraction >= 0)
-        popts.pcie_expert_fraction = pcie_fraction;
-    if (prefill != "auto") {
-        try {
-            popts.prefill_chunk = std::stoi(prefill);
-        } catch (...) {}
-    }
-    popts.spec_tokens = spec;
-    if (!std::isfinite(spec_min_p) || spec_min_p < 0 || spec_min_p > 1 || pool_workers < 0) {
-        std::fprintf(stderr, "--spec-min-p requires 0..1 and --pool-workers requires a nonnegative count\n");
-        return 2;
-    }
-    popts.spec_min_p = spec_min_p;
-    popts.pool_workers = pool_workers;
-
-    auto plan = guild::memory::MemoryPlanner::plan(desc, hw, popts);
-    if (!decode_strategy.empty())
-        plan.decode_strategy = decode_strategy; // checked by the model load
-    plan.mtp_optional = mtp_optional;
-
-    // Model Paths
-    ModelPaths paths;
-    paths.primary_model_path = native_path;
-    paths.pack_dir = pack_dir;
-    paths.expert_profile_path = profile_path;
-    paths.mtp_dir = mtp_dir;
-    paths.drama3_dir = drama3_dir;
-    paths.tokenizer_dir = tokenizer_dir;
-    paths.ple_gguf = ple_gguf;
-    paths.ple_io = ple_io;
-
-    std::string err_msg;
-    // The model and its session, an exception as an error: a VRAM shortfall can surface either way.
-    std::unique_ptr<GuildModel> model;
-    std::unique_ptr<GuildSession> session;
-    int64_t context = plan.context_length;
-    auto load = [&]() {
-        session.reset();
-        model.reset();
-        try {
-            model = GuildModel::load(paths, desc, plan, err_msg);
-            if (model) {
-                // the context the model holds, at most the one asked for (GLM-5.3-Flash's engine fits it to the VRAM)
-                const int64_t held = model->plan().context_length;
-                context = held > 0 ? std::min<int64_t>(plan.context_length, held) : plan.context_length;
-                session = model->create_session(context);
-                if (!session)
-                    err_msg = "session creation failed";
-            }
-        } catch (const std::exception& e) {
-            err_msg = e.what();
-        }
-        return model != nullptr && session != nullptr;
-    };
-    bool loaded = load();
-    // --mtp-optional (setup.py writes it for small cards): the MTP draft layer is dropped, not the start, when the
-    // VRAM does not hold it with the rest.  The model then drafts from the context (decode strategy auto).
-    if (!loaded && mtp_optional && !paths.mtp_dir.empty() && err_msg.find("out of memory") != std::string::npos) {
-        std::fprintf(stderr, "guild-generate: %s; --mtp-optional: loading again without the MTP draft layer\n",
-                     err_msg.c_str());
-        paths.mtp_dir.clear();
-        loaded = load();
-    }
-    if (!loaded) {
-        std::fprintf(stderr, "guild-generate: model load failed: %s\n", err_msg.c_str());
-        return 1;
-    }
+    guild::program::LoadedModel loaded;
+    if (const int rc = guild::program::load_model(mo, "guild-generate", loaded); rc != 0)
+        return rc;
+    auto& model = loaded.model;
+    auto& session = loaded.session;
+    const int64_t context = loaded.context;
 
     if (serve_mode) {
         std::cout << "READY " << context << " stop" << (model->is_speech_model() ? " speech" : "") << "\n"
