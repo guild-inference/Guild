@@ -78,6 +78,8 @@ public:
     /// Runs tokens[0 .. n) at positions pos0 .. pos0 + n - 1; `logits` (n_vocab floats, host) gets the last token's
     /// logits when it is not null.
     bool forward(const int32_t* tokens, int n, int64_t pos0, float* logits, std::string& err);
+    /// After forward() with logits: the last token's final hidden state, the head's input (n_embd floats, host).
+    bool last_hidden(float* host, std::string& err);
 
     /// Speculative decoding with the NextN block.  draft: the block's guess for the token after `last` (which sits at
     /// `pos`, not yet fed).  verify: runs tokens[0 .. n) (n <= 2: the last token and the draft) at pos0 and gives

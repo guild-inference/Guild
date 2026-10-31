@@ -1238,6 +1238,13 @@ bool GuildSession::score(const ScoreRequest& req, ScoreResult& result, std::stri
         error_msg = "the window's logits could not be read";
         return runtime_failure();
     }
+    if (req.want_hidden) {
+        result.hidden.resize(static_cast<size_t>(m_impl->g.n_embd));
+        if (!m_impl->ver->copy_hidden(0, result.hidden.data())) {
+            error_msg = "the window's hidden state could not be read";
+            return runtime_failure();
+        }
+    }
     // Committed, as generate's windows are: a window writes some state as it runs (Qwen3.8-Flash-Next's QSA indexer
     // appends the window's keys, which its commit rewinds and re-appends), so one left uncommitted would not be the
     // state after the last-but-one token it looks like.  The state is then after the whole prompt.

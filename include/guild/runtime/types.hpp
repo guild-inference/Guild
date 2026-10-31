@@ -76,10 +76,13 @@ struct ScoreRequest {
     /// > 0: the state after this many tokens is also kept as a checkpoint, so later prompts that begin with them
     /// read only the rest.  At most tokens.size() - 1 (the last token is read by the window that gives the logits).
     int64_t keep_prefix = 0;
+    /// Also return the last position's final hidden state: the output head's input, after the output norm.
+    bool want_hidden = false;
 };
 
 struct ScoreResult {
     std::vector<float> logits; ///< one per candidate, in their order (or the vocabulary's)
+    std::vector<float> hidden; ///< with want_hidden: n_embd floats
     int64_t cached_tokens = 0; ///< tokens taken from the live state or a checkpoint instead of being read
     int64_t read_tokens = 0;   ///< tokens read by this call (prefill and the last token's window)
     double prefill_ms = 0;     ///< reading the prompt up to its last token (and the checkpoint, if any)

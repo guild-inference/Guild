@@ -476,7 +476,8 @@ struct Glm5Engine::Impl {
     uint64_t vram = 0;
     std::string placement;
     std::unique_ptr<Pool> pool;
-    int caller_cpu = -1; // the core the pool leaves to the calling thread
+    int caller_cpu = -1;    // the core the pool leaves to the calling thread
+    int last_head_row = -1; // the row of hn that forward's head read last (last_hidden)
     double cpu_ms = 0.0;
     double phase_ms[4] = {0, 0, 0, 0}; // GUILD_GLM_TIMING: activations, gate/up, hidden, down
     double enqueue_ms = 0;             // GUILD_GLM_TIMING: the pipelined window's GPU launches
@@ -2556,6 +2557,8 @@ bool Glm5Engine::forward(const int32_t* tokens, int n, int64_t pos0, float* logi
             return false;
         if (logits && base + T == n && !m.head_rows(T - 1, 1, logits, err))
             return false;
+        if (logits && base + T == n)
+            m.last_head_row = T - 1;
         if (m.has_mtp && !m.mtp_catch_up(tokens + base, T, pos0 + base, err))
             return false;
         if (cudaStreamSynchronize(m.st) != cudaSuccess) {
@@ -2595,6 +2598,21 @@ bool Glm5Engine::draft(int32_t last, int64_t pos, int32_t& draft, std::string& e
         return false;
     }
     draft = m.h_arg[0];
+    return true;
+}
+
+bool Glm5Engine::last_hidden(float* host, std::string& err) {
+    Impl& m = *p_;
+    if (m.last_head_row < 0) {
+        err = "glm5: no head was read";
+        return false;
+    }
+    const size_t N = (size_t) m.g.n_embd;
+    if (cudaMemcpy(host, m.hn + (size_t) m.last_head_row * N, N * sizeof(float), cudaMemcpyDeviceToHost) !=
+        cudaSuccess) {
+        err = "glm5: the hidden state could not be read";
+        return false;
+    }
     return true;
 }
 

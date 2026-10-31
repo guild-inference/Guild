@@ -92,6 +92,9 @@ public:
     bool run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool, void* user, int32_t* out, std::string& err);
     /// Diagnostics: row `t` of the last window's head logits (n_vocab floats) to the host. Valid after run().
     bool copy_logits(int t, float* host) const;
+    /// Row `t` of the last window's final hidden state - the head's input, after the output norm (n_embd floats) -
+    /// to the host.  Valid after run().
+    bool copy_hidden(int t, float* host) const;
     void debug_dump_layer0() const;
     int64_t vocab() const {
         return next_ ? next_->vocab() : n_vocab_;
@@ -499,6 +502,9 @@ private:
     float* dbg_l0_R_ = nullptr;
     float* dbg_l0_post_norm_ = nullptr;
     float* dbg_l0_logits_ = nullptr;
+    // GUILD_VERIFY_DUMP_RESIDUAL=<file> (diagnostics): row 0's residual R and pending FFN write bo after each layer,
+    // [n_layers][n_embd] each, written to the file as the residual stream (R + bo) after every window
+    float *dbg_res_R_ = nullptr, *dbg_res_bo_ = nullptr;
     float* dbg_l0_shared_ = nullptr;
 };
 

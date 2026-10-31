@@ -412,8 +412,17 @@ bool glm5_score(GuildModel::Impl& m, const ScoreRequest& req, ScoreResult& res, 
         }
         m.glm_ctx_logits = logits;
         res.read_tokens = (int64_t) (prompt.size() - start);
+        if (req.want_hidden) {
+            res.hidden.resize((size_t) eng.geometry().n_embd);
+            if (!eng.last_hidden(res.hidden.data(), err))
+                return false;
+        }
     } else {
         logits = m.glm_ctx_logits;
+        if (req.want_hidden) { // the engine's state is after the prompt: read its last token again for the row
+            err = "glm5: the hidden state of a prompt already read whole is not kept; reset the session";
+            return false;
+        }
     }
     res.prefill_ms = ms_since(t0);
     if (req.candidates.empty()) {

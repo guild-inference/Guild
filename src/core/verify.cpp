@@ -607,6 +607,10 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
         dbg_l0_post_norm_ = b.take<float>(N);
         dbg_l0_logits_ = b.take<float>(g.n_expert);
         dbg_l0_shared_ = b.take<float>(N);
+        if (std::getenv("GUILD_VERIFY_DUMP_RESIDUAL") != nullptr) {
+            dbg_res_R_ = b.take<float>((uint64_t) g.n_layers * N);
+            dbg_res_bo_ = b.take<float>((uint64_t) g.n_layers * N);
+        }
     };
     Bump count;
     carve(count);
@@ -1641,6 +1645,10 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         } else if (cvec().covers(l)) {
             cvec_apply(Rt(tb), l, n, HC * N, bo_ + tb * N, N, inj2_ + tb * HC, HC, true, cs);
         }
+        if (dbg_res_R_ != nullptr && grp == 0 && g.hc == 1) { // row 0's residual and pending FFN write after layer l
+            cudaMemcpyAsync(dbg_res_R_ + (size_t) l * N, Rt(0), (size_t) N * 4, cudaMemcpyDeviceToDevice, cs);
+            cudaMemcpyAsync(dbg_res_bo_ + (size_t) l * N, bo_, (size_t) N * 4, cudaMemcpyDeviceToDevice, cs);
+        }
         return true;
     };
 
@@ -2262,6 +2270,19 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
     }
     drain.finished = true;
     commit_pending_ = false;
+    if (dbg_res_R_ != nullptr) { // the residual stream after each layer: R + bo, the last layer's bo already in R
+        const size_t L = (size_t) g_->n_layers, N = (size_t) g_->n_embd;
+        std::vector<float> r(L * N), bo(L * N);
+        cudaMemcpy(r.data(), dbg_res_R_, L * N * 4, cudaMemcpyDeviceToHost);
+        cudaMemcpy(bo.data(), dbg_res_bo_, L * N * 4, cudaMemcpyDeviceToHost);
+        for (size_t l = 0; l + 1 < L; ++l)
+            for (size_t i = 0; i < N; ++i)
+                r[l * N + i] += bo[l * N + i];
+        if (std::FILE* f = std::fopen(std::getenv("GUILD_VERIFY_DUMP_RESIDUAL"), "wb")) {
+            std::fwrite(r.data(), 4, r.size(), f);
+            std::fclose(f);
+        }
+    }
     progress_at("verify window: waiting for the expert copies", (int64_t) T);
     if (copy_used_) {
         cudaStreamSynchronize(copy_); // no host function of this window may raise flag B in the next one
@@ -3108,6 +3129,15 @@ bool Verifier::copy_logits(int t, float* host) const {
         return false;
     return cudaMemcpy(host, head_logits_ + (size_t) t * (size_t) n_vocab_, (size_t) n_vocab_ * sizeof(float),
                       cudaMemcpyDeviceToHost) == cudaSuccess;
+}
+
+bool Verifier::copy_hidden(int t, float* host) const {
+    if (next_ != nullptr)
+        return next_->copy_hidden(t, host); // a layer split: the head's input is on the last stage
+    if (head_mixed_ == nullptr || host == nullptr || t < 0 || g_ == nullptr)
+        return false;
+    const size_t n = (size_t) g_->n_embd;
+    return cudaMemcpy(host, head_mixed_ + (size_t) t * n, n * sizeof(float), cudaMemcpyDeviceToHost) == cudaSuccess;
 }
 
 void Verifier::debug_dump_layer0() const {
