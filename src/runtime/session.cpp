@@ -1097,8 +1097,7 @@ bool GuildSession::generate(const GenerationRequest& req, TokenStreamCallback on
 
 // Scoring: the prompt is read as generate reads it (the reused prefix, then the prefill engines or, for a short tail,
 // the verifier's windows), with an optional checkpoint at keep_prefix on the way; its last token then runs alone in
-// one verify window, whose head row is the next-token logits.  That window is not committed: the state stays after
-// the last-but-one token, which is where the next prompt of the same beginning picks up.
+// one verify window, whose head row is the next-token logits, and is committed: the state is left after the prompt.
 bool GuildSession::score(const ScoreRequest& req, ScoreResult& result, std::string& error_msg) try {
     result = ScoreResult{};
     error_msg.clear();
@@ -1239,6 +1238,13 @@ bool GuildSession::score(const ScoreRequest& req, ScoreResult& result, std::stri
         error_msg = "the window's logits could not be read";
         return runtime_failure();
     }
+    // Committed, as generate's windows are: a window writes some state as it runs (Qwen3.8-Flash-Next's QSA indexer
+    // appends the window's keys, which its commit rewinds and re-appends), so one left uncommitted would not be the
+    // state after the last-but-one token it looks like.  The state is then after the whole prompt.
+    if (!m_impl->ver->commit(1, error_msg))
+        return runtime_failure();
+    if (kv_cache_enabled)
+        m_impl->live_committed_tokens = req.tokens;
     if (req.candidates.empty()) {
         result.logits = std::move(row);
     } else {
