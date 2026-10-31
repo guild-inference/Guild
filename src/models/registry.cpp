@@ -119,15 +119,16 @@ void ModelRegistry::init_builtins() {
     // 3. StartLux-Decision-v1-35B-A3B: a decision model (typed questions answered from next-token logits by
     // decision_run), Ornith's Qwen3.5-MoE topology.  No GGUF is published for this size: the safetensors are
     // converted with llama.cpp's Qwen3.5-MoE converter and llama-quantize, then packed (tools/iq_pack.py).
-    // CC BY-NC 4.0: not for commercial serving.
+    // Q8_0 is the quant whose probabilities stay within 0.01 of the reference's (Q6_K and Q4_K_M move them by up to
+    // 0.03 and 0.06).  CC BY-NC 4.0: not for commercial serving.
     {
         ModelManifest m;
         m.name = "startlux-decision:35b-a3b";
         m.aliases = {"startlux-decision", "startlux-decision-35b-a3b", "StartLux-Decision-v1-35B-A3B"};
         m.architecture = "qwen35moe";
-        m.quantization = "Q4_K_M";
+        m.quantization = "Q8_0";
         m.source = "startlux-models/StartLux-Decision-v1-35B-A3B";
-        m.description = "StartLux Decision v1 35B-A3B MoE decision model (Q4_K_M, 256 routed experts, 8 active): "
+        m.description = "StartLux Decision v1 35B-A3B MoE decision model (Q8_0, 256 routed experts, 8 active): "
                         "typed choice / yes-no / score questions, probabilities from logits";
         m.context_length = 262144;
         m.license = "cc-by-nc-4.0";
@@ -150,18 +151,18 @@ void ModelRegistry::init_builtins() {
         m.expert_blob_bytes = 1907936;
 
         ModelFile s1;
-        s1.name = "StartLux-Decision-35B-A3B-Q4_K_M.gguf";
+        s1.name = "StartLux-Decision-35B-A3B-Q8_0.gguf";
         s1.role = "primary";
-        const char* local = "/home/ubuntu/models/startlux-decision-35b-a3b-gguf/StartLux-Decision-35B-A3B-Q4_K_M.gguf";
+        const char* local = "/home/ubuntu/models/startlux-decision-35b-a3b-gguf/StartLux-Decision-35B-A3B-Q8_0.gguf";
         if (std::filesystem::exists(local)) {
             s1.local_path = local;
             std::error_code ec;
             s1.size_bytes = std::filesystem::file_size(local, ec);
         }
         m.files.push_back(s1);
-        if (std::filesystem::exists("/home/ubuntu/models/startlux-decision-35b-a3b-gguf/pack-Q4_K_M")) {
-            m.metadata["pack_dir"] = "/home/ubuntu/models/startlux-decision-35b-a3b-gguf/pack-Q4_K_M";
-            m.metadata["tokenizer_dir"] = "/home/ubuntu/models/startlux-decision-35b-a3b-gguf/tokenizer";
+        if (std::filesystem::exists("/home/ubuntu/models/startlux-decision-35b-a3b-gguf/pack-Q8_0")) {
+            m.metadata["pack_dir"] = "/home/ubuntu/models/startlux-decision-35b-a3b-gguf/pack-Q8_0";
+            m.metadata["tokenizer_dir"] = "/home/ubuntu/models/startlux-decision-35b-a3b-gguf/pack-Q8_0/tokenizer";
         }
 
         m.expected_size_bytes = m.total_size_bytes();

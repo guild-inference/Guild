@@ -77,6 +77,7 @@ int against_reference(const std::string& tok_dir, const std::string& requests, c
     std::string err;
     if (!tok.load(tok_dir, err) || !tmpl.load(tok_dir, err)) {
         std::printf("FAIL tokenizer %s: %s\n", tok_dir.c_str(), err.c_str());
+        ++fails;
         return 1;
     }
     std::map<std::string, JsonValue> reqs;
@@ -128,6 +129,10 @@ int against_reference(const std::string& tok_dir, const std::string& requests, c
         }
     }
     std::printf("%d of %d prompts token-identical to the reference\n", same, questions);
+    if (questions == 0) {
+        std::printf("FAIL no reference questions read from %s\n", reference.c_str());
+        ++fails;
+    }
     return 0;
 }
 
