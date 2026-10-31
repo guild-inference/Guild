@@ -1179,10 +1179,21 @@ if(NOT GUILD_BUILTIN_CPU)
   target_compile_definitions(guild_runtime PRIVATE GUILD_NO_BUILTIN_FULL_CPU=1)
 endif()
 
+# typed decisions from a decision checkpoint's next-token logits (StartLux-Decision): rendering and readout
+add_library(guild_decision STATIC src/decision/decision.cpp)
+target_link_libraries(guild_decision PUBLIC guild_runtime guild_warnings)
+
 if(GUILD_ENABLE_CUDA OR GUILD_ENABLE_HIP)
+  # the model-loading options the command-line runners share
+  add_library(guild_program_options STATIC src/program/model_options.cpp)
+  target_link_libraries(guild_program_options PUBLIC guild_runtime guild_cli guild_model guild_memory guild_artifact guild_warnings)
+
   add_executable(guild-generate src/program/generate.cpp)
   target_include_directories(guild-generate PRIVATE ${_guild_gpu_include_directories})
-  target_link_libraries(guild-generate PRIVATE guild_runtime guild_cli guild_model guild_memory guild_artifact guild_warnings)
+  target_link_libraries(guild-generate PRIVATE guild_program_options guild_runtime guild_cli guild_model guild_memory guild_artifact guild_warnings)
+
+  add_executable(decision_run src/program/decision_run.cpp)
+  target_link_libraries(decision_run PRIVATE guild_decision guild_program_options)
 endif()
 
 # ---- guild_server (Native HTTP & OpenAI serving layer) --------------------
@@ -1279,6 +1290,17 @@ if(GUILD_BUILD_TESTS)
     add_test(NAME glm5_ctx32k_test COMMAND glm5_run ${GUILD_GLM5_MODEL} text:${GUILD_GLM5_LONG_TEXT} 64 --spec
       --ctx 32768 --prompt-tokens 32000 --tokenizer ${GUILD_GLM5_TOKENIZER_DIR} --ab GUILD_GLM_IDX_LEGACY=0,1
       --reps 1)
+  endif()
+  # StartLux-Decision prompts: Python's json.dumps / state_text cases always; with the checkpoint's tokenizer export,
+  # every question of the fixture rendered and tokenized as the reference package does
+  add_executable(decision_render_test tests/core/decision_render_test.cpp)
+  target_link_libraries(decision_render_test PRIVATE guild_decision guild_server)
+  add_test(NAME decision_python_text_test COMMAND decision_render_test)
+  set(GUILD_STARTLUX_TOKENIZER_DIR "" CACHE PATH "StartLux-Decision tokenizer export (tools/guild_tokenizer.py)")
+  if(GUILD_STARTLUX_TOKENIZER_DIR)
+    add_test(NAME decision_render_test COMMAND decision_render_test ${GUILD_STARTLUX_TOKENIZER_DIR}
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/startlux_decision/requests.jsonl
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/startlux_decision/reference_bf16.jsonl)
   endif()
   add_executable(tokenizer_parity_test tests/core/tokenizer_parity_test.cpp)
   target_link_libraries(tokenizer_parity_test PRIVATE guild_runtime guild_server guild_cli)

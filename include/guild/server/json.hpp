@@ -27,6 +27,7 @@ public:
     JsonType type = JsonType::Null;
     bool bool_val = false;
     double num_val = 0.0;
+    std::string num_text; ///< a parsed number's literal as written (1 and 1.0 stay apart; big integers keep digits)
     std::string str_val;
     std::vector<JsonValue> arr_val;
     std::vector<std::pair<std::string, JsonValue>> obj_val;
@@ -412,6 +413,7 @@ private:
         try {
             double d = std::stod(num_str);
             val = JsonValue(d);
+            val.num_text = num_str;
             return true;
         } catch (...) {
             err = "Failed to parse number '" + num_str + "'";
