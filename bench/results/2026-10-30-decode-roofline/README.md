@@ -148,7 +148,7 @@ context (S1G, round 1), mostly the DSA attention and the indexer. G3's indexer k
 | pre-round-1 | 69.81 | 30.57 | 73.65 | 41.38 | 2.13 / 3.05 | 6.74 / 7.21 | 2, not alternated |
 | round 1 | 65.52 | 32.56 | 68.59 | 44.44 | 2.13 / 3.05 | 6.67 / 7.13 | 3, alternated with final |
 | round2a | 64.06 | 33.87 | 67.26 | 44.26 | 2.17 / 2.98 | 6.49 / 7.03 | 2, alternated with final |
-| final | **63.33** | **34.26** | **66.45** | **44.80** | 2.17 / 2.98 | 6.46 / 7.00 | 5 |
+| final | **63.33** | **34.26** | **66.45** | **44.80** | 2.17 / 2.98 | 6.46 / 7.00 | 3, alternated with round 1 (all 5: 63.35 / 34.24 / 66.46 / 44.79) |
 | final, every round-2 switch set back | 65.53 | 32.55 | 68.59 | 44.43 | 2.13 / 3.05 | 6.66 / 7.14 | 1 |
 | final, one row group (`GUILD_SPEC_SPLIT=0`) | 67.70 | 32.04 | 73.78 | 40.35 | 2.17 / 2.98 | | 1 |
 
@@ -267,7 +267,8 @@ expert) and leaves the top-k and the doorbell alone on the GPU.
 
 **Q4, the NUMA-split expert arenas out of NUMA balancing** (Guild `bc7f565`). After placement the resident arena and
 the repacked IQ3_S rows get an `MPOL_LOCAL` policy, which the kernel's balancer skips. It had been migrating them:
-20-40 thousand hint faults a second during decode, and ~9 GB of pages moved during a load (S1).
+20-40 thousand hint faults a second during decode, with bursts of 400 thousand (Q4's lane, `/proc/vmstat`), and ~9 GB
+of pages moved during a load (S1).
 - Switch: `GUILD_EXPERT_AUTONUMA=1`.
 - Alone (2 pairs, the lane's CPU-kernel half on in both arms): 70.66 -> 68.93 ms (prose), 73.96 -> 72.65 (code);
   CPU dispatch 28.1 -> 23.4 and 32.1 -> 25.9 ms a window. GPU waits for the CPU 1.96 -> 0.34 ms a window by the
@@ -343,9 +344,10 @@ all-worker barrier; the mutex and condvar are used only when a worker actually s
 quantized by the item that completes each 256-row block (the separate phase is gone), Q8_K quantization has an
 AVX-512 path (0.7 instead of 4.8 ns a value, the same bytes as `quantize_row_q8_K_ref`), down items are 16 rows, and
 the last 16 items of each queue are split in four.
-- Lane, 6 + 9 runs in two batches: CPU experts 73.9 -> 68.1 and 72.2 -> 67.6 ms a step, p90 step ~91 -> ~85 ms,
-  +3.9% and +2.3% tok/s; second run (3 pairs) 73.3 -> 68.1 ms, +3.1%. Phase totals over a run: activations ~300 ->
-  ~115 ms, hidden ~225 -> 1 ms, down ~4,080 -> ~3,630 ms.
+- Lane, 6 + 9 runs in two batches: CPU experts 73.9 -> 68.1 ms a step with `0e47c38` alone, and 72.2 -> 67.8 with
+  both commits (67.6 with `0e47c38` alone), p90 step ~91 -> ~85 ms, +3.9% and +2.3% tok/s; second run (both
+  commits, 3 pairs) 73.3 -> 68.1 ms, +3.1%. Phase totals over a run (`0e47c38` alone): activations ~300 -> ~115 ms,
+  hidden ~225 -> 1 ms, down ~4,080 -> ~3,630 ms.
 - Bits: ids identical in every run; the AVX-512 Q8_K against the reference on 784,095 engine rows and 300,000 x 16
   test blocks (ties, infinities, NaNs, denormals): 0 differ; the fused quantization against a whole-row
   `from_float`: 12,767 calls, 0 bytes differ; a standalone stress test of the pool (200,000 phases in each of 6
@@ -473,7 +475,8 @@ snapshot) and in a second check (separate processes).
 
 Cost of the exact path: 3.1% (C1, 3 pairs before G1: 21.49-21.57 against 20.81-20.85 tok/s, verify +4.1 ms a step);
 about 5% after G1 (one run: 20.89 against 21.95-22.07). `GUILD_GLM_PIPE=0` (one group of two tokens) is not exact
-either; its 2-token path differs at the first row and is not the default.
+either: the first window's first row is bitwise equal, its second row differs and so does every row after it (C1).
+It is not the default.
 
 ### Outputs that changed on purpose
 
