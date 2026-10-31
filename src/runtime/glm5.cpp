@@ -108,6 +108,31 @@ int32_t sample(std::vector<float>& logits, const GenerationRequest& req, const s
     return c[keep - 1].second;
 }
 
+// Where a prompt's reading starts: the live context, or the snapshot (restored), when it is a prefix of `prompt` -
+// the whole prompt only when its last logits are known - else nothing (the engine and the snapshot reset).
+bool resume(GuildModel::Impl& m, const std::vector<int32_t>& prompt, size_t& start, std::string& err) {
+    core::Glm5Engine& eng = *m.glm;
+    start = 0;
+    const size_t live = common_prefix(m.glm_ctx, prompt), snap = common_prefix(m.glm_snap, prompt);
+    if (live == m.glm_ctx.size() && live > 0 && (live < prompt.size() || !m.glm_ctx_logits.empty())) {
+        start = live;
+    } else if (snap == m.glm_snap.size() && snap > 0 && (snap < prompt.size() || !m.glm_snap_logits.empty())) {
+        if (!eng.restore(err))
+            return false;
+        start = snap;
+        m.glm_ctx = m.glm_snap;
+        m.glm_ctx_logits = m.glm_snap_logits;
+    } else {
+        eng.reset();
+        m.glm_ctx.clear();
+        m.glm_ctx_logits.clear();
+        // the snapshot's K/V rows are about to be overwritten from 0: it no longer describes anything
+        m.glm_snap.clear();
+        m.glm_snap_logits.clear();
+    }
+    return true;
+}
+
 } // namespace
 
 bool glm5_is_model(const std::string& gguf_path) {
@@ -168,23 +193,8 @@ bool glm5_generate(GuildModel::Impl& m, const GenerationRequest& req, const std:
     // where to start: the live context, the snapshot (after the last prompt's <|assistant|>), or nothing
     std::vector<float> logits((size_t) V);
     size_t start = 0;
-    const size_t live = common_prefix(m.glm_ctx, prompt), snap = common_prefix(m.glm_snap, prompt);
-    if (live == m.glm_ctx.size() && live > 0 && (live < prompt.size() || !m.glm_ctx_logits.empty())) {
-        start = live;
-    } else if (snap == m.glm_snap.size() && snap > 0 && (snap < prompt.size() || !m.glm_snap_logits.empty())) {
-        if (!eng.restore(err))
-            return false;
-        start = snap;
-        m.glm_ctx = m.glm_snap;
-        m.glm_ctx_logits = m.glm_snap_logits;
-    } else {
-        eng.reset();
-        m.glm_ctx.clear();
-        m.glm_ctx_logits.clear();
-        // the snapshot's K/V rows are about to be overwritten from 0: it no longer describes anything
-        m.glm_snap.clear();
-        m.glm_snap_logits.clear();
-    }
+    if (!resume(m, prompt, start, err))
+        return false;
     tel.cached_prompt_tokens = (int) start;
     tel.prompt_tokens = (int) prompt.size();
 
@@ -354,6 +364,65 @@ bool glm5_generate(GuildModel::Impl& m, const GenerationRequest& req, const std:
     tel.decode_ms = ms_since(t1);
     tel.decode_tok_s = produced > 1 ? (produced - 1) * 1000.0 / std::max(1e-3, tel.decode_ms) : 0.0;
     tel.finish_reason = aborted ? "cancel" : eos ? "stop" : "length";
+    return true;
+}
+
+// GuildSession::score on GLM-5.3-Flash: the prompt read as glm5_generate reads it (resumed from the live context or the
+// snapshot), with the snapshot moved to keep_prefix when one is asked for; the engine reads every prompt token, so
+// the live context ends after the prompt and its logits are kept for a repeat.
+bool glm5_score(GuildModel::Impl& m, const ScoreRequest& req, ScoreResult& res, std::string& err,
+                std::atomic<bool>& cancelled) {
+    core::Glm5Engine& eng = *m.glm;
+    const int64_t V = eng.geometry().n_vocab;
+    const std::vector<int32_t>& prompt = req.tokens;
+    if ((int64_t) prompt.size() > eng.max_context()) {
+        err = "prompt of " + std::to_string(prompt.size()) + " tokens does not fit the context of " +
+              std::to_string(eng.max_context());
+        return false;
+    }
+    const auto t0 = Clock::now();
+    std::vector<float> logits((size_t) V);
+    size_t start = 0;
+    if (!resume(m, prompt, start, err))
+        return false;
+    res.cached_tokens = (int64_t) start;
+    const size_t cut = req.keep_prefix > (int64_t) start ? (size_t) req.keep_prefix : prompt.size();
+    if (start < prompt.size()) {
+        for (size_t at = start; at < prompt.size();) {
+            if (cancelled.load()) { // the state matches glm_ctx; its logits are unknown
+                err = "cancelled";
+                return false;
+            }
+            const size_t end = at < cut ? cut : prompt.size();
+            const int n = (int) std::min<size_t>(eng.max_window(), end - at);
+            const bool last = at + (size_t) n == prompt.size();
+            if (!eng.forward(&prompt[at], n, (int64_t) at, last ? logits.data() : nullptr, err)) {
+                m.ready->store(false);
+                return false;
+            }
+            at += (size_t) n;
+            m.glm_ctx.assign(prompt.begin(), prompt.begin() + (std::ptrdiff_t) at);
+            m.glm_ctx_logits.clear();
+            if (at == cut && cut < prompt.size()) {
+                if (!eng.snapshot(err))
+                    return false;
+                m.glm_snap = m.glm_ctx;
+                m.glm_snap_logits.clear();
+            }
+        }
+        m.glm_ctx_logits = logits;
+        res.read_tokens = (int64_t) (prompt.size() - start);
+    } else {
+        logits = m.glm_ctx_logits;
+    }
+    res.prefill_ms = ms_since(t0);
+    if (req.candidates.empty()) {
+        res.logits = std::move(logits);
+    } else {
+        res.logits.reserve(req.candidates.size());
+        for (int32_t id : req.candidates)
+            res.logits.push_back(logits[(size_t) id]);
+    }
     return true;
 }
 

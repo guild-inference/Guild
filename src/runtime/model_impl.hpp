@@ -531,6 +531,8 @@ bool glm5_load(GuildModel::Impl& m, const ModelPaths& paths, const memory::Execu
 bool glm5_generate(GuildModel::Impl& m, const GenerationRequest& req, const std::vector<int64_t>& prompt,
                    TokenStreamCallback on_token, RuntimeTelemetry& tel, std::string& err,
                    PrefillProgressCallback on_prefill, std::atomic<bool>& cancelled);
+bool glm5_score(GuildModel::Impl& m, const ScoreRequest& req, ScoreResult& res, std::string& err,
+                std::atomic<bool>& cancelled);
 
 } // namespace guild::runtime
 

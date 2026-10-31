@@ -24,6 +24,13 @@ bool GuildSession::generate(const GenerationRequest& req, TokenStreamCallback on
     return false;
 }
 
+bool GuildSession::score(const ScoreRequest& req, ScoreResult& result, std::string& error_msg) {
+    (void) req;
+    result = ScoreResult{};
+    error_msg = "Guild GPU runtime is disabled in CPU-only build";
+    return false;
+}
+
 void GuildSession::reset() {
 }
 void GuildSession::ingest_retrieval_tokens(const int32_t* ids, size_t n) {

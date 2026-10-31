@@ -69,6 +69,23 @@ struct GenerationRequest {
     std::shared_ptr<std::atomic<bool>> cancel_flag;
 };
 
+/// Scoring a prompt without generating (GuildSession::score): the next-token logits at its last position.
+struct ScoreRequest {
+    std::vector<int32_t> tokens;     ///< the prompt
+    std::vector<int32_t> candidates; ///< the token ids whose logits come back (empty: the whole vocabulary)
+    /// > 0: the state after this many tokens is also kept as a checkpoint, so later prompts that begin with them
+    /// read only the rest.  At most tokens.size() - 1 (the last token is read by the window that gives the logits).
+    int64_t keep_prefix = 0;
+};
+
+struct ScoreResult {
+    std::vector<float> logits; ///< one per candidate, in their order (or the vocabulary's)
+    int64_t cached_tokens = 0; ///< tokens taken from the live state or a checkpoint instead of being read
+    int64_t read_tokens = 0;   ///< tokens read by this call (prefill and the last token's window)
+    double prefill_ms = 0;     ///< reading the prompt up to its last token (and the checkpoint, if any)
+    double window_ms = 0;      ///< the last token's window and the logits' copy
+};
+
 /// A voice to clone: its transcript, and its codes ([frames][10], GuildModel::encode_voice) or its audio (mono
 /// samples in [-1, 1] at `sample_rate`; synthesize encodes it, resampled to 44.1 kHz as torchaudio does)
 struct SpeechReference {
