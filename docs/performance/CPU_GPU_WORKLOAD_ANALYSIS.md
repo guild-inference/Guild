@@ -634,6 +634,15 @@ same kernel calls, so outputs are unchanged. `GUILD_EXPERT_NUMA=interleave` (or
 their codebook lookups. See
 [2026-10-24-numa-iq3s](../../bench/results/2026-10-24-numa-iq3s/README.md).
 
+Since 2026-10-30 the split arena and the repacked IQ3_S rows also get an
+`MPOL_LOCAL` policy once they are placed, which keeps the kernel's automatic
+NUMA balancing from migrating them; `GUILD_EXPERT_AUTONUMA=1` is the earlier
+behaviour. With the balancer free to move them, a Qwen decode bench saw 83,000
+to 133,000 hint faults a second and 1.0-4.3 GB of pages migrated (system-wide
+counters); with the policy, 5,000 to 14,000 and 5-70 MB, and Qwen's decode
+windows were 1.3 to 1.7 ms shorter. See
+[2026-10-30-decode-roofline](../../bench/results/2026-10-30-decode-roofline/README.md).
+
 ## 9. CPU streaming, instruction count, and frequency
 
 ### Real-expert microbenchmark shape

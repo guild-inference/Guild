@@ -6,6 +6,12 @@ Measured 2026-10-25 on this PC: Ubuntu, two Xeon Gold 6130 (2 NUMA nodes, 32 cor
 at 629817c). The model is [unsloth/GLM-5.3-Flash-GGUF](https://huggingface.co/unsloth/GLM-5.3-Flash-GGUF), UD-IQ4_XS
 (5 shards, 147 GiB). The reference is llama.cpp at 86ebfef (the glm5next branch), on the CPU.
 
+## Update 2026-10-30: 32k tokens of context, the CPU expert pool, the indexer
+
+Measured in [2026-10-30-decode-roofline](../2026-10-30-decode-roofline/README.md): `--ctx 32768` now holds 32,768
+tokens on the 8 GB card (four shared experts move to their CPU copies), the CPU experts take 68.4 instead of 72.6 ms
+a step (21.36 -> 21.80 tok/s, 3 alternated pairs), and decode after a 32,000-token prompt runs at 18.2 tok/s.
+
 ## Update 2026-10-27: the GPU and the CPU at once
 
 Measured on the same PC at 0430a78 + 08c36dc (feat/glm5), with other users' jobs on the box (load average ~20):

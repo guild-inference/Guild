@@ -128,6 +128,12 @@ are identical.
 - GLM-5.3-Flash's own staged Q6_K / Q8_0 kernels against these at its shapes: within 3% either way (GLM's 2% faster at
   one column, these slightly faster at two), so GLM keeps its own.
 
+## Later
+
+The hyper-connection read, the router, the verify head and the rest of Qwen's decode window were taken further on
+2026-10-27/28 and 2026-10-30, against the memory roofline:
+[2026-10-30-decode-roofline](../2026-10-30-decode-roofline/README.md).
+
 ## How to reproduce
 
 ```bash
