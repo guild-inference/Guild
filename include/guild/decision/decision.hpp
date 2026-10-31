@@ -35,7 +35,13 @@ struct Config {
     int max_options = 26;                      ///< options a prompt can list
     int wide_group = 25, wide_keep = 3;        ///< a wider choice: groups of about this size, the top `keep` of each
     double wide_residual = 1e-3;               ///< the probability mass the options left out of the final round share
+    /// The letters' rows of the checkpoint's output head ([26][n_embd] float32, decision_letter_rows.f32 beside
+    /// decision_config.json; tools/decision_letter_rows.py).  When present the letter logits are the final hidden
+    /// state times these rows in double precision, as model.py reads them (h.float() @ letter_rows.T), instead of the
+    /// engine's quantized head over the quantized hidden state.
+    std::vector<float> letter_rows;
 };
+/// Reads decision_config.json and, beside it, decision_letter_rows.f32 when there is one
 bool load_config(const std::string& path, Config& cfg, std::string& err);
 
 struct Option {

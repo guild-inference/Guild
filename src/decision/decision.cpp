@@ -623,6 +623,20 @@ bool load_config(const std::string& path, Config& cfg, std::string& err) {
         err = path + ": letter_token_ids must list A..Z, max_options_per_pass 2..26, wide_choice group >= 2";
         return false;
     }
+    const size_t slash = path.find_last_of('/');
+    const std::string rows_path =
+        (slash == std::string::npos ? std::string() : path.substr(0, slash + 1)) + "decision_letter_rows.f32";
+    if (std::ifstream rf{rows_path, std::ios::binary}) {
+        rf.seekg(0, std::ios::end);
+        const std::streamoff bytes = rf.tellg();
+        rf.seekg(0);
+        if (bytes <= 0 || bytes % (26 * 4) != 0) {
+            err = rows_path + ": not [26][n_embd] float32";
+            return false;
+        }
+        cfg.letter_rows.resize((size_t) bytes / 4);
+        rf.read(reinterpret_cast<char*>(cfg.letter_rows.data()), bytes);
+    }
     return true;
 }
 
@@ -860,10 +874,26 @@ bool Decider::logits(const std::vector<Row>& rows, std::vector<std::vector<float
         sr.candidates.assign(cfg_.letter_ids.begin(),
                              cfg_.letter_ids.begin() + (std::ptrdiff_t) rows[i].options.size());
         sr.keep_prefix = i == 0 ? common : 0;
+        sr.want_hidden = !cfg_.letter_rows.empty();
         runtime::ScoreResult res;
         if (!session_.score(sr, res, err))
             return false;
         out[i] = std::move(res.logits);
+        if (sr.want_hidden) { // the exact letter rows over the fp32 hidden state (model.py: h.float() @ letter_rows.T)
+            const size_t n = cfg_.letter_rows.size() / 26;
+            if (res.hidden.size() != n) {
+                err = "decision_letter_rows.f32 is for a model of " + std::to_string(n) +
+                      " hidden units, this one has " + std::to_string(res.hidden.size());
+                return false;
+            }
+            for (size_t k = 0; k < out[i].size(); ++k) {
+                double acc = 0;
+                const float* w = cfg_.letter_rows.data() + k * n;
+                for (size_t j = 0; j < n; ++j)
+                    acc += (double) res.hidden[j] * (double) w[j];
+                out[i][k] = (float) acc;
+            }
+        }
         usage.input_tokens += (int64_t) enc[i].size();
         usage.cached_tokens += res.cached_tokens;
         usage.prefill_ms += res.prefill_ms;
