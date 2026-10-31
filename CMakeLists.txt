@@ -1303,7 +1303,18 @@ if(GUILD_BUILD_TESTS)
   if(GUILD_STARTLUX_TOKENIZER_DIR)
     add_test(NAME decision_render_test COMMAND decision_render_test ${GUILD_STARTLUX_TOKENIZER_DIR}
       ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/startlux_decision/requests.jsonl
-      ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/startlux_decision/reference_bf16.jsonl)
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/startlux_decision/reference_fp32.jsonl)
+  endif()
+  # The gate on the GPU (opt-in: the converted model and its pack given): decision_run on the fixture's requests,
+  # every answer within 0.01 of the reference package's fp32 probabilities with the same top answer
+  set(GUILD_STARTLUX_MODEL "" CACHE FILEPATH "StartLux-Decision GGUF (Q8_0) for decision_gate_test")
+  set(GUILD_STARTLUX_PACK "" CACHE PATH "Its pack (tools/iq_pack.py) for decision_gate_test")
+  if(TARGET decision_run AND GUILD_STARTLUX_MODEL AND GUILD_STARTLUX_PACK)
+    find_package(Python3 COMPONENTS Interpreter)
+    add_test(NAME decision_gate_test COMMAND ${CMAKE_COMMAND}
+      -DRUN=$<TARGET_FILE:decision_run> -DMODEL=${GUILD_STARTLUX_MODEL} -DPACK=${GUILD_STARTLUX_PACK}
+      -DPYTHON=${Python3_EXECUTABLE} -DSRC=${CMAKE_CURRENT_SOURCE_DIR} -DOUT=${CMAKE_CURRENT_BINARY_DIR}
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/startlux_decision/gate.cmake)
   endif()
   add_executable(tokenizer_parity_test tests/core/tokenizer_parity_test.cpp)
   target_link_libraries(tokenizer_parity_test PRIVATE guild_runtime guild_server guild_cli)
