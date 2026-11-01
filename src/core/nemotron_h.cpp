@@ -127,6 +127,11 @@ struct NemotronHEngine::Impl {
     std::vector<int32_t> win_tok;
     int64_t win_pos = 0;
     int win_n = 0;
+    // the kept rows of the last verify window that the MTP block has not read yet (accept() leaves them to the next
+    // draft's first step, one pass for both): their tokens, from cell wait_pos; their hidden rows are hn's first ones
+    std::vector<int32_t> wait_tok;
+    int64_t wait_pos = 0;
+    bool flush_wait(std::string& err);
 
     ~Impl() {
         if (st)
@@ -821,6 +826,17 @@ bool NemotronHEngine::Impl::mtp_catch_up(const int32_t* tokens, const float* emb
     return true;
 }
 
+/// the kept rows accept() left, through the MTP block on their own (before anything overwrites hn)
+bool NemotronHEngine::Impl::flush_wait(std::string& err) {
+    if (wait_tok.empty())
+        return true;
+    const int rows = (int) wait_tok.size();
+    cudaMemcpyAsync(mh, hn, (size_t) rows * g.n_embd * 4, cudaMemcpyDeviceToDevice, st);
+    const bool ok = mtp_rows(mh, wait_tok.data(), nullptr, rows, wait_pos, hn, err);
+    wait_tok.clear();
+    return ok;
+}
+
 // ---- the public face ------------------------------------------------------------------------------------------------
 
 NemotronHEngine::NemotronHEngine() : p_(std::make_unique<Impl>()) {
@@ -855,9 +871,11 @@ void NemotronHEngine::print_timing(const char* what) const {
     if (std::getenv("GUILD_MOE_TIMING"))
         std::fprintf(stderr,
                      "nemotron_h timing (%s): activations %.0f ms, up %.0f, hidden %.0f, down %.0f; %.2f GB of "
-                     "expert rows; %.0f ms waiting for the GPU before them\n",
+                     "expert rows; %.0f ms waiting for the GPU before them; threads busy %.0f%% / %.0f%%\n",
                      what, p_->xp.phase_ms[0], p_->xp.phase_ms[1], p_->xp.phase_ms[2], p_->xp.phase_ms[3],
-                     p_->xp.weight_bytes * 1e-9, p_->gpu_wait_ms);
+                     p_->xp.weight_bytes * 1e-9, p_->gpu_wait_ms,
+                     100.0 * p_->xp.busy_ms[1] / std::max(1.0, p_->xp.phase_ms[1] * p_->wk.pool->size()),
+                     100.0 * p_->xp.busy_ms[3] / std::max(1.0, p_->xp.phase_ms[3] * p_->wk.pool->size()));
 }
 
 void NemotronHEngine::reset() {
@@ -873,6 +891,7 @@ void NemotronHEngine::reset() {
     m.ctx_end = 0;
     m.has_pending = false;
     m.win_tok.clear();
+    m.wait_tok.clear();
 }
 
 bool NemotronHEngine::forward(const int32_t* tokens, const float* embeds, int n, int64_t pos0, float* logits,
@@ -884,6 +903,8 @@ bool NemotronHEngine::forward(const int32_t* tokens, const float* embeds, int n,
         err = "nemotron_h: the context holds " + std::to_string(m.opt.max_context) + " tokens";
         return false;
     }
+    if (!m.flush_wait(err))
+        return false;
     const int64_t N = m.g.n_embd;
     // two windows at a time, each one's CPU experts beside the other's GPU layers (window_pair); one at a time with
     // GUILD_NEMOTRON_DUMP, whose rows follow the layers of one window
@@ -935,8 +956,8 @@ bool NemotronHEngine::step(int32_t token, int64_t pos, float* logits, std::strin
     }
     const cpu_moe::PinCaller pin(m.wk.caller_cpu);
     m.cpu_ms = 0;
-    if (!m.window(&token, nullptr, 1, pos, false, false, err) || (logits && !m.head_rows(m.hn, 1, logits, err)) ||
-        (m.has_mtp && !m.mtp_catch_up(&token, nullptr, 1, pos, err)))
+    if (!m.flush_wait(err) || !m.window(&token, nullptr, 1, pos, false, false, err) ||
+        (logits && !m.head_rows(m.hn, 1, logits, err)) || (m.has_mtp && !m.mtp_catch_up(&token, nullptr, 1, pos, err)))
         return false;
     m.ctx_end = pos + 1;
     if (cudaStreamSynchronize(m.st) != cudaSuccess) {
@@ -956,13 +977,23 @@ bool NemotronHEngine::draft(int32_t last, int64_t pos, int kd, int32_t* drafts, 
     const cpu_moe::PinCaller pin(m.wk.caller_cpu);
     const int64_t N = m.g.n_embd;
     // step i: (hidden, token) at cell pos - 1 + i; the first pairs the main model's waiting row with `last`, the next
-    // ones the block's own output with the previous draft (the repeated layer)
+    // ones the block's own output with the previous draft (the repeated layer).  The first step also takes the kept
+    // rows accept() left (hn's first rows, then the waiting row: one pass of at most kMaxVerify rows, each computed
+    // as alone), its draft from its last row.
     int32_t tok = last;
     const float* h = m.pending;
+    const int wait = (int) m.wait_tok.size();
     for (int i = 0; i < kd; ++i) {
-        float* out = m.mh + (size_t) (i % 2) * N;
-        if (!m.mtp_rows(h, &tok, nullptr, 1, pos - 1 + i, out, err))
+        float* out = m.mh + (size_t) (wait + i) * N;
+        if (i == 0 && wait > 0) {
+            std::vector<int32_t> toks = m.wait_tok;
+            toks.push_back(last);
+            if (!m.mtp_rows(m.hn, toks.data(), nullptr, wait + 1, m.wait_pos, m.mh, err))
+                return false;
+            m.wait_tok.clear();
+        } else if (!m.mtp_rows(h, &tok, nullptr, 1, pos - 1 + i, out, err)) {
             return false;
+        }
         m.quant(out, N, 1, 0);
         m.mm(m.head, 0, m.logits, 1);
         glm5k::argmax(m.logits, (int) m.g.n_vocab, m.d_arg, m.st);
@@ -985,6 +1016,8 @@ bool NemotronHEngine::verify(const int32_t* tokens, int n, int64_t pos0, float* 
     }
     const cpu_moe::PinCaller pin(m.wk.caller_cpu);
     m.cpu_ms = 0;
+    if (!m.flush_wait(err))
+        return false;
     // two halves, the first the larger, each one's CPU experts beside the other's GPU layers (window_pair); one
     // window with GUILD_NEMOTRON_DUMP, and GUILD_SPEC_SPLIT=0 is the one-window control (as the Qwen runtime's)
     static const bool split = std::getenv("GUILD_NEMOTRON_DUMP") == nullptr && [] {
@@ -1029,13 +1062,10 @@ bool NemotronHEngine::accept(int n_keep, std::string& err) {
     if (m.has_mtp) {
         // the MTP block over the kept rows: cell win_pos - 1 (the draft's first step) already pairs the waiting row
         // with the window's first token; rows 0 .. n_keep - 2 pair with the tokens after them, and row n_keep - 1 waits
-        const int rows = n_keep - 1;
+        // (left to the next draft's first step, or flush_wait)
         cudaMemcpyAsync(m.pending, m.hn + (size_t) (n_keep - 1) * N, (size_t) N * 4, cudaMemcpyDeviceToDevice, m.st);
-        if (rows > 0) {
-            cudaMemcpyAsync(m.mh, m.hn, (size_t) rows * N * 4, cudaMemcpyDeviceToDevice, m.st);
-            if (!m.mtp_rows(m.mh, m.win_tok.data() + 1, nullptr, rows, m.win_pos, m.hn, err))
-                return false;
-        }
+        m.wait_tok.assign(m.win_tok.begin() + 1, m.win_tok.begin() + n_keep);
+        m.wait_pos = m.win_pos;
         m.has_pending = true;
     }
     m.win_tok.clear();
