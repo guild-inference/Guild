@@ -462,7 +462,7 @@ if(GUILD_ENABLE_CUDA OR GUILD_ENABLE_HIP)
     src/core/expert_cache.cpp src/core/native_head.cpp src/core/native_dense.cpp src/core/verify.cpp src/core/mtp.cpp
     src/core/conversation_snapshot.cpp src/core/conversation_state.cpp src/core/conversation_memory.cpp src/core/peer_experts.cpp
     src/core/drama3_tower.cpp src/core/drama3_codec.cu src/core/glm5.cpp src/core/glm5_nl4.cpp src/core/host_combine.cpp
-    src/core/cpu_moe.cpp)
+    src/core/cpu_moe.cpp src/audio/encoder.cu)
   # AVX2 kernels behind a runtime check (cpu_avx2_ok), as guild-kernels-cpu builds its own
   if(MSVC)
     set_source_files_properties(src/core/glm5_nl4.cpp src/core/host_combine.cpp PROPERTIES COMPILE_OPTIONS /arch:AVX2)
@@ -472,8 +472,8 @@ if(GUILD_ENABLE_CUDA OR GUILD_ENABLE_HIP)
     set_source_files_properties(src/core/host_combine.cpp PROPERTIES COMPILE_OPTIONS "-mavx2;-mfma;-ffp-contract=off")
   endif()
   target_include_directories(guild_engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
-  target_link_libraries(guild_engine PUBLIC guild_core guild_model guild_kernels guild_kernels_cpu ${_guild_gpu_runtime_target}
-    ${_guild_gpu_blas_target})
+  target_link_libraries(guild_engine PUBLIC guild_core guild_model guild_kernels guild_kernels_cpu guild_audio
+    ${_guild_gpu_runtime_target} ${_guild_gpu_blas_target})
   enable_testing()
   # Drama 3's tower against reference vectors (scratch tools write them); skipped (77) without them
   add_executable(drama3_tower_test tests/core/drama3_tower_test.cpp)
@@ -1211,6 +1211,10 @@ if(GUILD_ENABLE_CUDA OR GUILD_ENABLE_HIP)
   # GuildSession::score on any model guild-generate loads (model options as arguments; not a ctest: needs a model)
   add_executable(session_score_test tests/core/session_score_test.cpp)
   target_link_libraries(session_score_test PRIVATE guild_program_options)
+
+  # Nemotron 3.5 Transcribe's audio model on WAV files, every stage written out (tools/nemotron_audio_parity.py)
+  add_executable(audio_encode src/program/audio_encode.cpp)
+  target_link_libraries(audio_encode PRIVATE guild_engine guild_audio)
 endif()
 
 # ---- guild_server (Native HTTP & OpenAI serving layer) --------------------
