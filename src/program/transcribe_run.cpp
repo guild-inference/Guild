@@ -236,8 +236,10 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "transcribe_run: %s\n", err.c_str());
         return 1;
     }
-    std::fprintf(stderr, "transcribe_run: loaded in %.1f s; audio model %.0f MiB, %s", ms_since(t0) / 1000.0,
-                 enc.vram_bytes() / 1048576.0, lm.placement().c_str());
+    // the audio model's float32 matrices kept, when the language model leaves room for them
+    const bool wide = enc.keep_wide(uint64_t(512) << 20);
+    std::fprintf(stderr, "transcribe_run: loaded in %.1f s; audio model %.0f MiB%s, %s", ms_since(t0) / 1000.0,
+                 enc.vram_bytes() / 1048576.0, wide ? " (float32 matrices kept)" : "", lm.placement().c_str());
     if (mtp_k > 0 && !lm.has_mtp()) {
         std::fprintf(stderr, "transcribe_run: --mtp needs the MTP block\n");
         return 1;
@@ -358,6 +360,8 @@ int main(int argc, char** argv) {
             int64_t pos = (int64_t) ids.size();
             int32_t next = argmax(logits.data(), V);
             int drafted = 0, accepted = 0, steps = 0;
+            double t_draft = 0, t_verify = 0, t_accept = 0; // milliseconds in each call of the drafted path
+            double t_cpu = 0; // the CPU experts' part of the decode steps or the verify windows
             // TRANSCRIBE_FORCE=FILE (debugging): feed these ids instead of the argmax and print, per step, the forced
             // token's logit minus the largest other one
             std::vector<int32_t> forced;
@@ -393,16 +397,20 @@ int main(int argc, char** argv) {
                 if (mtp_k > 0) {
                     int32_t d[8];
                     const int k = std::min(mtp_k, max_new - (int) gen.size());
+                    auto q0 = std::chrono::steady_clock::now();
                     if (!lm.draft(next, pos, k, d, err)) {
                         std::fprintf(stderr, "transcribe_run: %s\n", err.c_str());
                         return 1;
                     }
                     std::vector<int32_t> win = {next};
                     win.insert(win.end(), d, d + k);
+                    t_draft += ms_since(q0);
+                    q0 = std::chrono::steady_clock::now();
                     if (!lm.verify(win.data(), (int) win.size(), pos, logits.data(), err)) {
                         std::fprintf(stderr, "transcribe_run: %s\n", err.c_str());
                         return 1;
                     }
+                    t_cpu += lm.last_cpu_ms();
                     if (!greedy_logits.empty()) {
                         const size_t step0 = gen.size(); // the greedy step whose logits row 0 of the window gives
                         bool prefix_ok = true;
@@ -429,10 +437,13 @@ int main(int argc, char** argv) {
                     }
                     drafted += k;
                     accepted += keep - 1;
+                    t_verify += ms_since(q0);
+                    q0 = std::chrono::steady_clock::now();
                     if (!lm.accept(keep, err)) {
                         std::fprintf(stderr, "transcribe_run: %s\n", err.c_str());
                         return 1;
                     }
+                    t_accept += ms_since(q0);
                     pos += keep;
                     next = nt;
                 } else {
@@ -440,6 +451,7 @@ int main(int argc, char** argv) {
                         std::fprintf(stderr, "transcribe_run: %s\n", err.c_str());
                         return 1;
                     }
+                    t_cpu += lm.last_cpu_ms();
                     ++pos;
                     next = argmax(logits.data(), V);
                 }
@@ -452,9 +464,11 @@ int main(int argc, char** argv) {
                 tail, sizeof tail,
                 ",\"seconds\":%.3f,\"prompt_tokens\":%d,\"audio_tokens\":%d,\"tokens\":%d,\"features_ms\":%.1f,"
                 "\"encode_ms\":%.1f,\"prefill_ms\":%.1f,\"decode_ms\":%.1f,\"total_ms\":%.1f,\"steps\":%d,"
-                "\"drafted\":%d,\"accepted\":%d,\"mtp\":%d,\"run\":%d}",
+                "\"drafted\":%d,\"accepted\":%d,\"mtp\":%d,\"draft_ms\":%.1f,\"verify_ms\":%.1f,\"accept_ms\":%.1f,"
+                "\"step_cpu_ms\":%.1f,"
+                "\"run\":%d}",
                 seconds, (int) ids.size(), n_audio, (int) gen.size(), fe_ms, enc_ms, prefill_ms, decode_ms, total_ms,
-                steps, drafted, accepted, mtp_k, r);
+                steps, drafted, accepted, mtp_k, t_draft, t_verify, t_accept, t_cpu, r);
             std::string line = "{\"id\":" + json_escape(c.id) + ",\"ids\":[";
             for (size_t i = 0; i < gen.size(); ++i)
                 line += (i ? "," : "") + std::to_string(gen[i]);
