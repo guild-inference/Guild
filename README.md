@@ -276,31 +276,36 @@ then pass both to `guild-generate` (or a server config with those `args`):
 
 ```bash
 python tools/guild_tokenizer.py --gguf GLM-5.3-Flash-UD-IQ4_XS-00001-of-00005.gguf --out <dir>
-guild-generate --serve --native GLM-5.3-Flash-UD-IQ4_XS-00001-of-00005.gguf --tokenizer <dir> --max-context 32768
+guild-generate --serve --native GLM-5.3-Flash-UD-IQ4_XS-00001-of-00005.gguf --tokenizer <dir> --max-context 262144
 ```
 
-The engine fits the context to the VRAM and says how much it holds. A token of context takes 1,088 bytes of VRAM in
-each DSA layer (its FP16 latent and a quarter of a pooled indexer key; the indexer's per-token key and gate rows are
-rings of 512 rows), so an 8 GB card holds 32k tokens: with `--max-context 32768` the context takes the place of the
-last four of the 43 shared experts on the GPU (the NextN block's and layers 42 to 44's), which their CPU copies then
-compute. `GUILD_GLM_CTX_FIRST=16384` gives every shared expert its GPU place first (24,832 tokens on that card). When
-the GGUF's Q8_0 attention matrices would leave less than the context asked for (up to 16k tokens), it re-quantizes
-them to Q6_K at load (about 16 s); `GUILD_GLM_DENSE=q8_0` keeps Q8_0, `q6_k` always converts. `GUILD_GLM_MTP=0`
-decodes without the drafts. With the drafts, a verify window's second token takes its shared expert from the CPU
-copy, which rounds differently, so the text can part from plain greedy decoding; `GUILD_GLM_SHEXP_SPLIT=0` keeps it
-equal bit for bit (3-5% slower on the PC below). `data/draft_vocab_glm.bin`, copied into the tokenizer directory as
-`draft_vocab.bin`, makes the drafts read 117,354 of the head's 154,880 rows (0.55 ms less a step there).
+The engine fits the context to the VRAM and says how much it holds. A token of context takes 1,088 bytes of VRAM in each
+DSA layer (its FP16 latent and a quarter of a pooled indexer key; the indexer's per-token key and gate rows are rings of
+512 rows), so an 8 GB card holds 32k tokens: with `--max-context 32768` the context takes the place of the last four of
+the 43 shared experts on the GPU (the NextN block's and layers 42 to 44's), which their CPU copies then compute.
+`GUILD_GLM_CTX_FIRST=16384` gives every shared expert its GPU place first (24,832 tokens on that card). A longer context
+(`--max-context 262144`, as Qwen's server config) keeps the latent rows of its later cells in pinned host memory (1 KiB
+a cell and DSA layer: 2.9 GiB at 262,144) and copies the 2,048 rows each query's indexer selects to the GPU; the VRAM
+keeps every cell's pooled key, and the first cells' latents (14,848 on an 8 GB card, with the FFNs placed as at 32k).
+The output is the all-VRAM context's bit for bit; `GUILD_GLM_KV_HOST=0` limits the context to the VRAM. When the GGUF's
+Q8_0 attention matrices would leave less than the context asked for (up to 16k tokens), it re-quantizes them to Q6_K at
+load (about 16 s); `GUILD_GLM_DENSE=q8_0` keeps Q8_0, `q6_k` always converts. `GUILD_GLM_MTP=0` decodes without the
+drafts. With the drafts, a verify window's second token takes its shared expert from the CPU copy, which rounds
+differently, so the text can part from plain greedy decoding; `GUILD_GLM_SHEXP_SPLIT=0` keeps it equal bit for bit (3-5%
+slower on the PC below). `data/draft_vocab_glm.bin`, copied into the tokenizer directory as `draft_vocab.bin`, makes the
+drafts read 117,354 of the head's 154,880 rows (0.55 ms less a step there).
 
-On a dual Xeon Gold 6130 with a GTX 1070 (8 GB): 32k tokens of context; at a short context 14.3 tok/s plain and
-21.9 tok/s with the drafts (86% accepted) with every shared expert on the GPU, and 21.8 tok/s with the 32k context's
-four on the CPU; 19.0 tok/s after a 16,000-token prompt and 18.2 tok/s after a 32,000-token one, prompts of 640 to
-2967 tokens at 50 to 54 tok/s (16k to 32k tokens at 44 to 46 tok/s), and a conversation's next turn reads only what
-is new. The GPU computes one token's (or half a prompt window's) attention while the CPU computes
-the other's experts. Guild's decode steps match llama.cpp's logits on the same GGUF to a mean KL of 0.015 to 0.028
-nats, with the same top token on 98% of them ([bench/results/2026-10-25-glm5](bench/results/2026-10-25-glm5/README.md);
-the decode against this PC's memory roofline, and what moved it, in
-[bench/results/2026-10-30-decode-roofline](bench/results/2026-10-30-decode-roofline/README.md)). It has run on CUDA
-only so far; the server parses GLM's tool calls and its `<think>` blocks.
+On a dual Xeon Gold 6130 with a GTX 1070 (8 GB): 262,144 tokens of context (32k in VRAM alone); at a short context 14.3
+tok/s plain and 21.9 tok/s with the drafts (86% accepted) with every shared expert on the GPU, and 21.8 tok/s with the
+32k context's four on the CPU; 19.0 tok/s after a 16,000-token prompt and 18.2 tok/s after a 32,000-token one (17.6 to
+18.0 at a 262,144-token context, [bench/results/2026-11-01-glm-256k](bench/results/2026-11-01-glm-256k/README.md)),
+prompts of 640 to 2967 tokens at 50 to 54 tok/s (16k to 32k tokens at 44 to 57 tok/s), and a conversation's next turn
+reads only what is new. The GPU computes one token's (or half a prompt window's) attention while the CPU computes the
+other's experts. Guild's decode steps match llama.cpp's logits on the same GGUF to a mean KL of 0.015 to 0.028 nats,
+with the same top token on 98% of them ([bench/results/2026-10-25-glm5](bench/results/2026-10-25-glm5/README.md); the
+decode against this PC's memory roofline, and what moved it, in
+[bench/results/2026-10-30-decode-roofline](bench/results/2026-10-30-decode-roofline/README.md)). It has run on CUDA only
+so far; the server parses GLM's tool calls and its `<think>` blocks.
 
 ## Performance philosophy
 
