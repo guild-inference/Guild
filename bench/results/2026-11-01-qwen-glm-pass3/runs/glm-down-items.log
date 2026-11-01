@@ -1,0 +1,50 @@
+glm5_run: a prompt of 5 tokens
+guild glm5: attention matrices Q8_0 -> Q6_K (for the context; GUILD_GLM_DENSE=q8_0 keeps Q8_0): 5746 -> 4436 MiB in 15.8 s
+guild glm5: VRAM: 8010 MiB free, 6214 MiB fixed, context 32768 tokens x 13184 B, 5 MiB left; 4 shared experts on the CPU
+guild glm5: 530 matrices take MMQ in prompt windows
+guild glm5: experts split across 2 NUMA nodes, IQ3_S gate/up as NL4: 77.9 + 77.9 GiB in 23.9 s
+guild glm5: token_embd copied to memory: 643 MiB in 0.44 s (the load waited 0.00 s for it)
+glm5: 45 layers (34 KDA, 11 DSA) + MTP, 39 of 46 FFNs on the GPU, 32 CPU threads on 2 NUMA nodes, 7575 MiB VRAM, context 32768
+glm5_run: loaded in 43.0 s
+prompt: CPU experts 151 ms of 190
+glm5 timing (prompt): activations 4 ms, gate/up 86, hidden 0, down 59; launches 50; threads busy 94% / 96%; 21.54 GB of expert rows (gate/up 14.11 GB at 164.6 GB/s, down 7.44 at 126.7)
+top after the prompt: 12089 (16.948) 264 (14.423) 11240 (14.309) 825 (14.222) 3881 (14.177)
+GUILD_MOE_DRB=64 #1: MTP: 117 of 138 drafts accepted (85%); per step: draft 4.3 ms, verify 78.7, accept 2.1
+GUILD_MOE_DRB=64 #1: per step: 84.1 / 84.5 / 85.0 ms (10th / 50th / 90th percentile), CPU experts 67.5 / 68.1 / 69.0
+GUILD_MOE_DRB=64 #1: decode 256 tokens in 11787 ms (21.63 tok/s)
+GUILD_MOE_DRB=16 #1: MTP: 117 of 138 drafts accepted (85%); per step: draft 4.4 ms, verify 78.9, accept 2.2
+GUILD_MOE_DRB=16 #1: per step: 84.6 / 85.7 / 86.4 ms (10th / 50th / 90th percentile), CPU experts 69.6 / 71.8 / 72.9
+GUILD_MOE_DRB=16 #1: decode 256 tokens in 11830 ms (21.55 tok/s)
+GUILD_MOE_DRB=64 #2: MTP: 117 of 138 drafts accepted (85%); per step: draft 4.4 ms, verify 79.1, accept 2.2
+GUILD_MOE_DRB=64 #2: per step: 84.7 / 85.2 / 85.8 ms (10th / 50th / 90th percentile), CPU experts 69.4 / 70.2 / 70.8
+GUILD_MOE_DRB=64 #2: decode 256 tokens in 11855 ms (21.51 tok/s)
+GUILD_MOE_DRB=16 #2: MTP: 117 of 138 drafts accepted (85%); per step: draft 4.4 ms, verify 79.6, accept 2.2
+GUILD_MOE_DRB=16 #2: per step: 85.4 / 86.0 / 86.9 ms (10th / 50th / 90th percentile), CPU experts 71.6 / 72.5 / 73.2
+GUILD_MOE_DRB=16 #2: decode 256 tokens in 11927 ms (21.38 tok/s)
+GUILD_MOE_DRB=64 #3: MTP: 117 of 138 drafts accepted (85%); per step: draft 4.4 ms, verify 79.0, accept 2.2
+GUILD_MOE_DRB=64 #3: per step: 85.0 / 85.5 / 86.3 ms (10th / 50th / 90th percentile), CPU experts 69.9 / 70.4 / 71.4
+GUILD_MOE_DRB=64 #3: decode 256 tokens in 11837 ms (21.54 tok/s)
+GUILD_MOE_DRB=16 #3: MTP: 117 of 138 drafts accepted (85%); per step: draft 4.4 ms, verify 80.0, accept 2.2
+GUILD_MOE_DRB=16 #3: per step: 85.8 / 86.4 / 87.5 ms (10th / 50th / 90th percentile), CPU experts 72.3 / 73.0 / 73.9
+GUILD_MOE_DRB=16 #3: decode 256 tokens in 11990 ms (21.27 tok/s)
+GUILD_MOE_DRB=64 #4: MTP: 117 of 138 drafts accepted (85%); per step: draft 4.4 ms, verify 79.2, accept 2.2
+GUILD_MOE_DRB=64 #4: per step: 85.0 / 85.5 / 86.3 ms (10th / 50th / 90th percentile), CPU experts 69.5 / 70.3 / 71.5
+GUILD_MOE_DRB=64 #4: decode 256 tokens in 11864 ms (21.49 tok/s)
+GUILD_MOE_DRB=16 #4: MTP: 117 of 138 drafts accepted (85%); per step: draft 4.4 ms, verify 79.7, accept 2.2
+GUILD_MOE_DRB=16 #4: per step: 85.9 / 86.3 / 87.0 ms (10th / 50th / 90th percentile), CPU experts 72.1 / 72.8 / 73.8
+GUILD_MOE_DRB=16 #4: decode 256 tokens in 11953 ms (21.33 tok/s)
+GUILD_MOE_DRB=64 #5: MTP: 117 of 138 drafts accepted (85%); per step: draft 4.4 ms, verify 78.9, accept 2.2
+GUILD_MOE_DRB=64 #5: per step: 85.0 / 85.5 / 86.0 ms (10th / 50th / 90th percentile), CPU experts 69.3 / 70.2 / 71.0
+GUILD_MOE_DRB=64 #5: decode 256 tokens in 11825 ms (21.56 tok/s)
+GUILD_MOE_DRB=16 #5: MTP: 117 of 138 drafts accepted (85%); per step: draft 4.4 ms, verify 80.7, accept 2.2
+GUILD_MOE_DRB=16 #5: per step: 85.9 / 86.4 / 87.0 ms (10th / 50th / 90th percentile), CPU experts 72.2 / 73.1 / 73.6
+GUILD_MOE_DRB=16 #5: decode 256 tokens in 12082 ms (21.11 tok/s)
+GUILD_MOE_DRB=64 #6: MTP: 117 of 138 drafts accepted (85%); per step: draft 4.4 ms, verify 79.1, accept 2.2
+GUILD_MOE_DRB=64 #6: per step: 85.2 / 85.6 / 86.1 ms (10th / 50th / 90th percentile), CPU experts 69.9 / 70.7 / 71.6
+GUILD_MOE_DRB=64 #6: decode 256 tokens in 11861 ms (21.50 tok/s)
+GUILD_MOE_DRB=16 #6: MTP: 117 of 138 drafts accepted (85%); per step: draft 4.4 ms, verify 80.1, accept 2.2
+GUILD_MOE_DRB=16 #6: per step: 86.0 / 86.5 / 87.2 ms (10th / 50th / 90th percentile), CPU experts 72.2 / 73.0 / 73.7
+GUILD_MOE_DRB=16 #6: decode 256 tokens in 11999 ms (21.25 tok/s)
+A/B GUILD_MOE_DRB=64: per step 84.6 / 85.4 / 86.1 ms (10th / 50th / 90th, 6 runs), 21.54 tok/s
+A/B GUILD_MOE_DRB=16: per step 85.4 / 86.3 / 87.1 ms (10th / 50th / 90th, 6 runs), 21.31 tok/s
+A/B ids: identical in every run

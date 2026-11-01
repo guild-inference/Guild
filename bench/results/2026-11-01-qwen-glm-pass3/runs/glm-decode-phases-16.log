@@ -1,0 +1,15 @@
+glm5_run: a prompt of 5 tokens
+guild glm5: attention matrices Q8_0 -> Q6_K (for the context; GUILD_GLM_DENSE=q8_0 keeps Q8_0): 5746 -> 4436 MiB in 15.9 s
+guild glm5: VRAM: 8010 MiB free, 6214 MiB fixed, context 32768 tokens x 13184 B, 5 MiB left; 4 shared experts on the CPU
+guild glm5: 530 matrices take MMQ in prompt windows
+guild glm5: experts split across 2 NUMA nodes, IQ3_S gate/up as NL4: 77.9 + 77.9 GiB in 23.5 s
+guild glm5: token_embd copied to memory: 643 MiB in 0.45 s (the load waited 0.00 s for it)
+glm5: 45 layers (34 KDA, 11 DSA) + MTP, 39 of 46 FFNs on the GPU, 32 CPU threads on 2 NUMA nodes, 7575 MiB VRAM, context 32768
+glm5_run: loaded in 42.3 s
+prompt: CPU experts 157 ms of 197
+glm5 timing (prompt): activations 4 ms, gate/up 86, hidden 0, down 62; launches 47; threads busy 94% / 96%; 21.54 GB of expert rows (gate/up 14.11 GB at 164.3 GB/s, down 7.44 at 119.7)
+top after the prompt: 12089 (16.948) 264 (14.423) 11240 (14.309) 825 (14.222) 3881 (14.177)
+glm5 timing (prompt + decode): activations 149 ms, gate/up 5847, hidden 15, down 3722; launches 1995; threads busy 93% / 94%; 1595.59 GB of expert rows (gate/up 1047.29 GB at 179.1 GB/s, down 548.30 at 147.3)
+MTP: 117 of 138 drafts accepted (85%); per step: draft 4.4 ms, verify 78.2, accept 2.2
+per step: 84.0 / 84.5 / 84.9 ms (10th / 50th / 90th percentile), CPU experts 68.9 / 69.6 / 70.4
+prompt 5 tokens in 197 ms (25.44 tok/s); decode 256 tokens in 11732 ms (21.73 tok/s, CPU experts 68.7 ms per step)

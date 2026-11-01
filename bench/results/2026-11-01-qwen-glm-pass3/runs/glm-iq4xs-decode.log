@@ -1,0 +1,38 @@
+glm5_run: a prompt of 5 tokens
+guild glm5: attention matrices Q8_0 -> Q6_K (for the context; GUILD_GLM_DENSE=q8_0 keeps Q8_0): 5746 -> 4436 MiB in 15.8 s
+guild glm5: VRAM: 8010 MiB free, 6214 MiB fixed, context 32768 tokens x 13184 B, 5 MiB left; 4 shared experts on the CPU
+guild glm5: 530 matrices take MMQ in prompt windows
+guild glm5: experts split across 2 NUMA nodes, IQ3_S gate/up as NL4: 77.9 + 77.9 GiB in 23.4 s
+guild glm5: token_embd copied to memory: 643 MiB in 0.44 s (the load waited 0.00 s for it)
+glm5: 45 layers (34 KDA, 11 DSA) + MTP, 39 of 46 FFNs on the GPU, 32 CPU threads on 2 NUMA nodes, 7575 MiB VRAM, context 32768
+glm5_run: loaded in 42.3 s
+prompt: CPU experts 154 ms of 192
+glm5 timing (prompt): activations 4 ms, gate/up 86, hidden 0, down 59; launches 45; threads busy 94% / 96%; 21.54 GB of expert rows
+top after the prompt: 12089 (16.948) 264 (14.423) 11240 (14.309) 825 (14.222) 3881 (14.177)
+GUILD_IQ4XS_512=0 #1: MTP: 117 of 138 drafts accepted (85%); per step: draft 4.4 ms, verify 78.0, accept 2.1
+GUILD_IQ4XS_512=0 #1: per step: 84.2 / 84.6 / 85.4 ms (10th / 50th / 90th percentile), CPU experts 70.1 / 70.8 / 71.5
+GUILD_IQ4XS_512=0 #1: decode 256 tokens in 11697 ms (21.80 tok/s)
+GUILD_IQ4XS_512=1 #1: MTP: 117 of 138 drafts accepted (85%); per step: draft 4.4 ms, verify 81.4, accept 2.2
+GUILD_IQ4XS_512=1 #1: per step: 84.3 / 87.7 / 90.0 ms (10th / 50th / 90th percentile), CPU experts 70.8 / 74.8 / 76.7
+GUILD_IQ4XS_512=1 #1: decode 256 tokens in 12175 ms (20.95 tok/s)
+GUILD_IQ4XS_512=0 #2: MTP: 117 of 138 drafts accepted (85%); per step: draft 4.4 ms, verify 80.1, accept 2.2
+GUILD_IQ4XS_512=0 #2: per step: 86.4 / 86.9 / 87.5 ms (10th / 50th / 90th percentile), CPU experts 73.3 / 73.9 / 74.6
+GUILD_IQ4XS_512=0 #2: decode 256 tokens in 12000 ms (21.25 tok/s)
+GUILD_IQ4XS_512=1 #2: MTP: 117 of 138 drafts accepted (85%); per step: draft 4.4 ms, verify 80.8, accept 2.2
+GUILD_IQ4XS_512=1 #2: per step: 87.0 / 87.6 / 88.5 ms (10th / 50th / 90th percentile), CPU experts 73.6 / 74.6 / 75.2
+GUILD_IQ4XS_512=1 #2: decode 256 tokens in 12102 ms (21.07 tok/s)
+GUILD_IQ4XS_512=0 #3: MTP: 117 of 138 drafts accepted (85%); per step: draft 4.4 ms, verify 82.6, accept 2.2
+GUILD_IQ4XS_512=0 #3: per step: 87.5 / 88.0 / 89.4 ms (10th / 50th / 90th percentile), CPU experts 74.1 / 75.0 / 75.7
+GUILD_IQ4XS_512=0 #3: decode 256 tokens in 12344 ms (20.66 tok/s)
+GUILD_IQ4XS_512=1 #3: MTP: 117 of 138 drafts accepted (85%); per step: draft 4.4 ms, verify 82.1, accept 2.2
+GUILD_IQ4XS_512=1 #3: per step: 88.4 / 88.9 / 89.7 ms (10th / 50th / 90th percentile), CPU experts 74.9 / 75.8 / 76.4
+GUILD_IQ4XS_512=1 #3: decode 256 tokens in 12285 ms (20.76 tok/s)
+GUILD_IQ4XS_512=0 #4: MTP: 117 of 138 drafts accepted (85%); per step: draft 4.4 ms, verify 82.5, accept 2.2
+GUILD_IQ4XS_512=0 #4: per step: 88.3 / 89.0 / 89.8 ms (10th / 50th / 90th percentile), CPU experts 75.0 / 75.9 / 76.6
+GUILD_IQ4XS_512=0 #4: decode 256 tokens in 12332 ms (20.68 tok/s)
+GUILD_IQ4XS_512=1 #4: MTP: 117 of 138 drafts accepted (85%); per step: draft 4.4 ms, verify 82.7, accept 2.2
+GUILD_IQ4XS_512=1 #4: per step: 89.0 / 89.4 / 90.2 ms (10th / 50th / 90th percentile), CPU experts 75.7 / 76.3 / 77.0
+GUILD_IQ4XS_512=1 #4: decode 256 tokens in 12361 ms (20.63 tok/s)
+A/B GUILD_IQ4XS_512=0: per step 84.5 / 87.5 / 89.4 ms (10th / 50th / 90th, 4 runs), 21.09 tok/s
+A/B GUILD_IQ4XS_512=1: per step 87.1 / 88.6 / 89.9 ms (10th / 50th / 90th, 4 runs), 20.85 tok/s
+A/B ids: identical in every run
