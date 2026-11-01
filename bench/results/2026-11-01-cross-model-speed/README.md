@@ -6,15 +6,16 @@ the formats this PC runs stream at the memory's speed.  Every change keeps each 
 the same bits.
 
 PC: 2x Xeon Gold 6130 (AVX-512 without VNNI, 2 NUMA nodes), GTX 1070 8 GB, CUDA 12.  Guild
-`feat/nemotron-transcribe` (`c104042`, `5485490`, `a12a30e`, `cdf65cb`); guild-kernels-cpu `perf/q8-avx512`
-(`c12ae99`, local, on the pinned `5147f69`: **not in `backends.lock.json`** - a build takes it only through
-`GUILD_CPU_SOURCE_DIR`).
+`feat/nemotron-transcribe` (`c104042`, `5485490`, `a12a30e`, `cdf65cb`, `2673a42`); guild-kernels-cpu
+`perf/q8-avx512` (`c12ae99`, local, on the pinned `5147f69`) and guild-kernels-cuda `perf/prefill-mmvq` (`f55b62d`,
+local, on `perf/sm61-decode`'s `b511c94`): **neither is in `backends.lock.json`** - a build takes them only through
+`GUILD_CPU_SOURCE_DIR` / `GUILD_CUDA_SOURCE_DIR`.
 
 | Model | What | Before | After | Outputs |
 | --- | --- | ---: | ---: | --- |
-| StartLux-Decision Q8_0 | a 503-token question | 2.41 s | 1.60 s (pairs) / 1.19 s (+ Q8_0 rows) | the same answers |
-| | a 940-token prompt | 4.55 s | 3.11 s / 2.23 s | |
-| Ornith-1.5-35B Q4_K_M | 1,024-token prefill | 244 tok/s | 345 tok/s | the same ids |
+| StartLux-Decision Q8_0 | a 503-token question | 2.41 s | 1.60 s (pairs) / 1.19 s (+ Q8_0 rows) / 1.08 s (+ MMVQ) | the same answers |
+| | a 940-token prompt | 4.55 s | 3.11 s / 2.23 s / 2.05 s | |
+| Ornith-1.5-35B Q4_K_M | 1,024-token prefill | 244 tok/s | 345 tok/s (pairs) / 438 tok/s (+ MMVQ) | the same ids |
 | GLM-5.3-Flash | decode step (2 tokens) | 84.7 ms (CPU experts 69.6) | 83.9 ms (67.1) | the same ids |
 | Nemotron 3.5 Transcribe | 29.6 s clip, 3 drafts | decode 1195 ms | 1170 ms | the same ids |
 | Qwen3.8-Flash-Next | decode / a 4K prompt | | unchanged | the same texts |
@@ -30,8 +31,10 @@ Now each chunk runs as two halves of rows: at each layer this thread runs one ha
 the other half's layer up to its routing.  The stream keeps every layer's order (half A before half B: the
 recurrent states and the attention cells pass from one to the next), so each half computes what a chunk of its rows
 computes alone, and the batched prefill already equals the sequential ingestion bit for bit at every batch size.
-Expert jobs hold at most 8 tokens, so a half reads no more expert bytes than the chunk did.  `GUILD_PREFILL_PAIRS=0`
-is the control; profiling and per-layer callbacks run one half.
+A half reads some experts once more than the chunk did (these models route a token to 8 of 256 experts, so a
+128-row half gives an expert ~4 tokens where the 256-row chunk gave ~8, one job either way): Ornith's 1,024-token
+prompt takes 57,135 expert jobs against 50,317.  `GUILD_PREFILL_PAIRS=0` is the control; profiling and per-layer
+callbacks run one half.
 
 - `ornith_prefill_test` passes: 512 tokens at batch 1-512 against the sequential ingestion, the logits, the GDN/conv
   state, the KV cells and the output bitwise (Ornith at batch 512: 353 tokens/s).
@@ -104,8 +107,38 @@ step (at most four rows, each computed as alone, so the same drafts).  The 60 ga
 accepted counts with 1-3 drafts.  The 29.6 s clip with three drafts: accept 1.5 -> 0.1 ms a step, a draft step
 +0.9 ms, decode 1195 -> 1170 ms.
 
+## 5. Second pass: the prefill's GPU projections (`f55b62d`, local) and what did not pay
+
+With the pairs, Ornith's prefill waited on the GPU (1.04 s of 2.96): its dense projections run the decode's MMVQ
+arithmetic over 128 columns (kept so that the prefill equals the sequential ingestion).  For more than 8 columns
+guild-kernels-cuda ran one row a block, each column's activations loaded again for every row.  The branch takes two
+rows a block for the formats that load activations apart (`acc_tile`): the same thread mapping, += order and
+cross-warp sum, so every output is the one-column kernel's (`mmvq_multi_parity`, `mmvq_staged_parity`;
+`pass2/bench_many.cu`, 128 columns against 128 one-column calls: none differ).  GTX 1070, 128 columns, one row ->
+two (us): Q8_0 2048x8192 3352 -> 2398, 4096x2048 1636 -> 1110; Q4_K 2048x8192 3148 -> 2248, 4096x2048 1952 ->
+1297; Q6_K 2048x8192 3321 -> 2702 (four rows: slower on every one; `pass2/bench_many_rows.log`).  A first try, a new
+kernel reloading the weights for every 8-column tile with one warp reducing, was 2x slower and was dropped.
+
+`pass2/chain7.sh` (Guild built against both kernel branches, alternated twice): `ornith_prefill_test` passes;
+Ornith's 1,024-token prefill 2.96 -> 2.34 s (346 -> 438 tokens/s), the CPU's wait for the GPU 1.04 -> 0.39 s;
+StartLux-Decision a question 1.17 -> 1.08 s, three 1.53 -> 1.47 s, a 940-token prompt 2.20 -> 2.05 s with the same
+answers; Qwen3.8-Flash-Next the same texts.
+
+Tried and not kept:
+- **The fronts on a launcher thread** (the calling thread straight to the other half's experts): no faster (Ornith
+  2.35 s either way, StartLux within 1%) and, as written, not exact (`ornith_prefill_test` failed and three
+  StartLux answers moved with it on, never off).  Reverted.
+- **Chunks of 512 rows** (halves of 256, an expert ~8 tokens a half again): Ornith 2.34 -> 2.31 s, StartLux 1.09 ->
+  1.06 s a question (`pass2/batch512.sh`); 2%, for twice the prefill scratch: the default stays 256.
+- **Ornith's decode** is the GPU's: 16.7 ms a token, of which the CPU experts 4.8 ms overlapped
+  (`GUILD_DECODE_TIMING`); the decode-roofline work on Qwen's kernels is its lever.
+- **GLM-5.3-Flash's remaining CPU gap** is inside its items: the phases stream ~177 GB/s while busy, and
+  `glm5_nl4_test --dram 32 1 64` (64-row items in a shuffled order) reaches 204 (212 as one stream), so the item size
+  is not it.
+
 ## Files
 
 `abpairs.sh` (the parity test, StartLux pairs), `abq8.sh` (StartLux, the kernel branch), `ornithab.sh`, `glmab2.sh`,
-`qwenlong.sh` (with `qwen4k.json`: the first 4,000 ids of the decode-roofline lanes' 32K prompt and its last 8), `kcpu_test.sh` (the kernel repository's tests on the branch); `runs/` holds the StartLux answers and timings and
-the Ornith CSVs.
+`qwenlong.sh` (with `qwen4k.json`: the first 4,000 ids of the decode-roofline lanes' 32K prompt and its last 8),
+`kcpu_test.sh` (the kernel repository's tests on the branch); `runs/` holds the StartLux answers and timings and
+the Ornith CSVs; `pass2/` the second pass's scripts, bench and runs.
