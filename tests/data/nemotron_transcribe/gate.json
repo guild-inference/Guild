@@ -1,0 +1,21 @@
+{
+ "reference": "reference_fp32.jsonl",
+ "noise": "reference_bf16.jsonl",
+ "min_identical_rate": 0.95,
+ "noise_identical": 57,
+ "min_wer_diff": 0.2,
+ "noise_wer_diff": 0.0,
+ "noise_run": {
+  "clips": 60,
+  "identical": 57,
+  "different": [
+   "1221-135766-0009",
+   "672-122797-0063",
+   "4077-13751-0001"
+  ],
+  "wer_ref": 10.26694045174538,
+  "wer_got": 10.26694045174538
+ },
+ "min_identical": 57,
+ "max_wer_diff": 0.2
+}

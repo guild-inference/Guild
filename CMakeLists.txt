@@ -1337,6 +1337,21 @@ if(GUILD_BUILD_TESTS)
       -DPYTHON=${Python3_EXECUTABLE} -DSRC=${CMAKE_CURRENT_SOURCE_DIR} -DOUT=${CMAKE_CURRENT_BINARY_DIR}
       -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/startlux_decision/gate.cmake)
   endif()
+  # Nemotron 3.5 Transcribe's gate (opt-in: the GGUF, the audio runtime files, the tokenizer and the clips
+  # tests/data/nemotron_transcribe/make_clips.py writes)
+  set(GUILD_NEMOTRON_MODEL "" CACHE FILEPATH "Nemotron 3.5 Transcribe language model GGUF for transcribe_gate_test")
+  set(GUILD_NEMOTRON_AUDIO "" CACHE PATH "Its audio runtime files (tools/nemotron_audio_rt.py)")
+  set(GUILD_NEMOTRON_TOKENIZER "" CACHE FILEPATH "Its tokenizer.json")
+  set(GUILD_NEMOTRON_CLIPS "" CACHE PATH "The gate's clips (make_clips.py's output directory)")
+  if(TARGET transcribe_run AND GUILD_NEMOTRON_MODEL AND GUILD_NEMOTRON_AUDIO AND GUILD_NEMOTRON_TOKENIZER AND
+     GUILD_NEMOTRON_CLIPS)
+    find_package(Python3 COMPONENTS Interpreter)
+    add_test(NAME transcribe_gate_test COMMAND ${CMAKE_COMMAND}
+      -DRUN=$<TARGET_FILE:transcribe_run> -DMODEL=${GUILD_NEMOTRON_MODEL} -DAUDIO=${GUILD_NEMOTRON_AUDIO}
+      -DTOKENIZER=${GUILD_NEMOTRON_TOKENIZER} -DCLIPS=${GUILD_NEMOTRON_CLIPS} -DPYTHON=${Python3_EXECUTABLE}
+      -DSRC=${CMAKE_CURRENT_SOURCE_DIR} -DOUT=${CMAKE_CURRENT_BINARY_DIR}
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/nemotron_transcribe/gate.cmake)
+  endif()
   add_executable(tokenizer_parity_test tests/core/tokenizer_parity_test.cpp)
   target_link_libraries(tokenizer_parity_test PRIVATE guild_runtime guild_server guild_cli)
   add_test(NAME tokenizer_fail_closed_test COMMAND tokenizer_parity_test --unloaded-only)

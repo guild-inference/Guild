@@ -4,6 +4,8 @@
                                     [--thresholds gate.json] [--json report.json]
     python tools/transcribe_gate.py --ref reference_fp32.jsonl --noise reference_bf16.jsonl --clips clips.jsonl
                                     --write-thresholds gate.json
+    python tools/transcribe_gate.py ... --same-as greedy.jsonl   (and every clip's ids equal that run's: speculative
+                                                                  decoding against greedy)
 
 One line per clip in each file ({"id", "text"}, and "ids").  Per clip: whether the transcript is the reference's
 (the same text), and its word error rate against the clip's own transcript (clips.jsonl "text": LibriSpeech's and
@@ -85,6 +87,7 @@ def main():
     ap.add_argument("--write-thresholds")
     ap.add_argument("--thresholds")
     ap.add_argument("--json")
+    ap.add_argument("--same-as", help="another run whose ids every clip must equal (greedy, for a speculative run)")
     a = ap.parse_args()
     ref, clips = load(a.ref), load(a.clips)
     if a.write_thresholds:
@@ -105,6 +108,11 @@ def main():
     for cid in s["different"]:
         print(f"  differs: {cid}\n    ref: {ref[cid]['text']}\n    got: {got[cid]['text']}")
     failures = [f"{cid}: no transcript" for cid in s["missing"]]
+    if a.same_as:
+        other = load(a.same_as)
+        diff = [cid for cid in got if cid not in other or other[cid]["ids"] != got[cid]["ids"]]
+        print(f"ids equal to {a.same_as.split('/')[-1]}: {len(got) - len(diff)} of {len(got)}")
+        failures += [f"{cid}: ids differ from {a.same_as.split('/')[-1]}" for cid in diff]
     if a.thresholds:
         th = json.load(open(a.thresholds))
         print(f"bounds: identical >= {th['min_identical']}, WER difference <= {th['max_wer_diff']:.2f} points")
