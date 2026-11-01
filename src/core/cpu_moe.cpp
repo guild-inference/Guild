@@ -2,6 +2,7 @@
 #include "guild/core/cpu_moe.hpp"
 
 #include "guild/core/glm5_nl4.hpp"
+#include "guild/core/iq4xs_rows512.hpp"
 #include "guild/core/q8_0_rows512.hpp"
 #include "guild/kernels/cpu/expert.hpp"
 #include "guild/kernels/cpu/features.hpp"
@@ -483,17 +484,10 @@ void Experts::run(Pool& pool, int64_t N, int T, int max_t, const int32_t* ids, c
     grow(hqbuf_, hq_off[(size_t) U] + 64);
     float* hv = (float*) hbuf_.data();
 
-    // the multi-token row kernel for a weight type, or null (ggml-cpu's single-token dot then).  The AVX-512 i-quant
-    // rows need AVX-512 F and BW only, but run where cpu_avx512_ok() (VNNI and VBMI too); IQ4_XS's also run on an
-    // AVX-512 BW CPU, where they beat the AVX-2 rows (Xeon Gold 6130, one thread, GLM-5.3-Flash's 2,048-value down
-    // rows: 24.9 -> 33.9 GMAC/s at 4 tokens) with the same bits (both are ggml-cpu's dot per token).
-    // GUILD_IQ4XS_512=0 (read each call, for A/Bs in one process): the AVX-2 rows.
+    // the multi-token row kernel for a weight type, or null (ggml-cpu's single-token dot then)
     using RowsFn = void (*)(int, const uint8_t*, size_t, int, const void* const*, int, float* const*, int, int);
-    const char* x512 = std::getenv("GUILD_IQ4XS_512");
-    const bool iq4xs512 = !(x512 && x512[0] == '0');
-    auto multi = [iq4xs512](int type) -> RowsFn {
-        if (kcpu::iq512_supported(type) &&
-            (kcpu::cpu_avx512_ok() || (iq4xs512 && type == (int) GGML_TYPE_IQ4_XS && kcpu::cpu_avx512bw_ok())))
+    auto multi = [](int type) -> RowsFn {
+        if (kcpu::cpu_avx512_ok() && kcpu::iq512_supported(type))
             return &kcpu::iq512_rows;
         if (kcpu::cpu_avx2_ok() && kcpu::iq256_supported(type))
             return &kcpu::iq256_rows;
@@ -501,6 +495,12 @@ void Experts::run(Pool& pool, int64_t N, int T, int max_t, const int32_t* ids, c
             return &kcpu::kq256_rows;
         return nullptr;
     };
+    // IQ4_XS down rows two to an AVX-512BW register for any number of tokens, one-token windows included: each
+    // (row, token) is ggml-cpu's dot to the bit (iq4xs_rows512_test).  All 32 cores of 2x Xeon Gold 6130 streaming
+    // GLM-5.3-Flash's 2,048-value rows: 161 -> 193 GB/s at one token, 91 -> 162 at two.  GUILD_IQ4XS_512=0 (read each
+    // call, for A/Bs in one process): ggml-cpu's dot, or the multi-token kernel above.
+    const char* x512 = std::getenv("GUILD_IQ4XS_512");
+    const bool iq4xs = iq4xs_rows512_ok() && !(x512 && x512[0] == '0');
     constexpr int RB = 64, MT = kQ8Rows512MaxT > kcpu::MAXT ? kQ8Rows512MaxT : kcpu::MAXT;
     // a down item's rows of every group (down_rows, at most RB)
     const int DRB = std::clamp(down_rows, 4, RB) / 4 * 4;
@@ -763,6 +763,7 @@ void Experts::run(Pool& pool, int64_t N, int T, int max_t, const int32_t* ids, c
             const Group& gr = groups[gi];
             const CpuFfn& f = gr.f;
             const ggml_type_traits_cpu* tr = cpu_traits(f.d_type);
+            const bool x4 = iq4xs && f.d_type == (int) GGML_TYPE_IQ4_XS;
             const RowsFn mt = !single && gr.units.size() >= 2 ? multi(f.d_type) : nullptr;
             for (size_t c = 0; c + 1 < gr.d_c.size(); ++c) {
                 const size_t c0 = (size_t) gr.d_c[c];
@@ -781,6 +782,12 @@ void Experts::run(Pool& pool, int64_t N, int T, int max_t, const int32_t* ids, c
                     q8_0_rows512(wd, f.d_row, (int) f.n_ff, pk + gr.d_pk[c], nt, dout, r0, r1,
                                  nf ? nf->down[r0 >= nf->d_split] + (size_t) r0 * nf->d_row : nullptr,
                                  nf ? nf->d_row : 0);
+                } else if (x4) {
+                    // after the group's last chunk, the next group's rows are the ones to ask for
+                    const CpuFfn* nf = c + 2 == gr.d_c.size() && gi + 1 < groups.size() ? &groups[gi + 1].f : nullptr;
+                    iq4xs_rows512(wd, f.d_row, (int) f.n_ff, hq, nt, dout, r0, r1,
+                                  nf ? nf->down[r0 >= nf->d_split] + (size_t) r0 * nf->d_row : nullptr,
+                                  nf ? nf->d_row : 0);
                 } else if (mt && nt >= 2) {
                     mt(f.d_type, wd, f.d_row, (int) f.n_ff, hq, nt, dout, r0, r1);
                 } else {
