@@ -126,6 +126,7 @@ struct ExecutionPlan {
     uint64_t prompt_scratch_bytes = 0;
     uint64_t safety_reserve_bytes = 0;
     int64_t prefill_chunk = 512;
+    int64_t prefill_rows = 0;  ///< --prefill-rows: the prompt path's chunks computed as chunks of this many (0: off)
     int64_t prefill_batch = 0; ///< Generic layer-wise prompt rows: 0 auto, 1..512 override.
 
     // Warnings and degradations

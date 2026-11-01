@@ -1134,6 +1134,13 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
     // Prefill initialization
     const auto pf_t0 = Clock::now();
     impl->prefill = std::make_unique<prefill::Prefill>();
+    if (plan.prefill_rows > 0 && plan.prefill_rows < impl->config.prefill_chunk) {
+        prefill::Prefill::set_rows(plan.prefill_rows);
+        std::fprintf(stderr, "guild prefill: chunks of %lld tokens computed as chunks of %lld (--prefill-rows)\n",
+                     (long long) impl->config.prefill_chunk, (long long) plan.prefill_rows);
+    } else {
+        prefill::Prefill::set_rows(0);
+    }
     std::string pf_err;
     if (!impl->prefill->init(impl->wt, impl->g, impl->ss, impl->srcp,
                              impl->xcache.slots() > 0 ? &impl->xcache : nullptr,

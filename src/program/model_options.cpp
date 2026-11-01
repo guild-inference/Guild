@@ -63,6 +63,9 @@ const char* model_options_usage() {
            "  --expert-cache <auto|n>    GPU expert cache slots\n"
            "  --pcie-frac <f>            Fraction of missed experts offloaded from RAM (0..1; default auto)\n"
            "  --prefill <auto|n>         Prefill chunk size\n"
+           "  --prefill-rows <n>         Compute each prefill chunk as chunks of n tokens, streaming the experts once\n"
+           "                             a chunk (e.g. --prefill 1024 --prefill-rows 512: 512's results where the\n"
+           "                             expert products do not depend on rows an expert has; 0: off)\n"
            "  --spec <n>                 Speculative draft length (default 4)\n"
            "  --spec-min-p <p>           Speculative min probability (default 0.5)\n"
            "  --rope-scaling <s>         none|linear|yarn: a --max-context past the model's trained context\n"
@@ -114,6 +117,14 @@ int parse_model_option(int argc, char** argv, int& i, ModelOptions& o, const cha
         }
     } else if (a == "--prefill") {
         o.prefill = next("--prefill");
+    } else if (a == "--prefill-rows") {
+        const std::string value = next("--prefill-rows");
+        size_t used = 0;
+        o.prefill_rows = std::stoll(value, &used);
+        if (used != value.size() || o.prefill_rows < 0) {
+            std::fprintf(stderr, "--prefill-rows requires a token count (0: off)\n");
+            return 2;
+        }
     } else if (a == "--spec") {
         o.spec = std::stoi(next("--spec"));
     } else if (a == "--spec-min-p") {
@@ -235,6 +246,7 @@ int load_model(ModelOptions& o, const char* program, LoadedModel& out) {
     if (!o.decode_strategy.empty())
         plan.decode_strategy = o.decode_strategy; // checked by the model load
     plan.mtp_optional = o.mtp_optional;
+    plan.prefill_rows = o.prefill_rows;
 
     // Model Paths
     ModelPaths paths;

@@ -88,6 +88,12 @@ public:
     /// #583: the auto chunk scan's byte-budget ring, for chunks above `small_max` (0.1.39's auto chunk: a prompt that
     /// fits it keeps 0.1.39's ring).  0 slots = none.  A layer split's set_ring_override and GUILD_PREFILL_RING win.
     static void set_ring_budget(int slots, int64_t small_max);
+    /// --prefill-rows: chunks of more than `rows` tokens computed as chunks of `rows` tokens (every product in slices
+    /// of at most `rows` rows, and the expert ring a `rows`-token chunk takes), the experts streamed once a chunk.  On
+    /// a GPU whose MMQ expert products do not depend on how many rows an expert has (llama.cpp's MMQ without stream-k:
+    /// Pascal), a chunk computes what its `rows`-token chunks compute (GTX 1070, Qwen3.8-Flash-Next: 1024-token chunks
+    /// with rows 512 gave the 512-token chunks' residuals and text bit for bit).  0: off.  Set before `init`.
+    static void set_rows(int64_t rows);
 
     /// Device bytes `init` needs for a chunk of `chunk` tokens (what a borrowed region must hold).
     static uint64_t bytes_needed(const core::ModelGeometry& g, const core::SessionState& ss, int64_t chunk);
