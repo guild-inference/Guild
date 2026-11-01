@@ -20,6 +20,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -233,7 +234,11 @@ int main() {
         const int64_t rows_after_1 = get_rows();
         std::cerr << "[ornith_gkernel_plugin_test] External CUDA router calls=" << calls_after_1
                   << ", token_rows=" << rows_after_1 << "\n";
-        CHECK(calls_after_1 == 40);
+        // the batched prefill runs a chunk as two halves of rows (a router call each a layer) unless
+        // GUILD_PREFILL_PAIRS=0 or the chunk is one row
+        const char* pairs_env = std::getenv("GUILD_PREFILL_PAIRS");
+        const bool halves = !(pairs_env && std::atoi(pairs_env) == 0) && telem.prompt_tokens - 1 >= 2;
+        CHECK(calls_after_1 == 40 * (halves ? 2 : 1));
         CHECK(rows_after_1 == 40 * (static_cast<int64_t>(telem.prompt_tokens) - 1));
         ::dlclose(h);
 
