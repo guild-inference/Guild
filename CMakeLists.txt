@@ -1180,6 +1180,19 @@ if(NOT GUILD_BUILTIN_CPU)
   target_compile_definitions(guild_runtime PRIVATE GUILD_NO_BUILTIN_FULL_CPU=1)
 endif()
 
+# audio in, log-mel features out (the speech models' front end, CPU): every float32 step rounds on its own
+add_library(guild_audio STATIC src/audio/frontend.cpp)
+target_include_directories(guild_audio PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(guild_audio PUBLIC guild_warnings)
+if(NOT MSVC)
+  set_source_files_properties(src/audio/frontend.cpp PROPERTIES COMPILE_OPTIONS "-ffp-contract=off")
+endif()
+if(GUILD_BUILD_TESTS)
+  add_executable(audio_frontend_test tests/core/audio_frontend_test.cpp)
+  target_link_libraries(audio_frontend_test PRIVATE guild_audio)
+  add_test(NAME audio_frontend_test COMMAND audio_frontend_test)
+endif()
+
 # typed decisions from a decision checkpoint's next-token logits (StartLux-Decision): rendering and readout
 add_library(guild_decision STATIC src/decision/decision.cpp)
 target_link_libraries(guild_decision PUBLIC guild_runtime guild_warnings)
