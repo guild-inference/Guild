@@ -219,6 +219,17 @@ http://127.0.0.1:11434/v1
 
 Supported API functionality is still evolving.
 
+### Prompt chunks on an 8 GB card
+
+Qwen3.8-Flash-Next reads a prompt in chunks, and every chunk streams the routed experts the GPU does not hold over
+PCIe (on a GTX 1070, all 55 GiB of the UD-IQ4_XS experts a chunk). An 8 GB card gets 512-token chunks.
+`--prefill 1024 --prefill-rows 512` streams them once for 1024 tokens and computes each half as a 512-token chunk
+(every product in 512-row slices, the 512-token chunk's expert path), so it gives the 512-token chunks' results bit
+for bit where the expert products do not depend on how many rows an expert has (llama.cpp's MMQ without stream-k,
+as on Pascal). On a GTX 1070 + dual Xeon Gold 6130, a 4,007-token prompt 53.8 -> 35.6 s at a 32k context and
+54.4 -> 36.2 s at 262k with the host-only KV cache, the same 256 tokens after it
+([bench/results/2026-11-01-qwen-glm-pass3](bench/results/2026-11-01-qwen-glm-pass3/README.md)).
+
 ### Ornith-1.5-35B with its MTP draft layer
 
 Ornith's GGUF ships a multi-token-prediction layer that drafts tokens for the verify window. Write it in the
