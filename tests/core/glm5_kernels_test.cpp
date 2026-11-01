@@ -549,6 +549,97 @@ static void test_attend_staged() {
     cudaFreeHost(far);
 }
 
+// one-token queries through the row cache (kv_cache_rows): eight steps whose selections overlap (each replaces ~10%
+// of the last one's cells), some cells written again (and forgotten) between steps, against attention over the whole
+// cache in VRAM: the same bits every step
+static void test_row_cache() {
+    const int AH = 64, L = 512, cells = 6000, near = 2304, n_max = 2052, n = 2048;
+    std::vector<__half> kvh((size_t) cells * L);
+    auto fill = [&](int c) {
+        const auto r = rnd(L);
+        for (int d = 0; d < L; ++d)
+            kvh[(size_t) c * L + d] = __float2half(r[(size_t) d]);
+    };
+    for (int c = 0; c < cells; ++c)
+        fill(c);
+    __half *dc = nullptr, *dnear = nullptr, *rows = nullptr;
+    cudaMalloc(&dc, kvh.size() * 2);
+    cudaMalloc(&dnear, (size_t) near * L * 2);
+    cudaMalloc(&rows, (size_t) n_max * L * 2);
+    void *far = nullptr, *dfar = nullptr;
+    cudaHostAlloc(&far, (size_t) (cells - near) * L * 2, cudaHostAllocMapped);
+    cudaHostGetDevicePointer(&dfar, far, 0);
+    auto upload = [&]() {
+        cudaMemcpy(dc, kvh.data(), kvh.size() * 2, cudaMemcpyHostToDevice);
+        cudaMemcpy(dnear, kvh.data(), (size_t) near * L * 2, cudaMemcpyHostToDevice);
+        std::memcpy(far, kvh.data() + (size_t) near * L, (size_t) (cells - near) * L * 2);
+    };
+    upload();
+    int32_t *slot_cell, *cell_slot, *rsel, *misses, *dsel, *dn;
+    cudaMalloc(&slot_cell, n_max * 4);
+    cudaMalloc(&cell_slot, cells * 4);
+    cudaMalloc(&rsel, n_max * 4);
+    cudaMalloc(&misses, (2 * n_max + 1) * 4);
+    cudaMalloc(&dsel, n_max * 4);
+    cudaMalloc(&dn, 4);
+    cudaMemset(slot_cell, 0xff, n_max * 4);
+    cudaMemset(cell_slot, 0xff, cells * 4);
+    float *dlat, *dpart;
+    cudaMalloc(&dlat, (size_t) AH * L * 4);
+    cudaMalloc(&dpart, (size_t) k::attend_scratch_floats(cells, AH, L, 1) * 4);
+    std::vector<int32_t> sel;
+    std::vector<char> in((size_t) cells, 0);
+    std::uniform_int_distribution<int> any(0, cells - 1);
+    while ((int) sel.size() < n) {
+        const int c = any(rng);
+        if (!in[(size_t) c]) {
+            in[(size_t) c] = 1;
+            sel.push_back(c);
+        }
+    }
+    int same = 0;
+    for (int step = 0; step < 8; ++step) {
+        if (step > 0) {
+            for (int r = 0; r < n / 10; ++r) { // ~10% of the cells change
+                int c;
+                do
+                    c = any(rng);
+                while (in[(size_t) c]);
+                const size_t i = (size_t) any(rng) % sel.size();
+                in[(size_t) sel[i]] = 0;
+                in[(size_t) c] = 1;
+                sel[i] = c;
+            }
+            for (int r = 0; r < 40; ++r) { // and some cells are written again, selected or not
+                const int c = r < 20 ? sel[(size_t) any(rng) % sel.size()] : any(rng);
+                fill(c);
+                k::kv_cache_forget(cell_slot, c, 1, nullptr);
+            }
+            upload();
+        }
+        cudaMemcpy(dsel, sel.data(), (size_t) n * 4, cudaMemcpyHostToDevice);
+        const int32_t nn = n;
+        cudaMemcpy(dn, &nn, 4, cudaMemcpyHostToDevice);
+        auto q = rnd((size_t) AH * L);
+        float* dq = up(q);
+        k::mla_attend(dq, dc, cells - 1, AH, L, 1, 0.05f, dsel, dn, n_max, dlat, dpart, nullptr);
+        const auto want = down(dlat, (size_t) AH * L);
+        k::kv_cache_rows(dnear, near, dfar, dsel, dn, n_max, rows, slot_cell, cell_slot, rsel, misses, L, nullptr);
+        k::mla_attend(dq, rows, cells - 1, AH, L, 1, 0.05f, rsel, dn, n_max, dlat, dpart, nullptr);
+        same += std::memcmp(want.data(), down(dlat, (size_t) AH * L).data(), want.size() * 4) == 0;
+        int32_t nmiss = 0;
+        cudaMemcpy(&nmiss, misses + 2 * n_max, 4, cudaMemcpyDeviceToHost);
+        if (step == 7)
+            std::printf("  row cache, step 8: %d of %d cells copied\n", nmiss, n);
+        cudaFree(dq);
+    }
+    same_attend("mla_attend through the row cache, 8 steps", {(float) same}, {8.f});
+    for (void* p : {(void*) dc, (void*) dnear, (void*) rows, (void*) slot_cell, (void*) cell_slot, (void*) rsel,
+                    (void*) misses, (void*) dsel, (void*) dn, (void*) dlat, (void*) dpart})
+        cudaFree(p);
+    cudaFreeHost(far);
+}
+
 // `glm5_kernels_test attend`: mla_attend over 2,048 selected cells of a long context, legacy and new, and the
 // gather of those rows from mapped host memory
 static int bench_attend() {
@@ -1259,6 +1350,7 @@ int main(int argc, char** argv) {
     test_narrow();
     test_indexer();
     test_attend_staged();
+    test_row_cache();
     const cudaError_t e = cudaDeviceSynchronize();
     if (e != cudaSuccess) {
         std::printf("CUDA error: %s\n", cudaGetErrorString(e));

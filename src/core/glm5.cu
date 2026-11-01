@@ -861,20 +861,23 @@ __global__ void __launch_bounds__(256)
             out[2 + lane + 32 * k] = acc[k];
 }
 
-// mla_attend_k's arithmetic with fewer instructions and three blocks an SM: a chunk's rows go to shared memory as
-// floats, lane l's values (dims l, l + 32, ...) side by side, so a lane reads a cell's values in four 16-byte loads
-// instead of sixteen 2-byte loads and conversions; its 16-byte piece k lies at k ^ ((l >> 1) & 3), so a quarter
-// warp's reads hit 32 banks without padding (32 KiB a block).  The rows are read from global memory 16 bytes a thread.
-// Every product, sum and softmax step is mla_attend_k's, in its order.  GTX 1070, 2,048 selected cells, 64 heads:
-// 680 -> 367 us for a token, 64.0 -> 39.2 ms for 128 (glm5_kernels_test attend; padded and unbounded: 413 us).
-__device__ __forceinline__ int lane_at(int lane, int k) { // k: a value's index in the lane (0 .. PER - 1)
-    return lane * (kMaxL / 32) + ((((k >> 2) ^ ((lane >> 1) & 3)) << 2) | (k & 3));
+// mla_attend_k's arithmetic with fewer instructions: a chunk's rows go to shared memory as they are (FP16), lane l's
+// values (dims l, l + 32, ...) side by side, so a lane reads a cell's 16 values in two 16-byte loads (piece p at
+// p ^ ((l >> 2) & 1), so a quarter warp's reads hit 32 banks) instead of sixteen 2-byte loads, and converts them to
+// float (exactly) as mla_attend_k does; the rows are read from global memory 16 bytes a thread.  Every product, sum
+// and softmax step is mla_attend_k's, in its order.  16 KiB a block; kMinB blocks an SM (80 or 64 registers).  GTX
+// 1070, 2,048 selected cells, 64 heads (glm5_kernels_test attend): a token 680 -> 331 us with three blocks (357 with
+// four), 128 tokens 64.6 -> 32.2 ms with four (34.0 with three).  Tried: the rows as floats (32 KiB, three blocks):
+// 367 us and 39.3 ms.
+__device__ __forceinline__ int lane_at_h(int lane, int k) { // k: a value's index in the lane (0 .. PER - 1)
+    return lane * (kMaxL / 32) + ((((k >> 3) ^ ((lane >> 2) & 1)) << 3) | (k & 7));
 }
-__global__ void __launch_bounds__(256, 3)
+template <int kMinB>
+__global__ void __launch_bounds__(256, kMinB)
     mla_attend2_k(const float* q, const __half* cache, int64_t pos0, int H, int L, float scale, const int32_t* sel,
                   const int32_t* n_sel, int sel_stride, int kSplits, float* part) {
     constexpr int PER = kMaxL / 32;
-    __shared__ __align__(16) float kv_s[kCh][32 * PER];
+    __shared__ __align__(16) __half kv_s[kCh][32 * PER];
     const int split = blockIdx.x, hg = blockIdx.y, t = blockIdx.z;
     const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
     const int h = hg * kHg + warp;
@@ -895,13 +898,13 @@ __global__ void __launch_bounds__(256, 3)
         const int nc = min(kCh, c1 - cb);
         __syncthreads();
         for (int i = threadIdx.x; i < nc * n8; i += blockDim.x) {
-            const int c = i / n8, d = (i - c * n8) * 8; // dims d .. d + 7: lanes d % 32 .., value d / 32
+            const int c = i / n8, d = (i - c * n8) * 8;
             const int cell = tsel ? tsel[cb + c] : cb + c;
             const uint4 v = *(const uint4*) (cache + (size_t) cell * L + d);
             const __half* hv = (const __half*) &v;
 #pragma unroll
             for (int j = 0; j < 8; ++j)
-                kv_s[c][lane_at((d & 31) + j, d >> 5)] = __half2float(hv[j]);
+                kv_s[c][lane_at_h((d & 31) + j, d >> 5)] = hv[j];
         }
         __syncthreads();
         float s[kCh];
@@ -910,14 +913,14 @@ __global__ void __launch_bounds__(256, 3)
         for (int c = 0; c < kCh; ++c) {
             float v = 0.f;
             if (c < nc) {
-                float kv[PER];
-#pragma unroll
-                for (int k = 0; k < PER / 4; ++k)
-                    *(float4*) &kv[4 * k] = *(const float4*) &kv_s[c][lane_at(lane, 4 * k)];
+                const uint4 p0 = *(const uint4*) &kv_s[c][lane_at_h(lane, 0)];
+                const uint4 p1 = *(const uint4*) &kv_s[c][lane_at_h(lane, 8)];
+                const __half* h0 = (const __half*) &p0;
+                const __half* h1 = (const __half*) &p1;
 #pragma unroll
                 for (int k = 0; k < PER; ++k)
                     if (k < nl)
-                        v += qr[k] * kv[k];
+                        v += qr[k] * __half2float(k < 8 ? h0[k] : h1[k - 8]);
                 v = warp_sum(v);
                 mx = fmaxf(mx, v);
             }
@@ -934,14 +937,14 @@ __global__ void __launch_bounds__(256, 3)
                 break;
             const float p = expf(s[c] - mx);
             l += p;
-            float kv[PER];
-#pragma unroll
-            for (int k = 0; k < PER / 4; ++k)
-                *(float4*) &kv[4 * k] = *(const float4*) &kv_s[c][lane_at(lane, 4 * k)];
+            const uint4 p0 = *(const uint4*) &kv_s[c][lane_at_h(lane, 0)];
+            const uint4 p1 = *(const uint4*) &kv_s[c][lane_at_h(lane, 8)];
+            const __half* h0 = (const __half*) &p0;
+            const __half* h1 = (const __half*) &p1;
 #pragma unroll
             for (int k = 0; k < PER; ++k)
                 if (k < nl)
-                    acc[k] += p * kv[k];
+                    acc[k] += p * __half2float(k < 8 ? h0[k] : h1[k - 8]);
         }
         m = mx;
     }
@@ -1740,6 +1743,86 @@ void kv_gather_union(const void* near, int64_t n_near, const void* far, const in
     cudaMemsetAsync(mask, 0, (size_t) nw * 4, S(st));
 }
 
+// one block: each selected cell's slot (a hit keeps its own; a miss takes one no hit holds, in slot order), the
+// misses listed for rc_rows_k
+__global__ void __launch_bounds__(1024)
+    rc_plan_k(const int32_t* sel, const int32_t* n_sel, int slots, int32_t* slot_cell, int32_t* cell_slot,
+              int32_t* out_sel, int32_t* misses) {
+    extern __shared__ uint32_t used[]; // a bit a slot
+    __shared__ int tot[2];
+    const int n = n_sel[0], tid = threadIdx.x, nt = blockDim.x, words = (slots + 31) / 32;
+    for (int w = tid; w < words; w += nt)
+        used[w] = 0;
+    __syncthreads();
+    // hits: each thread a contiguous range of the selection
+    const int per = (n + nt - 1) / nt, i0 = min(n, tid * per), i1 = min(n, i0 + per);
+    int miss = 0;
+    for (int i = i0; i < i1; ++i) {
+        const int c = sel[i], s = cell_slot[c];
+        const bool hit = s >= 0 && s < slots && slot_cell[s] == c;
+        out_sel[i] = hit ? s : -1;
+        if (hit)
+            atomicOr(&used[s >> 5], 1u << (s & 31));
+        miss += !hit;
+    }
+    __syncthreads();
+    // the free slots, in slot order: each thread a contiguous range of the slots
+    const int sper = (slots + nt - 1) / nt, s0 = min(slots, tid * sper), s1 = min(slots, s0 + sper);
+    int nfree = 0;
+    for (int s = s0; s < s1; ++s)
+        nfree += !((used[s >> 5] >> (s & 31)) & 1u);
+    int o_miss = miss, o_free = nfree;
+    block_scan2(o_miss, o_free, tot);
+    // the k-th free slot to the k-th miss: the free slots first listed at misses[slots + k]
+    int32_t* free_list = misses + slots;
+    for (int s = s0; s < s1; ++s)
+        if (!((used[s >> 5] >> (s & 31)) & 1u))
+            free_list[o_free++] = s;
+    __syncthreads();
+    for (int i = i0; i < i1; ++i)
+        if (out_sel[i] < 0) {
+            const int c = sel[i], s = free_list[o_miss];
+            misses[o_miss++] = c;
+            out_sel[i] = s;
+            slot_cell[s] = c;
+            cell_slot[c] = s;
+        }
+    if (tid == 0)
+        misses[2 * slots] = tot[0];
+}
+
+// a warp a missed row, into its slot (out_sel tells which: the misses are in selection order, so walk them again)
+__global__ void rc_rows_k(const __half* near, int64_t n_near, const __half* far, const int32_t* misses,
+                          const int32_t* cell_slot, int slots, __half* rows, int L) {
+    const int r = blockIdx.x * 8 + (threadIdx.x >> 5), lane = threadIdx.x & 31;
+    if (r >= misses[2 * slots])
+        return;
+    const int64_t cell = misses[r];
+    const uint4* src = (const uint4*) (cell < n_near ? near + cell * L : far + (cell - n_near) * L);
+    uint4* dst = (uint4*) (rows + (size_t) cell_slot[cell] * L);
+    for (int k = lane; k < L / 8; k += 32)
+        dst[k] = src[k];
+}
+
+void kv_cache_rows(const void* near, int64_t n_near, const void* far, const int32_t* sel, const int32_t* n_sel,
+                   int slots, void* rows, int32_t* slot_cell, int32_t* cell_slot, int32_t* out_sel, int32_t* misses,
+                   int L, void* st) {
+    rc_plan_k<<<1, 1024, (size_t) (slots + 31) / 32 * 4, S(st)>>>(sel, n_sel, slots, slot_cell, cell_slot, out_sel,
+                                                                  misses);
+    rc_rows_k<<<(slots + 7) / 8, 256, 0, S(st)>>>((const __half*) near, n_near, (const __half*) far, misses, cell_slot,
+                                                  slots, (__half*) rows, L);
+}
+
+__global__ void rc_forget_k(int32_t* cell_slot, int64_t c0, int n) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n)
+        cell_slot[c0 + i] = -1;
+}
+
+void kv_cache_forget(int32_t* cell_slot, int64_t c0, int n, void* st) {
+    rc_forget_k<<<(n + 255) / 256, 256, 0, S(st)>>>(cell_slot, c0, n);
+}
+
 void kv_store(const float* kv, void* cache, int64_t pos0, int L, int T, void* st) {
     kv_store_k<<<(L * T + 255) / 256, 256, 0, S(st)>>>(kv, (__half*) cache, pos0, L, T);
 }
@@ -1757,9 +1840,12 @@ void mla_attend(const float* q, const void* cache, int64_t pos0, int H, int L, i
     if (legacy)
         mla_attend_k<<<dim3(splits, H / kHg, T), 256, 0, S(st)>>>(q, (const __half*) cache, pos0, H, L, scale, sel,
                                                                   n_sel, sel_stride, splits, part);
+    else if (splits * (H / kHg) * T >= 256) // a long launch: four blocks an SM (a decode step's 128: three)
+        mla_attend2_k<4><<<dim3(splits, H / kHg, T), 256, 0, S(st)>>>(q, (const __half*) cache, pos0, H, L, scale, sel,
+                                                                      n_sel, sel_stride, splits, part);
     else
-        mla_attend2_k<<<dim3(splits, H / kHg, T), 256, 0, S(st)>>>(q, (const __half*) cache, pos0, H, L, scale, sel,
-                                                                   n_sel, sel_stride, splits, part);
+        mla_attend2_k<3><<<dim3(splits, H / kHg, T), 256, 0, S(st)>>>(q, (const __half*) cache, pos0, H, L, scale, sel,
+                                                                      n_sel, sel_stride, splits, part);
     mla_reduce_k<<<dim3(H, T), 256, 0, S(st)>>>(part, lat, H, L, splits);
 }
 

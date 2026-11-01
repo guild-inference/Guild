@@ -101,6 +101,16 @@ void kv_gather_union(const void* near, int64_t n_near, const void* far, const in
 inline int64_t union_mask_words(int64_t n_cells) {
     return (n_cells + 31) / 32;
 }
+/// A decode step's row cache (one a DSA layer): `slots` rows of L FP16 at `rows`; slot_cell[s] the cell slot s holds
+/// (-1: none), cell_slot[c] the slot cell c was last put in (valid only when slot_cell agrees; -1 at first).  For one
+/// query's selection (sel, n_sel[0] cells, n_sel[0] <= slots): every selected cell keeps its slot when cached, the
+/// others take slots no selected cell holds and their rows are copied in (near / far as in kv_gather), and
+/// out_sel[i] = the slot of sel[i].  Scratch: misses (2 * slots int32 and 1 more).
+void kv_cache_rows(const void* near, int64_t n_near, const void* far, const int32_t* sel, const int32_t* n_sel,
+                   int slots, void* rows, int32_t* slot_cell, int32_t* cell_slot, int32_t* out_sel, int32_t* misses,
+                   int L, void* st);
+/// cell_slot[c] = -1 for cells [c0, c0 + n): their rows were written again
+void kv_cache_forget(int32_t* cell_slot, int64_t c0, int n, void* st);
 
 // ---- the DSA indexer (pools of kKpool cells; cell = position) ----
 inline constexpr int kKpool = 4, kIdxDim = 128;
