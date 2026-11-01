@@ -4,7 +4,8 @@
 // without AVX-512BW.
 //
 //   glm5_nl4_test [--bench]                 one thread's GB/s of rows, AVX-2 against AVX-512, 1/2/4 tokens
-//   glm5_nl4_test --dram [threads] [tokens]  threads 0 .. threads - 1 each streaming 128 MB of its own rows
+//   glm5_nl4_test --dram [threads] [tokens] [item rows]  threads 0 .. threads - 1 each streaming 128 MB of its own
+//                                                        rows (in items of that many rows in a shuffled order)
 #include "guild/core/glm5_nl4.hpp"
 
 #include <algorithm>
@@ -125,6 +126,9 @@ int main(int argc, char** argv) {
     }
     if (argc > 1 && std::string(argv[1]) == "--dram") {
         const int threads = argc > 2 ? std::atoi(argv[2]) : 32, nt = argc > 3 ? std::atoi(argv[3]) : 2;
+        // [item rows]: the rows in items of that many, visited in a shuffled order (the expert phases' pattern)
+        const int item = argc > 4 ? std::atoi(argv[4]) : 64;
+        const bool shuffled = argc > 4;
         const bool avx2 = std::getenv("NL4_TEST_AVX2") != nullptr;
         const int rows = (int) ((size_t) 128 << 20) / (int) rb; // 128 MB a thread
         std::vector<std::thread> th;
@@ -147,10 +151,15 @@ int main(int argc, char** argv) {
                 }
                 ready.fetch_add(1);
                 while (ready.load() < threads) {}
+                std::vector<int> order;
+                for (int rr = 0; rr < rows; rr += item)
+                    order.push_back(rr);
+                if (shuffled)
+                    std::shuffle(order.begin(), order.end(), r);
                 const auto t0 = std::chrono::steady_clock::now();
                 for (int k = 0; k < 3; ++k)
-                    for (int rr = 0; rr < rows; rr += 64)
-                        (avx2 ? nl4_rows_avx2 : nl4_rows)(w.data(), rb, n, act, nt, out, rr, std::min(rr + 64, rows));
+                    for (int rr : order)
+                        (avx2 ? nl4_rows_avx2 : nl4_rows)(w.data(), rb, n, act, nt, out, rr, std::min(rr + item, rows));
                 gbs[(size_t) i] = 3.0 * (double) w.size() /
                                   std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
             });
