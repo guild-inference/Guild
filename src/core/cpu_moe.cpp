@@ -2,6 +2,7 @@
 #include "guild/core/cpu_moe.hpp"
 
 #include "guild/core/glm5_nl4.hpp"
+#include "guild/core/q8_0_rows512.hpp"
 #include "guild/kernels/cpu/expert.hpp"
 #include "guild/kernels/cpu/features.hpp"
 #include "guild/kernels/cpu/iq_avx2.hpp"
@@ -371,7 +372,9 @@ void Experts::run(Pool& pool, int64_t N, int T, int max_t, const int32_t* ids, c
     // FFN for every token).  Units: (group, token) pairs, each with its hidden activation.
     struct Group {
         CpuFfn f;
-        std::vector<int> units; // indices into `unit_t` / `unit_w`
+        std::vector<int> units;          // indices into `unit_t` / `unit_w`
+        std::vector<int> gu_c, d_c;      // the units' chunks for gate/up and for down: [c[i], c[i + 1])
+        std::vector<size_t> gu_pk, d_pk; // q8_0_rows512's rows: each chunk's packed activations in pkbuf_ (else empty)
     };
     std::vector<Group> groups;
     std::vector<int> unit_t, unit_g;
@@ -431,11 +434,29 @@ void Experts::run(Pool& pool, int64_t N, int T, int max_t, const int32_t* ids, c
         phase_ms[k] += std::chrono::duration<double, std::milli>(now - tp).count();
         tp = now;
     };
-    actbuf_.resize(total + 64);
-    for (const auto& kv : act_off) {
-        const int at = kv.first / max_t, t = kv.first % max_t;
-        from_float_of(at)(x + (size_t) t * N, actbuf_.data() + kv.second, N);
-    }
+    if (timing)
+        for (const Group& gr : groups)
+            weight_bytes += (double) gr.f.n_ff * (double) gr.f.gu_row * (gr.f.act == CpuFfn::ReLU2 ? 1 : 2) +
+                            (double) N * (double) gr.f.d_row;
+    // a few rows or chunks (a decode step's) on this thread, a prompt window's across the pool
+    auto each = [&](int n, size_t bytes, const std::function<void(int)>& f) {
+        if (bytes < (size_t) 1 << 18)
+            for (int i = 0; i < n; ++i)
+                f(i);
+        else
+            pool.run(n, f);
+    };
+    // the buffers only grow: resize() zero-fills what it adds, megabytes on this thread after a smaller window
+    auto grow = [](std::vector<uint8_t>& v, size_t n) {
+        if (v.size() < n)
+            v.resize(n);
+    };
+    grow(actbuf_, total + 64);
+    const std::vector<std::pair<int, size_t>> act_rows(act_off.begin(), act_off.end());
+    each((int) act_rows.size(), total, [&](int i) {
+        const int at = act_rows[(size_t) i].first / max_t, t = act_rows[(size_t) i].first % max_t;
+        from_float_of(at)(x + (size_t) t * N, actbuf_.data() + act_rows[(size_t) i].second, N);
+    });
     std::vector<size_t> h_off((size_t) U + 1, 0), hq_off((size_t) U + 1, 0);
     for (int u = 0; u < U; ++u) {
         const CpuFfn& f = groups[(size_t) unit_g[(size_t) u]].f;
@@ -443,8 +464,8 @@ void Experts::run(Pool& pool, int64_t N, int T, int max_t, const int32_t* ids, c
         const int dt = (int) cpu_traits(f.d_type)->vec_dot_type;
         hq_off[(size_t) u + 1] = hq_off[(size_t) u] + ggml_row_size((ggml_type) dt, f.n_ff);
     }
-    hbuf_.resize(h_off[(size_t) U] * 4);
-    hqbuf_.resize(hq_off[(size_t) U] + 64);
+    grow(hbuf_, h_off[(size_t) U] * 4);
+    grow(hqbuf_, hq_off[(size_t) U] + 64);
     float* hv = (float*) hbuf_.data();
 
     // the multi-token row kernel for a weight type, or null (ggml-cpu's single-token dot then)
@@ -458,7 +479,7 @@ void Experts::run(Pool& pool, int64_t N, int T, int max_t, const int32_t* ids, c
             return &kcpu::kq256_rows;
         return nullptr;
     };
-    constexpr int RB = 64, MT = kcpu::MAXT;
+    constexpr int RB = 64, MT = kQ8Rows512MaxT > kcpu::MAXT ? kQ8Rows512MaxT : kcpu::MAXT;
     // a down item's rows: with 64 a phase's last items kept a few threads busy while the rest waited (2x Xeon Gold
     // 6130, 32 threads: a thread's last item ended 35 us before the phase on average, 16 us with 16 rows)
     constexpr int DRB = 16;
@@ -466,6 +487,44 @@ void Experts::run(Pool& pool, int64_t N, int T, int max_t, const int32_t* ids, c
     // short items (2x Xeon Gold 6130: CPU experts -0.9 ms a 2-token step)
     constexpr int kTail = 16, GTR = RB / 4, DTR = DRB / 4;
 
+    // Q8_0 rows go through q8_0_rows512 in any window (each token's result is bitwise ggml-cpu's dot product), a chunk
+    // of up to kQ8Rows512MaxT tokens at a time, as even as they come, packed once: for gate/up here, for down with the
+    // hidden activations.  Other rows keep chunks of kcpu::MAXT tokens.
+    const bool q8 = q8_0_rows512_ok();
+    auto chunks = [](size_t units, size_t most, bool even, std::vector<int>& c) {
+        const size_t k = (units + most - 1) / most;
+        c.assign(1, 0);
+        for (size_t i = 1; i <= k; ++i)
+            c.push_back((int) (even ? units * i / k : std::min(units, i * most)));
+    };
+    size_t pk_bytes = 0;
+    std::vector<std::pair<int, int>> gu_pack, d_pack; // (group, chunk)
+    for (int gi = 0; gi < (int) groups.size(); ++gi) {
+        Group& gr = groups[(size_t) gi];
+        const bool pg = q8 && gr.f.gu_type == (int) GGML_TYPE_Q8_0, pd = q8 && gr.f.d_type == (int) GGML_TYPE_Q8_0;
+        chunks(gr.units.size(), pg ? kQ8Rows512MaxT : kcpu::MAXT, pg, gr.gu_c);
+        chunks(gr.units.size(), pd ? kQ8Rows512MaxT : kcpu::MAXT, pd, gr.d_c);
+        for (size_t c = 0; pg && c + 1 < gr.gu_c.size(); ++c) {
+            gr.gu_pk.push_back(pk_bytes);
+            pk_bytes += q8_0_packed_bytes((int) N, gr.gu_c[c + 1] - gr.gu_c[c]);
+            gu_pack.emplace_back(gi, (int) c);
+        }
+        for (size_t c = 0; pd && c + 1 < gr.d_c.size(); ++c) {
+            gr.d_pk.push_back(pk_bytes);
+            pk_bytes += q8_0_packed_bytes((int) gr.f.n_ff, gr.d_c[c + 1] - gr.d_c[c]);
+            d_pack.emplace_back(gi, (int) c);
+        }
+    }
+    grow(pkbuf_, pk_bytes + 64);
+    uint8_t* pk = pkbuf_.data() + (64 - (uintptr_t) pkbuf_.data() % 64) % 64;
+    each((int) gu_pack.size(), pk_bytes, [&](int i) {
+        const Group& gr = groups[(size_t) gu_pack[(size_t) i].first];
+        const int c = gu_pack[(size_t) i].second, c0 = gr.gu_c[(size_t) c], nt = gr.gu_c[(size_t) c + 1] - c0;
+        const void* act[MT];
+        for (int k = 0; k < nt; ++k)
+            act[k] = actbuf_.data() + act_at[(size_t) gr.units[(size_t) (c0 + k)]];
+        q8_0_pack(act, nt, (int) N, pk + gr.gu_pk[(size_t) c]);
+    });
     lap(0);
     // phase 1: gate/up, each row block on the queue of the node that holds it
     struct Item {
@@ -530,8 +589,9 @@ void Experts::run(Pool& pool, int64_t N, int T, int max_t, const int32_t* ids, c
         const ggml_type_traits_cpu* tr = nl4 ? nullptr : cpu_traits(f.gu_type);
         const RowsFn mt = !nl4 && !single && gr.units.size() >= 2 ? multi(f.gu_type) : nullptr;
         float gbuf[MT][RB], ubuf[MT][RB];
-        for (size_t c0 = 0; c0 < gr.units.size(); c0 += MT) {
-            const int nt = (int) std::min<size_t>(MT, gr.units.size() - c0);
+        for (size_t c = 0; c + 1 < gr.gu_c.size(); ++c) {
+            const size_t c0 = (size_t) gr.gu_c[c];
+            const int nt = gr.gu_c[c + 1] - (int) c0;
             const void* act[MT];
             float* go[MT];
             float* uo[MT];
@@ -540,7 +600,12 @@ void Experts::run(Pool& pool, int64_t N, int T, int max_t, const int32_t* ids, c
                 go[k] = gbuf[k] - r0; // the kernels index outputs by row
                 uo[k] = ubuf[k] - r0;
             }
-            if (nl4) {
+            if (!gr.gu_pk.empty()) {
+                if (gated)
+                    q8_0_rows512(wg, f.gu_row, (int) N, pk + gr.gu_pk[c], nt, go, r0, r1, wu + (size_t) r0 * f.gu_row,
+                                 f.gu_row);
+                q8_0_rows512(wu, f.gu_row, (int) N, pk + gr.gu_pk[c], nt, uo, r0, r1);
+            } else if (nl4) {
                 if (gated)
                     glm5cpu::nl4_rows(wg, f.gu_row, (int) N, act, nt, go, r0, r1);
                 glm5cpu::nl4_rows(wu, f.gu_row, (int) N, act, nt, uo, r0, r1);
@@ -590,13 +655,37 @@ void Experts::run(Pool& pool, int64_t N, int T, int max_t, const int32_t* ids, c
         }
     });
     lap(1);
-    // the hidden activations, unless gate/up quantized them
-    if (!fuse)
-        pool.run(U, [&](int u) {
-            const CpuFfn& f = groups[(size_t) unit_g[(size_t) u]].f;
-            from_float_of((int) cpu_traits(f.d_type)->vec_dot_type)(hv + h_off[(size_t) u],
-                                                                    hqbuf_.data() + hq_off[(size_t) u], f.n_ff);
+    // the hidden activations, unless gate/up quantized them, and the down chunks q8_0_rows512 reads packed
+    auto quantize = [&](int u) {
+        const CpuFfn& f = groups[(size_t) unit_g[(size_t) u]].f;
+        from_float_of((int) cpu_traits(f.d_type)->vec_dot_type)(hv + h_off[(size_t) u],
+                                                                hqbuf_.data() + hq_off[(size_t) u], f.n_ff);
+    };
+    auto pack_down = [&](const Group& gr, int c) {
+        const int c0 = gr.d_c[(size_t) c], nt = gr.d_c[(size_t) c + 1] - c0;
+        const void* hq[MT];
+        for (int k = 0; k < nt; ++k)
+            hq[k] = hqbuf_.data() + hq_off[(size_t) gr.units[(size_t) (c0 + k)]];
+        q8_0_pack(hq, nt, (int) gr.f.n_ff, pk + gr.d_pk[(size_t) c]);
+    };
+    if (!fuse) {
+        // a task per down chunk: its units quantized, then packed
+        std::vector<std::pair<int, int>> tasks;
+        for (int gi = 0; gi < (int) groups.size(); ++gi)
+            for (int c = 0; c + 1 < (int) groups[(size_t) gi].d_c.size(); ++c)
+                tasks.emplace_back(gi, c);
+        pool.run((int) tasks.size(), [&](int i) {
+            const Group& gr = groups[(size_t) tasks[(size_t) i].first];
+            const int c = tasks[(size_t) i].second;
+            for (int k = gr.d_c[(size_t) c]; k < gr.d_c[(size_t) c + 1]; ++k)
+                quantize(gr.units[(size_t) k]);
+            if (!gr.d_pk.empty())
+                pack_down(gr, c);
         });
+    } else if (!d_pack.empty()) {
+        each((int) d_pack.size(), pk_bytes,
+             [&](int i) { pack_down(groups[(size_t) d_pack[(size_t) i].first], d_pack[(size_t) i].second); });
+    }
     lap(2);
     // phase 2: down rows, summed over each token's units; the first half of the rows on node 0 (where the split puts
     // them), the second on node 1
@@ -626,12 +715,14 @@ void Experts::run(Pool& pool, int64_t N, int T, int max_t, const int32_t* ids, c
         if (single)
             ub.resize((size_t) U * DRB);
         float dbuf[MT][RB];
-        for (const Group& gr : groups) {
+        for (size_t gi = 0; gi < groups.size(); ++gi) {
+            const Group& gr = groups[gi];
             const CpuFfn& f = gr.f;
             const ggml_type_traits_cpu* tr = cpu_traits(f.d_type);
             const RowsFn mt = !single && gr.units.size() >= 2 ? multi(f.d_type) : nullptr;
-            for (size_t c0 = 0; c0 < gr.units.size(); c0 += MT) {
-                const int nt = (int) std::min<size_t>(MT, gr.units.size() - c0);
+            for (size_t c = 0; c + 1 < gr.d_c.size(); ++c) {
+                const size_t c0 = (size_t) gr.d_c[c];
+                const int nt = gr.d_c[c + 1] - (int) c0;
                 const void* hq[MT];
                 float* dout[MT];
                 for (int k = 0; k < nt; ++k) {
@@ -640,7 +731,13 @@ void Experts::run(Pool& pool, int64_t N, int T, int max_t, const int32_t* ids, c
                 }
                 // the block lies on one side of this group's split (the split is at `half` or past N)
                 const uint8_t* wd = f.down[r0 >= f.d_split];
-                if (mt && nt >= 2) {
+                if (!gr.d_pk.empty()) {
+                    // after the group's last chunk, the next group's rows are the ones to ask for
+                    const CpuFfn* nf = c + 2 == gr.d_c.size() && gi + 1 < groups.size() ? &groups[gi + 1].f : nullptr;
+                    q8_0_rows512(wd, f.d_row, (int) f.n_ff, pk + gr.d_pk[c], nt, dout, r0, r1,
+                                 nf ? nf->down[r0 >= nf->d_split] + (size_t) r0 * nf->d_row : nullptr,
+                                 nf ? nf->d_row : 0);
+                } else if (mt && nt >= 2) {
                     mt(f.d_type, wd, f.d_row, (int) f.n_ff, hq, nt, dout, r0, r1);
                 } else {
                     for (int k = 0; k < nt; ++k)

@@ -240,19 +240,23 @@ int act_type(int gu_type);
 ///     and the item that completes a 256-row block of an FFN's hidden activations quantizes it;
 ///   down over row blocks of the output, each summing its rows over every unit of every token, so no two threads
 ///     write one row.
-/// x: T x n_embd floats (host), y: T x n_embd (host), written.  `single`: every (token, row) dot product through
-/// ggml-cpu's one-token vec_dot, as a one-token window computes it, so that a token's output does not depend on the
-/// other tokens of its window (a verify window's rows equal decode steps; the multi-token kernels are bitwise vec_dot
-/// per token only within one row partition, and the partition follows the window's experts).
+/// Q8_0 rows take q8_0_rows512.hpp's AVX-512 kernel when the CPU has it, in every window: each (token, row) result is
+/// bitwise ggml-cpu's one-token vec_dot.
+/// x: T x n_embd floats (host), y: T x n_embd (host), written.  `single`: every (token, row) dot product as ggml-cpu's
+/// one-token vec_dot computes it, so that a token's output does not depend on the other tokens of its window (a verify
+/// window's rows equal decode steps; guild-kernels-cpu's multi-token kernels are bitwise vec_dot per token only within
+/// one row partition, and the partition follows the window's experts).
 class Experts {
 public:
     void run(Pool& pool, int64_t n_embd, int T, int max_t, const int32_t* ids, const float* w, int n_used,
              const std::vector<CpuFfn>& experts, const CpuFfn* own, const float* x, float* y, bool single = false);
-    /// GUILD_GLM_TIMING-style phase totals, milliseconds: activations, gate/up, hidden, down
+    /// GUILD_GLM_TIMING-style phase totals, milliseconds: activations, gate/up, hidden, down; and the weight bytes
+    /// the gate/up and down phases read (each FFN's rows once)
     double phase_ms[4] = {0, 0, 0, 0};
+    double weight_bytes = 0;
 
 private:
-    std::vector<uint8_t> actbuf_, hbuf_, hqbuf_;
+    std::vector<uint8_t> actbuf_, hbuf_, hqbuf_, pkbuf_;
     std::vector<int> qneed_;
     std::unique_ptr<std::atomic<int>[]> qcnt_;
     size_t qcnt_cap_ = 0;
