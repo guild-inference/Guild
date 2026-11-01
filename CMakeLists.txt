@@ -1215,6 +1215,9 @@ if(GUILD_ENABLE_CUDA OR GUILD_ENABLE_HIP)
   # Nemotron 3.5 Transcribe's audio model on WAV files, every stage written out (tools/nemotron_audio_parity.py)
   add_executable(audio_encode src/program/audio_encode.cpp)
   target_link_libraries(audio_encode PRIVATE guild_engine guild_audio)
+  # Nemotron 3.5 Transcribe: offline transcription of WAV clips (the audio model and the Nemotron-H engine)
+  add_executable(transcribe_run src/program/transcribe_run.cpp)
+  target_link_libraries(transcribe_run PRIVATE guild_engine guild_audio guild_server)
 endif()
 
 # ---- guild_server (Native HTTP & OpenAI serving layer) --------------------
