@@ -1,0 +1,677 @@
+// src/core/cpu_moe.cpp - feed-forward networks on the CPU (include/guild/core/cpu_moe.hpp).
+#include "guild/core/cpu_moe.hpp"
+
+#include "guild/core/glm5_nl4.hpp"
+#include "guild/kernels/cpu/expert.hpp"
+#include "guild/kernels/cpu/features.hpp"
+#include "guild/kernels/cpu/iq_avx2.hpp"
+#include "guild/kernels/cpu/iq_avx512.hpp"
+#include "guild/kernels/cpu/kq_avx2.hpp"
+#include "guild/kernels/cpu/numa.hpp"
+
+#include "ggml.h"
+#include "ggml-cpu.h"
+
+#include <cuda_runtime.h>
+
+#include <array>
+#include <chrono>
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <fstream>
+#include <map>
+#include <mutex>
+
+#if defined(__x86_64__)
+#include <immintrin.h>
+#endif
+
+#if defined(__linux__)
+#include <pthread.h>
+#include <sched.h>
+#include <sys/mman.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+#endif
+
+namespace guild::core::cpu_moe {
+
+namespace kcpu = guild::kernels::cpu;
+
+namespace {
+
+const ggml_type_traits_cpu* cpu_traits(int type) {
+    return ggml_get_type_traits_cpu((ggml_type) type);
+}
+
+#if defined(__x86_64__)
+/// ggml's Q8_K block (ggml-common.h)
+struct Q8KBlock {
+    float d;
+    int8_t qs[256];
+    int16_t bsums[16];
+};
+static_assert(sizeof(Q8KBlock) == 292, "block_q8_K");
+
+/// quantize_row_q8_K_ref (the CPU backend's Q8_K from_float, scalar) with AVX-512, the same bytes: the scale from the
+/// first value of the largest magnitude, nearest_int (round half to even, which a conversion in the default rounding
+/// mode does) of the same single-precision product, and a block of zeros left as the reference leaves it (d and qs
+/// written, bsums not).  A block with a NaN goes to the reference.  One Xeon Gold 6130 core: 4.8 ns a value for the
+/// reference, 0.7 for this.
+__attribute__((target("avx512f,avx512bw"))) void q8k_row_avx512(const float* x, void* vy, int64_t k) {
+    static const ggml_from_float_t ref = ggml_get_type_traits_cpu(GGML_TYPE_Q8_K)->from_float;
+    Q8KBlock* y = (Q8KBlock*) vy;
+    for (int64_t i = 0; i < k / 256; ++i, x += 256, ++y) {
+        __m512 v[16];
+        __m512 m = _mm512_setzero_ps();
+        __mmask16 nan = 0;
+        for (int j = 0; j < 16; ++j) {
+            v[j] = _mm512_loadu_ps(x + 16 * j);
+            nan |= _mm512_cmp_ps_mask(v[j], v[j], _CMP_UNORD_Q);
+            m = _mm512_max_ps(m, _mm512_abs_ps(v[j]));
+        }
+        if (nan) {
+            ref(x, y, 256);
+            continue;
+        }
+        const float amax = _mm512_reduce_max_ps(m);
+        if (amax == 0.f) {
+            y->d = 0.f;
+            std::memset(y->qs, 0, sizeof y->qs);
+            continue;
+        }
+        int at = 0;
+        const __m512 va = _mm512_set1_ps(amax);
+        for (int j = 0; j < 16; ++j) {
+            const __mmask16 e = _mm512_cmp_ps_mask(_mm512_abs_ps(v[j]), va, _CMP_EQ_OQ);
+            if (e) {
+                at = 16 * j + __builtin_ctz((unsigned) e);
+                break;
+            }
+        }
+        const float iscale = -127.f / x[at];
+        const __m512 vs = _mm512_set1_ps(iscale);
+        const __m512i lim = _mm512_set1_epi32(127);
+        for (int j = 0; j < 16; ++j) {
+            const __m512i q = _mm512_min_epi32(_mm512_cvtps_epi32(_mm512_mul_ps(vs, v[j])), lim);
+            const __m128i q8 = _mm512_cvtepi32_epi8(q);
+            _mm_storeu_si128((__m128i*) (y->qs + 16 * j), q8);
+            y->bsums[j] = (int16_t) _mm512_reduce_add_epi32(_mm512_cvtepi8_epi32(q8));
+        }
+        y->d = 1.f / iscale;
+    }
+}
+#endif
+
+/// a type's from_float (q8k_row_avx512 for Q8_K where the CPU has AVX-512BW)
+ggml_from_float_t from_float_of(int type) {
+#if defined(__x86_64__)
+    if (type == (int) GGML_TYPE_Q8_K && kcpu::cpu_avx512bw_ok() &&
+        ggml_row_size(GGML_TYPE_Q8_K, 256) == sizeof(Q8KBlock))
+        return &q8k_row_avx512;
+#endif
+    return cpu_traits(type)->from_float;
+}
+
+/// ggml-cpu's tables (the FP16 -> FP32 conversion its dot products read for block scales, the i-quant grids): without
+/// them a single-token Q8_0 vec_dot returns 0.  Every entry point that leads to a dot product calls this.
+void ggml_cpu_ready() {
+    static std::once_flag once;
+    std::call_once(once, [] { ggml_cpu_init(); });
+}
+
+/// `p` moved back by `rows` rows of `row` bytes (the base that puts row `rows` at `p`)
+inline const uint8_t* rebase(const uint8_t* p, int64_t rows, size_t row) {
+    return (const uint8_t*) ((uintptr_t) p - (uintptr_t) rows * row);
+}
+
+} // namespace
+
+int act_type(int gu_type) {
+    return gu_type == kcpu::kIq3sNl4Type ? (int) GGML_TYPE_Q8_K : (int) cpu_traits(gu_type)->vec_dot_type;
+}
+
+// ---- Launcher, PinCaller, Pool ------------------------------------------------------------------------------------
+
+Launcher::Launcher(int cpu, int device) : th_([this, cpu, device] { loop(cpu, device); }) {
+}
+Launcher::~Launcher() {
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        stop_ = true;
+    }
+    cv_.notify_all();
+    th_.join();
+}
+void Launcher::post(std::function<void()> f) {
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        task_ = std::move(f);
+        pending_ = true;
+    }
+    cv_.notify_all();
+}
+void Launcher::wait() {
+    std::unique_lock<std::mutex> lk(mu_);
+    cv_.wait(lk, [&] { return !pending_; });
+}
+void Launcher::loop(int cpu, int device) {
+#if defined(__linux__)
+    if (cpu >= 0) {
+        cpu_set_t set;
+        CPU_ZERO(&set);
+        CPU_SET(cpu, &set);
+        pthread_setaffinity_np(pthread_self(), sizeof(set), &set);
+    }
+#endif
+    (void) cpu;
+    cudaSetDevice(device);
+    std::unique_lock<std::mutex> lk(mu_);
+    for (;;) {
+        cv_.wait(lk, [&] { return pending_ || stop_; });
+        if (stop_)
+            return;
+        std::function<void()> f = std::move(task_);
+        lk.unlock();
+        f();
+        lk.lock();
+        pending_ = false;
+        cv_.notify_all();
+    }
+}
+
+PinCaller::PinCaller(int cpu) {
+#if defined(__linux__)
+    static_assert(sizeof(cpu_set_t) <= sizeof(saved_), "cpu_set_t");
+    cpu_set_t* saved = reinterpret_cast<cpu_set_t*>(saved_);
+    if (cpu < 0 || pthread_getaffinity_np(pthread_self(), sizeof(cpu_set_t), saved) != 0)
+        return;
+    cpu_set_t one;
+    CPU_ZERO(&one);
+    CPU_SET(cpu, &one);
+    pinned_ = pthread_setaffinity_np(pthread_self(), sizeof(one), &one) == 0;
+#else
+    (void) cpu;
+#endif
+}
+PinCaller::~PinCaller() {
+#if defined(__linux__)
+    if (pinned_)
+        pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), reinterpret_cast<cpu_set_t*>(saved_));
+#endif
+}
+
+void Pool::pin(int cpu) {
+#if defined(__linux__)
+    cpu_set_t set;
+    CPU_ZERO(&set);
+    CPU_SET(cpu, &set);
+    pthread_setaffinity_np(pthread_self(), sizeof(set), &set);
+#else
+    (void) cpu;
+#endif
+}
+
+Workers make_workers(bool numa_split, int threads) {
+    ggml_cpu_ready();
+    Workers w;
+    const kcpu::NumaTopology& topo = kcpu::numa_topology();
+    w.split = topo.nodes == 2 && numa_split && kcpu::numa_split_requested(); // GUILD_EXPERT_NUMA
+    std::vector<std::vector<int>> cpus(w.split ? 2 : 1);
+    const int ncpu = (int) std::thread::hardware_concurrency();
+    auto first_sibling = [](int cpu) { // the lowest CPU sharing this one's core
+        std::ifstream f("/sys/devices/system/cpu/cpu" + std::to_string(cpu) + "/topology/thread_siblings_list");
+        int first = cpu;
+        if (f >> first)
+            return first;
+        return cpu;
+    };
+    for (int cpu = 0; cpu < ncpu; ++cpu) {
+        if (first_sibling(cpu) != cpu)
+            continue; // a hyper-thread sibling
+        const int node = w.split && cpu < (int) topo.cpu_node.size() && topo.cpu_node[(size_t) cpu] == 1 ? 1 : 0;
+        cpus[(size_t) node].push_back(cpu);
+    }
+    // the calling thread runs on the first core (PinCaller); a thread budget trims both nodes alike
+    if (!cpus[0].empty()) {
+        w.caller_cpu = cpus[0].front();
+        cpus[0].erase(cpus[0].begin());
+    }
+    if (threads > 0)
+        for (auto& c : cpus)
+            c.resize(std::min(c.size(), (size_t) std::max(1, threads / (int) cpus.size())));
+    w.pool = std::make_unique<Pool>(cpus);
+    // the launcher beside the calling thread, on its core's other hyper-thread when it has one
+    int sib = -1;
+    std::ifstream f("/sys/devices/system/cpu/cpu" + std::to_string(w.caller_cpu) + "/topology/thread_siblings_list");
+    std::string list;
+    if (w.caller_cpu >= 0 && std::getline(f, list))
+        for (size_t i = 0; i < list.size();) {
+            const size_t j = list.find_first_of(",-", i);
+            const int c = std::atoi(list.substr(i, j == std::string::npos ? std::string::npos : j - i).c_str());
+            if (c != w.caller_cpu) {
+                sib = c;
+                break;
+            }
+            if (j == std::string::npos)
+                break;
+            i = j + 1;
+        }
+    int dev = 0;
+    cudaGetDevice(&dev);
+    w.launcher = std::make_unique<Launcher>(sib, dev);
+    return w;
+}
+
+// ---- the experts' rows on the NUMA nodes ----------------------------------------------------------------------------
+
+bool place_ffns(Pool& pool, const std::vector<CpuFfn*>& all, int64_t N, bool split, bool nl4, uint8_t* arena[2],
+                size_t arena_bytes[2], std::string& err) {
+    const int nn = split ? 2 : 1;
+    const int64_t dh = split ? N / 2 : N;
+    auto h_of = [&](const CpuFfn& f) { return split ? f.n_ff / 2 : f.n_ff; };
+    auto repacked = [&](const CpuFfn& f) { return nl4 && f.gu_type == GGML_TYPE_IQ3_S; };
+    auto gu_row_of = [&](const CpuFfn& f) { return repacked(f) ? (size_t) (N / 256) * kcpu::kIq3sNl4Block : f.gu_row; };
+    auto n_gu = [](const CpuFfn& f) { return f.act == CpuFfn::ReLU2 ? (size_t) 1 : (size_t) 2; }; // up, or gate + up
+    size_t node_bytes[2] = {0, 0};
+    std::vector<std::array<size_t, 2>> at; // per FFN in `all`: the offset of its part in each arena
+    for (const CpuFfn* fp : all) {
+        const CpuFfn& f = *fp;
+        const size_t gr = gu_row_of(f);
+        const int64_t h = h_of(f);
+        at.push_back({node_bytes[0], node_bytes[1]});
+        node_bytes[0] += n_gu(f) * (size_t) h * gr + (size_t) dh * f.d_row;
+        if (nn == 2)
+            node_bytes[1] += n_gu(f) * (size_t) (f.n_ff - h) * gr + (size_t) (N - dh) * f.d_row;
+    }
+    for (int node = 0; node < nn; ++node) {
+#if defined(__linux__)
+        void* p = mmap(nullptr, node_bytes[node], PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        if (p == MAP_FAILED) {
+            err = "no memory for the experts (" + std::to_string(node_bytes[node] >> 30) + " GiB on node " +
+                  std::to_string(node) + ")";
+            return false;
+        }
+        unsigned long mask = 1ul << node;
+        if (split && syscall(SYS_mbind, p, node_bytes[node], 2 /* MPOL_BIND */, &mask, 64ul, 0u) != 0)
+            std::fprintf(stderr, "guild: mbind to node %d failed; the experts' halves go where they land\n", node);
+        madvise(p, node_bytes[node], MADV_HUGEPAGE);
+        arena[node] = (uint8_t*) p;
+        arena_bytes[node] = node_bytes[node];
+#else
+        err = "the experts' NUMA placement needs Linux";
+        return false;
+#endif
+    }
+    const int n_all = (int) all.size();
+    std::atomic<bool> repack_ok{true};
+    pool.run_nodes(n_all, nn == 2 ? n_all : 0, [&](int node, int i) {
+        CpuFfn& f = *all[(size_t) i];
+        const int64_t h = h_of(f);
+        const int64_t r0 = node ? h : 0, rg = node ? f.n_ff - h : h;
+        const int64_t d0 = node ? dh : 0, rd = node ? N - dh : dh;
+        const size_t gr = gu_row_of(f), ng = n_gu(f);
+        uint8_t* dst = arena[node] + at[(size_t) i][(size_t) node];
+        if (repacked(f)) {
+            for (int64_t r = 0; r < rg; ++r) {
+                bool ok = kcpu::iq3s_nl4_repack(f.gate[0] + (size_t) (r0 + r) * f.gu_row, (int) (N / 256),
+                                                dst + (size_t) r * gr);
+                ok &= kcpu::iq3s_nl4_repack(f.up[0] + (size_t) (r0 + r) * f.gu_row, (int) (N / 256),
+                                            dst + (size_t) (rg + r) * gr);
+                if (!ok)
+                    repack_ok = false;
+            }
+        } else if (ng == 2) {
+            std::memcpy(dst, f.gate[0] + (size_t) r0 * f.gu_row, (size_t) rg * f.gu_row);
+            std::memcpy(dst + (size_t) rg * gr, f.up[0] + (size_t) r0 * f.gu_row, (size_t) rg * f.gu_row);
+        } else {
+            std::memcpy(dst, f.up[0] + (size_t) r0 * f.gu_row, (size_t) rg * f.gu_row);
+        }
+        std::memcpy(dst + ng * (size_t) rg * gr, f.down[0] + (size_t) d0 * f.d_row, (size_t) rd * f.d_row);
+    });
+    if (!repack_ok) {
+        err = "an IQ3_S expert row does not repack (a grid value outside the NL4 codes); run with GUILD_GLM_NL4=0";
+        return false;
+    }
+    // the pointers, once every part is copied (the copies read the mapping through gate[0] and friends)
+    for (int i = 0; i < n_all; ++i) {
+        CpuFfn& f = *all[(size_t) i];
+        const size_t gr = gu_row_of(f), ng = n_gu(f);
+        const int64_t h = h_of(f);
+        for (int node = 0; node < 2; ++node) {
+            const int src = node < nn ? node : 0;
+            const int64_t r0 = src ? h : 0, rg = src ? f.n_ff - h : h, d0 = src ? dh : 0;
+            const uint8_t* base = arena[src] + at[(size_t) i][(size_t) src];
+            if (ng == 2) {
+                f.gate[node] = rebase(base, r0, gr);
+                f.up[node] = rebase(base + (size_t) rg * gr, r0, gr);
+            } else {
+                f.gate[node] = nullptr;
+                f.up[node] = rebase(base, r0, gr);
+            }
+            f.down[node] = rebase(base + ng * (size_t) rg * gr, d0, f.d_row);
+        }
+        if (repacked(f))
+            f.gu_type = kcpu::kIq3sNl4Type;
+        f.gu_row = gr;
+        f.gu_split = h;
+        f.d_split = dh;
+    }
+    return true;
+}
+
+// ---- the expert phases --------------------------------------------------------------------------------------------
+
+void Experts::run(Pool& pool, int64_t N, int T, int max_t, const int32_t* ids, const float* wts, int n_used,
+                  const std::vector<CpuFfn>& experts, const CpuFfn* own, const float* x, float* y, bool single) {
+    ggml_cpu_ready();
+    // Groups: one FFN slice and the tokens it serves (a routed expert and the tokens routed to it, or the layer's own
+    // FFN for every token).  Units: (group, token) pairs, each with its hidden activation.
+    struct Group {
+        CpuFfn f;
+        std::vector<int> units; // indices into `unit_t` / `unit_w`
+    };
+    std::vector<Group> groups;
+    std::vector<int> unit_t, unit_g;
+    std::vector<float> unit_w;
+    if (ids) {
+        std::vector<int> group_of(experts.size(), -1);
+        for (int t = 0; t < T; ++t)
+            for (int j = 0; j < n_used; ++j) {
+                const int ex = ids[t * n_used + j];
+                if (group_of[(size_t) ex] < 0) {
+                    group_of[(size_t) ex] = (int) groups.size();
+                    Group gr;
+                    gr.f = experts[(size_t) ex];
+                    groups.push_back(std::move(gr));
+                }
+                const int gi = group_of[(size_t) ex];
+                groups[(size_t) gi].units.push_back((int) unit_t.size());
+                unit_t.push_back(t);
+                unit_g.push_back(gi);
+                unit_w.push_back(wts[t * n_used + j]);
+            }
+    }
+    if (own) {
+        Group gr;
+        gr.f = *own;
+        const int gi = (int) groups.size();
+        for (int t = 0; t < T; ++t) {
+            gr.units.push_back((int) unit_t.size());
+            unit_t.push_back(t);
+            unit_g.push_back(gi);
+            unit_w.push_back(1.f);
+        }
+        groups.push_back(std::move(gr));
+    }
+    const int U = (int) unit_t.size();
+
+    // the quantized inputs: one per (token, activation type)
+    std::map<int, size_t> act_off; // (vec_dot_type * max_t + t) -> offset
+    std::vector<size_t> act_at((size_t) U);
+    size_t total = 0;
+    for (int u = 0; u < U; ++u) {
+        const int at = act_type(groups[(size_t) unit_g[(size_t) u]].f.gu_type);
+        const int key = at * max_t + unit_t[(size_t) u];
+        auto it = act_off.find(key);
+        if (it == act_off.end()) {
+            it = act_off.emplace(key, total).first;
+            total += ggml_row_size((ggml_type) at, N);
+        }
+        act_at[(size_t) u] = it->second;
+    }
+    static const bool timing = std::getenv("GUILD_GLM_TIMING") != nullptr || std::getenv("GUILD_MOE_TIMING") != nullptr;
+    auto tp = std::chrono::steady_clock::now();
+    auto lap = [&](int k) {
+        if (!timing)
+            return;
+        const auto now = std::chrono::steady_clock::now();
+        phase_ms[k] += std::chrono::duration<double, std::milli>(now - tp).count();
+        tp = now;
+    };
+    actbuf_.resize(total + 64);
+    for (const auto& kv : act_off) {
+        const int at = kv.first / max_t, t = kv.first % max_t;
+        from_float_of(at)(x + (size_t) t * N, actbuf_.data() + kv.second, N);
+    }
+    std::vector<size_t> h_off((size_t) U + 1, 0), hq_off((size_t) U + 1, 0);
+    for (int u = 0; u < U; ++u) {
+        const CpuFfn& f = groups[(size_t) unit_g[(size_t) u]].f;
+        h_off[(size_t) u + 1] = h_off[(size_t) u] + (size_t) f.n_ff;
+        const int dt = (int) cpu_traits(f.d_type)->vec_dot_type;
+        hq_off[(size_t) u + 1] = hq_off[(size_t) u] + ggml_row_size((ggml_type) dt, f.n_ff);
+    }
+    hbuf_.resize(h_off[(size_t) U] * 4);
+    hqbuf_.resize(hq_off[(size_t) U] + 64);
+    float* hv = (float*) hbuf_.data();
+
+    // the multi-token row kernel for a weight type, or null (ggml-cpu's single-token dot then)
+    using RowsFn = void (*)(int, const uint8_t*, size_t, int, const void* const*, int, float* const*, int, int);
+    auto multi = [](int type) -> RowsFn {
+        if (kcpu::cpu_avx512_ok() && kcpu::iq512_supported(type))
+            return &kcpu::iq512_rows;
+        if (kcpu::cpu_avx2_ok() && kcpu::iq256_supported(type))
+            return &kcpu::iq256_rows;
+        if (kcpu::cpu_avx2_ok() && kcpu::kq256_supported(type))
+            return &kcpu::kq256_rows;
+        return nullptr;
+    };
+    constexpr int RB = 64, MT = kcpu::MAXT;
+    // a down item's rows: with 64 a phase's last items kept a few threads busy while the rest waited (2x Xeon Gold
+    // 6130, 32 threads: a thread's last item ended 35 us before the phase on average, 16 us with 16 rows)
+    constexpr int DRB = 16;
+    // and the last items of each node's queue, about one a worker, are split in four, so that the phase ends with
+    // short items (2x Xeon Gold 6130: CPU experts -0.9 ms a 2-token step)
+    constexpr int kTail = 16, GTR = RB / 4, DTR = DRB / 4;
+
+    lap(0);
+    // phase 1: gate/up, each row block on the queue of the node that holds it
+    struct Item {
+        int gi, r0, r1; // group, rows
+    };
+    std::vector<Item> items[2];
+    for (int gi = 0; gi < (int) groups.size(); ++gi) {
+        const CpuFfn& f = groups[(size_t) gi].f;
+        for (int node = 0; node < 2; ++node) {
+            const int64_t a = node ? f.gu_split : 0, b = node ? f.n_ff : f.gu_split;
+            for (int64_t r = a; r < b; r += RB)
+                items[node].push_back({gi, (int) r, (int) std::min<int64_t>(r + RB, b)});
+        }
+    }
+    for (auto& v : items) {
+        const size_t k0 = v.size() > (size_t) kTail ? v.size() - kTail : 0;
+        std::vector<Item> tail;
+        for (size_t k = k0; k < v.size(); ++k)
+            for (int r = v[k].r0; r < v[k].r1; r += GTR)
+                tail.push_back({v[k].gi, r, std::min(r + GTR, v[k].r1)});
+        v.resize(k0);
+        v.insert(v.end(), tail.begin(), tail.end());
+    }
+    // The hidden activations' quantization: from_float quantizes each 256-row block on its own (Q8_K's blocks are
+    // 256, Q8_0's 32), so the item that completes a group's block of 256 rows quantizes that block for the group's
+    // units, and the bytes are those of a whole-row from_float.  qneed: the items that write each (group, block);
+    // qcnt: how many have.
+    constexpr int QB = 256;
+    bool fuse = true;
+    for (const Group& gr : groups) {
+        const int dt = (int) cpu_traits(gr.f.d_type)->vec_dot_type;
+        if (gr.f.n_ff % QB != 0 || QB % ggml_blck_size((ggml_type) dt) != 0)
+            fuse = false;
+    }
+    std::vector<int> qbase(groups.size() + 1, 0);
+    if (fuse) {
+        for (size_t gi = 0; gi < groups.size(); ++gi)
+            qbase[gi + 1] = qbase[gi] + (int) (groups[gi].f.n_ff / QB);
+        const size_t nb = (size_t) qbase.back();
+        qneed_.assign(nb, 0);
+        for (int node = 0; node < 2; ++node)
+            for (const Item& it : items[node])
+                for (int b = it.r0 / QB; b <= (it.r1 - 1) / QB; ++b)
+                    ++qneed_[(size_t) (qbase[(size_t) it.gi] + b)];
+        if (qcnt_cap_ < nb) {
+            qcnt_.reset(new std::atomic<int>[nb]);
+            qcnt_cap_ = nb;
+        }
+        for (size_t k = 0; k < nb; ++k)
+            qcnt_[k].store(0, std::memory_order_relaxed);
+    }
+    pool.run_nodes((int) items[0].size(), (int) items[1].size(), [&](int node, int i) {
+        const Item& it = items[node][(size_t) i];
+        const int gi = it.gi;
+        const Group& gr = groups[(size_t) gi];
+        const CpuFfn& f = gr.f;
+        const int r0 = it.r0, r1 = it.r1, nr = r1 - r0;
+        const bool gated = f.act != CpuFfn::ReLU2;
+        const uint8_t* wg = f.gate[node];
+        const uint8_t* wu = f.up[node];
+        const bool nl4 = f.gu_type == kcpu::kIq3sNl4Type;
+        const ggml_type_traits_cpu* tr = nl4 ? nullptr : cpu_traits(f.gu_type);
+        const RowsFn mt = !nl4 && !single && gr.units.size() >= 2 ? multi(f.gu_type) : nullptr;
+        float gbuf[MT][RB], ubuf[MT][RB];
+        for (size_t c0 = 0; c0 < gr.units.size(); c0 += MT) {
+            const int nt = (int) std::min<size_t>(MT, gr.units.size() - c0);
+            const void* act[MT];
+            float* go[MT];
+            float* uo[MT];
+            for (int k = 0; k < nt; ++k) {
+                act[k] = actbuf_.data() + act_at[(size_t) gr.units[c0 + k]];
+                go[k] = gbuf[k] - r0; // the kernels index outputs by row
+                uo[k] = ubuf[k] - r0;
+            }
+            if (nl4) {
+                if (gated)
+                    glm5cpu::nl4_rows(wg, f.gu_row, (int) N, act, nt, go, r0, r1);
+                glm5cpu::nl4_rows(wu, f.gu_row, (int) N, act, nt, uo, r0, r1);
+            } else if (mt && nt >= 2) {
+                if (gated)
+                    mt(f.gu_type, wg, f.gu_row, (int) N, act, nt, go, r0, r1);
+                mt(f.gu_type, wu, f.gu_row, (int) N, act, nt, uo, r0, r1);
+            } else {
+                for (int k = 0; k < nt; ++k)
+                    for (int r = r0; r < r1; ++r) {
+                        if (gated)
+                            tr->vec_dot((int) N, &go[k][r], 0, wg + (size_t) r * f.gu_row, 0, act[k], 0, 1);
+                        tr->vec_dot((int) N, &uo[k][r], 0, wu + (size_t) r * f.gu_row, 0, act[k], 0, 1);
+                    }
+            }
+            for (int k = 0; k < nt; ++k) {
+                float* h = hv + h_off[(size_t) gr.units[c0 + k]];
+                if (!gated) {
+                    for (int j = 0; j < nr; ++j) { // relu(up)^2, as torch's relu then square
+                        const float r = std::max(ubuf[k][j], 0.f);
+                        h[r0 + j] = r * r;
+                    }
+                    continue;
+                }
+                for (int j = 0; j < nr; ++j) {
+                    float gt = gbuf[k][j], up = ubuf[k][j];
+                    if (f.lim > 0.f) {
+                        gt = std::min(gt, f.lim);
+                        up = std::clamp(up, -f.lim, f.lim);
+                    }
+                    h[r0 + j] = gt / (1.f + std::exp(-gt)) * up;
+                }
+            }
+        }
+        if (fuse) {
+            const int dt = (int) cpu_traits(f.d_type)->vec_dot_type;
+            const size_t qb_bytes = ggml_row_size((ggml_type) dt, QB);
+            const ggml_from_float_t from_float = from_float_of(dt);
+            for (int b = r0 / QB; b <= (r1 - 1) / QB; ++b) {
+                const size_t k = (size_t) (qbase[(size_t) gi] + b);
+                if (qcnt_[k].fetch_add(1, std::memory_order_acq_rel) + 1 != qneed_[k])
+                    continue;
+                for (int u : gr.units)
+                    from_float(hv + h_off[(size_t) u] + (size_t) b * QB,
+                               hqbuf_.data() + hq_off[(size_t) u] + (size_t) b * qb_bytes, QB);
+            }
+        }
+    });
+    lap(1);
+    // the hidden activations, unless gate/up quantized them
+    if (!fuse)
+        pool.run(U, [&](int u) {
+            const CpuFfn& f = groups[(size_t) unit_g[(size_t) u]].f;
+            from_float_of((int) cpu_traits(f.d_type)->vec_dot_type)(hv + h_off[(size_t) u],
+                                                                    hqbuf_.data() + hq_off[(size_t) u], f.n_ff);
+        });
+    lap(2);
+    // phase 2: down rows, summed over each token's units; the first half of the rows on node 0 (where the split puts
+    // them), the second on node 1
+    const int64_t half = (N / 2 + RB - 1) / RB * RB;
+    const int64_t d0[2] = {0, half}, d1[2] = {half, N};
+    int dmain[2], dn[2]; // a node's items of DRB rows, and of all
+    for (int node = 0; node < 2; ++node) {
+        const int64_t rows = d1[node] - d0[node];
+        dmain[node] = (int) std::max<int64_t>(0, rows / DRB - kTail);
+        dn[node] = dmain[node] + (int) ((rows - (int64_t) dmain[node] * DRB + DTR - 1) / DTR);
+    }
+    // single: each unit's rows kept, then each token's units summed in the order a one-token window sums them (its
+    // routing slots, then its own FFN): the group order follows the window's other tokens
+    std::vector<std::vector<int>> token_units;
+    if (single) {
+        token_units.resize((size_t) T);
+        for (int u = 0; u < U; ++u)
+            token_units[(size_t) unit_t[(size_t) u]].push_back(u);
+    }
+    pool.run_nodes(dn[0], dn[1], [&](int node, int i) {
+        const int m = dmain[node];
+        const int r0 = (int) d0[node] + (i < m ? i * DRB : m * DRB + (i - m) * DTR);
+        const int r1 = (int) std::min<int64_t>(r0 + (i < m ? DRB : DTR), d1[node]), nr = r1 - r0;
+        for (int t = 0; t < T; ++t)
+            std::fill(y + (size_t) t * N + r0, y + (size_t) t * N + r1, 0.f);
+        thread_local std::vector<float> ub; // single: [unit][row of the item]
+        if (single)
+            ub.resize((size_t) U * DRB);
+        float dbuf[MT][RB];
+        for (const Group& gr : groups) {
+            const CpuFfn& f = gr.f;
+            const ggml_type_traits_cpu* tr = cpu_traits(f.d_type);
+            const RowsFn mt = !single && gr.units.size() >= 2 ? multi(f.d_type) : nullptr;
+            for (size_t c0 = 0; c0 < gr.units.size(); c0 += MT) {
+                const int nt = (int) std::min<size_t>(MT, gr.units.size() - c0);
+                const void* hq[MT];
+                float* dout[MT];
+                for (int k = 0; k < nt; ++k) {
+                    hq[k] = hqbuf_.data() + hq_off[(size_t) gr.units[c0 + k]];
+                    dout[k] = dbuf[k] - r0;
+                }
+                // the block lies on one side of this group's split (the split is at `half` or past N)
+                const uint8_t* wd = f.down[r0 >= f.d_split];
+                if (mt && nt >= 2) {
+                    mt(f.d_type, wd, f.d_row, (int) f.n_ff, hq, nt, dout, r0, r1);
+                } else {
+                    for (int k = 0; k < nt; ++k)
+                        for (int r = r0; r < r1; ++r)
+                            tr->vec_dot((int) f.n_ff, &dout[k][r], 0, wd + (size_t) r * f.d_row, 0, hq[k], 0, 1);
+                }
+                for (int k = 0; k < nt; ++k) {
+                    const int u = gr.units[c0 + k];
+                    if (single) {
+                        std::copy(dbuf[k], dbuf[k] + nr, ub.data() + (size_t) u * DRB);
+                        continue;
+                    }
+                    float* out = y + (size_t) unit_t[(size_t) u] * N + r0;
+                    const float w = unit_w[(size_t) u];
+                    for (int j = 0; j < nr; ++j)
+                        out[j] += w * dbuf[k][j];
+                }
+            }
+        }
+        if (single)
+            for (int t = 0; t < T; ++t) {
+                float* out = y + (size_t) t * N + r0;
+                for (int u : token_units[(size_t) t]) {
+                    const float w = unit_w[(size_t) u];
+                    const float* d = ub.data() + (size_t) u * DRB;
+                    for (int j = 0; j < nr; ++j)
+                        out[j] += w * d[j];
+                }
+            }
+    });
+    lap(3);
+}
+
+} // namespace guild::core::cpu_moe

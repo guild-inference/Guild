@@ -5,6 +5,8 @@
 // (dense or MoE) -> mHC post-mix. The MoE layer hands the normed activations and the router's choice to the CPU, which
 // computes the routed experts while the GPU computes the shared one.
 #include "guild/core/glm5.hpp"
+#include "guild/core/cpu_moe.hpp"
+#include "guild/core/dense_mm.hpp"
 #include "guild/core/glm5_kernels.hpp"
 #include "guild/core/glm5_nl4.hpp"
 #include "guild/artifact/gguf_reader.hpp"
@@ -62,38 +64,14 @@ namespace kcpu = guild::kernels::cpu;
 
 constexpr int kQ8_0 = 8, kQ6_K = 14, kF32 = 0;
 
-/// A weight matrix in its GGUF form: n_out rows of n_in values
-struct Mat {
-    int type = -1;
-    int64_t n_in = 0, n_out = 0;
-    const uint8_t* host = nullptr;
-    void* dev = nullptr;
-    size_t bytes = 0;
-    std::vector<uint8_t> owned; ///< host bytes of a re-quantized copy (until uploaded)
-    bool mmq = false;           ///< prompt windows multiply it with llama.cpp's MMQ (int8 tiles) instead of MMVQ
-    size_t row_bytes() const {
-        return ggml_row_size((ggml_type) type, n_in);
-    }
-};
+/// A weight matrix in its GGUF form (dense_mm.hpp)
+using Mat = GgufMat;
 
-/// A SwiGLU FFN on the CPU: gate/up rows of n_embd, down rows of n_ff (one expert's slices, or a whole tensor)
-struct CpuFfn {
-    int gu_type = -1, d_type = -1;
-    int64_t n_ff = 0;
-    // Row r of a matrix is at base[node] + r * row bytes, node = r >= split: two NUMA nodes each hold half the rows
-    // (node 1's base is offset back by its first row so a row keeps its global index); unsplit, both bases are one
-    const uint8_t* gate[2] = {nullptr, nullptr};
-    const uint8_t* up[2] = {nullptr, nullptr};
-    const uint8_t* down[2] = {nullptr, nullptr};
-    int64_t gu_split = 0, d_split = 0; ///< the first gate/up row and the first down row of node 1
-    size_t gu_row = 0, d_row = 0;
-    float lim = 0.f;
-};
-
-/// `p` moved back by `rows` rows of `row` bytes (the base that puts row `rows` at `p`)
-inline const uint8_t* rebase(const uint8_t* p, int64_t rows, size_t row) {
-    return (const uint8_t*) ((uintptr_t) p - (uintptr_t) rows * row);
-}
+/// The CPU's FFNs, its pool and its launcher: cpu_moe.hpp (shared with the Nemotron-H engine)
+using cpu_moe::CpuFfn;
+using cpu_moe::Launcher;
+using cpu_moe::PinCaller;
+using cpu_moe::Pool;
 
 struct Layer {
     bool kda = true, moe = false;
@@ -134,326 +112,8 @@ struct Layer {
     std::vector<CpuFfn> experts; ///< where each routed expert's rows are (the GGUF mapping, or the NUMA halves)
 };
 
-// ---- the CPU pool: persistent workers, one queue per NUMA node, a parallel_for that the calling thread joins ------
-
-/// A thread that runs one task at a time for the calling thread: the pipelined window's GPU launches (about 110 us of
-/// launch calls a group and layer), so that the calling thread starts the other group's CPU experts at once.
-class Launcher {
-public:
-    Launcher(int cpu, int device) : th_([this, cpu, device] { loop(cpu, device); }) {
-    }
-    ~Launcher() {
-        {
-            std::lock_guard<std::mutex> lk(mu_);
-            stop_ = true;
-        }
-        cv_.notify_all();
-        th_.join();
-    }
-    void post(std::function<void()> f) {
-        {
-            std::lock_guard<std::mutex> lk(mu_);
-            task_ = std::move(f);
-            pending_ = true;
-        }
-        cv_.notify_all();
-    }
-    void wait() {
-        std::unique_lock<std::mutex> lk(mu_);
-        cv_.wait(lk, [&] { return !pending_; });
-    }
-
-private:
-    void loop(int cpu, int device) {
-#if defined(__linux__)
-        if (cpu >= 0) {
-            cpu_set_t set;
-            CPU_ZERO(&set);
-            CPU_SET(cpu, &set);
-            pthread_setaffinity_np(pthread_self(), sizeof(set), &set);
-        }
-#endif
-        (void) cpu;
-        cudaSetDevice(device);
-        std::unique_lock<std::mutex> lk(mu_);
-        for (;;) {
-            cv_.wait(lk, [&] { return pending_ || stop_; });
-            if (stop_)
-                return;
-            std::function<void()> f = std::move(task_);
-            lk.unlock();
-            f();
-            lk.lock();
-            pending_ = false;
-            cv_.notify_all();
-        }
-    }
-    std::mutex mu_;
-    std::condition_variable cv_;
-    std::function<void()> task_;
-    bool pending_ = false, stop_ = false;
-    std::thread th_;
-};
-
-/// Pins the calling thread to `cpu` (the core the pool leaves it) for one call into the engine and gives it back its
-/// affinity afterwards.  It runs a share of every phase; unpinned, the scheduler sometimes kept it on a hyper-thread
-/// sibling of a worker or on the other node for a whole run (2x Xeon Gold 6130: CPU experts 33 -> 41 ms a token).
-class PinCaller {
-public:
-    explicit PinCaller(int cpu) {
-#if defined(__linux__)
-        if (cpu < 0 || pthread_getaffinity_np(pthread_self(), sizeof(saved_), &saved_) != 0)
-            return;
-        cpu_set_t one;
-        CPU_ZERO(&one);
-        CPU_SET(cpu, &one);
-        pinned_ = pthread_setaffinity_np(pthread_self(), sizeof(one), &one) == 0;
-#else
-        (void) cpu;
-#endif
-    }
-    ~PinCaller() {
-#if defined(__linux__)
-        if (pinned_)
-            pthread_setaffinity_np(pthread_self(), sizeof(saved_), &saved_);
-#endif
-    }
-    PinCaller(const PinCaller&) = delete;
-    PinCaller& operator=(const PinCaller&) = delete;
-
-private:
-#if defined(__linux__)
-    cpu_set_t saved_;
-    bool pinned_ = false;
-#endif
-};
-
-/// The pool: a worker per CPU of the node lists it is given (the calling thread joins every phase as node 0's) and a
-/// queue per NUMA node.  A queue is one 64-bit word on a cache line of its own - the phase's generation, its item
-/// count and the next item - so a worker claims an item of the phase it woke for with a compare-and-swap, or none: one
-/// that wakes late never takes the next phase's items.  Workers count the items they finish on their node's line, and
-/// the calling thread returns once every item is done, without waiting for the workers that found none (a worker the
-/// scheduler parked behind another process holds up only an item it has claimed).
-class Pool {
-public:
-    /// cpus[n]: the logical CPUs of node n's workers (a worker per CPU)
-    explicit Pool(const std::vector<std::vector<int>>& cpus) {
-        for (int node = 0; node < (int) cpus.size(); ++node)
-            for (int cpu : cpus[(size_t) node])
-                workers_.emplace_back([this, node, cpu] { loop(node, cpu); });
-    }
-    ~Pool() {
-        stop_.store(true);
-        publish(0, 0);
-        { std::lock_guard<std::mutex> lk(mu_); }
-        cv_.notify_all();
-        for (auto& w : workers_)
-            w.join();
-    }
-    int size() const {
-        return (int) workers_.size() + 1;
-    }
-    /// fn(i) for i in [0, n), any node
-    void run(int n, const std::function<void(int)>& fn) {
-        run_nodes(n, 0, [&](int, int i) { fn(i); });
-    }
-    /// fn(node, i) for i in [0, n0) on node 0's queue and [0, n1) on node 1's; a worker drains its node's queue
-    /// first, then helps the other
-    void run_nodes(int n0, int n1, const std::function<void(int, int)>& fn) {
-        if (n0 + n1 <= 0)
-            return;
-        constexpr int kMax = (int) kIdx; // a queue's items in one phase; more go in several phases
-        if (n0 > kMax || n1 > kMax) {
-            for (int b = 0; b < n0 || b < n1; b += kMax)
-                run_nodes(std::clamp(n0 - b, 0, kMax), std::clamp(n1 - b, 0, kMax),
-                          [&](int node, int i) { fn(node, b + i); });
-            return;
-        }
-        fn_.p = &fn;
-        done_[0].v.store(0, std::memory_order_relaxed);
-        done_[1].v.store(0, std::memory_order_relaxed);
-        const uint64_t g = publish(n0, n1);
-        if (sleepers_.v.load(std::memory_order_seq_cst) > 0) {
-            {
-                std::lock_guard<std::mutex> lk(mu_);
-            }
-            cv_.notify_all();
-        }
-        work(0, g);
-        while (done_[0].v.load(std::memory_order_acquire) + done_[1].v.load(std::memory_order_acquire) < n0 + n1)
-            relax();
-    }
-
-private:
-    // a queue word: generation (24 bits) | item count (20) | next item (20)
-    static constexpr uint64_t kIdx = (1u << 20) - 1;
-    static uint64_t gen_of(uint64_t w) {
-        return w >> 40;
-    }
-    static uint64_t n_of(uint64_t w) {
-        return (w >> 20) & kIdx;
-    }
-    static uint64_t idx_of(uint64_t w) {
-        return w & kIdx;
-    }
-    static void relax() {
-#if defined(__x86_64__)
-        __builtin_ia32_pause();
-#endif
-    }
-#if defined(__linux__)
-    static void pin(int cpu) {
-        cpu_set_t set;
-        CPU_ZERO(&set);
-        CPU_SET(cpu, &set);
-        pthread_setaffinity_np(pthread_self(), sizeof(set), &set);
-    }
-#endif
-    /// the calling thread's: the next generation (never 0, which no phase has) on both queues
-    uint64_t publish(int n0, int n1) {
-        gen_ = gen_ % ((1u << 24) - 1) + 1;
-        q_[0].w.store(gen_ << 40 | (uint64_t) n0 << 20, std::memory_order_seq_cst);
-        q_[1].w.store(gen_ << 40 | (uint64_t) n1 << 20, std::memory_order_seq_cst);
-        return gen_;
-    }
-    /// the items of generation g: node's queue first, then the other's
-    void work(int node, uint64_t g) {
-        for (int q : {node, 1 - node}) {
-            std::atomic<uint64_t>& w = q_[q].w;
-            uint64_t v = w.load(std::memory_order_acquire);
-            while (gen_of(v) == g && idx_of(v) < n_of(v)) {
-                if (!w.compare_exchange_weak(v, v + 1, std::memory_order_acq_rel, std::memory_order_acquire))
-                    continue;
-                (*fn_.p)(q, (int) idx_of(v));
-                done_[node].v.fetch_add(1, std::memory_order_release);
-                v = w.load(std::memory_order_acquire);
-            }
-        }
-    }
-    void loop(int node, int cpu) {
-#if defined(__linux__)
-        pin(cpu);
-#endif
-        (void) cpu;
-        uint64_t seen = 0;
-        std::atomic<uint64_t>& w = q_[node].w;
-        for (;;) {
-            // spin a while for the next phase (a layer's phases follow each other within microseconds), then sleep
-            uint64_t g = gen_of(w.load(std::memory_order_acquire));
-            for (int s = 0; g == seen && s < 200000; ++s) {
-                relax();
-                g = gen_of(w.load(std::memory_order_acquire));
-            }
-            if (g == seen) {
-                std::unique_lock<std::mutex> lk(mu_);
-                sleepers_.v.fetch_add(1, std::memory_order_seq_cst);
-                while ((g = gen_of(w.load(std::memory_order_seq_cst))) == seen)
-                    cv_.wait(lk);
-                sleepers_.v.fetch_sub(1, std::memory_order_relaxed);
-            }
-            if (stop_.load())
-                return;
-            seen = g;
-            work(node, g);
-        }
-    }
-    // what workers read or write on every item, a cache line each (the two nodes' sockets share none)
-    struct alignas(128) Word {
-        std::atomic<uint64_t> w{0};
-    };
-    struct alignas(128) Count {
-        std::atomic<int> v{0};
-    };
-    struct alignas(128) Fn {
-        const std::function<void(int, int)>* p = nullptr;
-    };
-    Word q_[2];
-    Count done_[2];
-    Fn fn_;
-    Count sleepers_;
-    uint64_t gen_ = 0;
-    std::atomic<bool> stop_{false};
-    std::mutex mu_;
-    std::condition_variable cv_;
-    std::vector<std::thread> workers_;
-};
-
 const ggml_type_traits_cpu* cpu_traits(int type) {
     return ggml_get_type_traits_cpu((ggml_type) type);
-}
-
-#if defined(__x86_64__)
-/// ggml's Q8_K block (ggml-common.h)
-struct Q8KBlock {
-    float d;
-    int8_t qs[256];
-    int16_t bsums[16];
-};
-static_assert(sizeof(Q8KBlock) == 292, "block_q8_K");
-
-/// quantize_row_q8_K_ref (the CPU backend's Q8_K from_float, scalar) with AVX-512, the same bytes: the scale from the
-/// first value of the largest magnitude, nearest_int (round half to even, which a conversion in the default rounding
-/// mode does) of the same single-precision product, and a block of zeros left as the reference leaves it (d and qs
-/// written, bsums not).  A block with a NaN goes to the reference.  One Xeon Gold 6130 core: 4.8 ns a value for the
-/// reference, 0.7 for this.
-__attribute__((target("avx512f,avx512bw"))) void q8k_row_avx512(const float* x, void* vy, int64_t k) {
-    static const ggml_from_float_t ref = ggml_get_type_traits_cpu(GGML_TYPE_Q8_K)->from_float;
-    Q8KBlock* y = (Q8KBlock*) vy;
-    for (int64_t i = 0; i < k / 256; ++i, x += 256, ++y) {
-        __m512 v[16];
-        __m512 m = _mm512_setzero_ps();
-        __mmask16 nan = 0;
-        for (int j = 0; j < 16; ++j) {
-            v[j] = _mm512_loadu_ps(x + 16 * j);
-            nan |= _mm512_cmp_ps_mask(v[j], v[j], _CMP_UNORD_Q);
-            m = _mm512_max_ps(m, _mm512_abs_ps(v[j]));
-        }
-        if (nan) {
-            ref(x, y, 256);
-            continue;
-        }
-        const float amax = _mm512_reduce_max_ps(m);
-        if (amax == 0.f) {
-            y->d = 0.f;
-            std::memset(y->qs, 0, sizeof y->qs);
-            continue;
-        }
-        int at = 0;
-        const __m512 va = _mm512_set1_ps(amax);
-        for (int j = 0; j < 16; ++j) {
-            const __mmask16 e = _mm512_cmp_ps_mask(_mm512_abs_ps(v[j]), va, _CMP_EQ_OQ);
-            if (e) {
-                at = 16 * j + __builtin_ctz((unsigned) e);
-                break;
-            }
-        }
-        const float iscale = -127.f / x[at];
-        const __m512 vs = _mm512_set1_ps(iscale);
-        const __m512i lim = _mm512_set1_epi32(127);
-        for (int j = 0; j < 16; ++j) {
-            const __m512i q = _mm512_min_epi32(_mm512_cvtps_epi32(_mm512_mul_ps(vs, v[j])), lim);
-            const __m128i q8 = _mm512_cvtepi32_epi8(q);
-            _mm_storeu_si128((__m128i*) (y->qs + 16 * j), q8);
-            y->bsums[j] = (int16_t) _mm512_reduce_add_epi32(_mm512_cvtepi8_epi32(q8));
-        }
-        y->d = 1.f / iscale;
-    }
-}
-#endif
-
-/// a type's from_float (q8k_row_avx512 for Q8_K where the CPU has AVX-512BW)
-ggml_from_float_t from_float_of(int type) {
-#if defined(__x86_64__)
-    if (type == (int) GGML_TYPE_Q8_K && kcpu::cpu_avx512bw_ok() &&
-        ggml_row_size(GGML_TYPE_Q8_K, 256) == sizeof(Q8KBlock))
-        return &q8k_row_avx512;
-#endif
-    return cpu_traits(type)->from_float;
-}
-
-/// the activation format a gate/up weight type multiplies (NL4 rows are IQ3_S's: Q8_K)
-int act_type(int gu_type) {
-    return gu_type == kcpu::kIq3sNl4Type ? (int) GGML_TYPE_Q8_K : (int) cpu_traits(gu_type)->vec_dot_type;
 }
 
 double ms_since(std::chrono::steady_clock::time_point t0) {
@@ -479,8 +139,7 @@ struct Glm5Engine::Impl {
     int caller_cpu = -1;    // the core the pool leaves to the calling thread
     int last_head_row = -1; // the row of hn that forward's head read last (last_hidden)
     double cpu_ms = 0.0;
-    double phase_ms[4] = {0, 0, 0, 0}; // GUILD_GLM_TIMING: activations, gate/up, hidden, down
-    double enqueue_ms = 0;             // GUILD_GLM_TIMING: the pipelined window's GPU launches
+    double enqueue_ms = 0; // GUILD_GLM_TIMING: the pipelined window's GPU launches
     // device memory: cudaMalloc rounds each allocation up to 2 MiB, which over a thousand weights and vectors of odd
     // sizes (Q6_K rows of 210-byte blocks) wasted ~560 MiB the placement did not count; dalloc carves 256-byte
     // aligned pieces out of the chunk the placement reserves (and, past it, chunks of their own)
@@ -489,15 +148,10 @@ struct Glm5Engine::Impl {
         size_t size, used;
     };
     std::vector<Chunk> chunks;
-    std::vector<uint8_t> actbuf, hbuf, hqbuf; // the CPU experts' activations
-    uint8_t* snap = nullptr;                  // pinned host copy of the recurrent states (snapshot / restore)
-    uint8_t* arena[2] = {nullptr, nullptr};   // the experts' NUMA halves
+    cpu_moe::Experts xp;                    // the CPU experts' phases (GUILD_GLM_TIMING: xp.phase_ms)
+    uint8_t* snap = nullptr;                // pinned host copy of the recurrent states (snapshot / restore)
+    uint8_t* arena[2] = {nullptr, nullptr}; // the experts' NUMA halves
     size_t arena_bytes[2] = {0, 0};
-    // cpu_ffn's hidden quantization: the gate/up items that write each (group, 256-row block) of hbuf, and how many
-    // have
-    std::vector<int> qneed;
-    std::unique_ptr<std::atomic<int>[]> qcnt;
-    size_t qcnt_cap = 0;
     // token_embd in anonymous memory on the calling thread's node: embed_rows reads a row per token, and read from the
     // GGUF mapping, the first use of a token whose page the page cache had dropped waited on the disk (a draft or
     // verify step took 11-68 ms longer).  A thread copies it while the rest loads (embd_copy_start / _finish).
@@ -539,12 +193,7 @@ struct Glm5Engine::Impl {
     int32_t *sel = nullptr, *nsel = nullptr;
     int score_stride = 0, sel_stride = 0;
     void *xq = nullptr, *xq2 = nullptr;
-    // prompt windows (more than kMmvqCols tokens): the activations in MMQ's layout too, and its launch tables
-#if defined(GUILD_GLM_MMQ)
-    std::unique_ptr<guild::prefill::mmq::Context> mmq_ctx;
-#endif
-    void *xqm = nullptr, *xqm2 = nullptr;
-    int32_t *mmq_bounds = nullptr, *mmq_ids = nullptr;
+    DenseProducts dp; ///< the GPU products (dense_mm.hpp): xq / xq2 are its two activation buffers
     // pinned host
     float *h_x = nullptr, *h_y = nullptr, *h_w = nullptr, *h_emb = nullptr;
     int32_t* h_ids = nullptr;
@@ -758,55 +407,19 @@ struct Glm5Engine::Impl {
         return p;
     }
 
-    // ---- the GPU products ----
-    // MMVQ reads the weights once for up to 8 columns; beyond that each column costs about as much again (GTX 1070:
-    // 0.20 ms for one column of a 4096 x 8192 Q8_0 matrix, 0.31 for 8, 2.75 for 64), so wider windows use MMQ
-    static constexpr int kMmvqCols = 8;
+    // ---- the GPU products (dense_mm.hpp) ----
+    static constexpr int kMmvqCols = DenseProducts::kMmvqCols;
     static constexpr int kMaxWindow = 2 * kMaxT; ///< a window's tokens: two pipelined groups of up to kMaxT
     const bool pipe = [] {                       // GUILD_GLM_PIPE=0 (and GUILD_GLM_DEBUG): one group, windows of kMaxT
         const char* e = std::getenv("GUILD_GLM_PIPE");
         return !(e && e[0] == '0') && std::getenv("GUILD_GLM_DEBUG") == nullptr;
     }();
     void quant(const float* x, int64_t n, int T, void* dst) {
-        guild::kernels::native_quantize_q8_1(x, dst, (int) n, T, st);
-#if defined(GUILD_GLM_MMQ)
-        if (T > kMmvqCols && mmq_ctx)
-            guild::prefill::mmq::quantize(x, nullptr, dst == xq ? xqm : xqm2, kQ8_0, n, n, T, st);
-#endif
+        dp.quant(x, n, T, dst);
     }
     void mm(const Mat& m, const void* xq_, float* out, int T) {
-#if defined(GUILD_GLM_MMQ)
-        if (T > kMmvqCols && m.mmq && mmq_ctx && (xq_ == xq || xq_ == xq2)) {
-            namespace mmq = guild::prefill::mmq;
-            mmq::Product p;
-            p.w = m.dev;
-            p.type = m.type;
-            p.w_rows = m.n_out;
-            p.w_cols = m.n_in;
-            p.expert_bytes = mmq::matrix_bytes(m.type, m.n_out, m.n_in);
-            p.n = 1;
-            p.xq = xq_ == xq ? xqm : xqm2;
-            p.bounds = mmq_bounds + 2 * T;
-            p.ids = mmq_ids;
-            p.total_rows = T;
-            p.max_rows = T;
-            p.dst = out;
-            p.ld_dst = m.n_out;
-            mmq_ctx->run(p, st);
-            debug_check(out, (size_t) T * m.n_out, m, T, "mmq");
-            return;
-        }
-#endif
-        // one or two tokens of Q6_K / Q8_0: the staged kernels (bitwise native_mmvq's, fewer load instructions)
-        if (m.type == kQ6_K && glm5k::q6k_mmvq_supported((int) m.n_in, (int) m.n_out, T))
-            glm5k::q6k_mmvq(m.dev, xq_, out, (int) m.n_in, (int) m.n_out, T, st);
-        else if (m.type == kQ8_0 && glm5k::q8_0_mmvq_supported((int) m.n_in, (int) m.n_out, T))
-            glm5k::q8_0_mmvq(m.dev, xq_, out, (int) m.n_in, (int) m.n_out, T, st);
-        else if (m.type == kQ8_0 && glm5k::q8_0_narrow_supported((int) m.n_in, T))
-            glm5k::q8_0_narrow(m.dev, xq_, out, (int) m.n_in, (int) m.n_out, T, st);
-        else
-            guild::kernels::native_mmvq(m.type, m.dev, xq_, out, (int) m.n_in, (int) m.n_out, T, st);
-        debug_check(out, (size_t) T * m.n_out, m, T, "mmvq");
+        const char* path = dp.mm(m, xq_, out, T);
+        debug_check(out, (size_t) T * m.n_out, m, T, path);
     }
     // GUILD_GLM_DEBUG=2: every product's output checked; the first non-finite one is reported
     void debug_check(const float* out, size_t n, const Mat& m, int T, const char* path) {
@@ -1082,57 +695,12 @@ bool Glm5Engine::Impl::load(const std::string& path, const Glm5Options& o, std::
         }
     }
 
-    // the CPU pool: a worker per physical core (the calling thread joins in), grouped by NUMA node
-    const kcpu::NumaTopology& topo = kcpu::numa_topology();
-    const bool split = topo.nodes == 2 && opt.numa_split && kcpu::numa_split_requested(); // GUILD_EXPERT_NUMA
-    std::vector<std::vector<int>> cpus(split ? 2 : 1);
-    {
-        const int ncpu = (int) std::thread::hardware_concurrency();
-        std::vector<int> core_of((size_t) ncpu, -1);
-        auto first_sibling = [](int cpu) { // the lowest CPU sharing this one's core
-            std::ifstream f("/sys/devices/system/cpu/cpu" + std::to_string(cpu) + "/topology/thread_siblings_list");
-            int first = cpu;
-            if (f >> first)
-                return first;
-            return cpu;
-        };
-        for (int cpu = 0; cpu < ncpu; ++cpu) {
-            if (first_sibling(cpu) != cpu)
-                continue; // a hyper-thread sibling
-            const int node = split && cpu < (int) topo.cpu_node.size() && topo.cpu_node[(size_t) cpu] == 1 ? 1 : 0;
-            cpus[(size_t) node].push_back(cpu);
-        }
-        // the calling thread runs on the first core (PinCaller); a thread budget trims both nodes alike
-        if (!cpus[0].empty()) {
-            caller_cpu = cpus[0].front();
-            cpus[0].erase(cpus[0].begin());
-        }
-        if (opt.threads > 0)
-            for (auto& c : cpus)
-                c.resize(std::min(c.size(), (size_t) std::max(1, opt.threads / (int) cpus.size())));
-    }
-    pool = std::make_unique<Pool>(cpus);
-    {
-        // the launcher beside the calling thread, on its core's other hyper-thread when it has one
-        int sib = -1;
-        std::ifstream f("/sys/devices/system/cpu/cpu" + std::to_string(caller_cpu) + "/topology/thread_siblings_list");
-        std::string list;
-        if (caller_cpu >= 0 && std::getline(f, list))
-            for (size_t i = 0; i < list.size();) {
-                const size_t j = list.find_first_of(",-", i);
-                const int c = std::atoi(list.substr(i, j == std::string::npos ? std::string::npos : j - i).c_str());
-                if (c != caller_cpu) {
-                    sib = c;
-                    break;
-                }
-                if (j == std::string::npos)
-                    break;
-                i = j + 1;
-            }
-        int dev = 0;
-        cudaGetDevice(&dev);
-        launcher = std::make_unique<Launcher>(sib, dev);
-    }
+    // the CPU pool: a worker per physical core (the calling thread joins in), grouped by NUMA node, and the launcher
+    cpu_moe::Workers wk = cpu_moe::make_workers(opt.numa_split, opt.threads);
+    pool = std::move(wk.pool);
+    launcher = std::move(wk.launcher);
+    caller_cpu = wk.caller_cpu;
+    const bool split = wk.split;
     const int threads = pool->size();
     embd_copy_start();
 
@@ -1447,49 +1015,27 @@ bool Glm5Engine::Impl::load(const std::string& path, const Glm5Options& o, std::
         !(scores = dalloc<float>((size_t) T * score_stride, err)) ||
         !(sel = dalloc<int32_t>((size_t) T * sel_stride, err)) || !(nsel = dalloc<int32_t>((size_t) T, err)))
         return false;
-    const size_t qbytes = guild::kernels::native_q8_1_bytes((int) widest, T);
-    if (!(xq = dalloc<uint8_t>(qbytes, err)) || !(xq2 = dalloc<uint8_t>(qbytes, err)))
+    // GUILD_GLM_MMQ=0: MMVQ for every window
+    if (!dp.init(
+            st, widest, T, std::getenv("GUILD_GLM_MMQ") == nullptr,
+            [&](size_t bytes) { return (void*) dalloc<uint8_t>(bytes, err); }, err))
         return false;
-#if defined(GUILD_GLM_MMQ)
-    {
-        namespace mmq = guild::prefill::mmq;
-        if (mmq::built() && std::getenv("GUILD_GLM_MMQ") == nullptr) { // GUILD_GLM_MMQ=0: MMVQ for every window
-            const size_t mb = mmq::q8_bytes(T, widest);
-            std::vector<int32_t> bounds((size_t) 2 * (T + 1));
-            for (int t = 0; t <= T; ++t) {
-                bounds[(size_t) 2 * t] = 0;
-                bounds[(size_t) 2 * t + 1] = t;
-            }
-            if (!(xqm = dalloc<uint8_t>(mb, err)) || !(xqm2 = dalloc<uint8_t>(mb, err)) ||
-                !(mmq_bounds = dalloc<int32_t>(bounds.size(), err)) || !(mmq_ids = dalloc<int32_t>((size_t) T, err)))
-                return false;
-            cudaMemcpy(mmq_bounds, bounds.data(), bounds.size() * 4, cudaMemcpyHostToDevice);
-            mmq::iota(mmq_ids, T, st);
-            mmq_ctx = std::make_unique<mmq::Context>();
-            int n_mmq = 0;
-            auto mark = [&](Mat& m) {
-                // MMQ steps through a row 256 values at a time: a narrower row (the KDA gates' 128) reads past it.
-                // Q6_K (GLM's re-quantized matrices, when the build has its MMQ) takes the activations Q8_0 does:
-                // llama.cpp quantizes both to q8_1 in the same D4 layout
-                const bool type_ok = m.type == kQ8_0 || (m.type == kQ6_K && mmq::supported(kQ6_K));
-                m.mmq = m.dev && type_ok && m.n_in % 256 == 0 && mmq::fits(m.type, m.n_out);
-                n_mmq += m.mmq;
-            };
-            std::vector<Layer*> all_layers;
-            for (Layer& y : L)
-                all_layers.push_back(&y);
-            if (has_mtp)
-                all_layers.push_back(&mtp);
-            for (Layer* yp : all_layers)
-                for (Mat* m :
-                     {&yp->hc_attn_fn, &yp->hc_ffn_fn, &yp->wo,     &yp->wq,   &yp->wk,  &yp->wv,   &yp->f_a,
-                      &yp->f_b,        &yp->g_a,       &yp->g_b,    &yp->beta, &yp->q_a, &yp->q_b,  &yp->kv_a,
-                      &yp->idx_k,      &yp->idx_gate,  &yp->idx_qb, &yp->gate, &yp->up,  &yp->down, &yp->eh_proj})
-                    mark(*m);
-            std::fprintf(stderr, "guild glm5: %d matrices take MMQ in prompt windows\n", n_mmq);
-        }
+    xq = dp.xq[0];
+    xq2 = dp.xq[1];
+    if (dp.mmq_on()) {
+        int n_mmq = 0;
+        std::vector<Layer*> all_layers;
+        for (Layer& y : L)
+            all_layers.push_back(&y);
+        if (has_mtp)
+            all_layers.push_back(&mtp);
+        for (Layer* yp : all_layers)
+            for (Mat* m : {&yp->hc_attn_fn, &yp->hc_ffn_fn, &yp->wo,     &yp->wq,   &yp->wk,  &yp->wv,   &yp->f_a,
+                           &yp->f_b,        &yp->g_a,       &yp->g_b,    &yp->beta, &yp->q_a, &yp->q_b,  &yp->kv_a,
+                           &yp->idx_k,      &yp->idx_gate,  &yp->idx_qb, &yp->gate, &yp->up,  &yp->down, &yp->eh_proj})
+                n_mmq += dp.mark(*m);
+        std::fprintf(stderr, "guild glm5: %d matrices take MMQ in prompt windows\n", n_mmq);
     }
-#endif
     if (cudaMallocHost(&h_x, (size_t) kMaxWindow * N * 4) != cudaSuccess ||
         cudaMallocHost(&h_y, (size_t) kMaxWindow * N * 4) != cudaSuccess ||
         cudaMallocHost(&h_w, (size_t) kMaxWindow * g.n_used * 4) != cudaSuccess ||
@@ -1544,9 +1090,6 @@ bool Glm5Engine::Impl::load(const std::string& path, const Glm5Options& o, std::
     if (split || nl4) {
         // node n holds gate/up rows [n h, (n + 1) h) and down rows [n dh, (n + 1) dh) of every routed expert and of
         // the FFNs the CPU computes (shared experts, dense layers) (one node: all of them)
-        const int nn = split ? 2 : 1;
-        const int64_t dh = split ? N / 2 : N;
-        auto h_of = [&](const CpuFfn& f) { return split ? f.n_ff / 2 : f.n_ff; };
         std::vector<CpuFfn*> all;
         for (Layer* yp : moe_layers)
             for (CpuFfn& f : yp->experts)
@@ -1559,84 +1102,11 @@ bool Glm5Engine::Impl::load(const std::string& path, const Glm5Options& o, std::
         for (Layer* yp : ffn_layers)
             if (!yp->ffn_gpu || yp->ffn_twin)
                 all.push_back(&yp->ffn_cpu);
-        auto repacked = [&](const CpuFfn& f) { return nl4 && f.gu_type == GGML_TYPE_IQ3_S; };
-        auto gu_row_of = [&](const CpuFfn& f) {
-            return repacked(f) ? (size_t) (N / 256) * kcpu::kIq3sNl4Block : f.gu_row;
-        };
-        size_t node_bytes[2] = {0, 0};
-        std::vector<std::array<size_t, 2>> at; // per FFN in `all`: the offset of its part in each arena
-        for (const CpuFfn* fp : all) {
-            const CpuFfn& f = *fp;
-            const size_t gr = gu_row_of(f);
-            const int64_t h = h_of(f);
-            at.push_back({node_bytes[0], node_bytes[1]});
-            node_bytes[0] += 2 * (size_t) h * gr + (size_t) dh * f.d_row;
-            if (nn == 2)
-                node_bytes[1] += 2 * (size_t) (f.n_ff - h) * gr + (size_t) (N - dh) * f.d_row;
-        }
-        for (int node = 0; node < nn; ++node) {
-            void* p = mmap(nullptr, node_bytes[node], PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-            if (p == MAP_FAILED) {
-                err = "glm5: no memory for the experts (" + std::to_string(node_bytes[node] >> 30) + " GiB on node " +
-                      std::to_string(node) + ")";
-                return false;
-            }
-            unsigned long mask = 1ul << node;
-            if (split && syscall(SYS_mbind, p, node_bytes[node], 2 /* MPOL_BIND */, &mask, 64ul, 0u) != 0)
-                std::fprintf(stderr, "guild glm5: mbind to node %d failed; the experts' halves go where they land\n",
-                             node);
-            madvise(p, node_bytes[node], MADV_HUGEPAGE);
-            arena[node] = (uint8_t*) p;
-            arena_bytes[node] = node_bytes[node];
-        }
-        const int n_all = (int) all.size();
-        std::atomic<bool> repack_ok{true};
-        pool->run_nodes(n_all, nn == 2 ? n_all : 0, [&](int node, int i) {
-            CpuFfn& f = *all[(size_t) i];
-            const int64_t h = h_of(f);
-            const int64_t r0 = node ? h : 0, rg = node ? f.n_ff - h : h;
-            const int64_t d0 = node ? dh : 0, rd = node ? N - dh : dh;
-            const size_t gr = gu_row_of(f);
-            uint8_t* dst = arena[node] + at[(size_t) i][(size_t) node];
-            if (repacked(f)) {
-                for (int64_t r = 0; r < rg; ++r) {
-                    bool ok = kcpu::iq3s_nl4_repack(f.gate[0] + (size_t) (r0 + r) * f.gu_row, (int) (N / 256),
-                                                    dst + (size_t) r * gr);
-                    ok &= kcpu::iq3s_nl4_repack(f.up[0] + (size_t) (r0 + r) * f.gu_row, (int) (N / 256),
-                                                dst + (size_t) (rg + r) * gr);
-                    if (!ok)
-                        repack_ok = false;
-                }
-            } else {
-                std::memcpy(dst, f.gate[0] + (size_t) r0 * f.gu_row, (size_t) rg * f.gu_row);
-                std::memcpy(dst + (size_t) rg * gr, f.up[0] + (size_t) r0 * f.gu_row, (size_t) rg * f.gu_row);
-            }
-            std::memcpy(dst + 2 * (size_t) rg * gr, f.down[0] + (size_t) d0 * f.d_row, (size_t) rd * f.d_row);
-        });
-        if (!repack_ok) {
-            err = "glm5: an IQ3_S expert row does not repack (a grid value outside the NL4 codes); run with "
-                  "GUILD_GLM_NL4=0";
+        if (!cpu_moe::place_ffns(*pool, all, N, split, nl4, arena, arena_bytes, err)) {
+            err = "glm5: " + err;
             return false;
         }
-        // the pointers, once every part is copied (the copies read the mapping through gate[0] and friends)
-        for (int i = 0; i < n_all; ++i) {
-            CpuFfn& f = *all[(size_t) i];
-            const size_t gr = gu_row_of(f);
-            const int64_t h = h_of(f);
-            for (int node = 0; node < 2; ++node) {
-                const int src = node < nn ? node : 0;
-                const int64_t r0 = src ? h : 0, rg = src ? f.n_ff - h : h, d0 = src ? dh : 0;
-                const uint8_t* base = arena[src] + at[(size_t) i][(size_t) src];
-                f.gate[node] = rebase(base, r0, gr);
-                f.up[node] = rebase(base + (size_t) rg * gr, r0, gr);
-                f.down[node] = rebase(base + 2 * (size_t) rg * gr, d0, f.d_row);
-            }
-            if (repacked(f))
-                f.gu_type = kcpu::kIq3sNl4Type;
-            f.gu_row = gr;
-            f.gu_split = h;
-            f.d_split = dh;
-        }
+        const size_t node_bytes[2] = {arena_bytes[0], arena_bytes[1]};
         // the routed experts' pages of the shards are no longer read: let the kernel drop them (only theirs: the
         // embedding copy may still be reading token_embd's)
         for (size_t sh = 0; sh < gguf->size(); ++sh) {
@@ -1787,280 +1257,11 @@ bool Glm5Engine::Impl::layer_attention(int l, int T, int64_t pos0, bool save_mid
 }
 
 void Glm5Engine::Impl::cpu_ffn(const Layer& Y, int T, const Rows& io) {
-    // Groups: one FFN slice and the tokens it serves (a routed expert and the tokens routed to it, or the layer's own
-    // FFN for every token when it lives on the CPU).  Units: (group, token) pairs, each with its hidden activation.
-    // Phase 1, gate/up, over (group, row block): a group's tokens share the weight decode (multi-token kernels from
-    // two tokens up), and the item that completes a 256-row block of a group's hidden activations quantizes it.
-    // Phase 2, down, over row blocks of the output, each summing its rows over every unit of every token, so no two
-    // threads write one row.
-    const int64_t N = g.n_embd;
-    struct Group {
-        CpuFfn f;
-        std::vector<int> units; // indices into `unit_t` / `unit_w`
-    };
-    std::vector<Group> groups;
-    std::vector<int> unit_t, unit_g;
-    std::vector<float> unit_w;
-    if (Y.moe) {
-        std::vector<int> group_of((size_t) g.n_expert, -1);
-        for (int t = 0; t < T; ++t)
-            for (int j = 0; j < (int) g.n_used; ++j) {
-                const int ex = io.h_ids[t * g.n_used + j];
-                if (group_of[(size_t) ex] < 0) {
-                    group_of[(size_t) ex] = (int) groups.size();
-                    Group gr;
-                    gr.f = Y.experts[(size_t) ex];
-                    groups.push_back(std::move(gr));
-                }
-                const int gi = group_of[(size_t) ex];
-                groups[(size_t) gi].units.push_back((int) unit_t.size());
-                unit_t.push_back(t);
-                unit_g.push_back(gi);
-                unit_w.push_back(io.h_w[t * g.n_used + j]);
-            }
-    }
-    if (!Y.ffn_gpu || (io.twin && Y.ffn_twin)) {
-        Group gr;
-        gr.f = Y.ffn_cpu;
-        const int gi = (int) groups.size();
-        for (int t = 0; t < T; ++t) {
-            gr.units.push_back((int) unit_t.size());
-            unit_t.push_back(t);
-            unit_g.push_back(gi);
-            unit_w.push_back(1.f);
-        }
-        groups.push_back(std::move(gr));
-    }
-    const int U = (int) unit_t.size();
-
-    // the quantized inputs: one per (token, activation type)
-    std::map<int, size_t> act_off; // (vec_dot_type * kMaxT + t) -> offset
-    std::vector<size_t> act_at((size_t) U);
-    size_t total = 0;
-    for (int u = 0; u < U; ++u) {
-        const int at = act_type(groups[(size_t) unit_g[(size_t) u]].f.gu_type);
-        const int key = at * kMaxT + unit_t[(size_t) u];
-        auto it = act_off.find(key);
-        if (it == act_off.end()) {
-            it = act_off.emplace(key, total).first;
-            total += ggml_row_size((ggml_type) at, N);
-        }
-        act_at[(size_t) u] = it->second;
-    }
-    static const bool timing = std::getenv("GUILD_GLM_TIMING") != nullptr;
-    auto tp = std::chrono::steady_clock::now();
-    auto lap = [&](int k) {
-        if (!timing)
-            return;
-        const auto now = std::chrono::steady_clock::now();
-        phase_ms[k] += std::chrono::duration<double, std::milli>(now - tp).count();
-        tp = now;
-    };
-    actbuf.resize(total + 64);
-    for (const auto& kv : act_off) {
-        const int at = kv.first / kMaxT, t = kv.first % kMaxT;
-        from_float_of(at)(io.h_x + (size_t) t * N, actbuf.data() + kv.second, N);
-    }
-    std::vector<size_t> h_off((size_t) U + 1, 0), hq_off((size_t) U + 1, 0);
-    for (int u = 0; u < U; ++u) {
-        const CpuFfn& f = groups[(size_t) unit_g[(size_t) u]].f;
-        h_off[(size_t) u + 1] = h_off[(size_t) u] + (size_t) f.n_ff;
-        const int dt = (int) cpu_traits(f.d_type)->vec_dot_type;
-        hq_off[(size_t) u + 1] = hq_off[(size_t) u] + ggml_row_size((ggml_type) dt, f.n_ff);
-    }
-    hbuf.resize(h_off[(size_t) U] * 4);
-    hqbuf.resize(hq_off[(size_t) U] + 64);
-    float* hv = (float*) hbuf.data();
-
-    // the multi-token row kernel for a weight type, or null (ggml-cpu's single-token dot then)
-    using RowsFn = void (*)(int, const uint8_t*, size_t, int, const void* const*, int, float* const*, int, int);
-    auto multi = [](int type) -> RowsFn {
-        if (kcpu::cpu_avx512_ok() && kcpu::iq512_supported(type))
-            return &kcpu::iq512_rows;
-        if (kcpu::cpu_avx2_ok() && kcpu::iq256_supported(type))
-            return &kcpu::iq256_rows;
-        if (kcpu::cpu_avx2_ok() && kcpu::kq256_supported(type))
-            return &kcpu::kq256_rows;
-        return nullptr;
-    };
-    constexpr int RB = 64, MT = kcpu::MAXT;
-    // a down item's rows: with 64 a phase's last items kept a few threads busy while the rest waited (2x Xeon Gold
-    // 6130, 32 threads: a thread's last item ended 35 us before the phase on average, 16 us with 16 rows)
-    constexpr int DRB = 16;
-    // and the last items of each node's queue, about one a worker, are split in four, so that the phase ends with
-    // short items (2x Xeon Gold 6130: CPU experts -0.9 ms a 2-token step)
-    constexpr int kTail = 16, GTR = RB / 4, DTR = DRB / 4;
-
-    lap(0);
-    // phase 1: gate/up, each row block on the queue of the node that holds it
-    struct Item {
-        int gi, r0, r1; // group, rows
-    };
-    std::vector<Item> items[2];
-    for (int gi = 0; gi < (int) groups.size(); ++gi) {
-        const CpuFfn& f = groups[(size_t) gi].f;
-        for (int node = 0; node < 2; ++node) {
-            const int64_t a = node ? f.gu_split : 0, b = node ? f.n_ff : f.gu_split;
-            for (int64_t r = a; r < b; r += RB)
-                items[node].push_back({gi, (int) r, (int) std::min<int64_t>(r + RB, b)});
-        }
-    }
-    for (auto& v : items) {
-        const size_t k0 = v.size() > (size_t) kTail ? v.size() - kTail : 0;
-        std::vector<Item> tail;
-        for (size_t k = k0; k < v.size(); ++k)
-            for (int r = v[k].r0; r < v[k].r1; r += GTR)
-                tail.push_back({v[k].gi, r, std::min(r + GTR, v[k].r1)});
-        v.resize(k0);
-        v.insert(v.end(), tail.begin(), tail.end());
-    }
-    // The hidden activations' quantization: from_float quantizes each 256-row block on its own (Q8_K's blocks are
-    // 256, Q8_0's 32), so the item that completes a group's block of 256 rows quantizes that block for the group's
-    // units, and the bytes are those of a whole-row from_float.  qneed: the items that write each (group, block);
-    // qcnt: how many have.
-    constexpr int QB = 256;
-    bool fuse = true;
-    for (const Group& gr : groups) {
-        const int dt = (int) cpu_traits(gr.f.d_type)->vec_dot_type;
-        if (gr.f.n_ff % QB != 0 || QB % ggml_blck_size((ggml_type) dt) != 0)
-            fuse = false;
-    }
-    std::vector<int> qbase(groups.size() + 1, 0);
-    if (fuse) {
-        for (size_t gi = 0; gi < groups.size(); ++gi)
-            qbase[gi + 1] = qbase[gi] + (int) (groups[gi].f.n_ff / QB);
-        const size_t nb = (size_t) qbase.back();
-        qneed.assign(nb, 0);
-        for (int node = 0; node < 2; ++node)
-            for (const Item& it : items[node])
-                for (int b = it.r0 / QB; b <= (it.r1 - 1) / QB; ++b)
-                    ++qneed[(size_t) (qbase[(size_t) it.gi] + b)];
-        if (qcnt_cap < nb) {
-            qcnt.reset(new std::atomic<int>[nb]);
-            qcnt_cap = nb;
-        }
-        for (size_t k = 0; k < nb; ++k)
-            qcnt[k].store(0, std::memory_order_relaxed);
-    }
-    pool->run_nodes((int) items[0].size(), (int) items[1].size(), [&](int node, int i) {
-        const Item& it = items[node][(size_t) i];
-        const int gi = it.gi;
-        const Group& gr = groups[(size_t) gi];
-        const CpuFfn& f = gr.f;
-        const int r0 = it.r0, r1 = it.r1, nr = r1 - r0;
-        const uint8_t* wg = f.gate[node];
-        const uint8_t* wu = f.up[node];
-        const bool nl4 = f.gu_type == kcpu::kIq3sNl4Type;
-        const ggml_type_traits_cpu* tr = nl4 ? nullptr : cpu_traits(f.gu_type);
-        const RowsFn mt = !nl4 && gr.units.size() >= 2 ? multi(f.gu_type) : nullptr;
-        float gbuf[MT][RB], ubuf[MT][RB];
-        for (size_t c0 = 0; c0 < gr.units.size(); c0 += MT) {
-            const int nt = (int) std::min<size_t>(MT, gr.units.size() - c0);
-            const void* act[MT];
-            float* go[MT];
-            float* uo[MT];
-            for (int k = 0; k < nt; ++k) {
-                act[k] = actbuf.data() + act_at[(size_t) gr.units[c0 + k]];
-                go[k] = gbuf[k] - r0; // the kernels index outputs by row
-                uo[k] = ubuf[k] - r0;
-            }
-            if (nl4) {
-                glm5cpu::nl4_rows(wg, f.gu_row, (int) N, act, nt, go, r0, r1);
-                glm5cpu::nl4_rows(wu, f.gu_row, (int) N, act, nt, uo, r0, r1);
-            } else if (mt && nt >= 2) {
-                mt(f.gu_type, wg, f.gu_row, (int) N, act, nt, go, r0, r1);
-                mt(f.gu_type, wu, f.gu_row, (int) N, act, nt, uo, r0, r1);
-            } else {
-                for (int k = 0; k < nt; ++k)
-                    for (int r = r0; r < r1; ++r) {
-                        tr->vec_dot((int) N, &go[k][r], 0, wg + (size_t) r * f.gu_row, 0, act[k], 0, 1);
-                        tr->vec_dot((int) N, &uo[k][r], 0, wu + (size_t) r * f.gu_row, 0, act[k], 0, 1);
-                    }
-            }
-            for (int k = 0; k < nt; ++k) {
-                float* h = hv + h_off[(size_t) gr.units[c0 + k]];
-                for (int j = 0; j < nr; ++j) {
-                    float gt = gbuf[k][j], up = ubuf[k][j];
-                    if (f.lim > 0.f) {
-                        gt = std::min(gt, f.lim);
-                        up = std::clamp(up, -f.lim, f.lim);
-                    }
-                    h[r0 + j] = gt / (1.f + std::exp(-gt)) * up;
-                }
-            }
-        }
-        if (fuse) {
-            const int dt = (int) cpu_traits(f.d_type)->vec_dot_type;
-            const size_t qb_bytes = ggml_row_size((ggml_type) dt, QB);
-            const ggml_from_float_t from_float = from_float_of(dt);
-            for (int b = r0 / QB; b <= (r1 - 1) / QB; ++b) {
-                const size_t k = (size_t) (qbase[(size_t) gi] + b);
-                if (qcnt[k].fetch_add(1, std::memory_order_acq_rel) + 1 != qneed[k])
-                    continue;
-                for (int u : gr.units)
-                    from_float(hv + h_off[(size_t) u] + (size_t) b * QB,
-                               hqbuf.data() + hq_off[(size_t) u] + (size_t) b * qb_bytes, QB);
-            }
-        }
-    });
-    lap(1);
-    // the hidden activations, unless gate/up quantized them
-    if (!fuse)
-        pool->run(U, [&](int u) {
-            const CpuFfn& f = groups[(size_t) unit_g[(size_t) u]].f;
-            from_float_of((int) cpu_traits(f.d_type)->vec_dot_type)(hv + h_off[(size_t) u],
-                                                                    hqbuf.data() + hq_off[(size_t) u], f.n_ff);
-        });
-    lap(2);
-    // phase 2: down rows, summed over each token's units; the first half of the rows on node 0 (where the split puts
-    // them), the second on node 1
-    const int64_t half = (N / 2 + RB - 1) / RB * RB;
-    const int64_t d0[2] = {0, half}, d1[2] = {half, N};
-    int dmain[2], dn[2]; // a node's items of DRB rows, and of all
-    for (int node = 0; node < 2; ++node) {
-        const int64_t rows = d1[node] - d0[node];
-        dmain[node] = (int) std::max<int64_t>(0, rows / DRB - kTail);
-        dn[node] = dmain[node] + (int) ((rows - (int64_t) dmain[node] * DRB + DTR - 1) / DTR);
-    }
-    pool->run_nodes(dn[0], dn[1], [&](int node, int i) {
-        const int m = dmain[node];
-        const int r0 = (int) d0[node] + (i < m ? i * DRB : m * DRB + (i - m) * DTR);
-        const int r1 = (int) std::min<int64_t>(r0 + (i < m ? DRB : DTR), d1[node]), nr = r1 - r0;
-        for (int t = 0; t < T; ++t)
-            std::fill(io.h_y + (size_t) t * N + r0, io.h_y + (size_t) t * N + r1, 0.f);
-        float dbuf[MT][RB];
-        for (const Group& gr : groups) {
-            const CpuFfn& f = gr.f;
-            const ggml_type_traits_cpu* tr = cpu_traits(f.d_type);
-            const RowsFn mt = gr.units.size() >= 2 ? multi(f.d_type) : nullptr;
-            for (size_t c0 = 0; c0 < gr.units.size(); c0 += MT) {
-                const int nt = (int) std::min<size_t>(MT, gr.units.size() - c0);
-                const void* hq[MT];
-                float* dout[MT];
-                for (int k = 0; k < nt; ++k) {
-                    hq[k] = hqbuf.data() + hq_off[(size_t) gr.units[c0 + k]];
-                    dout[k] = dbuf[k] - r0;
-                }
-                // the block lies on one side of this group's split (the split is at `half` or past N)
-                const uint8_t* wd = f.down[r0 >= f.d_split];
-                if (mt && nt >= 2) {
-                    mt(f.d_type, wd, f.d_row, (int) f.n_ff, hq, nt, dout, r0, r1);
-                } else {
-                    for (int k = 0; k < nt; ++k)
-                        for (int r = r0; r < r1; ++r)
-                            tr->vec_dot((int) f.n_ff, &dout[k][r], 0, wd + (size_t) r * f.d_row, 0, hq[k], 0, 1);
-                }
-                for (int k = 0; k < nt; ++k) {
-                    const int u = gr.units[c0 + k];
-                    float* out = io.h_y + (size_t) unit_t[(size_t) u] * N + r0;
-                    const float w = unit_w[(size_t) u];
-                    for (int j = 0; j < nr; ++j)
-                        out[j] += w * dbuf[k][j];
-                }
-            }
-        }
-    });
-    lap(3);
+    // the routed experts of a MoE layer, and the layer's own FFN for every token when it lives on the CPU (or the
+    // shared expert's twin for a pipelined group)
+    const bool own = !Y.ffn_gpu || (io.twin && Y.ffn_twin);
+    xp.run(*pool, g.n_embd, T, kMaxT, Y.moe ? io.h_ids : nullptr, io.h_w, (int) g.n_used, Y.experts,
+           own ? &Y.ffn_cpu : nullptr, io.h_x, io.h_y);
 }
 
 void Glm5Engine::Impl::ffn_begin(const Layer& Y, int T) {
@@ -2151,9 +1352,9 @@ const std::string& Glm5Engine::placement() const {
 }
 void Glm5Engine::print_timing(const char* what) const {
     if (std::getenv("GUILD_GLM_TIMING"))
-        std::fprintf(stderr,
-                     "glm5 timing (%s): activations %.0f ms, gate/up %.0f, hidden %.0f, down %.0f; launches %.0f\n",
-                     what, p_->phase_ms[0], p_->phase_ms[1], p_->phase_ms[2], p_->phase_ms[3], p_->enqueue_ms);
+        std::fprintf(
+            stderr, "glm5 timing (%s): activations %.0f ms, gate/up %.0f, hidden %.0f, down %.0f; launches %.0f\n",
+            what, p_->xp.phase_ms[0], p_->xp.phase_ms[1], p_->xp.phase_ms[2], p_->xp.phase_ms[3], p_->enqueue_ms);
 }
 
 double Glm5Engine::last_cpu_ms() const {
