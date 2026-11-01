@@ -479,10 +479,17 @@ void Experts::run(Pool& pool, int64_t N, int T, int max_t, const int32_t* ids, c
     grow(hqbuf_, hq_off[(size_t) U] + 64);
     float* hv = (float*) hbuf_.data();
 
-    // the multi-token row kernel for a weight type, or null (ggml-cpu's single-token dot then)
+    // the multi-token row kernel for a weight type, or null (ggml-cpu's single-token dot then).  The AVX-512 i-quant
+    // rows need AVX-512 F and BW only, but run where cpu_avx512_ok() (VNNI and VBMI too); IQ4_XS's also run on an
+    // AVX-512 BW CPU, where they beat the AVX-2 rows (Xeon Gold 6130, one thread, GLM-5.3-Flash's 2,048-value down
+    // rows: 24.9 -> 33.9 GMAC/s at 4 tokens) with the same bits (both are ggml-cpu's dot per token).
+    // GUILD_IQ4XS_512=0 (read each call, for A/Bs in one process): the AVX-2 rows.
     using RowsFn = void (*)(int, const uint8_t*, size_t, int, const void* const*, int, float* const*, int, int);
-    auto multi = [](int type) -> RowsFn {
-        if (kcpu::cpu_avx512_ok() && kcpu::iq512_supported(type))
+    const char* x512 = std::getenv("GUILD_IQ4XS_512");
+    const bool iq4xs512 = !(x512 && x512[0] == '0');
+    auto multi = [iq4xs512](int type) -> RowsFn {
+        if (kcpu::iq512_supported(type) &&
+            (kcpu::cpu_avx512_ok() || (iq4xs512 && type == (int) GGML_TYPE_IQ4_XS && kcpu::cpu_avx512bw_ok())))
             return &kcpu::iq512_rows;
         if (kcpu::cpu_avx2_ok() && kcpu::iq256_supported(type))
             return &kcpu::iq256_rows;

@@ -405,9 +405,18 @@ int main(int argc, char** argv) {
                     const Arm& arm = arms[a];
                     set_arm(arm);
                     eng.reset();
+                    const auto tp = std::chrono::steady_clock::now();
                     if (!eng.forward(p.data(), (int) p.size(), 0, logits.data(), err)) {
                         std::fprintf(stderr, "glm5_run: %s\n", err.c_str());
                         return 1;
+                    }
+                    const double prompt_ms =
+                        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tp).count();
+                    uint64_t lh = 1469598103934665603ull; // FNV-1a of the prompt's last logits, to compare arms
+                    for (const float v : logits) {
+                        uint32_t u;
+                        std::memcpy(&u, &v, 4);
+                        lh = (lh ^ u) * 1099511628211ull;
                     }
                     const std::vector<float> first = logits;
                     Decode r;
@@ -418,13 +427,14 @@ int main(int argc, char** argv) {
                     std::string label = arm.name;
                     std::replace(label.begin(), label.end(), ' ', ',');
                     const int steps = std::max(1, r.offered ? r.offered : (int) r.step_ms.size());
-                    std::printf("gen %s %s round %d: %zu tokens, %zu steps, %d drafts accepted (%.1f%%); per step: "
+                    std::printf("gen %s %s round %d: prompt %zu tokens in %.0f ms (logits %016llx); %zu tokens, %zu "
+                                "steps, %d drafts accepted (%.1f%%); per step: "
                                 "draft %.3f ms (median %.3f, 90th %.3f), verify %.2f, accept %.2f, CPU experts %.1f, "
                                 "step median %.2f; %.2f tok/s\n",
-                                name.c_str(), label.c_str(), round, r.out.size(), r.step_ms.size(), r.accepted,
-                                100.0 * r.accepted / std::max(1, r.offered), r.draft_ms / steps, pct(r.draft_one, 0.5),
-                                pct(r.draft_one, 0.9), r.verify_ms / steps, r.accept_ms / steps, r.cpu_ms / steps,
-                                pct(r.step_ms, 0.5), tok_s(r));
+                                name.c_str(), label.c_str(), round, p.size(), prompt_ms, (unsigned long long) lh,
+                                r.out.size(), r.step_ms.size(), r.accepted, 100.0 * r.accepted / std::max(1, r.offered),
+                                r.draft_ms / steps, pct(r.draft_one, 0.5), pct(r.draft_one, 0.9), r.verify_ms / steps,
+                                r.accept_ms / steps, r.cpu_ms / steps, pct(r.step_ms, 0.5), tok_s(r));
                     std::printf("ids %s %s round %d:", name.c_str(), label.c_str(), round);
                     for (size_t i = 0; i < r.out.size(); ++i)
                         std::printf("%s%d", i ? "," : " ", r.out[i]);
