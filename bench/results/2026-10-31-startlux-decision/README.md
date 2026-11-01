@@ -53,15 +53,38 @@ each prompt whole, the same computation.
 
 - **Prompts:** all 255 prompts the reference recorded render to the same tokens in Guild (`decision_render_test`), the
   31K-token one and the JSON states included.
-- **Probabilities** against the fp32 reference (`tools/decision_gate.py`):
+- **The readout.** The letters' logits are the final hidden state times the checkpoint's own BF16 head rows for
+  the 26 letters, in double precision, as the package's `model.py` reads them (`h.float() @ letter_rows.T`):
+  `tools/decision_letter_rows.py` writes the rows beside `decision_config.json`, and `GuildSession::score` returns the
+  hidden state with the logits.  Against Guild's Q8_0 head it moved one question across 0.01 (59 -> 60) and the 95th
+  percentile of max |dp| from 0.03722 to 0.03680: the head was not where the error comes from.
+- **The gate as decided** (`gate.json`, a fixed test; `decision_gate_test` runs it when the model's paths are
+  configured).  The reference is the package in fp32; the bounds are the package's own bf16 run's distance from it:
+  1. the top answer equals fp32's wherever fp32's top two probabilities differ by 0.05 or more (near-ties may flip);
+  2. no more questions with max |dp| over 0.01 than bf16 has (52 of 258), and a 95th percentile of max |dp|
+     (nearest rank) no larger than bf16's (0.03685);
+  3. the same prompt tokens.
 
-| Run | Same top answer | max \|dp\| <= 0.01 | Median / 90th / max \|dp\| |
+| Condition | bf16 (the bound) | Guild Q8_0 | |
+| --- | --- | --- | --- |
+| 1. flips where fp32's margin >= 0.05 | none | `hard-opus-c-temporal_numeric-04` (margin 0.0614) | **fails** |
+| near-tie flips (allowed), fp32 margin | `temporal_numeric-07` 0.0111, `temporal_numeric-12` 0.0033, `long-json-20k`/`common` 0.028 | `temporal_numeric-07` 0.0111, `sol-a-multi_hop-09` 0.0138, `long-json-20k`/`common` 0.028 | |
+| 2a. questions over 0.01 | 52 | 60 | **fails** |
+| 2b. 95th percentile of max \|dp\| | 0.03685 | 0.03680 | passes |
+| 3. prompt tokens equal | | 255 of 255 | passes |
+
+  The test fails, and gives the same result every run (regress2's ctest: the same flips, counts and percentile).
+  `temporal_numeric-04` flips under every Q8_0 computation measured: llama.cpp on the same GGUF, and the package in
+  fp32 with every matrix rounded to Q8_0.
+- **All 258 questions** against fp32:
+
+| Run | Same top answer | max \|dp\| <= 0.01 | Median / 90th / 95th / max \|dp\| |
 | --- | ---: | ---: | --- |
-| Guild Q8_0 (the default) | 253 / 258 | 199 / 258 | 0.0014 / 0.022 / 0.143 |
-| Guild Q4_K_M | 249 / 258 | 155 / 258 | 0.0059 / 0.057 / 0.537 |
-| the reference package in bf16 | 255 / 258 | 206 / 258 | 0.0013 / 0.026 / 0.086 |
+| Guild Q8_0 (the default) | 254 / 258 | 198 / 258 | 0.0014 / 0.022 / 0.0368 / 0.144 |
+| the reference package in bf16 | 255 / 258 | 206 / 258 | 0.0013 / 0.026 / 0.0369 / 0.086 |
+| Guild Q4_K_M (before the letter-rows readout) | 249 / 258 | 155 / 258 | 0.0059 / 0.057 / - / 0.537 |
 
-On the 69 questions of 500 tokens or more, against fp32:
+On the 69 questions of 500 tokens or more that llama.cpp was run on, against fp32 (before the letter-rows readout):
 
 | Run | max \|dp\| <= 0.01 | Median / 90th / max \|dp\| | Same top answer |
 | --- | ---: | --- | ---: |
@@ -77,18 +100,41 @@ On the 69 questions of 500 tokens or more, against fp32:
   - Rounding the weights to Q8_0 alone, with fp32 activations, already moves 31 of the 69 longer questions by more
     than 0.01.
   - The error grows with the prompt: Guild Q8_0's median \|dp\| is 0.0005 under 200 tokens and 0.012 at 2K-4K.
-  - The flips sit on near-ties: two of Guild's five are also bf16's (`hard-opus-a-temporal_numeric-07`,
-    `long-json-20k` / `common`).
-- **Not passed as set.** A 0.01 bound on every question against fp32 holds only for an engine close to fp32: bf16
-  weights with fp32 activations throughout.
+
+- **The 0.143 outlier** (`hard-opus-b-multi_hop-04`, 2,359 tokens; condition 3 of the decision).  fp32 is fairly
+  confident there and Guild is not, so it was followed down to the layers:
+
+| Run | chen | ana | bjorn | esra | max \|dp\| |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| the package in fp32 (the reference) | 0.479 | 0.229 | 0.184 | 0.060 | |
+| the package in bf16 | 0.503 | 0.170 | 0.204 | 0.080 | 0.058 |
+| fp32 with Q8_0-rounded weights | 0.433 | 0.264 | 0.137 | 0.105 | 0.046 |
+| llama.cpp, the same Q8_0 GGUF | 0.442 | 0.309 | 0.161 | 0.058 | 0.080 |
+| Guild Q8_0 | 0.335 | 0.324 | 0.191 | 0.091 | 0.144 |
+
+  - **Per layer.** The residual stream at the last position, relative L2 against fp32: Guild stays within the
+    envelope of the other runs up to layer 20 (0.025; fp32 with Q8_0 weights 0.020, bf16 0.033), and against fp32
+    with Q8_0 weights it stays at 0.012-0.023 (Q8_0 activations on top of the same weights).  Then it jumps at
+    layer 21 (0.025 -> 0.041) and again at layer 35.
+  - **The routing explains the jump.** The last token's router (top 8 of 256 experts) has its 8th and 9th
+    probabilities within 0.001 of each other in 30 of the 40 layers in fp32, and within 0.0001 in 7 (layers 10, 12,
+    21, 22, 25, 27, 35; 0.00004 at layer 21).  Every reduced precision picks some of those near-ties the other way:
+    Guild swaps one expert in 7 layers (21, 22, 25, 26, 27, 33, 39), fp32 with Q8_0 weights in 9 (22-28, 30, 35),
+    and only 2 of those swaps are the same (layers 22 and 26).  Guild's first swap is layer 21, where its error
+    jumps; before it, nothing in its arithmetic stands out.
+  - **So:** not a kernel defect that shows anywhere else, but a prompt whose answer hangs on a chain of expert
+    choices that are ties at fp32's own precision; which computation lands nearer fp32 is luck of the draw (bf16
+    0.058, llama.cpp 0.080, Guild 0.144).  Noted, not fixed.
+
+
 - **JevBench accuracy**, correct of easy / original / hard:
 
 | Run | Easy | Original | Hard |
 | --- | ---: | ---: | ---: |
 | the reference in fp32 | 48 / 48 | 71 / 72 | 89 / 111 |
 | the reference in bf16 | 48 / 48 | 71 / 72 | 91 / 111 |
-| Guild Q8_0 | 48 / 48 | 70 / 72 | 88 / 111 |
-| Guild Q4_K_M | 48 / 48 | 71 / 72 | 88 / 111 |
+| Guild Q8_0 (the letter-rows readout) | 48 / 48 | 71 / 72 | 88 / 111 |
+| Guild Q4_K_M (before it) | 48 / 48 | 71 / 72 | 88 / 111 |
 
 ## Speed
 
@@ -110,21 +156,29 @@ adds.
 
 ## Nothing else moved
 
-The branch against `build-cuda12` (`feat/glm5` `196527e`), one machine lock, `regress.sh`:
-- **ctest:** all 123 of the branch's tests ran: 116 passed, 6 skipped for missing hardware features or fixtures.
-  `ple_parity` failed: its fixtures are not on this machine, as on `feat/glm5`.
-- **Qwen3.8-Flash-Next:** qwen-bench, server flags, base / branch / branch / base.
-  - ms a window, prose: 62.95-63.24 against 63.08-63.26.
-  - code: 66.10-66.41 against 66.29-66.42.
-  - All 24 texts identical.
+The branch against `build-cuda12` (`feat/glm5` `196527e`), one machine lock, `regress.sh`, run twice: before the
+letter-rows readout (regress1) and at the branch's head `66d5356` (regress2, 2026-10-31 21:44-23:02 UTC):
+- **ctest (regress2):** 125 tests, 3 failures:
+  - `ple_parity`: its fixtures are not on this machine, as on `feat/glm5`.
+  - `decision_gate_test`: the gate above, failing as it should.
+  - `multi_model_isolation_test`: timed out at 183 s against its 180 s limit (173 s in regress1).  Run alone right
+    after, it passed.
+- **Qwen3.8-Flash-Next:** qwen-bench, server flags, base / branch / branch / base, tok/s:
+  - prose: 34.04 / 34.28 / 34.23 / 34.19;
+  - code: 44.74 / 44.76 / 44.75 / 44.63.
+  - All texts identical.
 - **GLM-5.3-Flash:**
-  - glm5_run, base / branch alternated: the branch's warm runs 21.59 / 21.85 / 21.85 tok/s against 21.88 / 21.87;
-    the first base run, cold after the Qwen runs, 10.09.  The same ids in all six.
-  - guild-generate (the runtime's GLM path): the same text, 21.62 against 21.61 tok/s.
+  - glm5_run, base / branch alternated, tok/s:
+    - base 21.23 (the first run, colder), 21.68, 21.81;
+    - branch 21.54, 21.90, 21.80.
+    - The same ids in all six.
+  - guild-generate (the runtime's GLM path): the same text, 20.75 against 21.45 tok/s.
+  - `session_score_test` on GLM: the argmax and repeat checks pass; reading a prompt in two parts differs from one
+    read (max \|dlogit\| 3.03), as before this branch (below).
 
 ## Known gaps
 
-- **Precision.** The 0.01-on-every-question gate is not met at Q8_0 (above).
+- **The gate fails** at Q8_0 on two of its conditions (above).  No full-precision path was built, as decided.
 - **Prompt length.** Guild's dense attention for this topology holds 32,768 cells (`kTopkMaxCells`), so a prompt
   is at most 32,768 tokens.  The model card's 262,144 needs multi-tile attention.
 - **Images** are refused.
