@@ -46,6 +46,10 @@ public:
     /// The front end's configuration, with the stored window and mel filter bank
     const MelConfig& mel_config() const;
     uint64_t vram_bytes() const;
+    /// Keeps a float32 copy of every BF16 matrix on the device, so that encode() skips the widening (the same
+    /// products: 2x Xeon Gold 6130 + GTX 1070, about 35 ms less a clip), if the device still has `keep_free` bytes
+    /// free after (twice the BF16 bytes: 2.9 GB for this model); false, and the widening a layer at a time, if not.
+    bool keep_wide(uint64_t keep_free);
 
     /// The embeddings of `f` (from log_mel with mel_config()): one row of out_dim floats per audio token,
     /// (f.frames + stack - 1) / stack of them (host).  AudioDetail holds every token the model reads (f.padded /

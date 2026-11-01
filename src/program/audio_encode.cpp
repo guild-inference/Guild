@@ -1,12 +1,13 @@
 // src/program/audio_encode.cpp - Nemotron 3.5 Transcribe's audio front end and audio model on WAV files, every
 // stage written out for comparison with the reference (tools/nemotron_audio_parity.py).
 //
-//   audio_encode --audio <runtime dir> --out <dir> [--repeat N] a.wav b.wav ...
+//   audio_encode --audio <runtime dir> --out <dir> [--repeat N] [--keep-wide] a.wav b.wav ...
 //
 // Per file <name>.wav: <name>.mel.f32 (frames x n_mels, the log-mel before normalization, padded frames included),
 // <name>.asr.f32 (tokens x 1280, the speech encoder), <name>.spk.f32 (tokens * 8 x 8, the speaker logits),
 // <name>.audio.f32 (tokens x 1280, with the speaker term) and <name>.emb.f32 (tokens x 2688, the embeddings), and a
-// line of timings on stdout.  Audio at another rate is resampled first.
+// line of timings on stdout.  Audio at another rate is resampled first.  --keep-wide: the float32 matrices kept on the
+// device (AudioEncoder::keep_wide).
 #include "guild/audio/encoder.hpp"
 #include "guild/audio/frontend.hpp"
 
@@ -36,6 +37,7 @@ double ms_since(std::chrono::steady_clock::time_point t0) {
 int main(int argc, char** argv) {
     std::string dir, out;
     int repeat = 1;
+    bool keep_wide = false;
     std::vector<std::string> wavs;
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
@@ -45,14 +47,19 @@ int main(int argc, char** argv) {
             out = argv[++i];
         else if (a == "--repeat" && i + 1 < argc)
             repeat = std::max(1, std::atoi(argv[++i]));
+        else if (a == "--keep-wide")
+            keep_wide = true;
         else if (a.rfind("--", 0) == 0) {
-            std::fprintf(stderr, "usage: audio_encode --audio <runtime dir> --out <dir> [--repeat N] file.wav ...\n");
+            std::fprintf(
+                stderr,
+                "usage: audio_encode --audio <runtime dir> --out <dir> [--repeat N] [--keep-wide] file.wav ...\n");
             return 2;
         } else
             wavs.push_back(a);
     }
     if (dir.empty() || out.empty() || wavs.empty()) {
-        std::fprintf(stderr, "usage: audio_encode --audio <runtime dir> --out <dir> [--repeat N] file.wav ...\n");
+        std::fprintf(stderr,
+                     "usage: audio_encode --audio <runtime dir> --out <dir> [--repeat N] [--keep-wide] file.wav ...\n");
         return 2;
     }
     std::filesystem::create_directories(out);
@@ -63,6 +70,8 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "audio_encode: %s\n", err.c_str());
         return 1;
     }
+    if (keep_wide && !enc.keep_wide(0))
+        std::fprintf(stderr, "audio_encode: no room for the float32 matrices; widening a layer at a time\n");
     std::printf("audio_encode: loaded in %.0f ms, %.0f MiB on the GPU\n", ms_since(t0),
                 double(enc.vram_bytes()) / 1048576.0);
     const auto& cfg = enc.mel_config();

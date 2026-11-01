@@ -28,6 +28,7 @@ struct Entry {
     std::string kind;
     int64_t rows = 0, cols = 0;
     uint64_t offset = 0, bytes = 0;
+    float* wide = nullptr; ///< a BF16 matrix's float32 copy, when keep_wide() kept them
 };
 
 __global__ void widen_bf16(const uint16_t* in, float* out, int64_t n) {
@@ -198,6 +199,8 @@ struct AudioEncoder::Impl {
     cublasHandle_t blas = nullptr;
     float* wide = nullptr; ///< one widened matrix
     int64_t wide_elems = 0;
+    float* wide_all = nullptr; ///< every BF16 matrix widened (keep_wide)
+    uint64_t wide_all_bytes = 0;
     // activations, sized for diar_chunk tokens
     float *feat = nullptr, *h = nullptr, *a = nullptr, *qkv = nullptr, *att = nullptr, *ff = nullptr, *sc = nullptr,
           *col = nullptr, *up = nullptr, *cls = nullptr, *spk = nullptr, *emb = nullptr;
@@ -207,8 +210,8 @@ struct AudioEncoder::Impl {
 
     ~Impl() {
         for (void* p :
-             {(void*) dev, (void*) wide, (void*) feat, (void*) h, (void*) a, (void*) qkv, (void*) att, (void*) ff,
-              (void*) sc, (void*) col, (void*) up, (void*) cls, (void*) spk, (void*) emb, (void*) cs})
+             {(void*) dev, (void*) wide, (void*) wide_all, (void*) feat, (void*) h, (void*) a, (void*) qkv, (void*) att,
+              (void*) ff, (void*) sc, (void*) col, (void*) up, (void*) cls, (void*) spk, (void*) emb, (void*) cs})
             if (p)
                 cudaFree(p);
         if (blas)
@@ -244,16 +247,49 @@ struct AudioEncoder::Impl {
     }
 
     /// Y[T, N] (row stride ldy) = X[T, K] (row stride ldx) . W^T, W the BF16 matrix `name` [N, K], widened first
+    /// (or kept widened)
     bool linear(const std::string& name, const float* X, int64_t ldx, float* Y, int64_t ldy, int T) {
         const Entry* e = find(name);
         if (!e)
             return false;
         const int64_t N = e->rows, K = e->cols;
-        widen_bf16<<<grid_for(N * K), 256, 0, st>>>(reinterpret_cast<const uint16_t*>(dev + e->offset), wide, N * K);
+        const float* W = e->wide;
+        if (!W) {
+            widen_bf16<<<grid_for(N * K), 256, 0, st>>>(reinterpret_cast<const uint16_t*>(dev + e->offset), wide,
+                                                        N * K);
+            W = wide;
+        }
         const float one = 1.f, zero = 0.f;
-        return blas_ok(cublasSgemm(blas, CUBLAS_OP_T, CUBLAS_OP_N, int(N), T, int(K), &one, wide, int(K), X, int(ldx),
+        return blas_ok(cublasSgemm(blas, CUBLAS_OP_T, CUBLAS_OP_N, int(N), T, int(K), &one, W, int(K), X, int(ldx),
                                    &zero, Y, int(ldy)),
                        name.c_str());
+    }
+
+    /// every BF16 matrix widened once, each at a 256-byte boundary as the per-product scratch is, if the device keeps
+    /// `keep_free` bytes free after
+    bool keep_wide(uint64_t keep_free) {
+        if (wide_all)
+            return true;
+        uint64_t need = 0;
+        for (auto& [name, e] : index)
+            if (e.kind == "bf16")
+                need += (uint64_t(e.rows * e.cols) * 4 + 255) / 256 * 256;
+        size_t free_b = 0, total_b = 0;
+        if (cudaMemGetInfo(&free_b, &total_b) != cudaSuccess || free_b < need + keep_free ||
+            cudaMalloc(&wide_all, need) != cudaSuccess) {
+            wide_all = nullptr;
+            return false;
+        }
+        wide_all_bytes = need;
+        uint8_t* p = reinterpret_cast<uint8_t*>(wide_all);
+        for (auto& [name, e] : index)
+            if (e.kind == "bf16") {
+                e.wide = reinterpret_cast<float*>(p);
+                widen_bf16<<<grid_for(e.rows * e.cols), 256, 0, st>>>(reinterpret_cast<const uint16_t*>(dev + e.offset),
+                                                                      e.wide, e.rows * e.cols);
+                p += (uint64_t(e.rows * e.cols) * 4 + 255) / 256 * 256;
+            }
+        return cuda(cudaStreamSynchronize(st), "widen");
     }
     /// LayerNorm rows of D at stride D (in place when x == y)
     bool norm(const std::string& tag, const float* x, float* y, int rows, int D) {
@@ -570,7 +606,10 @@ const MelConfig& AudioEncoder::mel_config() const {
     return p_->mel;
 }
 uint64_t AudioEncoder::vram_bytes() const {
-    return p_->dev_bytes + uint64_t(p_->wide_elems) * 4;
+    return p_->dev_bytes + uint64_t(p_->wide_elems) * 4 + p_->wide_all_bytes;
+}
+bool AudioEncoder::keep_wide(uint64_t keep_free) {
+    return p_->keep_wide(keep_free);
 }
 bool AudioEncoder::encode(const Features& f, std::vector<float>& embeds, std::string& err, AudioDetail* detail) {
     return p_->encode(f, embeds, err, detail);
