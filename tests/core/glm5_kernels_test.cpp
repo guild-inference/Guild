@@ -236,13 +236,28 @@ static void test_kda() {
     float* dst0 = up(st0);
     k::kda_conv(dq, dk, dv, dst, dwq, dwk, dwv, dout, D, T, dcmid, nullptr);
     k::kda_gates(dfp, ddt, da, dg, dbp, dbeta, D, H, T, lb, nullptr);
-    k::kda_step(dS, dout, dg, dbeta, do_, H, T, dmid, nullptr);
+    k::kda_step(dS, dS, dout, dg, dbeta, do_, H, T, dmid, nullptr);
     // the saved first-token state is what a one-token window leaves
     float* dout1;
     cudaMalloc(&dout1, (size_t) 3 * D * 4);
     k::kda_conv(dq, dk, dv, dst0, dwq, dwk, dwv, dout1, D, 1, nullptr, nullptr);
-    k::kda_step(dS0, dout, dg, dbeta, do_ + 0, H, 1, nullptr, nullptr);
+    k::kda_step(dS0, dS0, dout, dg, dbeta, do_ + 0, H, 1, nullptr, nullptr);
     check("kda_step mid state", down(dmid, (size_t) H * DK * DK), down(dS0, (size_t) H * DK * DK), 0);
+    { // a verify window split in two (glm5.cpp's kda_mid1): token 0's state to a mid copy only, token 1 from it,
+      // against both tokens at once: the same state and outputs
+        float *dSx = up(S0), *dSy = up(S0), *dm2, *o2a, *o2b;
+        cudaMalloc(&dm2, (size_t) H * DK * DK * 4);
+        cudaMalloc(&o2a, (size_t) 2 * D * 4);
+        cudaMalloc(&o2b, (size_t) 2 * D * 4);
+        k::kda_step(dSx, dSx, dout, dg, dbeta, o2a, H, 2, nullptr, nullptr);
+        k::kda_step(dSy, nullptr, dout, dg, dbeta, o2b, H, 1, dm2, nullptr);
+        check("kda_step split window: S_in left alone", down(dSy, (size_t) H * DK * DK), S0, 0);
+        k::kda_step(dm2, dSy, dout + 3 * D, dg + D, dbeta + H, o2b + D, H, 1, nullptr, nullptr);
+        check("kda_step split window: state", down(dSy, (size_t) H * DK * DK), down(dSx, (size_t) H * DK * DK), 0);
+        check("kda_step split window: outputs", down(o2b, (size_t) 2 * D), down(o2a, (size_t) 2 * D), 0);
+        for (float* p : {dSx, dSy, dm2, o2a, o2b})
+            cudaFree(p);
+    }
     check("kda_conv mid state", down(dcmid, (size_t) 3 * D * 3), down(dst0, (size_t) 3 * D * 3), 0);
     k::kda_out(do_, dgate, dnw, dy, H, T, 1e-5f, nullptr);
     auto conv = down(dout, (size_t) T * 3 * D), st1 = down(dst, (size_t) 3 * D * 3), g = down(dg, (size_t) T * D),
@@ -1138,6 +1153,49 @@ static void test_narrow() {
 }
 
 // `glm5_kernels_test bench`: the GPU products at GLM-5.3-Flash's shapes (Q8_0 and Q6_K), GB/s of weights read
+// `glm5_kernels_test q6k`: glm5k::q6k_mmvq (the attention's Q6_K products) at GLM-5.3-Flash's shapes, GB/s
+static int bench_q6k() {
+    struct Shape {
+        const char* what;
+        int n_in, n_out;
+    } shapes[] = {{"DSA q_b 1536x16384", 1536, 16384}, {"KDA q/k/v 4096x8192", 4096, 8192},
+                  {"KDA out 8192x4096", 8192, 4096},   {"DSA out 16384x4096", 16384, 4096},
+                  {"head 4096x154880", 4096, 154880},  {"DSA q_b 1536x16384", 1536, 16384}}; // again, the clocks up
+    cudaStream_t st;
+    cudaStreamCreate(&st);
+    for (const Shape& sh : shapes) {
+        const size_t wb = (size_t) sh.n_out * (sh.n_in / 256) * 210, xb = (size_t) 2 * (sh.n_in / 32) * 36;
+        void *w, *x;
+        float* y;
+        cudaMalloc(&w, wb);
+        cudaMemset(w, 0, wb);
+        cudaMalloc(&x, xb);
+        cudaMemset(x, 0, xb);
+        cudaMalloc(&y, (size_t) 2 * sh.n_out * 4);
+        for (const int T : {1, 2}) {
+            cudaEvent_t a, b;
+            cudaEventCreate(&a);
+            cudaEventCreate(&b);
+            for (int i = 0; i < 3; ++i)
+                k::q6k_mmvq(w, x, y, sh.n_in, sh.n_out, T, st);
+            cudaEventRecord(a, st);
+            const int reps = 50;
+            for (int i = 0; i < reps; ++i)
+                k::q6k_mmvq(w, x, y, sh.n_in, sh.n_out, T, st);
+            cudaEventRecord(b, st);
+            cudaEventSynchronize(b);
+            float ms = 0;
+            cudaEventElapsedTime(&ms, a, b);
+            std::printf("q6k_mmvq %-22s T %d: %7.1f us  %6.1f GB/s\n", sh.what, T, 1000.0 * ms / reps,
+                        wb / (ms / reps * 1e-3) / 1e9);
+        }
+        cudaFree(w);
+        cudaFree(x);
+        cudaFree(y);
+    }
+    return 0;
+}
+
 static int bench() {
     struct Shape {
         const char* what;
@@ -1337,6 +1395,8 @@ int main(int argc, char** argv) {
         return bench_indexer();
     if (argc > 1 && std::string(argv[1]) == "attend")
         return bench_attend();
+    if (argc > 1 && std::string(argv[1]) == "q6k")
+        return bench_q6k();
     test_hc();
     test_hc_mix();
     test_kda();

@@ -44,10 +44,11 @@ void kda_conv(const float* xq, const float* xk, const float* xv, float* state, c
 /// g = lower_bound * sigmoid(-(fpre + dt_b) * ssm_a[head]) (per channel), beta = sigmoid(bpre) (per head)
 void kda_gates(const float* fpre, const float* dt_b, const float* ssm_a, float* g, const float* bpre, float* beta,
                int D, int H, int T, float lower_bound, void* st);
-/// The KDA recurrence for T tokens: S [H][128 key][128 value]; qkv = the convolved, normalised [T][3D].  `mid` (may
-/// be null): the state after the first token, in S's layout.
-void kda_step(float* S, const float* qkv, const float* g, const float* beta, float* o, int H, int T, float* mid,
-              void* st);
+/// The KDA recurrence for T tokens: the state [H][128 key][128 value] read from S_in and written to S_out (null: not
+/// written); qkv = the convolved, normalised [T][3D].  `mid` (may be null): the state after the first token, in the
+/// same layout.
+void kda_step(const float* S_in, float* S_out, const float* qkv, const float* g, const float* beta, float* o, int H,
+              int T, float* mid, void* st);
 /// y = rms_norm(o per head) * norm_w * sigmoid(gate)
 void kda_out(const float* o, const float* gate, const float* norm_w, float* y, int H, int T, float eps, void* st);
 

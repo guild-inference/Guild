@@ -312,15 +312,15 @@ __global__ void kda_gates_k(const float* fpre, const float* dt_b, const float* s
 // thread keeps its 16 x 1 piece of S in registers for the whole window; the column sums go through shared memory.
 constexpr int kKdaTile = 32, kKdaSlices = 8, kKdaPer = kKdaDim / kKdaSlices;
 
-__global__ void __launch_bounds__(256)
-    kda_step_k(float* S, const float* qkv, const float* g, const float* beta, float* o, int H, int T, float* mid) {
+__global__ void __launch_bounds__(256) kda_step_k(const float* S_in, float* S_out, const float* qkv, const float* g,
+                                                  const float* beta, float* o, int H, int T, float* mid) {
     constexpr int DK = kKdaDim;
     const int h = blockIdx.x, lane = threadIdx.x & 31, sl = threadIdx.x >> 5;
     const int j = blockIdx.y * kKdaTile + lane;
     const int D = H * DK;
     __shared__ float sq[DK], sk[DK], sg[DK];
     __shared__ float part[kKdaSlices][kKdaTile];
-    float* Sh = S + (size_t) h * DK * DK;
+    const float* Sh = S_in + (size_t) h * DK * DK;
     float col[kKdaPer];
 #pragma unroll
     for (int i = 0; i < kKdaPer; ++i)
@@ -374,9 +374,12 @@ __global__ void __launch_bounds__(256)
                 Mh[(sl * kKdaPer + i) * DK + j] = col[i];
         }
     }
+    if (!S_out)
+        return;
+    float* Oh = S_out + (size_t) h * DK * DK;
 #pragma unroll
     for (int i = 0; i < kKdaPer; ++i)
-        Sh[(sl * kKdaPer + i) * DK + j] = col[i];
+        Oh[(sl * kKdaPer + i) * DK + j] = col[i];
 }
 
 __global__ void kda_out_k(const float* o, const float* gate, const float* nw, float* y, int H, float eps) {
@@ -462,6 +465,8 @@ __global__ void __launch_bounds__(256)
 // here a warp per row stages 8 blocks (1680 bytes) at a time in shared memory with 16-byte loads, the next 8 loading
 // while it reads the last, and the block's warps share the activations from shared memory.
 constexpr int kQ6Block = 210, kQ6Chunk = 8, kQ6Q81 = 36;
+// a warp's staging: a chunk, and the 16-byte pieces' head and tail around a chunk that does not start 16-byte aligned
+constexpr int kQ6WarpBytes = kQ6Chunk * kQ6Block + 32;
 
 struct Q81 { // ggml's block_q8_1
     __half2 ds;
@@ -489,7 +494,7 @@ __global__ void __launch_bounds__(NW * 32)
         return;
     const size_t rb = (size_t) nb * kQ6Block;
     const uint8_t* wr = W + (size_t) (Ids ? __ldg(ids + row) : row) * rb;
-    uint8_t* sm = smem + xbytes + warp * (kQ6Chunk * kQ6Block);
+    uint8_t* sm = smem + xbytes + warp * kQ6WarpBytes;
     const bool v16 = rb % 16 == 0;
     // the lane's fixed slot in every block (iqs = lane)
     const int iqs = lane, bq8 = 4 * (iqs / 16) + (iqs % 16) / 8, so = 8 * (iqs / 16) + (iqs % 16) / 4;
@@ -514,6 +519,7 @@ __global__ void __launch_bounds__(NW * 32)
         fetch(0);
     for (int c0 = 0; c0 < nb; c0 += kQ6Chunk) {
         const int cn = min(kQ6Chunk, nb - c0), bytes = cn * kQ6Block;
+        int head = 0; // where the chunk starts in sm
         __syncwarp();
         if (v16) {
 #pragma unroll
@@ -524,15 +530,28 @@ __global__ void __launch_bounds__(NW * 32)
             }
             if (c0 + kQ6Chunk < nb)
                 fetch(c0 + kQ6Chunk);
-        } else { // rows of an odd number of 8-block chunks' bytes: 2-byte pieces
+        } else {
+            // rows that are not 16-byte multiples (DSA q_b: 6 blocks, 1,260 bytes): the 16-byte pieces that cover the
+            // chunk, its first byte `head` bytes into the first (2-byte pieces one after another: 171-176 -> 129.5 us
+            // on q_b, glm5_kernels_test q6k; the rows' bytes past either end are read, not used)
             const uint8_t* src = wr + (size_t) c0 * kQ6Block;
-            for (int o = lane * 2; o < bytes; o += 64)
-                *reinterpret_cast<unsigned short*>(sm + o) = __ldg(reinterpret_cast<const unsigned short*>(src + o));
+            head = (int) ((uintptr_t) src & 15);
+            const int n16 = (head + bytes + 15) / 16;
+            constexpr int kP = (kQ6WarpBytes / 16 + 31) / 32;
+            int4 v[kP];
+#pragma unroll
+            for (int k = 0; k < kP; ++k)
+                if (lane + 32 * k < n16)
+                    v[k] = __ldg(reinterpret_cast<const int4*>(src - head) + lane + 32 * k);
+#pragma unroll
+            for (int k = 0; k < kP; ++k)
+                if (lane + 32 * k < n16)
+                    reinterpret_cast<int4*>(sm)[lane + 32 * k] = v[k];
         }
         __syncwarp();
 #pragma unroll 2
         for (int b = 0; b < cn; ++b) {
-            const uint8_t* blk = sm + b * kQ6Block; // ql[128] qh[64] scales[16] d
+            const uint8_t* blk = sm + head + b * kQ6Block; // ql[128] qh[64] scales[16] d
             const int kbx = c0 + b;
             const int vl = ld_b2(blk, iqs);
             const int vh = ld_b2(blk + 128, qh_i) >> vh_shift;
@@ -1534,9 +1553,9 @@ void kda_gates(const float* fpre, const float* dt_b, const float* ssm_a, float* 
     kda_gates_k<<<(D * T + 255) / 256, 256, 0, S(st)>>>(fpre, dt_b, ssm_a, g, bpre, beta, D, H, T, lower_bound);
 }
 
-void kda_step(float* S_, const float* qkv, const float* g, const float* beta, float* o, int H, int T, float* mid,
-              void* st) {
-    kda_step_k<<<dim3(H, kKdaDim / kKdaTile), 256, 0, S(st)>>>(S_, qkv, g, beta, o, H, T, mid);
+void kda_step(const float* S_in, float* S_out, const float* qkv, const float* g, const float* beta, float* o, int H,
+              int T, float* mid, void* st) {
+    kda_step_k<<<dim3(H, kKdaDim / kKdaTile), 256, 0, S(st)>>>(S_in, S_out, qkv, g, beta, o, H, T, mid);
 }
 
 void kda_out(const float* o, const float* gate, const float* norm_w, float* y, int H, int T, float eps, void* st) {
@@ -1588,7 +1607,7 @@ bool q6k_mmvq_supported(int n_in, int n_out, int T) {
     // native_mmvq's path for four or more blocks a row; the activations of T tokens fit in shared memory beside the
     // staged rows (48 KiB a block before Volta)
     return n_in % 256 == 0 && n_in >= 1024 && n_out >= 512 && T >= 1 && T <= 2 &&
-           (size_t) T * (n_in / 32) * kQ6Q81 + 8 * kQ6Chunk * kQ6Block <= 48 * 1024;
+           (size_t) T * (n_in / 32) * kQ6Q81 + 8 * kQ6WarpBytes <= 48 * 1024;
 }
 
 void q6k_mmvq(const void* W, const void* xq8_1, float* y, int n_in, int n_out, int T, void* st) {
@@ -1598,7 +1617,7 @@ void q6k_mmvq(const void* W, const void* xq8_1, float* y, int n_in, int n_out, i
     // eight rows a block: the activations are read once per block (four rows a block, which two tokens 16384 wide
     // would need, lost to native_mmvq: 117 against 146 GB/s)
     const dim3 grid((unsigned) ((n_out + 7) / 8));
-    const size_t sh = xbytes + 8 * kQ6Chunk * kQ6Block;
+    const size_t sh = xbytes + 8 * kQ6WarpBytes;
     if (T == 1)
         q6k_mmvq_k<1, 8><<<grid, 256, sh, S(st)>>>(w, x, y, n_in, n_out);
     else
@@ -1606,7 +1625,7 @@ void q6k_mmvq(const void* W, const void* xq8_1, float* y, int n_in, int n_out, i
 }
 
 void q6k_mmvq_rows(const void* W, const int32_t* ids, int n_ids, const void* xq8_1, float* y, int n_in, void* st) {
-    const size_t sh = (size_t) (n_in / 32) * kQ6Q81 + 8 * kQ6Chunk * kQ6Block;
+    const size_t sh = (size_t) (n_in / 32) * kQ6Q81 + 8 * kQ6WarpBytes;
     q6k_mmvq_k<1, 8, true><<<(unsigned) ((n_ids + 7) / 8), 256, sh, S(st)>>>((const uint8_t*) W, (const uint8_t*) xq8_1,
                                                                              y, n_in, n_ids, ids);
 }

@@ -494,6 +494,9 @@ struct Glm5Engine::Impl {
         return ffn_end(Y, T, rows(), err);
     }
     bool layer_attention(int l, int T, int64_t pos0, bool save_mid, std::string& err);
+    // a pipelined window of one token a group that saves the state after its first token: group A's KDA state goes
+    // to kda_mid alone and group B starts from there (GUILD_GLM_KDA_MID1=0, read each window: written twice)
+    bool kda_mid1 = false;
     bool embed_rows(const int32_t* tokens, int T, std::string& err);
     const char* Y_kind(int l) const;
     bool main_window(const int32_t* tokens, int T, int64_t pos0, bool save_mid, std::string& err);
@@ -1316,7 +1319,11 @@ void Glm5Engine::Impl::attn_kda(Layer& Y, int T, float* mid_state, float* mid_co
     glm5k::kda_gates(a, Y.dt_b, Y.ssm_a, gk, bl, beta, (int) D, (int) H, T, g.kda_lower_bound, st);
     quant(ga, Y.g_a.n_out, T, xq2);
     mm(Y.g_b, xq2, b, T); // output gate [T][D]
-    glm5k::kda_step(Y.kda_state, qkv, gk, beta, c, (int) H, T, mid_state, st);
+    // kda_mid1: group A of a 2-token verify window writes the state after its token to kda_mid only (it is the same
+    // state), and group B reads it from there
+    const bool a_only = kda_mid1 && mid_state && T == 1, b_from = kda_mid1 && !mid_state;
+    glm5k::kda_step(b_from ? Y.kda_mid : Y.kda_state, a_only ? nullptr : Y.kda_state, qkv, gk, beta, c, (int) H, T,
+                    mid_state, st);
     glm5k::kda_out(c, b, Y.ssm_norm, d, (int) H, T, g.rms_eps, st);
     quant(d, D, T, xq2);
     mm(Y.wo, xq2, y, T);
@@ -1746,6 +1753,8 @@ bool Glm5Engine::Impl::main_window(const int32_t* tokens, int T, int64_t pos0, b
     // state at the same layer, both written before it in stream order; neither group waits for the other's FFN.
     if (pipe && T >= 2) {
         const int TA = T / 2, TB = T - TA;
+        const char* m1 = std::getenv("GUILD_GLM_KDA_MID1");
+        kda_mid1 = save_mid && TA == 1 && !(m1 && m1[0] == '0');
         // group B's shared experts on the CPU (GUILD_GLM_SHEXP_SPLIT=0: both on the GPU): the GPU's half of a layer was
         // the longer one, by about a shared expert.  The CPU twin rounds differently from the GPU's shared expert
         // (Q8_1 activations, MMVQ, the GPU's expf), so a 2-token verify window's second row is not what one-token
@@ -1785,6 +1794,7 @@ bool Glm5Engine::Impl::main_window(const int32_t* tokens, int T, int64_t pos0, b
             ok = ok && launch_ok;
         }
         group_rows(0, rows0.ev);
+        kda_mid1 = false;
         if (!ok) {
             if (!launch_ok && err.empty())
                 err = launch_err;
