@@ -37,6 +37,9 @@ enum class Glm5Dense {
 };
 
 struct Glm5Options {
+    /// the context's cells: in VRAM while they fit beside the weights (the first 32k before the FFNs), past that
+    /// with the latent rows of the later cells in pinned host memory (GUILD_GLM_KV_HOST=0: never; the context is then
+    /// what the VRAM holds).  load() sets it to what was placed.
     int64_t max_context = 32768;
     int threads = 0;                      ///< CPU expert threads (0: the physical cores)
     uint64_t vram_reserve = 384ull << 20; ///< left free on the GPU for the CUDA context and other users

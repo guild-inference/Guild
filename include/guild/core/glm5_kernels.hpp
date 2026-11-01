@@ -80,9 +80,27 @@ void f32_matvec(const float* W, const float* x, float* y, int n_in, int n_out, i
 void kv_store(const float* kv, void* cache, int64_t pos0, int L, int T, void* st);
 /// Absorbed MLA attention (one latent head shared by all H query heads): for query t, the cells
 /// [0, pos0 + t], or when sel is not null the n_sel[t] cells of sel[t] (rows of sel_stride); lat[t][h] =
-/// softmax(scale q.kv) kv.  `part` is scratch of attend_scratch_floats(...) floats.
+/// softmax(scale q.kv) kv.  `part` is scratch of attend_scratch_floats(...) floats.  `splits_of` (0: T): the
+/// window whose split of a query's cells to use, so that a window attended a few queries at a time sums as it does
+/// whole (a part of a window needs no more of `part` than the window).  `legacy`: the slower kernel that gives the
+/// same bits
 void mla_attend(const float* q, const void* cache, int64_t pos0, int H, int L, int T, float scale, const int32_t* sel,
-                const int32_t* n_sel, int sel_stride, float* lat, float* part, void* st);
+                const int32_t* n_sel, int sel_stride, float* lat, float* part, void* st, int splits_of = 0,
+                bool legacy = false);
+/// stage[q][i] = the latent row of cell sel[q][i] (rows of L FP16; sel and stage rows of sel_stride) for i <
+/// n_sel[q], q < nq: cell c's row is near's row c below n_near, else far's row c - n_near (far: mapped host memory)
+void kv_gather(const void* near, int64_t n_near, const void* far, const int32_t* sel, const int32_t* n_sel,
+               int sel_stride, int nq, void* stage, int L, void* st);
+/// kv_gather for queries that share cells (a prompt window's): the union of nq <= stage_rows / sel_stride queries'
+/// selected cells, each row gathered once, in cell order; out_sel[q][i] = the stage row of sel[q][i].  Scratch:
+/// `mask` (union_mask_words(n_cells) words, zero on entry and on return), `base` (as many + 1) and `list`
+/// (stage_rows), for cells below n_cells.
+void kv_gather_union(const void* near, int64_t n_near, const void* far, const int32_t* sel, const int32_t* n_sel,
+                     int sel_stride, int nq, int64_t n_cells, uint32_t* mask, int32_t* base, int32_t* list,
+                     int32_t* out_sel, void* stage, int stage_rows, int L, void* st);
+inline int64_t union_mask_words(int64_t n_cells) {
+    return (n_cells + 31) / 32;
+}
 
 // ---- the DSA indexer (pools of kKpool cells; cell = position) ----
 inline constexpr int kKpool = 4, kIdxDim = 128;

@@ -47,6 +47,13 @@ static void check(const char* what, const std::vector<float>& got, const std::ve
     failures += !ok;
     std::printf("%-28s max |diff| %.3g (largest |ref| %.3g) %s\n", what, worst, scale, ok ? "ok" : "FAIL");
 }
+// the same floats to the bit
+static void same_attend(const std::string& what, const std::vector<float>& a, const std::vector<float>& b) {
+    const bool same = a.size() == b.size() && std::memcmp(a.data(), b.data(), a.size() * 4) == 0;
+    failures += !same;
+    std::printf("%-44s %s\n", what.c_str(), same ? "ok (bitwise)" : "FAIL (bits differ)");
+}
+
 static float sigm(float x) {
     return 1.f / (1.f + std::exp(-x));
 }
@@ -440,6 +447,11 @@ static void test_heads_and_attention() {
             return out;
         };
         k::mla_attend(dq, dc, pos0, AH, L, AT, scale, nullptr, nullptr, 0, dlat, dpart, nullptr);
+        const auto causal_new = down(dlat, (size_t) AT * AH * L);
+        k::mla_attend(dq, dc, pos0, AH, L, AT, scale, nullptr, nullptr, 0, dlat, dpart, nullptr, 0, true);
+        same_attend("mla_attend (causal), legacy" + std::string(" T ") + std::to_string(AT), causal_new,
+                    down(dlat, (size_t) AT * AH * L));
+        k::mla_attend(dq, dc, pos0, AH, L, AT, scale, nullptr, nullptr, 0, dlat, dpart, nullptr);
         std::vector<std::vector<int>> causal(AT);
         for (int t = 0; t < AT; ++t)
             for (int c = 0; c <= pos0 + t; ++c)
@@ -458,8 +470,174 @@ static void test_heads_and_attention() {
         int32_t* dsel = up(sel);
         int32_t* dnsel = up(std::vector<int32_t>(AT, n_sel));
         k::mla_attend(dq, dc, pos0, AH, L, AT, scale, dsel, dnsel, n_sel, dlat, dpart, nullptr);
-        check(("mla_attend (selected cells)" + at).c_str(), down(dlat, (size_t) AT * AH * L), ref_attend(sets), 1e-4);
+        const auto sel_new = down(dlat, (size_t) AT * AH * L);
+        check(("mla_attend (selected cells)" + at).c_str(), sel_new, ref_attend(sets), 1e-4);
+        k::mla_attend(dq, dc, pos0, AH, L, AT, scale, dsel, dnsel, n_sel, dlat, dpart, nullptr, 0, true);
+        same_attend("mla_attend (selected cells), legacy" + at, sel_new, down(dlat, (size_t) AT * AH * L));
     }
+}
+
+// a window's selected rows, some in VRAM and the rest in mapped host memory, gathered kStage queries at a time (each
+// query's rows, or the union of the queries' rows) and attended with the window's split (as glm5.cpp's long context
+// does) against the whole window over one VRAM cache: the same bits
+static void test_attend_staged() {
+    const int AH = 64, L = 512, cells = 6000, near = 2304, kStage = 8, n_max = 2052;
+    std::vector<__half> kvh((size_t) cells * L);
+    {
+        const auto kvf = rnd(kvh.size());
+        for (size_t i = 0; i < kvh.size(); ++i)
+            kvh[i] = __float2half(kvf[i]);
+    }
+    __half* dc = up(kvh);
+    void* far = nullptr;
+    void* dfar = nullptr;
+    cudaHostAlloc(&far, (size_t) (cells - near) * L * 2, cudaHostAllocMapped);
+    std::memcpy(far, kvh.data() + (size_t) near * L, (size_t) (cells - near) * L * 2);
+    cudaHostGetDevicePointer(&dfar, far, 0);
+    for (const int AT : {1, 2, 3, 20, 37}) {
+        const int64_t pos0 = cells - AT;
+        auto q = rnd((size_t) AT * AH * L);
+        std::vector<int32_t> sel((size_t) AT * n_max), nsel(AT);
+        std::uniform_int_distribution<int> any(0, cells - AT - 1);
+        for (int t = 0; t < AT; ++t) {
+            nsel[t] = n_max - 3 * t; // the counts differ between queries
+            for (int i = 0; i < nsel[t]; ++i)
+                sel[(size_t) t * n_max + i] = i < 4 ? (int) pos0 + t - i : any(rng);
+        }
+        std::vector<int32_t> ident((size_t) kStage * n_max);
+        for (size_t i = 0; i < ident.size(); ++i)
+            ident[i] = (int32_t) i;
+        float* dq = up(q);
+        int32_t *dsel = up(sel), *dnsel = up(nsel), *did = up(ident);
+        float *dlat, *dpart;
+        __half* stage;
+        cudaMalloc(&dlat, (size_t) AT * AH * L * 4);
+        cudaMalloc(&dpart, (size_t) k::attend_scratch_floats(cells, AH, L, AT) * 4);
+        cudaMalloc(&stage, (size_t) kStage * n_max * L * 2);
+        const int64_t words = k::union_mask_words(cells);
+        uint32_t* mask;
+        int32_t *base, *list, *usel;
+        cudaMalloc(&mask, (size_t) words * 4);
+        cudaMemset(mask, 0, (size_t) words * 4);
+        cudaMalloc(&base, (size_t) (words + 1) * 4);
+        cudaMalloc(&list, (size_t) kStage * n_max * 4);
+        cudaMalloc(&usel, (size_t) kStage * n_max * 4);
+        k::mla_attend(dq, dc, pos0, AH, L, AT, 0.05f, dsel, dnsel, n_max, dlat, dpart, nullptr);
+        const auto whole = down(dlat, (size_t) AT * AH * L);
+        for (const bool uni : {false, true}) {
+            cudaMemset(dlat, 0, (size_t) AT * AH * L * 4);
+            for (int q0 = 0; q0 < AT; q0 += kStage) {
+                const int nq = std::min(kStage, AT - q0);
+                const int32_t* qsel = dsel + (size_t) q0 * n_max;
+                if (uni)
+                    k::kv_gather_union(dc, near, dfar, qsel, dnsel + q0, n_max, nq, cells, mask, base, list, usel,
+                                       stage, kStage * n_max, L, nullptr);
+                else
+                    k::kv_gather(dc, near, dfar, qsel, dnsel + q0, n_max, nq, stage, L, nullptr);
+                k::mla_attend(dq + (size_t) q0 * AH * L, stage, pos0 + q0, AH, L, nq, 0.05f, uni ? usel : did,
+                              dnsel + q0, n_max, dlat + (size_t) q0 * AH * L, dpart, nullptr, AT);
+            }
+            same_attend(std::string("mla_attend, rows ") + (uni ? "of the union " : "") +
+                            "gathered from VRAM and host T " + std::to_string(AT),
+                        whole, down(dlat, (size_t) AT * AH * L));
+        }
+        for (void* p : {(void*) dq, (void*) dsel, (void*) dnsel, (void*) did, (void*) dlat, (void*) dpart,
+                        (void*) stage, (void*) mask, (void*) base, (void*) list, (void*) usel})
+            cudaFree(p);
+    }
+    cudaFree(dc);
+    cudaFreeHost(far);
+}
+
+// `glm5_kernels_test attend`: mla_attend over 2,048 selected cells of a long context, legacy and new, and the
+// gather of those rows from mapped host memory
+static int bench_attend() {
+    const int AH = 64, L = 512, n_max = 2052, n = 2048;
+    const int64_t cells = 65536;
+    std::vector<__half> kvh((size_t) cells * L);
+    for (size_t i = 0; i < kvh.size(); ++i)
+        kvh[i] = __float2half((float) ((i * 2654435761u) % 1000) * 0.001f - 0.5f);
+    __half* dc = up(kvh);
+    void* far = nullptr;
+    void* dfar = nullptr;
+    cudaHostAlloc(&far, kvh.size() * 2, cudaHostAllocMapped);
+    std::memcpy(far, kvh.data(), kvh.size() * 2);
+    cudaHostGetDevicePointer(&dfar, far, 0);
+    cudaStream_t st;
+    cudaStreamCreate(&st);
+    const int64_t words = k::union_mask_words(cells);
+    uint32_t* mask;
+    int32_t *base, *list, *usel;
+    cudaMalloc(&mask, (size_t) words * 4);
+    cudaMemset(mask, 0, (size_t) words * 4);
+    cudaMalloc(&base, (size_t) (words + 1) * 4);
+    cudaMalloc(&list, (size_t) 8 * n_max * 4);
+    cudaMalloc(&usel, (size_t) 8 * n_max * 4);
+    for (const int T : {1, 2, 4, 8, 32, 128}) {
+        // a prompt window's queries: each selects 2,048 cells, 1,792 of them shared by all (a pool list that moves
+        // little from one token to the next), in ascending order as idx_select gives them
+        std::vector<int32_t> sel((size_t) T * n_max), nsel(T, n);
+        std::uniform_int_distribution<int> any(0, (int) cells - 200);
+        std::vector<int32_t> common(1792);
+        for (auto& c : common)
+            c = any(rng);
+        for (int t = 0; t < T; ++t) {
+            std::vector<int32_t> s(common);
+            while ((int) s.size() < n)
+                s.push_back(any(rng));
+            std::sort(s.begin(), s.end());
+            std::copy(s.begin(), s.end(), sel.begin() + (size_t) t * n_max);
+        }
+        auto q = rnd((size_t) T * AH * L);
+        float* dq = up(q);
+        int32_t *dsel = up(sel), *dnsel = up(nsel);
+        float *dlat, *dpart;
+        __half* stage;
+        cudaMalloc(&dlat, (size_t) T * AH * L * 4);
+        cudaMalloc(&dpart, (size_t) k::attend_scratch_floats(cells, AH, L, T) * 4);
+        cudaMalloc(&stage, (size_t) std::min(T, 8) * n_max * L * 2);
+        cudaEvent_t a, b, c, d, f;
+        for (cudaEvent_t* e : {&a, &b, &c, &d, &f})
+            cudaEventCreate(e);
+        const int reps = T >= 32 ? 5 : 30;
+        for (int i = 0; i < 2; ++i) {
+            k::mla_attend(dq, dc, cells - 100, AH, L, T, 0.05f, dsel, dnsel, n_max, dlat, dpart, st, 0, true);
+            k::mla_attend(dq, dc, cells - 100, AH, L, T, 0.05f, dsel, dnsel, n_max, dlat, dpart, st);
+        }
+        cudaEventRecord(a, st);
+        for (int i = 0; i < reps; ++i)
+            k::mla_attend(dq, dc, cells - 100, AH, L, T, 0.05f, dsel, dnsel, n_max, dlat, dpart, st, 0, true);
+        cudaEventRecord(b, st);
+        for (int i = 0; i < reps; ++i)
+            k::mla_attend(dq, dc, cells - 100, AH, L, T, 0.05f, dsel, dnsel, n_max, dlat, dpart, st);
+        cudaEventRecord(c, st);
+        for (int i = 0; i < reps; ++i)
+            for (int q0 = 0; q0 < T; q0 += 8)
+                k::kv_gather(dc, 0, dfar, dsel + (size_t) q0 * n_max, dnsel + q0, n_max, std::min(8, T - q0), stage, L,
+                             st);
+        cudaEventRecord(d, st);
+        for (int i = 0; i < reps; ++i)
+            for (int q0 = 0; q0 < T; q0 += 8)
+                k::kv_gather_union(dc, 0, dfar, dsel + (size_t) q0 * n_max, dnsel + q0, n_max, std::min(8, T - q0),
+                                   cells, mask, base, list, usel, stage, 8 * n_max, L, st);
+        cudaEventRecord(f, st);
+        cudaEventSynchronize(f);
+        float ms_l = 0, ms_n = 0, ms_g = 0, ms_u = 0;
+        cudaEventElapsedTime(&ms_l, a, b);
+        cudaEventElapsedTime(&ms_n, b, c);
+        cudaEventElapsedTime(&ms_g, c, d);
+        cudaEventElapsedTime(&ms_u, d, f);
+        std::printf("attend T %3d: legacy %8.1f us, new %8.1f us; rows from host: each query's %8.1f us (%.1f GB/s), "
+                    "the union's %8.1f us\n",
+                    T, 1000.0 * ms_l / reps, 1000.0 * ms_n / reps, 1000.0 * ms_g / reps,
+                    (double) T * n * L * 2 / (1e6 * ms_g / reps), 1000.0 * ms_u / reps);
+        for (void* p : {(void*) dq, (void*) dsel, (void*) dnsel, (void*) dlat, (void*) dpart, (void*) stage})
+            cudaFree(p);
+    }
+    for (void* p : {(void*) dc, (void*) mask, (void*) base, (void*) list, (void*) usel})
+        cudaFree(p);
+    cudaFreeHost(far);
+    return 0;
 }
 
 // the indexer's kernels against their legacy versions, which must agree to the bit: scores over `n` pools of random
@@ -640,12 +818,12 @@ static void test_indexer() {
     test_indexer_bits(5000, 2, 1); // every score equal
 }
 
-// `glm5_kernels_test indexer`: the indexer's scores and selection, legacy and new, at 4K to 128K tokens of context
+// `glm5_kernels_test indexer`: the indexer's scores and selection, legacy and new, at 4K to 256K tokens of context
 static int bench_indexer() {
     const int H = 32, D = k::kIdxDim, K = 512, SEL = 2048 + 8;
     cudaStream_t st;
     cudaStreamCreate(&st);
-    for (const int ctx : {4096, 16384, 32768, 131072}) {
+    for (const int ctx : {4096, 16384, 32768, 131072, 262144}) {
         const int n = ctx / k::kKpool, stride = n + 8;
         std::vector<__half> keys((size_t) n * D);
         auto r = rnd((size_t) n * D);
@@ -1066,6 +1244,8 @@ int main(int argc, char** argv) {
         return bench_shapes();
     if (argc > 1 && std::string(argv[1]) == "indexer")
         return bench_indexer();
+    if (argc > 1 && std::string(argv[1]) == "attend")
+        return bench_attend();
     test_hc();
     test_hc_mix();
     test_kda();
@@ -1078,6 +1258,7 @@ int main(int argc, char** argv) {
     test_mmvq_rows();
     test_narrow();
     test_indexer();
+    test_attend_staged();
     const cudaError_t e = cudaDeviceSynchronize();
     if (e != cudaSuccess) {
         std::printf("CUDA error: %s\n", cudaGetErrorString(e));

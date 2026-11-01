@@ -89,7 +89,8 @@ struct Layer {
     Mat q_a, q_b, kv_a, k_b, v_b;
     Mat qkvi; ///< q_a, kv_a and the indexer's key and gate rows, one after the other: one product for a token
     float *q_a_norm = nullptr, *kv_a_norm = nullptr;
-    void* kv_cache = nullptr;
+    void* kv_cache = nullptr; ///< the latent rows of cells [0, kv_near): [cells][kv_lora] FP16
+    void* kv_far = nullptr;   ///< the cells' from kv_near on, in mapped host memory (a context past what VRAM holds)
     // its indexer
     Mat idx_k, idx_gate, idx_qb;
     float *idx_proj = nullptr, *idx_ln_w = nullptr, *idx_ln_b = nullptr, *idx_ape = nullptr;
@@ -192,6 +193,16 @@ struct Glm5Engine::Impl {
     size_t snap_tail = 0; ///< where the snapshot keeps its incomplete pool's indexer rows
     int32_t *sel = nullptr, *nsel = nullptr;
     int score_stride = 0, sel_stride = 0;
+    // a context past what the VRAM holds: the latent rows of cells from kv_near on are in kv_far_mem (pinned, mapped),
+    // and a window's selected rows are gathered into kv_stage kStageQ queries at a time: a token's (stage_sel: q *
+    // sel_stride + i, their rows there), or the union of several tokens' (glm5k::kv_gather_union: u_sel their rows,
+    // u_mask, u_base and u_list its scratch).  kv_near is the context when it all is in VRAM.
+    static constexpr int kStageQ = 8;
+    int64_t kv_near = 0;
+    void* kv_far_mem = nullptr;
+    void* kv_stage = nullptr;
+    int32_t *stage_sel = nullptr, *u_sel = nullptr, *u_base = nullptr, *u_list = nullptr;
+    uint32_t* u_mask = nullptr;
     void *xq = nullptr, *xq2 = nullptr;
     DenseProducts dp; ///< the GPU products (dense_mm.hpp): xq / xq2 are its two activation buffers
     // pinned host
@@ -236,8 +247,8 @@ struct Glm5Engine::Impl {
             cudaStreamSynchronize(st);
         for (const Chunk& c : chunks)
             cudaFree(c.base);
-        for (void* p :
-             {(void*) h_x, (void*) h_y, (void*) h_w, (void*) h_emb, (void*) h_ids, (void*) snap, (void*) h_arg})
+        for (void* p : {(void*) h_x, (void*) h_y, (void*) h_w, (void*) h_emb, (void*) h_ids, (void*) snap,
+                        (void*) h_arg, kv_far_mem})
             if (p)
                 cudaFreeHost(p);
         pool.reset(); // before the memory its workers might still touch
@@ -542,8 +553,8 @@ bool Glm5Engine::Impl::load(const std::string& path, const Glm5Options& o, std::
         err = "glm5: only sigmoid expert gating is implemented";
         return false;
     }
-    if (g.hc != glm5k::kHc || g.kda_dim != glm5k::kKdaDim || g.kv_lora > 512 || g.n_head % 8 != 0 ||
-        g.n_expert > glm5k::kMaxExperts || g.n_used > 32 || num("rope.dimension_count", 0) != 0) {
+    if (g.hc != glm5k::kHc || g.kda_dim != glm5k::kKdaDim || g.kv_lora > 512 || g.kv_lora % 32 != 0 ||
+        g.n_head % 8 != 0 || g.n_expert > glm5k::kMaxExperts || g.n_used > 32 || num("rope.dimension_count", 0) != 0) {
         err = "glm5: unexpected geometry (hc " + std::to_string(g.hc) + ", KDA head " + std::to_string(g.kda_dim) +
               ", kv_lora " + std::to_string(g.kv_lora) + ")";
         return false;
@@ -822,6 +833,45 @@ bool Glm5Engine::Impl::load(const std::string& path, const Glm5Options& o, std::
         ctx += more;
         left -= (uint64_t) more * per_token;
     }
+    // A context past that (GUILD_GLM_KV_HOST=0: none) keeps the latent rows of its cells from kv_near on in pinned
+    // host memory.  The VRAM keeps every cell's pooled key and score row, and a stage for kStageQ queries' selected
+    // rows; the budget of the cells placed so far pays for them, so fewer cells keep their latents in VRAM (an 8 GB
+    // card asked for 262,144 tokens: the first 14,848, and the FFNs where they are at 32k).  kv_near is at least
+    // min_near: a window the indexer does not select for (its cells all before idx_topk + kKpool) reads VRAM only.
+    // GUILD_GLM_KV_NEAR=<cells>: at most that many in VRAM (tests).
+    kv_near = ctx;
+    uint64_t per_far = 0, stage = 0; // in VRAM, a cell from kv_near on, and the stage
+    {
+        const char* e = std::getenv("GUILD_GLM_KV_HOST");
+        const char* en = std::getenv("GUILD_GLM_KV_NEAR");
+        const int64_t min_near = std::max<int64_t>(4096, (g.idx_topk + glm5k::kKpool + 255) / 256 * 256);
+        const int64_t near_cap =
+            en && std::atoll(en) > 0 ? std::max<int64_t>(min_near, std::atoll(en) / 256 * 256) : INT64_MAX;
+        int64_t n_dsa = has_mtp;
+        for (const Layer& y : L)
+            n_dsa += !y.kda;
+        const uint64_t lat = (uint64_t) n_dsa * g.kv_lora * 2;
+        per_far = per_token - lat;
+        stage = (uint64_t) kStageQ * (g.idx_topk + glm5k::kKpool + 4) * (g.kv_lora * 2 + 12) +
+                (uint64_t) glm5k::union_mask_words(want) * 8 + 4096;
+        const uint64_t budget = (uint64_t) ctx * per_token + left;
+        if (!(e && e[0] == '0') && (want > ctx || near_cap < ctx) && budget >= min_near * per_token + stage) {
+            const int64_t total =
+                std::min<int64_t>(want, min_near + (int64_t) ((budget - min_near * per_token - stage) / per_far)) /
+                256 * 256;
+            const int64_t near =
+                std::min<int64_t>({near_cap, total, (int64_t) ((budget - total * per_far - stage) / lat)}) / 256 * 256;
+            if (near < total) {
+                kv_near = near;
+                ctx = total;
+                left = budget - total * per_far - near * lat - stage;
+                std::fprintf(stderr,
+                             "guild glm5: context %lld tokens, the latent rows of cells %lld on in host memory "
+                             "(%llu MiB pinned)\n",
+                             (long long) ctx, (long long) near, (unsigned long long) ((ctx - near) * lat >> 20));
+            }
+        }
+    }
     if (ctx < opt.max_context)
         std::fprintf(stderr, "guild glm5: context %lld -> %lld tokens (what the VRAM holds next to the weights)\n",
                      (long long) opt.max_context, (long long) ctx);
@@ -829,17 +879,48 @@ bool Glm5Engine::Impl::load(const std::string& path, const Glm5Options& o, std::
         int shexp_cpu = 0;
         for (const Layer* yp : ffn_order)
             shexp_cpu += (yp->moe || yp == &mtp) && !yp->ffn_gpu;
-        std::fprintf(stderr,
-                     "guild glm5: VRAM: %llu MiB free, %llu MiB fixed, context %lld tokens x %llu B, %llu MiB left; "
-                     "%d shared experts on the CPU\n",
-                     (unsigned long long) (free_b >> 20), (unsigned long long) (need >> 20), (long long) ctx,
-                     (unsigned long long) per_token, (unsigned long long) (left >> 20), shexp_cpu);
+        char cells[128];
+        if (kv_near < ctx)
+            std::snprintf(cells, sizeof cells, "%lld x %llu B + %lld x %llu B + a %llu MiB stage", (long long) kv_near,
+                          (unsigned long long) per_token, (long long) (ctx - kv_near), (unsigned long long) per_far,
+                          (unsigned long long) (stage >> 20));
+        else
+            std::snprintf(cells, sizeof cells, "x %llu B", (unsigned long long) per_token);
+        std::fprintf(
+            stderr,
+            "guild glm5: VRAM: %llu MiB free, %llu MiB fixed, context %lld tokens %s, %llu MiB left; %d shared "
+            "experts on the CPU\n",
+            (unsigned long long) (free_b >> 20), (unsigned long long) (need >> 20), (long long) ctx, cells,
+            (unsigned long long) (left >> 20), shexp_cpu);
     }
     opt.max_context = ctx;
     // everything the placement counted, in one chunk
     if (!add_chunk(free_b - opt.vram_reserve - left, err))
         return false;
 
+    // the host part of each DSA layer's latent rows, one after the other
+    uint8_t* far_next = nullptr;
+    if (kv_near < ctx) {
+        size_t bytes = (size_t) has_mtp * (ctx - kv_near) * g.kv_lora * 2;
+        for (const Layer& y : L)
+            bytes += y.kda ? 0 : (size_t) (ctx - kv_near) * g.kv_lora * 2;
+        void* dev = nullptr;
+        if (cudaHostAlloc(&kv_far_mem, bytes, cudaHostAllocMapped | cudaHostAllocPortable) != cudaSuccess ||
+            cudaHostGetDevicePointer(&dev, kv_far_mem, 0) != cudaSuccess) {
+            cudaGetLastError();
+            err =
+                "glm5: no " + std::to_string(bytes >> 20) + " MiB of pinned host memory for the context's latent rows";
+            return false;
+        }
+        far_next = (uint8_t*) dev;
+    }
+    auto far_rows = [&](Layer& y) {
+        if (far_next) {
+            y.kv_far = far_next;
+            far_next += (size_t) (ctx - kv_near) * g.kv_lora * 2;
+        }
+        return true;
+    };
     for (int64_t l = 0; l < g.n_layer; ++l) {
         Layer& y = L[(size_t) l];
         const std::string p = bp + std::to_string(l) + ".";
@@ -885,7 +966,7 @@ bool Glm5Engine::Impl::load(const std::string& path, const Glm5Options& o, std::
             if (!(y.q_a_norm = f32(p + "attn_q_a_norm.weight", g.q_lora, err)) ||
                 !(y.kv_a_norm = f32(p + "attn_kv_a_norm.weight", g.kv_lora, err)))
                 return false;
-            if (!(y.kv_cache = dalloc<__half>((size_t) ctx * g.kv_lora, err)))
+            if (!(y.kv_cache = dalloc<__half>((size_t) kv_near * g.kv_lora, err)) || !far_rows(y))
                 return false;
         }
         if (y.moe) {
@@ -935,7 +1016,7 @@ bool Glm5Engine::Impl::load(const std::string& path, const Glm5Options& o, std::
             !(y.head_norm = find(p + "nextn.shared_head_norm.weight") ? f32(p + "nextn.shared_head_norm.weight", N, err)
                                                                       : f32("output_norm.weight", N, err)))
             return false;
-        if (!(y.kv_cache = dalloc<__half>((size_t) ctx * g.kv_lora, err)) ||
+        if (!(y.kv_cache = dalloc<__half>((size_t) kv_near * g.kv_lora, err)) || !far_rows(y) ||
             !(y.idx_kc = dalloc<__half>((size_t) kIdxRing * g.idx_dim, err)) ||
             !(y.idx_gc = dalloc<__half>((size_t) kIdxRing * g.idx_dim, err)) ||
             !(y.pooled = dalloc<__half>((size_t) ctx / glm5k::kKpool * g.idx_dim, err)))
@@ -1015,6 +1096,20 @@ bool Glm5Engine::Impl::load(const std::string& path, const Glm5Options& o, std::
         !(scores = dalloc<float>((size_t) T * score_stride, err)) ||
         !(sel = dalloc<int32_t>((size_t) T * sel_stride, err)) || !(nsel = dalloc<int32_t>((size_t) T, err)))
         return false;
+    if (kv_near < ctx) {
+        const size_t words = (size_t) glm5k::union_mask_words(ctx);
+        if (!(kv_stage = dalloc<__half>((size_t) kStageQ * sel_stride * g.kv_lora, err)) ||
+            !(stage_sel = dalloc<int32_t>((size_t) kStageQ * sel_stride, err)) ||
+            !(u_sel = dalloc<int32_t>((size_t) kStageQ * sel_stride, err)) ||
+            !(u_list = dalloc<int32_t>((size_t) kStageQ * sel_stride, err)) ||
+            !(u_base = dalloc<int32_t>(words + 1, err)) || !(u_mask = dalloc<uint32_t>(words, err)))
+            return false;
+        cudaMemset(u_mask, 0, words * 4);
+        std::vector<int32_t> rows((size_t) kStageQ * sel_stride);
+        for (size_t i = 0; i < rows.size(); ++i)
+            rows[i] = (int32_t) i;
+        cudaMemcpy(stage_sel, rows.data(), rows.size() * 4, cudaMemcpyHostToDevice);
+    }
     // GUILD_GLM_MMQ=0: MMVQ for every window
     if (!dp.init(
             st, widest, T, std::getenv("GUILD_GLM_MMQ") == nullptr,
@@ -1217,12 +1312,19 @@ void Glm5Engine::Impl::attn_dsa(Layer& Y, int T, int64_t pos0) {
     glm5k::rms_norm(kva, Y.kv_a_norm, kva, (int) KL, T, g.rms_eps, st);
     quant(qa, QL, T, xq2);
     mm(Y.q_b, xq2, a, T); // q [T][H][qk_dim]
-    glm5k::kv_store(kva, Y.kv_cache, pos0, (int) KL, T, st);
+    const int t_near = (int) std::clamp<int64_t>(kv_near - pos0, 0, T);
+    if (t_near > 0)
+        glm5k::kv_store(kva, Y.kv_cache, pos0, (int) KL, t_near, st);
+    if (t_near < T)
+        glm5k::kv_store(kva + (size_t) t_near * KL, Y.kv_far, pos0 + t_near - kv_near, (int) KL, T - t_near, st);
     // the indexer's key and gate are stored for every cell, dense or not, and pooled as pools complete
     glm5k::idx_store(ik, Y.idx_ln_w, Y.idx_ln_b, ig, Y.idx_kc, Y.idx_gc, pos0, T, kIdxRing, g.ln_eps, st);
     glm5k::idx_pool(Y.idx_kc, Y.idx_gc, kIdxRing, Y.idx_ape, Y.pooled, pos0, T, st);
     glm5k::q8_0_heads(Y.k_b.dev, a, e, (int) H, (int) g.qk_dim, (int) KL, T, st); // absorbed q [T][H][KL]
     const float scale = 1.f / std::sqrt((float) g.qk_dim);
+    // GUILD_GLM_ATTEND_LEGACY=1: the slower attention kernel that gives the same bits (read each window, for A/Bs)
+    const char* al = std::getenv("GUILD_GLM_ATTEND_LEGACY");
+    const bool a_legacy = al && al[0] == '1';
     // a query sees at most idx_topk / kpool pools before the selection is anything but all of them
     const int k_pools = (int) (g.idx_topk / glm5k::kKpool);
     if ((pos0 + T) / glm5k::kKpool > k_pools) {
@@ -1233,9 +1335,26 @@ void Glm5Engine::Impl::attn_dsa(Layer& Y, int T, int64_t pos0) {
         glm5k::idx_score(iq, iw, Y.pooled, pos0, T, (int) g.idx_heads,
                          1.f / std::sqrt((float) (g.idx_dim * g.idx_heads)), scores, score_stride, legacy, st);
         glm5k::idx_select(scores, score_stride, pos0, T, k_pools, sel, nsel, sel_stride, legacy, st);
-        glm5k::mla_attend(e, Y.kv_cache, pos0, (int) H, (int) KL, T, scale, sel, nsel, sel_stride, b, part, st);
-    } else {
-        glm5k::mla_attend(e, Y.kv_cache, pos0, (int) H, (int) KL, T, scale, nullptr, nullptr, 0, b, part, st);
+        if (pos0 + T <= kv_near)
+            glm5k::mla_attend(e, Y.kv_cache, pos0, (int) H, (int) KL, T, scale, sel, nsel, sel_stride, b, part, st, 0,
+                              a_legacy);
+        else // some rows in host memory: kStageQ queries' rows gathered at a time, each summed as in the whole window
+            for (int q0 = 0; q0 < T; q0 += kStageQ) {
+                const int nq = std::min(kStageQ, T - q0);
+                const int32_t* qsel = sel + (size_t) q0 * sel_stride;
+                if (nq == 1)
+                    glm5k::kv_gather(Y.kv_cache, kv_near, Y.kv_far, qsel, nsel + q0, sel_stride, 1, kv_stage, (int) KL,
+                                     st);
+                else // a prompt window's tokens select mostly the same cells: each row read once
+                    glm5k::kv_gather_union(Y.kv_cache, kv_near, Y.kv_far, qsel, nsel + q0, sel_stride, nq, pos0 + T,
+                                           u_mask, u_base, u_list, u_sel, kv_stage, kStageQ * sel_stride, (int) KL, st);
+                glm5k::mla_attend(e + (size_t) q0 * H * KL, kv_stage, pos0 + q0, (int) H, (int) KL, nq, scale,
+                                  nq == 1 ? stage_sel : u_sel, nsel + q0, sel_stride, b + (size_t) q0 * H * KL, part,
+                                  st, T, a_legacy);
+            }
+    } else { // cells [0, pos0 + T) < kv_near
+        glm5k::mla_attend(e, Y.kv_cache, pos0, (int) H, (int) KL, T, scale, nullptr, nullptr, 0, b, part, st, 0,
+                          a_legacy);
     }
     glm5k::q8_0_heads(Y.v_b.dev, b, c, (int) H, (int) KL, (int) g.v_dim, T, st); // [T][H][v_dim]
     quant(c, H * g.v_dim, T, xq2);
