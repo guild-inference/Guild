@@ -178,6 +178,19 @@ struct Glm5Engine::Impl {
     // MTP: the main model's final hidden rows of the last window, the hidden row waiting for the next token, and the
     // NextN block's own rows
     float *hn = nullptr, *pending = nullptr, *hin = nullptr, *mx = nullptr, *me = nullptr, *mh = nullptr;
+    // a kept draft's NextN catch-up, deferred to the next draft (one 2-token pass of the block instead of two of one):
+    // the token, its position and the main model's hidden row before it (defer_h); -1: none (GUILD_GLM_ACCEPT_FOLD=0,
+    // read at each accept: run at accept)
+    int32_t defer_tok = -1;
+    int64_t defer_pos = 0;
+    float* defer_h = nullptr;
+    bool flush_defer(std::string& err) {
+        if (defer_tok < 0)
+            return true;
+        const int32_t t = defer_tok;
+        defer_tok = -1;
+        return mtp_window(&t, 1, defer_pos, defer_h, false, err);
+    }
     int32_t *d_arg = nullptr, *h_arg = nullptr;
     // the draft head's token subset (read_draft_vocab): ascending token ids until they are on the GPU, where the draft
     // maps its argmax to a token id
@@ -1109,9 +1122,9 @@ bool Glm5Engine::Impl::load(const std::string& path, const Glm5Options& o, std::
         !(hcpart = dalloc<float>(glm5k::hc_mix_floats(kMmvqCols), err)))
         return false;
     if (!(hn = dalloc<float>((size_t) TW * N, err)) || !(pending = dalloc<float>((size_t) N, err)) ||
-        !(hin = dalloc<float>((size_t) T * N, err)) || !(mx = dalloc<float>((size_t) T * N, err)) ||
-        !(me = dalloc<float>((size_t) T * N, err)) || !(mh = dalloc<float>((size_t) T * N, err)) ||
-        !(d_arg = dalloc<int32_t>(4, err)))
+        !(defer_h = dalloc<float>((size_t) N, err)) || !(hin = dalloc<float>((size_t) T * N, err)) ||
+        !(mx = dalloc<float>((size_t) T * N, err)) || !(me = dalloc<float>((size_t) T * N, err)) ||
+        !(mh = dalloc<float>((size_t) T * N, err)) || !(d_arg = dalloc<int32_t>(4, err)))
         return false;
     cudaMemsetAsync(pending, 0, (size_t) N * 4, st);
     if (cudaMallocHost(&h_arg, 16) != cudaSuccess) {
@@ -1549,6 +1562,7 @@ void Glm5Engine::reset() {
     if (m.pending)
         cudaMemsetAsync(m.pending, 0, (size_t) m.g.n_embd * 4, m.st);
     m.win_tok.clear();
+    m.defer_tok = -1;
     m.ctx_end = 0;
     cudaStreamSynchronize(m.st);
 }
@@ -1579,6 +1593,8 @@ void Glm5Engine::Impl::snap_idx_tail(bool save) {
 
 bool Glm5Engine::snapshot(std::string& err) {
     Impl& m = *p_;
+    if (!m.flush_defer(err)) // the block's state as of ctx_end
+        return false;
     const size_t sb = (size_t) m.g.n_head * 128 * 128 * 4, cb = (size_t) 3 * m.g.n_head * m.g.kda_dim * 3 * 4;
     const size_t n_kda = (size_t) std::count(m.g.is_kda.begin(), m.g.is_kda.end(), true);
     const size_t pb = (size_t) m.g.n_embd * 4; // the NextN block's pending row
@@ -1610,6 +1626,7 @@ bool Glm5Engine::snapshot(std::string& err) {
 
 bool Glm5Engine::restore(std::string& err) {
     Impl& m = *p_;
+    m.defer_tok = -1; // past the snapshot (snapshot ran any before it)
     if (!m.snap) {
         err = "glm5: restore without a snapshot";
         return false;
@@ -1930,6 +1947,11 @@ bool Glm5Engine::forward(const int32_t* tokens, int n, int64_t pos0, float* logi
         err = "glm5: the context is full (" + std::to_string(m.opt.max_context) + " tokens)";
         return false;
     }
+    // a deferred catch-up before the block reads new rows (dropped when this window rewrites its cell)
+    if (m.defer_pos >= pos0)
+        m.defer_tok = -1;
+    if (!m.flush_defer(err))
+        return false;
     const int W = m.pipe ? Impl::kMaxWindow : kMaxT;
     for (int base = 0; base < n; base += W) {
         const int T = std::min(W, n - base);
@@ -1971,8 +1993,20 @@ bool Glm5Engine::draft(int32_t last, int64_t pos, int32_t& draft, std::string& e
         err = "glm5: the context is full";
         return false;
     }
-    if (!m.mtp_window(&last, 1, pos, m.pending, true, err))
-        return false;
+    if (m.defer_tok >= 0 && m.defer_pos + 1 == pos) { // the kept draft and this token: one 2-token pass
+        const int64_t N = m.g.n_embd;
+        const int32_t two[2] = {m.defer_tok, last};
+        m.defer_tok = -1;
+        cudaMemcpyAsync(m.hin, m.defer_h, (size_t) N * 4, cudaMemcpyDeviceToDevice, m.st);
+        cudaMemcpyAsync(m.hin + N, m.pending, (size_t) N * 4, cudaMemcpyDeviceToDevice, m.st);
+        if (!m.mtp_window(two, 2, pos - 1, m.hin, true, err))
+            return false;
+    } else {
+        if (m.defer_pos >= pos)
+            m.defer_tok = -1;
+        if (!m.flush_defer(err) || !m.mtp_window(&last, 1, pos, m.pending, true, err))
+            return false;
+    }
     if (cudaStreamSynchronize(m.st) != cudaSuccess) {
         err = std::string("glm5: CUDA error: ") + cudaGetErrorString(cudaGetLastError());
         return false;
@@ -2038,7 +2072,12 @@ bool Glm5Engine::accept(int n_keep, std::string& err) {
     }
     if (m.has_mtp) {
         // the draft step already ran the block at win_pos with the pending row; it catches up the accepted rest
-        if (n_keep > 1) {
+        const char* fold = std::getenv("GUILD_GLM_ACCEPT_FOLD");
+        if (n_keep == 2 && !(fold && fold[0] == '0')) { // to the next draft (flush_defer runs it if none comes)
+            m.defer_tok = m.win_tok[1];
+            m.defer_pos = m.win_pos + 1;
+            cudaMemcpyAsync(m.defer_h, m.hn, (size_t) N * 4, cudaMemcpyDeviceToDevice, m.st);
+        } else if (n_keep > 1) {
             cudaMemcpyAsync(m.hin, m.hn, (size_t) (n_keep - 1) * N * 4, cudaMemcpyDeviceToDevice, m.st);
             if (!m.mtp_window(m.win_tok.data() + 1, n_keep - 1, m.win_pos + 1, m.hin, false, err))
                 return false;
