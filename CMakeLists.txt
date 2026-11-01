@@ -270,7 +270,7 @@ endif()
 # Only built when a GPU backend is on, so the Phase 1 targets keep working without a toolkit.
 if(GUILD_ENABLE_CUDA OR GUILD_ENABLE_HIP)
   add_library(guild_core STATIC src/core/device.cu src/core/pinned.cu src/platform/memory.cpp src/core/graph.cpp src/core/weights.cpp
-                               src/core/layout.cpp src/core/drama3_tower.cu src/core/glm5.cu)
+                               src/core/layout.cpp src/core/drama3_tower.cu src/core/glm5.cu src/core/nemotron_h.cu)
   target_include_directories(guild_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
   if(GUILD_ENABLE_CUDA AND GUILD_EXPERIMENTAL_SM60)
     # the runtime device check (src/core/device.cu) admits the cards this build was made for (#236)
@@ -462,7 +462,7 @@ if(GUILD_ENABLE_CUDA OR GUILD_ENABLE_HIP)
     src/core/expert_cache.cpp src/core/native_head.cpp src/core/native_dense.cpp src/core/verify.cpp src/core/mtp.cpp
     src/core/conversation_snapshot.cpp src/core/conversation_state.cpp src/core/conversation_memory.cpp src/core/peer_experts.cpp
     src/core/drama3_tower.cpp src/core/drama3_codec.cu src/core/glm5.cpp src/core/glm5_nl4.cpp src/core/host_combine.cpp
-    src/core/cpu_moe.cpp src/audio/encoder.cu)
+    src/core/cpu_moe.cpp src/core/nemotron_h.cpp src/audio/encoder.cu)
   # AVX2 kernels behind a runtime check (cpu_avx2_ok), as guild-kernels-cpu builds its own
   if(MSVC)
     set_source_files_properties(src/core/glm5_nl4.cpp src/core/host_combine.cpp PROPERTIES COMPILE_OPTIONS /arch:AVX2)
