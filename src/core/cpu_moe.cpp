@@ -446,9 +446,13 @@ void Experts::run(Pool& pool, int64_t N, int T, int max_t, const int32_t* ids, c
         tp = now;
     };
     if (timing)
-        for (const Group& gr : groups)
-            weight_bytes += (double) gr.f.n_ff * (double) gr.f.gu_row * (gr.f.act == CpuFfn::ReLU2 ? 1 : 2) +
-                            (double) N * (double) gr.f.d_row;
+        for (const Group& gr : groups) {
+            const double gu = (double) gr.f.n_ff * (double) gr.f.gu_row * (gr.f.act == CpuFfn::ReLU2 ? 1 : 2),
+                         dn = (double) N * (double) gr.f.d_row;
+            gu_bytes += gu;
+            down_bytes += dn;
+            weight_bytes += gu + dn;
+        }
     // a few rows or chunks (a decode step's) on this thread, a prompt window's across the pool
     auto each = [&](int n, size_t bytes, const std::function<void(int)>& f) {
         if (bytes < (size_t) 1 << 18)
@@ -498,12 +502,12 @@ void Experts::run(Pool& pool, int64_t N, int T, int max_t, const int32_t* ids, c
         return nullptr;
     };
     constexpr int RB = 64, MT = kQ8Rows512MaxT > kcpu::MAXT ? kQ8Rows512MaxT : kcpu::MAXT;
-    // a down item's rows: with 64 a phase's last items kept a few threads busy while the rest waited (2x Xeon Gold
-    // 6130, 32 threads: a thread's last item ended 35 us before the phase on average, 16 us with 16 rows)
-    constexpr int DRB = 16;
+    // a down item's rows of every group (down_rows, at most RB)
+    const int DRB = std::clamp(down_rows, 4, RB) / 4 * 4;
     // and the last items of each node's queue, about one a worker, are split in four, so that the phase ends with
     // short items (2x Xeon Gold 6130: CPU experts -0.9 ms a 2-token step)
-    constexpr int kTail = 16, GTR = RB / 4, DTR = DRB / 4;
+    constexpr int kTail = 16, GTR = RB / 4;
+    const int DTR = DRB / 4;
 
     // Q8_0 rows go through q8_0_rows512 in any window (each token's result is bitwise ggml-cpu's dot product), a chunk
     // of up to kQ8Rows512MaxT tokens at a time, as even as they come, packed once: for gate/up here, for down with the

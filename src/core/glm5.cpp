@@ -710,6 +710,11 @@ bool Glm5Engine::Impl::load(const std::string& path, const Glm5Options& o, std::
     cpu_moe::Workers wk = cpu_moe::make_workers(opt.numa_split, opt.threads);
     pool = std::move(wk.pool);
     launcher = std::move(wk.launcher);
+    // the down phase in items of 64 rows of every expert (cpu_moe::Experts::down_rows): its IQ4_XS rows go through
+    // ggml-cpu's one-token dot in a decode step, and longer runs of each expert's rows paid there (2x Xeon Gold 6130,
+    // one process alternated six times: CPU experts 71.8-73.1 -> 68.1-70.7 ms a step, the step 85.7-86.5 -> 84.5-85.6
+    // ms; a 2,051-token prompt 31.2 -> 30.9 s; the same ids)
+    xp.down_rows = 64;
     caller_cpu = wk.caller_cpu;
     const bool split = wk.split;
     const int threads = pool->size();
@@ -1471,13 +1476,16 @@ const std::string& Glm5Engine::placement() const {
 }
 void Glm5Engine::print_timing(const char* what) const {
     if (std::getenv("GUILD_GLM_TIMING"))
-        std::fprintf(stderr,
-                     "glm5 timing (%s): activations %.0f ms, gate/up %.0f, hidden %.0f, down %.0f; launches %.0f; "
-                     "threads busy %.0f%% / %.0f%%; %.2f GB of expert rows\n",
-                     what, p_->xp.phase_ms[0], p_->xp.phase_ms[1], p_->xp.phase_ms[2], p_->xp.phase_ms[3],
-                     p_->enqueue_ms, 100.0 * p_->xp.busy_ms[1] / std::max(1.0, p_->xp.phase_ms[1] * p_->pool->size()),
-                     100.0 * p_->xp.busy_ms[3] / std::max(1.0, p_->xp.phase_ms[3] * p_->pool->size()),
-                     p_->xp.weight_bytes * 1e-9);
+        std::fprintf(
+            stderr,
+            "glm5 timing (%s): activations %.0f ms, gate/up %.0f, hidden %.0f, down %.0f; launches %.0f; "
+            "threads busy %.0f%% / %.0f%%; %.2f GB of expert rows (gate/up %.2f GB at %.1f GB/s, down %.2f at %.1f)\n",
+            what, p_->xp.phase_ms[0], p_->xp.phase_ms[1], p_->xp.phase_ms[2], p_->xp.phase_ms[3], p_->enqueue_ms,
+            100.0 * p_->xp.busy_ms[1] / std::max(1.0, p_->xp.phase_ms[1] * p_->pool->size()),
+            100.0 * p_->xp.busy_ms[3] / std::max(1.0, p_->xp.phase_ms[3] * p_->pool->size()),
+            p_->xp.weight_bytes * 1e-9, p_->xp.gu_bytes * 1e-9,
+            p_->xp.gu_bytes * 1e-6 / std::max(1e-3, p_->xp.phase_ms[1]), p_->xp.down_bytes * 1e-9,
+            p_->xp.down_bytes * 1e-6 / std::max(1e-3, p_->xp.phase_ms[3]));
 }
 
 double Glm5Engine::last_cpu_ms() const {

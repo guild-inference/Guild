@@ -253,7 +253,12 @@ public:
     /// GUILD_GLM_TIMING-style phase totals, milliseconds: activations, gate/up, hidden, down; and the weight bytes
     /// the gate/up and down phases read (each FFN's rows once)
     double phase_ms[4] = {0, 0, 0, 0};
-    double weight_bytes = 0;
+    double weight_bytes = 0, gu_bytes = 0, down_bytes = 0; ///< both phases', the gate/up phase's, the down phase's
+    /// The rows of every group a down item takes (4-64; the last items of each node take a quarter).  16: with 64 a
+    /// phase's last items kept a few threads busy while the rest waited (2x Xeon Gold 6130, 32 threads: a thread's
+    /// last item ended 35 us before the phase on average, 16 us with 16 rows), before those quarter items; Nemotron
+    /// 3.5's Q8_0 rows are still ~1% faster with 16, GLM-5.3-Flash's IQ4_XS rows ~1% with 64 (glm5.cpp).
+    int down_rows = 16;
     /// the gate/up and down phases' item times summed over the threads ([1] and [3]): busy_ms / (phase_ms * the
     /// pool's threads) is the share of the threads' time spent in items
     double busy_ms[4] = {0, 0, 0, 0};
