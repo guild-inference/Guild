@@ -88,6 +88,7 @@ struct NemotronHEngine::Impl {
     DenseProducts dp;
     std::vector<void*> allocs;
     double cpu_ms = 0.0;
+    double gpu_wait_ms = 0.0; ///< the CPU waiting for a layer's rows before its experts (GUILD_MOE_TIMING)
 
     // device scratch, for kPromptT rows
     float *x = nullptr, *xn = nullptr, *a = nullptr, *cv = nullptr, *ys = nullptr, *yn = nullptr, *q = nullptr;
@@ -100,6 +101,27 @@ struct NemotronHEngine::Impl {
     // pinned host
     float *h_x = nullptr, *h_y = nullptr, *h_w = nullptr, *h_emb = nullptr;
     int32_t *h_ids = nullptr, *h_arg = nullptr;
+    // A window's own buffers (the rest of the scratch is used up within a layer): x, y, ycpu, hn, h_x, h_y, h_w,
+    // h_emb, h_ids and ev above are the bound window's (bind), window 0's but inside a window pair.  A verify window
+    // split in two: the second part's snapshots start at slot snap0, and the first part keeps its last token's too.
+    struct Win {
+        float *x = nullptr, *y = nullptr, *ycpu = nullptr, *hn = nullptr;
+        float *h_x = nullptr, *h_y = nullptr, *h_w = nullptr, *h_emb = nullptr;
+        int32_t* h_ids = nullptr;
+        cudaEvent_t ev = nullptr;
+        int snap0 = 0;
+        bool snap_last = false;
+    };
+    Win win[2];
+    int snap0 = 0;
+    bool snap_last = false;
+    void bind(const Win& w) {
+        x = w.x, y = w.y, ycpu = w.ycpu, hn = w.hn, h_x = w.h_x, h_y = w.h_y, h_w = w.h_w, h_emb = w.h_emb;
+        h_ids = w.h_ids, ev = w.ev, snap0 = w.snap0, snap_last = w.snap_last;
+    }
+    Win bound() const {
+        return {x, y, ycpu, hn, h_x, h_y, h_w, h_emb, h_ids, ev, snap0, snap_last};
+    }
     int64_t ctx_end = 0;
     // the last verify window, until accept()
     std::vector<int32_t> win_tok;
@@ -111,9 +133,15 @@ struct NemotronHEngine::Impl {
             cudaStreamSynchronize(st);
         for (void* p : allocs)
             cudaFree(p);
-        for (void* p : {(void*) h_x, (void*) h_y, (void*) h_w, (void*) h_emb, (void*) h_ids, (void*) h_arg})
+        if (win[0].x)
+            bind(win[0]);
+        for (void* p :
+             {(void*) h_x, (void*) h_y, (void*) h_w, (void*) h_emb, (void*) h_ids, (void*) h_arg, (void*) win[1].h_x,
+              (void*) win[1].h_y, (void*) win[1].h_w, (void*) win[1].h_emb, (void*) win[1].h_ids})
             if (p)
                 cudaFreeHost(p);
+        if (win[1].ev)
+            cudaEventDestroy(win[1].ev);
         wk.pool.reset(); // before the memory its workers might still touch
         wk.launcher.reset();
 #if defined(__linux__)
@@ -222,7 +250,12 @@ struct NemotronHEngine::Impl {
     void mamba(Layer& Y, int T, bool prompt, bool snaps);
     void attention(Layer& Y, int T, int64_t pos0);
     void moe_begin(const Layer& Y, int T);
-    bool moe_end(const Layer& Y, int T, std::string& err);
+    bool moe_end(const Layer& Y, int T, const Win& w, std::string& err);
+    void dump_row(const char* what, int l, const float* buf, int T);
+    size_t segment(size_t l, int T, int64_t pos0, bool prompt, bool snaps);
+    bool moe_finish(size_t l, int T, std::string& err);
+    bool window_pair(const int32_t* tokens, const float* embeds, int T0, int T1, int64_t pos0, bool prompt, bool snaps,
+                     std::string& err);
     bool window(const int32_t* tokens, const float* embeds, int T, int64_t pos0, bool prompt, bool snaps,
                 std::string& err);
     bool head_rows(const float* rows, int n, float* host, std::string& err);
@@ -451,6 +484,18 @@ bool NemotronHEngine::Impl::load(const std::string& path, const NemotronHOptions
         err = "nemotron_h: no pinned host memory";
         return false;
     }
+    win[0] = {x, y, ycpu, hn, h_x, h_y, h_w, h_emb, h_ids, ev};
+    Win& w1 = win[1];
+    if (!(w1.x = dalloc<float>((size_t) W * N, err)) || !(w1.y = dalloc<float>((size_t) W * N, err)) ||
+        !(w1.ycpu = dalloc<float>((size_t) W * N, err)) || !(w1.hn = dalloc<float>((size_t) W * N, err)))
+        return false;
+    if (cudaMallocHost(&w1.h_x, (size_t) W * N * 4) != cudaSuccess || cudaMallocHost(&w1.h_y, (size_t) W * N * 4) ||
+        cudaMallocHost(&w1.h_w, (size_t) W * g.n_used * 4) || cudaMallocHost(&w1.h_ids, (size_t) W * g.n_used * 4) ||
+        cudaMallocHost(&w1.h_emb, (size_t) W * N * 4) ||
+        cudaEventCreateWithFlags(&w1.ev, cudaEventDisableTiming) != cudaSuccess) {
+        err = "nemotron_h: no pinned host memory";
+        return false;
+    }
 
     // the routed experts: halves of every expert's rows in memory bound to each node (or one copy: no split)
     const auto t0 = std::chrono::steady_clock::now();
@@ -513,9 +558,13 @@ void NemotronHEngine::Impl::mamba(Layer& Y, int T, bool prompt, bool snaps) {
     const int ld = (int) Y.in_proj.n_out; // z | xBC | dt
     quant(xn, g.n_embd, T, 0);
     mm(Y.in_proj, 0, a, T);
-    nhk::ssm_conv(a + I, ld, Y.conv_state, Y.conv_w, Y.conv_b, cv, (int) C, T, snaps ? Y.conv_snap : nullptr, st);
+    const int n_snaps = snaps ? (snap_last ? T : T - 1) : 0;
+    const size_t ssm_floats = (size_t) H * (I / H) * g.ssm_state;
+    nhk::ssm_conv(a + I, ld, Y.conv_state, Y.conv_w, Y.conv_b, cv, (int) C, T,
+                  snaps ? Y.conv_snap + (size_t) snap0 * C * 3 : nullptr, n_snaps, st);
     nhk::ssm_scan(cv, (int) C, a + I + C, ld, Y.dt_b, Y.A, Y.D, Y.ssm_state, ys, (int) H, (int) (I / H),
-                  (int) g.ssm_state, (int) g.ssm_groups, T, prompt ? 0.001f : 0.f, snaps ? Y.ssm_snap : nullptr, st);
+                  (int) g.ssm_state, (int) g.ssm_groups, T, prompt ? 0.001f : 0.f,
+                  snaps ? Y.ssm_snap + (size_t) snap0 * ssm_floats : nullptr, n_snaps, st);
     nhk::gated_group_norm(ys, a, ld, Y.ssm_norm, yn, (int) I, (int) (I / g.ssm_groups), g.rms_eps, T, st);
     quant(yn, I, T, 1);
     mm(Y.out_proj, 1, y, T);
@@ -560,73 +609,150 @@ void NemotronHEngine::Impl::moe_begin(const Layer& Y, int T) {
     mm(Y.down_sh, 1, y, T);
 }
 
-/// the routed experts on the CPU, added to the shared expert's rows in y
-bool NemotronHEngine::Impl::moe_end(const Layer& Y, int T, std::string& err) {
+/// window w's routed experts on the CPU, added to the shared expert's rows in w.y.  Its buffers only, not the bound
+/// ones: a window pair runs it beside the launcher, which binds the other window meanwhile.
+bool NemotronHEngine::Impl::moe_end(const Layer& Y, int T, const Win& w, std::string& err) {
     const int64_t N = g.n_embd;
-    if (cudaEventSynchronize(ev) != cudaSuccess) {
+    const auto w0 = std::chrono::steady_clock::now();
+    if (cudaEventSynchronize(w.ev) != cudaSuccess) {
         err = "nemotron_h: CUDA error before the CPU experts: " + std::string(cudaGetErrorString(cudaGetLastError()));
         return false;
     }
     const auto t0 = std::chrono::steady_clock::now();
-    xp.run(*wk.pool, N, T, kPromptT, h_ids, h_w, (int) g.n_used, Y.experts, nullptr, h_x, h_y, T <= kMaxVerify);
+    gpu_wait_ms += std::chrono::duration<double, std::milli>(t0 - w0).count();
+    xp.run(*wk.pool, N, T, kPromptT, w.h_ids, w.h_w, (int) g.n_used, Y.experts, nullptr, w.h_x, w.h_y, T <= kMaxVerify);
     cpu_ms += ms_since(t0);
 
-    cudaMemcpyAsync(ycpu, h_y, (size_t) T * N * 4, cudaMemcpyHostToDevice, st);
-    glm5k::add(y, ycpu, (int64_t) T * N, st);
+    cudaMemcpyAsync(w.ycpu, w.h_y, (size_t) T * N * 4, cudaMemcpyHostToDevice, st);
+    glm5k::add(w.y, w.ycpu, (int64_t) T * N, st);
+    return true;
+}
+
+/// GUILD_NEMOTRON_DUMP=FILE (debugging): every layer's mixer output and block output for the window's last row, in
+/// the record form of llama.cpp's eval callback names (name, n, floats)
+void NemotronHEngine::Impl::dump_row(const char* what, int l, const float* buf, int T) {
+    static std::FILE* dump = [] {
+        const char* p = std::getenv("GUILD_NEMOTRON_DUMP");
+        return p && *p ? std::fopen(p, "wb") : nullptr;
+    }();
+    if (!dump)
+        return;
+    const int64_t N = g.n_embd;
+    static const bool all = std::getenv("GUILD_NEMOTRON_DUMP_ALL") != nullptr; // every row of the window
+    const int rows = all ? T : 1;
+    std::vector<float> h((size_t) rows * N);
+    cudaMemcpyAsync(h.data(), buf + (size_t) (T - rows) * N, h.size() * 4, cudaMemcpyDeviceToHost, st);
+    cudaStreamSynchronize(st);
+    const std::string name = std::string(what) + "-" + std::to_string(l);
+    const int32_t len = (int32_t) name.size(), n = (int32_t) h.size();
+    std::fwrite(&len, 4, 1, dump);
+    std::fwrite(name.data(), 1, (size_t) len, dump);
+    std::fwrite(&n, 4, 1, dump);
+    std::fwrite(h.data(), 4, h.size(), dump);
+    std::fflush(dump);
+}
+
+/// The bound window's rows [0, T) at pos0 from layer l through the next MoE layer's moe_begin: that layer's index;
+/// or past the last layer, the final norm (x -> hn) and L.size()
+size_t NemotronHEngine::Impl::segment(size_t l, int T, int64_t pos0, bool prompt, bool snaps) {
+    const int64_t N = g.n_embd;
+    for (; l < L.size(); ++l) {
+        Layer& Y = L[l];
+        glm5k::rms_norm(x, Y.norm, xn, (int) N, T, g.rms_eps, st);
+        if (Y.kind == 'M') {
+            mamba(Y, T, prompt, snaps);
+            dump_row("mamba_out", (int) l, y, T);
+        } else if (Y.kind == '*') {
+            attention(Y, T, pos0);
+            dump_row("attn_out", (int) l, y, T);
+        } else {
+            moe_begin(Y, T);
+            dump_row("shexp_out", (int) l, y, T);
+            return l;
+        }
+        glm5k::add(x, y, (int64_t) T * N, st);
+        dump_row("nemotron_h_block_out", (int) l, x, T);
+    }
+    glm5k::rms_norm(x, out_norm, hn, (int) N, T, g.rms_eps, st);
+    return L.size();
+}
+
+/// the bound window's MoE layer l after segment(): its CPU experts, and the layer's output added to its rows
+bool NemotronHEngine::Impl::moe_finish(size_t l, int T, std::string& err) {
+    if (!moe_end(L[l], T, bound(), err))
+        return false;
+    dump_row("ffn_out", (int) l, y, T);
+    glm5k::add(x, y, (int64_t) T * g.n_embd, st);
+    dump_row("nemotron_h_block_out", (int) l, x, T);
     return true;
 }
 
 /// rows [0, T) at pos0 through every layer: x -> hn (the final norm's output, the head's input)
 bool NemotronHEngine::Impl::window(const int32_t* tokens, const float* embeds, int T, int64_t pos0, bool prompt,
                                    bool snaps, std::string& err) {
-    const int64_t N = g.n_embd;
     if (!embed_rows(tokens, embeds, T, x, err))
         return false;
-    // GUILD_NEMOTRON_DUMP=FILE (debugging): every layer's mixer output and block output for the window's last row,
-    // in the record form of llama.cpp's eval callback names (name, n, floats)
-    static std::FILE* dump = [] {
-        const char* p = std::getenv("GUILD_NEMOTRON_DUMP");
-        return p && *p ? std::fopen(p, "wb") : nullptr;
-    }();
-    auto dump_row = [&](const char* what, int l, const float* buf) {
-        if (!dump)
-            return;
-        static const bool all = std::getenv("GUILD_NEMOTRON_DUMP_ALL") != nullptr; // every row of the window
-        const int rows = all ? T : 1;
-        std::vector<float> h((size_t) rows * N);
-        cudaMemcpyAsync(h.data(), buf + (size_t) (T - rows) * N, h.size() * 4, cudaMemcpyDeviceToHost, st);
-        cudaStreamSynchronize(st);
-        const std::string name = std::string(what) + "-" + std::to_string(l);
-        const int32_t len = (int32_t) name.size(), n = (int32_t) h.size();
-        std::fwrite(&len, 4, 1, dump);
-        std::fwrite(name.data(), 1, (size_t) len, dump);
-        std::fwrite(&n, 4, 1, dump);
-        std::fwrite(h.data(), 4, h.size(), dump);
-        std::fflush(dump);
-    };
-    dump_row("block_in", 0, x);
-    int l = 0;
-    for (Layer& Y : L) {
-        glm5k::rms_norm(x, Y.norm, xn, (int) N, T, g.rms_eps, st);
-        if (Y.kind == 'M') {
-            mamba(Y, T, prompt, snaps);
-            dump_row("mamba_out", l, y);
-        } else if (Y.kind == '*') {
-            attention(Y, T, pos0);
-            dump_row("attn_out", l, y);
-        } else {
-            moe_begin(Y, T);
-            dump_row("shexp_out", l, y);
-            if (!moe_end(Y, T, err))
-                return false;
-            dump_row("ffn_out", l, y);
-        }
-        glm5k::add(x, y, (int64_t) T * N, st);
-        dump_row("nemotron_h_block_out", l, x);
-        ++l;
-    }
-    glm5k::rms_norm(x, out_norm, hn, (int) N, T, g.rms_eps, st);
+    dump_row("block_in", 0, x, T);
+    for (size_t l = 0; (l = segment(l, T, pos0, prompt, snaps)) < L.size(); ++l)
+        if (!moe_finish(l, T, err))
+            return false;
     return true;
+}
+
+/// Two windows, T0 rows at pos0 and T1 rows right after (win[0] and win[1]): at each MoE layer the CPU experts of
+/// one window here while the launcher enqueues the other's layers up to its next MoE layer (bound to that window
+/// meanwhile; moe_end takes its window's own buffers).  The stream keeps every layer's order (window 0 before window
+/// 1: the Mamba states and the attention cells pass from one to the next), so each window computes what window()
+/// computes for it.  `snaps`: the two halves of a verify window, whose snapshots are the whole window's (each verify
+/// row is a decode step's: the products, the router and the CPU experts compute a row alike in a window of 1 to
+/// kMaxVerify rows).
+bool NemotronHEngine::Impl::window_pair(const int32_t* tokens, const float* embeds, int T0, int T1, int64_t pos0,
+                                        bool prompt, bool snaps, std::string& err) {
+    const int64_t N = g.n_embd;
+    cpu_moe::Launcher& lc = *wk.launcher;
+    win[0].snap0 = 0, win[0].snap_last = true;
+    win[1].snap0 = T0, win[1].snap_last = false;
+    bind(win[0]);
+    bool ok = embed_rows(tokens, embeds, T0, x, err);
+    size_t l0 = ok ? segment(0, T0, pos0, prompt, snaps) : L.size(), l1 = 0;
+    bool ok1 = true;
+    std::string err1;
+    auto launch0 = [&](size_t from) {
+        bind(win[0]);
+        l0 = segment(from, T0, pos0, prompt, snaps);
+    };
+    auto launch1 = [&](size_t from) {
+        bind(win[1]);
+        if (from == 0 && !embed_rows(tokens + T0, embeds ? embeds + (size_t) T0 * N : nullptr, T1, x, err1))
+            ok1 = false;
+        else
+            l1 = segment(from, T1, pos0 + T0, prompt, snaps);
+    };
+    if (ok)
+        lc.post([&] { launch1(0); });
+    while (ok && l0 < L.size()) { // both windows meet the same MoE layers
+        const size_t m = l0;
+        ok = moe_end(L[m], T0, win[0], err); // window 0's experts here, window 1's layers to MoE layer m meanwhile
+        glm5k::add(win[0].x, win[0].y, (int64_t) T0 * N, st);
+        lc.wait();
+        if (!ok1) {
+            err = err1;
+            ok = false;
+        }
+        if (!ok)
+            break;
+        lc.post([&, m] { launch0(m + 1); }); // window 0's next layers, window 1's experts meanwhile
+        ok = moe_end(L[m], T1, win[1], err);
+        glm5k::add(win[1].x, win[1].y, (int64_t) T1 * N, st);
+        lc.wait();
+        if (ok && l0 < L.size())
+            lc.post([&, m] { launch1(m + 1); });
+        else if (ok)
+            launch1(m + 1); // past the last MoE layer: window 1's last layers
+    }
+    win[0].snap_last = false;
+    bind(win[0]);
+    return ok;
 }
 
 /// logits of n rows of normed hidden states (device), to the host
@@ -662,7 +788,7 @@ bool NemotronHEngine::Impl::mtp_rows(const float* h_rows, const int32_t* tokens,
     glm5k::add(x, y, (int64_t) T * N, st);
     glm5k::rms_norm(x, Y.post_norm, xn, (int) N, T, g.rms_eps, st);
     moe_begin(Y, T);
-    if (!moe_end(Y, T, err))
+    if (!moe_end(Y, T, bound(), err))
         return false;
     glm5k::add(x, y, (int64_t) T * N, st);
     if (opt.mtp_layer_norm)
@@ -727,8 +853,11 @@ double NemotronHEngine::last_cpu_ms() const {
 }
 void NemotronHEngine::print_timing(const char* what) const {
     if (std::getenv("GUILD_MOE_TIMING"))
-        std::fprintf(stderr, "nemotron_h timing (%s): activations %.0f ms, up %.0f, hidden %.0f, down %.0f\n", what,
-                     p_->xp.phase_ms[0], p_->xp.phase_ms[1], p_->xp.phase_ms[2], p_->xp.phase_ms[3]);
+        std::fprintf(stderr,
+                     "nemotron_h timing (%s): activations %.0f ms, up %.0f, hidden %.0f, down %.0f; %.2f GB of "
+                     "expert rows; %.0f ms waiting for the GPU before them\n",
+                     what, p_->xp.phase_ms[0], p_->xp.phase_ms[1], p_->xp.phase_ms[2], p_->xp.phase_ms[3],
+                     p_->xp.weight_bytes * 1e-9, p_->gpu_wait_ms);
 }
 
 void NemotronHEngine::reset() {
@@ -756,9 +885,30 @@ bool NemotronHEngine::forward(const int32_t* tokens, const float* embeds, int n,
         return false;
     }
     const int64_t N = m.g.n_embd;
+    // two windows at a time, each one's CPU experts beside the other's GPU layers (window_pair); one at a time with
+    // GUILD_NEMOTRON_DUMP, whose rows follow the layers of one window
+    static const bool pairs = std::getenv("GUILD_NEMOTRON_DUMP") == nullptr;
     for (int done = 0; done < n;) {
-        const int T = std::min(kPromptT, n - done);
+        const int T = std::min(kPromptT, n - done), T1 = pairs ? std::min(kPromptT, n - done - T) : 0;
         const float* e = embeds ? embeds + (size_t) done * N : nullptr;
+        if (T1 > 0) {
+            if (!m.window_pair(tokens + done, e, T, T1, pos0 + done, true, false, err))
+                return false;
+            if (done + T + T1 == n && logits && !m.head_rows(m.win[1].hn + (size_t) (T1 - 1) * N, 1, logits, err))
+                return false;
+            if (m.has_mtp) {
+                if (!m.mtp_catch_up(tokens + done, e, T, pos0 + done, err))
+                    return false;
+                m.bind(m.win[1]); // the second window's rows in its own hn
+                const bool ok =
+                    m.mtp_catch_up(tokens + done + T, e ? e + (size_t) T * N : nullptr, T1, pos0 + done + T, err);
+                m.bind(m.win[0]);
+                if (!ok)
+                    return false;
+            }
+            done += T + T1;
+            continue;
+        }
         // a prompt: the reference reads it with its chunked scan, which clamps the time step
         if (!m.window(tokens + done, e, T, pos0 + done, true, false, err))
             return false;
@@ -835,7 +985,22 @@ bool NemotronHEngine::verify(const int32_t* tokens, int n, int64_t pos0, float* 
     }
     const cpu_moe::PinCaller pin(m.wk.caller_cpu);
     m.cpu_ms = 0;
-    if (!m.window(tokens, nullptr, n, pos0, false, n > 1, err) || !m.head_rows(m.hn, n, logits_rows, err))
+    // two halves, the first the larger, each one's CPU experts beside the other's GPU layers (window_pair); one
+    // window with GUILD_NEMOTRON_DUMP, and GUILD_SPEC_SPLIT=0 is the one-window control (as the Qwen runtime's)
+    static const bool split = std::getenv("GUILD_NEMOTRON_DUMP") == nullptr && [] {
+        const char* e = std::getenv("GUILD_SPEC_SPLIT");
+        return e == nullptr || std::atoi(e) != 0;
+    }();
+    const int n0 = split && n > 1 ? (n + 1) / 2 : n;
+    if (n0 < n) {
+        if (!m.window_pair(tokens, nullptr, n0, n - n0, pos0, false, true, err))
+            return false;
+        cudaMemcpyAsync(m.hn + (size_t) n0 * m.g.n_embd, m.win[1].hn, (size_t) (n - n0) * m.g.n_embd * 4,
+                        cudaMemcpyDeviceToDevice, m.st); // the second half's rows after the first's
+    } else if (!m.window(tokens, nullptr, n, pos0, false, n > 1, err)) {
+        return false;
+    }
+    if (!m.head_rows(m.hn, n, logits_rows, err))
         return false;
     m.win_tok.assign(tokens, tokens + n);
     m.win_pos = pos0;

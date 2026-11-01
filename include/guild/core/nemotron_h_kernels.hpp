@@ -13,21 +13,21 @@ namespace guild::core::nhk {
 
 /// The causal convolution of the Mamba-2 mixer's x|B|C channels and SiLU: out[t][c] = silu(sum_k w[c][k] x[t-3+k][c]
 /// + b[c]), x[t] = in[t * ld_in + c], the 3 inputs before the window from `state` ([C][3], oldest first), which ends
-/// as the window's last 3.  `snaps` (may be null): the state after each of the window's first T - 1 tokens
-/// ([T - 1][C][3]), a verify window's rollback points.
+/// as the window's last 3.  `snaps` (may be null): the state after each of the window's first n_snaps tokens
+/// ([n_snaps][C][3]), a verify window's rollback points.
 void ssm_conv(const float* in, int ld_in, float* state, const float* w, const float* b, float* out, int C, int T,
-              float* snaps, void* st);
+              float* snaps, int n_snaps, void* st);
 
 /// The Mamba-2 selective scan, one token after another: per head h (group h / (H / G)),
 ///   dt = max(softplus(dt_raw[t][h] + dt_bias[h]), dt_min), s[h][p][n] = s * exp(dt A[h]) + dt B[t][g][n] x[t][h][p],
 ///   y[t][h][p] = sum_n s[h][p][n] C[t][g][n] + D[h] x[t][h][p]
 /// xbc [T][ld]: x (H * P) | B (G * N) | C (G * N); dt_raw rows of ld_dt; state [H][P][N] (float32, kept);
 /// y [T][H * P].  P = 64 and N = 128 (ssm_scan_supported).  `snaps` (may be null): the state after each of the
-/// window's first T - 1 tokens ([T - 1][H][P][N]).
+/// window's first n_snaps tokens ([n_snaps][H][P][N]).
 bool ssm_scan_supported(int P, int N);
 void ssm_scan(const float* xbc, int ld, const float* dt_raw, int ld_dt, const float* dt_bias, const float* A,
               const float* D, float* state, float* y, int H, int P, int N, int G, int T, float dt_min, float* snaps,
-              void* st);
+              int n_snaps, void* st);
 
 /// The mixer's output norm: v = y * silu(z), then RMSNorm over groups of `group` channels, times w: out [T][I];
 /// z rows of ld_z

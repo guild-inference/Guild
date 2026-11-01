@@ -51,7 +51,7 @@ __device__ float block_max(float v, float* red) {
 // ---- the convolution -----------------------------------------------------------------------------------------------
 
 __global__ void ssm_conv_k(const float* in, int ld_in, float* state, const float* w, const float* b, float* out, int C,
-                           int T, float* snaps) {
+                           int T, float* snaps, int n_snaps) {
     const int c = blockIdx.x * blockDim.x + threadIdx.x;
     if (c >= C)
         return;
@@ -64,7 +64,7 @@ __global__ void ssm_conv_k(const float* in, int ld_in, float* state, const float
         h0 = h1;
         h1 = h2;
         h2 = x;
-        if (snaps && t + 1 < T) {
+        if (snaps && t < n_snaps) {
             float* s = snaps + (size_t) t * C * 3 + (size_t) c * 3;
             s[0] = h0;
             s[1] = h1;
@@ -82,7 +82,7 @@ constexpr int kP = 64, kN = 128, kQ = 4, kPer = kN / kQ;
 
 __global__ void __launch_bounds__(kP* kQ)
     ssm_scan_k(const float* xbc, int ld, const float* dt_raw, int ld_dt, const float* dt_bias, const float* A,
-               const float* Dv, float* state, float* y, int H, int G, int T, float dt_min, float* snaps) {
+               const float* Dv, float* state, float* y, int H, int G, int T, float dt_min, float* snaps, int n_snaps) {
     const int h = blockIdx.x, g = h / (H / G);
     const int p = threadIdx.x / kQ, q = threadIdx.x % kQ;
     const int HP = H * kP;
@@ -120,7 +120,7 @@ __global__ void __launch_bounds__(kP* kQ)
         acc += __shfl_xor_sync(0xffffffffu, acc, 2);
         if (q == 0)
             y[(size_t) t * HP + h * kP + p] = acc + d * x;
-        if (snaps && t + 1 < T) {
+        if (snaps && t < n_snaps) {
             float* o = snaps + (size_t) t * H * kP * kN + ((size_t) h * kP + p) * kN + q * kPer;
 #pragma unroll
             for (int i = 0; i < kPer; ++i)
@@ -238,8 +238,8 @@ int grid_for(int64_t n) {
 } // namespace
 
 void ssm_conv(const float* in, int ld_in, float* state, const float* w, const float* b, float* out, int C, int T,
-              float* snaps, void* st) {
-    ssm_conv_k<<<(C + 127) / 128, 128, 0, S(st)>>>(in, ld_in, state, w, b, out, C, T, snaps);
+              float* snaps, int n_snaps, void* st) {
+    ssm_conv_k<<<(C + 127) / 128, 128, 0, S(st)>>>(in, ld_in, state, w, b, out, C, T, snaps, n_snaps);
 }
 
 bool ssm_scan_supported(int P, int N) {
@@ -248,10 +248,11 @@ bool ssm_scan_supported(int P, int N) {
 
 void ssm_scan(const float* xbc, int ld, const float* dt_raw, int ld_dt, const float* dt_bias, const float* A,
               const float* D, float* state, float* y, int H, int P, int N, int G, int T, float dt_min, float* snaps,
-              void* st) {
+              int n_snaps, void* st) {
     (void) P;
     (void) N;
-    ssm_scan_k<<<H, kP * kQ, 0, S(st)>>>(xbc, ld, dt_raw, ld_dt, dt_bias, A, D, state, y, H, G, T, dt_min, snaps);
+    ssm_scan_k<<<H, kP * kQ, 0, S(st)>>>(xbc, ld, dt_raw, ld_dt, dt_bias, A, D, state, y, H, G, T, dt_min, snaps,
+                                         n_snaps);
 }
 
 void gated_group_norm(const float* y, const float* z, int ld_z, const float* w, float* out, int I, int group, float eps,
