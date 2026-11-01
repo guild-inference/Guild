@@ -254,6 +254,9 @@ public:
     /// the gate/up and down phases read (each FFN's rows once)
     double phase_ms[4] = {0, 0, 0, 0};
     double weight_bytes = 0;
+    /// the gate/up and down phases' item times summed over the threads ([1] and [3]): busy_ms / (phase_ms * the
+    /// pool's threads) is the share of the threads' time spent in items
+    double busy_ms[4] = {0, 0, 0, 0};
 
 private:
     std::vector<uint8_t> actbuf_, hbuf_, hqbuf_, pkbuf_;

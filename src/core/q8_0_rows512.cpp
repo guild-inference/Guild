@@ -7,6 +7,7 @@
 // vpsignb, which AVX-512 lacks, changes nothing: where x is 0 the product is 0 either way), and each half summed by
 // hsum_float_8.  A row pair's block is loaded, its signs and scales taken once for every token.
 #include "guild/core/q8_0_rows512.hpp"
+#include "guild/kernels/cpu/features.hpp"
 
 #include <immintrin.h>
 
@@ -14,10 +15,6 @@
 #include <cstdlib>
 #include <cstring>
 #include <utility>
-
-#if defined(__GNUC__) && !defined(_MSC_VER)
-#include <cpuid.h>
-#endif
 
 namespace guild::core::cpu_moe {
 namespace {
@@ -85,28 +82,7 @@ template <int... I> constexpr auto table(std::integer_sequence<int, I...>) {
 } // namespace
 
 bool q8_0_rows512_ok() {
-    static const bool ok = [] {
-        if (const char* f = std::getenv("GUILD_FORCE_AVX2"); f && f[0] == '1')
-            return false;
-#if defined(__GNUC__) && !defined(_MSC_VER)
-        unsigned a = 0, b = 0, c = 0, d = 0;
-        if (__get_cpuid_max(0, nullptr) < 7)
-            return false;
-        __cpuid_count(1, 0, a, b, c, d);
-        const bool osxsave = (c >> 27) & 1u, fma = (c >> 12) & 1u, f16c = (c >> 29) & 1u;
-        if (!osxsave || !fma || !f16c)
-            return false;
-        unsigned lo = 0, hi = 0;
-        __asm__ volatile("xgetbv" : "=a"(lo), "=d"(hi) : "c"(0));
-        if ((lo & 0xE6) != 0xE6) // the OS saves the AVX-512 state
-            return false;
-        __cpuid_count(7, 0, a, b, c, d);
-        return ((b >> 16) & 1u) && ((b >> 17) & 1u) && ((b >> 30) & 1u) && ((b >> 31) & 1u); // F, DQ, BW, VL
-#else
-        return false;
-#endif
-    }();
-    return ok;
+    return guild::kernels::cpu::cpu_avx512bw_ok(); // GUILD_FORCE_AVX2=1: false
 }
 
 size_t q8_0_packed_bytes(int n, int nt) {

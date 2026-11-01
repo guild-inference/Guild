@@ -12,7 +12,8 @@ namespace guild::core::cpu_moe {
 /// the most tokens one call takes
 constexpr int kQ8Rows512MaxT = 16;
 
-/// AVX-512 F, BW, DQ and VL, F16C and FMA, and the OS saves their state (GUILD_FORCE_AVX2=1: false)
+/// AVX-512 F, BW, DQ and VL, and the OS saves their state (guild-kernels-cpu's cpu_avx512bw_ok; GUILD_FORCE_AVX2=1:
+/// false)
 bool q8_0_rows512_ok();
 
 /// The bytes q8_0_pack writes for `nt` tokens of `n` values (a multiple of 64)

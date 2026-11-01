@@ -1352,9 +1352,13 @@ const std::string& Glm5Engine::placement() const {
 }
 void Glm5Engine::print_timing(const char* what) const {
     if (std::getenv("GUILD_GLM_TIMING"))
-        std::fprintf(
-            stderr, "glm5 timing (%s): activations %.0f ms, gate/up %.0f, hidden %.0f, down %.0f; launches %.0f\n",
-            what, p_->xp.phase_ms[0], p_->xp.phase_ms[1], p_->xp.phase_ms[2], p_->xp.phase_ms[3], p_->enqueue_ms);
+        std::fprintf(stderr,
+                     "glm5 timing (%s): activations %.0f ms, gate/up %.0f, hidden %.0f, down %.0f; launches %.0f; "
+                     "threads busy %.0f%% / %.0f%%; %.2f GB of expert rows\n",
+                     what, p_->xp.phase_ms[0], p_->xp.phase_ms[1], p_->xp.phase_ms[2], p_->xp.phase_ms[3],
+                     p_->enqueue_ms, 100.0 * p_->xp.busy_ms[1] / std::max(1.0, p_->xp.phase_ms[1] * p_->pool->size()),
+                     100.0 * p_->xp.busy_ms[3] / std::max(1.0, p_->xp.phase_ms[3] * p_->pool->size()),
+                     p_->xp.weight_bytes * 1e-9);
 }
 
 double Glm5Engine::last_cpu_ms() const {

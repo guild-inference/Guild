@@ -43,6 +43,17 @@ namespace kcpu = guild::kernels::cpu;
 
 namespace {
 
+/// asks for `bytes` from p (a row two rows ahead of the one-token dot products, which do not ask themselves)
+inline void ask(const uint8_t* p, size_t bytes) {
+#if defined(__x86_64__)
+    for (size_t o = 0; o < bytes; o += 64)
+        _mm_prefetch((const char*) p + o, _MM_HINT_T0);
+#else
+    (void) p;
+    (void) bytes;
+#endif
+}
+
 const ggml_type_traits_cpu* cpu_traits(int type) {
     return ggml_get_type_traits_cpu((ggml_type) type);
 }
@@ -576,7 +587,23 @@ void Experts::run(Pool& pool, int64_t N, int T, int max_t, const int32_t* ids, c
         for (size_t k = 0; k < nb; ++k)
             qcnt_[k].store(0, std::memory_order_relaxed);
     }
-    pool.run_nodes((int) items[0].size(), (int) items[1].size(), [&](int node, int i) {
+    // with the timing, each phase's item times summed over the threads too (busy_ms)
+    auto run_timed = [&](int k, int n0, int n1, const std::function<void(int, int)>& f) {
+        if (!timing) {
+            pool.run_nodes(n0, n1, f);
+            return;
+        }
+        std::atomic<int64_t> ns{0};
+        pool.run_nodes(n0, n1, [&](int node, int i) {
+            const auto a = std::chrono::steady_clock::now();
+            f(node, i);
+            ns.fetch_add(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - a).count(),
+                std::memory_order_relaxed);
+        });
+        busy_ms[k] += (double) ns.load() * 1e-6;
+    };
+    auto gu_item = [&](int node, int i) {
         const Item& it = items[node][(size_t) i];
         const int gi = it.gi;
         const Group& gr = groups[(size_t) gi];
@@ -616,6 +643,11 @@ void Experts::run(Pool& pool, int64_t N, int T, int max_t, const int32_t* ids, c
             } else {
                 for (int k = 0; k < nt; ++k)
                     for (int r = r0; r < r1; ++r) {
+                        if (k == 0 && r + 2 < r1) { // the DRAM stream, once: the rows after next
+                            if (gated)
+                                ask(wg + (size_t) (r + 2) * f.gu_row, f.gu_row);
+                            ask(wu + (size_t) (r + 2) * f.gu_row, f.gu_row);
+                        }
                         if (gated)
                             tr->vec_dot((int) N, &go[k][r], 0, wg + (size_t) r * f.gu_row, 0, act[k], 0, 1);
                         tr->vec_dot((int) N, &uo[k][r], 0, wu + (size_t) r * f.gu_row, 0, act[k], 0, 1);
@@ -653,7 +685,8 @@ void Experts::run(Pool& pool, int64_t N, int T, int max_t, const int32_t* ids, c
                                hqbuf_.data() + hq_off[(size_t) u] + (size_t) b * qb_bytes, QB);
             }
         }
-    });
+    };
+    run_timed(1, (int) items[0].size(), (int) items[1].size(), gu_item);
     lap(1);
     // the hidden activations, unless gate/up quantized them, and the down chunks q8_0_rows512 reads packed
     auto quantize = [&](int u) {
@@ -705,7 +738,7 @@ void Experts::run(Pool& pool, int64_t N, int T, int max_t, const int32_t* ids, c
         for (int u = 0; u < U; ++u)
             token_units[(size_t) unit_t[(size_t) u]].push_back(u);
     }
-    pool.run_nodes(dn[0], dn[1], [&](int node, int i) {
+    auto down_item = [&](int node, int i) {
         const int m = dmain[node];
         const int r0 = (int) d0[node] + (i < m ? i * DRB : m * DRB + (i - m) * DTR);
         const int r1 = (int) std::min<int64_t>(r0 + (i < m ? DRB : DTR), d1[node]), nr = r1 - r0;
@@ -740,9 +773,16 @@ void Experts::run(Pool& pool, int64_t N, int T, int max_t, const int32_t* ids, c
                 } else if (mt && nt >= 2) {
                     mt(f.d_type, wd, f.d_row, (int) f.n_ff, hq, nt, dout, r0, r1);
                 } else {
+                    // the DRAM stream, once: the rows after next, then the next group's first rows
+                    const CpuFfn* nf = gi + 1 < groups.size() ? &groups[gi + 1].f : nullptr;
                     for (int k = 0; k < nt; ++k)
-                        for (int r = r0; r < r1; ++r)
+                        for (int r = r0; r < r1; ++r) {
+                            if (k == 0 && r + 2 < r1)
+                                ask(wd + (size_t) (r + 2) * f.d_row, f.d_row);
+                            else if (k == 0 && nf && c + 2 == gr.d_c.size())
+                                ask(nf->down[r0 >= nf->d_split] + (size_t) (r0 + r + 2 - r1) * nf->d_row, nf->d_row);
                             tr->vec_dot((int) f.n_ff, &dout[k][r], 0, wd + (size_t) r * f.d_row, 0, hq[k], 0, 1);
+                        }
                 }
                 for (int k = 0; k < nt; ++k) {
                     const int u = gr.units[c0 + k];
@@ -767,7 +807,8 @@ void Experts::run(Pool& pool, int64_t N, int T, int max_t, const int32_t* ids, c
                         out[j] += w * d[j];
                 }
             }
-    });
+    };
+    run_timed(3, dn[0], dn[1], down_item);
     lap(3);
 }
 
