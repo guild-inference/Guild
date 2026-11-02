@@ -462,6 +462,9 @@ int fused_multi_lds_parity(const float* d_norm, const uint16_t* d_down, const ui
 // --hc q8_0: w_down / w_up as Q8_0 blocks in the read's two planes (int8 values, then f16 scales).  The read against
 // the double-precision reference on the dequantized weights (FP32 activations, no pending write), then T tokens read
 // together against T one-token reads (with the pending write), bit for bit, directly and as a replayed graph.
+// --q8-bits FILE: the T-token reads' outputs (T = 1, 2, 3, 4, 5, 8) written to FILE when it does not exist, else
+// compared with it bit for bit - a kernel change that must keep the read's bits, checked against the build before it.
+const char* g_q8_bits = nullptr;
 std::vector<uint8_t> q8_planes(const std::vector<float>& w, long long rows, long long cols, std::vector<float>& deq) {
     const long long nb = cols / 32;
     std::vector<uint8_t> out((size_t) (rows * cols + rows * nb * 2));
@@ -556,6 +559,7 @@ int fused_q8_parity(const std::vector<float>& R, const std::vector<float>& w_nor
         return v;
     };
     int bad = 0;
+    std::vector<float> bits; // --q8-bits: every T-token read's outputs, in order
     cudaStream_t stream = nullptr;
     check(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking), "q8 stream");
     { // against the reference (token 0, no pending write)
@@ -582,6 +586,7 @@ int fused_q8_parity(const std::vector<float>& R, const std::vector<float>& w_nor
         fused_gr_read_multi(args.data(), T, d_xn, stream);
         check(cudaStreamSynchronize(stream), "q8 multi");
         const auto multi = fetch(T);
+        bits.insert(bits.end(), multi.begin(), multi.end());
         // each token alone, into its own slot
         for (int t = 0; t < T; ++t) {
             FusedGrArgs a = arg(t, true, t);
@@ -606,6 +611,30 @@ int fused_q8_parity(const std::vector<float>& R, const std::vector<float>& w_nor
                     ok ? "pass" : "*** FAIL ***");
         bad += !ok;
     }
+    if (g_q8_bits != nullptr) {
+        std::vector<float> was(bits.size());
+        if (std::FILE* f = std::fopen(g_q8_bits, "rb")) {
+            const size_t got = std::fread(was.data(), 4, was.size(), f);
+            const bool longer = std::fgetc(f) != EOF;
+            std::fclose(f);
+            const bool ok = got == was.size() && !longer && std::memcmp(was.data(), bits.data(), bits.size() * 4) == 0;
+            size_t first = 0;
+            while (first < std::min(got, bits.size()) && std::memcmp(&was[first], &bits[first], 4) == 0)
+                ++first;
+            std::printf("  Q8_0 reads against %s, bit for bit %s (%zu values%s)\n", g_q8_bits,
+                        ok ? "pass" : "*** FAIL ***", bits.size(),
+                        ok ? "" : (", the first difference at " + std::to_string(first)).c_str());
+            bad += !ok;
+        } else if (std::FILE* o = std::fopen(g_q8_bits, "wb")) {
+            const bool ok = std::fwrite(bits.data(), 4, bits.size(), o) == bits.size();
+            std::fclose(o);
+            std::printf("  Q8_0 reads written to %s (%zu values)\n", g_q8_bits, bits.size());
+            bad += !ok;
+        } else {
+            std::printf("  cannot write %s\n", g_q8_bits);
+            ++bad;
+        }
+    }
     check(cudaStreamDestroy(stream), "q8 stream destroy");
     for (void* p : {(void*) d_qd, (void*) d_qu, (void*) d_r, (void*) d_r_out, (void*) d_bo, (void*) d_inj, (void*) d_lo,
                     (void*) d_rs, (void*) d_inj_out, (void*) d_mixed, (void*) d_xn})
@@ -620,8 +649,10 @@ int main(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
         if (std::string(argv[i]) == "--selftest")
             selftest = true;
+        else if (std::string(argv[i]) == "--q8-bits" && i + 1 < argc)
+            g_q8_bits = argv[++i];
         else {
-            std::fprintf(stderr, "usage: gr_parity [--selftest]\n");
+            std::fprintf(stderr, "usage: gr_parity [--selftest] [--q8-bits FILE]\n");
             return 2;
         }
     }
