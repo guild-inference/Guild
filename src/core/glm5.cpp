@@ -111,6 +111,7 @@ struct Layer {
     float lim_ffn = 0.f, lim_exp = 0.f;
     // routing
     float *router = nullptr, *exp_bias = nullptr;
+    uint16_t* router16 = nullptr; ///< the router as bf16 when all its F32 values are bf16 values (then router is null)
     // the NextN (MTP) block: [enorm(embedding) | hnorm(hidden)] -> eh_proj, and the norm before the shared head
     Mat eh_proj;
     float *enorm = nullptr, *hnorm = nullptr, *head_norm = nullptr;
@@ -147,6 +148,9 @@ struct Glm5Engine::Impl {
     int last_head_row = -1; // the row of hn that forward's head read last (last_hidden)
     double cpu_ms = 0.0;
     double enqueue_ms = 0; // GUILD_GLM_TIMING: the pipelined window's GPU launches
+    // GUILD_GLM_TIMING: the calling thread's waits - for a group's router and copies before its CPU experts (by the
+    // layer's attention, KDA or DSA: the GPU's half was the longer one), and for the launcher's enqueues
+    double router_wait_ms[2] = {0, 0}, launcher_wait_ms = 0;
     // device memory: cudaMalloc rounds each allocation up to 2 MiB, which over a thousand weights and vectors of odd
     // sizes (Q6_K rows of 210-byte blocks) wasted ~560 MiB the placement did not count; dalloc carves 256-byte
     // aligned pieces out of the chunk the placement reserves (and, past it, chunks of their own)
@@ -445,6 +449,52 @@ struct Glm5Engine::Impl {
         return p;
     }
 
+    // Whether an F32 tensor of n values holds only bf16 values (the low 16 bits of every one zero), GUILD_GLM_ROUTER16
+    // not 0; read once a tensor.
+    std::map<std::string, bool> bf16_seen;
+    bool all_bf16(const std::string& name, int64_t n) {
+        static const bool on = [] {
+            const char* e = std::getenv("GUILD_GLM_ROUTER16");
+            return !(e && e[0] == '0');
+        }();
+        if (!on)
+            return false;
+        const auto it = bf16_seen.find(name);
+        if (it != bf16_seen.end())
+            return it->second;
+        const TensorInfo* t = nullptr;
+        const uint8_t* h = data(name, &t);
+        bool ok = h && t->type == kF32 && (int64_t) t->elements() == n;
+        for (int64_t i = 0; ok && i < n; ++i) {
+            uint32_t u;
+            std::memcpy(&u, h + 4 * i, 4);
+            ok = (u & 0xffffu) == 0;
+        }
+        bf16_seen[name] = ok;
+        return ok;
+    }
+    // a MoE layer's router: its high halves when all_bf16 (half the bytes, the same numbers), else F32
+    bool router_w(Layer& y, const std::string& name, std::string& err) {
+        const int64_t n = g.n_expert * g.n_embd;
+        if (!all_bf16(name, n))
+            return (y.router = f32(name, n, err)) != nullptr;
+        const uint8_t* h = data(name, nullptr);
+        std::vector<uint16_t> hi((size_t) n);
+        for (int64_t i = 0; i < n; ++i) {
+            uint32_t u;
+            std::memcpy(&u, h + 4 * i, 4);
+            hi[(size_t) i] = (uint16_t) (u >> 16);
+        }
+        if (!(y.router16 = dalloc<uint16_t>((size_t) n, err)))
+            return false;
+        cudaMemcpy(y.router16, hi.data(), (size_t) n * 2, cudaMemcpyHostToDevice);
+        return true;
+    }
+    uint64_t router_bytes(const std::string& name) {
+        const int64_t n = g.n_expert * g.n_embd;
+        return (uint64_t) n * (all_bf16(name, n) ? 2 : 4);
+    }
+
     // ---- the GPU products (dense_mm.hpp) ----
     static constexpr int kMmvqCols = DenseProducts::kMmvqCols;
     static constexpr int kMaxWindow = 2 * kMaxT; ///< a window's tokens: two pipelined groups of up to kMaxT
@@ -489,22 +539,30 @@ struct Glm5Engine::Impl {
     void attn_kda(Layer& Y, int T, float* mid_state, float* mid_conv);
     void attn_dsa(Layer& Y, int T, int64_t pos0);
     /// the mHC pre-mix of one half layer: the fused hc_mix for a few tokens, the norm + MMQ product for a window
-    void hc_pre_half(const Mat& fn, const float* scale, const float* base, const float* norm_w, int T) {
+    // (xh: the normed rows also stored to that mapped host memory, for the CPU's FFN)
+    void hc_pre_half(const Mat& fn, const float* scale, const float* base, const float* norm_w, int T,
+                     float* xh = nullptr) {
         const int64_t N = g.n_embd;
         if (T <= kMmvqCols && fn.type == kQ8_0) {
             glm5k::hc_mix(fn.dev, R, hcpart, (int) N, T, st);
             glm5k::hc_pre_mixed(hcpart, scale, base, R, norm_w, post, comb, xn, (int) N, T, (int) g.sinkhorn_iters,
-                                g.hc_eps, g.rms_eps, st);
+                                g.hc_eps, g.rms_eps, st, xh);
             return;
         }
         glm5k::rms_norm(R, nullptr, a, (int) (4 * N), T, g.rms_eps, st);
         quant(a, 4 * N, T, xq);
         mm(fn, xq, mix, T);
         glm5k::hc_pre(mix, scale, base, R, norm_w, post, comb, xn, (int) N, T, (int) g.sinkhorn_iters, g.hc_eps,
-                      g.rms_eps, st);
+                      g.rms_eps, st, xh);
     }
+    // The router's choice, an FFN's input rows and the CPU's output rows cross through the mapped host rows (h_ids,
+    // h_w, h_x, h_y): the kernels store and read them there, instead of copies queued on the stream between kernels
+    // (GUILD_GLM_ZC=0, read each window: the copies).  x_on_host: layer_ffn_begin's pre-mix wrote h_x.
+    bool zc = true;
+    bool x_on_host = false;
     void ffn_begin(const Layer& Y, int T);
-    bool ffn_end(const Layer& Y, int T, const Rows& io, std::string& err);
+    /// y_used (when given): where the FFN's output rows are, io.y or (zero copy) the CPU's mapped io.h_y
+    bool ffn_end(const Layer& Y, int T, const Rows& io, std::string& err, const float** y_used = nullptr);
     bool ffn(const Layer& Y, int T, std::string& err) {
         ffn_begin(Y, T);
         return ffn_end(Y, T, rows(), err);
@@ -524,6 +582,8 @@ struct Glm5Engine::Impl {
         glm5k::set_q6k_rows(!(e && e[0] == '0'));
         e = std::getenv("GUILD_GLM_ONE_WAVE");
         glm5k::set_one_wave(!(e && e[0] == '0'));
+        e = std::getenv("GUILD_GLM_ZC");
+        zc = !(e && e[0] == '0');
     }
     bool embed_rows(const int32_t* tokens, int T, std::string& err);
     const char* Y_kind(int l) const;
@@ -788,7 +848,7 @@ bool Glm5Engine::Impl::load(const std::string& path, const Glm5Options& o, std::
             for (const Mat* m : {&mtp.wo, &mtp.q_a, &mtp.q_b, &mtp.kv_a, &mtp.k_b, &mtp.v_b, &mtp.idx_k, &mtp.idx_gate,
                                  &mtp.idx_qb, &mtp.eh_proj})
                 state_bytes += m->bytes;
-            state_bytes += (uint64_t) g.n_expert * N * 4 + 64 * 1024;
+            state_bytes += router_bytes(bp + std::to_string(g.n_layer) + ".ffn_gate_inp.weight") + 64 * 1024;
         }
         // a group of kMaxT tokens' scratch (~1.1 MB a token) and a window of kMaxWindow tokens' rows (~64 KB a token)
         const uint64_t scratch_bytes = (176ull << 20) + (uint64_t) (kMaxWindow - kMaxT) * 4 * N * 4 * 2;
@@ -799,7 +859,8 @@ bool Glm5Engine::Impl::load(const std::string& path, const Glm5Options& o, std::
                  {&y.hc_attn_fn, &y.hc_ffn_fn, &y.wo, &y.wq, &y.wk, &y.wv, &y.f_a, &y.f_b, &y.g_a, &y.g_b, &y.beta,
                   &y.q_a, &y.q_b, &y.kv_a, &y.k_b, &y.v_b, &y.idx_k, &y.idx_gate, &y.idx_qb})
                 need += m->host ? m->bytes : 0;
-        need += (uint64_t) L.size() * (g.n_expert * N * 4 + 64 * 1024); // routers and the small vectors
+        for (size_t l = 0; l < L.size(); ++l) // routers and the small vectors
+            need += (L[l].moe ? router_bytes(bp + std::to_string(l) + ".ffn_gate_inp.weight") : 0) + 64 * 1024;
         return need;
     };
     size_t free_b = 0, total_b = 0;
@@ -809,10 +870,19 @@ bool Glm5Engine::Impl::load(const std::string& path, const Glm5Options& o, std::
     const int64_t first = std::min<int64_t>(want, 16384);
 
     // Glm5Dense::Auto: the attention's largest Q8_0 matrices as Q6_K when the GGUF's Q8_0 leave less context than asked
-    // for, up to 16k tokens (an 8 GB card: 6400 tokens with Q8_0, 17664 with Q6_K, and Q6_K decodes faster there)
+    // for, up to 16k tokens, beside every MoE layer's shared expert: one on the GPU runs beside its layer's CPU experts
+    // instead of after them.  An 8 GB card at 32k tokens: Q8_0 attention leaves the 43 shared experts on the CPU, Q6_K
+    // holds all of them; 22.8 / 23.0 against 23.9 / 23.6 tok/s (glm5_run --spec, 768 tokens, GTX 1070 + 2x Xeon Gold
+    // 6130).  Counting only the context, Q8_0 still fitted once the routers went bf16 (110 MiB less), and kept them
+    // all on the CPU.
     bool q6 = opt.dense == Glm5Dense::Q6_K;
     if (opt.dense == Glm5Dense::Auto) {
-        const uint64_t need = fixed_need(), budget = free_b > opt.vram_reserve ? free_b - opt.vram_reserve : 0;
+        uint64_t ffn = 0; // the shared experts' bytes (and the NextN block's)
+        for (const Layer& y : L)
+            ffn += y.moe ? y.gate.bytes + y.up.bytes + y.down.bytes : 0;
+        if (has_mtp)
+            ffn += mtp.gate.bytes + mtp.up.bytes + mtp.down.bytes;
+        const uint64_t need = fixed_need() + ffn, budget = free_b > opt.vram_reserve ? free_b - opt.vram_reserve : 0;
         q6 = budget < need || (int64_t) ((budget - need) / per_token) < first;
     }
     if (q6) {
@@ -1030,7 +1100,7 @@ bool Glm5Engine::Impl::load(const std::string& path, const Glm5Options& o, std::
                 return false;
         }
         if (y.moe) {
-            if (!(y.router = f32(p + "ffn_gate_inp.weight", g.n_expert * N, err)) ||
+            if (!router_w(y, p + "ffn_gate_inp.weight", err) ||
                 !(y.exp_bias = f32(p + "exp_probs_b.bias", g.n_expert, err)))
                 return false;
         }
@@ -1071,7 +1141,7 @@ bool Glm5Engine::Impl::load(const std::string& path, const Glm5Options& o, std::
             !(y.idx_ln_w = f32(p + "indexer.k_norm.weight", g.idx_dim, err)) ||
             !(y.idx_ln_b = f32(p + "indexer.k_norm.bias", g.idx_dim, err)) ||
             !(y.idx_ape = f32(p + "indexer_compressor_ape.weight", g.idx_dim * glm5k::kKpool, err)) ||
-            !(y.router = f32(p + "ffn_gate_inp.weight", g.n_expert * N, err)) ||
+            !router_w(y, p + "ffn_gate_inp.weight", err) ||
             !(y.exp_bias = f32(p + "exp_probs_b.bias", g.n_expert, err)) ||
             !(y.enorm = f32(p + "nextn.enorm.weight", N, err)) || !(y.hnorm = f32(p + "nextn.hnorm.weight", N, err)) ||
             !(y.head_norm = find(p + "nextn.shared_head_norm.weight") ? f32(p + "nextn.shared_head_norm.weight", N, err)
@@ -1481,14 +1551,20 @@ void Glm5Engine::Impl::ffn_begin(const Layer& Y, int T) {
     const int64_t N = g.n_embd;
     const bool cpu = Y.moe || !Y.ffn_gpu, gpu_ffn = Y.ffn_gpu && !(twin && Y.ffn_twin);
     if (Y.moe) {
-        glm5k::f32_matvec(Y.router, xn, rlog, (int) N, (int) g.n_expert, T, st);
-        glm5k::route(rlog, Y.exp_bias, (int) g.n_expert, (int) g.n_used, g.expert_norm, g.expert_scale, rids, rw, T,
-                     st);
-        cudaMemcpyAsync(h_ids, rids, (size_t) T * g.n_used * 4, cudaMemcpyDeviceToHost, st);
-        cudaMemcpyAsync(h_w, rw, (size_t) T * g.n_used * 4, cudaMemcpyDeviceToHost, st);
+        if (Y.router16)
+            glm5k::bf16_matvec(Y.router16, xn, rlog, (int) N, (int) g.n_expert, T, st);
+        else
+            glm5k::f32_matvec(Y.router, xn, rlog, (int) N, (int) g.n_expert, T, st);
+        glm5k::route(rlog, Y.exp_bias, (int) g.n_expert, (int) g.n_used, g.expert_norm, g.expert_scale, rids, rw, T, st,
+                     zc ? h_ids : nullptr, zc ? h_w : nullptr);
+        if (!zc) {
+            cudaMemcpyAsync(h_ids, rids, (size_t) T * g.n_used * 4, cudaMemcpyDeviceToHost, st);
+            cudaMemcpyAsync(h_w, rw, (size_t) T * g.n_used * 4, cudaMemcpyDeviceToHost, st);
+        }
     }
     if (cpu) {
-        cudaMemcpyAsync(h_x, xn, (size_t) T * N * 4, cudaMemcpyDeviceToHost, st);
+        if (!x_on_host)
+            cudaMemcpyAsync(h_x, xn, (size_t) T * N * 4, cudaMemcpyDeviceToHost, st);
         cudaEventRecord(ev, st);
     }
     if (gpu_ffn) { // the shared expert or the dense FFN, while the CPU computes the routed experts
@@ -1508,10 +1584,13 @@ void Glm5Engine::Impl::ffn_begin(const Layer& Y, int T) {
     }
 }
 
-bool Glm5Engine::Impl::ffn_end(const Layer& Y, int T, const Rows& io, std::string& err) {
+bool Glm5Engine::Impl::ffn_end(const Layer& Y, int T, const Rows& io, std::string& err, const float** y_used) {
     const int64_t N = g.n_embd;
     if (Y.moe || !Y.ffn_gpu) {
-        if (cudaEventSynchronize(io.ev) != cudaSuccess) {
+        const auto tw = std::chrono::steady_clock::now();
+        const cudaError_t ws = cudaEventSynchronize(io.ev);
+        router_wait_ms[Y.kda ? 0 : 1] += ms_since(tw);
+        if (ws != cudaSuccess) {
             err = "glm5: CUDA error before the CPU experts: " + std::string(cudaGetErrorString(cudaGetLastError()));
             return false;
         }
@@ -1519,8 +1598,14 @@ bool Glm5Engine::Impl::ffn_end(const Layer& Y, int T, const Rows& io, std::strin
         cpu_ffn(Y, T, io);
         cpu_ms += ms_since(t0);
         if (Y.ffn_gpu && !(io.twin && Y.ffn_twin)) {
-            cudaMemcpyAsync(io.ycpu, io.h_y, (size_t) T * N * 4, cudaMemcpyHostToDevice, st);
-            glm5k::add(io.y, io.ycpu, T * N, st);
+            if (zc) { // the add reads the CPU's rows in mapped host memory
+                glm5k::add(io.y, io.h_y, T * N, st);
+            } else {
+                cudaMemcpyAsync(io.ycpu, io.h_y, (size_t) T * N * 4, cudaMemcpyHostToDevice, st);
+                glm5k::add(io.y, io.ycpu, T * N, st);
+            }
+        } else if (zc && y_used) {
+            *y_used = io.h_y; // the caller's next kernel reads them there
         } else {
             cudaMemcpyAsync(io.y, io.h_y, (size_t) T * N * 4, cudaMemcpyHostToDevice, st);
         }
@@ -1530,14 +1615,17 @@ bool Glm5Engine::Impl::ffn_end(const Layer& Y, int T, const Rows& io, std::strin
 
 void Glm5Engine::Impl::layer_ffn_begin(int l, int T) {
     Layer& Y = L[(size_t) l];
-    hc_pre_half(Y.hc_ffn_fn, Y.hc_ffn_scale, Y.hc_ffn_base, Y.ffn_norm, T);
+    x_on_host = zc && (Y.moe || !Y.ffn_gpu); // the CPU reads the pre-mix's rows: it stores them to h_x too
+    hc_pre_half(Y.hc_ffn_fn, Y.hc_ffn_scale, Y.hc_ffn_base, Y.ffn_norm, T, x_on_host ? h_x : nullptr);
     ffn_begin(Y, T);
+    x_on_host = false;
 }
 
 bool Glm5Engine::Impl::layer_ffn_end(int l, int T, const Rows& io, std::string& err) {
-    if (!ffn_end(L[(size_t) l], T, io, err))
+    const float* y_rows = io.y;
+    if (!ffn_end(L[(size_t) l], T, io, err, &y_rows))
         return false;
-    glm5k::hc_post(io.y, io.R, io.post, io.comb, (int) g.n_embd, T, st);
+    glm5k::hc_post(y_rows, io.R, io.post, io.comb, (int) g.n_embd, T, st);
     return true;
 }
 
@@ -1574,10 +1662,11 @@ void Glm5Engine::print_timing(const char* what) const {
         std::fprintf(
             stderr,
             "glm5 timing (%s): activations %.0f ms, gate/up %.0f, hidden %.0f, down %.0f, both in one phase %.0f; "
-            "launches %.0f; threads busy %.0f%% / %.0f%% / %.0f%%; %.2f GB of expert rows (gate/up %.2f GB, down %.2f) "
-            "at %.1f GB/s\n",
+            "launches %.0f; waits for a group's router %.0f (KDA layers) / %.0f (DSA), for the launcher %.0f; threads "
+            "busy %.0f%% / %.0f%% / %.0f%%; %.2f GB of expert rows (gate/up %.2f GB, down %.2f) at %.1f GB/s\n",
             what, p_->xp.phase_ms[0], p_->xp.phase_ms[1], p_->xp.phase_ms[2], p_->xp.phase_ms[3], p_->xp.phase_ms[4],
-            p_->enqueue_ms, 100.0 * p_->xp.busy_ms[1] / std::max(1.0, p_->xp.phase_ms[1] * p_->pool->size()),
+            p_->enqueue_ms, p_->router_wait_ms[0], p_->router_wait_ms[1], p_->launcher_wait_ms,
+            100.0 * p_->xp.busy_ms[1] / std::max(1.0, p_->xp.phase_ms[1] * p_->pool->size()),
             100.0 * p_->xp.busy_ms[3] / std::max(1.0, p_->xp.phase_ms[3] * p_->pool->size()),
             100.0 * p_->xp.busy_ms[4] / std::max(1.0, p_->xp.phase_ms[4] * p_->pool->size()),
             p_->xp.weight_bytes * 1e-9, p_->xp.gu_bytes * 1e-9, p_->xp.down_bytes * 1e-9,
@@ -1817,10 +1906,8 @@ bool Glm5Engine::Impl::main_window(const int32_t* tokens, int T, int64_t pos0, b
         // decode computes and --spec leaves plain greedy decode.  With GUILD_GLM_SHEXP_SPLIT=0 every row of 128
         // 2-token windows equals greedy decode's logits bit for bit (5-token prompt, 256 tokens; GTX 1070 + 2x Xeon
         // Gold 6130), at 20.8 against 21.5 tok/s (verify 83.7 against 79.6 ms a step).
-        static const bool split_shexp = [] {
-            const char* e = std::getenv("GUILD_GLM_SHEXP_SPLIT");
-            return !(e && e[0] == '0');
-        }();
+        const char* sse = std::getenv("GUILD_GLM_SHEXP_SPLIT"); // read each window
+        const bool split_shexp = !(sse && sse[0] == '0');
         group_rows(TA, ev2, split_shexp);
         const Rows rB = rows();
         group_rows(0, rows0.ev);
@@ -1842,11 +1929,15 @@ bool Glm5Engine::Impl::main_window(const int32_t* tokens, int T, int64_t pos0, b
         for (int l = 0; l < (int) g.n_layer && ok; ++l) {
             launcher->post([&, l] { launch(l, false); }); // B's attention on the GPU ...
             ok = layer_ffn_end(l, TA, rA, err);           // ... while A's experts run here
+            auto tl = std::chrono::steady_clock::now();
             launcher->wait();
+            launcher_wait_ms += ms_since(tl);
             if (ok && l + 1 < (int) g.n_layer)
                 launcher->post([&, l] { launch(l + 1, true); }); // A's next attention after its FFN
             ok = ok && layer_ffn_end(l, TB, rB, err);
+            tl = std::chrono::steady_clock::now();
             launcher->wait();
+            launcher_wait_ms += ms_since(tl);
             ok = ok && launch_ok;
         }
         group_rows(0, rows0.ev);

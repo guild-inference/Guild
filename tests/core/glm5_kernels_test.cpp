@@ -382,6 +382,40 @@ static void test_f32_matvec() {
     }
 }
 
+// the router as bf16 (GLM-5.3-Flash's F32 routers hold bf16 values): bitwise f32_matvec on those values, for the
+// one- and two-token kernels and the general one
+static void test_bf16_matvec() {
+    for (const int T : {1, 2, 3, 5, 11}) {
+        const int n_in = 4096, n_out = 288;
+        auto W = rnd((size_t) n_out * n_in, 0.05f), x = rnd((size_t) T * n_in);
+        std::vector<uint16_t> W16(W.size());
+        for (size_t i = 0; i < W.size(); ++i) {
+            uint32_t u;
+            std::memcpy(&u, &W[i], 4);
+            u = (u + 0x7fffu + ((u >> 16) & 1u)) & 0xffff0000u; // a bf16 value
+            std::memcpy(&W[i], &u, 4);
+            W16[i] = (uint16_t) (u >> 16);
+        }
+        float *dW = up(W), *dx = up(x), *dy, *dy16;
+        uint16_t* dW16 = up(W16);
+        cudaMalloc(&dy, (size_t) T * n_out * 4);
+        cudaMalloc(&dy16, (size_t) T * n_out * 4);
+        k::f32_matvec(dW, dx, dy, n_in, n_out, T, nullptr);
+        k::bf16_matvec(dW16, dx, dy16, n_in, n_out, T, nullptr);
+        const auto a = down(dy, (size_t) T * n_out), b = down(dy16, (size_t) T * n_out);
+        if (std::memcmp(a.data(), b.data(), a.size() * 4) != 0) {
+            std::printf("FAIL bf16_matvec T %d differs from f32_matvec\n", T);
+            ++failures;
+        } else
+            std::printf("ok   bf16_matvec T %d: f32_matvec's bits\n", T);
+        cudaFree(dW);
+        cudaFree(dx);
+        cudaFree(dy);
+        cudaFree(dy16);
+        cudaFree(dW16);
+    }
+}
+
 static void test_heads_and_attention() {
     for (const int T : {11, 1, 2}) // two token tiles, a decode step, a verify window
         for (const int n_in : {256, 512, 64}) {
@@ -1569,6 +1603,7 @@ int main(int argc, char** argv) {
     test_route();
     test_rms_norm();
     test_f32_matvec();
+    test_bf16_matvec();
     test_staged_mmvq(14);
     test_staged_mmvq(8);
     test_mmvq_rows();

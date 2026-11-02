@@ -137,7 +137,7 @@ __global__ void __launch_bounds__(128)
 // mixes the same way.  As one block, the stream sum waited for the 20 Sinkhorn rounds on one warp.
 __global__ void hc_pre_k(const float* mixes, const float* part, int K, const float* scale, const float* base,
                          const float* R, const float* nw, float* post, float* comb, float* xn, int N, int iters,
-                         float hc_eps, float rms_eps) {
+                         float hc_eps, float rms_eps, float* xh) {
     extern __shared__ float xs[]; // N floats
     __shared__ float pre_s[kHc], c[kHc * kHc], msh[(2 + kHc) * kHc];
     const int t = blockIdx.x;
@@ -213,8 +213,12 @@ __global__ void hc_pre_k(const float* mixes, const float* part, int K, const flo
         ss += v * v;
     }
     const float inv = rsqrtf(block_sum(ss) / N + rms_eps);
-    for (int i = threadIdx.x; i < N; i += blockDim.x)
-        xn[(size_t) t * N + i] = xs[i] * inv * nw[i];
+    for (int i = threadIdx.x; i < N; i += blockDim.x) {
+        const float v = xs[i] * inv * nw[i];
+        xn[(size_t) t * N + i] = v;
+        if (xh) // the same row in mapped host memory, for the CPU's FFN (no copy queued behind this kernel)
+            xh[(size_t) t * N + i] = v;
+    }
 }
 
 __global__ void hc_post_k(const float* y, float* R, const float* post, const float* comb, int N) {
@@ -917,6 +921,41 @@ __global__ void __launch_bounds__(128)
             red[threadIdx.x][0] + red[threadIdx.x][1] + red[threadIdx.x][2] + red[threadIdx.x][3];
 }
 
+// f32_matvec_k on bf16-valued weights held as their high halves (bf16_matvec): the same sums in the same order
+__global__ void __launch_bounds__(128)
+    bf16_matvec_k(const uint16_t* W, const float* x, float* y, int n_in, int n_out, int T) {
+    const int r = blockIdx.x, t0 = blockIdx.y * kTile;
+    T = min(kTile, T - t0);
+    const uint2* wr = reinterpret_cast<const uint2*>(W + (size_t) r * n_in);
+    float acc[kTile];
+#pragma unroll
+    for (int t = 0; t < kTile; ++t)
+        acc[t] = 0.f;
+    for (int k = threadIdx.x; k < n_in / 4; k += blockDim.x) {
+        const uint2 u = wr[k];
+        const float4 w = make_float4(__uint_as_float(u.x << 16), __uint_as_float(u.x & 0xffff0000u),
+                                     __uint_as_float(u.y << 16), __uint_as_float(u.y & 0xffff0000u));
+#pragma unroll
+        for (int t = 0; t < kTile; ++t)
+            if (t < T) {
+                const float4 xv = reinterpret_cast<const float4*>(x + (size_t) (t0 + t) * n_in)[k];
+                acc[t] += w.x * xv.x + w.y * xv.y + w.z * xv.z + w.w * xv.w;
+            }
+    }
+    __shared__ float red[kTile][4];
+    const int lane = threadIdx.x & 31, wp = threadIdx.x >> 5;
+#pragma unroll
+    for (int t = 0; t < kTile; ++t) {
+        const float v = warp_sum(acc[t]);
+        if (lane == 0)
+            red[t][wp] = v;
+    }
+    __syncthreads();
+    if (threadIdx.x < T)
+        y[(size_t) (t0 + threadIdx.x) * n_out + r] =
+            red[threadIdx.x][0] + red[threadIdx.x][1] + red[threadIdx.x][2] + red[threadIdx.x][3];
+}
+
 // one or two tokens (the routers, 4096 -> 288): a warp per row, four rows a block, eight float4 loads in flight a lane.
 // A block per row read the routers at 130 GB/s on a GTX 1070 (288 blocks: a wave and a fifth).
 template <int T>
@@ -935,6 +974,41 @@ __global__ void __launch_bounds__(128)
 #pragma unroll 8
     for (int k = lane; k < n4; k += 32) {
         const float4 w = __ldg(wr + k);
+#pragma unroll
+        for (int t = 0; t < T; ++t) {
+            const float4 xv = __ldg(reinterpret_cast<const float4*>(x + (size_t) t * n_in) + k);
+            acc[t] += w.x * xv.x + w.y * xv.y + w.z * xv.z + w.w * xv.w;
+        }
+    }
+#pragma unroll
+    for (int t = 0; t < T; ++t) {
+        const float v = warp_sum(acc[t]);
+        if (lane == 0)
+            y[(size_t) t * n_out + r] = v;
+    }
+}
+
+// f32_rows_k on a router whose F32 values are all bf16 values (GLM-5.3-Flash's are), held as their high halves: half
+// the bytes.  A lane reads float4 k's four values as a uint2 and widens them exactly, so every product and sum is
+// f32_rows_k's, in its order.
+template <int T>
+__global__ void __launch_bounds__(128) bf16_rows_k(const uint16_t* __restrict__ W, const float* __restrict__ x,
+                                                   float* __restrict__ y, int n_in, int n_out) {
+    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
+    const int r = blockIdx.x * 4 + warp;
+    if (r >= n_out)
+        return;
+    const uint2* wr = reinterpret_cast<const uint2*>(W + (size_t) r * n_in);
+    const int n4 = n_in / 4;
+    float acc[T];
+#pragma unroll
+    for (int t = 0; t < T; ++t)
+        acc[t] = 0.f;
+#pragma unroll 8
+    for (int k = lane; k < n4; k += 32) {
+        const uint2 u = __ldg(wr + k);
+        const float4 w = make_float4(__uint_as_float(u.x << 16), __uint_as_float(u.x & 0xffff0000u),
+                                     __uint_as_float(u.y << 16), __uint_as_float(u.y & 0xffff0000u));
 #pragma unroll
         for (int t = 0; t < T; ++t) {
             const float4 xv = __ldg(reinterpret_cast<const float4*>(x + (size_t) t * n_in) + k);
@@ -1559,8 +1633,8 @@ __global__ void __launch_bounds__(1024) idx_select_radix_k(const float* scores, 
 // scores, ties to the lower index; the owner lane drops its pick.  (Shared memory and a sync a round took 11 us.)
 constexpr int kRouteMax = kMaxExperts / 32;
 
-__global__ void __launch_bounds__(32)
-    route_k(const float* logits, const float* bias, int E, int k, bool norm, float scale, int32_t* ids, float* w) {
+__global__ void __launch_bounds__(32) route_k(const float* logits, const float* bias, int E, int k, bool norm,
+                                              float scale, int32_t* ids, float* w, int32_t* ids_h, float* w_h) {
     const int t = blockIdx.x, lane = threadIdx.x;
     float sg[kRouteMax], sel[kRouteMax];
 #pragma unroll
@@ -1604,8 +1678,13 @@ __global__ void __launch_bounds__(32)
         }
     }
     if (lane < k) {
+        const float wv = (norm ? mine / sum : mine) * scale;
         ids[t * k + lane] = mine_id;
-        w[t * k + lane] = (norm ? mine / sum : mine) * scale;
+        w[t * k + lane] = wv;
+        if (ids_h) { // mapped host memory, for the CPU's experts
+            ids_h[t * k + lane] = mine_id;
+            w_h[t * k + lane] = wv;
+        }
     }
 }
 
@@ -1669,9 +1748,9 @@ void rms_norm(const float* x, const float* w, float* y, int n, int rows, float e
 }
 
 void hc_pre(const float* mixes, const float* scale, const float* base, const float* R, const float* norm_w, float* post,
-            float* comb, float* xn, int N, int T, int iters, float hc_eps, float rms_eps, void* st) {
+            float* comb, float* xn, int N, int T, int iters, float hc_eps, float rms_eps, void* st, float* xn_host) {
     hc_pre_k<<<dim3(T, one_wave() ? 2 : 1), 1024, (size_t) N * sizeof(float), S(st)>>>(
-        mixes, nullptr, 0, scale, base, R, norm_w, post, comb, xn, N, iters, hc_eps, rms_eps);
+        mixes, nullptr, 0, scale, base, R, norm_w, post, comb, xn, N, iters, hc_eps, rms_eps, xn_host);
 }
 
 void hc_mix(const void* hc_fn, const float* R, float* part, int N, int T, void* st) {
@@ -1684,9 +1763,10 @@ size_t hc_mix_floats(int T) {
 }
 
 void hc_pre_mixed(const float* part, const float* scale, const float* base, const float* R, const float* norm_w,
-                  float* post, float* comb, float* xn, int N, int T, int iters, float hc_eps, float rms_eps, void* st) {
+                  float* post, float* comb, float* xn, int N, int T, int iters, float hc_eps, float rms_eps, void* st,
+                  float* xn_host) {
     hc_pre_k<<<dim3(T, one_wave() ? 2 : 1), 1024, (size_t) N * sizeof(float), S(st)>>>(
-        nullptr, part, kHc * N, scale, base, R, norm_w, post, comb, xn, N, iters, hc_eps, rms_eps);
+        nullptr, part, kHc * N, scale, base, R, norm_w, post, comb, xn, N, iters, hc_eps, rms_eps, xn_host);
 }
 
 void hc_post(const float* y, float* R, const float* post, const float* comb, int N, int T, void* st) {
@@ -1873,6 +1953,16 @@ void q8_0_narrow(const void* W, const void* xq8_1, float* y, int n_in, int n_out
     else
         nb == 2 ? GLM5_NARROW(2, 2) : nb == 4 ? GLM5_NARROW(2, 4) : GLM5_NARROW(2, 8);
 #undef GLM5_NARROW
+}
+
+void bf16_matvec(const uint16_t* W, const float* x, float* y, int n_in, int n_out, int T, void* st) {
+    const unsigned blocks = (unsigned) ((n_out + 3) / 4);
+    if (T == 1 && n_in % 4 == 0)
+        bf16_rows_k<1><<<blocks, 128, 0, S(st)>>>(W, x, y, n_in, n_out);
+    else if (T == 2 && n_in % 4 == 0)
+        bf16_rows_k<2><<<blocks, 128, 0, S(st)>>>(W, x, y, n_in, n_out);
+    else
+        bf16_matvec_k<<<dim3(n_out, (T + kTile - 1) / kTile), 128, 0, S(st)>>>(W, x, y, n_in, n_out, T);
 }
 
 void f32_matvec(const float* W, const float* x, float* y, int n_in, int n_out, int T, void* st) {
@@ -2116,8 +2206,8 @@ void idx_select(const float* scores, int stride, int64_t pos0, int T, int k_pool
 }
 
 void route(const float* logits, const float* bias, int E, int k, bool norm, float scale, int32_t* ids, float* w, int T,
-           void* st) {
-    route_k<<<T, 32, 0, S(st)>>>(logits, bias, E, k, norm, scale, ids, w);
+           void* st, int32_t* ids_host, float* w_host) {
+    route_k<<<T, 32, 0, S(st)>>>(logits, bias, E, k, norm, scale, ids, w, ids_host, w_host);
 }
 
 void swiglu_clamp(const float* gate, const float* up, float* y, int n, int T, float lim, void* st) {

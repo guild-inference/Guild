@@ -21,13 +21,16 @@ void rms_norm(const float* x, const float* w, float* y, int n, int rows, float e
 /// The mHC mix before a sublayer.  mixes [T][24] = hc_fn . rms_norm(flat R); from them pre/post/comb (comb by
 /// Sinkhorn, `iters` iterations), xn[t] = rms_norm(sum_h pre[h] R[t][h]) * norm_w.  post [T][4], comb [T][16].
 void hc_pre(const float* mixes, const float* scale, const float* base, const float* R, const float* norm_w, float* post,
-            float* comb, float* xn, int N, int T, int iters, float hc_eps, float rms_eps, void* st);
+            float* comb, float* xn, int N, int T, int iters, float hc_eps, float rms_eps, void* st,
+            float* xn_host = nullptr);
 /// The pre-mix without the separate norm and product: hc_mix from hc_fn (Q8_0, 24 x 4N, the GGUF's blocks) and the
 /// streams writes hc_mix_floats(T) partial sums, which hc_pre_mixed turns into the mixes (the RMS norm of R as a scale)
 void hc_mix(const void* hc_fn, const float* R, float* part, int N, int T, void* st);
 size_t hc_mix_floats(int T);
+/// (xn_host, when given: the same xn rows also stored to that mapped host memory)
 void hc_pre_mixed(const float* part, const float* scale, const float* base, const float* R, const float* norm_w,
-                  float* post, float* comb, float* xn, int N, int T, int iters, float hc_eps, float rms_eps, void* st);
+                  float* post, float* comb, float* xn, int N, int T, int iters, float hc_eps, float rms_eps, void* st,
+                  float* xn_host = nullptr);
 /// R[t][dst] = y[t] * post[t][dst] + sum_src R[t][src] * comb[t][dst + 4 * src], in place
 void hc_post(const float* y, float* R, const float* post, const float* comb, int N, int T, void* st);
 /// out[t] = rms_norm(mean_h R[t][h]) * w
@@ -84,6 +87,9 @@ bool q8_0_narrow_supported(int n_in, int T);
 void q8_0_narrow(const void* W, const void* xq8_1, float* y, int n_in, int n_out, int T, void* st);
 /// y[t][r] = W[r] . x[t], W [n_out][n_in] F32
 void f32_matvec(const float* W, const float* x, float* y, int n_in, int n_out, int T, void* st);
+/// f32_matvec on a matrix whose F32 values are all bf16 values, held as their high 16 bits: the same products and sums
+/// in the same order (for every T), so the same bits, from half the bytes
+void bf16_matvec(const uint16_t* W, const float* x, float* y, int n_in, int n_out, int T, void* st);
 
 /// The latent K/V rows of a DSA layer: cache [cells][L] FP16, rows pos0 .. pos0 + T - 1
 void kv_store(const float* kv, void* cache, int64_t pos0, int L, int T, void* st);
@@ -144,9 +150,10 @@ void idx_select(const float* scores, int stride, int64_t pos0, int T, int k_pool
                 int sel_stride, bool legacy, void* st);
 int64_t attend_scratch_floats(int64_t max_cells, int H, int L, int T);
 
-/// Sigmoid routing with a selection bias (noaux_tc): ids/w [T][k], w normalised (when norm) and scaled
+/// Sigmoid routing with a selection bias (noaux_tc): ids/w [T][k], w normalised (when norm) and scaled; with ids_host
+/// and w_host (mapped host memory) both also stored there
 void route(const float* logits, const float* bias, int E, int k, bool norm, float scale, int32_t* ids, float* w, int T,
-           void* st);
+           void* st, int32_t* ids_host = nullptr, float* w_host = nullptr);
 /// y = silu(min(gate, lim)) * clamp(up, -lim, lim), [T][n] each
 void swiglu_clamp(const float* gate, const float* up, float* y, int n, int T, float lim, void* st);
 /// y += x (n floats)
