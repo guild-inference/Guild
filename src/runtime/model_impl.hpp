@@ -16,6 +16,7 @@
 #include "guild/core/drama3_codec.hpp"
 #include "guild/core/drama3_tower.hpp"
 #include "guild/core/glm5.hpp"
+#include "guild/core/dflash.hpp"
 #include "guild/core/mtp.hpp"
 #include "guild/core/native_dense.hpp"
 #include "guild/core/native_head.hpp"
@@ -174,6 +175,15 @@ struct GuildModel::Impl {
     float* ple_emb_dev = nullptr;
     void* ple_scratch = nullptr;
     std::unique_ptr<core::MtpDrafter> mtp;
+    /// GUILD_DFLASH (a prototype): a DFlash 2 block drafter in place of the MTP layer, its stream, and the prompt
+    /// path's buffer for its context features (dflash_pf_rows rows)
+    std::unique_ptr<core::DFlashDrafter> dflash;
+    cudaStream_t dflash_stream = nullptr;
+    float* dflash_pf_feat = nullptr;
+    int64_t dflash_pf_rows = 0;
+    /// the token ids of positions [0, dflash->context_end()): a request that reuses a prefix keeps the drafter's
+    /// context when these match it
+    std::vector<int32_t> dflash_seq;
     std::unique_ptr<core::Drama3Tower> tower; ///< Drama 3 (ModelPaths::drama3_dir): the codebook tower
     std::unique_ptr<core::Drama3Codec> codec; ///< ... and the codec that turns frames into audio
     /// GLM-5.3-Flash (a glm5-next GGUF) runs on its own engine (src/runtime/glm5.cpp); the rest stays empty
@@ -454,6 +464,14 @@ struct GuildModel::Impl {
             ver.reset();
         if (mtp)
             mtp.reset();
+        if (dflash_stream)
+            cudaStreamSynchronize(dflash_stream);
+        if (dflash)
+            dflash.reset();
+        if (dflash_pf_feat)
+            cudaFree(dflash_pf_feat);
+        if (dflash_stream)
+            cudaStreamDestroy(dflash_stream);
         if (pool)
             pool.reset();
         if (main_stream)

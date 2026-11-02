@@ -95,6 +95,18 @@ public:
     /// Row `t` of the last window's final hidden state - the head's input, after the output norm (n_embd floats) -
     /// to the host.  Valid after run().
     bool copy_hidden(int t, float* host) const;
+    /// A drafter's context features (core/dflash.hpp): every window row's residual streams averaged as each of
+    /// `layers` completes (its FFN write applied), [T][layers.size()][n_embd] floats on the device.  Set before the
+    /// first window (the window graphs record it); layers in 0 .. n_layers - 2 of a single-stage verifier.  An empty
+    /// list turns it off.
+    bool set_feature_layers(const std::vector<int>& layers, std::string& err);
+    /// The last window's features (device; row t at t * feature_count() * n_embd floats), or null.  Valid after run().
+    const float* features() const {
+        return feat_;
+    }
+    int feature_count() const {
+        return (int) feat_layers_.size();
+    }
     void debug_dump_layer0() const;
     int64_t vocab() const {
         return next_ ? next_->vocab() : n_vocab_;
@@ -514,6 +526,8 @@ private:
     float *sh_gate_ = nullptr, *sh_up_ = nullptr, *sh_g_ = nullptr;
     float* hist_snap_ = nullptr; // T * NG_HIST * NG_HC_DIM
     int64_t cap_ = 0, max_blocks_ = 0, attn_scratch_floats_ = 0;
+    float* feat_ = nullptr; ///< set_feature_layers: [max_t][feat_layers_.size()][n_embd]
+    std::vector<int> feat_layers_;
     float* dbg_l0_attn_norm_ = nullptr;
     float* dbg_l0_z_ = nullptr;
     float* dbg_l0_bo_ = nullptr;

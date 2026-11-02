@@ -1016,8 +1016,12 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
     const bool mode_wants_mtp =
         (parsed_mode == spec::DecodeStrategyMode::Auto || parsed_mode == spec::DecodeStrategyMode::Mtp ||
          parsed_mode == spec::DecodeStrategyMode::Adaptive);
+    // GUILD_DFLASH=<checkpoint directory> (a prototype): a DFlash 2 block drafter (core/dflash.hpp) drafts in place
+    // of the MTP layer, which is then not loaded; GUILD_DFLASH_VOCAB=<int32 token ids> limits its head to a subset
+    const char* dflash_dir = std::getenv("GUILD_DFLASH");
+    const bool use_dflash = dflash_dir != nullptr && *dflash_dir != 0 && mode_wants_mtp && plan.mtp_spec_tokens > 0;
     const bool use_mtp =
-        !paths.mtp_dir.empty() && mode_wants_mtp &&
+        !use_dflash && !paths.mtp_dir.empty() && mode_wants_mtp &&
         (plan.mtp_spec_tokens > 0 ||
          ((parsed_mode == spec::DecodeStrategyMode::Mtp || parsed_mode == spec::DecodeStrategyMode::Adaptive) &&
           plan.spec_max_draft > 0));
@@ -1137,6 +1141,31 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
     impl->ver->set_split(split_env == nullptr || std::atoi(split_env) != 0);
     sp.verifier_init_ms += ms_since(ver_t0);
 
+    // the DFlash drafter: its weights and the verifier's feature capture, before any window graph is recorded
+    if (use_dflash) {
+        const auto df_t0 = Clock::now();
+        if (!impl->native_head.loaded() || impl->native_embed.bytes() == 0) {
+            error_msg = "GUILD_DFLASH needs the native head and token embedding";
+            return nullptr;
+        }
+        impl->dflash = std::make_unique<core::DFlashDrafter>();
+        const char* vocab = std::getenv("GUILD_DFLASH_VOCAB");
+        if (!impl->dflash->load(dflash_dir, impl->native_head, impl->native_embed, vocab ? vocab : "", error_msg) ||
+            !impl->ver->set_feature_layers(impl->dflash->target_layers(), error_msg)) {
+            error_msg = "DFlash drafter: " + error_msg;
+            return nullptr;
+        }
+        if (impl->dflash->hidden() != impl->g.n_embd) {
+            error_msg = "DFlash drafter: its width differs from the model's";
+            return nullptr;
+        }
+        if (cudaStreamCreateWithFlags(&impl->dflash_stream, cudaStreamNonBlocking) != cudaSuccess) {
+            error_msg = "DFlash drafter: no stream";
+            return nullptr;
+        }
+        sp.mtp_init_ms += ms_since(df_t0);
+    }
+
     if (use_mtp) {
         const auto mtpb_t0 = Clock::now();
         if (!impl->mtp->bind(impl->wt, impl->native_head.loaded() ? &impl->native_head : nullptr,
@@ -1179,6 +1208,15 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
         // Prefill engine is optimized for Qwen4Exp; architectures with different geometry fall back to Verifier
         // ingestion
         impl->prefill.reset();
+    }
+    if (impl->dflash && impl->prefill) { // the prompt path's features for the drafter: a chunk's rows in its window
+        impl->dflash_pf_rows = std::min<int64_t>(impl->prefill->chunk(), impl->dflash->window());
+        const size_t bytes = (size_t) impl->dflash_pf_rows * impl->dflash->target_layers().size() *
+                             (size_t) impl->g.n_embd * sizeof(float);
+        if (cudaMalloc((void**) &impl->dflash_pf_feat, bytes) != cudaSuccess) {
+            error_msg = "DFlash drafter: no VRAM for the prompt's features";
+            return nullptr;
+        }
     }
 
     if (!impl->prefill && impl->g.is_dense_attention()) {

@@ -4,6 +4,7 @@
 #if defined(GUILD_ENABLE_CUDA) || defined(GUILD_ENABLE_HIP)
 
 #include "model_impl.hpp"
+#include "guild/kernels/ngram.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -125,6 +126,10 @@ void GuildSession::reset() {
     core::session_zero(m_impl->ss, m_impl->g, nullptr, m_impl->main_stream);
     if (m_impl->mtp)
         core::qsa_state_zero(m_impl->mtp->kv_state(), m_impl->g, m_impl->main_stream);
+    if (m_impl->dflash) {
+        m_impl->dflash->reset(0);
+        m_impl->dflash_seq.clear();
+    }
     m_impl->clear_prefix_cache();
     if (cudaStreamSynchronize(m_impl->main_stream) != cudaSuccess)
         m_impl->ready->store(false);
@@ -230,10 +235,14 @@ enum class Ingest {
 };
 
 // Reads prompt tokens [from, to) into the state (K/V cells, GDN and convolution state, PLE history), with the MTP
-// drafter's K/V too when `use_mtp`.  The next token, ids[to], is the one a window reads after it.
+// drafter's K/V too when `use_mtp`, and the DFlash drafter's context from position `dflash_from` on when that is not
+// negative.  The next token, ids[to], is the one a window reads after it.
 Ingest ingest_prompt(GuildModel::Impl& m, const std::vector<int64_t>& ids, int64_t from, int64_t to, bool use_mtp,
-                     int S, const std::function<bool()>& stop, std::string& error_msg) {
+                     int S, const std::function<bool()>& stop, std::string& error_msg, int64_t dflash_from = -1) {
     auto* m_impl = &m;
+    const bool use_dflash = dflash_from >= 0 && m_impl->dflash != nullptr;
+    const size_t dflash_stride =
+        use_dflash ? m_impl->dflash->target_layers().size() * (size_t) m_impl->g.n_embd : (size_t) 0;
     // A short prompt tail - an agentic turn after a reused prefix - goes through the verifier's windows: the prefill
     // engine streams every selected expert to the GPU first (~460 ms here before its first token), the verifier's CPU
     // experts start at once (~21 ms a token).  They cross near 110 tokens on the GTX 1070 PC
@@ -265,6 +274,7 @@ Ingest ingest_prompt(GuildModel::Impl& m, const std::vector<int64_t>& ids, int64
             if (m->prefill) {
                 m->prefill->on_chunk = nullptr;
                 m->prefill->should_stop = nullptr;
+                m->prefill->set_features({}, nullptr, 0, 0);
             }
             if (m->batched_prefill) {
                 m->batched_prefill->on_chunk = nullptr;
@@ -281,6 +291,31 @@ Ingest ingest_prompt(GuildModel::Impl& m, const std::vector<int64_t>& ids, int64
 
         if (use_mtp)
             m_impl->prefill->on_chunk = mtp_chunk(true);
+        if (use_dflash && m_impl->dflash_pf_feat != nullptr) {
+            // each chunk's rows from dflash_from on into the drafter's context (at most dflash_pf_rows of them: the
+            // rows from dflash_from to the prompt's end fit in its window)
+            m_impl->prefill->set_features(m_impl->dflash->target_layers(), m_impl->dflash_pf_feat,
+                                          m_impl->dflash_pf_rows, dflash_from);
+            m_impl->prefill->on_chunk = [m_impl, &ids, dflash_from, dflash_stride](const float*, int64_t T, int64_t p0,
+                                                                                   std::string& e) -> bool {
+                const int64_t t0 = std::max<int64_t>(0, dflash_from - p0);
+                if (t0 >= T)
+                    return true;
+                if (T - t0 > m_impl->dflash_pf_rows) {
+                    e = "dflash: a prompt chunk with more rows than its feature buffer";
+                    return false;
+                }
+                if (!m_impl->dflash->add_context(m_impl->dflash_pf_feat, dflash_stride, T - t0, p0 + t0,
+                                                 m_impl->dflash_stream, e))
+                    return false;
+                if (cudaStreamSynchronize(m_impl->dflash_stream) != cudaSuccess) { // the next chunk rewrites them
+                    e = "dflash: its stream failed";
+                    return false;
+                }
+                m_impl->dflash_seq.insert(m_impl->dflash_seq.end(), ids.begin() + (p0 + t0), ids.begin() + (p0 + T));
+                return true;
+            };
+        }
 
         const int64_t n_to_prefill = to - from;
         if (n_to_prefill > 0) {
@@ -321,6 +356,16 @@ Ingest ingest_prompt(GuildModel::Impl& m, const std::vector<int64_t>& ids, int64
                 }
                 if (use_mtp && !m_impl->mtp->prefill(m_impl->ver->final_R_all(), next.data(), T, pos, error_msg))
                     return Ingest::Failed;
+                if (use_dflash && pos + T > dflash_from) {
+                    const int64_t t0 = std::max<int64_t>(0, dflash_from - pos);
+                    if (!m_impl->dflash->add_context(m_impl->ver->features() + (size_t) t0 * dflash_stride,
+                                                     dflash_stride, T - t0, pos + t0, m_impl->dflash_stream,
+                                                     error_msg) ||
+                        cudaStreamSynchronize(m_impl->dflash_stream) != cudaSuccess) // the next window rewrites them
+                        return Ingest::Failed;
+                    m_impl->dflash_seq.insert(m_impl->dflash_seq.end(), ids.begin() + (pos + t0),
+                                              ids.begin() + (pos + T));
+                }
                 pos += T;
             }
         }
@@ -459,7 +504,8 @@ bool GuildSession::generate(const GenerationRequest& req, TokenStreamCallback on
     // emitted token is the verify window's, so outputs are unchanged.  Ornith-1.5-35B on the dual Xeon + GTX 1070:
     // 54.86 / 54.72 tok/s normal, 54.68 / 55.00 adaptive on the bench prose / code prompts; 54.02 against 109.24
     // tok/s on a 512-token repeating prompt.
-    if (eff_mode == spec::DecodeStrategyMode::Auto && m_impl->mtp == nullptr && m_impl->plan.mtp_spec_tokens > 0)
+    if (eff_mode == spec::DecodeStrategyMode::Auto && m_impl->mtp == nullptr && m_impl->dflash == nullptr &&
+        m_impl->plan.mtp_spec_tokens > 0)
         eff_mode = spec::DecodeStrategyMode::Adaptive;
 
     const int S = std::max(1, m_impl->config.spec);
@@ -469,7 +515,8 @@ bool GuildSession::generate(const GenerationRequest& req, TokenStreamCallback on
     } else if (m_impl->config.spec_max_draft > 0) {
         max_draft = std::min(m_impl->config.spec_max_draft, S - 1);
     } else if (eff_mode == spec::DecodeStrategyMode::Auto) {
-        max_draft = (m_impl->plan.mtp_spec_tokens > 0 && m_impl->mtp != nullptr) ? (S - 1) : 0;
+        max_draft =
+            (m_impl->plan.mtp_spec_tokens > 0 && (m_impl->mtp != nullptr || m_impl->dflash != nullptr)) ? (S - 1) : 0;
     } else if (eff_mode == spec::DecodeStrategyMode::Normal) {
         max_draft = 0;
     } else {
@@ -479,6 +526,10 @@ bool GuildSession::generate(const GenerationRequest& req, TokenStreamCallback on
     const bool use_mtp = (m_impl->mtp != nullptr) && (max_draft > 0) &&
                          (eff_mode == spec::DecodeStrategyMode::Auto || eff_mode == spec::DecodeStrategyMode::Mtp ||
                           eff_mode == spec::DecodeStrategyMode::Adaptive);
+    // the DFlash drafter (GUILD_DFLASH) drafts every window in the MTP layer's place
+    const bool use_dflash = (m_impl->dflash != nullptr) && (max_draft > 0) &&
+                            (eff_mode == spec::DecodeStrategyMode::Auto || eff_mode == spec::DecodeStrategyMode::Mtp ||
+                             eff_mode == spec::DecodeStrategyMode::Adaptive);
     const bool need_lookup = (max_draft > 0) && (eff_mode == spec::DecodeStrategyMode::Lookup ||
                                                  eff_mode == spec::DecodeStrategyMode::Adaptive);
     const bool need_retrieval = (max_draft > 0) && (eff_mode == spec::DecodeStrategyMode::Retrieval ||
@@ -516,10 +567,31 @@ bool GuildSession::generate(const GenerationRequest& req, TokenStreamCallback on
 
     if (use_mtp)
         m_impl->mtp->set_prompt_len(n_prompt);
+    // The DFlash drafter's context: the prompt positions within its window of the first draft.  A prefix reused from
+    // the cache has no features, so the drafter keeps its own context of it when it read the same tokens (the turns
+    // of a conversation), and otherwise starts after it.
+    int64_t dflash_from = -1;
+    if (use_dflash) {
+        const int64_t fresh = std::max<int64_t>(reused_pos, (n_prompt - 1) - (int64_t) m_impl->dflash->window());
+        std::vector<int32_t>& seq = m_impl->dflash_seq;
+        const int64_t lim = std::min<int64_t>((int64_t) seq.size(), reused_pos);
+        int64_t same = 0;
+        while (same < lim && seq[(size_t) same] == (int32_t) ids[(size_t) same])
+            ++same;
+        if (fresh == reused_pos && same == reused_pos && (int64_t) seq.size() == m_impl->dflash->context_end() &&
+            m_impl->dflash->rewind(reused_pos)) {
+            dflash_from = reused_pos;
+        } else {
+            dflash_from = fresh;
+            m_impl->dflash->reset(fresh);
+        }
+        seq.assign(ids.begin(), ids.begin() + dflash_from);
+    }
     // Prefill uncached prompt tokens [reused_pos, n_prompt - 1)
     switch (ingest_prompt(
         *m_impl, ids, reused_pos, n_prompt - 1, use_mtp, S,
-        [this, &req] { return impl_->cancelled.load() || (req.cancel_flag && req.cancel_flag->load()); }, error_msg)) {
+        [this, &req] { return impl_->cancelled.load() || (req.cancel_flag && req.cancel_flag->load()); }, error_msg,
+        dflash_from)) {
     case Ingest::Done: break;
     case Ingest::Cancelled:
         m_impl->clear_prefix_cache();
@@ -608,6 +680,14 @@ bool GuildSession::generate(const GenerationRequest& req, TokenStreamCallback on
     std::vector<int32_t> retrieval_drafts(static_cast<size_t>(S), 0);
     std::vector<int32_t> outv(static_cast<size_t>(S), 0);
     std::vector<float> dprob(static_cast<size_t>(S), 1.0f);
+    // DFlash: a block's drafts and probabilities, the cumulative probability a draft must keep to be verified
+    // (GUILD_DFLASH_CUM, default 0.1), and the drafter's time
+    const int dflash_block = use_dflash ? m_impl->dflash->block() : 0;
+    std::vector<int32_t> dflash_drafts(static_cast<size_t>(std::max(1, dflash_block)), 0);
+    std::vector<float> dflash_prob(dflash_drafts.size(), 0.0f);
+    const float dflash_cum =
+        std::getenv("GUILD_DFLASH_CUM") ? (float) std::atof(std::getenv("GUILD_DFLASH_CUM")) : 0.1f;
+    double dflash_ms = 0.0;
 
     bool first_window = true;
     int produced_n = 0;
@@ -831,7 +911,66 @@ bool GuildSession::generate(const GenerationRequest& req, TokenStreamCallback on
                 if (!m_impl->mtp->prefill(m_impl->ver->final_R_all(), outv.data(), a + 1, p, error_msg))
                     return runtime_failure();
             }
+            if (use_dflash) { // the committed rows, so a next request that reuses them keeps the drafter's context
+                const size_t fstride = m_impl->dflash->target_layers().size() * (size_t) m_impl->g.n_embd;
+                if (!m_impl->dflash->add_context(m_impl->ver->features(), fstride, a + 1, p, m_impl->dflash_stream,
+                                                 error_msg) ||
+                    cudaStreamSynchronize(m_impl->dflash_stream) != cudaSuccess)
+                    return runtime_failure();
+                m_impl->dflash_seq.insert(m_impl->dflash_seq.end(), window.begin(), window.begin() + (a + 1));
+            }
             break;
+        }
+
+        if (use_dflash) {
+            // the window's committed rows into the drafter's context, then its block after the next window's first
+            // token: the next window verifies the drafts whose cumulative probability stays >= dflash_cum
+            const int32_t next = outv[static_cast<size_t>(a)];
+            const double d_before = m_impl->dflash->ms_draft + m_impl->dflash->ms_context;
+            core::SessionState& pss = m_impl->ss;
+            const bool do_ple = pss.ple.ready() && pss.ple.table != nullptr;
+            int32_t ple_prev[2] = {do_ple ? pss.ple_prev[0] : 0, do_ple ? pss.ple_prev[1] : 0};
+            auto prefetch_ple = [&](int32_t tok) { // the PLE rows the next window reads, as the MTP drafter does
+                if (!do_ple || tok < 0)
+                    return;
+                uint32_t rows16[kernels::PLE_N_HEADS];
+                kernels::ngram_rows(&tok, ple_prev, 1, pss.ple.consts, rows16);
+                ple_prev[0] = ple_prev[1];
+                ple_prev[1] = tok;
+                pss.ple.table->prefetch_rows(rows16);
+            };
+            prefetch_ple(next);
+            const size_t fstride = m_impl->dflash->target_layers().size() * (size_t) m_impl->g.n_embd;
+            if (!m_impl->dflash->add_context(m_impl->ver->features(), fstride, a + 1, p, m_impl->dflash_stream,
+                                             error_msg) ||
+                !m_impl->dflash->draft(next, p + a + 1, dflash_block, dflash_drafts.data(), dflash_prob.data(),
+                                       m_impl->dflash_stream, error_msg))
+                return runtime_failure();
+            m_impl->dflash_seq.insert(m_impl->dflash_seq.end(), window.begin(), window.begin() + (a + 1));
+            int k = 0;
+            float cum = 1.0f;
+            while (k < std::min(max_draft, dflash_block - 1)) {
+                cum *= dflash_prob[static_cast<size_t>(k)];
+                if (cum < dflash_cum)
+                    break;
+                drafts[static_cast<size_t>(k)] = dflash_drafts[static_cast<size_t>(k)];
+                prefetch_ple(drafts[static_cast<size_t>(k)]);
+                ++k;
+            }
+            cur_source = k > 0 ? spec::CandidateSource::Mtp : spec::CandidateSource::Normal;
+            cur_proposed_k = k;
+            cur_match_len = 0;
+            cur_lookup_ms = 0.0;
+            cur_retrieval_ms = 0.0;
+            cur_sched_ms = 0.0;
+            cur_draft_ms = m_impl->dflash->ms_draft + m_impl->dflash->ms_context - d_before;
+            dflash_ms += cur_draft_ms;
+            if (spec_trace)
+                std::fprintf(stderr, "guild spec trace [pos=%lld]: src=dflash k=%d accepted %d of %d\n",
+                             (long long) (p + a + 1), k, a, actual_proposed_k);
+            p += (a + 1);
+            x = next;
+            continue;
         }
 
         // Safe verification boundary: select strategy and prepare draft tokens for the next window
@@ -1005,7 +1144,7 @@ bool GuildSession::generate(const GenerationRequest& req, TokenStreamCallback on
     telemetry.offload_entries = m_impl->drive.d.offload_entries - offload_before;
     telemetry.request_latency_s = std::chrono::duration<double>(t_decode_end - t_req_start).count();
     telemetry.decode_windows = m_impl->ver->windows - windows_before;
-    telemetry.decode_mtp_draft_ms = use_mtp ? (m_impl->mtp->ms_draft - draft_before) : 0.0;
+    telemetry.decode_mtp_draft_ms = use_mtp ? (m_impl->mtp->ms_draft - draft_before) : dflash_ms;
     telemetry.decode_commit_ms = m_impl->ver->ms_commit - commit_before;
     telemetry.decode_host_wait_ms = m_impl->ver->ms_wait - wait_before;
     telemetry.decode_ple_ms = m_impl->ver->ms_host - host_before;
@@ -1061,7 +1200,7 @@ bool GuildSession::generate(const GenerationRequest& req, TokenStreamCallback on
             static_cast<long long>(windows), produced_n / denominator, telemetry.decode_ms / denominator,
             (m_impl->ver->ms_commit - commit_before) / denominator, (m_impl->drive.cpu_ms - pool_before) / denominator,
             (m_impl->drive.validation_ms - validation_before) / denominator,
-            (use_mtp ? m_impl->mtp->ms_draft - draft_before : 0) / denominator,
+            (use_mtp ? m_impl->mtp->ms_draft - draft_before : dflash_ms) / denominator,
             static_cast<long long>(m_impl->drive.d.pcie_experts - pcie_before), telemetry.drafts_accepted,
             telemetry.drafts_offered, (m_impl->ver->ms_logit_validation - logits_validation_before) / denominator,
             static_cast<unsigned long long>(m_impl->ver->logits_readback_bytes - logits_bytes_before));

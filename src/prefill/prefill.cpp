@@ -1,5 +1,6 @@
 // src/prefill/prefill.cpp - see include/guild/prefill/prefill.hpp.
 #include "guild/prefill/prefill.hpp"
+#include "guild/core/dflash.hpp"
 #include "guild/core/mtp.hpp"
 #include "guild/core/progress.hpp"
 #include "guild/core/on_device.hpp"
@@ -3744,6 +3745,14 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                 }
                 if (half == 1 && guild::kernels::cvec().covers(l)) // --control-vector-scaled
                     guild::kernels::cvec_apply(m.R, l, T, D, nullptr, 0, nullptr, 0, false, m.cs);
+                if (half == 1 && feat_out_ != nullptr) { // a drafter's features: layer l is complete in R
+                    const int64_t t0 = std::max<int64_t>(0, feat_from_ - p0), nf = (int64_t) feat_layers_.size();
+                    for (int64_t k = 0; k < nf && t0 < T; ++k)
+                        if (feat_layers_[(size_t) k] == l)
+                            core::dflashk::stream_mean(m.R + t0 * D, (int) HC, (int) N,
+                                                       (int) std::min(T - t0, feat_cap_), (size_t) D, feat_out_ + k * N,
+                                                       (size_t) (nf * N), m.cs);
+                }
             }
         }
         if (!ple_land())

@@ -1,5 +1,6 @@
 // src/core/verify.cpp - see include/guild/core/verify.hpp.
 #include "guild/core/verify.hpp"
+#include "guild/core/dflash.hpp"
 #include "guild/core/drama3_tower_kernels.hpp"
 #include "guild/core/validation.hpp"
 #include "guild/core/remote_expert_opt.hpp"
@@ -405,6 +406,8 @@ Verifier::~Verifier() {
         cudaFree(slot_off_d_);
     if (arena_)
         cudaFree(arena_);
+    if (feat_)
+        cudaFree(feat_);
     void* hosts[] = {h_tok_,  h_step_, h_pos_,   h_commit_, h_ple_,   h_out_,  h_x_,     h_ids_,
                      h_w_,    h_seq_,  h_flag_,  h_ymiss_,  h_flagA_, h_plan_, h_flagB_, h_finite_status_,
                      h_code_, h_ysum_, h_flagD_, h_ydef_};
@@ -1127,6 +1130,14 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             }
         };
         gr_read_group(0, pending, inj2_, inj_);
+        // a drafter's features: Rt holds layer l - 1 complete now (the pending FFN write applied)
+        if (feat_ != nullptr && l > 0) {
+            const size_t nf = feat_layers_.size();
+            for (size_t k = 0; k < nf; ++k)
+                if (feat_layers_[k] == l - 1)
+                    dflashk::stream_mean(Rt(tb), (int) HC, (int) N, n, (size_t) HC * N,
+                                         feat_ + ((size_t) tb * nf + k) * N, nf * N, cs);
+        }
         if (l == 0 && grp == 0 && dbg_l0_attn_norm_) {
             cudaMemcpyAsync(dbg_l0_attn_norm_, mixed_ + tb * N, (size_t) N * sizeof(float), cudaMemcpyDeviceToDevice,
                             cs);
@@ -3214,6 +3225,43 @@ bool Verifier::copy_hidden(int t, float* host) const {
         return false;
     const size_t n = (size_t) g_->n_embd;
     return cudaMemcpy(host, head_mixed_ + (size_t) t * n, n * sizeof(float), cudaMemcpyDeviceToHost) == cudaSuccess;
+}
+
+bool Verifier::set_feature_layers(const std::vector<int>& layers, std::string& err) {
+    if (g_ == nullptr) {
+        err = "verify: set_feature_layers before init";
+        return false;
+    }
+    for (const cudaGraphExec_t e : exec_)
+        if (e != nullptr) {
+            err = "verify: set_feature_layers after a window graph was recorded";
+            return false;
+        }
+    if (!layers.empty() && (next_ != nullptr || lb_ != 0 || (le_ >= 0 && le_ != g_->n_layers))) {
+        err = "verify: drafter features need a single-stage verifier";
+        return false;
+    }
+    for (const int l : layers)
+        if (l < 0 || l > g_->n_layers - 2) {
+            err = "verify: feature layer " + std::to_string(l) + " out of range";
+            return false;
+        }
+    const OnDevice on_device(device_);
+    if (feat_ != nullptr) {
+        cudaFree(feat_);
+        feat_ = nullptr;
+    }
+    feat_layers_ = layers;
+    if (layers.empty())
+        return true;
+    const size_t bytes = (size_t) max_t_ * layers.size() * (size_t) g_->n_embd * sizeof(float);
+    if (cudaMalloc((void**) &feat_, bytes) != cudaSuccess) {
+        feat_ = nullptr;
+        feat_layers_.clear();
+        err = "verify: no VRAM for the drafter features";
+        return false;
+    }
+    return true;
 }
 
 void Verifier::debug_dump_layer0() const {
