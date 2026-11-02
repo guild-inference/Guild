@@ -60,6 +60,7 @@ namespace {
 
 constexpr float EPS = 1e-6f;
 bool g_commit_async = false;
+int g_defer_experts = -1; // Verifier::set_defer_experts (-1: GUILD_DEFER_EXPERTS)
 using Clock = std::chrono::steady_clock;
 double ms_since(Clock::time_point t) {
     return std::chrono::duration<double, std::milli>(Clock::now() - t).count();
@@ -241,7 +242,7 @@ bool Verifier::release_gpu_waits(int timeout_ms) {
     // the words the spin kernels read (wait_flag_ge, wait_flag_ge_or) are mapped host memory, so a store here
     // reaches them with no API call; UINT32_MAX is past every ring.  (E-6's skip words are device memory, but
     // wait_flag_ge_or also returns on its flag.)  A host function raising flag B later only raises.
-    for (uint32_t* p : {h_flag_, h_flagA_, h_flagB_})
+    for (uint32_t* p : {h_flag_, h_flagA_, h_flagB_, h_flagD_})
         if (p != nullptr)
             *(volatile uint32_t*) p = UINT32_MAX;
     std::atomic_thread_fence(std::memory_order_seq_cst);
@@ -404,8 +405,9 @@ Verifier::~Verifier() {
         cudaFree(slot_off_d_);
     if (arena_)
         cudaFree(arena_);
-    void* hosts[] = {h_tok_,  h_step_,  h_pos_,   h_commit_, h_ple_,   h_out_,           h_x_,    h_ids_, h_w_, h_seq_,
-                     h_flag_, h_ymiss_, h_flagA_, h_plan_,   h_flagB_, h_finite_status_, h_code_, h_ysum_};
+    void* hosts[] = {h_tok_,  h_step_, h_pos_,   h_commit_, h_ple_,   h_out_,  h_x_,     h_ids_,
+                     h_w_,    h_seq_,  h_flag_,  h_ymiss_,  h_flagA_, h_plan_, h_flagB_, h_finite_status_,
+                     h_code_, h_ysum_, h_flagD_, h_ydef_};
     for (void* h : hosts)
         if (h)
             cudaFreeHost(h);
@@ -432,6 +434,18 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
     hits_ = hits;
     head_ = head;
     max_t_ = max_t;
+    if (const char* e = g_defer_experts >= 0 ? "" : std::getenv("GUILD_DEFER_EXPERTS"); e != nullptr) {
+        const int k = g_defer_experts >= 0 ? g_defer_experts : std::atoi(e);
+        defer_k_ = k > 0 && k < (int) ss.k ? k : 0;
+        const char* at = std::getenv("GUILD_DEFER_AT");
+        defer_out_ = at && std::string(at) == "out";
+        if (defer_k_ > 0)
+            std::fprintf(stderr,
+                         "guild verify: expert deferral (--defer-experts %d): a layer's experts past its top %d "
+                         "land %s; one group a window\n",
+                         defer_k_, defer_k_,
+                         defer_out_ ? "in the next layer's output" : "before the next layer's experts read");
+    }
     async_commit_ = g_commit_async && !env_on("GUILD_COMMIT_SYNC");
     device_logit_validation_ = !env_on("GUILD_LOGITS_VALIDATION_HOST");
     sampling_.greedy = true; // a fresh verifier samples greedily until set_sampling says otherwise
@@ -507,7 +521,8 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
         mapped(64, (void**) &h_flag_, (void**) &m_flag_) && mapped(64, (void**) &h_flagA_, (void**) &m_flagA_) &&
         mapped(64, (void**) &h_flagB_, (void**) &m_flagB_) &&
         mapped(T * K * N * 4, (void**) &h_ymiss_, (void**) &m_ymiss_) &&
-        mapped(T * N * 4, (void**) &h_ysum_, (void**) &m_ysum_);
+        mapped(T * N * 4, (void**) &h_ysum_, (void**) &m_ysum_) && mapped(64, (void**) &h_flagD_, (void**) &m_flagD_) &&
+        mapped(2 * T * N * 4, (void**) &h_ydef_, (void**) &m_ydef_);
     if (!ok) {
         err = "verify: mapped staging allocation failed";
         return false;
@@ -579,6 +594,8 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
         ids_ = b.take<int32_t>(T * K);
         shared_ = b.take<float>(T * N);
         parts_ = b.take<float>(T * K * N);
+        dsum_ = b.take<float>(T * N);
+        inj2def_ = b.take<float>(2 * T * HC);
         hit_out_ = b.take<float>(T * K * N);
         hit_slot_ = b.take<int32_t>(T * K);
         hit_dst_ = b.take<int32_t>(T * K);
@@ -803,7 +820,8 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
     const bool ple_on = ss.ple.ready() && ple_stage();
     auto Rt = [&](int t) { return R_ + (size_t) t * HC * N; };
     // a batch window is one group; with every expert in VRAM there is no CPU work for the other group to hide
-    const int G = (split_ && !all_resident_ && T >= 2 && !batch_rec_) ? 2 : 1;
+    const bool defer_on = defer_k_ > 0 && !batch_rec_ && remote_opt_ == nullptr && !all_resident_;
+    const int G = (split_ && !all_resident_ && T >= 2 && !batch_rec_ && !defer_on) ? 2 : 1;
     static const bool dec_batch = [] {
         const char* v = std::getenv("GUILD_DEC_BATCH");
         return v == nullptr || std::atoi(v) != 0;
@@ -829,8 +847,10 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
     }();
     const bool host_combine =
         host_combine_env && !need_gpu_plan && !batch_rec_ && native_moe_combine_enabled() && host_combine_supported();
-    if (!batch_rec_)
+    if (!batch_rec_) {
         host_combine_[T] = host_combine;
+        defer_[T] = defer_on && host_combine;
+    }
     static std::atomic<bool> host_combine_said{false};
     if (host_combine && !host_combine_said.exchange(true))
         std::fprintf(stderr,
@@ -1399,6 +1419,16 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             return false;
         }
         stamp(l, 16, grp);
+        if (defer_[T] && !defer_out_ && l > lb_) {
+            // the previous layer's deferred experts, written into the streams with that layer's FFN-half injection
+            // before this layer's FFN reads them (only this layer's attention runs without them)
+            wait_flag_ge(m_flagD_, (uint32_t) (l - lb_), cs);
+            copy_from_mapped(dsum_ + tb * N, m_ydef_ + (size_t) ((l - 1) & 1) * max_t_ * N + (size_t) tb * N,
+                             (int64_t) n * N, cs);
+            for (int t = tb; t < te; ++t)
+                gr_write(Rt(t), dsum_ + t * N, inj2def_ + (size_t) ((l - 1) & 1) * max_t_ * HC + (size_t) t * HC, gs,
+                         Rt(t), cs);
+        }
         gr_read_group(1, true, inj_, inj2_);
         if (l == 0 && grp == 0 && dbg_l0_R_) {
             cudaMemcpyAsync(dbg_l0_R_, Rt(0), (size_t) N * sizeof(float), cudaMemcpyDeviceToDevice, cs);
@@ -1629,6 +1659,15 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         if (remote_opt_)
             remote_opt_->combine(bo_ + tb * N, y_dummy_ + tb * N, tb, n, device_plan_ ? skip_ + grp : nullptr, ring,
                                  cs);
+        if (defer_[T] && defer_out_ && l > lb_) { // the previous layer's deferred experts, summed by the CPU meanwhile
+            wait_flag_ge(m_flagD_, (uint32_t) (l - lb_), cs);
+            copy_from_mapped(dsum_ + tb * N, m_ydef_ + (size_t) ((l - 1) & 1) * max_t_ * N + (size_t) tb * N,
+                             (int64_t) n * N, cs);
+            guild::kernels::add_inplace(bo_ + tb * N, dsum_ + tb * N, (int64_t) n * N, cs);
+        }
+        if (defer_[T] && !defer_out_ && l + 1 < le_) // this layer's FFN-half injection, for its deferred sums
+            cudaMemcpyAsync(inj2def_ + (size_t) (l & 1) * max_t_ * HC + (size_t) tb * HC, inj2_ + (size_t) tb * HC,
+                            (size_t) n * HC * sizeof(float), cudaMemcpyDeviceToDevice, cs);
         stamp(l, 24, grp);
         if (l == g.n_layers - 1) {
             if (!fuse_head_gr) {
@@ -2034,6 +2073,7 @@ void Verifier::stage_inputs(int T, const int32_t* tokens, int64_t pos0) {
     *(volatile uint32_t*) h_flag_ = 0;
     *(volatile uint32_t*) h_flagA_ = 0;
     *(volatile uint32_t*) h_flagB_ = 0;
+    *(volatile uint32_t*) h_flagD_ = 0;
     std::atomic_thread_fence(std::memory_order_seq_cst);
     last_t_ = T;
     last_pos0_ = pos0;
@@ -2212,12 +2252,32 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
             progress_at("verify window: the CPU experts of layer", l);
             if (remote_opt_)
                 remote_opt_->begin(h_w_ + (size_t) tb * ss.k, tb, n);
-            if (pool != nullptr)
-                pool(user, h_x_ + (size_t) tb * g.n_embd, h_ids_ + (size_t) tb * ss.k, n, ss.k,
+            // expert deferral: this layer's top defer_k_ experts now, the rest after its flag is raised (below)
+            const bool defer_layer = defer_[T] && pool != nullptr && l + 1 < le_;
+            const int KK = (int) ss.k, ki = defer_k_, kd = KK - defer_k_;
+            if (defer_layer) {
+                def_ids_.resize((size_t) n * KK);
+                def_w_.resize((size_t) n * KK);
+                for (int t = 0; t < n; ++t)
+                    for (int j = 0; j < KK; ++j) {
+                        const int32_t id = h_ids_[(size_t) (tb + t) * KK + j];
+                        const float w = h_w_[(size_t) (tb + t) * KK + j];
+                        const size_t at = j < ki ? (size_t) t * ki + j : (size_t) n * ki + (size_t) t * kd + (j - ki);
+                        def_ids_[at] = id;
+                        def_w_[at] = w;
+                    }
+                pool(user, h_x_ + (size_t) tb * g.n_embd, def_ids_.data(), n, ki,
                      h_ymiss_ + (size_t) tb * ss.k * g.n_embd, l);
-            if (host_combine_[T]) // the combine's weighted sums; the GPU reads n_embd floats a token
-                host_moe_combine(h_ymiss_ + (size_t) tb * ss.k * g.n_embd, h_w_ + (size_t) tb * ss.k,
-                                 h_ysum_ + (size_t) tb * g.n_embd, n, (int) ss.k, (int) g.n_embd);
+                host_moe_combine(h_ymiss_ + (size_t) tb * ss.k * g.n_embd, def_w_.data(),
+                                 h_ysum_ + (size_t) tb * g.n_embd, n, ki, (int) g.n_embd);
+            } else {
+                if (pool != nullptr)
+                    pool(user, h_x_ + (size_t) tb * g.n_embd, h_ids_ + (size_t) tb * ss.k, n, ss.k,
+                         h_ymiss_ + (size_t) tb * ss.k * g.n_embd, l);
+                if (host_combine_[T]) // the combine's weighted sums; the GPU reads n_embd floats a token
+                    host_moe_combine(h_ymiss_ + (size_t) tb * ss.k * g.n_embd, h_w_ + (size_t) tb * ss.k,
+                                     h_ysum_ + (size_t) tb * g.n_embd, n, (int) ss.k, (int) g.n_embd);
+            }
             if (remote_opt_)
                 remote_opt_->end();
             VDBG("layer %lld served\n", (long long) l);
@@ -2251,6 +2311,17 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
             }
             if (!(test_stall && k + 1 == steps))
                 *flag = want;
+            if (defer_layer) { // the deferred experts, while the GPU runs the next layer
+                pool(user, h_x_ + (size_t) tb * g.n_embd, def_ids_.data() + (size_t) n * ki, n, kd,
+                     h_ymiss_ + (size_t) tb * ss.k * g.n_embd, l);
+                host_moe_combine(h_ymiss_ + (size_t) tb * ss.k * g.n_embd, def_w_.data() + (size_t) n * ki,
+                                 h_ydef_ + (size_t) (l & 1) * max_t_ * g.n_embd + (size_t) tb * g.n_embd, n, kd,
+                                 (int) g.n_embd);
+                std::atomic_thread_fence(std::memory_order_seq_cst);
+                _mm_sfence();
+            }
+            if (defer_[T])
+                *(volatile uint32_t*) h_flagD_ = want;
             ms_wait += std::chrono::duration<double, std::milli>(b - a).count();
             ms_pool += ms_since(b);
         }
@@ -2483,6 +2554,9 @@ bool Verifier::window_logprobs(const int32_t* targets, int T, int64_t pos0, int3
     return true;
 }
 
+void Verifier::set_defer_experts(int k) {
+    g_defer_experts = k;
+}
 void Verifier::set_commit_async(bool on) {
     g_commit_async = on && std::getenv("GUILD_COMMIT_SYNC") == nullptr;
 }

@@ -28,6 +28,7 @@ struct ModelOptions {
     std::string prefill = "auto";
     int64_t prefill_rows = 0;     ///< --prefill-rows: compute the prompt chunks as chunks of this many tokens (0: off)
     std::string dense = "native"; ///< --dense: native, or q6_k (the GPU's Q8_0 matrices re-quantized at load)
+    int defer_experts = 0;        ///< --defer-experts: expert deferral's immediate experts (0: off)
     int spec = 4;
     float spec_min_p = 0.5f;
     std::string decode_strategy;

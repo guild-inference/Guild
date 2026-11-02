@@ -69,6 +69,10 @@ const char* model_options_usage() {
            "  --dense <native|q6_k>      The GPU's dense matrices as the GGUF has them (default), or its Q8_0 ones\n"
            "                             of 2048+ rows re-quantized to Q6_K at load (fewer bytes a token; changes\n"
            "                             the output slightly)\n"
+           "  --defer-experts <k>        Expert deferral: an MoE layer's experts past its router's top k reach the\n"
+           "                             residual before the next layer's experts, not before its attention, so the\n"
+           "                             CPU computes them beside the GPU and a window reads its weights once\n"
+           "                             (changes the model's computation; 0: off, the default)\n"
            "  --spec <n>                 Speculative draft length (default 4)\n"
            "  --spec-min-p <p>           Speculative min probability (default 0.5)\n"
            "  --rope-scaling <s>         none|linear|yarn: a --max-context past the model's trained context\n"
@@ -126,6 +130,14 @@ int parse_model_option(int argc, char** argv, int& i, ModelOptions& o, const cha
         o.prefill_rows = std::stoll(value, &used);
         if (used != value.size() || o.prefill_rows < 0) {
             std::fprintf(stderr, "--prefill-rows requires a token count (0: off)\n");
+            return 2;
+        }
+    } else if (a == "--defer-experts") {
+        const std::string value = next("--defer-experts");
+        size_t used = 0;
+        o.defer_experts = std::stoi(value, &used);
+        if (used != value.size() || o.defer_experts < 0) {
+            std::fprintf(stderr, "--defer-experts requires a count of experts (0: off)\n");
             return 2;
         }
     } else if (a == "--dense") {
@@ -257,6 +269,7 @@ int load_model(ModelOptions& o, const char* program, LoadedModel& out) {
     plan.mtp_optional = o.mtp_optional;
     plan.prefill_rows = o.prefill_rows;
     plan.dense_q6k = o.dense == "q6_k";
+    plan.defer_experts = o.defer_experts;
 
     // Model Paths
     ModelPaths paths;

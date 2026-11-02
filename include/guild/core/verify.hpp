@@ -220,6 +220,8 @@ public:
     /// the session from another stream or the host afterwards (a new request, a checkpoint, a snapshot, the prompt
     /// path, the end of a run) calls wait_commit() first.  GUILD_COMMIT_SYNC=1 keeps the wait.
     static void set_commit_async(bool on);
+    /// --defer-experts k: expert deferral for the verifiers initialized after (0: off; GUILD_DEFER_EXPERTS when unset)
+    static void set_defer_experts(int k);
     /// Per-instance setting for reusable runtimes; the static setting is a legacy default.
     void set_async_commit(bool on);
     bool async_commit_enabled() const {
@@ -466,7 +468,23 @@ private:
     bool host_combine_[9] = {};
     float* h_ysum_ = nullptr;
     float* m_ysum_ = nullptr; // T * n_embd
-    float* ones_ = nullptr;   // device: T weights of 1.0 (the k = 1 combine that adds the shared expert)
+    // GUILD_DEFER_EXPERTS=k (0 < k < the experts a token; read at init): expert deferral, which changes the model's
+    // computation.  A layer's first k routed experts (the router's top k by weight) are summed into its output as
+    // before; the CPU sums the rest after raising the layer's flag, while the GPU runs the next layer, and that sum is
+    // added to the next layer's output instead (the last layer defers none).  A window then runs as one group, each
+    // dense weight read once.  Needs the host combine (every routed expert on the CPU).
+    int defer_k_ = 0;
+    bool defer_[9] = {};
+    uint32_t* h_flagD_ = nullptr;
+    uint32_t* m_flagD_ = nullptr; // a layer's deferred sums are in h_ydef_ (its ring, as flag)
+    float* h_ydef_ = nullptr;
+    float* m_ydef_ = nullptr;  // 2 * max_t * n_embd: the deferred sums, by the layer's parity
+    float* dsum_ = nullptr;    // device: T * n_embd, a layer's deferred sums copied in
+    float* inj2def_ = nullptr; // device: 2 * max_t * hc, a layer's FFN-half injection kept for its deferred sums
+    bool defer_out_ = false;   // GUILD_DEFER_AT=out: the deferred sums join the next layer's FFN output instead
+    std::vector<int32_t> def_ids_;
+    std::vector<float> def_w_;
+    float* ones_ = nullptr; // device: T weights of 1.0 (the k = 1 combine that adds the shared expert)
 
     // device
     void* arena_ = nullptr;

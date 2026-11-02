@@ -1094,6 +1094,8 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
     vh.blob = static_cast<int64_t>(kernels::cpu::expert_layout().max_blob);
 
     impl->ver = std::make_unique<core::Verifier>();
+    if (plan.defer_experts > 0)
+        core::Verifier::set_defer_experts(plan.defer_experts);
     if (!impl->ver->init(impl->wt, impl->g, impl->ss, vh, impl->native_head.loaded() ? &impl->native_head : nullptr,
                          impl->config.spec, error_msg)) {
         error_msg = "Verifier::init failed: " + error_msg;
