@@ -19,6 +19,11 @@ inline cudaStream_t S(void* st) {
     return (cudaStream_t) st;
 }
 
+std::atomic<bool> g_one_wave{true};
+bool one_wave() {
+    return g_one_wave.load(std::memory_order_relaxed);
+}
+
 __device__ __forceinline__ float warp_sum(float v) {
 #pragma unroll
     for (int o = 16; o > 0; o >>= 1)
@@ -127,12 +132,19 @@ __global__ void __launch_bounds__(128)
         part[((size_t) t * (rows + 1) + r) * kMixSplit + ks] = acc;
 }
 
+// Two blocks a token (grid.y): block 0 the pre-weighted stream sum and its norm, block 1 the post weights and the
+// Sinkhorn mix (comb is read only by hc_post, after the half layer), so neither waits for the other; each computes the
+// mixes the same way.  As one block, the stream sum waited for the 20 Sinkhorn rounds on one warp.
 __global__ void hc_pre_k(const float* mixes, const float* part, int K, const float* scale, const float* base,
                          const float* R, const float* nw, float* post, float* comb, float* xn, int N, int iters,
                          float hc_eps, float rms_eps) {
     extern __shared__ float xs[]; // N floats
     __shared__ float pre_s[kHc], c[kHc * kHc], msh[(2 + kHc) * kHc];
     const int t = blockIdx.x;
+    // one block a token (gridDim.y == 1): both halves, the Sinkhorn first
+    const bool mixer = blockIdx.y == 1, both = gridDim.y == 1;
+    if (mixer && threadIdx.x >= 32)
+        return;
     // lanes 0..15 of warp 0 own comb element (dst = lane % 4, src = lane / 4): a row (fixed src) is 4 adjacent lanes
     // (shuffles 1, 2), a column (fixed dst) lanes 4 apart (shuffles 4, 8)
     if (threadIdx.x < 32) {
@@ -157,11 +169,11 @@ __global__ void hc_pre_k(const float* mixes, const float* part, int K, const flo
             m = msh;
         }
         const unsigned mask = 0xffffu;
-        if (lane < kHc) {
+        if (lane < kHc && !mixer)
             pre_s[lane] = sigmoidf_(m[lane] * scale[0] + base[lane]) + hc_eps;
+        if (lane < kHc && (mixer || both))
             post[t * kHc + lane] = 2.f * sigmoidf_(m[kHc + lane] * scale[1] + base[kHc + lane]);
-        }
-        if (lane < kHc * kHc) {
+        if (lane < kHc * kHc && (mixer || both)) {
             float v = m[2 * kHc + lane] * scale[2] + base[2 * kHc + lane];
             float mx = fmaxf(v, __shfl_xor_sync(mask, v, 1));
             mx = fmaxf(mx, __shfl_xor_sync(mask, mx, 2));
@@ -187,6 +199,8 @@ __global__ void hc_pre_k(const float* mixes, const float* part, int K, const flo
             comb[t * kHc * kHc + lane] = v;
         }
     }
+    if (mixer)
+        return;
     __syncthreads();
     const float* Rt = R + (size_t) t * kHc * N;
     float ss = 0.f;
@@ -409,54 +423,74 @@ constexpr int kTile = 8;
 // 16 values at a time, so a warp's 16-byte loads read 512 contiguous bytes; the head's activations (TT tokens) sit in
 // shared memory, where the warp's lanes all read the same value (a broadcast).  A warp per row with a lane reduction
 // per row read the GTX 1070's memory at 46 (rows of 256) and 69 GB/s (512).
-template <int TT>
+template <int TT, int G = 1>
 __global__ void __launch_bounds__(256)
     q8_0_heads_k(const int8_t* __restrict__ qs, const __half* __restrict__ d, const float* __restrict__ x,
                  float* __restrict__ y, int H, int n_in, int n_out, int T) {
     extern __shared__ __align__(16) float xs[]; // [TT][n_in]
     const int nw = blockDim.x >> 5, warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
-    const int row0 = blockIdx.x * nw * 32, h = row0 / n_out; // a block's rows lie in one head
+    const int row0 = blockIdx.x * nw * 32 * G, h = row0 / n_out; // a block's rows lie in one head
     const int t0 = blockIdx.y * TT, nt = min(TT, T - t0);
     for (int i = threadIdx.x; i < nt * n_in / 4; i += blockDim.x) {
         const int t = i / (n_in / 4), k = i % (n_in / 4);
         reinterpret_cast<float4*>(xs)[i] = reinterpret_cast<const float4*>(x + ((size_t) (t0 + t) * H + h) * n_in)[k];
     }
     __syncthreads();
-    const int g = row0 / 32 + warp, nc = n_in / 16;
-    const int4* wq = reinterpret_cast<const int4*>(qs) + (size_t) g * nc * 32 + lane;
-    const __half* wd = d + (size_t) g * (n_in / 32) * 32 + lane;
-    float acc[TT];
+    // G groups of 32 rows a warp (group j: row0 / 32 + j * nw + warp), their loads side by side
+    const int nc = n_in / 16;
+    const int4* wq[G];
+    const __half* wd[G];
 #pragma unroll
-    for (int t = 0; t < TT; ++t)
-        acc[t] = 0.f;
+    for (int j = 0; j < G; ++j) {
+        const int g = row0 / 32 + j * nw + warp;
+        wq[j] = reinterpret_cast<const int4*>(qs) + (size_t) g * nc * 32 + lane;
+        wd[j] = d + (size_t) g * (n_in / 32) * 32 + lane;
+    }
+    float acc[G][TT];
+#pragma unroll
+    for (int j = 0; j < G; ++j)
+#pragma unroll
+        for (int t = 0; t < TT; ++t)
+            acc[j][t] = 0.f;
 #pragma unroll 2
     for (int c = 0; c < nc; ++c) {
-        const int4 v = __ldg(wq + (size_t) c * 32);
-        const float sc = __half2float(wd[(size_t) (c / 2) * 32]);
-        const int8_t* b = reinterpret_cast<const int8_t*>(&v);
-        float w[16];
+        int4 v[G];
+        float sc[G];
 #pragma unroll
-        for (int i = 0; i < 16; ++i)
-            w[i] = (float) b[i];
+        for (int j = 0; j < G; ++j) {
+            v[j] = __ldg(wq[j] + (size_t) c * 32);
+            sc[j] = __half2float(wd[j][(size_t) (c / 2) * 32]);
+        }
 #pragma unroll
-        for (int t = 0; t < TT; ++t) {
-            if (t >= nt)
-                break;
-            const float4* xr = reinterpret_cast<const float4*>(xs + t * n_in + c * 16);
-            float s = 0.f;
+        for (int j = 0; j < G; ++j) {
+            const int8_t* b = reinterpret_cast<const int8_t*>(&v[j]);
+            float w[16];
 #pragma unroll
-            for (int i = 0; i < 4; ++i) {
-                const float4 xv = xr[i];
-                s += w[4 * i] * xv.x + w[4 * i + 1] * xv.y + w[4 * i + 2] * xv.z + w[4 * i + 3] * xv.w;
+            for (int i = 0; i < 16; ++i)
+                w[i] = (float) b[i];
+#pragma unroll
+            for (int t = 0; t < TT; ++t) {
+                if (t >= nt)
+                    break;
+                const float4* xr = reinterpret_cast<const float4*>(xs + t * n_in + c * 16);
+                float s = 0.f;
+#pragma unroll
+                for (int i = 0; i < 4; ++i) {
+                    const float4 xv = xr[i];
+                    s += w[4 * i] * xv.x + w[4 * i + 1] * xv.y + w[4 * i + 2] * xv.z + w[4 * i + 3] * xv.w;
+                }
+                acc[j][t] += sc[j] * s;
             }
-            acc[t] += sc * s;
         }
     }
-    const int r = g * 32 + lane - h * n_out;
 #pragma unroll
-    for (int t = 0; t < TT; ++t)
-        if (t < nt)
-            y[((size_t) (t0 + t) * H + h) * n_out + r] = acc[t];
+    for (int j = 0; j < G; ++j) {
+        const int r = (row0 / 32 + j * nw + warp) * 32 + lane - h * n_out;
+#pragma unroll
+        for (int t = 0; t < TT; ++t)
+            if (t < nt)
+                y[((size_t) (t0 + t) * H + h) * n_out + r] = acc[j][t];
+    }
 }
 
 // Q6_K rows (ggml's layout) times Q8_1 activations, one or two tokens: llama.cpp's vec_dot_q6_K_q8_1 in the order of
@@ -777,57 +811,76 @@ __global__ void __launch_bounds__(NW * 32) q8_0_mmvq_k(const uint8_t* __restrict
 }
 
 // Q8_0 rows of 64, 128 or 256 values (the KDA gates' second halves, 128 -> 8192) times Q8_1 activations: a warp stages
-// 32 blocks (1088 bytes: 32 / nb whole rows) with 16-byte loads, a lane takes one block's 32 products and the row's nb
-// lanes add up with shuffles.  native_mmvq read these rows at 48 GB/s.
-template <int T, int NB>
+// C chunks of 32 blocks (1088 bytes: 32 / nb whole rows each) with 16-byte loads, issued before the activations are
+// read, a lane takes one block's 32 products and the row's nb lanes add up with shuffles.  native_mmvq read these rows
+// at 48 GB/s.
+template <int T, int NB, int C = 1>
 __global__ void __launch_bounds__(256)
     q8_0_narrow_k(const uint8_t* __restrict__ W, const uint8_t* __restrict__ x, float* __restrict__ y, int n_out) {
-    __shared__ __align__(16) uint8_t stage[8][kQ8Chunk * kQ8Block];
+    __shared__ __align__(16) uint8_t stage[8][C][kQ8Chunk * kQ8Block];
     __shared__ __align__(16) uint8_t xs[T * NB * kQ6Q81];
+    constexpr int R = 32 / NB; // rows a chunk
+    constexpr int KV = (kQ8Chunk * kQ8Block / 16 + 31) / 32;
+    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
+    // the warp's C chunks (chunk j: rows (blockIdx.x * 8 * C + j * 8 + warp) * R ...), loaded before the activations
+    int4 v16[C][KV];
+    int rows[C];
+#pragma unroll
+    for (int j = 0; j < C; ++j) {
+        const int row0 = (blockIdx.x * 8 * C + j * 8 + warp) * R;
+        rows[j] = row0 < n_out ? min(R, n_out - row0) : 0;
+        const int bytes = rows[j] * NB * kQ8Block;
+        const uint8_t* src = W + (size_t) row0 * NB * kQ8Block;
+#pragma unroll
+        for (int k = 0; k < KV; ++k)
+            if ((lane + 32 * k) * 16 < bytes)
+                v16[j][k] = __ldg(reinterpret_cast<const int4*>(src) + lane + 32 * k);
+    }
     for (int o = threadIdx.x * 4; o < T * NB * kQ6Q81; o += 256 * 4)
         *reinterpret_cast<int*>(xs + o) = __ldg(reinterpret_cast<const int*>(x + o));
     __syncthreads();
-    constexpr int R = 32 / NB; // rows a warp
-    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
-    const int row0 = (blockIdx.x * 8 + warp) * R;
-    if (row0 >= n_out)
-        return;
-    const int rows = min(R, n_out - row0), bytes = rows * NB * kQ8Block;
-    const uint8_t* src = W + (size_t) row0 * NB * kQ8Block;
-    uint8_t* sm = stage[warp];
-    for (int o = lane * 16; o < bytes; o += 512)
-        *reinterpret_cast<int4*>(sm + o) = __ldg(reinterpret_cast<const int4*>(src + o));
-    __syncwarp();
-    const int r = lane / NB, b = lane % NB;
-    float acc[T];
 #pragma unroll
-    for (int t = 0; t < T; ++t)
-        acc[t] = 0.f;
-    if (r < rows) {
-        const uint8_t* blk = sm + lane * kQ8Block;
-        const float d0 = __half2float(*reinterpret_cast<const __half*>(blk));
-        int v[8];
+    for (int j = 0; j < C; ++j) {
+        if (rows[j] == 0)
+            break;
+        const int row0 = (blockIdx.x * 8 * C + j * 8 + warp) * R, bytes = rows[j] * NB * kQ8Block;
+        uint8_t* sm = stage[warp][j];
 #pragma unroll
-        for (int i = 0; i < 8; ++i)
-            v[i] = ld_b2(blk + 2, i);
+        for (int k = 0; k < KV; ++k)
+            if ((lane + 32 * k) * 16 < bytes)
+                reinterpret_cast<int4*>(sm)[lane + 32 * k] = v16[j][k];
+        __syncwarp();
+        const int r = lane / NB, b = lane % NB;
+        float acc[T];
 #pragma unroll
-        for (int t = 0; t < T; ++t) {
-            const Q81& q = *reinterpret_cast<const Q81*>(xs + (t * NB + b) * kQ6Q81);
-            const int* u = reinterpret_cast<const int*>(q.qs);
-            int sumi = 0;
+        for (int t = 0; t < T; ++t)
+            acc[t] = 0.f;
+        if (r < rows[j]) {
+            const uint8_t* blk = sm + lane * kQ8Block;
+            const float d0 = __half2float(*reinterpret_cast<const __half*>(blk));
+            int v[8];
 #pragma unroll
             for (int i = 0; i < 8; ++i)
-                sumi = __dp4a(v[i], u[i], sumi);
-            acc[t] = d0 * __low2float(q.ds) * (float) sumi;
+                v[i] = ld_b2(blk + 2, i);
+#pragma unroll
+            for (int t = 0; t < T; ++t) {
+                const Q81& q = *reinterpret_cast<const Q81*>(xs + (t * NB + b) * kQ6Q81);
+                const int* u = reinterpret_cast<const int*>(q.qs);
+                int sumi = 0;
+#pragma unroll
+                for (int i = 0; i < 8; ++i)
+                    sumi = __dp4a(v[i], u[i], sumi);
+                acc[t] = d0 * __low2float(q.ds) * (float) sumi;
+            }
         }
-    }
 #pragma unroll
-    for (int t = 0; t < T; ++t) {
+        for (int t = 0; t < T; ++t) {
 #pragma unroll
-        for (int o = NB / 2; o > 0; o >>= 1)
-            acc[t] += __shfl_xor_sync(0xffffffffu, acc[t], o);
-        if (b == 0 && r < rows)
-            y[(size_t) t * n_out + row0 + r] = acc[t];
+            for (int o = NB / 2; o > 0; o >>= 1)
+                acc[t] += __shfl_xor_sync(0xffffffffu, acc[t], o);
+            if (b == 0 && r < rows[j])
+                y[(size_t) t * n_out + row0 + r] = acc[t];
+        }
     }
 }
 
@@ -1617,8 +1670,8 @@ void rms_norm(const float* x, const float* w, float* y, int n, int rows, float e
 
 void hc_pre(const float* mixes, const float* scale, const float* base, const float* R, const float* norm_w, float* post,
             float* comb, float* xn, int N, int T, int iters, float hc_eps, float rms_eps, void* st) {
-    hc_pre_k<<<T, 1024, (size_t) N * sizeof(float), S(st)>>>(mixes, nullptr, 0, scale, base, R, norm_w, post, comb, xn,
-                                                             N, iters, hc_eps, rms_eps);
+    hc_pre_k<<<dim3(T, one_wave() ? 2 : 1), 1024, (size_t) N * sizeof(float), S(st)>>>(
+        mixes, nullptr, 0, scale, base, R, norm_w, post, comb, xn, N, iters, hc_eps, rms_eps);
 }
 
 void hc_mix(const void* hc_fn, const float* R, float* part, int N, int T, void* st) {
@@ -1632,8 +1685,8 @@ size_t hc_mix_floats(int T) {
 
 void hc_pre_mixed(const float* part, const float* scale, const float* base, const float* R, const float* norm_w,
                   float* post, float* comb, float* xn, int N, int T, int iters, float hc_eps, float rms_eps, void* st) {
-    hc_pre_k<<<T, 1024, (size_t) N * sizeof(float), S(st)>>>(nullptr, part, kHc * N, scale, base, R, norm_w, post, comb,
-                                                             xn, N, iters, hc_eps, rms_eps);
+    hc_pre_k<<<dim3(T, one_wave() ? 2 : 1), 1024, (size_t) N * sizeof(float), S(st)>>>(
+        nullptr, part, kHc * N, scale, base, R, norm_w, post, comb, xn, N, iters, hc_eps, rms_eps);
 }
 
 void hc_post(const float* y, float* R, const float* post, const float* comb, int N, int T, void* st) {
@@ -1674,9 +1727,17 @@ void q8_0_heads(const void* W, const float* x, float* y, int H, int n_in, int n_
     // rows a block: 256, or fewer so that a block stays in one head
     const int nw = n_out % 256 == 0 ? 8 : n_out % 128 == 0 ? 4 : n_out % 64 == 0 ? 2 : 1;
     const unsigned blocks = (unsigned) ((size_t) H * n_out / (32 * nw));
+    // a token, two groups of 32 rows a warp when a head has 512 or more rows: the absorb's 64 x 512 rows were 1,024
+    // warps a launch, more than a GTX 1070 holds (960), so 64 of them ran after the rest (k_b 51.4 -> 45.6 us; two
+    // tokens gained nothing, 50.5 -> 51.1)
+    const bool two = n_out % 512 == 0 && nw == 8 && T == 1 && one_wave();
     if (T <= 2) {
         const size_t sh = (size_t) T * n_in * 4;
-        if (T == 1)
+        if (two && T == 1)
+            q8_0_heads_k<1, 2><<<dim3(blocks / 2, 1), nw * 32, sh, S(st)>>>(qs, d, x, y, H, n_in, n_out, T);
+        else if (two)
+            q8_0_heads_k<2, 2><<<dim3(blocks / 2, 1), nw * 32, sh, S(st)>>>(qs, d, x, y, H, n_in, n_out, T);
+        else if (T == 1)
             q8_0_heads_k<1><<<dim3(blocks, 1), nw * 32, sh, S(st)>>>(qs, d, x, y, H, n_in, n_out, T);
         else
             q8_0_heads_k<2><<<dim3(blocks, 1), nw * 32, sh, S(st)>>>(qs, d, x, y, H, n_in, n_out, T);
@@ -1742,6 +1803,10 @@ bool q6k_rows_on(int n_in, int T) {
 
 } // namespace
 
+void set_one_wave(bool on) {
+    g_one_wave.store(on, std::memory_order_relaxed);
+}
+
 void set_q6k_rows(bool on) {
     g_q6k_rows.store(on, std::memory_order_relaxed);
 }
@@ -1794,11 +1859,15 @@ bool q8_0_narrow_supported(int n_in, int T) {
 }
 
 void q8_0_narrow(const void* W, const void* xq8_1, float* y, int n_in, int n_out, int T, void* st) {
-    const int nb = n_in / 32, rows_per_block = 8 * (32 / nb);
+    // two chunks a warp from 4096 rows: 8192 rows of 128 values were 1,024 warps, more than a GTX 1070 holds (960)
+    const int C = one_wave() && n_out >= 4096 ? 2 : 1;
+    const int nb = n_in / 32, rows_per_block = 8 * C * (32 / nb);
     const dim3 grid((unsigned) ((n_out + rows_per_block - 1) / rows_per_block));
     const auto* w = (const uint8_t*) W;
     const auto* x = (const uint8_t*) xq8_1;
-#define GLM5_NARROW(TT, NB) q8_0_narrow_k<TT, NB><<<grid, 256, 0, S(st)>>>(w, x, y, n_out)
+#define GLM5_NARROW(TT, NB)                                                                                            \
+    (C == 2 ? q8_0_narrow_k<TT, NB, 2><<<grid, 256, 0, S(st)>>>(w, x, y, n_out)                                        \
+            : q8_0_narrow_k<TT, NB, 1><<<grid, 256, 0, S(st)>>>(w, x, y, n_out))
     if (T == 1)
         nb == 2 ? GLM5_NARROW(1, 2) : nb == 4 ? GLM5_NARROW(1, 4) : GLM5_NARROW(1, 8);
     else

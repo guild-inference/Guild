@@ -68,6 +68,10 @@ void q6k_mmvq(const void* W, const void* xq8_1, float* y, int n_in, int n_out, i
 /// One token over rows of at most 4096 values: each warp's rows in a loop on as many blocks as the GPU holds, the next
 /// row loading while one is used (on by default; off: a block per 8 rows).  The same bits either way.
 void set_q6k_rows(bool on);
+/// Launches that fit the GPU in one wave (on by default; off: the launches before them, the same bits): the per-head
+/// Q8_0 products of 512-row heads and the narrow Q8_0 rows two row groups a warp, and the mHC pre-mix's Sinkhorn on a
+/// block of its own beside the stream sum
+void set_one_wave(bool on);
 /// One token over a subset of the rows (q6k_mmvq_supported(n_in, n, 1)): y[i] = row ids[i] times the token, bitwise
 /// q6k_mmvq's y[ids[i]] (the draft head over a token subset)
 void q6k_mmvq_rows(const void* W, const int32_t* ids, int n_ids, const void* xq8_1, float* y, int n_in, void* st);

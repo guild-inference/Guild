@@ -104,6 +104,7 @@ struct Layer {
     Mat wo;
     // FFN: the dense one (lead layers) or the shared expert, on the GPU when `ffn_gpu`
     Mat gate, up, down;
+    Mat gu; ///< gate and up's rows, one after the other in VRAM: one product for a token
     bool ffn_gpu = false;
     CpuFfn ffn_cpu; ///< on the CPU, or (a MoE layer's shared expert on the GPU) its twin for a pipelined group
     bool ffn_twin = false;
@@ -171,6 +172,7 @@ struct Glm5Engine::Impl {
     // device scratch, sized for kMaxT tokens
     float *R = nullptr, *xn = nullptr, *mix = nullptr, *post = nullptr, *comb = nullptr, *y = nullptr;
     float *a = nullptr, *b = nullptr, *c = nullptr, *d = nullptr, *e = nullptr, *f = nullptr, *qkv = nullptr;
+    int64_t a_floats = 0; ///< a token's row of `a`
     float *small1 = nullptr, *small2 = nullptr, *gk = nullptr, *beta = nullptr, *part = nullptr, *logits = nullptr;
     float *rlog = nullptr, *rw = nullptr, *ycpu = nullptr;
     float* hcpart = nullptr; // glm5k::hc_mix's partial sums, for windows of up to kMmvqCols tokens
@@ -511,14 +513,17 @@ struct Glm5Engine::Impl {
     // a pipelined window of one token a group that saves the state after its first token: group A's KDA state goes
     // to kda_mid alone and group B starts from there (GUILD_GLM_KDA_MID1=0, read each window: written twice)
     bool kda_mid1 = false;
-    // read each window (switches for A/Bs in one process; the same bits either way): GUILD_GLM_QKV1=0 multiplies a
-    // token's q, k and v as three products, GUILD_GLM_Q6K_ROWS=0 takes the block-per-8-rows Q6_K kernel for every shape
-    bool qkv1 = true;
+    // read each window (switches for A/Bs in one process; the same bits either way): GUILD_GLM_MERGED=0 multiplies a
+    // token's q, k and v as three products and its FFN's gate and up as two, GUILD_GLM_Q6K_ROWS=0 takes the
+    // block-per-8-rows Q6_K kernel for every shape, GUILD_GLM_ONE_WAVE=0 the launches before glm5k::set_one_wave
+    bool merged = true;
     void read_switches() {
-        const char* e = std::getenv("GUILD_GLM_QKV1");
-        qkv1 = !(e && e[0] == '0');
+        const char* e = std::getenv("GUILD_GLM_MERGED");
+        merged = !(e && e[0] == '0');
         e = std::getenv("GUILD_GLM_Q6K_ROWS");
         glm5k::set_q6k_rows(!(e && e[0] == '0'));
+        e = std::getenv("GUILD_GLM_ONE_WAVE");
+        glm5k::set_one_wave(!(e && e[0] == '0'));
     }
     bool embed_rows(const int32_t* tokens, int T, std::string& err);
     const char* Y_kind(int l) const;
@@ -1030,7 +1035,8 @@ bool Glm5Engine::Impl::load(const std::string& path, const Glm5Options& o, std::
                 return false;
         }
         if (y.ffn_gpu) {
-            if (!upload(y.gate, err) || !upload(y.up, err) || !upload(y.down, err))
+            if (!upload_together({&y.gate, &y.up}, y.gu, err) || !upload(y.gate, err) || !upload(y.up, err) ||
+                !upload(y.down, err))
                 return false;
         }
         // a MoE layer's shared expert on the GPU has a twin on the CPU: one group of a pipelined window computes it
@@ -1077,7 +1083,8 @@ bool Glm5Engine::Impl::load(const std::string& path, const Glm5Options& o, std::
             !(y.pooled = dalloc<__half>((size_t) ctx / glm5k::kKpool * g.idx_dim, err)))
             return false;
         if (y.ffn_gpu) {
-            if (!upload(y.gate, err) || !upload(y.up, err) || !upload(y.down, err))
+            if (!upload_together({&y.gate, &y.up}, y.gu, err) || !upload(y.gate, err) || !upload(y.up, err) ||
+                !upload(y.down, err))
                 return false;
         } else {
             CpuFfn& f = y.ffn_cpu;
@@ -1113,6 +1120,7 @@ bool Glm5Engine::Impl::load(const std::string& path, const Glm5Options& o, std::
     // each scratch row as wide as its widest use (a: the flat streams, q, the FFN gate; b: k, the latent, the FFN up;
     // c: v, the KDA scan, v_b, the SwiGLU; d: beta, the KDA output; the quantized inputs: any product's input)
     const int64_t wa = std::max<int64_t>({N * 4, D, QB, g.n_ff}), wb = std::max<int64_t>({D, LB, g.n_ff});
+    a_floats = wa;
     const int64_t wc = std::max<int64_t>({D, VB, g.n_ff}), wd = std::max<int64_t>(D, H);
     const int64_t widest = std::max<int64_t>({N * 4, D, VB, g.n_ff, 2 * N, g.q_lora});
     // the rows a window keeps across its two pipelined groups (streams, embeddings, mixes, FFN output, final rows)
@@ -1326,8 +1334,8 @@ void Glm5Engine::Impl::attn_kda(Layer& Y, int T, float* mid_state, float* mid_co
     const int64_t H = g.n_head, D = H * g.kda_dim;
     quant(xn, g.n_embd, T, xq);
     // a token's q, k and v in one product (their rows are consecutive), into the convolution's output, which it
-    // computes in place (a thread reads channel c and then writes it); qkv1 off: three products (the same bits)
-    const bool one = T == 1 && Y.wqkv.dev && qkv1;
+    // computes in place (a thread reads channel c and then writes it); `merged` off: three products (the same bits)
+    const bool one = T == 1 && Y.wqkv.dev && merged;
     if (one) {
         mm(Y.wqkv, xq, qkv, 1);
     } else {
@@ -1486,9 +1494,15 @@ void Glm5Engine::Impl::ffn_begin(const Layer& Y, int T) {
     if (gpu_ffn) { // the shared expert or the dense FFN, while the CPU computes the routed experts
         const int64_t F = Y.gate.n_out;
         quant(xn, N, T, xq);
-        mm(Y.gate, xq, a, T);
-        mm(Y.up, xq, b, T);
-        glm5k::swiglu_clamp(a, b, c, (int) F, T, Y.lim_ffn > 0.f ? Y.lim_ffn : 3.0e38f, st);
+        // a token's gate and up rows in one product, when both fit the row of `a`
+        if (T == 1 && Y.gu.dev && merged && 2 * F <= a_floats) {
+            mm(Y.gu, xq, a, 1);
+            glm5k::swiglu_clamp(a, a + F, c, (int) F, 1, Y.lim_ffn > 0.f ? Y.lim_ffn : 3.0e38f, st);
+        } else {
+            mm(Y.gate, xq, a, T);
+            mm(Y.up, xq, b, T);
+            glm5k::swiglu_clamp(a, b, c, (int) F, T, Y.lim_ffn > 0.f ? Y.lim_ffn : 3.0e38f, st);
+        }
         quant(c, F, T, xq2);
         mm(Y.down, xq2, y, T);
     }

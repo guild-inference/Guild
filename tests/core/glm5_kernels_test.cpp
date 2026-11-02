@@ -10,6 +10,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <functional>
 #include <random>
 #include <string>
 #include <vector>
@@ -1387,6 +1388,141 @@ static int bench_shapes() {
     return 0;
 }
 
+// glm5k::set_one_wave: the per-head products two row groups a warp, the narrow rows two chunks a warp and the
+// pre-mix's Sinkhorn on a block of its own, bitwise the launches before them (GLM-5.3-Flash's shapes; with `bench`,
+// each one's time both ways)
+static int test_one_wave(bool bench) {
+    cudaStream_t st;
+    cudaStreamCreate(&st);
+    cudaEvent_t ea, eb;
+    cudaEventCreate(&ea);
+    cudaEventCreate(&eb);
+    std::uniform_int_distribution<int> byte(0, 255), qd(-127, 127);
+    // runs f with the switch off and on: the outputs must match bit for bit
+    auto both = [&](const std::string& what, const std::function<void()>& f, float* out, size_t n,
+                    float* out2 = nullptr, size_t n2 = 0, float* out3 = nullptr, size_t n3 = 0) {
+        std::vector<std::vector<float>> r[2];
+        for (int on = 0; on < 2; ++on) {
+            k::set_one_wave(on == 1);
+            f();
+            cudaStreamSynchronize(st);
+            r[on].push_back(down(out, n));
+            if (out2)
+                r[on].push_back(down(out2, n2));
+            if (out3)
+                r[on].push_back(down(out3, n3));
+        }
+        bool same = true;
+        for (size_t i = 0; i < r[0].size(); ++i)
+            same = same && std::memcmp(r[0][i].data(), r[1][i].data(), r[0][i].size() * 4) == 0;
+        std::printf("%-44s %s\n", (what + " (bitwise)").c_str(), same ? "ok" : "FAIL");
+        failures += same ? 0 : 1;
+        if (!bench)
+            return;
+        for (int on = 0; on < 2; ++on) {
+            k::set_one_wave(on == 1);
+            for (int i = 0; i < 5; ++i)
+                f();
+            cudaEventRecord(ea, st);
+            for (int i = 0; i < 200; ++i)
+                f();
+            cudaEventRecord(eb, st);
+            cudaEventSynchronize(eb);
+            float ms = 0;
+            cudaEventElapsedTime(&ms, ea, eb);
+            std::printf("    %s: %.1f us\n", on ? "one wave" : "before  ", ms * 1000.f / 200);
+        }
+    };
+    for (const int T : {1, 2}) {
+        // the absorb's heads: 64 x [512][256] (k_b) and 64 x [256][512] (v_b), q8_0_split's layout
+        for (const auto& hs : std::vector<std::pair<int, int>>{{256, 512}, {512, 256}}) {
+            const int H = 64, n_in = hs.first, n_out = hs.second;
+            std::vector<uint8_t> W((size_t) H * n_out * (n_in / 32) * 34);
+            for (size_t blk = 0; blk < W.size() / 34; ++blk) {
+                const __half d = __float2half(0.001f * (float) (1 + byte(rng) % 50));
+                std::memcpy(&W[blk * 34], &d, 2);
+                for (int i = 0; i < 32; ++i)
+                    W[blk * 34 + 2 + i] = (uint8_t) (int8_t) qd(rng);
+            }
+            std::vector<uint8_t> Ws(W.size());
+            k::q8_0_split(W.data(), Ws.data(), (int64_t) H * n_out, n_in);
+            uint8_t* dW = up(Ws);
+            float* dx = up(rnd((size_t) T * H * n_in));
+            float* dy;
+            cudaMalloc(&dy, (size_t) T * H * n_out * 4);
+            both(
+                "q8_0_heads 64 x " + std::to_string(n_out) + " x " + std::to_string(n_in) + " T " + std::to_string(T),
+                [&] { k::q8_0_heads(dW, dx, dy, H, n_in, n_out, T, st); }, dy, (size_t) T * H * n_out);
+            cudaFree(dW);
+            cudaFree(dx);
+            cudaFree(dy);
+        }
+        // the KDA gates' second halves: 128 -> 8192, and the other widths
+        for (const int n_in : {128, 64, 256}) {
+            const int n_out = n_in == 128 ? 8192 : 1000, nb = n_in / 32;
+            std::vector<uint8_t> W((size_t) n_out * nb * 34);
+            for (size_t blk = 0; blk < (size_t) n_out * nb; ++blk) {
+                for (int i = 0; i < 34; ++i)
+                    W[blk * 34 + i] = (uint8_t) byte(rng);
+                const __half d = __float2half(0.001f * (float) (1 + byte(rng) % 50));
+                std::memcpy(&W[blk * 34], &d, 2);
+            }
+            uint8_t* dW = up(W);
+            float* dx = up(rnd((size_t) T * n_in));
+            void* xq;
+            cudaMalloc(&xq, guild::kernels::native_q8_1_bytes(n_in, T));
+            guild::kernels::native_quantize_q8_1(dx, xq, n_in, T, st);
+            float* dy;
+            cudaMalloc(&dy, (size_t) T * n_out * 4);
+            both(
+                "q8_0_narrow " + std::to_string(n_in) + " x " + std::to_string(n_out) + " T " + std::to_string(T),
+                [&] { k::q8_0_narrow(dW, xq, dy, n_in, n_out, T, st); }, dy, (size_t) T * n_out);
+            cudaFree(dW);
+            cudaFree(dx);
+            cudaFree(xq);
+            cudaFree(dy);
+        }
+        // the mHC pre-mix, from mixes and from hc_mix's slices
+        {
+            const int N = 4096, iters = 20;
+            const float eps = 1e-6f, rms = 1e-6f;
+            auto R = rnd((size_t) T * 4 * N), nwv = rnd(N, 0.1f), m = rnd((size_t) T * 24, 0.5f);
+            for (auto& v : nwv)
+                v += 1.f;
+            std::vector<float> sc = {0.7f, 0.9f, 1.1f}, base = rnd(24, 0.3f);
+            float *dR = up(R), *dn = up(nwv), *dm = up(m), *ds = up(sc), *db = up(base), *dpost, *dcomb, *dxn, *dpart;
+            cudaMalloc(&dpost, (size_t) T * 4 * 4);
+            cudaMalloc(&dcomb, (size_t) T * 16 * 4);
+            cudaMalloc(&dxn, (size_t) T * N * 4);
+            both(
+                "hc_pre T " + std::to_string(T),
+                [&] { k::hc_pre(dm, ds, db, dR, dn, dpost, dcomb, dxn, N, T, iters, eps, rms, st); }, dxn,
+                (size_t) T * N, dpost, (size_t) T * 4, dcomb, (size_t) T * 16);
+            std::vector<uint8_t> W((size_t) 24 * (4 * N / 32) * 34);
+            for (size_t blk = 0; blk < W.size() / 34; ++blk) {
+                const __half d = __float2half(0.0005f * (float) (1 + byte(rng) % 50));
+                std::memcpy(&W[blk * 34], &d, 2);
+                for (int i = 0; i < 32; ++i)
+                    W[blk * 34 + 2 + i] = (uint8_t) (int8_t) qd(rng);
+            }
+            uint8_t* dW = up(W);
+            cudaMalloc(&dpart, k::hc_mix_floats(T) * 4);
+            both(
+                "hc_mix + hc_pre_mixed T " + std::to_string(T),
+                [&] {
+                    k::hc_mix(dW, dR, dpart, N, T, st);
+                    k::hc_pre_mixed(dpart, ds, db, dR, dn, dpost, dcomb, dxn, N, T, iters, eps, rms, st);
+                },
+                dxn, (size_t) T * N, dpost, (size_t) T * 4, dcomb, (size_t) T * 16);
+            for (float* p : {dR, dn, dm, ds, db, dpost, dcomb, dxn, dpart})
+                cudaFree(p);
+            cudaFree(dW);
+        }
+    }
+    k::set_one_wave(true);
+    return failures ? 1 : 0;
+}
+
 int main(int argc, char** argv) {
     if (argc > 1 && std::string(argv[1]) == "bench")
         return bench();
@@ -1398,6 +1534,8 @@ int main(int argc, char** argv) {
         return bench_attend();
     if (argc > 1 && std::string(argv[1]) == "q6k")
         return bench_q6k();
+    if (argc > 1 && std::string(argv[1]) == "wave")
+        return test_one_wave(true);
     test_hc();
     test_hc_mix();
     test_kda();
@@ -1412,6 +1550,7 @@ int main(int argc, char** argv) {
     test_indexer();
     test_attend_staged();
     test_row_cache();
+    test_one_wave(false);
     const cudaError_t e = cudaDeviceSynchronize();
     if (e != cudaSuccess) {
         std::printf("CUDA error: %s\n", cudaGetErrorString(e));
