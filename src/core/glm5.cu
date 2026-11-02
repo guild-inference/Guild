@@ -221,7 +221,8 @@ __global__ void hc_pre_k(const float* mixes, const float* part, int K, const flo
     }
 }
 
-__global__ void hc_post_k(const float* y, float* R, const float* post, const float* comb, int N) {
+// y2 (when given): the layer output is y + y2, added as add_k adds them
+__global__ void hc_post_k(const float* y, float* R, const float* post, const float* comb, int N, const float* y2) {
     const int t = blockIdx.y, i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= N)
         return;
@@ -232,7 +233,9 @@ __global__ void hc_post_k(const float* y, float* R, const float* post, const flo
 #pragma unroll
     for (int h = 0; h < kHc; ++h)
         r[h] = Rt[(size_t) h * N + i];
-    const float yi = y[(size_t) t * N + i];
+    float yi = y[(size_t) t * N + i];
+    if (y2)
+        yi += y2[(size_t) t * N + i];
 #pragma unroll
     for (int dst = 0; dst < kHc; ++dst) {
         float v = yi * p[dst];
@@ -1908,8 +1911,8 @@ void hc_pre_mixed(const float* part, const float* scale, const float* base, cons
         nullptr, part, kHc * N, scale, base, R, norm_w, post, comb, xn, N, iters, hc_eps, rms_eps, xn_host);
 }
 
-void hc_post(const float* y, float* R, const float* post, const float* comb, int N, int T, void* st) {
-    hc_post_k<<<dim3((N + 255) / 256, T), 256, 0, S(st)>>>(y, R, post, comb, N);
+void hc_post(const float* y, float* R, const float* post, const float* comb, int N, int T, void* st, const float* y2) {
+    hc_post_k<<<dim3((N + 255) / 256, T), 256, 0, S(st)>>>(y, R, post, comb, N, y2);
 }
 
 void hc_mean_norm(const float* R, const float* w, float* out, int N, int T, float eps, void* st) {

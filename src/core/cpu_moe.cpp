@@ -552,14 +552,35 @@ void Experts::run(Pool& pool, int64_t N, int T, int max_t, const int32_t* ids, c
     struct Item {
         int gi, r0, r1; // group, rows
     };
+    // A node's threads take the items in queue order, so the items next to each other in a queue run at the same
+    // time.  In each group's order, sixteen threads read sixteen adjacent row blocks of one expert at once, which a
+    // DRAM channel serves slower than the same reads apart: 32 threads over 2x Xeon Gold 6130 read 137 KiB items at
+    // 193 GB/s side by side, 214-216 spread, and 70 KiB items at 175 against 208.  So the queue takes the groups in
+    // turn, a group's blocks from its two halves alternately (GUILD_CPU_MOE_SPREAD=0, read each call: group by group).
+    const char* spr = std::getenv("GUILD_CPU_MOE_SPREAD");
+    const bool spread = !(spr && spr[0] == '0');
+    // the k-th of n blocks in the spread order: 0, h, 1, h + 1, ... (h = ceil(n / 2))
+    auto spread_at = [](size_t k, size_t n) { return k % 2 == 0 ? k / 2 : (n + 1) / 2 + k / 2; };
     std::vector<Item> items[2];
-    for (int gi = 0; gi < (int) groups.size(); ++gi) {
-        const CpuFfn& f = groups[(size_t) gi].f;
-        for (int node = 0; node < 2; ++node) {
+    for (int node = 0; node < 2; ++node) {
+        std::vector<std::vector<Item>> per(groups.size());
+        size_t most = 0;
+        for (int gi = 0; gi < (int) groups.size(); ++gi) {
+            const CpuFfn& f = groups[(size_t) gi].f;
             const int64_t a = node ? f.gu_split : 0, b = node ? f.n_ff : f.gu_split;
             for (int64_t r = a; r < b; r += RB)
-                items[node].push_back({gi, (int) r, (int) std::min<int64_t>(r + RB, b)});
+                per[(size_t) gi].push_back({gi, (int) r, (int) std::min<int64_t>(r + RB, b)});
+            most = std::max(most, per[(size_t) gi].size());
         }
+        if (!spread) {
+            for (const auto& v : per)
+                items[node].insert(items[node].end(), v.begin(), v.end());
+            continue;
+        }
+        for (size_t k = 0; k < most; ++k)
+            for (const auto& v : per)
+                if (k < v.size())
+                    items[node].push_back(v[spread_at(k, v.size())]);
     }
     for (auto& v : items) {
         const size_t k0 = v.size() > (size_t) kTail ? v.size() - kTail : 0;
@@ -776,18 +797,32 @@ void Experts::run(Pool& pool, int64_t N, int T, int max_t, const int32_t* ids, c
         for (int u = 0; u < U; ++u)
             token_units[(size_t) unit_t[(size_t) u]].push_back(u);
     }
+    // spread: the items next to each other in the queue take row blocks apart, and each starts at its own group (a
+    // group's rows kept, then all of them summed in group order: the same sums as group by group)
+    size_t max_units = 0;
+    for (const Group& gr : groups)
+        max_units = std::max(max_units, gr.units.size());
     auto down_item = [&](int node, int i) {
         const int m = dmain[node];
-        const int r0 = (int) d0[node] + (i < m ? i * DRB : m * DRB + (i - m) * DTR);
-        const int r1 = (int) std::min<int64_t>(r0 + (i < m ? DRB : DTR), d1[node]), nr = r1 - r0;
+        const int ib = spread && i < m ? (int) spread_at((size_t) i, (size_t) m) : i;
+        const int r0 = (int) d0[node] + (ib < m ? ib * DRB : m * DRB + (ib - m) * DTR);
+        const int r1 = (int) std::min<int64_t>(r0 + (ib < m ? DRB : DTR), d1[node]), nr = r1 - r0;
         for (int t = 0; t < T; ++t)
             std::fill(y + (size_t) t * N + r0, y + (size_t) t * N + r1, 0.f);
         thread_local std::vector<float> ub; // single: [unit][row of the item]
         if (single)
             ub.resize((size_t) U * DRB);
-        float dbuf[MT][RB];
-        for (size_t gi = 0; gi < groups.size(); ++gi) {
+        const size_t NG = groups.size();
+        const size_t g0 = spread && !single && NG > 0 ? (size_t) i % NG : 0;
+        thread_local std::vector<float> gbufs; // g0 > 0: [group][unit of the group][row]
+        if (g0 != 0)
+            gbufs.resize(NG * max_units * RB);
+        float dbuf_own[MT][RB];
+        for (size_t gs = 0; gs < NG; ++gs) {
+            const size_t gi = (g0 + gs) % NG;
             const Group& gr = groups[gi];
+            // the next group taken, for the stream hints
+            const Group* gnext = gs + 1 < NG ? &groups[(gi + 1) % NG] : nullptr;
             if (flow)
                 while (gflow_[(size_t) G + gi].v.load(std::memory_order_acquire) == 0)
                     __builtin_ia32_pause();
@@ -798,6 +833,9 @@ void Experts::run(Pool& pool, int64_t N, int T, int max_t, const int32_t* ids, c
             for (size_t c = 0; c + 1 < gr.d_c.size(); ++c) {
                 const size_t c0 = (size_t) gr.d_c[c];
                 const int nt = gr.d_c[c + 1] - (int) c0;
+                // a group's rows go to its slots while the sums wait for group order (g0 > 0)
+                float(*dbuf)[RB] =
+                    g0 != 0 ? reinterpret_cast<float(*)[RB]>(gbufs.data() + (gi * max_units + c0) * RB) : dbuf_own;
                 const void* hq[MT];
                 float* dout[MT];
                 for (int k = 0; k < nt; ++k) {
@@ -808,13 +846,13 @@ void Experts::run(Pool& pool, int64_t N, int T, int max_t, const int32_t* ids, c
                 const uint8_t* wd = f.down[r0 >= f.d_split];
                 if (!gr.d_pk.empty()) {
                     // after the group's last chunk, the next group's rows are the ones to ask for
-                    const CpuFfn* nf = c + 2 == gr.d_c.size() && gi + 1 < groups.size() ? &groups[gi + 1].f : nullptr;
+                    const CpuFfn* nf = c + 2 == gr.d_c.size() && gnext ? &gnext->f : nullptr;
                     q8_0_rows512(wd, f.d_row, (int) f.n_ff, pk + gr.d_pk[c], nt, dout, r0, r1,
                                  nf ? nf->down[r0 >= nf->d_split] + (size_t) r0 * nf->d_row : nullptr,
                                  nf ? nf->d_row : 0);
                 } else if (x4) {
                     // after the group's last chunk, the next group's rows are the ones to ask for
-                    const CpuFfn* nf = c + 2 == gr.d_c.size() && gi + 1 < groups.size() ? &groups[gi + 1].f : nullptr;
+                    const CpuFfn* nf = c + 2 == gr.d_c.size() && gnext ? &gnext->f : nullptr;
                     iq4xs_rows512(wd, f.d_row, (int) f.n_ff, hq, nt, dout, r0, r1,
                                   nf ? nf->down[r0 >= nf->d_split] + (size_t) r0 * nf->d_row : nullptr,
                                   nf ? nf->d_row : 0);
@@ -822,7 +860,7 @@ void Experts::run(Pool& pool, int64_t N, int T, int max_t, const int32_t* ids, c
                     mt(f.d_type, wd, f.d_row, (int) f.n_ff, hq, nt, dout, r0, r1);
                 } else {
                     // the DRAM stream, once: the rows after next, then the next group's first rows
-                    const CpuFfn* nf = gi + 1 < groups.size() ? &groups[gi + 1].f : nullptr;
+                    const CpuFfn* nf = gnext ? &gnext->f : nullptr;
                     for (int k = 0; k < nt; ++k)
                         for (int r = r0; r < r1; ++r) {
                             if (k == 0 && r + 2 < r1)
@@ -838,6 +876,8 @@ void Experts::run(Pool& pool, int64_t N, int T, int max_t, const int32_t* ids, c
                         std::copy(dbuf[k], dbuf[k] + nr, ub.data() + (size_t) u * DRB);
                         continue;
                     }
+                    if (g0 != 0)
+                        continue; // summed in group order below
                     float* out = y + (size_t) unit_t[(size_t) u] * N + r0;
                     const float w = unit_w[(size_t) u];
                     for (int j = 0; j < nr; ++j)
@@ -845,6 +885,18 @@ void Experts::run(Pool& pool, int64_t N, int T, int max_t, const int32_t* ids, c
                 }
             }
         }
+        if (g0 != 0) // the sums in group order, as a group by group item adds them
+            for (size_t gi = 0; gi < NG; ++gi) {
+                const Group& gr = groups[gi];
+                for (size_t k = 0; k < gr.units.size(); ++k) {
+                    const int u = gr.units[k];
+                    float* out = y + (size_t) unit_t[(size_t) u] * N + r0;
+                    const float w = unit_w[(size_t) u];
+                    const float* d = gbufs.data() + (gi * max_units + k) * RB;
+                    for (int j = 0; j < nr; ++j)
+                        out[j] += w * d[j];
+                }
+            }
         if (single)
             for (int t = 0; t < T; ++t) {
                 float* out = y + (size_t) t * N + r0;

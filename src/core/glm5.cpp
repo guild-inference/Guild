@@ -138,6 +138,13 @@ struct Glm5Engine::Impl {
     Layer mtp; ///< the NextN block (when the GGUF has it and Glm5Options::mtp)
     bool has_mtp = false;
     Mat head, embd;
+    // the draft's copy of the output head as Q4_K (all rows, or the token subset's in its order), when the drafts
+    // cannot change the output (Q5_K / Q4_K attention: verify is greedy decode's); GUILD_GLM_DRAFT_HEAD=q6_k: none,
+    // q4_k: one whatever the attention's format
+    Mat dhead;
+    bool dhead_on = true; ///< read each window: GUILD_GLM_DRAFT_HEAD_COPY=0 drafts over the head's own rows (A/Bs)
+    /// read each window: GUILD_GLM_FUSE=0 runs the small kernels the fused ones replace (the same bits either way)
+    bool fuse = true;
     float* out_norm = nullptr;
     cudaStream_t st = nullptr;
     cudaEvent_t ev = nullptr, ev2 = nullptr;
@@ -568,7 +575,10 @@ struct Glm5Engine::Impl {
     bool x_on_host = false;
     void ffn_begin(const Layer& Y, int T);
     /// y_used (when given): where the FFN's output rows are, io.y or (zero copy) the CPU's mapped io.h_y
-    bool ffn_end(const Layer& Y, int T, const Rows& io, std::string& err, const float** y_used = nullptr);
+    /// y_add (when given): with a GPU half and zero copy, the CPU's rows for the caller's next kernel to add (the
+    /// fused add, GUILD_GLM_FUSE), instead of an add here
+    bool ffn_end(const Layer& Y, int T, const Rows& io, std::string& err, const float** y_used = nullptr,
+                 const float** y_add = nullptr);
     bool ffn(const Layer& Y, int T, std::string& err) {
         ffn_begin(Y, T);
         return ffn_end(Y, T, rows(), err);
@@ -606,6 +616,10 @@ struct Glm5Engine::Impl {
         glm5k::set_one_wave(!(e && e[0] == '0'));
         e = std::getenv("GUILD_GLM_ZC");
         zc = !(e && e[0] == '0');
+        e = std::getenv("GUILD_GLM_DRAFT_HEAD_COPY");
+        dhead_on = !(e && e[0] == '0');
+        e = std::getenv("GUILD_GLM_FUSE");
+        fuse = !(e && e[0] == '0');
     }
     bool embed_rows(const int32_t* tokens, int T, std::string& err);
     const char* Y_kind(int l) const;
@@ -953,7 +967,18 @@ bool Glm5Engine::Impl::load(const std::string& path, const Glm5Options& o, std::
     }
 
     // ---- placement: everything but the FFNs must be on the GPU; then the FFNs, layer by layer --------------------
-    const uint64_t need = fixed_need();
+    // the draft head's copy: rows of the head, or of the token subset
+    {
+        const char* e = std::getenv("GUILD_GLM_DRAFT_HEAD");
+        const bool want_copy = e && e[0] ? std::string(e) == "q4_k" : narrow_attention;
+        if (want_copy && has_mtp && head.type == kQ6_K && head.n_in % 256 == 0) {
+            dhead.type = GGML_TYPE_Q4_K;
+            dhead.n_in = head.n_in;
+            dhead.n_out = dvocab.empty() ? head.n_out : (int64_t) dvocab.size();
+            dhead.bytes = ggml_row_size(GGML_TYPE_Q4_K, dhead.n_in) * (size_t) dhead.n_out;
+        }
+    }
+    const uint64_t need = fixed_need() + dhead.bytes;
     if (need + opt.vram_reserve + kMinContext * per_token > free_b) {
         err = "glm5: the attention weights need " + std::to_string((need + kMinContext * per_token) >> 20) +
               " MiB of VRAM with a 2048-token context, " + std::to_string((free_b - opt.vram_reserve) >> 20) +
@@ -1242,6 +1267,36 @@ bool Glm5Engine::Impl::load(const std::string& path, const Glm5Options& o, std::
     }
     if (!upload(head, err) || !(out_norm = f32("output_norm.weight", N, err)))
         return false;
+    if (dhead.bytes) { // the head's Q6_K rows dequantized and quantized as Q4_K, as llama-quantize would
+        const auto tq = std::chrono::steady_clock::now();
+        const size_t q6_row = head.row_bytes(), q4_row = ggml_row_size(GGML_TYPE_Q4_K, dhead.n_in);
+        dhead.owned.resize(dhead.bytes);
+        const ggml_to_float_t to_float = ggml_get_type_traits(GGML_TYPE_Q6_K)->to_float;
+        const int64_t rows_per = 64;
+        const int n_items = (int) ((dhead.n_out + rows_per - 1) / rows_per);
+        auto body = [&](int i) {
+            std::vector<float> buf((size_t) rows_per * dhead.n_in);
+            const int64_t r0 = i * rows_per, nr = std::min<int64_t>(rows_per, dhead.n_out - r0);
+            for (int64_t r = 0; r < nr; ++r) {
+                const int64_t src = dvocab.empty() ? r0 + r : (int64_t) dvocab[(size_t) (r0 + r)];
+                to_float(head.host + (size_t) src * q6_row, buf.data() + (size_t) r * dhead.n_in, dhead.n_in);
+            }
+            ggml_quantize_chunk(GGML_TYPE_Q4_K, buf.data(), dhead.owned.data() + (size_t) r0 * q4_row, 0, nr,
+                                dhead.n_in, nullptr);
+        };
+        if (pool)
+            pool->run(n_items, body);
+        else
+            for (int i = 0; i < n_items; ++i)
+                body(i);
+        dhead.host = dhead.owned.data();
+        if (!upload(dhead, err))
+            return false;
+        std::fprintf(stderr,
+                     "guild glm5: the draft head's %lld rows as Q4_K (%.0f MiB, %.1f s; GUILD_GLM_DRAFT_HEAD=q6_k: the "
+                     "head's own)\n",
+                     (long long) dhead.n_out, (double) dhead.bytes / 1048576.0, ms_since(tq) / 1000.0);
+    }
     if (!dvocab.empty()) {
         if (!(d_dvocab = dalloc<int32_t>(dvocab.size(), err)))
             return false;
@@ -1650,7 +1705,8 @@ void Glm5Engine::Impl::ffn_begin(const Layer& Y, int T) {
     }
 }
 
-bool Glm5Engine::Impl::ffn_end(const Layer& Y, int T, const Rows& io, std::string& err, const float** y_used) {
+bool Glm5Engine::Impl::ffn_end(const Layer& Y, int T, const Rows& io, std::string& err, const float** y_used,
+                               const float** y_add) {
     const int64_t N = g.n_embd;
     const bool on_cpu = on_twin(Y, io.twin, io.dtwin);
     if (Y.moe || !Y.ffn_gpu || on_cpu) {
@@ -1665,7 +1721,9 @@ bool Glm5Engine::Impl::ffn_end(const Layer& Y, int T, const Rows& io, std::strin
         cpu_ffn(Y, T, io);
         cpu_ms += ms_since(t0);
         if (Y.ffn_gpu && !on_cpu) {
-            if (zc) { // the add reads the CPU's rows in mapped host memory
+            if (zc && y_add) { // the caller's kernel adds the CPU's rows, reading them in mapped host memory
+                *y_add = io.h_y;
+            } else if (zc) { // the add reads the CPU's rows in mapped host memory
                 glm5k::add(io.y, io.h_y, T * N, st);
             } else {
                 cudaMemcpyAsync(io.ycpu, io.h_y, (size_t) T * N * 4, cudaMemcpyHostToDevice, st);
@@ -1691,9 +1749,10 @@ void Glm5Engine::Impl::layer_ffn_begin(int l, int T) {
 
 bool Glm5Engine::Impl::layer_ffn_end(int l, int T, const Rows& io, std::string& err) {
     const float* y_rows = io.y;
-    if (!ffn_end(L[(size_t) l], T, io, err, &y_rows))
+    const float* y_add = nullptr;
+    if (!ffn_end(L[(size_t) l], T, io, err, &y_rows, fuse ? &y_add : nullptr))
         return false;
-    glm5k::hc_post(y_rows, io.R, io.post, io.comb, (int) g.n_embd, T, st);
+    glm5k::hc_post(y_rows, io.R, io.post, io.comb, (int) g.n_embd, T, st, y_add);
     return true;
 }
 
@@ -2108,7 +2167,10 @@ bool Glm5Engine::Impl::mtp_window(const int32_t* tokens, int T, int64_t pos0, co
     if (draft) {
         glm5k::rms_norm(mx + (size_t) (T - 1) * N, Y.head_norm, xn, (int) N, 1, g.rms_eps, st);
         quant(xn, N, 1, xq);
-        if (d_dvocab && dvocab_on) { // the subset's rows, the argmax mapped to its token id on the GPU
+        if (dhead.dev && dhead_on && (dhead.n_out == g.n_vocab || dvocab_on)) { // the Q4_K copy (subset's rows or all)
+            mm(dhead, xq, logits, 1);
+            glm5k::argmax(logits, (int) dhead.n_out, d_arg, st, dhead.n_out == g.n_vocab ? nullptr : d_dvocab);
+        } else if (d_dvocab && dvocab_on) { // the subset's rows, the argmax mapped to its token id on the GPU
             glm5k::q6k_mmvq_rows(head.dev, d_dvocab, n_dvocab, xq, logits, (int) N, st);
             glm5k::argmax(logits, n_dvocab, d_arg, st, d_dvocab);
         } else {

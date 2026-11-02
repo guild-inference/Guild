@@ -32,7 +32,8 @@ void hc_pre_mixed(const float* part, const float* scale, const float* base, cons
                   float* post, float* comb, float* xn, int N, int T, int iters, float hc_eps, float rms_eps, void* st,
                   float* xn_host = nullptr);
 /// R[t][dst] = y[t] * post[t][dst] + sum_src R[t][src] * comb[t][dst + 4 * src], in place
-void hc_post(const float* y, float* R, const float* post, const float* comb, int N, int T, void* st);
+void hc_post(const float* y, float* R, const float* post, const float* comb, int N, int T, void* st,
+             const float* y2 = nullptr);
 /// out[t] = rms_norm(mean_h R[t][h]) * w
 void hc_mean_norm(const float* R, const float* w, float* out, int N, int T, float eps, void* st);
 /// R[t][h] = e[t] for every stream h

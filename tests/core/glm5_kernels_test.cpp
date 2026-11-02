@@ -1430,7 +1430,9 @@ static int bench_shapes() {
                   {"glm dsa qb q4", 12, 1536, 16384},
                   {"glm dsa out q6", 14, 16384, 4096},
                   {"glm dsa out q5", 13, 16384, 4096},
-                  {"glm dsa out q4", 12, 16384, 4096}};
+                  {"glm dsa out q4", 12, 16384, 4096},
+                  {"glm head", 14, 4096, 154880},
+                  {"glm head q4", 12, 4096, 154880}};
     cudaStream_t st;
     cudaStreamCreate(&st);
     for (const Shape& sh : shapes) {
