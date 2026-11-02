@@ -2,8 +2,10 @@
 // ones, bit for bit on every output (lo, rs, inject, mixed, the in-place R), and each one's time.
 //
 //     build/fused_gr_bench [iters] [T min] [T max]
+//     FUSED_GR_BENCH_Q8=1: the bf16 read against --hc q8_0's (the same weights as Q8_0), each read's time
 #include "guild/kernels/fused_gr.hpp"
 
+#include <cuda_fp16.h>
 #include <cuda_runtime.h>
 
 #include <cmath>
@@ -73,6 +75,69 @@ int main(int argc, char** argv) {
     cudaEventCreate(&e0);
     cudaEventCreate(&e1);
     int failures = 0;
+    if (const char* q8 = std::getenv("FUSED_GR_BENCH_Q8"); q8 && std::atoi(q8) != 0) {
+        // --hc q8_0's read against the bf16 one: the same weights quantized to Q8_0 planes (int8 values, then f16
+        // scales), the pending write and the inject rows on, each the best of 3 rounds of `iters` calls
+        auto planes = [&](const std::vector<uint16_t>& w, size_t rows, size_t cols) {
+            std::vector<uint8_t> o(rows * cols + rows * cols / 16);
+            for (size_t b = 0; b < rows * cols / 32; ++b) {
+                float v[32], amax = 0.f;
+                for (int i = 0; i < 32; ++i) {
+                    const uint32_t u = (uint32_t) w[b * 32 + i] << 16;
+                    std::memcpy(&v[i], &u, 4);
+                    amax = std::fmax(amax, std::fabs(v[i]));
+                }
+                const __half h = __float2half(amax / 127.f);
+                const float d = __half2float(h);
+                std::memcpy(o.data() + rows * cols + b * 2, &h, 2);
+                for (int i = 0; i < 32; ++i)
+                    o[b * 32 + i] = (uint8_t) (int8_t) std::lrint(d != 0.f ? v[i] / d : 0.f);
+            }
+            return o;
+        };
+        const auto pd = planes(wd, LR, D), pu = planes(wu, D, LR);
+        int8_t *dqd, *dqu;
+        cudaMalloc((void**) &dqd, pd.size());
+        cudaMalloc((void**) &dqu, pu.size());
+        cudaMemcpy(dqd, pd.data(), pd.size(), cudaMemcpyHostToDevice);
+        cudaMemcpy(dqu, pu.data(), pu.size(), cudaMemcpyHostToDevice);
+        cudaMemcpy(dR, R.data(), R.size() * 4, cudaMemcpyHostToDevice);
+        for (int T = t_lo; T <= t_hi; ++T) {
+            double us[2] = {1e30, 1e30};
+            for (int round = 0; round < 3; ++round)
+                for (int q = 0; q < 2; ++q) {
+                    K::FusedGrArgs a[TM];
+                    for (int t = 0; t < T; ++t) {
+                        a[t].R = a[t].R_out = dR + (size_t) t * D;
+                        a[t].apply = true;
+                        a[t].bo_prev = dbo + (size_t) t * N;
+                        a[t].inj_prev = dinj + (size_t) t * HC;
+                        a[t].w_norm = dwn;
+                        a[t].w_down = q ? nullptr : dwd;
+                        a[t].w_up = q ? nullptr : dwu;
+                        a[t].w_down_q8 = q ? dqd : nullptr;
+                        a[t].w_up_q8 = q ? dqu : nullptr;
+                        a[t].w_inject = dwi;
+                        a[t].lo = dlo + (size_t) t * LR;
+                        a[t].rs = drs + (size_t) t * HC;
+                        a[t].inject_out = dio + (size_t) t * HC;
+                        a[t].mixed = dmix + (size_t) t * N;
+                    }
+                    for (int i = 0; i < 20; ++i)
+                        K::fused_gr_read_multi(a, T, dxn, s);
+                    cudaEventRecord(e0, s);
+                    for (int i = 0; i < iters; ++i)
+                        K::fused_gr_read_multi(a, T, dxn, s);
+                    cudaEventRecord(e1, s);
+                    cudaEventSynchronize(e1);
+                    float ms = 0;
+                    cudaEventElapsedTime(&ms, e0, e1);
+                    us[q] = std::fmin(us[q], 1e3 * ms / iters);
+                }
+            std::printf("T %d | bf16 %6.1f us  q8_0 %6.1f us\n", T, us[0], us[1]);
+        }
+        return 0;
+    }
     for (int T = t_lo; T <= t_hi; ++T)
         for (int apply = 0; apply < 2; ++apply)
             for (int inject = 0; inject < 2; ++inject) {
