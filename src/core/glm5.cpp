@@ -573,6 +573,8 @@ struct Glm5Engine::Impl {
     // (GUILD_GLM_ZC=0, read each window: the copies).  x_on_host: layer_ffn_begin's pre-mix wrote h_x.
     bool zc = true;
     bool x_on_host = false;
+    // cpu_ffn: the window's first token the CPU computes (a draft's NextN pass reads its last row only)
+    int cpu_t_first = 0;
     void ffn_begin(const Layer& Y, int T);
     /// y_used (when given): where the FFN's output rows are, io.y or (zero copy) the CPU's mapped io.h_y
     /// y_add (when given): with a GPU half and zero copy, the CPU's rows for the caller's next kernel to add (the
@@ -1664,7 +1666,7 @@ void Glm5Engine::Impl::cpu_ffn(const Layer& Y, int T, const Rows& io) {
     // shared expert's twin for a pipelined group)
     const bool own = !Y.ffn_gpu || on_twin(Y, io.twin, io.dtwin);
     xp.run(*pool, g.n_embd, T, kMaxT, Y.moe ? io.h_ids : nullptr, io.h_w, (int) g.n_used, Y.experts,
-           own ? &Y.ffn_cpu : nullptr, io.h_x, io.h_y);
+           own ? &Y.ffn_cpu : nullptr, io.h_x, io.h_y, false, cpu_t_first);
 }
 
 void Glm5Engine::Impl::ffn_begin(const Layer& Y, int T) {
@@ -2160,8 +2162,19 @@ bool Glm5Engine::Impl::mtp_window(const int32_t* tokens, int T, int64_t pos0, co
     glm5k::rms_norm(mx, Y.attn_norm, xn, (int) N, T, g.rms_eps, st);
     attn_dsa(Y, T, pos0);
     glm5k::add(mx, y, (int64_t) T * N, st);
+    // A catch-up pass's rows are there for the keys and values the attention stored: nothing reads their FFN.  A
+    // draft reads the last row's: the CPU computes that token's routed experts alone, in the order the window's tokens
+    // give them, so the row is the one the whole window computes, bit for bit (GUILD_GLM_MTP_FFN_ALL=1, read each
+    // pass: every row's)
+    const char* all_rows = std::getenv("GUILD_GLM_MTP_FFN_ALL");
+    const bool every = all_rows && all_rows[0] == '1';
+    if (!draft && !every)
+        return true;
     glm5k::rms_norm(mx, Y.ffn_norm, xn, (int) N, T, g.rms_eps, st);
-    if (!ffn(Y, T, err))
+    cpu_t_first = every ? 0 : T - 1;
+    const bool ffn_ok = ffn(Y, T, err);
+    cpu_t_first = 0;
+    if (!ffn_ok)
         return false;
     glm5k::add(mx, y, (int64_t) T * N, st);
     if (draft) {

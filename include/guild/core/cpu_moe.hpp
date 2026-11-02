@@ -249,8 +249,11 @@ int act_type(int gu_type);
 /// one row partition, and the partition follows the window's experts).
 class Experts {
 public:
+    /// t_first: the tokens before it are not computed (their rows of y are 0); the groups keep the order the whole
+    /// window's tokens give them, so a computed token's sums are the ones the whole window computes
     void run(Pool& pool, int64_t n_embd, int T, int max_t, const int32_t* ids, const float* w, int n_used,
-             const std::vector<CpuFfn>& experts, const CpuFfn* own, const float* x, float* y, bool single = false);
+             const std::vector<CpuFfn>& experts, const CpuFfn* own, const float* x, float* y, bool single = false,
+             int t_first = 0);
     /// GUILD_GLM_TIMING-style phase totals, milliseconds: activations, gate/up, hidden, down, and gate/up and down as
     /// one phase (GUILD_CPU_MOE_FLOW); and the weight bytes the gate/up and down phases read (each FFN's rows once)
     double phase_ms[5] = {0, 0, 0, 0, 0};

@@ -378,7 +378,8 @@ bool place_ffns(Pool& pool, const std::vector<CpuFfn*>& all, int64_t N, bool spl
 // ---- the expert phases --------------------------------------------------------------------------------------------
 
 void Experts::run(Pool& pool, int64_t N, int T, int max_t, const int32_t* ids, const float* wts, int n_used,
-                  const std::vector<CpuFfn>& experts, const CpuFfn* own, const float* x, float* y, bool single) {
+                  const std::vector<CpuFfn>& experts, const CpuFfn* own, const float* x, float* y, bool single,
+                  int t_first) {
     ggml_cpu_ready();
     // Groups: one FFN slice and the tokens it serves (a routed expert and the tokens routed to it, or the layer's own
     // FFN for every token).  Units: (group, token) pairs, each with its hidden activation.
@@ -391,18 +392,32 @@ void Experts::run(Pool& pool, int64_t N, int T, int max_t, const int32_t* ids, c
     std::vector<Group> groups;
     std::vector<int> unit_t, unit_g;
     std::vector<float> unit_w;
+    t_first = std::clamp(t_first, 0, T);
     if (ids) {
+        // the experts in the order the window's tokens first name them, those a computed token names
         std::vector<int> group_of(experts.size(), -1);
+        std::vector<int> order;
         for (int t = 0; t < T; ++t)
             for (int j = 0; j < n_used; ++j) {
                 const int ex = ids[t * n_used + j];
-                if (group_of[(size_t) ex] < 0) {
-                    group_of[(size_t) ex] = (int) groups.size();
-                    Group gr;
-                    gr.f = experts[(size_t) ex];
-                    groups.push_back(std::move(gr));
+                if (group_of[(size_t) ex] == -1) {
+                    group_of[(size_t) ex] = -2;
+                    order.push_back(ex);
                 }
-                const int gi = group_of[(size_t) ex];
+            }
+        for (int t = t_first; t < T; ++t)
+            for (int j = 0; j < n_used; ++j)
+                group_of[(size_t) ids[t * n_used + j]] = -3;
+        for (int ex : order)
+            if (group_of[(size_t) ex] == -3) {
+                group_of[(size_t) ex] = (int) groups.size();
+                Group gr;
+                gr.f = experts[(size_t) ex];
+                groups.push_back(std::move(gr));
+            }
+        for (int t = t_first; t < T; ++t)
+            for (int j = 0; j < n_used; ++j) {
+                const int gi = group_of[(size_t) ids[t * n_used + j]];
                 groups[(size_t) gi].units.push_back((int) unit_t.size());
                 unit_t.push_back(t);
                 unit_g.push_back(gi);
@@ -413,7 +428,7 @@ void Experts::run(Pool& pool, int64_t N, int T, int max_t, const int32_t* ids, c
         Group gr;
         gr.f = *own;
         const int gi = (int) groups.size();
-        for (int t = 0; t < T; ++t) {
+        for (int t = t_first; t < T; ++t) {
             gr.units.push_back((int) unit_t.size());
             unit_t.push_back(t);
             unit_g.push_back(gi);

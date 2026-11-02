@@ -20,14 +20,14 @@
 //   overrides it, 0 for the whole head)
 //
 //   A/B arms (several decodes in one process: the same load and context):
-//   --ab VAR=a,b [--reps N]: the decode N times (default 3) with VAR=a then VAR=b; repeated, --ab sets several
+//   --ab VAR=a,b [--reps N]: the decode N times (default 3) with VAR=a then VAR=b, the order reversed every other
+//   round (a b, b a, a b, ...: a drift over the run weighs on both arms alike); repeated, --ab sets several
 //   variables an arm (VAR1=a,b --ab VAR2=c,d: arms {a, c} and {b, d}).  Two variables are glm5_run's own:
 //   GLM5_RUN_PLAIN=1 decodes without the drafts (with --spec: speculative and plain decoding in one A/B; on
 //   GLM-5.3-Flash they part after a few tokens unless GUILD_GLM_SHEXP_SPLIT=0, since a verify window's second token
 //   computes its shared experts on the CPU) and GLM5_RUN_DRAFT_VOCAB=1 / 0 drafts over the --draft-vocab subset /
 //   the whole head
-//   --ab (no VAR=): the arms GLM5_RUN_DRAFT_VOCAB=1 and =0 ("subset" and "full"), which goes first alternating by
-//   round
+//   --ab (no VAR=): the arms GLM5_RUN_DRAFT_VOCAB=1 and =0 ("subset" and "full")
 //   --plain: one more arm, GLM5_RUN_PLAIN=1 ("plain")
 //   --repeat N: the same as --reps N
 //   Without --prompts, every arm decodes from a snapshot of the state after the prompt; the arms' ids must be equal
@@ -278,13 +278,15 @@ int main(int argc, char** argv) {
         for (const auto& v : arm.env)
             setenv(v.first.c_str(), v.second.c_str(), 1);
     };
-    // --ab (the draft subset A/B): which arm goes first alternates by round; --plain's arm stays last
+    // the A/B arms run in reverse order every other round (A B, B A, ...: a drift over the run weighs on every arm
+    // alike); --plain's arm stays last
     auto arm_order = [&](int round) {
         std::vector<size_t> order;
         for (size_t a = 0; a < arms.size(); ++a)
             order.push_back(a);
-        if (ab_vocab && round % 2 == 1)
-            std::swap(order[0], order[1]);
+        const size_t n_ab = plain_arm ? arms.size() - 1 : arms.size();
+        if (round % 2 == 1 && n_ab > 1)
+            std::reverse(order.begin(), order.begin() + (long) n_ab);
         return order;
     };
 
