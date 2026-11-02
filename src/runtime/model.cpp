@@ -710,16 +710,20 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
             sp.dense_vram_bytes += impl->native_dense.weight_bytes();
         }
     } else if (!shards.empty()) {
-        guild::core::NativeDense::set_q6k(plan.dense_q6k);
+        guild::core::NativeDense::set_dense_type(plan.dense_type);
         if (!impl->native_dense.load(shards, impl->wt, error_msg, true)) {
             return nullptr;
         }
         sp.container_opens += static_cast<int64_t>(shards.size());
         sp.dense_device_allocs += static_cast<int64_t>(skip.size());
         sp.dense_vram_bytes += impl->native_dense.weight_bytes();
-        if (impl->native_dense.requantized() > 0)
-            std::fprintf(stderr, "guild: %zu dense matrices re-quantized Q8_0 -> Q6_K (--dense q6_k), %.0f MiB\n",
-                         impl->native_dense.requantized(), (double) impl->native_dense.weight_bytes() / 1048576.0);
+        if (impl->native_dense.requantized() > 0) {
+            const int t = guild::core::NativeDense::requant_type();
+            const char* name = t == 13 ? "Q5_K" : t == 12 ? "Q4_K" : "Q6_K";
+            std::fprintf(stderr, "guild: %zu dense matrices re-quantized Q8_0 -> %s (--dense), %.0f MiB\n",
+                         impl->native_dense.requantized(), name,
+                         (double) impl->native_dense.weight_bytes() / 1048576.0);
+        }
         if (impl->native_dense.hc_q8_count() > 0)
             std::fprintf(stderr,
                          "guild: %zu hyper-connection matrices as the GGUF's Q8_0 blocks (--hc q8_0), %.0f MiB; their "

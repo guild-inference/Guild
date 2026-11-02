@@ -35,9 +35,12 @@ public:
     /// Layer split: load only blocks [lb, le) (every other `blk.N.` projection belongs to another GPU's stage; the
     /// PLE tensors are loaded everywhere).  Process-wide, read by the next `load`; (-1, -1) = all layers.
     static void set_layer_range(int lb, int le);
-    /// Q8_0 matrices of 2048 or more rows (rows of whole 256-value blocks) uploaded as Q6_K (--dense q6_k; also
-    /// GUILD_DENSE=q6_k).  Process-wide, read by the next `load`.
-    static void set_q6k(bool on);
+    /// Q8_0 matrices of 2048 or more rows (rows of whole 256-value blocks) uploaded as this ggml type: 14 (Q6_K,
+    /// --dense q6_k; also GUILD_DENSE=q6_k), 13 (Q5_K) or 12 (Q4_K); 0 as the GGUF has them.  Process-wide, read by
+    /// the next `load`.
+    static void set_dense_type(int ggml_type);
+    /// the type set_dense_type (or GUILD_DENSE) asks for, 0 for none
+    static int requant_type();
     /// --hc q8_0 (also GUILD_HC=q8_0): every layer's hyper-connection down and up matrix (`blk.N.hc_{attn,ffn}_
     /// {down,up}.weight`) from the GGUF's own Q8_0 blocks instead of the pack's bf16 rounding of them: `served_names`
     /// adds them to the arena's skip set, `load` uploads them (WeightRef::hc_q8).  The caller checks that the CUDA
@@ -54,7 +57,7 @@ public:
     size_t tensor_count() const {
         return weights_.size();
     }
-    /// matrices uploaded as Q6_K out of Q8_0 (GUILD_DENSE=q6_k)
+    /// matrices uploaded as requant_type() out of Q8_0 (--dense)
     size_t requantized() const {
         return requantized_;
     }

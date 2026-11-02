@@ -734,6 +734,145 @@ __global__ void __launch_bounds__(NW * 32, 4)
     }
 }
 
+// Q5_K rows (ggml's layout) times Q8_1 activations, one or two tokens: native_mmvq's vec_dot_q5_K_q8_1 in the order of
+// its one-token kernel (four warps a row, sixteen threads a block at two ints each, eight blocks an iteration: thread
+// t's sum takes blocks t / 16, t / 16 + 8, ...; the warps' sums added in order, then the lanes), so every output is
+// bitwise that kernel's.  A warp a row, in a loop over rows as q6k_rows_k's, its blocks staged in shared memory eight
+// at a time with 16-byte loads (176-byte blocks keep a row 16-byte aligned), the next eight loading while it reads
+// these: lanes 0-15 take a pair's even block and 16-31 its odd one, lane l standing for the threads l, 32 + l, 64 + l
+// and 96 + l of that kernel, whose sums are acc[0 .. 3].  (native_mmvq's own Q5_K kernel reads each int with its own
+// load: 163 against Q6_K's 211 GB/s for 4096 x 24576 on a GTX 1070.)
+constexpr int kQ5Block = 176, kQ5Chunk = 8, kQ5WarpBytes = kQ5Chunk * kQ5Block;
+
+// vec_dot_q5_K_q8_1 for the thread whose iqs / 2 is `i2` (0 .. 15): blk is the Q5_K block (dm, scales[12], qh[32],
+// qs[128]), xb its 256 values' eight Q8_1 blocks
+__device__ __forceinline__ float q5k_dot(const uint8_t* blk, const uint8_t* xb, int i2) {
+    const int bq8_offset = 2 * (i2 / 4);
+    const int* ql = reinterpret_cast<const int*>(blk + 48 + 16 * bq8_offset + 4 * (i2 % 4));
+    const int* qh = reinterpret_cast<const int*>(blk + 16 + 4 * (i2 % 4));
+    int vl[2], vh[2], u[4];
+    float d8[2];
+    vl[0] = ql[0];
+    vl[1] = ql[4];
+    vh[0] = qh[0] >> bq8_offset;
+    vh[1] = qh[4] >> bq8_offset;
+    const uint16_t* scales = reinterpret_cast<const uint16_t*>(blk + 4);
+    const int j = bq8_offset / 2;
+    const int jm = j & 1;
+    const uint32_t s0 = scales[jm];
+    const uint32_t s2 = scales[jm + 2];
+    const uint32_t s4 = scales[jm + 4];
+    const uint32_t hi = uint32_t(-int32_t(j >= 2));
+    uint16_t aux[2];
+    aux[0] = uint16_t(((s0 & 0x3f3f) & ~hi) | ((((s4 >> 0) & 0x0f0f) | ((s0 & 0xc0c0) >> 2)) & hi));
+    aux[1] = uint16_t(((s2 & 0x3f3f) & ~hi) | ((((s4 >> 4) & 0x0f0f) | ((s2 & 0xc0c0) >> 2)) & hi));
+    const uint8_t* sc = reinterpret_cast<const uint8_t*>(aux);
+    const uint8_t* m = sc + 2;
+#pragma unroll
+    for (int i = 0; i < 2; ++i) {
+        const Q81& q = *reinterpret_cast<const Q81*>(xb + (bq8_offset + i) * kQ6Q81);
+        d8[i] = __low2float(q.ds);
+        const int* q8 = reinterpret_cast<const int*>(q.qs) + (i2 % 4);
+        u[2 * i] = q8[0];
+        u[2 * i + 1] = q8[4];
+    }
+    float sumf_d = 0.0f;
+    float sumf_m = 0.0f;
+#pragma unroll
+    for (int i = 0; i < 2; ++i) {
+        const int vl0i = (vl[0] >> (4 * i)) & 0x0f0f0f0f;
+        const int vl1i = (vl[1] >> (4 * i)) & 0x0f0f0f0f;
+        const int vh0i = ((vh[0] >> i) << 4) & 0x10101010;
+        const int vh1i = ((vh[1] >> i) << 4) & 0x10101010;
+        const int v0i = vl0i | vh0i;
+        const int v1i = vl1i | vh1i;
+        const int dot1 = __dp4a(v0i, u[2 * i], __dp4a(v1i, u[2 * i + 1], 0));
+        const int dot2 = __dp4a(0x01010101, u[2 * i], __dp4a(0x01010101, u[2 * i + 1], 0));
+        sumf_d += d8[i] * (dot1 * sc[i]);
+        sumf_m += d8[i] * (dot2 * m[i]);
+    }
+    const float2 dm5f = __half22float2(*reinterpret_cast<const __half2*>(blk));
+    return dm5f.x * sumf_d - dm5f.y * sumf_m;
+}
+
+template <int T, int NW>
+__global__ void __launch_bounds__(NW * 32, 4) q5k_rows_k(const uint8_t* __restrict__ W, const uint8_t* __restrict__ x,
+                                                         float* __restrict__ y, int n_in, int n_out) {
+    extern __shared__ __align__(16) uint8_t smem[];
+    const int nb = n_in / 256, xb = n_in / 32, xbytes = T * xb * kQ6Q81;
+    for (int o = threadIdx.x * 16; o < xbytes; o += NW * 32 * 16)
+        *reinterpret_cast<int4*>(smem + o) = __ldg(reinterpret_cast<const int4*>(x + o));
+    __syncthreads();
+    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
+    const int stride = gridDim.x * NW;
+    int row = blockIdx.x * NW + warp;
+    if (row >= n_out)
+        return;
+    const size_t rb = (size_t) nb * kQ5Block;
+    uint8_t* sm = smem + xbytes + warp * kQ5WarpBytes;
+    const int half = lane >> 4, i2 = lane & 15;
+    constexpr int kV = (kQ5WarpBytes / 16 + 31) / 32; // 16-byte pieces a lane carries (3)
+    int4 pf[kV];
+    int pf_n16 = 0;
+    // a chunk's 16-byte pieces (whole: 176-byte blocks)
+    auto fetch = [&](const uint8_t* src, int bytes) {
+        pf_n16 = bytes / 16;
+#pragma unroll
+        for (int k = 0; k < kV; ++k)
+            if (lane + 32 * k < pf_n16)
+                pf[k] = __ldg(reinterpret_cast<const int4*>(src) + lane + 32 * k);
+    };
+    const uint8_t* wr = W + (size_t) row * rb;
+    fetch(wr, min(kQ5Chunk, nb) * kQ5Block);
+    float acc[T][4];
+    while (true) {
+#pragma unroll
+        for (int t = 0; t < T; ++t)
+            acc[t][0] = acc[t][1] = acc[t][2] = acc[t][3] = 0.f;
+        const int next = row + stride;
+        const uint8_t* wn = next < n_out ? W + (size_t) next * rb : nullptr;
+        for (int c0 = 0; c0 < nb; c0 += kQ5Chunk) {
+            const int cn = min(kQ5Chunk, nb - c0);
+            __syncwarp();
+            const int n16 = pf_n16;
+#pragma unroll
+            for (int k = 0; k < kV; ++k)
+                if (lane + 32 * k < n16)
+                    reinterpret_cast<int4*>(sm)[lane + 32 * k] = pf[k];
+            if (c0 + kQ5Chunk < nb)
+                fetch(wr + (size_t) (c0 + kQ5Chunk) * kQ5Block, min(kQ5Chunk, nb - c0 - kQ5Chunk) * kQ5Block);
+            else if (wn)
+                fetch(wn, min(kQ5Chunk, nb) * kQ5Block);
+            __syncwarp();
+#pragma unroll 2
+            for (int b = 0; b < cn; b += 2) { // the pair (c0 + b, c0 + b + 1): the oracle's thread sums (b / 2) % 4
+                const int bb = b + half;
+                if (bb < cn) {
+                    const uint8_t* blk = sm + bb * kQ5Block;
+                    const int kbx = c0 + bb, a = ((c0 + b) >> 1) & 3;
+#pragma unroll
+                    for (int t = 0; t < T; ++t)
+                        acc[t][a] += q5k_dot(blk, smem + ((size_t) t * xb + kbx * 8) * kQ6Q81, i2);
+                }
+            }
+        }
+#pragma unroll
+        for (int t = 0; t < T; ++t) {
+            float v = acc[t][0];
+            v += acc[t][1];
+            v += acc[t][2];
+            v += acc[t][3];
+            v = warp_sum(v);
+            if (lane == 0)
+                y[(size_t) t * n_out + row] = v;
+        }
+        if (!wn)
+            break;
+        row = next;
+        wr = wn;
+    }
+}
+
 // Q8_0 rows times Q8_1 activations, the same way: native_mmvq's order (four lanes a block, a lane's two ints at
 // 2 * (lane % 4), blocks lane / 4 + 8 y + 32 i for its four sums y, added in order, then the lanes), so bitwise its
 // one-token result, with a warp per row staging 32 blocks (1088 bytes) at a time with 16-byte loads.
@@ -1915,6 +2054,33 @@ void q6k_mmvq_rows(const void* W, const int32_t* ids, int n_ids, const void* xq8
     else
         q6k_mmvq_k<1, 8, true><<<(unsigned) ((n_ids + 7) / 8), 256, sh, S(st)>>>(
             (const uint8_t*) W, (const uint8_t*) xq8_1, y, n_in, n_ids, ids);
+}
+
+bool q5k_mmvq_supported(int n_in, int n_out, int T) {
+    // the activations of T tokens beside eight warps' staged chunks in a block's 48 KiB (before Volta)
+    return n_in % 256 == 0 && n_out >= 1 && T >= 1 && T <= 2 &&
+           (size_t) T * (n_in / 32) * kQ6Q81 + 8 * kQ5WarpBytes <= 48 * 1024;
+}
+
+void q5k_mmvq(const void* W, const void* xq8_1, float* y, int n_in, int n_out, int T, void* st) {
+    // as many blocks as the GPU holds at once (the widest rows' shared memory), at most a block per 8 rows
+    static const int resident = [] {
+        int dev = 0, sms = 0, per_sm = 0;
+        cudaGetDevice(&dev);
+        cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, dev);
+        cudaOccupancyMaxActiveBlocksPerMultiprocessor(&per_sm, q5k_rows_k<1, 8>, 256,
+                                                      (size_t) (16384 / 32) * kQ6Q81 + 8 * kQ5WarpBytes);
+        cudaGetLastError();
+        return std::max(1, sms) * std::max(1, per_sm);
+    }();
+    const unsigned grid = (unsigned) std::min(resident, (n_out + 7) / 8);
+    const size_t sh = (size_t) T * (n_in / 32) * kQ6Q81 + 8 * kQ5WarpBytes;
+    const auto* w = (const uint8_t*) W;
+    const auto* x = (const uint8_t*) xq8_1;
+    if (T == 1)
+        q5k_rows_k<1, 8><<<grid, 256, sh, S(st)>>>(w, x, y, n_in, n_out);
+    else
+        q5k_rows_k<2, 8><<<grid, 256, sh, S(st)>>>(w, x, y, n_in, n_out);
 }
 
 bool q8_0_mmvq_supported(int n_in, int n_out, int T) {

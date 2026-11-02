@@ -1,21 +1,21 @@
 // tests/core/glm5_run.cpp - GLM-5.3-Flash from token ids: greedy decode, timings, and the prompt's last logits.
 //
 //   glm5_run <gguf shard> <prompt> [new tokens] [--logits out.f32] [--threads N] [--ctx N]
-//            [--step] [--spec] [--no-mtp] [--no-numa] [--no-prefault] [--q6k | --q8]
+//            [--step] [--spec] [--no-mtp] [--no-numa] [--no-prefault] [--q6k | --q8 | --q5k | --q4k]
 //   <prompt>: comma-separated ids, @<file> for a file of ids (separated by commas, spaces or newlines: argv holds
 //   ~18k ids at most), or text:<file> with --tokenizer
 //   --tokenizer <dir>: the tokenizer that encodes a text:<file> prompt and decodes the output (printed to stderr)
 //   --prompt-tokens N: the prompt's first N ids (a long text cut to a context's length)
 //   --save-ids <file>: write the prompt's ids (comma-separated) to <file>; with "-" for the gguf, only that
 //   --spec: decode with the NextN block's drafts (greedy; the output equals plain greedy decoding with
-//   GUILD_GLM_SHEXP_SPLIT=0, and leaves it by default: see main_window in src/core/glm5.cpp)
+//   GUILD_GLM_SHEXP_SPLIT=0 or --q5k / --q4k, and leaves it otherwise: see main_window in src/core/glm5.cpp)
 //   --oracle <file>: --spec with the drafts replaced by a plain greedy output (tests the accept path)
 //   --step: the prompt one token at a time, as decode runs, instead of windows of 64
 //   --no-numa: the experts stay in the GGUF mapping instead of half of each on either NUMA node
 //   --dump <file>: append every decode step's logits (the row that picks the next token) to <file>; with --spec
 //   a window's rows that pick tokens (the first, and the second when the draft is accepted), so the files compare
 //   --q6k / --q8: the attention's Q8_0 matrices re-quantized to Q6_K, or kept (default: Q6_K when Q8_0 would hold
-//   less context than --ctx, up to 16k tokens)
+//   less context than --ctx, up to 16k tokens); --q5k / --q4k: to Q5_K / Q4_K, the shared experts' GPU copies too
 //   --draft-vocab <file>: drafts over this token subset of the head (tools/draft_vocab.py; GUILD_GLM_DRAFT_VOCAB
 //   overrides it, 0 for the whole head)
 //
@@ -146,6 +146,10 @@ int main(int argc, char** argv) {
             opt.dense = guild::core::Glm5Dense::Q6_K;
         else if (a == "--q8")
             opt.dense = guild::core::Glm5Dense::Q8_0;
+        else if (a == "--q5k")
+            opt.dense = guild::core::Glm5Dense::Q5_K;
+        else if (a == "--q4k")
+            opt.dense = guild::core::Glm5Dense::Q4_K;
         else if (a == "--oracle" && i + 1 < argc) { // test: drafts are this greedy output's tokens (all accepted)
             std::string line;
             std::ifstream f(argv[++i]);
@@ -295,7 +299,14 @@ int main(int argc, char** argv) {
         std::vector<double> draft_one; // and its ms
     };
     auto argmax = [](const float* l, size_t n) { return (int32_t) (std::max_element(l, l + n) - l); };
-    auto is_eos = [&](int32_t t) { return std::find(g.eos_ids.begin(), g.eos_ids.end(), t) != g.eos_ids.end(); };
+    // GLM5_RUN_IGNORE_EOS=1: decode past an end token (arms whose texts differ decode the same number of tokens)
+    const bool ignore_eos = [] {
+        const char* e = std::getenv("GLM5_RUN_IGNORE_EOS");
+        return e && e[0] == '1';
+    }();
+    auto is_eos = [&](int32_t t) {
+        return !ignore_eos && std::find(g.eos_ids.begin(), g.eos_ids.end(), t) != g.eos_ids.end();
+    };
     auto decode = [&](Decode& r, int64_t n_prompt, const std::vector<float>& first) -> bool {
         int64_t pos = n_prompt;
         auto tstep = std::chrono::steady_clock::now();

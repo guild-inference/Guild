@@ -78,6 +78,10 @@ void set_one_wave(bool on);
 /// One token over a subset of the rows (q6k_mmvq_supported(n_in, n, 1)): y[i] = row ids[i] times the token, bitwise
 /// q6k_mmvq's y[ids[i]] (the draft head over a token subset)
 void q6k_mmvq_rows(const void* W, const int32_t* ids, int n_ids, const void* xq8_1, float* y, int n_in, void* st);
+/// Q5_K rows times one or two tokens of Q8_1 activations (q5k_mmvq_supported): y[t][r], bitwise
+/// guild::kernels::native_mmvq's one-token result, a warp a row through shared memory (16-byte loads)
+bool q5k_mmvq_supported(int n_in, int n_out, int T);
+void q5k_mmvq(const void* W, const void* xq8_1, float* y, int n_in, int n_out, int T, void* st);
 /// The same for Q8_0 rows (bitwise native_mmvq's one-token result)
 bool q8_0_mmvq_supported(int n_in, int n_out, int T);
 void q8_0_mmvq(const void* W, const void* xq8_1, float* y, int n_in, int n_out, int T, void* st);

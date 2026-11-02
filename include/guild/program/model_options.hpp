@@ -27,7 +27,7 @@ struct ModelOptions {
     double pcie_fraction = -1.0;
     std::string prefill = "auto";
     int64_t prefill_rows = 0;     ///< --prefill-rows: compute the prompt chunks as chunks of this many tokens (0: off)
-    std::string dense = "native"; ///< --dense: native, or q6_k (the GPU's Q8_0 matrices re-quantized at load)
+    std::string dense = "native"; ///< --dense: native, or q6_k / q5_k / q4_k (Q8_0 matrices re-quantized at load)
     std::string hc = "bf16";      ///< --hc: bf16, or q8_0 (the hyper-connection down/up as the GGUF's Q8_0 blocks)
     int defer_experts = 0;        ///< --defer-experts: expert deferral's immediate experts (0: off)
     int spec = 4;

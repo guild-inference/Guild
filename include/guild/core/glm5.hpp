@@ -33,7 +33,9 @@ struct Glm5Geometry {
 enum class Glm5Dense {
     Auto,
     Q8_0,
-    Q6_K
+    Q6_K,
+    Q5_K, ///< the attention and the shared experts' GPU copies (Glm5Options::dense)
+    Q4_K
 };
 
 struct Glm5Options {
@@ -48,7 +50,9 @@ struct Glm5Options {
     bool mtp = true;        ///< load the NextN block for speculative decoding (draft / verify / accept)
     bool nl4 = true;        ///< IQ3_S expert gate/up rows repacked for the CPU's faster decode (AVX2)
     /// the attention's largest Q8_0 matrices: as the GGUF has them, re-quantized to Q6_K (less VRAM and GPU time,
-    /// ~15 s more load), or Q6_K only when Q8_0 would hold less context than max_context (up to 16k tokens)
+    /// ~15 s more load), or Q6_K only when Q8_0 would hold less context than max_context (up to 16k tokens).  Q5_K and
+    /// Q4_K re-quantize the shared experts' GPU copies too (GUILD_GLM_SHEXP picks theirs), and change the output more
+    /// than Q6_K (bench/results/2026-11-02-decode-round6).
     Glm5Dense dense = Glm5Dense::Auto;
     /// the draft head's token subset (tools/draft_vocab.py: int32 token ids; GUILD_GLM_DRAFT_VOCAB overrides it, 0
     /// for none): drafts are the argmax over these rows of the output head only.  Empty: the whole head.

@@ -45,7 +45,7 @@ public:
     // MMVQ reads the weights once for up to 8 columns; beyond that each column costs about as much again (GTX 1070:
     // 0.20 ms for one column of a 4096 x 8192 Q8_0 matrix, 0.31 for 8, 2.75 for 64), so wider windows use MMQ
     static constexpr int kMmvqCols = 8;
-    static constexpr int kQ8_0 = 8, kQ6_K = 14;
+    static constexpr int kQ8_0 = 8, kQ4_K = 12, kQ5_K = 13, kQ6_K = 14;
 
     /// Two activation buffers (xq[0], xq[1]) for windows of up to max_t tokens of up to `widest` values; with
     /// `allow_mmq` (and MMQ built) their MMQ twins and the launch tables.  alloc: the engine's device allocator.
@@ -66,8 +66,8 @@ public:
                 bounds[(size_t) 2 * t] = 0;
                 bounds[(size_t) 2 * t + 1] = t;
             }
-            if (!(xqm_[0] = alloc(mb)) || !(xqm_[1] = alloc(mb)) || !(bounds_ = (int32_t*) alloc(bounds.size() * 4)) ||
-                !(ids_ = (int32_t*) alloc((size_t) max_t * 4))) {
+            if (!(xqm_[0] = alloc(mb)) || !(xqm_[1] = alloc(mb)) || !(xqk_[0] = alloc(mb)) || !(xqk_[1] = alloc(mb)) ||
+                !(bounds_ = (int32_t*) alloc(bounds.size() * 4)) || !(ids_ = (int32_t*) alloc((size_t) max_t * 4))) {
                 err = "out of GPU memory for the MMQ activations";
                 return false;
             }
@@ -87,14 +87,17 @@ public:
         return false;
 #endif
     }
-    /// Admits m to MMQ: on the GPU, Q8_0 (or Q6_K when the build has its MMQ), rows a multiple of 256 values (MMQ
-    /// steps through a row 256 values at a time: a narrower one reads past it) and a tile that fits.  Q6_K takes the
-    /// activations Q8_0 does: llama.cpp quantizes both to q8_1 in the same D4 layout.
-    bool mark(GgufMat& m) const {
+    /// Admits m to MMQ: on the GPU, Q8_0 (or Q6_K, Q5_K, Q4_K when the build has their MMQ), rows a multiple of 256
+    /// values (MMQ steps through a row 256 values at a time: a narrower one reads past it) and a tile that fits.  Q6_K
+    /// takes the activations Q8_0 does (llama.cpp quantizes both to q8_1 in the same D4 layout); Q5_K and Q4_K take
+    /// them with each 32 values' sum beside its scale (DS4), which quant() then also writes.
+    bool mark(GgufMat& m) {
 #if defined(GUILD_GLM_MMQ)
         namespace mmq = guild::prefill::mmq;
-        const bool type_ok = m.type == kQ8_0 || (m.type == kQ6_K && mmq::supported(kQ6_K));
+        const bool type_ok =
+            m.type == kQ8_0 || ((m.type == kQ6_K || m.type == kQ5_K || m.type == kQ4_K) && mmq::supported(m.type));
         m.mmq = ctx_ && m.dev && type_ok && m.n_in % 256 == 0 && mmq::fits(m.type, m.n_out);
+        ds4_ = ds4_ || (m.mmq && (m.type == kQ5_K || m.type == kQ4_K));
 #else
         m.mmq = false;
 #endif
@@ -105,8 +108,11 @@ public:
     void quant(const float* x, int64_t n, int T, void* dst) {
         guild::kernels::native_quantize_q8_1(x, dst, (int) n, T, st_);
 #if defined(GUILD_GLM_MMQ)
-        if (T > kMmvqCols && ctx_)
+        if (T > kMmvqCols && ctx_) {
             guild::prefill::mmq::quantize(x, nullptr, dst == xq[0] ? xqm_[0] : xqm_[1], kQ8_0, n, n, T, st_);
+            if (ds4_)
+                guild::prefill::mmq::quantize(x, nullptr, dst == xq[0] ? xqk_[0] : xqk_[1], kQ4_K, n, n, T, st_);
+        }
 #endif
     }
     /// out [T][m.n_out] = the window xq_ (xq[0] or xq[1], quantized by quant()) times m's rows; returns the path taken
@@ -121,7 +127,8 @@ public:
             p.w_cols = m.n_in;
             p.expert_bytes = mmq::matrix_bytes(m.type, m.n_out, m.n_in);
             p.n = 1;
-            p.xq = xq_ == xq[0] ? xqm_[0] : xqm_[1];
+            const bool ds4 = m.type == kQ5_K || m.type == kQ4_K;
+            p.xq = xq_ == xq[0] ? (ds4 ? xqk_[0] : xqm_[0]) : (ds4 ? xqk_[1] : xqm_[1]);
             p.bounds = bounds_ + 2 * T;
             p.ids = ids_;
             p.total_rows = T;
@@ -132,9 +139,11 @@ public:
             return "mmq";
         }
 #endif
-        // one or two tokens of Q6_K / Q8_0: the staged kernels (bitwise native_mmvq's, fewer load instructions)
+        // one or two tokens of Q6_K / Q5_K / Q8_0: the staged kernels (bitwise native_mmvq's, fewer load instructions)
         if (m.type == kQ6_K && glm5k::q6k_mmvq_supported((int) m.n_in, (int) m.n_out, T))
             glm5k::q6k_mmvq(m.dev, xq_, out, (int) m.n_in, (int) m.n_out, T, st_);
+        else if (m.type == kQ5_K && glm5k::q5k_mmvq_supported((int) m.n_in, (int) m.n_out, T))
+            glm5k::q5k_mmvq(m.dev, xq_, out, (int) m.n_in, (int) m.n_out, T, st_);
         else if (m.type == kQ8_0 && glm5k::q8_0_mmvq_supported((int) m.n_in, (int) m.n_out, T))
             glm5k::q8_0_mmvq(m.dev, xq_, out, (int) m.n_in, (int) m.n_out, T, st_);
         else if (m.type == kQ8_0 && glm5k::q8_0_narrow_supported((int) m.n_in, T))
@@ -149,6 +158,8 @@ public:
 private:
     cudaStream_t st_ = nullptr;
     void* xqm_[2] = {nullptr, nullptr};
+    void* xqk_[2] = {nullptr, nullptr}; ///< the DS4 layout, for Q5_K / Q4_K
+    bool ds4_ = false;                  ///< some matrix mark() admitted takes it
     int32_t *bounds_ = nullptr, *ids_ = nullptr;
 #if defined(GUILD_GLM_MMQ)
     std::unique_ptr<guild::prefill::mmq::Context> ctx_;

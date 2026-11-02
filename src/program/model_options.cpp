@@ -66,9 +66,11 @@ const char* model_options_usage() {
            "  --prefill-rows <n>         Compute each prefill chunk as chunks of n tokens, streaming the experts once\n"
            "                             a chunk (e.g. --prefill 1024 --prefill-rows 512: 512's results where the\n"
            "                             expert products do not depend on rows an expert has; 0: off)\n"
-           "  --dense <native|q6_k>      The GPU's dense matrices as the GGUF has them (default), or its Q8_0 ones\n"
-           "                             of 2048+ rows re-quantized to Q6_K at load (fewer bytes a token; changes\n"
-           "                             the output slightly)\n"
+           "  --dense <native|q6_k|q5_k|q4_k>\n"
+           "                             The GPU's dense matrices as the GGUF has them (default), or its Q8_0 ones\n"
+           "                             of 2048+ rows re-quantized at load (fewer bytes a token; changes the\n"
+           "                             output slightly).  GLM-5.3-Flash: its attention matrices (default: Q6_K\n"
+           "                             when Q8_0 would leave less context than asked for)\n"
            "  --hc <bf16|q8_0>           The hyper-connection down/up matrices as the pack's bf16 rounding of the\n"
            "                             GGUF's Q8_0 blocks (default), or as those blocks themselves (half the\n"
            "                             bytes a token; changes the output slightly)\n"
@@ -145,8 +147,8 @@ int parse_model_option(int argc, char** argv, int& i, ModelOptions& o, const cha
         }
     } else if (a == "--dense") {
         o.dense = next("--dense");
-        if (o.dense != "native" && o.dense != "q6_k") {
-            std::fprintf(stderr, "--dense requires native or q6_k\n");
+        if (o.dense != "native" && o.dense != "q6_k" && o.dense != "q5_k" && o.dense != "q4_k") {
+            std::fprintf(stderr, "--dense requires native, q6_k, q5_k or q4_k\n");
             return 2;
         }
     } else if (a == "--hc") {
@@ -277,7 +279,7 @@ int load_model(ModelOptions& o, const char* program, LoadedModel& out) {
         plan.decode_strategy = o.decode_strategy; // checked by the model load
     plan.mtp_optional = o.mtp_optional;
     plan.prefill_rows = o.prefill_rows;
-    plan.dense_q6k = o.dense == "q6_k";
+    plan.dense_type = o.dense == "q6_k" ? 14 : o.dense == "q5_k" ? 13 : o.dense == "q4_k" ? 12 : 0;
     plan.hc_q8 = o.hc == "q8_0";
     plan.defer_experts = o.defer_experts;
 

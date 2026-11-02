@@ -1047,11 +1047,11 @@ static void test_staged_mmvq(int type) {
     cudaStreamCreate(&st);
     struct Shape {
         int n_in, n_out;
-    } shapes[] = {{4096, 1000}, {1536, 515}, {8192, 520}, {16384, 513}, {1536, 16384}};
+    } shapes[] = {{4096, 1000}, {1536, 515}, {8192, 520}, {16384, 513}, {1536, 16384}, {2304, 77}, {256, 9}};
     std::uniform_int_distribution<int> byte(0, 255);
     for (const Shape& sh : shapes) {
-        const bool q6 = type == 14;
-        const int bs = q6 ? 210 : 34, nb = sh.n_in / (q6 ? 256 : 32);
+        const bool q6 = type == 14, q5 = type == 13;
+        const int bs = q6 ? 210 : q5 ? 176 : 34, nb = sh.n_in / (q6 || q5 ? 256 : 32);
         std::vector<uint8_t> W((size_t) sh.n_out * nb * bs);
         for (size_t blk = 0; blk < (size_t) sh.n_out * nb; ++blk) {
             uint8_t* b = &W[blk * bs];
@@ -1059,10 +1059,16 @@ static void test_staged_mmvq(int type) {
                 b[i] = (uint8_t) byte(rng);
             const __half d = __float2half(0.001f * (float) (1 + byte(rng) % 50));
             std::memcpy(b + (q6 ? 208 : 0), &d, 2);
+            if (q5) { // dmin
+                const __half m = __float2half(0.001f * (float) (1 + byte(rng) % 50));
+                std::memcpy(b + 2, &m, 2);
+            }
         }
         uint8_t* dW = up(W);
         for (const int T : {1, 2}) {
-            if (!(q6 ? k::q6k_mmvq_supported(sh.n_in, sh.n_out, T) : k::q8_0_mmvq_supported(sh.n_in, sh.n_out, T)))
+            if (!(q6   ? k::q6k_mmvq_supported(sh.n_in, sh.n_out, T)
+                  : q5 ? k::q5k_mmvq_supported(sh.n_in, sh.n_out, T)
+                       : k::q8_0_mmvq_supported(sh.n_in, sh.n_out, T)))
                 continue;
             auto x = rnd((size_t) T * sh.n_in);
             float* dx = up(x);
@@ -1072,14 +1078,17 @@ static void test_staged_mmvq(int type) {
             float *dy, *dr;
             cudaMalloc(&dy, (size_t) T * sh.n_out * 4);
             cudaMalloc(&dr, (size_t) T * sh.n_out * 4);
-            (q6 ? k::q6k_mmvq : k::q8_0_mmvq)(dW, xq, dy, sh.n_in, sh.n_out, T, st);
+            (q6 ? k::q6k_mmvq : q5 ? k::q5k_mmvq : k::q8_0_mmvq)(dW, xq, dy, sh.n_in, sh.n_out, T, st);
             const size_t qrow = guild::kernels::native_q8_1_bytes(sh.n_in, 1);
             for (int t = 0; t < T; ++t)
                 guild::kernels::native_mmvq(type, dW, (const uint8_t*) xq + (size_t) t * qrow,
                                             dr + (size_t) t * sh.n_out, sh.n_in, sh.n_out, 1, st);
             const auto got = down(dy, (size_t) T * sh.n_out), ref = down(dr, (size_t) T * sh.n_out);
-            const std::string what = std::string(q6 ? "q6k_mmvq " : "q8_0_mmvq ") + std::to_string(sh.n_in) + "x" +
-                                     std::to_string(sh.n_out) + " T " + std::to_string(T) + " (bitwise)";
+            const std::string what = std::string(q6   ? "q6k_mmvq "
+                                                 : q5 ? "q5k_mmvq "
+                                                      : "q8_0_mmvq ") +
+                                     std::to_string(sh.n_in) + "x" + std::to_string(sh.n_out) + " T " +
+                                     std::to_string(T) + " (bitwise)";
             check(what.c_str(), got, ref, 0);
             cudaFree(dx);
             cudaFree(xq);
@@ -1200,7 +1209,8 @@ static int bench_q6k() {
     cudaStream_t st;
     cudaStreamCreate(&st);
     for (const Shape& sh : shapes) {
-        const size_t wb = (size_t) sh.n_out * (sh.n_in / 256) * 210, xb = (size_t) 2 * (sh.n_in / 32) * 36;
+        const size_t wb = (size_t) sh.n_out * (sh.n_in / 256) * 210, xb = (size_t) 2 * (sh.n_in / 32) * 36,
+                     wb5 = (size_t) sh.n_out * (sh.n_in / 256) * 176;
         void *w, *x;
         float* y;
         cudaMalloc(&w, wb);
@@ -1224,6 +1234,17 @@ static int bench_q6k() {
             cudaEventElapsedTime(&ms, a, b);
             std::printf("q6k_mmvq %-22s T %d: %7.1f us  %6.1f GB/s\n", sh.what, T, 1000.0 * ms / reps,
                         wb / (ms / reps * 1e-3) / 1e9);
+            // the same rows as Q5_K (the zero bytes are a valid block of either)
+            for (int i = 0; i < 3; ++i)
+                k::q5k_mmvq(w, x, y, sh.n_in, sh.n_out, T, st);
+            cudaEventRecord(a, st);
+            for (int i = 0; i < reps; ++i)
+                k::q5k_mmvq(w, x, y, sh.n_in, sh.n_out, T, st);
+            cudaEventRecord(b, st);
+            cudaEventSynchronize(b);
+            cudaEventElapsedTime(&ms, a, b);
+            std::printf("q5k_mmvq %-22s T %d: %7.1f us  %6.1f GB/s\n", sh.what, T, 1000.0 * ms / reps,
+                        wb5 / (ms / reps * 1e-3) / 1e9);
         }
         cudaFree(w);
         cudaFree(x);
@@ -1365,16 +1386,51 @@ static int bench_shapes() {
     struct Shape {
         const char* what;
         int type, n_in, n_out;
-    } shapes[] = {
-        {"qwen qkv", 8, 2560, 10240},        {"qwen gate", 8, 2560, 6144},      {"qwen ssm_out", 8, 6144, 2560},
-        {"qwen qkv q6", 14, 2560, 10240},    {"qwen gate q6", 14, 2560, 6144},  {"qwen ssm_out q6", 14, 6144, 2560},
-        {"qwen q q6", 14, 2560, 12288},      {"qwen out q6", 14, 4096, 2560},   {"qwen out", 8, 4096, 2560},
-        {"qwen shexp gu q6", 14, 2560, 640}, {"qwen q", 8, 2560, 12288},        {"qwen kv", 8, 2560, 512},
-        {"qwen shexp gu", 8, 2560, 640},     {"qwen shexp down", 8, 640, 2560}, {"qwen hc down", 8, 10240, 320},
-        {"qwen hc up", 8, 320, 10240},       {"qwen head", 14, 2560, 248320},   {"ornith qkv", 12, 2048, 8192},
-        {"ornith qkv q6", 14, 2048, 8192},   {"ornith gate", 12, 2048, 4096},   {"ornith out", 12, 4096, 2048},
-        {"ornith kv", 12, 2048, 512},        {"ornith v q6", 14, 2048, 512},    {"ornith shexp gu", 12, 2048, 512},
-        {"ornith shexp dn", 14, 512, 2048},  {"ornith head", 14, 2048, 248320}};
+    } shapes[] = {{"qwen qkv", 8, 2560, 10240},
+                  {"qwen gate", 8, 2560, 6144},
+                  {"qwen ssm_out", 8, 6144, 2560},
+                  {"qwen qkv q6", 14, 2560, 10240},
+                  {"qwen gate q6", 14, 2560, 6144},
+                  {"qwen ssm_out q6", 14, 6144, 2560},
+                  {"qwen q q6", 14, 2560, 12288},
+                  {"qwen out q6", 14, 4096, 2560},
+                  {"qwen out", 8, 4096, 2560},
+                  {"qwen shexp gu q6", 14, 2560, 640},
+                  {"qwen q", 8, 2560, 12288},
+                  {"qwen kv", 8, 2560, 512},
+                  {"qwen shexp gu", 8, 2560, 640},
+                  {"qwen shexp down", 8, 640, 2560},
+                  {"qwen hc down", 8, 10240, 320},
+                  {"qwen hc up", 8, 320, 10240},
+                  {"qwen head", 14, 2560, 248320},
+                  {"ornith qkv", 12, 2048, 8192},
+                  {"ornith qkv q6", 14, 2048, 8192},
+                  {"ornith gate", 12, 2048, 4096},
+                  {"ornith out", 12, 4096, 2048},
+                  {"ornith kv", 12, 2048, 512},
+                  {"ornith v q6", 14, 2048, 512},
+                  {"ornith shexp gu", 12, 2048, 512},
+                  {"ornith shexp dn", 14, 512, 2048},
+                  {"ornith head", 14, 2048, 248320},
+                  // Qwen3.8-Flash-Next's dense matrices as Q5_K
+                  {"qwen qkv q5", 13, 2560, 10240},
+                  {"qwen gate q5", 13, 2560, 6144},
+                  {"qwen ssm_out q5", 13, 6144, 2560},
+                  {"qwen q q5", 13, 2560, 12288},
+                  {"qwen out q5", 13, 4096, 2560},
+                  // GLM-5.3-Flash's attention matrices as Q6_K, Q5_K and Q4_K
+                  {"glm kda qkv q6", 14, 4096, 24576},
+                  {"glm kda qkv q5", 13, 4096, 24576},
+                  {"glm kda qkv q4", 12, 4096, 24576},
+                  {"glm kda out q6", 14, 8192, 4096},
+                  {"glm kda out q5", 13, 8192, 4096},
+                  {"glm kda out q4", 12, 8192, 4096},
+                  {"glm dsa qb q6", 14, 1536, 16384},
+                  {"glm dsa qb q5", 13, 1536, 16384},
+                  {"glm dsa qb q4", 12, 1536, 16384},
+                  {"glm dsa out q6", 14, 16384, 4096},
+                  {"glm dsa out q5", 13, 16384, 4096},
+                  {"glm dsa out q4", 12, 16384, 4096}};
     cudaStream_t st;
     cudaStreamCreate(&st);
     for (const Shape& sh : shapes) {
@@ -1391,11 +1447,15 @@ static int bench_shapes() {
             std::uniform_int_distribution<int> byte(0, 255);
             for (auto& v : hw)
                 v = (uint8_t) byte(rng);
-            const int bs = sh.type == 8 ? 34 : sh.type == 12 ? 144 : 210, at = sh.type == 14 ? 208 : 0;
+            const int bs = sh.type == 8    ? 34
+                           : sh.type == 12 ? 144
+                           : sh.type == 13 ? 176
+                                           : 210,
+                      at = sh.type == 14 ? 208 : 0;
             for (size_t b = 0; b + bs <= wb; b += bs) {
                 const __half d = __float2half(0.001f * (float) (1 + byte(rng) % 50));
                 std::memcpy(&hw[b + at], &d, 2);
-                if (sh.type == 12)
+                if (sh.type == 12 || sh.type == 13)
                     std::memcpy(&hw[b + 2], &d, 2);
             }
         }
@@ -1421,6 +1481,7 @@ static int bench_shapes() {
         std::printf("%-16s %-5s %6d x %-6d", sh.what,
                     sh.type == 8    ? "Q8_0"
                     : sh.type == 12 ? "Q4_K"
+                    : sh.type == 13 ? "Q5_K"
                                     : "Q6_K",
                     sh.n_in, sh.n_out);
         for (int ncols : {1, 2, 3, 4, 5, 8}) {
@@ -1605,6 +1666,7 @@ int main(int argc, char** argv) {
     test_f32_matvec();
     test_bf16_matvec();
     test_staged_mmvq(14);
+    test_staged_mmvq(13);
     test_staged_mmvq(8);
     test_mmvq_rows();
     test_narrow();

@@ -247,10 +247,15 @@ struct Glm5Engine::Impl {
         float *R, *post, *comb, *y, *ycpu, *h_x, *h_y, *h_w;
         int32_t* h_ids;
         cudaEvent_t ev;
-        bool twin; ///< the CPU computes the shared expert (its twin) for these rows
+        bool twin;  ///< the CPU computes the shared expert (its twin) for these rows
+        bool dtwin; ///< and a dense layer's FFN, whose other rows the GPU computes
     } rows0{};
-    bool twin = false;
-    void group_rows(int t0, cudaEvent_t e, bool tw = false) {
+    bool twin = false, dtwin = false;
+    /// whether these rows' FFN half of layer Y runs on its CPU twin
+    static bool on_twin(const Layer& Y, bool tw, bool dtw) {
+        return Y.ffn_twin && (Y.moe ? tw : dtw);
+    }
+    void group_rows(int t0, cudaEvent_t e, bool tw = false, bool dtw = false) {
         const int64_t N = g.n_embd, U = g.n_used;
         R = rows0.R + (size_t) t0 * 4 * N;
         post = rows0.post + (size_t) t0 * 4;
@@ -263,9 +268,10 @@ struct Glm5Engine::Impl {
         h_ids = rows0.h_ids + (size_t) t0 * U;
         ev = e;
         twin = tw;
+        dtwin = dtw;
     }
     Rows rows() const {
-        return {R, post, comb, y, ycpu, h_x, h_y, h_w, h_ids, ev, twin};
+        return {R, post, comb, y, ycpu, h_x, h_y, h_w, h_ids, ev, twin, dtwin};
     }
     std::unique_ptr<Launcher> launcher; // the pipelined window's GPU launches, beside the calling thread's CPU work
 
@@ -360,11 +366,12 @@ struct Glm5Engine::Impl {
         m.host = m.owned.data();
     }
     /// Q8_0 -> Q6_K on the host (Glm5Options::dense): 6.56 instead of 8.5 bits a weight for the GPU's largest
-    /// matrices.  The rows are dequantized exactly, then quantized as llama-quantize would (no importance matrix).
-    void requant_q6k(Mat& m) {
+    /// matrices (Q5_K, Q4_K: 5.5, 4.5).  The rows are dequantized exactly, then quantized as llama-quantize would (no
+    /// importance matrix).
+    void requant(Mat& m, ggml_type to) {
         if (m.type != kQ8_0 || m.n_in % 256 != 0)
             return;
-        const size_t q6_row = ggml_row_size(GGML_TYPE_Q6_K, m.n_in), q8_row = m.row_bytes();
+        const size_t q6_row = ggml_row_size(to, m.n_in), q8_row = m.row_bytes();
         m.owned.resize(q6_row * (size_t) m.n_out);
         const int64_t rows_per = 64;
         const int n_items = (int) ((m.n_out + rows_per - 1) / rows_per);
@@ -382,15 +389,14 @@ struct Glm5Engine::Impl {
                         out[b * 32 + k] = d * (float) (int8_t) q[b * 34 + 2 + k];
                 }
             }
-            ggml_quantize_chunk(GGML_TYPE_Q6_K, buf.data(), m.owned.data() + (size_t) r0 * q6_row, 0, nr, m.n_in,
-                                nullptr);
+            ggml_quantize_chunk(to, buf.data(), m.owned.data() + (size_t) r0 * q6_row, 0, nr, m.n_in, nullptr);
         };
         if (pool)
             pool->run(n_items, body);
         else
             for (int i = 0; i < n_items; ++i)
                 body(i);
-        m.type = GGML_TYPE_Q6_K;
+        m.type = to;
         m.host = m.owned.data();
         m.bytes = m.owned.size();
     }
@@ -571,6 +577,22 @@ struct Glm5Engine::Impl {
     // a pipelined window of one token a group that saves the state after its first token: group A's KDA state goes
     // to kda_mid alone and group B starts from there (GUILD_GLM_KDA_MID1=0, read each window: written twice)
     bool kda_mid1 = false;
+    // the attention's matrices as Q5_K or Q4_K (Glm5Options::dense): the GPU's half of a layer is the shorter one
+    bool narrow_attention = false;
+    // a dense layer's FFN on the GPU: the second group of a pipelined window computes it on the CPU (load)
+    bool dense_twin = true;
+    // the GPU's copies of the shared experts re-quantized at load to this ggml type (0: the GGUF's Q8_0): the
+    // attention's type when that is Q5_K or Q4_K; GUILD_GLM_SHEXP=q8_0 / q6_k / q5_k / q4_k picks one
+    int shexp_type = 0;
+    /// a FFN's bytes on the GPU: a shared expert's as shexp_type re-quantizes them
+    uint64_t ffn_gpu_bytes(const Layer& y) const {
+        uint64_t b = 0;
+        for (const Mat* m : {&y.gate, &y.up, &y.down})
+            b += y.moe && shexp_type && m->type == kQ8_0 && m->n_in % 256 == 0
+                     ? ggml_row_size((ggml_type) shexp_type, m->n_in) * (uint64_t) m->n_out
+                     : m->bytes;
+        return b;
+    }
     // read each window (switches for A/Bs in one process; the same bits either way): GUILD_GLM_MERGED=0 multiplies a
     // token's q, k and v as three products and its FFN's gate and up as two, GUILD_GLM_Q6K_ROWS=0 takes the
     // block-per-8-rows Q6_K kernel for every shape, GUILD_GLM_ONE_WAVE=0 the launches before glm5k::set_one_wave
@@ -875,17 +897,38 @@ bool Glm5Engine::Impl::load(const std::string& path, const Glm5Options& o, std::
     // holds all of them; 22.8 / 23.0 against 23.9 / 23.6 tok/s (glm5_run --spec, 768 tokens, GTX 1070 + 2x Xeon Gold
     // 6130).  Counting only the context, Q8_0 still fitted once the routers went bf16 (110 MiB less), and kept them
     // all on the CPU.
-    bool q6 = opt.dense == Glm5Dense::Q6_K;
+    {
+        // GUILD_GLM_SHEXP: the shared experts' GPU format, whatever --dense says
+        const char* e = std::getenv("GUILD_GLM_SHEXP");
+        const std::string v = e ? e : "";
+        shexp_type = v == "q6_k"                    ? 14
+                     : v == "q5_k"                  ? 13
+                     : v == "q4_k"                  ? 12
+                     : v == "q8_0"                  ? 0
+                     : opt.dense == Glm5Dense::Q5_K ? 13
+                     : opt.dense == Glm5Dense::Q4_K ? 12
+                                                    : 0;
+        if (shexp_type)
+            std::fprintf(stderr, "guild glm5: the shared experts on the GPU as %s (GUILD_GLM_SHEXP=q8_0 keeps Q8_0)\n",
+                         shexp_type == 14   ? "Q6_K"
+                         : shexp_type == 13 ? "Q5_K"
+                                            : "Q4_K");
+    }
+    bool q6 = opt.dense == Glm5Dense::Q6_K || opt.dense == Glm5Dense::Q5_K || opt.dense == Glm5Dense::Q4_K;
     if (opt.dense == Glm5Dense::Auto) {
         uint64_t ffn = 0; // the shared experts' bytes (and the NextN block's)
         for (const Layer& y : L)
-            ffn += y.moe ? y.gate.bytes + y.up.bytes + y.down.bytes : 0;
+            ffn += y.moe ? ffn_gpu_bytes(y) : 0;
         if (has_mtp)
-            ffn += mtp.gate.bytes + mtp.up.bytes + mtp.down.bytes;
+            ffn += ffn_gpu_bytes(mtp);
         const uint64_t need = fixed_need() + ffn, budget = free_b > opt.vram_reserve ? free_b - opt.vram_reserve : 0;
         q6 = budget < need || (int64_t) ((budget - need) / per_token) < first;
     }
     if (q6) {
+        const ggml_type to = opt.dense == Glm5Dense::Q5_K   ? GGML_TYPE_Q5_K
+                             : opt.dense == Glm5Dense::Q4_K ? GGML_TYPE_Q4_K
+                                                            : GGML_TYPE_Q6_K;
+        narrow_attention = to != GGML_TYPE_Q6_K;
         const auto tq = std::chrono::steady_clock::now();
         uint64_t before = 0, after = 0;
         std::vector<Layer*> all_layers;
@@ -898,10 +941,13 @@ bool Glm5Engine::Impl::load(const std::string& path, const Glm5Options& o, std::
                 if (!m->host)
                     continue;
                 before += m->bytes;
-                requant_q6k(*m);
+                requant(*m, to);
                 after += m->bytes;
             }
-        std::fprintf(stderr, "guild glm5: attention matrices Q8_0 -> Q6_K%s: %llu -> %llu MiB in %.1f s\n",
+        std::fprintf(stderr, "guild glm5: attention matrices Q8_0 -> %s%s: %llu -> %llu MiB in %.1f s\n",
+                     to == GGML_TYPE_Q5_K   ? "Q5_K"
+                     : to == GGML_TYPE_Q4_K ? "Q4_K"
+                                            : "Q6_K",
                      opt.dense == Glm5Dense::Auto ? " (for the context; GUILD_GLM_DENSE=q8_0 keeps Q8_0)" : "",
                      (unsigned long long) (before >> 20), (unsigned long long) (after >> 20), ms_since(tq) / 1000.0);
     }
@@ -914,10 +960,10 @@ bool Glm5Engine::Impl::load(const std::string& path, const Glm5Options& o, std::
               " MiB are free";
         return false;
     }
-    // up to 32k tokens of context first (GUILD_GLM_CTX_FIRST=<tokens>), then the FFNs while they fit, then the rest
-    // of the context asked for.  The shared experts go first: one runs on the GPU while the CPU computes its layer's
-    // routed experts, so it takes its time off the CPU's (a dense layer's FFN moves its whole time from the CPU to
-    // the GPU instead).  A context past what fits beside all of them (an 8 GB card: ~25k tokens) takes the place of
+    // up to 32k tokens of context first (GUILD_GLM_CTX_FIRST=<tokens>), then the shared experts while they fit, then
+    // the rest of the context asked for.  A shared expert runs on the GPU while the CPU computes its layer's routed
+    // experts, so it takes its time off the CPU's (a dense layer's FFN would move its whole time from the CPU to the
+    // GPU instead).  A context past what fits beside all of them (an 8 GB card: ~25k tokens) takes the place of
     // the last ones, which their CPU twins then compute for every token (32k tokens: 4 of 43).
     const int64_t ctx_first = [&] {
         const char* e = std::getenv("GUILD_GLM_CTX_FIRST");
@@ -936,9 +982,20 @@ bool Glm5Engine::Impl::load(const std::string& path, const Glm5Options& o, std::
     for (Layer& y : L)
         if (!y.moe)
             ffn_order.push_back(&y);
+    // A dense layer's FFN (layers 0-2) on the GPU for both groups of a pipelined window leaves the CPU nothing to do
+    // while the layer's attention and FFN wait on the GPU: the attention as Q5_K at 262,144 tokens, which leaves the
+    // room, took a median step of 80.9 / 82.3 ms so, 79.3 / 78.3 with the FFNs on the CPU.  So when it fits it goes to
+    // the GPU only as a twin, the second group computing it on the CPU as a shared expert's split does, and only where
+    // that split is the default (Q8_0 / Q6_K attention); otherwise it stays on the CPU, which computes every token's
+    // as one-token decode does.  GUILD_GLM_DENSE_FFN_GPU=0: on the CPU; =1: on the GPU for both groups.
+    const char* dfg = std::getenv("GUILD_GLM_DENSE_FFN_GPU");
+    const bool dense_ffn_gpu = dfg && dfg[0] ? dfg[0] == '1' : !narrow_attention;
+    dense_twin = !(dfg && dfg[0] == '1');
     for (Layer* yp : ffn_order) {
         Layer& y = *yp;
-        const uint64_t b = y.gate.bytes + y.up.bytes + y.down.bytes;
+        const uint64_t b = ffn_gpu_bytes(y);
+        if (!y.moe && yp != &mtp && !dense_ffn_gpu)
+            continue;
         if (b <= left) {
             y.ffn_gpu = true;
             left -= b;
@@ -1104,26 +1161,31 @@ bool Glm5Engine::Impl::load(const std::string& path, const Glm5Options& o, std::
                 !(y.exp_bias = f32(p + "exp_probs_b.bias", g.n_expert, err)))
                 return false;
         }
+        // the CPU's copy: the GGUF's rows (a GPU copy may be re-quantized below)
+        const Mat cg = y.gate, cu = y.up, cd = y.down;
         if (y.ffn_gpu) {
+            if (y.moe && shexp_type != 0) // the GPU's shared expert re-quantized (shexp_type)
+                for (Mat* m : {&y.gate, &y.up, &y.down})
+                    requant(*m, (ggml_type) shexp_type);
             if (!upload_together({&y.gate, &y.up}, y.gu, err) || !upload(y.gate, err) || !upload(y.up, err) ||
                 !upload(y.down, err))
                 return false;
         }
-        // a MoE layer's shared expert on the GPU has a twin on the CPU: one group of a pipelined window computes it
-        // there, which evens the GPU's and the CPU's halves of a layer
-        if (!y.ffn_gpu || y.moe) {
+        // a shared expert or a dense layer's FFN on the GPU has a twin on the CPU: one group of a pipelined window
+        // computes it there, which evens the GPU's and the CPU's halves of a layer
+        {
             y.ffn_twin = y.ffn_gpu;
             CpuFfn& f = y.ffn_cpu;
-            f.gu_type = y.gate.type;
-            f.d_type = y.down.type;
-            f.n_ff = y.gate.n_out;
-            f.gate[0] = f.gate[1] = y.gate.host;
-            f.up[0] = f.up[1] = y.up.host;
-            f.down[0] = f.down[1] = y.down.host;
-            f.gu_split = y.gate.n_out;
-            f.d_split = y.down.n_out;
-            f.gu_row = y.gate.row_bytes();
-            f.d_row = y.down.row_bytes();
+            f.gu_type = cg.type;
+            f.d_type = cd.type;
+            f.n_ff = cg.n_out;
+            f.gate[0] = f.gate[1] = cg.host;
+            f.up[0] = f.up[1] = cu.host;
+            f.down[0] = f.down[1] = cd.host;
+            f.gu_split = cg.n_out;
+            f.d_split = cd.n_out;
+            f.gu_row = cg.row_bytes();
+            f.d_row = cd.row_bytes();
             f.lim = y.lim_ffn;
         }
     }
@@ -1153,6 +1215,9 @@ bool Glm5Engine::Impl::load(const std::string& path, const Glm5Options& o, std::
             !(y.pooled = dalloc<__half>((size_t) ctx / glm5k::kKpool * g.idx_dim, err)))
             return false;
         if (y.ffn_gpu) {
+            if (shexp_type != 0)
+                for (Mat* m : {&y.gate, &y.up, &y.down})
+                    requant(*m, (ggml_type) shexp_type);
             if (!upload_together({&y.gate, &y.up}, y.gu, err) || !upload(y.gate, err) || !upload(y.up, err) ||
                 !upload(y.down, err))
                 return false;
@@ -1542,14 +1607,15 @@ bool Glm5Engine::Impl::layer_attention(int l, int T, int64_t pos0, bool save_mid
 void Glm5Engine::Impl::cpu_ffn(const Layer& Y, int T, const Rows& io) {
     // the routed experts of a MoE layer, and the layer's own FFN for every token when it lives on the CPU (or the
     // shared expert's twin for a pipelined group)
-    const bool own = !Y.ffn_gpu || (io.twin && Y.ffn_twin);
+    const bool own = !Y.ffn_gpu || on_twin(Y, io.twin, io.dtwin);
     xp.run(*pool, g.n_embd, T, kMaxT, Y.moe ? io.h_ids : nullptr, io.h_w, (int) g.n_used, Y.experts,
            own ? &Y.ffn_cpu : nullptr, io.h_x, io.h_y);
 }
 
 void Glm5Engine::Impl::ffn_begin(const Layer& Y, int T) {
     const int64_t N = g.n_embd;
-    const bool cpu = Y.moe || !Y.ffn_gpu, gpu_ffn = Y.ffn_gpu && !(twin && Y.ffn_twin);
+    const bool tw = on_twin(Y, twin, dtwin);
+    const bool cpu = Y.moe || !Y.ffn_gpu || tw, gpu_ffn = Y.ffn_gpu && !tw;
     if (Y.moe) {
         if (Y.router16)
             glm5k::bf16_matvec(Y.router16, xn, rlog, (int) N, (int) g.n_expert, T, st);
@@ -1586,7 +1652,8 @@ void Glm5Engine::Impl::ffn_begin(const Layer& Y, int T) {
 
 bool Glm5Engine::Impl::ffn_end(const Layer& Y, int T, const Rows& io, std::string& err, const float** y_used) {
     const int64_t N = g.n_embd;
-    if (Y.moe || !Y.ffn_gpu) {
+    const bool on_cpu = on_twin(Y, io.twin, io.dtwin);
+    if (Y.moe || !Y.ffn_gpu || on_cpu) {
         const auto tw = std::chrono::steady_clock::now();
         const cudaError_t ws = cudaEventSynchronize(io.ev);
         router_wait_ms[Y.kda ? 0 : 1] += ms_since(tw);
@@ -1597,7 +1664,7 @@ bool Glm5Engine::Impl::ffn_end(const Layer& Y, int T, const Rows& io, std::strin
         const auto t0 = std::chrono::steady_clock::now();
         cpu_ffn(Y, T, io);
         cpu_ms += ms_since(t0);
-        if (Y.ffn_gpu && !(io.twin && Y.ffn_twin)) {
+        if (Y.ffn_gpu && !on_cpu) {
             if (zc) { // the add reads the CPU's rows in mapped host memory
                 glm5k::add(io.y, io.h_y, T * N, st);
             } else {
@@ -1615,7 +1682,8 @@ bool Glm5Engine::Impl::ffn_end(const Layer& Y, int T, const Rows& io, std::strin
 
 void Glm5Engine::Impl::layer_ffn_begin(int l, int T) {
     Layer& Y = L[(size_t) l];
-    x_on_host = zc && (Y.moe || !Y.ffn_gpu); // the CPU reads the pre-mix's rows: it stores them to h_x too
+    // the CPU reads the pre-mix's rows: it stores them to h_x too
+    x_on_host = zc && (Y.moe || !Y.ffn_gpu || on_twin(Y, twin, dtwin));
     hc_pre_half(Y.hc_ffn_fn, Y.hc_ffn_scale, Y.hc_ffn_base, Y.ffn_norm, T, x_on_host ? h_x : nullptr);
     ffn_begin(Y, T);
     x_on_host = false;
@@ -1900,15 +1968,17 @@ bool Glm5Engine::Impl::main_window(const int32_t* tokens, int T, int64_t pos0, b
         const int TA = T / 2, TB = T - TA;
         const char* m1 = std::getenv("GUILD_GLM_KDA_MID1");
         kda_mid1 = save_mid && TA == 1 && !(m1 && m1[0] == '0');
-        // group B's shared experts on the CPU (GUILD_GLM_SHEXP_SPLIT=0: both on the GPU): the GPU's half of a layer was
-        // the longer one, by about a shared expert.  The CPU twin rounds differently from the GPU's shared expert
-        // (Q8_1 activations, MMVQ, the GPU's expf), so a 2-token verify window's second row is not what one-token
-        // decode computes and --spec leaves plain greedy decode.  With GUILD_GLM_SHEXP_SPLIT=0 every row of 128
-        // 2-token windows equals greedy decode's logits bit for bit (5-token prompt, 256 tokens; GTX 1070 + 2x Xeon
-        // Gold 6130), at 20.8 against 21.5 tok/s (verify 83.7 against 79.6 ms a step).
+        // group B's shared experts on the CPU when the attention is Q8_0 or Q6_K (GUILD_GLM_SHEXP_SPLIT=0 / 1: both on
+        // the GPU / split, whatever the format): the GPU's half of a layer was the longer one, by about a shared
+        // expert.  The CPU twin rounds differently from the GPU's shared expert (Q8_1 activations, MMVQ, the GPU's
+        // expf), so a 2-token verify window's second row is not what one-token decode computes and --spec leaves plain
+        // greedy decode.  With both on the GPU every row of 128 2-token windows equals greedy decode's logits bit for
+        // bit (5-token prompt, 256 tokens; GTX 1070 + 2x Xeon Gold 6130), at 20.8 against 21.5 tok/s (verify 83.7
+        // against 79.6 ms a step).  With the attention as Q4_K (--dense q4_k) the GPU has the time: the median step
+        // 78.4 -> 74.5 ms with both on the GPU; Q5_K 80.2 -> 79.5 (glm5_run --spec, 768 tokens, --ctx 262144).
         const char* sse = std::getenv("GUILD_GLM_SHEXP_SPLIT"); // read each window
-        const bool split_shexp = !(sse && sse[0] == '0');
-        group_rows(TA, ev2, split_shexp);
+        const bool split_shexp = sse && sse[0] ? sse[0] != '0' : !narrow_attention;
+        group_rows(TA, ev2, split_shexp, split_shexp && dense_twin);
         const Rows rB = rows();
         group_rows(0, rows0.ev);
         const Rows rA = rows();
@@ -1918,7 +1988,7 @@ bool Glm5Engine::Impl::main_window(const int32_t* tokens, int T, int64_t pos0, b
         std::string launch_err;
         auto launch = [&](int l, bool a) {
             const auto tq = std::chrono::steady_clock::now();
-            group_rows(a ? 0 : TA, a ? rA.ev : rB.ev, a ? rA.twin : rB.twin);
+            group_rows(a ? 0 : TA, a ? rA.ev : rB.ev, a ? rA.twin : rB.twin, a ? rA.dtwin : rB.dtwin);
             if (!layer_attention(l, a ? TA : TB, a ? pos0 : pos0 + TA, a && save_mid, launch_err))
                 launch_ok = false;
             layer_ffn_begin(l, a ? TA : TB);
@@ -1974,10 +2044,11 @@ bool Glm5Engine::Impl::head_rows(int first, int n, float* host, std::string& err
 // The draft head's token subset (tools/draft_vocab.py: int32 token ids): Glm5Options::draft_vocab, or
 // GUILD_GLM_DRAFT_VOCAB (a file, or 0 for the whole head).  A draft is the argmax over these rows of the head only;
 // verify multiplies the whole head, so the subset changes which drafts are offered and how many are accepted.  With
-// GUILD_GLM_SHEXP_SPLIT=0 verify equals greedy decode and the output does not change; by default a window's second
-// row takes its shared expert on the CPU, so the output depends on the window shapes and any change in the drafts can
-// change it.  The rows are read where the head has them (no copy: VRAM is what limits the context); the ids are kept
-// ascending so a tie goes to the lower token id, as the whole head's argmax does.
+// both groups' shared experts on the GPU (GUILD_GLM_SHEXP_SPLIT=0, or attention as Q5_K / Q4_K) verify equals greedy
+// decode and the output does not change; with Q8_0 or Q6_K attention a window's second row takes its shared expert on
+// the CPU, so the output depends on the window shapes and any change in the drafts can change it.  The rows are read
+// where the head has them (no copy: VRAM is what limits the context); the ids are kept ascending so a tie goes to the
+// lower token id, as the whole head's argmax does.
 bool Glm5Engine::Impl::read_draft_vocab(std::string& err) {
     std::string path = opt.draft_vocab;
     if (const char* e = std::getenv("GUILD_GLM_DRAFT_VOCAB"))

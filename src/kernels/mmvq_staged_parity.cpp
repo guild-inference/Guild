@@ -3,8 +3,8 @@
 //     GUILD_MMVQ_STAGED=0 build/mmvq_staged_parity --dump ref.bin   # the kernels without the staged rows
 //     build/mmvq_staged_parity --compare ref.bin                    # the default (staged) kernels, compared
 //
-// WHY IT EXISTS.  On CUDA, native_mmvq computes Q4_K, Q6_K and Q8_0 with a warp per row read through shared memory
-// (native_mmvq.cu, "Staged rows"), and says each output is bitwise the ncols = 1 kernel's at every column count.
+// WHY IT EXISTS.  On CUDA, native_mmvq computes Q4_K, Q5_K, Q6_K and Q8_0 with a warp per row read through shared
+// memory (native_mmvq.cu, "Staged rows"), and says each output is bitwise the ncols = 1 kernel's at every column count.
 // mmvq_multi_parity cannot see that: it compares T columns against T single columns, and both now take the staged
 // kernel.  The switch that turns the staged kernel off is an environment variable read once per process, so the
 // two runs are two processes, joined by a file (registered as two tests with a fixture).
@@ -43,6 +43,11 @@ const Case CASES[] = {
     {"Q4_K 2048", 12, 2048, 1000, 256, 144, {0, 2}},
     {"Q4_K 2304 (9 blocks)", 12, 2304, 7, 256, 144, {0, 2}},
     {"Q4_K 4096", 12, 4096, 2048, 256, 144, {0, 2}},
+    {"Q5_K 512 (2 blocks)", 13, 512, 512, 256, 176, {0, 2}},
+    {"Q5_K 2304 (9 blocks)", 13, 2304, 7, 256, 176, {0, 2}},
+    {"Q5_K 2560 (10 blocks)", 13, 2560, 1001, 256, 176, {0, 2}},
+    {"Q5_K 4096", 13, 4096, 2048, 256, 176, {0, 2}},
+    {"Q5_K 6144 (24 blocks)", 13, 6144, 300, 256, 176, {0, 2}},
     {"Q6_K 512", 14, 512, 13, 256, 210, {208, -1}},
     {"Q6_K 2048", 14, 2048, 512, 256, 210, {208, -1}},
     {"Q6_K 2304 (9 blocks)", 14, 2304, 1003, 256, 210, {208, -1}},

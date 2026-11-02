@@ -149,9 +149,16 @@ bool glm5_load(GuildModel::Impl& m, const ModelPaths& paths, const memory::Execu
     core::Glm5Options o;
     o.max_context = plan.context_length > 0 ? plan.context_length : o.max_context;
     o.threads = plan.pool_workers;
-    if (const char* d = std::getenv("GUILD_GLM_DENSE")) // auto (the default), q8_0 or q6_k
+    // --dense: the attention matrices as Q6_K / Q5_K / Q4_K (native: Glm5Dense::Auto)
+    o.dense = plan.dense_type == 14   ? guild::core::Glm5Dense::Q6_K
+              : plan.dense_type == 13 ? guild::core::Glm5Dense::Q5_K
+              : plan.dense_type == 12 ? guild::core::Glm5Dense::Q4_K
+                                      : guild::core::Glm5Dense::Auto;
+    if (const char* d = std::getenv("GUILD_GLM_DENSE")) // auto (the default), q8_0, q6_k, q5_k or q4_k
         o.dense = std::string(d) == "q6_k"   ? guild::core::Glm5Dense::Q6_K
                   : std::string(d) == "q8_0" ? guild::core::Glm5Dense::Q8_0
+                  : std::string(d) == "q5_k" ? guild::core::Glm5Dense::Q5_K
+                  : std::string(d) == "q4_k" ? guild::core::Glm5Dense::Q4_K
                                              : guild::core::Glm5Dense::Auto;
     if (const char* n = std::getenv("GUILD_GLM_MTP"))
         o.mtp = std::string(n) != "0";
