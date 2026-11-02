@@ -827,9 +827,9 @@ int main(int argc, char** argv) {
             if (!ok)
                 ++bad;
         }
-        // 8 tokens: the HIP kernel's full dynamic-LDS request; 1 and 2: a verify group's reads (the direct kernels
-        // before sm_70 under GUILD_HC_SPLIT=2, the gr_parity_staged test)
-        for (const int T : {1, 2, (int) guild::kernels::kFusedGrMaxT})
+        // 8 tokens: the HIP kernel's full dynamic-LDS request; 1 to 4: a verify group's reads (the direct kernels
+        // before sm_70 under GUILD_HC_SPLIT=2, the gr_parity_staged test; 3 and 4 from a window read as one group)
+        for (const int T : {1, 2, 3, 4, (int) guild::kernels::kFusedGrMaxT})
             bad += fused_multi_lds_parity(dN, dD, dU, dJ, eps, T);
         select_activation_mode(0);
         cudaFree(rws_raw);
