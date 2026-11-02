@@ -184,6 +184,14 @@ struct GuildModel::Impl {
     /// the token ids of positions [0, dflash->context_end()): a request that reuses a prefix keeps the drafter's
     /// context when these match it
     std::vector<int32_t> dflash_seq;
+    /// GUILD_DFLASH_RULE=cost: the verify window's measured cost by its rows (index T, a running mean that turns into
+    /// an average of the last ~10 windows) and the drafter's, across requests
+    struct DFlashCost {
+        double verify_ms[kernels::kVerifyMaxT + 1] = {};
+        int verify_n[kernels::kVerifyMaxT + 1] = {};
+        double draft_ms = 0;
+        int draft_n = 0;
+    } dflash_cost;
     std::unique_ptr<core::Drama3Tower> tower; ///< Drama 3 (ModelPaths::drama3_dir): the codebook tower
     std::unique_ptr<core::Drama3Codec> codec; ///< ... and the codec that turns frames into audio
     /// GLM-5.3-Flash (a glm5-next GGUF) runs on its own engine (src/runtime/glm5.cpp); the rest stays empty

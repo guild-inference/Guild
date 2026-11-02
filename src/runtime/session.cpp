@@ -687,6 +687,18 @@ bool GuildSession::generate(const GenerationRequest& req, TokenStreamCallback on
     std::vector<float> dflash_prob(dflash_drafts.size(), 0.0f);
     const float dflash_cum =
         std::getenv("GUILD_DFLASH_CUM") ? (float) std::atof(std::getenv("GUILD_DFLASH_CUM")) : 0.1f;
+    // GUILD_DFLASH_RULE=cost: the window that maximizes the expected tokens a millisecond (EVICT, arXiv 2605.00342):
+    // 1 + the drafts' cumulative probabilities, over the window's verify cost (as measured for its rows; a line through
+    // the measured ones for rows not yet seen) plus the draft's
+    const bool dflash_cost_rule = [] {
+        const char* r = std::getenv("GUILD_DFLASH_RULE");
+        return r != nullptr && std::string(r) == "cost";
+    }();
+    auto& dcost = m_impl->dflash_cost;
+    auto dcost_add = [](double& mean, int& n, double x) {
+        mean = n < 10 ? (mean * n + x) / (n + 1) : 0.9 * mean + 0.1 * x;
+        ++n;
+    };
     double dflash_ms = 0.0;
 
     bool first_window = true;
@@ -758,13 +770,96 @@ bool GuildSession::generate(const GenerationRequest& req, TokenStreamCallback on
                               ? std::min(max_draft, std::max(1, m_impl->plan.mtp_spec_tokens - 1))
                               : max_draft;
 
+    // DFlash: the drafter's block after `anchor`, the next window's row 0 at position `start`.  The window verifies its
+    // drafts while their cumulative probability stays >= dflash_cum; the PLE rows of its tokens are read ahead, as
+    // the MTP drafter does.
+    auto dflash_next = [&](int32_t anchor, int64_t start, double d_before) -> bool {
+        core::SessionState& pss = m_impl->ss;
+        const bool do_ple = pss.ple.ready() && pss.ple.table != nullptr;
+        int32_t ple_prev[2] = {do_ple ? pss.ple_prev[0] : 0, do_ple ? pss.ple_prev[1] : 0};
+        auto prefetch_ple = [&](int32_t tok) {
+            if (!do_ple || tok < 0)
+                return;
+            uint32_t rows16[kernels::PLE_N_HEADS];
+            kernels::ngram_rows(&tok, ple_prev, 1, pss.ple.consts, rows16);
+            ple_prev[0] = ple_prev[1];
+            ple_prev[1] = tok;
+            pss.ple.table->prefetch_rows(rows16);
+        };
+        prefetch_ple(anchor);
+        if (!m_impl->dflash->draft(anchor, start, dflash_block, dflash_drafts.data(), dflash_prob.data(),
+                                   m_impl->dflash_stream, error_msg))
+            return false;
+        const int kmax = std::min(max_draft, dflash_block - 1);
+        int k = 0;
+        // the cost rule once two window sizes are measured: a weighted least-squares line of cost on rows
+        double sw = 0, st = 0, sv = 0, stt = 0, stv = 0;
+        int sizes = 0;
+        for (int t = 1; t <= kernels::kVerifyMaxT; ++t)
+            if (dcost.verify_n[t] > 0) {
+                const double w = std::min(dcost.verify_n[t], 10);
+                sw += w;
+                st += w * t;
+                sv += w * dcost.verify_ms[t];
+                stt += w * t * t;
+                stv += w * t * dcost.verify_ms[t];
+                ++sizes;
+            }
+        if (dflash_cost_rule && sizes >= 2 && dcost.draft_n > 0) {
+            const double slope = (sw * stv - st * sv) / std::max(1e-9, sw * stt - st * st);
+            const double icept = (sv - slope * st) / sw;
+            auto cost = [&](int t) {
+                return (dcost.verify_n[t] >= 2 ? dcost.verify_ms[t] : icept + slope * t) + dcost.draft_ms;
+            };
+            double best = 1.0 / cost(1), expect = 1.0, cum = 1.0;
+            for (int j = 1; j <= kmax; ++j) {
+                cum *= dflash_prob[static_cast<size_t>(j - 1)];
+                expect += cum;
+                const double v = expect / cost(j + 1);
+                if (v > best) {
+                    best = v;
+                    k = j;
+                }
+            }
+        } else {
+            float cum = 1.0f;
+            while (k < kmax) {
+                cum *= dflash_prob[static_cast<size_t>(k)];
+                if (cum < dflash_cum)
+                    break;
+                ++k;
+            }
+        }
+        for (int j = 0; j < k; ++j) {
+            drafts[static_cast<size_t>(j)] = dflash_drafts[static_cast<size_t>(j)];
+            prefetch_ple(drafts[static_cast<size_t>(j)]);
+        }
+        cur_source = k > 0 ? spec::CandidateSource::Mtp : spec::CandidateSource::Normal;
+        cur_proposed_k = k;
+        cur_match_len = 0;
+        cur_lookup_ms = 0.0;
+        cur_retrieval_ms = 0.0;
+        cur_sched_ms = 0.0;
+        cur_draft_ms = m_impl->dflash->ms_draft + m_impl->dflash->ms_context - d_before;
+        dflash_ms += cur_draft_ms;
+        dcost_add(dcost.draft_ms, dcost.draft_n, cur_draft_ms);
+        return true;
+    };
+    // the first window drafts too: the prompt is in the drafter's context up to its last token, the window's row 0
+    bool first_drafted = false;
+    if (use_dflash && m_impl->dflash->context_end() == p) {
+        if (!dflash_next(x, p, m_impl->dflash->ms_draft + m_impl->dflash->ms_context))
+            return runtime_failure();
+        first_drafted = cur_proposed_k > 0;
+    }
+
     while (produced_n < req.max_new_tokens && !eos) {
         if (impl_->cancelled.load() || (req.cancel_flag && req.cancel_flag->load())) {
             client_aborted = true;
             break;
         }
 
-        int T = first_window ? 1 : (1 + cur_proposed_k);
+        int T = (first_window && !first_drafted) ? 1 : (1 + cur_proposed_k);
         T = std::clamp(T, 1, S);
         T = std::min(T, req.max_new_tokens - produced_n);
         const int actual_proposed_k = T - 1;
@@ -839,7 +934,8 @@ bool GuildSession::generate(const GenerationRequest& req, TokenStreamCallback on
         if (first_window) {
             telemetry.first_window_capture_ms = cap_delta_ms;
             telemetry.ttft_ms = std::chrono::duration<double, std::milli>(Clock::now() - t_req_start).count();
-            impl_->scheduler->seed_single_token_verify(exec_ver_ms + com_ms, win_distinct_experts, win_cpu_ms);
+            if (actual_proposed_k == 0) // a single-token window (a drafted first window costs more)
+                impl_->scheduler->seed_single_token_verify(exec_ver_ms + com_ms, win_distinct_experts, win_cpu_ms);
         }
 
         telemetry.drafts_offered += actual_proposed_k;
@@ -922,52 +1018,20 @@ bool GuildSession::generate(const GenerationRequest& req, TokenStreamCallback on
             break;
         }
 
-        if (use_dflash) {
-            // the window's committed rows into the drafter's context, then its block after the next window's first
-            // token: the next window verifies the drafts whose cumulative probability stays >= dflash_cum
+        if (use_dflash) { // the window's committed rows into the drafter's context, then the next window's block
+            if (T >= 1 && T <= kernels::kVerifyMaxT)
+                dcost_add(dcost.verify_ms[T], dcost.verify_n[T], exec_ver_ms + com_ms);
             const int32_t next = outv[static_cast<size_t>(a)];
             const double d_before = m_impl->dflash->ms_draft + m_impl->dflash->ms_context;
-            core::SessionState& pss = m_impl->ss;
-            const bool do_ple = pss.ple.ready() && pss.ple.table != nullptr;
-            int32_t ple_prev[2] = {do_ple ? pss.ple_prev[0] : 0, do_ple ? pss.ple_prev[1] : 0};
-            auto prefetch_ple = [&](int32_t tok) { // the PLE rows the next window reads, as the MTP drafter does
-                if (!do_ple || tok < 0)
-                    return;
-                uint32_t rows16[kernels::PLE_N_HEADS];
-                kernels::ngram_rows(&tok, ple_prev, 1, pss.ple.consts, rows16);
-                ple_prev[0] = ple_prev[1];
-                ple_prev[1] = tok;
-                pss.ple.table->prefetch_rows(rows16);
-            };
-            prefetch_ple(next);
             const size_t fstride = m_impl->dflash->target_layers().size() * (size_t) m_impl->g.n_embd;
             if (!m_impl->dflash->add_context(m_impl->ver->features(), fstride, a + 1, p, m_impl->dflash_stream,
                                              error_msg) ||
-                !m_impl->dflash->draft(next, p + a + 1, dflash_block, dflash_drafts.data(), dflash_prob.data(),
-                                       m_impl->dflash_stream, error_msg))
+                !dflash_next(next, p + a + 1, d_before))
                 return runtime_failure();
             m_impl->dflash_seq.insert(m_impl->dflash_seq.end(), window.begin(), window.begin() + (a + 1));
-            int k = 0;
-            float cum = 1.0f;
-            while (k < std::min(max_draft, dflash_block - 1)) {
-                cum *= dflash_prob[static_cast<size_t>(k)];
-                if (cum < dflash_cum)
-                    break;
-                drafts[static_cast<size_t>(k)] = dflash_drafts[static_cast<size_t>(k)];
-                prefetch_ple(drafts[static_cast<size_t>(k)]);
-                ++k;
-            }
-            cur_source = k > 0 ? spec::CandidateSource::Mtp : spec::CandidateSource::Normal;
-            cur_proposed_k = k;
-            cur_match_len = 0;
-            cur_lookup_ms = 0.0;
-            cur_retrieval_ms = 0.0;
-            cur_sched_ms = 0.0;
-            cur_draft_ms = m_impl->dflash->ms_draft + m_impl->dflash->ms_context - d_before;
-            dflash_ms += cur_draft_ms;
             if (spec_trace)
                 std::fprintf(stderr, "guild spec trace [pos=%lld]: src=dflash k=%d accepted %d of %d\n",
-                             (long long) (p + a + 1), k, a, actual_proposed_k);
+                             (long long) (p + a + 1), cur_proposed_k, a, actual_proposed_k);
             p += (a + 1);
             x = next;
             continue;

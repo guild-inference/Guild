@@ -3,6 +3,9 @@
 // position equals a reference's (the offline PyTorch port's drafts: int32 rows of B - 1).
 //
 //   dflash_check DRAFTER_DIR GGUF VOCAB PREFIX B [REF]
+//
+// DFLASH_TABLE=<file>: every position's drafts measured against the text, for window rules simulated offline: int32
+// prompt length, block, positions, then a position: int32 accepted drafts (of B - 1), B - 1 float probabilities.
 #include "guild/artifact/gguf_split.hpp"
 #include "guild/core/dflash.hpp"
 #include "guild/core/native_head.hpp"
@@ -73,6 +76,8 @@ int main(int argc, char** argv) {
     int steps = 0, refs = 0;
     std::vector<int32_t> drafts((size_t) B);
     std::vector<float> probs((size_t) B);
+    std::vector<char> table; // DFLASH_TABLE
+    auto put = [&](const void* p, size_t n) { table.insert(table.end(), (const char*) p, (const char*) p + n); };
     for (int start = P; start + B <= end; ++start) {
         if (!d.draft(seq[(size_t) start], start, B, drafts.data(), probs.data(), st, err)) {
             std::cerr << err << '\n';
@@ -82,6 +87,8 @@ int main(int argc, char** argv) {
         while (a < B - 1 && drafts[(size_t) a] == seq[(size_t) (start + 1 + a)])
             ++a;
         ++hist[(size_t) a];
+        put(&a, 4);
+        put(probs.data(), (size_t) (B - 1) * 4);
         if ((size_t) (steps + 1) * (B - 1) <= ref.size()) {
             for (int i = 0; i < B - 1; ++i)
                 same[(size_t) i] += drafts[(size_t) i] == ref[(size_t) steps * (B - 1) + i];
@@ -92,6 +99,12 @@ int main(int argc, char** argv) {
             std::cerr << err << '\n';
             return 1;
         }
+    }
+    if (const char* tp = std::getenv("DFLASH_TABLE")) {
+        std::ofstream tf(tp, std::ios::binary);
+        const int32_t head[3] = {P, B, steps};
+        tf.write((const char*) head, sizeof head);
+        tf.write(table.data(), (std::streamsize) table.size());
     }
     double mean = 0;
     for (int a = 0; a < B; ++a)
