@@ -35,6 +35,9 @@ public:
     /// Layer split: load only blocks [lb, le) (every other `blk.N.` projection belongs to another GPU's stage; the
     /// PLE tensors are loaded everywhere).  Process-wide, read by the next `load`; (-1, -1) = all layers.
     static void set_layer_range(int lb, int le);
+    /// Q8_0 matrices of 2048 or more rows (rows of whole 256-value blocks) uploaded as Q6_K (--dense q6_k; also
+    /// GUILD_DENSE=q6_k).  Process-wide, read by the next `load`.
+    static void set_q6k(bool on);
     /// #326: a native pack whose `blk.1.ple_key.weight` row is unquantized (iq_pack --compat-bf16 of a GGUF key
     /// the native kernel also reads, e.g. OrcaRouter's IQ3_XXS) serves the PLE from that row, so it is taken out
     /// of `skip` and `load` does not upload the GGUF key over it.  A quantized row leaves `skip` unchanged.
@@ -45,10 +48,15 @@ public:
     size_t tensor_count() const {
         return weights_.size();
     }
+    /// matrices uploaded as Q6_K out of Q8_0 (GUILD_DENSE=q6_k)
+    size_t requantized() const {
+        return requantized_;
+    }
 
 private:
     std::vector<void*> weights_;
     void* scratch_ = nullptr;
     uint64_t bytes_ = 0;
+    size_t requantized_ = 0;
 };
 } // namespace guild::core

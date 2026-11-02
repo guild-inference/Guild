@@ -127,6 +127,7 @@ struct ExecutionPlan {
     uint64_t safety_reserve_bytes = 0;
     int64_t prefill_chunk = 512;
     int64_t prefill_rows = 0;  ///< --prefill-rows: the prompt path's chunks computed as chunks of this many (0: off)
+    bool dense_q6k = false;    ///< --dense q6_k: the GPU's Q8_0 dense matrices of 2048+ rows as Q6_K
     int64_t prefill_batch = 0; ///< Generic layer-wise prompt rows: 0 auto, 1..512 override.
 
     // Warnings and degradations

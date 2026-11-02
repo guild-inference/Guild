@@ -5,14 +5,21 @@
 #include "guild/artifact/gpack.hpp"
 #include "guild/kernels/native_mmvq.hpp"
 
+#include "ggml.h"
+
 #include <cuda_runtime.h>
 #include <algorithm>
+#include <atomic>
 #include <climits>
 #include <cstdlib>
+#include <cstring>
 #include <exception>
 #include <limits>
 #include <memory>
 #include <set>
+#include <string>
+#include <thread>
+#include <vector>
 
 namespace guild::core {
 namespace {
@@ -39,6 +46,55 @@ bool eligible(const guild::TensorInfo& tensor, bool include_ple_key) {
         if (name.ends_with(suffix))
             return true;
     return false;
+}
+// --dense q6_k (NativeDense::set_q6k) or GUILD_DENSE=q6_k: the Q8_0 matrices of 2048 rows or more whose rows are whole
+// 256-value blocks go to the GPU as Q6_K, 6.56 instead of 8.5 bits a weight: each row dequantized exactly, then
+// quantized as llama-quantize would without an importance matrix.  Another rounding of the weights, so the output
+// changes.  Smaller matrices (the shared expert's 640 rows, k and v's 512) stay Q8_0: their products wait on latency,
+// not bytes (Qwen3.8's shared expert gate 2560 x 640: 11.4 us either way, 12.2 -> 13.9 us at two columns), and the PLE
+// key keeps its type (its kernel reads only Q8_0 among these).
+bool g_q6k = false; // NativeDense::set_q6k
+bool dense_q6k() {
+    static const bool env = [] {
+        const char* e = std::getenv("GUILD_DENSE");
+        return e && std::string(e) == "q6_k";
+    }();
+    return g_q6k || env;
+}
+std::vector<uint8_t> q8_0_to_q6k(const uint8_t* q8, int64_t n_in, int64_t n_out) {
+    const size_t q6_row = ggml_row_size(GGML_TYPE_Q6_K, n_in), q8_row = (size_t) (n_in / 32) * 34;
+    std::vector<uint8_t> out(q6_row * (size_t) n_out);
+    constexpr int64_t kRows = 64;
+    std::atomic<int64_t> next{0};
+    auto work = [&] {
+        std::vector<float> buf((size_t) kRows * n_in);
+        for (;;) {
+            const int64_t r0 = next.fetch_add(kRows);
+            if (r0 >= n_out)
+                return;
+            const int64_t nr = std::min(kRows, n_out - r0);
+            for (int64_t r = 0; r < nr; ++r) {
+                const uint8_t* q = q8 + (size_t) (r0 + r) * q8_row;
+                float* f = buf.data() + (size_t) r * n_in;
+                for (int64_t b = 0; b < n_in / 32; ++b) {
+                    ggml_fp16_t h;
+                    std::memcpy(&h, q + b * 34, 2);
+                    const float d = ggml_fp16_to_fp32(h);
+                    for (int k = 0; k < 32; ++k)
+                        f[b * 32 + k] = d * (float) (int8_t) q[b * 34 + 2 + k];
+                }
+            }
+            ggml_quantize_chunk(GGML_TYPE_Q6_K, buf.data(), out.data() + (size_t) r0 * q6_row, 0, nr, n_in, nullptr);
+        }
+    };
+    const unsigned n = std::max(1u, std::min(32u, std::thread::hardware_concurrency()));
+    std::vector<std::thread> th;
+    for (unsigned i = 1; i < n; ++i)
+        th.emplace_back(work);
+    work();
+    for (auto& t : th)
+        t.join();
+    return out;
 }
 struct DeviceFree {
     void operator()(void* p) const {
@@ -70,6 +126,10 @@ bool NativeDense::served_names(const std::vector<std::string>& shards, bool incl
         err = std::string("native dense: ") + error.what();
         return false;
     }
+}
+
+void NativeDense::set_q6k(bool on) {
+    g_q6k = on;
 }
 
 void NativeDense::set_layer_range(int lb, int le) {
@@ -215,19 +275,29 @@ bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& tabl
                     err = "native dense: incompatible matrix " + tensor.name;
                     return false;
                 }
-                const auto bytes = guild::kernels::native_mmvq_weight_bytes(tensor.type, (int) ref.ne0, (int) ref.ne1);
+                int type = (int) tensor.type;
+                const void* src = gguf.tensor_data(tensor);
+                std::vector<uint8_t> q6;
+                if (dense_q6k() && type == 8 && ref.ne0 % 256 == 0 && ref.ne1 >= 2048 &&
+                    tensor.name.find("ple") == std::string::npos) {
+                    q6 = q8_0_to_q6k(static_cast<const uint8_t*>(src), ref.ne0, ref.ne1);
+                    src = q6.data();
+                    type = 14;
+                    ++requantized_;
+                }
+                const auto bytes = guild::kernels::native_mmvq_weight_bytes(type, (int) ref.ne0, (int) ref.ne1);
                 void* allocation = nullptr;
                 auto status = cudaMalloc(&allocation, bytes);
                 DevicePtr data(allocation);
                 if (status == cudaSuccess)
-                    status = cudaMemcpy(data.get(), gguf.tensor_data(tensor), bytes, cudaMemcpyHostToDevice);
+                    status = cudaMemcpy(data.get(), src, bytes, cudaMemcpyHostToDevice);
                 if (status != cudaSuccess) {
                     err = "native dense upload " + tensor.name + ": " + cudaGetErrorString(status);
                     return false;
                 }
                 max_in = (std::max)(max_in, (int) ref.ne0);
                 total += bytes;
-                pending.push_back(Pending{&ref, (int) tensor.type, bytes, std::move(data)});
+                pending.push_back(Pending{&ref, type, bytes, std::move(data)});
             }
         }
         if (pending.empty()) {

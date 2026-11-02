@@ -66,6 +66,9 @@ const char* model_options_usage() {
            "  --prefill-rows <n>         Compute each prefill chunk as chunks of n tokens, streaming the experts once\n"
            "                             a chunk (e.g. --prefill 1024 --prefill-rows 512: 512's results where the\n"
            "                             expert products do not depend on rows an expert has; 0: off)\n"
+           "  --dense <native|q6_k>      The GPU's dense matrices as the GGUF has them (default), or its Q8_0 ones\n"
+           "                             of 2048+ rows re-quantized to Q6_K at load (fewer bytes a token; changes\n"
+           "                             the output slightly)\n"
            "  --spec <n>                 Speculative draft length (default 4)\n"
            "  --spec-min-p <p>           Speculative min probability (default 0.5)\n"
            "  --rope-scaling <s>         none|linear|yarn: a --max-context past the model's trained context\n"
@@ -123,6 +126,12 @@ int parse_model_option(int argc, char** argv, int& i, ModelOptions& o, const cha
         o.prefill_rows = std::stoll(value, &used);
         if (used != value.size() || o.prefill_rows < 0) {
             std::fprintf(stderr, "--prefill-rows requires a token count (0: off)\n");
+            return 2;
+        }
+    } else if (a == "--dense") {
+        o.dense = next("--dense");
+        if (o.dense != "native" && o.dense != "q6_k") {
+            std::fprintf(stderr, "--dense requires native or q6_k\n");
             return 2;
         }
     } else if (a == "--spec") {
@@ -247,6 +256,7 @@ int load_model(ModelOptions& o, const char* program, LoadedModel& out) {
         plan.decode_strategy = o.decode_strategy; // checked by the model load
     plan.mtp_optional = o.mtp_optional;
     plan.prefill_rows = o.prefill_rows;
+    plan.dense_q6k = o.dense == "q6_k";
 
     // Model Paths
     ModelPaths paths;

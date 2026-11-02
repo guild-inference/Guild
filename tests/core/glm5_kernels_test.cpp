@@ -1332,13 +1332,15 @@ static int bench_shapes() {
         const char* what;
         int type, n_in, n_out;
     } shapes[] = {
-        {"qwen qkv", 8, 2560, 10240},      {"qwen gate", 8, 2560, 6144},       {"qwen ssm_out", 8, 6144, 2560},
-        {"qwen q", 8, 2560, 12288},        {"qwen kv", 8, 2560, 512},          {"qwen shexp gu", 8, 2560, 640},
-        {"qwen shexp down", 8, 640, 2560}, {"qwen hc down", 8, 10240, 320},    {"qwen hc up", 8, 320, 10240},
-        {"qwen head", 14, 2560, 248320},   {"ornith qkv", 12, 2048, 8192},     {"ornith qkv q6", 14, 2048, 8192},
-        {"ornith gate", 12, 2048, 4096},   {"ornith out", 12, 4096, 2048},     {"ornith kv", 12, 2048, 512},
-        {"ornith v q6", 14, 2048, 512},    {"ornith shexp gu", 12, 2048, 512}, {"ornith shexp dn", 14, 512, 2048},
-        {"ornith head", 14, 2048, 248320}};
+        {"qwen qkv", 8, 2560, 10240},        {"qwen gate", 8, 2560, 6144},      {"qwen ssm_out", 8, 6144, 2560},
+        {"qwen qkv q6", 14, 2560, 10240},    {"qwen gate q6", 14, 2560, 6144},  {"qwen ssm_out q6", 14, 6144, 2560},
+        {"qwen q q6", 14, 2560, 12288},      {"qwen out q6", 14, 4096, 2560},   {"qwen out", 8, 4096, 2560},
+        {"qwen shexp gu q6", 14, 2560, 640}, {"qwen q", 8, 2560, 12288},        {"qwen kv", 8, 2560, 512},
+        {"qwen shexp gu", 8, 2560, 640},     {"qwen shexp down", 8, 640, 2560}, {"qwen hc down", 8, 10240, 320},
+        {"qwen hc up", 8, 320, 10240},       {"qwen head", 14, 2560, 248320},   {"ornith qkv", 12, 2048, 8192},
+        {"ornith qkv q6", 14, 2048, 8192},   {"ornith gate", 12, 2048, 4096},   {"ornith out", 12, 4096, 2048},
+        {"ornith kv", 12, 2048, 512},        {"ornith v q6", 14, 2048, 512},    {"ornith shexp gu", 12, 2048, 512},
+        {"ornith shexp dn", 14, 512, 2048},  {"ornith head", 14, 2048, 248320}};
     cudaStream_t st;
     cudaStreamCreate(&st);
     for (const Shape& sh : shapes) {
@@ -1347,14 +1349,38 @@ static int bench_shapes() {
         // cache, as in a model's forward pass (a GTX 1070's L2 holds 2 MB)
         const int copies = (int) std::min<size_t>(64, (64u << 20) / wb + 1);
         std::vector<void*> w(copies);
+        // random bytes with small finite FP16 scales (GLM5_SHAPES_ZERO=1: zeros, as before): on a power-capped card
+        // the bits moved change the clocks
+        const bool zero = std::getenv("GLM5_SHAPES_ZERO") != nullptr;
+        std::vector<uint8_t> hw(zero ? 0 : wb);
+        if (!zero) {
+            std::uniform_int_distribution<int> byte(0, 255);
+            for (auto& v : hw)
+                v = (uint8_t) byte(rng);
+            const int bs = sh.type == 8 ? 34 : sh.type == 12 ? 144 : 210, at = sh.type == 14 ? 208 : 0;
+            for (size_t b = 0; b + bs <= wb; b += bs) {
+                const __half d = __float2half(0.001f * (float) (1 + byte(rng) % 50));
+                std::memcpy(&hw[b + at], &d, 2);
+                if (sh.type == 12)
+                    std::memcpy(&hw[b + 2], &d, 2);
+            }
+        }
         for (void*& p : w) {
             cudaMalloc(&p, wb);
-            cudaMemset(p, 0, wb);
+            if (zero)
+                cudaMemset(p, 0, wb);
+            else
+                cudaMemcpy(p, hw.data(), wb, cudaMemcpyHostToDevice);
         }
         void* xq;
         float *x, *y;
         cudaMalloc(&x, (size_t) sh.n_in * 8 * 4);
-        cudaMemset(x, 0, (size_t) sh.n_in * 8 * 4);
+        if (zero) {
+            cudaMemset(x, 0, (size_t) sh.n_in * 8 * 4);
+        } else {
+            const auto hx = rnd((size_t) sh.n_in * 8);
+            cudaMemcpy(x, hx.data(), hx.size() * 4, cudaMemcpyHostToDevice);
+        }
         cudaMalloc(&xq, guild::kernels::native_q8_1_bytes(sh.n_in, 8));
         cudaMalloc(&y, (size_t) sh.n_out * 8 * 4);
         guild::kernels::native_quantize_q8_1(x, xq, sh.n_in, 8, st);
