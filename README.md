@@ -301,9 +301,14 @@ token only those its layer's last token did not select); the VRAM keeps every ce
 latents (11,776 on an 8 GB card, with the FFNs placed as at 32k). The output is the all-VRAM context's bit for bit;
 `GUILD_GLM_KV_HOST=0` limits the context to the VRAM. When the GGUF's Q8_0 attention matrices would leave less than the
 context asked for (up to 16k tokens), it re-quantizes them to Q6_K at load (about 16 s); `GUILD_GLM_DENSE=q8_0` keeps
-Q8_0, `q6_k` always converts. `GUILD_GLM_MTP=0` decodes without the drafts. With the drafts, a verify window's second
-token takes its shared expert from the CPU copy, which rounds differently, so the text can part from plain greedy
-decoding; `GUILD_GLM_SHEXP_SPLIT=0` keeps it equal bit for bit (3-5% slower on the PC below).
+Q8_0, `q6_k` always converts. `--dense q5_k` / `--dense q4_k` re-quantize them and the shared experts' GPU copies to
+Q5_K / Q4_K instead: decode steps 7% / 10-13% shorter on the PC below, at a KL from the Q6_K output of 0.036-0.043 /
+0.052-0.063, against 0.023-0.025 for a change of rounding alone
+([bench/results/2026-11-02-decode-round6](bench/results/2026-11-02-decode-round6/README.md)). `GUILD_GLM_MTP=0`
+decodes without the drafts. With the drafts and Q6_K attention, a verify window's second token takes its shared expert
+from the CPU copy, which rounds differently, so the text can part from plain greedy decoding;
+`GUILD_GLM_SHEXP_SPLIT=0` keeps it equal bit for bit (3-5% slower on the PC below). With `--dense q5_k` / `q4_k` both
+groups take it on the GPU by default, and the text is greedy decoding's.
 `data/draft_vocab_glm.bin`, copied into the tokenizer directory as `draft_vocab.bin`, makes the drafts read 117,354 of
 the head's 154,880 rows (0.55 ms less a step there).
 
