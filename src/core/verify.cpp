@@ -1098,6 +1098,8 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                     a.w_norm = (const float*) wn[half]->data;
                     a.w_down = (const uint16_t*) wd[half]->data;
                     a.w_up = (const uint16_t*) wu[half]->data;
+                    a.w_down_q8 = wd[half]->hc_q8; // --hc q8_0: the GGUF's Q8_0 blocks (then data is null)
+                    a.w_up_q8 = wu[half]->hc_q8;
                     a.w_inject = (const uint16_t*) wi[half]->data;
                     a.eps = EPS;
                     a.lo = lo_ + t * g.hc_lr;

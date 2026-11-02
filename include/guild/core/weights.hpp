@@ -101,6 +101,10 @@ struct WeightRef {
     /// Plan v0.3 P1: false when the loader SKIPPED this tensor's canonical bytes because another form serves it
     /// (native GGUF projections, the native head).  The metadata above stays valid; `data` is null.
     bool resident = true;
+    /// --hc q8_0 (NativeDense): a layer's hyper-connection down / up matrix as the GGUF's own Q8_0 blocks, in two
+    /// planes - every row's int8 values, then their f16 scales, one a 32 values (both row-major).  The pack's bf16
+    /// copy (a rounding of these) is then not loaded: `resident` false, `data` null.
+    const int8_t* hc_q8 = nullptr;
 };
 
 struct LoadReport {

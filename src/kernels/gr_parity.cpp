@@ -22,6 +22,7 @@
 #include "guild/kernels/gr.hpp"
 #include "guild/kernels/fused_gr.hpp"
 
+#include <cuda_fp16.h>
 #include <cuda_runtime.h>
 
 #include <cmath>
@@ -458,6 +459,160 @@ int fused_multi_lds_parity(const float* d_norm, const uint16_t* d_down, const ui
     return bad;
 }
 
+// --hc q8_0: w_down / w_up as Q8_0 blocks in the read's two planes (int8 values, then f16 scales).  The read against
+// the double-precision reference on the dequantized weights (FP32 activations, no pending write), then T tokens read
+// together against T one-token reads (with the pending write), bit for bit, directly and as a replayed graph.
+std::vector<uint8_t> q8_planes(const std::vector<float>& w, long long rows, long long cols, std::vector<float>& deq) {
+    const long long nb = cols / 32;
+    std::vector<uint8_t> out((size_t) (rows * cols + rows * nb * 2));
+    deq.resize(w.size());
+    for (long long r = 0; r < rows; ++r)
+        for (long long b = 0; b < nb; ++b) {
+            const float* v = w.data() + r * cols + b * 32;
+            float amax = 0.0f;
+            for (int i = 0; i < 32; ++i)
+                amax = std::max(amax, std::fabs(v[i]));
+            const __half h = __float2half(amax / 127.0f);
+            const float d = __half2float(h), id = d != 0.0f ? 1.0f / d : 0.0f;
+            std::memcpy(out.data() + rows * cols + (r * nb + b) * 2, &h, 2);
+            for (int i = 0; i < 32; ++i) {
+                const int q = std::clamp((int) std::nearbyint(v[i] * id), -127, 127);
+                out[(size_t) (r * cols + b * 32 + i)] = (uint8_t) (int8_t) q;
+                deq[(size_t) (r * cols + b * 32 + i)] = d * (float) q;
+            }
+        }
+    return out;
+}
+
+int fused_q8_parity(const std::vector<float>& R, const std::vector<float>& w_norm, const std::vector<float>& w_down,
+                    const std::vector<float>& w_up, const std::vector<float>& w_inject, const float* d_norm,
+                    const uint16_t* d_inject, float eps) {
+    using namespace guild::kernels;
+    constexpr int N = 2560, HC = 4, LR = 320, D = N * HC, TM = kFusedGrMaxT;
+    if (!fused_gr_q8_supported()) {
+        std::printf("  Q8_0 read: not in this build, skipped\n");
+        return 0;
+    }
+    std::vector<float> deq_down, deq_up;
+    const auto p_down = q8_planes(w_down, LR, D, deq_down), p_up = q8_planes(w_up, D, LR, deq_up);
+    int8_t *d_qd = nullptr, *d_qu = nullptr;
+    check(cudaMalloc(&d_qd, p_down.size()), "q8 down");
+    check(cudaMalloc(&d_qu, p_up.size()), "q8 up");
+    check(cudaMemcpy(d_qd, p_down.data(), p_down.size(), cudaMemcpyHostToDevice), "q8 copy down");
+    check(cudaMemcpy(d_qu, p_up.data(), p_up.size(), cudaMemcpyHostToDevice), "q8 copy up");
+    std::mt19937 rng(0x5138);
+    std::normal_distribution<float> normal(0.0f, 0.3f);
+    std::vector<float> r((size_t) TM * D), bo((size_t) TM * N), inj((size_t) TM * HC);
+    for (size_t i = 0; i < (size_t) D; ++i)
+        r[i] = R[i]; // token 0: the reference's R
+    for (size_t i = D; i < r.size(); ++i)
+        r[i] = normal(rng) * (float) (1 + (i / N) % 4);
+    for (auto& x : bo)
+        x = normal(rng);
+    for (auto& x : inj)
+        x = normal(rng);
+    float *d_r = nullptr, *d_r_out = nullptr, *d_bo = nullptr, *d_inj = nullptr, *d_lo = nullptr, *d_rs = nullptr,
+          *d_inj_out = nullptr, *d_mixed = nullptr, *d_xn = nullptr;
+    check(cudaMalloc(&d_r, r.size() * 4), "q8 R");
+    check(cudaMalloc(&d_r_out, r.size() * 4), "q8 R_out");
+    check(cudaMalloc(&d_bo, bo.size() * 4), "q8 bo");
+    check(cudaMalloc(&d_inj, inj.size() * 4), "q8 inj");
+    check(cudaMalloc(&d_lo, (size_t) TM * LR * 4), "q8 lo");
+    check(cudaMalloc(&d_rs, (size_t) TM * HC * 4), "q8 rs");
+    check(cudaMalloc(&d_inj_out, (size_t) TM * HC * 4), "q8 injection");
+    check(cudaMalloc(&d_mixed, (size_t) TM * N * 4), "q8 mixed");
+    check(cudaMalloc(&d_xn, (size_t) TM * D * 4), "q8 xn");
+    check(cudaMemcpy(d_r, r.data(), r.size() * 4, cudaMemcpyHostToDevice), "q8 copy R");
+    check(cudaMemcpy(d_bo, bo.data(), bo.size() * 4, cudaMemcpyHostToDevice), "q8 copy bo");
+    check(cudaMemcpy(d_inj, inj.data(), inj.size() * 4, cudaMemcpyHostToDevice), "q8 copy inj");
+    auto arg = [&](int t, bool apply, int slot) {
+        FusedGrArgs a;
+        a.R = d_r + (size_t) t * D;
+        a.R_out = d_r_out + (size_t) slot * D;
+        a.apply = apply;
+        a.bo_prev = d_bo + (size_t) t * N;
+        a.inj_prev = d_inj + (size_t) t * HC;
+        a.w_norm = d_norm;
+        a.w_down_q8 = d_qd;
+        a.w_up_q8 = d_qu;
+        a.w_inject = d_inject;
+        a.eps = eps;
+        a.lo = d_lo + (size_t) slot * LR;
+        a.rs = d_rs + (size_t) slot * HC;
+        a.inject_out = d_inj_out + (size_t) slot * HC;
+        a.mixed = d_mixed + (size_t) slot * N;
+        return a;
+    };
+    auto fetch = [&](int n) {
+        std::vector<float> v((size_t) n * (D + LR + HC + HC + N));
+        float* p = v.data();
+        check(cudaMemcpy(p, d_r_out, (size_t) n * D * 4, cudaMemcpyDeviceToHost), "q8 get R_out");
+        check(cudaMemcpy(p + (size_t) n * D, d_lo, (size_t) n * LR * 4, cudaMemcpyDeviceToHost), "q8 get lo");
+        check(cudaMemcpy(p + (size_t) n * (D + LR), d_rs, (size_t) n * HC * 4, cudaMemcpyDeviceToHost), "q8 get rs");
+        check(cudaMemcpy(p + (size_t) n * (D + LR + HC), d_inj_out, (size_t) n * HC * 4, cudaMemcpyDeviceToHost),
+              "q8 get inject");
+        check(cudaMemcpy(p + (size_t) n * (D + LR + 2 * HC), d_mixed, (size_t) n * N * 4, cudaMemcpyDeviceToHost),
+              "q8 get mixed");
+        return v;
+    };
+    int bad = 0;
+    cudaStream_t stream = nullptr;
+    check(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking), "q8 stream");
+    { // against the reference (token 0, no pending write)
+        FusedGrArgs a = arg(0, false, 0);
+        fused_gr_read_multi(&a, 1, d_xn, stream);
+        check(cudaStreamSynchronize(stream), "q8 reference read");
+        std::vector<float> gm((size_t) N), gi((size_t) HC);
+        check(cudaMemcpy(gm.data(), d_mixed, N * 4, cudaMemcpyDeviceToHost), "q8 mixed");
+        check(cudaMemcpy(gi.data(), d_inj_out, HC * 4, cudaMemcpyDeviceToHost), "q8 inject");
+        Opts fp32;
+        fp32.round_activation = false;
+        std::vector<float> wm, wi;
+        reference(R, w_norm, deq_down, deq_up, w_inject, eps, N, HC, LR, fp32, wm, wi);
+        const double rm = rel_diff(wm, gm), ri = rel_diff(wi, gi);
+        const bool ok = rm <= 1e-4 && ri <= 1e-4;
+        std::printf("  Q8_0 read against the reference on the dequantized weights %s (mixed %.3e, inject %.3e)\n",
+                    ok ? "pass" : "*** FAIL ***", rm, ri);
+        bad += !ok;
+    }
+    for (const int T : {1, 2, 3, 4, 5, 8}) {
+        std::vector<FusedGrArgs> args;
+        for (int t = 0; t < T; ++t)
+            args.push_back(arg(t, true, t));
+        fused_gr_read_multi(args.data(), T, d_xn, stream);
+        check(cudaStreamSynchronize(stream), "q8 multi");
+        const auto multi = fetch(T);
+        // each token alone, into its own slot
+        for (int t = 0; t < T; ++t) {
+            FusedGrArgs a = arg(t, true, t);
+            fused_gr_read_multi(&a, 1, d_xn, stream);
+        }
+        check(cudaStreamSynchronize(stream), "q8 singles");
+        const auto single = fetch(T);
+        cudaGraph_t graph = nullptr;
+        cudaGraphExec_t exec = nullptr;
+        check(cudaStreamBeginCapture(stream, cudaStreamCaptureModeThreadLocal), "q8 capture");
+        fused_gr_read_multi(args.data(), T, d_xn, stream);
+        check(cudaStreamEndCapture(stream, &graph), "q8 capture end");
+        check(cudaGraphInstantiate(&exec, graph, nullptr, nullptr, 0), "q8 instantiate");
+        check(cudaGraphLaunch(exec, stream), "q8 replay");
+        check(cudaStreamSynchronize(stream), "q8 replay sync");
+        const auto replay = fetch(T);
+        check(cudaGraphExecDestroy(exec), "q8 exec destroy");
+        check(cudaGraphDestroy(graph), "q8 graph destroy");
+        const bool ok = std::memcmp(multi.data(), single.data(), multi.size() * 4) == 0 &&
+                        std::memcmp(multi.data(), replay.data(), multi.size() * 4) == 0;
+        std::printf("  Q8_0 read, %d tokens: as %d one-token reads and as a replayed graph, bit for bit %s\n", T, T,
+                    ok ? "pass" : "*** FAIL ***");
+        bad += !ok;
+    }
+    check(cudaStreamDestroy(stream), "q8 stream destroy");
+    for (void* p : {(void*) d_qd, (void*) d_qu, (void*) d_r, (void*) d_r_out, (void*) d_bo, (void*) d_inj, (void*) d_lo,
+                    (void*) d_rs, (void*) d_inj_out, (void*) d_mixed, (void*) d_xn})
+        cudaFree(p);
+    return bad;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -831,6 +986,7 @@ int main(int argc, char** argv) {
         // before sm_70 under GUILD_HC_SPLIT=2, the gr_parity_staged test; 3 and 4 from a window read as one group)
         for (const int T : {1, 2, 3, 4, (int) guild::kernels::kFusedGrMaxT})
             bad += fused_multi_lds_parity(dN, dD, dU, dJ, eps, T);
+        bad += fused_q8_parity(rR, rnorm, rdown, rup, rinj, dN, dJ, eps);
         select_activation_mode(0);
         cudaFree(rws_raw);
         cudaFree(dR);

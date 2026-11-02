@@ -128,6 +128,7 @@ struct ExecutionPlan {
     int64_t prefill_chunk = 512;
     int64_t prefill_rows = 0;  ///< --prefill-rows: the prompt path's chunks computed as chunks of this many (0: off)
     bool dense_q6k = false;    ///< --dense q6_k: the GPU's Q8_0 dense matrices of 2048+ rows as Q6_K
+    bool hc_q8 = false;        ///< --hc q8_0: the hyper-connection down/up matrices as the GGUF's Q8_0 blocks
     int defer_experts = 0;     ///< --defer-experts: expert deferral's immediate experts (0: off)
     int64_t prefill_batch = 0; ///< Generic layer-wise prompt rows: 0 auto, 1..512 override.
 

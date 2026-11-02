@@ -1126,6 +1126,10 @@ void gr_write(const float* r, const float* bo, const float* inj, const GrShapes&
     p.R_out = out;
     qwen(p, s);
 }
+bool fused_gr_q8_supported() {
+    const auto* b = try_backend();
+    return b != nullptr && (b->caps & GUILD_CUDA_MOE_CAP_HC_Q8_0_V1) != 0;
+}
 void fused_gr_read(const FusedGrArgs& a, void* s) {
     auto p = command<guild_cuda_qwen_op_v1_t>(GUILD_CUDA_QWEN_FUSED_GR_READ_V1);
     p.fused_gr = fused_args(a);
@@ -1141,6 +1145,8 @@ void fused_gr_read_multi(const FusedGrArgs* a, int nt, float* scratch, void* s, 
         args[t] = fused_args(a[t]);
     auto p = command<guild_cuda_qwen_op_v1_t>(GUILD_CUDA_QWEN_FUSED_GR_READ_MULTI_V1);
     p.fused_gr_multi = args;
+    p.hc_down_q8 = a[0].w_down_q8;
+    p.hc_up_q8 = a[0].w_up_q8;
     p.n_tok = nt;
     p.xn_scratch = scratch;
     p.stamp_buf = stamp;

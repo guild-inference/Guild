@@ -12,6 +12,9 @@ extern "C" {
 
 #define GUILD_CUDA_MOE_TAG_V1 0x43444d31u // "CDM1"
 #define GUILD_CUDA_MOE_VERSION_V1 1u
+/* guild_cuda_moe_ext_v1_t::caps (0 in modules before it): the fused hyper-connection read takes the GGUF's Q8_0
+   w_down / w_up (guild_cuda_qwen_op_v1_t::hc_down_q8 / hc_up_q8) */
+#define GUILD_CUDA_MOE_CAP_HC_Q8_0_V1 (1u << 0)
 
 enum guild_cuda_moe_config_flags_v1_e {
     GUILD_CUDA_MOE_FLAG_NONE_V1 = 0u,
@@ -542,13 +545,18 @@ typedef struct guild_cuda_qwen_op_v1_s {
     int64_t bo_ld;
     int64_t inj_ld;
     uint32_t write;
+    /* FUSED_GR_READ_MULTI with GUILD_CUDA_MOE_CAP_HC_Q8_0_V1: the Q8_0 w_down / w_up of every token's read (both or
+       null), two planes each - the rows' int8 values, then their f16 scales, one a 32 values; the bf16 w_down /
+       w_up of fused_gr_multi are then not read */
+    const int8_t* hc_down_q8;
+    const int8_t* hc_up_q8;
 } guild_cuda_qwen_op_v1_t;
 
 typedef struct guild_cuda_moe_ext_v1_s {
     uint32_t struct_size;
     uint32_t tag;
     uint32_t version;
-    uint32_t reserved;
+    uint32_t caps; /* GUILD_CUDA_MOE_CAP_* bits */
     guild_status_t (*configure)(const guild_exec_context_v1_t* ctx, const guild_cuda_moe_config_v1_t* params,
                                 guild_error_info_t* err);
     guild_status_t (*quantize_dequant)(const guild_exec_context_v1_t* ctx,

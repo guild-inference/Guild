@@ -2147,6 +2147,10 @@ bool block_layer_pre(const WeightTable& tables, const ModelGeometry& g, int64_t 
                 err = v.name(pre[h]) + "has the wrong engine forms (norm must be F32, the other three bf16)";
                 return false;
             }
+            if ((w_down[h]->hc_q8 != nullptr) != (w_up[h]->hc_q8 != nullptr) || (w_down[h]->hc_q8 && !fused)) {
+                err = v.name(pre[h]) + "down/up: the Q8_0 forms (--hc q8_0) need both and the fused read";
+                return false;
+            }
         }
     } else {
         w_norm[0] = v.get("attn_norm.weight");
@@ -2188,13 +2192,18 @@ bool block_layer_pre(const WeightTable& tables, const ModelGeometry& g, int64_t 
                 fa.w_norm = (const float*) w_norm[0]->data;
                 fa.w_down = (const uint16_t*) w_down[0]->data;
                 fa.w_up = (const uint16_t*) w_up[0]->data;
+                fa.w_down_q8 = w_down[0]->hc_q8;
+                fa.w_up_q8 = w_up[0]->hc_q8;
                 fa.w_inject = (const uint16_t*) w_inject[0]->data;
                 fa.eps = RMS_EPS;
                 fa.lo = bb.gr.lo;
                 fa.rs = bb.gr_rs;
                 fa.inject_out = bb.inject;
                 fa.mixed = bb.mixed;
-                guild::kernels::fused_gr_read(fa, stream);
+                if (fa.w_down_q8) // --hc q8_0: the one-token read is the multi-token kernels' (xn in the workspace)
+                    guild::kernels::fused_gr_read_multi(&fa, 1, bb.gr.xn, stream);
+                else
+                    guild::kernels::fused_gr_read(fa, stream);
             } else {
                 gr_read(R, (const float*) w_norm[0]->data, (const uint16_t*) w_down[0]->data,
                         (const uint16_t*) w_up[0]->data, (const uint16_t*) w_inject[0]->data, RMS_EPS, gs, bb.gr,
@@ -2259,13 +2268,18 @@ bool block_layer_pre(const WeightTable& tables, const ModelGeometry& g, int64_t 
                 fa.w_norm = (const float*) w_norm[1]->data;
                 fa.w_down = (const uint16_t*) w_down[1]->data;
                 fa.w_up = (const uint16_t*) w_up[1]->data;
+                fa.w_down_q8 = w_down[1]->hc_q8;
+                fa.w_up_q8 = w_up[1]->hc_q8;
                 fa.w_inject = (const uint16_t*) w_inject[1]->data;
                 fa.eps = RMS_EPS;
                 fa.lo = bb.gr.lo;
                 fa.rs = bb.gr_rs;
                 fa.inject_out = bb.inject2;
                 fa.mixed = bb.mixed;
-                guild::kernels::fused_gr_read(fa, stream);
+                if (fa.w_down_q8) // --hc q8_0: the one-token read is the multi-token kernels' (xn in the workspace)
+                    guild::kernels::fused_gr_read_multi(&fa, 1, bb.gr.xn, stream);
+                else
+                    guild::kernels::fused_gr_read(fa, stream);
             } else {
                 gr_read(R, (const float*) w_norm[1]->data, (const uint16_t*) w_down[1]->data,
                         (const uint16_t*) w_up[1]->data, (const uint16_t*) w_inject[1]->data, RMS_EPS, gs, bb.gr,

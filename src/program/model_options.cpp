@@ -69,6 +69,9 @@ const char* model_options_usage() {
            "  --dense <native|q6_k>      The GPU's dense matrices as the GGUF has them (default), or its Q8_0 ones\n"
            "                             of 2048+ rows re-quantized to Q6_K at load (fewer bytes a token; changes\n"
            "                             the output slightly)\n"
+           "  --hc <bf16|q8_0>           The hyper-connection down/up matrices as the pack's bf16 rounding of the\n"
+           "                             GGUF's Q8_0 blocks (default), or as those blocks themselves (half the\n"
+           "                             bytes a token; changes the output slightly)\n"
            "  --defer-experts <k>        Expert deferral: an MoE layer's experts past its router's top k reach the\n"
            "                             residual before the next layer's experts, not before its attention, so the\n"
            "                             CPU computes them beside the GPU and a window reads its weights once\n"
@@ -144,6 +147,12 @@ int parse_model_option(int argc, char** argv, int& i, ModelOptions& o, const cha
         o.dense = next("--dense");
         if (o.dense != "native" && o.dense != "q6_k") {
             std::fprintf(stderr, "--dense requires native or q6_k\n");
+            return 2;
+        }
+    } else if (a == "--hc") {
+        o.hc = next("--hc");
+        if (o.hc != "bf16" && o.hc != "q8_0") {
+            std::fprintf(stderr, "--hc requires bf16 or q8_0\n");
             return 2;
         }
     } else if (a == "--spec") {
@@ -269,6 +278,7 @@ int load_model(ModelOptions& o, const char* program, LoadedModel& out) {
     plan.mtp_optional = o.mtp_optional;
     plan.prefill_rows = o.prefill_rows;
     plan.dense_q6k = o.dense == "q6_k";
+    plan.hc_q8 = o.hc == "q8_0";
     plan.defer_experts = o.defer_experts;
 
     // Model Paths

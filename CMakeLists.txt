@@ -570,7 +570,7 @@ if(GUILD_ENABLE_CUDA OR GUILD_ENABLE_HIP)
   # what composes them into a token.  No tokenizer - the prompt arrives as ids - because Gate C1 compares logits
   # against llama.cpp on the SAME ids and a tokenizer on one side of that comparison is a second variable.
   # plan v0.3 P5: batched prompt processing (tensor-core GEMMs through cuBLAS).
-  add_library(guild_prefill STATIC src/prefill/prefill.cpp)
+  add_library(guild_prefill STATIC src/prefill/prefill.cpp src/prefill/hc_q8.cu)
   guild_cuda_attach_prefill(guild_prefill)
   target_include_directories(guild_prefill PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include ${_guild_gpu_include_directories})
   target_link_libraries(guild_prefill PUBLIC guild_engine ${_guild_gpu_blas_target} ${_guild_gpu_runtime_target})

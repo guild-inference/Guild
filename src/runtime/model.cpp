@@ -8,6 +8,7 @@
 #include "guild/abi/gkernel_package.hpp"
 #include "guild/artifact/gguf_reader.hpp"
 #include "guild/model/archetype.hpp"
+#include "guild/kernels/fused_gr.hpp"
 #include "guild/kernels/iq_kernels.hpp"
 #include "guild/kernels/verify_kernels.hpp"
 #include "guild/platform/device_policy.hpp"
@@ -635,6 +636,10 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
     std::set<std::string> skip;
     uint64_t pool_bytes = 0;
     if (use_gpack) {
+        if (plan.hc_q8 || guild::core::NativeDense::hc_q8()) {
+            error_msg = "--hc q8_0 reads the GGUF's own blocks: it needs the model's GGUF shards, not a .gpack";
+            return nullptr;
+        }
         skip = impl->gpack->precomputed_skip_set();
         if (!core::WeightTable::pool_bytes_gpack(*impl->gpack, pool_bytes, error_msg, skip.empty() ? nullptr : &skip)) {
             return nullptr;
@@ -650,6 +655,12 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
         }
     } else {
         if (!shards.empty()) {
+            if (plan.hc_q8)
+                guild::core::NativeDense::set_hc_q8(true);
+            if (guild::core::NativeDense::hc_q8() && !kernels::fused_gr_q8_supported()) { // also GUILD_HC=q8_0
+                error_msg = "--hc q8_0: this CUDA kernel module has no Q8_0 hyper-connection read";
+                return nullptr;
+            }
             if (!guild::core::NativeDense::served_names(shards, true, skip, error_msg)) {
                 return nullptr;
             }
@@ -705,6 +716,11 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
         if (impl->native_dense.requantized() > 0)
             std::fprintf(stderr, "guild: %zu dense matrices re-quantized Q8_0 -> Q6_K (--dense q6_k), %.0f MiB\n",
                          impl->native_dense.requantized(), (double) impl->native_dense.weight_bytes() / 1048576.0);
+        if (impl->native_dense.hc_q8_count() > 0)
+            std::fprintf(stderr,
+                         "guild: %zu hyper-connection matrices as the GGUF's Q8_0 blocks (--hc q8_0), %.0f MiB; their "
+                         "bf16 copies not loaded\n",
+                         impl->native_dense.hc_q8_count(), (double) impl->native_dense.hc_q8_bytes() / 1048576.0);
     }
     if (!core::check_all(impl->wt, impl->g, error_msg))
         return nullptr;

@@ -96,6 +96,32 @@ std::vector<uint8_t> q8_0_to_q6k(const uint8_t* q8, int64_t n_in, int64_t n_out)
         t.join();
     return out;
 }
+bool g_hc_q8 = false; // NativeDense::set_hc_q8
+// a layer's hyper-connection down / up matrix in the GGUF's Q8_0, its shape the read's ([320][10240] or [10240][320])
+bool hc_q8_tensor(const guild::TensorInfo& tensor) {
+    const auto& name = tensor.name;
+    if (name.rfind("blk.", 0) != 0 || tensor.type != 8 || tensor.shape.size() != 2)
+        return false;
+    const bool down = name.ends_with(".hc_attn_down.weight") || name.ends_with(".hc_ffn_down.weight");
+    const bool up = name.ends_with(".hc_attn_up.weight") || name.ends_with(".hc_ffn_up.weight");
+    return (down && tensor.shape[0] == 10240 && tensor.shape[1] == 320) ||
+           (up && tensor.shape[0] == 320 && tensor.shape[1] == 10240);
+}
+// Q8_0 blocks (f16 d, 32 int8) of `rows` rows of `cols` values -> the read's two planes: the int8 values row-major,
+// then the scales row-major, one f16 a 32 values.  Bytes moved, not changed.
+std::vector<uint8_t> hc_q8_planes(const uint8_t* q8, int64_t cols, int64_t rows) {
+    const int64_t nb = cols / 32;
+    std::vector<uint8_t> out((size_t) (rows * cols + rows * nb * 2));
+    uint8_t* qs = out.data();
+    uint8_t* sc = out.data() + (size_t) (rows * cols);
+    for (int64_t r = 0; r < rows; ++r)
+        for (int64_t b = 0; b < nb; ++b) {
+            const uint8_t* blk = q8 + (size_t) (r * nb + b) * 34;
+            std::memcpy(sc + (size_t) (r * nb + b) * 2, blk, 2);
+            std::memcpy(qs + (size_t) (r * cols + b * 32), blk + 2, 32);
+        }
+    return out;
+}
 struct DeviceFree {
     void operator()(void* p) const {
         if (p)
@@ -109,6 +135,11 @@ struct Pending {
     uint64_t bytes;
     DevicePtr data;
 };
+struct HcPending {
+    WeightRef* ref;
+    uint64_t bytes;
+    DevicePtr data;
+};
 } // namespace
 
 bool NativeDense::served_names(const std::vector<std::string>& shards, bool include_ple_key, std::set<std::string>& out,
@@ -117,8 +148,9 @@ bool NativeDense::served_names(const std::vector<std::string>& shards, bool incl
         for (const auto& path : shards) {
             guild::GgufFile gguf(path);
             for (const auto& tensor : gguf.tensors())
-                if (eligible(tensor, include_ple_key) && guild::kernels::native_mmvq_supported(tensor.type) &&
-                    tensor.shape.size() == 2)
+                if ((eligible(tensor, include_ple_key) && guild::kernels::native_mmvq_supported(tensor.type) &&
+                     tensor.shape.size() == 2) ||
+                    (hc_q8() && hc_q8_tensor(tensor)))
                     out.insert(tensor.name);
         }
         return true;
@@ -130,6 +162,18 @@ bool NativeDense::served_names(const std::vector<std::string>& shards, bool incl
 
 void NativeDense::set_q6k(bool on) {
     g_q6k = on;
+}
+
+void NativeDense::set_hc_q8(bool on) {
+    g_hc_q8 = on;
+}
+
+bool NativeDense::hc_q8() {
+    static const bool env = [] {
+        const char* e = std::getenv("GUILD_HC");
+        return e && std::string(e) == "q8_0";
+    }();
+    return g_hc_q8 || env;
 }
 
 void NativeDense::set_layer_range(int lb, int le) {
@@ -173,6 +217,7 @@ bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& tabl
     }
     try {
         std::vector<Pending> pending;
+        std::vector<HcPending> hc_pending;
         std::set<std::string> seen;
         int max_in = 0;
         uint64_t total = 0;
@@ -246,6 +291,30 @@ bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& tabl
                 }
             }
             for (const auto& tensor : gguf.tensors()) {
+                if (hc_q8() && hc_q8_tensor(tensor) && !outside(tensor.name) && in_range(tensor.name)) {
+                    auto found = table.table_.find(tensor.name);
+                    if (found == table.table_.end() || found->second.hc_q8 ||
+                        tensor.shape[0] != (uint64_t) found->second.ne0 ||
+                        tensor.shape[1] != (uint64_t) found->second.ne1) {
+                        err = "native dense: hyper-connection matrix " + tensor.name +
+                              " is absent from the canonical table, loaded twice, or of another shape";
+                        return false;
+                    }
+                    const auto planes = hc_q8_planes(static_cast<const uint8_t*>(gguf.tensor_data(tensor)),
+                                                     (int64_t) tensor.shape[0], (int64_t) tensor.shape[1]);
+                    void* allocation = nullptr;
+                    auto status = cudaMalloc(&allocation, planes.size());
+                    DevicePtr data(allocation);
+                    if (status == cudaSuccess)
+                        status = cudaMemcpy(data.get(), planes.data(), planes.size(), cudaMemcpyHostToDevice);
+                    if (status != cudaSuccess) {
+                        err = "native dense upload " + tensor.name + ": " + cudaGetErrorString(status);
+                        return false;
+                    }
+                    total += planes.size();
+                    hc_pending.push_back(HcPending{&found->second, planes.size(), std::move(data)});
+                    continue;
+                }
                 if (!eligible(tensor, include_ple_key) || outside(tensor.name))
                     continue;
                 if (!in_range(tensor.name) && tensor.name.find("ple") == std::string::npos)
@@ -312,11 +381,17 @@ bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& tabl
             return false;
         }
         // All checks and allocations finish before publishing any reference.
-        weights_.reserve(pending.size());
+        weights_.reserve(pending.size() + hc_pending.size());
         for (auto& item : pending) {
             item.ref->native_data = item.data.get();
             item.ref->native_type = item.type;
             item.ref->native_q8_1 = scratch.get();
+            weights_.push_back(item.data.release());
+        }
+        for (auto& item : hc_pending) {
+            item.ref->hc_q8 = static_cast<const int8_t*>(item.data.get());
+            hc_q8_bytes_ += item.bytes;
+            ++hc_q8_count_;
             weights_.push_back(item.data.release());
         }
         scratch_ = scratch.release();

@@ -29,6 +29,8 @@
 #include "guild/prefill/moe_mmq.hpp"
 #include "guild/core/peer_experts.hpp"
 #include "guild/prefill/kernels.hpp"
+#include "guild/prefill/hc_q8.hpp"
+#include "guild/core/native_dense.hpp"
 
 #include <cuda_runtime.h>
 
@@ -666,6 +668,7 @@ struct Prefill::Impl {
     float* mixed = nullptr;
     uint16_t *mixed_bf = nullptr, *mixed_h = nullptr;
     uint16_t *xn16_lo = nullptr, *lo16_lo = nullptr, *mixed_bf_lo = nullptr; // bf16x2(): the BF16 GEMMs' low parts
+    uint16_t* hc16 = nullptr; // --hc q8_0: a hyper-connection matrix's bf16 values, one at a time (bf16_proj)
     float* bo = nullptr;
     // GDN
     float *qkv = nullptr, *z = nullptr, *ab = nullptr, *gate = nullptr, *beta = nullptr, *hbuf = nullptr, *y = nullptr;
@@ -1092,6 +1095,12 @@ bool Prefill::init(const core::WeightTable& wt, const core::ModelGeometry& g, co
                 ok = false;
             m.ple_rows[b].resize(T * guild::kernels::PLE_N_HEADS);
         }
+    }
+    if (core::NativeDense::hc_q8() && m.hc16 == nullptr) { // --hc q8_0: room for one hyper-connection matrix
+        if (cudaMalloc((void**) &m.hc16, (size_t) D * LR * sizeof(uint16_t)) != cudaSuccess)
+            ok = false;
+        else
+            m.owned.push_back(m.hc16);
     }
     if (ss.qsa_states[ss.qsa_primary()].kv_mode == 1) { // KV streaming: the staging pool's identity page table
         const int64_t pages = ss.qsa_states[ss.qsa_primary()].n_pages;
@@ -1904,15 +1913,22 @@ bool native_proj(Gemm& gm, const core::WeightRef* w, const uint16_t* X, float* Y
     gemm_native(gm, X, w->native_type, w->native_data, Y, T, w->ne1, w->ne0, ldy);
     return true;
 }
+// `hc16` (with `cs`): a hyper-connection matrix held as the GGUF's Q8_0 blocks (--hc q8_0) is first written there as
+// the bf16 values the pack would have held (hc_q8_to_bf16), one matrix at a time in stream order.
 bool bf16_proj(Gemm& gm, const core::WeightRef* w, const uint16_t* X, float* Y, int64_t T, const std::string& name,
-               std::string& err, int64_t ldy = 0, const uint16_t* X_lo = nullptr) {
-    if (w->kind != core::WeightKind::Bf16InF32 || !w->data) {
+               std::string& err, int64_t ldy = 0, const uint16_t* X_lo = nullptr, uint16_t* hc16 = nullptr,
+               cudaStream_t cs = nullptr) {
+    const uint16_t* W = (const uint16_t*) w->data;
+    if (w->hc_q8 && hc16) {
+        hc_q8_to_bf16(w->hc_q8, w->ne1, w->ne0, hc16, cs);
+        W = hc16;
+    } else if (w->kind != core::WeightKind::Bf16InF32 || !w->data) {
         err = "prefill: " + name + " is not a resident BF16 tensor";
         return false;
     }
-    gemm_bf16(gm, X, (const uint16_t*) w->data, Y, T, w->ne1 > 0 ? w->ne1 : 1, w->ne0, ldy);
+    gemm_bf16(gm, X, W, Y, T, w->ne1 > 0 ? w->ne1 : 1, w->ne0, ldy);
     if (X_lo)
-        gemm_bf16(gm, X_lo, (const uint16_t*) w->data, Y, T, w->ne1 > 0 ? w->ne1 : 1, w->ne0, ldy, 1.0f);
+        gemm_bf16(gm, X_lo, W, Y, T, w->ne1 > 0 ? w->ne1 : 1, w->ne0, ldy, 1.0f);
     return true;
 }
 
@@ -2560,10 +2576,10 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                 else if (!normed)
                     gr_norm_rs(m.R, (const float*) wn->data, EPS, m.grs, m.xn16, T, m.cs, m.xn16_lo);
                 normed = false;
-                if (!bf16_proj(m.gemm, wd, m.xn16, m.lo, T, sd, err, 0, m.xn16_lo))
+                if (!bf16_proj(m.gemm, wd, m.xn16, m.lo, T, sd, err, 0, m.xn16_lo, m.hc16, m.cs))
                     return false;
                 gr_silu(m.lo, m.lo16, T, m.cs, m.lo16_lo);
-                if (!bf16_proj(m.gemm, wu, m.lo16, m.gated, T, su, err, 0, m.lo16_lo))
+                if (!bf16_proj(m.gemm, wu, m.lo16, m.gated, T, su, err, 0, m.lo16_lo, m.hc16, m.cs))
                     return false;
                 if (!bf16_proj(m.gemm, wi, m.xn16, m.inj, T, si, err, 0, m.xn16_lo))
                     return false;
