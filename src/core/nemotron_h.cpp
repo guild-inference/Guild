@@ -870,12 +870,14 @@ double NemotronHEngine::last_cpu_ms() const {
 void NemotronHEngine::print_timing(const char* what) const {
     if (std::getenv("GUILD_MOE_TIMING"))
         std::fprintf(stderr,
-                     "nemotron_h timing (%s): activations %.0f ms, up %.0f, hidden %.0f, down %.0f; %.2f GB of "
-                     "expert rows; %.0f ms waiting for the GPU before them; threads busy %.0f%% / %.0f%%\n",
+                     "nemotron_h timing (%s): activations %.0f ms, up %.0f, hidden %.0f, down %.0f, both in one phase "
+                     "%.0f; %.2f GB of expert rows; %.0f ms waiting for the GPU before them; threads busy %.0f%% / "
+                     "%.0f%% / %.0f%%\n",
                      what, p_->xp.phase_ms[0], p_->xp.phase_ms[1], p_->xp.phase_ms[2], p_->xp.phase_ms[3],
-                     p_->xp.weight_bytes * 1e-9, p_->gpu_wait_ms,
+                     p_->xp.phase_ms[4], p_->xp.weight_bytes * 1e-9, p_->gpu_wait_ms,
                      100.0 * p_->xp.busy_ms[1] / std::max(1.0, p_->xp.phase_ms[1] * p_->wk.pool->size()),
-                     100.0 * p_->xp.busy_ms[3] / std::max(1.0, p_->xp.phase_ms[3] * p_->wk.pool->size()));
+                     100.0 * p_->xp.busy_ms[3] / std::max(1.0, p_->xp.phase_ms[3] * p_->wk.pool->size()),
+                     100.0 * p_->xp.busy_ms[4] / std::max(1.0, p_->xp.phase_ms[4] * p_->wk.pool->size()));
 }
 
 void NemotronHEngine::reset() {

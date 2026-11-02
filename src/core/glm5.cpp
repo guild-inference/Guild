@@ -1559,14 +1559,15 @@ void Glm5Engine::print_timing(const char* what) const {
     if (std::getenv("GUILD_GLM_TIMING"))
         std::fprintf(
             stderr,
-            "glm5 timing (%s): activations %.0f ms, gate/up %.0f, hidden %.0f, down %.0f; launches %.0f; "
-            "threads busy %.0f%% / %.0f%%; %.2f GB of expert rows (gate/up %.2f GB at %.1f GB/s, down %.2f at %.1f)\n",
-            what, p_->xp.phase_ms[0], p_->xp.phase_ms[1], p_->xp.phase_ms[2], p_->xp.phase_ms[3], p_->enqueue_ms,
-            100.0 * p_->xp.busy_ms[1] / std::max(1.0, p_->xp.phase_ms[1] * p_->pool->size()),
+            "glm5 timing (%s): activations %.0f ms, gate/up %.0f, hidden %.0f, down %.0f, both in one phase %.0f; "
+            "launches %.0f; threads busy %.0f%% / %.0f%% / %.0f%%; %.2f GB of expert rows (gate/up %.2f GB, down %.2f) "
+            "at %.1f GB/s\n",
+            what, p_->xp.phase_ms[0], p_->xp.phase_ms[1], p_->xp.phase_ms[2], p_->xp.phase_ms[3], p_->xp.phase_ms[4],
+            p_->enqueue_ms, 100.0 * p_->xp.busy_ms[1] / std::max(1.0, p_->xp.phase_ms[1] * p_->pool->size()),
             100.0 * p_->xp.busy_ms[3] / std::max(1.0, p_->xp.phase_ms[3] * p_->pool->size()),
-            p_->xp.weight_bytes * 1e-9, p_->xp.gu_bytes * 1e-9,
-            p_->xp.gu_bytes * 1e-6 / std::max(1e-3, p_->xp.phase_ms[1]), p_->xp.down_bytes * 1e-9,
-            p_->xp.down_bytes * 1e-6 / std::max(1e-3, p_->xp.phase_ms[3]));
+            100.0 * p_->xp.busy_ms[4] / std::max(1.0, p_->xp.phase_ms[4] * p_->pool->size()),
+            p_->xp.weight_bytes * 1e-9, p_->xp.gu_bytes * 1e-9, p_->xp.down_bytes * 1e-9,
+            p_->xp.weight_bytes * 1e-6 / std::max(1e-3, p_->xp.phase_ms[1] + p_->xp.phase_ms[3] + p_->xp.phase_ms[4]));
 }
 
 double Glm5Engine::last_cpu_ms() const {

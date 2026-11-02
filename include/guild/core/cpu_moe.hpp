@@ -239,7 +239,8 @@ int act_type(int gu_type);
 ///   gate/up over (FFN, row block): an FFN's tokens share the weight decode (multi-token kernels from two tokens up),
 ///     and the item that completes a 256-row block of an FFN's hidden activations quantizes it;
 ///   down over row blocks of the output, each summing its rows over every unit of every token, so no two threads
-///     write one row.
+///     write one row; in one pool phase with the gate/up items (GUILD_CPU_MOE_FLOW=0: two phases), a down item waiting
+///     for a group only until that group's hidden rows are quantized.
 /// Q8_0 rows take q8_0_rows512.hpp's AVX-512 kernel when the CPU has it, in every window: each (token, row) result is
 /// bitwise ggml-cpu's one-token vec_dot.
 /// x: T x n_embd floats (host), y: T x n_embd (host), written.  `single`: every (token, row) dot product as ggml-cpu's
@@ -250,24 +251,30 @@ class Experts {
 public:
     void run(Pool& pool, int64_t n_embd, int T, int max_t, const int32_t* ids, const float* w, int n_used,
              const std::vector<CpuFfn>& experts, const CpuFfn* own, const float* x, float* y, bool single = false);
-    /// GUILD_GLM_TIMING-style phase totals, milliseconds: activations, gate/up, hidden, down; and the weight bytes
-    /// the gate/up and down phases read (each FFN's rows once)
-    double phase_ms[4] = {0, 0, 0, 0};
+    /// GUILD_GLM_TIMING-style phase totals, milliseconds: activations, gate/up, hidden, down, and gate/up and down as
+    /// one phase (GUILD_CPU_MOE_FLOW); and the weight bytes the gate/up and down phases read (each FFN's rows once)
+    double phase_ms[5] = {0, 0, 0, 0, 0};
     double weight_bytes = 0, gu_bytes = 0, down_bytes = 0; ///< both phases', the gate/up phase's, the down phase's
     /// The rows of every group a down item takes (4-64; the last items of each node take a quarter).  16: with 64 a
     /// phase's last items kept a few threads busy while the rest waited (2x Xeon Gold 6130, 32 threads: a thread's
     /// last item ended 35 us before the phase on average, 16 us with 16 rows), before those quarter items; Nemotron
     /// 3.5's Q8_0 rows are still ~1% faster with 16, GLM-5.3-Flash's IQ4_XS rows ~1% with 64 (glm5.cpp).
     int down_rows = 16;
-    /// the gate/up and down phases' item times summed over the threads ([1] and [3]): busy_ms / (phase_ms * the
+    /// the gate/up, down and one-phase item times summed over the threads ([1], [3], [4]): busy_ms / (phase_ms * the
     /// pool's threads) is the share of the threads' time spent in items
-    double busy_ms[4] = {0, 0, 0, 0};
+    double busy_ms[5] = {0, 0, 0, 0, 0};
 
 private:
     std::vector<uint8_t> actbuf_, hbuf_, hqbuf_, pkbuf_;
     std::vector<int> qneed_;
     std::unique_ptr<std::atomic<int>[]> qcnt_;
-    size_t qcnt_cap_ = 0;
+    /// the one phase's per-group counts of quantized blocks and ready flags, a cache line each: a waiting down item
+    /// reads its group's flag while gate/up items count other groups' blocks
+    struct alignas(128) Line {
+        std::atomic<int> v{0};
+    };
+    std::unique_ptr<Line[]> gflow_;
+    size_t qcnt_cap_ = 0, gflow_cap_ = 0;
 };
 
 } // namespace guild::core::cpu_moe

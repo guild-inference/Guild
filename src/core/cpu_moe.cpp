@@ -598,6 +598,30 @@ void Experts::run(Pool& pool, int64_t N, int T, int max_t, const int32_t* ids, c
         for (size_t k = 0; k < nb; ++k)
             qcnt_[k].store(0, std::memory_order_relaxed);
     }
+    // One phase for gate/up and down (GUILD_CPU_MOE_FLOW=0, read each call: two phases): each queue holds its gate/up
+    // items and then its down items, and a down item, which sums its rows over every group in order, waits for a group
+    // only until that group's hidden rows are quantized.  The threads that end the gate/up items early start down
+    // items instead of waiting for the last gate/up item; the arithmetic and its order are the two phases', so the
+    // bytes are the same.  A gate/up item waits on nothing, and a queue's down items come after all its gate/up items,
+    // so a waiting down item waits only on items already taken.
+    const char* fl = std::getenv("GUILD_CPU_MOE_FLOW");
+    const int G = (int) groups.size();
+    const bool flow = fuse && !single && G > 0 && !(fl && fl[0] == '0');
+    if (flow) {
+        if (gflow_cap_ < (size_t) (2 * G)) {
+            gflow_.reset(new Line[(size_t) (2 * G)]);
+            gflow_cap_ = (size_t) (2 * G);
+        }
+        for (int k = 0; k < 2 * G; ++k) // [0, G): a group's 256-row blocks quantized; [G, 2G): its down rows ready
+            gflow_[(size_t) k].v.store(0, std::memory_order_relaxed);
+    }
+    auto pack_down = [&](const Group& gr, int c) {
+        const int c0 = gr.d_c[(size_t) c], nt = gr.d_c[(size_t) c + 1] - c0;
+        const void* hq[MT];
+        for (int k = 0; k < nt; ++k)
+            hq[k] = hqbuf_.data() + hq_off[(size_t) gr.units[(size_t) (c0 + k)]];
+        q8_0_pack(hq, nt, (int) gr.f.n_ff, pk + gr.d_pk[(size_t) c]);
+    };
     // with the timing, each phase's item times summed over the threads too (busy_ms)
     auto run_timed = [&](int k, int n0, int n1, const std::function<void(int, int)>& f) {
         if (!timing) {
@@ -694,25 +718,28 @@ void Experts::run(Pool& pool, int64_t N, int T, int max_t, const int32_t* ids, c
                 for (int u : gr.units)
                     from_float(hv + h_off[(size_t) u] + (size_t) b * QB,
                                hqbuf_.data() + hq_off[(size_t) u] + (size_t) b * qb_bytes, QB);
+                // the group's last block: its packed down chunks, then its down rows may start
+                if (flow && gflow_[(size_t) gi].v.fetch_add(1, std::memory_order_acq_rel) + 1 == (int) (f.n_ff / QB)) {
+                    for (int c = 0; c < (int) gr.d_pk.size(); ++c)
+                        pack_down(gr, c);
+                    gflow_[(size_t) (G + gi)].v.store(1, std::memory_order_release);
+                }
             }
         }
     };
-    run_timed(1, (int) items[0].size(), (int) items[1].size(), gu_item);
-    lap(1);
+    if (!flow) {
+        run_timed(1, (int) items[0].size(), (int) items[1].size(), gu_item);
+        lap(1);
+    }
     // the hidden activations, unless gate/up quantized them, and the down chunks q8_0_rows512 reads packed
     auto quantize = [&](int u) {
         const CpuFfn& f = groups[(size_t) unit_g[(size_t) u]].f;
         from_float_of((int) cpu_traits(f.d_type)->vec_dot_type)(hv + h_off[(size_t) u],
                                                                 hqbuf_.data() + hq_off[(size_t) u], f.n_ff);
     };
-    auto pack_down = [&](const Group& gr, int c) {
-        const int c0 = gr.d_c[(size_t) c], nt = gr.d_c[(size_t) c + 1] - c0;
-        const void* hq[MT];
-        for (int k = 0; k < nt; ++k)
-            hq[k] = hqbuf_.data() + hq_off[(size_t) gr.units[(size_t) (c0 + k)]];
-        q8_0_pack(hq, nt, (int) gr.f.n_ff, pk + gr.d_pk[(size_t) c]);
-    };
-    if (!fuse) {
+    if (flow) {
+        // packed and quantized by the gate/up items
+    } else if (!fuse) {
         // a task per down chunk: its units quantized, then packed
         std::vector<std::pair<int, int>> tasks;
         for (int gi = 0; gi < (int) groups.size(); ++gi)
@@ -761,6 +788,9 @@ void Experts::run(Pool& pool, int64_t N, int T, int max_t, const int32_t* ids, c
         float dbuf[MT][RB];
         for (size_t gi = 0; gi < groups.size(); ++gi) {
             const Group& gr = groups[gi];
+            if (flow)
+                while (gflow_[(size_t) G + gi].v.load(std::memory_order_acquire) == 0)
+                    __builtin_ia32_pause();
             const CpuFfn& f = gr.f;
             const ggml_type_traits_cpu* tr = cpu_traits(f.d_type);
             const bool x4 = iq4xs && f.d_type == (int) GGML_TYPE_IQ4_XS;
@@ -826,8 +856,19 @@ void Experts::run(Pool& pool, int64_t N, int T, int max_t, const int32_t* ids, c
                 }
             }
     };
-    run_timed(3, dn[0], dn[1], down_item);
-    lap(3);
+    if (!flow) {
+        run_timed(3, dn[0], dn[1], down_item);
+        lap(3);
+        return;
+    }
+    const int ngu[2] = {(int) items[0].size(), (int) items[1].size()};
+    run_timed(4, ngu[0] + dn[0], ngu[1] + dn[1], [&](int node, int i) {
+        if (i < ngu[node])
+            gu_item(node, i);
+        else
+            down_item(node, i - ngu[node]);
+    });
+    lap(4);
 }
 
 } // namespace guild::core::cpu_moe
