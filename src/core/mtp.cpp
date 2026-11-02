@@ -30,7 +30,11 @@
 #include "guild/kernels/verify_kernels.hpp"
 #include "guild/kernels/ngram.hpp"
 
+#include "ggml.h"
+
 #include <algorithm>
+#include <atomic>
+#include <thread>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -686,9 +690,57 @@ bool MtpDrafter::bind(const WeightTable& wt, const NativeHead* head, const float
             guild::kernels::gather_rows((const uint8_t*) head->weights(), row_bytes, dvocab_, n_dvocab_, dhead_,
                                         nullptr);
             cudaDeviceSynchronize();
-            vram_ += (uint64_t) (n_dvocab_ * row_bytes) + raw.size();
-            std::fprintf(stderr, "guild mtp: draft head over %lld tokens (%.1f MiB)\n", (long long) n_dvocab_,
-                         (double) (n_dvocab_ * row_bytes) / 1048576.0);
+            dhead_type_ = head->type();
+            int64_t bytes = n_dvocab_ * row_bytes;
+            // A Q6_K draft head's rows as Q4_K (each row dequantized exactly, then quantized as llama-quantize would
+            // without an importance matrix): 146 instead of 213 MiB read a draft.  Only the drafts can change, never
+            // the verified output.  Qwen3.8-Flash-Next, seven prompts (prose, code, an edit, French, Chinese, math, a
+            // summary), the same texts: 43.90 -> 44.67 tok/s, -0.2% to +3.5% a prompt (GTX 1070).  GUILD_MTP_HEAD=q6_k:
+            // the head's own rows; q5_k: Q5_K (no faster than Q6_K there).
+            const char* hq = std::getenv("GUILD_MTP_HEAD");
+            const std::string hs = hq ? hq : "q4_k";
+            const int want = hs == "q4_k" ? 12 : hs == "q5_k" ? 13 : -1;
+            const int n_embd = (int) g_->n_embd;
+            if (want >= 0 && dhead_type_ == 14 && n_embd % 256 == 0) {
+                std::vector<uint8_t> q6((size_t) bytes);
+                cudaMemcpy(q6.data(), dhead_, q6.size(), cudaMemcpyDeviceToHost);
+                const size_t out_row = ggml_row_size((ggml_type) want, n_embd);
+                std::vector<uint8_t> out((size_t) n_dvocab_ * out_row);
+                const auto* tr = ggml_get_type_traits(GGML_TYPE_Q6_K);
+                std::atomic<int64_t> next{0};
+                auto work = [&] {
+                    std::vector<float> f((size_t) 64 * n_embd);
+                    for (int64_t r0; (r0 = next.fetch_add(64)) < n_dvocab_;) {
+                        const int64_t nr = std::min<int64_t>(64, n_dvocab_ - r0);
+                        for (int64_t r = 0; r < nr; ++r)
+                            tr->to_float(q6.data() + (size_t) (r0 + r) * row_bytes, f.data() + (size_t) r * n_embd,
+                                         n_embd);
+                        ggml_quantize_chunk((ggml_type) want, f.data(), out.data() + (size_t) r0 * out_row, 0, nr,
+                                            n_embd, nullptr);
+                    }
+                };
+                std::vector<std::thread> th;
+                for (unsigned i = 1; i < std::max(1u, std::min(32u, std::thread::hardware_concurrency())); ++i)
+                    th.emplace_back(work);
+                work();
+                for (auto& t : th)
+                    t.join();
+                uint8_t* p = nullptr;
+                if (cudaMalloc((void**) &p, out.size()) == cudaSuccess) {
+                    cudaMemcpy(p, out.data(), out.size(), cudaMemcpyHostToDevice);
+                    cudaFree(dhead_);
+                    dhead_ = p;
+                    dhead_type_ = want;
+                    bytes = (int64_t) out.size();
+                } else
+                    cudaGetLastError();
+            }
+            vram_ += (uint64_t) bytes + raw.size();
+            std::fprintf(stderr, "guild mtp: draft head over %lld tokens (%.1f MiB%s)\n", (long long) n_dvocab_,
+                         (double) bytes / 1048576.0,
+                         dhead_type_ == 12   ? ", as Q4_K: GUILD_MTP_HEAD=q6_k keeps Q6_K"
+                         : dhead_type_ == 13 ? ", as Q5_K"
+                                             : "");
         }
     }
     if (coupled_draft_env() && cparams_ == nullptr && !setup_coupled(err))
@@ -907,7 +959,8 @@ bool MtpDrafter::record_forward(int T, int step_row0, cudaStream_t cs, std::stri
         native_quantize_q8_1(sample_, xq_, (int) N, T, cs);
         const bool sub = dhead_ != nullptr;
         const int64_t nv = sub ? n_dvocab_ : n_vocab_;
-        native_mmvq(head_->type(), sub ? dhead_ : head_->weights(), xq_, head_logits_, (int) N, (int) nv, T, cs);
+        native_mmvq(sub ? dhead_type_ : head_->type(), sub ? dhead_ : head_->weights(), xq_, head_logits_, (int) N,
+                    (int) nv, T, cs);
         if (coupled_rec_) {
             // coupled draft sampling: the target's chain and Philox draw for the row that will verify this draft
             // (counter = this cell + 1, from its step record), penalties over the ring; T == 1 (full layer)
@@ -1061,7 +1114,8 @@ bool MtpDrafter::record_forward_single(int T, int step_row0, cudaStream_t cs, st
         native_quantize_q8_1(sample_, xq_, (int) N, T, cs);
         const bool sub = dhead_ != nullptr;
         const int64_t nv = sub ? n_dvocab_ : n_vocab_;
-        native_mmvq(head_->type(), sub ? dhead_ : head_->weights(), xq_, head_logits_, (int) N, (int) nv, T, cs);
+        native_mmvq(sub ? dhead_type_ : head_->type(), sub ? dhead_ : head_->weights(), xq_, head_logits_, (int) N,
+                    (int) nv, T, cs);
         if (coupled_rec_) {
             coupled_draft_sample(head_logits_, (int) nv, sub ? dvocab_ : nullptr, sub ? dinv_ : nullptr, (int) n_vocab_,
                                  cparams_, cring_, kCoupledHistCap, coupled_j_, step, cscratch_, out_ids_, probs_, cs);
