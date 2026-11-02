@@ -169,6 +169,9 @@ public:
     void bind_native_kernels(const guild_cpu_expert_ext_v1_t& table) {
         native_table_ = table;
     }
+    const guild_cpu_expert_ext_v1_t& native_table() const {
+        return native_table_;
+    }
     void bind_backend_kernels(const guild_cpu_backend_ext_v2_t& table) {
         const auto baseline_swiglu = backend_table_.swiglu;
         backend_table_ = table;

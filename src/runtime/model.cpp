@@ -8,6 +8,7 @@
 #include "guild/abi/gkernel_package.hpp"
 #include "guild/artifact/gguf_reader.hpp"
 #include "guild/model/archetype.hpp"
+#include "guild/core/pool_rows.hpp"
 #include "guild/kernels/fused_gr.hpp"
 #include "guild/kernels/iq_kernels.hpp"
 #include "guild/kernels/verify_kernels.hpp"
@@ -500,6 +501,9 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
             return nullptr;
         }
 #endif
+        // the IQ3_S (NL4) gate/up and IQ4_NL down rows two to an AVX-512BW register, the same bits
+        // (GUILD_POOL_ROWS512=0: the table as bound)
+        impl->pool->bind_native_kernels(core::pool_rows512(impl->pool->native_table()));
     }
     std::optional<kernels::ScopedCudaDense> dense_scope;
     std::optional<kernels::ScopedCudaAttn> attn_scope;
