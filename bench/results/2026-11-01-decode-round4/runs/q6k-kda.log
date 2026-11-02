@@ -1,0 +1,38 @@
+glm5_run: a prompt of 5 tokens
+guild glm5: attention matrices Q8_0 -> Q6_K (for the context; GUILD_GLM_DENSE=q8_0 keeps Q8_0): 5746 -> 4436 MiB in 21.4 s
+guild glm5: VRAM: 8010 MiB free, 6214 MiB fixed, context 32768 tokens x 13184 B, 5 MiB left; 4 shared experts on the CPU
+guild glm5: 530 matrices take MMQ in prompt windows
+guild glm5: experts split across 2 NUMA nodes, IQ3_S gate/up as NL4: 77.9 + 77.9 GiB in 131.6 s
+guild glm5: token_embd copied to memory: 643 MiB in 5.41 s (the load waited 0.00 s for it)
+glm5: 45 layers (34 KDA, 11 DSA) + MTP, 39 of 46 FFNs on the GPU, 32 CPU threads on 2 NUMA nodes, 7575 MiB VRAM, context 32768
+glm5_run: loaded in 160.1 s
+prompt: CPU experts 151 ms of 193
+glm5 timing (prompt): activations 4 ms, gate/up 85, hidden 0, down 58; launches 49; threads busy 95% / 92%; 21.54 GB of expert rows (gate/up 14.11 GB at 165.4 GB/s, down 7.44 at 127.6)
+top after the prompt: 12089 (16.948) 264 (14.423) 11240 (14.309) 825 (14.222) 3881 (14.177)
+GLM_Q6K_W4=0 GUILD_GLM_KDA_MID1=0 #1: MTP: 117 of 138 drafts accepted (85%); per step: draft 4.4 ms, verify 79.4, accept 2.1
+GLM_Q6K_W4=0 GUILD_GLM_KDA_MID1=0 #1: per step: 85.4 / 86.1 / 86.9 ms (10th / 50th / 90th percentile), CPU experts 68.2 / 68.9 / 69.6
+GLM_Q6K_W4=0 GUILD_GLM_KDA_MID1=0 #1: decode 256 tokens in 11898 ms (21.43 tok/s)
+GLM_Q6K_W4=1 GUILD_GLM_KDA_MID1=1 #1: MTP: 117 of 138 drafts accepted (85%); per step: draft 4.4 ms, verify 79.2, accept 2.1
+GLM_Q6K_W4=1 GUILD_GLM_KDA_MID1=1 #1: per step: 84.2 / 86.2 / 87.5 ms (10th / 50th / 90th percentile), CPU experts 68.3 / 72.3 / 73.2
+GLM_Q6K_W4=1 GUILD_GLM_KDA_MID1=1 #1: decode 256 tokens in 11868 ms (21.49 tok/s)
+GLM_Q6K_W4=0 GUILD_GLM_KDA_MID1=0 #2: MTP: 117 of 138 drafts accepted (85%); per step: draft 4.5 ms, verify 80.4, accept 2.2
+GLM_Q6K_W4=0 GUILD_GLM_KDA_MID1=0 #2: per step: 86.6 / 87.3 / 87.8 ms (10th / 50th / 90th percentile), CPU experts 71.7 / 72.6 / 73.4
+GLM_Q6K_W4=0 GUILD_GLM_KDA_MID1=0 #2: decode 256 tokens in 12048 ms (21.17 tok/s)
+GLM_Q6K_W4=1 GUILD_GLM_KDA_MID1=1 #2: MTP: 117 of 138 drafts accepted (85%); per step: draft 4.4 ms, verify 80.0, accept 2.2
+GLM_Q6K_W4=1 GUILD_GLM_KDA_MID1=1 #2: per step: 86.1 / 86.7 / 87.5 ms (10th / 50th / 90th percentile), CPU experts 72.1 / 73.0 / 73.8
+GLM_Q6K_W4=1 GUILD_GLM_KDA_MID1=1 #2: decode 256 tokens in 11982 ms (21.28 tok/s)
+GLM_Q6K_W4=0 GUILD_GLM_KDA_MID1=0 #3: MTP: 117 of 138 drafts accepted (85%); per step: draft 4.5 ms, verify 81.9, accept 2.2
+GLM_Q6K_W4=0 GUILD_GLM_KDA_MID1=0 #3: per step: 87.5 / 88.2 / 89.6 ms (10th / 50th / 90th percentile), CPU experts 72.7 / 73.6 / 75.0
+GLM_Q6K_W4=0 GUILD_GLM_KDA_MID1=0 #3: decode 256 tokens in 12256 ms (20.81 tok/s)
+GLM_Q6K_W4=1 GUILD_GLM_KDA_MID1=1 #3: MTP: 117 of 138 drafts accepted (85%); per step: draft 4.4 ms, verify 81.1, accept 2.2
+GLM_Q6K_W4=1 GUILD_GLM_KDA_MID1=1 #3: per step: 87.3 / 88.0 / 88.6 ms (10th / 50th / 90th percentile), CPU experts 73.5 / 74.3 / 74.8
+GLM_Q6K_W4=1 GUILD_GLM_KDA_MID1=1 #3: decode 256 tokens in 12142 ms (21.00 tok/s)
+GLM_Q6K_W4=0 GUILD_GLM_KDA_MID1=0 #4: MTP: 117 of 138 drafts accepted (85%); per step: draft 4.5 ms, verify 82.8, accept 2.2
+GLM_Q6K_W4=0 GUILD_GLM_KDA_MID1=0 #4: per step: 88.2 / 89.0 / 89.8 ms (10th / 50th / 90th percentile), CPU experts 73.7 / 74.7 / 75.6
+GLM_Q6K_W4=0 GUILD_GLM_KDA_MID1=0 #4: decode 256 tokens in 12381 ms (20.60 tok/s)
+GLM_Q6K_W4=1 GUILD_GLM_KDA_MID1=1 #4: MTP: 117 of 138 drafts accepted (85%); per step: draft 4.4 ms, verify 82.0, accept 2.2
+GLM_Q6K_W4=1 GUILD_GLM_KDA_MID1=1 #4: per step: 88.2 / 88.8 / 89.7 ms (10th / 50th / 90th percentile), CPU experts 74.1 / 75.1 / 75.8
+GLM_Q6K_W4=1 GUILD_GLM_KDA_MID1=1 #4: decode 256 tokens in 12265 ms (20.79 tok/s)
+A/B GLM_Q6K_W4=0 GUILD_GLM_KDA_MID1=0: per step 85.9 / 87.7 / 89.3 ms (10th / 50th / 90th, 4 runs), 21.00 tok/s
+A/B GLM_Q6K_W4=1 GUILD_GLM_KDA_MID1=1: per step 85.5 / 87.5 / 89.0 ms (10th / 50th / 90th, 4 runs), 21.14 tok/s
+A/B ids: identical in every run
