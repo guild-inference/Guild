@@ -7,6 +7,7 @@
 #include <cuda_runtime.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cfloat>
 #include <cmath>
 #include <cstring>
@@ -587,6 +588,111 @@ __global__ void __launch_bounds__(NW * 32)
         v = warp_sum(v);
         if (lane == 0)
             y[(size_t) t * n_out + row] = v;
+    }
+}
+
+// q6k_mmvq_k with each warp's rows in a loop (row, row + gridDim.x * NW, ...) on as many blocks as fit the GPU at
+// once, and the next chunk - the row's next, or the first of the warp's next row - loading while the warp uses the
+// current one; rows of any alignment through 16-byte pieces.  For rows of one or two chunks the kernel above has a
+// warp load its row, wait, use it and exit: DSA q_b (6 blocks, 1,260 bytes a row) 140.8 -> 102.3 us, the 4096-wide
+// rows (KDA q/k/v, the draft head) 2-4% faster (glm5_kernels_test q6k, GTX 1070).  The arithmetic, its order and the
+// lane of every value are the kernel above's, so the results are bitwise its own.
+template <int T, int NW, bool Ids = false>
+__global__ void __launch_bounds__(NW * 32, 4)
+    q6k_rows_k(const uint8_t* __restrict__ W, const uint8_t* __restrict__ x, float* __restrict__ y, int n_in, int n_out,
+               const int32_t* __restrict__ ids = nullptr) {
+    extern __shared__ __align__(16) uint8_t smem[];
+    const int nb = n_in / 256, xb = n_in / 32, xbytes = T * xb * kQ6Q81;
+    for (int o = threadIdx.x * 16; o < xbytes; o += NW * 32 * 16)
+        *reinterpret_cast<int4*>(smem + o) = __ldg(reinterpret_cast<const int4*>(x + o));
+    __syncthreads();
+    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
+    const int stride = gridDim.x * NW;
+    int row = blockIdx.x * NW + warp;
+    if (row >= n_out)
+        return;
+    const size_t rb = (size_t) nb * kQ6Block;
+    uint8_t* sm = smem + xbytes + warp * kQ6WarpBytes;
+    const int iqs = lane, bq8 = 4 * (iqs / 16) + (iqs % 16) / 8, so = 8 * (iqs / 16) + (iqs % 16) / 4;
+    const int vh_shift = 2 * ((iqs % 16) / 8), qh_i = 8 * (iqs / 16) + iqs % 8;
+    constexpr int kV = (kQ6WarpBytes / 16 + 31) / 32; // 16-byte pieces a lane carries (4)
+    int4 pf[kV];
+    int pf_head = 0, pf_n16 = 0;
+    auto row_ptr = [&](int r) { return W + (size_t) (Ids ? __ldg(ids + r) : r) * rb; };
+    // the 16-byte pieces covering [src, src + bytes), the first `pf_head` bytes into the first
+    auto fetch = [&](const uint8_t* src, int bytes) {
+        pf_head = (int) ((uintptr_t) src & 15);
+        pf_n16 = (pf_head + bytes + 15) / 16;
+#pragma unroll
+        for (int k = 0; k < kV; ++k)
+            if (lane + 32 * k < pf_n16)
+                pf[k] = __ldg(reinterpret_cast<const int4*>(src - pf_head) + lane + 32 * k);
+    };
+    const uint8_t* wr = row_ptr(row);
+    fetch(wr, min(kQ6Chunk, nb) * kQ6Block);
+    float acc[T][4];
+    while (true) {
+#pragma unroll
+        for (int t = 0; t < T; ++t)
+            acc[t][0] = acc[t][1] = acc[t][2] = acc[t][3] = 0.f;
+        const int next = row + stride;
+        const uint8_t* wn = next < n_out ? row_ptr(next) : nullptr;
+        for (int c0 = 0; c0 < nb; c0 += kQ6Chunk) {
+            const int cn = min(kQ6Chunk, nb - c0);
+            __syncwarp();
+            const int head = pf_head, n16 = pf_n16;
+#pragma unroll
+            for (int k = 0; k < kV; ++k)
+                if (lane + 32 * k < n16)
+                    reinterpret_cast<int4*>(sm)[lane + 32 * k] = pf[k];
+            if (c0 + kQ6Chunk < nb)
+                fetch(wr + (size_t) (c0 + kQ6Chunk) * kQ6Block, min(kQ6Chunk, nb - c0 - kQ6Chunk) * kQ6Block);
+            else if (wn)
+                fetch(wn, min(kQ6Chunk, nb) * kQ6Block);
+            __syncwarp();
+#pragma unroll 2
+            for (int b = 0; b < cn; ++b) {
+                const uint8_t* blk = sm + head + b * kQ6Block; // ql[128] qh[64] scales[16] d
+                const int kbx = c0 + b;
+                const int vl = ld_b2(blk, iqs);
+                const int vh = ld_b2(blk + 128, qh_i) >> vh_shift;
+                const int8_t* sc = reinterpret_cast<const int8_t*>(blk + 192) + so;
+                const float d = __half2float(*reinterpret_cast<const __half*>(blk + 208));
+                int vi[2];
+#pragma unroll
+                for (int i = 0; i < 2; ++i) {
+                    const int vil = (vl >> (4 * i)) & 0x0f0f0f0f;
+                    const int vih = ((vh >> (4 * i)) << 4) & 0x30303030;
+                    vi[i] = __vsubss4(vil | vih, 0x20202020);
+                }
+#pragma unroll
+                for (int t = 0; t < T; ++t) {
+                    const uint8_t* xt = smem + ((size_t) t * xb + kbx * 8) * kQ6Q81;
+                    float sumf = 0.0f;
+#pragma unroll
+                    for (int i = 0; i < 2; ++i) {
+                        const Q81& q = *reinterpret_cast<const Q81*>(xt + (bq8 + 2 * i) * kQ6Q81);
+                        const int u = reinterpret_cast<const int*>(q.qs)[iqs % 8];
+                        sumf += __low2float(q.ds) * (__dp4a(vi[i], u, 0) * (int) sc[4 * i]);
+                    }
+                    acc[t][kbx & 3] += d * sumf;
+                }
+            }
+        }
+#pragma unroll
+        for (int t = 0; t < T; ++t) {
+            float v = acc[t][0];
+            v += acc[t][1];
+            v += acc[t][2];
+            v += acc[t][3];
+            v = warp_sum(v);
+            if (lane == 0)
+                y[(size_t) t * n_out + row] = v;
+        }
+        if (!wn)
+            break;
+        row = next;
+        wr = wn;
     }
 }
 
@@ -1610,6 +1716,36 @@ bool q6k_mmvq_supported(int n_in, int n_out, int T) {
            (size_t) T * (n_in / 32) * kQ6Q81 + 8 * kQ6WarpBytes <= 48 * 1024;
 }
 
+namespace {
+// q6k_rows_k's grid: the blocks the GPU holds at once (four an SM at 64 registers), at most a block per 8 rows
+unsigned q6k_rows_grid(int n_out) {
+    static const int resident = [] {
+        int dev = 0, sms = 0, per_sm = 0;
+        cudaGetDevice(&dev);
+        cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, dev);
+        // the widest rows it takes (two chunks, 4096 values) and one token: the most shared memory
+        cudaOccupancyMaxActiveBlocksPerMultiprocessor(&per_sm, q6k_rows_k<1, 8>, 256,
+                                                      (size_t) (4096 / 32) * kQ6Q81 + 8 * kQ6WarpBytes);
+        cudaGetLastError();
+        return std::max(1, sms) * std::max(1, per_sm);
+    }();
+    return (unsigned) std::min(resident, (n_out + 7) / 8);
+}
+
+std::atomic<bool> g_q6k_rows{true};
+
+bool q6k_rows_on(int n_in, int T) {
+    // a token, rows of one or two chunks: 8192 or 16384 values a row (4 and 8 chunks) and two tokens measured no
+    // faster this way (KDA out 134 -> 136 us, the two-column head 3335 -> 3328 us)
+    return g_q6k_rows.load(std::memory_order_relaxed) && T == 1 && n_in / 256 <= 2 * kQ6Chunk;
+}
+
+} // namespace
+
+void set_q6k_rows(bool on) {
+    g_q6k_rows.store(on, std::memory_order_relaxed);
+}
+
 void q6k_mmvq(const void* W, const void* xq8_1, float* y, int n_in, int n_out, int T, void* st) {
     const size_t xbytes = (size_t) T * (n_in / 32) * kQ6Q81;
     const auto* w = (const uint8_t*) W;
@@ -1618,7 +1754,9 @@ void q6k_mmvq(const void* W, const void* xq8_1, float* y, int n_in, int n_out, i
     // would need, lost to native_mmvq: 117 against 146 GB/s)
     const dim3 grid((unsigned) ((n_out + 7) / 8));
     const size_t sh = xbytes + 8 * kQ6WarpBytes;
-    if (T == 1)
+    if (q6k_rows_on(n_in, T))
+        q6k_rows_k<1, 8><<<q6k_rows_grid(n_out), 256, sh, S(st)>>>(w, x, y, n_in, n_out);
+    else if (T == 1)
         q6k_mmvq_k<1, 8><<<grid, 256, sh, S(st)>>>(w, x, y, n_in, n_out);
     else
         q6k_mmvq_k<2, 8><<<grid, 256, sh, S(st)>>>(w, x, y, n_in, n_out);
@@ -1626,8 +1764,12 @@ void q6k_mmvq(const void* W, const void* xq8_1, float* y, int n_in, int n_out, i
 
 void q6k_mmvq_rows(const void* W, const int32_t* ids, int n_ids, const void* xq8_1, float* y, int n_in, void* st) {
     const size_t sh = (size_t) (n_in / 32) * kQ6Q81 + 8 * kQ6WarpBytes;
-    q6k_mmvq_k<1, 8, true><<<(unsigned) ((n_ids + 7) / 8), 256, sh, S(st)>>>((const uint8_t*) W, (const uint8_t*) xq8_1,
-                                                                             y, n_in, n_ids, ids);
+    if (q6k_rows_on(n_in, 1))
+        q6k_rows_k<1, 8, true>
+            <<<q6k_rows_grid(n_ids), 256, sh, S(st)>>>((const uint8_t*) W, (const uint8_t*) xq8_1, y, n_in, n_ids, ids);
+    else
+        q6k_mmvq_k<1, 8, true><<<(unsigned) ((n_ids + 7) / 8), 256, sh, S(st)>>>(
+            (const uint8_t*) W, (const uint8_t*) xq8_1, y, n_in, n_ids, ids);
 }
 
 bool q8_0_mmvq_supported(int n_in, int n_out, int T) {

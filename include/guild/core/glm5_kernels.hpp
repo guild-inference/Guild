@@ -39,6 +39,7 @@ void hc_init(const float* e, float* R, int N, int T, void* st);
 /// silu(conv), state = the last 3 inputs per channel ([C][3], oldest first).  w: q, k, v taps, each [D][4].  Then q
 /// and k are L2-normalised per head of 128.
 /// `mid` (may be null): where the state after the window's first token goes (a verify window's rollback point).
+/// One token may run in place: xk = xq + D, xv = xq + 2 * D and out = xq.
 void kda_conv(const float* xq, const float* xk, const float* xv, float* state, const float* wq, const float* wk,
               const float* wv, float* out, int D, int T, float* mid, void* st);
 /// g = lower_bound * sigmoid(-(fpre + dt_b) * ssm_a[head]) (per channel), beta = sigmoid(bpre) (per head)
@@ -64,6 +65,9 @@ void q8_0_split(const uint8_t* q8, uint8_t* out, int64_t rows, int n_in);
 /// guild::kernels::native_mmvq's one-token result, with fewer load instructions (Pascal is bound by them on Q6_K)
 bool q6k_mmvq_supported(int n_in, int n_out, int T);
 void q6k_mmvq(const void* W, const void* xq8_1, float* y, int n_in, int n_out, int T, void* st);
+/// One token over rows of at most 4096 values: each warp's rows in a loop on as many blocks as the GPU holds, the next
+/// row loading while one is used (on by default; off: a block per 8 rows).  The same bits either way.
+void set_q6k_rows(bool on);
 /// One token over a subset of the rows (q6k_mmvq_supported(n_in, n, 1)): y[i] = row ids[i] times the token, bitwise
 /// q6k_mmvq's y[ids[i]] (the draft head over a token subset)
 void q6k_mmvq_rows(const void* W, const int32_t* ids, int n_ids, const void* xq8_1, float* y, int n_in, void* st);

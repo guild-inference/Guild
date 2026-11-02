@@ -1012,7 +1012,7 @@ static void test_staged_mmvq(int type) {
     cudaStreamCreate(&st);
     struct Shape {
         int n_in, n_out;
-    } shapes[] = {{4096, 1000}, {1536, 515}, {8192, 520}, {16384, 513}};
+    } shapes[] = {{4096, 1000}, {1536, 515}, {8192, 520}, {16384, 513}, {1536, 16384}};
     std::uniform_int_distribution<int> byte(0, 255);
     for (const Shape& sh : shapes) {
         const bool q6 = type == 14;
@@ -1160,7 +1160,8 @@ static int bench_q6k() {
         int n_in, n_out;
     } shapes[] = {{"DSA q_b 1536x16384", 1536, 16384}, {"KDA q/k/v 4096x8192", 4096, 8192},
                   {"KDA out 8192x4096", 8192, 4096},   {"DSA out 16384x4096", 16384, 4096},
-                  {"head 4096x154880", 4096, 154880},  {"DSA q_b 1536x16384", 1536, 16384}}; // again, the clocks up
+                  {"head 4096x154880", 4096, 154880},  {"KDA q|k|v 4096x24576", 4096, 24576},
+                  {"DSA q_b 1536x16384", 1536, 16384}}; // again, the clocks up
     cudaStream_t st;
     cudaStreamCreate(&st);
     for (const Shape& sh : shapes) {

@@ -80,7 +80,8 @@ struct Layer {
     float *hc_attn_scale = nullptr, *hc_attn_base = nullptr, *hc_ffn_scale = nullptr, *hc_ffn_base = nullptr;
     // KDA
     Mat wq, wk, wv, f_a, f_b, g_a, g_b, beta;
-    Mat fgb; ///< f_a, g_a and beta's rows, one after the other in VRAM: one product for a token
+    Mat fgb;  ///< f_a, g_a and beta's rows, one after the other in VRAM: one product for a token
+    Mat wqkv; ///< q, k and v's rows, one after the other in VRAM: one product for a token
     float *conv_q = nullptr, *conv_k = nullptr, *conv_v = nullptr, *dt_b = nullptr, *ssm_a = nullptr,
           *ssm_norm = nullptr;
     float *kda_state = nullptr, *conv_state = nullptr;
@@ -510,6 +511,15 @@ struct Glm5Engine::Impl {
     // a pipelined window of one token a group that saves the state after its first token: group A's KDA state goes
     // to kda_mid alone and group B starts from there (GUILD_GLM_KDA_MID1=0, read each window: written twice)
     bool kda_mid1 = false;
+    // read each window (switches for A/Bs in one process; the same bits either way): GUILD_GLM_QKV1=0 multiplies a
+    // token's q, k and v as three products, GUILD_GLM_Q6K_ROWS=0 takes the block-per-8-rows Q6_K kernel for every shape
+    bool qkv1 = true;
+    void read_switches() {
+        const char* e = std::getenv("GUILD_GLM_QKV1");
+        qkv1 = !(e && e[0] == '0');
+        e = std::getenv("GUILD_GLM_Q6K_ROWS");
+        glm5k::set_q6k_rows(!(e && e[0] == '0'));
+    }
     bool embed_rows(const int32_t* tokens, int T, std::string& err);
     const char* Y_kind(int l) const;
     bool main_window(const int32_t* tokens, int T, int64_t pos0, bool save_mid, std::string& err);
@@ -979,6 +989,8 @@ bool Glm5Engine::Impl::load(const std::string& path, const Glm5Options& o, std::
         if (y.kda) {
             if (!upload_together({&y.f_a, &y.g_a, &y.beta}, y.fgb, err))
                 return false;
+            if (!upload_together({&y.wq, &y.wk, &y.wv}, y.wqkv, err))
+                return false;
             for (Mat* m : {&y.wq, &y.wk, &y.wv, &y.f_a, &y.f_b, &y.g_a, &y.g_b, &y.beta})
                 if (!upload(*m, err))
                     return false;
@@ -1313,9 +1325,16 @@ bool Glm5Engine::Impl::load(const std::string& path, const Glm5Options& o, std::
 void Glm5Engine::Impl::attn_kda(Layer& Y, int T, float* mid_state, float* mid_conv) {
     const int64_t H = g.n_head, D = H * g.kda_dim;
     quant(xn, g.n_embd, T, xq);
-    mm(Y.wq, xq, a, T);
-    mm(Y.wk, xq, b, T);
-    mm(Y.wv, xq, c, T);
+    // a token's q, k and v in one product (their rows are consecutive), into the convolution's output, which it
+    // computes in place (a thread reads channel c and then writes it); qkv1 off: three products (the same bits)
+    const bool one = T == 1 && Y.wqkv.dev && qkv1;
+    if (one) {
+        mm(Y.wqkv, xq, qkv, 1);
+    } else {
+        mm(Y.wq, xq, a, T);
+        mm(Y.wk, xq, b, T);
+        mm(Y.wv, xq, c, T);
+    }
     float *fa = small1, *ga = small2, *bl = d; // f_a, g_a and beta outputs: [T][128], [T][128], [T][H]
     if (T == 1 && Y.fgb.dev) {
         mm(Y.fgb, xq, small1, 1);
@@ -1326,7 +1345,11 @@ void Glm5Engine::Impl::attn_kda(Layer& Y, int T, float* mid_state, float* mid_co
         mm(Y.g_a, xq, small2, T);
         mm(Y.beta, xq, d, T);
     }
-    glm5k::kda_conv(a, b, c, Y.conv_state, Y.conv_q, Y.conv_k, Y.conv_v, qkv, (int) D, T, mid_conv, st);
+    if (one)
+        glm5k::kda_conv(qkv, qkv + D, qkv + 2 * D, Y.conv_state, Y.conv_q, Y.conv_k, Y.conv_v, qkv, (int) D, 1,
+                        mid_conv, st);
+    else
+        glm5k::kda_conv(a, b, c, Y.conv_state, Y.conv_q, Y.conv_k, Y.conv_v, qkv, (int) D, T, mid_conv, st);
     quant(fa, Y.f_a.n_out, T, xq2);
     mm(Y.f_b, xq2, a, T); // fpre [T][D]
     glm5k::kda_gates(a, Y.dt_b, Y.ssm_a, gk, bl, beta, (int) D, (int) H, T, g.kda_lower_bound, st);
@@ -1742,6 +1765,7 @@ const char* Glm5Engine::Impl::Y_kind(int l) const {
 
 bool Glm5Engine::Impl::main_window(const int32_t* tokens, int T, int64_t pos0, bool save_mid, std::string& err) {
     const int64_t N = g.n_embd;
+    read_switches();
     if (!embed_rows(tokens, T, err))
         return false;
     glm5k::hc_init(f, R, (int) N, T, st);
