@@ -24,8 +24,8 @@ and 39.7 and 49.9 for MTP, with the same texts.
   by 1%; in the cleaner of two rounds it ran 2-6% slower on prose, story and sql.
 
 PC: 2x Xeon Gold 6130 (16 cores each, AVX-512 BW without VNNI, 2 NUMA nodes), GTX 1070 8 GB (sm_61, 15 SMs, 151 W
-cap), CUDA 12. Branch `feat/nemotron-transcribe`, guild-kernels-cpu `9b7281a`, guild-kernels-cuda `de65d60` (all
-local). Drafter checkpoints: incoai's DFlash 2 checkpoints for Qwen3.8-Flash-Next and GLM-5.3-Flash (bf16
+cap), CUDA 12. Branch `feat/nemotron-transcribe`, guild-kernels-cpu `9b7281a`, guild-kernels-cuda `de65d60`, which
+`backends.lock.json` pins since the round. Drafter checkpoints: incoai's DFlash 2 checkpoints for Qwen3.8-Flash-Next and GLM-5.3-Flash (bf16
 safetensors, 1.2 GB and 2.3 GB).
 
 ## Results
