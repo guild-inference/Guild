@@ -1,6 +1,7 @@
 // tests/core/dflash_kernels_test.cpp - the DFlash drafter's kernels (include/guild/core/dflash.hpp) against host
 // references on random data: the activation quantization, the int8 ("D8") and Q4_K products at one to eight columns,
 // the top 16 with the log-sum-exp, the block attention over a context ring, and the per-head norm with RoPE.
+// `dflash_kernels_test rates` times the two products instead.
 #include "../check.hpp"
 #include "guild/core/dflash.hpp"
 
@@ -88,8 +89,8 @@ Act quantize(const std::vector<float>& x, int K, int cols) {
 void test_d8(std::mt19937& rng) {
     std::uniform_int_distribution<int> qd(-127, 127);
     std::normal_distribution<float> nd(0.f, 1.f);
-    for (const int K : {2560, 7680}) // one staged chunk, then three
-        for (const int n_out : {640, 2560, 6144}) {
+    for (const int K : {2560, 7680})                     // one staged chunk, then three
+        for (const int n_out : {640, 641, 2560, 6144}) { // 641: one row a task
             std::vector<int8_t> wq((size_t) n_out * K);
             std::vector<uint16_t> ws((size_t) n_out * K / 32);
             for (auto& v : wq)
@@ -130,11 +131,11 @@ void test_d8(std::mt19937& rng) {
             cudaFree(dws);
             cudaFree(y);
         }
-    std::printf("d8_mm: K 2560 / 7680, 640 / 2560 / 6144 rows, 1-8 columns match\n");
+    std::printf("d8_mm: K 2560 / 7680, 640 / 641 / 2560 / 6144 rows, 1-8 columns match\n");
 }
 
-void test_k4(std::mt19937& rng, int K) { // K past 2560: the columns staged in chunks
-    const int n_out = 2048;
+void test_k4(std::mt19937& rng, int K,
+             int n_out) { // K past 2560: the columns staged in chunks; n_out odd: a row a task
     std::normal_distribution<float> nd(0.f, 1.f);
     std::vector<float> wf((size_t) n_out * K);
     for (auto& v : wf)
@@ -167,13 +168,13 @@ void test_k4(std::mt19937& rng, int K) { // K past 2560: the columns staged in c
             }
         const double e = rel_err(got, want);
         if (e > 2e-5) {
-            std::fprintf(stderr, "k4_mm cols %d: relative error %.3g\n", cols, e);
+            std::fprintf(stderr, "k4_mm n_out %d cols %d: relative error %.3g\n", n_out, cols, e);
             CHECK(false);
         }
     }
     cudaFree(dw);
     cudaFree(y);
-    std::printf("k4_mm: Q4_K 2048 x %d, 1-8 columns match ggml's dequantized rows\n", K);
+    std::printf("k4_mm: Q4_K %d x %d, 1-8 columns match ggml's dequantized rows\n", n_out, K);
 }
 
 void test_topk(std::mt19937& rng, int n) {
@@ -344,18 +345,82 @@ void test_norm_rope(std::mt19937& rng) {
     std::printf("head_norm_rope: 8 heads of 128 at positions near 5000 match (max error %.2g)\n", e);
 }
 
+// `dflash_kernels_test rates`: GB/s of the two products at 1-8 columns on random rows (d8_mm 15360 x 2560, k4_mm
+// 248320 x 2560), the median of 20 runs after 3
+void rates(std::mt19937& rng) {
+    const int K = 2560, n8 = 15360, n4 = 248320;
+    std::vector<float> x((size_t) 8 * K);
+    std::normal_distribution<float> nd(0.f, 1.f);
+    for (auto& v : x)
+        v = nd(rng);
+    const Act a = quantize(x, K, 8);
+    std::vector<int8_t> wq((size_t) n8 * K);
+    for (auto& v : wq)
+        v = (int8_t) (rng() & 0x7F);
+    std::vector<uint16_t> ws((size_t) n8 * K / 32, ggml_fp32_to_fp16(0.01f));
+    const size_t row4 = ggml_row_size(GGML_TYPE_Q4_K, K);
+    std::vector<uint8_t> w4((size_t) n4 * row4);
+    for (auto& v : w4)
+        v = (uint8_t) rng();
+    for (size_t b = 0; b < w4.size(); b += 144) { // d and dmin: finite halves
+        const uint16_t one = ggml_fp32_to_fp16(0.01f);
+        std::memcpy(&w4[b], &one, 2);
+        std::memcpy(&w4[b + 2], &one, 2);
+    }
+    int8_t* dwq = dev(wq);
+    uint16_t* dws = dev(ws);
+    uint8_t* dw4 = dev(w4);
+    float* y = nullptr;
+    CHECK(cudaMalloc((void**) &y, (size_t) 8 * n4 * 4) == cudaSuccess);
+    cudaEvent_t e0, e1;
+    cudaEventCreate(&e0);
+    cudaEventCreate(&e1);
+    auto time = [&](auto&& run) {
+        std::vector<float> ms;
+        for (int i = 0; i < 23; ++i) {
+            cudaEventRecord(e0);
+            run();
+            cudaEventRecord(e1);
+            cudaEventSynchronize(e1);
+            float t = 0;
+            cudaEventElapsedTime(&t, e0, e1);
+            if (i >= 3)
+                ms.push_back(t);
+        }
+        std::sort(ms.begin(), ms.end());
+        return (double) ms[ms.size() / 2];
+    };
+    std::printf("columns   d8_mm GB/s   k4_mm GB/s\n");
+    for (int cols = 1; cols <= 8; ++cols) {
+        const double t8 = time([&] { dflashk::d8_mm(dwq, dws, a.xq, a.xs, y, K, n8, cols, nullptr); });
+        const double t4 = time([&] { dflashk::k4_mm(dw4, a.xq, a.xs, a.xm, y, K, n4, cols, nullptr); });
+        std::printf("%7d %12.0f %12.0f\n", cols, (double) (wq.size() + ws.size() * 2) / t8 / 1e6,
+                    (double) w4.size() / t4 / 1e6);
+    }
+    cudaFree(dwq);
+    cudaFree(dws);
+    cudaFree(dw4);
+    cudaFree(y);
+}
+
 } // namespace
 
-int main() {
+int main(int argc, char** argv) {
     int n = 0;
     if (cudaGetDeviceCount(&n) != cudaSuccess || n == 0) {
         std::printf("no CUDA device: skipped\n");
         return 77;
     }
+    if (argc > 1 && std::strcmp(argv[1], "rates") == 0) {
+        std::mt19937 rng(7);
+        rates(rng);
+        return 0;
+    }
     std::mt19937 rng(7);
     test_d8(rng);
-    test_k4(rng, 2560);
-    test_k4(rng, 4096);
+    test_k4(rng, 2560, 2048);
+    test_k4(rng, 2560, 2047);
+    test_k4(rng, 4096, 2048);
     test_topk(rng, 248320); // float4 rows
     test_topk(rng, 106299); // a draft vocabulary of an odd size
     test_attention(rng);

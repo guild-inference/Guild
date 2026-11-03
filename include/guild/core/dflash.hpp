@@ -56,8 +56,7 @@ size_t topk_scratch_floats(int rows, int n);
 void topk_lse(const float* logits, int n, int rows, int k, int32_t* idx, float* val, float* lse, float* scratch,
               void* st);
 /// the drafter's products (its "D8" weights): int8 rows of K values with an fp16 scale a 32 (`ws`, K / 32 a row) times
-/// `cols` (<= 8) columns of int8 with a float scale a 32 (q8_act's), y[c][n_out]; K a multiple of 32, n_out of 4
-/// when it is 4096 or more
+/// `cols` (<= 8) columns of int8 with a float scale a 32 (q8_act's), y[c][n_out]; K a multiple of 32
 void q8_act(const float* x, int K, int cols, int8_t* xq, float* xs, void* st, float* xsum = nullptr);
 bool d8_mm(const int8_t* wq, const uint16_t* ws, const int8_t* xq, const float* xs, float* y, int K, int n_out,
            int cols, void* st);

@@ -66,6 +66,24 @@ bool read_file(const std::string& path, std::string& out) {
     return true;
 }
 
+// ggml's quantization of `rows` rows of n_in values, 64 rows at a time in up to 32 threads (Q4_K's scale search alone
+// took about 50 s for the drafter's matrices)
+void quantize_rows(ggml_type t, const float* f, uint8_t* out, int64_t rows, int64_t n_in) {
+    const size_t row = ggml_row_size(t, n_in);
+    std::atomic<int64_t> next{0};
+    auto work = [&] {
+        for (int64_t r0; (r0 = next.fetch_add(64)) < rows;)
+            ggml_quantize_chunk(t, f + r0 * n_in, out + (size_t) r0 * row, 0, std::min<int64_t>(64, rows - r0), n_in,
+                                nullptr);
+    };
+    std::vector<std::thread> th;
+    for (unsigned i = 1; i < std::max(1u, std::min(32u, std::thread::hardware_concurrency())); ++i)
+        th.emplace_back(work);
+    work();
+    for (auto& t : th)
+        t.join();
+}
+
 } // namespace
 
 struct DFlashDrafter::Mmq {
@@ -88,7 +106,7 @@ bool DFlashDrafter::upload_mat(const std::vector<float>& f, int n_in, int n_out,
     if (q4k_ && n_in % 256 == 0) { // ggml's Q4_K blocks for k4_mm
         const size_t row = ggml_row_size(GGML_TYPE_Q4_K, n_in);
         std::vector<uint8_t> q((size_t) n_out * row);
-        ggml_quantize_chunk(GGML_TYPE_Q4_K, f.data(), q.data(), 0, n_out, n_in, nullptr);
+        quantize_rows(GGML_TYPE_Q4_K, f.data(), q.data(), n_out, n_in);
         if (cudaMalloc(&m.w, q.size()) != cudaSuccess) {
             err = "dflash: no VRAM for a matrix";
             return false;
@@ -105,7 +123,7 @@ bool DFlashDrafter::upload_mat(const std::vector<float>& f, int n_in, int n_out,
     // Q8_0's rounding (ggml's), then its blocks split into the int8 rows and the scales d8_mm reads
     const size_t row = ggml_row_size(GGML_TYPE_Q8_0, n_in);
     std::vector<uint8_t> q((size_t) n_out * row);
-    ggml_quantize_chunk(GGML_TYPE_Q8_0, f.data(), q.data(), 0, n_out, n_in, nullptr);
+    quantize_rows(GGML_TYPE_Q8_0, f.data(), q.data(), n_out, n_in);
     const int nb = n_in / 32;
     std::vector<int8_t> wq((size_t) n_out * n_in);
     std::vector<uint16_t> ws((size_t) n_out * nb);

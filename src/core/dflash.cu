@@ -663,11 +663,9 @@ void d8_launch(const int8_t* wq, const __half* ws, const int8_t* xq, const float
 template <int C>
 void d8_launch_r(const int8_t* wq, const __half* ws, const int8_t* xq, const float* xs, float* y, int K, int n_out,
                  cudaStream_t st) {
-    // rows a task: 4 where there are enough tasks to fill the card (the 2560-row products: 6.52 -> 6.37 ms a draft
-    // against 2), fewer for the small products
-    if (n_out % 4 == 0 && n_out >= 2048)
-        d8_launch<C, 4>(wq, ws, xq, xs, y, K, n_out, st);
-    else if (n_out % 2 == 0 && n_out >= 1024)
+    // two rows a task (the drafter's products, GTX 1070: 5.43 ms a draft against 5.55 with four for the 2560-row
+    // products and 5.69 with one), one for an odd count
+    if (n_out % 2 == 0)
         d8_launch<C, 2>(wq, ws, xq, xs, y, K, n_out, st);
     else
         d8_launch<C, 1>(wq, ws, xq, xs, y, K, n_out, st);
@@ -893,15 +891,17 @@ void q8_act(const float* x, int K, int cols, int8_t* xq, float* xs, void* st, fl
 }
 bool k4_mm(const void* w, const int8_t* xq, const float* xs, const float* xsum, float* y, int K, int n_out, int cols,
            void* st) {
-    if (K % 256 != 0 || n_out % 2 != 0)
+    if (K % 256 != 0)
         return false;
-        // four rows a task where they divide (the 248320-row head at 7 columns: 6.36 against 7.23 ms a draft with two)
+        // two rows a task, one for an odd count: four spill past the 128 registers of two blocks an SM from three
+        // columns on (the 248320-row head at 7 columns, GTX 1070: 5.53 ms a draft against 6.50-6.57 with four and
+        // 5.65-5.73 with one)
 #define K4_CASE(CC)                                                                                                    \
     case CC:                                                                                                           \
-        if (n_out % 4 == 0)                                                                                            \
-            k4_launch<CC, 4>(w, xq, xs, xsum, y, K, n_out, S(st));                                                     \
-        else                                                                                                           \
+        if (n_out % 2 == 0)                                                                                            \
             k4_launch<CC, 2>(w, xq, xs, xsum, y, K, n_out, S(st));                                                     \
+        else                                                                                                           \
+            k4_launch<CC, 1>(w, xq, xs, xsum, y, K, n_out, S(st));                                                     \
         break;
     switch (cols) {
         K4_CASE(1)
