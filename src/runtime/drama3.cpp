@@ -14,12 +14,17 @@
 #include "model_impl.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
+#include <functional>
+#include <mutex>
 #include <numeric>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <thread>
 
 namespace guild::runtime {
 
@@ -29,6 +34,61 @@ using Clock = std::chrono::steady_clock;
 double ms_since(Clock::time_point t) {
     return std::chrono::duration<double, std::milli>(Clock::now() - t).count();
 }
+
+// A thread that runs one job at a time while the caller goes on: the tower's step_finish (a frame's codes 2..9) beside
+// the backbone's next row, which reads only main and c1, and the codec's chunks.  The GPU has room for them: the
+// backbone's step waits on its CPU experts.
+class Beside {
+public:
+    explicit Beside(int device)
+        : t_([this, device] {
+              cudaSetDevice(device);
+              std::unique_lock<std::mutex> lk(mu_);
+              for (;;) {
+                  cv_.wait(lk, [&] { return job_ || quit_; });
+                  if (quit_)
+                      return;
+                  job_ = false;
+                  auto fn = std::move(fn_);
+                  lk.unlock();
+                  const bool ok = fn();
+                  lk.lock();
+                  ok_ = ok;
+                  busy_ = false;
+                  cv_.notify_all();
+              }
+          }) {
+    }
+    ~Beside() {
+        join();
+        {
+            std::lock_guard<std::mutex> lk(mu_);
+            quit_ = true;
+        }
+        cv_.notify_all();
+        t_.join();
+    }
+    void start(std::function<bool()> fn) {
+        std::lock_guard<std::mutex> lk(mu_);
+        fn_ = std::move(fn);
+        job_ = busy_ = true;
+        cv_.notify_all();
+    }
+    bool join() { // the last job's result; true when none is running
+        std::unique_lock<std::mutex> lk(mu_);
+        cv_.wait(lk, [&] { return !busy_; });
+        const bool ok = ok_;
+        ok_ = true;
+        return ok;
+    }
+
+private:
+    std::mutex mu_;
+    std::condition_variable cv_;
+    std::function<bool()> fn_;
+    bool job_ = false, busy_ = false, quit_ = false, ok_ = true;
+    std::thread t_;
+};
 
 constexpr int kWidth = 11;           // [main, c0..c9]
 constexpr int kMaxPromptRows = 8192; // the reference's DRAMA3_MAX_PROMPT_ROWS
@@ -289,29 +349,93 @@ bool GuildModel::synthesize(const SpeechRequest& req, const SpeechCallback& on_a
     std::vector<int32_t> frame(kWidth), pending; // pending: generated frames not yet decoded, [n][10]
     std::vector<float> pcm;
     double codec_ms = 0.0, tower_ms = 0.0;
-    auto cancelled = [&] { return req.cancel_flag && req.cancel_flag->load(); };
-    auto flush = [&](bool last) -> bool {
-        const int n = (int) (pending.size() / (size_t) tg.n_codebooks);
-        if (n == 0 && !last)
-            return true;
-        const auto t0 = Clock::now();
+    // The codec decodes each chunk of frames on `codec_side` while the next frames are made (GUILD_DRAMA3_OVERLAP=0:
+    // here), so `on_audio` may run on that thread: one call at a time, in order, all before this returns.  codec_ms
+    // is the time this thread spends on the codec (its own chunks, and waiting for the other thread's).
+    const char* overlap_env = std::getenv("GUILD_DRAMA3_OVERLAP");
+    const bool overlap = !(overlap_env && overlap_env[0] == '0');
+    int device = 0;
+    cudaGetDevice(&device);
+    std::vector<int32_t> codec_frames;
+    std::string codec_err;
+    std::atomic<bool> codec_stopped{false}; // on_audio returned false
+    auto decode = [&](bool last, std::string& err) -> bool {
+        const int n = (int) (codec_frames.size() / (size_t) tg.n_codebooks);
         pcm.resize((size_t) n * (size_t) m.codec->frame_samples());
-        if (n > 0 && !m.codec->decode(pending.data(), n, pcm.data(), error_msg))
+        if (n > 0 && !m.codec->decode(codec_frames.data(), n, pcm.data(), err))
             return false;
-        codec_ms += ms_since(t0);
-        pending.clear();
         SpeechChunk c;
         c.pcm = pcm.data();
         c.samples = pcm.size();
         c.sample_rate = m.codec->sample_rate();
         c.last = last;
-        return on_audio(c);
+        if (on_audio(c))
+            return true;
+        codec_stopped = true;
+        return false;
+    };
+    std::unique_ptr<Beside> codec_side; // after what its job reads and writes, so it joins before they go
+    if (overlap)
+        codec_side = std::make_unique<Beside>(device);
+    auto codec_join = [&]() -> bool { // false: the last chunk failed (error_msg) or on_audio stopped (no error)
+        if (!codec_side)
+            return true;
+        const auto t0 = Clock::now();
+        const bool ok = codec_side->join();
+        codec_ms += ms_since(t0);
+        if (!ok)
+            error_msg = codec_err;
+        return ok;
+    };
+    auto cancelled = [&] { return (req.cancel_flag && req.cancel_flag->load()) || codec_stopped; };
+    auto flush = [&](bool last) -> bool {
+        const int n = (int) (pending.size() / (size_t) tg.n_codebooks);
+        if (n == 0 && !last)
+            return true;
+        if (!codec_join())
+            return false;
+        codec_frames.swap(pending);
+        pending.clear();
+        if (codec_side && !last) {
+            codec_side->start([&] {
+                codec_err.clear();
+                return decode(false, codec_err);
+            });
+            return true;
+        }
+        const auto t0 = Clock::now();
+        const bool ok = decode(last, error_msg);
+        codec_ms += ms_since(t0);
+        return ok;
+    };
+    // tower_step leaves the frame's codes 2..9 to `beside` (GUILD_DRAMA3_OVERLAP=0: none); tower_join waits for them.
+    // tower_ms is the time this thread spends in the tower.  `tower_row` is the step's frame row, kept until the join.
+    std::vector<int32_t> tower_row(kWidth);
+    std::string beside_err;
+    std::unique_ptr<Beside> beside; // after what its job reads and writes, so it joins before they go
+    if (overlap)
+        beside = std::make_unique<Beside>(device);
+    auto tower_join = [&]() -> bool {
+        if (!beside)
+            return true;
+        const auto t0 = Clock::now();
+        const bool ok = beside->join();
+        tower_ms += ms_since(t0);
+        if (!ok)
+            error_msg = beside_err;
+        return ok;
     };
     auto tower_step = [&](const float* hidden, int64_t p, const int32_t* row, const int32_t* forced) -> bool {
         const auto t0 = Clock::now();
+        std::copy(row, row + kWidth, tower_row.begin());
         const int n_hist = (int) std::min<size_t>(mains.size(), (size_t) p + 1);
-        const bool ok = m.tower->step(hidden, p, row, forced, mains.data() + (n_hist - std::min(n_hist, 16)),
-                                      std::min(n_hist, 16), sp, frame.data(), error_msg);
+        bool ok =
+            m.tower->step_begin(hidden, p, tower_row.data(), forced, mains.data() + (n_hist - std::min(n_hist, 16)),
+                                std::min(n_hist, 16), sp, frame.data(), error_msg);
+        if (ok && beside)
+            beside->start([&] { return m.tower->step_finish(beside_err); });
+        else if (ok)
+            ok = m.tower->step_finish(error_msg);
         tower_ms += ms_since(t0);
         return ok;
     };
@@ -395,6 +519,7 @@ bool GuildModel::synthesize(const SpeechRequest& req, const SpeechCallback& on_a
     if (!tower_step(prompt_hidden.p + (size_t) (R - 1) * D, R - 1, &rows[(size_t) (R - 1) * kWidth], forced_at(0)))
         return false;
     telemetry.prompt_ms = ms_since(t_prompt);
+    // the loop's `frame` holds main, c0 and c1 at the top; the rest after tower_join
 
     // ---- decode: `frame` holds the frame after row R - 1
     const auto t_decode = Clock::now();
@@ -410,6 +535,15 @@ bool GuildModel::synthesize(const SpeechRequest& req, const SpeechCallback& on_a
         }
         ++telemetry.frames;
         mains.push_back(frame[0]);
+        const bool last = step + 1 == req.max_new_frames;
+        const int64_t p = (int64_t) R + step; // the new frame's row
+        const int32_t main = frame[0], code1 = frame[2];
+        if (!last && !backbone(&main, &code1, 1, p)) {
+            tower_join();
+            return false;
+        }
+        if (!tower_join())
+            return false;
         pending.insert(pending.end(), frame.begin() + 1, frame.end());
         if ((int) (pending.size() / (size_t) tg.n_codebooks) >= std::max(1, req.chunk_frames) && !flush(false)) {
             if (!error_msg.empty())
@@ -417,21 +551,26 @@ bool GuildModel::synthesize(const SpeechRequest& req, const SpeechCallback& on_a
             telemetry.finish_reason = "cancel";
             break;
         }
-        if (step + 1 == req.max_new_frames)
+        if (last)
             break;
-        const int64_t p = (int64_t) R + step; // the new frame's row
         const std::vector<int32_t> row = frame;
-        if (!backbone(&row[0], &row[2], 1, p))
-            return false;
         dump_hidden(m.ver->head_input(0));
         if (!tower_step(m.ver->head_input(0), p, row.data(), forced_at(step + 1)))
             return false;
     }
+    if (!tower_join())
+        return false;
+    const bool codec_ok = codec_join(); // the chunk on codec_side counts toward the decode, as when it ran here
     telemetry.decode_ms = ms_since(t_decode);
     if (hidden_dump)
         std::fclose(hidden_dump);
-    if (!flush(true) && !error_msg.empty())
+    if (!codec_ok) {
+        if (!error_msg.empty())
+            return false;
+        telemetry.finish_reason = "cancel";
+    } else if (!flush(true) && !error_msg.empty()) {
         return false;
+    }
     telemetry.tower_ms = tower_ms;
     telemetry.codec_ms = codec_ms;
     return true;

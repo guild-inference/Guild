@@ -351,29 +351,29 @@ int Drama3Tower::sample(const float* logits, int n, const Drama3Sampling& sp, st
 bool Drama3Tower::step(const float* hidden, int64_t pos, const int32_t* frame, const int32_t* forced,
                        const int32_t* history, int n_history, const Drama3Sampling& sp, int32_t* out, std::string& err,
                        float* cand_logits, float* code_logits, float* layer_out) {
+    return step_begin(hidden, pos, frame, forced, history, n_history, sp, out, err, cand_logits, code_logits,
+                      layer_out) &&
+           step_finish(err);
+}
+
+bool Drama3Tower::step_begin(const float* hidden, int64_t pos, const int32_t* frame, const int32_t* forced,
+                             const int32_t* history, int n_history, const Drama3Sampling& sp, int32_t* out,
+                             std::string& err, float* cand_logits, float* code_logits, float* layer_out) {
+    cur_.next_layer = (int) layers_.size(); // step_finish does nothing unless this step begins
     if (pos < 0 || pos >= max_frames_) {
         err = "drama3 tower: position " + std::to_string(pos) + " is past the tower's " + std::to_string(max_frames_) +
               " frames";
         return false;
     }
     const auto st = (cudaStream_t) stream_;
-    const int D = g_.dim, CS = g_.codebook_size, NC = g_.n_codebooks;
+    const int D = g_.dim, CS = g_.codebook_size;
     if (!cuda_ok(cudaMemcpyAsync(h_, hidden, (size_t) D * 4, cudaMemcpyDeviceToDevice, st), "hidden copy", err))
         return false;
-    auto read_logits = [&](int n, float* also) -> bool {
-        if (!cuda_ok(cudaMemcpyAsync(host_logits_, logits_, (size_t) n * 4, cudaMemcpyDeviceToHost, st), "logits",
-                     err) ||
-            !cuda_ok(cudaStreamSynchronize(st), "tower step", err))
-            return false;
-        if (also)
-            std::memcpy(also, host_logits_, (size_t) n * 4);
-        return true;
-    };
 
     // the main token: eos or <|semantic:c0|>, over eos + the band
     int32_t main = 0;
     if (!forced || cand_logits) {
-        if (!matvec(cand_, h_, logits_, err) || !read_logits(CS + 1, cand_logits))
+        if (!matvec(cand_, h_, logits_, err) || !read_logits(CS + 1, cand_logits, err))
             return false;
     }
     if (forced) {
@@ -401,49 +401,85 @@ bool Drama3Tower::step(const float* hidden, int64_t pos, const int32_t* frame, c
                 return false;
         }
     }
-    const bool semantic = g_.is_semantic(main);
-    int32_t codes[10] = {};
-    codes[0] = std::clamp(main - g_.semantic_start, 0, CS - 1);
+    cur_ = Step{};
+    cur_.pos = pos;
+    cur_.frame = frame;
+    cur_.forced = forced;
+    cur_.sp = sp;
+    cur_.out = out;
+    cur_.code_logits = code_logits;
+    cur_.layer_out = layer_out;
+    cur_.semantic = g_.is_semantic(main);
+    cur_.codes[0] = std::clamp(main - g_.semantic_start, 0, CS - 1);
+    // through the first residual layer, whose head gives c1
+    const int split = std::min(g_.n_shared + 1, (int) layers_.size());
+    // synchronized: `hidden` (the backbone's) is free to change once this returns
+    if (!step_layers(0, split, err) || !cuda_ok(cudaStreamSynchronize(st), "tower step", err))
+        return false;
+    out[0] = main;
+    out[1] = cur_.codes[0];
+    if (g_.n_codebooks > 1)
+        out[2] = cur_.codes[1];
+    return true;
+}
 
-    // frame pos's codes the backbone did not see (2..NC-1), summed into the first shared layer's input
-    drama3::EmbedAdd unseen;
-    if (g_.is_semantic(frame[0]))
-        for (int k = 2; k < NC; ++k)
-            unseen.rows[unseen.n++] = k * CS + std::clamp(frame[1 + k], 0, CS - 1);
-    const int n_layers = (int) layers_.size();
-    for (int l = 0; l < n_layers; ++l) {
+bool Drama3Tower::step_finish(std::string& err) {
+    if (!step_layers(cur_.next_layer, (int) layers_.size(), err) ||
+        !cuda_ok(cudaStreamSynchronize((cudaStream_t) stream_), "tower step", err))
+        return false;
+    for (int k = 2; cur_.out && k < g_.n_codebooks; ++k)
+        cur_.out[1 + k] = cur_.codes[k];
+    return true;
+}
+
+bool Drama3Tower::read_logits(int n, float* also, std::string& err) {
+    const auto st = (cudaStream_t) stream_;
+    if (!cuda_ok(cudaMemcpyAsync(host_logits_, logits_, (size_t) n * 4, cudaMemcpyDeviceToHost, st), "logits", err) ||
+        !cuda_ok(cudaStreamSynchronize(st), "tower step", err))
+        return false;
+    if (also)
+        std::memcpy(also, host_logits_, (size_t) n * 4);
+    return true;
+}
+
+bool Drama3Tower::step_layers(int l0, int l1, std::string& err) {
+    const auto st = (cudaStream_t) stream_;
+    const int D = g_.dim, CS = g_.codebook_size, NC = g_.n_codebooks;
+    Step& c = cur_;
+    for (int l = l0; l < l1; ++l) {
         const bool shared = l < g_.n_shared;
         const int j = l - g_.n_shared; // residual index
-        const int code = shared ? codes[0] : codes[j];
-        drama3::EmbedAdd none;
-        drama3::embed(layers_[(size_t) l].embedding, semantic ? std::clamp(code, 0, CS - 1) : -1,
-                      l == 0 ? unseen : none, codebook_embeddings_, e_, D, st);
-        if (!layer_forward(layers_[(size_t) l], e_, pos, err))
+        const int code = shared ? c.codes[0] : c.codes[j];
+        // frame pos's codes the backbone did not see (2..NC-1), summed into the first shared layer's input
+        drama3::EmbedAdd unseen;
+        if (l == 0 && g_.is_semantic(c.frame[0]))
+            for (int k = 2; k < NC; ++k)
+                unseen.rows[unseen.n++] = k * CS + std::clamp(c.frame[1 + k], 0, CS - 1);
+        drama3::embed(layers_[(size_t) l].embedding, c.semantic ? std::clamp(code, 0, CS - 1) : -1, unseen,
+                      codebook_embeddings_, e_, D, st);
+        if (!layer_forward(layers_[(size_t) l], e_, c.pos, err))
             return false;
-        if (layer_out &&
-            !cuda_ok(cudaMemcpyAsync(layer_out + (size_t) l * D, h_, (size_t) D * 4, cudaMemcpyDeviceToHost, st),
+        if (c.layer_out &&
+            !cuda_ok(cudaMemcpyAsync(c.layer_out + (size_t) l * D, h_, (size_t) D * 4, cudaMemcpyDeviceToHost, st),
                      "layer readback", err))
             return false;
+        c.next_layer = l + 1;
         if (shared)
             continue;
         // a teacher-forced step takes the next code from `forced`, and runs the head only when its logits are asked for
-        if ((!forced || code_logits) && (!matvec(heads_[(size_t) j], h_, logits_, err) ||
-                                         !read_logits(CS, code_logits ? code_logits + (size_t) j * CS : nullptr)))
+        if ((!c.forced || c.code_logits) &&
+            (!matvec(heads_[(size_t) j], h_, logits_, err) ||
+             !read_logits(CS, c.code_logits ? c.code_logits + (size_t) j * CS : nullptr, err)))
             return false;
-        if (forced) {
-            codes[j + 1] = forced[2 + j];
+        if (c.forced) {
+            c.codes[j + 1] = c.forced[2 + j];
         } else {
-            const int c = sample(host_logits_, CS, sp, err);
-            if (c < 0)
+            const int s = sample(host_logits_, CS, c.sp, err);
+            if (s < 0)
                 return false;
-            codes[j + 1] = c;
+            c.codes[j + 1] = s;
         }
     }
-    if (!cuda_ok(cudaStreamSynchronize(st), "tower step", err))
-        return false;
-    out[0] = main;
-    for (int k = 0; k < NC; ++k)
-        out[1 + k] = codes[k];
     return true;
 }
 

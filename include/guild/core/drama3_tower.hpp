@@ -79,6 +79,14 @@ public:
     bool step(const float* hidden, int64_t pos, const int32_t* frame, const int32_t* forced, const int32_t* history,
               int n_history, const Drama3Sampling& sp, int32_t* out, std::string& err, float* cand_logits = nullptr,
               float* code_logits = nullptr, float* layer_out = nullptr);
+    /// `step` in two parts.  step_begin runs the shared layers and the first residual one, so `out` holds main, c0
+    /// and c1: all the backbone's next row reads.  step_finish runs the other residual layers into the same `out`
+    /// (c2..), and may run on another thread while the backbone takes the next row; nothing else may use the tower
+    /// between the two.  `frame`, `forced`, `out` and the test outputs must stay valid until step_finish returns.
+    bool step_begin(const float* hidden, int64_t pos, const int32_t* frame, const int32_t* forced,
+                    const int32_t* history, int n_history, const Drama3Sampling& sp, int32_t* out, std::string& err,
+                    float* cand_logits = nullptr, float* code_logits = nullptr, float* layer_out = nullptr);
+    bool step_finish(std::string& err);
 
     /// The prompt: teacher-forces positions pos0 .. pos0 + n - 1 at once.  Row i of `hidden` (device, [n][dim]) is the
     /// backbone's state at pos0 + i; `rows` (host, [n + 1][width]) are frames pos0 .. pos0 + n.  Each row gets
@@ -116,6 +124,20 @@ private:
                        float* layer_out);
     static constexpr int kPrefillCols = 64;
     int sample(const float* logits, int n, const Drama3Sampling& sp, std::string& err);
+    bool step_layers(int l0, int l1, std::string& err);     // layers [l0, l1) of the step in `cur_`
+    bool read_logits(int n, float* also, std::string& err); // logits_ -> host_logits_ (and `also`), synchronized
+
+    // the step between step_begin and step_finish
+    struct Step {
+        int64_t pos = 0;
+        const int32_t *frame = nullptr, *forced = nullptr;
+        Drama3Sampling sp;
+        int32_t* out = nullptr;
+        float *code_logits = nullptr, *layer_out = nullptr;
+        bool semantic = false;
+        int32_t codes[10] = {};
+        int next_layer = 0;
+    } cur_;
 
     Drama3TowerGeometry g_;
     int64_t max_frames_ = 0;

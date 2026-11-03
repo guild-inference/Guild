@@ -29,8 +29,8 @@ public:
     std::unique_ptr<GuildSession> create_session(int64_t max_context = 0);
 
     /// Text to speech (a model loaded with ModelPaths::drama3_dir): streams 44.1 kHz audio to `on_audio` as frames
-    /// are generated.  Shares the model's execution state with generation, so it must not run concurrently with a
-    /// session's generate.
+    /// are generated (from a thread of its own, one call at a time, in order, all before it returns).  Shares the
+    /// model's execution state with generation, so it must not run concurrently with a session's generate.
     bool synthesize(const SpeechRequest& req, const SpeechCallback& on_audio, SpeechTelemetry& telemetry,
                     std::string& error_msg);
     bool is_speech_model() const;
