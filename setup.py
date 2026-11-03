@@ -67,6 +67,13 @@ HF_REVISIONS = {
     "ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF": "b22d729eae29b5796f76fb70f91aef549b9fc52c",   # 2026-09-24
     "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-Coder-GGUF": "5348543e0147355ac9cbcb031184a3546350988e",  # 2026-09-29
     "unsloth/Qwen3.8-Flash-Next-GGUF": "38bb39ee97821de2c9009abb7e93950eec396e66",                   # 2026-09-30
+    "incoai/Qwen3.8-Flash-Next-DFlash2": "a22a1744e85c17364dcc54a6a420af7135d4c7f6",                 # 2026-10-19
+}
+# The DFlash 2 drafter (src/core/dflash.cpp, Apache-2.0): name -> (bytes, sha256) at the pinned revision
+DFLASH_REPO = "incoai/Qwen3.8-Flash-Next-DFlash2"
+DFLASH_FILES = {
+    "config.json": (1236, "2409575986f9ea24d455343eb469c0e6940def5edab1d1be503bb8eb4cc3b1b9"),
+    "model.safetensors": (1206140008, "d6723f2a359eaf33ec0c95f22ae8edda896774020c552296a85e1913b4d3186f"),
 }
 
 
@@ -3676,6 +3683,8 @@ def main() -> int:
     ap.add_argument("--yes", action="store_true", help="accept the recommended answers")
     ap.add_argument("--setup", action="store_true", help="install another model or change settings")
     ap.add_argument("--no-start", action="store_true", help="install only, do not start the model")
+    ap.add_argument("--no-dflash", action="store_true",
+                    help="draft with the MTP layer instead of the DFlash 2 drafter (~1.2 GB less to download)")
     ap.add_argument("--update", action="store_true",
                     help="update the installed engine, Python packages and model settings as a start would, without "
                          "starting the model (UPDATE.bat / update.sh run it after a git pull)")
@@ -4349,6 +4358,24 @@ def main() -> int:
     ok(f"MTP draft layer: {rt}")
     for line in draft_vocab_note(gpu.get("vram_gb", 0.0), draft_vocab):   # #474: a recommendation, nothing changes
         say("  " + line)
+    # The DFlash 2 drafter drafts in the MTP layer's place: one pass proposes up to seven tokens and the verify window
+    # still decides every one, so the output is the same (bench/results/2026-11-02-decode-round8: GTX 1070 + 2x Xeon
+    # Gold 6130, prose 40.0 -> 40.5 and code 50.2 -> 53.7 tok/s).  Its kernels are CUDA's and it reads features of the
+    # whole model on one card, so AMD and several GPUs keep the MTP layer; so do --no-dflash and an older engine.
+    dflash = None
+    if a.no_dflash:
+        ok("DFlash drafter: off (--no-dflash); the MTP draft layer drafts")
+    elif hip or len(chosen) > 1:
+        ok(f"DFlash drafter: not {'on AMD' if hip else 'across several GPUs'} yet; the MTP draft layer drafts")
+    elif not engine_supports_option(eng, "--dflash", env):
+        ok("DFlash drafter: this engine has no --dflash yet; the MTP draft layer drafts")
+    else:
+        dflash = mtp / "dflash"
+        say("  The DFlash 2 drafter (speculative decoding, up to 7 drafts a window): ~1.2 GB")
+        for name, (size, sha) in DFLASH_FILES.items():
+            download(hf(DFLASH_REPO) + name, dflash / name, f"DFlash drafter {name}")
+            verify_sha256(dflash / name, size, sha)
+        ok(f"DFlash drafter: {dflash}")
 
     # ---- 7. the start script
     step(7, "writing the start script")
@@ -4360,8 +4387,8 @@ def main() -> int:
     # (a 4-shard file: the engine finds the PLE table's shard itself from shard 1, the measured setup)
     args = ["--pack", str(pack), "--native", str(shards[0]), *(["--ple-gguf", str(ple)] if len(shards) <= 2 else []),
             "--expert-profile", str(ROOT / "data" / fam.get("profile", "expert-profile.bin")), "--expert-cache", "auto",
-            "--prefill", lv_plan["prefill"], "--spec", "4", "--spec-min-p", "0.5", "--mtp", str(rt),
-            "--max-context", str(ctx)]
+            "--prefill", lv_plan["prefill"], "--spec", "8" if dflash else "4", "--spec-min-p", "0.5", "--mtp", str(rt),
+            *(["--dflash", str(dflash)] if dflash else []), "--max-context", str(ctx)]
     if tiny_card:
         if engine_supports_option(eng, "--mtp-optional", env):
             args += ["--mtp-optional"]

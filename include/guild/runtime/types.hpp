@@ -15,6 +15,10 @@ struct ModelPaths {
     std::string pack_dir;
     std::string expert_profile_path;
     std::string mtp_dir;
+    /// A DFlash 2 drafter (core/dflash.hpp: config.json and model.safetensors), drafting in place of the MTP layer, and
+    /// its draft head's token subset (int32 ids; empty: the whole head).  GUILD_DFLASH / GUILD_DFLASH_VOCAB override.
+    std::string dflash_dir;
+    std::string dflash_vocab;
     std::string tokenizer_dir;
     std::string ple_gguf;
     /// How the PLE table is read: "" or "direct" (unbuffered reads and a row cache), "mmap", or "ram" (mapped and

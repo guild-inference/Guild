@@ -17,6 +17,7 @@ struct ModelOptions {
     std::string native_path;
     std::string profile_path;
     std::string mtp_dir;
+    std::string dflash_dir, dflash_vocab;
     std::string tokenizer_dir; ///< default: <pack_dir>/tokenizer
     std::string drama3_dir;
     int64_t max_context = 262144;

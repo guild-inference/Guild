@@ -1016,10 +1016,15 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
     const bool mode_wants_mtp =
         (parsed_mode == spec::DecodeStrategyMode::Auto || parsed_mode == spec::DecodeStrategyMode::Mtp ||
          parsed_mode == spec::DecodeStrategyMode::Adaptive);
-    // GUILD_DFLASH=<checkpoint directory> (a prototype): a DFlash 2 block drafter (core/dflash.hpp) drafts in place
-    // of the MTP layer, which is then not loaded; GUILD_DFLASH_VOCAB=<int32 token ids> limits its head to a subset
-    const char* dflash_dir = std::getenv("GUILD_DFLASH");
-    const bool use_dflash = dflash_dir != nullptr && *dflash_dir != 0 && mode_wants_mtp && plan.mtp_spec_tokens > 0;
+    // --dflash <checkpoint directory> (GUILD_DFLASH overrides; "0": none): a DFlash 2 block drafter (core/dflash.hpp)
+    // drafts in place of the MTP layer, which is then not loaded; --dflash-vocab (GUILD_DFLASH_VOCAB) limits its head
+    // to a token subset
+    std::string dflash_dir = paths.dflash_dir, dflash_vocab = paths.dflash_vocab;
+    if (const char* e = std::getenv("GUILD_DFLASH"))
+        dflash_dir = std::string(e) == "0" ? std::string() : std::string(e);
+    if (const char* e = std::getenv("GUILD_DFLASH_VOCAB"))
+        dflash_vocab = e;
+    const bool use_dflash = !dflash_dir.empty() && mode_wants_mtp && plan.mtp_spec_tokens > 0;
     const bool use_mtp =
         !use_dflash && !paths.mtp_dir.empty() && mode_wants_mtp &&
         (plan.mtp_spec_tokens > 0 ||
@@ -1145,12 +1150,11 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
     if (use_dflash) {
         const auto df_t0 = Clock::now();
         if (!impl->native_head.loaded() || impl->native_embed.bytes() == 0) {
-            error_msg = "GUILD_DFLASH needs the native head and token embedding";
+            error_msg = "--dflash needs the native head and token embedding";
             return nullptr;
         }
         impl->dflash = std::make_unique<core::DFlashDrafter>();
-        const char* vocab = std::getenv("GUILD_DFLASH_VOCAB");
-        if (!impl->dflash->load(dflash_dir, impl->native_head, impl->native_embed, vocab ? vocab : "", error_msg) ||
+        if (!impl->dflash->load(dflash_dir, impl->native_head, impl->native_embed, dflash_vocab, error_msg) ||
             !impl->ver->set_feature_layers(impl->dflash->target_layers(), error_msg)) {
             error_msg = "DFlash drafter: " + error_msg;
             return nullptr;
@@ -1420,11 +1424,13 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
                  static_cast<long long>(slots), static_cast<long long>(impl->xcache.bytes()));
     std::fprintf(stderr,
                  "guild performance: CPU workers %d + host %d%s; verifier capacity %d; "
-                 "MTP %s; min draft probability %.3f; RAM expert backing %llu bytes\n",
+                 "drafter %s; min draft probability %.3f; RAM expert backing %llu bytes\n",
                  impl->pool->workers(), int(impl->pool->host_works()),
                  impl->pool->numa_split() ? " (rows split by NUMA node)" : "", impl->config.spec,
-                 use_mtp ? "on" : "off", double(impl->config.spec_min_p),
-                 static_cast<unsigned long long>(impl->src.resident_bytes()));
+                 use_dflash ? "DFlash"
+                 : use_mtp  ? "MTP"
+                            : "off",
+                 double(impl->config.spec_min_p), static_cast<unsigned long long>(impl->src.resident_bytes()));
     model->config_ = impl->config;
 
     // Load tokenizer (from GPACK binary section if available, else tokenizer_dir)

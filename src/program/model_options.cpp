@@ -52,7 +52,10 @@ const char* model_options_usage() {
            "  --native <file>            Primary model GGUF file\n"
            "  --expert-profile <file>    Expert profile binary\n"
            "  --mtp <dir>                MTP speculative draft directory\n"
-           "  --mtp-optional             Start without the MTP draft layer when VRAM cannot also hold it\n"
+           "  --mtp-optional             Start without the draft layer (MTP or DFlash) when VRAM cannot also hold it\n"
+           "  --dflash <dir>             A DFlash 2 drafter (config.json, model.safetensors): drafts in place of the\n"
+           "                             MTP layer, which is then not loaded; up to --spec - 1 drafts a window\n"
+           "  --dflash-vocab <file>      The DFlash draft head's token subset (int32 ids; default: the whole head)\n"
            "  --ple-gguf <file>          The GGUF shard holding the PLE table (default: found in --native's)\n"
            "  --ple-io <direct|mmap|ram> How the PLE table is read; ram locks it in RAM (rotational disks)\n"
            "  --tokenizer <dir>          Tokenizer directory\n"
@@ -105,6 +108,10 @@ int parse_model_option(int argc, char** argv, int& i, ModelOptions& o, const cha
         o.profile_path = next("--expert-profile");
     } else if (a == "--mtp") {
         o.mtp_dir = next("--mtp");
+    } else if (a == "--dflash") {
+        o.dflash_dir = next("--dflash");
+    } else if (a == "--dflash-vocab") {
+        o.dflash_vocab = next("--dflash-vocab");
     } else if (a == "--drama3") {
         o.drama3_dir = next("--drama3");
     } else if (a == "--tokenizer") {
@@ -289,6 +296,8 @@ int load_model(ModelOptions& o, const char* program, LoadedModel& out) {
     paths.pack_dir = o.pack_dir;
     paths.expert_profile_path = o.profile_path;
     paths.mtp_dir = o.mtp_dir;
+    paths.dflash_dir = o.dflash_dir;
+    paths.dflash_vocab = o.dflash_vocab;
     paths.drama3_dir = o.drama3_dir;
     paths.tokenizer_dir = o.tokenizer_dir;
     paths.ple_gguf = o.ple_gguf;
@@ -319,12 +328,14 @@ int load_model(ModelOptions& o, const char* program, LoadedModel& out) {
         return model != nullptr && session != nullptr;
     };
     bool loaded = load();
-    // --mtp-optional (setup.py writes it for small cards): the MTP draft layer is dropped, not the start, when the
-    // VRAM does not hold it with the rest.  The model then drafts from the context (decode strategy auto).
-    if (!loaded && o.mtp_optional && !paths.mtp_dir.empty() && err_msg.find("out of memory") != std::string::npos) {
-        std::fprintf(stderr, "%s: %s; --mtp-optional: loading again without the MTP draft layer\n", program,
+    // --mtp-optional (setup.py writes it for small cards): the draft layer (MTP or DFlash) is dropped, not the start,
+    // when the VRAM does not hold it with the rest.  The model then drafts from the context (decode strategy auto).
+    if (!loaded && o.mtp_optional && (!paths.mtp_dir.empty() || !paths.dflash_dir.empty()) &&
+        err_msg.find("out of memory") != std::string::npos) {
+        std::fprintf(stderr, "%s: %s; --mtp-optional: loading again without the draft layer\n", program,
                      err_msg.c_str());
         paths.mtp_dir.clear();
+        paths.dflash_dir.clear();
         loaded = load();
     }
     if (!loaded) {
