@@ -126,6 +126,7 @@ struct ExecutionPlan {
     uint64_t prompt_scratch_bytes = 0;
     uint64_t safety_reserve_bytes = 0;
     int64_t prefill_chunk = 512;
+    bool prefill_chunk_auto = false; ///< the planner chose prefill_chunk (no --prefill N): the load may grow it
     int64_t prefill_rows = 0;  ///< --prefill-rows: the prompt path's chunks computed as chunks of this many (0: off)
     int dense_type = 0;        ///< --dense: the GPU's Q8_0 dense matrices of 2048+ rows as this ggml type (0: as is)
     bool hc_q8 = false;        ///< --hc q8_0: the hyper-connection down/up matrices as the GGUF's Q8_0 blocks

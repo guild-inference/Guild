@@ -222,13 +222,17 @@ Supported API functionality is still evolving.
 ### Prompt chunks on an 8 GB card
 
 Qwen3.8-Flash-Next reads a prompt in chunks, and every chunk streams the routed experts the GPU does not hold over
-PCIe (on a GTX 1070, all 55 GiB of the UD-IQ4_XS experts a chunk). An 8 GB card gets 512-token chunks.
-`--prefill 1024 --prefill-rows 512` streams them once for 1024 tokens and computes each half as a 512-token chunk
-(every product in 512-row slices, the 512-token chunk's expert path), so it gives the 512-token chunks' results bit
-for bit where the expert products do not depend on how many rows an expert has (llama.cpp's MMQ without stream-k,
-as on Pascal). On a GTX 1070 + dual Xeon Gold 6130, a 4,007-token prompt 53.8 -> 35.6 s at a 32k context and
-54.4 -> 36.2 s at 262k with the host-only KV cache, the same 256 tokens after it
-([bench/results/2026-11-01-qwen-glm-pass3](bench/results/2026-11-01-qwen-glm-pass3/README.md)).
+PCIe (on a GTX 1070, all 55 GiB of the UD-IQ4_XS experts a chunk). `--prefill-rows 512` computes a chunk as 512-token
+chunks (every product in 512-row slices, the 512-token chunk's expert path) while it streams the experts once, so a
+larger chunk gives the 512-token chunks' results bit for bit where the expert products do not depend on how many rows
+an expert has (llama.cpp's MMQ without stream-k, as on Pascal).
+
+On an 8 GB card `--prefill auto` (setup's choice) starts from 512-token chunks and, on Pascal, grows them into the
+VRAM the load leaves free, up to 4096 tokens, computed as chunks of 512 (`GUILD_PREFILL_GROW=1` does it on newer
+cards too, whose results then move slightly; `--prefill N` keeps N). On a GTX 1070 + dual Xeon Gold 6130 with setup's
+Qwen settings, the load left 2,954 MiB free and the chunks grew to 4096: a 4,008-token prompt 52.2 -> 19.6 s and a
+31,918-token one 432.6 -> 169.7 s, the same tokens after each
+([bench/results/2026-11-03-decode-round11](bench/results/2026-11-03-decode-round11/README.md)).
 
 ### Qwen3.8-Flash-Next with the DFlash 2 drafter
 

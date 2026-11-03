@@ -1197,10 +1197,38 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
     // Prefill initialization
     const auto pf_t0 = Clock::now();
     impl->prefill = std::make_unique<prefill::Prefill>();
-    if (plan.prefill_rows > 0 && plan.prefill_rows < impl->config.prefill_chunk) {
-        prefill::Prefill::set_rows(plan.prefill_rows);
+    int64_t prefill_rows = plan.prefill_rows;
+    // The 512-token chunk the planner gives an 8 GiB-class card grows into the VRAM the load left free, computed as
+    // 512-token chunks: each chunk streams the experts over PCIe once, so a ~4K-token prompt took 52.2 s in chunks of
+    // 512 and 19.7 s in one of 4096 on a GTX 1070 (bench/results/2026-11-03-decode-round11).  On Pascal the rows
+    // give the 512-token chunks' results bit for bit (llama.cpp's MMQ without stream-k); newer cards keep 512 unless
+    // GUILD_PREFILL_GROW=1 (and --prefill N keeps N).  A chunk took ~0.40 MiB of VRAM a token (Qwen3.8, n_embd 2560:
+    // 5925 MiB in use after a 4K prompt in chunks of 512, 7353 in one of 4096), counted as 168 bytes a unit of n_embd,
+    // with 768 MiB left over (the planner's 512 MiB reserve, and 256 for what the prompt path adds later).
+    if (plan.prefill_chunk_auto && impl->config.prefill_chunk == 512 && prefill_rows == 0 && impl->g.n_embd > 0) {
+        int dev = 0, major = 0;
+        cudaGetDevice(&dev);
+        cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev);
+        const char* grow = std::getenv("GUILD_PREFILL_GROW");
+        size_t free = 0, total = 0;
+        if ((grow ? grow[0] == '1' : major < 7) && cudaMemGetInfo(&free, &total) == cudaSuccess) {
+            const uint64_t per_token = 168ull * (uint64_t) impl->g.n_embd, keep = 768ull << 20;
+            int64_t chunk = 512;
+            for (int64_t c = 4096; c > 512 && chunk == 512; c -= 512)
+                if ((uint64_t) c * per_token + keep <= free)
+                    chunk = c;
+            if (chunk > 512) {
+                impl->config.prefill_chunk = chunk;
+                prefill_rows = 512;
+                std::fprintf(stderr, "guild prefill: chunks of %lld tokens in the %.0f MiB of VRAM free\n",
+                             (long long) chunk, (double) free / (1 << 20));
+            }
+        }
+    }
+    if (prefill_rows > 0 && prefill_rows < impl->config.prefill_chunk) {
+        prefill::Prefill::set_rows(prefill_rows);
         std::fprintf(stderr, "guild prefill: chunks of %lld tokens computed as chunks of %lld (--prefill-rows)\n",
-                     (long long) impl->config.prefill_chunk, (long long) plan.prefill_rows);
+                     (long long) impl->config.prefill_chunk, (long long) prefill_rows);
     } else {
         prefill::Prefill::set_rows(0);
     }

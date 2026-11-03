@@ -4333,6 +4333,13 @@ def main() -> int:
     lv_plan = low_vram_plan(min(x["vram_gb"] for x in chosen), ctx, kv,
                             host_capable and a.kv_streaming != "off" and
                             (stream_fits or a.kv_streaming == "on"))
+    # The engine grows an 8 GiB card's 512-token prompt chunks into the VRAM its load leaves free, computed as chunks of
+    # 512 (on Pascal the same results; a ~4K-token prompt 52.2 -> 19.6 s on a GTX 1070,
+    # bench/results/2026-11-03-decode-round11): it chooses when asked for auto.  Older engines, and cards past 8 GiB
+    # (whose auto is 2048 without the 512-token slices), keep 512.
+    if (lv_plan["prefill"] == "512" and 0 < min(x["vram_gb"] for x in chosen) <= 8.0
+            and engine_supports_option(eng, "grown into the VRAM", env)):
+        lv_plan["prefill"] = "auto"
     if a.kv_host_only and not KV_FORMATS[kv]["streaming"]:
         fail(f"--kv-host-only is not supported with --kv {kv}", "use fp16, int8 or q4_0")
     if a.kv_host_only and is_wsl():
@@ -4450,6 +4457,9 @@ def main() -> int:
            "GPU staging buffer is shared by the attention layers")
         if lv_plan["prefill"] != "auto":
             ok(f"low-VRAM plan: {lv_plan['prefill']}-token prompt chunks; context and KV precision are unchanged")
+        elif tiny_card:
+            ok("low-VRAM plan: 512-token prompt chunks grown into the VRAM free after the load (the engine sizes them); "
+               "context and KV precision are unchanged")
         if not q4_split and budget is not None and a.resident_budget_gib is None:
             budget = resident_budget_gib(model, ram, kv_ram_gb)
             ok(f"RAM budget: {budget} GiB (less the host-only KV cache's RAM)")

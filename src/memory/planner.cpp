@@ -329,6 +329,7 @@ ExecutionPlan MemoryPlanner::plan(const model::ModelDescriptor& desc, const hard
     p.prompt_scratch_bytes = prompt_scratch;
     p.safety_reserve_bytes = safety_reserve;
     p.prefill_chunk = prefill_chunk;
+    p.prefill_chunk_auto = !options.prefill_chunk.has_value();
 
     p.total_host_ram_bytes = hw.ram_total_bytes;
     p.total_gpu_vram_bytes = hw.gpu_vram_bytes;

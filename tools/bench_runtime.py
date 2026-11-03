@@ -39,7 +39,7 @@ def main() -> int:
     ap.add_argument('--spec-min-p', type=float, default=0.5)
     ap.add_argument('--cache', default='auto')
     ap.add_argument('--pcie-frac', type=float)
-    ap.add_argument('--prefill', type=int, default=512)
+    ap.add_argument('--prefill', default='512', help="the prompt chunk: a token count, or auto (the engine's own)")
     ap.add_argument('--resident-budget-gib', type=int)
     ap.add_argument('--pool-workers', type=int, default=0)
     ap.add_argument('--runs', type=int, default=3)
