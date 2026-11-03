@@ -170,8 +170,9 @@ bool glm5_load(GuildModel::Impl& m, const ModelPaths& paths, const memory::Execu
         if (std::filesystem::is_regular_file(dv, ec))
             o.draft_vocab = dv.string();
     }
-    // --dflash (GUILD_DFLASH overrides, "0": none): a DFlash 2 drafter in the NextN block's place.  Measured slower
-    // than the NextN block on a GTX 1070 + 2x Xeon Gold 6130 (bench/results/2026-11-03-decode-round9): opt-in.
+    // --dflash (GUILD_DFLASH overrides, "0": none): a DFlash 2 drafter in the NextN block's place.  Measured 2-6%
+    // slower than the NextN block on three of four prompts (1% faster on code) on a GTX 1070 + 2x Xeon Gold 6130
+    // (bench/results/2026-11-03-decode-round9): opt-in.
     o.dflash = paths.dflash_dir;
     o.dflash_vocab = paths.dflash_vocab;
     if (const char* e = std::getenv("GUILD_DFLASH"))

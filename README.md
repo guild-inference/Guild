@@ -334,7 +334,11 @@ from the CPU copy, which rounds differently, so the text can part from plain gre
 `GUILD_GLM_SHEXP_SPLIT=0` keeps it equal bit for bit (3-5% slower on the PC below). With `--dense q5_k` / `q4_k` both
 groups take it on the GPU by default, and the text is greedy decoding's.
 `data/draft_vocab_glm.bin`, copied into the tokenizer directory as `draft_vocab.bin`, makes the drafts read 117,354 of
-the head's 154,880 rows (0.55 ms less a step there).
+the head's 154,880 rows (0.55 ms less a step there). `--dflash <dir>` drafts with incoai's GLM-5.3-Flash DFlash 2
+checkpoint instead of the NextN block (CC BY-NC-ND 4.0, for research and evaluation: setup does not fetch it). On the PC
+below it ran 1% faster on code and 2-6% slower on prose, story and sql: GLM's verify takes at most two tokens, so
+the drafter's seven-token block goes unused
+([bench/results/2026-11-03-decode-round9](bench/results/2026-11-03-decode-round9/README.md)).
 
 On a dual Xeon Gold 6130 with a GTX 1070 (8 GB): 262,144 tokens of context (32k in VRAM alone); at a short context 14.3
 tok/s plain and 21.9 tok/s with the drafts (86% accepted) with every shared expert on the GPU, and 21.8 tok/s with the
