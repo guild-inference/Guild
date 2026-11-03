@@ -1,6 +1,6 @@
 """The DFlash 2 drafter in setup (no GPU, no downloads): fetched and written into the run config (--dflash, windows of
-8) on one NVIDIA card with an engine that has --dflash; the MTP layer alone with --no-dflash, an older engine, or
-several GPUs.
+8) on one NVIDIA card with an engine that has --dflash, with its head's token subset (--dflash-vocab: English and
+code with --draft-vocab en); the MTP layer alone with --no-dflash, an older engine, or several GPUs.
 
     python -m unittest tools.test_setup_dflash
 """
@@ -15,8 +15,10 @@ from tools.test_setup_golden import card, install  # noqa: E402
 
 
 class DFlashDrafter(unittest.TestCase):
-    def install(self, flags=(), cards=None, dflash_engine=True):
+    def install(self, flags=(), cards=None, dflash_engine=True, vocab_engine=True, vocab_files=True):
         def supports(engine, option, env=None):
+            if option == "--dflash-vocab":
+                return dflash_engine and vocab_engine
             return option != "--dflash" or dflash_engine
         fetched = []
 
@@ -25,6 +27,9 @@ class DFlashDrafter(unittest.TestCase):
             dst.parent.mkdir(parents=True, exist_ok=True)
             dst.write_bytes(b"")
             setup.mark(dst)
+            if vocab_files:  # the head subsets the repository ships, in the test's Guild folder
+                for name in (setup.DFLASH_VOCAB_DEFAULT, *setup.DFLASH_VOCABS.values()):
+                    (setup.ROOT / "data" / name).write_bytes(bytes(8))
         code, out, cfg, _ = install(127.8, cards or [card(0, "NVIDIA GeForce RTX 4090", 24.0, "89")],
                                     ["--family", "qwen", "--model", "IQ3_S", "--no-start", *flags],
                                     extra=[mock.patch.object(setup, "engine_supports_option", side_effect=supports),
@@ -45,11 +50,26 @@ class DFlashDrafter(unittest.TestCase):
             if "DFlash2" in url:
                 self.assertIn(setup.HF_REVISIONS[setup.DFLASH_REPO], url)   # the pinned revision
         self.assertIn("DFlash drafter:", out)
+        self.assertTrue(args[args.index("--dflash-vocab") + 1].replace("\\", "/").endswith("/data/dflash_vocab.bin"))
+
+    def test_english_draft_vocab_takes_the_english_head(self):
+        code, out, cfg, _ = self.install(["--draft-vocab", "en"])
+        self.assertEqual(code, 0, out)
+        args = cfg["args"]
+        self.assertTrue(args[args.index("--dflash-vocab") + 1].replace("\\", "/").endswith("/data/dflash_vocab_en.bin"))
+
+    def test_an_engine_without_dflash_vocab_drafts_with_the_whole_head(self):
+        for kw in ({"vocab_engine": False}, {"vocab_files": False}):   # or a checkout without the subsets
+            code, out, cfg, _ = self.install(**kw)
+            self.assertEqual(code, 0, out)
+            self.assertIn("--dflash", cfg["args"])
+            self.assertNotIn("--dflash-vocab", cfg["args"])
 
     def test_no_dflash_keeps_the_mtp_layer(self):
         code, out, cfg, fetched = self.install(["--no-dflash"])
         self.assertEqual(code, 0, out)
         self.assertNotIn("--dflash", cfg["args"])
+        self.assertNotIn("--dflash-vocab", cfg["args"])
         self.assertEqual(cfg["args"][cfg["args"].index("--spec") + 1], "4")
         self.assertFalse(any("DFlash2" in url for url, _ in fetched))
 
@@ -73,6 +93,14 @@ class DFlashDrafter(unittest.TestCase):
         for size, sha in setup.DFLASH_FILES.values():
             self.assertGreater(size, 0)
             self.assertEqual(len(sha), 64)
+
+    def test_shipped_head_subsets(self):  # int32 ids of the 248,320-token vocabulary, an even count of them
+        from array import array
+        for name in (setup.DFLASH_VOCAB_DEFAULT, *setup.DFLASH_VOCABS.values()):
+            ids = array("i", (setup.ROOT / "data" / name).read_bytes())
+            self.assertEqual(len(ids) % 2, 0, name)
+            self.assertEqual(len(set(ids)), len(ids), name)
+            self.assertTrue(all(0 <= i < 248320 for i in ids), name)
 
 
 if __name__ == "__main__":

@@ -232,20 +232,27 @@ as on Pascal). On a GTX 1070 + dual Xeon Gold 6130, a 4,007-token prompt 53.8 ->
 
 ### Qwen3.8-Flash-Next with the DFlash 2 drafter
 
-Setup fetches incoai's DFlash 2 drafter for Qwen3.8-Flash-Next (Apache-2.0, ~1.2 GB) and writes `--dflash <dir>`
-and `--spec 8` into the run config. One pass of the drafter proposes up to seven tokens from five of the model's
-layers, in place of the MTP layer, which is then not loaded. The verify window still decides every token, so the
-output is the same. Setup leaves it out with `--no-dflash`, on AMD, across several GPUs, and for an engine without
-`--dflash`.
+Setup fetches incoai's DFlash 2 drafter for Qwen3.8-Flash-Next (Apache-2.0, ~1.2 GB) and writes `--dflash <dir>`,
+`--dflash-vocab <file>` and `--spec 8` into the run config. One pass of the drafter proposes up to seven tokens from
+five of the model's layers, in place of the MTP layer, which is then not loaded. The verify window still decides
+every token, so the output is the same. Setup leaves it out with `--no-dflash`, on AMD, across several GPUs, and for
+an engine without `--dflash`.
 
 ```bash
-guild-generate --serve --native <model>.gguf --pack <pack> --dflash <drafter dir> --spec 8 ...
+guild-generate --serve --native <model>.gguf --pack <pack> --dflash <drafter dir> \
+    --dflash-vocab data/dflash_vocab.bin --spec 8 ...
 ```
 
-On a dual Xeon Gold 6130 with a GTX 1070 (`--dense q6_k --hc q8_0`), decode went from 40.0 / 50.2 to 40.5 / 53.7
-tok/s (prose / code) against the MTP layer at `--spec 4`. The drafter takes 908 MiB of VRAM, the MTP layer about
-1.1 GB ([bench/results/2026-11-02-decode-round8](bench/results/2026-11-02-decode-round8/README.md)).
-`--dflash-vocab <file>` limits its draft head to a token subset (int32 ids).
+`--dflash-vocab` limits the drafter's head to a token subset (int32 ids; without it, all 248,320 rows):
+`data/dflash_vocab.bin` holds 163,778 tokens of English, code, Chinese, Japanese, Korean, Russian and multilingual
+text, `data/dflash_vocab_en.bin` 65,536 of English and code. Setup passes the English one with `--draft-vocab en`,
+which its low-VRAM plan picks on an 8 GB card, and the other one otherwise (`tools/draft_vocab.py` builds them).
+
+On a dual Xeon Gold 6130 with a GTX 1070 (`--dense q6_k --hc q8_0`), decode went from 39.7 / 49.9 to 41.2 / 54.5
+tok/s (prose / code) against the MTP layer at `--spec 4`, with the multilingual subset. The English subset makes
+English and code answers up to 1.4% faster and Chinese and Russian ones 28-31% slower. The drafter takes 799 MiB of
+VRAM with the multilingual subset and 655 MiB with the English one, the MTP layer about 1.1 GB
+([bench/results/2026-11-03-decode-round9](bench/results/2026-11-03-decode-round9/README.md)).
 
 ### Ornith-1.5-35B with its MTP draft layer
 
