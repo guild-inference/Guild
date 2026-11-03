@@ -277,7 +277,7 @@ __global__ void hc_init_k(const float* e, float* R, int N) {
 
 // one thread per channel of q|k|v, the tokens in order
 __global__ void kda_conv_k(const float* xq, const float* xk, const float* xv, float* state, const float* wq,
-                           const float* wk, const float* wv, float* out, int D, int T, float* mid) {
+                           const float* wk, const float* wv, float* out, int D, int T, float* mid, int nmid) {
     const int c = blockIdx.x * blockDim.x + threadIdx.x;
     const int C = 3 * D;
     if (c >= C)
@@ -293,10 +293,11 @@ __global__ void kda_conv_k(const float* xq, const float* xk, const float* xv, fl
         s0 = s1;
         s1 = s2;
         s2 = xi;
-        if (t == 0 && mid) {
-            mid[(size_t) c * 3] = s0;
-            mid[(size_t) c * 3 + 1] = s1;
-            mid[(size_t) c * 3 + 2] = s2;
+        if (t < nmid) { // the state after token t: a verify window's rollback point
+            float* m = mid + ((size_t) t * C + c) * 3;
+            m[0] = s0;
+            m[1] = s1;
+            m[2] = s2;
         }
     }
     state[(size_t) c * 3] = s0;
@@ -1924,8 +1925,9 @@ void hc_init(const float* e, float* R, int N, int T, void* st) {
 }
 
 void kda_conv(const float* xq, const float* xk, const float* xv, float* state, const float* wq, const float* wk,
-              const float* wv, float* out, int D, int T, float* mid, void* st) {
-    kda_conv_k<<<(3 * D + 255) / 256, 256, 0, S(st)>>>(xq, xk, xv, state, wq, wk, wv, out, D, T, mid);
+              const float* wv, float* out, int D, int T, float* mid, int nmid, void* st) {
+    kda_conv_k<<<(3 * D + 255) / 256, 256, 0, S(st)>>>(xq, xk, xv, state, wq, wk, wv, out, D, T, mid,
+                                                       mid ? std::min(nmid, T) : 0);
     kda_l2_k<<<dim3(2 * D / kKdaDim, T), kKdaDim, 0, S(st)>>>(out, D, 1e-6f);
 }
 

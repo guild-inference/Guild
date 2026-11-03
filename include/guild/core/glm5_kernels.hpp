@@ -42,10 +42,10 @@ void hc_init(const float* e, float* R, int N, int T, void* st);
 /// KDA short convolution over the q|k|v channels (C = 3 * D; xq, xk, xv are [T][D] each): out [T][C] =
 /// silu(conv), state = the last 3 inputs per channel ([C][3], oldest first).  w: q, k, v taps, each [D][4].  Then q
 /// and k are L2-normalised per head of 128.
-/// `mid` (may be null): where the state after the window's first token goes (a verify window's rollback point).
-/// One token may run in place: xk = xq + D, xv = xq + 2 * D and out = xq.
+/// `mid` (may be null): the states after the window's first `nmid` tokens, [nmid][C][3] (a verify window's rollback
+/// points).  One token may run in place: xk = xq + D, xv = xq + 2 * D and out = xq.
 void kda_conv(const float* xq, const float* xk, const float* xv, float* state, const float* wq, const float* wk,
-              const float* wv, float* out, int D, int T, float* mid, void* st);
+              const float* wv, float* out, int D, int T, float* mid, int nmid, void* st);
 /// g = lower_bound * sigmoid(-(fpre + dt_b) * ssm_a[head]) (per channel), beta = sigmoid(bpre) (per head)
 void kda_gates(const float* fpre, const float* dt_b, const float* ssm_a, float* g, const float* bpre, float* beta,
                int D, int H, int T, float lower_bound, void* st);

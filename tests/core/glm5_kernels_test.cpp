@@ -232,34 +232,49 @@ static void test_kda() {
     cudaMalloc(&dy, (size_t) T * D * 4);
     float *dmid, *dcmid;
     cudaMalloc(&dmid, (size_t) H * DK * DK * 4);
-    cudaMalloc(&dcmid, (size_t) 3 * D * 3 * 4);
+    cudaMalloc(&dcmid, (size_t) (T - 1) * 3 * D * 3 * 4);
     float* dS0 = up(S0);
     float* dst0 = up(st0);
-    k::kda_conv(dq, dk, dv, dst, dwq, dwk, dwv, dout, D, T, dcmid, nullptr);
+    k::kda_conv(dq, dk, dv, dst, dwq, dwk, dwv, dout, D, T, dcmid, T - 1, nullptr);
     k::kda_gates(dfp, ddt, da, dg, dbp, dbeta, D, H, T, lb, nullptr);
     k::kda_step(dS, dS, dout, dg, dbeta, do_, H, T, dmid, nullptr);
     // the saved first-token state is what a one-token window leaves
     float* dout1;
     cudaMalloc(&dout1, (size_t) 3 * D * 4);
-    k::kda_conv(dq, dk, dv, dst0, dwq, dwk, dwv, dout1, D, 1, nullptr, nullptr);
+    k::kda_conv(dq, dk, dv, dst0, dwq, dwk, dwv, dout1, D, 1, nullptr, 0, nullptr);
     k::kda_step(dS0, dS0, dout, dg, dbeta, do_ + 0, H, 1, nullptr, nullptr);
     check("kda_step mid state", down(dmid, (size_t) H * DK * DK), down(dS0, (size_t) H * DK * DK), 0);
-    { // a verify window split in two (glm5.cpp's kda_mid1): token 0's state to a mid copy only, token 1 from it,
-      // against both tokens at once: the same state and outputs
-        float *dSx = up(S0), *dSy = up(S0), *dm2, *o2a, *o2b;
-        cudaMalloc(&dm2, (size_t) H * DK * DK * 4);
-        cudaMalloc(&o2a, (size_t) 2 * D * 4);
-        cudaMalloc(&o2b, (size_t) 2 * D * 4);
-        k::kda_step(dSx, dSx, dout, dg, dbeta, o2a, H, 2, nullptr, nullptr);
-        k::kda_step(dSy, nullptr, dout, dg, dbeta, o2b, H, 1, dm2, nullptr);
-        check("kda_step split window: S_in left alone", down(dSy, (size_t) H * DK * DK), S0, 0);
-        k::kda_step(dm2, dSy, dout + 3 * D, dg + D, dbeta + H, o2b + D, H, 1, nullptr, nullptr);
-        check("kda_step split window: state", down(dSy, (size_t) H * DK * DK), down(dSx, (size_t) H * DK * DK), 0);
-        check("kda_step split window: outputs", down(o2b, (size_t) 2 * D), down(o2a, (size_t) 2 * D), 0);
-        for (float* p : {dSx, dSy, dm2, o2a, o2b})
+    check("kda_conv mid state", down(dcmid, (size_t) 3 * D * 3), down(dst0, (size_t) 3 * D * 3), 0);
+    { // the state after the second token: a 2-token run's
+        float* dst2 = up(st0);
+        float* dout2;
+        cudaMalloc(&dout2, (size_t) 2 * 3 * D * 4);
+        k::kda_conv(dq, dk, dv, dst2, dwq, dwk, dwv, dout2, D, 2, nullptr, 0, nullptr);
+        check("kda_conv second mid state", down(dcmid + (size_t) 3 * D * 3, (size_t) 3 * D * 3),
+              down(dst2, (size_t) 3 * D * 3), 0);
+        cudaFree(dst2);
+        cudaFree(dout2);
+    }
+    { // a 3-token verify window as glm5.cpp runs it: group A (token 0) from S_in into a second buffer, group B
+      // (tokens 1 and 2) on in that buffer - one call's state and outputs, S_in left alone; then accept's replay of
+      // 2 kept tokens from S_in in place - a 2-token run's state
+        const size_t SN = (size_t) H * DK * DK;
+        float *dSa = up(S0), *dSw = up(S0), *dS2 = up(S0), *dalt, *o3a, *o3b;
+        cudaMalloc(&dalt, SN * 4);
+        cudaMalloc(&o3a, (size_t) 3 * D * 4);
+        cudaMalloc(&o3b, (size_t) 3 * D * 4);
+        k::kda_step(dSw, dSw, dout, dg, dbeta, o3a, H, 3, nullptr, nullptr);
+        k::kda_step(dSa, dalt, dout, dg, dbeta, o3b, H, 1, nullptr, nullptr);
+        k::kda_step(dalt, dalt, dout + 3 * D, dg + D, dbeta + H, o3b + D, H, 2, nullptr, nullptr);
+        check("kda_step two buffers: S_in left alone", down(dSa, SN), S0, 0);
+        check("kda_step two buffers: state", down(dalt, SN), down(dSw, SN), 0);
+        check("kda_step two buffers: outputs", down(o3b, (size_t) 3 * D), down(o3a, (size_t) 3 * D), 0);
+        k::kda_step(dS2, dS2, dout, dg, dbeta, o3a, H, 2, nullptr, nullptr);
+        k::kda_step(dSa, dSa, dout, dg, dbeta, o3b, H, 2, nullptr, nullptr);
+        check("kda_step replay of 2 kept tokens", down(dSa, SN), down(dS2, SN), 0);
+        for (float* p : {dSa, dSw, dS2, dalt, o3a, o3b})
             cudaFree(p);
     }
-    check("kda_conv mid state", down(dcmid, (size_t) 3 * D * 3), down(dst0, (size_t) 3 * D * 3), 0);
     k::kda_out(do_, dgate, dnw, dy, H, T, 1e-5f, nullptr);
     auto conv = down(dout, (size_t) T * 3 * D), st1 = down(dst, (size_t) 3 * D * 3), g = down(dg, (size_t) T * D),
          y = down(dy, (size_t) T * D), S1 = down(dS, (size_t) H * DK * DK);
@@ -524,6 +539,113 @@ static void test_heads_and_attention() {
         check(("mla_attend (selected cells)" + at).c_str(), sel_new, ref_attend(sets), 1e-4);
         k::mla_attend(dq, dc, pos0, AH, L, AT, scale, dsel, dnsel, n_sel, dlat, dpart, nullptr, 0, true);
         same_attend("mla_attend (selected cells), legacy" + at, sel_new, down(dlat, (size_t) AT * AH * L));
+    }
+}
+
+// A verify window's group of two tokens against the same tokens one at a time, as decode runs them: the same bits
+// (glm5.cpp's spec decoding equals greedy decoding only where every kernel's token rows are the window's)
+static void test_window_invariance() {
+    const int T = 2;
+    auto split = [&](const std::function<void(int t0, int n, float* out)>& run, size_t per_token, const char* what) {
+        float *dw, *d1;
+        cudaMalloc(&dw, (size_t) T * per_token * 4);
+        cudaMalloc(&d1, (size_t) T * per_token * 4);
+        run(0, T, dw);
+        for (int t = 0; t < T; ++t)
+            run(t, 1, d1 + (size_t) t * per_token);
+        same_attend(std::string(what) + ": 2 tokens = 1 + 1", down(dw, (size_t) T * per_token),
+                    down(d1, (size_t) T * per_token));
+        cudaFree(dw);
+        cudaFree(d1);
+    };
+    { // the routers' and the indexer's GEMVs
+        const int n_in = 4096, n_out = 256;
+        auto W = rnd((size_t) n_out * n_in, 0.05f), x = rnd((size_t) T * n_in);
+        std::vector<uint16_t> W16(W.size());
+        for (size_t i = 0; i < W.size(); ++i) {
+            uint32_t u;
+            std::memcpy(&u, &W[i], 4);
+            W16[i] = (uint16_t) (u >> 16);
+        }
+        float *dW = up(W), *dx = up(x);
+        uint16_t* dW16 = up(W16);
+        split([&](int t0, int n,
+                  float* out) { k::f32_matvec(dW, dx + (size_t) t0 * n_in, out, n_in, n_out, n, nullptr); },
+              n_out, "f32_matvec");
+        split([&](int t0, int n,
+                  float* out) { k::bf16_matvec(dW16, dx + (size_t) t0 * n_in, out, n_in, n_out, n, nullptr); },
+              n_out, "bf16_matvec");
+        cudaFree(dW);
+        cudaFree(dx);
+        cudaFree(dW16);
+    }
+    { // q8_0_heads: the absorbed query and the value up-projection
+        const int H = 8, n_in = 512, n_out = 512;
+        std::vector<uint8_t> W((size_t) H * n_out * (n_in / 32) * 34);
+        std::uniform_int_distribution<int> qd(-127, 127);
+        for (size_t b = 0; b < W.size() / 34; ++b) {
+            const __half d = __float2half(0.01f + 0.001f * (float) (b % 7));
+            std::memcpy(&W[b * 34], &d, 2);
+            for (int i = 0; i < 32; ++i)
+                W[b * 34 + 2 + i] = (uint8_t) (int8_t) qd(rng);
+        }
+        std::vector<uint8_t> Ws(W.size());
+        k::q8_0_split(W.data(), Ws.data(), (int64_t) H * n_out, n_in);
+        uint8_t* dW = up(Ws);
+        auto x = rnd((size_t) T * H * n_in);
+        float* dx = up(x);
+        split([&](int t0, int n,
+                  float* out) { k::q8_0_heads(dW, dx + (size_t) t0 * H * n_in, out, H, n_in, n_out, n, nullptr); },
+              (size_t) H * n_out, "q8_0_heads");
+        cudaFree(dW);
+        cudaFree(dx);
+    }
+    { // the hyper-connection pre-mix (fused)
+        const int N = 4096, K = 4 * N, iters = 20;
+        std::uniform_int_distribution<int> qd(-127, 127);
+        std::vector<uint8_t> W((size_t) 24 * K / 32 * 34);
+        for (size_t b = 0; b < W.size() / 34; ++b) {
+            const __half d = __float2half(0.0005f * (float) (1 + b % 9));
+            std::memcpy(&W[b * 34], &d, 2);
+            for (int i = 0; i < 32; ++i)
+                W[b * 34 + 2 + i] = (uint8_t) (int8_t) qd(rng);
+        }
+        auto R = rnd((size_t) T * K), scale = rnd(3, 0.5f), base = rnd(24, 0.5f), nw = rnd(N, 0.2f);
+        uint8_t* dW = up(W);
+        float *dR = up(R), *ds = up(scale), *db = up(base), *dn = up(nw), *dpart, *post, *comb;
+        cudaMalloc(&dpart, k::hc_mix_floats(T) * 4);
+        cudaMalloc(&post, T * 4 * 4);
+        cudaMalloc(&comb, T * 16 * 4);
+        split(
+            [&](int t0, int n, float* out) {
+                k::hc_mix(dW, dR + (size_t) t0 * K, dpart, N, n, nullptr);
+                k::hc_pre_mixed(dpart, ds, db, dR + (size_t) t0 * K, dn, post, comb, out, N, n, iters, 1e-6f, 1e-5f,
+                                nullptr);
+            },
+            N, "hc_mix + hc_pre_mixed");
+        for (float* q : {dR, ds, db, dn, dpart, post, comb})
+            cudaFree(q);
+        cudaFree(dW);
+    }
+    { // the DSA attention, causal, at two consecutive positions
+        const int AH = 64, L = 512, pos0 = 77, cells = pos0 + T;
+        auto q = rnd((size_t) T * AH * L), kvf = rnd((size_t) cells * L);
+        std::vector<__half> kvh(kvf.size());
+        for (size_t i = 0; i < kvf.size(); ++i)
+            kvh[i] = __float2half(kvf[i]);
+        float* dq = up(q);
+        __half* dc = up(kvh);
+        float* dpart;
+        cudaMalloc(&dpart, (size_t) k::attend_scratch_floats(cells, AH, L, T) * 4);
+        split(
+            [&](int t0, int n, float* out) {
+                k::mla_attend(dq + (size_t) t0 * AH * L, dc, pos0 + t0, AH, L, n, 1.f / 16.f, nullptr, nullptr, 0, out,
+                              dpart, nullptr);
+            },
+            (size_t) AH * L, "mla_attend");
+        cudaFree(dq);
+        cudaFree(dc);
+        cudaFree(dpart);
     }
 }
 
@@ -1663,6 +1785,7 @@ int main(int argc, char** argv) {
     test_hc_mix();
     test_kda();
     test_heads_and_attention();
+    test_window_invariance();
     test_route();
     test_rms_norm();
     test_f32_matvec();

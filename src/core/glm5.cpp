@@ -60,7 +60,7 @@ namespace guild::core {
 namespace {
 
 using glm5k::kMaxT;
-constexpr int kMaxVerify = 4; ///< tokens of a verify window (logits for each)
+constexpr int kMaxVerify = Glm5Engine::kMaxVerify; ///< tokens of a verify window (logits for each)
 namespace kcpu = guild::kernels::cpu;
 
 constexpr int kQ8_0 = 8, kQ6_K = 14, kF32 = 0;
@@ -86,7 +86,10 @@ struct Layer {
     float *conv_q = nullptr, *conv_k = nullptr, *conv_v = nullptr, *dt_b = nullptr, *ssm_a = nullptr,
           *ssm_norm = nullptr;
     float *kda_state = nullptr, *conv_state = nullptr;
-    float *kda_mid = nullptr, *conv_mid = nullptr; ///< the states after a verify window's first token
+    // a verify window's rollback (Impl::rollback): the recurrent state after the window (kda_state keeps the window's
+    // start until accept), the convolution's state after each of its tokens but the last, and the window's convolved
+    // q|k|v rows, gates and betas, from which accept replays the tokens it keeps
+    float *kda_alt = nullptr, *conv_mids = nullptr, *win_qkv = nullptr, *win_g = nullptr, *win_beta = nullptr;
     // DSA
     Mat q_a, q_b, kv_a, k_b, v_b;
     Mat qkvi; ///< q_a, kv_a and the indexer's key and gate rows, one after the other: one product for a token
@@ -565,7 +568,8 @@ struct Glm5Engine::Impl {
     }
 
     bool load(const std::string& path, const Glm5Options& o, std::string& err);
-    void attn_kda(Layer& Y, int T, float* mid_state, float* mid_conv);
+    /// off: the group's first token in a verify window of win_n tokens (-1: no window, the states in place)
+    void attn_kda(Layer& Y, int T, int off);
     void attn_dsa(Layer& Y, int T, int64_t pos0);
     /// the mHC pre-mix of one half layer: the fused hc_mix for a few tokens, the norm + MMQ product for a window
     // (xh: the normed rows also stored to that mapped host memory, for the CPU's FFN)
@@ -601,10 +605,9 @@ struct Glm5Engine::Impl {
         ffn_begin(Y, T);
         return ffn_end(Y, T, rows(), err);
     }
-    bool layer_attention(int l, int T, int64_t pos0, bool save_mid, std::string& err);
-    // a pipelined window of one token a group that saves the state after its first token: group A's KDA state goes
-    // to kda_mid alone and group B starts from there (GUILD_GLM_KDA_MID1=0, read each window: written twice)
-    bool kda_mid1 = false;
+    bool layer_attention(int l, int T, int64_t pos0, int win_off, std::string& err);
+    // the tokens of the verify window main_window runs (0: none), whose KDA layers keep a rollback for accept
+    int win_n = 0;
     // the attention's matrices as Q5_K or Q4_K (Glm5Options::dense): the GPU's half of a layer is the shorter one
     bool narrow_attention = false;
     // a dense layer's FFN on the GPU: the second group of a pipelined window computes it on the CPU (load)
@@ -890,23 +893,28 @@ bool Glm5Engine::Impl::load(const std::string& path, const Glm5Options& o, std::
     const uint64_t dsa_token = (uint64_t) g.kv_lora * 2 + (uint64_t) g.idx_dim * 2 / glm5k::kKpool;
     const uint64_t dsa_fixed = (uint64_t) kIdxRing * g.idx_dim * 2 * 2;
     auto fixed_need = [&] {
-        uint64_t state_bytes = 0;
+        uint64_t state_bytes = 0, dsa_rings = 0;
         per_token = (uint64_t) kMaxT * 4 / glm5k::kKpool;
         for (const Layer& y : L) {
             if (y.kda)
                 state_bytes += (uint64_t) H * 128 * 128 * 4 + (uint64_t) 3 * D * 3 * 4;
             else {
                 per_token += dsa_token;
-                state_bytes += dsa_fixed;
+                dsa_rings += dsa_fixed;
             }
         }
-        if (rollback && !has_mtp) // every KDA layer's rollback state for a verify window
+        state_bytes += dsa_rings;
+        // every KDA layer's rollback for a verify window of kMaxVerify tokens: the state after it, the convolution's
+        // after each token but the last, and the window's convolved rows, gates and betas
+        if (rollback)
             for (const Layer& y : L)
-                state_bytes += y.kda ? (uint64_t) H * 128 * 128 * 4 + (uint64_t) 3 * D * 3 * 4 : 0;
+                state_bytes += y.kda ? (uint64_t) H * 128 * 128 * 4 + (uint64_t) (kMaxVerify - 1) * 3 * D * 3 * 4 +
+                                           (uint64_t) kMaxVerify * (4 * D + H) * 4
+                                     : 0;
         if (has_mtp) {
-            // its K/V and indexer rows, its weights, and every KDA layer's rollback state for a verify window
+            // its K/V and indexer rows and its weights (and the layers' indexer rings once more, as reserved before)
             per_token += dsa_token;
-            state_bytes += state_bytes + dsa_fixed; // the mid states equal the states
+            state_bytes += dsa_rings + dsa_fixed;
             for (const Mat* m : {&mtp.wo, &mtp.q_a, &mtp.q_b, &mtp.kv_a, &mtp.k_b, &mtp.v_b, &mtp.idx_k, &mtp.idx_gate,
                                  &mtp.idx_qb, &mtp.eh_proj})
                 state_bytes += m->bytes;
@@ -1338,8 +1346,11 @@ bool Glm5Engine::Impl::load(const std::string& path, const Glm5Options& o, std::
     }
     if (rollback)
         for (Layer& l2 : L)
-            if (l2.kda && (!(l2.kda_mid = dalloc<float>((size_t) H * 128 * 128, err)) ||
-                           !(l2.conv_mid = dalloc<float>((size_t) 3 * D * 3, err))))
+            if (l2.kda && (!(l2.kda_alt = dalloc<float>((size_t) H * 128 * 128, err)) ||
+                           !(l2.conv_mids = dalloc<float>((size_t) (kMaxVerify - 1) * 3 * D * 3, err)) ||
+                           !(l2.win_qkv = dalloc<float>((size_t) kMaxVerify * 3 * D, err)) ||
+                           !(l2.win_g = dalloc<float>((size_t) kMaxVerify * D, err)) ||
+                           !(l2.win_beta = dalloc<float>((size_t) kMaxVerify * H, err))))
                 return false;
     if (!upload(head, err) || !(out_norm = f32("output_norm.weight", N, err)))
         return false;
@@ -1596,14 +1607,23 @@ bool Glm5Engine::Impl::load(const std::string& path, const Glm5Options& o, std::
 
 // ---- the forward pass -------------------------------------------------------------------------------------------
 
-void Glm5Engine::Impl::attn_kda(Layer& Y, int T, float* mid_state, float* mid_conv) {
+void Glm5Engine::Impl::attn_kda(Layer& Y, int T, int off) {
     const int64_t H = g.n_head, D = H * g.kda_dim;
+    // a verify window's group (off >= 0): its convolved rows, gates and betas go to the layer's window rows, the
+    // convolution's state after each of the window's tokens but the last to conv_mids, and the recurrent state - from
+    // the window's start (kda_state, which accept still needs) or from group A's end - to kda_alt
+    const bool win = off >= 0;
+    float* const rq = win ? Y.win_qkv + (size_t) off * 3 * D : qkv;
+    float* const rg = win ? Y.win_g + (size_t) off * D : gk;
+    float* const rb = win ? Y.win_beta + (size_t) off * H : beta;
+    float* const cmid = win ? Y.conv_mids + (size_t) off * 3 * D * 3 : nullptr;
+    const int nmid = win ? std::clamp(win_n - 1 - off, 0, T) : 0;
     quant(xn, g.n_embd, T, xq);
     // a token's q, k and v in one product (their rows are consecutive), into the convolution's output, which it
     // computes in place (a thread reads channel c and then writes it); `merged` off: three products (the same bits)
     const bool one = T == 1 && Y.wqkv.dev && merged;
     if (one) {
-        mm(Y.wqkv, xq, qkv, 1);
+        mm(Y.wqkv, xq, rq, 1);
     } else {
         mm(Y.wq, xq, a, T);
         mm(Y.wk, xq, b, T);
@@ -1620,20 +1640,17 @@ void Glm5Engine::Impl::attn_kda(Layer& Y, int T, float* mid_state, float* mid_co
         mm(Y.beta, xq, d, T);
     }
     if (one)
-        glm5k::kda_conv(qkv, qkv + D, qkv + 2 * D, Y.conv_state, Y.conv_q, Y.conv_k, Y.conv_v, qkv, (int) D, 1,
-                        mid_conv, st);
+        glm5k::kda_conv(rq, rq + D, rq + 2 * D, Y.conv_state, Y.conv_q, Y.conv_k, Y.conv_v, rq, (int) D, 1, cmid, nmid,
+                        st);
     else
-        glm5k::kda_conv(a, b, c, Y.conv_state, Y.conv_q, Y.conv_k, Y.conv_v, qkv, (int) D, T, mid_conv, st);
+        glm5k::kda_conv(a, b, c, Y.conv_state, Y.conv_q, Y.conv_k, Y.conv_v, rq, (int) D, T, cmid, nmid, st);
     quant(fa, Y.f_a.n_out, T, xq2);
     mm(Y.f_b, xq2, a, T); // fpre [T][D]
-    glm5k::kda_gates(a, Y.dt_b, Y.ssm_a, gk, bl, beta, (int) D, (int) H, T, g.kda_lower_bound, st);
+    glm5k::kda_gates(a, Y.dt_b, Y.ssm_a, rg, bl, rb, (int) D, (int) H, T, g.kda_lower_bound, st);
     quant(ga, Y.g_a.n_out, T, xq2);
     mm(Y.g_b, xq2, b, T); // output gate [T][D]
-    // kda_mid1: group A of a 2-token verify window writes the state after its token to kda_mid only (it is the same
-    // state), and group B reads it from there
-    const bool a_only = kda_mid1 && mid_state && T == 1, b_from = kda_mid1 && !mid_state;
-    glm5k::kda_step(b_from ? Y.kda_mid : Y.kda_state, a_only ? nullptr : Y.kda_state, qkv, gk, beta, c, (int) H, T,
-                    mid_state, st);
+    glm5k::kda_step(win && off > 0 ? Y.kda_alt : Y.kda_state, win ? Y.kda_alt : Y.kda_state, rq, rg, rb, c, (int) H, T,
+                    nullptr, st);
     glm5k::kda_out(c, b, Y.ssm_norm, d, (int) H, T, g.rms_eps, st);
     quant(d, D, T, xq2);
     mm(Y.wo, xq2, y, T);
@@ -1721,13 +1738,13 @@ void Glm5Engine::Impl::attn_dsa(Layer& Y, int T, int64_t pos0) {
     mm(Y.wo, xq2, y, T);
 }
 
-bool Glm5Engine::Impl::layer_attention(int l, int T, int64_t pos0, bool save_mid, std::string& err) {
+bool Glm5Engine::Impl::layer_attention(int l, int T, int64_t pos0, int win_off, std::string& err) {
     Layer& Y = L[(size_t) l];
     const int64_t N = g.n_embd;
     // mHC pre-mix: mixes = hc_fn . rms_norm(R flat), then the stream sum, normed by attn_norm
     hc_pre_half(Y.hc_attn_fn, Y.hc_attn_scale, Y.hc_attn_base, Y.attn_norm, T);
     if (Y.kda)
-        attn_kda(Y, T, save_mid ? Y.kda_mid : nullptr, save_mid ? Y.conv_mid : nullptr);
+        attn_kda(Y, T, win_off);
     else
         attn_dsa(Y, T, pos0);
     glm5k::hc_post(y, R, post, comb, (int) N, T, st);
@@ -1739,8 +1756,10 @@ void Glm5Engine::Impl::cpu_ffn(const Layer& Y, int T, const Rows& io) {
     // the routed experts of a MoE layer, and the layer's own FFN for every token when it lives on the CPU (or the
     // shared expert's twin for a pipelined group)
     const bool own = !Y.ffn_gpu || on_twin(Y, io.twin, io.dtwin);
+    // a verify window's group of two or more tokens each as a decode step computes it (`single`: the multi-token
+    // kernels' sums follow the window's experts); a group of one is a decode step's already, with the faster phases
     xp.run(*pool, g.n_embd, T, kMaxT, Y.moe ? io.h_ids : nullptr, io.h_w, (int) g.n_used, Y.experts,
-           own ? &Y.ffn_cpu : nullptr, io.h_x, io.h_y, false, cpu_t_first);
+           own ? &Y.ffn_cpu : nullptr, io.h_x, io.h_y, win_n > 0 && T > 1, cpu_t_first);
 }
 
 void Glm5Engine::Impl::ffn_begin(const Layer& Y, int T) {
@@ -2082,6 +2101,7 @@ const char* Glm5Engine::Impl::Y_kind(int l) const {
 bool Glm5Engine::Impl::main_window(const int32_t* tokens, int T, int64_t pos0, bool save_mid, std::string& err) {
     const int64_t N = g.n_embd;
     read_switches();
+    win_n = save_mid ? T : 0; // a verify window: its KDA layers keep what accept rolls back with
     if (!embed_rows(tokens, T, err))
         return false;
     glm5k::hc_init(f, R, (int) N, T, st);
@@ -2110,8 +2130,6 @@ bool Glm5Engine::Impl::main_window(const int32_t* tokens, int T, int64_t pos0, b
     // state at the same layer, both written before it in stream order; neither group waits for the other's FFN.
     if (pipe && T >= 2) {
         const int TA = T / 2, TB = T - TA;
-        const char* m1 = std::getenv("GUILD_GLM_KDA_MID1");
-        kda_mid1 = save_mid && TA == 1 && !(m1 && m1[0] == '0');
         // group B's shared experts on the CPU when the attention is Q8_0 or Q6_K (GUILD_GLM_SHEXP_SPLIT=0 / 1: both on
         // the GPU / split, whatever the format): the GPU's half of a layer was the longer one, by about a shared
         // expert.  The CPU twin rounds differently from the GPU's shared expert (Q8_1 activations, MMVQ, the GPU's
@@ -2133,7 +2151,7 @@ bool Glm5Engine::Impl::main_window(const int32_t* tokens, int T, int64_t pos0, b
         auto launch = [&](int l, bool a) {
             const auto tq = std::chrono::steady_clock::now();
             group_rows(a ? 0 : TA, a ? rA.ev : rB.ev, a ? rA.twin : rB.twin, a ? rA.dtwin : rB.dtwin);
-            if (!layer_attention(l, a ? TA : TB, a ? pos0 : pos0 + TA, a && save_mid, launch_err))
+            if (!layer_attention(l, a ? TA : TB, a ? pos0 : pos0 + TA, save_mid ? (a ? 0 : TA) : -1, launch_err))
                 launch_ok = false;
             layer_ffn_begin(l, a ? TA : TB);
             enqueue_ms += ms_since(tq);
@@ -2155,7 +2173,6 @@ bool Glm5Engine::Impl::main_window(const int32_t* tokens, int T, int64_t pos0, b
             ok = ok && launch_ok;
         }
         group_rows(0, rows0.ev);
-        kda_mid1 = false;
         if (!ok) {
             if (!launch_ok && err.empty())
                 err = launch_err;
@@ -2163,7 +2180,7 @@ bool Glm5Engine::Impl::main_window(const int32_t* tokens, int T, int64_t pos0, b
         }
     } else {
         for (int l = 0; l < (int) g.n_layer; ++l) {
-            if (!layer_attention(l, T, pos0, save_mid, err))
+            if (!layer_attention(l, T, pos0, save_mid ? 0 : -1, err))
                 return false;
             check(l, Y_kind(l));
             if (!layer_ffn(l, T, err))
@@ -2406,9 +2423,8 @@ bool Glm5Engine::verify(const int32_t* tokens, int n, int64_t pos0, float* logit
         err = "glm5: a verify window of " + std::to_string(n) + " tokens at " + std::to_string(pos0) + " does not fit";
         return false;
     }
-    if (n > 2 || (n > 1 && !m.rollback)) { // one rollback point, allocated with the NextN block or the drafter
-        err = "glm5: a verify window of " + std::to_string(n) +
-              " tokens needs the NextN block or the DFlash drafter, and at most 2 tokens";
+    if (n > 1 && !m.rollback) { // the KDA layers' rollback, allocated with the NextN block or the drafter
+        err = "glm5: a verify window of " + std::to_string(n) + " tokens needs the NextN block or the DFlash drafter";
         return false;
     }
     if (!m.main_window(tokens, n, pos0, n > 1, err) || !m.head_rows(0, n, logits_rows, err))
@@ -2431,14 +2447,18 @@ bool Glm5Engine::accept(int n_keep, std::string& err) {
         return false;
     }
     const int64_t N = m.g.n_embd, D = m.g.n_head * m.g.kda_dim;
-    if (n_keep < n) { // back to the state after the window's first token
+    if (n > 1) // the KDA layers: the window's end state, or its start replayed through the kept tokens
         for (Layer& y : m.L)
             if (y.kda) {
-                cudaMemcpyAsync(y.kda_state, y.kda_mid, (size_t) m.g.n_head * 128 * 128 * 4, cudaMemcpyDeviceToDevice,
-                                m.st);
-                cudaMemcpyAsync(y.conv_state, y.conv_mid, (size_t) 3 * D * 3 * 4, cudaMemcpyDeviceToDevice, m.st);
+                if (n_keep == n) {
+                    std::swap(y.kda_state, y.kda_alt);
+                    continue;
+                }
+                glm5k::kda_step(y.kda_state, y.kda_state, y.win_qkv, y.win_g, y.win_beta, m.c, (int) m.g.n_head, n_keep,
+                                nullptr, m.st);
+                cudaMemcpyAsync(y.conv_state, y.conv_mids + (size_t) (n_keep - 1) * 3 * D * 3, (size_t) 3 * D * 3 * 4,
+                                cudaMemcpyDeviceToDevice, m.st);
             }
-    }
     if (m.has_mtp) {
         // the draft step already ran the block at win_pos with the pending row; it catches up the accepted rest
         const char* fold = std::getenv("GUILD_GLM_ACCEPT_FOLD");
@@ -2473,6 +2493,27 @@ bool Glm5Engine::has_dflash() const {
 
 double Glm5Engine::dflash_ms() const {
     return p_->dflash ? p_->dflash->ms_draft + p_->dflash->ms_context : 0.0;
+}
+
+int Glm5Engine::dflash_window(const float* probs, int n) const {
+    // GUILD_GLM_DFLASH_K drafts, or while their cumulative probability stays >= GUILD_GLM_DFLASH_CUM: 0.7 measured
+    // best of 0.3 / 0.5 / 0.7 / 0.85 (2x Xeon Gold 6130 + GTX 1070, four chat prompts, the same texts as plain greedy
+    // decoding: prose +4.8%, code +10.3%, story +0.3%, sql +18.7% against one draft a step)
+    static const int fixed = [] {
+        const char* e = std::getenv("GUILD_GLM_DFLASH_K");
+        return e ? std::atoi(e) : -1;
+    }();
+    static const float cum_min = [] {
+        const char* e = std::getenv("GUILD_GLM_DFLASH_CUM");
+        return e ? (float) std::atof(e) : 0.7f;
+    }();
+    const int most = std::min(n, kMaxVerify - 1);
+    if (fixed >= 0)
+        return std::clamp(fixed, 0, most);
+    int k = 0;
+    for (float cum = 1.f; k < most && (cum *= probs[k]) >= cum_min;)
+        ++k;
+    return k;
 }
 
 bool Glm5Engine::dflash_draft(int32_t last, int64_t pos, int32_t* drafts, float* probs, int& n, std::string& err) {

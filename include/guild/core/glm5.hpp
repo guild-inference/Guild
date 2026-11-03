@@ -92,9 +92,11 @@ public:
     bool last_hidden(float* host, std::string& err);
 
     /// Speculative decoding with the NextN block.  draft: the block's guess for the token after `last` (which sits at
-    /// `pos`, not yet fed).  verify: runs tokens[0 .. n) (n <= 2: the last token and the draft) at pos0 and gives
-    /// every row's logits ([n][n_vocab], host).  accept: keeps the first n_keep tokens of that window (the state
-    /// rolls back to after the first when the draft is refused).  forward() needs no accept.
+    /// `pos`, not yet fed).  verify: runs tokens[0 .. n) (n <= kMaxVerify: the last token and its drafts) at pos0
+    /// and gives every row's logits ([n][n_vocab], host).  accept: keeps the first n_keep tokens of that window (the
+    /// KDA layers' states roll back to after them: the window's start replayed through the kept tokens).  forward()
+    /// needs no accept.
+    static constexpr int kMaxVerify = 4;
     bool has_mtp() const;
     bool draft(int32_t last, int64_t pos, int32_t& draft, std::string& err);
     bool verify(const int32_t* tokens, int n, int64_t pos0, float* logits_rows, std::string& err);
@@ -105,9 +107,12 @@ public:
 
     /// The DFlash drafter (Glm5Options::dflash): its block's drafts after `last` at `pos` (not yet fed; the drafter's
     /// context holds the committed positions before it, which forward() and accept() add), each with its probability
-    /// under the drafter; n gets their count (the block - 1).  verify() then takes up to 2 tokens, as with NextN.
+    /// under the drafter; n gets their count (the block - 1).  dflash_window: how many of them a step verifies (0 to
+    /// kMaxVerify - 1): GUILD_GLM_DFLASH_K when set, else while their cumulative probability stays at or above
+    /// GUILD_GLM_DFLASH_CUM (default 0.7; both read once).
     bool has_dflash() const;
     bool dflash_draft(int32_t last, int64_t pos, int32_t* drafts, float* probs, int& n, std::string& err);
+    int dflash_window(const float* probs, int n) const;
     /// the drafter's time so far: drafting, and adding the committed rows to its context (ms)
     double dflash_ms() const;
 

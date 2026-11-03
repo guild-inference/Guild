@@ -170,9 +170,9 @@ bool glm5_load(GuildModel::Impl& m, const ModelPaths& paths, const memory::Execu
         if (std::filesystem::is_regular_file(dv, ec))
             o.draft_vocab = dv.string();
     }
-    // --dflash (GUILD_DFLASH overrides, "0": none): a DFlash 2 drafter in the NextN block's place.  Measured 2-6%
-    // slower than the NextN block on three of four prompts (1% faster on code) on a GTX 1070 + 2x Xeon Gold 6130
-    // (bench/results/2026-11-03-decode-round9): opt-in.
+    // --dflash (GUILD_DFLASH overrides, "0": none): a DFlash 2 drafter in the NextN block's place, up to three drafts
+    // a step.  Against the NextN block on a GTX 1070 + 2x Xeon Gold 6130: prose +1%, code +9%, sql +16%, story -8%
+    // (bench/results/2026-11-03-decode-round10): opt-in.
     o.dflash = paths.dflash_dir;
     o.dflash_vocab = paths.dflash_vocab;
     if (const char* e = std::getenv("GUILD_DFLASH"))
@@ -284,8 +284,9 @@ bool glm5_generate(GuildModel::Impl& m, const GenerationRequest& req, const std:
     tel.ttft_ms = tel.prompt_ms;
 
     // decode: the sampled token waits in `tid` (emitted, not fed).  With the NextN block a step drafts the token
-    // after it and verifies both in one window: the main model's own sample over the first row decides, so the
-    // output is what plain decoding would sample, and an equal draft gives the second row's sample for free.
+    // after it, with the DFlash drafter up to kMaxVerify - 1 tokens (Glm5Engine::dflash_window), and verifies them
+    // with it in one window: each row's own sample decides, so the output is what plain decoding would sample, and a
+    // draft equal to its row's sample gives the next row's sample for free.
     std::mt19937_64 rng(req.seed ? req.seed : (uint64_t) std::random_device{}());
     std::unique_ptr<IncrementalDecoder> decoder;
     if (m.tokenizer && m.tokenizer->is_loaded())
@@ -294,7 +295,7 @@ bool glm5_generate(GuildModel::Impl& m, const GenerationRequest& req, const std:
         (eng.has_mtp() || eng.has_dflash()) && req.decode_strategy != "normal" && m.config.decode_strategy != "normal";
     int32_t dfl[16];
     float dprob[16];
-    std::vector<float> rows(spec ? (size_t) 2 * V : 0);
+    std::vector<float> rows(spec ? (size_t) core::Glm5Engine::kMaxVerify * V : 0);
     std::string text;
     std::vector<int32_t> history = prompt;
     const auto t1 = Clock::now();
@@ -333,46 +334,54 @@ bool glm5_generate(GuildModel::Impl& m, const GenerationRequest& req, const std:
         if (pos + 1 >= eng.max_context())
             break; // the context is full: finish with "length"
         if (spec && pos + 2 < eng.max_context()) {
-            int32_t d = 0;
-            int nd = 0;
-            if (eng.has_dflash() ? !eng.dflash_draft(tid, pos, dfl, dprob, nd, err) : !eng.draft(tid, pos, d, err)) {
+            int nd = 0, k = 1;
+            int32_t win[core::Glm5Engine::kMaxVerify] = {tid};
+            if (eng.has_dflash() ? !eng.dflash_draft(tid, pos, dfl, dprob, nd, err)
+                                 : !eng.draft(tid, pos, win[1], err)) {
                 m.ready->store(false);
                 return false;
             }
-            if (eng.has_dflash())
-                d = dfl[0];
-            const int32_t win[2] = {tid, d};
-            if (!eng.verify(win, 2, pos, rows.data(), err)) {
+            if (eng.has_dflash()) { // as many of the block's drafts as the window rule takes, within the context
+                k = (int) std::min<int64_t>(eng.dflash_window(dprob, nd), eng.max_context() - pos - 2);
+                for (int j = 0; j < k; ++j)
+                    win[1 + j] = dfl[j];
+            }
+            if (!eng.verify(win, 1 + k, pos, rows.data(), err)) {
                 m.ready->store(false);
                 return false;
             }
-            std::vector<float> row0(rows.begin(), rows.begin() + V);
-            const int32_t y1 = sample(row0, req, history, rng);
-            ++tel.drafts_offered;
-            if (y1 == d) {
-                ++tel.drafts_accepted;
-                if (!eng.accept(2, err)) {
-                    m.ready->store(false);
-                    return false;
-                }
-                m.glm_ctx.push_back(tid);
-                m.glm_ctx.push_back(d);
+            // each row's sample in turn, with the kept drafts in the history its penalties read: a draft is kept while
+            // it is the sample of the row before it
+            std::vector<int32_t> hist = history;
+            auto row_sample = [&](int j) {
+                std::vector<float> row(rows.begin() + (size_t) j * V, rows.begin() + (size_t) (j + 1) * V);
+                return sample(row, req, hist, rng);
+            };
+            int a = 0;
+            int32_t y = row_sample(0);
+            while (a < k && y == win[1 + a]) {
+                hist.push_back(win[1 + a]);
+                y = row_sample(++a);
+            }
+            tel.drafts_offered += k;
+            tel.drafts_accepted += a;
+            if (!eng.accept(a + 1, err)) {
+                m.ready->store(false);
+                return false;
+            }
+            for (int j = 0; j <= a; ++j)
+                m.glm_ctx.push_back(win[j]);
+            bool go = true;
+            for (int j = 1; j <= a && go; ++j) {
                 if (cancelled_now()) {
                     aborted = true;
-                    break;
-                }
-                if (!emit(d))
-                    break;
-                std::vector<float> row1(rows.begin() + V, rows.end());
-                tid = sample(row1, req, history, rng);
-            } else {
-                if (!eng.accept(1, err)) {
-                    m.ready->store(false);
-                    return false;
-                }
-                m.glm_ctx.push_back(tid);
-                tid = y1;
+                    go = false;
+                } else
+                    go = emit(win[j]);
             }
+            if (!go)
+                break;
+            tid = y;
             continue;
         }
         if (!eng.forward(&tid, 1, pos, logits.data(), err)) {
