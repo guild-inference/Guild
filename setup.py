@@ -75,10 +75,10 @@ DFLASH_FILES = {
     "config.json": (1236, "2409575986f9ea24d455343eb469c0e6940def5edab1d1be503bb8eb4cc3b1b9"),
     "model.safetensors": (1206140008, "d6723f2a359eaf33ec0c95f22ae8edda896774020c552296a85e1913b4d3186f"),
 }
-# its head's token subset (--dflash-vocab, tools/draft_vocab.py): English and code with --draft-vocab en, else the
-# tokens of every language its corpora held (bench/results/2026-11-03-decode-round9)
-DFLASH_VOCABS = {"en": "dflash_vocab_en.bin"}
-DFLASH_VOCAB_DEFAULT = "dflash_vocab.bin"
+# its head's token subset (--dflash-vocab, tools/draft_vocab.py): the tokens of every language its corpora held,
+# whatever --draft-vocab says - data/dflash_vocab_en.bin (English and code) made Chinese and Russian answers 28-31%
+# slower on a GTX 1070 + 2x Xeon Gold 6130 (bench/results/2026-11-03-decode-round9), so it is only passed by hand
+DFLASH_VOCAB = "dflash_vocab.bin"
 
 
 HF_DEFAULT = "https://huggingface.co"
@@ -3707,7 +3707,7 @@ def main() -> int:
                          "and code only (~110 MiB less VRAM, English answers 1-2%% faster), cyrillic = English, code "
                          "and the Cyrillic script (Ukrainian, Russian... answers decode ~30%% faster), fr = English, "
                          "code and French (French answers: 18%% more drafts accepted). The DFlash drafter's head "
-                         "takes English and code with en, every language otherwise")
+                         "keeps every language's tokens")
     ap.add_argument("--low-ram", choices=["auto", "on", "off", "resident", "mmap"], default="auto",
                     help="read the model's experts from one file in its folder instead of copying them all into RAM "
                          "(for a PC with a big GPU and little RAM); auto: when the experts would not fit the RAM. In "
@@ -4365,7 +4365,7 @@ def main() -> int:
         say("  " + line)
     # The DFlash 2 drafter drafts in the MTP layer's place: one pass proposes up to seven tokens and the verify window
     # still decides every one, so the output is the same (bench/results/2026-11-03-decode-round9: GTX 1070 + 2x Xeon
-    # Gold 6130, prose 39.7 -> 41.2 and code 49.9 -> 54.5 tok/s with its multilingual head subset).  Its kernels are
+    # Gold 6130, prose 39.7 -> 42.9 and code 49.9 -> 56.2 tok/s with its multilingual head subset).  Its kernels are
     # CUDA's and it reads features of the whole model on one card, so AMD and several GPUs keep the MTP layer; so do
     # --no-dflash and an older engine.
     dflash = dflash_vocab = None
@@ -4381,7 +4381,7 @@ def main() -> int:
         for name, (size, sha) in DFLASH_FILES.items():
             download(hf(DFLASH_REPO) + name, dflash / name, f"DFlash drafter {name}")
             verify_sha256(dflash / name, size, sha)
-        vocab = ROOT / "data" / DFLASH_VOCABS.get(draft_vocab or "", DFLASH_VOCAB_DEFAULT)
+        vocab = ROOT / "data" / DFLASH_VOCAB
         if vocab.exists() and engine_supports_option(eng, "--dflash-vocab", env):
             dflash_vocab = vocab
         ok(f"DFlash drafter: {dflash}" + (f" (its head's tokens: {vocab.name})" if dflash_vocab else ""))
@@ -4399,6 +4399,13 @@ def main() -> int:
             "--prefill", lv_plan["prefill"], "--spec", "8" if dflash else "4", "--spec-min-p", "0.5", "--mtp", str(rt),
             *(["--dflash", str(dflash)] if dflash else []),
             *(["--dflash-vocab", str(dflash_vocab)] if dflash_vocab else []), "--max-context", str(ctx)]
+    # Unsloth's UD-IQ4_XS keeps every dense and hyper-connection matrix as Q8_0: --dense q5_k re-quantizes the dense ones
+    # at load and --hc q8_0 reads the hyper-connection ones as the GGUF stores them, with a KL of 0.048 from its output
+    # (bench/results/2026-11-02-decode-round6) and, with the DFlash drafter on a GTX 1070 + 2x Xeon Gold 6130, prose
+    # 39.8 -> 45.3 and code 50.9 -> 59.9 tok/s (bench/results/2026-11-03-decode-round9).  The GSQ-RCO quants' dense
+    # matrices are 3-6 bits already; the other quants are not measured.  CUDA's kernels.
+    if model == "UD-IQ4_XS" and not hip and all(engine_supports_option(eng, o, env) for o in ("--dense", "--hc")):
+        args += ["--dense", "q5_k", "--hc", "q8_0"]
     if tiny_card:
         if engine_supports_option(eng, "--mtp-optional", env):
             args += ["--mtp-optional"]

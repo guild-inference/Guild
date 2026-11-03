@@ -1,12 +1,15 @@
 // src/core/dflash.cpp - the DFlash 2 drafter's host side (include/guild/core/dflash.hpp).
 //
 // The checkpoint (z-lab/dflash's DFlash2DraftModel, bf16 safetensors) is read once: every matrix is quantized as
-// Q8_0 at load (the drafts measured the same with Q8_0 weights as with bf16 ones, offline on Qwen3.8-Flash-Next's
-// greedy texts) and kept as int8 rows with a scale a 32 for dflashk::d8_mm, which reads them at 200-215 GB/s at every
-// column count on a GTX 1070 (MMQ: 115-153 at eight columns); the norms and the convolutions' base kernels stay f32,
-// and the candidate selector's two codebooks (2 x vocab x 256 bf16) stay in host memory, where the selector runs.  The
-// output head is the target's own, its rows of the draft vocabulary copied as Q4_K (Q4_0 drafted 1.747 against 1.794
-// accepted drafts of 7 on a prose text; Q5_0 1.825 at 22% more bytes) for dflashk::k4_mm.
+// Q4_K at load for dflashk::k4_mm (Qwen3.8-Flash-Next on a GTX 1070: 684 against 923 MiB, a draft in 4.55 against
+// 5.43 ms, and end to end prose +4.1%, code +3.1%, story +1.0%, Chinese +2.1%, Russian -0.2%, sql -3.2% against Q8_0;
+// bench/results/2026-11-03-decode-round9), or with GUILD_DFLASH_WEIGHTS=int8 as Q8_0 kept as int8 rows with a scale a
+// 32 for dflashk::d8_mm (the drafts measured the same with Q8_0 weights as with bf16 ones, offline on
+// Qwen3.8-Flash-Next's greedy texts).  Both kernels read 194-215 GB/s at one to eight columns (MMQ: 115-153 at
+// eight); the norms and the convolutions' base kernels stay f32, and the candidate selector's two codebooks (2 x
+// vocab x 256 bf16) stay in host memory, where the selector runs.  The output head is the target's own, its rows of
+// the draft vocabulary copied as Q4_K (Q4_0 drafted 1.747 against 1.794 accepted drafts of 7 on a prose text; Q5_0
+// 1.825 at 22% more bytes) for dflashk::k4_mm.
 //
 // The forward follows dflash/model.py: the context features of a committed position go through fc and hidden_norm
 // and each layer's k_proj (k_norm, RoPE) and v_proj into that layer's ring of K/V rows (fp16, `window` slots); a
@@ -219,7 +222,7 @@ bool DFlashDrafter::load(const std::string& dir, const NativeHead& head, const N
 bool DFlashDrafter::load(const std::string& dir, const DFlashTarget& target, const std::string& vocab_path,
                          std::string& err) {
     if (const char* e = std::getenv("GUILD_DFLASH_WEIGHTS"))
-        q4k_ = std::string(e) == "q4_k";
+        q4k_ = std::string(e) != "int8";
     using guild::server::json::JsonValue;
     std::string text;
     JsonValue cfg;

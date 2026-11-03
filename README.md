@@ -243,16 +243,27 @@ guild-generate --serve --native <model>.gguf --pack <pack> --dflash <drafter dir
     --dflash-vocab data/dflash_vocab.bin --spec 8 ...
 ```
 
-`--dflash-vocab` limits the drafter's head to a token subset (int32 ids; without it, all 248,320 rows):
-`data/dflash_vocab.bin` holds 163,778 tokens of English, code, Chinese, Japanese, Korean, Russian and multilingual
-text, `data/dflash_vocab_en.bin` 65,536 of English and code. Setup passes the English one with `--draft-vocab en`,
-which its low-VRAM plan picks on an 8 GB card, and the other one otherwise (`tools/draft_vocab.py` builds them).
+`--dflash-vocab` limits the drafter's head to a token subset (int32 ids; without it, all 248,320 rows). Setup passes
+`data/dflash_vocab.bin`, 163,778 tokens of English, code, Chinese, Japanese, Korean, Russian and multilingual text,
+whatever `--draft-vocab` says (that option chooses the MTP layer's subset). `data/dflash_vocab_en.bin` (65,536 tokens of
+English and code) is there to pass by hand: English and code answers up to 1.4% faster, Chinese and Russian ones
+28-31% slower. `tools/draft_vocab.py` builds both. The drafter's matrices are Q4_K (`GUILD_DFLASH_WEIGHTS=int8` keeps
+them as int8 rows: 239 MiB more VRAM; prose 4% and code 3% slower, sql 3% faster).
 
-On a dual Xeon Gold 6130 with a GTX 1070 (`--dense q6_k --hc q8_0`), decode went from 39.7 / 49.9 to 41.2 / 54.5
-tok/s (prose / code) against the MTP layer at `--spec 4`, with the multilingual subset. The English subset makes
-English and code answers up to 1.4% faster and Chinese and Russian ones 28-31% slower. The drafter takes 799 MiB of
-VRAM with the multilingual subset and 655 MiB with the English one, the MTP layer about 1.1 GB
-([bench/results/2026-11-03-decode-round9](bench/results/2026-11-03-decode-round9/README.md)).
+On a dual Xeon Gold 6130 with a GTX 1070, both with `--dense q6_k --hc q8_0`, decode went from 39.7 / 49.9 to 42.9 /
+56.2 tok/s (prose / code) against the MTP layer at `--spec 4`. The drafter takes 560 MiB of VRAM, the MTP layer about
+1.1 GB ([bench/results/2026-11-03-decode-round9](bench/results/2026-11-03-decode-round9/README.md)).
+
+### Qwen3.8-Flash-Next's dense matrices (UD-IQ4_XS)
+
+Unsloth's UD-IQ4_XS stores every dense and hyper-connection matrix as Q8_0. For it, setup writes `--dense q5_k`, which
+re-quantizes the dense ones to Q5_K at load, and `--hc q8_0`, which reads the hyper-connection ones as the GGUF stores
+them instead of the pack's bf16 copy. The output moves a KL of 0.048 from the GGUF's own, with the same top token at
+92.0% of positions; a change of the CPU experts' summation order alone measures 0.017 and 95.3%
+([bench/results/2026-11-02-decode-round6](bench/results/2026-11-02-decode-round6/README.md)). With the DFlash drafter
+on the PC above, prose went from 39.8 to 45.3 tok/s and code from 50.9 to 59.9, and four more prompts (story, sql,
+Chinese, Russian) 11-22% ([bench/results/2026-11-03-decode-round9](bench/results/2026-11-03-decode-round9/README.md)).
+The GSQ-RCO quants' dense matrices are 3-6 bits already, so setup leaves them alone.
 
 ### Ornith-1.5-35B with its MTP draft layer
 

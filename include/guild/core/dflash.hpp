@@ -185,8 +185,8 @@ private:
     // llama.cpp's MMQ, for a head k4_mm does not take (GUILD_DFLASH_K4=0 forces it: the A/B switch)
     struct Mmq;
     std::unique_ptr<Mmq> mmq_;
-    int mmq_min_ = 5;  ///< columns from which a non-D8 product takes MMQ (GUILD_DFLASH_MMQ_MIN; 0: never)
-    bool q4k_ = false; ///< the drafter's matrices as Q4_K (GUILD_DFLASH_WEIGHTS=q4_k: half the VRAM of int8)
+    int mmq_min_ = 5; ///< columns from which a non-D8 product takes MMQ (GUILD_DFLASH_MMQ_MIN; 0: never)
+    bool q4k_ = true; ///< the drafter's matrices as Q4_K, or int8 rows (GUILD_DFLASH_WEIGHTS=int8: 239 MiB more)
 };
 
 } // namespace guild::core

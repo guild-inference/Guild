@@ -1,6 +1,6 @@
 """The DFlash 2 drafter in setup (no GPU, no downloads): fetched and written into the run config (--dflash, windows of
-8) on one NVIDIA card with an engine that has --dflash, with its head's token subset (--dflash-vocab: English and
-code with --draft-vocab en); the MTP layer alone with --no-dflash, an older engine, or several GPUs.
+8) on one NVIDIA card with an engine that has --dflash, with its head's multilingual token subset (--dflash-vocab,
+whatever --draft-vocab says); the MTP layer alone with --no-dflash, an older engine, or several GPUs.
 
     python -m unittest tools.test_setup_dflash
 """
@@ -28,8 +28,7 @@ class DFlashDrafter(unittest.TestCase):
             dst.write_bytes(b"")
             setup.mark(dst)
             if vocab_files:  # the head subsets the repository ships, in the test's Guild folder
-                for name in (setup.DFLASH_VOCAB_DEFAULT, *setup.DFLASH_VOCABS.values()):
-                    (setup.ROOT / "data" / name).write_bytes(bytes(8))
+                (setup.ROOT / "data" / setup.DFLASH_VOCAB).write_bytes(bytes(8))
         code, out, cfg, _ = install(127.8, cards or [card(0, "NVIDIA GeForce RTX 4090", 24.0, "89")],
                                     ["--family", "qwen", "--model", "IQ3_S", "--no-start", *flags],
                                     extra=[mock.patch.object(setup, "engine_supports_option", side_effect=supports),
@@ -52,11 +51,13 @@ class DFlashDrafter(unittest.TestCase):
         self.assertIn("DFlash drafter:", out)
         self.assertTrue(args[args.index("--dflash-vocab") + 1].replace("\\", "/").endswith("/data/dflash_vocab.bin"))
 
-    def test_english_draft_vocab_takes_the_english_head(self):
-        code, out, cfg, _ = self.install(["--draft-vocab", "en"])
-        self.assertEqual(code, 0, out)
-        args = cfg["args"]
-        self.assertTrue(args[args.index("--dflash-vocab") + 1].replace("\\", "/").endswith("/data/dflash_vocab_en.bin"))
+    def test_the_head_keeps_every_language(self):  # --draft-vocab en, and an 8 GB card's low-VRAM plan's en
+        for flags, cards in ((["--draft-vocab", "en"], None), ([], [card(0, "NVIDIA GeForce RTX 3070", 8.0, "86")])):
+            code, out, cfg, _ = self.install(flags, cards)
+            self.assertEqual(code, 0, out)
+            self.assertEqual(cfg.get("draft_vocab"), "en")              # the MTP layer's subset
+            head = cfg["args"][cfg["args"].index("--dflash-vocab") + 1]
+            self.assertTrue(head.replace("\\", "/").endswith("/data/dflash_vocab.bin"))
 
     def test_an_engine_without_dflash_vocab_drafts_with_the_whole_head(self):
         for kw in ({"vocab_engine": False}, {"vocab_files": False}):   # or a checkout without the subsets
@@ -96,7 +97,7 @@ class DFlashDrafter(unittest.TestCase):
 
     def test_shipped_head_subsets(self):  # int32 ids of the 248,320-token vocabulary, an even count of them
         from array import array
-        for name in (setup.DFLASH_VOCAB_DEFAULT, *setup.DFLASH_VOCABS.values()):
+        for name in (setup.DFLASH_VOCAB, "dflash_vocab_en.bin"):
             ids = array("i", (setup.ROOT / "data" / name).read_bytes())
             self.assertEqual(len(ids) % 2, 0, name)
             self.assertEqual(len(set(ids)), len(ids), name)
