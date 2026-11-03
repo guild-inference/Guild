@@ -346,10 +346,11 @@ from the CPU copy, which rounds differently, so the text can part from plain gre
 groups take it on the GPU by default, and the text is greedy decoding's.
 `data/draft_vocab_glm.bin`, copied into the tokenizer directory as `draft_vocab.bin`, makes the drafts read 117,354 of
 the head's 154,880 rows (0.55 ms less a step there). `--dflash <dir>` drafts with incoai's GLM-5.3-Flash DFlash 2
-checkpoint instead of the NextN block (CC BY-NC-ND 4.0, for research and evaluation: setup does not fetch it). On the PC
-below it ran 1% faster on code and 2-6% slower on prose, story and sql: GLM's verify takes at most two tokens, so
-the drafter's seven-token block goes unused
-([bench/results/2026-11-03-decode-round9](bench/results/2026-11-03-decode-round9/README.md)).
+checkpoint instead of the NextN block (CC BY-NC-ND 4.0, for research and evaluation: setup does not fetch it). A step
+then verifies up to three of its drafts, while their cumulative probability stays at or above 0.7
+(`GUILD_GLM_DFLASH_CUM`); the KDA layers replay the kept tokens on accept, and the text is plain greedy decoding's.
+On the PC below that ran prose +1%, code +9% and sql +16% against NextN, and story -8%
+([bench/results/2026-11-03-decode-round10](bench/results/2026-11-03-decode-round10/README.md)).
 
 On a dual Xeon Gold 6130 with a GTX 1070 (8 GB): 262,144 tokens of context (32k in VRAM alone); at a short context 14.3
 tok/s plain and 21.9 tok/s with the drafts (86% accepted) with every shared expert on the GPU, and 21.8 tok/s with the

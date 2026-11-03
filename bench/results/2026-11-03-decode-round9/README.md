@@ -240,7 +240,8 @@ NextN stays GLM's drafter.
   with q5_k than with q6_k; the rest of the difference is tokens a window on these texts. The GSQ-RCO quants keep
   their dense matrices at 3-6 bits in the GGUF, so setup writes the flags for UD-IQ4_XS only.
 - **A longer GLM verify window** (a KDA rollback point a token) would let DFlash's later drafts count, and NextN's
-  chained drafts too. Started after the round.
+  chained drafts too. Built after the round: windows of up to four tokens
+  ([bench/results/2026-11-03-decode-round10](../2026-11-03-decode-round10/README.md)).
 
 ## Tools
 
