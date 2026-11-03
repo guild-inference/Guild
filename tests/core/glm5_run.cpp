@@ -18,6 +18,9 @@
 //   less context than --ctx, up to 16k tokens); --q5k / --q4k: to Q5_K / Q4_K, the shared experts' GPU copies too
 //   --draft-vocab <file>: drafts over this token subset of the head (tools/draft_vocab.py; GUILD_GLM_DRAFT_VOCAB
 //   overrides it, 0 for the whole head)
+//   --dflash <dir>: --spec drafts with a DFlash 2 drafter in the NextN block's place (its first draft verified), and
+//   counts how often its second draft would have been accepted in a 3-token window; --dflash-vocab <file>: its draft
+//   head's token subset
 //
 //   A/B arms (several decodes in one process: the same load and context):
 //   --ab VAR=a,b [--reps N]: the decode N times (default 3) with VAR=a then VAR=b, the order reversed every other
@@ -132,6 +135,10 @@ int main(int argc, char** argv) {
             prompts_path = argv[++i];
         else if (a == "--draft-vocab" && i + 1 < argc)
             opt.draft_vocab = argv[++i];
+        else if (a == "--dflash" && i + 1 < argc)
+            opt.dflash = argv[++i];
+        else if (a == "--dflash-vocab" && i + 1 < argc)
+            opt.dflash_vocab = argv[++i];
         else if (a == "--step")
             step = true;
         else if (a == "--no-prefault")
@@ -241,8 +248,8 @@ int main(int argc, char** argv) {
         return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t).count();
     };
     std::fprintf(stderr, "%sglm5_run: loaded in %.1f s\n", eng.placement().c_str(), since(t0) / 1000.0);
-    if (!prompts.empty() && !eng.has_mtp()) {
-        std::fprintf(stderr, "glm5_run: --prompts needs the NextN block\n");
+    if (!prompts.empty() && !eng.has_mtp() && !eng.has_dflash()) {
+        std::fprintf(stderr, "glm5_run: --prompts needs the NextN block or a DFlash drafter\n");
         return 2;
     }
     const auto& g = eng.geometry();
@@ -296,6 +303,7 @@ int main(int argc, char** argv) {
         std::vector<double> step_ms, step_cpu; // per forward: wall time, and the CPU experts' part
         double cpu_ms = 0, dec_ms = 0, draft_ms = 0, verify_ms = 0, accept_ms = 0; // --spec: wall time in each call
         int offered = 0, accepted = 0;
+        int second = 0; // --dflash: steps whose first draft was accepted and whose second equals the next token
         std::vector<int32_t> drafts;   // --spec: each step's draft,
         std::vector<char> draft_ok;    // whether it was accepted,
         std::vector<double> draft_one; // and its ms
@@ -324,7 +332,9 @@ int main(int argc, char** argv) {
         const char* vocab = std::getenv("GLM5_RUN_DRAFT_VOCAB");
         if (vocab && vocab[0])
             eng.use_draft_vocab(vocab[0] == '1');
-        const bool use_spec = spec && eng.has_mtp() && !(plain && plain[0] == '1');
+        const bool use_spec = spec && (eng.has_mtp() || eng.has_dflash()) && !(plain && plain[0] == '1');
+        int32_t dfl[16];
+        float dprob[16];
         while ((int) r.out.size() < n_new) {
             r.out.push_back(next);
             if (is_eos(next) || (int) r.out.size() >= n_new)
@@ -332,7 +342,12 @@ int main(int argc, char** argv) {
             if (use_spec) { // greedy speculation: the main model's argmax over the first row decides
                 int32_t d = 0;
                 auto tc = std::chrono::steady_clock::now();
-                if (!eng.draft(next, pos, d, err))
+                int nd = 0;
+                if (eng.has_dflash()) {
+                    if (!eng.dflash_draft(next, pos, dfl, dprob, nd, err))
+                        return false;
+                    d = dfl[0];
+                } else if (!eng.draft(next, pos, d, err))
                     return false;
                 if (r.out.size() < oracle.size())
                     d = oracle[r.out.size()];
@@ -365,6 +380,8 @@ int main(int argc, char** argv) {
                     if (is_eos(d) || (int) r.out.size() >= n_new)
                         break;
                     next = argmax(rows.data() + V, V);
+                    if (nd > 1 && dfl[1] == next) // a 3-token window would have kept the second draft too
+                        ++r.second;
                 } else {
                     if (!eng.accept(1, err))
                         return false;
@@ -441,13 +458,14 @@ int main(int argc, char** argv) {
                     std::replace(label.begin(), label.end(), ' ', ',');
                     const int steps = std::max(1, r.offered ? r.offered : (int) r.step_ms.size());
                     std::printf("gen %s %s round %d: prompt %zu tokens in %.0f ms (logits %016llx); %zu tokens, %zu "
-                                "steps, %d drafts accepted (%.1f%%); per step: "
+                                "steps, %d drafts accepted (%.1f%%; the second too: %d); per step: "
                                 "draft %.3f ms (median %.3f, 90th %.3f), verify %.2f, accept %.2f, CPU experts %.1f, "
                                 "step median %.2f; %.2f tok/s\n",
                                 name.c_str(), label.c_str(), round, p.size(), prompt_ms, (unsigned long long) lh,
                                 r.out.size(), r.step_ms.size(), r.accepted, 100.0 * r.accepted / std::max(1, r.offered),
-                                r.draft_ms / steps, pct(r.draft_one, 0.5), pct(r.draft_one, 0.9), r.verify_ms / steps,
-                                r.accept_ms / steps, r.cpu_ms / steps, pct(r.step_ms, 0.5), tok_s(r));
+                                r.second, r.draft_ms / steps, pct(r.draft_one, 0.5), pct(r.draft_one, 0.9),
+                                r.verify_ms / steps, r.accept_ms / steps, r.cpu_ms / steps, pct(r.step_ms, 0.5),
+                                tok_s(r));
                     std::printf("ids %s %s round %d:", name.c_str(), label.c_str(), round);
                     for (size_t i = 0; i < r.out.size(); ++i)
                         std::printf("%s%d", i ? "," : " ", r.out[i]);
@@ -493,9 +511,11 @@ int main(int argc, char** argv) {
     auto report = [&](const Decode& r, const std::string& tag) {
         if (r.offered)
             std::fprintf(
-                stderr, "%sMTP: %d of %d drafts accepted (%.0f%%); per step: draft %.1f ms, verify %.1f, accept %.1f\n",
-                tag.c_str(), r.accepted, r.offered, 100.0 * r.accepted / r.offered, r.draft_ms / r.offered,
-                r.verify_ms / r.offered, r.accept_ms / r.offered);
+                stderr,
+                "%s%s: %d of %d drafts accepted (%.0f%%)%s; per step: draft %.1f ms, verify %.1f, accept %.1f\n",
+                tag.c_str(), eng.has_dflash() ? "DFlash" : "MTP", r.accepted, r.offered, 100.0 * r.accepted / r.offered,
+                eng.has_dflash() ? (", the second draft too at " + std::to_string(r.second) + " of them").c_str() : "",
+                r.draft_ms / r.offered, r.verify_ms / r.offered, r.accept_ms / r.offered);
         if (std::getenv("GLM5_RUN_STEPS")) {
             std::fprintf(stderr, "%ssteps (ms, CPU ms):", tag.c_str());
             for (size_t i = 0; i < r.step_ms.size(); ++i)

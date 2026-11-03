@@ -7,6 +7,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -60,11 +61,23 @@ void topk_lse(const float* logits, int n, int rows, int k, int32_t* idx, float* 
 void q8_act(const float* x, int K, int cols, int8_t* xq, float* xs, void* st, float* xsum = nullptr);
 bool d8_mm(const int8_t* wq, const uint16_t* ws, const int8_t* xq, const float* xs, float* y, int K, int n_out,
            int cols, void* st);
-/// ggml Q4_K rows of K (<= 2560, a multiple of 256) values times `cols` (<= 8) columns from q8_act with `xsum` (the
-/// scale times the sum of a 32's int8 values), y[c][n_out]; false: a shape it does not take
+/// ggml Q4_K rows of K (a multiple of 256) values times `cols` (<= 8) columns from q8_act with `xsum` (the scale times
+/// the sum of a 32's int8 values), y[c][n_out]; false: a shape it does not take
 bool k4_mm(const void* w, const int8_t* xq, const float* xs, const float* xsum, float* y, int K, int n_out, int cols,
            void* st);
 } // namespace dflashk
+
+/// What the drafter reads of its target model: the output head's rows (a ggml type with to_float, in device or host
+/// memory: the draft head copies the draft vocabulary's rows as Q4_K at load) and a token's embedding row
+struct DFlashTarget {
+    const void* head = nullptr;
+    bool head_on_device = true;
+    int head_type = 0;
+    size_t head_row_bytes = 0;
+    int64_t n_vocab = 0;
+    /// a token's embedding row (hidden() floats) into `dev` (device), in `stream`'s order
+    std::function<void(int32_t token, float* dev, void* stream)> embed;
+};
 
 class DFlashDrafter {
 public:
@@ -78,6 +91,8 @@ public:
     /// whose rows of the head are copied as Q4_K for the drafts
     bool load(const std::string& dir, const NativeHead& head, const NativeEmbed& embed, const std::string& vocab_path,
               std::string& err);
+    /// the same for any target (another engine's head and embedding)
+    bool load(const std::string& dir, const DFlashTarget& target, const std::string& vocab_path, std::string& err);
     int block() const {
         return block_;
     }
@@ -118,7 +133,7 @@ private:
         void* w = nullptr;      // D8: int8 rows (dflashk::d8_mm); else the GGUF type's blocks
         uint16_t* ws = nullptr; // D8: the rows' fp16 scales, one a 32 values
         int n_in = 0, n_out = 0, type = 8;
-        bool d8 = false;
+        bool d8 = false, k4 = false; // k4: ggml Q4_K blocks (dflashk::k4_mm)
     };
     struct Layer {
         float *in_ln = nullptr, *post_ln = nullptr, *q_norm = nullptr, *k_norm = nullptr;
@@ -151,7 +166,7 @@ private:
     // the selector's codebooks (host, bf16 bits) and the target's mask-token embedding (device)
     std::vector<uint16_t> pred_cb_, succ_cb_;
     float* mask_emb_ = nullptr;
-    const NativeEmbed* embed_ = nullptr;
+    std::function<void(int32_t, float*, void*)> embed_;
     // scratch
     float *x_ = nullptr, *h_ = nullptr, *a_ = nullptr, *b_ = nullptr, *c_ = nullptr, *dyn_ = nullptr, *att_ = nullptr;
     float* tscratch_ = nullptr;
@@ -171,7 +186,8 @@ private:
     // llama.cpp's MMQ, for a head k4_mm does not take (GUILD_DFLASH_K4=0 forces it: the A/B switch)
     struct Mmq;
     std::unique_ptr<Mmq> mmq_;
-    int mmq_min_ = 5; ///< columns from which a non-D8 product takes MMQ (GUILD_DFLASH_MMQ_MIN; 0: never)
+    int mmq_min_ = 5;  ///< columns from which a non-D8 product takes MMQ (GUILD_DFLASH_MMQ_MIN; 0: never)
+    bool q4k_ = false; ///< the drafter's matrices as Q4_K (GUILD_DFLASH_WEIGHTS=q4_k: half the VRAM of int8)
 };
 
 } // namespace guild::core

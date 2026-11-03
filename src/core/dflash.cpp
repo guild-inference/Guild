@@ -85,6 +85,23 @@ DFlashDrafter::~DFlashDrafter() {
 }
 
 bool DFlashDrafter::upload_mat(const std::vector<float>& f, int n_in, int n_out, Mat& m, std::string& err) {
+    if (q4k_ && n_in % 256 == 0) { // ggml's Q4_K blocks for k4_mm
+        const size_t row = ggml_row_size(GGML_TYPE_Q4_K, n_in);
+        std::vector<uint8_t> q((size_t) n_out * row);
+        ggml_quantize_chunk(GGML_TYPE_Q4_K, f.data(), q.data(), 0, n_out, n_in, nullptr);
+        if (cudaMalloc(&m.w, q.size()) != cudaSuccess) {
+            err = "dflash: no VRAM for a matrix";
+            return false;
+        }
+        allocs_.push_back(m.w);
+        cudaMemcpy(m.w, q.data(), q.size(), cudaMemcpyHostToDevice);
+        m.n_in = n_in;
+        m.n_out = n_out;
+        m.type = (int) GGML_TYPE_Q4_K;
+        m.k4 = true;
+        vram_ += q.size();
+        return true;
+    }
     // Q8_0's rounding (ggml's), then its blocks split into the int8 rows and the scales d8_mm reads
     const size_t row = ggml_row_size(GGML_TYPE_Q8_0, n_in);
     std::vector<uint8_t> q((size_t) n_out * row);
@@ -120,8 +137,8 @@ bool DFlashDrafter::use_mmq(const Mat& m, int cols) const {
 
 void DFlashDrafter::prep(const Mat& m, const float* x, int cols, void* st) {
     namespace mmq = guild::prefill::mmq;
-    if (m.d8) {
-        dflashk::q8_act(x, m.n_in, cols, xq8_, xs8_, st);
+    if (m.d8 || m.k4) {
+        dflashk::q8_act(x, m.n_in, cols, xq8_, xs8_, st, m.k4 ? xm8_ : nullptr);
         return;
     }
     if (use_mmq(m, cols)) {
@@ -134,11 +151,17 @@ void DFlashDrafter::prep(const Mat& m, const float* x, int cols, void* st) {
 
 void DFlashDrafter::run(const Mat& m, float* y, int cols, void* st) {
     namespace mmq = guild::prefill::mmq;
-    if (m.d8) { // eight columns at a time
+    if (m.d8 || m.k4) { // eight columns at a time
         const int nb = m.n_in / 32;
-        for (int c0 = 0; c0 < cols; c0 += 8)
-            dflashk::d8_mm((const int8_t*) m.w, m.ws, xq8_ + (size_t) c0 * m.n_in, xs8_ + (size_t) c0 * nb,
-                           y + (size_t) c0 * m.n_out, m.n_in, m.n_out, std::min(8, cols - c0), st);
+        for (int c0 = 0; c0 < cols; c0 += 8) {
+            const int8_t* xq = xq8_ + (size_t) c0 * m.n_in;
+            const float* xs = xs8_ + (size_t) c0 * nb;
+            float* yc = y + (size_t) c0 * m.n_out;
+            if (m.d8)
+                dflashk::d8_mm((const int8_t*) m.w, m.ws, xq, xs, yc, m.n_in, m.n_out, std::min(8, cols - c0), st);
+            else
+                dflashk::k4_mm(m.w, xq, xs, xm8_ + (size_t) c0 * nb, yc, m.n_in, m.n_out, std::min(8, cols - c0), st);
+        }
         return;
     }
     if (use_mmq(m, cols)) {
@@ -165,6 +188,20 @@ void DFlashDrafter::run(const Mat& m, float* y, int cols, void* st) {
 
 bool DFlashDrafter::load(const std::string& dir, const NativeHead& head, const NativeEmbed& embed,
                          const std::string& vocab_path, std::string& err) {
+    DFlashTarget t;
+    t.head = head.weights();
+    t.head_on_device = true;
+    t.head_type = head.type();
+    t.head_row_bytes = head.row_bytes();
+    t.n_vocab = 0; // the codebooks' rows
+    t.embed = [&embed](int32_t token, float* dev, void* st) { embed.gather_one(token, dev, st); };
+    return load(dir, t, vocab_path, err);
+}
+
+bool DFlashDrafter::load(const std::string& dir, const DFlashTarget& target, const std::string& vocab_path,
+                         std::string& err) {
+    if (const char* e = std::getenv("GUILD_DFLASH_WEIGHTS"))
+        q4k_ = std::string(e) == "q4_k";
     using guild::server::json::JsonValue;
     std::string text;
     JsonValue cfg;
@@ -345,22 +382,34 @@ bool DFlashDrafter::load(const std::string& dir, const NativeHead& head, const N
             vocab_[(size_t) i] = (int32_t) i;
     }
     n_sub_ = (int) vocab_.size();
+    if (target.n_vocab > 0 &&
+        (V != target.n_vocab || vocab_.empty() || *std::max_element(vocab_.begin(), vocab_.end()) >= target.n_vocab)) {
+        err = "dflash: the drafter's vocabulary (" + std::to_string(V) + ") is not the target's (" +
+              std::to_string(target.n_vocab) + ")";
+        return false;
+    }
     {
-        const int64_t row_bytes = (int64_t) head.row_bytes();
-        int32_t* d_ids = nullptr;
-        uint8_t* rows = nullptr;
-        if (cudaMalloc((void**) &d_ids, vocab_.size() * 4) != cudaSuccess ||
-            cudaMalloc((void**) &rows, (size_t) n_sub_ * row_bytes) != cudaSuccess) {
-            err = "dflash: no VRAM to gather the head's rows";
-            return false;
-        }
-        cudaMemcpy(d_ids, vocab_.data(), vocab_.size() * 4, cudaMemcpyHostToDevice);
-        guild::kernels::gather_rows((const uint8_t*) head.weights(), row_bytes, d_ids, n_sub_, rows, nullptr);
+        const int64_t row_bytes = (int64_t) target.head_row_bytes;
         std::vector<uint8_t> src((size_t) n_sub_ * row_bytes);
-        cudaMemcpy(src.data(), rows, src.size(), cudaMemcpyDeviceToHost);
-        cudaFree(rows);
-        cudaFree(d_ids);
-        const auto* tr = ggml_get_type_traits((ggml_type) head.type());
+        if (target.head_on_device) { // the rows gathered on the device, then to the host
+            int32_t* d_ids = nullptr;
+            uint8_t* rows = nullptr;
+            if (cudaMalloc((void**) &d_ids, vocab_.size() * 4) != cudaSuccess ||
+                cudaMalloc((void**) &rows, (size_t) n_sub_ * row_bytes) != cudaSuccess) {
+                err = "dflash: no VRAM to gather the head's rows";
+                return false;
+            }
+            cudaMemcpy(d_ids, vocab_.data(), vocab_.size() * 4, cudaMemcpyHostToDevice);
+            guild::kernels::gather_rows((const uint8_t*) target.head, row_bytes, d_ids, n_sub_, rows, nullptr);
+            cudaMemcpy(src.data(), rows, src.size(), cudaMemcpyDeviceToHost);
+            cudaFree(rows);
+            cudaFree(d_ids);
+        } else {
+            for (int64_t r = 0; r < n_sub_; ++r)
+                std::memcpy(src.data() + (size_t) r * row_bytes,
+                            (const uint8_t*) target.head + (size_t) vocab_[(size_t) r] * row_bytes, (size_t) row_bytes);
+        }
+        const auto* tr = ggml_get_type_traits((ggml_type) target.head_type);
         const ggml_type ht = (ggml_type) head_type_;
         const size_t out_row = ggml_row_size(ht, H_);
         std::vector<uint8_t> out((size_t) n_sub_ * out_row);
@@ -458,8 +507,8 @@ bool DFlashDrafter::load(const std::string& dir, const NativeHead& head, const N
         cudaMemcpy(mmq_->bounds, bounds.data(), bounds.size() * 4, cudaMemcpyHostToDevice);
         mmq::iota(mmq_->ids, R, nullptr);
     }
-    embed_ = &embed;
-    embed.gather_one(mask_id_, mask_emb_, nullptr);
+    embed_ = target.embed;
+    embed_(mask_id_, mask_emb_, nullptr);
     cudaDeviceSynchronize();
     if (cudaGetLastError() != cudaSuccess) {
         err = "dflash: a CUDA error while loading";
@@ -534,7 +583,7 @@ bool DFlashDrafter::draft(int32_t anchor, int64_t start, int B, int32_t* drafts,
     const int half = taps_ * groups; // a dynamic row's prepare part, then its finish part
     const size_t qkvd = (size_t) qd + 2 * kvd;
     dflashk::positions(pos_, start, B, cs);
-    embed_->gather_one(anchor, h_, cs);
+    embed_(anchor, h_, cs);
     for (int i = 1; i < B; ++i)
         cudaMemcpyAsync(h_ + (size_t) i * H_, mask_emb_, (size_t) H_ * 4, cudaMemcpyDeviceToDevice, cs);
     const int64_t ctx_lo = std::max<int64_t>(ctx_lo_, ctx_hi_ - ring_);

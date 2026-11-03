@@ -6,6 +6,7 @@
 // computes the routed experts while the GPU computes the shared one.
 #include "guild/core/glm5.hpp"
 #include "guild/core/cpu_moe.hpp"
+#include "guild/core/dflash.hpp"
 #include "guild/core/dense_mm.hpp"
 #include "guild/core/glm5_kernels.hpp"
 #include "guild/core/glm5_nl4.hpp"
@@ -137,6 +138,19 @@ struct Glm5Engine::Impl {
     std::vector<Layer> L;
     Layer mtp; ///< the NextN block (when the GGUF has it and Glm5Options::mtp)
     bool has_mtp = false;
+    // the DFlash drafter (Glm5Options::dflash) in the NextN block's place: the layers it reads, their features of the
+    // last window's rows ([kMaxWindow][layers][n_embd], device), a token's embedding row on its way to the device
+    std::unique_ptr<DFlashDrafter> dflash;
+    std::vector<int> feat_layers;
+    float* feat = nullptr;
+    float* demb = nullptr; // pinned
+    /// the KDA states after a verify window's first token are kept (the NextN block's or the drafter's verify)
+    bool rollback = false;
+    /// the drafter's context at `pos`: the committed positions before it (rewound, or started there)
+    void dflash_at(int64_t pos) {
+        if (dflash && dflash->context_end() != pos && !dflash->rewind(pos))
+            dflash->reset(pos);
+    }
     Mat head, embd;
     // the draft's copy of the output head as Q4_K (all rows, or the token subset's in its order), when the drafts
     // cannot change the output (Q5_K / Q4_K attention: verify is greedy decode's); GUILD_GLM_DRAFT_HEAD=q6_k: none,
@@ -292,9 +306,11 @@ struct Glm5Engine::Impl {
         for (const Chunk& c : chunks)
             cudaFree(c.base);
         for (void* p : {(void*) h_x, (void*) h_y, (void*) h_w, (void*) h_emb, (void*) h_ids, (void*) snap,
-                        (void*) h_arg, kv_far_mem})
+                        (void*) h_arg, kv_far_mem, (void*) demb})
             if (p)
                 cudaFreeHost(p);
+        if (feat)
+            cudaFree(feat);
         pool.reset(); // before the memory its workers might still touch
         for (int n = 0; n < 2; ++n)
             if (arena[n])
@@ -845,6 +861,11 @@ bool Glm5Engine::Impl::load(const std::string& path, const Glm5Options& o, std::
             std::fprintf(stderr, "guild glm5: no usable NextN block (%s); decoding without MTP\n", why.c_str());
         }
     }
+    if (!opt.dflash.empty() && has_mtp) {
+        std::fprintf(stderr, "guild glm5: the NextN block is not loaded: the DFlash drafter drafts\n");
+        has_mtp = false;
+    }
+    rollback = has_mtp || !opt.dflash.empty();
 
     // the CPU pool: a worker per physical core (the calling thread joins in), grouped by NUMA node, and the launcher
     cpu_moe::Workers wk = cpu_moe::make_workers(opt.numa_split, opt.threads);
@@ -879,6 +900,9 @@ bool Glm5Engine::Impl::load(const std::string& path, const Glm5Options& o, std::
                 state_bytes += dsa_fixed;
             }
         }
+        if (rollback && !has_mtp) // every KDA layer's rollback state for a verify window
+            for (const Layer& y : L)
+                state_bytes += y.kda ? (uint64_t) H * 128 * 128 * 4 + (uint64_t) 3 * D * 3 * 4 : 0;
         if (has_mtp) {
             // its K/V and indexer rows, its weights, and every KDA layer's rollback state for a verify window
             per_token += dsa_token;
@@ -901,6 +925,55 @@ bool Glm5Engine::Impl::load(const std::string& path, const Glm5Options& o, std::
             need += (L[l].moe ? router_bytes(bp + std::to_string(l) + ".ffn_gate_inp.weight") : 0) + 64 * 1024;
         return need;
     };
+    // the DFlash drafter, before the VRAM is counted (the context and the shared experts take what it leaves): its head
+    // copied from output.weight's mapped rows, a token's embedding dequantized here from token_embd's Q8_0 row
+    if (!opt.dflash.empty()) {
+        const auto td = std::chrono::steady_clock::now();
+        if (cudaMallocHost((void**) &demb, (size_t) N * 4) != cudaSuccess) {
+            err = "glm5: no pinned memory for the drafter";
+            return false;
+        }
+        DFlashTarget t;
+        t.head = head.host;
+        t.head_on_device = false;
+        t.head_type = head.type;
+        t.head_row_bytes = head.row_bytes();
+        t.n_vocab = g.n_vocab;
+        t.embed = [this](int32_t token, float* dev, void* stream) {
+            const int64_t n = g.n_embd;
+            const uint8_t* row = embd.host + (size_t) token * embd.row_bytes();
+            cudaStreamSynchronize((cudaStream_t) stream); // demb's last copy is done
+            for (int64_t blk = 0; blk < n / 32; ++blk) {
+                const uint8_t* q = row + blk * 34;
+                uint16_t hb;
+                std::memcpy(&hb, q, 2);
+                const float dsc = __half2float(*reinterpret_cast<const __half*>(&hb));
+                for (int k = 0; k < 32; ++k)
+                    demb[blk * 32 + k] = dsc * (float) (int8_t) q[2 + k];
+            }
+            cudaMemcpyAsync(dev, demb, (size_t) n * 4, cudaMemcpyHostToDevice, (cudaStream_t) stream);
+        };
+        dflash = std::make_unique<DFlashDrafter>();
+        if (!dflash->load(opt.dflash, t, opt.dflash_vocab, err)) {
+            err = "glm5: the DFlash drafter: " + err;
+            return false;
+        }
+        if (dflash->hidden() != N) {
+            err = "glm5: the DFlash drafter's width is not the model's";
+            return false;
+        }
+        feat_layers = dflash->target_layers();
+        for (const int l : feat_layers)
+            if (l < 0 || l >= g.n_layer) {
+                err = "glm5: the DFlash drafter reads layer " + std::to_string(l) + ", which the model does not have";
+                return false;
+            }
+        if (cudaMalloc((void**) &feat, (size_t) kMaxWindow * feat_layers.size() * N * 4) != cudaSuccess) {
+            err = "glm5: no VRAM for the drafter's features";
+            return false;
+        }
+        std::fprintf(stderr, "guild glm5: the DFlash drafter in %.1f s\n", ms_since(td) / 1000.0);
+    }
     size_t free_b = 0, total_b = 0;
     cudaMemGetInfo(&free_b, &total_b);
     constexpr int64_t kMinContext = 2048;
@@ -1262,11 +1335,12 @@ bool Glm5Engine::Impl::load(const std::string& path, const Glm5Options& o, std::
             f.d_row = y.down.row_bytes();
             f.lim = y.lim_ffn;
         }
+    }
+    if (rollback)
         for (Layer& l2 : L)
             if (l2.kda && (!(l2.kda_mid = dalloc<float>((size_t) H * 128 * 128, err)) ||
                            !(l2.conv_mid = dalloc<float>((size_t) 3 * D * 3, err))))
                 return false;
-    }
     if (!upload(head, err) || !(out_norm = f32("output_norm.weight", N, err)))
         return false;
     if (dhead.bytes) { // the head's Q6_K rows dequantized and quantized as Q4_K, as llama-quantize would
@@ -1755,6 +1829,13 @@ bool Glm5Engine::Impl::layer_ffn_end(int l, int T, const Rows& io, std::string& 
     if (!ffn_end(L[(size_t) l], T, io, err, &y_rows, fuse ? &y_add : nullptr))
         return false;
     glm5k::hc_post(y_rows, io.R, io.post, io.comb, (int) g.n_embd, T, st, y_add);
+    if (feat != nullptr) { // the drafter's features: the group's rows hold layer l complete
+        const int64_t N = g.n_embd, nf = (int64_t) feat_layers.size(), t0 = (io.R - rows0.R) / (4 * N);
+        for (int64_t k = 0; k < nf; ++k)
+            if (feat_layers[(size_t) k] == l)
+                dflashk::stream_mean(io.R, 4, (int) N, T, (size_t) (4 * N), feat + ((size_t) t0 * nf + k) * N,
+                                     (size_t) (nf * N), st);
+    }
     return true;
 }
 
@@ -1820,6 +1901,8 @@ void Glm5Engine::reset() {
     m.win_tok.clear();
     m.defer_tok = -1;
     m.ctx_end = 0;
+    if (m.dflash)
+        m.dflash->reset(0);
     cudaStreamSynchronize(m.st);
 }
 
@@ -2229,6 +2312,8 @@ bool Glm5Engine::forward(const int32_t* tokens, int n, int64_t pos0, float* logi
     if (!m.flush_defer(err))
         return false;
     const int W = m.pipe ? Impl::kMaxWindow : kMaxT;
+    // the drafter reads the positions within its window of the next draft: those before it are not added
+    const int64_t dfirst = m.dflash ? std::max<int64_t>(pos0, pos0 + n - m.dflash->window()) : 0;
     for (int base = 0; base < n; base += W) {
         const int T = std::min(W, n - base);
         if (!m.main_window(tokens + base, T, pos0 + base, false, err))
@@ -2239,6 +2324,13 @@ bool Glm5Engine::forward(const int32_t* tokens, int n, int64_t pos0, float* logi
             m.last_head_row = T - 1;
         if (m.has_mtp && !m.mtp_catch_up(tokens + base, T, pos0 + base, err))
             return false;
+        if (m.dflash && pos0 + base + T > dfirst) {
+            const int64_t t0 = std::max<int64_t>(0, dfirst - (pos0 + base)), nf = (int64_t) m.feat_layers.size();
+            m.dflash_at(pos0 + base + t0);
+            if (!m.dflash->add_context(m.feat + (size_t) t0 * nf * N, (size_t) (nf * N), T - t0, pos0 + base + t0, m.st,
+                                       err))
+                return false;
+        }
         if (cudaStreamSynchronize(m.st) != cudaSuccess) {
             err = std::string("glm5: CUDA error: ") + cudaGetErrorString(cudaGetLastError());
             return false;
@@ -2314,8 +2406,9 @@ bool Glm5Engine::verify(const int32_t* tokens, int n, int64_t pos0, float* logit
         err = "glm5: a verify window of " + std::to_string(n) + " tokens at " + std::to_string(pos0) + " does not fit";
         return false;
     }
-    if (n > 2 || (n > 1 && !m.has_mtp)) { // one rollback point, allocated with the NextN block
-        err = "glm5: a verify window of " + std::to_string(n) + " tokens needs the NextN block and at most 2 tokens";
+    if (n > 2 || (n > 1 && !m.rollback)) { // one rollback point, allocated with the NextN block or the drafter
+        err = "glm5: a verify window of " + std::to_string(n) +
+              " tokens needs the NextN block or the DFlash drafter, and at most 2 tokens";
         return false;
     }
     if (!m.main_window(tokens, n, pos0, n > 1, err) || !m.head_rows(0, n, logits_rows, err))
@@ -2360,12 +2453,45 @@ bool Glm5Engine::accept(int n_keep, std::string& err) {
         }
         cudaMemcpyAsync(m.pending, m.hn + (size_t) (n_keep - 1) * N, (size_t) N * 4, cudaMemcpyDeviceToDevice, m.st);
     }
+    if (m.dflash) { // the kept rows' features, which verify left in feat
+        m.dflash_at(m.win_pos);
+        if (!m.dflash->add_context(m.feat, m.feat_layers.size() * (size_t) N, n_keep, m.win_pos, m.st, err))
+            return false;
+    }
     m.win_tok.clear();
     m.ctx_end = m.win_pos + n_keep;
     if (cudaStreamSynchronize(m.st) != cudaSuccess) {
         err = std::string("glm5: CUDA error: ") + cudaGetErrorString(cudaGetLastError());
         return false;
     }
+    return true;
+}
+
+bool Glm5Engine::has_dflash() const {
+    return p_->dflash != nullptr;
+}
+
+double Glm5Engine::dflash_ms() const {
+    return p_->dflash ? p_->dflash->ms_draft + p_->dflash->ms_context : 0.0;
+}
+
+bool Glm5Engine::dflash_draft(int32_t last, int64_t pos, int32_t* drafts, float* probs, int& n, std::string& err) {
+    Impl& m = *p_;
+    const PinCaller pin(m.caller_cpu);
+    n = 0;
+    if (!m.dflash) {
+        err = "glm5: no DFlash drafter";
+        return false;
+    }
+    if (last < 0 || last >= m.g.n_vocab) {
+        err = "glm5: token id " + std::to_string(last) + " is outside the vocabulary";
+        return false;
+    }
+    m.dflash_at(pos);
+    const int B = m.dflash->block();
+    if (!m.dflash->draft(last, pos, B, drafts, probs, m.st, err))
+        return false;
+    n = B - 1;
     return true;
 }
 

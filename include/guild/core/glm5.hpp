@@ -57,6 +57,9 @@ struct Glm5Options {
     /// the draft head's token subset (tools/draft_vocab.py: int32 token ids; GUILD_GLM_DRAFT_VOCAB overrides it, 0
     /// for none): drafts are the argmax over these rows of the output head only.  Empty: the whole head.
     std::string draft_vocab;
+    /// a DFlash 2 drafter (core/dflash.hpp: config.json, model.safetensors) in the NextN block's place, which is then
+    /// not loaded, and its draft head's token subset (int32 ids; empty: the whole head)
+    std::string dflash, dflash_vocab;
 };
 
 class Glm5Engine {
@@ -99,6 +102,14 @@ public:
     /// Drafts over the token subset Glm5Options::draft_vocab loaded (on, the default) or over the whole head (off),
     /// for A/B runs in one process; returns whether a subset is loaded
     bool use_draft_vocab(bool on);
+
+    /// The DFlash drafter (Glm5Options::dflash): its block's drafts after `last` at `pos` (not yet fed; the drafter's
+    /// context holds the committed positions before it, which forward() and accept() add), each with its probability
+    /// under the drafter; n gets their count (the block - 1).  verify() then takes up to 2 tokens, as with NextN.
+    bool has_dflash() const;
+    bool dflash_draft(int32_t last, int64_t pos, int32_t* drafts, float* probs, int& n, std::string& err);
+    /// the drafter's time so far: drafting, and adding the committed rows to its context (ms)
+    double dflash_ms() const;
 
     /// Time spent in the last forward: GPU+orchestration and CPU experts, milliseconds
     double last_cpu_ms() const;

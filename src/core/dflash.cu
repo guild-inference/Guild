@@ -676,7 +676,7 @@ void d8_launch_r(const int8_t* wq, const __half* ws, const int8_t* xq, const flo
 // ---- the head: ggml's Q4_K rows (256-value blocks of 144 bytes: d, dmin, twelve bytes of 6-bit scales and mins,
 // 128 bytes of nibbles - bytes 32 p .. 32 p + 31 holding sub-blocks 2 p (low nibbles) and 2 p + 1 (high)) times C
 // columns as q8_act's int8 with scale and scaled sum.  Eight lanes take R rows at a time, lane l the sub-block pairs
-// l, l + 8, ... of the row; the columns are staged in shared memory once (K <= kD8Chunk).
+// l, l + 8, ... of each chunk of kD8Chunk values the columns are staged in shared memory by.
 struct K4Block {
     __half d, dmin;
     uint8_t scales[12];
@@ -689,89 +689,101 @@ __global__ void __launch_bounds__(256, 2)
             const float* __restrict__ xsum, float* __restrict__ y, int K, int n_out) {
     __shared__ __align__(16) int8_t sx[C][kD8Chunk];
     __shared__ float sxs[C][kD8Chunk / 32], sxm[C][kD8Chunk / 32];
-    const int oct = threadIdx.x >> 3, lane = threadIdx.x & 7, KB = K / 32, NSB = K / 256, NP = K / 64;
-    const int tasks = n_out / R;
-    {
-        const int n16 = K / 16;
+    const int oct = threadIdx.x >> 3, lane = threadIdx.x & 7, KB = K / 32, NSB = K / 256;
+    const int tasks = n_out / R, nchunk = (K + kD8Chunk - 1) / kD8Chunk;
+    auto stage = [&](int k0, int kc) { // the columns' values [k0, k0 + kc): int8, scales, scaled sums
+        __syncthreads();
+        const int n16 = kc / 16, n32 = kc / 32;
         for (int e = threadIdx.x; e < C * n16; e += blockDim.x) {
             const int c = e / n16, i = e - c * n16;
-            reinterpret_cast<int4*>(&sx[c][0])[swz(i)] = reinterpret_cast<const int4*>(xq + (size_t) c * K)[i];
+            reinterpret_cast<int4*>(&sx[c][0])[swz(i)] = reinterpret_cast<const int4*>(xq + (size_t) c * K + k0)[i];
         }
-        for (int e = threadIdx.x; e < C * KB; e += blockDim.x) {
-            const int c = e / KB, i = e - c * KB;
-            sxs[c][i] = xs[(size_t) c * KB + i];
-            sxm[c][i] = xsum[(size_t) c * KB + i];
+        for (int e = threadIdx.x; e < C * n32; e += blockDim.x) {
+            const int c = e / n32, i = e - c * n32;
+            sxs[c][i] = xs[(size_t) c * KB + k0 / 32 + i];
+            sxm[c][i] = xsum[(size_t) c * KB + k0 / 32 + i];
         }
         __syncthreads();
-    }
-    for (int task = blockIdx.x * 32 + oct; task < tasks; task += gridDim.x * 32) {
+    };
+    if (nchunk == 1)
+        stage(0, K);
+    for (int base = blockIdx.x * 32; base < tasks; base += gridDim.x * 32) {
+        const int task = base + oct;
+        const bool active = task < tasks;
         float acc[R][C];
 #pragma unroll
         for (int r = 0; r < R; ++r)
 #pragma unroll
             for (int c = 0; c < C; ++c)
                 acc[r][c] = 0.f;
-        for (int p = lane; p < NP; p += 8) {
-            const int sb = p >> 2, pq = p & 3;
-            int4 q0[R], q1[R];
-            float d1[R], m1[R], d2[R], m2[R];
+        for (int ch = 0; ch < nchunk; ++ch) {
+            const int k0 = ch * kD8Chunk, kc = min(kD8Chunk, K - k0);
+            if (nchunk > 1)
+                stage(k0, kc);
+            if (!active)
+                continue;
+            for (int pl = lane; pl < kc / 64; pl += 8) { // the chunk's sub-block pairs
+                const int p = k0 / 64 + pl, sb = p >> 2, pq = p & 3;
+                int4 q0[R], q1[R];
+                float d1[R], m1[R], d2[R], m2[R];
 #pragma unroll
-            for (int r = 0; r < R; ++r) {
-                const K4Block* blk = w + (size_t) (task * R + r) * NSB + sb;
-                const int4* qp = reinterpret_cast<const int4*>(blk->qs + 32 * pq);
-                q0[r] = qp[0];
-                q1[r] = qp[1];
-                const int4 hdr = __ldg(reinterpret_cast<const int4*>(blk));
-                const __half2 dd = *reinterpret_cast<const __half2*>(&hdr.x);
-                const float d = __low2float(dd), dmin = __high2float(dd);
-                // the 6-bit scale and min of sub-blocks 2 pq and 2 pq + 1 (k4_scale_min without its branch)
-                const uint32_t w0 = (uint32_t) hdr.y, w1 = (uint32_t) hdr.z, w2 = (uint32_t) hdr.w;
-                const int j0 = 2 * pq;
-                auto byte_at = [&](int i) -> int { // scales[i], i < 12
-                    const uint32_t wd = i < 4 ? w0 : i < 8 ? w1 : w2;
-                    return (int) ((wd >> (8 * (i & 3))) & 0xFF);
-                };
-                int s0, mm0, s1, mm1;
-                if (pq < 2) { // sub-blocks 0..3
-                    s0 = byte_at(j0) & 63;
-                    mm0 = byte_at(j0 + 4) & 63;
-                    s1 = byte_at(j0 + 1) & 63;
-                    mm1 = byte_at(j0 + 5) & 63;
-                } else {
-                    s0 = (byte_at(j0 + 4) & 0xF) | ((byte_at(j0 - 4) >> 6) << 4);
-                    mm0 = (byte_at(j0 + 4) >> 4) | ((byte_at(j0) >> 6) << 4);
-                    s1 = (byte_at(j0 + 5) & 0xF) | ((byte_at(j0 - 3) >> 6) << 4);
-                    mm1 = (byte_at(j0 + 5) >> 4) | ((byte_at(j0 + 1) >> 6) << 4);
+                for (int r = 0; r < R; ++r) {
+                    const K4Block* blk = w + (size_t) (task * R + r) * NSB + sb;
+                    const int4* qp = reinterpret_cast<const int4*>(blk->qs + 32 * pq);
+                    q0[r] = qp[0];
+                    q1[r] = qp[1];
+                    const int4 hdr = __ldg(reinterpret_cast<const int4*>(blk));
+                    const __half2 dd = *reinterpret_cast<const __half2*>(&hdr.x);
+                    const float d = __low2float(dd), dmin = __high2float(dd);
+                    // the 6-bit scale and min of sub-blocks 2 pq and 2 pq + 1 (k4_scale_min without its branch)
+                    const uint32_t w0 = (uint32_t) hdr.y, w1 = (uint32_t) hdr.z, w2 = (uint32_t) hdr.w;
+                    const int j0 = 2 * pq;
+                    auto byte_at = [&](int i) -> int { // scales[i], i < 12
+                        const uint32_t wd = i < 4 ? w0 : i < 8 ? w1 : w2;
+                        return (int) ((wd >> (8 * (i & 3))) & 0xFF);
+                    };
+                    int s0, mm0, s1, mm1;
+                    if (pq < 2) { // sub-blocks 0..3
+                        s0 = byte_at(j0) & 63;
+                        mm0 = byte_at(j0 + 4) & 63;
+                        s1 = byte_at(j0 + 1) & 63;
+                        mm1 = byte_at(j0 + 5) & 63;
+                    } else {
+                        s0 = (byte_at(j0 + 4) & 0xF) | ((byte_at(j0 - 4) >> 6) << 4);
+                        mm0 = (byte_at(j0 + 4) >> 4) | ((byte_at(j0) >> 6) << 4);
+                        s1 = (byte_at(j0 + 5) & 0xF) | ((byte_at(j0 - 3) >> 6) << 4);
+                        mm1 = (byte_at(j0 + 5) >> 4) | ((byte_at(j0 + 1) >> 6) << 4);
+                    }
+                    d1[r] = d * (float) s0;
+                    m1[r] = dmin * (float) mm0;
+                    d2[r] = d * (float) s1;
+                    m2[r] = dmin * (float) mm1;
                 }
-                d1[r] = d * (float) s0;
-                m1[r] = dmin * (float) mm0;
-                d2[r] = d * (float) s1;
-                m2[r] = dmin * (float) mm1;
-            }
-            // the nibbles of every row, once: low ones sub-block 2 pq, high ones 2 pq + 1
-            int4 lo0[R], lo1[R], hi0[R], hi1[R];
+                // the nibbles of every row, once: low ones sub-block 2 pq, high ones 2 pq + 1
+                int4 lo0[R], lo1[R], hi0[R], hi1[R];
 #pragma unroll
-            for (int r = 0; r < R; ++r) {
-                lo0[r] =
-                    make_int4(q0[r].x & 0x0F0F0F0F, q0[r].y & 0x0F0F0F0F, q0[r].z & 0x0F0F0F0F, q0[r].w & 0x0F0F0F0F);
-                lo1[r] =
-                    make_int4(q1[r].x & 0x0F0F0F0F, q1[r].y & 0x0F0F0F0F, q1[r].z & 0x0F0F0F0F, q1[r].w & 0x0F0F0F0F);
-                hi0[r] = make_int4((q0[r].x >> 4) & 0x0F0F0F0F, (q0[r].y >> 4) & 0x0F0F0F0F,
-                                   (q0[r].z >> 4) & 0x0F0F0F0F, (q0[r].w >> 4) & 0x0F0F0F0F);
-                hi1[r] = make_int4((q1[r].x >> 4) & 0x0F0F0F0F, (q1[r].y >> 4) & 0x0F0F0F0F,
-                                   (q1[r].z >> 4) & 0x0F0F0F0F, (q1[r].w >> 4) & 0x0F0F0F0F);
-            }
-            const int xb = 2 * p; // the first sub-block's Q8 block
+                for (int r = 0; r < R; ++r) {
+                    lo0[r] = make_int4(q0[r].x & 0x0F0F0F0F, q0[r].y & 0x0F0F0F0F, q0[r].z & 0x0F0F0F0F,
+                                       q0[r].w & 0x0F0F0F0F);
+                    lo1[r] = make_int4(q1[r].x & 0x0F0F0F0F, q1[r].y & 0x0F0F0F0F, q1[r].z & 0x0F0F0F0F,
+                                       q1[r].w & 0x0F0F0F0F);
+                    hi0[r] = make_int4((q0[r].x >> 4) & 0x0F0F0F0F, (q0[r].y >> 4) & 0x0F0F0F0F,
+                                       (q0[r].z >> 4) & 0x0F0F0F0F, (q0[r].w >> 4) & 0x0F0F0F0F);
+                    hi1[r] = make_int4((q1[r].x >> 4) & 0x0F0F0F0F, (q1[r].y >> 4) & 0x0F0F0F0F,
+                                       (q1[r].z >> 4) & 0x0F0F0F0F, (q1[r].w >> 4) & 0x0F0F0F0F);
+                }
+                const int xb = 2 * pl; // the first sub-block's Q8 block in the chunk
 #pragma unroll
-            for (int c = 0; c < C; ++c) {
-                const int4* xp = reinterpret_cast<const int4*>(&sx[c][0]);
-                const int4 xa0 = xp[swz(2 * xb)], xa1 = xp[swz(2 * xb + 1)], xb0 = xp[swz(2 * xb + 2)],
-                           xb1 = xp[swz(2 * xb + 3)];
-                const float sa = sxs[c][xb], sb2 = sxs[c][xb + 1], ma = sxm[c][xb], mb = sxm[c][xb + 1];
+                for (int c = 0; c < C; ++c) {
+                    const int4* xp = reinterpret_cast<const int4*>(&sx[c][0]);
+                    const int4 xa0 = xp[swz(2 * xb)], xa1 = xp[swz(2 * xb + 1)], xb0 = xp[swz(2 * xb + 2)],
+                               xb1 = xp[swz(2 * xb + 3)];
+                    const float sa = sxs[c][xb], sb2 = sxs[c][xb + 1], ma = sxm[c][xb], mb = sxm[c][xb + 1];
 #pragma unroll
-                for (int r = 0; r < R; ++r)
-                    acc[r][c] += (float) dot8(lo0[r], lo1[r], xa0, xa1) * (d1[r] * sa) - m1[r] * ma +
-                                 (float) dot8(hi0[r], hi1[r], xb0, xb1) * (d2[r] * sb2) - m2[r] * mb;
+                    for (int r = 0; r < R; ++r)
+                        acc[r][c] += (float) dot8(lo0[r], lo1[r], xa0, xa1) * (d1[r] * sa) - m1[r] * ma +
+                                     (float) dot8(hi0[r], hi1[r], xb0, xb1) * (d2[r] * sb2) - m2[r] * mb;
+                }
             }
         }
 #pragma unroll
@@ -784,7 +796,7 @@ __global__ void __launch_bounds__(256, 2)
                 v += __shfl_xor_sync(0xffffffffu, v, 1);
                 acc[r][c] = v;
             }
-        if (lane == 0)
+        if (active && lane == 0)
 #pragma unroll
             for (int r = 0; r < R; ++r)
 #pragma unroll
@@ -881,7 +893,7 @@ void q8_act(const float* x, int K, int cols, int8_t* xq, float* xs, void* st, fl
 }
 bool k4_mm(const void* w, const int8_t* xq, const float* xs, const float* xsum, float* y, int K, int n_out, int cols,
            void* st) {
-    if (K % 256 != 0 || K > kD8Chunk || n_out % 2 != 0)
+    if (K % 256 != 0 || n_out % 2 != 0)
         return false;
         // four rows a task where they divide (the 248320-row head at 7 columns: 6.36 against 7.23 ms a draft with two)
 #define K4_CASE(CC)                                                                                                    \

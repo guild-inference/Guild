@@ -170,6 +170,14 @@ bool glm5_load(GuildModel::Impl& m, const ModelPaths& paths, const memory::Execu
         if (std::filesystem::is_regular_file(dv, ec))
             o.draft_vocab = dv.string();
     }
+    // --dflash (GUILD_DFLASH overrides, "0": none): a DFlash 2 drafter in the NextN block's place.  Measured slower
+    // than the NextN block on a GTX 1070 + 2x Xeon Gold 6130 (bench/results/2026-11-03-decode-round9): opt-in.
+    o.dflash = paths.dflash_dir;
+    o.dflash_vocab = paths.dflash_vocab;
+    if (const char* e = std::getenv("GUILD_DFLASH"))
+        o.dflash = std::string(e) == "0" ? std::string() : std::string(e);
+    if (const char* e = std::getenv("GUILD_DFLASH_VOCAB"))
+        o.dflash_vocab = e;
     m.glm = std::make_unique<core::Glm5Engine>();
     if (!m.glm->load(paths.primary_model_path, o, err))
         return false;
@@ -178,8 +186,9 @@ bool glm5_load(GuildModel::Impl& m, const ModelPaths& paths, const memory::Execu
     m.config.eos_token_ids.clear();
     for (int32_t id : m.glm->geometry().eos_ids)
         m.config.eos_token_ids.push_back(id);
-    m.config.decode_strategy = m.glm->has_mtp() ? "mtp" : "normal";
-    m.config.spec = m.glm->has_mtp() ? 2 : 1;
+    const bool drafts = m.glm->has_mtp() || m.glm->has_dflash();
+    m.config.decode_strategy = drafts ? "mtp" : "normal";
+    m.config.spec = drafts ? 2 : 1;
     return true;
 }
 
@@ -280,7 +289,10 @@ bool glm5_generate(GuildModel::Impl& m, const GenerationRequest& req, const std:
     std::unique_ptr<IncrementalDecoder> decoder;
     if (m.tokenizer && m.tokenizer->is_loaded())
         decoder = std::make_unique<IncrementalDecoder>(m.tokenizer.get(), true);
-    const bool spec = eng.has_mtp() && req.decode_strategy != "normal" && m.config.decode_strategy != "normal";
+    const bool spec =
+        (eng.has_mtp() || eng.has_dflash()) && req.decode_strategy != "normal" && m.config.decode_strategy != "normal";
+    int32_t dfl[16];
+    float dprob[16];
     std::vector<float> rows(spec ? (size_t) 2 * V : 0);
     std::string text;
     std::vector<int32_t> history = prompt;
@@ -321,10 +333,13 @@ bool glm5_generate(GuildModel::Impl& m, const GenerationRequest& req, const std:
             break; // the context is full: finish with "length"
         if (spec && pos + 2 < eng.max_context()) {
             int32_t d = 0;
-            if (!eng.draft(tid, pos, d, err)) {
+            int nd = 0;
+            if (eng.has_dflash() ? !eng.dflash_draft(tid, pos, dfl, dprob, nd, err) : !eng.draft(tid, pos, d, err)) {
                 m.ready->store(false);
                 return false;
             }
+            if (eng.has_dflash())
+                d = dfl[0];
             const int32_t win[2] = {tid, d};
             if (!eng.verify(win, 2, pos, rows.data(), err)) {
                 m.ready->store(false);

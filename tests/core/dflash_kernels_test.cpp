@@ -133,8 +133,8 @@ void test_d8(std::mt19937& rng) {
     std::printf("d8_mm: K 2560 / 7680, 640 / 2560 / 6144 rows, 1-8 columns match\n");
 }
 
-void test_k4(std::mt19937& rng) {
-    const int K = 2560, n_out = 2048;
+void test_k4(std::mt19937& rng, int K) { // K past 2560: the columns staged in chunks
+    const int n_out = 2048;
     std::normal_distribution<float> nd(0.f, 1.f);
     std::vector<float> wf((size_t) n_out * K);
     for (auto& v : wf)
@@ -173,7 +173,7 @@ void test_k4(std::mt19937& rng) {
     }
     cudaFree(dw);
     cudaFree(y);
-    std::printf("k4_mm: Q4_K 2048 x 2560, 1-8 columns match ggml's dequantized rows\n");
+    std::printf("k4_mm: Q4_K 2048 x %d, 1-8 columns match ggml's dequantized rows\n", K);
 }
 
 void test_topk(std::mt19937& rng, int n) {
@@ -354,7 +354,8 @@ int main() {
     }
     std::mt19937 rng(7);
     test_d8(rng);
-    test_k4(rng);
+    test_k4(rng, 2560);
+    test_k4(rng, 4096);
     test_topk(rng, 248320); // float4 rows
     test_topk(rng, 106299); // a draft vocabulary of an odd size
     test_attention(rng);
