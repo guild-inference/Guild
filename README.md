@@ -356,10 +356,21 @@ token only those its layer's last token did not select); the VRAM keeps every ce
 latents (11,776 on an 8 GB card, with the FFNs placed as at 32k). The output is the all-VRAM context's bit for bit;
 `GUILD_GLM_KV_HOST=0` limits the context to the VRAM. When the GGUF's Q8_0 attention matrices would leave less than the
 context asked for (up to 16k tokens), it re-quantizes them to Q6_K at load (about 16 s); `GUILD_GLM_DENSE=q8_0` keeps
-Q8_0, `q6_k` always converts. `--dense q5_k` / `--dense q4_k` re-quantize them and the shared experts' GPU copies to
-Q5_K / Q4_K instead: decode steps 7% / 10-13% shorter on the PC below, at a KL from the Q6_K output of 0.036-0.043 /
-0.052-0.063, against 0.023-0.025 for a change of rounding alone
-([bench/results/2026-11-02-decode-round6](bench/results/2026-11-02-decode-round6/README.md)). `GUILD_GLM_MTP=0`
+Q8_0, `q6_k` always converts.
+
+`--dense q5_k` / `--dense q4_k` re-quantize them and the shared experts' GPU copies to Q5_K / Q4_K instead.
+`--dense-imatrix` weights that re-quantization with Unsloth's GLM-5.3-Flash `imatrix_unsloth.gguf_file`, and
+`--dense-map` sets a type per matrix kind. On the PC below, at a 262,144-token context with NextN drafts, with KL from
+the GGUF's Q8_0 attention on two texts (a change of rounding alone measures ~0.023 / 0.025):
+
+| Format | Decode step | KL |
+| --- | ---: | --- |
+| Q6_K | 79.6 ms | 0.027 / 0.029 |
+| `--dense q5_k` with the imatrix | 73.3 ms | 0.033 / 0.039 |
+| `--dense q4_k --dense-map attn_output=q6_k` with it | 71.7 ms | 0.040 / 0.048 |
+| `--dense q4_k` with it | 68.3 ms | 0.054 / 0.060 |
+
+See [bench/results/2026-11-04-glm-dense-map](bench/results/2026-11-04-glm-dense-map/README.md). `GUILD_GLM_MTP=0`
 decodes without the drafts. With the drafts and Q6_K attention, a verify window's second token takes its shared expert
 from the CPU copy, which rounds differently, so the text can part from plain greedy decoding;
 `GUILD_GLM_SHEXP_SPLIT=0` keeps it equal bit for bit (3-5% slower on the PC below). With `--dense q5_k` / `q4_k` both
