@@ -50,5 +50,32 @@ i.e. about 20 / 40 / 78 tokens an expert:
 
 Each doubling of an expert's tokens takes its products to ~0.68x, and the copies and the gather are paid per chunk.
 Every 4,096-token chunk of a long prompt streams all of the experts again (~50 GB at the link's 8 GB/s).
-- **The fix: layer-major.** Each layer's experts streamed once for the whole prompt, ~620 tokens an expert at 32K.
-  Estimated at ~30% off a 32K prompt; not built here (a restructuring of the prompt path's chunk loop).
+- **Layer-major (not built).** Each layer's experts streamed once for the whole prompt, ~620 tokens an expert at
+  32K, estimated at ~30% off a 32K prompt. It needs a restructuring of the prompt path's chunk loop.
+
+## Larger chunks, the same tokens
+
+The chunk was held at 4,096 tokens by ~0.40 MiB of buffers a token. Three changes cut that:
+- **Group-local MoE buffers** (MMQ on every layer, not fused, one GPU; `GUILD_PREFILL_GROUP_LOCAL=0` keeps the old
+  ones). The MoE half's gate/up rows, SwiGLU output and q8_1 activations hold one MMQ group's rows, at most 2T (a
+  larger group runs in parts), not all T x 10 slots'. The same products of the same rows land in the same rows of
+  `Dm`, which keeps every slot (the combine's fixed `fmaf` order needs them all).
+- **`gated` in the shared region.** The hyper-connection read's up product lives in the region the half's scratch
+  takes after the mix has read it.
+- **Dense MMQ in slices.** The dense MMQ path runs in slices of 1,024 rows: each row's product is its own.
+
+**Chunk sizing.** The chunk now grows to the largest, up to 8,192, whose `Prefill::bytes_needed` (the prompt path's
+own count of its buffers) leaves 768 MiB, and 48 more for the dense slices. Before, it was 168 B x n_embd a token,
+up to 4,096. On Pascal the rows of `--prefill-rows 512` keep a chunk's results those of its 512-token parts, so a
+larger chunk gives the same tokens.
+
+| | Before | After |
+| --- | --- | --- |
+| 4K prompt's VRAM after the run, at chunks of 4,096 | 7,331 MiB | 6,965 MiB |
+| 4K prompt, 4,007 tokens, one chunk either way | 15.97 s | 16.07 s |
+| 31,917 tokens, `--context 32768` (chunks of 8,192) | 141.99 s | 116.55 s |
+| 31,917 tokens, `--context 262144` (2,692 MiB free: chunks of 6,656) | 137.06 s | 121.73 s |
+
+The tokens were the same in every row. At 32K the experts' gate/up products took 25.5 -> 19.8 s, down 10.6 -> 8.7,
+the gather 5.2 -> 2.7 and the wait for copies 23.9 -> 12.5. Decode after the 32K prompt was 43.3 -> 45.0 tok/s; about
+440-465 MiB of VRAM is left free after these runs.
