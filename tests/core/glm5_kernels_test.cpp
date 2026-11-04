@@ -1561,7 +1561,12 @@ static int bench_shapes() {
                   {"glm head q4", 12, 4096, 154880}};
     cudaStream_t st;
     cudaStreamCreate(&st);
+    // GLM5_SHAPES_ONLY=<part of a name>: those shapes only; GLM5_SHAPES_COLS=<n>: that column count only (profiling)
+    const char* only = std::getenv("GLM5_SHAPES_ONLY");
+    const char* only_cols = std::getenv("GLM5_SHAPES_COLS");
     for (const Shape& sh : shapes) {
+        if (only && !std::strstr(sh.what, only))
+            continue;
         const size_t wb = guild::kernels::native_mmvq_weight_bytes(sh.type, sh.n_in, sh.n_out);
         // copies of the matrix cycled through, 64 MB or more of them, so the reads come from DRAM and not the L2
         // cache, as in a model's forward pass (a GTX 1070's L2 holds 2 MB)
@@ -1613,6 +1618,8 @@ static int bench_shapes() {
                                     : "Q6_K",
                     sh.n_in, sh.n_out);
         for (int ncols : {1, 2, 3, 4, 5, 8}) {
+            if (only_cols && ncols != std::atoi(only_cols))
+                continue;
             cudaEvent_t a, b;
             cudaEventCreate(&a);
             cudaEventCreate(&b);
