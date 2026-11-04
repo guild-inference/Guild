@@ -127,8 +127,11 @@ struct ExecutionPlan {
     uint64_t safety_reserve_bytes = 0;
     int64_t prefill_chunk = 512;
     bool prefill_chunk_auto = false; ///< the planner chose prefill_chunk (no --prefill N): the load may grow it
+    int prefill_mmq = 0; ///< --prefill-mmq: the prompt's dense products through MMQ (1 dense, 2 + hyper-connection)
     int64_t prefill_rows = 0;  ///< --prefill-rows: the prompt path's chunks computed as chunks of this many (0: off)
     int dense_type = 0;        ///< --dense: the GPU's Q8_0 dense matrices of 2048+ rows as this ggml type (0: as is)
+    std::string dense_map;     ///< --dense-map: a type per matrix kind over dense_type
+    std::string dense_imatrix; ///< --dense-imatrix: the importance matrix weighting the re-quantization
     bool hc_q8 = false;        ///< --hc q8_0: the hyper-connection down/up matrices as the GGUF's Q8_0 blocks
     int defer_experts = 0;     ///< --defer-experts: expert deferral's immediate experts (0: off)
     int64_t prefill_batch = 0; ///< Generic layer-wise prompt rows: 0 auto, 1..512 override.

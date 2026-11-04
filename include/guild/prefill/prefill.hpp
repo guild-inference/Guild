@@ -95,6 +95,9 @@ public:
     /// Pascal), a chunk computes what its `rows`-token chunks compute (GTX 1070, Qwen3.8-Flash-Next: 1024-token chunks
     /// with rows 512 gave the 512-token chunks' residuals and text bit for bit).  0: off.  Set before `init`.
     static void set_rows(int64_t rows);
+    /// --prefill-mmq: 0 off, 1 the native dense products through MMQ, 2 the hyper-connection's Q8_0 ones too
+    /// (GUILD_PREFILL_DENSE_MMQ overrides).  It rounds differently.  Process-wide; set before a prompt.
+    static void set_dense_mmq(int mode);
 
     /// Device bytes `init` needs for a chunk of `chunk` tokens (what a borrowed region must hold).
     static uint64_t bytes_needed(const core::ModelGeometry& g, const core::SessionState& ss, int64_t chunk);

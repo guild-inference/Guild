@@ -63,7 +63,72 @@ int dense_type() {
     }();
     return g_dense_type ? g_dense_type : env;
 }
-std::vector<uint8_t> q8_0_requant(const uint8_t* q8, int64_t n_in, int64_t n_out, int type) {
+// GUILD_DENSE_IMATRIX=<file> (NativeDense::set_dense_imatrix): llama.cpp's importance matrix in its GGUF form
+// (<tensor>.in_sum2, <tensor>.counts; Unsloth publishes the one its quants were made with) weights the
+// requantization's rounding error by each input column's mean squared activation, as llama-quantize --imatrix does.
+// A matrix it does not list is quantized without one.
+std::string g_imatrix_path; // NativeDense::set_dense_imatrix
+const std::string& imatrix_path() {
+    static const std::string env = [] {
+        const char* e = std::getenv("GUILD_DENSE_IMATRIX");
+        return std::string(e ? e : "");
+    }();
+    return g_imatrix_path.empty() ? env : g_imatrix_path;
+}
+// the column weights for `name` ([n_in]), or empty
+std::vector<float> imatrix_of(const std::string& name, int64_t n_in) {
+    static std::unique_ptr<guild::GgufFile> f;
+    static std::string opened;
+    const std::string& path = imatrix_path();
+    if (path.empty())
+        return {};
+    if (!f || opened != path) {
+        f = std::make_unique<guild::GgufFile>(path);
+        opened = path;
+    }
+    const guild::TensorInfo* sums = f->find(name + ".in_sum2");
+    const guild::TensorInfo* counts = f->find(name + ".counts");
+    if (!sums || !counts || sums->type != 0 || counts->type != 0 || sums->elements() != (uint64_t) n_in ||
+        counts->elements() != 1)
+        return {};
+    float c = 0.0f;
+    std::memcpy(&c, f->tensor_data(*counts), 4);
+    if (!(c > 0.0f))
+        return {};
+    std::vector<float> w((size_t) n_in);
+    std::memcpy(w.data(), f->tensor_data(*sums), (size_t) n_in * 4);
+    for (float& v : w)
+        v /= c;
+    return w;
+}
+// GUILD_DENSE_MAP="attn_qkv=q6_k,ssm_out=q4_k,..." (NativeDense::set_dense_map): a type per matrix kind (the name's
+// part after "blk.N."), over --dense's for those kinds; "q8_0" keeps a kind as the GGUF has it.
+std::string g_dense_map; // NativeDense::set_dense_map
+int type_of(const std::string& v) {
+    return v == "q6_k" ? 14 : v == "q5_k" ? 13 : v == "q4_k" ? 12 : v == "q8_0" ? 8 : -1;
+}
+int dense_type_for(const std::string& name) {
+    static const std::string env = [] {
+        const char* e = std::getenv("GUILD_DENSE_MAP");
+        return std::string(e ? e : "");
+    }();
+    const std::string& map = g_dense_map.empty() ? env : g_dense_map;
+    const size_t dot = name.find('.', 4);
+    const std::string kind = dot == std::string::npos ? name : name.substr(dot + 1);
+    for (size_t at = 0; at < map.size();) {
+        const size_t end = std::min(map.find(',', at), map.size()), eq = map.find('=', at);
+        if (eq != std::string::npos && eq < end &&
+            map.compare(at, eq - at, kind.substr(0, kind.rfind(".weight"))) == 0) {
+            const int t = type_of(map.substr(eq + 1, end - eq - 1));
+            if (t > 0)
+                return t == 8 ? 0 : t;
+        }
+        at = end + 1;
+    }
+    return dense_type();
+}
+std::vector<uint8_t> q8_0_requant(const uint8_t* q8, int64_t n_in, int64_t n_out, int type,
+                                  const float* imatrix = nullptr) {
     const size_t q_row = ggml_row_size((ggml_type) type, n_in), q8_row = (size_t) (n_in / 32) * 34;
     std::vector<uint8_t> out(q_row * (size_t) n_out);
     constexpr int64_t kRows = 64;
@@ -86,7 +151,7 @@ std::vector<uint8_t> q8_0_requant(const uint8_t* q8, int64_t n_in, int64_t n_out
                         f[b * 32 + k] = d * (float) (int8_t) q[b * 34 + 2 + k];
                 }
             }
-            ggml_quantize_chunk((ggml_type) type, buf.data(), out.data() + (size_t) r0 * q_row, 0, nr, n_in, nullptr);
+            ggml_quantize_chunk((ggml_type) type, buf.data(), out.data() + (size_t) r0 * q_row, 0, nr, n_in, imatrix);
         }
     };
     const unsigned n = std::max(1u, std::min(32u, std::thread::hardware_concurrency()));
@@ -164,6 +229,14 @@ bool NativeDense::served_names(const std::vector<std::string>& shards, bool incl
 
 void NativeDense::set_dense_type(int ggml_type) {
     g_dense_type = ggml_type;
+}
+
+void NativeDense::set_dense_map(const std::string& map) {
+    g_dense_map = map;
+}
+
+void NativeDense::set_dense_imatrix(const std::string& path) {
+    g_imatrix_path = path;
 }
 
 int NativeDense::requant_type() {
@@ -353,11 +426,15 @@ bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& tabl
                 int type = (int) tensor.type;
                 const void* src = gguf.tensor_data(tensor);
                 std::vector<uint8_t> rq;
-                if (dense_type() && type == 8 && ref.ne0 % 256 == 0 && ref.ne1 >= 2048 &&
+                const int want = dense_type_for(tensor.name);
+                if (want && type == 8 && ref.ne0 % 256 == 0 && ref.ne1 >= 2048 &&
                     tensor.name.find("ple") == std::string::npos) {
-                    rq = q8_0_requant(static_cast<const uint8_t*>(src), ref.ne0, ref.ne1, dense_type());
+                    const std::vector<float> im = imatrix_of(tensor.name, ref.ne0);
+                    rq = q8_0_requant(static_cast<const uint8_t*>(src), ref.ne0, ref.ne1, want,
+                                      im.empty() ? nullptr : im.data());
+                    imatrix_used_ += !im.empty();
                     src = rq.data();
-                    type = dense_type();
+                    type = want;
                     ++requantized_;
                 }
                 const auto bytes = guild::kernels::native_mmvq_weight_bytes(type, (int) ref.ne0, (int) ref.ne1);

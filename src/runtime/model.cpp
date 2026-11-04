@@ -711,6 +711,8 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
         }
     } else if (!shards.empty()) {
         guild::core::NativeDense::set_dense_type(plan.dense_type);
+        guild::core::NativeDense::set_dense_map(plan.dense_map);
+        guild::core::NativeDense::set_dense_imatrix(plan.dense_imatrix);
         if (!impl->native_dense.load(shards, impl->wt, error_msg, true)) {
             return nullptr;
         }
@@ -719,10 +721,15 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
         sp.dense_vram_bytes += impl->native_dense.weight_bytes();
         if (impl->native_dense.requantized() > 0) {
             const int t = guild::core::NativeDense::requant_type();
-            const char* name = t == 13 ? "Q5_K" : t == 12 ? "Q4_K" : "Q6_K";
-            std::fprintf(stderr, "guild: %zu dense matrices re-quantized Q8_0 -> %s (--dense), %.0f MiB\n",
-                         impl->native_dense.requantized(), name,
-                         (double) impl->native_dense.weight_bytes() / 1048576.0);
+            const char* name = !plan.dense_map.empty() || std::getenv("GUILD_DENSE_MAP") ? "--dense-map's types"
+                               : t == 13                                                 ? "Q5_K"
+                               : t == 12                                                 ? "Q4_K"
+                                                                                         : "Q6_K";
+            std::fprintf(stderr,
+                         "guild: %zu dense matrices re-quantized Q8_0 -> %s (--dense), %.0f MiB; %zu with the "
+                         "importance matrix\n",
+                         impl->native_dense.requantized(), name, (double) impl->native_dense.weight_bytes() / 1048576.0,
+                         impl->native_dense.imatrix_used());
         }
         if (impl->native_dense.hc_q8_count() > 0)
             std::fprintf(stderr,
@@ -1225,6 +1232,10 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
             }
         }
     }
+    prefill::Prefill::set_dense_mmq(plan.prefill_mmq);
+    if (plan.prefill_mmq > 0)
+        std::fprintf(stderr, "guild prefill: dense products through MMQ (--prefill-mmq %s)\n",
+                     plan.prefill_mmq == 2 ? "dense-hc" : "dense");
     if (prefill_rows > 0 && prefill_rows < impl->config.prefill_chunk) {
         prefill::Prefill::set_rows(prefill_rows);
         std::fprintf(stderr, "guild prefill: chunks of %lld tokens computed as chunks of %lld (--prefill-rows)\n",

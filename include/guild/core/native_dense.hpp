@@ -39,6 +39,12 @@ public:
     /// --dense q6_k; also GUILD_DENSE=q6_k), 13 (Q5_K) or 12 (Q4_K); 0 as the GGUF has them.  Process-wide, read by
     /// the next `load`.
     static void set_dense_type(int ggml_type);
+    /// llama.cpp's GGUF importance matrix for that requantization (--dense-imatrix; also GUILD_DENSE_IMATRIX), ""
+    /// for none.  Process-wide, read by the next `load`.
+    static void set_dense_imatrix(const std::string& path);
+    /// a type per matrix kind over set_dense_type's ("ssm_out=q4_k,attn_qkv=q6_k"; q8_0 keeps the GGUF's), from
+    /// --dense-map or GUILD_DENSE_MAP.  Process-wide, read by the next `load`.
+    static void set_dense_map(const std::string& map);
     /// the type set_dense_type (or GUILD_DENSE) asks for, 0 for none
     static int requant_type();
     /// --hc q8_0 (also GUILD_HC=q8_0): every layer's hyper-connection down and up matrix (`blk.N.hc_{attn,ffn}_
@@ -61,6 +67,10 @@ public:
     size_t requantized() const {
         return requantized_;
     }
+    /// of those, the ones the importance matrix weighted
+    size_t imatrix_used() const {
+        return imatrix_used_;
+    }
     /// hyper-connection matrices uploaded as the GGUF's Q8_0 (--hc q8_0), and their bytes (part of weight_bytes)
     size_t hc_q8_count() const {
         return hc_q8_count_;
@@ -74,6 +84,7 @@ private:
     void* scratch_ = nullptr;
     uint64_t bytes_ = 0;
     size_t requantized_ = 0;
+    size_t imatrix_used_ = 0;
     size_t hc_q8_count_ = 0;
     uint64_t hc_q8_bytes_ = 0;
 };

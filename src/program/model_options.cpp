@@ -71,11 +71,20 @@ const char* model_options_usage() {
            "  --prefill-rows <n>         Compute each prefill chunk as chunks of n tokens, streaming the experts once\n"
            "                             a chunk (e.g. --prefill 1024 --prefill-rows 512: 512's results where the\n"
            "                             expert products do not depend on rows an expert has; 0: off)\n"
+           "  --prefill-mmq <off|dense|dense-hc>\n"
+           "                             The prompt's quantized dense products through int8 MMQ, as decode rounds\n"
+           "                             them, instead of FP16 cuBLAS (dense-hc: the Q8_0 hyper-connection too;\n"
+           "                             faster on Pascal, changes the output slightly)\n"
            "  --dense <native|q6_k|q5_k|q4_k>\n"
            "                             The GPU's dense matrices as the GGUF has them (default), or its Q8_0 ones\n"
            "                             of 2048+ rows re-quantized at load (fewer bytes a token; changes the\n"
            "                             output slightly).  GLM-5.3-Flash: its attention matrices (default: Q6_K\n"
            "                             when Q8_0 would leave less context than asked for)\n"
+           "  --dense-map <kind=type,...>\n"
+           "                             A type per dense matrix kind over --dense's (kinds: attn_qkv, attn_gate,\n"
+           "                             ssm_out, attn_q, attn_output; types q6_k, q5_k, q4_k, q8_0 = as the GGUF)\n"
+           "  --dense-imatrix <file>     llama.cpp's GGUF importance matrix (Unsloth's imatrix_unsloth.gguf_file)\n"
+           "                             weighting --dense's re-quantization, as llama-quantize --imatrix does\n"
            "  --hc <bf16|q8_0>           The hyper-connection down/up matrices as the pack's bf16 rounding of the\n"
            "                             GGUF's Q8_0 blocks (default), or as those blocks themselves (half the\n"
            "                             bytes a token; changes the output slightly)\n"
@@ -138,6 +147,12 @@ int parse_model_option(int argc, char** argv, int& i, ModelOptions& o, const cha
         }
     } else if (a == "--prefill") {
         o.prefill = next("--prefill");
+    } else if (a == "--prefill-mmq") {
+        o.prefill_mmq = next("--prefill-mmq");
+        if (o.prefill_mmq != "off" && o.prefill_mmq != "dense" && o.prefill_mmq != "dense-hc") {
+            std::fprintf(stderr, "--prefill-mmq requires off, dense or dense-hc\n");
+            return 2;
+        }
     } else if (a == "--prefill-rows") {
         const std::string value = next("--prefill-rows");
         size_t used = 0;
@@ -160,6 +175,10 @@ int parse_model_option(int argc, char** argv, int& i, ModelOptions& o, const cha
             std::fprintf(stderr, "--dense requires native, q6_k, q5_k or q4_k\n");
             return 2;
         }
+    } else if (a == "--dense-map") {
+        o.dense_map = next("--dense-map");
+    } else if (a == "--dense-imatrix") {
+        o.dense_imatrix = next("--dense-imatrix");
     } else if (a == "--hc") {
         o.hc = next("--hc");
         if (o.hc != "bf16" && o.hc != "q8_0") {
@@ -288,7 +307,10 @@ int load_model(ModelOptions& o, const char* program, LoadedModel& out) {
         plan.decode_strategy = o.decode_strategy; // checked by the model load
     plan.mtp_optional = o.mtp_optional;
     plan.prefill_rows = o.prefill_rows;
+    plan.prefill_mmq = o.prefill_mmq == "dense" ? 1 : o.prefill_mmq == "dense-hc" ? 2 : 0;
     plan.dense_type = o.dense == "q6_k" ? 14 : o.dense == "q5_k" ? 13 : o.dense == "q4_k" ? 12 : 0;
+    plan.dense_map = o.dense_map;
+    plan.dense_imatrix = o.dense_imatrix;
     plan.hc_q8 = o.hc == "q8_0";
     plan.defer_experts = o.defer_experts;
 

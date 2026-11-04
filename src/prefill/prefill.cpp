@@ -177,6 +177,7 @@ thread_local int64_t g_ring_small_max = 0;
 // (so the same expert path) - so that it computes what those chunks compute, with each expert streamed once for all
 // of them.  Process-wide: set at load, read by the request threads.  0: the chunk is the chunk.
 std::atomic<int64_t> g_rows{0};
+std::atomic<int> g_dense_mmq{0}; // Prefill::set_dense_mmq (--prefill-mmq)
 inline size_t arith_rows(size_t T) {
     const int64_t r = g_rows.load(std::memory_order_relaxed);
     return r > 0 && (int64_t) T > r ? (size_t) r : T;
@@ -1782,6 +1783,9 @@ void Prefill::set_pinned_share(double share) {
 void Prefill::set_ring_override(int slots) {
     g_ring_override = slots > 0 ? slots : 0;
 }
+void Prefill::set_dense_mmq(int mode) {
+    g_dense_mmq.store(mode, std::memory_order_relaxed);
+}
 void Prefill::set_rows(int64_t rows) {
     g_rows.store(rows > 0 ? rows : 0, std::memory_order_relaxed);
 }
@@ -1919,11 +1923,11 @@ struct DenseMmq {
     size_t x32_bytes = 0, xq_bytes = 0, blocks_bytes = 0, ident_bytes = 0, bounds_bytes = 0;
 };
 int dense_mmq_mode() { // 1: the native projections, 2: the hyper-connection's Q8_0 matrices too
-    static const int v = [] {
+    static const int env = [] {
         const char* e = std::getenv("GUILD_PREFILL_DENSE_MMQ");
-        return e ? std::atoi(e) : 0;
+        return e ? std::atoi(e) : -1;
     }();
-    return v;
+    return env >= 0 ? env : g_dense_mmq.load(std::memory_order_relaxed);
 }
 bool dense_mmq_on() {
     return dense_mmq_mode() >= 1;
