@@ -60,6 +60,10 @@ struct Glm5Options {
     /// a DFlash 2 drafter (core/dflash.hpp: config.json, model.safetensors) in the NextN block's place, which is then
     /// not loaded, and its draft head's token subset (int32 ids; empty: the whole head)
     std::string dflash, dflash_vocab;
+    /// --dense-imatrix: llama.cpp's GGUF importance matrix weighting the attention's and shared experts'
+    /// re-quantization (Unsloth's imatrix_unsloth.gguf_file); --dense-map: a type per matrix kind over `dense`'s
+    /// ("attn_output=q8_0,attn_q=q4_k"; q8_0 keeps the GGUF's)
+    std::string imatrix, dense_map;
 };
 
 class Glm5Engine {

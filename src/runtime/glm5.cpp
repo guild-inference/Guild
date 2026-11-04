@@ -154,6 +154,8 @@ bool glm5_load(GuildModel::Impl& m, const ModelPaths& paths, const memory::Execu
               : plan.dense_type == 13 ? guild::core::Glm5Dense::Q5_K
               : plan.dense_type == 12 ? guild::core::Glm5Dense::Q4_K
                                       : guild::core::Glm5Dense::Auto;
+    o.imatrix = plan.dense_imatrix;
+    o.dense_map = plan.dense_map;
     if (const char* d = std::getenv("GUILD_GLM_DENSE")) // auto (the default), q8_0, q6_k, q5_k or q4_k
         o.dense = std::string(d) == "q6_k"   ? guild::core::Glm5Dense::Q6_K
                   : std::string(d) == "q8_0" ? guild::core::Glm5Dense::Q8_0

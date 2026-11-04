@@ -1540,6 +1540,10 @@ static int bench_shapes() {
                   {"qwen ssm_out q5", 13, 6144, 2560},
                   {"qwen q q5", 13, 2560, 12288},
                   {"qwen out q5", 13, 4096, 2560},
+                  // and as Q4_K (setup's --dense q4_k --dense-map ssm_out=q5_k,attn_output=q8_0)
+                  {"qwen qkv q4", 12, 2560, 10240},
+                  {"qwen gate q4", 12, 2560, 6144},
+                  {"qwen q q4", 12, 2560, 12288},
                   // GLM-5.3-Flash's attention matrices as Q6_K, Q5_K and Q4_K
                   {"glm kda qkv q6", 14, 4096, 24576},
                   {"glm kda qkv q5", 13, 4096, 24576},

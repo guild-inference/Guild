@@ -459,7 +459,7 @@ if(GUILD_ENABLE_CUDA OR GUILD_ENABLE_HIP)
   # about arithmetic, and this one knows the ORDER the arithmetic happens in.
   add_library(guild_engine STATIC src/core/layer.cpp src/core/session.cpp src/core/expert_source.cpp src/core/remote_experts.cpp
     src/core/remote_expert_opt.cpp
-    src/core/expert_cache.cpp src/core/native_head.cpp src/core/native_dense.cpp src/core/verify.cpp src/core/mtp.cpp
+    src/core/expert_cache.cpp src/core/native_head.cpp src/core/native_dense.cpp src/core/dense_quant.cpp src/core/verify.cpp src/core/mtp.cpp
     src/core/conversation_snapshot.cpp src/core/conversation_state.cpp src/core/conversation_memory.cpp src/core/peer_experts.cpp
     src/core/drama3_tower.cpp src/core/drama3_codec.cu src/core/glm5.cpp src/core/glm5_nl4.cpp src/core/host_combine.cpp
     src/core/cpu_moe.cpp src/core/q8_0_rows512.cpp src/core/iq4xs_rows512.cpp src/core/iq4nl_rows512.cpp src/core/pool_rows.cpp
