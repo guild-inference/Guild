@@ -194,6 +194,31 @@ void run(int fmt) {
     require(counters.calls == 18 && counters.misses > 0 && counters.misses <= counters.lookups &&
                 counters.overflow == 0,
             "transient staging counters were reset or overflowed");
+    // A verify window's group 1 resolves right after group 0 of the same layer and keeps its map
+    // (invalidate_shared = false): it copies only the blocks group 0 did not, and reads the same values.
+    {
+        std::set<int32_t> first, all;
+        for (int t = 0; t < 4; ++t)
+            for (int64_t i = 0; i < cap; ++i) {
+                const int32_t block = selections[t * cap + i] / int32_t(shape.page_size);
+                all.insert(block);
+                if (t < 2)
+                    first.insert(block);
+            }
+        copy_reference(a.s);
+        c::qsa_kv_resolve(b.s, g, ids.p, steps.p, nq, cap, nullptr); // the other layer refills the pool
+        const auto c0 = k::kv_stream_counters(a.s.map);
+        c::qsa_kv_resolve(a.s, g, ids.p, steps.p, 2, cap, nullptr);
+        const auto c1 = k::kv_stream_counters(a.s.map);
+        c::qsa_kv_resolve(a.s, g, ids.p, steps.p, 4, cap, nullptr, /*invalidate_shared=*/false);
+        k::qsa_decode_attn_batch(q.p, c::qsa_attn_pools(ref.s), ids.p, steps.p, cap, shape, scratch.p, expected.p, 4,
+                                 nullptr);
+        k::qsa_decode_attn_batch(q.p, c::qsa_attn_pools(a.s), ids.p, steps.p, cap, shape, scratch.p, out.p, 4, nullptr);
+        compare(4);
+        const auto c2 = k::kv_stream_counters(a.s.map);
+        require(c1.misses - c0.misses == first.size() && c2.misses - c1.misses == all.size() - first.size(),
+                "a kept map copied blocks that were already resident");
+    }
     std::printf("kv_host_only_test: format %d, 262144 cells, %.3f MiB shared staging: bitwise parity (1..8 rows, "
                 "layers, graphs)\n",
                 fmt, double(staged) / 1048576.0);

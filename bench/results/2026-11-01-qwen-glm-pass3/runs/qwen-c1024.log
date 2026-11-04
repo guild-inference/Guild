@@ -1,0 +1,23 @@
+FileExpertSource: RAM budget 55.43 GiB: 24576 of the 55.43 GiB of experts the GPU cache does not hold, by profile rank; the rest are read from the files
+FileExpertSource: allocating 55.43 GiB pageable resident cache complement
+FileExpertSource: copied cache complement through layer 8/48 (13.74 GiB)
+FileExpertSource: copied cache complement through layer 16/48 (23.44 GiB)
+FileExpertSource: copied cache complement through layer 24/48 (32.94 GiB)
+FileExpertSource: copied cache complement through layer 32/48 (42.17 GiB)
+FileExpertSource: copied cache complement through layer 40/48 (51.00 GiB)
+FileExpertSource: copied cache complement through Traceback (most recent call last):
+  File "/home/ubuntu/Guild/tools/bench_runtime.py", line 197, in <module>
+    raise SystemExit(main())
+                     ~~~~^^
+  File "/home/ubuntu/Guild/tools/bench_runtime.py", line 158, in main
+    line = next_line()
+  File "/home/ubuntu/Guild/tools/bench_runtime.py", line 126, in next_line
+    raise RuntimeError(f'engine failed: {line}; see {output.with_suffix(".log")}')
+RuntimeError: engine failed: None; see /home/ubuntu/work/nemotron/opt/qwenchunk/b-c1024.log
+Exception ignored while finalizing file <_io.TextIOWrapper name=6 encoding='UTF-8'>:
+BrokenPipeError: [Errno 32] Broken pipe
+uild hc: CUDA0: the hyper-connection read runs as staged (the norm per token and stream, the down projection's activations staged ahead by cp.async) in 512-float tiles, with the two-plane up kernel (one or two tokens: the direct down and the column up kernels, GUILD_HC_DIRECT=0 for the tiles); checked bit for bit against the plain read on this card (GUILD_HC_SPLIT=1 or 0 for the earlier ones)
+guild verify: window up to 4 tokens, 75.6 MiB of device buffers
+guild mtp: draft head over 106299 tokens (212.9 MiB)
+guild mtp: 1232 MiB of VRAM free after the draft layer, 842 MiB still needed
+kv_stream: reset: out of memory

@@ -1,0 +1,17 @@
+b_11_1 22.24 s of audio, 479 frames (eos) in 10303 ms (46.49 frames/s, 2.16x real time; tower 1771 ms, codec 40 ms), prompt 86 rows in 506 ms
+t_11_1 22.24 s of audio, 479 frames (eos) in 10493 ms (45.65 frames/s, 2.12x real time; tower 1670 ms, codec 1286 ms), prompt 86 rows in 496 ms
+o_11_1 22.24 s of audio, 479 frames (eos) in 12195 ms (39.28 frames/s, 1.82x real time; tower 4146 ms, codec 1298 ms), prompt 86 rows in 517 ms
+b_12_1 19.78 s of audio, 426 frames (eos) in 9273 ms (45.94 frames/s, 2.13x real time; tower 1608 ms, codec 31 ms), prompt 86 rows in 512 ms
+t_12_1 19.78 s of audio, 426 frames (eos) in 9597 ms (44.39 frames/s, 2.06x real time; tower 1516 ms, codec 1158 ms), prompt 86 rows in 525 ms
+o_12_1 19.78 s of audio, 426 frames (eos) in 10864 ms (39.21 frames/s, 1.82x real time; tower 3731 ms, codec 1161 ms), prompt 86 rows in 521 ms
+en0b_11_1 18.67 s of audio, 402 frames (eos) in 8857 ms (45.39 frames/s, 2.11x real time; tower 1725 ms, codec 16 ms), prompt 206 rows in 1267 ms
+en0t_11_1 18.67 s of audio, 402 frames (eos) in 9005 ms (44.64 frames/s, 2.07x real time; tower 1626 ms, codec 1103 ms), prompt 206 rows in 1216 ms
+b_11_2 22.24 s of audio, 479 frames (eos) in 10469 ms (45.75 frames/s, 2.12x real time; tower 1797 ms, codec 40 ms), prompt 86 rows in 512 ms
+t_11_2 22.24 s of audio, 479 frames (eos) in 10790 ms (44.39 frames/s, 2.06x real time; tower 1690 ms, codec 1301 ms), prompt 86 rows in 524 ms
+o_11_2 22.24 s of audio, 479 frames (eos) in 12259 ms (39.07 frames/s, 1.81x real time; tower 4189 ms, codec 1305 ms), prompt 86 rows in 517 ms
+b_12_2 19.78 s of audio, 426 frames (eos) in 9361 ms (45.51 frames/s, 2.11x real time; tower 1616 ms, codec 31 ms), prompt 86 rows in 515 ms
+t_12_2 19.78 s of audio, 426 frames (eos) in 9629 ms (44.24 frames/s, 2.05x real time; tower 1522 ms, codec 1163 ms), prompt 86 rows in 530 ms
+o_12_2 19.78 s of audio, 426 frames (eos) in 10912 ms (39.04 frames/s, 1.81x real time; tower 3727 ms, codec 1167 ms), prompt 86 rows in 521 ms
+en0b_11_2 18.67 s of audio, 402 frames (eos) in 8848 ms (45.43 frames/s, 2.11x real time; tower 1720 ms, codec 16 ms), prompt 206 rows in 1264 ms
+en0t_11_2 18.67 s of audio, 402 frames (eos) in 9103 ms (44.16 frames/s, 2.05x real time; tower 1642 ms, codec 1103 ms), prompt 206 rows in 1291 ms
+done

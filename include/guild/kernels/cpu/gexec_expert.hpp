@@ -10,7 +10,9 @@ inline constexpr const char* kGExecFusedAvx2ImplId = "cpu.expert_pool.gexec_fuse
 inline constexpr const char* kGExecFusedAvx512ImplId = "cpu.expert_pool.gexec_fused_avx512";
 inline constexpr const char* kGExecInterleavedAvx2ImplId = "cpu.expert_pool.gexec_interleaved_avx2";
 inline constexpr const char* kGExecInterleavedAvx512ImplId = "cpu.expert_pool.gexec_interleaved_avx512";
-inline constexpr uint32_t kGExecExpertImplVersion = GUILD_KERNEL_ABI_MAKE_VERSION(5, 0, 0);
+// 6.0.0: the multi-token i-quant and IQ4_NL rows sum in ggml-cpu's float order (#152, gexec_expert.cpp), so their
+// output bits changed; a .gexec record frozen on 5.x no longer binds and the model falls back to default selection.
+inline constexpr uint32_t kGExecExpertImplVersion = GUILD_KERNEL_ABI_MAKE_VERSION(6, 0, 0);
 
 // Returns the v2 CPU backend extension table for GEXEC fused 2-row/4-row expert execution
 // over the standard PortableContiguous [gate(n_ff) | up(n_ff) | down(n_embd)] layout (AVX2).

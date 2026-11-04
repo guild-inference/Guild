@@ -5,7 +5,8 @@
 // what plain greedy decode would produce after token t, BIT FOR BIT: every kernel here is either the single-token
 // kernel applied per token, or a multi-token kernel whose per-token arithmetic is the single-token kernel's
 // (multi-column MMVQ in exact mode, the T-token GDN kernels, the per-token hit activation, the multi-token CPU
-// expert rows).  So a draft is accepted exactly when greedy decode would have produced it.
+// expert rows, which sum in ggml-cpu's float order: guild-kernels-cpu GUILD_IQ_GGML_ORDER, #152).  So a draft is
+// accepted exactly when greedy decode would have produced it.
 //
 // What the window costs is the dense weights read ONCE for T tokens and the union of the T tokens' missed
 // experts on the CPU (measured on decode traces: 1.75x one token's misses for T=2, 2.4x for 3, 3.05x for 4).
@@ -91,6 +92,21 @@ public:
     bool run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool, void* user, int32_t* out, std::string& err);
     /// Diagnostics: row `t` of the last window's head logits (n_vocab floats) to the host. Valid after run().
     bool copy_logits(int t, float* host) const;
+    /// Row `t` of the last window's final hidden state - the head's input, after the output norm (n_embd floats) -
+    /// to the host.  Valid after run().
+    bool copy_hidden(int t, float* host) const;
+    /// A drafter's context features (core/dflash.hpp): every window row's residual streams averaged as each of
+    /// `layers` completes (its FFN write applied), [T][layers.size()][n_embd] floats on the device.  Set before the
+    /// first window (the window graphs record it); layers in 0 .. n_layers - 2 of a single-stage verifier.  An empty
+    /// list turns it off.
+    bool set_feature_layers(const std::vector<int>& layers, std::string& err);
+    /// The last window's features (device; row t at t * feature_count() * n_embd floats), or null.  Valid after run().
+    const float* features() const {
+        return feat_;
+    }
+    int feature_count() const {
+        return (int) feat_layers_.size();
+    }
     void debug_dump_layer0() const;
     int64_t vocab() const {
         return next_ ? next_->vocab() : n_vocab_;
@@ -166,7 +182,7 @@ public:
     // Everything that is per row already (hyper-connections, dense projections, router, shared expert, the
     // routed experts on the GPU and the CPU, the head) runs once over the S rows, so the weights are read once
     // per window for all the sequences.  Row s's arithmetic is the single-token window's, so a slot's greedy
-    // tokens are its solo greedy tokens (modulo the multi-token CPU kernel choice: GUILD_IQ_MT_MIN=1).
+    // tokens are its solo greedy tokens (the multi-token CPU expert kernels sum in ggml-cpu's order, #152).
     //
     // Greedy only, no drafts (MTP) in a batch window.  `init_slots` once after `init` (S <= max_t); a layer
     // split's stages each get their own sessions, and run_slots/commit_slots continue into the next stage.
@@ -216,6 +232,8 @@ public:
     /// the session from another stream or the host afterwards (a new request, a checkpoint, a snapshot, the prompt
     /// path, the end of a run) calls wait_commit() first.  GUILD_COMMIT_SYNC=1 keeps the wait.
     static void set_commit_async(bool on);
+    /// --defer-experts k: expert deferral for the verifiers initialized after (0: off; GUILD_DEFER_EXPERTS when unset)
+    static void set_defer_experts(int k);
     /// Per-instance setting for reusable runtimes; the static setting is a legacy default.
     void set_async_commit(bool on);
     bool async_commit_enabled() const {
@@ -236,6 +254,27 @@ public:
 
     /// Token t's residual after the last layer, (hc, n_embd) on the device, valid until the next `run`.
     const float* final_R(int t) const;
+    /// Token t's input to the head (the final norm's output, n_embd on the device; hc == 1), valid until the next
+    /// `run`.
+    const float* head_input(int t) const;
+
+    /// Fish Audio Drama 3: a row whose token lies in [band_lo, band_hi] (the audio band) takes
+    /// (embed(token) + code1_rows[code1]) / sqrt(2) as its input, code1 from `set_codes` (code1_rows: BF16
+    /// [n][n_embd], device).  Set before `init`.
+    void set_audio_embed(const uint16_t* code1_rows, int32_t band_lo, int32_t band_hi) {
+        audio_rows_ = code1_rows;
+        audio_lo_ = band_lo;
+        audio_hi_ = band_hi;
+    }
+    /// The next `run`'s per-row codebook-1 codes (rows outside the audio band ignore theirs)
+    void set_codes(const int32_t* code1, int T) {
+        codes_.assign(code1, code1 + T);
+    }
+    /// Stop each window at the final norm: no head, no sampling, `run` returns -1 per row (Drama 3 runs its own head
+    /// over `head_input`).
+    void set_no_head(bool on) {
+        no_head_ = on;
+    }
     const float* final_R_all() const {
         return next_ ? next_->final_R_all() : R_;
     }
@@ -361,12 +400,27 @@ private:
     cudaStream_t cs_ = nullptr;
     cudaStream_t sh_cs_ = nullptr;
     cudaEvent_t ev_fork_ = nullptr, ev_join_ = nullptr;
+    // a GDN layer's conv and alpha/beta beside its gate product (GUILD_GDN_FORK), the commit's small commits beside
+    // the GDN state commits (GUILD_GDN_COMMIT_FORK); created at the device's greatest stream priority, which its
+    // captured kernels carry as node priorities (gdn_node_prio_: the window graph was recorded with the fork)
+    cudaStream_t gdn_cs_ = nullptr;
+    int gdn_prio_ = 0;
+    bool gdn_node_prio_ = false;
+    cudaEvent_t ev_gdn_fork_ = nullptr, ev_gdn_join_ = nullptr;
     cudaGraphExec_t exec_[9] = {};
     cudaGraphExec_t commit_exec_ = nullptr;
 
     // mapped staging (host pointer, device alias)
     int32_t* h_tok_ = nullptr;
     int32_t* m_tok_ = nullptr; // T
+    int32_t* h_code_ = nullptr;
+    int32_t* m_code_ = nullptr; // T (Drama 3's codebook-1 codes)
+    int32_t* code_ = nullptr;
+    const uint16_t* audio_rows_ = nullptr;
+    int32_t audio_lo_ = 0, audio_hi_ = -1;
+    std::vector<int32_t> codes_;
+    bool no_head_ = false;
+    void audio_embed(int T, cudaStream_t cs);
     int32_t* h_step_ = nullptr;
     int32_t* m_step_ = nullptr; // T * kStepCount
     int32_t* h_pos_ = nullptr;
@@ -415,10 +469,34 @@ private:
     uint32_t cur_layer_ = 0;
     static void publish_plan(void* ctx);
     void set_plan_slot(int grp);
-    bool split_ = false; // opt-in (--spec-split): exact but slower, see the overlap study
+    // The runtime turns it on (GUILD_SPEC_SPLIT=0 keeps one group): exact, and faster once the CPU pool's experts no
+    // longer wait for the GPU's layer work (bench/results/2026-10-24-split-window).
+    bool split_ = false;
     int groups_[9] = {};
     float* h_ymiss_ = nullptr;
     float* m_ymiss_ = nullptr; // T * k * n_embd
+    // When the CPU serves every routed expert, it also does the combine's weighted sum (host_combine.hpp) and only
+    // the sums cross PCIe; set per captured window size (GUILD_HOST_COMBINE=0: the GPU combines the rows as before).
+    bool host_combine_[9] = {};
+    float* h_ysum_ = nullptr;
+    float* m_ysum_ = nullptr; // T * n_embd
+    // GUILD_DEFER_EXPERTS=k (0 < k < the experts a token; read at init): expert deferral, which changes the model's
+    // computation.  A layer's first k routed experts (the router's top k by weight) are summed into its output as
+    // before; the CPU sums the rest after raising the layer's flag, while the GPU runs the next layer, and that sum is
+    // added to the next layer's output instead (the last layer defers none).  A window then runs as one group, each
+    // dense weight read once.  Needs the host combine (every routed expert on the CPU).
+    int defer_k_ = 0;
+    bool defer_[9] = {};
+    uint32_t* h_flagD_ = nullptr;
+    uint32_t* m_flagD_ = nullptr; // a layer's deferred sums are in h_ydef_ (its ring, as flag)
+    float* h_ydef_ = nullptr;
+    float* m_ydef_ = nullptr;  // 2 * max_t * n_embd: the deferred sums, by the layer's parity
+    float* dsum_ = nullptr;    // device: T * n_embd, a layer's deferred sums copied in
+    float* inj2def_ = nullptr; // device: 2 * max_t * hc, a layer's FFN-half injection kept for its deferred sums
+    bool defer_out_ = false;   // GUILD_DEFER_AT=out: the deferred sums join the next layer's FFN output instead
+    std::vector<int32_t> def_ids_;
+    std::vector<float> def_w_;
+    float* ones_ = nullptr; // device: T weights of 1.0 (the k = 1 combine that adds the shared expert)
 
     // device
     void* arena_ = nullptr;
@@ -448,12 +526,17 @@ private:
     float *sh_gate_ = nullptr, *sh_up_ = nullptr, *sh_g_ = nullptr;
     float* hist_snap_ = nullptr; // T * NG_HIST * NG_HC_DIM
     int64_t cap_ = 0, max_blocks_ = 0, attn_scratch_floats_ = 0;
+    float* feat_ = nullptr; ///< set_feature_layers: [max_t][feat_layers_.size()][n_embd]
+    std::vector<int> feat_layers_;
     float* dbg_l0_attn_norm_ = nullptr;
     float* dbg_l0_z_ = nullptr;
     float* dbg_l0_bo_ = nullptr;
     float* dbg_l0_R_ = nullptr;
     float* dbg_l0_post_norm_ = nullptr;
     float* dbg_l0_logits_ = nullptr;
+    // GUILD_VERIFY_DUMP_RESIDUAL=<file> (diagnostics): row 0's residual R and pending FFN write bo after each layer,
+    // [n_layers][n_embd] each, written to the file as the residual stream (R + bo) after every window
+    float *dbg_res_R_ = nullptr, *dbg_res_bo_ = nullptr;
     float* dbg_l0_shared_ = nullptr;
 };
 

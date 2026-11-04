@@ -58,6 +58,7 @@ from serve import runconfig  # noqa: E402
 from serve.winjob import contain  # noqa: E402
 from serve.structured import StructuredOutputError, prepare_format, validated_json  # noqa: E402
 from serve import responses as responses_api  # noqa: E402
+from serve import speech as speech_api  # noqa: E402
 from serve.responses import ResponsesError, error_body as responses_error_body  # noqa: E402
 
 IM_END = "<|im_end|>"
@@ -388,6 +389,19 @@ def btrace(*a):
 EOS_IDS = {248044, 248046}   # <|endoftext|>, <|im_end|>: the engine's default --eos-ids
 
 
+def end_of_turn_ids(tokenizer) -> set:
+    """The ids that end a reply: the end-of-turn strings this vocabulary has as one special token (Qwen's <|im_end|>
+    and <|endoftext|>, GLM-5's <|endoftext|>, <|user|> and <|observation|>).  A string the vocabulary lacks - GLM has
+    no <|im_end|> - encodes to ordinary pieces ('<', '|', 'im', ...), which would end every reply that writes one."""
+    special = getattr(tokenizer, "special_tokens", None)
+    ids = set()
+    for s in (IM_END, "<|endoftext|>", "<|user|>", "<|observation|>"):
+        enc = tokenizer.encode(s, parse_special=True)
+        if len(enc) == 1 and (special is None or s in special):
+            ids.add(enc[0])
+    return ids
+
+
 class GuildEngine:
     """The resident engine: `guild --serve` reads `GEN <max_new> <ids>` lines and streams `T <id>` lines, then
     `DONE ...`.  Requests are serialized by the service's FIFO, so one pipe is enough.
@@ -428,6 +442,8 @@ class GuildEngine:
         self.ended, self.unloaded = True, True
         self.max_context = int(args[args.index("--max-context") + 1]) if "--max-context" in args else 4096
         self.can_stop = False            # the engine honours a STOP line mid-request (READY <ctx> stop)
+        self.speech = False              # a text-to-speech model (READY ... speech): VOICE / SAY, serve/speech.py
+        self.last_speech = {}
         self.last = {}
         self.info = {}                   # INFO key=value facts (engine 0.1.8+): kv, expert slots, ... (Monitor tab)
         self.prefill_tok_s_mean = None
@@ -464,6 +480,7 @@ class GuildEngine:
                 f = line.split()
                 self.max_context = int(f[1])
                 self.can_stop = "stop" in f[2:]
+                self.speech = "speech" in f[2:]
                 break
         loading.set()
         if self.max_context <= 0:
@@ -1208,6 +1225,75 @@ class GuildEngine:
                     if not self.can_stop:
                         heard = time.monotonic()
 
+    def _command(self, line: str) -> None:
+        try:
+            self.proc.stdin.write(line + "\n")
+            self.proc.stdin.flush()
+        except OSError:                                  # the pipe is gone: the engine died (not the client)
+            raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})") from None
+
+    def encode_voice(self, samples: bytes, rate: int) -> str:
+        """A reference clip's codes (comma-separated, [frames][10]): VOICE (serve/speech.py)"""
+        self._command(f"VOICE {int(rate)} {base64.b64encode(samples).decode('ascii')}")
+        while True:
+            try:
+                line = self.lines.get(timeout=300)
+            except queue.Empty:
+                raise self._silent("the engine did not answer VOICE within 300 s") from None
+            if line is None:
+                raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})")
+            if line.startswith("CODES "):
+                f = line.split()
+                return f[2] if len(f) > 2 else ""
+            if line.startswith("ERR"):
+                raise ValueError(line[4:].strip())
+
+    def speak(self, say: str, cancel) -> Iterator[bytes | None]:
+        """16-bit PCM chunks of one SAY (serve/speech.py), None as a heartbeat while the prompt is read; a consumer
+        that stops early or `cancel` makes the engine STOP.  The finished request's numbers land in last_speech."""
+        self._command(say)
+        done = False
+        try:
+            while True:
+                try:
+                    line = self.lines.get(timeout=10)
+                except queue.Empty:
+                    if cancel.is_set():
+                        return
+                    yield None
+                    continue
+                if line is None:
+                    done = True
+                    raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})")
+                if line.startswith("A "):
+                    if cancel.is_set():
+                        return
+                    yield base64.b64decode(line[2:].strip())
+                elif line.startswith("SDONE"):
+                    f = line.split()
+                    self.last_speech = {"frames": int(f[1]), "prompt_rows": int(f[2]), "prompt_ms": float(f[3]),
+                                        "decode_ms": float(f[4]), "finish_reason": f[5], "sample_rate": int(f[6])}
+                    done = True
+                    return
+                elif line.startswith("ERR"):
+                    done = True
+                    raise ValueError(line[4:].strip())
+        finally:
+            if not done:
+                if self.can_stop:
+                    try:
+                        self._command("STOP")
+                    except EngineDied:
+                        return
+                deadline = time.monotonic() + 60
+                while time.monotonic() < deadline:
+                    try:
+                        line = self.lines.get(timeout=max(0.1, deadline - time.monotonic()))
+                    except queue.Empty:
+                        break
+                    if line is None or line.startswith(("SDONE", "ERR")):
+                        break
+
     def _silent(self, what: str) -> EngineSilent:
         """#481: end an engine that lost step with the server (its main thread waits for a command the server never
         sends), so the next request starts it again: killed now, its GPU and RAM go back with the process."""
@@ -1658,6 +1744,7 @@ class Service:
         self.shared = {}                              # the web app's Chat settings for every client (POST /settings)
         self.shared_path = None                       # where they are kept between starts (next to the config)
         self.fifo = threading.Lock()
+        self.voices = speech_api.Voices(None)         # --voices / the config's voices_dir (serve/speech.py)
         self.embeddings = threading.local()           # the current request's image embeddings file (GENI)
         self.api_key = ""                              # when set, /v1/* needs it (Bearer or x-api-key)
         # #458 (opt-in, the config's "effort_position": "end"): a non-default reasoning effort goes in a short system
@@ -1706,8 +1793,7 @@ class Service:
         self.reasoning_budget_tokens = 0                 # #123: the config's default thinking budget (0: none)
         self.repeat_stop_tokens = REPEAT_STOP_TOKENS     # #606: one token this many times in a row ends a reply (0: off)
         self.anthropic_think_unasked = True               # #278: "anthropic_thinking": "on_request" -> False
-        self.stop_ids = set(tokenizer.encode(IM_END, parse_special=True) +
-                            tokenizer.encode("<|endoftext|>", parse_special=True))
+        self.stop_ids = end_of_turn_ids(tokenizer)
 
     def loaded(self) -> bool:
         return not hasattr(self.engine, "alive") or self.engine.alive()
@@ -1870,6 +1956,26 @@ class Service:
                     with self.status_lock:
                         trace["load_s"] += round(time.perf_counter() - loading, 3)
                         trace["state"] = "queued"
+
+    def speak(self, text: str, voice: str | None, refs: list[tuple[bytes, str]], params: dict, cancel,
+              chunk: int = 16) -> Iterator[bytes | None]:
+        """Text to speech: 16-bit PCM chunks at 44.1 kHz (None: a heartbeat).  `voice` names a voice of the voices
+        folder; `refs` are (WAV bytes, transcript) clips brought by the request."""
+        self.load()
+        if not getattr(self.engine, "speech", False):
+            raise ValueError("this model does not speak: start a text-to-speech model (Fish Audio Drama 3, "
+                             "guild-generate --drama3) for /v1/audio/speech")
+        if not isinstance(text, str) or not text.strip():
+            raise ValueError("input: the text to speak")
+        with self.fifo:
+            self.last_request_at = time.time()
+            pairs = []
+            if voice:
+                pairs.append(self.voices.reference(voice, self.engine.encode_voice))
+            for wav, transcript in refs:
+                samples, rate = speech_api.wav_samples(wav)
+                pairs.append((transcript, self.engine.encode_voice(samples, rate)))
+            yield from self.engine.speak(speech_api.say_line(text, pairs, {**params, "chunk": chunk}), cancel)
 
     def unload(self, idle_for: float | None = None) -> str:
         """Stop the engine between requests: "unloaded", "not loaded", "busy" (a request is running or waiting, or
@@ -2203,7 +2309,15 @@ class Service:
                                  f"max_tokens (at most {max(0, room)} here), or add \"fit_max_tokens\": true to the "
                                  "model's guild-<model>.json to shorten it to the room left (#545)")
             max_new = max(1, room)          # --fit-max-tokens: a shorter completion beats a 400
-        return ids, kwargs.get("enable_thinking", True) is not False, max_new
+        # a prompt that ends inside an open <think> (GLM-5's template opens one whatever enable_thinking says) is
+        # answered with reasoning first
+        return ids, kwargs.get("enable_thinking", True) is not False or self._opens_think(ids), max_new
+
+    def _opens_think(self, ids) -> bool:
+        if not hasattr(self, "_think_id"):
+            enc = self.tok.encode("<think>", parse_special=True)
+            self._think_id = enc[0] if len(enc) == 1 else None
+        return bool(ids) and self._think_id is not None and ids[-1] == self._think_id
 
     def _note(self, n, evs, st=None, rate=None):
         with self.status_lock:
@@ -2433,9 +2547,14 @@ class Service:
                             el = now - st.get("started", now)
                             ft = st.get("first_token")
                             rate = n / max(1e-6, now - ft) if ft else 0.0
-                            hit_msg = f", expert cache {hit_rate*100:.1f}% hit" if hit_rate is not None else ""
+                            # no hits at all is a model without GPU-cached experts (Ornith's formats), not news
+                            hit_msg = (f", expert cache {hit_rate*100:.1f}% hit"
+                                       if hit_rate is not None and (last.get("hits") or pcie_share) else "")
                             if hit_msg and pcie_share:
                                 hit_msg += f" (+{pcie_share*100:.1f}% of the routed experts over PCIe)"
+                            if last.get("drafts_offered"):
+                                hit_msg += (f", drafts {last.get('drafts_accepted') or 0}/{last['drafts_offered']} "
+                                            "accepted")
                             print(f"[guild] done: {n} tokens in {el:.0f} s ({rate:.1f} tok/s) "
                                   f"({finish}, cancel={cancel.is_set()}){hit_msg}", flush=True)
                             if finish == "length" and parser.state == "reasoning":   # #530
@@ -3073,6 +3192,10 @@ def make_handler(svc: Service):
             elif path == "/v1/status":
                 if self._authorized():
                     self._json(200, svc.v1_status())
+            elif path == "/v1/audio/voices":
+                if self._authorized():
+                    self._json(200, {"object": "list", "speech": bool(getattr(svc.engine, "speech", False)),
+                                     "data": [{"id": v, "object": "voice"} for v in svc.voices.names()]})
             else:
                 self._json(404, {"error": {"message": "not found"}})
 
@@ -3150,6 +3273,9 @@ def make_handler(svc: Service):
                         self._json(200, svc.vram(r))
                     except EngineDied as e:
                         self._json(503, {"error": {"type": "server_error", "message": str(e)}})
+                    return
+                if path in ("/v1/audio/speech", "/v1/tts"):
+                    self._speech(req, path)
                     return
                 if path in ("/v1/chat/completions", "/v1/messages", "/v1/responses"):
                     self.record = svc.begin_request(path, req)
@@ -3310,6 +3436,84 @@ def make_handler(svc: Service):
             print("[guild] other apps now use the Chat settings: " + ", ".join(f"{k}={v}" for k, v in shared.items())
                   if shared else "[guild] other apps use their own settings again", flush=True)
             self._json(200, {"shared": bool(shared), "defaults": shared})
+
+        def _speech(self, req, path):
+            """POST /v1/audio/speech (OpenAI: input, voice, instructions, response_format wav|pcm, stream_format)
+            and POST /v1/tts (Fish Audio: text, references [{audio: base64 WAV, text}], reference_id, format, the
+            sampling).  The audio is 16-bit mono at 44.1 kHz.  A stream (stream_format "audio", or "streaming":
+            true) is sent as it is made: WAV with open-ended sizes, or raw PCM."""
+            import base64 as b64
+            if path == "/v1/audio/speech":
+                text, voice, fmt = req.get("input"), req.get("voice") or None, req.get("response_format") or "wav"
+                if not isinstance(text, str) or not text.strip():
+                    raise ValueError("input: the text to speak")
+                if req.get("instructions"):              # Drama 3 takes direction in brackets before the line
+                    text = speech_api.with_direction(text, str(req["instructions"]))
+                refs = []
+                stream = req.get("stream_format") == "audio"
+                if req.get("speed") not in (None, 1, 1.0):
+                    raise ValueError("speed: only 1.0 (Drama 3 takes pace in the text, e.g. [slowly])")
+            else:
+                text, voice, fmt = req.get("text"), req.get("reference_id") or None, req.get("format") or "wav"
+                refs = []
+                for r in req.get("references") or []:
+                    if not isinstance(r, dict) or not r.get("audio") or not isinstance(r.get("text"), str):
+                        raise ValueError("references: [{\"audio\": base64 WAV, \"text\": its transcript}]")
+                    try:
+                        refs.append((b64.b64decode(r["audio"]), r["text"]))
+                    except ValueError:
+                        raise ValueError("references: audio is not base64") from None
+                stream = req.get("streaming") is True
+            if fmt not in ("wav", "pcm"):
+                raise ValueError("response_format: wav or pcm (16-bit mono, 44.1 kHz)")
+            params = speech_api.speech_params(req)
+            seed = str(int(params["seed"]))                    # sent back, so a take can be replayed
+            cancel = threading.Event()
+            self._watch_client(cancel)
+            chunks = svc.speak(text, voice, refs, params, cancel)
+            if not stream:
+                pcm = b"".join(c for c in chunks if c)
+                body = (speech_api.wav_header(44100, len(pcm) // 2) if fmt == "wav" else b"") + pcm
+                self.send_response(200)
+                self.send_header("Content-Type", "audio/wav" if fmt == "wav" else "audio/pcm")
+                self.send_header("X-Guild-Seed", seed)
+                self._cors()
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            try:
+                first = next((c for c in chunks if c), None)   # errors before the answer starts are a JSON error
+            except BaseException:
+                chunks.close()
+                raise
+            # From here the answer has started: an error can only end the connection (a JSON error written now would
+            # land inside the audio), and the generator is closed whatever happens, so its fifo is released at once.
+            try:
+                self.send_response(200)
+                self.send_header("Content-Type", "audio/wav" if fmt == "wav" else "audio/pcm")
+                self.send_header("Cache-Control", "no-cache")
+                self.send_header("X-Accel-Buffering", "no")
+                self.send_header("X-Guild-Seed", seed)
+                self._cors()
+                self.end_headers()
+                if fmt == "wav":
+                    self.wfile.write(speech_api.wav_header(44100, None))
+                if first:
+                    self.wfile.write(first)
+                    self.wfile.flush()
+                for c in chunks:
+                    if c:
+                        self.wfile.write(c)
+                        self.wfile.flush()
+            except OSError:
+                cancel.set()
+                raise
+            except Exception as e:                       # the engine failed mid-stream (ERR, or it died)
+                print(f"[guild] speech stream ended early: {e}", flush=True)
+                self.close_connection = True
+            finally:
+                chunks.close()
 
         def _sse(self):
             self._note(http_status=200)
@@ -3907,7 +4111,8 @@ def main() -> int:
     ap.add_argument("--script", action="append",
                     help="the mock engine's answer (default: a short greeting); given more than once, requests get "
                          "them in turn and the last one repeats")
-    ap.add_argument("--port", type=int, default=8095)
+    ap.add_argument("--port", type=int, default=None,
+                    help="the port to listen on (default 8095; also \"port\" in the config)")
     ap.add_argument("--gpu", help="the GPU to run on, as nvidia-smi numbers them, or several for a layer split "
                                   "(\"0,2\"; also \"gpu\" in the config)")
     ap.add_argument("--tokenizer", default=str(ROOT / "pack/full/tokenizer"),
@@ -3921,6 +4126,8 @@ def main() -> int:
     ap.add_argument("--mcp-config", help="a JSON file with MCP servers in Claude Desktop's format ({\"mcpServers\": "
                                          "{...}}); the web app's chat can use their tools (also \"mcp_servers\" in "
                                          "the config)")
+    ap.add_argument("--voices", help="a folder of voices for /v1/audio/speech: <name>.wav with its transcript in "
+                    "<name>.txt (the config's voices_dir)")
     ap.add_argument("--lazy", action="store_true", help="start the text-only API unloaded; load on first request")
     ap.add_argument("--api-monitor", action="store_true",
                     help="the API request monitor at /api-monitor: keeps the last 100 requests' prompts and answers in "
@@ -3939,6 +4146,7 @@ def main() -> int:
     if a.gpu is not None:
         cfg["gpu"] = int(a.gpu) if a.gpu.strip().isdigit() else a.gpu
     a.host = a.host or cfg.get("host") or "127.0.0.1"   # issue #26: the run scripts pass no --host, the config can
+    a.port = a.port or int(cfg.get("port") or 8095)     # as "host": a config's "port" was read only by setup's scripts
     try:                                                # before the minutes of loading: is the port free?
         Server((a.host, a.port), BaseHTTPRequestHandler).server_close()
     except OSError:
@@ -3958,7 +4166,9 @@ def main() -> int:
             tokens[i] = t
         merges = (tpath / "merges.txt").read_text(encoding="utf-8").split("\n")
         types = json.loads((tpath / "token_type.json").read_text())
-        tok = ST.Tokenizer(tokens, merges, types)
+        info = tpath / "tokenizer.json"   # the pre-tokenizer rule (qwen35, or glm4 for GLM-5.3-Flash)
+        pre = json.loads(info.read_text(encoding="utf-8")).get("pre", "qwen35") if info.exists() else "qwen35"
+        tok = ST.Tokenizer(tokens, merges, types, pre=pre)
     hub = hub_from_config(cfg, a.mcp_config)            # before the minutes of loading: a bad entry stops here
     if a.engine == "guild":
         if not cfg:
@@ -4030,6 +4240,7 @@ def main() -> int:
               file=sys.stderr)
         return 2
     svc.api_key = a.api_key or cfg.get("api_key", "")
+    svc.voices = speech_api.Voices(a.voices or cfg.get("voices_dir"))
     svc.cors_origins = origins_of(cfg.get("cors_origins"), "cors_origins", wildcard=True)
     svc.trusted_origins = origins_of(cfg.get("trusted_origins"), "trusted_origins", wildcard=False)
     try:

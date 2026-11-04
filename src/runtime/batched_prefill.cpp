@@ -146,11 +146,15 @@ struct BatchedPrefill::Impl {
     kernels::ResolvedPrefillKernels fns{};
     bool profiling = false;
     cudaEvent_t events[5] = {};
+    cudaEvent_t half_ev[2] = {}; ///< each half's rows on the host (run: two halves of a chunk at a time)
     std::FILE* profile_file = nullptr;
     ~Impl() {
         if (cs)
             cudaStreamSynchronize(cs);
         for (auto e : events)
+            if (e)
+                cudaEventDestroy(e);
+        for (auto e : half_ev)
             if (e)
                 cudaEventDestroy(e);
         for (auto p : device)
@@ -244,6 +248,9 @@ bool BatchedPrefill::init(const core::WeightTable& wt, const core::ModelGeometry
     if (m.profiling)
         for (auto& event : m.events)
             ck(cudaEventCreate(&event));
+    for (auto& event : m.half_ev)
+        if (!event)
+            ck(cudaEventCreateWithFlags(&event, cudaEventDisableTiming));
     for (int64_t l = 0; l < g.n_layers; ++l) {
         const core::LayerView lv(wt, l);
         for (const auto* key :
@@ -282,7 +289,7 @@ bool BatchedPrefill::init(const core::WeightTable& wt, const core::ModelGeometry
     m.alloc(m.tokens, B);
     m.alloc(m.positions, B * m.pos_stride);
     m.alloc(m.steps, B * kStepCount);
-    m.alloc(m.keep, 1);
+    m.alloc(m.keep, 2);
     m.alloc(m.ident, size_t(kAttentionQueries) * m.cap);
     m.alloc(m.R, B * N);
     m.alloc(m.mixed, B * N);
@@ -326,7 +333,7 @@ bool BatchedPrefill::init(const core::WeightTable& wt, const core::ModelGeometry
         m.alloc(m.htokens, B, true);
         m.alloc(m.hpositions, B * m.pos_stride, true);
         m.alloc(m.hsteps, B * kStepCount, true);
-        m.alloc(m.hkeep, 1, true);
+        m.alloc(m.hkeep, 2, true);
         m.alloc(m.hact, B * N, true);
         m.alloc(m.hparts, B * K * N, true);
         m.alloc(m.hids, B * K, true);
@@ -391,6 +398,316 @@ bool BatchedPrefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::st
     const size_t gdn_floats = state_floats + size_t(C) * (g.ssm_d_conv - 1);
     const auto& layout = m.src ? m.src->layout() : kernels::cpu::expert_layout();
     const double gu0 = m.pool->ms_multi_gu, quant0 = m.pool->ms_multi_q, down0 = m.pool->ms_multi_down;
+    // Two halves of a chunk at a time: at each layer this thread runs one half's CPU experts while the GPU runs the
+    // other half's layer up to its routing (front).  The stream keeps every layer's order (half A before half B: the
+    // recurrent states and the attention cells pass from one to the next), so each half computes what a chunk of
+    // its rows computes alone - the sequential ingestion's bits, which no batch size changes.  One half (the chunk)
+    // when profiling, when a per-layer callback reads the chunk's rows at one layer, or with GUILD_PREFILL_PAIRS=0.
+    static const bool pairs_env = [] {
+        const char* v = std::getenv("GUILD_PREFILL_PAIRS");
+        return v == nullptr || std::atoi(v) != 0;
+    }();
+    const bool pairs = pairs_env && !m.profiling && !on_layer;
+    struct Half {
+        int k = 0, r0 = 0, T = 0; // which half, its rows [r0, r0 + T) of the chunk
+        int64_t p0 = 0;
+        int qi = 0, gi = 0;
+        double wait_ms = 0, dense_ms = 0, mixer_ms = 0;
+    };
+    // the GPU part of layer l for a half: the mixer, the routing, the rows to the host, the shared expert
+    auto front = [&](Half& hf, int64_t l) {
+        const int T = hf.T;
+        const int64_t p0 = hf.p0;
+        float* R = m.R + size_t(hf.r0) * N;
+        float* mixed = m.mixed + size_t(hf.r0) * N;
+        const int32_t* steps = m.steps + size_t(hf.r0) * kStepCount;
+        const int32_t* positions = m.positions + size_t(hf.r0) * m.pos_stride;
+        const int32_t* keep = m.keep + hf.k;
+        const core::LayerView lv(*m.wt, l);
+        auto a = Clock::now();
+        m.stamp(0);
+        m.norm(R, need(lv, "attn_norm.weight"), mixed, N, T);
+        quant(m.fns, mixed, m.xq, N, T, cs);
+        if (!core::is_qsa_layer(g, l)) {
+            project(m.fns, need(lv, "attn_qkv.weight"), m.xq, m.qkv, T, cs);
+            project(m.fns, need(lv, "attn_gate.weight"), m.xq, m.z, T, cs);
+            m.stamp(1);
+            auto* state = ss.gdn_state + size_t(hf.gi - ss.gdn_ord0) * gdn_floats;
+            auto* conv = state + state_floats;
+            m.fns.gdn_conv(conv, m.qkv, static_cast<const float*>(need(lv, "ssm_conv1d.weight").data), m.h, C, 2 * HK,
+                           kEps, T, cs);
+            m.fns.gdn_ab(mixed, static_cast<const uint16_t*>(need(lv, "ssm_alpha.weight").data),
+                         static_cast<const uint16_t*>(need(lv, "ssm_beta.weight").data),
+                         static_cast<const float*>(need(lv, "ssm_dt.bias").data),
+                         static_cast<const float*>(need(lv, "ssm_a").data), m.gate, m.beta, N, HV, T, cs);
+            m.fns.gdn_recurrence(state, m.h, C, m.gate, m.beta, m.z,
+                                 static_cast<const float*>(need(lv, "ssm_norm.weight").data), kEps, m.y, HK, HV, T,
+                                 keep, g.gdn_gate_silu, cs);
+            gdn_conv_commit(conv, m.qkv, C, keep, cs);
+            m.stamp(2);
+            quant(m.fns, m.y, m.xq, V, T, cs);
+            project(m.fns, need(lv, "ssm_out.weight"), m.xq, m.bo, T, cs);
+            ++hf.gi;
+        } else {
+            project(m.fns, need(lv, "attn_q.weight"), m.xq, m.qfull, T, cs);
+            project(m.fns, need(lv, "attn_k.weight"), m.xq, m.k, T, cs);
+            project(m.fns, need(lv, "attn_v.weight"), m.xq, m.v, T, cs);
+            m.stamp(1);
+            const auto& st = ss.qsa_states[hf.qi];
+            // Append current chunk first; each query's width enforces its own causal boundary.
+            ck(cudaMemcpy2DAsync(m.q, HD * 4, m.qfull, HD * 8, HD * 4, size_t(T) * NH, cudaMemcpyDeviceToDevice, cs));
+            m.norm(m.q, need(lv, "attn_q_norm.weight"), m.q, HD, T * NH);
+            m.norm(m.k, need(lv, "attn_k_norm.weight"), m.k, HD, T * NK);
+            m.fns.rope_apply(m.q, m.q, T * NH, HD, int(s.n_rot), rope_scaling(), positions, cs);
+            m.fns.rope_apply(m.k, m.k, T * NK, HD, int(s.n_rot), rope_scaling(), positions + T * NH, cs);
+            if (st.kv_rot) {
+                fwht256_inplace_cuda(m.k, int64_t(T) * NK, cs);
+                fwht256_inplace_cuda(m.v, int64_t(T) * NK, cs);
+                fwht256_inplace_cuda(m.q, int64_t(T) * NH, cs);
+            } else if (st.kv_hybrid) {
+                fwht256_inplace_cuda(m.v, int64_t(T) * NK, cs);
+            }
+            if (st.kv_mode == 3 && !st.shares_staging) {
+                // Claim new staging slots before kv_append_step so new cells are written directly into VRAM
+                // and st.host instead of round-tripping through st.host over PCIe.
+                core::qsa_kv_resolve(st, g, m.ident, steps + (T - 1) * kStepCount, 1, m.cap, cs);
+            }
+            if (!st.kv_hybrid && st.kv_q4 && HD == 256) {
+                kv_append_q4(st.k_q4, st.v_q4, st.page_table, p0, T, m.k, m.v, s, cs, &st.host);
+            } else if (!st.kv_hybrid && !st.kv_q4 && NK == 2 && HD == 256) {
+                prefill::kv_append(m.k, m.v, T, p0, st.page_table, s.page_size, st.kv_int8 ? nullptr : st.k_pool,
+                                   st.kv_int8 ? nullptr : st.v_pool, st.k_q, st.v_q, st.k_scale, st.v_scale, cs,
+                                   &st.host);
+            } else {
+                for (int t = 0; t < T; ++t) {
+                    float* kt = m.k + size_t(t) * NK * HD;
+                    float* vt = m.v + size_t(t) * NK * HD;
+                    const int32_t* step_t = steps + t * kStepCount;
+                    if (st.kv_hybrid) {
+                        kv_append_q8_step(st.k_q, st.k_q, st.k_scale, st.k_scale, st.page_table, step_t, kt, kt, s, cs,
+                                          nullptr);
+                        kv_append_q4_step(st.v_q4, st.v_q4, st.page_table, step_t, vt, vt, s, cs, nullptr);
+                    } else if (st.kv_q4) {
+                        kv_append_q4_step(st.k_q4, st.v_q4, st.page_table, step_t, kt, vt, s, cs, &st.host);
+                    } else if (st.kv_int8) {
+                        kv_append_q8_step(st.k_q, st.v_q, st.k_scale, st.v_scale, st.page_table, step_t, kt, vt, s, cs,
+                                          &st.host);
+                    } else {
+                        kv_append_step(st.k_pool, st.v_pool, st.page_table, step_t, kt, vt, s, cs, &st.host);
+                    }
+                }
+            }
+            if (!(st.kv_mode == 3 && !st.shares_staging)) {
+                core::qsa_kv_resolve(st, g, m.ident, steps + (T - 1) * kStepCount, 1, m.cap, cs);
+            }
+            for (int t = 0; t < T; t += kAttentionQueries) {
+                const int count = std::min(kAttentionQueries, T - t);
+                const int active_cap = std::max(1, int(p0 + t + count));
+                qsa_decode_attn_batch(m.q + size_t(t) * NH * HD, core::qsa_attn_pools(st), m.ident,
+                                      steps + t * kStepCount, active_cap, s, m.scratch, m.attn + size_t(t) * NH * HD,
+                                      count, cs, 0);
+            }
+            if (st.kv_rot || st.kv_hybrid)
+                fwht256_inplace_cuda(m.attn, int64_t(T) * NH, cs);
+            native_qsa_gate_apply(m.attn, m.qfull, m.attn, T * NH, HD, cs);
+            m.stamp(2);
+            quant(m.fns, m.attn, m.xq, NH * HD, T, cs);
+            project(m.fns, need(lv, "attn_output.weight"), m.xq, m.bo, T, cs);
+            ++hf.qi;
+        }
+        add_inplace(R, m.bo, size_t(T) * N, cs);
+        m.stamp(3);
+        stats_.ms_mixer += ms(a); // host submission; the waits are the back's
+        m.norm(R, need(lv, "post_attention_norm.weight"), mixed, N, T);
+        m.fns.router_projection(mixed, static_cast<const uint16_t*>(need(lv, "ffn_gate_inp.weight").data), m.logits, N,
+                                NE, T, cs);
+        router_top10(m.logits, T, NE, K, m.ids + size_t(hf.r0) * K, m.weights + size_t(hf.r0) * K, cs);
+        ck(cudaMemcpyAsync(m.hact + size_t(hf.r0) * N, mixed, size_t(T) * N * 4, cudaMemcpyDeviceToHost, cs));
+        ck(cudaMemcpyAsync(m.hids + size_t(hf.r0) * K, m.ids + size_t(hf.r0) * K, size_t(T) * K * 4,
+                           cudaMemcpyDeviceToHost, cs));
+        ck(cudaMemcpyAsync(m.hweights + size_t(hf.r0) * K, m.weights + size_t(hf.r0) * K, size_t(T) * K * 4,
+                           cudaMemcpyDeviceToHost, cs));
+        m.stamp(4);
+        ck(cudaEventRecord(m.half_ev[hf.k], cs));
+        // the shared expert on the GPU while the CPU runs the routed ones
+        NativeSharedWeights sw;
+        const auto& wg = need(lv, "ffn_gate_shexp.weight");
+        const auto& wu = need(lv, "ffn_up_shexp.weight");
+        const auto& wd = need(lv, "ffn_down_shexp.weight");
+        sw.gate_type = wg.native_type;
+        sw.gate_data = wg.native_data;
+        sw.up_type = wu.native_type;
+        sw.up_data = wu.native_data;
+        sw.down_type = wd.native_type;
+        sw.down_data = wd.native_data;
+        sw.q8_1 = m.xq;
+        shared_expert_multi(T, mixed, m.bf, sw,
+                            static_cast<const uint16_t*>(need(lv, "ffn_gate_inp_shexp.weight").data), m.sg, m.su,
+                            m.scalar, m.shared + size_t(hf.r0) * N, N, F, cs);
+    };
+    // the rest of layer l for a half: its routed experts (the CPU's, and the GPU cache's), combined into its rows
+    auto back = [&](Half& hf, int64_t l) {
+        const int T = hf.T;
+        const int64_t p0 = hf.p0;
+        float* R = m.R + size_t(hf.r0) * N;
+        const float* mixed = m.mixed + size_t(hf.r0) * N;
+        float* shared = m.shared + size_t(hf.r0) * N;
+        float* parts = m.parts + size_t(hf.r0) * K * N;
+        const float* weights = m.weights + size_t(hf.r0) * K;
+        float* hact = m.hact + size_t(hf.r0) * N;
+        float* hparts = m.hparts + size_t(hf.r0) * K * N;
+        const int32_t* hids = m.hids + size_t(hf.r0) * K;
+        const float* hweights = m.hweights + size_t(hf.r0) * K;
+        auto a = Clock::now();
+        const auto wait_start = Clock::now();
+        ck(cudaEventSynchronize(m.half_ev[hf.k]));
+        const double wait_ms = ms(wait_start);
+        stats_.host_wait_ms += wait_ms;
+        const double dense_ms = m.elapsed(0, 1) + m.elapsed(2, 3) + m.elapsed(3, 4), mixer_ms = m.elapsed(1, 2);
+        stats_.gpu_dense_ms += dense_ms;
+        if (core::is_qsa_layer(g, l))
+            stats_.gpu_attention_ms += mixer_ms;
+        else
+            stats_.gpu_gdn_ms += mixer_ms;
+        std::string e;
+        if (!core::validate_finite(hweights, size_t(T) * K, "prefill routing weights", e))
+            throw std::runtime_error(e);
+        // Group by expert, but write every result to its original token/routing rank.
+        const auto group_start = Clock::now();
+        for (auto& list : m.entries)
+            list.clear();
+        m.jobs.clear();
+        m.job_nact.clear();
+        m.job_out.clear();
+        if (m.job_nact.capacity() < size_t(T * K)) {
+            m.job_nact.reserve(size_t(T * K));
+            m.job_out.reserve(size_t(T * K));
+        }
+        const auto& fmt = layout.fmt[size_t(l)];
+        if (!m.pool->quant_act_multi_native(fmt, hact, m.act.data(), T)) {
+            if (!core::validate_finite(hact, size_t(T) * N, "prefill expert input", e))
+                throw std::runtime_error(e);
+            throw std::runtime_error("prefill expert input: nonfinite value");
+        }
+        for (int i = 0; i < T * K; ++i) {
+            if (hids[i] < 0 || hids[i] >= NE)
+                throw std::runtime_error("prefill routed expert ID outside vocabulary");
+            m.entries[size_t(hids[i])].push_back(i);
+        }
+        m.src->begin_layer(l, hids, T * K);
+        for (int expert = 0; expert < NE; ++expert) {
+            const auto& list = m.entries[size_t(expert)];
+            if (list.empty())
+                continue;
+            const int slot = m.cache ? m.cache->slot_of(l, expert) : -1;
+            const uint8_t* blob = nullptr;
+            if (slot >= 0)
+                blob = m.cache->device_slot(slot);
+            else if (m.src->transient(l, expert)) {
+                // A file source's staging leases can expire within a large prompt layer.
+                // Own each active file expert until every job finishes.
+                auto& storage = m.file_storage[size_t(expert)];
+                storage.resize(fmt.bytes);
+                if (m.src->copy_blob(l, expert, storage.data()))
+                    blob = storage.data();
+            } else
+                blob = m.src->blob(l, expert);
+            if (!blob)
+                throw std::runtime_error("prefill: missing routed expert blob");
+            if (slot >= 0) {
+                for (size_t b = 0; b < list.size(); b += kernels::cpu::MAXT) {
+                    const int nt = int(std::min<size_t>(kernels::cpu::MAXT, list.size() - b));
+                    // Native cached matrices keep their original quantization; no whole expert dequantization.
+                    for (int j = 0; j < nt; ++j)
+                        ck(cudaMemcpyAsync(m.gx + size_t(j) * N, mixed + size_t(list[b + j] / K) * N, N * 4,
+                                           cudaMemcpyDeviceToDevice, cs));
+                    quant(m.fns, m.gx, m.gq, N, nt, cs);
+                    m.fns.mmvq(fmt.gu_type, blob, m.gq, m.gg, N, F, nt, cs);
+                    m.fns.mmvq(fmt.gu_type, blob + fmt.up_off, m.gq, m.gu, N, F, nt, cs);
+                    native_swiglu_quantize_q8_1(m.gg, m.gu, m.gq, F, nt, cs);
+                    m.fns.mmvq(fmt.d_type, blob + fmt.down_off, m.gq, m.go, F, N, nt, cs);
+                    for (int j = 0; j < nt; ++j)
+                        ck(cudaMemcpyAsync(parts + size_t(list[b + j]) * N, m.go + size_t(j) * N, N * 4,
+                                           cudaMemcpyDeviceToDevice, cs));
+                    ++stats_.gpu_groups;
+                    ++stats_.expert_groups;
+                }
+            } else {
+                for (size_t b = 0; b < list.size(); b += kernels::cpu::kMaxMultiExt) {
+                    const int nt = int(std::min<size_t>(kernels::cpu::kMaxMultiExt, list.size() - b));
+                    kernels::cpu::ExpertJobMulti job;
+                    job.blob = blob;
+                    job.nt = nt;
+                    if (nt <= kernels::cpu::MAXT) {
+                        for (int j = 0; j < nt; ++j) {
+                            const int i = list[b + j];
+                            job.nact[j] = m.act.data() + size_t(i / K) * kernels::cpu::kNativeActBytes;
+                            job.out[j] = hparts + size_t(i) * N;
+                        }
+                    } else {
+                        const size_t base = m.job_nact.size();
+                        for (int j = 0; j < nt; ++j) {
+                            const int i = list[b + j];
+                            m.job_nact.push_back(m.act.data() + size_t(i / K) * kernels::cpu::kNativeActBytes);
+                            m.job_out.push_back(hparts + size_t(i) * N);
+                        }
+                        job.nact_ext = m.job_nact.data() + base;
+                        job.out_ext = m.job_out.data() + base;
+                    }
+                    m.jobs.push_back(job);
+                    stats_.expert_bytes += fmt.bytes;
+                    ++stats_.expert_groups;
+                }
+            }
+        }
+        std::stable_sort(
+            m.jobs.begin(), m.jobs.end(),
+            [](const kernels::cpu::ExpertJobMulti& x, const kernels::cpu::ExpertJobMulti& y) { return x.nt > y.nt; });
+        const double group_ms = ms(group_start);
+        stats_.cpu_group_ms += group_ms;
+        const auto expert_start = m.profile_file ? Clock::now() : Clock::time_point{};
+        m.pool->run_split_multi_native(fmt, m.jobs.data(), int(m.jobs.size()), true);
+        const double expert_ms = m.profile_file ? ms(expert_start) : 0;
+        const auto combine_start = m.profile_file ? Clock::now() : Clock::time_point{};
+        uint64_t h2d_bytes = 0;
+        // CPU row writes never overlap resident GPU rows. Preserve rank order, not expert-ID sum order.
+        if (!m.cache || !m.cache->valid()) {
+            if (!m.pool->combine_multi_native(hparts, hweights, hact, T, K, N)) {
+                if (!core::validate_finite(hparts, size_t(T) * K * N, "prefill expert output", e))
+                    throw std::runtime_error(e);
+                throw std::runtime_error("prefill expert output: nonfinite value");
+            }
+            ck(cudaMemcpyAsync(m.bo, hact, size_t(T) * N * 4, cudaMemcpyHostToDevice, cs));
+            h2d_bytes = uint64_t(T) * N * 4;
+            add_inplace(m.bo, shared, size_t(T) * N, cs);
+            add_inplace(R, m.bo, size_t(T) * N, cs);
+        } else {
+            for (int i = 0; i < T * K; ++i)
+                if (m.cache->slot_of(l, hids[i]) < 0) {
+                    if (!core::validate_finite(hparts + size_t(i) * N, N, "prefill expert output", e))
+                        throw std::runtime_error(e);
+                    ck(cudaMemcpyAsync(parts + size_t(i) * N, hparts + size_t(i) * N, N * 4, cudaMemcpyHostToDevice,
+                                       cs));
+                    h2d_bytes += uint64_t(N) * 4;
+                }
+            native_moe_combine_multi(parts, weights, shared, m.bo, N, K, T, cs);
+            add_inplace(R, m.bo, size_t(T) * N, cs);
+            ck(cudaStreamSynchronize(cs));
+        }
+        if (on_layer) {
+            ck(cudaStreamSynchronize(cs));
+            on_layer(p0, l, T, R, m.ids + size_t(hf.r0) * K, weights);
+        }
+        stats_.activation_bytes += uint64_t(T) * (N + 2 * K) * 4 + h2d_bytes;
+        stats_.ms_moe += ms(a);
+        if (m.profile_file) {
+            const double combine_ms = ms(combine_start);
+            std::fprintf(m.profile_file, "%lld,%lld,%lld,%d,%.9f,%.9f,%.9f,%.9f,%.9f,%.9f,%llu,%llu\n", (long long) n,
+                         (long long) p0, (long long) l, T, dense_ms, mixer_ms, expert_ms, combine_ms, group_ms, wait_ms,
+                         (unsigned long long) (uint64_t(T) * (N + 2 * K) * 4), (unsigned long long) h2d_bytes);
+            std::fflush(m.profile_file);
+        }
+    };
     for (int64_t c0 = 0; c0 < n; c0 += batch_size_) {
         if (should_stop && should_stop()) {
             ck(cudaStreamSynchronize(cs));
@@ -399,18 +716,28 @@ bool BatchedPrefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::st
         }
         const int T = int(std::min<int64_t>(batch_size_, n - c0));
         const int64_t p0 = pos0 + c0;
+        // the halves: [0, TA) and [TA, T), or the chunk alone
+        const int TA = pairs && T >= 2 ? (T + 1) / 2 : T;
+        Half hv[2];
+        hv[0] = {0, 0, TA, p0, 0, 0};
+        hv[1] = {1, TA, T - TA, p0 + TA, 0, 0};
+        const int nh = TA < T ? 2 : 1;
         auto a = Clock::now();
-        for (int t = 0; t < T; ++t) {
-            m.htokens[t] = int32_t(tokens[c0 + t]);
-            qsa_step_fill(m.hsteps + t * kStepCount, p0 + t, s);
-            std::fill_n(m.hpositions + t * NH, NH, int32_t(p0 + t));
-            std::fill_n(m.hpositions + T * NH + t * NK, NK, int32_t(p0 + t));
+        for (int k = 0; k < nh; ++k) {
+            const Half& hf = hv[k];
+            int32_t* hpos = m.hpositions + size_t(hf.r0) * m.pos_stride;
+            for (int t = 0; t < hf.T; ++t) {
+                m.htokens[hf.r0 + t] = int32_t(tokens[c0 + hf.r0 + t]);
+                qsa_step_fill(m.hsteps + (hf.r0 + t) * kStepCount, hf.p0 + t, s);
+                std::fill_n(hpos + t * NH, NH, int32_t(hf.p0 + t));
+                std::fill_n(hpos + hf.T * NH + t * NK, NK, int32_t(hf.p0 + t));
+            }
+            m.hkeep[k] = hf.T;
         }
-        *m.hkeep = T;
         ck(cudaMemcpyAsync(m.tokens, m.htokens, T * 4, cudaMemcpyHostToDevice, cs));
         ck(cudaMemcpyAsync(m.steps, m.hsteps, T * kStepCount * 4, cudaMemcpyHostToDevice, cs));
         ck(cudaMemcpyAsync(m.positions, m.hpositions, T * m.pos_stride * 4, cudaMemcpyHostToDevice, cs));
-        ck(cudaMemcpyAsync(m.keep, m.hkeep, 4, cudaMemcpyHostToDevice, cs));
+        ck(cudaMemcpyAsync(m.keep, m.hkeep, nh * 4, cudaMemcpyHostToDevice, cs));
         if (const auto* emb = core::native_embed())
             emb->gather_dev(m.tokens, T, m.R, cs);
         else
@@ -418,284 +745,30 @@ bool BatchedPrefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::st
                 if (!core::embed_row(*m.wt, g, tokens[c0 + t], m.R + size_t(t) * N, cs, err))
                     return false;
         stats_.ms_embed += ms(a);
-        int qi = 0, gi = 0;
+        for (int k = 0; k < nh; ++k)
+            front(hv[k], 0);
         for (int64_t l = 0; l < g.n_layers; ++l) {
             if (should_stop && should_stop()) {
                 ck(cudaStreamSynchronize(cs));
                 err = "cancelled";
                 return false;
             }
-            const core::LayerView lv(*m.wt, l);
-            a = Clock::now();
-            m.stamp(0);
-            m.norm(m.R, need(lv, "attn_norm.weight"), m.mixed, N, T);
-            quant(m.fns, m.mixed, m.xq, N, T, cs);
-            if (!core::is_qsa_layer(g, l)) {
-                project(m.fns, need(lv, "attn_qkv.weight"), m.xq, m.qkv, T, cs);
-                project(m.fns, need(lv, "attn_gate.weight"), m.xq, m.z, T, cs);
-                m.stamp(1);
-                auto* state = ss.gdn_state + size_t(gi - ss.gdn_ord0) * gdn_floats;
-                auto* conv = state + state_floats;
-                m.fns.gdn_conv(conv, m.qkv, static_cast<const float*>(need(lv, "ssm_conv1d.weight").data), m.h, C,
-                               2 * HK, kEps, T, cs);
-                m.fns.gdn_ab(m.mixed, static_cast<const uint16_t*>(need(lv, "ssm_alpha.weight").data),
-                             static_cast<const uint16_t*>(need(lv, "ssm_beta.weight").data),
-                             static_cast<const float*>(need(lv, "ssm_dt.bias").data),
-                             static_cast<const float*>(need(lv, "ssm_a").data), m.gate, m.beta, N, HV, T, cs);
-                m.fns.gdn_recurrence(state, m.h, C, m.gate, m.beta, m.z,
-                                     static_cast<const float*>(need(lv, "ssm_norm.weight").data), kEps, m.y, HK, HV, T,
-                                     m.keep, g.gdn_gate_silu, cs);
-                gdn_conv_commit(conv, m.qkv, C, m.keep, cs);
-                m.stamp(2);
-                quant(m.fns, m.y, m.xq, V, T, cs);
-                project(m.fns, need(lv, "ssm_out.weight"), m.xq, m.bo, T, cs);
-                ++gi;
-            } else {
-                project(m.fns, need(lv, "attn_q.weight"), m.xq, m.qfull, T, cs);
-                project(m.fns, need(lv, "attn_k.weight"), m.xq, m.k, T, cs);
-                project(m.fns, need(lv, "attn_v.weight"), m.xq, m.v, T, cs);
-                m.stamp(1);
-                const auto& st = ss.qsa_states[qi];
-                // Append current chunk first; each query's width enforces its own causal boundary.
-                ck(cudaMemcpy2DAsync(m.q, HD * 4, m.qfull, HD * 8, HD * 4, size_t(T) * NH, cudaMemcpyDeviceToDevice,
-                                     cs));
-                m.norm(m.q, need(lv, "attn_q_norm.weight"), m.q, HD, T * NH);
-                m.norm(m.k, need(lv, "attn_k_norm.weight"), m.k, HD, T * NK);
-                m.fns.rope_apply(m.q, m.q, T * NH, HD, int(s.n_rot), rope_scaling(), m.positions, cs);
-                m.fns.rope_apply(m.k, m.k, T * NK, HD, int(s.n_rot), rope_scaling(), m.positions + T * NH, cs);
-                if (st.kv_rot) {
-                    fwht256_inplace_cuda(m.k, int64_t(T) * NK, cs);
-                    fwht256_inplace_cuda(m.v, int64_t(T) * NK, cs);
-                    fwht256_inplace_cuda(m.q, int64_t(T) * NH, cs);
-                } else if (st.kv_hybrid) {
-                    fwht256_inplace_cuda(m.v, int64_t(T) * NK, cs);
-                }
-                if (st.kv_mode == 3 && !st.shares_staging) {
-                    // Claim new staging slots before kv_append_step so new cells are written directly into VRAM
-                    // and st.host instead of round-tripping through st.host over PCIe.
-                    core::qsa_kv_resolve(st, g, m.ident, m.steps + (T - 1) * kStepCount, 1, m.cap, cs);
-                }
-                if (!st.kv_hybrid && st.kv_q4 && HD == 256) {
-                    kv_append_q4(st.k_q4, st.v_q4, st.page_table, p0, T, m.k, m.v, s, cs, &st.host);
-                } else if (!st.kv_hybrid && !st.kv_q4 && NK == 2 && HD == 256) {
-                    prefill::kv_append(m.k, m.v, T, p0, st.page_table, s.page_size, st.kv_int8 ? nullptr : st.k_pool,
-                                       st.kv_int8 ? nullptr : st.v_pool, st.k_q, st.v_q, st.k_scale, st.v_scale, cs,
-                                       &st.host);
-                } else {
-                    for (int t = 0; t < T; ++t) {
-                        float* kt = m.k + size_t(t) * NK * HD;
-                        float* vt = m.v + size_t(t) * NK * HD;
-                        const int32_t* step_t = m.steps + t * kStepCount;
-                        if (st.kv_hybrid) {
-                            kv_append_q8_step(st.k_q, st.k_q, st.k_scale, st.k_scale, st.page_table, step_t, kt, kt, s,
-                                              cs, nullptr);
-                            kv_append_q4_step(st.v_q4, st.v_q4, st.page_table, step_t, vt, vt, s, cs, nullptr);
-                        } else if (st.kv_q4) {
-                            kv_append_q4_step(st.k_q4, st.v_q4, st.page_table, step_t, kt, vt, s, cs, &st.host);
-                        } else if (st.kv_int8) {
-                            kv_append_q8_step(st.k_q, st.v_q, st.k_scale, st.v_scale, st.page_table, step_t, kt, vt, s,
-                                              cs, &st.host);
-                        } else {
-                            kv_append_step(st.k_pool, st.v_pool, st.page_table, step_t, kt, vt, s, cs, &st.host);
-                        }
-                    }
-                }
-                if (!(st.kv_mode == 3 && !st.shares_staging)) {
-                    core::qsa_kv_resolve(st, g, m.ident, m.steps + (T - 1) * kStepCount, 1, m.cap, cs);
-                }
-                for (int t = 0; t < T; t += kAttentionQueries) {
-                    const int count = std::min(kAttentionQueries, T - t);
-                    const int active_cap = std::max(1, int(p0 + t + count));
-                    qsa_decode_attn_batch(m.q + size_t(t) * NH * HD, core::qsa_attn_pools(st), m.ident,
-                                          m.steps + t * kStepCount, active_cap, s, m.scratch,
-                                          m.attn + size_t(t) * NH * HD, count, cs, 0);
-                }
-                if (st.kv_rot || st.kv_hybrid)
-                    fwht256_inplace_cuda(m.attn, int64_t(T) * NH, cs);
-                native_qsa_gate_apply(m.attn, m.qfull, m.attn, T * NH, HD, cs);
-                m.stamp(2);
-                quant(m.fns, m.attn, m.xq, NH * HD, T, cs);
-                project(m.fns, need(lv, "attn_output.weight"), m.xq, m.bo, T, cs);
-                ++qi;
-            }
-            add_inplace(m.R, m.bo, size_t(T) * N, cs);
-            m.stamp(3);
-            stats_.ms_mixer += ms(a); // host submission + waits below; not a GPU-duration estimate
-            a = Clock::now();
-            m.norm(m.R, need(lv, "post_attention_norm.weight"), m.mixed, N, T);
-            m.fns.router_projection(m.mixed, static_cast<const uint16_t*>(need(lv, "ffn_gate_inp.weight").data),
-                                    m.logits, N, NE, T, cs);
-            router_top10(m.logits, T, NE, K, m.ids, m.weights, cs);
-            ck(cudaMemcpyAsync(m.hact, m.mixed, size_t(T) * N * 4, cudaMemcpyDeviceToHost, cs));
-            ck(cudaMemcpyAsync(m.hids, m.ids, size_t(T) * K * 4, cudaMemcpyDeviceToHost, cs));
-            ck(cudaMemcpyAsync(m.hweights, m.weights, size_t(T) * K * 4, cudaMemcpyDeviceToHost, cs));
-            m.stamp(4);
-            const auto wait_start = Clock::now();
-            ck(cudaStreamSynchronize(cs));
-            const double wait_ms = ms(wait_start);
-            stats_.host_wait_ms += wait_ms;
-            const double dense_ms = m.elapsed(0, 1) + m.elapsed(2, 3) + m.elapsed(3, 4), mixer_ms = m.elapsed(1, 2);
-            stats_.gpu_dense_ms += dense_ms;
-            if (core::is_qsa_layer(g, l))
-                stats_.gpu_attention_ms += mixer_ms;
-            else
-                stats_.gpu_gdn_ms += mixer_ms;
-            NativeSharedWeights sw;
-            const auto& wg = need(lv, "ffn_gate_shexp.weight");
-            const auto& wu = need(lv, "ffn_up_shexp.weight");
-            const auto& wd = need(lv, "ffn_down_shexp.weight");
-            sw.gate_type = wg.native_type;
-            sw.gate_data = wg.native_data;
-            sw.up_type = wu.native_type;
-            sw.up_data = wu.native_data;
-            sw.down_type = wd.native_type;
-            sw.down_data = wd.native_data;
-            sw.q8_1 = m.xq;
-            shared_expert_multi(T, m.mixed, m.bf, sw,
-                                static_cast<const uint16_t*>(need(lv, "ffn_gate_inp_shexp.weight").data), m.sg, m.su,
-                                m.scalar, m.shared, N, F, cs);
-            std::string e;
-            if (!core::validate_finite(m.hweights, size_t(T) * K, "prefill routing weights", e))
-                throw std::runtime_error(e);
-            // Group by expert, but write every result to its original token/routing rank.
-            const auto group_start = Clock::now();
-            for (auto& list : m.entries)
-                list.clear();
-            m.jobs.clear();
-            m.job_nact.clear();
-            m.job_out.clear();
-            if (m.job_nact.capacity() < size_t(T * K)) {
-                m.job_nact.reserve(size_t(T * K));
-                m.job_out.reserve(size_t(T * K));
-            }
-            const auto& fmt = layout.fmt[size_t(l)];
-            if (!m.pool->quant_act_multi_native(fmt, m.hact, m.act.data(), T)) {
-                if (!core::validate_finite(m.hact, size_t(T) * N, "prefill expert input", e))
-                    throw std::runtime_error(e);
-                throw std::runtime_error("prefill expert input: nonfinite value");
-            }
-            for (int i = 0; i < T * K; ++i) {
-                if (m.hids[i] < 0 || m.hids[i] >= NE)
-                    throw std::runtime_error("prefill routed expert ID outside vocabulary");
-                m.entries[size_t(m.hids[i])].push_back(i);
-            }
-            m.src->begin_layer(l, m.hids, T * K);
-            for (int expert = 0; expert < NE; ++expert) {
-                const auto& list = m.entries[size_t(expert)];
-                if (list.empty())
-                    continue;
-                const int slot = m.cache ? m.cache->slot_of(l, expert) : -1;
-                const uint8_t* blob = nullptr;
-                if (slot >= 0)
-                    blob = m.cache->device_slot(slot);
-                else if (m.src->transient(l, expert)) {
-                    // A file source's staging leases can expire within a large prompt layer.
-                    // Own each active file expert until every job finishes.
-                    auto& storage = m.file_storage[size_t(expert)];
-                    storage.resize(fmt.bytes);
-                    if (m.src->copy_blob(l, expert, storage.data()))
-                        blob = storage.data();
-                } else
-                    blob = m.src->blob(l, expert);
-                if (!blob)
-                    throw std::runtime_error("prefill: missing routed expert blob");
-                if (slot >= 0) {
-                    for (size_t b = 0; b < list.size(); b += kernels::cpu::MAXT) {
-                        const int nt = int(std::min<size_t>(kernels::cpu::MAXT, list.size() - b));
-                        // Native cached matrices keep their original quantization; no whole expert dequantization.
-                        for (int j = 0; j < nt; ++j)
-                            ck(cudaMemcpyAsync(m.gx + size_t(j) * N, m.mixed + size_t(list[b + j] / K) * N, N * 4,
-                                               cudaMemcpyDeviceToDevice, cs));
-                        quant(m.fns, m.gx, m.gq, N, nt, cs);
-                        m.fns.mmvq(fmt.gu_type, blob, m.gq, m.gg, N, F, nt, cs);
-                        m.fns.mmvq(fmt.gu_type, blob + fmt.up_off, m.gq, m.gu, N, F, nt, cs);
-                        native_swiglu_quantize_q8_1(m.gg, m.gu, m.gq, F, nt, cs);
-                        m.fns.mmvq(fmt.d_type, blob + fmt.down_off, m.gq, m.go, F, N, nt, cs);
-                        for (int j = 0; j < nt; ++j)
-                            ck(cudaMemcpyAsync(m.parts + size_t(list[b + j]) * N, m.go + size_t(j) * N, N * 4,
-                                               cudaMemcpyDeviceToDevice, cs));
-                        ++stats_.gpu_groups;
-                        ++stats_.expert_groups;
-                    }
-                } else {
-                    for (size_t b = 0; b < list.size(); b += kernels::cpu::kMaxMultiExt) {
-                        const int nt = int(std::min<size_t>(kernels::cpu::kMaxMultiExt, list.size() - b));
-                        kernels::cpu::ExpertJobMulti job;
-                        job.blob = blob;
-                        job.nt = nt;
-                        if (nt <= kernels::cpu::MAXT) {
-                            for (int j = 0; j < nt; ++j) {
-                                const int i = list[b + j];
-                                job.nact[j] = m.act.data() + size_t(i / K) * kernels::cpu::kNativeActBytes;
-                                job.out[j] = m.hparts + size_t(i) * N;
-                            }
-                        } else {
-                            const size_t base = m.job_nact.size();
-                            for (int j = 0; j < nt; ++j) {
-                                const int i = list[b + j];
-                                m.job_nact.push_back(m.act.data() + size_t(i / K) * kernels::cpu::kNativeActBytes);
-                                m.job_out.push_back(m.hparts + size_t(i) * N);
-                            }
-                            job.nact_ext = m.job_nact.data() + base;
-                            job.out_ext = m.job_out.data() + base;
-                        }
-                        m.jobs.push_back(job);
-                        stats_.expert_bytes += fmt.bytes;
-                        ++stats_.expert_groups;
-                    }
-                }
-            }
-            std::stable_sort(m.jobs.begin(), m.jobs.end(),
-                             [](const kernels::cpu::ExpertJobMulti& a, const kernels::cpu::ExpertJobMulti& b) {
-                                 return a.nt > b.nt;
-                             });
-            const double group_ms = ms(group_start);
-            stats_.cpu_group_ms += group_ms;
-            const auto expert_start = m.profile_file ? Clock::now() : Clock::time_point{};
-            m.pool->run_split_multi_native(fmt, m.jobs.data(), int(m.jobs.size()), true);
-            const double expert_ms = m.profile_file ? ms(expert_start) : 0;
-            const auto combine_start = m.profile_file ? Clock::now() : Clock::time_point{};
-            uint64_t h2d_bytes = 0;
-            // CPU row writes never overlap resident GPU rows. Preserve rank order, not expert-ID sum order.
-            if (!m.cache || !m.cache->valid()) {
-                if (!m.pool->combine_multi_native(m.hparts, m.hweights, m.hact, T, K, N)) {
-                    if (!core::validate_finite(m.hparts, size_t(T) * K * N, "prefill expert output", e))
-                        throw std::runtime_error(e);
-                    throw std::runtime_error("prefill expert output: nonfinite value");
-                }
-                ck(cudaMemcpyAsync(m.bo, m.hact, size_t(T) * N * 4, cudaMemcpyHostToDevice, cs));
-                h2d_bytes = uint64_t(T) * N * 4;
-                add_inplace(m.bo, m.shared, size_t(T) * N, cs);
-                add_inplace(m.R, m.bo, size_t(T) * N, cs);
-            } else {
-                for (int i = 0; i < T * K; ++i)
-                    if (m.cache->slot_of(l, m.hids[i]) < 0) {
-                        if (!core::validate_finite(m.hparts + size_t(i) * N, N, "prefill expert output", e))
-                            throw std::runtime_error(e);
-                        ck(cudaMemcpyAsync(m.parts + size_t(i) * N, m.hparts + size_t(i) * N, N * 4,
-                                           cudaMemcpyHostToDevice, cs));
-                        h2d_bytes += uint64_t(N) * 4;
-                    }
-                native_moe_combine_multi(m.parts, m.weights, m.shared, m.bo, N, K, T, cs);
-                add_inplace(m.R, m.bo, size_t(T) * N, cs);
-                ck(cudaStreamSynchronize(cs));
-            }
-            if (on_layer) {
-                ck(cudaStreamSynchronize(cs));
-                on_layer(p0, l, T, m.R, m.ids, m.weights);
-            }
-            stats_.activation_bytes += uint64_t(T) * (N + 2 * K) * 4 + h2d_bytes;
-            stats_.ms_moe += ms(a);
-            if (m.profile_file) {
-                const double combine_ms = ms(combine_start);
-                std::fprintf(m.profile_file, "%lld,%lld,%lld,%d,%.9f,%.9f,%.9f,%.9f,%.9f,%.9f,%llu,%llu\n",
-                             (long long) n, (long long) p0, (long long) l, T, dense_ms, mixer_ms, expert_ms, combine_ms,
-                             group_ms, wait_ms, (unsigned long long) (uint64_t(T) * (N + 2 * K) * 4),
-                             (unsigned long long) h2d_bytes);
-                std::fflush(m.profile_file);
+            // each half's experts here, its next layer on the GPU after them; the other half's layer runs meanwhile
+            for (int k = 0; k < nh; ++k) {
+                back(hv[k], l);
+                if (l + 1 < g.n_layers)
+                    front(hv[k], l + 1);
             }
         }
         m.finite(m.R, size_t(T) * N, "prefill residual");
+        if (on_chunk) {
+            ck(cudaStreamSynchronize(cs));
+            if (!on_chunk(m.R, T, p0, err)) {
+                if (err.empty())
+                    err = "batched prefill: the chunk callback failed";
+                return false;
+            }
+        }
         ++stats_.chunks_processed;
     }
     ck(cudaStreamSynchronize(m.cs));

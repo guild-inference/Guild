@@ -1,5 +1,6 @@
 // src/prefill/prefill.cpp - see include/guild/prefill/prefill.hpp.
 #include "guild/prefill/prefill.hpp"
+#include "guild/core/dflash.hpp"
 #include "guild/core/mtp.hpp"
 #include "guild/core/progress.hpp"
 #include "guild/core/on_device.hpp"
@@ -29,6 +30,8 @@
 #include "guild/prefill/moe_mmq.hpp"
 #include "guild/core/peer_experts.hpp"
 #include "guild/prefill/kernels.hpp"
+#include "guild/prefill/hc_q8.hpp"
+#include "guild/core/native_dense.hpp"
 
 #include <cuda_runtime.h>
 
@@ -169,6 +172,42 @@ thread_local int g_ring_override = 0; // #340: set by a layer split (Prefill::se
 // on one chunk the smaller ring only slowed it (RTX 5070, 4K prompts: Coder -15%, IQ3_S -5%, IQ3_XXS -2%).
 thread_local int g_ring_budget = 0;
 thread_local int64_t g_ring_small_max = 0;
+// --prefill-rows (Prefill::set_rows): a chunk of more tokens computed as chunks of g_rows tokens - its products in
+// slices of at most g_rows rows (cuBLAS picks its kernel by the row count) and the ring a g_rows-token chunk takes
+// (so the same expert path) - so that it computes what those chunks compute, with each expert streamed once for all
+// of them.  Process-wide: set at load, read by the request threads.  0: the chunk is the chunk.
+std::atomic<int64_t> g_rows{0};
+std::atomic<int> g_dense_mmq{0}; // Prefill::set_dense_mmq (--prefill-mmq)
+inline size_t arith_rows(size_t T) {
+    const int64_t r = g_rows.load(std::memory_order_relaxed);
+    return r > 0 && (int64_t) T > r ? (size_t) r : T;
+}
+// A chunk's products in slices of at most g_rows rows (--prefill-rows; one product without it).  The native product
+// dequantizes its weight once: the later slices multiply the scratch the first one filled, when it holds the whole.
+void gemm_bf16(Gemm& gm, const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64_t N, int64_t K,
+               int64_t ldy = 0, float beta = 0.0f) {
+    const int64_t r = (int64_t) arith_rows((size_t) T), ld = ldy > 0 ? ldy : N;
+    for (int64_t t0 = 0; t0 < T; t0 += r)
+        gm.bf16(X + t0 * K, W, Y + t0 * ld, std::min(r, T - t0), N, K, ldy, beta);
+}
+void gemm_f16(Gemm& gm, const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64_t N, int64_t K,
+              int64_t ldy = 0, float beta = 0.0f) {
+    const int64_t r = (int64_t) arith_rows((size_t) T), ld = ldy > 0 ? ldy : N;
+    for (int64_t t0 = 0; t0 < T; t0 += r)
+        gm.f16(X + t0 * K, W, Y + t0 * ld, std::min(r, T - t0), N, K, ldy, beta);
+}
+void gemm_native(Gemm& gm, const uint16_t* X, int type, const void* W, float* Y, int64_t T, int64_t N, int64_t K,
+                 int64_t ldy = 0, float beta = 0.0f) {
+    const int64_t r = (int64_t) arith_rows((size_t) T), ld = ldy > 0 ? ldy : N;
+    const bool whole = N * K <= gm.scratch_elems();
+    for (int64_t t0 = 0; t0 < T; t0 += r) {
+        const int64_t n = std::min(r, T - t0);
+        if (t0 == 0 || !whole)
+            gm.native(X + t0 * K, type, W, Y + t0 * ld, n, N, K, ldy, beta);
+        else
+            gm.f16(X + t0 * K, gm.scratch(), Y + t0 * ld, n, N, K, ldy, beta);
+    }
+}
 // #136: the fused experts (GUILD_PF_FUSED=1) launch on a batch of a layer's streamed experts at once, so the ring
 // should hold a whole layer's (~460 of 512 on Q2_0): with 384 slots a layer's last batch waits for slots its own
 // first batch frees.  Measured on the 5070, Q2_0, the 4K / 32K code-agent prompts (one run each): fused at 384 slots
@@ -227,6 +266,7 @@ inline int ring_budget_slots() {
     return (int) (n <= 0 ? 0 : (n > cap ? cap : n));
 }
 inline int ring_slots(size_t T) {
+    T = arith_rows(T);
     const char* v = std::getenv("GUILD_PREFILL_RING");
 #if defined(GUILD_USE_HIP)
     // S6: with the opt-in RDNA4 matrix-core attention (GUILD_HIP_WMMA=1) a 96-slot ring: measured with it, 9070 XT
@@ -630,6 +670,7 @@ struct Prefill::Impl {
     float* mixed = nullptr;
     uint16_t *mixed_bf = nullptr, *mixed_h = nullptr;
     uint16_t *xn16_lo = nullptr, *lo16_lo = nullptr, *mixed_bf_lo = nullptr; // bf16x2(): the BF16 GEMMs' low parts
+    uint16_t* hc16 = nullptr; // --hc q8_0: a hyper-connection matrix's bf16 values, one at a time (bf16_proj)
     float* bo = nullptr;
     // GDN
     float *qkv = nullptr, *z = nullptr, *ab = nullptr, *gate = nullptr, *beta = nullptr, *hbuf = nullptr, *y = nullptr;
@@ -1057,6 +1098,12 @@ bool Prefill::init(const core::WeightTable& wt, const core::ModelGeometry& g, co
             m.ple_rows[b].resize(T * guild::kernels::PLE_N_HEADS);
         }
     }
+    if (core::NativeDense::hc_q8() && m.hc16 == nullptr) { // --hc q8_0: room for one hyper-connection matrix
+        if (cudaMalloc((void**) &m.hc16, (size_t) D * LR * sizeof(uint16_t)) != cudaSuccess)
+            ok = false;
+        else
+            m.owned.push_back(m.hc16);
+    }
     if (ss.qsa_states[ss.qsa_primary()].kv_mode == 1) { // KV streaming: the staging pool's identity page table
         const int64_t pages = ss.qsa_states[ss.qsa_primary()].n_pages;
         std::vector<int32_t> ident((size_t) pages);
@@ -1365,7 +1412,7 @@ bool Prefill::draft_kv(core::MtpDrafter& mtp, const float* R_rows, const int32_t
     auto proj = [&](const float* x, const uint16_t* x16, const void* w, float* y, int64_t rows, int64_t n_out,
                     int64_t k, int slot) {
         if (!q8) {
-            m.gemm.native(x16, kQ8_0, w, y, rows, n_out, k);
+            gemm_native(m.gemm, x16, kQ8_0, w, y, rows, n_out, k);
             return;
         }
         mmq::quantize(x, nullptr, xq, kQ8_0, k, k, rows, m.cs);
@@ -1422,9 +1469,9 @@ bool Prefill::draft_kv(core::MtpDrafter& mtp, const float* R_rows, const int32_t
         guild::kernels::add_streams_broadcast(h2, e2, Rm, Nn, (int) g.hc, (int) nb, m.cs);
         // the attention hyper-connection's read (its mixed input only: this pass writes nothing back)
         gr_norm_rs(Rm, w_hn, EPS, grs, xn16, nb, m.cs);
-        m.gemm.bf16(xn16, w_dn, lo, nb, LR, HCN);
+        gemm_bf16(m.gemm, xn16, w_dn, lo, nb, LR, HCN);
         gr_silu(lo, lo16, nb, m.cs);
-        m.gemm.bf16(lo16, w_up, gated, nb, HCN, LR);
+        gemm_bf16(m.gemm, lo16, w_up, gated, nb, HCN, LR);
         gr_mix_r(Rm, grs, w_hn, gated, mixed, nullptr, nb, m.cs, mixed_h);
         // K and V into the drafter's cache, as the prompt path's QSA layers append theirs
         proj(mixed, mixed_h, w_k, Kc, nb, KV, Nn, 0);
@@ -1671,7 +1718,7 @@ bool Prefill::set_peer(core::PeerExperts* peer, int64_t cap_rows, std::string& e
             ok = cudaEventCreateWithFlags(&pp->ev_dm[b], cudaEventDisableTiming) == cudaSuccess;
         const char* fs = std::getenv("GUILD_PF_PEER_STREAM");
         pp->ps_frac = fs ? std::atof(fs) : 0.35; // measured: 0.25-0.5 all ~1950-1970 at 32K, 0.35 best
-        if (pp->ps_frac > 0.0 && !mp.fallback && m.T_max >= stream_all_min()) {
+        if (pp->ps_frac > 0.0 && !mp.fallback && (int64_t) arith_rows((size_t) m.T_max) >= stream_all_min()) {
             pp->RP = 48;
             if (const char* pr = std::getenv("GUILD_PF_PEER_RING"); pr != nullptr)
                 pp->RP = std::atoi(pr);
@@ -1735,6 +1782,12 @@ void Prefill::set_pinned_share(double share) {
 }
 void Prefill::set_ring_override(int slots) {
     g_ring_override = slots > 0 ? slots : 0;
+}
+void Prefill::set_dense_mmq(int mode) {
+    g_dense_mmq.store(mode, std::memory_order_relaxed);
+}
+void Prefill::set_rows(int64_t rows) {
+    g_rows.store(rows > 0 ? rows : 0, std::memory_order_relaxed);
 }
 void Prefill::set_ring_budget(int slots, int64_t small_max) {
     g_ring_budget = slots > 0 ? slots : 0;
@@ -1856,24 +1909,131 @@ const core::WeightRef* need(const core::LayerView& v, const char* suffix, std::s
         err = v.name(suffix) + " is missing";
     return r;
 }
+// GUILD_PREFILL_DENSE_MMQ=1 (opt-in; it rounds differently): a dense matrix of a type MMQ covers multiplies its own
+// GGUF blocks against q8_1 activations (the rounding decode's MMVQ applies), all of a chunk's rows in one launch,
+// instead of an FP16 or BF16 copy through cuBLAS: the native projections, and with 2 the hyper-connection's Q8_0
+// matrices too (--hc q8_0, rebuilt as the GGUF's blocks).  Its buffers are its own, grown on first use and kept
+// (a 4096-token chunk: ~130 MB, the widest input's FP32 rows and their q8_1 copy); a failed allocation keeps the
+// cuBLAS path.  One set for the process: the prompt path reads one prompt at a time.
+struct DenseMmq {
+    std::unique_ptr<mmq::Context> ctx;
+    float* x32 = nullptr;
+    void *xq = nullptr, *blocks = nullptr;
+    int32_t *ident = nullptr, *bounds = nullptr;
+    size_t x32_bytes = 0, xq_bytes = 0, blocks_bytes = 0, ident_bytes = 0, bounds_bytes = 0;
+};
+int dense_mmq_mode() { // 1: the native projections, 2: the hyper-connection's Q8_0 matrices too
+    static const int env = [] {
+        const char* e = std::getenv("GUILD_PREFILL_DENSE_MMQ");
+        return e ? std::atoi(e) : -1;
+    }();
+    return env >= 0 ? env : g_dense_mmq.load(std::memory_order_relaxed);
+}
+bool dense_mmq_on() {
+    return dense_mmq_mode() >= 1;
+}
+DenseMmq& dense_mmq_state() {
+    static DenseMmq d;
+    return d;
+}
+bool dense_grow(void** p, size_t& have, size_t need) {
+    if (need <= have)
+        return true;
+    cudaFree(*p);
+    *p = nullptr;
+    have = 0;
+    if (cudaMalloc(p, need) != cudaSuccess) {
+        cudaGetLastError();
+        return false;
+    }
+    have = need;
+    return true;
+}
+// d.x32 holds the T x K activations; Y[T, N] = x . W^T with W `type` blocks at `w`
+bool dense_mmq_run(Gemm& gm, const void* w, int type, float* Y, int64_t T, int64_t N, int64_t K) {
+    DenseMmq& d = dense_mmq_state();
+    const auto s = (cudaStream_t) gm.stream();
+    const size_t ident_had = d.ident_bytes;
+    if (!dense_grow(&d.xq, d.xq_bytes, mmq::q8_bytes(T, K)) || !dense_grow((void**) &d.bounds, d.bounds_bytes, 16) ||
+        !dense_grow((void**) &d.ident, d.ident_bytes, (size_t) T * 4))
+        return false;
+    if (d.ident_bytes != ident_had)
+        mmq::iota(d.ident, (int64_t) (d.ident_bytes / 4), s);
+    if (!d.ctx)
+        d.ctx = std::make_unique<mmq::Context>();
+    const int32_t b[2] = {0, (int32_t) T};
+    if (cudaMemcpyAsync(d.bounds, b, sizeof b, cudaMemcpyHostToDevice, s) != cudaSuccess)
+        return false;
+    mmq::quantize(d.x32, nullptr, d.xq, type, K, K, T, s);
+    mmq::Product p;
+    p.w = w;
+    p.type = type;
+    p.w_rows = N;
+    p.w_cols = K;
+    p.expert_bytes = mmq::matrix_bytes(type, N, K);
+    p.n = 1;
+    p.xq = d.xq;
+    p.bounds = d.bounds;
+    p.ids = d.ident;
+    p.total_rows = T;
+    p.max_rows = T;
+    p.dst = Y;
+    p.ld_dst = N;
+    d.ctx->run(p, s);
+    return true;
+}
+constexpr int kGgmlQ8_0 = 8; // GGML_TYPE_Q8_0
+bool dense_mmq_x32(int64_t elems) {
+    DenseMmq& d = dense_mmq_state();
+    return dense_grow((void**) &d.x32, d.x32_bytes, (size_t) elems * 4);
+}
 bool native_proj(Gemm& gm, const core::WeightRef* w, const uint16_t* X, float* Y, int64_t T, const std::string& name,
                  std::string& err, int64_t ldy = 0) {
     if (!w->native_data) {
         err = "prefill: " + name + " has no native GGUF blocks (run with --native)";
         return false;
     }
-    gm.native(X, w->native_type, w->native_data, Y, T, w->ne1, w->ne0, ldy);
+    if (dense_mmq_on() && (ldy == 0 || ldy == w->ne1) && w->ne0 % 256 == 0 && mmq::fits(w->native_type, w->ne1) &&
+        dense_mmq_x32(T * w->ne0)) {
+        f16_to_f32(X, dense_mmq_state().x32, T * w->ne0, gm.stream());
+        if (dense_mmq_run(gm, w->native_data, w->native_type, Y, T, w->ne1, w->ne0))
+            return true;
+    }
+    gemm_native(gm, X, w->native_type, w->native_data, Y, T, w->ne1, w->ne0, ldy);
     return true;
 }
+// `hc16` (with `cs`): a hyper-connection matrix held as the GGUF's Q8_0 blocks (--hc q8_0) is first written there as
+// the bf16 values the pack would have held (hc_q8_to_bf16), one matrix at a time in stream order.
 bool bf16_proj(Gemm& gm, const core::WeightRef* w, const uint16_t* X, float* Y, int64_t T, const std::string& name,
-               std::string& err, int64_t ldy = 0, const uint16_t* X_lo = nullptr) {
-    if (w->kind != core::WeightKind::Bf16InF32 || !w->data) {
+               std::string& err, int64_t ldy = 0, const uint16_t* X_lo = nullptr, uint16_t* hc16 = nullptr,
+               cudaStream_t cs = nullptr) {
+    const uint16_t* W = (const uint16_t*) w->data;
+    if (dense_mmq_mode() >= 2 && w->hc_q8 && cs && (ldy == 0 || ldy == w->ne1) && w->ne0 % 32 == 0 &&
+        mmq::fits(kGgmlQ8_0, w->ne1) && dense_mmq_x32(T * w->ne0)) {
+        DenseMmq& d = dense_mmq_state();
+        // the blocks, then MMQ_TAIL zeroed bytes: a row shorter than MMQ's 256-value tile reads past the last one
+        const size_t wb = mmq::matrix_bytes(kGgmlQ8_0, w->ne1, w->ne0), had = d.blocks_bytes;
+        if (dense_grow(&d.blocks, d.blocks_bytes, wb + MMQ_TAIL)) {
+            if (d.blocks_bytes != had)
+                cudaMemsetAsync(d.blocks, 0, d.blocks_bytes, (cudaStream_t) cs);
+            else
+                cudaMemsetAsync((uint8_t*) d.blocks + wb, 0, MMQ_TAIL, (cudaStream_t) cs);
+            hc_q8_to_blocks(w->hc_q8, w->ne1, w->ne0, d.blocks, cs);
+            bf16_to_f32(X, X_lo, d.x32, T * w->ne0, cs);
+            if (dense_mmq_run(gm, d.blocks, kGgmlQ8_0, Y, T, w->ne1, w->ne0))
+                return true;
+        }
+    }
+    if (w->hc_q8 && hc16) {
+        hc_q8_to_bf16(w->hc_q8, w->ne1, w->ne0, hc16, cs);
+        W = hc16;
+    } else if (w->kind != core::WeightKind::Bf16InF32 || !w->data) {
         err = "prefill: " + name + " is not a resident BF16 tensor";
         return false;
     }
-    gm.bf16(X, (const uint16_t*) w->data, Y, T, w->ne1 > 0 ? w->ne1 : 1, w->ne0, ldy);
+    gemm_bf16(gm, X, W, Y, T, w->ne1 > 0 ? w->ne1 : 1, w->ne0, ldy);
     if (X_lo)
-        gm.bf16(X_lo, (const uint16_t*) w->data, Y, T, w->ne1 > 0 ? w->ne1 : 1, w->ne0, ldy, 1.0f);
+        gemm_bf16(gm, X_lo, W, Y, T, w->ne1 > 0 ? w->ne1 : 1, w->ne0, ldy, 1.0f);
     return true;
 }
 
@@ -2468,17 +2628,17 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                     const float* emb = m.ple_emb + s0 * N;
                     if (pw.key_bf16 != nullptr) {
                         to_bf16(emb, e16, nb * N, m.cs, e16_lo);
-                        m.gemm.bf16(e16, pw.key_bf16, key, nb, HD, N);
+                        gemm_bf16(m.gemm, e16, pw.key_bf16, key, nb, HD, N);
                         if (e16_lo)
-                            m.gemm.bf16(e16_lo, pw.key_bf16, key, nb, HD, N, 0, 1.0f);
+                            gemm_bf16(m.gemm, e16_lo, pw.key_bf16, key, nb, HD, N, 0, 1.0f);
                     } else {
                         to_f16(emb, e16, nb * N, m.cs);
-                        m.gemm.native(e16, pw.key_native_type, pw.key_native_data, key, nb, HD, N);
+                        gemm_native(m.gemm, e16, pw.key_native_type, pw.key_native_data, key, nb, HD, N);
                         to_bf16(emb, e16, nb * N, m.cs, e16_lo);
                     }
-                    m.gemm.bf16(e16, pw.value_bf16, val, nb, N, N);
+                    gemm_bf16(m.gemm, e16, pw.value_bf16, val, nb, N, N);
                     if (e16_lo)
-                        m.gemm.bf16(e16_lo, pw.value_bf16, val, nb, N, N, 0, 1.0f);
+                        gemm_bf16(m.gemm, e16_lo, pw.value_bf16, val, nb, N, N, 0, 1.0f);
                     try {
                         guild::kernels::native_ple_postops_batch(key, m.R + s0 * D, val, ss.ple.hist, pw, qn, gated,
                                                                  gate, (int) nb, m.cs);
@@ -2521,10 +2681,10 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                 else if (!normed)
                     gr_norm_rs(m.R, (const float*) wn->data, EPS, m.grs, m.xn16, T, m.cs, m.xn16_lo);
                 normed = false;
-                if (!bf16_proj(m.gemm, wd, m.xn16, m.lo, T, sd, err, 0, m.xn16_lo))
+                if (!bf16_proj(m.gemm, wd, m.xn16, m.lo, T, sd, err, 0, m.xn16_lo, m.hc16, m.cs))
                     return false;
                 gr_silu(m.lo, m.lo16, T, m.cs, m.lo16_lo);
-                if (!bf16_proj(m.gemm, wu, m.lo16, m.gated, T, su, err, 0, m.lo16_lo))
+                if (!bf16_proj(m.gemm, wu, m.lo16, m.gated, T, su, err, 0, m.lo16_lo, m.hc16, m.cs))
                     return false;
                 if (!bf16_proj(m.gemm, wi, m.xn16, m.inj, T, si, err, 0, m.xn16_lo))
                     return false;
@@ -2868,9 +3028,9 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                         err = "prefill: shared gate is not BF16";
                         return false;
                     }
-                    m.gemm.bf16(m.mixed_bf, (const uint16_t*) wgi->data, m.sg, T, 1, N);
+                    gemm_bf16(m.gemm, m.mixed_bf, (const uint16_t*) wgi->data, m.sg, T, 1, N);
                     if (m.mixed_bf_lo)
-                        m.gemm.bf16(m.mixed_bf_lo, (const uint16_t*) wgi->data, m.sg, T, 1, N, 0, 1.0f);
+                        gemm_bf16(m.gemm, m.mixed_bf_lo, (const uint16_t*) wgi->data, m.sg, T, 1, N, 0, 1.0f);
                     // #136: GUILD_PF_FUSED=1 - the Q2_0 pack's experts on the fused int8 kernels (moe_fused.hpp),
                     // grouped on the GPU: no host sync.  Only where every expert's place is known before the routing -
                     // the streamed walk, in which every non-resident expert of the layer comes through the ring in id
@@ -3553,10 +3713,10 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                             }
                             const int64_t o0 = m.off[(size_t) e], ne = m.cnt[(size_t) e];
                             pt.mark(kPfGemmGU, cs);
-                            m.gemm.f16(m.Xs + o0 * N, m.dq_gu[q], m.GU + o0 * 1280, ne, 1280, N);
+                            gemm_f16(m.gemm, m.Xs + o0 * N, m.dq_gu[q], m.GU + o0 * 1280, ne, 1280, N);
                             swiglu_interleaved(m.GU + o0 * 1280, m.Hh + o0 * 640, ne, m.cs);
                             pt.mark(kPfGemmD, cs);
-                            m.gemm.f16(m.Hh + o0 * 640, m.dq_d[q], m.Dm + o0 * N, ne, N, 640);
+                            gemm_f16(m.gemm, m.Hh + o0 * 640, m.dq_d[q], m.Dm + o0 * N, ne, N, 640);
                             return true;
                         };
                         if (!stream_all) {
@@ -3689,6 +3849,14 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                 }
                 if (half == 1 && guild::kernels::cvec().covers(l)) // --control-vector-scaled
                     guild::kernels::cvec_apply(m.R, l, T, D, nullptr, 0, nullptr, 0, false, m.cs);
+                if (half == 1 && feat_out_ != nullptr) { // a drafter's features: layer l is complete in R
+                    const int64_t t0 = std::max<int64_t>(0, feat_from_ - p0), nf = (int64_t) feat_layers_.size();
+                    for (int64_t k = 0; k < nf && t0 < T; ++k)
+                        if (feat_layers_[(size_t) k] == l)
+                            core::dflashk::stream_mean(m.R + t0 * D, (int) HC, (int) N,
+                                                       (int) std::min(T - t0, feat_cap_), (size_t) D, feat_out_ + k * N,
+                                                       (size_t) (nf * N), m.cs);
+                }
             }
         }
         if (!ple_land())

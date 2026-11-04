@@ -35,6 +35,9 @@ std::string ModelManifest::to_json() const {
     root["description"] = description;
     root["expected_size_bytes"] = static_cast<int64_t>(expected_size_bytes);
     root["context_length"] = static_cast<int64_t>(context_length);
+    if (!license.empty())
+        root["license"] = license;
+    root["commercial_use"] = commercial_use;
 
     if (!tokenizer_source.empty())
         root["tokenizer_source"] = tokenizer_source;
@@ -115,6 +118,8 @@ std::optional<ModelManifest> ModelManifest::from_json(const std::string& json_st
     m.description = root["description"].as_string();
     m.expected_size_bytes = static_cast<uint64_t>(root["expected_size_bytes"].as_int(0));
     m.context_length = static_cast<uint32_t>(root["context_length"].as_int(262144));
+    m.license = root["license"].as_string();
+    m.commercial_use = root["commercial_use"].as_bool(true);
 
     m.tokenizer_source = root["tokenizer_source"].as_string();
     m.mtp_source = root["mtp_source"].as_string();

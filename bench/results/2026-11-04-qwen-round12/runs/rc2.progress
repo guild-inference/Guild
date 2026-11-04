@@ -1,0 +1,5 @@
+ring 32 SUMMARY {"p4k": 46.886275141849296} wall 19749 ms gather 122 wait copy 2989  0
+ring 64 SUMMARY {"p4k": 46.74347691127869} wall 19671 ms gather 122 wait copy 2646  0
+ring 128 SUMMARY {"p4k": 46.75636827215129} wall 19235 ms gather 122 wait copy 2140  0
+ring 160 SUMMARY {"p4k": 46.70084097998796} wall 19010 ms gather 122 wait copy 1918  0
+done

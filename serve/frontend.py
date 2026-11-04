@@ -441,11 +441,69 @@ def call_end(text: str) -> int:
             return text.find(CALL_END, pos)
 
 
+ARG_KEY, ARG_KEY_END, ARG_VALUE, ARG_VALUE_END = "<arg_key>", "</arg_key>", "<arg_value>", "</arg_value>"
+
+
+def call_name(body: str) -> str:
+    """The function a call body names, in either format: `<function=NAME>...` or GLM's `NAME<arg_key>...`."""
+    s = body.strip()
+    if s.startswith("<function="):
+        return s[len("<function="):].split(">", 1)[0]
+    return s.split(ARG_KEY, 1)[0].strip()
+
+
+def _json_or_text(value: str, declared: str | None):
+    if declared == "string":
+        return value
+    try:
+        return json.loads(value)
+    except ValueError:
+        return value
+
+
+def parse_glm_tool_call(body: str, schema: dict | None = None) -> ToolCall:
+    """GLM-5's form, `NAME<arg_key>K</arg_key><arg_value>V</arg_value>...`: the template writes a string value as
+    itself and any other value as JSON, so a value is JSON-decoded unless the schema declares it a string.  A value
+    ends at the first `</arg_value>` followed by the next `<arg_key>` or by the end of the call."""
+    body = body.strip()
+    name = call_name(body)
+    if not name or "<" in name or ">" in name:
+        raise ValueError("malformed tool call: " + body[:80])
+    props = ((schema or {}).get("parameters") or {}).get("properties") or {}
+    args = {}
+    rest = body[body.find(name) + len(name):]
+    while True:
+        rest = rest.lstrip()
+        if not rest.startswith(ARG_KEY):
+            break
+        k_end = rest.find(ARG_KEY_END)
+        if k_end < 0:
+            raise ValueError("malformed tool call argument: " + rest[:80])
+        key = rest[len(ARG_KEY):k_end].strip()
+        rest = rest[k_end + len(ARG_KEY_END):].lstrip()
+        if not rest.startswith(ARG_VALUE):
+            raise ValueError("tool call argument without a value: " + key)
+        rest = rest[len(ARG_VALUE):]
+        at = rest.find(ARG_VALUE_END)
+        while at >= 0:
+            after = rest[at + len(ARG_VALUE_END):].lstrip()
+            if not after or after.startswith(ARG_KEY):
+                break
+            at = rest.find(ARG_VALUE_END, at + 1)
+        if at < 0:
+            raise ValueError("unterminated tool call argument: " + key)
+        args[key] = _json_or_text(rest[:at], (props.get(key) or {}).get("type"))
+        rest = rest[at + len(ARG_VALUE_END):]
+    return ToolCall(name=name, arguments=args)
+
+
 def parse_tool_call(body: str, schema: dict | None = None) -> ToolCall:
     """`<function=NAME>\\n<parameter=P>\\nVALUE\\n</parameter>...</function>` -> ToolCall. Values are JSON-decoded
     when the tool's schema says the parameter is not a string (or, without a schema, when they parse as JSON
-    objects/arrays/numbers/booleans)."""
+    objects/arrays/numbers/booleans).  GLM-5's `NAME<arg_key>...` form goes to parse_glm_tool_call."""
     body = body.strip()
+    if body and not body.startswith("<"):
+        return parse_glm_tool_call(body, schema)
     if not body.startswith("<function=") or ">" not in body:
         raise ValueError("malformed tool call: " + body[:80])
     name = body[len("<function="):body.index(">")]
@@ -662,8 +720,7 @@ class OutputParser:
                     return out
                 body = self.buf[:i]
                 self.buf = self.buf[i + len(CALL_END):]
-                name = body.strip()[len("<function="):].split(">", 1)[0]
-                call = parse_tool_call(body, self.schemas.get(name))
+                call = parse_tool_call(body, self.schemas.get(call_name(body)))
                 if self.scall is not None:
                     call.id = self.scall.id
                 out.append(Event("tool_call", call=call))

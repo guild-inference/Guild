@@ -28,6 +28,16 @@ public:
     // generation is serialized and each request starts a fresh sequence.
     std::unique_ptr<GuildSession> create_session(int64_t max_context = 0);
 
+    /// Text to speech (a model loaded with ModelPaths::drama3_dir): streams 44.1 kHz audio to `on_audio` as frames
+    /// are generated (from a thread of its own, one call at a time, in order, all before it returns).  Shares the
+    /// model's execution state with generation, so it must not run concurrently with a session's generate.
+    bool synthesize(const SpeechRequest& req, const SpeechCallback& on_audio, SpeechTelemetry& telemetry,
+                    std::string& error_msg);
+    bool is_speech_model() const;
+    /// A reference voice's codes ([frames][10]) from its audio (mono, [-1, 1], any sample rate): encode once, pass
+    /// the codes in SpeechReference.codes for every request in that voice.
+    bool encode_voice(const float* pcm, size_t n, int sample_rate, std::vector<int32_t>& codes, std::string& error_msg);
+
     const model::ModelDescriptor& descriptor() const {
         return desc_;
     }

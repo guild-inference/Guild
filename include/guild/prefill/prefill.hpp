@@ -21,6 +21,7 @@
 #include <future>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace guild::core {
 class PeerExperts;
@@ -88,6 +89,15 @@ public:
     /// #583: the auto chunk scan's byte-budget ring, for chunks above `small_max` (0.1.39's auto chunk: a prompt that
     /// fits it keeps 0.1.39's ring).  0 slots = none.  A layer split's set_ring_override and GUILD_PREFILL_RING win.
     static void set_ring_budget(int slots, int64_t small_max);
+    /// --prefill-rows: chunks of more than `rows` tokens computed as chunks of `rows` tokens (every product in slices
+    /// of at most `rows` rows, and the expert ring a `rows`-token chunk takes), the experts streamed once a chunk.  On
+    /// a GPU whose MMQ expert products do not depend on how many rows an expert has (llama.cpp's MMQ without stream-k:
+    /// Pascal), a chunk computes what its `rows`-token chunks compute (GTX 1070, Qwen3.8-Flash-Next: 1024-token chunks
+    /// with rows 512 gave the 512-token chunks' residuals and text bit for bit).  0: off.  Set before `init`.
+    static void set_rows(int64_t rows);
+    /// --prefill-mmq: 0 off, 1 the native dense products through MMQ, 2 the hyper-connection's Q8_0 ones too
+    /// (GUILD_PREFILL_DENSE_MMQ overrides).  It rounds differently.  Process-wide; set before a prompt.
+    static void set_dense_mmq(int mode);
 
     /// Device bytes `init` needs for a chunk of `chunk` tokens (what a borrowed region must hold).
     static uint64_t bytes_needed(const core::ModelGeometry& g, const core::SessionState& ss, int64_t chunk);
@@ -128,6 +138,17 @@ public:
     /// rows per layer; the rest of the peer's experts are read by this GPU over P2P).  Allocates the peer's buffers for
     /// chunks of up to init's `chunk` tokens.  Needs P2P between the two cards.
     bool set_peer(core::PeerExperts* peer, int64_t cap_rows, std::string& err);
+
+    /// A drafter's context features (core/dflash.hpp): for every chunk, the mean of the residual streams of its rows at
+    /// positions >= `from` as each of `layers` completes, [row][layers.size()][n_embd] floats into `out` (device, room
+    /// for `cap` rows; the chunk's first such row first), ready when on_chunk runs.  Empty `layers` or a null `out`:
+    /// off.  A single-stage prompt path only.
+    void set_features(std::vector<int> layers, float* out, int64_t cap, int64_t from) {
+        feat_layers_ = std::move(layers);
+        feat_out_ = out;
+        feat_cap_ = cap;
+        feat_from_ = from;
+    }
 
     /// Plan v0.3 P6: called after every chunk with the chunk's final multi-stream residual rows (device,
     /// T x hc*n_embd, valid until the next chunk) and the chunk's first position; the MTP draft layer builds its
@@ -175,6 +196,9 @@ private:
 
     int64_t stage_lb_ = 0, stage_le_ = -1;
     Prefill* next_ = nullptr;
+    std::vector<int> feat_layers_; ///< set_features
+    float* feat_out_ = nullptr;
+    int64_t feat_cap_ = 0, feat_from_ = 0;
     Prefill* helper_ = nullptr;        ///< set_stage_helper
     bool single_chunk_ = false;        ///< a later stage: the prompt is one chunk (set by the stage before)
     bool bind_stage_helper(int64_t T); // binds the helper's buffers for a one-chunk prompt of T tokens

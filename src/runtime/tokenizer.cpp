@@ -3,6 +3,7 @@
 #include "guild/server/json.hpp"
 
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -254,10 +255,12 @@ bool Tokenizer::load(const std::string& tokenizer_dir, std::string& err_msg) {
     }
 
     std::string pre_type = tok_info["pre"].as_string();
-    if (pre_type != "qwen35") {
-        err_msg = "unsupported pre-tokenization rule: " + pre_type + " (expected 'qwen35')";
+    if (pre_type != "qwen35" && pre_type != "glm4") {
+        err_msg = "unsupported pre-tokenization rule: " + pre_type + " (expected 'qwen35' or 'glm4')";
         return false;
     }
+    glm4_ = pre_type == "glm4";
+    ignore_merges_ = glm4_ || tok_info["ignore_merges"].as_bool(false);
 
     int64_t expected_vocab_size = tok_info["vocab_size"].as_int(-1);
     if (expected_vocab_size <= 0) {
@@ -420,7 +423,11 @@ bool Tokenizer::load(const std::string& tokenizer_dir, std::string& err_msg) {
 
     // 5. Load chat_template.jinja
     std::string chat_err;
-    if (!chat_template_.load(tokenizer_dir, chat_err)) {
+    if (!chat_template_.load(tokenizer_dir, chat_err) && glm4_) {
+        // GLM's template is rendered by the server (Python Jinja); the native renderer only knows the Qwen family
+        std::fprintf(stderr, "guild tokenizer: the native chat renderer does not handle this template (%s)\n",
+                     chat_err.c_str());
+    } else if (!chat_err.empty()) {
         err_msg = "failed to load chat template: " + chat_err;
         return false;
     }
@@ -669,6 +676,9 @@ std::vector<std::string> Tokenizer::pre_tokenize_qwen(const std::string& text) c
     std::vector<std::string> tokens;
     const size_t n = text.size();
     size_t i = 0;
+    // qwen35 joins combining marks to letters ([\p{L}\p{M}]); glm4 does not (\p{L} alone)
+    const bool marks = !glm4_;
+    auto letter = [marks](uint32_t c) { return unicode::is_letter(c) || (marks && unicode::is_mark(c)); };
 
     while (i < n) {
         // Branch 1: Contractions (e.g. 's, 't, 're, 've, 'm, 'll, 'd)
@@ -714,13 +724,13 @@ std::vector<std::string> Tokenizer::pre_tokenize_qwen(const std::string& text) c
             size_t next_read = 0;
             if (i + b_read < n) {
                 uint32_t next_cp = decode_utf8_codepoint(text.data() + i + b_read, n - (i + b_read), next_read);
-                if (unicode::is_letter(next_cp) || unicode::is_mark(next_cp)) {
+                if (letter(next_cp)) {
                     size_t start = i;
                     i += b_read;
                     while (i < n) {
                         size_t cr = 0;
                         uint32_t c = decode_utf8_codepoint(text.data() + i, n - i, cr);
-                        if (!unicode::is_letter(c) && !unicode::is_mark(c))
+                        if (!letter(c))
                             break;
                         i += cr;
                     }
@@ -729,13 +739,13 @@ std::vector<std::string> Tokenizer::pre_tokenize_qwen(const std::string& text) c
                 }
             }
         }
-        if (unicode::is_letter(cp) || unicode::is_mark(cp)) {
+        if (letter(cp)) {
             size_t start = i;
             i += b_read;
             while (i < n) {
                 size_t cr = 0;
                 uint32_t c = decode_utf8_codepoint(text.data() + i, n - i, cr);
-                if (!unicode::is_letter(c) && !unicode::is_mark(c))
+                if (!letter(c))
                     break;
                 i += cr;
             }
@@ -743,10 +753,18 @@ std::vector<std::string> Tokenizer::pre_tokenize_qwen(const std::string& text) c
             continue;
         }
 
-        // Branch 3: \p{N}
+        // Branch 3: \p{N} (glm4: \p{N}{1,3})
         if (unicode::is_number(cp)) {
-            tokens.push_back(text.substr(i, b_read));
+            size_t start = i;
             i += b_read;
+            for (int more = glm4_ ? 2 : 0; more > 0 && i < n; --more) {
+                size_t cr = 0;
+                uint32_t c = decode_utf8_codepoint(text.data() + i, n - i, cr);
+                if (!unicode::is_number(c))
+                    break;
+                i += cr;
+            }
+            tokens.push_back(text.substr(start, i - start));
             continue;
         }
 
@@ -755,15 +773,13 @@ std::vector<std::string> Tokenizer::pre_tokenize_qwen(const std::string& text) c
             size_t next_read = 0;
             if (i + 1 < n) {
                 uint32_t next_cp = decode_utf8_codepoint(text.data() + i + 1, n - (i + 1), next_read);
-                if (!unicode::is_whitespace(next_cp) && !unicode::is_letter(next_cp) && !unicode::is_mark(next_cp) &&
-                    !unicode::is_number(next_cp)) {
+                if (!unicode::is_whitespace(next_cp) && !letter(next_cp) && !unicode::is_number(next_cp)) {
                     size_t start = i;
                     i += 1;
                     while (i < n) {
                         size_t cr = 0;
                         uint32_t c = decode_utf8_codepoint(text.data() + i, n - i, cr);
-                        if (unicode::is_whitespace(c) || unicode::is_letter(c) || unicode::is_mark(c) ||
-                            unicode::is_number(c))
+                        if (unicode::is_whitespace(c) || letter(c) || unicode::is_number(c))
                             break;
                         i += cr;
                     }
@@ -774,14 +790,13 @@ std::vector<std::string> Tokenizer::pre_tokenize_qwen(const std::string& text) c
                     continue;
                 }
             }
-        } else if (!unicode::is_whitespace(cp) && !unicode::is_letter(cp) && !unicode::is_mark(cp) &&
-                   !unicode::is_number(cp)) {
+        } else if (!unicode::is_whitespace(cp) && !letter(cp) && !unicode::is_number(cp)) {
             size_t start = i;
             i += b_read;
             while (i < n) {
                 size_t cr = 0;
                 uint32_t c = decode_utf8_codepoint(text.data() + i, n - i, cr);
-                if (unicode::is_whitespace(c) || unicode::is_letter(c) || unicode::is_mark(c) || unicode::is_number(c))
+                if (unicode::is_whitespace(c) || letter(c) || unicode::is_number(c))
                     break;
                 i += cr;
             }
@@ -813,14 +828,16 @@ std::vector<std::string> Tokenizer::pre_tokenize_qwen(const std::string& text) c
             }
         }
 
-        // Branch 6: \s+(?!\S)
+        // Branch 6: \s+(?!\S) - a run followed by a non-space gives back its last CODEPOINT (a multi-byte space
+        // such as U+2028 or U+3000 stays whole)
         if (unicode::is_whitespace(cp)) {
-            size_t k = i;
+            size_t k = i, last = i;
             while (k < n) {
                 size_t cr = 0;
                 uint32_t c = decode_utf8_codepoint(text.data() + k, n - k, cr);
                 if (!unicode::is_whitespace(c))
                     break;
+                last = k;
                 k += cr;
             }
             if (k == n) {
@@ -828,9 +845,9 @@ std::vector<std::string> Tokenizer::pre_tokenize_qwen(const std::string& text) c
                 i = k;
                 continue;
             }
-            if (k - i >= 2) {
-                tokens.push_back(text.substr(i, (k - 1) - i));
-                i = k - 1;
+            if (last > i) {
+                tokens.push_back(text.substr(i, last - i));
+                i = last;
                 continue;
             }
         }
@@ -860,6 +877,15 @@ std::vector<std::string> Tokenizer::pre_tokenize_qwen(const std::string& text) c
 std::vector<int32_t> Tokenizer::bpe_merge_word(const std::string& word) const {
     if (word.empty())
         return {};
+    if (ignore_merges_) { // glm4: a piece that is a vocabulary entry is that token, without BPE
+        std::string mapped;
+        mapped.reserve(word.size() * 2);
+        for (unsigned char b : word)
+            mapped += byte_to_unicode_[b];
+        auto it = token_to_id_.find(mapped);
+        if (it != token_to_id_.end())
+            return {it->second};
+    }
 
     if (id_merges_complete_) {
         std::vector<int32_t> ids;
@@ -1023,12 +1049,14 @@ bool Tokenizer::encode(const std::string& text, std::vector<int32_t>& ids, bool 
         }
     };
 
+    // CONTROL tokens (type 3) only with allow_special; USER_DEFINED ones (type 4: <think>, </think>, <tool_call>
+    // ...) always, as llama.cpp's tokenizer does
     std::vector<std::pair<std::string, int32_t>> active_specials;
-    if (allow_special && !special_tokens_.empty()) {
-        for (const auto& sp : special_tokens_) {
-            if (text.find(sp.first) != std::string::npos) {
-                active_specials.push_back(sp);
-            }
+    for (const auto& sp : special_tokens_) {
+        const bool user_defined = sp.second >= 0 && static_cast<size_t>(sp.second) < token_types_.size() &&
+                                  token_types_[static_cast<size_t>(sp.second)] == 4;
+        if ((allow_special || user_defined) && text.find(sp.first) != std::string::npos) {
+            active_specials.push_back(sp);
         }
     }
 

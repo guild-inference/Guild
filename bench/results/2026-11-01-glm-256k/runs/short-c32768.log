@@ -1,0 +1,32 @@
+glm5_run: a prompt of 5 tokens
+guild glm5: attention matrices Q8_0 -> Q6_K (for the context; GUILD_GLM_DENSE=q8_0 keeps Q8_0): 5746 -> 4436 MiB in 16.6 s
+guild glm5: VRAM: 8010 MiB free, 6214 MiB fixed, context 32768 tokens x 13184 B, 5 MiB left; 4 shared experts on the CPU
+guild glm5: 530 matrices take MMQ in prompt windows
+guild glm5: experts split across 2 NUMA nodes, IQ3_S gate/up as NL4: 77.9 + 77.9 GiB in 103.8 s
+guild glm5: token_embd copied to memory: 643 MiB in 5.15 s (the load waited 0.00 s for it)
+glm5: 45 layers (34 KDA, 11 DSA) + MTP, 39 of 46 FFNs on the GPU, 32 CPU threads on 2 NUMA nodes, 7575 MiB VRAM, context 32768
+glm5_run: loaded in 129.0 s
+prompt: CPU experts 156 ms of 180
+glm5 timing (prompt): activations 4 ms, gate/up 87, hidden 0, down 62; launches 35; threads busy 94% / 96%; 21.54 GB of expert rows
+top after the prompt: 12089 (16.948) 264 (14.423) 11240 (14.309) 825 (14.222) 3881 (14.177)
+GUILD_GLM_ATTEND_LEGACY=1 #1: MTP: 117 of 138 drafts accepted (85%); per step: draft 4.4 ms, verify 78.2, accept 2.1
+GUILD_GLM_ATTEND_LEGACY=1 #1: per step: 84.1 / 84.7 / 85.4 ms (10th / 50th / 90th percentile), CPU experts 69.8 / 70.5 / 71.2
+GUILD_GLM_ATTEND_LEGACY=1 #1: decode 256 tokens in 11718 ms (21.76 tok/s)
+GUILD_GLM_ATTEND_LEGACY=0 #1: MTP: 117 of 138 drafts accepted (85%); per step: draft 4.4 ms, verify 79.8, accept 2.2
+GUILD_GLM_ATTEND_LEGACY=0 #1: per step: 84.3 / 86.3 / 87.8 ms (10th / 50th / 90th percentile), CPU experts 70.0 / 73.1 / 74.4
+GUILD_GLM_ATTEND_LEGACY=0 #1: decode 256 tokens in 11947 ms (21.35 tok/s)
+GUILD_GLM_ATTEND_LEGACY=1 #2: MTP: 117 of 138 drafts accepted (85%); per step: draft 4.4 ms, verify 80.1, accept 2.2
+GUILD_GLM_ATTEND_LEGACY=1 #2: per step: 86.2 / 86.7 / 87.6 ms (10th / 50th / 90th percentile), CPU experts 72.9 / 73.8 / 74.4
+GUILD_GLM_ATTEND_LEGACY=1 #2: decode 256 tokens in 11992 ms (21.26 tok/s)
+GUILD_GLM_ATTEND_LEGACY=0 #2: MTP: 117 of 138 drafts accepted (85%); per step: draft 4.4 ms, verify 81.1, accept 2.2
+GUILD_GLM_ATTEND_LEGACY=0 #2: per step: 86.7 / 87.2 / 87.9 ms (10th / 50th / 90th percentile), CPU experts 73.6 / 74.2 / 74.7
+GUILD_GLM_ATTEND_LEGACY=0 #2: decode 256 tokens in 12138 ms (21.01 tok/s)
+GUILD_GLM_ATTEND_LEGACY=1 #3: MTP: 117 of 138 drafts accepted (85%); per step: draft 4.4 ms, verify 81.2, accept 2.2
+GUILD_GLM_ATTEND_LEGACY=1 #3: per step: 87.0 / 87.7 / 88.3 ms (10th / 50th / 90th percentile), CPU experts 73.6 / 74.5 / 75.0
+GUILD_GLM_ATTEND_LEGACY=1 #3: decode 256 tokens in 12156 ms (20.98 tok/s)
+GUILD_GLM_ATTEND_LEGACY=0 #3: MTP: 117 of 138 drafts accepted (85%); per step: draft 4.4 ms, verify 81.5, accept 2.2
+GUILD_GLM_ATTEND_LEGACY=0 #3: per step: 87.5 / 88.1 / 89.0 ms (10th / 50th / 90th percentile), CPU experts 74.3 / 75.1 / 75.8
+GUILD_GLM_ATTEND_LEGACY=0 #3: decode 256 tokens in 12189 ms (20.92 tok/s)
+A/B GUILD_GLM_ATTEND_LEGACY=1: per step 84.5 / 86.7 / 88.0 ms (10th / 50th / 90th, 3 runs), 21.33 tok/s
+A/B GUILD_GLM_ATTEND_LEGACY=0: per step 84.6 / 87.3 / 88.7 ms (10th / 50th / 90th, 3 runs), 21.09 tok/s
+A/B ids: identical in every run

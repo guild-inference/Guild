@@ -39,7 +39,7 @@ def main() -> int:
     ap.add_argument('--spec-min-p', type=float, default=0.5)
     ap.add_argument('--cache', default='auto')
     ap.add_argument('--pcie-frac', type=float)
-    ap.add_argument('--prefill', type=int, default=512)
+    ap.add_argument('--prefill', default='512', help="the prompt chunk: a token count, or auto (the engine's own)")
     ap.add_argument('--resident-budget-gib', type=int)
     ap.add_argument('--pool-workers', type=int, default=0)
     ap.add_argument('--runs', type=int, default=3)
@@ -47,9 +47,17 @@ def main() -> int:
     ap.add_argument('--warmup', type=int, default=16)
     ap.add_argument('--prompts', help='JSON list: {name, text} or {name, token_ids}')
     ap.add_argument('--timeout', type=float, default=600)
-    ap.add_argument('--out', required=True)
-    ap.add_argument('--extra-args', nargs=argparse.REMAINDER, default=[])
+    ap.add_argument('--out', help='the report (required)')
+    ap.add_argument('--extra-args', nargs=argparse.REMAINDER, default=[],
+                    help='engine options; everything after it goes to the engine, so it comes last')
     a = ap.parse_args()
+    own = {o for act in ap._actions for o in act.option_strings} - {'--extra-args'}
+    swallowed = [x for x in a.extra_args if x.split('=', 1)[0] in own]
+    if swallowed:   # e.g. --extra-args --decode-strategy adaptive --out r.json: --out went to the engine
+        ap.error(f"{', '.join(swallowed)} came after --extra-args, which hands everything after it to the engine; "
+                 "put --extra-args last")
+    if not a.out:
+        ap.error('--out is required')
     if min(a.context, a.runs, a.max_new, a.warmup) < 1:
         ap.error('context, runs, max-new and warmup must be positive')
     exe, model, pack = (Path(p).resolve() for p in (a.exe, a.model, a.pack))

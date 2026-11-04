@@ -1,0 +1,35 @@
+FileExpertSource: RAM budget 55.43 GiB: 24576 of the 55.43 GiB of experts the GPU cache does not hold, by profile rank; the rest are read from the files
+FileExpertSource: allocating 55.43 GiB pageable resident cache complement
+FileExpertSource: copied cache complement through layer 8/48 (13.29 GiB)
+FileExpertSource: copied cache complement through layer 16/48 (22.10 GiB)
+FileExpertSource: copied cache complement through layer 24/48 (31.05 GiB)
+FileExpertSource: copied cache complement through layer 32/48 (43.15 GiB)
+FileExpertSource: copied cache complement through layer 40/48 (51.59 GiB)
+FileExpertSource: copied cache complement through layer 48/48 (55.43 GiB)
+FileExpertSource:READY load_s=32.18 READY 262144 stop
+RESULT {"prompt": "p4k", "repeat": 1, "generated": 256, "decode_tok_s": 36.53140059392066, "ttft_s": 54.45541575085372}
+RESULT {"prompt": "p4k", "repeat": 2, "generated": 256, "decode_tok_s": 36.54939450788239, "ttft_s": 54.37665620399639}
+SUMMARY {"p4k": 36.540397550901524}
+ 9.0 s; mlock
+guild runtime: required PLE connected (/mnt/models-ssd/Strata-data/models/unsloth-UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00002-of-00003.gguf, 320001536 rows)
+guild mtp: draft layer loaded, 865 MiB of VRAM (experts 675, dense 111), files read in 1.03 s (761 MiB/s)
+guild hc: CUDA0: the hyper-connection read runs as staged (the norm per token and stream, the down projection's activations staged ahead by cp.async) in 512-float tiles, with the two-plane up kernel (one or two tokens: the direct down and the column up kernels, GUILD_HC_DIRECT=0 for the tiles); checked bit for bit against the plain read on this card (GUILD_HC_SPLIT=1 or 0 for the earlier ones)
+guild verify: window up to 4 tokens, 76.4 MiB of device buffers
+guild mtp: draft head over 106299 tokens (212.9 MiB)
+guild mtp: 828 MiB of VRAM free after the draft layer, 764 MiB still needed
+guild verify: the CPU sums its experts' rows and 2560 floats a token cross PCIe, not 25600 (GUILD_HOST_COMBINE=0: the GPU sums them)
+guild verify: captured the 1-token window (upload no error, sync no error)
+guild verify: captured the 2-token window (upload no error, sync no error)
+guild verify: captured the 3-token window (upload no error, sync no error)
+guild verify: captured the 4-token window (upload no error, sync no error)
+guild performance: 0 measured formats, CPU 0.000 ms, GPU 0.000 ms, copy 0.000 ms; PCIe up to 0/256, GPU cache 0 slots (0 bytes)
+guild performance: CPU workers 31 + host 1 (rows split by NUMA node); verifier capacity 4; MTP on; min draft probability 0.500; RAM expert backing 59519795200 bytes
+guild prefill timing: 4007 tokens, GPU timeline 54239 ms, wall 54249 ms, host staging 36921 ms: embed+steps 59 (0.1%) hc read 1869 (3.4%) gdn 4293 (7.9%) qsa proj 1802 (3.3%) qsa indexer 1 (0.0%) qsa select 55 (0.1%) qsa attn 1522 (2.8%) router+shared 728 (1.3%) host grouping 184 (0.3%) gather 544 (1.0%) wait copy 24953 (46.0%) dequant 3618 (6.7%) gemm gate/up 9324 (17.2%) gemm down 3113 (5.7%) combine 291 (0.5%) ple 107 (0.2%) gdn conv+gates 88 (0.2%) gdn recurrence 394 (0.7%) gdn out proj 1296 (2.4%)
+guild prefill timing: host: chunk setup (PLE rows, the expert stream plan) 1 ms, waiting for each chunk 58 ms, after each chunk (the draft layer, progress) 62 ms, PLE 19 ms
+guild decode timing: 5 windows, 3.20 tokens/window, 68.61 ms/window; commit 0.171, CPU dispatch 28.95 (finite checks 0.13), draft 5.49 ms/window; PCIe 0 experts, drafts 11/11; logit validation 0.000 ms/window, 40 bytes read
+guild prefill timing: 4007 tokens, GPU timeline 54380 ms, wall 54390 ms, host staging 74202 ms: embed+steps 59 (0.1%) hc read 1873 (3.4%) gdn 4304 (7.9%) qsa proj 1810 (3.3%) qsa indexer 1 (0.0%) qsa select 55 (0.1%) qsa attn 1529 (2.8%) router+shared 732 (1.3%) host grouping 182 (0.3%) gather 663 (1.2%) wait copy 24926 (45.8%) dequant 3601 (6.6%) gemm gate/up 9328 (17.2%) gemm down 3130 (5.8%) combine 291 (0.5%) ple 107 (0.2%) gdn conv+gates 88 (0.2%) gdn recurrence 396 (0.7%) gdn out proj 1306 (2.4%)
+guild prefill timing: host: chunk setup (PLE rows, the expert stream plan) 1 ms, waiting for each chunk 58 ms, after each chunk (the draft layer, progress) 62 ms, PLE 21 ms
+guild decode timing: 108 windows, 2.37 tokens/window, 64.89 ms/window; commit 0.027, CPU dispatch 26.87 (finite checks 0.12), draft 6.46 ms/window; PCIe 0 experts, drafts 148/212; logit validation 0.000 ms/window, 864 bytes read
+guild prefill timing: 4007 tokens, GPU timeline 54312 ms, wall 54321 ms, host staging 111403 ms: embed+steps 59 (0.1%) hc read 1874 (3.4%) gdn 4305 (7.9%) qsa proj 1808 (3.3%) qsa indexer 1 (0.0%) qsa select 55 (0.1%) qsa attn 1530 (2.8%) router+shared 732 (1.3%) host grouping 175 (0.3%) gather 618 (1.1%) wait copy 24869 (45.8%) dequant 3602 (6.6%) gemm gate/up 9362 (17.2%) gemm down 3136 (5.8%) combine 291 (0.5%) ple 107 (0.2%) gdn conv+gates 88 (0.2%) gdn recurrence 396 (0.7%) gdn out proj 1305 (2.4%)
+guild prefill timing: host: chunk setup (PLE rows, the expert stream plan) 0 ms, waiting for each chunk 58 ms, after each chunk (the draft layer, progress) 62 ms, PLE 23 ms
+guild decode timing: 108 windows, 2.37 tokens/window, 64.85 ms/window; commit 0.025, CPU dispatch 26.65 (finite checks 0.12), draft 6.47 ms/window; PCIe 0 experts, drafts 148/212; logit validation 0.000 ms/window, 864 bytes read

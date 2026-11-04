@@ -1,0 +1,6 @@
+attend T   1: legacy    748.8 us, new    461.4 us; rows from host: each query's    294.1 us (7.1 GB/s), the union's    304.0 us
+attend T   2: legacy   1423.6 us, new    814.3 us; rows from host: each query's    563.1 us (7.4 GB/s), the union's    334.4 us
+attend T   4: legacy   2264.4 us, new   1534.8 us; rows from host: each query's   1159.9 us (7.2 GB/s), the union's    396.8 us
+attend T   8: legacy   4432.3 us, new   2780.3 us; rows from host: each query's   2428.6 us (6.9 GB/s), the union's    536.3 us
+attend T  32: legacy  16674.6 us, new  10873.7 us; rows from host: each query's   9930.0 us (6.8 GB/s), the union's   2130.7 us
+attend T 128: legacy  63978.1 us, new  42186.1 us; rows from host: each query's  38154.7 us (7.0 GB/s), the union's   8541.8 us

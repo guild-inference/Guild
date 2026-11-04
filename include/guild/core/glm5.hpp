@@ -1,0 +1,129 @@
+// include/guild/core/glm5.hpp - GLM-5.3-Flash (GGUF architecture `glm5-next`): 45 layers of mHC hyper-connected
+// blocks, 34 of them KDA linear attention and 11 DSA (absorbed MLA) attention, 3 dense FFN layers then 42 MoE
+// layers (288 experts, 8 used, plus a shared expert).
+//
+// Placement: the attention, the mixers, the router and the output head on the GPU in their GGUF formats; the
+// routed experts on the CPU (ggml-cpu's dot products, as llama.cpp's CPU backend computes them); the shared
+// experts and the dense FFN layers on the GPU while VRAM lasts, otherwise on the CPU with the routed ones.
+//
+// Not yet: the vision tower.
+#pragma once
+
+#include <cstdint>
+#include <memory>
+#include <string>
+#include <vector>
+
+namespace guild::core {
+
+struct Glm5Geometry {
+    int64_t n_embd = 4096, n_layer = 45, n_vocab = 154880;
+    int64_t n_head = 64, kda_dim = 128;
+    int64_t q_lora = 1536, kv_lora = 512, qk_dim = 256, v_dim = 256;
+    int64_t idx_heads = 32, idx_dim = 128, idx_topk = 2048, idx_kpool = 4;
+    int64_t hc = 4, sinkhorn_iters = 20;
+    int64_t n_expert = 288, n_used = 8, n_ff = 12288, n_ff_exp = 2048, n_ff_shexp = 2048, n_dense_lead = 3;
+    float rms_eps = 1e-5f, ln_eps = 1e-6f, hc_eps = 1e-6f, kda_lower_bound = -5.f, expert_scale = 2.5f;
+    bool expert_norm = true;
+    std::vector<bool> is_kda;                  ///< per layer: KDA (true) or DSA attention
+    std::vector<float> clamp_exp, clamp_shexp; ///< per layer SwiGLU limits (0: none)
+    std::vector<int32_t> eos_ids;
+};
+
+enum class Glm5Dense {
+    Auto,
+    Q8_0,
+    Q6_K,
+    Q5_K, ///< the attention and the shared experts' GPU copies (Glm5Options::dense)
+    Q4_K
+};
+
+struct Glm5Options {
+    /// the context's cells: in VRAM while they fit beside the weights (the first 32k before the FFNs), past that
+    /// with the latent rows of the later cells in pinned host memory (GUILD_GLM_KV_HOST=0: never; the context is then
+    /// what the VRAM holds).  load() sets it to what was placed.
+    int64_t max_context = 32768;
+    int threads = 0;                      ///< CPU expert threads (0: the physical cores)
+    uint64_t vram_reserve = 384ull << 20; ///< left free on the GPU for the CUDA context and other users
+    bool prefault = true;                 ///< read the routed experts into memory at load
+    bool numa_split = true; ///< on two NUMA nodes, copy half of every expert's rows into each node's memory
+    bool mtp = true;        ///< load the NextN block for speculative decoding (draft / verify / accept)
+    bool nl4 = true;        ///< IQ3_S expert gate/up rows repacked for the CPU's faster decode (AVX2)
+    /// the attention's largest Q8_0 matrices: as the GGUF has them, re-quantized to Q6_K (less VRAM and GPU time,
+    /// ~15 s more load), or Q6_K only when Q8_0 would hold less context than max_context (up to 16k tokens).  Q5_K and
+    /// Q4_K re-quantize the shared experts' GPU copies too (GUILD_GLM_SHEXP picks theirs), and change the output more
+    /// than Q6_K (bench/results/2026-11-02-decode-round6).
+    Glm5Dense dense = Glm5Dense::Auto;
+    /// the draft head's token subset (tools/draft_vocab.py: int32 token ids; GUILD_GLM_DRAFT_VOCAB overrides it, 0
+    /// for none): drafts are the argmax over these rows of the output head only.  Empty: the whole head.
+    std::string draft_vocab;
+    /// a DFlash 2 drafter (core/dflash.hpp: config.json, model.safetensors) in the NextN block's place, which is then
+    /// not loaded, and its draft head's token subset (int32 ids; empty: the whole head)
+    std::string dflash, dflash_vocab;
+};
+
+class Glm5Engine {
+public:
+    Glm5Engine();
+    ~Glm5Engine();
+    Glm5Engine(const Glm5Engine&) = delete;
+    Glm5Engine& operator=(const Glm5Engine&) = delete;
+
+    /// `gguf` is any shard of the model
+    bool load(const std::string& gguf, const Glm5Options& opt, std::string& err);
+    const Glm5Geometry& geometry() const;
+    int64_t max_context() const;
+    /// the tokens forward() takes in one window (more are split): two pipelined groups of up to glm5k::kMaxT
+    int max_window() const;
+    uint64_t vram_bytes() const;
+    /// one line per placement decision, for the startup log
+    const std::string& placement() const;
+
+    /// Forgets the context (K/V, KDA and convolution states).
+    void reset();
+    /// Saves / restores the recurrent (KDA and convolution) states.  The K/V and indexer rows stay where they are:
+    /// a restored context of n tokens reads cells 0 .. n - 1 and overwrites the rest as it goes.
+    bool snapshot(std::string& err);
+    bool restore(std::string& err);
+    /// Runs tokens[0 .. n) at positions pos0 .. pos0 + n - 1; `logits` (n_vocab floats, host) gets the last token's
+    /// logits when it is not null.
+    bool forward(const int32_t* tokens, int n, int64_t pos0, float* logits, std::string& err);
+    /// After forward() with logits: the last token's final hidden state, the head's input (n_embd floats, host).
+    bool last_hidden(float* host, std::string& err);
+
+    /// Speculative decoding with the NextN block.  draft: the block's guess for the token after `last` (which sits at
+    /// `pos`, not yet fed).  verify: runs tokens[0 .. n) (n <= kMaxVerify: the last token and its drafts) at pos0
+    /// and gives every row's logits ([n][n_vocab], host).  accept: keeps the first n_keep tokens of that window (the
+    /// KDA layers' states roll back to after them: the window's start replayed through the kept tokens).  forward()
+    /// needs no accept.
+    static constexpr int kMaxVerify = 4;
+    bool has_mtp() const;
+    bool draft(int32_t last, int64_t pos, int32_t& draft, std::string& err);
+    bool verify(const int32_t* tokens, int n, int64_t pos0, float* logits_rows, std::string& err);
+    bool accept(int n_keep, std::string& err);
+    /// Drafts over the token subset Glm5Options::draft_vocab loaded (on, the default) or over the whole head (off),
+    /// for A/B runs in one process; returns whether a subset is loaded
+    bool use_draft_vocab(bool on);
+
+    /// The DFlash drafter (Glm5Options::dflash): its block's drafts after `last` at `pos` (not yet fed; the drafter's
+    /// context holds the committed positions before it, which forward() and accept() add), each with its probability
+    /// under the drafter; n gets their count (the block - 1).  dflash_window: how many of them a step verifies (0 to
+    /// kMaxVerify - 1): GUILD_GLM_DFLASH_K when set, else while their cumulative probability stays at or above
+    /// GUILD_GLM_DFLASH_CUM (default 0.7; both read once).
+    bool has_dflash() const;
+    bool dflash_draft(int32_t last, int64_t pos, int32_t* drafts, float* probs, int& n, std::string& err);
+    int dflash_window(const float* probs, int n) const;
+    /// the drafter's time so far: drafting, and adding the committed rows to its context (ms)
+    double dflash_ms() const;
+
+    /// Time spent in the last forward: GPU+orchestration and CPU experts, milliseconds
+    double last_cpu_ms() const;
+    /// GUILD_GLM_TIMING=1: the CPU experts' phases so far (activations, gate/up, hidden, down), to stderr
+    void print_timing(const char* what) const;
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> p_;
+};
+
+} // namespace guild::core

@@ -1,0 +1,5 @@
+text 1 cublas: top-1 the same 1029 of 1060 (97.08%); KL mean 0.012416, median 0.001057, 99th percentile 0.153836, max 0.307935
+text 1 mmq:    top-1 the same 1017 of 1060 (95.94%); KL mean 0.014657, median 0.001159, 99th percentile 0.157508, max 0.364606
+text 2 cublas: 
+text 2 mmq:    
+done

@@ -21,6 +21,12 @@ public:
     bool generate(const GenerationRequest& req, TokenStreamCallback on_token, RuntimeTelemetry& telemetry,
                   std::string& error_msg, PrefillProgressCallback on_prefill = nullptr);
 
+    // Scores a prompt without generating: reads req.tokens (reusing the longest prefix the session still holds or
+    // has a checkpoint of) and returns the next-token logits of req.candidates at the last position.  The state is
+    // left after the prompt; req.keep_prefix checkpoints it on the way, so later prompts with that beginning read
+    // only the rest.
+    bool score(const ScoreRequest& req, ScoreResult& result, std::string& error_msg);
+
     // Resets session conversation/KV history
     void reset();
 

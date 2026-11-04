@@ -1,0 +1,13 @@
+none_on_11_1 22.24 s of audio, 479 frames (eos) in 10539 ms (45.45 frames/s, 2.11x real time; tower 1669 ms, codec 1289 ms), prompt 86 rows in 496 ms
+none_off_11_1 22.24 s of audio, 479 frames (eos) in 11919 ms (40.19 frames/s, 1.87x real time; tower 4062 ms, codec 1291 ms), prompt 86 rows in 508 ms
+none_on_12_1 19.78 s of audio, 426 frames (eos) in 9437 ms (45.14 frames/s, 2.10x real time; tower 1504 ms, codec 1158 ms), prompt 86 rows in 504 ms
+none_off_12_1 19.78 s of audio, 426 frames (eos) in 10942 ms (38.93 frames/s, 1.81x real time; tower 3713 ms, codec 1156 ms), prompt 86 rows in 537 ms
+en0_off_11_1 18.67 s of audio, 402 frames (eos) in 10364 ms (38.79 frames/s, 1.80x real time; tower 3722 ms, codec 1102 ms), prompt 206 rows in 1297 ms
+en0_on_11_1 18.67 s of audio, 402 frames (eos) in 9119 ms (44.08 frames/s, 2.05x real time; tower 1638 ms, codec 1103 ms), prompt 206 rows in 1289 ms
+none_on_11_2 22.24 s of audio, 479 frames (eos) in 10856 ms (44.12 frames/s, 2.05x real time; tower 1702 ms, codec 1302 ms), prompt 86 rows in 526 ms
+none_off_11_2 22.24 s of audio, 479 frames (eos) in 12269 ms (39.04 frames/s, 1.81x real time; tower 4158 ms, codec 1300 ms), prompt 86 rows in 532 ms
+none_on_12_2 19.78 s of audio, 426 frames (eos) in 9608 ms (44.34 frames/s, 2.06x real time; tower 1519 ms, codec 1161 ms), prompt 86 rows in 532 ms
+none_off_12_2 19.78 s of audio, 426 frames (eos) in 10957 ms (38.88 frames/s, 1.81x real time; tower 3731 ms, codec 1162 ms), prompt 86 rows in 539 ms
+en0_off_11_2 18.67 s of audio, 402 frames (eos) in 10334 ms (38.90 frames/s, 1.81x real time; tower 3710 ms, codec 1103 ms), prompt 206 rows in 1301 ms
+en0_on_11_2 18.67 s of audio, 402 frames (eos) in 9122 ms (44.07 frames/s, 2.05x real time; tower 1636 ms, codec 1107 ms), prompt 206 rows in 1296 ms
+done

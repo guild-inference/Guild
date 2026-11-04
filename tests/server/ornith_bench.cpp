@@ -38,6 +38,7 @@ int main(int argc, char** argv) {
     int target_runs = 3;
     std::string out_csv;
     std::string out_json;
+    std::string decode_strategy; // the request's (normal, lookup, adaptive, ...); empty = the model's default
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
@@ -53,9 +54,11 @@ int main(int argc, char** argv) {
             out_csv = argv[++i];
         else if (arg == "--json" && i + 1 < argc)
             out_json = argv[++i];
+        else if (arg == "--decode-strategy" && i + 1 < argc)
+            decode_strategy = argv[++i];
         else if (arg == "-h" || arg == "--help") {
             std::cout << "Usage: ornith_bench [--context N] [--prompt-len N] [--gen-tokens N] [--runs N] [--csv PATH] "
-                         "[--json PATH]\n";
+                         "[--json PATH] [--decode-strategy normal|lookup|retrieval|adaptive]\n";
             return 0;
         }
     }
@@ -170,6 +173,7 @@ int main(int argc, char** argv) {
         req.prompt_tokens = prompt_tokens;
         req.max_new_tokens = static_cast<int>(target_gen_tokens);
         req.temperature = 0.0f;
+        req.decode_strategy = decode_strategy;
 
         guild::runtime::RuntimeTelemetry telem;
         std::string gen_err;

@@ -1,0 +1,11 @@
+START ["/home/ubuntu/work/nemotron/opt/r17/gmap", "--serve", "--native", "/mnt/models-ssd/Strata-data/models/unsloth-UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf", "--pack", "/mnt/models-ssd/Strata-data/packs/unsloth-ud-iq4_xs", "--tokenizer", "/mnt/models-ssd/Strata-data/packs/unsloth-ud-iq4_xs/tokenizer", "--max-context", "32768", "--kv", "fp16", "--kv-host-only", "--spec", "8", "--spec-min-p", "0.5", "--expert-cache", "auto", "--prefill", "auto", "--pool-workers", "0", "--expert-profile", "/home/ubuntu/Guild/data/expert-profile.bin", "--mtp", "/mnt/models-ssd/Strata-data/mtp/rt", "--resident-budget-gib", "56", "--dflash", "/home/ubuntu/work/dflash/drafter", "--dflash-vocab", "/home/ubuntu/work/nemotron/guild/data/dflash_vocab.bin", "--dense", "q5_k", "--hc", "q8_0"]
+READY load_s=71.31 READY 32768 stop
+RESULT {"prompt": "story", "repeat": 1, "generated": 256, "decode_tok_s": 38.600374544259246, "ttft_s": 0.07125728111714125}
+RESULT {"prompt": "story", "repeat": 2, "generated": 256, "decode_tok_s": 38.70589266976919, "ttft_s": 0.07002635905519128}
+RESULT {"prompt": "sql", "repeat": 1, "generated": 256, "decode_tok_s": 60.57264813679954, "ttft_s": 0.4298150227405131}
+RESULT {"prompt": "sql", "repeat": 2, "generated": 256, "decode_tok_s": 60.86586447359348, "ttft_s": 0.0729601439088583}
+RESULT {"prompt": "zh", "repeat": 1, "generated": 256, "decode_tok_s": 33.73134564351765, "ttft_s": 0.41149371583014727}
+RESULT {"prompt": "zh", "repeat": 2, "generated": 256, "decode_tok_s": 33.69418577868448, "ttft_s": 0.0693871802650392}
+RESULT {"prompt": "ru", "repeat": 1, "generated": 256, "decode_tok_s": 38.116167955320705, "ttft_s": 0.46258141193538904}
+RESULT {"prompt": "ru", "repeat": 2, "generated": 256, "decode_tok_s": 38.09008006356282, "ttft_s": 0.06844401406124234}
+SUMMARY {"story": 38.65313360701422, "sql": 60.71925630519651, "zh": 33.71276571110106, "ru": 38.103124009441764}

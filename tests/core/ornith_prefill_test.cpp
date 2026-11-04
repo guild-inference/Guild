@@ -91,6 +91,8 @@ Image generate(runtime::GuildModel& model, const std::vector<int32_t>& ids, bool
 }
 int main(int argc, char** argv) {
     CHECK(argc >= 3);
+    // Each prompt is prefilled again per batch size and compared, so the prefix cache must not skip the repeats.
+    setenv("GUILD_NO_KV_CACHE", "1", 1);
     runtime::ModelPaths paths;
     paths.primary_model_path = argv[1];
     paths.pack_dir = argv[2];

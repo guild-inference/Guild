@@ -26,4 +26,27 @@ std::unique_ptr<GuildSession> GuildModel::create_session(int64_t max_context) {
     return nullptr;
 }
 
+bool GuildModel::synthesize(const SpeechRequest& req, const SpeechCallback& on_audio, SpeechTelemetry& telemetry,
+                            std::string& error_msg) {
+    (void) req;
+    (void) on_audio;
+    (void) telemetry;
+    error_msg = "Guild GPU runtime is disabled in CPU-only build";
+    return false;
+}
+
+bool GuildModel::is_speech_model() const {
+    return false;
+}
+
+bool GuildModel::encode_voice(const float* pcm, size_t n, int sample_rate, std::vector<int32_t>& codes,
+                              std::string& error_msg) {
+    (void) pcm;
+    (void) n;
+    (void) sample_rate;
+    (void) codes;
+    error_msg = "Guild GPU runtime is disabled in CPU-only build";
+    return false;
+}
+
 } // namespace guild::runtime

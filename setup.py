@@ -67,7 +67,27 @@ HF_REVISIONS = {
     "ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF": "b22d729eae29b5796f76fb70f91aef549b9fc52c",   # 2026-09-24
     "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-Coder-GGUF": "5348543e0147355ac9cbcb031184a3546350988e",  # 2026-09-29
     "unsloth/Qwen3.8-Flash-Next-GGUF": "38bb39ee97821de2c9009abb7e93950eec396e66",                   # 2026-09-30
+    "incoai/Qwen3.8-Flash-Next-DFlash2": "a22a1744e85c17364dcc54a6a420af7135d4c7f6",                 # 2026-10-19
 }
+# The DFlash 2 drafter (src/core/dflash.cpp, Apache-2.0): name -> (bytes, sha256) at the pinned revision
+DFLASH_REPO = "incoai/Qwen3.8-Flash-Next-DFlash2"
+DFLASH_FILES = {
+    "config.json": (1236, "2409575986f9ea24d455343eb469c0e6940def5edab1d1be503bb8eb4cc3b1b9"),
+    "model.safetensors": (1206140008, "d6723f2a359eaf33ec0c95f22ae8edda896774020c552296a85e1913b4d3186f"),
+}
+# its head's token subset (--dflash-vocab, tools/draft_vocab.py): the tokens of every language its corpora held,
+# whatever --draft-vocab says - data/dflash_vocab_en.bin (English and code) made Chinese and Russian answers 28-31%
+# slower on a GTX 1070 + 2x Xeon Gold 6130 (bench/results/2026-11-03-decode-round9), so it is only passed by hand
+DFLASH_VOCAB = "dflash_vocab.bin"
+# Unsloth's importance matrix for Qwen3.8-Flash-Next (the one its quants were made with), at the pinned revision of
+# its GGUF repo: --dense-imatrix weights --dense's re-quantization with it.  name, bytes, sha256
+UNSLOTH_IMATRIX = ("imatrix_unsloth.gguf_file", 580038720,
+                   "a5863123db1ca458727e738955bef7bfc199520aa2bee3a30142a1aff9254154")
+# UD-IQ4_XS's dense matrices on the GPU: Q4_K, its SSM outputs Q5_K and its attention outputs the GGUF's Q8_0, weighted
+# by that imatrix.  Per kind, one kind lowered at a time (bench/results/2026-11-04-qwen-round13): the attention output
+# (5% of the bytes) costs the most KL, the gate and the attention q the least.
+UD_DENSE = "q4_k"
+UD_DENSE_MAP = "ssm_out=q5_k,attn_output=q8_0"
 
 
 HF_DEFAULT = "https://huggingface.co"
@@ -3676,6 +3696,8 @@ def main() -> int:
     ap.add_argument("--yes", action="store_true", help="accept the recommended answers")
     ap.add_argument("--setup", action="store_true", help="install another model or change settings")
     ap.add_argument("--no-start", action="store_true", help="install only, do not start the model")
+    ap.add_argument("--no-dflash", action="store_true",
+                    help="draft with the MTP layer instead of the DFlash 2 drafter (~1.2 GB less to download)")
     ap.add_argument("--update", action="store_true",
                     help="update the installed engine, Python packages and model settings as a start would, without "
                          "starting the model (UPDATE.bat / update.sh run it after a git pull)")
@@ -3693,7 +3715,8 @@ def main() -> int:
                     help="the draft layer's tokens: cjk = with Chinese, Japanese and Korean (default), en = English "
                          "and code only (~110 MiB less VRAM, English answers 1-2%% faster), cyrillic = English, code "
                          "and the Cyrillic script (Ukrainian, Russian... answers decode ~30%% faster), fr = English, "
-                         "code and French (French answers: 18%% more drafts accepted)")
+                         "code and French (French answers: 18%% more drafts accepted). The DFlash drafter's head "
+                         "keeps every language's tokens")
     ap.add_argument("--low-ram", choices=["auto", "on", "off", "resident", "mmap"], default="auto",
                     help="read the model's experts from one file in its folder instead of copying them all into RAM "
                          "(for a PC with a big GPU and little RAM); auto: when the experts would not fit the RAM. In "
@@ -4319,6 +4342,13 @@ def main() -> int:
     lv_plan = low_vram_plan(min(x["vram_gb"] for x in chosen), ctx, kv,
                             host_capable and a.kv_streaming != "off" and
                             (stream_fits or a.kv_streaming == "on"))
+    # The engine grows an 8 GiB card's 512-token prompt chunks into the VRAM its load leaves free, computed as chunks of
+    # 512 (on Pascal the same results; a ~4K-token prompt 52.2 -> 19.6 s on a GTX 1070,
+    # bench/results/2026-11-03-decode-round11): it chooses when asked for auto.  Older engines, and cards past 8 GiB
+    # (whose auto is 2048 without the 512-token slices), keep 512.
+    if (lv_plan["prefill"] == "512" and 0 < min(x["vram_gb"] for x in chosen) <= 8.0
+            and engine_supports_option(eng, "grown into the VRAM", env)):
+        lv_plan["prefill"] = "auto"
     if a.kv_host_only and not KV_FORMATS[kv]["streaming"]:
         fail(f"--kv-host-only is not supported with --kv {kv}", "use fp16, int8 or q4_0")
     if a.kv_host_only and is_wsl():
@@ -4349,6 +4379,28 @@ def main() -> int:
     ok(f"MTP draft layer: {rt}")
     for line in draft_vocab_note(gpu.get("vram_gb", 0.0), draft_vocab):   # #474: a recommendation, nothing changes
         say("  " + line)
+    # The DFlash 2 drafter drafts in the MTP layer's place: one pass proposes up to seven tokens and the verify window
+    # still decides every one, so the output is the same (bench/results/2026-11-03-decode-round9: GTX 1070 + 2x Xeon
+    # Gold 6130, prose 39.7 -> 42.9 and code 49.9 -> 56.2 tok/s with its multilingual head subset).  Its kernels are
+    # CUDA's and it reads features of the whole model on one card, so AMD and several GPUs keep the MTP layer; so do
+    # --no-dflash and an older engine.
+    dflash = dflash_vocab = None
+    if a.no_dflash:
+        ok("DFlash drafter: off (--no-dflash); the MTP draft layer drafts")
+    elif hip or len(chosen) > 1:
+        ok(f"DFlash drafter: not {'on AMD' if hip else 'across several GPUs'} yet; the MTP draft layer drafts")
+    elif not engine_supports_option(eng, "--dflash", env):
+        ok("DFlash drafter: this engine has no --dflash yet; the MTP draft layer drafts")
+    else:
+        dflash = mtp / "dflash"
+        say("  The DFlash 2 drafter (speculative decoding, up to 7 drafts a window): ~1.2 GB")
+        for name, (size, sha) in DFLASH_FILES.items():
+            download(hf(DFLASH_REPO) + name, dflash / name, f"DFlash drafter {name}")
+            verify_sha256(dflash / name, size, sha)
+        vocab = ROOT / "data" / DFLASH_VOCAB
+        if vocab.exists() and engine_supports_option(eng, "--dflash-vocab", env):
+            dflash_vocab = vocab
+        ok(f"DFlash drafter: {dflash}" + (f" (its head's tokens: {vocab.name})" if dflash_vocab else ""))
 
     # ---- 7. the start script
     step(7, "writing the start script")
@@ -4360,8 +4412,32 @@ def main() -> int:
     # (a 4-shard file: the engine finds the PLE table's shard itself from shard 1, the measured setup)
     args = ["--pack", str(pack), "--native", str(shards[0]), *(["--ple-gguf", str(ple)] if len(shards) <= 2 else []),
             "--expert-profile", str(ROOT / "data" / fam.get("profile", "expert-profile.bin")), "--expert-cache", "auto",
-            "--prefill", lv_plan["prefill"], "--spec", "4", "--spec-min-p", "0.5", "--mtp", str(rt),
-            "--max-context", str(ctx)]
+            "--prefill", lv_plan["prefill"], "--spec", "8" if dflash else "4", "--spec-min-p", "0.5", "--mtp", str(rt),
+            *(["--dflash", str(dflash)] if dflash else []),
+            *(["--dflash-vocab", str(dflash_vocab)] if dflash_vocab else []), "--max-context", str(ctx)]
+    # Unsloth's UD-IQ4_XS keeps every dense and hyper-connection matrix as Q8_0: --dense re-quantizes the dense ones at
+    # load (fewer bytes a token) and --hc q8_0 reads the hyper-connection ones as the GGUF stores them.  With the DFlash
+    # drafter on a GTX 1070 + 2x Xeon Gold 6130, q5_k took prose 39.8 -> 45.3 and code 50.9 -> 59.9 tok/s
+    # (bench/results/2026-11-03-decode-round9).  The GSQ-RCO quants' dense matrices are 3-6 bits already; the other
+    # quants are not measured.  CUDA's kernels.
+    if model == "UD-IQ4_XS" and not hip and all(engine_supports_option(eng, o, env) for o in ("--dense", "--hc")):
+        # an engine with --dense-map / --dense-imatrix: the mixed map, weighted by Unsloth's imatrix - on a GTX 1070 +
+        # 2x Xeon Gold 6130 1.4% faster a token than q5_k alone, at 11-14% less KL from the GGUF's own matrices
+        # (bench/results/2026-11-04-qwen-round13); an older engine: q5_k throughout
+        if all(engine_supports_option(eng, o, env) for o in ("--dense-map", "--dense-imatrix")):
+            name, size, sha = UNSLOTH_IMATRIX
+            imatrix = shards[0].parent / "imatrix_unsloth.gguf"
+            download(hf("unsloth/Qwen3.8-Flash-Next-GGUF") + name, imatrix, "Unsloth's importance matrix")
+            verify_sha256(imatrix, size, sha)
+            args += ["--dense", UD_DENSE, "--dense-map", UD_DENSE_MAP, "--dense-imatrix", str(imatrix), "--hc", "q8_0"]
+            ok(f"dense matrices: {UD_DENSE} ({UD_DENSE_MAP}), weighted by {imatrix.name}")
+        else:
+            args += ["--dense", "q5_k", "--hc", "q8_0"]
+        # Pascal: the prompt's dense products through int8 MMQ instead of fp32 cuBLAS - a 4K prompt 19.6 -> 16.1 s, 32K
+        # 171 -> 143 s on a GTX 1070, its KL after the prompt below what any rounding of the weights makes
+        # (bench/results/2026-11-04-qwen-round12, -round13).  Newer cards are not measured.
+        if all(int(g["arch"]) < 70 for g in chosen) and engine_supports_option(eng, "--prefill-mmq", env):
+            args += ["--prefill-mmq", "dense"]
     if tiny_card:
         if engine_supports_option(eng, "--mtp-optional", env):
             args += ["--mtp-optional"]
@@ -4406,6 +4482,9 @@ def main() -> int:
            "GPU staging buffer is shared by the attention layers")
         if lv_plan["prefill"] != "auto":
             ok(f"low-VRAM plan: {lv_plan['prefill']}-token prompt chunks; context and KV precision are unchanged")
+        elif tiny_card:
+            ok("low-VRAM plan: 512-token prompt chunks grown into the VRAM free after the load (the engine sizes them); "
+               "context and KV precision are unchanged")
         if not q4_split and budget is not None and a.resident_budget_gib is None:
             budget = resident_budget_gib(model, ram, kv_ram_gb)
             ok(f"RAM budget: {budget} GiB (less the host-only KV cache's RAM)")

@@ -119,6 +119,19 @@ public:
     /// reused staging buffer - otherwise the pool would read the next expert's bytes while computing this one.
     virtual const uint8_t* blob(int64_t layer, int64_t expert) = 0;
 
+    /// The CPU's own copy of `(layer, expert)`'s gate/up rows in the format `cpu_fmt(layer)` describes (IQ3_S
+    /// repacked, iq_avx2.hpp), or nullptr when the CPU computes that layer from `blob()` alone.  When a layer has a
+    /// `cpu_fmt`, every expert of it has this copy, and its down rows still come from `blob()`.
+    virtual const uint8_t* cpu_gu_blob(int64_t layer, int64_t expert) const {
+        (void) layer;
+        (void) expert;
+        return nullptr;
+    }
+    virtual const kernels::cpu::NativeFmt* cpu_fmt(int64_t layer) const {
+        (void) layer;
+        return nullptr;
+    }
+
     /// Blobs touched, for the driver to report.  A source that does not count returns 0.
     virtual int64_t reads() const {
         return 0;
@@ -518,6 +531,19 @@ public:
                               const std::vector<std::pair<int32_t, int32_t>>* rank = nullptr);
     void close();
 
+    /// Repacks the gate/up rows of every IQ3_S layer for the CPU (iq_avx2.hpp: the grid lookup done once, the same
+    /// bits out of the pool) into a second, CPU-only copy: the GPU cache, PCIe offload and the prompt path keep the
+    /// IQ3_S bytes.  It costs 134/110 of the gate/up bytes again, so it runs only when that leaves `headroom_bytes`
+    /// of RAM available.  Only valid when the native CPU kernels compute the repacked rows bitwise as the IQ3_S
+    /// ones (iq3s_nl4_exact) - the caller checks that the bound CPU backend is the bundled one.  Never fails the
+    /// load: when it cannot run (or GUILD_IQ3S_REPACK=0) the CPU keeps the IQ3_S rows, and `note` says why.
+    void build_cpu_repack(uint64_t headroom_bytes, std::string& note);
+    const uint8_t* cpu_gu_blob(int64_t layer, int64_t expert) const override;
+    const kernels::cpu::NativeFmt* cpu_fmt(int64_t layer) const override;
+    uint64_t cpu_repack_bytes() const {
+        return cpu_repack_bytes_;
+    }
+
     bool mapped() const {
         return base_ != nullptr;
     }
@@ -727,6 +753,12 @@ private:
     const uint8_t* complement_device_ = nullptr;
     uint64_t complement_bytes_ = 0;
     std::vector<uint64_t> complement_offsets_;
+    void* cpu_repack_ = nullptr; ///< build_cpu_repack's copy (mmap'd)
+    uint64_t cpu_repack_bytes_ = 0;
+    uint64_t cpu_repack_locked_ = 0;
+    std::vector<uint64_t> cpu_repack_off_; ///< per layer: where its experts start, ~0 when not repacked
+    std::vector<uint64_t> cpu_repack_blob_;
+    std::vector<kernels::cpu::NativeFmt> cpu_fmt_;
     bool complement_pinned_ = false;
     bool complement_partial_ = false; ///< CS-T: only the first complement_pin_limit_ bytes are registered
     uint64_t complement_pin_limit_ = 0;

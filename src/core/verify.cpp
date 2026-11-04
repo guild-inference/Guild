@@ -1,5 +1,7 @@
 // src/core/verify.cpp - see include/guild/core/verify.hpp.
 #include "guild/core/verify.hpp"
+#include "guild/core/dflash.hpp"
+#include "guild/core/drama3_tower_kernels.hpp"
 #include "guild/core/validation.hpp"
 #include "guild/core/remote_expert_opt.hpp"
 #if defined(_WIN32)
@@ -9,6 +11,7 @@
 #include "guild/core/native_head.hpp"
 #include "guild/core/on_device.hpp"
 #include "guild/core/peer_experts.hpp"
+#include "guild/core/host_combine.hpp"
 #include "guild/kernels/iq_kernels.hpp"
 #include "guild/kernels/cpu/expert_layout.hpp"
 #include "guild/kernels/cpu/pool.hpp"
@@ -58,6 +61,7 @@ namespace {
 
 constexpr float EPS = 1e-6f;
 bool g_commit_async = false;
+int g_defer_experts = -1; // Verifier::set_defer_experts (-1: GUILD_DEFER_EXPERTS)
 using Clock = std::chrono::steady_clock;
 double ms_since(Clock::time_point t) {
     return std::chrono::duration<double, std::milli>(Clock::now() - t).count();
@@ -141,6 +145,51 @@ bool native_of(const WeightRef* w, const std::string& name, std::string& err) {
 } // namespace
 
 namespace {
+// The kernel node just captured on `s` gets priority `prio`, which the graph honors when it is instantiated with
+// cudaGraphInstantiateFlagUseNodePriority.  For gdn_cs_'s small kernels: their blocks are dispatched before the
+// remaining blocks of the large product the main stream runs beside them (without it they started near that product's
+// end: nsys, 77 us after the fork of an 84 us gate product).
+void prioritize_captured(cudaStream_t s, int prio) {
+#if defined(GUILD_USE_HIP) || defined(GUILD_HIP_GFX906)
+    (void) s; // the HIP builds create gdn_cs_ without a priority
+    (void) prio;
+#else
+    cudaStreamCaptureStatus st = cudaStreamCaptureStatusNone;
+    const cudaGraphNode_t* deps = nullptr;
+    size_t nd = 0;
+    if (prio == 0 || cudaStreamGetCaptureInfo(s, &st, nullptr, nullptr, &deps, &nd) != cudaSuccess ||
+        st != cudaStreamCaptureStatusActive)
+        return;
+    for (size_t i = 0; i < nd; ++i) {
+        cudaGraphNodeType ty = cudaGraphNodeTypeEmpty;
+        if (cudaGraphNodeGetType(deps[i], &ty) != cudaSuccess || ty != cudaGraphNodeTypeKernel)
+            continue;
+        cudaKernelNodeAttrValue v{};
+        v.priority = prio;
+        cudaGraphKernelNodeSetAttribute(deps[i], cudaKernelNodeAttributePriority, &v);
+    }
+#endif
+}
+
+// gdn_cs_: at the device's greatest stream priority on CUDA (prioritize_captured), a plain stream on HIP
+bool create_gdn_stream(cudaStream_t* s, int* prio) {
+    *prio = 0;
+#if defined(GUILD_USE_HIP) || defined(GUILD_HIP_GFX906)
+    return cudaStreamCreateWithFlags(s, cudaStreamNonBlocking) == cudaSuccess;
+#else
+    int least = 0, greatest = 0;
+    if (cudaDeviceGetStreamPriorityRange(&least, &greatest) == cudaSuccess)
+        *prio = greatest;
+    return cudaStreamCreateWithPriority(s, cudaStreamNonBlocking, *prio) == cudaSuccess;
+#endif
+}
+
+#if defined(GUILD_USE_HIP) || defined(GUILD_HIP_GFX906)
+constexpr unsigned kUseNodePriority = 0;
+#else
+constexpr unsigned kUseNodePriority = cudaGraphInstantiateFlagUseNodePriority;
+#endif
+
 std::atomic<const Verifier*> g_diag_verifier{nullptr};
 void diag_active_verifier(std::FILE* f) {
     if (const Verifier* v = g_diag_verifier.load())
@@ -194,7 +243,7 @@ bool Verifier::release_gpu_waits(int timeout_ms) {
     // the words the spin kernels read (wait_flag_ge, wait_flag_ge_or) are mapped host memory, so a store here
     // reaches them with no API call; UINT32_MAX is past every ring.  (E-6's skip words are device memory, but
     // wait_flag_ge_or also returns on its flag.)  A host function raising flag B later only raises.
-    for (uint32_t* p : {h_flag_, h_flagA_, h_flagB_})
+    for (uint32_t* p : {h_flag_, h_flagA_, h_flagB_, h_flagD_})
         if (p != nullptr)
             *(volatile uint32_t*) p = UINT32_MAX;
     std::atomic_thread_fence(std::memory_order_seq_cst);
@@ -314,6 +363,8 @@ Verifier::~Verifier() {
         cudaStreamSynchronize(cs_);
     if (sh_cs_)
         cudaStreamSynchronize(sh_cs_);
+    if (gdn_cs_)
+        cudaStreamSynchronize(gdn_cs_);
     for (auto& e : exec_)
         if (e)
             cudaGraphExecDestroy(e);
@@ -333,6 +384,8 @@ Verifier::~Verifier() {
         cudaStreamDestroy(cs_);
     if (sh_cs_)
         cudaStreamDestroy(sh_cs_);
+    if (gdn_cs_)
+        cudaStreamDestroy(gdn_cs_);
     if (copy_) {
         cudaStreamSynchronize(copy_);
         cudaStreamDestroy(copy_);
@@ -343,14 +396,21 @@ Verifier::~Verifier() {
         cudaEventDestroy(ev_fork_);
     if (ev_join_)
         cudaEventDestroy(ev_join_);
+    if (ev_gdn_fork_)
+        cudaEventDestroy(ev_gdn_fork_);
+    if (ev_gdn_join_)
+        cudaEventDestroy(ev_gdn_join_);
     if (skip_)
         cudaFree(skip_);
     if (slot_off_d_)
         cudaFree(slot_off_d_);
     if (arena_)
         cudaFree(arena_);
-    void* hosts[] = {h_tok_, h_step_, h_pos_,  h_commit_, h_ple_,   h_out_,  h_x_,     h_ids_,
-                     h_w_,   h_seq_,  h_flag_, h_ymiss_,  h_flagA_, h_plan_, h_flagB_, h_finite_status_};
+    if (feat_)
+        cudaFree(feat_);
+    void* hosts[] = {h_tok_,  h_step_, h_pos_,   h_commit_, h_ple_,   h_out_,  h_x_,     h_ids_,
+                     h_w_,    h_seq_,  h_flag_,  h_ymiss_,  h_flagA_, h_plan_, h_flagB_, h_finite_status_,
+                     h_code_, h_ysum_, h_flagD_, h_ydef_};
     for (void* h : hosts)
         if (h)
             cudaFreeHost(h);
@@ -377,6 +437,18 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
     hits_ = hits;
     head_ = head;
     max_t_ = max_t;
+    if (const char* e = g_defer_experts >= 0 ? "" : std::getenv("GUILD_DEFER_EXPERTS"); e != nullptr) {
+        const int k = g_defer_experts >= 0 ? g_defer_experts : std::atoi(e);
+        defer_k_ = k > 0 && k < (int) ss.k ? k : 0;
+        const char* at = std::getenv("GUILD_DEFER_AT");
+        defer_out_ = at && std::string(at) == "out";
+        if (defer_k_ > 0)
+            std::fprintf(stderr,
+                         "guild verify: expert deferral (--defer-experts %d): a layer's experts past its top %d "
+                         "land %s; one group a window\n",
+                         defer_k_, defer_k_,
+                         defer_out_ ? "in the next layer's output" : "before the next layer's experts read");
+    }
     async_commit_ = g_commit_async && !env_on("GUILD_COMMIT_SYNC");
     device_logit_validation_ = !env_on("GUILD_LOGITS_VALIDATION_HOST");
     sampling_.greedy = true; // a fresh verifier samples greedily until set_sampling says otherwise
@@ -439,19 +511,21 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
             kernels::cpu::restore_thread_affinity(prev);
         }
     } local_alloc(device_);
-    bool ok = mapped(T * 4, (void**) &h_tok_, (void**) &m_tok_) &&
-              mapped(T * guild::kernels::kStepCount * 4, (void**) &h_step_, (void**) &m_step_) &&
-              mapped(T * (NH + NKV + IQ) * 4, (void**) &h_pos_, (void**) &m_pos_) &&
-              mapped((2 + T) * 4 + 16, (void**) &h_commit_, (void**) &m_commit_) &&
-              mapped(T * N * 4, (void**) &h_ple_, (void**) &m_ple_) &&
-              mapped(T * 4 + 16, (void**) &h_out_, (void**) &m_out_) &&
-              mapped(sizeof(*h_finite_status_), (void**) &h_finite_status_, (void**) &m_finite_status_) &&
-              mapped(T * N * 4, (void**) &h_x_, (void**) &m_x_) &&
-              mapped(T * K * 4, (void**) &h_ids_, (void**) &m_ids_) &&
-              mapped(T * K * 4, (void**) &h_w_, (void**) &m_w_) && mapped(64, (void**) &h_seq_, (void**) &m_seq_) &&
-              mapped(64, (void**) &h_flag_, (void**) &m_flag_) && mapped(64, (void**) &h_flagA_, (void**) &m_flagA_) &&
-              mapped(64, (void**) &h_flagB_, (void**) &m_flagB_) &&
-              mapped(T * K * N * 4, (void**) &h_ymiss_, (void**) &m_ymiss_);
+    bool ok =
+        mapped(T * 4, (void**) &h_tok_, (void**) &m_tok_) && mapped(T * 4, (void**) &h_code_, (void**) &m_code_) &&
+        mapped(T * guild::kernels::kStepCount * 4, (void**) &h_step_, (void**) &m_step_) &&
+        mapped(T * (NH + NKV + IQ) * 4, (void**) &h_pos_, (void**) &m_pos_) &&
+        mapped((2 + T) * 4 + 16, (void**) &h_commit_, (void**) &m_commit_) &&
+        mapped(T * N * 4, (void**) &h_ple_, (void**) &m_ple_) &&
+        mapped(T * 4 + 16, (void**) &h_out_, (void**) &m_out_) &&
+        mapped(sizeof(*h_finite_status_), (void**) &h_finite_status_, (void**) &m_finite_status_) &&
+        mapped(T * N * 4, (void**) &h_x_, (void**) &m_x_) && mapped(T * K * 4, (void**) &h_ids_, (void**) &m_ids_) &&
+        mapped(T * K * 4, (void**) &h_w_, (void**) &m_w_) && mapped(64, (void**) &h_seq_, (void**) &m_seq_) &&
+        mapped(64, (void**) &h_flag_, (void**) &m_flag_) && mapped(64, (void**) &h_flagA_, (void**) &m_flagA_) &&
+        mapped(64, (void**) &h_flagB_, (void**) &m_flagB_) &&
+        mapped(T * K * N * 4, (void**) &h_ymiss_, (void**) &m_ymiss_) &&
+        mapped(T * N * 4, (void**) &h_ysum_, (void**) &m_ysum_) && mapped(64, (void**) &h_flagD_, (void**) &m_flagD_) &&
+        mapped(2 * T * N * 4, (void**) &h_ydef_, (void**) &m_ydef_);
     if (!ok) {
         err = "verify: mapped staging allocation failed";
         return false;
@@ -482,6 +556,7 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
     // ---- the device arena: the same sequence counted, then carved
     auto carve = [&](Bump& b) {
         tok_ = b.take<int32_t>(T);
+        code_ = b.take<int32_t>(T);
         step_ = b.take<int32_t>(T * guild::kernels::kStepCount);
         pos_ = b.take<int32_t>(T * (NH + NKV + IQ));
         commit_ = b.take<int32_t>(2 + T);
@@ -518,9 +593,12 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
         tail_snap_ = b.take<float>(nQ * TS);
         logits_ = b.take<float>(T * (uint64_t) g.n_expert);
         w_ = b.take<float>(T * K);
+        ones_ = b.take<float>(T);
         ids_ = b.take<int32_t>(T * K);
         shared_ = b.take<float>(T * N);
         parts_ = b.take<float>(T * K * N);
+        dsum_ = b.take<float>(T * N);
+        inj2def_ = b.take<float>(2 * T * HC);
         hit_out_ = b.take<float>(T * K * N);
         hit_slot_ = b.take<int32_t>(T * K);
         hit_dst_ = b.take<int32_t>(T * K);
@@ -549,6 +627,10 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
         dbg_l0_post_norm_ = b.take<float>(N);
         dbg_l0_logits_ = b.take<float>(g.n_expert);
         dbg_l0_shared_ = b.take<float>(N);
+        if (std::getenv("GUILD_VERIFY_DUMP_RESIDUAL") != nullptr) {
+            dbg_res_R_ = b.take<float>((uint64_t) g.n_layers * N);
+            dbg_res_bo_ = b.take<float>((uint64_t) g.n_layers * N);
+        }
     };
     Bump count;
     carve(count);
@@ -591,6 +673,10 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
     Bump real;
     real.base = (uint8_t*) arena_;
     carve(real);
+    {
+        const std::vector<float> ones((size_t) T, 1.0f);
+        cudaMemcpy(ones_, ones.data(), ones.size() * sizeof(float), cudaMemcpyHostToDevice);
+    }
     if (g.idx_q_heads == 0 && cap_ > 0) {
         std::vector<int32_t> id((size_t) (T * (uint64_t) cap_));
         for (uint64_t t = 0; t < T; ++t) {
@@ -608,13 +694,16 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
         return false;
     }
     if (cudaStreamCreateWithFlags(&cs_, cudaStreamNonBlocking) != cudaSuccess ||
-        cudaStreamCreateWithFlags(&sh_cs_, cudaStreamNonBlocking) != cudaSuccess) {
+        cudaStreamCreateWithFlags(&sh_cs_, cudaStreamNonBlocking) != cudaSuccess ||
+        !create_gdn_stream(&gdn_cs_, &gdn_prio_)) {
         err = "verify: stream create failed";
         return false;
     }
     if (cudaEventCreateWithFlags(&commit_done_, cudaEventDisableTiming) != cudaSuccess ||
         cudaEventCreateWithFlags(&ev_fork_, cudaEventDisableTiming) != cudaSuccess ||
-        cudaEventCreateWithFlags(&ev_join_, cudaEventDisableTiming) != cudaSuccess) {
+        cudaEventCreateWithFlags(&ev_join_, cudaEventDisableTiming) != cudaSuccess ||
+        cudaEventCreateWithFlags(&ev_gdn_fork_, cudaEventDisableTiming) != cudaSuccess ||
+        cudaEventCreateWithFlags(&ev_gdn_join_, cudaEventDisableTiming) != cudaSuccess) {
         err = "verify: event create failed";
         return false;
     }
@@ -695,6 +784,17 @@ const float* Verifier::final_R(int t) const {
     return R_ + (size_t) t * (size_t) (g_->hc * g_->n_embd);
 }
 
+const float* Verifier::head_input(int t) const {
+    return next_ ? next_->head_input(t) : head_mixed_ + (size_t) t * (size_t) g_->n_embd;
+}
+
+void Verifier::audio_embed(int T, cudaStream_t cs) {
+    if (audio_rows_ == nullptr)
+        return;
+    guild::kernels::copy_i32_from_mapped(code_, m_code_, T, cs);
+    drama3::backbone_embed_add(emb_, tok_, code_, audio_rows_, audio_lo_, audio_hi_, (int) g_->n_embd, T, cs);
+}
+
 // ================================ THE WINDOW, AS CAPTURED ================================
 //
 // Plan v0.3 P6 (split window): with `groups_ == 2` the window's tokens are cut into two groups A = [0, T/2 up) and
@@ -722,7 +822,9 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
     const int64_t TS = (s.idx_block - 1) * ID;
     const bool ple_on = ss.ple.ready() && ple_stage();
     auto Rt = [&](int t) { return R_ + (size_t) t * HC * N; };
-    const int G = (split_ && T >= 2 && !batch_rec_) ? 2 : 1; // a batch window is one group
+    // a batch window is one group; with every expert in VRAM there is no CPU work for the other group to hide
+    const bool defer_on = defer_k_ > 0 && !batch_rec_ && remote_opt_ == nullptr && !all_resident_;
+    const int G = (split_ && !all_resident_ && T >= 2 && !batch_rec_ && !defer_on) ? 2 : 1;
     static const bool dec_batch = [] {
         const char* v = std::getenv("GUILD_DEC_BATCH");
         return v == nullptr || std::atoi(v) != 0;
@@ -740,6 +842,24 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
     const bool has_pcie_hits = pcie_on_;
     const bool has_gpu_experts = all_resident_ || device_plan_ || has_vram_hits || has_pcie_hits;
     const bool need_gpu_plan = has_gpu_experts || remote_opt_ != nullptr;
+    // every routed expert on the CPU: it sums each token's K rows itself (host_combine.hpp) and only the sums cross
+    // PCIe (n_embd floats a token, not K * n_embd); GUILD_HOST_COMBINE=0: the rows cross and the GPU sums them
+    static const bool host_combine_env = [] {
+        const char* v = std::getenv("GUILD_HOST_COMBINE");
+        return v == nullptr || std::atoi(v) != 0;
+    }();
+    const bool host_combine =
+        host_combine_env && !need_gpu_plan && !batch_rec_ && native_moe_combine_enabled() && host_combine_supported();
+    if (!batch_rec_) {
+        host_combine_[T] = host_combine;
+        defer_[T] = defer_on && host_combine;
+    }
+    static std::atomic<bool> host_combine_said{false};
+    if (host_combine && !host_combine_said.exchange(true))
+        std::fprintf(stderr,
+                     "guild verify: the CPU sums its experts' rows and %lld floats a token cross PCIe, not %lld "
+                     "(GUILD_HOST_COMBINE=0: the GPU sums them)\n",
+                     (long long) N, (long long) (K * N));
     const int64_t nQall = g.n_qsa_layers();
     // a batch window: row t is slot t, whose state lives in its own session
     auto slot_ss = [&](int t) -> SessionState& { return batch_rec_ ? *slots_[(size_t) brow_[t]] : ss; };
@@ -763,6 +883,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         copy_from_mapped(inj2_, hin + (size_t) T * (HC + 1) * N, (int64_t) T * HC, cs);
     } else if (const NativeEmbed* ne = native_embed()) { // plan v0.3 P6: the GGUF-form table
         ne->gather_dev(tok_, T, emb_, cs);
+        audio_embed(T, cs);
         if (HC > 1)
             broadcast_streams(emb_, R_, N, (int) HC, T, cs);
         else if (cudaMemcpyAsync(R_, emb_, (size_t) T * N * 4, cudaMemcpyDeviceToDevice, cs) != cudaSuccess) {
@@ -782,6 +903,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         const uint64_t row_groups = (uint64_t) (w->ne0 / w->group_elems);
         embedding_gather_dev(codes, scales, offsets, tok_, T, w->ne0, w->code_bits, w->code_bias, w->group_elems,
                              row_codes, row_groups, emb_, cs);
+        audio_embed(T, cs);
         if (HC > 1)
             broadcast_streams(emb_, R_, N, (int) HC, T, cs);
         else if (cudaMemcpyAsync(R_, emb_, (size_t) T * N * 4, cudaMemcpyDeviceToDevice, cs) != cudaSuccess) {
@@ -802,6 +924,89 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         }
     }
 
+    // The shared expert runs on sh_cs_ beside the main stream.  In a split window (GUILD_SH_FORK; on by default on
+    // CUDA) the shared expert of (l, g) is forked in the next post(), the other group's, right after that post() has
+    // joined its own: pre(l + 1, A) leaves A's to post(l, B), pre(l + 1, B) leaves B's to post(l + 1, A).  It then runs
+    // beside the other group's wait for the CPU, its combine and its next mixer, and joins in post(l, g) long after
+    // it is done; the router, top-k and ring run alone.  GUILD_SH_FORK=0, and one-group windows: forked before the
+    // router in pre(l, g) and joined before the combine, where post(l, B), captured after pre(l + 1, A), also
+    // waited for A's layer-(l + 1) shared expert forked just before it.  The shared expert reads only its group's
+    // mixed_ rows, which nothing writes before its join.  GTX 1070, 256-token decodes with --spec 4: 70.7 -> 69.6
+    // ms a prose window and 73.8 -> 72.6 a code window, 68.4 and 71.7 with the two-row BF16 router as well (nsys:
+    // the router, top-k and ring 44.7 -> 33.4 us a group and layer).
+    static const bool sh_stream_env = [] {
+        const char* e = std::getenv("GUILD_SH_STREAM");
+        return !e || e[0] != '0';
+    }();
+    static const bool sh_fork_late = [] {
+        const char* e = std::getenv("GUILD_SH_FORK");
+#if defined(GUILD_USE_HIP) || defined(GUILD_HIP_GFX906)
+        return e != nullptr && e[0] != '0'; // measured on CUDA only: opt-in (both HIP builds)
+#else
+        return !e || e[0] != '0';
+#endif
+    }();
+    const bool sh_fork = sh_stream_env && !prof_on_ && sh_cs_ != nullptr && ev_fork_ != nullptr && ev_join_ != nullptr;
+    // GUILD_GDN_FORK=0: a GDN layer's conv and alpha/beta projection on the main stream, before its gate product
+    static const bool gdn_fork_env = [] {
+        const char* e = std::getenv("GUILD_GDN_FORK");
+#if defined(GUILD_USE_HIP) || defined(GUILD_HIP_GFX906)
+        return e != nullptr && e[0] != '0'; // measured on CUDA only: opt-in (both HIP builds)
+#else
+        return !e || e[0] != '0';
+#endif
+    }();
+    const bool gdn_fork =
+        gdn_fork_env && !prof_on_ && gdn_cs_ != nullptr && ev_gdn_fork_ != nullptr && ev_gdn_join_ != nullptr;
+    gdn_node_prio_ = gdn_fork;
+    const bool sh_defer = sh_fork && sh_fork_late && G == 2;
+    int64_t sh_pending_l = -1; // the shared expert pre() left to the next post() (sh_defer)
+    int sh_pending_grp = 0;
+    // the shared expert of (l, grp): on sh_cs_ when `fork` (forked off cs by the caller), else on cs
+    auto issue_shared = [&](int64_t l, int grp, bool fork) -> bool {
+        const int tb = tb_[grp], te = te_[grp], n = te - tb;
+        const LayerView v(wt, l);
+        float* xm = mixed_ + tb * N;
+        cudaStream_t sh_stream = fork ? sh_cs_ : cs;
+        const WeightRef *wgi = need(v, "ffn_gate_inp_shexp.weight", err), *wsg = need(v, "ffn_gate_shexp.weight", err),
+                        *wsu = need(v, "ffn_up_shexp.weight", err), *wsd = need(v, "ffn_down_shexp.weight", err);
+        if (!wgi || !wsg || !wsu || !wsd)
+            return false;
+        if (!native_of(wsg, v.name("ffn_gate_shexp.weight"), err) ||
+            !native_of(wsu, v.name("ffn_up_shexp.weight"), err) ||
+            !native_of(wsd, v.name("ffn_down_shexp.weight"), err))
+            return false;
+        NativeSharedWeights nsw;
+        nsw.gate_type = wsg->native_type;
+        nsw.gate_data = wsg->native_data;
+        nsw.up_type = wsu->native_type;
+        nsw.up_data = wsu->native_data;
+        nsw.down_type = wsd->native_type;
+        nsw.down_data = wsd->native_data;
+        nsw.q8_1 = fork ? sh_xq_ : xq_;
+        if (!shared_expert_native_bf16_enabled()) {
+            if (dec_batch)
+                f32_to_bf16_bulk(mixed_ + tb * N, sh_bf16_ + tb * N, (int64_t) n * N, sh_stream); // contiguous rows
+            else
+                for (int t = tb; t < te; ++t)
+                    f32_to_bf16_bulk(mixed_ + t * N, sh_bf16_ + t * N, N, sh_stream);
+        }
+        try {
+            shared_expert_multi(n, xm, sh_bf16_ + tb * N, nsw, (const uint16_t*) wgi->data,
+                                sh_gate_ + (size_t) tb * g.n_ff, sh_up_ + (size_t) tb * g.n_ff, sh_g_ + tb,
+                                shared_ + tb * N, N, g.n_ff, sh_stream);
+        } catch (const std::exception& e) {
+            err = std::string("verify shared expert: ") + e.what();
+            return false;
+        }
+        if (l == 0 && grp == 0 && dbg_l0_shared_) {
+            cudaMemcpyAsync(dbg_l0_shared_, shared_ + tb * N, (size_t) N * sizeof(float), cudaMemcpyDeviceToDevice,
+                            sh_stream);
+        }
+        if (fork)
+            cudaEventRecord(ev_join_, sh_cs_);
+        return true;
+    };
     // ---------------------------------------------------------------- pre(l, group): up to the ring
     auto pre = [&](int64_t l, int grp) -> bool {
         const int tb = tb_[grp], te = te_[grp], n = te - tb;
@@ -839,13 +1044,21 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 const char* e = std::getenv("GUILD_PLE_BATCH");
                 return !e || e[0] != '0';
             }();
-            const bool ple_batch_kv = ple_batch_env && dec_batch && n > 1 && ss.ple.w.key_bf16 != nullptr &&
-                                      ss.ple.w.value_bf16 != nullptr && ple_native_bf16_enabled() &&
-                                      ple_native_postops_enabled();
+            // the key in BF16, or quantized (ple_block's native path: the row to Q8_1, then the native MMVQ, whose
+            // n-column call is each column's single one bit for bit)
+            const bool ple_native_key = ss.ple.w.key_bf16 == nullptr && ss.ple.w.key_native_data != nullptr;
+            const bool ple_batch_kv =
+                ple_batch_env && dec_batch && n > 1 && (ss.ple.w.key_bf16 != nullptr || ple_native_key) &&
+                ss.ple.w.value_bf16 != nullptr && ple_native_bf16_enabled() && ple_native_postops_enabled();
             if (ple_batch_kv) {
                 try {
-                    bf16_gemv_fp32_mmvf_multi(ple_ + (size_t) tb * N, N, ss.ple.w.key_bf16, xn_ + (size_t) tb * HC * N,
-                                              HC * N, N, HC * N, n, cs);
+                    if (ple_native_key) {
+                        native_quantize_q8_1(ple_ + (size_t) tb * N, xq_, (int) N, n, cs);
+                        native_mmvq(ss.ple.w.key_native_type, ss.ple.w.key_native_data, xq_, xn_ + (size_t) tb * HC * N,
+                                    (int) N, (int) (HC * N), n, cs);
+                    } else
+                        bf16_gemv_fp32_mmvf_multi(ple_ + (size_t) tb * N, N, ss.ple.w.key_bf16,
+                                                  xn_ + (size_t) tb * HC * N, HC * N, N, HC * N, n, cs);
                     bf16_gemv_fp32_mmvf_multi(ple_ + (size_t) tb * N, N, ss.ple.w.value_bf16, z_ + (size_t) tb * N, N,
                                               N, N, n, cs);
                 } catch (const std::exception& e) {
@@ -888,6 +1101,8 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                     a.w_norm = (const float*) wn[half]->data;
                     a.w_down = (const uint16_t*) wd[half]->data;
                     a.w_up = (const uint16_t*) wu[half]->data;
+                    a.w_down_q8 = wd[half]->hc_q8; // --hc q8_0: the GGUF's Q8_0 blocks (then data is null)
+                    a.w_up_q8 = wu[half]->hc_q8;
                     a.w_inject = (const uint16_t*) wi[half]->data;
                     a.eps = EPS;
                     a.lo = lo_ + t * g.hc_lr;
@@ -915,6 +1130,14 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             }
         };
         gr_read_group(0, pending, inj2_, inj_);
+        // a drafter's features: Rt holds layer l - 1 complete now (the pending FFN write applied)
+        if (feat_ != nullptr && l > 0) {
+            const size_t nf = feat_layers_.size();
+            for (size_t k = 0; k < nf; ++k)
+                if (feat_layers_[k] == l - 1)
+                    dflashk::stream_mean(Rt(tb), (int) HC, (int) N, n, (size_t) HC * N,
+                                         feat_ + ((size_t) tb * nf + k) * N, nf * N, cs);
+        }
         if (l == 0 && grp == 0 && dbg_l0_attn_norm_) {
             cudaMemcpyAsync(dbg_l0_attn_norm_, mixed_ + tb * N, (size_t) N * sizeof(float), cudaMemcpyDeviceToDevice,
                             cs);
@@ -944,26 +1167,45 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 native_quantize_q8_1(xm, xq_, (int) N, n, cs);
                 native_mmvq(wqkv->native_type, wqkv->native_data, xq_, qkv + (size_t) tb * C, (int) N, (int) C, n, cs);
                 stamp(l, 2, grp);
+                // the conv and the alpha/beta projection run on gdn_cs_ beside the gate product, which reads neither
+                // their inputs' writers nor their outputs; the recurrence joins both
+                cudaStream_t gs = cs;
+                if (gdn_fork) {
+                    cudaEventRecord(ev_gdn_fork_, cs);
+                    cudaStreamWaitEvent(gdn_cs_, ev_gdn_fork_, 0);
+                    gs = gdn_cs_;
+                }
                 if (batch_rec_) { // each row from its own slot's conv history, one row each
                     for (int t = tb; t < te; ++t) {
                         SessionState& sx = slot_ss(t);
                         const float* cx = sx.gdn_state + (size_t) (gi - sx.gdn_ord0) * gdn_floats +
                                           (uint64_t) g.ssm_state_size * g.ssm_v_heads * g.ssm_state_size;
                         gdn_conv_l2_multi(cx, qkv + (size_t) t * C, (const float*) wc->data, hb + (size_t) t * C,
-                                          (int) C, (int) (2 * HK), EPS, 1, cs, 0);
+                                          (int) C, (int) (2 * HK), EPS, 1, gs, 0);
+                        if (gdn_fork)
+                            prioritize_captured(gs, gdn_prio_);
                     }
-                } else
-                    gdn_conv_l2_multi(conv, qkv, (const float*) wc->data, hb, (int) C, (int) (2 * HK), EPS, n, cs, tb);
+                } else {
+                    gdn_conv_l2_multi(conv, qkv, (const float*) wc->data, hb, (int) C, (int) (2 * HK), EPS, n, gs, tb);
+                    if (gdn_fork)
+                        prioritize_captured(gs, gdn_prio_);
+                }
                 stamp(l, 3, grp);
                 gdn_ab_multi(xm, (const uint16_t*) wa->data, (const uint16_t*) wb->data, (const float*) wdt->data,
                              (const float*) wsa->data, gate + (size_t) tb * HV, beta + (size_t) tb * HV, (int) N,
-                             (int) HV, n, cs);
+                             (int) HV, n, gs);
+                if (gdn_fork) {
+                    prioritize_captured(gs, gdn_prio_);
+                    cudaEventRecord(ev_gdn_join_, gdn_cs_);
+                }
                 stamp(l, 4, grp);
                 native_mmvq(wg->native_type, wg->native_data, xq_, z_ + (size_t) tb * ZV, (int) N, (int) ZV, n, cs);
                 if (l == 0 && grp == 0 && dbg_l0_z_) {
                     cudaMemcpyAsync(dbg_l0_z_, z_ + (size_t) tb * ZV, (size_t) ZV * sizeof(float),
                                     cudaMemcpyDeviceToDevice, cs);
                 }
+                if (gdn_fork)
+                    cudaStreamWaitEvent(cs, ev_gdn_join_, 0);
                 stamp(l, 5, grp);
                 // the recurrence from the untouched state over tokens [0, te); outputs only for this group's
                 if (batch_rec_) { // each row's recurrence from its own slot's state, one token
@@ -1145,8 +1387,21 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                                        cap_, s, sel_ + (size_t) tb * cap_, cs);
                     }
                     stamp(l, 11, grp);
-                    // KV streaming: the n selections' blocks resident (device-side, inside the graph)
-                    qsa_kv_resolve(st, *g_, sel_ + (size_t) tb * cap_, step_ + tb * kStepCount, n, cap_, cs);
+                    // KV streaming: the n selections' blocks resident (device-side, inside the graph).  With one
+                    // staging pool shared by the QSA layers, a resolve normally clears this layer's map first,
+                    // because the layer before it has refilled the slots.  Group 1 is the exception: the stream
+                    // runs pre(l, 0), post(l - 1, 1), pre(l, 1), and post has no attention, so nothing has touched
+                    // the pool since group 0 of this same layer filled it, and group 1's own K/V append went
+                    // through this map.  Keeping the map, group 1 copies only the blocks group 0 did not select.
+                    // Measured on the GTX 1070 with a 7K-token prompt: 8,380 instead of 13,393 8 KiB blocks a
+                    // window over PCIe, and the copy kernel 5.8 instead of 9.1 ms a window.
+                    // GUILD_KV_STAGING_REUSE=0: clear it as group 0 does.
+                    static const bool staging_reuse = [] {
+                        const char* e = std::getenv("GUILD_KV_STAGING_REUSE");
+                        return !e || e[0] != '0';
+                    }();
+                    qsa_kv_resolve(st, *g_, sel_ + (size_t) tb * cap_, step_ + tb * kStepCount, n, cap_, cs,
+                                   /*invalidate_shared=*/!(staging_reuse && grp > 0));
                     stamp(l, 12, grp);
                     const QsaAttnPools pools = qsa_attn_pools(st);
                     qsa_decode_attn_batch(
@@ -1177,20 +1432,25 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             return false;
         }
         stamp(l, 16, grp);
+        if (defer_[T] && !defer_out_ && l > lb_) {
+            // the previous layer's deferred experts, written into the streams with that layer's FFN-half injection
+            // before this layer's FFN reads them (only this layer's attention runs without them)
+            wait_flag_ge(m_flagD_, (uint32_t) (l - lb_), cs);
+            copy_from_mapped(dsum_ + tb * N, m_ydef_ + (size_t) ((l - 1) & 1) * max_t_ * N + (size_t) tb * N,
+                             (int64_t) n * N, cs);
+            for (int t = tb; t < te; ++t)
+                gr_write(Rt(t), dsum_ + t * N, inj2def_ + (size_t) ((l - 1) & 1) * max_t_ * HC + (size_t) t * HC, gs,
+                         Rt(t), cs);
+        }
         gr_read_group(1, true, inj_, inj2_);
         if (l == 0 && grp == 0 && dbg_l0_R_) {
             cudaMemcpyAsync(dbg_l0_R_, Rt(0), (size_t) N * sizeof(float), cudaMemcpyDeviceToDevice, cs);
             cudaMemcpyAsync(dbg_l0_post_norm_, mixed_ + tb * N, (size_t) N * sizeof(float), cudaMemcpyDeviceToDevice,
                             cs);
         }
-        static const bool sh_stream_env = [] {
-            const char* e = std::getenv("GUILD_SH_STREAM");
-            return !e || e[0] != '0';
-        }();
-        const bool sh_fork =
-            sh_stream_env && !prof_on_ && sh_cs_ != nullptr && ev_fork_ != nullptr && ev_join_ != nullptr;
-        cudaStream_t sh_stream = sh_fork ? sh_cs_ : cs;
-        if (sh_fork) {
+        // left to the next post() (sh_defer), except group A's first layer, whose next call is pre(l, B)
+        const bool defer = sh_defer && !(l == lb_ && grp == 0);
+        if (sh_fork && !defer) {
             cudaEventRecord(ev_fork_, cs);
             cudaStreamWaitEvent(sh_cs_, ev_fork_, 0);
         }
@@ -1206,15 +1466,14 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 err = "verify router: " + std::string(e.what());
                 return false;
             }
-#if defined(GUILD_HIP_GFX906)
         } else if (dec_batch) {
-            // gfx906: the Coder's 256-expert router (the native router is 512 x 10 only) for the whole window in one
-            // multi-column BF16 projection and one top-k, bitwise the per-token calls (route_window_parity); ~3 ms
-            // of a ~55 ms verify window on 2x MI50.  GUILD_ROUTE_PER_TOKEN=1: the per-token calls.
+            // any other router (the native router is 512 x 10 only: the Coder's 256 x 10, Ornith's 256 x 8) for the
+            // whole group in one multi-column BF16 projection and one top-k, bitwise the per-token calls
+            // (route_window_parity); ~3 ms of a ~55 ms verify window on 2x MI50.  GUILD_ROUTE_PER_TOKEN=1: the
+            // per-token calls.
             if (!moe_route_window(wt, g, l, K, ss.moe, mixed_ + tb * N, logits_ + tb * NE, ids_ + tb * K, w_ + tb * K,
                                   n, cs, err))
                 return false;
-#endif
         } else
             for (int t = tb; t < te; ++t) {
                 MoEBuffers mb = ss.moe;
@@ -1244,7 +1503,8 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                                        cs);
             else
 #endif
-                if (remote_opt_) // #578: the helper GPUs reduce with the routing weights - publish them
+                if (remote_opt_ || host_combine) // #578: the helper GPUs reduce with the routing weights - publish
+                                                 // them (and the host combine sums with them)
                 doorbell_publish(xm, ids_ + tb * K, w_ + tb * K, (int64_t) n * N, (int64_t) n * K, m_x_ + tb * N,
                                  m_ids_ + tb * K, m_w_ + tb * K, m_seq_, cs);
             else {
@@ -1254,45 +1514,11 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             }
         }
         stamp(l, 17, grp);
-        {
-            const WeightRef *wgi = need(v, "ffn_gate_inp_shexp.weight", err),
-                            *wsg = need(v, "ffn_gate_shexp.weight", err), *wsu = need(v, "ffn_up_shexp.weight", err),
-                            *wsd = need(v, "ffn_down_shexp.weight", err);
-            if (!wgi || !wsg || !wsu || !wsd)
-                return false;
-            if (!native_of(wsg, v.name("ffn_gate_shexp.weight"), err) ||
-                !native_of(wsu, v.name("ffn_up_shexp.weight"), err) ||
-                !native_of(wsd, v.name("ffn_down_shexp.weight"), err))
-                return false;
-            NativeSharedWeights nsw;
-            nsw.gate_type = wsg->native_type;
-            nsw.gate_data = wsg->native_data;
-            nsw.up_type = wsu->native_type;
-            nsw.up_data = wsu->native_data;
-            nsw.down_type = wsd->native_type;
-            nsw.down_data = wsd->native_data;
-            nsw.q8_1 = sh_fork ? sh_xq_ : xq_;
-            if (!shared_expert_native_bf16_enabled()) {
-                if (dec_batch)
-                    f32_to_bf16_bulk(mixed_ + tb * N, sh_bf16_ + tb * N, (int64_t) n * N, sh_stream); // contiguous rows
-                else
-                    for (int t = tb; t < te; ++t)
-                        f32_to_bf16_bulk(mixed_ + t * N, sh_bf16_ + t * N, N, sh_stream);
-            }
-            try {
-                shared_expert_multi(n, xm, sh_bf16_ + tb * N, nsw, (const uint16_t*) wgi->data,
-                                    sh_gate_ + (size_t) tb * g.n_ff, sh_up_ + (size_t) tb * g.n_ff, sh_g_ + tb,
-                                    shared_ + tb * N, N, g.n_ff, sh_stream);
-            } catch (const std::exception& e) {
-                err = std::string("verify shared expert: ") + e.what();
-                return false;
-            }
-            if (l == 0 && grp == 0 && dbg_l0_shared_) {
-                cudaMemcpyAsync(dbg_l0_shared_, shared_ + tb * N, (size_t) N * sizeof(float), cudaMemcpyDeviceToDevice,
-                                sh_stream);
-            }
-            if (sh_fork)
-                cudaEventRecord(ev_join_, sh_cs_);
+        if (defer) {
+            sh_pending_l = l;
+            sh_pending_grp = grp;
+        } else if (!issue_shared(l, grp, sh_fork)) {
+            return false;
         }
         if (has_gpu_experts) {
             if (guild::kernels::cpu::expert_layout().native)
@@ -1328,6 +1554,16 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         float* hit_out = hit_out_ + (size_t) tb * K * N;
         float* parts_out = parts_ + (size_t) tb * K * N;
         const auto& lay = guild::kernels::cpu::expert_layout();
+        if (sh_defer) { // this group's shared expert joined, then the other group's forked (see sh_defer)
+            cudaStreamWaitEvent(cs, ev_join_, 0);
+            if (sh_pending_l >= 0) {
+                cudaEventRecord(ev_fork_, cs);
+                cudaStreamWaitEvent(sh_cs_, ev_fork_, 0);
+                if (!issue_shared(sh_pending_l, sh_pending_grp, true))
+                    return false;
+                sh_pending_l = -1;
+            }
+        }
         // plan v0.3 P6: the VRAM groups now; the PCIe groups once the copy engine has landed them in staging.
         // `gy`: the native launch's groups side by side (0: cap, one block row per possible group).
         auto grouped = [&](const unsigned long long* gp, const int32_t* gs, const int32_t* gn, int64_t gy,
@@ -1353,7 +1589,10 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         } else if (!need_gpu_plan) {
             wait_flag_ge(m_flag_, ring, cs); // all routed experts are served by the CPU pool
             stamp(l, 23, grp);
-            copy_from_mapped(parts_out, m_ymiss_ + (size_t) tb * K * N, (int64_t) n * K * N, cs);
+            if (host_combine) // the CPU's weighted sums, n_embd floats a token
+                copy_from_mapped(parts_out, m_ysum_ + (size_t) tb * N, (int64_t) n * N, cs);
+            else
+                copy_from_mapped(parts_out, m_ymiss_ + (size_t) tb * K * N, (int64_t) n * K * N, cs);
         } else {
             if (device_plan_) { // E-6: skipped when the device planned this group (all its experts resident)
                 wait_flag_ge_or(m_flagA_, ring, skip_ + grp, cs);
@@ -1403,10 +1642,18 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             if (has_gpu_experts)
                 moe_hit_add(parts_out, hit_out, p_dst, p_counts + 1, cap, N, cs);
         }
-        if (!prof_on_ && sh_cs_ != nullptr && ev_fork_ != nullptr && ev_join_ != nullptr) {
+        if (!sh_defer && !prof_on_ && sh_cs_ != nullptr && ev_fork_ != nullptr && ev_join_ != nullptr) {
             cudaStreamWaitEvent(cs, ev_join_, 0);
         }
-        if (dec_batch && n > 1 && native_moe_combine_enabled()) { // one launch for the window's rows
+        if (host_combine) { // the shared expert added to the CPU's sums: the combine kernel at k = 1, weight 1.0
+            try {
+                native_moe_combine_multi(parts_ + (size_t) tb * K * N, ones_, shared_ + tb * N, bo_ + tb * N, N, 1, n,
+                                         cs);
+            } catch (const std::exception& e) {
+                err = "verify combine: " + std::string(e.what());
+                return false;
+            }
+        } else if (dec_batch && n > 1 && native_moe_combine_enabled()) { // one launch for the window's rows
             try {
                 native_moe_combine_multi(parts_ + (size_t) tb * K * N, w_ + tb * K, shared_ + tb * N, bo_ + tb * N, N,
                                          K, n, cs);
@@ -1425,6 +1672,15 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         if (remote_opt_)
             remote_opt_->combine(bo_ + tb * N, y_dummy_ + tb * N, tb, n, device_plan_ ? skip_ + grp : nullptr, ring,
                                  cs);
+        if (defer_[T] && defer_out_ && l > lb_) { // the previous layer's deferred experts, summed by the CPU meanwhile
+            wait_flag_ge(m_flagD_, (uint32_t) (l - lb_), cs);
+            copy_from_mapped(dsum_ + tb * N, m_ydef_ + (size_t) ((l - 1) & 1) * max_t_ * N + (size_t) tb * N,
+                             (int64_t) n * N, cs);
+            guild::kernels::add_inplace(bo_ + tb * N, dsum_ + tb * N, (int64_t) n * N, cs);
+        }
+        if (defer_[T] && !defer_out_ && l + 1 < le_) // this layer's FFN-half injection, for its deferred sums
+            cudaMemcpyAsync(inj2def_ + (size_t) (l & 1) * max_t_ * HC + (size_t) tb * HC, inj2_ + (size_t) tb * HC,
+                            (size_t) n * HC * sizeof(float), cudaMemcpyDeviceToDevice, cs);
         stamp(l, 24, grp);
         if (l == g.n_layers - 1) {
             if (!fuse_head_gr) {
@@ -1440,6 +1696,10 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             }
         } else if (cvec().covers(l)) {
             cvec_apply(Rt(tb), l, n, HC * N, bo_ + tb * N, N, inj2_ + tb * HC, HC, true, cs);
+        }
+        if (dbg_res_R_ != nullptr && grp == 0 && g.hc == 1) { // row 0's residual and pending FFN write after layer l
+            cudaMemcpyAsync(dbg_res_R_ + (size_t) l * N, Rt(0), (size_t) N * 4, cudaMemcpyDeviceToDevice, cs);
+            cudaMemcpyAsync(dbg_res_bo_ + (size_t) l * N, bo_, (size_t) N * 4, cudaMemcpyDeviceToDevice, cs);
         }
         return true;
     };
@@ -1521,6 +1781,10 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                     rms_norm_weighted(head_mixed_ + t * N, (const float*) hn->data, 1, (int) N, EPS, cs);
                 }
             }
+        }
+        if (no_head_) {
+            stamp(g.n_layers, 1, 0);
+            return true;
         }
         if (head_ != nullptr && head_->loaded()) {
             try {
@@ -1668,7 +1932,7 @@ bool Verifier::capture(int T, std::string& err) {
         std::fprintf(stderr, "\n");
     }
 #endif
-    const cudaError_t ie = cudaGraphInstantiate(&exec_[T], graph, 0);
+    const cudaError_t ie = cudaGraphInstantiate(&exec_[T], graph, gdn_node_prio_ ? kUseNodePriority : 0);
     cudaGraphDestroy(graph);
     if (ie != cudaSuccess) {
         err = std::string("verify: instantiate: ") + cudaGetErrorString(ie);
@@ -1701,8 +1965,31 @@ bool Verifier::capture_commit(std::string& err) {
         return false;
     }
     bool ok = true;
+    // GUILD_GDN_COMMIT_FORK=0 runs the whole commit on cs_.  Otherwise the small commits (the GDN layers' conv
+    // histories, the QSA layers' indexer appends, the PLE history) run on gdn_cs_, at its priority, beside the GDN
+    // state commits on cs_: they touch disjoint state and all read commit_, copied before the fork.  nsys of the
+    // short-context decode: the commit graph's span 2.26 ms -> 1.75 ms (median; 1.95 ms without the priority).
+    static const bool commit_fork_env = [] {
+        const char* e = std::getenv("GUILD_GDN_COMMIT_FORK");
+#if defined(GUILD_USE_HIP) || defined(GUILD_HIP_GFX906)
+        return e != nullptr && e[0] != '0'; // measured on CUDA only: opt-in (both HIP builds)
+#else
+        return !e || e[0] != '0';
+#endif
+    }();
+    const bool commit_fork =
+        commit_fork_env && gdn_cs_ != nullptr && ev_gdn_fork_ != nullptr && ev_gdn_join_ != nullptr;
+    cudaStream_t side = commit_fork ? gdn_cs_ : cs_;
+    const auto mark = [&] {
+        if (commit_fork)
+            prioritize_captured(gdn_cs_, gdn_prio_);
+    };
     try {
         copy_i32_from_mapped(commit_, m_commit_, 2 + MT, cs_);
+        if (commit_fork) {
+            cudaEventRecord(ev_gdn_fork_, cs_);
+            cudaStreamWaitEvent(gdn_cs_, ev_gdn_fork_, 0);
+        }
         int64_t qsa_index = 0, gdn_index = 0;
         for (int64_t l = 0; l < lb_; ++l)
             (is_qsa_layer(g, l) ? qsa_index : gdn_index) += 1;
@@ -1717,7 +2004,8 @@ bool Verifier::capture_commit(std::string& err) {
                 float* state = ss.gdn_state + (size_t) (gdn_index - ss.gdn_ord0) * gdn_floats;
                 float* conv = state + (uint64_t) g.ssm_state_size * g.ssm_v_heads * g.ssm_state_size;
                 const float* qkv = qkv_L_ + (size_t) gdn_index * MT * C;
-                gdn_conv_commit(conv, qkv, (int) C, commit_, cs_);
+                gdn_conv_commit(conv, qkv, (int) C, commit_, side);
+                mark();
                 gdn_step_norm_multi(state, h_L_ + (size_t) gdn_index * MT * C, (int) C,
                                     gate_L_ + (size_t) gdn_index * MT * HV, beta_L_ + (size_t) gdn_index * MT * HV, z_,
                                     (const float*) wnm->data, EPS, y_dummy_, (int) g.ssm_k_heads, (int) HV, (int) MT,
@@ -1731,21 +2019,30 @@ bool Verifier::capture_commit(std::string& err) {
                         ok = false;
                         break;
                     }
-                    copy_from_mapped(st.idx_tail, tail_snap_ + (size_t) qsa_index * TS, TS, cs_);
+                    copy_from_mapped(st.idx_tail, tail_snap_ + (size_t) qsa_index * TS, TS, side);
+                    mark();
                     const QsaIndexerBuffers ib{st.idx_tail, st.idx_dead, st.idx_pooled, st.idx_block_pos};
-                    for (int64_t t = 0; t < MT; ++t)
+                    for (int64_t t = 0; t < MT; ++t) {
                         native_qsa_indexer_append(idx_raw_L_ + (size_t) (qsa_index * MT + t) * ID, commit_ + 2 + t, 0,
                                                   (const float*) wikn->data, EPS, ib, s, st.max_cells, rope_scaling(),
-                                                  cs_);
+                                                  side);
+                        mark();
+                    }
                 }
                 ++qsa_index;
             }
         }
-        if (ok && ss.ple.ready() && ple_stage())
-            copy_indexed(ss.ple.hist, hist_snap_, HS, commit_ + 1, HS, cs_);
+        if (ok && ss.ple.ready() && ple_stage()) {
+            copy_indexed(ss.ple.hist, hist_snap_, HS, commit_ + 1, HS, side);
+            mark();
+        }
     } catch (const std::exception& e) {
         err = std::string("verify commit: ") + e.what();
         ok = false;
+    }
+    if (commit_fork) {
+        cudaEventRecord(ev_gdn_join_, gdn_cs_);
+        cudaStreamWaitEvent(cs_, ev_gdn_join_, 0);
     }
     cudaGraph_t graph = nullptr;
     const cudaError_t ce = cudaStreamEndCapture(cs_, &graph);
@@ -1754,7 +2051,8 @@ bool Verifier::capture_commit(std::string& err) {
             cudaGraphDestroy(graph);
         return false;
     }
-    if (ce != cudaSuccess || cudaGraphInstantiate(&commit_exec_, graph, 0) != cudaSuccess) {
+    if (ce != cudaSuccess ||
+        cudaGraphInstantiate(&commit_exec_, graph, commit_fork ? kUseNodePriority : 0) != cudaSuccess) {
         if (graph)
             cudaGraphDestroy(graph);
         err = std::string("verify: commit capture: ") + cudaGetErrorString(ce);
@@ -1773,6 +2071,8 @@ void Verifier::stage_inputs(int T, const int32_t* tokens, int64_t pos0) {
     int32_t* const pi = pk + (size_t) max_t_ * g.n_head_kv;
     for (int t = 0; t < T; ++t) {
         h_tok_[t] = tokens[t];
+        if (audio_rows_ != nullptr)
+            h_code_[t] = t < (int) codes_.size() ? codes_[(size_t) t] : 0;
         qsa_step_fill(h_step_ + t * kStepCount, pos0 + t, s);
         const int32_t pos_t = (int32_t) (pos0 + t);
         for (int64_t h = 0; h < g.n_head; ++h)
@@ -1786,6 +2086,7 @@ void Verifier::stage_inputs(int T, const int32_t* tokens, int64_t pos0) {
     *(volatile uint32_t*) h_flag_ = 0;
     *(volatile uint32_t*) h_flagA_ = 0;
     *(volatile uint32_t*) h_flagB_ = 0;
+    *(volatile uint32_t*) h_flagD_ = 0;
     std::atomic_thread_fence(std::memory_order_seq_cst);
     last_t_ = T;
     last_pos0_ = pos0;
@@ -1964,9 +2265,32 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
             progress_at("verify window: the CPU experts of layer", l);
             if (remote_opt_)
                 remote_opt_->begin(h_w_ + (size_t) tb * ss.k, tb, n);
-            if (pool != nullptr)
-                pool(user, h_x_ + (size_t) tb * g.n_embd, h_ids_ + (size_t) tb * ss.k, n, ss.k,
+            // expert deferral: this layer's top defer_k_ experts now, the rest after its flag is raised (below)
+            const bool defer_layer = defer_[T] && pool != nullptr && l + 1 < le_;
+            const int KK = (int) ss.k, ki = defer_k_, kd = KK - defer_k_;
+            if (defer_layer) {
+                def_ids_.resize((size_t) n * KK);
+                def_w_.resize((size_t) n * KK);
+                for (int t = 0; t < n; ++t)
+                    for (int j = 0; j < KK; ++j) {
+                        const int32_t id = h_ids_[(size_t) (tb + t) * KK + j];
+                        const float w = h_w_[(size_t) (tb + t) * KK + j];
+                        const size_t at = j < ki ? (size_t) t * ki + j : (size_t) n * ki + (size_t) t * kd + (j - ki);
+                        def_ids_[at] = id;
+                        def_w_[at] = w;
+                    }
+                pool(user, h_x_ + (size_t) tb * g.n_embd, def_ids_.data(), n, ki,
                      h_ymiss_ + (size_t) tb * ss.k * g.n_embd, l);
+                host_moe_combine(h_ymiss_ + (size_t) tb * ss.k * g.n_embd, def_w_.data(),
+                                 h_ysum_ + (size_t) tb * g.n_embd, n, ki, (int) g.n_embd);
+            } else {
+                if (pool != nullptr)
+                    pool(user, h_x_ + (size_t) tb * g.n_embd, h_ids_ + (size_t) tb * ss.k, n, ss.k,
+                         h_ymiss_ + (size_t) tb * ss.k * g.n_embd, l);
+                if (host_combine_[T]) // the combine's weighted sums; the GPU reads n_embd floats a token
+                    host_moe_combine(h_ymiss_ + (size_t) tb * ss.k * g.n_embd, h_w_ + (size_t) tb * ss.k,
+                                     h_ysum_ + (size_t) tb * g.n_embd, n, (int) ss.k, (int) g.n_embd);
+            }
             if (remote_opt_)
                 remote_opt_->end();
             VDBG("layer %lld served\n", (long long) l);
@@ -2000,6 +2324,17 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
             }
             if (!(test_stall && k + 1 == steps))
                 *flag = want;
+            if (defer_layer) { // the deferred experts, while the GPU runs the next layer
+                pool(user, h_x_ + (size_t) tb * g.n_embd, def_ids_.data() + (size_t) n * ki, n, kd,
+                     h_ymiss_ + (size_t) tb * ss.k * g.n_embd, l);
+                host_moe_combine(h_ymiss_ + (size_t) tb * ss.k * g.n_embd, def_w_.data() + (size_t) n * ki,
+                                 h_ydef_ + (size_t) (l & 1) * max_t_ * g.n_embd + (size_t) tb * g.n_embd, n, kd,
+                                 (int) g.n_embd);
+                std::atomic_thread_fence(std::memory_order_seq_cst);
+                _mm_sfence();
+            }
+            if (defer_[T])
+                *(volatile uint32_t*) h_flagD_ = want;
             ms_wait += std::chrono::duration<double, std::milli>(b - a).count();
             ms_pool += ms_since(b);
         }
@@ -2019,6 +2354,19 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
     }
     drain.finished = true;
     commit_pending_ = false;
+    if (dbg_res_R_ != nullptr) { // the residual stream after each layer: R + bo, the last layer's bo already in R
+        const size_t L = (size_t) g_->n_layers, N = (size_t) g_->n_embd;
+        std::vector<float> r(L * N), bo(L * N);
+        cudaMemcpy(r.data(), dbg_res_R_, L * N * 4, cudaMemcpyDeviceToHost);
+        cudaMemcpy(bo.data(), dbg_res_bo_, L * N * 4, cudaMemcpyDeviceToHost);
+        for (size_t l = 0; l + 1 < L; ++l)
+            for (size_t i = 0; i < N; ++i)
+                r[l * N + i] += bo[l * N + i];
+        if (std::FILE* f = std::fopen(std::getenv("GUILD_VERIFY_DUMP_RESIDUAL"), "wb")) {
+            std::fwrite(r.data(), 4, r.size(), f);
+            std::fclose(f);
+        }
+    }
     progress_at("verify window: waiting for the expert copies", (int64_t) T);
     if (copy_used_) {
         cudaStreamSynchronize(copy_); // no host function of this window may raise flag B in the next one
@@ -2033,6 +2381,14 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
     if (le_ < g.n_layers) { // a layer split's earlier stage: the hand-off is written (synced above)
         ++windows;
         return next_ == nullptr || next_->run(T, tokens, pos0, pool, next_user_, out, err);
+    }
+    if (no_head_) { // the caller runs its own head on head_input()
+        for (int t = 0; t < T; ++t)
+            out[t] = -1;
+        ++windows;
+        progress_at("decode");
+        progress_beat();
+        return true;
     }
     if (!validate_logits(T, pos0, err))
         return false;
@@ -2211,6 +2567,9 @@ bool Verifier::window_logprobs(const int32_t* targets, int T, int64_t pos0, int3
     return true;
 }
 
+void Verifier::set_defer_experts(int k) {
+    g_defer_experts = k;
+}
 void Verifier::set_commit_async(bool on) {
     g_commit_async = on && std::getenv("GUILD_COMMIT_SYNC") == nullptr;
 }
@@ -2254,7 +2613,7 @@ bool Verifier::reset_graphs(std::string& err) {
     if (!wait_commit(err))
         return false;
     if (cudaStreamSynchronize(cs_) != cudaSuccess || cudaStreamSynchronize(sh_cs_) != cudaSuccess ||
-        cudaStreamSynchronize(copy_) != cudaSuccess) {
+        cudaStreamSynchronize(gdn_cs_) != cudaSuccess || cudaStreamSynchronize(copy_) != cudaSuccess) {
         err = "verify: graph reset synchronization failed";
         return false;
     }
@@ -2408,7 +2767,7 @@ bool Verifier::capture_batch(const int* rows, int S, int hbase, std::string& err
         err = !ok ? rerr : std::string("verify: end batch capture: ") + cudaGetErrorString(ce);
         return false;
     }
-    const cudaError_t ie = cudaGraphInstantiate(&ex, graph, 0);
+    const cudaError_t ie = cudaGraphInstantiate(&ex, graph, gdn_node_prio_ ? kUseNodePriority : 0);
     cudaGraphDestroy(graph);
     if (ie != cudaSuccess) {
         err = std::string("verify: batch instantiate: ") + cudaGetErrorString(ie);
@@ -2544,6 +2903,8 @@ bool Verifier::stage_batch(const int* rows, int S, int hbase, const int32_t* tok
     const QsaShapes s = shapes_of(g);
     for (int t = 0; t < S; ++t) {
         h_tok_[t] = tokens[t];
+        if (audio_rows_ != nullptr)
+            h_code_[t] = t < (int) codes_.size() ? codes_[(size_t) t] : 0;
         qsa_step_fill(h_step_ + t * kStepCount, pos[t], s);
         for (int64_t h = 0; h < g.n_head; ++h)
             h_pos_[t * g.n_head + h] = (int32_t) pos[t];
@@ -2855,6 +3216,52 @@ bool Verifier::copy_logits(int t, float* host) const {
         return false;
     return cudaMemcpy(host, head_logits_ + (size_t) t * (size_t) n_vocab_, (size_t) n_vocab_ * sizeof(float),
                       cudaMemcpyDeviceToHost) == cudaSuccess;
+}
+
+bool Verifier::copy_hidden(int t, float* host) const {
+    if (next_ != nullptr)
+        return next_->copy_hidden(t, host); // a layer split: the head's input is on the last stage
+    if (head_mixed_ == nullptr || host == nullptr || t < 0 || g_ == nullptr)
+        return false;
+    const size_t n = (size_t) g_->n_embd;
+    return cudaMemcpy(host, head_mixed_ + (size_t) t * n, n * sizeof(float), cudaMemcpyDeviceToHost) == cudaSuccess;
+}
+
+bool Verifier::set_feature_layers(const std::vector<int>& layers, std::string& err) {
+    if (g_ == nullptr) {
+        err = "verify: set_feature_layers before init";
+        return false;
+    }
+    for (const cudaGraphExec_t e : exec_)
+        if (e != nullptr) {
+            err = "verify: set_feature_layers after a window graph was recorded";
+            return false;
+        }
+    if (!layers.empty() && (next_ != nullptr || lb_ != 0 || (le_ >= 0 && le_ != g_->n_layers))) {
+        err = "verify: drafter features need a single-stage verifier";
+        return false;
+    }
+    for (const int l : layers)
+        if (l < 0 || l > g_->n_layers - 2) {
+            err = "verify: feature layer " + std::to_string(l) + " out of range";
+            return false;
+        }
+    const OnDevice on_device(device_);
+    if (feat_ != nullptr) {
+        cudaFree(feat_);
+        feat_ = nullptr;
+    }
+    feat_layers_ = layers;
+    if (layers.empty())
+        return true;
+    const size_t bytes = (size_t) max_t_ * layers.size() * (size_t) g_->n_embd * sizeof(float);
+    if (cudaMalloc((void**) &feat_, bytes) != cudaSuccess) {
+        feat_ = nullptr;
+        feat_layers_.clear();
+        err = "verify: no VRAM for the drafter features";
+        return false;
+    }
+    return true;
 }
 
 void Verifier::debug_dump_layer0() const {

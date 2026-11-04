@@ -35,6 +35,24 @@ public:
     /// Layer split: load only blocks [lb, le) (every other `blk.N.` projection belongs to another GPU's stage; the
     /// PLE tensors are loaded everywhere).  Process-wide, read by the next `load`; (-1, -1) = all layers.
     static void set_layer_range(int lb, int le);
+    /// Q8_0 matrices of 2048 or more rows (rows of whole 256-value blocks) uploaded as this ggml type: 14 (Q6_K,
+    /// --dense q6_k; also GUILD_DENSE=q6_k), 13 (Q5_K) or 12 (Q4_K); 0 as the GGUF has them.  Process-wide, read by
+    /// the next `load`.
+    static void set_dense_type(int ggml_type);
+    /// llama.cpp's GGUF importance matrix for that requantization (--dense-imatrix; also GUILD_DENSE_IMATRIX), ""
+    /// for none.  Process-wide, read by the next `load`.
+    static void set_dense_imatrix(const std::string& path);
+    /// a type per matrix kind over set_dense_type's ("ssm_out=q4_k,attn_qkv=q6_k"; q8_0 keeps the GGUF's), from
+    /// --dense-map or GUILD_DENSE_MAP.  Process-wide, read by the next `load`.
+    static void set_dense_map(const std::string& map);
+    /// the type set_dense_type (or GUILD_DENSE) asks for, 0 for none
+    static int requant_type();
+    /// --hc q8_0 (also GUILD_HC=q8_0): every layer's hyper-connection down and up matrix (`blk.N.hc_{attn,ffn}_
+    /// {down,up}.weight`) from the GGUF's own Q8_0 blocks instead of the pack's bf16 rounding of them: `served_names`
+    /// adds them to the arena's skip set, `load` uploads them (WeightRef::hc_q8).  The caller checks that the CUDA
+    /// module reads them (fused_gr_q8_supported).  Process-wide; set before `served_names`.
+    static void set_hc_q8(bool on);
+    static bool hc_q8();
     /// #326: a native pack whose `blk.1.ple_key.weight` row is unquantized (iq_pack --compat-bf16 of a GGUF key
     /// the native kernel also reads, e.g. OrcaRouter's IQ3_XXS) serves the PLE from that row, so it is taken out
     /// of `skip` and `load` does not upload the GGUF key over it.  A quantized row leaves `skip` unchanged.
@@ -45,10 +63,29 @@ public:
     size_t tensor_count() const {
         return weights_.size();
     }
+    /// matrices uploaded as requant_type() out of Q8_0 (--dense)
+    size_t requantized() const {
+        return requantized_;
+    }
+    /// of those, the ones the importance matrix weighted
+    size_t imatrix_used() const {
+        return imatrix_used_;
+    }
+    /// hyper-connection matrices uploaded as the GGUF's Q8_0 (--hc q8_0), and their bytes (part of weight_bytes)
+    size_t hc_q8_count() const {
+        return hc_q8_count_;
+    }
+    uint64_t hc_q8_bytes() const {
+        return hc_q8_bytes_;
+    }
 
 private:
     std::vector<void*> weights_;
     void* scratch_ = nullptr;
     uint64_t bytes_ = 0;
+    size_t requantized_ = 0;
+    size_t imatrix_used_ = 0;
+    size_t hc_q8_count_ = 0;
+    uint64_t hc_q8_bytes_ = 0;
 };
 } // namespace guild::core

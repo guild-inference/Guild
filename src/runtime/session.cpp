@@ -4,12 +4,14 @@
 #if defined(GUILD_ENABLE_CUDA) || defined(GUILD_ENABLE_HIP)
 
 #include "model_impl.hpp"
+#include "guild/kernels/ngram.hpp"
 
 #include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <functional>
 #include <iostream>
 #include <mutex>
 #include <vector>
@@ -101,6 +103,14 @@ void GuildSession::reset() {
     std::lock_guard<std::mutex> lock(m_impl->generation_mutex);
     if (!m_impl->ready || !m_impl->ready->load())
         return;
+    if (m_impl->glm) { // forget the context and the snapshot
+        m_impl->glm->reset();
+        m_impl->glm_ctx.clear();
+        m_impl->glm_snap.clear();
+        m_impl->glm_ctx_logits.clear();
+        m_impl->glm_snap_logits.clear();
+        return;
+    }
     core::ScopedModelExecution exec_scope(m_impl->exec_state);
     std::optional<kernels::ScopedCudaAttn> attn_scope;
     if (m_impl->cuda_attn)
@@ -116,6 +126,10 @@ void GuildSession::reset() {
     core::session_zero(m_impl->ss, m_impl->g, nullptr, m_impl->main_stream);
     if (m_impl->mtp)
         core::qsa_state_zero(m_impl->mtp->kv_state(), m_impl->g, m_impl->main_stream);
+    if (m_impl->dflash) {
+        m_impl->dflash->reset(0);
+        m_impl->dflash_seq.clear();
+    }
     m_impl->clear_prefix_cache();
     if (cudaStreamSynchronize(m_impl->main_stream) != cudaSuccess)
         m_impl->ready->store(false);
@@ -150,6 +164,218 @@ void GuildSession::cancel() {
     }
 }
 
+namespace {
+
+bool prefix_cache_enabled() {
+    return std::getenv("GUILD_NO_KV_CACHE") == nullptr || std::atoi(std::getenv("GUILD_NO_KV_CACHE")) == 0;
+}
+
+// Where a prompt's reading starts: the live state when it ends at a prefix of `ids` (at most `max_reusable` tokens),
+// else the longest checkpoint that is one, restored.  With nothing to reuse, the state is zeroed.  Returns the tokens
+// reused, or -1 when the state could not be reset.
+int64_t reuse_prefix(GuildModel::Impl& m, const std::vector<int64_t>& ids, int64_t max_reusable,
+                     bool kv_cache_enabled) {
+    int64_t reused_pos = 0;
+    auto prefix_matches = [&](const std::vector<int32_t>& candidate) -> bool {
+        if (candidate.empty() || (int64_t) candidate.size() > max_reusable)
+            return false;
+        for (size_t i = 0; i < candidate.size(); ++i) {
+            if (static_cast<int64_t>(candidate[i]) != ids[i])
+                return false;
+        }
+        return true;
+    };
+
+    if (kv_cache_enabled && max_reusable > 0) {
+        if (prefix_matches(m.live_committed_tokens)) {
+            // Fast path: the live session state in m.ss already ends at the exact prefix!
+            reused_pos = static_cast<int64_t>(m.live_committed_tokens.size());
+        } else {
+            // Search saved checkpoints for the longest matching prefix <= max_reusable
+            const GuildModel::Impl::PrefixStateCheckpoint* best_cp = nullptr;
+            for (const auto& cp : m.prefix_checkpoints) {
+                if (prefix_matches(cp.tokens)) {
+                    if (!best_cp || cp.tokens.size() > best_cp->tokens.size()) {
+                        best_cp = &cp;
+                    }
+                }
+            }
+            if (best_cp != nullptr && m.restore_prefix_checkpoint(*best_cp)) {
+                reused_pos = static_cast<int64_t>(best_cp->tokens.size());
+                m.live_committed_tokens = best_cp->tokens;
+                // With KV streaming (--kv-host-only, --kv-resident) the draft layer's K/V is a ring of its 32K-cell
+                // window, and the request before this one wrote its cells past the prefix into the slots of the
+                // window's oldest cells: refill the window from the host copy, or the drafts, and with them the
+                // window shapes and the tokens, depend on the requests that ran before.  On a 64K-token prompt (GTX
+                // 1070, --spec 4) the second 256-token request took other windows from window 12 and other tokens
+                // from token 154 without it; with it, every repeat matches the first request bit for bit.
+                if (m.mtp)
+                    m.mtp->kv_restore(reused_pos);
+                // Prune any checkpoints beyond reused_pos whose KV cells will be overwritten
+                m.prune_prefix_checkpoints(static_cast<size_t>(reused_pos));
+            }
+        }
+    }
+
+    if (reused_pos == 0) {
+        m.clear_prefix_cache();
+        core::session_zero(m.ss, m.g, nullptr, m.main_stream);
+        if (m.mtp)
+            core::qsa_state_zero(m.mtp->kv_state(), m.g, m.main_stream);
+        if (cudaStreamSynchronize(m.main_stream) != cudaSuccess)
+            return -1;
+    }
+    return reused_pos;
+}
+
+enum class Ingest {
+    Done,
+    Cancelled,
+    Failed
+};
+
+// Reads prompt tokens [from, to) into the state (K/V cells, GDN and convolution state, PLE history), with the MTP
+// drafter's K/V too when `use_mtp`, and the DFlash drafter's context from position `dflash_from` on when that is not
+// negative.  The next token, ids[to], is the one a window reads after it.
+Ingest ingest_prompt(GuildModel::Impl& m, const std::vector<int64_t>& ids, int64_t from, int64_t to, bool use_mtp,
+                     int S, const std::function<bool()>& stop, std::string& error_msg, int64_t dflash_from = -1) {
+    auto* m_impl = &m;
+    const bool use_dflash = dflash_from >= 0 && m_impl->dflash != nullptr;
+    const size_t dflash_stride =
+        use_dflash ? m_impl->dflash->target_layers().size() * (size_t) m_impl->g.n_embd : (size_t) 0;
+    // A short prompt tail - an agentic turn after a reused prefix - goes through the verifier's windows: the prefill
+    // engine streams every selected expert to the GPU first (~460 ms here before its first token), the verifier's CPU
+    // experts start at once (~21 ms a token).  They cross near 110 tokens on the GTX 1070 PC
+    // (bench/results/2026-10-24-split-window); GUILD_PREFILL_VERIFY_MAX moves the bound, 0 turns it off.  The batched
+    // prefill computes CPU experts itself and keeps every length.
+    const int64_t n_tail = to - from;
+    const char* vmax_env = std::getenv("GUILD_PREFILL_VERIFY_MAX");
+    const int64_t verify_max = vmax_env != nullptr ? std::atoll(vmax_env) : 64;
+    const bool verify_ingest = m_impl->prefill != nullptr && n_tail > 0 && n_tail <= verify_max;
+    // The MTP drafter's prompt K/V from each prompt chunk's final residuals.  Set for this request or cleared: the
+    // callback holds this request's `ids`, so one left from an earlier request with drafts would read freed memory
+    // (and fill the drafter for nothing) when this one has none.
+    auto mtp_chunk = [m_impl, &ids](bool engine) {
+        return [m_impl, &ids, engine](const float* R_rows, int64_t T, int64_t p0, std::string& e) -> bool {
+            std::vector<int32_t> next_tokens(static_cast<size_t>(T));
+            for (int64_t i = 0; i < T; ++i) {
+                if (p0 + i + 1 < static_cast<int64_t>(ids.size())) {
+                    next_tokens[static_cast<size_t>(i)] = static_cast<int32_t>(ids[static_cast<size_t>(p0 + i + 1)]);
+                }
+            }
+            if (engine && m_impl->prefill->draft_kv(*m_impl->mtp, R_rows, next_tokens.data(), T, p0, e))
+                return true;
+            return e.empty() && m_impl->mtp->prefill(R_rows, next_tokens.data(), T, p0, e);
+        };
+    };
+    struct ClearChunkCallbacks {
+        GuildModel::Impl* m;
+        ~ClearChunkCallbacks() { // and the stop test, which holds the caller's request
+            if (m->prefill) {
+                m->prefill->on_chunk = nullptr;
+                m->prefill->should_stop = nullptr;
+                m->prefill->set_features({}, nullptr, 0, 0);
+            }
+            if (m->batched_prefill) {
+                m->batched_prefill->on_chunk = nullptr;
+                m->batched_prefill->should_stop = nullptr;
+            }
+        }
+    } clear_chunk_callbacks{m_impl};
+    if (m_impl->prefill)
+        m_impl->prefill->on_chunk = nullptr;
+    if (m_impl->batched_prefill)
+        m_impl->batched_prefill->on_chunk = nullptr;
+    if (m_impl->prefill && !verify_ingest) {
+        m_impl->prefill->should_stop = stop;
+
+        if (use_mtp)
+            m_impl->prefill->on_chunk = mtp_chunk(true);
+        if (use_dflash && m_impl->dflash_pf_feat != nullptr) {
+            // each chunk's rows from dflash_from on into the drafter's context (at most dflash_pf_rows of them: the
+            // rows from dflash_from to the prompt's end fit in its window)
+            m_impl->prefill->set_features(m_impl->dflash->target_layers(), m_impl->dflash_pf_feat,
+                                          m_impl->dflash_pf_rows, dflash_from);
+            m_impl->prefill->on_chunk = [m_impl, &ids, dflash_from, dflash_stride](const float*, int64_t T, int64_t p0,
+                                                                                   std::string& e) -> bool {
+                const int64_t t0 = std::max<int64_t>(0, dflash_from - p0);
+                if (t0 >= T)
+                    return true;
+                if (T - t0 > m_impl->dflash_pf_rows) {
+                    e = "dflash: a prompt chunk with more rows than its feature buffer";
+                    return false;
+                }
+                if (!m_impl->dflash->add_context(m_impl->dflash_pf_feat, dflash_stride, T - t0, p0 + t0,
+                                                 m_impl->dflash_stream, e))
+                    return false;
+                if (cudaStreamSynchronize(m_impl->dflash_stream) != cudaSuccess) { // the next chunk rewrites them
+                    e = "dflash: its stream failed";
+                    return false;
+                }
+                m_impl->dflash_seq.insert(m_impl->dflash_seq.end(), ids.begin() + (p0 + t0), ids.begin() + (p0 + T));
+                return true;
+            };
+        }
+
+        const int64_t n_to_prefill = to - from;
+        if (n_to_prefill > 0) {
+            if (!m_impl->prefill->run(ids.data() + from, n_to_prefill, from, error_msg))
+                return error_msg == "cancelled" ? Ingest::Cancelled : Ingest::Failed;
+        }
+    } else if (m_impl->batched_prefill && !verify_ingest && std::getenv("GUILD_PREFILL_SEQUENTIAL") == nullptr) {
+        m_impl->batched_prefill->should_stop = stop;
+        if (use_mtp)
+            m_impl->batched_prefill->on_chunk = mtp_chunk(false);
+        const int64_t n_to_prefill = to - from;
+        if (n_to_prefill > 0) {
+            if (!m_impl->batched_prefill->run(ids.data() + from, n_to_prefill, from, error_msg))
+                return error_msg == "cancelled" ? Ingest::Cancelled : Ingest::Failed;
+        }
+    } else {
+        // Architecture-independent prompt ingestion via Verifier (sequential fallback)
+        // in windows of up to the verifier's S tokens, as decode runs them
+        if (to > from) {
+            std::vector<int32_t> window_tok(static_cast<size_t>(S)), next(static_cast<size_t>(S)),
+                sink_out(static_cast<size_t>(S));
+            for (int64_t pos = from; pos < to;) {
+                if (stop())
+                    return Ingest::Cancelled;
+                const int T = static_cast<int>(std::min<int64_t>(S, to - pos));
+                for (int t = 0; t < T; ++t) {
+                    window_tok[static_cast<size_t>(t)] = static_cast<int32_t>(ids[static_cast<size_t>(pos + t)]);
+                    next[static_cast<size_t>(t)] = static_cast<int32_t>(ids[static_cast<size_t>(pos + t + 1)]);
+                }
+                m_impl->drive.d.layers = 0;
+                m_impl->drive.d.experts = 0;
+                if (!m_impl->ver->run(T, window_tok.data(), pos, drive_pool_multi, &m_impl->drive, sink_out.data(),
+                                      error_msg)) {
+                    return Ingest::Failed;
+                }
+                if (!m_impl->ver->commit(T, error_msg)) {
+                    return Ingest::Failed;
+                }
+                if (use_mtp && !m_impl->mtp->prefill(m_impl->ver->final_R_all(), next.data(), T, pos, error_msg))
+                    return Ingest::Failed;
+                if (use_dflash && pos + T > dflash_from) {
+                    const int64_t t0 = std::max<int64_t>(0, dflash_from - pos);
+                    if (!m_impl->dflash->add_context(m_impl->ver->features() + (size_t) t0 * dflash_stride,
+                                                     dflash_stride, T - t0, pos + t0, m_impl->dflash_stream,
+                                                     error_msg) ||
+                        cudaStreamSynchronize(m_impl->dflash_stream) != cudaSuccess) // the next window rewrites them
+                        return Ingest::Failed;
+                    m_impl->dflash_seq.insert(m_impl->dflash_seq.end(), ids.begin() + (pos + t0),
+                                              ids.begin() + (pos + T));
+                }
+                pos += T;
+            }
+        }
+    }
+
+    return Ingest::Done;
+}
+
+} // namespace
+
 // One generation, start to finish.  The shape is: validate the request against the model's real limits, take the
 // scopes that pin the CUDA bridges for the duration, reset the KV/MTP state, run prefill, then decode until EOS,
 // `max_new_tokens`, cancellation or a runtime failure.  Any failure after the first device work marks the model
@@ -165,6 +391,10 @@ bool GuildSession::generate(const GenerationRequest& req, TokenStreamCallback on
     }
 
     auto* m_impl = impl_->model_impl.get();
+    if (m_impl->tower) { // its verifier stops at the final norm (no head): there are no text tokens to generate
+        error_msg = "this is a text-to-speech model (--drama3): use GuildModel::synthesize";
+        return false;
+    }
     std::lock_guard<std::mutex> lock(m_impl->generation_mutex);
     if (!m_impl->ready || !m_impl->ready->load()) {
         error_msg = "model is not ready or an earlier inference failed; reload the model";
@@ -209,6 +439,14 @@ bool GuildSession::generate(const GenerationRequest& req, TokenStreamCallback on
                     ") exceeds max context (" + std::to_string(impl_->max_context) + ")";
         return false;
     }
+    if (m_impl->glm) {
+        for (int64_t id : ids)
+            if (id < 0 || id >= m_impl->glm->geometry().n_vocab) {
+                error_msg = "prompt token id " + std::to_string(id) + " is outside the model vocabulary";
+                return false;
+            }
+        return glm5_generate(*m_impl, req, ids, on_token, telemetry, error_msg, on_prefill, impl_->cancelled);
+    }
     for (int64_t id : ids) {
         if (id < 0 || id >= m_impl->ver->vocab()) {
             error_msg = "prompt token id " + std::to_string(id) + " is outside the model vocabulary";
@@ -244,61 +482,13 @@ bool GuildSession::generate(const GenerationRequest& req, TokenStreamCallback on
     if (m_impl->mtp && !m_impl->mtp->idle(error_msg))
         return runtime_failure();
 
-    // KV + Recurrent State Prefix Cache Resolution:
-    // The last prompt token (ids[n_prompt - 1]) is evaluated by the first decode/verify window,
-    // so up to max_reusable = n_prompt - 1 tokens can be reused directly from the KV cache.
-    const bool kv_cache_enabled =
-        (std::getenv("GUILD_NO_KV_CACHE") == nullptr || std::atoi(std::getenv("GUILD_NO_KV_CACHE")) == 0);
-    const size_t max_reusable = n_prompt > 1 ? static_cast<size_t>(n_prompt - 1) : 0;
-    int64_t reused_pos = 0;
-
-    auto prefix_matches = [&](const std::vector<int32_t>& candidate) -> bool {
-        if (candidate.empty() || candidate.size() > max_reusable)
-            return false;
-        for (size_t i = 0; i < candidate.size(); ++i) {
-            if (static_cast<int64_t>(candidate[i]) != ids[i])
-                return false;
-        }
-        return true;
-    };
-
-    if (kv_cache_enabled && max_reusable > 0) {
-        if (prefix_matches(m_impl->live_committed_tokens)) {
-            // Fast path: the live session state in m_impl->ss already ends at the exact prefix!
-            reused_pos = static_cast<int64_t>(m_impl->live_committed_tokens.size());
-        } else {
-            // Search saved checkpoints for the longest matching prefix <= max_reusable
-            const GuildModel::Impl::PrefixStateCheckpoint* best_cp = nullptr;
-            for (const auto& cp : m_impl->prefix_checkpoints) {
-                if (prefix_matches(cp.tokens)) {
-                    if (!best_cp || cp.tokens.size() > best_cp->tokens.size()) {
-                        best_cp = &cp;
-                    }
-                }
-            }
-            if (best_cp != nullptr && m_impl->restore_prefix_checkpoint(*best_cp)) {
-                reused_pos = static_cast<int64_t>(best_cp->tokens.size());
-                m_impl->live_committed_tokens = best_cp->tokens;
-                // Prune any checkpoints beyond reused_pos whose KV cells will be overwritten
-                m_impl->prefix_checkpoints.erase(
-                    std::remove_if(m_impl->prefix_checkpoints.begin(), m_impl->prefix_checkpoints.end(),
-                                   [reused_pos](const GuildModel::Impl::PrefixStateCheckpoint& c) {
-                                       return c.tokens.size() > static_cast<size_t>(reused_pos);
-                                   }),
-                    m_impl->prefix_checkpoints.end());
-            }
-        }
-    }
-
-    if (reused_pos == 0) {
-        m_impl->clear_prefix_cache();
-        core::session_zero(m_impl->ss, m_impl->g, nullptr, m_impl->main_stream);
-        if (m_impl->mtp)
-            core::qsa_state_zero(m_impl->mtp->kv_state(), m_impl->g, m_impl->main_stream);
-        if (cudaStreamSynchronize(m_impl->main_stream) != cudaSuccess) {
-            error_msg = "failed to reset inference state";
-            return runtime_failure();
-        }
+    // KV + Recurrent State Prefix Cache Resolution: the last prompt token (ids[n_prompt - 1]) is evaluated by the
+    // first decode/verify window, so up to n_prompt - 1 tokens can be reused (reuse_prefix).
+    const bool kv_cache_enabled = prefix_cache_enabled();
+    const int64_t reused_pos = reuse_prefix(*m_impl, ids, n_prompt > 1 ? n_prompt - 1 : 0, kv_cache_enabled);
+    if (reused_pos < 0) {
+        error_msg = "failed to reset inference state";
+        return runtime_failure();
     }
     telemetry.cached_prompt_tokens = static_cast<int>(reused_pos);
 
@@ -309,6 +499,14 @@ bool GuildSession::generate(const GenerationRequest& req, TokenStreamCallback on
         error_msg = "invalid request decode_strategy '" + req.decode_strategy + "'";
         return false;
     }
+    // Without an MTP drafter `auto` drafts from the context (adaptive: lookup and retrieval, back to one token when
+    // they miss) instead of not drafting, when the plan allows drafts at all (--spec 0 still means none).  Every
+    // emitted token is the verify window's, so outputs are unchanged.  Ornith-1.5-35B on the dual Xeon + GTX 1070:
+    // 54.86 / 54.72 tok/s normal, 54.68 / 55.00 adaptive on the bench prose / code prompts; 54.02 against 109.24
+    // tok/s on a 512-token repeating prompt.
+    if (eff_mode == spec::DecodeStrategyMode::Auto && m_impl->mtp == nullptr && m_impl->dflash == nullptr &&
+        m_impl->plan.mtp_spec_tokens > 0)
+        eff_mode = spec::DecodeStrategyMode::Adaptive;
 
     const int S = std::max(1, m_impl->config.spec);
     int max_draft = 0;
@@ -317,7 +515,8 @@ bool GuildSession::generate(const GenerationRequest& req, TokenStreamCallback on
     } else if (m_impl->config.spec_max_draft > 0) {
         max_draft = std::min(m_impl->config.spec_max_draft, S - 1);
     } else if (eff_mode == spec::DecodeStrategyMode::Auto) {
-        max_draft = (m_impl->plan.mtp_spec_tokens > 0 && m_impl->mtp != nullptr) ? (S - 1) : 0;
+        max_draft =
+            (m_impl->plan.mtp_spec_tokens > 0 && (m_impl->mtp != nullptr || m_impl->dflash != nullptr)) ? (S - 1) : 0;
     } else if (eff_mode == spec::DecodeStrategyMode::Normal) {
         max_draft = 0;
     } else {
@@ -327,6 +526,10 @@ bool GuildSession::generate(const GenerationRequest& req, TokenStreamCallback on
     const bool use_mtp = (m_impl->mtp != nullptr) && (max_draft > 0) &&
                          (eff_mode == spec::DecodeStrategyMode::Auto || eff_mode == spec::DecodeStrategyMode::Mtp ||
                           eff_mode == spec::DecodeStrategyMode::Adaptive);
+    // the DFlash drafter (GUILD_DFLASH) drafts every window in the MTP layer's place
+    const bool use_dflash = (m_impl->dflash != nullptr) && (max_draft > 0) &&
+                            (eff_mode == spec::DecodeStrategyMode::Auto || eff_mode == spec::DecodeStrategyMode::Mtp ||
+                             eff_mode == spec::DecodeStrategyMode::Adaptive);
     const bool need_lookup = (max_draft > 0) && (eff_mode == spec::DecodeStrategyMode::Lookup ||
                                                  eff_mode == spec::DecodeStrategyMode::Adaptive);
     const bool need_retrieval = (max_draft > 0) && (eff_mode == spec::DecodeStrategyMode::Retrieval ||
@@ -364,81 +567,37 @@ bool GuildSession::generate(const GenerationRequest& req, TokenStreamCallback on
 
     if (use_mtp)
         m_impl->mtp->set_prompt_len(n_prompt);
-    if (m_impl->prefill) {
-        m_impl->prefill->should_stop = [this, &req] {
-            return impl_->cancelled.load() || (req.cancel_flag && req.cancel_flag->load());
-        };
-
-        if (use_mtp) {
-            m_impl->prefill->on_chunk = [this, m_impl, &ids](const float* R_rows, int64_t T, int64_t p0,
-                                                             std::string& e) -> bool {
-                std::vector<int32_t> next_tokens(static_cast<size_t>(T));
-                for (int64_t i = 0; i < T; ++i) {
-                    if (p0 + i + 1 < static_cast<int64_t>(ids.size())) {
-                        next_tokens[static_cast<size_t>(i)] =
-                            static_cast<int32_t>(ids[static_cast<size_t>(p0 + i + 1)]);
-                    }
-                }
-                if (m_impl->prefill->draft_kv(*m_impl->mtp, R_rows, next_tokens.data(), T, p0, e))
-                    return true;
-                return e.empty() && m_impl->mtp->prefill(R_rows, next_tokens.data(), T, p0, e);
-            };
+    // The DFlash drafter's context: the prompt positions within its window of the first draft.  A prefix reused from
+    // the cache has no features, so the drafter keeps its own context of it when it read the same tokens (the turns
+    // of a conversation), and otherwise starts after it.
+    int64_t dflash_from = -1;
+    if (use_dflash) {
+        const int64_t fresh = std::max<int64_t>(reused_pos, (n_prompt - 1) - (int64_t) m_impl->dflash->window());
+        std::vector<int32_t>& seq = m_impl->dflash_seq;
+        const int64_t lim = std::min<int64_t>((int64_t) seq.size(), reused_pos);
+        int64_t same = 0;
+        while (same < lim && seq[(size_t) same] == (int32_t) ids[(size_t) same])
+            ++same;
+        if (fresh == reused_pos && same == reused_pos && (int64_t) seq.size() == m_impl->dflash->context_end() &&
+            m_impl->dflash->rewind(reused_pos)) {
+            dflash_from = reused_pos;
+        } else {
+            dflash_from = fresh;
+            m_impl->dflash->reset(fresh);
         }
-
-        // Prefill uncached prompt tokens [reused_pos, n_prompt - 1)
-        const int64_t n_to_prefill = (n_prompt - 1) - reused_pos;
-        if (n_to_prefill > 0) {
-            if (!m_impl->prefill->run(ids.data() + reused_pos, n_to_prefill, reused_pos, error_msg)) {
-                if (error_msg == "cancelled") {
-                    m_impl->clear_prefix_cache();
-                    telemetry.finish_reason = "cancel";
-                    return true;
-                }
-                return runtime_failure();
-            }
-        }
-    } else if (m_impl->batched_prefill && std::getenv("GUILD_PREFILL_SEQUENTIAL") == nullptr) {
-        m_impl->batched_prefill->should_stop = [this, &req] {
-            return impl_->cancelled.load() || (req.cancel_flag && req.cancel_flag->load());
-        };
-        const int64_t n_to_prefill = (n_prompt - 1) - reused_pos;
-        if (n_to_prefill > 0) {
-            if (!m_impl->batched_prefill->run(ids.data() + reused_pos, n_to_prefill, reused_pos, error_msg)) {
-                if (error_msg == "cancelled") {
-                    m_impl->clear_prefix_cache();
-                    telemetry.finish_reason = "cancel";
-                    return true;
-                }
-                return runtime_failure();
-            }
-        }
-    } else {
-        // Architecture-independent prompt ingestion via Verifier (sequential fallback)
-        if (n_prompt - 1 > reused_pos) {
-            std::vector<int32_t> sink_out(1);
-            for (int64_t pos = reused_pos; pos < n_prompt - 1; ++pos) {
-                if (impl_->cancelled.load() || (req.cancel_flag && req.cancel_flag->load())) {
-                    m_impl->clear_prefix_cache();
-                    telemetry.finish_reason = "cancel";
-                    return true;
-                }
-                int32_t prompt_tok = static_cast<int32_t>(ids[static_cast<size_t>(pos)]);
-                m_impl->drive.d.layers = 0;
-                m_impl->drive.d.experts = 0;
-                if (!m_impl->ver->run(1, &prompt_tok, pos, drive_pool_multi, &m_impl->drive, sink_out.data(),
-                                      error_msg)) {
-                    return runtime_failure();
-                }
-                if (!m_impl->ver->commit(1, error_msg)) {
-                    return runtime_failure();
-                }
-                if (use_mtp) {
-                    const int32_t next = int32_t(ids[size_t(pos + 1)]);
-                    if (!m_impl->mtp->prefill(m_impl->ver->final_R_all(), &next, 1, pos, error_msg))
-                        return runtime_failure();
-                }
-            }
-        }
+        seq.assign(ids.begin(), ids.begin() + dflash_from);
+    }
+    // Prefill uncached prompt tokens [reused_pos, n_prompt - 1)
+    switch (ingest_prompt(
+        *m_impl, ids, reused_pos, n_prompt - 1, use_mtp, S,
+        [this, &req] { return impl_->cancelled.load() || (req.cancel_flag && req.cancel_flag->load()); }, error_msg,
+        dflash_from)) {
+    case Ingest::Done: break;
+    case Ingest::Cancelled:
+        m_impl->clear_prefix_cache();
+        telemetry.finish_reason = "cancel";
+        return true;
+    case Ingest::Failed: return runtime_failure();
     }
 
     if (kv_cache_enabled && n_prompt > 1) {
@@ -521,6 +680,26 @@ bool GuildSession::generate(const GenerationRequest& req, TokenStreamCallback on
     std::vector<int32_t> retrieval_drafts(static_cast<size_t>(S), 0);
     std::vector<int32_t> outv(static_cast<size_t>(S), 0);
     std::vector<float> dprob(static_cast<size_t>(S), 1.0f);
+    // DFlash: a block's drafts and probabilities, the cumulative probability a draft must keep to be verified
+    // (GUILD_DFLASH_CUM, default 0.1), and the drafter's time
+    const int dflash_block = use_dflash ? m_impl->dflash->block() : 0;
+    std::vector<int32_t> dflash_drafts(static_cast<size_t>(std::max(1, dflash_block)), 0);
+    std::vector<float> dflash_prob(dflash_drafts.size(), 0.0f);
+    const float dflash_cum =
+        std::getenv("GUILD_DFLASH_CUM") ? (float) std::atof(std::getenv("GUILD_DFLASH_CUM")) : 0.1f;
+    // GUILD_DFLASH_RULE=cost: the window that maximizes the expected tokens a millisecond (EVICT, arXiv 2605.00342):
+    // 1 + the drafts' cumulative probabilities, over the window's verify cost (as measured for its rows; a line through
+    // the measured ones for rows not yet seen) plus the draft's
+    const bool dflash_cost_rule = [] {
+        const char* r = std::getenv("GUILD_DFLASH_RULE");
+        return r != nullptr && std::string(r) == "cost";
+    }();
+    auto& dcost = m_impl->dflash_cost;
+    auto dcost_add = [](double& mean, int& n, double x) {
+        mean = n < 10 ? (mean * n + x) / (n + 1) : 0.9 * mean + 0.1 * x;
+        ++n;
+    };
+    double dflash_ms = 0.0;
 
     bool first_window = true;
     int produced_n = 0;
@@ -591,13 +770,96 @@ bool GuildSession::generate(const GenerationRequest& req, TokenStreamCallback on
                               ? std::min(max_draft, std::max(1, m_impl->plan.mtp_spec_tokens - 1))
                               : max_draft;
 
+    // DFlash: the drafter's block after `anchor`, the next window's row 0 at position `start`.  The window verifies its
+    // drafts while their cumulative probability stays >= dflash_cum; the PLE rows of its tokens are read ahead, as
+    // the MTP drafter does.
+    auto dflash_next = [&](int32_t anchor, int64_t start, double d_before) -> bool {
+        core::SessionState& pss = m_impl->ss;
+        const bool do_ple = pss.ple.ready() && pss.ple.table != nullptr;
+        int32_t ple_prev[2] = {do_ple ? pss.ple_prev[0] : 0, do_ple ? pss.ple_prev[1] : 0};
+        auto prefetch_ple = [&](int32_t tok) {
+            if (!do_ple || tok < 0)
+                return;
+            uint32_t rows16[kernels::PLE_N_HEADS];
+            kernels::ngram_rows(&tok, ple_prev, 1, pss.ple.consts, rows16);
+            ple_prev[0] = ple_prev[1];
+            ple_prev[1] = tok;
+            pss.ple.table->prefetch_rows(rows16);
+        };
+        prefetch_ple(anchor);
+        if (!m_impl->dflash->draft(anchor, start, dflash_block, dflash_drafts.data(), dflash_prob.data(),
+                                   m_impl->dflash_stream, error_msg))
+            return false;
+        const int kmax = std::min(max_draft, dflash_block - 1);
+        int k = 0;
+        // the cost rule once two window sizes are measured: a weighted least-squares line of cost on rows
+        double sw = 0, st = 0, sv = 0, stt = 0, stv = 0;
+        int sizes = 0;
+        for (int t = 1; t <= kernels::kVerifyMaxT; ++t)
+            if (dcost.verify_n[t] > 0) {
+                const double w = std::min(dcost.verify_n[t], 10);
+                sw += w;
+                st += w * t;
+                sv += w * dcost.verify_ms[t];
+                stt += w * t * t;
+                stv += w * t * dcost.verify_ms[t];
+                ++sizes;
+            }
+        if (dflash_cost_rule && sizes >= 2 && dcost.draft_n > 0) {
+            const double slope = (sw * stv - st * sv) / std::max(1e-9, sw * stt - st * st);
+            const double icept = (sv - slope * st) / sw;
+            auto cost = [&](int t) {
+                return (dcost.verify_n[t] >= 2 ? dcost.verify_ms[t] : icept + slope * t) + dcost.draft_ms;
+            };
+            double best = 1.0 / cost(1), expect = 1.0, cum = 1.0;
+            for (int j = 1; j <= kmax; ++j) {
+                cum *= dflash_prob[static_cast<size_t>(j - 1)];
+                expect += cum;
+                const double v = expect / cost(j + 1);
+                if (v > best) {
+                    best = v;
+                    k = j;
+                }
+            }
+        } else {
+            float cum = 1.0f;
+            while (k < kmax) {
+                cum *= dflash_prob[static_cast<size_t>(k)];
+                if (cum < dflash_cum)
+                    break;
+                ++k;
+            }
+        }
+        for (int j = 0; j < k; ++j) {
+            drafts[static_cast<size_t>(j)] = dflash_drafts[static_cast<size_t>(j)];
+            prefetch_ple(drafts[static_cast<size_t>(j)]);
+        }
+        cur_source = k > 0 ? spec::CandidateSource::Mtp : spec::CandidateSource::Normal;
+        cur_proposed_k = k;
+        cur_match_len = 0;
+        cur_lookup_ms = 0.0;
+        cur_retrieval_ms = 0.0;
+        cur_sched_ms = 0.0;
+        cur_draft_ms = m_impl->dflash->ms_draft + m_impl->dflash->ms_context - d_before;
+        dflash_ms += cur_draft_ms;
+        dcost_add(dcost.draft_ms, dcost.draft_n, cur_draft_ms);
+        return true;
+    };
+    // the first window drafts too: the prompt is in the drafter's context up to its last token, the window's row 0
+    bool first_drafted = false;
+    if (use_dflash && m_impl->dflash->context_end() == p) {
+        if (!dflash_next(x, p, m_impl->dflash->ms_draft + m_impl->dflash->ms_context))
+            return runtime_failure();
+        first_drafted = cur_proposed_k > 0;
+    }
+
     while (produced_n < req.max_new_tokens && !eos) {
         if (impl_->cancelled.load() || (req.cancel_flag && req.cancel_flag->load())) {
             client_aborted = true;
             break;
         }
 
-        int T = first_window ? 1 : (1 + cur_proposed_k);
+        int T = (first_window && !first_drafted) ? 1 : (1 + cur_proposed_k);
         T = std::clamp(T, 1, S);
         T = std::min(T, req.max_new_tokens - produced_n);
         const int actual_proposed_k = T - 1;
@@ -672,7 +934,8 @@ bool GuildSession::generate(const GenerationRequest& req, TokenStreamCallback on
         if (first_window) {
             telemetry.first_window_capture_ms = cap_delta_ms;
             telemetry.ttft_ms = std::chrono::duration<double, std::milli>(Clock::now() - t_req_start).count();
-            impl_->scheduler->seed_single_token_verify(exec_ver_ms + com_ms, win_distinct_experts, win_cpu_ms);
+            if (actual_proposed_k == 0) // a single-token window (a drafted first window costs more)
+                impl_->scheduler->seed_single_token_verify(exec_ver_ms + com_ms, win_distinct_experts, win_cpu_ms);
         }
 
         telemetry.drafts_offered += actual_proposed_k;
@@ -744,7 +1007,34 @@ bool GuildSession::generate(const GenerationRequest& req, TokenStreamCallback on
                 if (!m_impl->mtp->prefill(m_impl->ver->final_R_all(), outv.data(), a + 1, p, error_msg))
                     return runtime_failure();
             }
+            if (use_dflash) { // the committed rows, so a next request that reuses them keeps the drafter's context
+                const size_t fstride = m_impl->dflash->target_layers().size() * (size_t) m_impl->g.n_embd;
+                if (!m_impl->dflash->add_context(m_impl->ver->features(), fstride, a + 1, p, m_impl->dflash_stream,
+                                                 error_msg) ||
+                    cudaStreamSynchronize(m_impl->dflash_stream) != cudaSuccess)
+                    return runtime_failure();
+                m_impl->dflash_seq.insert(m_impl->dflash_seq.end(), window.begin(), window.begin() + (a + 1));
+            }
             break;
+        }
+
+        if (use_dflash) { // the window's committed rows into the drafter's context, then the next window's block
+            if (T >= 1 && T <= kernels::kVerifyMaxT)
+                dcost_add(dcost.verify_ms[T], dcost.verify_n[T], exec_ver_ms + com_ms);
+            const int32_t next = outv[static_cast<size_t>(a)];
+            const double d_before = m_impl->dflash->ms_draft + m_impl->dflash->ms_context;
+            const size_t fstride = m_impl->dflash->target_layers().size() * (size_t) m_impl->g.n_embd;
+            if (!m_impl->dflash->add_context(m_impl->ver->features(), fstride, a + 1, p, m_impl->dflash_stream,
+                                             error_msg) ||
+                !dflash_next(next, p + a + 1, d_before))
+                return runtime_failure();
+            m_impl->dflash_seq.insert(m_impl->dflash_seq.end(), window.begin(), window.begin() + (a + 1));
+            if (spec_trace)
+                std::fprintf(stderr, "guild spec trace [pos=%lld]: src=dflash k=%d accepted %d of %d\n",
+                             (long long) (p + a + 1), cur_proposed_k, a, actual_proposed_k);
+            p += (a + 1);
+            x = next;
+            continue;
         }
 
         // Safe verification boundary: select strategy and prepare draft tokens for the next window
@@ -918,7 +1208,7 @@ bool GuildSession::generate(const GenerationRequest& req, TokenStreamCallback on
     telemetry.offload_entries = m_impl->drive.d.offload_entries - offload_before;
     telemetry.request_latency_s = std::chrono::duration<double>(t_decode_end - t_req_start).count();
     telemetry.decode_windows = m_impl->ver->windows - windows_before;
-    telemetry.decode_mtp_draft_ms = use_mtp ? (m_impl->mtp->ms_draft - draft_before) : 0.0;
+    telemetry.decode_mtp_draft_ms = use_mtp ? (m_impl->mtp->ms_draft - draft_before) : dflash_ms;
     telemetry.decode_commit_ms = m_impl->ver->ms_commit - commit_before;
     telemetry.decode_host_wait_ms = m_impl->ver->ms_wait - wait_before;
     telemetry.decode_ple_ms = m_impl->ver->ms_host - host_before;
@@ -974,7 +1264,7 @@ bool GuildSession::generate(const GenerationRequest& req, TokenStreamCallback on
             static_cast<long long>(windows), produced_n / denominator, telemetry.decode_ms / denominator,
             (m_impl->ver->ms_commit - commit_before) / denominator, (m_impl->drive.cpu_ms - pool_before) / denominator,
             (m_impl->drive.validation_ms - validation_before) / denominator,
-            (use_mtp ? m_impl->mtp->ms_draft - draft_before : 0) / denominator,
+            (use_mtp ? m_impl->mtp->ms_draft - draft_before : dflash_ms) / denominator,
             static_cast<long long>(m_impl->drive.d.pcie_experts - pcie_before), telemetry.drafts_accepted,
             telemetry.drafts_offered, (m_impl->ver->ms_logit_validation - logits_validation_before) / denominator,
             static_cast<unsigned long long>(m_impl->ver->logits_readback_bytes - logits_bytes_before));
@@ -1003,6 +1293,180 @@ bool GuildSession::generate(const GenerationRequest& req, TokenStreamCallback on
 } catch (...) {
     telemetry.finish_reason = "error";
     error_msg = "inference failed with an unknown exception";
+    if (impl_ && impl_->model_impl && impl_->model_impl->ready)
+        impl_->model_impl->ready->store(false);
+    return false;
+}
+
+// Scoring: the prompt is read as generate reads it (the reused prefix, then the prefill engines or, for a short tail,
+// the verifier's windows), with an optional checkpoint at keep_prefix on the way; its last token then runs alone in
+// one verify window, whose head row is the next-token logits, and is committed: the state is left after the prompt.
+bool GuildSession::score(const ScoreRequest& req, ScoreResult& result, std::string& error_msg) try {
+    result = ScoreResult{};
+    error_msg.clear();
+    if (!impl_ || !impl_->model_impl) {
+        error_msg = "session uninitialized";
+        return false;
+    }
+    auto* m_impl = impl_->model_impl.get();
+    if (m_impl->tower) {
+        error_msg = "this is a text-to-speech model (--drama3): it has no next-token logits";
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(m_impl->generation_mutex);
+    if (!m_impl->ready || !m_impl->ready->load()) {
+        error_msg = "model is not ready or an earlier inference failed; reload the model";
+        return false;
+    }
+    auto runtime_failure = [&]() {
+        m_impl->ready->store(false);
+        return false;
+    };
+    if (m_impl->ple_required && !m_impl->ss.ple.ready()) {
+        error_msg = "required PLE operation is no longer connected; reload the model";
+        return runtime_failure();
+    }
+    impl_->cancelled.store(false);
+
+    const int64_t n_prompt = static_cast<int64_t>(req.tokens.size());
+    if (n_prompt == 0) {
+        error_msg = "prompt cannot be empty";
+        return false;
+    }
+    if (n_prompt > impl_->max_context) {
+        error_msg = "prompt (" + std::to_string(n_prompt) + ") exceeds max context (" +
+                    std::to_string(impl_->max_context) + ")";
+        return false;
+    }
+    if (req.keep_prefix < 0 || req.keep_prefix > n_prompt - 1) {
+        error_msg = "keep_prefix must be between 0 and the prompt's length - 1";
+        return false;
+    }
+    const int64_t n_vocab = m_impl->glm ? m_impl->glm->geometry().n_vocab : m_impl->ver->vocab();
+    for (int32_t id : req.tokens)
+        if (id < 0 || id >= n_vocab) {
+            error_msg = "prompt token id " + std::to_string(id) + " is outside the model vocabulary";
+            return false;
+        }
+    for (int32_t id : req.candidates)
+        if (id < 0 || id >= n_vocab) {
+            error_msg = "candidate token id " + std::to_string(id) + " is outside the model vocabulary";
+            return false;
+        }
+    if (m_impl->glm)
+        return glm5_score(*m_impl, req, result, error_msg, impl_->cancelled);
+    if (m_impl->g.is_dense_attention() && n_prompt > m_impl->ver->attention_capacity()) {
+        error_msg = "dense attention request exceeds the allocated single-tile history capacity";
+        return false;
+    }
+
+    struct RequestAffinity {
+        kernels::cpu::ThreadAffinity previous;
+        ~RequestAffinity() {
+            kernels::cpu::restore_thread_affinity(previous);
+        }
+    } affinity;
+    core::ScopedModelExecution exec_scope(m_impl->exec_state);
+    std::optional<kernels::ScopedCudaDense> dense_scope;
+    if (m_impl->cuda_dense)
+        dense_scope.emplace(*m_impl->cuda_dense);
+    std::optional<kernels::ScopedCudaAttn> attn_scope;
+    if (m_impl->cuda_attn)
+        attn_scope.emplace(*m_impl->cuda_attn);
+    std::optional<kernels::ScopedCudaMoE> moe_scope;
+    if (m_impl->cuda_moe)
+        moe_scope.emplace(*m_impl->cuda_moe);
+    if (!m_impl->ver->wait_commit(error_msg))
+        return runtime_failure();
+    if (m_impl->mtp && !m_impl->mtp->idle(error_msg))
+        return runtime_failure();
+
+    const std::vector<int64_t> ids(req.tokens.begin(), req.tokens.end());
+    const bool kv_cache_enabled = prefix_cache_enabled();
+    int64_t pos = reuse_prefix(*m_impl, ids, n_prompt - 1, kv_cache_enabled);
+    if (pos < 0) {
+        error_msg = "failed to reset inference state";
+        return runtime_failure();
+    }
+    result.cached_tokens = pos;
+    const auto t0 = Clock::now();
+    const int S = std::max(1, m_impl->config.spec);
+    const auto stop = [this] { return impl_->cancelled.load(); };
+    auto read = [&](int64_t to) {
+        switch (ingest_prompt(*m_impl, ids, pos, to, false, S, stop, error_msg)) {
+        case Ingest::Done: break;
+        case Ingest::Cancelled:
+            m_impl->clear_prefix_cache();
+            error_msg = "cancelled";
+            return false;
+        case Ingest::Failed: return runtime_failure();
+        }
+        result.read_tokens += to - pos;
+        pos = to;
+        if (kv_cache_enabled)
+            m_impl->live_committed_tokens.assign(req.tokens.begin(), req.tokens.begin() + to);
+        return true;
+    };
+    if (kv_cache_enabled && req.keep_prefix > pos) {
+        if (!read(req.keep_prefix))
+            return false;
+        if (!m_impl->save_prefix_checkpoint(m_impl->live_committed_tokens)) {
+            error_msg = "the prefix checkpoint could not be saved";
+            return runtime_failure();
+        }
+    }
+    if (!read(n_prompt - 1))
+        return false;
+    if (cudaStreamSynchronize(m_impl->main_stream) != cudaSuccess) {
+        error_msg = "prefill failed";
+        return runtime_failure();
+    }
+    const auto t1 = Clock::now();
+    result.prefill_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+
+    // the last token, as the first window of a generation runs it (the pool's host core, greedy head, no history)
+    const char* host_affinity = std::getenv("GUILD_HOST_AFFINITY");
+    if (!host_affinity || std::atoi(host_affinity) != 0)
+        affinity.previous = kernels::cpu::pin_current_thread_if_allowed(m_impl->pool->host_core());
+    m_impl->ver->set_sampling(kernels::SamplerParams{});
+    m_impl->ver->set_history(nullptr, 0);
+    m_impl->drive.d.layers = 0;
+    m_impl->drive.d.experts = 0;
+    const int32_t last = req.tokens.back();
+    int32_t argmax = 0;
+    if (!m_impl->ver->run(1, &last, n_prompt - 1, drive_pool_multi, &m_impl->drive, &argmax, error_msg))
+        return runtime_failure();
+    std::vector<float> row(static_cast<size_t>(n_vocab));
+    if (!m_impl->ver->copy_logits(0, row.data())) {
+        error_msg = "the window's logits could not be read";
+        return runtime_failure();
+    }
+    if (req.want_hidden) {
+        result.hidden.resize(static_cast<size_t>(m_impl->g.n_embd));
+        if (!m_impl->ver->copy_hidden(0, result.hidden.data())) {
+            error_msg = "the window's hidden state could not be read";
+            return runtime_failure();
+        }
+    }
+    // Committed, as generate's windows are: a window writes some state as it runs (Qwen3.8-Flash-Next's QSA indexer
+    // appends the window's keys, which its commit rewinds and re-appends), so one left uncommitted would not be the
+    // state after the last-but-one token it looks like.  The state is then after the whole prompt.
+    if (!m_impl->ver->commit(1, error_msg))
+        return runtime_failure();
+    if (kv_cache_enabled)
+        m_impl->live_committed_tokens = req.tokens;
+    if (req.candidates.empty()) {
+        result.logits = std::move(row);
+    } else {
+        result.logits.reserve(req.candidates.size());
+        for (int32_t id : req.candidates)
+            result.logits.push_back(row[static_cast<size_t>(id)]);
+    }
+    result.read_tokens += 1;
+    result.window_ms = std::chrono::duration<double, std::milli>(Clock::now() - t1).count();
+    return true;
+} catch (const std::exception& e) {
+    error_msg = std::string("scoring failed: ") + e.what();
     if (impl_ && impl_->model_impl && impl_->model_impl->ready)
         impl_->model_impl->ready->store(false);
     return false;

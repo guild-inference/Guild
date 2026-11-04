@@ -13,6 +13,10 @@
 #include "guild/core/expert_cache.hpp"
 #include "guild/core/expert_source.hpp"
 #include "guild/core/layer.hpp"
+#include "guild/core/drama3_codec.hpp"
+#include "guild/core/drama3_tower.hpp"
+#include "guild/core/glm5.hpp"
+#include "guild/core/dflash.hpp"
 #include "guild/core/mtp.hpp"
 #include "guild/core/native_dense.hpp"
 #include "guild/core/native_head.hpp"
@@ -54,6 +58,7 @@
 #include <array>
 #include <deque>
 #include <memory>
+#include <new>
 #include <mutex>
 #include <stdexcept>
 #include <vector>
@@ -80,6 +85,16 @@ inline void drive_pool_multi(void* user, const float* x_f, const int32_t* ids, i
         throw std::runtime_error(error);
     }
     t->d.layers = layer;
+    if (t->routing) { // tools/make_profile.py's record: layer, k, k ids, k weights (not known here: zeros)
+        static const float zeros[64] = {};
+        for (int64_t i = 0; i < n_tok; ++i) {
+            const int32_t head[2] = {int32_t(layer), int32_t(k)};
+            std::fwrite(head, sizeof head, 1, t->routing);
+            std::fwrite(ids + i * k, sizeof(int32_t), size_t(k), t->routing);
+            for (int64_t w = 0; w < k; w += 64)
+                std::fwrite(zeros, sizeof(float), size_t(std::min<int64_t>(k - w, 64)), t->routing);
+        }
+    }
     const Clock::time_point a = Clock::now();
     t->validation_ms += std::chrono::duration<double, std::milli>(a - validation_begin).count();
     guild::core::expert_pool_dispatch_multi(t->d, x_f, ids, n_tok, k, out);
@@ -160,6 +175,30 @@ struct GuildModel::Impl {
     float* ple_emb_dev = nullptr;
     void* ple_scratch = nullptr;
     std::unique_ptr<core::MtpDrafter> mtp;
+    /// GUILD_DFLASH (a prototype): a DFlash 2 block drafter in place of the MTP layer, its stream, and the prompt
+    /// path's buffer for its context features (dflash_pf_rows rows)
+    std::unique_ptr<core::DFlashDrafter> dflash;
+    cudaStream_t dflash_stream = nullptr;
+    float* dflash_pf_feat = nullptr;
+    int64_t dflash_pf_rows = 0;
+    /// the token ids of positions [0, dflash->context_end()): a request that reuses a prefix keeps the drafter's
+    /// context when these match it
+    std::vector<int32_t> dflash_seq;
+    /// GUILD_DFLASH_RULE=cost: the verify window's measured cost by its rows (index T, a running mean that turns into
+    /// an average of the last ~10 windows) and the drafter's, across requests
+    struct DFlashCost {
+        double verify_ms[kernels::kVerifyMaxT + 1] = {};
+        int verify_n[kernels::kVerifyMaxT + 1] = {};
+        double draft_ms = 0;
+        int draft_n = 0;
+    } dflash_cost;
+    std::unique_ptr<core::Drama3Tower> tower; ///< Drama 3 (ModelPaths::drama3_dir): the codebook tower
+    std::unique_ptr<core::Drama3Codec> codec; ///< ... and the codec that turns frames into audio
+    /// GLM-5.3-Flash (a glm5-next GGUF) runs on its own engine (src/runtime/glm5.cpp); the rest stays empty
+    std::unique_ptr<core::Glm5Engine> glm;
+    std::vector<int32_t> glm_ctx, glm_snap;             ///< the tokens of the live context and of the snapshot
+    std::vector<float> glm_ctx_logits, glm_snap_logits; ///< their last logits, when known
+    int32_t glm_turn_id = -2; ///< <|assistant|>, where a prompt's snapshot is taken (-1: none; -2: not looked up)
     std::unique_ptr<core::Verifier> ver;
     Drive drive;
     spec::GExecSpecCalibration spec_calibration;
@@ -176,10 +215,67 @@ struct GuildModel::Impl {
     float* window_R = nullptr;
     int32_t* d_mrope = nullptr;
 
+    // A checkpoint's recurrent state: 118 MB on Qwen3.8-Flash-Next, saved twice per request.  Page-locked so the copy
+    // is a DMA, and never zero-filled; buffers are recycled through `spare_gdn` rather than freed.  Falls back to
+    // pageable memory when the driver will not lock more.
+    struct HostBytes {
+        uint8_t* p = nullptr;
+        size_t n = 0;
+        bool pinned = false;
+        HostBytes() = default;
+        HostBytes(const HostBytes&) = delete;
+        HostBytes& operator=(const HostBytes&) = delete;
+        HostBytes(HostBytes&& o) noexcept : p(o.p), n(o.n), pinned(o.pinned) {
+            o.p = nullptr;
+            o.n = 0;
+        }
+        HostBytes& operator=(HostBytes&& o) noexcept {
+            if (this != &o) {
+                release();
+                p = o.p;
+                n = o.n;
+                pinned = o.pinned;
+                o.p = nullptr;
+                o.n = 0;
+            }
+            return *this;
+        }
+        ~HostBytes() {
+            release();
+        }
+        bool allocate(size_t bytes) {
+            if (bytes == n && p != nullptr)
+                return true;
+            release();
+            if (cudaMallocHost(reinterpret_cast<void**>(&p), bytes) == cudaSuccess) {
+                pinned = true;
+            } else {
+                (void) cudaGetLastError();
+                p = new (std::nothrow) uint8_t[bytes];
+                pinned = false;
+            }
+            n = p != nullptr ? bytes : 0;
+            return p != nullptr;
+        }
+        void release() {
+            if (p != nullptr) {
+                if (pinned)
+                    cudaFreeHost(p);
+                else
+                    delete[] p;
+            }
+            p = nullptr;
+            n = 0;
+        }
+        bool empty() const {
+            return n == 0;
+        }
+    };
+
     // KV + Recurrent State Prefix Cache for multi-turn & agentic continuations
     struct PrefixStateCheckpoint {
         std::vector<int32_t> tokens;
-        std::vector<uint8_t> gdn;
+        HostBytes gdn;
         std::vector<uint8_t> ple;
         int32_t ple_prev[2] = {-1, -1};
         int32_t ple_token = -1;
@@ -189,10 +285,28 @@ struct GuildModel::Impl {
     };
     std::vector<int32_t> live_committed_tokens;
     std::deque<PrefixStateCheckpoint> prefix_checkpoints;
+    std::vector<HostBytes> spare_gdn; // recycled checkpoint buffers (locking 118 MB again costs more than the copy)
 
+    void recycle_checkpoint(PrefixStateCheckpoint& cp) {
+        if (!cp.gdn.empty() && spare_gdn.size() < 2)
+            spare_gdn.push_back(std::move(cp.gdn));
+    }
     void clear_prefix_cache() {
         live_committed_tokens.clear();
+        for (auto& cp : prefix_checkpoints)
+            recycle_checkpoint(cp);
         prefix_checkpoints.clear();
+    }
+    /// Drops the checkpoints longer than `len`: the cells after it are about to be overwritten.
+    void prune_prefix_checkpoints(size_t len) {
+        for (auto it = prefix_checkpoints.begin(); it != prefix_checkpoints.end();) {
+            if (it->tokens.size() > len) {
+                recycle_checkpoint(*it);
+                it = prefix_checkpoints.erase(it);
+            } else {
+                ++it;
+            }
+        }
     }
 
     bool save_prefix_checkpoint(const std::vector<int32_t>& committed) {
@@ -204,6 +318,32 @@ struct GuildModel::Impl {
         PrefixStateCheckpoint cp;
         cp.tokens = committed;
 
+        // The slot this checkpoint takes - the same length's (replaced), else the oldest-but-one when the ring is
+        // full (the earliest, the system + tools prompt, is retained) - lends its buffer, so a steady stream of
+        // requests locks no new memory.
+        size_t same = prefix_checkpoints.size();
+        for (size_t i = 0; i < prefix_checkpoints.size(); ++i)
+            if (prefix_checkpoints[i].tokens.size() == cp.tokens.size())
+                same = i;
+        if (same == prefix_checkpoints.size() && prefix_checkpoints.size() >= 8) {
+            recycle_checkpoint(prefix_checkpoints[1]);
+            prefix_checkpoints.erase(prefix_checkpoints.begin() + 1);
+            same = prefix_checkpoints.size();
+        }
+        if (same < prefix_checkpoints.size())
+            cp.gdn = std::move(prefix_checkpoints[same].gdn);
+        else if (!spare_gdn.empty()) {
+            cp.gdn = std::move(spare_gdn.back());
+            spare_gdn.pop_back();
+        }
+        auto fail = [&] {
+            (void) cudaStreamSynchronize(main_stream); // no copy may still be writing the buffer being recycled
+            if (same < prefix_checkpoints.size())      // its buffer was lent to this one: it holds no state now
+                prefix_checkpoints.erase(prefix_checkpoints.begin() + static_cast<std::ptrdiff_t>(same));
+            recycle_checkpoint(cp);
+            return false;
+        };
+
         const size_t gdn_per_layer =
             static_cast<size_t>(g.ssm_state_size) * static_cast<size_t>(g.ssm_v_heads) *
                 static_cast<size_t>(g.ssm_state_size) +
@@ -211,17 +351,20 @@ struct GuildModel::Impl {
         const size_t gdn_bytes =
             static_cast<size_t>(std::max<int64_t>(0, ss.gdn_alloc)) * gdn_per_layer * sizeof(float);
         if (gdn_bytes > 0 && ss.gdn_state != nullptr) {
-            cp.gdn.resize(gdn_bytes);
-            if (cudaMemcpy(cp.gdn.data(), ss.gdn_state, gdn_bytes, cudaMemcpyDeviceToHost) != cudaSuccess)
-                return false;
+            if (!cp.gdn.allocate(gdn_bytes) ||
+                cudaMemcpyAsync(cp.gdn.p, ss.gdn_state, gdn_bytes, cudaMemcpyDeviceToHost, main_stream) != cudaSuccess)
+                return fail();
+        } else {
+            recycle_checkpoint(cp);
         }
 
         if (ss.ple_hist != nullptr) {
             const size_t ple_bytes =
                 static_cast<size_t>(kernels::NG_HIST) * static_cast<size_t>(kernels::NG_HC_DIM) * sizeof(float);
             cp.ple.resize(ple_bytes);
-            if (cudaMemcpy(cp.ple.data(), ss.ple_hist, ple_bytes, cudaMemcpyDeviceToHost) != cudaSuccess)
-                return false;
+            if (cudaMemcpyAsync(cp.ple.data(), ss.ple_hist, ple_bytes, cudaMemcpyDeviceToHost, main_stream) !=
+                cudaSuccess)
+                return fail();
         }
         cp.ple_prev[0] = ss.ple_prev[0];
         cp.ple_prev[1] = ss.ple_prev[1];
@@ -239,29 +382,23 @@ struct GuildModel::Impl {
 
             for (size_t j = 0; j < qsa_layers; ++j) {
                 const auto& st = ss.qsa_states[static_cast<size_t>(ss.qsa_ord0) + j];
-                if (cudaMemcpy(cp.qsa_tails.data() + j * tail_bytes, st.idx_tail, tail_bytes, cudaMemcpyDeviceToHost) !=
-                        cudaSuccess ||
-                    cudaMemcpy(cp.qsa_dead.data() + j * dead_bytes, st.idx_dead, dead_bytes, cudaMemcpyDeviceToHost) !=
-                        cudaSuccess ||
-                    cudaMemcpy(cp.qsa_block_pos.data() + j * pos_bytes, st.idx_block_pos, pos_bytes,
-                               cudaMemcpyDeviceToHost) != cudaSuccess) {
-                    return false;
+                if (cudaMemcpyAsync(cp.qsa_tails.data() + j * tail_bytes, st.idx_tail, tail_bytes,
+                                    cudaMemcpyDeviceToHost, main_stream) != cudaSuccess ||
+                    cudaMemcpyAsync(cp.qsa_dead.data() + j * dead_bytes, st.idx_dead, dead_bytes,
+                                    cudaMemcpyDeviceToHost, main_stream) != cudaSuccess ||
+                    cudaMemcpyAsync(cp.qsa_block_pos.data() + j * pos_bytes, st.idx_block_pos, pos_bytes,
+                                    cudaMemcpyDeviceToHost, main_stream) != cudaSuccess) {
+                    return fail();
                 }
             }
         }
+        if (cudaStreamSynchronize(main_stream) != cudaSuccess)
+            return fail();
 
-        // Replace existing checkpoint at the same token length or push to bounded ring (max 8 checkpoints)
-        for (auto& existing : prefix_checkpoints) {
-            if (existing.tokens.size() == cp.tokens.size()) {
-                existing = std::move(cp);
-                return true;
-            }
-        }
-        if (prefix_checkpoints.size() >= 8) {
-            // Retain the earliest checkpoint (system + tools prompt) and evict the second-oldest
-            prefix_checkpoints.erase(prefix_checkpoints.begin() + 1);
-        }
-        prefix_checkpoints.push_back(std::move(cp));
+        if (same < prefix_checkpoints.size())
+            prefix_checkpoints[same] = std::move(cp);
+        else
+            prefix_checkpoints.push_back(std::move(cp));
         return true;
     }
 
@@ -269,8 +406,7 @@ struct GuildModel::Impl {
         if (cp.tokens.empty())
             return false;
         if (!cp.gdn.empty() && ss.gdn_state != nullptr) {
-            if (cudaMemcpyAsync(ss.gdn_state, cp.gdn.data(), cp.gdn.size(), cudaMemcpyHostToDevice, main_stream) !=
-                cudaSuccess)
+            if (cudaMemcpyAsync(ss.gdn_state, cp.gdn.p, cp.gdn.n, cudaMemcpyHostToDevice, main_stream) != cudaSuccess)
                 return false;
         }
         if (!cp.ple.empty() && ss.ple_hist != nullptr) {
@@ -316,6 +452,8 @@ struct GuildModel::Impl {
     std::mutex generation_mutex;
 
     ~Impl() {
+        if (drive.routing)
+            std::fclose(drive.routing);
         core::ScopedModelExecution exec_scope(exec_state);
         std::optional<kernels::ScopedCudaDense> dense_scope;
         if (cuda_dense)
@@ -334,6 +472,14 @@ struct GuildModel::Impl {
             ver.reset();
         if (mtp)
             mtp.reset();
+        if (dflash_stream)
+            cudaStreamSynchronize(dflash_stream);
+        if (dflash)
+            dflash.reset();
+        if (dflash_pf_feat)
+            cudaFree(dflash_pf_feat);
+        if (dflash_stream)
+            cudaStreamDestroy(dflash_stream);
         if (pool)
             pool.reset();
         if (main_stream)
@@ -404,6 +550,15 @@ struct GuildModel::Impl {
 
 bool bind_required_ple(GuildModel::Impl& model, const std::vector<std::string>& shards, std::string& err);
 bool bind_required_ple_gpack(GuildModel::Impl& model, const artifact::GPackReader& gpack, std::string& err);
+
+/// GLM-5.3-Flash (src/runtime/glm5.cpp)
+bool glm5_is_model(const std::string& gguf_path);
+bool glm5_load(GuildModel::Impl& m, const ModelPaths& paths, const memory::ExecutionPlan& plan, std::string& err);
+bool glm5_generate(GuildModel::Impl& m, const GenerationRequest& req, const std::vector<int64_t>& prompt,
+                   TokenStreamCallback on_token, RuntimeTelemetry& tel, std::string& err,
+                   PrefillProgressCallback on_prefill, std::atomic<bool>& cancelled);
+bool glm5_score(GuildModel::Impl& m, const ScoreRequest& req, ScoreResult& res, std::string& err,
+                std::atomic<bool>& cancelled);
 
 } // namespace guild::runtime
 

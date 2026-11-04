@@ -17,6 +17,16 @@
 //     below 2,051 cells - so speculative cells (draft steps, rejected window rows) never touch indexer state and
 //     are simply overwritten when their positions are processed again;
 //   * all 512 routed experts live in VRAM (708 MB) and run through the grouped hit kernels.
+//
+// A qwen35moe model (Ornith-1.5-35B) ships its MTP layer as the GGUF's last block (`blk.40.*`, `blk.40.nextn.*`);
+// tools/ornith_mtp_rt.py writes it in the same files with an `mtp.txt` saying `experts native`.  That layer has one
+// residual stream instead of hyper-connections:
+//
+//   R = fc_embedding(rms(embed(tok))) + fc_hidden(rms(h))  ->  R += attention(rms(R))  ->  R += MoE(rms(R))
+//   (256 experts, top 8, softmax then renormalised; shared expert with a sigmoid gate)  ->  rms(R)  ->  head
+//
+// eh_proj is split into its two halves, so fc_embedding / fc_hidden are the same names, and the experts stay in
+// their GGUF form (Q4_K gate/up, down re-quantized to Q8_0) for the grouped native expert kernels.
 #pragma once
 
 #include "guild/core/layer.hpp"
@@ -130,6 +140,8 @@ public:
 
 private:
     bool record_forward(int T, int step_row0, cudaStream_t cs, std::string& err);
+    /// record_forward for the single-stream layer (`native_`).
+    bool record_forward_single(int T, int step_row0, cudaStream_t cs, std::string& err);
     bool capture_prefill(int T, std::string& err);
     bool capture_prefill_dev(int T, std::string& err); ///< E-4: without the mapped staging (inputs copied on device)
     bool capture_round(int T, bool coupled, std::string& err);
@@ -188,6 +200,7 @@ private:
     float *h_prob_ = nullptr, *m_prob_ = nullptr; // each draft's probability under the draft layer
     // the draft head: the main head's rows for a token subset (rt/draft_vocab.bin), or the whole head
     uint8_t* dhead_ = nullptr;
+    int dhead_type_ = -1; ///< dhead_'s ggml type: the head's, or GUILD_MTP_HEAD's re-quantization of its rows
     int32_t* dvocab_ = nullptr;
     int64_t n_dvocab_ = 0;
     std::string rt_dir_;
@@ -215,6 +228,13 @@ private:
     float* head_logits_ = nullptr;
     float* dummy_inj_ = nullptr;
     int64_t cap_ = 0, attn_scratch_floats_ = 0;
+    // the single-stream layer with GGUF-form experts (mtp.txt `experts native`): their ggml types and blob size,
+    // the q8_1 activations and the grouped kernel's scratch
+    bool native_ = false;
+    int nat_gu_type_ = -1, nat_d_type_ = -1;
+    uint64_t expert_bytes_ = 0;
+    uint8_t* nat_xq_ = nullptr;
+    void* nat_scratch_ = nullptr;
 };
 
 } // namespace guild::core

@@ -270,7 +270,7 @@ endif()
 # Only built when a GPU backend is on, so the Phase 1 targets keep working without a toolkit.
 if(GUILD_ENABLE_CUDA OR GUILD_ENABLE_HIP)
   add_library(guild_core STATIC src/core/device.cu src/core/pinned.cu src/platform/memory.cpp src/core/graph.cpp src/core/weights.cpp
-                               src/core/layout.cpp)
+                               src/core/layout.cpp src/core/drama3_tower.cu src/core/glm5.cu src/core/nemotron_h.cu src/core/dflash.cu)
   target_include_directories(guild_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
   if(GUILD_ENABLE_CUDA AND GUILD_EXPERIMENTAL_SM60)
     # the runtime device check (src/core/device.cu) admits the cards this build was made for (#236)
@@ -460,10 +460,66 @@ if(GUILD_ENABLE_CUDA OR GUILD_ENABLE_HIP)
   add_library(guild_engine STATIC src/core/layer.cpp src/core/session.cpp src/core/expert_source.cpp src/core/remote_experts.cpp
     src/core/remote_expert_opt.cpp
     src/core/expert_cache.cpp src/core/native_head.cpp src/core/native_dense.cpp src/core/verify.cpp src/core/mtp.cpp
-    src/core/conversation_snapshot.cpp src/core/conversation_state.cpp src/core/conversation_memory.cpp src/core/peer_experts.cpp)
+    src/core/conversation_snapshot.cpp src/core/conversation_state.cpp src/core/conversation_memory.cpp src/core/peer_experts.cpp
+    src/core/drama3_tower.cpp src/core/drama3_codec.cu src/core/glm5.cpp src/core/glm5_nl4.cpp src/core/host_combine.cpp
+    src/core/cpu_moe.cpp src/core/q8_0_rows512.cpp src/core/iq4xs_rows512.cpp src/core/iq4nl_rows512.cpp src/core/pool_rows.cpp
+    src/core/nemotron_h.cpp src/core/dflash.cpp src/audio/encoder.cu)
+  # AVX2 kernels behind a runtime check (cpu_avx2_ok), as guild-kernels-cpu builds its own
+  if(MSVC)
+    set_source_files_properties(src/core/glm5_nl4.cpp src/core/host_combine.cpp PROPERTIES COMPILE_OPTIONS /arch:AVX2)
+    set_source_files_properties(src/core/q8_0_rows512.cpp src/core/iq4xs_rows512.cpp src/core/iq4nl_rows512.cpp
+                                PROPERTIES COMPILE_OPTIONS
+      /arch:AVX512)
+  else()
+    set_source_files_properties(src/core/glm5_nl4.cpp PROPERTIES COMPILE_OPTIONS "-mavx2;-mfma;-mf16c")
+    # -ffp-contract=off: the mul and fma intrinsics stay what they are (host_combine.hpp: the GPU kernel's order)
+    set_source_files_properties(src/core/host_combine.cpp PROPERTIES COMPILE_OPTIONS "-mavx2;-mfma;-ffp-contract=off")
+    # AVX-512 behind q8_0_rows512_ok(); the mul and fma intrinsics stay what they are (ggml's order)
+    set_source_files_properties(src/core/q8_0_rows512.cpp src/core/iq4xs_rows512.cpp src/core/iq4nl_rows512.cpp
+                                PROPERTIES COMPILE_OPTIONS
+      "-mavx512f;-mavx512bw;-mavx512dq;-mavx512vl;-mfma;-mf16c;-ffp-contract=off")
+  endif()
   target_include_directories(guild_engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
-  target_link_libraries(guild_engine PUBLIC guild_core guild_model guild_kernels guild_kernels_cpu ${_guild_gpu_runtime_target})
+  target_link_libraries(guild_engine PUBLIC guild_core guild_model guild_kernels guild_kernels_cpu guild_audio
+    ${_guild_gpu_runtime_target} ${_guild_gpu_blas_target})
   enable_testing()
+  # Drama 3's tower against reference vectors (scratch tools write them); skipped (77) without them
+  add_executable(drama3_tower_test tests/core/drama3_tower_test.cpp)
+  target_link_libraries(drama3_tower_test PRIVATE guild_engine)
+  add_executable(drama3_codec_test tests/core/drama3_codec_test.cpp)
+  target_link_libraries(drama3_codec_test PRIVATE guild_engine)
+  # GLM-5.3-Flash: greedy decode from token ids, and the last prompt token's logits for comparisons
+  add_executable(glm5_run tests/core/glm5_run.cpp)
+  target_link_libraries(glm5_run PRIVATE guild_engine guild_runtime guild_server)
+  # GLM-5.3-Flash's next-token distributions under teacher forcing (KL against an earlier run)
+  add_executable(glm5_kl tests/core/glm5_kl.cpp)
+  target_link_libraries(glm5_kl PRIVATE guild_engine guild_runtime guild_server)
+  add_executable(glm5_cpu_bench tests/core/glm5_cpu_bench.cpp)
+  target_link_libraries(glm5_cpu_bench PRIVATE guild_engine)
+  add_executable(glm5_kernels_test tests/core/glm5_kernels_test.cpp)
+  target_link_libraries(glm5_kernels_test PRIVATE guild_engine)
+  add_test(NAME glm5_kernels_test COMMAND glm5_kernels_test)
+  # the DFlash drafter's kernels against host references (random data, no model)
+  add_executable(dflash_kernels_test tests/core/dflash_kernels_test.cpp)
+  target_link_libraries(dflash_kernels_test PRIVATE guild_engine)
+  add_test(NAME dflash_kernels_test COMMAND dflash_kernels_test)
+  set_tests_properties(dflash_kernels_test PROPERTIES SKIP_RETURN_CODE 77)
+  add_executable(glm5_nl4_test tests/core/glm5_nl4_test.cpp)
+  target_link_libraries(glm5_nl4_test PRIVATE guild_engine)
+  add_test(NAME glm5_nl4_test COMMAND glm5_nl4_test)
+  set_tests_properties(glm5_nl4_test PROPERTIES SKIP_RETURN_CODE 77)
+  add_executable(iq4xs_rows512_test tests/core/iq4xs_rows512_test.cpp)
+  target_link_libraries(iq4xs_rows512_test PRIVATE guild_engine)
+  add_test(NAME iq4xs_rows512_test COMMAND iq4xs_rows512_test)
+  set_tests_properties(iq4xs_rows512_test PROPERTIES SKIP_RETURN_CODE 77)
+  add_executable(iq4nl_rows512_test tests/core/iq4nl_rows512_test.cpp)
+  target_link_libraries(iq4nl_rows512_test PRIVATE guild_engine)
+  add_test(NAME iq4nl_rows512_test COMMAND iq4nl_rows512_test)
+  set_tests_properties(iq4nl_rows512_test PROPERTIES SKIP_RETURN_CODE 77)
+  add_executable(q8_0_rows512_test tests/core/q8_0_rows512_test.cpp)
+  target_link_libraries(q8_0_rows512_test PRIVATE guild_engine)
+  add_test(NAME q8_0_rows512_test COMMAND q8_0_rows512_test)
+  set_tests_properties(q8_0_rows512_test PROPERTIES SKIP_RETURN_CODE 77)
   add_executable(kv_host_only_test tests/core/kv_host_only_test.cpp)
   target_link_libraries(kv_host_only_test PRIVATE guild_engine)
   add_test(NAME kv_host_only_test COMMAND kv_host_only_test)
@@ -529,7 +585,7 @@ if(GUILD_ENABLE_CUDA OR GUILD_ENABLE_HIP)
   # what composes them into a token.  No tokenizer - the prompt arrives as ids - because Gate C1 compares logits
   # against llama.cpp on the SAME ids and a tokenizer on one side of that comparison is a second variable.
   # plan v0.3 P5: batched prompt processing (tensor-core GEMMs through cuBLAS).
-  add_library(guild_prefill STATIC src/prefill/prefill.cpp)
+  add_library(guild_prefill STATIC src/prefill/prefill.cpp src/prefill/hc_q8.cu)
   guild_cuda_attach_prefill(guild_prefill)
   target_include_directories(guild_prefill PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include ${_guild_gpu_include_directories})
   target_link_libraries(guild_prefill PUBLIC guild_engine ${_guild_gpu_blas_target} ${_guild_gpu_runtime_target})
@@ -689,6 +745,57 @@ if(GUILD_ENABLE_CUDA OR GUILD_ENABLE_HIP)
       add_test(NAME mmvq_multi_parity_cuda_layout COMMAND mmvq_multi_parity)
       set_tests_properties(mmvq_multi_parity_cuda_layout PROPERTIES ENVIRONMENT "GUILD_MMVQ_WAVE=0")
     endif()
+    # the staged rows (Q4_K, Q6_K, Q8_0) against the kernels without them, bitwise: two processes, since the switch
+    # is an environment variable read once
+    add_executable(mmvq_staged_parity src/kernels/mmvq_staged_parity.cpp)
+    target_include_directories(mmvq_staged_parity PRIVATE ${_guild_gpu_include_directories})
+    target_link_libraries(mmvq_staged_parity PRIVATE guild_kernels ${_guild_gpu_runtime_target})
+    add_test(NAME mmvq_staged_reference
+             COMMAND mmvq_staged_parity --dump ${CMAKE_CURRENT_BINARY_DIR}/mmvq_staged_reference.bin)
+    set_tests_properties(mmvq_staged_reference PROPERTIES ENVIRONMENT "GUILD_MMVQ_STAGED=0"
+                         FIXTURES_SETUP mmvq_staged_reference)
+    add_test(NAME mmvq_staged_parity
+             COMMAND mmvq_staged_parity --compare ${CMAKE_CURRENT_BINARY_DIR}/mmvq_staged_reference.bin)
+    set_tests_properties(mmvq_staged_parity PROPERTIES FIXTURES_REQUIRED mmvq_staged_reference)
+    # the verify windows' GDN recurrence and commit (column-block kernels) against the kernels before them, bitwise:
+    # two processes, since the switch is an environment variable read once
+    add_executable(gdn_step_parity src/kernels/gdn_step_parity.cpp)
+    target_include_directories(gdn_step_parity PRIVATE ${_guild_gpu_include_directories})
+    target_link_libraries(gdn_step_parity PRIVATE guild_kernels ${_guild_gpu_runtime_target})
+    add_test(NAME gdn_step_reference
+             COMMAND gdn_step_parity --dump ${CMAKE_CURRENT_BINARY_DIR}/gdn_step_reference.bin)
+    set_tests_properties(gdn_step_reference PROPERTIES ENVIRONMENT "GUILD_GDN_STEP_COLS=0"
+                         FIXTURES_SETUP gdn_step_reference)
+    add_test(NAME gdn_step_parity
+             COMMAND gdn_step_parity --compare ${CMAKE_CURRENT_BINARY_DIR}/gdn_step_reference.bin)
+    set_tests_properties(gdn_step_parity PROPERTIES ENVIRONMENT "GUILD_GDN_STEP_COLS=1"
+                         FIXTURES_REQUIRED gdn_step_reference)
+    # hip_router_fast on the CUDA runtime: the fast top-k router (the CUDA default) against the block kernel, bitwise
+    add_executable(router_fast_parity src/kernels/router_fast_parity.cpp)
+    target_include_directories(router_fast_parity PRIVATE ${_guild_gpu_include_directories})
+    target_link_libraries(router_fast_parity PRIVATE guild_kernels ${_guild_gpu_runtime_target})
+    add_test(NAME router_fast_parity COMMAND router_fast_parity)
+    # the FP32-activation BF16 products with R rows a block (the routers) against the one-row kernels, bitwise: two
+    # processes, since the switch is an environment variable read once; then each other row count
+    add_executable(mmvf_rows_parity src/kernels/mmvf_rows_parity.cpp)
+    target_include_directories(mmvf_rows_parity PRIVATE ${_guild_gpu_include_directories})
+    target_link_libraries(mmvf_rows_parity PRIVATE guild_kernels ${_guild_gpu_runtime_target})
+    add_test(NAME mmvf_rows_reference
+             COMMAND mmvf_rows_parity --dump ${CMAKE_CURRENT_BINARY_DIR}/mmvf_rows_reference.bin)
+    set_tests_properties(mmvf_rows_reference PROPERTIES ENVIRONMENT "GUILD_MMVF_ROWS=0"
+                         FIXTURES_SETUP mmvf_rows_reference)
+    foreach(_rows 1 2 4 8)
+      add_test(NAME mmvf_rows_parity_${_rows}
+               COMMAND mmvf_rows_parity --compare ${CMAKE_CURRENT_BINARY_DIR}/mmvf_rows_reference.bin)
+      set_tests_properties(mmvf_rows_parity_${_rows} PROPERTIES ENVIRONMENT "GUILD_MMVF_ROWS=${_rows}"
+                           FIXTURES_REQUIRED mmvf_rows_reference)
+    endforeach()
+    # the verify window's host combine (the CPU sums the expert rows) against the GPU combine it replaces, bitwise
+    add_executable(host_combine_parity src/kernels/host_combine_parity.cpp)
+    target_include_directories(host_combine_parity PRIVATE ${_guild_gpu_include_directories})
+    target_link_libraries(host_combine_parity PRIVATE guild_engine guild_kernels ${_guild_gpu_runtime_target})
+    add_test(NAME host_combine_parity COMMAND host_combine_parity)
+    set_tests_properties(host_combine_parity PROPERTIES SKIP_RETURN_CODE 77)
   endif()
   # the IQ kernels that decode a weight part once for every column/entry, bitwise vs the per-column ones
   # (GPU, synthetic, no model; --bench adds old/new timings)
@@ -726,6 +833,12 @@ if(GUILD_ENABLE_CUDA OR GUILD_ENABLE_HIP)
   target_include_directories(gr_parity PRIVATE ${_guild_gpu_include_directories})
   target_link_libraries(gr_parity PRIVATE guild_kernels ${_guild_gpu_runtime_target})
   add_test(NAME gr_parity COMMAND gr_parity --selftest)
+  # the same comparisons with the staged read (on a pre-Volta card, the direct down and column up kernels at 1-2 tokens)
+  add_test(NAME gr_parity_staged COMMAND gr_parity --selftest)
+  set_tests_properties(gr_parity_staged PROPERTIES ENVIRONMENT "GUILD_HC_SPLIT=2")
+  # the norm's L2 prefetch at a GUILD_HC_PF far above a row's 20,480 bytes: clamped to one row, the same bits
+  add_test(NAME gr_parity_staged_pf COMMAND gr_parity --selftest)
+  set_tests_properties(gr_parity_staged_pf PROPERTIES ENVIRONMENT "GUILD_HC_SPLIT=2;GUILD_HC_PF=1048576")
 
   add_executable(gdn_parity src/kernels/gdn_parity.cpp)
   target_include_directories(gdn_parity PRIVATE ${_guild_gpu_include_directories})
@@ -980,7 +1093,7 @@ endif()
 
 include(cmake/CPUBackend.cmake)
 target_include_directories(guild_artifact INTERFACE "${_guild_cpu_source}/include")
-add_library(guild_kernels_cpu STATIC src/kernels/cpu/pool.cpp src/kernels/cpu/pack_layout.cpp)
+add_library(guild_kernels_cpu STATIC src/kernels/cpu/pool.cpp src/kernels/cpu/pack_layout.cpp src/kernels/cpu/numa.cpp)
 target_include_directories(guild_kernels_cpu PUBLIC include)
 guild_cpu_attach_base(guild_kernels_cpu ${GUILD_BUILTIN_CPU})
 if(GUILD_BUILTIN_CPU)
@@ -1056,6 +1169,8 @@ if(GUILD_ENABLE_CUDA OR GUILD_ENABLE_HIP)
     src/kernels/registry.cpp
     src/model/runner.cpp
     src/runtime/model.cpp
+    src/runtime/drama3.cpp
+    src/runtime/glm5.cpp
     src/runtime/ple.cpp
     src/runtime/session.cpp
     src/runtime/performance.cpp
@@ -1097,10 +1212,44 @@ if(NOT GUILD_BUILTIN_CPU)
   target_compile_definitions(guild_runtime PRIVATE GUILD_NO_BUILTIN_FULL_CPU=1)
 endif()
 
+# audio in, log-mel features out (the speech models' front end, CPU): every float32 step rounds on its own
+add_library(guild_audio STATIC src/audio/frontend.cpp)
+target_include_directories(guild_audio PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(guild_audio PUBLIC guild_warnings)
+if(NOT MSVC)
+  set_source_files_properties(src/audio/frontend.cpp PROPERTIES COMPILE_OPTIONS "-ffp-contract=off")
+endif()
+if(GUILD_BUILD_TESTS)
+  add_executable(audio_frontend_test tests/core/audio_frontend_test.cpp)
+  target_link_libraries(audio_frontend_test PRIVATE guild_audio)
+  add_test(NAME audio_frontend_test COMMAND audio_frontend_test)
+endif()
+
+# typed decisions from a decision checkpoint's next-token logits (StartLux-Decision): rendering and readout
+add_library(guild_decision STATIC src/decision/decision.cpp)
+target_link_libraries(guild_decision PUBLIC guild_runtime guild_warnings)
+
 if(GUILD_ENABLE_CUDA OR GUILD_ENABLE_HIP)
+  # the model-loading options the command-line runners share
+  add_library(guild_program_options STATIC src/program/model_options.cpp)
+  target_link_libraries(guild_program_options PUBLIC guild_runtime guild_cli guild_model guild_memory guild_artifact guild_warnings)
+
   add_executable(guild-generate src/program/generate.cpp)
   target_include_directories(guild-generate PRIVATE ${_guild_gpu_include_directories})
-  target_link_libraries(guild-generate PRIVATE guild_runtime guild_cli guild_model guild_memory guild_artifact guild_warnings)
+  target_link_libraries(guild-generate PRIVATE guild_program_options guild_runtime guild_cli guild_model guild_memory guild_artifact guild_warnings)
+
+  add_executable(decision_run src/program/decision_run.cpp)
+  target_link_libraries(decision_run PRIVATE guild_decision guild_program_options)
+  # GuildSession::score on any model guild-generate loads (model options as arguments; not a ctest: needs a model)
+  add_executable(session_score_test tests/core/session_score_test.cpp)
+  target_link_libraries(session_score_test PRIVATE guild_program_options)
+
+  # Nemotron 3.5 Transcribe's audio model on WAV files, every stage written out (tools/nemotron_audio_parity.py)
+  add_executable(audio_encode src/program/audio_encode.cpp)
+  target_link_libraries(audio_encode PRIVATE guild_engine guild_audio)
+  # Nemotron 3.5 Transcribe: offline transcription of WAV clips (the audio model and the Nemotron-H engine)
+  add_executable(transcribe_run src/program/transcribe_run.cpp)
+  target_link_libraries(transcribe_run PRIVATE guild_engine guild_audio guild_server)
 endif()
 
 # ---- guild_server (Native HTTP & OpenAI serving layer) --------------------
@@ -1182,6 +1331,59 @@ if(GUILD_BUILD_TESTS)
   target_link_libraries(parity_test PRIVATE guild_server guild_runtime guild_models guild_memory guild_model guild_cli)
   add_test(NAME parity_test COMMAND parity_test)
 
+  # GLM-5.3-Flash's glm4 rules against llama.cpp's ids (skipped without the extracted tokenizer)
+  add_executable(glm5_tokenizer_test tests/core/glm5_tokenizer_test.cpp)
+  target_link_libraries(glm5_tokenizer_test PRIVATE guild_runtime guild_server)
+  set(GUILD_GLM5_TOKENIZER_DIR "$ENV{HOME}/models/GLM-5.3-Flash/pack/tokenizer" CACHE PATH "GLM-5.3-Flash tokenizer assets")
+  add_test(NAME glm5_tokenizer_test COMMAND glm5_tokenizer_test
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/glm5_tokenizer_golden.json ${GUILD_GLM5_TOKENIZER_DIR})
+  set_tests_properties(glm5_tokenizer_test PROPERTIES SKIP_RETURN_CODE 77)
+  # GLM-5.3-Flash at a 32k context on a long real text (a GGUF shard and a text file given; ~20 min on an 8 GB card):
+  # the decode after a 32,000-token prompt, from a snapshot, with the indexer's new and legacy kernels (the same ids)
+  set(GUILD_GLM5_MODEL "" CACHE FILEPATH "GLM-5.3-Flash GGUF (any shard) for glm5_ctx32k_test")
+  set(GUILD_GLM5_LONG_TEXT "" CACHE FILEPATH "A text of 130k characters or more for glm5_ctx32k_test")
+  if(TARGET glm5_run AND GUILD_GLM5_MODEL AND GUILD_GLM5_LONG_TEXT)
+    add_test(NAME glm5_ctx32k_test COMMAND glm5_run ${GUILD_GLM5_MODEL} text:${GUILD_GLM5_LONG_TEXT} 64 --spec
+      --ctx 32768 --prompt-tokens 32000 --tokenizer ${GUILD_GLM5_TOKENIZER_DIR} --ab GUILD_GLM_IDX_LEGACY=0,1
+      --reps 1)
+  endif()
+  # StartLux-Decision prompts: Python's json.dumps / state_text cases always; with the checkpoint's tokenizer export,
+  # every question of the fixture rendered and tokenized as the reference package does
+  add_executable(decision_render_test tests/core/decision_render_test.cpp)
+  target_link_libraries(decision_render_test PRIVATE guild_decision guild_server)
+  add_test(NAME decision_python_text_test COMMAND decision_render_test)
+  set(GUILD_STARTLUX_TOKENIZER_DIR "" CACHE PATH "StartLux-Decision tokenizer export (tools/guild_tokenizer.py)")
+  if(GUILD_STARTLUX_TOKENIZER_DIR)
+    add_test(NAME decision_render_test COMMAND decision_render_test ${GUILD_STARTLUX_TOKENIZER_DIR}
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/startlux_decision/requests.jsonl
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/startlux_decision/reference_fp32.jsonl)
+  endif()
+  # The gate on the GPU (opt-in: the converted model and its pack given): decision_run on the fixture's requests,
+  # every answer within 0.01 of the reference package's fp32 probabilities with the same top answer
+  set(GUILD_STARTLUX_MODEL "" CACHE FILEPATH "StartLux-Decision GGUF (Q8_0) for decision_gate_test")
+  set(GUILD_STARTLUX_PACK "" CACHE PATH "Its pack (tools/iq_pack.py) for decision_gate_test")
+  if(TARGET decision_run AND GUILD_STARTLUX_MODEL AND GUILD_STARTLUX_PACK)
+    find_package(Python3 COMPONENTS Interpreter)
+    add_test(NAME decision_gate_test COMMAND ${CMAKE_COMMAND}
+      -DRUN=$<TARGET_FILE:decision_run> -DMODEL=${GUILD_STARTLUX_MODEL} -DPACK=${GUILD_STARTLUX_PACK}
+      -DPYTHON=${Python3_EXECUTABLE} -DSRC=${CMAKE_CURRENT_SOURCE_DIR} -DOUT=${CMAKE_CURRENT_BINARY_DIR}
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/startlux_decision/gate.cmake)
+  endif()
+  # Nemotron 3.5 Transcribe's gate (opt-in: the GGUF, the audio runtime files, the tokenizer and the clips
+  # tests/data/nemotron_transcribe/make_clips.py writes)
+  set(GUILD_NEMOTRON_MODEL "" CACHE FILEPATH "Nemotron 3.5 Transcribe language model GGUF for transcribe_gate_test")
+  set(GUILD_NEMOTRON_AUDIO "" CACHE PATH "Its audio runtime files (tools/nemotron_audio_rt.py)")
+  set(GUILD_NEMOTRON_TOKENIZER "" CACHE FILEPATH "Its tokenizer.json")
+  set(GUILD_NEMOTRON_CLIPS "" CACHE PATH "The gate's clips (make_clips.py's output directory)")
+  if(TARGET transcribe_run AND GUILD_NEMOTRON_MODEL AND GUILD_NEMOTRON_AUDIO AND GUILD_NEMOTRON_TOKENIZER AND
+     GUILD_NEMOTRON_CLIPS)
+    find_package(Python3 COMPONENTS Interpreter)
+    add_test(NAME transcribe_gate_test COMMAND ${CMAKE_COMMAND}
+      -DRUN=$<TARGET_FILE:transcribe_run> -DMODEL=${GUILD_NEMOTRON_MODEL} -DAUDIO=${GUILD_NEMOTRON_AUDIO}
+      -DTOKENIZER=${GUILD_NEMOTRON_TOKENIZER} -DCLIPS=${GUILD_NEMOTRON_CLIPS} -DPYTHON=${Python3_EXECUTABLE}
+      -DSRC=${CMAKE_CURRENT_SOURCE_DIR} -DOUT=${CMAKE_CURRENT_BINARY_DIR}
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/nemotron_transcribe/gate.cmake)
+  endif()
   add_executable(tokenizer_parity_test tests/core/tokenizer_parity_test.cpp)
   target_link_libraries(tokenizer_parity_test PRIVATE guild_runtime guild_server guild_cli)
   add_test(NAME tokenizer_fail_closed_test COMMAND tokenizer_parity_test --unloaded-only)
@@ -1214,6 +1416,14 @@ if(GUILD_BUILD_TESTS)
   target_link_libraries(gexec_optimizer_test PRIVATE guild_runtime guild_models guild_cli)
   add_test(NAME gexec_optimizer_test COMMAND gexec_optimizer_test)
   set_tests_properties(gexec_optimizer_test PROPERTIES TIMEOUT 240)
+  # the kernel parity checks again with the 512-bit i-quant kernels on any AVX-512 BW CPU (not only VNNI/VBMI hosts)
+  add_test(NAME gexec_kernels_iq512 COMMAND gexec_optimizer_test --kernels)
+  set_tests_properties(gexec_kernels_iq512 PROPERTIES TIMEOUT 240 ENVIRONMENT "GUILD_GEXEC_IQ512=1")
+  # GUILD_IQ_MT_MIN above 2: groups smaller than it run each token alone, groups of 1..8 still give ggml's bits
+  add_test(NAME gexec_kernels_mt3 COMMAND gexec_optimizer_test --kernels)
+  set_tests_properties(gexec_kernels_mt3 PROPERTIES TIMEOUT 240 ENVIRONMENT "GUILD_IQ_MT_MIN=3")
+  add_test(NAME gexec_kernels_mt4 COMMAND gexec_optimizer_test --kernels)
+  set_tests_properties(gexec_kernels_mt4 PROPERTIES TIMEOUT 240 ENVIRONMENT "GUILD_IQ_MT_MIN=4")
 
   add_executable(multi_model_isolation_test tests/core/multi_model_isolation_test.cpp)
   target_link_libraries(multi_model_isolation_test PRIVATE guild_server guild_runtime guild_models guild_memory guild_model guild_cli)
@@ -1342,6 +1552,16 @@ if(GUILD_BUILD_TESTS)
     add_executable(qwen_runtime_parity_test tests/core/qwen_runtime_parity_test.cpp)
     target_include_directories(qwen_runtime_parity_test PRIVATE ${_guild_gpu_include_directories})
     target_link_libraries(qwen_runtime_parity_test PRIVATE guild_runtime guild_server guild_models guild_cli)
+    # Qwen3.8-Flash-Next's teacher-forced distributions, for measuring weight changes (top-1, KL, perplexity)
+    add_executable(qwen_kl tests/core/qwen_kl.cpp)
+    target_include_directories(qwen_kl PRIVATE ${_guild_gpu_include_directories})
+    target_link_libraries(qwen_kl PRIVATE guild_runtime guild_server guild_models guild_cli)
+    add_executable(dflash_check tests/core/dflash_check.cpp)
+    target_include_directories(dflash_check PRIVATE ${_guild_gpu_include_directories})
+    target_link_libraries(dflash_check PRIVATE guild_runtime guild_server guild_models guild_cli)
+    add_executable(qwen_feat_dump tests/core/qwen_feat_dump.cpp)
+    target_include_directories(qwen_feat_dump PRIVATE ${_guild_gpu_include_directories})
+    target_link_libraries(qwen_feat_dump PRIVATE guild_runtime guild_server guild_models guild_cli)
     set(GUILD_QWEN_PARITY_MODEL "" CACHE FILEPATH "Existing Qwen GGUF for opt-in real-model parity")
     set(GUILD_QWEN_PARITY_PACK "" CACHE PATH "Matching existing Qwen pack")
     set(GUILD_QWEN_PARITY_LOGITS "" CACHE FILEPATH "First-token logits captured from the working reference engine")
@@ -1495,8 +1715,11 @@ if(GUILD_NATIVE_EXPERTS)
     # GUILD_MMQ_KQUANTS q4_k q5_k q5_1, the experts of Unsloth's UD-Q4_K_XL (docs/UNSLOTH_Q4.md; the dispatch
     # follows eddoursul/Guild 7706c1b)
     set(_guild_mmq_cuda_types ${_guild_mmq_types})
+    # q6_k, q5_k, q4_k: GLM-5.3-Flash's prompt windows with its attention matrices re-quantized (GUILD_MMQ_Q6K,
+    # GUILD_MMQ_K45: --dense q5_k / q4_k)
+    list(APPEND _guild_mmq_cuda_types q6_k q4_k q5_k)
     if(GUILD_MMQ_KQUANTS)
-      list(APPEND _guild_mmq_cuda_types q4_k q5_k q5_1)
+      list(APPEND _guild_mmq_cuda_types q5_1)
     endif()
     foreach(_t IN LISTS _guild_mmq_cuda_types)
       target_sources(guild_mmq PRIVATE ${_guild_mmq}/template-instances/mmq-instance-${_t}.cu)
@@ -1504,10 +1727,14 @@ if(GUILD_NATIVE_EXPERTS)
     target_include_directories(guild_mmq PRIVATE ${_guild_gg}/include ${_guild_gg}/src ${_guild_mmq}
                                PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
     target_compile_options(guild_mmq PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda -use_fast_math>)
+    # GLM-5.3-Flash's prompt windows multiply their Q8_0 matrices with MMQ (src/core/glm5.cpp)
+    target_link_libraries(guild_engine PRIVATE guild_mmq)
+    target_compile_definitions(guild_engine PRIVATE GUILD_GLM_MMQ=1)
     if(MSVC)
       target_compile_options(guild_mmq PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=/bigobj>)
     endif()
     target_link_libraries(guild_mmq PUBLIC ggml-base ${_guild_gpu_runtime_target})
+    target_compile_definitions(guild_mmq PRIVATE GUILD_MMQ_Q6K=1 GUILD_MMQ_K45=1)
     if(GUILD_MMQ_KQUANTS)
       target_compile_definitions(guild_mmq PRIVATE GUILD_MMQ_KQUANTS=1)
     endif()
@@ -1674,6 +1901,11 @@ if(GUILD_BUILD_TESTS)
     add_test(NAME pool_test COMMAND pool_test --selftest WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
     set_tests_properties(pool_test PROPERTIES SKIP_RETURN_CODE 77)
   endif()
+  # the native multi-token paths (NUMA row split, repacked gate/up rows) against the row kernels, bit for bit
+  add_executable(pool_numa_test src/kernels/cpu/pool_numa_test.cpp)
+  target_link_libraries(pool_numa_test PRIVATE guild_kernels_cpu)
+  add_test(NAME pool_numa_test COMMAND pool_numa_test)
+  set_tests_properties(pool_numa_test PROPERTIES SKIP_RETURN_CODE 77)
   # issue #29: tiny batches with sleeping workers, as on a big-VRAM card; a hang fails it
   add_executable(pool_stress src/kernels/cpu/pool_stress.cpp)
   target_link_libraries(pool_stress PRIVATE guild_kernels_cpu)

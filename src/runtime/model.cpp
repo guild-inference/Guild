@@ -1,4 +1,5 @@
 #include "guild/runtime/model.hpp"
+#include "guild/kernels/cpu/numa.hpp"
 #include "guild/runtime/session.hpp"
 
 #if defined(GUILD_ENABLE_CUDA) || defined(GUILD_ENABLE_HIP)
@@ -7,6 +8,8 @@
 #include "guild/abi/gkernel_package.hpp"
 #include "guild/artifact/gguf_reader.hpp"
 #include "guild/model/archetype.hpp"
+#include "guild/core/pool_rows.hpp"
+#include "guild/kernels/fused_gr.hpp"
 #include "guild/kernels/iq_kernels.hpp"
 #include "guild/kernels/verify_kernels.hpp"
 #include "guild/platform/device_policy.hpp"
@@ -74,6 +77,41 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
     if (paths.primary_model_path.empty()) {
         error_msg = "model load: primary model path is required";
         return nullptr;
+    }
+    // GLM-5.3-Flash has its own engine: no pack, runner or verifier (src/runtime/glm5.cpp)
+    if (glm5_is_model(paths.primary_model_path)) {
+        auto model = std::unique_ptr<GuildModel>(new GuildModel());
+        auto* impl = model->impl_.get();
+        impl->paths = paths;
+        impl->plan = plan;
+        impl->desc = requested_desc;
+        if (!glm5_load(*impl, paths, plan, error_msg))
+            return nullptr;
+        if (!paths.tokenizer_dir.empty()) {
+            std::string tok_err;
+            if (!model->tokenizer_->load(paths.tokenizer_dir, tok_err)) {
+                error_msg = "model load: tokenizer: " + tok_err;
+                return nullptr;
+            }
+            // another model's tokenizer (a default pack path) would encode every prompt wrongly
+            if ((int64_t) model->tokenizer_->vocab_size() != impl->glm->geometry().n_vocab) {
+                error_msg = "model load: the tokenizer at " + paths.tokenizer_dir + " has " +
+                            std::to_string(model->tokenizer_->vocab_size()) + " tokens, this model " +
+                            std::to_string(impl->glm->geometry().n_vocab) +
+                            "; export its own: python tools/guild_tokenizer.py --gguf <shard 1> --out <dir>";
+                return nullptr;
+            }
+        }
+        model->desc_ = requested_desc;
+        model->plan_ = plan;
+        model->plan_.context_length = impl->config.max_context;
+        model->paths_ = paths;
+        model->config_ = impl->config;
+        sp.total_load_ms = ms_since(load_t0);
+        impl->startup_profile = sp;
+        model->startup_profile_ = sp;
+        model->ready_->store(true);
+        return model;
     }
     {
         const auto pkg_t0 = Clock::now();
@@ -167,6 +205,13 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
         }
         sp.runner_and_plan_ms += ms_since(run_t0);
     }
+    // A rope extension (linear or YaRN, guild-generate --rope-scaling) lets the model serve factor x its trained
+    // context; the descriptor the runner just rebuilt from the GGUF still says the trained one.
+    if (desc.rope.type != "none" && desc.rope.factor > 1.0) {
+        const double trained = desc.rope.orig_ctx > 0 ? desc.rope.orig_ctx : (double) desc.attn.context_length;
+        desc.attn.context_length =
+            std::max<int64_t>(desc.attn.context_length, (int64_t) std::llround(trained * desc.rope.factor));
+    }
     if (plan.context_length <= 0 || plan.context_length > desc.attn.context_length || plan.mtp_spec_tokens < 0 ||
         plan.mtp_spec_tokens > kernels::kVerifyMaxT || plan.spec_max_draft < 0 ||
         plan.spec_max_draft >= kernels::kVerifyMaxT) {
@@ -218,6 +263,10 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
     } else {
         impl->config.spec = std::max(2, plan.mtp_spec_tokens);
     }
+    // a speech model drafts nothing, so its windows only carry the prompt: the widest reads it in the fewest
+    // (a 153-row prompt: 2.18 s at 8 rows, 2.41 at 4, GTX 1070)
+    if (!paths.drama3_dir.empty())
+        impl->config.spec = kernels::kVerifyMaxT;
     impl->config.spec_min_p = plan.spec_min_p;
     impl->config.pool_workers = plan.pool_workers;
     impl->config.expert_cache_slots = plan.routed_experts_in_gpu;
@@ -257,9 +306,10 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
         rope_cfg.orig_ctx = desc.rope.orig_ctx;
     if (desc.rope.type == "linear")
         rope_cfg.type = kernels::RopeScalingType::Linear;
-    else if (desc.rope.type == "yarn")
+    else if (desc.rope.type == "yarn") {
         rope_cfg.type = kernels::RopeScalingType::YaRN;
-    else
+        rope_cfg.ext_factor = 1.0; // llama.cpp's default for YaRN (yarn_ext_factor -1 -> 1): the correction on
+    } else
         rope_cfg.type = kernels::RopeScalingType::None;
     kernels::rope_scaling_set(rope_cfg);
 
@@ -451,6 +501,9 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
             return nullptr;
         }
 #endif
+        // the IQ3_S (NL4) gate/up and IQ4_NL down rows two to an AVX-512BW register, the same bits
+        // (GUILD_POOL_ROWS512=0: the table as bound)
+        impl->pool->bind_native_kernels(core::pool_rows512(impl->pool->native_table()));
     }
     std::optional<kernels::ScopedCudaDense> dense_scope;
     std::optional<kernels::ScopedCudaAttn> attn_scope;
@@ -587,6 +640,10 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
     std::set<std::string> skip;
     uint64_t pool_bytes = 0;
     if (use_gpack) {
+        if (plan.hc_q8 || guild::core::NativeDense::hc_q8()) {
+            error_msg = "--hc q8_0 reads the GGUF's own blocks: it needs the model's GGUF shards, not a .gpack";
+            return nullptr;
+        }
         skip = impl->gpack->precomputed_skip_set();
         if (!core::WeightTable::pool_bytes_gpack(*impl->gpack, pool_bytes, error_msg, skip.empty() ? nullptr : &skip)) {
             return nullptr;
@@ -602,6 +659,12 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
         }
     } else {
         if (!shards.empty()) {
+            if (plan.hc_q8)
+                guild::core::NativeDense::set_hc_q8(true);
+            if (guild::core::NativeDense::hc_q8() && !kernels::fused_gr_q8_supported()) { // also GUILD_HC=q8_0
+                error_msg = "--hc q8_0: this CUDA kernel module has no Q8_0 hyper-connection read";
+                return nullptr;
+            }
             if (!guild::core::NativeDense::served_names(shards, true, skip, error_msg)) {
                 return nullptr;
             }
@@ -647,12 +710,32 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
             sp.dense_vram_bytes += impl->native_dense.weight_bytes();
         }
     } else if (!shards.empty()) {
+        guild::core::NativeDense::set_dense_type(plan.dense_type);
+        guild::core::NativeDense::set_dense_map(plan.dense_map);
+        guild::core::NativeDense::set_dense_imatrix(plan.dense_imatrix);
         if (!impl->native_dense.load(shards, impl->wt, error_msg, true)) {
             return nullptr;
         }
         sp.container_opens += static_cast<int64_t>(shards.size());
         sp.dense_device_allocs += static_cast<int64_t>(skip.size());
         sp.dense_vram_bytes += impl->native_dense.weight_bytes();
+        if (impl->native_dense.requantized() > 0) {
+            const int t = guild::core::NativeDense::requant_type();
+            const char* name = !plan.dense_map.empty() || std::getenv("GUILD_DENSE_MAP") ? "--dense-map's types"
+                               : t == 13                                                 ? "Q5_K"
+                               : t == 12                                                 ? "Q4_K"
+                                                                                         : "Q6_K";
+            std::fprintf(stderr,
+                         "guild: %zu dense matrices re-quantized Q8_0 -> %s (--dense), %.0f MiB; %zu with the "
+                         "importance matrix\n",
+                         impl->native_dense.requantized(), name, (double) impl->native_dense.weight_bytes() / 1048576.0,
+                         impl->native_dense.imatrix_used());
+        }
+        if (impl->native_dense.hc_q8_count() > 0)
+            std::fprintf(stderr,
+                         "guild: %zu hyper-connection matrices as the GGUF's Q8_0 blocks (--hc q8_0), %.0f MiB; their "
+                         "bf16 copies not loaded\n",
+                         impl->native_dense.hc_q8_count(), (double) impl->native_dense.hc_q8_bytes() / 1048576.0);
     }
     if (!core::check_all(impl->wt, impl->g, error_msg))
         return nullptr;
@@ -834,8 +917,12 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
         const uint64_t budget = ram_budget;
         const char* pin_env = std::getenv("GUILD_PIN_EXPERTS");
         const bool force_pin = (pin_env != nullptr && std::atoi(pin_env) != 0);
-        const bool pcie_offload_requested = force_pin || (plan.pcie_expert_fraction > 0.0) ||
-                                            (plan.pcie_expert_fraction < 0.0 && budget <= (24ull << 30));
+        // Automatic offload page-locks the arena, which then cannot be NUMA-placed: on a multi-node machine that costs
+        // the CPU more than the offload gives (dual Xeon Gold 6130: Qwen 21.21 / 26.44 tok/s page-locked against
+        // 21.53 / 27.30; Ornith's CPU experts 8.4 ms per token against 5.0).  The GEXEC path above has the same rule.
+        const bool pcie_offload_requested =
+            force_pin || (plan.pcie_expert_fraction > 0.0) ||
+            (plan.pcie_expert_fraction < 0.0 && budget <= (24ull << 30) && kernels::cpu::numa_topology().nodes <= 1);
         const bool gpu_needs_pinned = pcie_offload_requested && std::any_of(impl->expert_performance.gpu_layers.begin(),
                                                                             impl->expert_performance.gpu_layers.end(),
                                                                             [](uint8_t v) { return v != 0; });
@@ -859,6 +946,16 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
             sp.expert_copy_calls = (use_gpack && impl->gpack->has_embedded_experts()) ? rem_experts : rem_experts * 3;
         }
         sp.numa_expert_pin_ms += ms_since(pin_t0);
+    }
+    // IQ3_S gate/up rows repacked for the CPU pool (FileExpertSource::build_cpu_repack), with 16 GiB of RAM to spare:
+    // only with the bundled CPU kernels, the ones that compute the repacked rows, and only when the RAM budget holds
+    // every expert (a smaller --resident-budget-gib is a request to use less RAM, not more).
+    if (impl->native_cpu_package == "builtin.guild-kernels-cpu" &&
+        sp.gexec_cpu_expert_impl == "cpu.expert_pool.split_multi_native") {
+        std::string note = "skipped: the RAM budget holds only part of the experts";
+        if (impl->config.resident_budget_gib > 0 && !sp.expert_zero_copy && ram_budget >= layout.total)
+            impl->src.build_cpu_repack(16ull << 30, note);
+        std::fprintf(stderr, "guild experts: IQ3_S gate/up rows repacked for the CPU: %s\n", note.c_str());
     }
 
     // Session state initialization (with resource-aware QSA staging fallback under tight VRAM)
@@ -926,8 +1023,17 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
     const bool mode_wants_mtp =
         (parsed_mode == spec::DecodeStrategyMode::Auto || parsed_mode == spec::DecodeStrategyMode::Mtp ||
          parsed_mode == spec::DecodeStrategyMode::Adaptive);
+    // --dflash <checkpoint directory> (GUILD_DFLASH overrides; "0": none): a DFlash 2 block drafter (core/dflash.hpp)
+    // drafts in place of the MTP layer, which is then not loaded; --dflash-vocab (GUILD_DFLASH_VOCAB) limits its head
+    // to a token subset
+    std::string dflash_dir = paths.dflash_dir, dflash_vocab = paths.dflash_vocab;
+    if (const char* e = std::getenv("GUILD_DFLASH"))
+        dflash_dir = std::string(e) == "0" ? std::string() : std::string(e);
+    if (const char* e = std::getenv("GUILD_DFLASH_VOCAB"))
+        dflash_vocab = e;
+    const bool use_dflash = !dflash_dir.empty() && mode_wants_mtp && plan.mtp_spec_tokens > 0;
     const bool use_mtp =
-        !paths.mtp_dir.empty() && mode_wants_mtp &&
+        !use_dflash && !paths.mtp_dir.empty() && mode_wants_mtp &&
         (plan.mtp_spec_tokens > 0 ||
          ((parsed_mode == spec::DecodeStrategyMode::Mtp || parsed_mode == spec::DecodeStrategyMode::Adaptive) &&
           plan.spec_max_draft > 0));
@@ -939,6 +1045,29 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
         }
     }
     sp.mtp_init_ms += ms_since(mtp_t0);
+
+    // Fish Audio Drama 3: the codebook tower and the codec, before the VRAM expert tier is sized.  The tower's K/V
+    // covers the reference's largest request (8192 prompt rows + 2048 frames), or the context when it is smaller.
+    if (!paths.drama3_dir.empty()) {
+        if (impl->g.hc != 1) {
+            error_msg = "--drama3 needs a single-stream (qwen35moe) backbone";
+            return nullptr;
+        }
+        impl->tower = std::make_unique<core::Drama3Tower>();
+        const int64_t tower_frames = std::min<int64_t>(impl->config.max_context, 10240);
+        if (!impl->tower->load(paths.drama3_dir + "/tower", tower_frames, error_msg))
+            return nullptr;
+        if (impl->tower->geometry().dim != impl->g.n_embd) {
+            error_msg = "drama3: the tower's width differs from the backbone's";
+            return nullptr;
+        }
+        impl->codec = std::make_unique<core::Drama3Codec>();
+        if (!impl->codec->load(paths.drama3_dir + "/codec", 16, error_msg))
+            return nullptr;
+        std::fprintf(stderr, "guild drama3: tower %llu MiB (K/V for %lld frames), codec %llu MiB of VRAM\n",
+                     (unsigned long long) (impl->tower->vram_bytes() >> 20), (long long) tower_frames,
+                     (unsigned long long) (impl->codec->vram_bytes() >> 20));
+    }
 
     // Initialize speculative cost calibration (from GEXEC artifact when present, or model geometry priors).
     {
@@ -1005,13 +1134,48 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
     vh.blob = static_cast<int64_t>(kernels::cpu::expert_layout().max_blob);
 
     impl->ver = std::make_unique<core::Verifier>();
+    if (plan.defer_experts > 0)
+        core::Verifier::set_defer_experts(plan.defer_experts);
     if (!impl->ver->init(impl->wt, impl->g, impl->ss, vh, impl->native_head.loaded() ? &impl->native_head : nullptr,
                          impl->config.spec, error_msg)) {
         error_msg = "Verifier::init failed: " + error_msg;
         return nullptr;
     }
     impl->ver->set_async_commit(true);
+    if (impl->tower) { // before any window is captured (the warm-up below runs some)
+        const core::Drama3TowerGeometry& tg = impl->tower->geometry();
+        impl->ver->set_audio_embed(impl->tower->code1_rows(), tg.semantic_start, tg.semantic_end);
+        impl->ver->set_no_head(true);
+    }
+    // Two token groups per window, so the CPU's experts of one overlap the GPU's layer work of the other.  Exact per
+    // token; GUILD_SPEC_SPLIT=0 is the one-group control.
+    const char* split_env = std::getenv("GUILD_SPEC_SPLIT");
+    impl->ver->set_split(split_env == nullptr || std::atoi(split_env) != 0);
     sp.verifier_init_ms += ms_since(ver_t0);
+
+    // the DFlash drafter: its weights and the verifier's feature capture, before any window graph is recorded
+    if (use_dflash) {
+        const auto df_t0 = Clock::now();
+        if (!impl->native_head.loaded() || impl->native_embed.bytes() == 0) {
+            error_msg = "--dflash needs the native head and token embedding";
+            return nullptr;
+        }
+        impl->dflash = std::make_unique<core::DFlashDrafter>();
+        if (!impl->dflash->load(dflash_dir, impl->native_head, impl->native_embed, dflash_vocab, error_msg) ||
+            !impl->ver->set_feature_layers(impl->dflash->target_layers(), error_msg)) {
+            error_msg = "DFlash drafter: " + error_msg;
+            return nullptr;
+        }
+        if (impl->dflash->hidden() != impl->g.n_embd) {
+            error_msg = "DFlash drafter: its width differs from the model's";
+            return nullptr;
+        }
+        if (cudaStreamCreateWithFlags(&impl->dflash_stream, cudaStreamNonBlocking) != cudaSuccess) {
+            error_msg = "DFlash drafter: no stream";
+            return nullptr;
+        }
+        sp.mtp_init_ms += ms_since(df_t0);
+    }
 
     if (use_mtp) {
         const auto mtpb_t0 = Clock::now();
@@ -1021,11 +1185,64 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
             return nullptr;
         }
         sp.mtp_init_ms += ms_since(mtpb_t0);
+        // What still has to fit is the prompt scratch and the verify graphs.  Measured with Qwen on the GTX 1070:
+        // 832 MiB free (380 of scratch) started at 262144 cells; 600 failed instantiating the graphs (393216) and
+        // 368 ended in a kernel's out-of-memory exit (524288), past where an error can be returned.
+        size_t free_vram = 0, total_vram = 0;
+        if (cudaMemGetInfo(&free_vram, &total_vram) == cudaSuccess) {
+            const uint64_t need = plan.prompt_scratch_bytes + (384ull << 20);
+            std::fprintf(stderr, "guild mtp: %zu MiB of VRAM free after the draft layer, %llu MiB still needed\n",
+                         free_vram >> 20, (unsigned long long) (need >> 20));
+            if (plan.mtp_optional && free_vram < need) {
+                error_msg = "out of memory: the MTP draft layer leaves " + std::to_string(free_vram >> 20) +
+                            " MiB of VRAM, the rest needs about " + std::to_string(need >> 20);
+                return nullptr;
+            }
+        }
     }
 
     // Prefill initialization
     const auto pf_t0 = Clock::now();
     impl->prefill = std::make_unique<prefill::Prefill>();
+    int64_t prefill_rows = plan.prefill_rows;
+    // The 512-token chunk the planner gives an 8 GiB-class card grows into the VRAM the load left free, computed as
+    // 512-token chunks: each chunk streams the experts over PCIe once, so a ~4K-token prompt took 52.2 s in chunks of
+    // 512 and 19.7 s in one of 4096 on a GTX 1070 (bench/results/2026-11-03-decode-round11).  On Pascal the rows
+    // give the 512-token chunks' results bit for bit (llama.cpp's MMQ without stream-k); newer cards keep 512 unless
+    // GUILD_PREFILL_GROW=1 (and --prefill N keeps N).  A chunk took ~0.40 MiB of VRAM a token (Qwen3.8, n_embd 2560:
+    // 5925 MiB in use after a 4K prompt in chunks of 512, 7353 in one of 4096), counted as 168 bytes a unit of n_embd,
+    // with 768 MiB left over (the planner's 512 MiB reserve, and 256 for what the prompt path adds later).
+    if (plan.prefill_chunk_auto && impl->config.prefill_chunk == 512 && prefill_rows == 0 && impl->g.n_embd > 0) {
+        int dev = 0, major = 0;
+        cudaGetDevice(&dev);
+        cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev);
+        const char* grow = std::getenv("GUILD_PREFILL_GROW");
+        size_t free = 0, total = 0;
+        if ((grow ? grow[0] == '1' : major < 7) && cudaMemGetInfo(&free, &total) == cudaSuccess) {
+            const uint64_t per_token = 168ull * (uint64_t) impl->g.n_embd, keep = 768ull << 20;
+            int64_t chunk = 512;
+            for (int64_t c = 4096; c > 512 && chunk == 512; c -= 512)
+                if ((uint64_t) c * per_token + keep <= free)
+                    chunk = c;
+            if (chunk > 512) {
+                impl->config.prefill_chunk = chunk;
+                prefill_rows = 512;
+                std::fprintf(stderr, "guild prefill: chunks of %lld tokens in the %.0f MiB of VRAM free\n",
+                             (long long) chunk, (double) free / (1 << 20));
+            }
+        }
+    }
+    prefill::Prefill::set_dense_mmq(plan.prefill_mmq);
+    if (plan.prefill_mmq > 0)
+        std::fprintf(stderr, "guild prefill: dense products through MMQ (--prefill-mmq %s)\n",
+                     plan.prefill_mmq == 2 ? "dense-hc" : "dense");
+    if (prefill_rows > 0 && prefill_rows < impl->config.prefill_chunk) {
+        prefill::Prefill::set_rows(prefill_rows);
+        std::fprintf(stderr, "guild prefill: chunks of %lld tokens computed as chunks of %lld (--prefill-rows)\n",
+                     (long long) impl->config.prefill_chunk, (long long) prefill_rows);
+    } else {
+        prefill::Prefill::set_rows(0);
+    }
     std::string pf_err;
     if (!impl->prefill->init(impl->wt, impl->g, impl->ss, impl->srcp,
                              impl->xcache.slots() > 0 ? &impl->xcache : nullptr,
@@ -1034,6 +1251,15 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
         // Prefill engine is optimized for Qwen4Exp; architectures with different geometry fall back to Verifier
         // ingestion
         impl->prefill.reset();
+    }
+    if (impl->dflash && impl->prefill) { // the prompt path's features for the drafter: a chunk's rows in its window
+        impl->dflash_pf_rows = std::min<int64_t>(impl->prefill->chunk(), impl->dflash->window());
+        const size_t bytes = (size_t) impl->dflash_pf_rows * impl->dflash->target_layers().size() *
+                             (size_t) impl->g.n_embd * sizeof(float);
+        if (cudaMalloc((void**) &impl->dflash_pf_feat, bytes) != cudaSuccess) {
+            error_msg = "DFlash drafter: no VRAM for the prompt's features";
+            return nullptr;
+        }
     }
 
     if (!impl->prefill && impl->g.is_dense_attention()) {
@@ -1087,11 +1313,29 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
                         if (impl->expert_performance.gpu_layers[size_t(l)])
                             cache_ranking.emplace_back(l, e);
         }
+        // A cache that holds a sliver of the experts serves too few lookups to pay for itself: every layer's GPU plan
+        // (a wait for the CPU pool's plan, its copy, the expert kernels) sits on the verify window's critical path
+        // whatever the hits.  On a GTX 1070, Qwen3.8's 113 slots (0.46% of its experts, 0.3% of the lookups) made
+        // verify windows 1.8% (prose) and 3.9% (code) slower than none, and 356 slots (1.45%) slower still.  Below
+        // 5% of the GPU-capable experts `auto` keeps none; an explicit --expert-cache N still gets its slots.
+        int64_t capable = 0;
+        for (int64_t l = 0; l < layout.n_layers; ++l)
+            if (impl->expert_performance.gpu_layers[size_t(l)])
+                capable += layout.n_expert;
         for (int attempt = 0; attempt < 8 && budget; ++attempt) {
             const auto sizing = size_expert_cache(layout, cache_ranking, impl->expert_performance.gpu_layers, budget,
                                                   int64_t(cache_ranking.size()));
             if (sizing.pairs.empty())
                 break;
+            if (int64_t(sizing.pairs.size()) * 20 < capable) {
+                std::fprintf(stderr,
+                             "guild experts: a GPU cache of %zu slots would hold %.2f%% of the %lld GPU-capable "
+                             "experts, too few to pay for its per-layer plan; none is kept (--expert-cache N "
+                             "forces one)\n",
+                             sizing.pairs.size(), 100.0 * double(sizing.pairs.size()) / double(capable),
+                             (long long) capable);
+                break;
+            }
             if (!fill_cache(sizing)) {
                 if (!cache_allocation_failed)
                     return false;
@@ -1140,6 +1384,16 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
     impl->drive.d.n_expert = impl->g.n_expert;
     impl->drive.d.n_embd = impl->g.n_embd;
     impl->drive.d.jobs.resize(static_cast<size_t>(impl->K));
+    // GUILD_DUMP_ROUTING=FILE (guild-generate --dump-routing): every decode layer's routed experts, appended in the
+    // record form tools/make_profile.py reads, for an expert-cache profile of a workload or of a model that has none
+    if (const char* path = std::getenv("GUILD_DUMP_ROUTING"); path != nullptr && *path) {
+        impl->drive.routing = std::fopen(path, "ab");
+        if (impl->drive.routing == nullptr) {
+            error_msg = std::string("cannot open GUILD_DUMP_ROUTING file ") + path;
+            return nullptr;
+        }
+        std::fprintf(stderr, "guild: routing of every decode layer is appended to %s\n", path);
+    }
     impl->drive.d.split_rows = true;
     impl->drive.d.cache = slots > 0 ? &impl->xcache : nullptr;
     impl->drive.d.cache_base = slots > 0 ? static_cast<const uint8_t*>(impl->xcache.device_slot(0)) : nullptr;
@@ -1208,9 +1462,13 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
                  impl->expert_performance.gpu_ms, impl->expert_performance.copy_ms, impl->drive.d.pcie_num,
                  static_cast<long long>(slots), static_cast<long long>(impl->xcache.bytes()));
     std::fprintf(stderr,
-                 "guild performance: CPU workers %d + host %d; verifier capacity %d; "
-                 "MTP %s; min draft probability %.3f; RAM expert backing %llu bytes\n",
-                 impl->pool->workers(), int(impl->pool->host_works()), impl->config.spec, use_mtp ? "on" : "off",
+                 "guild performance: CPU workers %d + host %d%s; verifier capacity %d; "
+                 "drafter %s; min draft probability %.3f; RAM expert backing %llu bytes\n",
+                 impl->pool->workers(), int(impl->pool->host_works()),
+                 impl->pool->numa_split() ? " (rows split by NUMA node)" : "", impl->config.spec,
+                 use_dflash ? "DFlash"
+                 : use_mtp  ? "MTP"
+                            : "off",
                  double(impl->config.spec_min_p), static_cast<unsigned long long>(impl->src.resident_bytes()));
     model->config_ = impl->config;
 

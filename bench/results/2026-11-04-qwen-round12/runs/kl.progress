@@ -1,0 +1,13 @@
+text 1
+perplexity of the text: 2.5035 (1060 predictions)
+perplexity of the text: 2.5179 (1060 predictions)
+against /home/ubuntu/work/nemotron/opt/r16/kA1.f16: top-1 the same 1018 of 1060 (96.04%); KL mean 0.011759, median 0.000659, 99th percentile 0.144321, max 0.497395; perplexity 2.5036 (base) -> 2.5179
+perplexity of the text: 2.4982 (1060 predictions)
+against /home/ubuntu/work/nemotron/opt/r16/kA1.f16: top-1 the same 1023 of 1060 (96.51%); KL mean 0.013754, median 0.000878, 99th percentile 0.145644, max 0.652734; perplexity 2.5036 (base) -> 2.4982
+text 2
+perplexity of the text: 2.6171 (1149 predictions)
+perplexity of the text: 2.6184 (1149 predictions)
+against /home/ubuntu/work/nemotron/opt/r16/kA2.f16: top-1 the same 1114 of 1149 (96.95%); KL mean 0.014084, median 0.000579, 99th percentile 0.159233, max 0.538281; perplexity 2.6170 (base) -> 2.6184
+perplexity of the text: 2.6437 (1149 predictions)
+against /home/ubuntu/work/nemotron/opt/r16/kA2.f16: top-1 the same 1106 of 1149 (96.26%); KL mean 0.018121, median 0.000815, 99th percentile 0.179021, max 0.521692; perplexity 2.6170 (base) -> 2.6437
+done

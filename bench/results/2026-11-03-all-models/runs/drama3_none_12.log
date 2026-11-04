@@ -1,0 +1,24 @@
+FileExpertSource: RAM budget 18.16 GiB: 10240 of the 18.16 GiB of experts the GPU cache does not hold, by profile rank; the rest are read from the files
+FileExpertSource: allocating 18.16 GiB pageable resident cache complement
+FileExpertSource: copied cache complement through layer 8/40 (4.68 GiB)
+FileExpertSource: copied cache complement through layer 16/40 (8.03 GiB)
+FileExpertSource: copied cache complement through layer 24/40 (11.96 GiB)
+FileExpertSource: copied cache complement through layer 32/40 (15.85 GiB)
+FileExpertSource: copied cache complement through layer 40/40 (18.16 GiB)
+FileExpertSource: resident NUMA split: 1536/1536 sampled node-0 row pages on node 0, 1532/1536 node-1 row pages on node 1
+FileExpertSource: pageable resident cache complement ready: resident 18.16 GiB, pinned 0.00 GiB; mlock
+guild experts: IQ3_S gate/up rows repacked for the CPU: not used (no IQ3_S gate/up layers)
+guild drama3: tower 1694 MiB (K/V for 10240 frames), codec 1116 MiB of VRAM
+guild verify: window up to 8 tokens, 80.5 MiB of device buffers
+guild verify: the CPU sums its experts' rows and 2048 floats a token cross PCIe, not 16384 (GUILD_HOST_COMBINE=0: the GPU sums them)
+guild verify: captured the 1-token window (upload no error, sync no error)
+guild verify: captured the 2-token window (upload no error, sync no error)
+guild verify: captured the 3-token window (upload no error, sync no error)
+guild verify: captured the 4-token window (upload no error, sync no error)
+guild verify: captured the 5-token window (upload no error, sync no error)
+guild verify: captured the 6-token window (upload no error, sync no error)
+guild verify: captured the 7-token window (upload no error, sync no error)
+guild verify: captured the 8-token window (upload no error, sync no error)
+guild performance: 0 measured formats, CPU 0.000 ms, GPU 0.000 ms, copy 0.000 ms; PCIe up to 0/256, GPU cache 0 slots (0 bytes)
+guild performance: CPU workers 31 + host 1 (rows split by NUMA node); verifier capacity 8; drafter off; min draft probability 0.500; RAM expert backing 19503513600 bytes
+guild-generate: /home/ubuntu/work/nemotron/opt/all/drama3_none_12.wav: 19.78 s of audio, 426 frames (eos) in 10916 ms (39.02 frames/s, 1.81x real time; tower 3726 ms, codec 1143 ms), prompt 86 rows in 538 ms

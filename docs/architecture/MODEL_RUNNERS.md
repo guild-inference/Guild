@@ -43,6 +43,10 @@ Model Architecture Runners decouple model-family topology, GGUF metadata validat
 | `runner.qwen4exp.v1` | `builtin.guild-kernels-qwen` | `qwen4exp` | `ModelFamily::Qwen4Exp` | 48 layers (36 Gated DeltaNet + 12 Quad-Sparse Attention, interval 4), 4-stream Hyper-Connections (`hc=4`), 512 routed experts (`top_k=10`) + 1 shared expert, mandatory Per-Layer Embeddings (`ple_compute`), Coupled-Draft MTP |
 | `runner.qwen35moe.v1` | `builtin.guild-kernels-ornith` | `qwen35moe` | `ModelFamily::Qwen35MoE` | 40 layers (30 Gated DeltaNet + 10 Full GQA Attention, interval 4), single-stream residual (`hc=1`), 256 routed experts (`top_k=8`) + 1 shared expert, no PLE, native layer-wise batched prefill (`BatchedPrefill`) |
 
+GLM-5.3-Flash (a `glm5-next` GGUF) does not go through a runner: `GuildModel::load` recognizes the GGUF
+(`glm5_is_model`, `src/runtime/glm5.cpp`) and hands it to its own engine, `src/core/glm5.cpp` (KDA and DSA attention,
+mHC and the dense products on the GPU, the routed experts on the CPU, the NextN block for speculative decoding).
+
 ---
 
 ## 2. `IModelRunner` Interface & `AbiModelRunnerAdapter`

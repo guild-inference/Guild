@@ -1,0 +1,6 @@
+swz3: attend T   1: legacy    680.9 us, new    367.6 us; rows from host: each query's    293.7 us (7.1 GB/s), the union's    298.5 us
+swz3: attend T   2: legacy   1301.7 us, new    712.2 us; rows from host: each query's    566.2 us (7.4 GB/s), the union's    332.3 us
+swz3: attend T   4: legacy   2243.0 us, new   1294.7 us; rows from host: each query's   1155.2 us (7.3 GB/s), the union's    394.8 us
+swz3: attend T   8: legacy   4449.4 us, new   2584.9 us; rows from host: each query's   2435.8 us (6.9 GB/s), the union's    540.1 us
+swz3: attend T  32: legacy  16693.5 us, new  10057.2 us; rows from host: each query's   9959.7 us (6.7 GB/s), the union's   2134.5 us
+swz3: attend T 128: legacy  64565.0 us, new  39242.1 us; rows from host: each query's  38149.9 us (7.0 GB/s), the union's   8615.8 us

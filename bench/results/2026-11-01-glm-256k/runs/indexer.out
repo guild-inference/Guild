@@ -1,0 +1,20 @@
+indexer ctx   4096 T 1 legacy: idx_score    40.7 us, idx_select    48.9 us
+indexer ctx   4096 T 1 new   : idx_score     9.7 us, idx_select     9.1 us
+indexer ctx   4096 T 2 legacy: idx_score    70.2 us, idx_select    48.9 us
+indexer ctx   4096 T 2 new   : idx_score    15.0 us, idx_select     9.0 us
+indexer ctx  16384 T 1 legacy: idx_score   126.1 us, idx_select    69.8 us
+indexer ctx  16384 T 1 new   : idx_score    23.6 us, idx_select    13.0 us
+indexer ctx  16384 T 2 legacy: idx_score   241.8 us, idx_select    74.9 us
+indexer ctx  16384 T 2 new   : idx_score    37.5 us, idx_select    13.6 us
+indexer ctx  32768 T 1 legacy: idx_score   240.5 us, idx_select   121.4 us
+indexer ctx  32768 T 1 new   : idx_score    40.5 us, idx_select    18.6 us
+indexer ctx  32768 T 2 legacy: idx_score   474.6 us, idx_select   126.8 us
+indexer ctx  32768 T 2 new   : idx_score    72.4 us, idx_select    19.2 us
+indexer ctx 131072 T 1 legacy: idx_score   929.9 us, idx_select   355.7 us
+indexer ctx 131072 T 1 new   : idx_score   140.2 us, idx_select    52.7 us
+indexer ctx 131072 T 2 legacy: idx_score  1858.7 us, idx_select   365.2 us
+indexer ctx 131072 T 2 new   : idx_score   262.7 us, idx_select    53.6 us
+indexer ctx 262144 T 1 legacy: idx_score  1853.2 us, idx_select   687.9 us
+indexer ctx 262144 T 1 new   : idx_score   262.9 us, idx_select    97.1 us
+indexer ctx 262144 T 2 legacy: idx_score  3715.2 us, idx_select   691.3 us
+indexer ctx 262144 T 2 new   : idx_score   502.8 us, idx_select    97.8 us

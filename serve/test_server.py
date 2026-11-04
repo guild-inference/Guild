@@ -21,7 +21,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from serve.frontend import ChatTemplate  # noqa: E402
 from serve.server import (CTX_SLACK, ByteTokenizer, EngineDied, GpuBusy, MockEngine, Service, GuildEngine,  # noqa: E402
-                          engine_args, layer_split_value, prompt_tokens_seen, request_timings, serve,
+                          end_of_turn_ids, engine_args, layer_split_value, prompt_tokens_seen, request_timings, serve,
                           start_failure_hint)
 from types import SimpleNamespace  # noqa: E402
 
@@ -480,6 +480,72 @@ class ToolCallTerminators(unittest.TestCase):
                     if stream_tools:
                         streamed = "".join(e.text for e in evs if e.kind == "tool_args")
                         self.assertEqual(json.loads(streamed), {"path": "doc.md", "content": self.CONTENT})
+
+
+class OpenThinkPrompt(unittest.TestCase):
+    """A template that ends the prompt inside <think> (GLM-5's, even with enable_thinking false) is parsed as
+    reasoning first; a closed block or none follows enable_thinking."""
+
+    def test_open_think_means_reasoning(self):
+        tok = ThinkTokenizer()
+        svc = Service(MockEngine(tok, "hi"), tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        think = tok.encode("<think>", parse_special=True)
+        self.assertEqual(len(think), 1)
+        self.assertTrue(svc._opens_think([5, 6] + think))
+        self.assertFalse(svc._opens_think([5, 6]))
+        self.assertFalse(svc._opens_think([]))
+
+
+class EndOfTurnIds(unittest.TestCase):
+    """A reply ends at the vocabulary's own end-of-turn specials; a string it lacks (GLM-5 has no <|im_end|>) adds no
+    ids - its ordinary pieces ('<', '|', ...) would end every reply that writes one."""
+
+    def test_qwen_vocabulary(self):
+        tok = ByteTokenizer()
+        self.assertEqual(end_of_turn_ids(tok), {tok.encode(s, parse_special=True)[0]
+                                                for s in ("<|im_end|>", "<|endoftext|>")})
+
+    def test_glm_vocabulary(self):
+        class GlmBytes(ByteTokenizer):
+            SPECIALS = ["<|endoftext|>", "<|user|>", "<|observation|>", "<|assistant|>"]
+        self.assertEqual(end_of_turn_ids(GlmBytes()), {256, 257, 258})
+        self.assertFalse(end_of_turn_ids(GlmBytes()) & set(b"<|im_end|>"))
+
+
+class GlmToolCalls(unittest.TestCase):
+    """GLM-5.3-Flash writes `<tool_call>NAME<arg_key>K</arg_key><arg_value>V</arg_value>...</tool_call>`: strings as
+    themselves, other values as JSON; a value may contain the closing tag as text."""
+    SCHEMA = [{"name": "get_weather", "parameters": {"properties": {"city": {"type": "string"},
+                                                                    "days": {"type": "integer"},
+                                                                    "note": {"type": "string"}}}}]
+    NOTE = "close with </arg_value> later"
+
+    def test_calls_parse_in_any_split(self):
+        from serve.frontend import OutputParser
+        text = ("Need the forecast.</think>Checking.<tool_call>get_weather<arg_key>city</arg_key><arg_value>Paris"
+                "</arg_value><arg_key>days</arg_key><arg_value>3</arg_value><arg_key>note</arg_key><arg_value>"
+                f"{self.NOTE}</arg_value></tool_call><tool_call>get_weather<arg_key>city</arg_key><arg_value>Oslo"
+                "</arg_value></tool_call>")
+        for stream_tools in (False, True):
+            for step in (1, 5, 10_000):
+                with self.subTest(stream_tools=stream_tools, step=step):
+                    p = OutputParser(thinking=True, tools=self.SCHEMA, stream_tools=stream_tools)
+                    evs = []
+                    for i in range(0, len(text), step):
+                        evs += p.feed(text[i:i + step])
+                    evs += p.finish()
+                    calls = [e.call for e in evs if e.kind == "tool_call"]
+                    self.assertEqual([c.name for c in calls], ["get_weather", "get_weather"])
+                    self.assertEqual(calls[0].arguments, {"city": "Paris", "days": 3, "note": self.NOTE})
+                    self.assertEqual(calls[1].arguments, {"city": "Oslo"})
+                    self.assertEqual("".join(e.text for e in evs if e.kind == "reasoning"), "Need the forecast.")
+                    self.assertEqual("".join(e.text for e in evs if e.kind == "content"), "Checking.")
+
+    def test_untyped_values_decode_as_json(self):
+        from serve.frontend import parse_tool_call
+        call = parse_tool_call("run<arg_key>n</arg_key><arg_value>2</arg_value><arg_key>flags</arg_key>"
+                               "<arg_value>[\"-v\"]</arg_value><arg_key>name</arg_key><arg_value>x y</arg_value>")
+        self.assertEqual((call.name, call.arguments), ("run", {"n": 2, "flags": ["-v"], "name": "x y"}))
 
 
 class UnfinishedToolCall(unittest.TestCase):
@@ -1039,6 +1105,19 @@ class PcieShare(unittest.TestCase):
         self.assertEqual([r["hit_rate"] for r in rows], [0.6, 0.6, 0.6])
         self.assertEqual([r["pcie_share"] for r in rows], [0.2, 0.0, None])
         self.assertIn("expert cache 60.0% hit (+20.0% of the routed experts over PCIe)", out.getvalue())
+        self.assertIn("drafts 3/5 accepted", out.getvalue())
+
+    def test_no_cache_no_hit_rate(self):
+        # a model whose experts no GPU kernel takes (Ornith) still counts lookups: its 0% is not printed
+        tok = ByteTokenizer()
+        engine = DoneLineEngine(tok, "</think>\n\nok", max_context=CTX,
+                                done_lines=["DONE 4 20 40.0 30.0 stop 0 0 0 0 100 0 0 0.0 20 0"])
+        svc = Service(engine, tok, ChatTemplate(ROOT / "serve/chat_template.jinja"))
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            list(svc.run(tok.encode("hi"), False, None, 10, {}, threading.Event()))
+        self.assertIn("[guild] done:", out.getvalue())
+        self.assertNotIn("expert cache", out.getvalue())
+        self.assertNotIn("drafts", out.getvalue())
 
 
 class LearnedProfile(unittest.TestCase):

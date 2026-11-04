@@ -1,0 +1,31 @@
+{
+ "reference": "reference_fp32.jsonl",
+ "noise": "reference_bf16.jsonl",
+ "margin": 0.05,
+ "max_over_0_01": 52,
+ "max_p95": 0.03685039281845093,
+ "noise_run": {
+  "questions": 258,
+  "over_0_01": 52,
+  "p95": 0.03685039281845093,
+  "median": 0.0012817978858947754,
+  "max": 0.08611008524894714,
+  "flips": [
+   [
+    "hard-opus-a-temporal_numeric-07",
+    "q",
+    0.0111
+   ],
+   [
+    "hard-opus-c-temporal_numeric-12",
+    "q",
+    0.0033
+   ],
+   [
+    "long-json-20k",
+    "common",
+    0.028
+   ]
+  ]
+ }
+}

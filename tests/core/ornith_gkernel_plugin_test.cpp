@@ -20,6 +20,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -41,6 +42,8 @@ int main() {
     fs::remove_all(temp_root);
     fs::create_directories(temp_root / "pkg_src" / "lib");
     setenv("GUILD_DATA_DIR", (temp_root / "data").c_str(), 1);
+    // Every phase prefills the same prompt and counts the router calls it makes: the prefix cache would skip them.
+    setenv("GUILD_NO_KV_CACHE", "1", 1);
 
     std::string err;
     CHECK(abi::GKernelPackageManager::instance().init(err));
@@ -231,7 +234,11 @@ int main() {
         const int64_t rows_after_1 = get_rows();
         std::cerr << "[ornith_gkernel_plugin_test] External CUDA router calls=" << calls_after_1
                   << ", token_rows=" << rows_after_1 << "\n";
-        CHECK(calls_after_1 == 40);
+        // the batched prefill runs a chunk as two halves of rows (a router call each a layer) unless
+        // GUILD_PREFILL_PAIRS=0 or the chunk is one row
+        const char* pairs_env = std::getenv("GUILD_PREFILL_PAIRS");
+        const bool halves = !(pairs_env && std::atoi(pairs_env) == 0) && telem.prompt_tokens - 1 >= 2;
+        CHECK(calls_after_1 == 40 * (halves ? 2 : 1));
         CHECK(rows_after_1 == 40 * (static_cast<int64_t>(telem.prompt_tokens) - 1));
         ::dlclose(h);
 

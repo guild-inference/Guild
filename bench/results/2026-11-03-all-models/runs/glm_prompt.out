@@ -1,0 +1,21 @@
+guild tokenizer: the native chat renderer does not handle this template (unsupported or unrecognized chat template format)
+glm5_run: a prompt of 1974 tokens
+guild glm5: attention matrices Q8_0 -> Q6_K (for the context; GUILD_GLM_DENSE=q8_0 keeps Q8_0): 5746 -> 4436 MiB in 21.3 s
+guild glm5: context 262144 tokens, the latent rows of cells 11776 on in host memory (2934 MiB pinned)
+guild glm5: VRAM: 8010 MiB free, 6140 MiB fixed, context 262144 tokens 11776 x 13184 B + 250368 x 896 B + a 52 MiB stage, 0 MiB left; 1 shared experts on the CPU
+guild glm5: 539 matrices take MMQ in prompt windows
+guild glm5: experts split across 2 NUMA nodes, IQ3_S gate/up as NL4: 77.9 + 77.9 GiB in 286.6 s
+guild glm5: token_embd copied to memory: 643 MiB in 7.40 s (the load waited 0.00 s for it)
+glm5: 45 layers (34 KDA, 11 DSA) + MTP, 42 of 46 FFNs on the GPU, 32 CPU threads on 2 NUMA nodes, 7598 MiB VRAM, context 262144
+glm5_run: loaded in 333.7 s
+prompt: CPU experts 27005 ms of 27559
+glm5 timing (prompt): activations 156 ms, gate/up 0, hidden 156, down 0, both in one phase 26474; launches 255; waits for a group's router 88 (KDA layers) / 32 (DSA), for the launcher 1; threads busy 0% / 0% / 97%; 1754.86 GB of expert rows (gate/up 1149.02 GB, down 605.84) at 66.3 GB/s
+top after the prompt: 262 (23.021) 630 (15.402) 6490 (15.018) 532 (14.930) 92 (14.598)
+glm5 timing (prompt + decode): activations 177 ms, gate/up 8, hidden 188, down 4, both in one phase 27579; launches 496; waits for a group's router 150 (KDA layers) / 157 (DSA), for the launcher 1; threads busy 94% / 89% / 97%; 1956.87 GB of expert rows (gate/up 1281.67 GB, down 675.20) at 70.9 GB/s
+MTP: 13 of 18 drafts accepted (72%); per step: draft 5.1 ms, verify 79.7, accept 0.9
+per step: 84.7 / 85.5 / 86.7 ms (10th / 50th / 90th percentile), CPU experts 62.5 / 65.5 / 66.8
+output text:     grow(pkbuf_, pk_total + 64);
+    grow(gatebuf_, gate_total + 64);
+    grow(upbuf_, up_total + 
+prompt 1974 tokens in 27559 ms (71.63 tok/s); decode 32 tokens in 1547 ms (20.04 tok/s, CPU experts 65.2 ms per step)
+262,3063,39711,5909,6878,22399,10779,488,220,102636,317,262,3063,3268,349,5909,6878,18098,10779,488,220,102636,317,262,3063,35376,5909,6878,705,10779,488,220

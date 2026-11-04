@@ -3,6 +3,11 @@
 #include "guild/core/remote_experts.hpp"
 #include "guild/core/peer_experts.hpp"
 #include "guild/kernels/cpu/expert_layout.hpp"
+#include "guild/kernels/cpu/numa.hpp"
+#if GUILD_BUNDLED_CPU_ARITHMETIC && defined(GUILD_NATIVE_EXPERTS)
+#include "guild/kernels/cpu/iq_avx2.hpp"
+#endif
+#include "guild/kernels/cpu/pool.hpp"
 #include "guild/artifact/gguf_reader.hpp"
 
 #include "guild/core/pinned.hpp"
@@ -63,6 +68,148 @@ namespace guild::core {
 #if GUILD_BUNDLED_CPU_ARITHMETIC && defined(GUILD_NATIVE_EXPERTS)
 extern "C" const guild_cpu_backend_ext_v2_t* guild_cpu_backend_table_v2();
 #endif
+
+namespace {
+
+#if defined(__linux__) && defined(SYS_get_mempolicy)
+// The NUMA split (numa.hpp) for the resident arena: only when nothing (numactl, a container) set this process's
+// memory policy, because first touch below is what places the pages.
+bool numa_split_arena(const guild::kernels::cpu::ExpertLayout& lay) {
+    if (!lay.native || !guild::kernels::cpu::numa_split_requested())
+        return false;
+    int mode = -1;
+    return syscall(SYS_get_mempolicy, &mode, nullptr, 0ul, nullptr, 0ul) == 0 && mode == MPOL_DEFAULT;
+}
+
+// Places each blob's node-0 rows on node 0 and the rest on node 1 by writing one byte of every page from a thread
+// on that node, before anything else touches the arena.  A page shared by two halves goes to whichever node
+// writes it first; that is a few pages per blob.
+void numa_split_touch(uint8_t* arena, uint64_t bytes, const guild::kernels::cpu::ExpertLayout& lay,
+                      bool gate_up_interleaved, int64_t n_expert, const std::vector<uint64_t>& layer_blob_bytes,
+                      const std::vector<uint64_t>& offsets, uint64_t no_blob) {
+    namespace kc = guild::kernels::cpu;
+    const uint64_t page = (uint64_t) std::max(4096l, sysconf(_SC_PAGESIZE));
+    std::vector<std::pair<uint64_t, uint64_t>> spans[2];
+    auto add = [&](int node, uint64_t a, uint64_t b) {
+        if (b > a) {
+            auto& v = spans[node];
+            if (!v.empty() && v.back().second == a)
+                v.back().second = b;
+            else
+                v.push_back({a, b});
+        }
+    };
+    for (size_t i = 0; i < offsets.size(); ++i) {
+        const uint64_t off = offsets[i];
+        const size_t layer = i / (size_t) n_expert;
+        if (off == no_blob || layer >= lay.fmt.size() || layer >= layer_blob_bytes.size())
+            continue;
+        const uint64_t blob = layer_blob_bytes[layer];
+        uint64_t r[3][2];
+        const int n = kc::numa_node0_ranges(lay.fmt[layer], gate_up_interleaved, r);
+        uint64_t at = 0;
+        for (int k = 0; k < n; ++k) {
+            const uint64_t a = std::min(r[k][0], blob), b = std::min(r[k][1], blob);
+            add(1, off + at, off + a);
+            add(0, off + a, off + b);
+            at = b;
+        }
+        add(n > 0 ? 1 : 0, off + at, off + blob);
+    }
+    const auto& numa = kc::numa_topology();
+    std::vector<std::thread> threads;
+    for (int node = 0; node < 2; ++node) {
+        const auto& cpus = numa.node_cpus[(size_t) node];
+        const int per_node = (int) std::min<size_t>(8, cpus.size());
+        for (int t = 0; t < per_node; ++t)
+            threads.emplace_back([&, node, t, per_node, cpu = cpus[(size_t) t * cpus.size() / (size_t) per_node]] {
+                const auto previous = kc::pin_current_thread(cpu);
+                const auto& v = spans[node];
+                for (size_t s = (size_t) t; s < v.size(); s += (size_t) per_node)
+                    for (uint64_t at = v[s].first - v[s].first % page; at < v[s].second && at < bytes; at += page)
+                        reinterpret_cast<volatile uint8_t*>(arena)[at] = 0;
+                kc::restore_thread_affinity(previous);
+            });
+    }
+    for (auto& t : threads)
+        t.join();
+}
+
+// Takes a placed region out of Linux's automatic NUMA balancing (/proc/sys/kernel/numa_balancing).  The balancer
+// samples a process's pages by unmapping them, so the next read of each takes a "hinting" fault, and it migrates the
+// pages another node reads more.  The split already put every row on the node whose threads compute it, so the
+// sampling only adds faults (and TLB flushes on every pool thread).  The scanner skips a mapping that has its own
+// memory policy; MPOL_LOCAL is what first touch did, and without MPOL_MF_MOVE no page moves.
+// GUILD_EXPERT_AUTONUMA=1 leaves the region to the balancer, as before.
+void exclude_from_numa_balancing(void* p, uint64_t bytes) {
+#if defined(SYS_mbind)
+    static const bool keep = [] {
+        const char* v = std::getenv("GUILD_EXPERT_AUTONUMA");
+        return v != nullptr && std::atoi(v) != 0;
+    }();
+    if (keep || p == nullptr || bytes == 0)
+        return;
+    const uint64_t page = (uint64_t) std::max(4096l, sysconf(_SC_PAGESIZE));
+    const uint64_t a = (uint64_t) (uintptr_t) p & ~(page - 1);
+    const uint64_t len = ((uint64_t) (uintptr_t) p + bytes - a + page - 1) & ~(page - 1);
+    (void) syscall(SYS_mbind, (unsigned long) a, (unsigned long) len, MPOL_LOCAL, nullptr, 0ul, 0u);
+#else
+    (void) p;
+    (void) bytes;
+#endif
+}
+
+// Where the split's pages ended up: a sample of each node's spans, through move_pages(2) without moving anything.
+void numa_split_report(const uint8_t* arena, uint64_t bytes, const guild::kernels::cpu::ExpertLayout& lay,
+                       bool gate_up_interleaved, int64_t n_expert, const std::vector<uint64_t>& layer_blob_bytes,
+                       const std::vector<uint64_t>& offsets, uint64_t no_blob) {
+#if defined(SYS_move_pages)
+    std::vector<void*> pages;
+    std::vector<int> want;
+    const size_t stride = std::max<size_t>(1, offsets.size() / 512);
+    for (size_t i = 0; i < offsets.size(); i += stride) {
+        const size_t layer = i / (size_t) n_expert;
+        if (offsets[i] == no_blob || layer >= lay.fmt.size())
+            continue;
+        uint64_t r[3][2];
+        const int n = guild::kernels::cpu::numa_node0_ranges(lay.fmt[layer], gate_up_interleaved, r);
+        const uint64_t blob = layer_blob_bytes[layer];
+        for (int k = 0; k < n; ++k) {
+            const uint64_t a = offsets[i] + r[k][0], b = offsets[i] + r[k][1];
+            const uint64_t next = k + 1 < n ? offsets[i] + r[k + 1][0] : offsets[i] + blob;
+            if ((b + a) / 2 < bytes) {
+                pages.push_back((void*) (arena + (b + a) / 2));
+                want.push_back(0);
+            }
+            if ((b + next) / 2 < bytes && next > b) {
+                pages.push_back((void*) (arena + (b + next) / 2));
+                want.push_back(1);
+            }
+        }
+    }
+    std::vector<int> status(pages.size(), -1);
+    if (pages.empty() ||
+        syscall(SYS_move_pages, 0, (unsigned long) pages.size(), pages.data(), nullptr, status.data(), 0) != 0) {
+        std::fprintf(stderr, "FileExpertSource: resident NUMA split applied (placement not readable)\n");
+        return;
+    }
+    int right[2] = {0, 0}, total[2] = {0, 0};
+    for (size_t i = 0; i < pages.size(); ++i) {
+        ++total[want[i]];
+        right[want[i]] += status[i] == want[i];
+    }
+    std::fprintf(stderr,
+                 "FileExpertSource: resident NUMA split: %d/%d sampled node-0 row pages on node 0, %d/%d node-1 "
+                 "row pages on node 1\n",
+                 right[0], total[0], right[1], total[1]);
+#else
+    (void) arena, (void) bytes, (void) lay, (void) gate_up_interleaved, (void) n_expert, (void) layer_blob_bytes,
+        (void) offsets, (void) no_blob;
+#endif
+}
+#endif
+
+} // namespace
 
 namespace detail {
 
@@ -601,6 +748,19 @@ bool FileExpertSource::open_gpack(const uint8_t* exp_base, uint64_t exp_bytes, i
 }
 
 void FileExpertSource::close() {
+#if !defined(_WIN32)
+    if (cpu_repack_ != nullptr) {
+        if (cpu_repack_locked_ > 0)
+            guild::platform::unlock_resident(cpu_repack_, cpu_repack_locked_);
+        (void) munmap(cpu_repack_, (size_t) cpu_repack_bytes_);
+    }
+#endif
+    cpu_repack_ = nullptr;
+    cpu_repack_bytes_ = 0;
+    cpu_repack_locked_ = 0;
+    cpu_repack_off_.clear();
+    cpu_repack_blob_.clear();
+    cpu_fmt_.clear();
     if (complement_arena_ != nullptr) {
         if (complement_pinned_ && !complement_partial_)
             (void) cudaFreeHost(complement_arena_);
@@ -1780,6 +1940,7 @@ bool FileExpertSource::pin_cache_complement(const ExpertCache& cache, std::strin
     uint64_t locked = 0;
     uint64_t partial_pin = 0; ///< CS-T: a registered prefix of a locked arena
     uint64_t lock_off = 0;    ///< where the working-set lock starts (after the registered prefix)
+    bool numa_split = false;  ///< the arena's pages were placed by the NUMA split (numa.hpp)
     std::string note;
     auto release = [&]() {
         if (arena == nullptr)
@@ -1830,7 +1991,12 @@ bool FileExpertSource::pin_cache_complement(const ExpertCache& cache, std::strin
             const char* thp_env = std::getenv("GUILD_EXPERT_THP");
             const bool thp_disabled = (thp_env != nullptr && std::strcmp(thp_env, "0") == 0);
             const bool thp_forced = (thp_env != nullptr && std::atoi(thp_env) != 0);
-            const bool use_thp = !thp_disabled && (thp_forced || bytes >= (32ull << 30));
+#if defined(__linux__) && defined(SYS_get_mempolicy)
+            // The split places half-blobs by first touch, so it takes 4 KiB pages: a 2 MiB page cannot be shared
+            // by the nodes.  4 KiB and 2 MiB pages streamed at the same rate on the dual Xeon (numa.hpp).
+            numa_split = !thp_forced && numa_split_arena(layout());
+#endif
+            const bool use_thp = !numa_split && !thp_disabled && (thp_forced || bytes >= (32ull << 30));
             const size_t align_sz = use_thp ? (2ull << 20) : base_align;
             if (posix_memalign(&arena, align_sz, (size_t) bytes) != 0)
                 arena = nullptr;
@@ -1855,7 +2021,14 @@ bool FileExpertSource::pin_cache_complement(const ExpertCache& cache, std::strin
                 if (syscall(SYS_get_mempolicy, nullptr, nodemask, maxnode, nullptr, MPOL_F_MEMS_ALLOWED) == 0)
                     for (auto word : nodemask)
                         nodes += __builtin_popcountl(word);
-                if (!process && known && (force || mode == MPOL_DEFAULT) && nodes > 1) {
+                if (numa_split) {
+#if defined(MADV_NOHUGEPAGE)
+                    (void) madvise(arena, (size_t) bytes, MADV_NOHUGEPAGE); // a system-wide THP "always"
+#endif
+                    numa_split_touch((uint8_t*) arena, bytes, layout(), interleave_on_copy_, n_expert_,
+                                     layer_blob_bytes_, offsets, kNoComplement);
+                    exclude_from_numa_balancing(arena, bytes);
+                } else if (!process && known && (force || mode == MPOL_DEFAULT) && nodes > 1) {
                     const size_t mbind_align = base_align;
                     const size_t aligned_bytes = ((size_t) bytes + mbind_align - 1) & ~(mbind_align - 1);
                     const long result = syscall(SYS_mbind, arena, (unsigned long) aligned_bytes, MPOL_INTERLEAVE,
@@ -2075,6 +2248,11 @@ bool FileExpertSource::pin_cache_complement(const ExpertCache& cache, std::strin
         release();
         return false;
     }
+#if defined(__linux__) && defined(SYS_get_mempolicy)
+    if (numa_split)
+        numa_split_report((const uint8_t*) arena, bytes, layout(), interleave_on_copy_, n_expert_, layer_blob_bytes_,
+                          offsets, kNoComplement);
+#endif
     if (arena != nullptr && !pinned_ok && bytes > lock_off) {
         const guild::platform::LockResult lr =
             guild::platform::lock_resident((uint8_t*) arena + lock_off, bytes - lock_off);
@@ -2122,6 +2300,176 @@ bool FileExpertSource::pin_cache_complement(const ExpertCache& cache, std::strin
     }
     std::fflush(stderr);
     return true;
+}
+
+const uint8_t* FileExpertSource::cpu_gu_blob(int64_t layer, int64_t expert) const {
+    if (cpu_repack_ == nullptr || layer < 0 || (size_t) layer >= cpu_repack_off_.size() || expert < 0 ||
+        expert >= n_expert_ || cpu_repack_off_[(size_t) layer] == ~0ull)
+        return nullptr;
+    return (const uint8_t*) cpu_repack_ + cpu_repack_off_[(size_t) layer] +
+           (uint64_t) expert * cpu_repack_blob_[(size_t) layer];
+}
+
+const kernels::cpu::NativeFmt* FileExpertSource::cpu_fmt(int64_t layer) const {
+    if (cpu_repack_ == nullptr || layer < 0 || (size_t) layer >= cpu_repack_off_.size() ||
+        cpu_repack_off_[(size_t) layer] == ~0ull)
+        return nullptr;
+    return &cpu_fmt_[(size_t) layer];
+}
+
+void FileExpertSource::build_cpu_repack(uint64_t headroom_bytes, std::string& note) {
+#if GUILD_BUNDLED_CPU_ARITHMETIC && defined(GUILD_NATIVE_EXPERTS) && defined(GUILD_CPU_HAS_IQ3S_NL4) &&                \
+    defined(__linux__) && defined(SYS_get_mempolicy)
+    namespace kc = guild::kernels::cpu;
+    const auto& lay = layout();
+    const char* env = std::getenv("GUILD_IQ3S_REPACK");
+    if (env != nullptr && std::atoi(env) == 0) {
+        note = "off (GUILD_IQ3S_REPACK=0)";
+        return;
+    }
+    if (!lay.native || lay.gate_up_interleaved || interleave_on_copy_ || !kc::iq3s_nl4_exact()) {
+        note = "not used (no native IQ3_S rows this CPU computes the same way repacked)";
+        return;
+    }
+    std::vector<uint64_t> off((size_t) n_layers_, ~0ull), per((size_t) n_layers_, 0);
+    uint64_t total = 0;
+    int layers = 0;
+    for (int64_t l = 0; l < n_layers_ && (size_t) l < lay.fmt.size(); ++l) {
+        const auto& f = lay.fmt[(size_t) l];
+        if (f.gu_type != 21 || f.n_embd % 256 != 0 || f.n_ff <= 0)
+            continue;
+        const uint64_t row = (uint64_t) (f.n_embd / 256) * kc::kIq3sNl4Block;
+        per[(size_t) l] = (2 * (uint64_t) f.n_ff * row + 63) & ~63ull;
+        off[(size_t) l] = total;
+        total += per[(size_t) l] * (uint64_t) n_expert_;
+        ++layers;
+    }
+    if (total == 0) {
+        note = "not used (no IQ3_S gate/up layers)";
+        return;
+    }
+    char msg[200];
+    uint64_t avail = 0;
+    if (!available_memory_bytes(avail) || avail < total + headroom_bytes) {
+        std::snprintf(msg, sizeof msg, "skipped: %.2f GiB with %.2f GiB to spare needed, %.2f GiB available",
+                      (double) total / 1073741824.0, (double) headroom_bytes / 1073741824.0,
+                      (double) avail / 1073741824.0);
+        note = msg;
+        return;
+    }
+    void* mem = mmap(nullptr, (size_t) total, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (mem == MAP_FAILED) {
+        note = "skipped: the allocation was refused";
+        return;
+    }
+    int mode = -1;
+    const bool default_policy =
+        syscall(SYS_get_mempolicy, &mode, nullptr, 0ul, nullptr, 0ul) == 0 && mode == MPOL_DEFAULT;
+    const auto& numa = kc::numa_topology();
+    // The NUMA split (numa.hpp): node q's threads repack the rows node q's pool threads compute, and their writes
+    // place those pages.  Otherwise the copy is interleaved as the arena is.
+    const bool split = default_policy && kc::numa_split_requested();
+    if (split) {
+#if defined(MADV_NOHUGEPAGE)
+        (void) madvise(mem, (size_t) total, MADV_NOHUGEPAGE);
+#endif
+    } else if (default_policy && numa.nodes > 1) {
+        unsigned long mask[64] = {};
+        for (int n = 0; n < numa.nodes && n < 64 * 64; ++n)
+            mask[n / 64] |= 1ul << (n % 64);
+        (void) syscall(SYS_mbind, mem, (unsigned long) total, MPOL_INTERLEAVE, mask, 64ul * 64ul, 0u);
+    }
+    std::atomic<int64_t> next[2];
+    next[0].store(0);
+    next[1].store(0);
+    std::atomic<bool> failed{false};
+    const int64_t tasks = n_layers_ * n_expert_;
+    auto work = [&](int part, int parts) {
+        std::vector<uint8_t> tmp;
+        for (;;) {
+            const int64_t i = next[part].fetch_add(1);
+            if (i >= tasks || failed.load(std::memory_order_relaxed))
+                return;
+            const int64_t layer = i / n_expert_, expert = i % n_expert_;
+            if (off[(size_t) layer] == ~0ull)
+                continue;
+            const auto& f = lay.fmt[(size_t) layer];
+            const uint8_t* src = nullptr;
+            const size_t index = (size_t) i;
+            if (complement_ready_ && index < complement_offsets_.size() && complement_offsets_[index] != kNoComplement)
+                src = complement_host_ + complement_offsets_[index];
+            else {
+                tmp.resize((size_t) layer_blob_bytes_[(size_t) layer]);
+                if (!copy_from_files(layer, expert, tmp.data())) {
+                    failed.store(true);
+                    return;
+                }
+                src = tmp.data();
+            }
+            uint8_t* dst = (uint8_t*) mem + off[(size_t) layer] + (uint64_t) expert * per[(size_t) layer];
+            const int nb = (int) (f.n_embd / 256);
+            const uint64_t row = (uint64_t) nb * kc::kIq3sNl4Block, up = (uint64_t) f.n_ff * row;
+            const int half = kc::numa_half_rows((int) f.n_ff);
+            const int r0 = parts == 1 ? 0 : (part == 0 ? 0 : half);
+            const int r1 = parts == 1 ? (int) f.n_ff : (part == 0 ? half : (int) f.n_ff);
+            for (int r = r0; r < r1; ++r)
+                if (!kc::iq3s_nl4_repack(src + (size_t) r * f.gu_row, nb, dst + (size_t) r * row) ||
+                    !kc::iq3s_nl4_repack(src + f.up_off + (size_t) r * f.gu_row, nb, dst + up + (size_t) r * row)) {
+                    failed.store(true);
+                    return;
+                }
+        }
+    };
+    const auto t0 = std::chrono::steady_clock::now();
+    std::vector<std::thread> threads;
+    if (split) {
+        for (int node = 0; node < 2; ++node) {
+            const auto& cpus = numa.node_cpus[(size_t) node];
+            const int n = (int) std::min<size_t>(16, cpus.size());
+            for (int t = 0; t < n; ++t)
+                threads.emplace_back([&, node, cpu = cpus[(size_t) t * cpus.size() / (size_t) n]] {
+                    const auto previous = kc::pin_current_thread(cpu);
+                    work(node, 2);
+                    kc::restore_thread_affinity(previous);
+                });
+        }
+    } else {
+        const int n = (int) std::max(1u, std::min(32u, std::thread::hardware_concurrency()));
+        for (int t = 0; t < n; ++t)
+            threads.emplace_back([&] { work(0, 1); });
+    }
+    for (auto& t : threads)
+        t.join();
+    if (split)
+        exclude_from_numa_balancing(mem, total);
+    if (failed.load()) {
+        (void) munmap(mem, (size_t) total);
+        note = "skipped: an expert could not be read or repacked";
+        return;
+    }
+    cpu_fmt_ = lay.fmt;
+    for (int64_t l = 0; l < n_layers_ && (size_t) l < cpu_fmt_.size(); ++l)
+        if (off[(size_t) l] != ~0ull) {
+            auto& f = cpu_fmt_[(size_t) l];
+            f.gu_type = kc::kIq3sNl4Type;
+            f.gu_row = (uint64_t) (f.n_embd / 256) * kc::kIq3sNl4Block;
+            f.up_off = f.gu_row * (uint64_t) f.n_ff; // down_off and d_row stay the stored blob's
+        }
+    // Held in RAM like the arena: a decode that pages its expert rows in from swap is not one anyone wants.
+    const guild::platform::LockResult lr = guild::platform::lock_resident(mem, total);
+    cpu_repack_locked_ = lr.locked_bytes;
+    cpu_repack_ = mem;
+    cpu_repack_bytes_ = total;
+    cpu_repack_off_ = std::move(off);
+    cpu_repack_blob_ = std::move(per);
+    std::snprintf(msg, sizeof msg, "%d layers, %.2f GiB, %s, in %.1f s; ", layers, (double) total / 1073741824.0,
+                  split ? "rows split by NUMA node" : "interleaved",
+                  std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
+    note = msg + lr.note;
+#else
+    (void) headroom_bytes;
+    note = "not in this build (needs guild-kernels-cpu with iq3s_nl4, on Linux)";
+#endif
 }
 
 bool FileExpertSource::has_resident(int64_t layer, int64_t expert) const {
@@ -2671,6 +3019,8 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
     }
     const int64_t embd = d.n_embd;
     int njobs = 0;
+    // the CPU's repacked gate/up rows for this layer (build_cpu_repack), if any: every expert of it has them
+    const NativeFmt* cpu_fmt = native ? d.src->cpu_fmt(d.layers) : nullptr;
     for (int64_t t = 0; t < n_tok; ++t)
         for (int64_t j = 0; j < k; ++j) {
             const int64_t i = t * k + j;
@@ -2712,6 +3062,7 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
                 jo = (int16_t) njobs++;
                 ExpertJobMulti& nj = d.jobs_multi[(size_t) jo];
                 nj.blob = b;
+                nj.gu_blob = cpu_fmt != nullptr ? d.src->cpu_gu_blob(d.layers, e) : nullptr;
                 nj.nt = 0;
             }
             ExpertJobMulti& jb = d.jobs_multi[(size_t) jo];
@@ -2725,7 +3076,8 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
     pt("run", njobs);
     if (njobs > 0) {
         if (native)
-            d.pool->run_split_multi_native(lay.fmt[(size_t) d.layers], d.jobs_multi.data(), njobs);
+            d.pool->run_split_multi_native(cpu_fmt != nullptr ? *cpu_fmt : lay.fmt[(size_t) d.layers],
+                                           d.jobs_multi.data(), njobs);
         else
             d.pool->run_split_multi(d.jobs_multi.data(), njobs);
     }

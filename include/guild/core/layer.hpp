@@ -232,7 +232,8 @@ struct QsaState {
     /// table (n_slots == n_pages, no host copy). 1: streamed - the authoritative K/V in `host`, `n_slots` pages
     /// in VRAM, `map` resolves the selection's blocks on device. 2: a ring (the MTP drafter's window) - `n_slots`
     /// pages at `block % n_slots`, with the host copy for a resume. 3: host-only - authoritative pinned RAM and a
-    /// bounded staging pool shared by this session's main layers. Resolve invalidates it before each operation.
+    /// bounded staging pool shared by this session's main layers. Resolve invalidates it before each operation,
+    /// except where the caller knows the same layer resolved last (a verify window's group 1, the prompt's tiles).
     /// The pool pointers above point at the slots.
     int kv_mode = 0;
     bool shares_staging = false; ///< true when multiple QSA states share the same host-only staging pool

@@ -1,0 +1,96 @@
+hc_pre post                  max |diff| 0 (largest |ref| 1.23) ok
+hc_pre comb (Sinkhorn)       max |diff| 5.96e-08 (largest |ref| 0.361) ok
+hc_pre xn                    max |diff| 9.54e-07 (largest |ref| 6.62) ok
+hc_post                      max |diff| 9.54e-07 (largest |ref| 5.29) ok
+hc_mean_norm                 max |diff| 7.15e-07 (largest |ref| 4.85) ok
+hc_mix + hc_pre: post        max |diff| 6.56e-07 (largest |ref| 2) ok
+hc_mix + hc_pre: comb        max |diff| 1.19e-07 (largest |ref| 1) ok
+hc_mix + hc_pre: x           max |diff| 7.15e-07 (largest |ref| 4.41) ok
+kda_step mid state           max |diff| 0 (largest |ref| 1.29) ok
+kda_conv mid state           max |diff| 0 (largest |ref| 3.54) ok
+kda_conv (+ L2 norm)         max |diff| 4.77e-07 (largest |ref| 5.2) ok
+kda_conv state               max |diff| 0 (largest |ref| 3.64) ok
+kda_gates g                  max |diff| 9.54e-07 (largest |ref| 4.97) ok
+kda_step state               max |diff| 3.58e-07 (largest |ref| 1.21) ok
+kda_out                      max |diff| 9.54e-07 (largest |ref| 3.74) ok
+q8_0_heads n_in 256 T 11     max |diff| 1.14e-05 (largest |ref| 62.7) ok
+q8_0_heads n_in 512 T 11     max |diff| 2.29e-05 (largest |ref| 96) ok
+q8_0_heads n_in 64 T 11      max |diff| 2.38e-06 (largest |ref| 29.6) ok
+q8_0_heads n_in 256 T 1      max |diff| 7.63e-06 (largest |ref| 54.6) ok
+q8_0_heads n_in 512 T 1      max |diff| 1.53e-05 (largest |ref| 83) ok
+q8_0_heads n_in 64 T 1       max |diff| 1.91e-06 (largest |ref| 26.4) ok
+q8_0_heads n_in 256 T 2      max |diff| 7.63e-06 (largest |ref| 57) ok
+q8_0_heads n_in 512 T 2      max |diff| 1.53e-05 (largest |ref| 87.1) ok
+q8_0_heads n_in 64 T 2       max |diff| 1.91e-06 (largest |ref| 22.6) ok
+mla_attend (causal), legacy T 20             ok (bitwise)
+mla_attend (causal) T 20     max |diff| 1.19e-06 (largest |ref| 2.68) ok
+mla_attend (selected cells) T 20 max |diff| 9.54e-07 (largest |ref| 3.26) ok
+mla_attend (selected cells), legacy T 20     ok (bitwise)
+mla_attend (causal), legacy T 1              ok (bitwise)
+mla_attend (causal) T 1      max |diff| 2.68e-07 (largest |ref| 0.802) ok
+mla_attend (selected cells) T 1 max |diff| 5.96e-07 (largest |ref| 2.25) ok
+mla_attend (selected cells), legacy T 1      ok (bitwise)
+mla_attend (causal), legacy T 2              ok (bitwise)
+mla_attend (causal) T 2      max |diff| 2.68e-07 (largest |ref| 0.649) ok
+mla_attend (selected cells) T 2 max |diff| 5.96e-07 (largest |ref| 2.39) ok
+mla_attend (selected cells), legacy T 2      ok (bitwise)
+route ids                    ok
+route weights                max |diff| 5.96e-08 (largest |ref| 0.347) ok
+rms_norm 512                 max |diff| 2.38e-07 (largest |ref| 4.38) ok
+rms_norm 512 weighted        max |diff| 1.19e-07 (largest |ref| 1.82) ok
+rms_norm 4096                max |diff| 4.77e-07 (largest |ref| 4.3) ok
+rms_norm 4096 weighted       max |diff| 2.38e-07 (largest |ref| 2.78) ok
+rms_norm 16384               max |diff| 4.77e-07 (largest |ref| 4.86) ok
+rms_norm 16384 weighted      max |diff| 2.38e-07 (largest |ref| 3.19) ok
+f32_matvec T 11              max |diff| 1.07e-06 (largest |ref| 11.5) ok
+f32_matvec T 1               max |diff| 9.54e-07 (largest |ref| 8.71) ok
+f32_matvec T 2               max |diff| 1.55e-06 (largest |ref| 9.78) ok
+q6k_mmvq 4096x1000 T 1 (bitwise) max |diff| 0 (largest |ref| 8.83e+03) ok
+q6k_mmvq 4096x1000 T 2 (bitwise) max |diff| 0 (largest |ref| 8.67e+03) ok
+q6k_mmvq 1536x515 T 1 (bitwise) max |diff| 0 (largest |ref| 6.05e+03) ok
+q6k_mmvq 1536x515 T 2 (bitwise) max |diff| 0 (largest |ref| 6.33e+03) ok
+q6k_mmvq 8192x520 T 1 (bitwise) max |diff| 0 (largest |ref| 1.07e+04) ok
+q6k_mmvq 8192x520 T 2 (bitwise) max |diff| 0 (largest |ref| 1.36e+04) ok
+q6k_mmvq 16384x513 T 1 (bitwise) max |diff| 0 (largest |ref| 1.53e+04) ok
+q8_0_mmvq 4096x1000 T 1 (bitwise) max |diff| 0 (largest |ref| 591) ok
+q8_0_mmvq 4096x1000 T 2 (bitwise) max |diff| 0 (largest |ref| 500) ok
+q8_0_mmvq 1536x515 T 1 (bitwise) max |diff| 0 (largest |ref| 225) ok
+q8_0_mmvq 1536x515 T 2 (bitwise) max |diff| 0 (largest |ref| 320) ok
+q8_0_mmvq 8192x520 T 1 (bitwise) max |diff| 0 (largest |ref| 757) ok
+q8_0_mmvq 8192x520 T 2 (bitwise) max |diff| 0 (largest |ref| 646) ok
+q8_0_mmvq 16384x513 T 1 (bitwise) max |diff| 0 (largest |ref| 785) ok
+q8_0_mmvq 16384x513 T 2 (bitwise) max |diff| 0 (largest |ref| 813) ok
+q6k_mmvq_rows 1192 of 3001 (bitwise) max |diff| 0 (largest |ref| 1.01e+04) ok
+argmax over ids              1753 (want 1753) ok
+q6k_mmvq_rows 1192 of 3001 shuffled (bitwise) max |diff| 0 (largest |ref| 1.01e+04) ok
+argmax over ids              1753 (want 1753) ok
+q8_0_narrow 64 T 1           max |diff| 3.81e-06 (largest |ref| 61) ok
+q8_0_narrow 64 T 2           max |diff| 7.63e-06 (largest |ref| 97.4) ok
+q8_0_narrow 128 T 1          max |diff| 1.14e-05 (largest |ref| 84.8) ok
+q8_0_narrow 128 T 2          max |diff| 7.63e-06 (largest |ref| 103) ok
+q8_0_narrow 256 T 1          max |diff| 1.53e-05 (largest |ref| 107) ok
+q8_0_narrow 256 T 2          max |diff| 1.53e-05 (largest |ref| 164) ok
+idx_pool                     max |diff| 0.000977 (largest |ref| 4.2) ok
+idx_pool, ring of 16 rows    ok (the same bits)
+idx_score                    max |diff| 0.000131 (largest |ref| 1.95) ok
+idx_select                   ok (2049, 2050, 2051 cells)
+idx legacy == new            scores ok, selection ok (550 pools, T 3)
+idx legacy == new            scores ok, selection ok (300 pools, T 2)
+idx legacy == new            scores ok, selection ok (4100 pools, T 1)
+idx legacy == new            scores ok, selection ok (8197 pools, T 2)
+idx legacy == new            scores ok, selection ok (8197 pools, T 4, 7 levels)
+idx legacy == new            scores ok, selection ok (33000 pools, T 2)
+idx legacy == new            scores ok, selection ok (5000 pools, T 2, 1 levels)
+mla_attend, rows gathered from VRAM and host T 1 ok (bitwise)
+mla_attend, rows of the union gathered from VRAM and host T 1 ok (bitwise)
+mla_attend, rows gathered from VRAM and host T 2 ok (bitwise)
+mla_attend, rows of the union gathered from VRAM and host T 2 ok (bitwise)
+mla_attend, rows gathered from VRAM and host T 3 ok (bitwise)
+mla_attend, rows of the union gathered from VRAM and host T 3 ok (bitwise)
+mla_attend, rows gathered from VRAM and host T 20 ok (bitwise)
+mla_attend, rows of the union gathered from VRAM and host T 20 ok (bitwise)
+mla_attend, rows gathered from VRAM and host T 37 ok (bitwise)
+mla_attend, rows of the union gathered from VRAM and host T 37 ok (bitwise)
+  row cache, step 8: 214 of 2048 cells copied
+mla_attend through the row cache, 8 steps    ok (bitwise)
+PASS

@@ -15,9 +15,19 @@ struct ModelPaths {
     std::string pack_dir;
     std::string expert_profile_path;
     std::string mtp_dir;
+    /// A DFlash 2 drafter (core/dflash.hpp: config.json and model.safetensors), drafting in place of the MTP layer, and
+    /// its draft head's token subset (int32 ids; empty: the whole head).  GUILD_DFLASH / GUILD_DFLASH_VOCAB override.
+    std::string dflash_dir;
+    std::string dflash_vocab;
     std::string tokenizer_dir;
     std::string ple_gguf;
+    /// How the PLE table is read: "" or "direct" (unbuffered reads and a row cache), "mmap", or "ram" (mapped and
+    /// locked in RAM at open: no disk read on the token path; for a model on a rotational disk).
+    std::string ple_io;
     std::string gexec_path;
+    /// Fish Audio Drama 3: the directory with `tower/` (tools/drama3_tower_rt.py) and `codec/`
+    /// (tools/drama3_codec_rt.py).  Set, the model is a text-to-speech model: GuildModel::synthesize.
+    std::string drama3_dir;
 };
 
 struct RuntimeConfig {
@@ -61,6 +71,66 @@ struct GenerationRequest {
     int spec_max_draft = -1;     // Optional per-request override (-1 = use model config)
     std::vector<std::string> stop;
     std::shared_ptr<std::atomic<bool>> cancel_flag;
+};
+
+/// Scoring a prompt without generating (GuildSession::score): the next-token logits at its last position.
+struct ScoreRequest {
+    std::vector<int32_t> tokens;     ///< the prompt
+    std::vector<int32_t> candidates; ///< the token ids whose logits come back (empty: the whole vocabulary)
+    /// > 0: the state after this many tokens is also kept as a checkpoint, so later prompts that begin with them
+    /// read only the rest.  At most tokens.size() - 1 (the last token is read by the window that gives the logits).
+    int64_t keep_prefix = 0;
+    /// Also return the last position's final hidden state: the output head's input, after the output norm.
+    bool want_hidden = false;
+};
+
+struct ScoreResult {
+    std::vector<float> logits; ///< one per candidate, in their order (or the vocabulary's)
+    std::vector<float> hidden; ///< with want_hidden: n_embd floats
+    int64_t cached_tokens = 0; ///< tokens taken from the live state or a checkpoint instead of being read
+    int64_t read_tokens = 0;   ///< tokens read by this call (prefill and the last token's window)
+    double prefill_ms = 0;     ///< reading the prompt up to its last token (and the checkpoint, if any)
+    double window_ms = 0;      ///< the last token's window and the logits' copy
+};
+
+/// A voice to clone: its transcript, and its codes ([frames][10], GuildModel::encode_voice) or its audio (mono
+/// samples in [-1, 1] at `sample_rate`; synthesize encodes it, resampled to 44.1 kHz as torchaudio does)
+struct SpeechReference {
+    std::string text;
+    std::vector<int32_t> codes;
+    std::vector<float> audio;
+    int sample_rate = 44100;
+};
+
+/// One text-to-speech request (Drama 3).  `text` may carry <|speaker:N|> tags (0..15) and the model's inline tags
+/// ([laughs], [whisper] ...); without a leading speaker tag it is speaker 0.
+struct SpeechRequest {
+    std::string text;
+    std::vector<SpeechReference> references;
+    int max_new_frames = 2048; ///< 21.5 frames per second of audio
+    float temperature = 1.0f;
+    float top_p = 0.9f;
+    int top_k = 30;
+    uint64_t seed = 0;
+    int chunk_frames = 16; ///< audio is handed out every this many frames
+    std::shared_ptr<std::atomic<bool>> cancel_flag;
+};
+
+struct SpeechChunk {
+    const float* pcm = nullptr; ///< mono, [-1, 1]
+    size_t samples = 0;
+    int sample_rate = 44100;
+    bool last = false;
+};
+
+/// Return false to stop the generation.
+using SpeechCallback = std::function<bool(const SpeechChunk& chunk)>;
+
+struct SpeechTelemetry {
+    int prompt_rows = 0;
+    int frames = 0;
+    double prompt_ms = 0.0, decode_ms = 0.0, tower_ms = 0.0, codec_ms = 0.0;
+    std::string finish_reason; ///< "eos", "length", "cancel"
 };
 
 struct TokenEvent {

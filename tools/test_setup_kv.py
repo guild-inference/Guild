@@ -83,11 +83,20 @@ class KvFormats(unittest.TestCase):
         self.assertIn("--kv-host-only", args)
         self.assertNotIn("--kv-resident", args)
         self.assertIn("--mtp-optional", args)
-        self.assertEqual(args[args.index("--prefill") + 1], "512")
+        self.assertEqual(args[args.index("--prefill") + 1], "auto")   # the engine grows 512 into free VRAM
         self.assertEqual(args[args.index("--kv") + 1], "fp16")
         self.assertEqual(args[args.index("--max-context") + 1], "262144")
         self.assertEqual(cfg["draft_vocab"], "cjk")
         self.assertIn("MTP is optional", out)
+
+    def test_eight_gb_plan_keeps_512_for_an_engine_that_does_not_grow_it(self):
+        code, out, cfg, _ = install(377, [card(0, "Test GPU", 8, "61")],
+                                    ["--model", "Q2_0", "--no-start", "--context", "262144", "--kv", "fp16"],
+                                    extra=[mock.patch.object(setup, "engine_supports_option",
+                                                             side_effect=lambda eng, option, env=None:
+                                                             option != "grown into the VRAM")])
+        self.assertEqual(code, 0, out)
+        self.assertEqual(cfg["args"][cfg["args"].index("--prefill") + 1], "512")
 
     def test_old_engine_is_not_given_unsupported_flags(self):
         code, out, cfg, _ = self.install(["--kv", "fp16"], vram=8, supports=False)
