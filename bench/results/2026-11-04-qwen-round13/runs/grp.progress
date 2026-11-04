@@ -1,0 +1,11 @@
+attn_qkv 1 top-1 the same 1911 of 2084 (91.70%); KL mean 0.038018, median 0.010436, 99th percentile 0.325607, max 1.356191 36 dense matrices re-quantized Q8_0 -> Q6_K (--dense), 3162 MiB
+attn_qkv 2 top-1 the same 2006 of 2173 (92.31%); KL mean 0.054245, median 0.007233, 99th percentile 0.554640, max 2.345101 36 dense matrices re-quantized Q8_0 -> Q6_K (--dense), 3162 MiB
+attn_gate 1 top-1 the same 1983 of 2084 (95.15%); KL mean 0.022680, median 0.005624, 99th percentile 0.210248, max 0.838203 36 dense matrices re-quantized Q8_0 -> Q6_K (--dense), 3342 MiB
+attn_gate 2 top-1 the same 2031 of 2173 (93.47%); KL mean 0.035948, median 0.004797, 99th percentile 0.337207, max 0.818710 36 dense matrices re-quantized Q8_0 -> Q6_K (--dense), 3342 MiB
+ssm_out 1 top-1 the same 1922 of 2084 (92.23%); KL mean 0.043087, median 0.011157, 99th percentile 0.396997, max 2.407715 36 dense matrices re-quantized Q8_0 -> Q6_K (--dense), 3342 MiB
+ssm_out 2 top-1 the same 2000 of 2173 (92.04%); KL mean 0.061143, median 0.007887, 99th percentile 0.580986, max 1.996188 36 dense matrices re-quantized Q8_0 -> Q6_K (--dense), 3342 MiB
+attn_q 1 top-1 the same 1968 of 2084 (94.43%); KL mean 0.023022, median 0.005791, 99th percentile 0.226810, max 1.316550 12 dense matrices re-quantized Q8_0 -> Q6_K (--dense), 3432 MiB
+attn_q 2 top-1 the same 2041 of 2173 (93.93%); KL mean 0.035564, median 0.004285, 99th percentile 0.378456, max 1.846797 12 dense matrices re-quantized Q8_0 -> Q6_K (--dense), 3432 MiB
+attn_output 1 top-1 the same 1871 of 2084 (89.78%); KL mean 0.080629, median 0.022231, 99th percentile 0.672725, max 6.053214 12 dense matrices re-quantized Q8_0 -> Q6_K (--dense), 3522 MiB
+attn_output 2 top-1 the same 1950 of 2173 (89.74%); KL mean 0.103752, median 0.014084, 99th percentile 0.917376, max 3.032759 12 dense matrices re-quantized Q8_0 -> Q6_K (--dense), 3522 MiB
+done

@@ -1,0 +1,2 @@
+perplexity of the text: 5.0173 (2084 predictions)
+against /home/ubuntu/work/nemotron/opt/r17/native1.f16: top-1 the same 1935 of 2084 (92.85%); KL mean 0.033975, median 0.008937, 99th percentile 0.287355, max 0.969511; perplexity 5.0773 (base) -> 5.0173

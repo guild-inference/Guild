@@ -1,0 +1,9 @@
+native 1 perplexity of the text: 5.0773 (2084 predictions)
+q6_k 1 against /home/ubuntu/work/nemotron/opt/r17/native1.f16: top-1 the same 1924 of 2084 (92.32%); KL mean 0.030905, median 0.007688, 99th percentile 0.288744, max 1.305483; perplexity 5.0773 (base) -> 5.0344
+q5_k 1 against /home/ubuntu/work/nemotron/opt/r17/native1.f16: top-1 the same 1897 of 2084 (91.03%); KL mean 0.052859, median 0.014160, 99th percentile 0.465198, max 1.758097; perplexity 5.0773 (base) -> 5.0633
+q4_k 1 against /home/ubuntu/work/nemotron/opt/r17/native1.f16: top-1 the same 1833 of 2084 (87.96%); KL mean 0.122909, median 0.032888, 99th percentile 1.000269, max 4.144747; perplexity 5.0773 (base) -> 5.1722
+native 2 perplexity of the text: 4.3777 (2173 predictions)
+q6_k 2 against /home/ubuntu/work/nemotron/opt/r17/native2.f16: top-1 the same 2023 of 2173 (93.10%); KL mean 0.044918, median 0.005780, 99th percentile 0.497589, max 1.463194; perplexity 4.3777 (base) -> 4.3470
+q5_k 2 against /home/ubuntu/work/nemotron/opt/r17/native2.f16: top-1 the same 1982 of 2173 (91.21%); KL mean 0.077437, median 0.008879, 99th percentile 0.727487, max 3.251693; perplexity 4.3777 (base) -> 4.5298
+q4_k 2 against /home/ubuntu/work/nemotron/opt/r17/native2.f16: top-1 the same 1881 of 2173 (86.56%); KL mean 0.158472, median 0.022560, 99th percentile 1.394910, max 3.378488; perplexity 4.3777 (base) -> 4.4842
+done
