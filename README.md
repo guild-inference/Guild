@@ -260,14 +260,28 @@ On a dual Xeon Gold 6130 with a GTX 1070, both with `--dense q6_k --hc q8_0`, de
 
 ### Qwen3.8-Flash-Next's dense matrices (UD-IQ4_XS)
 
-Unsloth's UD-IQ4_XS stores every dense and hyper-connection matrix as Q8_0. For it, setup writes `--dense q5_k`, which
-re-quantizes the dense ones to Q5_K at load, and `--hc q8_0`, which reads the hyper-connection ones as the GGUF stores
-them instead of the pack's bf16 copy. The output moves a KL of 0.048 from the GGUF's own, with the same top token at
-92.0% of positions; a change of the CPU experts' summation order alone measures 0.017 and 95.3%
-([bench/results/2026-11-02-decode-round6](bench/results/2026-11-02-decode-round6/README.md)). With the DFlash drafter
-on the PC above, prose went from 39.8 to 45.3 tok/s and code from 50.9 to 59.9, and four more prompts (story, sql,
-Chinese, Russian) 11-22% ([bench/results/2026-11-03-decode-round9](bench/results/2026-11-03-decode-round9/README.md)).
-The GSQ-RCO quants' dense matrices are 3-6 bits already, so setup leaves them alone.
+Unsloth's UD-IQ4_XS stores every dense and hyper-connection matrix as Q8_0. For it setup writes
+`--dense q4_k --dense-map ssm_out=q5_k,attn_output=q8_0 --dense-imatrix <imatrix> --hc q8_0`:
+- The dense matrices are re-quantized at load: Q4_K, the SSM outputs Q5_K. The attention outputs keep their Q8_0:
+  5% of the bytes, but they carry the most loss.
+- The rounding is weighted by Unsloth's importance matrix (`imatrix_unsloth.gguf_file`, 553 MiB, downloaded beside
+  the model).
+- The hyper-connection matrices are read as the GGUF stores them.
+
+On a dual Xeon Gold 6130 with a GTX 1070:
+- **Loss:** the output moves a KL of 0.047 / 0.066 from the GGUF's own matrices (two texts). The `--dense q5_k` setup
+  wrote before moved 0.053 / 0.077. The model's floor, a 2^-9 rounding of one kind of weight, is 0.020 / 0.029.
+- **Speed:** decode is 1.4% faster a token than with `q5_k`. With the DFlash drafter, six prompts went from a
+  geometric mean of 45.2 to 46.4 tok/s.
+
+`--dense-map` and `--dense-imatrix` choose other points: `--dense q5_k --dense-map attn_output=q8_0` measured 0.031 /
+0.053 at 1.5% slower than `q5_k`, and `--dense q6_k --dense-map attn_output=q8_0` 0.024 / 0.036 at 6.5% slower
+([bench/results/2026-11-04-qwen-round13](bench/results/2026-11-04-qwen-round13/README.md)).
+
+On Pascal setup also writes `--prefill-mmq dense`: the prompt's dense products go through int8 MMQ instead of fp32
+cuBLAS. A 4,008-token prompt took 19.7 -> 16.0 s and a 31,918-token one 171.4 -> 142.0 s. The KL of the predictions
+after the prompt went 0.012 -> 0.015 / 0.014 -> 0.016, under the floor. The GSQ-RCO quants' dense matrices are 3-6
+bits already, so setup leaves them alone.
 
 ### Ornith-1.5-35B with its MTP draft layer
 

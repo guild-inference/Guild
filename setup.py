@@ -79,6 +79,15 @@ DFLASH_FILES = {
 # whatever --draft-vocab says - data/dflash_vocab_en.bin (English and code) made Chinese and Russian answers 28-31%
 # slower on a GTX 1070 + 2x Xeon Gold 6130 (bench/results/2026-11-03-decode-round9), so it is only passed by hand
 DFLASH_VOCAB = "dflash_vocab.bin"
+# Unsloth's importance matrix for Qwen3.8-Flash-Next (the one its quants were made with), at the pinned revision of
+# its GGUF repo: --dense-imatrix weights --dense's re-quantization with it.  name, bytes, sha256
+UNSLOTH_IMATRIX = ("imatrix_unsloth.gguf_file", 580038720,
+                   "a5863123db1ca458727e738955bef7bfc199520aa2bee3a30142a1aff9254154")
+# UD-IQ4_XS's dense matrices on the GPU: Q4_K, its SSM outputs Q5_K and its attention outputs the GGUF's Q8_0, weighted
+# by that imatrix.  Per kind, one kind lowered at a time (bench/results/2026-11-04-qwen-round13): the attention output
+# (5% of the bytes) costs the most KL, the gate and the attention q the least.
+UD_DENSE = "q4_k"
+UD_DENSE_MAP = "ssm_out=q5_k,attn_output=q8_0"
 
 
 HF_DEFAULT = "https://huggingface.co"
@@ -4406,13 +4415,29 @@ def main() -> int:
             "--prefill", lv_plan["prefill"], "--spec", "8" if dflash else "4", "--spec-min-p", "0.5", "--mtp", str(rt),
             *(["--dflash", str(dflash)] if dflash else []),
             *(["--dflash-vocab", str(dflash_vocab)] if dflash_vocab else []), "--max-context", str(ctx)]
-    # Unsloth's UD-IQ4_XS keeps every dense and hyper-connection matrix as Q8_0: --dense q5_k re-quantizes the dense ones
-    # at load and --hc q8_0 reads the hyper-connection ones as the GGUF stores them, with a KL of 0.048 from its output
-    # (bench/results/2026-11-02-decode-round6) and, with the DFlash drafter on a GTX 1070 + 2x Xeon Gold 6130, prose
-    # 39.8 -> 45.3 and code 50.9 -> 59.9 tok/s (bench/results/2026-11-03-decode-round9).  The GSQ-RCO quants' dense
-    # matrices are 3-6 bits already; the other quants are not measured.  CUDA's kernels.
+    # Unsloth's UD-IQ4_XS keeps every dense and hyper-connection matrix as Q8_0: --dense re-quantizes the dense ones at
+    # load (fewer bytes a token) and --hc q8_0 reads the hyper-connection ones as the GGUF stores them.  With the DFlash
+    # drafter on a GTX 1070 + 2x Xeon Gold 6130, q5_k took prose 39.8 -> 45.3 and code 50.9 -> 59.9 tok/s
+    # (bench/results/2026-11-03-decode-round9).  The GSQ-RCO quants' dense matrices are 3-6 bits already; the other
+    # quants are not measured.  CUDA's kernels.
     if model == "UD-IQ4_XS" and not hip and all(engine_supports_option(eng, o, env) for o in ("--dense", "--hc")):
-        args += ["--dense", "q5_k", "--hc", "q8_0"]
+        # an engine with --dense-map / --dense-imatrix: the mixed map, weighted by Unsloth's imatrix - on a GTX 1070 +
+        # 2x Xeon Gold 6130 1.4% faster a token than q5_k alone, at 11-14% less KL from the GGUF's own matrices
+        # (bench/results/2026-11-04-qwen-round13); an older engine: q5_k throughout
+        if all(engine_supports_option(eng, o, env) for o in ("--dense-map", "--dense-imatrix")):
+            name, size, sha = UNSLOTH_IMATRIX
+            imatrix = shards[0].parent / "imatrix_unsloth.gguf"
+            download(hf("unsloth/Qwen3.8-Flash-Next-GGUF") + name, imatrix, "Unsloth's importance matrix")
+            verify_sha256(imatrix, size, sha)
+            args += ["--dense", UD_DENSE, "--dense-map", UD_DENSE_MAP, "--dense-imatrix", str(imatrix), "--hc", "q8_0"]
+            ok(f"dense matrices: {UD_DENSE} ({UD_DENSE_MAP}), weighted by {imatrix.name}")
+        else:
+            args += ["--dense", "q5_k", "--hc", "q8_0"]
+        # Pascal: the prompt's dense products through int8 MMQ instead of fp32 cuBLAS - a 4K prompt 19.6 -> 16.1 s, 32K
+        # 171 -> 143 s on a GTX 1070, its KL after the prompt below what any rounding of the weights makes
+        # (bench/results/2026-11-04-qwen-round12, -round13).  Newer cards are not measured.
+        if all(int(g["arch"]) < 70 for g in chosen) and engine_supports_option(eng, "--prefill-mmq", env):
+            args += ["--prefill-mmq", "dense"]
     if tiny_card:
         if engine_supports_option(eng, "--mtp-optional", env):
             args += ["--mtp-optional"]
