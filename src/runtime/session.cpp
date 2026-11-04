@@ -244,13 +244,16 @@ Ingest ingest_prompt(GuildModel::Impl& m, const std::vector<int64_t>& ids, int64
     const size_t dflash_stride =
         use_dflash ? m_impl->dflash->target_layers().size() * (size_t) m_impl->g.n_embd : (size_t) 0;
     // A short prompt tail - an agentic turn after a reused prefix - goes through the verifier's windows: the prefill
-    // engine streams every selected expert to the GPU first (~460 ms here before its first token), the verifier's CPU
-    // experts start at once (~21 ms a token).  They cross near 110 tokens on the GTX 1070 PC
-    // (bench/results/2026-10-24-split-window); GUILD_PREFILL_VERIFY_MAX moves the bound, 0 turns it off.  The batched
-    // prefill computes CPU experts itself and keeps every length.
+    // engine streams nearly every routed expert to the GPU first, the verifier's CPU experts start at once.  With a
+    // GPU expert cache they crossed near 110 tokens on the GTX 1070 PC (bench/results/2026-10-24-split-window), so
+    // the bound is 64.  Without one (an 8 GB card's plan) every chunk streams almost all of the experts: 3.2 s for a
+    // 100-token prompt, 5.5 s for 400, against 0.95 and 3.8 s through the verifier's windows (9.5 ms a token with the
+    // DFlash drafter's windows of 8), crossing near 680 tokens (bench/results/2026-11-05-qwen-round14): the bound
+    // is 512.  GUILD_PREFILL_VERIFY_MAX moves it, 0 turns it off.  The batched prefill computes CPU experts itself
+    // and keeps every length.
     const int64_t n_tail = to - from;
     const char* vmax_env = std::getenv("GUILD_PREFILL_VERIFY_MAX");
-    const int64_t verify_max = vmax_env != nullptr ? std::atoll(vmax_env) : 64;
+    const int64_t verify_max = vmax_env != nullptr ? std::atoll(vmax_env) : m_impl->xcache.slots() > 0 ? 64 : 512;
     const bool verify_ingest = m_impl->prefill != nullptr && n_tail > 0 && n_tail <= verify_max;
     // The MTP drafter's prompt K/V from each prompt chunk's final residuals.  Set for this request or cleared: the
     // callback holds this request's `ids`, so one left from an earlier request with drafts would read freed memory
