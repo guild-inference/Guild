@@ -9,6 +9,9 @@
 // vocabulary size, then the rows).  With BASE (an earlier OUT of the same text) it prints, against BASE:
 //   top-1 agreement, KL(BASE || this) mean / median / 99th percentile / max, and both perplexities of the text,
 // as llama.cpp's perplexity --kl-divergence does.  The experts run on the CPU (no GPU expert cache).
+// QWEN_KL_PREFIX=P: only positions P .. are scored and written; with QWEN_KL_PREFILL=1 the text's first P tokens go
+// through the prompt path (Prefill::run) instead of the verifier, to measure what the prompt path's numbers do to
+// the predictions after it.
 #include "../check.hpp"
 #include "../../src/runtime/model_impl.hpp"
 #include "guild/server/native_engine.hpp"
@@ -18,6 +21,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <iostream>
 #include <sstream>
@@ -64,12 +68,27 @@ int main(int argc, char** argv) {
     CHECK(n >= 2);
     std::fprintf(stderr, "qwen_kl: %d tokens, vocabulary %lld\n", n, (long long) V);
 
-    std::vector<__half> out((size_t) (n - 1) * V);
+    const char* pe = std::getenv("QWEN_KL_PREFIX");
+    const int P = pe ? std::clamp(std::atoi(pe), 0, n - 2) : 0;
+    const char* pfe = std::getenv("QWEN_KL_PREFILL");
+    const bool via_prefill = P > 0 && pfe && pfe[0] == '1';
+    std::vector<__half> out((size_t) (n - 1 - P) * V);
     std::vector<float> row((size_t) V);
-    std::vector<double> nll(n - 1);
+    std::vector<double> nll(n - 1 - P);
     m->ver->set_sampling(kernels::SamplerParams{});
     m->ver->set_history(nullptr, 0);
-    for (int pos = 0; pos + 1 < n;) {
+    int start = 0;
+    if (via_prefill) {
+        CHECK(m->prefill != nullptr);
+        const std::vector<int64_t> prefix(ids.begin(), ids.begin() + P);
+        if (!m->prefill->run(prefix.data(), P, 0, err)) {
+            std::cerr << err << '\n';
+            return 1;
+        }
+        start = P;
+        std::fprintf(stderr, "qwen_kl: the first %d tokens through the prompt path\n", P);
+    }
+    for (int pos = start; pos + 1 < n;) {
         const int T = std::min(4, n - 1 - pos);
         m->drive.d.layers = 0;
         m->drive.d.experts = 0;
@@ -79,6 +98,8 @@ int main(int argc, char** argv) {
             return 1;
         }
         for (int t = 0; t < T; ++t) {
+            if (pos + t < P)
+                continue;
             CHECK(m->ver->copy_logits(t, row.data()));
             double mx = -1e300;
             for (float v : row)
@@ -87,10 +108,10 @@ int main(int argc, char** argv) {
             for (float v : row)
                 s += std::exp((double) v - mx);
             const double lse = mx + std::log(s);
-            __half* o = out.data() + (size_t) (pos + t) * V;
+            __half* o = out.data() + (size_t) (pos + t - P) * V;
             for (int64_t k = 0; k < V; ++k)
                 o[k] = __float2half((float) ((double) row[(size_t) k] - lse));
-            nll[(size_t) (pos + t)] = lse - (double) row[(size_t) ids[(size_t) (pos + t + 1)]];
+            nll[(size_t) (pos + t - P)] = lse - (double) row[(size_t) ids[(size_t) (pos + t + 1)]];
         }
         if (!m->ver->commit(T, err)) {
             std::cerr << err << '\n';
@@ -101,10 +122,11 @@ int main(int argc, char** argv) {
     double s = 0;
     for (double v : nll)
         s += v;
-    std::printf("perplexity of the text: %.4f (%d predictions)\n", std::exp(s / (n - 1)), n - 1);
+    const int rows = n - 1 - P;
+    std::printf("perplexity of the text: %.4f (%d predictions)\n", std::exp(s / rows), rows);
     {
         std::ofstream of(argv[5], std::ios::binary);
-        const int32_t hdr[2] = {n - 1, (int32_t) V};
+        const int32_t hdr[2] = {rows, (int32_t) V};
         of.write((const char*) hdr, sizeof hdr);
         of.write((const char*) out.data(), (std::streamsize)(out.size() * sizeof(__half)));
         CHECK(bool(of));
@@ -114,12 +136,12 @@ int main(int argc, char** argv) {
         CHECK(bf.is_open());
         int32_t hdr[2];
         bf.read((char*) hdr, sizeof hdr);
-        CHECK(hdr[0] == n - 1 && hdr[1] == (int32_t) V);
+        CHECK(hdr[0] == rows && hdr[1] == (int32_t) V);
         std::vector<__half> base((size_t) V);
         std::vector<double> kl;
         int same = 0;
         double base_nll = 0;
-        for (int i = 0; i < n - 1; ++i) {
+        for (int i = 0; i < rows; ++i) {
             bf.read((char*) base.data(), (std::streamsize)(V * sizeof(__half)));
             CHECK(bool(bf));
             const __half* o = out.data() + (size_t) i * V;
@@ -141,7 +163,7 @@ int main(int argc, char** argv) {
             }
             kl.push_back(std::max(0.0, k));
             same += ab == ao;
-            base_nll -= __half2float(base[(size_t) ids[(size_t) (i + 1)]]);
+            base_nll -= __half2float(base[(size_t) ids[(size_t) (P + i + 1)]]);
         }
         std::vector<double> sorted = kl;
         std::sort(sorted.begin(), sorted.end());
@@ -151,9 +173,9 @@ int main(int argc, char** argv) {
         mean /= (double) kl.size();
         std::printf("against %s: top-1 the same %d of %d (%.2f%%); KL mean %.6f, median %.6f, 99th percentile %.6f, "
                     "max %.6f; perplexity %.4f (base) -> %.4f\n",
-                    argv[6], same, n - 1, 100.0 * same / (n - 1), mean, sorted[sorted.size() / 2],
-                    sorted[(size_t) (0.99 * (double) (sorted.size() - 1))], sorted.back(), std::exp(base_nll / (n - 1)),
-                    std::exp(s / (n - 1)));
+                    argv[6], same, rows, 100.0 * same / rows, mean, sorted[sorted.size() / 2],
+                    sorted[(size_t) (0.99 * (double) (sorted.size() - 1))], sorted.back(), std::exp(base_nll / rows),
+                    std::exp(s / rows));
     }
     return 0;
 }

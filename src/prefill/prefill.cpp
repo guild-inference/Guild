@@ -1905,11 +1905,95 @@ const core::WeightRef* need(const core::LayerView& v, const char* suffix, std::s
         err = v.name(suffix) + " is missing";
     return r;
 }
+// GUILD_PREFILL_DENSE_MMQ=1 (opt-in; it rounds differently): a dense matrix of a type MMQ covers multiplies its own
+// GGUF blocks against q8_1 activations (the rounding decode's MMVQ applies), all of a chunk's rows in one launch,
+// instead of an FP16 or BF16 copy through cuBLAS: the native projections, and with 2 the hyper-connection's Q8_0
+// matrices too (--hc q8_0, rebuilt as the GGUF's blocks).  Its buffers are its own, grown on first use and kept
+// (a 4096-token chunk: ~130 MB, the widest input's FP32 rows and their q8_1 copy); a failed allocation keeps the
+// cuBLAS path.  One set for the process: the prompt path reads one prompt at a time.
+struct DenseMmq {
+    std::unique_ptr<mmq::Context> ctx;
+    float* x32 = nullptr;
+    void *xq = nullptr, *blocks = nullptr;
+    int32_t *ident = nullptr, *bounds = nullptr;
+    size_t x32_bytes = 0, xq_bytes = 0, blocks_bytes = 0, ident_bytes = 0, bounds_bytes = 0;
+};
+int dense_mmq_mode() { // 1: the native projections, 2: the hyper-connection's Q8_0 matrices too
+    static const int v = [] {
+        const char* e = std::getenv("GUILD_PREFILL_DENSE_MMQ");
+        return e ? std::atoi(e) : 0;
+    }();
+    return v;
+}
+bool dense_mmq_on() {
+    return dense_mmq_mode() >= 1;
+}
+DenseMmq& dense_mmq_state() {
+    static DenseMmq d;
+    return d;
+}
+bool dense_grow(void** p, size_t& have, size_t need) {
+    if (need <= have)
+        return true;
+    cudaFree(*p);
+    *p = nullptr;
+    have = 0;
+    if (cudaMalloc(p, need) != cudaSuccess) {
+        cudaGetLastError();
+        return false;
+    }
+    have = need;
+    return true;
+}
+// d.x32 holds the T x K activations; Y[T, N] = x . W^T with W `type` blocks at `w`
+bool dense_mmq_run(Gemm& gm, const void* w, int type, float* Y, int64_t T, int64_t N, int64_t K) {
+    DenseMmq& d = dense_mmq_state();
+    const auto s = (cudaStream_t) gm.stream();
+    const size_t ident_had = d.ident_bytes;
+    if (!dense_grow(&d.xq, d.xq_bytes, mmq::q8_bytes(T, K)) || !dense_grow((void**) &d.bounds, d.bounds_bytes, 16) ||
+        !dense_grow((void**) &d.ident, d.ident_bytes, (size_t) T * 4))
+        return false;
+    if (d.ident_bytes != ident_had)
+        mmq::iota(d.ident, (int64_t) (d.ident_bytes / 4), s);
+    if (!d.ctx)
+        d.ctx = std::make_unique<mmq::Context>();
+    const int32_t b[2] = {0, (int32_t) T};
+    if (cudaMemcpyAsync(d.bounds, b, sizeof b, cudaMemcpyHostToDevice, s) != cudaSuccess)
+        return false;
+    mmq::quantize(d.x32, nullptr, d.xq, type, K, K, T, s);
+    mmq::Product p;
+    p.w = w;
+    p.type = type;
+    p.w_rows = N;
+    p.w_cols = K;
+    p.expert_bytes = mmq::matrix_bytes(type, N, K);
+    p.n = 1;
+    p.xq = d.xq;
+    p.bounds = d.bounds;
+    p.ids = d.ident;
+    p.total_rows = T;
+    p.max_rows = T;
+    p.dst = Y;
+    p.ld_dst = N;
+    d.ctx->run(p, s);
+    return true;
+}
+constexpr int kGgmlQ8_0 = 8; // GGML_TYPE_Q8_0
+bool dense_mmq_x32(int64_t elems) {
+    DenseMmq& d = dense_mmq_state();
+    return dense_grow((void**) &d.x32, d.x32_bytes, (size_t) elems * 4);
+}
 bool native_proj(Gemm& gm, const core::WeightRef* w, const uint16_t* X, float* Y, int64_t T, const std::string& name,
                  std::string& err, int64_t ldy = 0) {
     if (!w->native_data) {
         err = "prefill: " + name + " has no native GGUF blocks (run with --native)";
         return false;
+    }
+    if (dense_mmq_on() && (ldy == 0 || ldy == w->ne1) && w->ne0 % 256 == 0 && mmq::fits(w->native_type, w->ne1) &&
+        dense_mmq_x32(T * w->ne0)) {
+        f16_to_f32(X, dense_mmq_state().x32, T * w->ne0, gm.stream());
+        if (dense_mmq_run(gm, w->native_data, w->native_type, Y, T, w->ne1, w->ne0))
+            return true;
     }
     gemm_native(gm, X, w->native_type, w->native_data, Y, T, w->ne1, w->ne0, ldy);
     return true;
@@ -1920,6 +2004,22 @@ bool bf16_proj(Gemm& gm, const core::WeightRef* w, const uint16_t* X, float* Y, 
                std::string& err, int64_t ldy = 0, const uint16_t* X_lo = nullptr, uint16_t* hc16 = nullptr,
                cudaStream_t cs = nullptr) {
     const uint16_t* W = (const uint16_t*) w->data;
+    if (dense_mmq_mode() >= 2 && w->hc_q8 && cs && (ldy == 0 || ldy == w->ne1) && w->ne0 % 32 == 0 &&
+        mmq::fits(kGgmlQ8_0, w->ne1) && dense_mmq_x32(T * w->ne0)) {
+        DenseMmq& d = dense_mmq_state();
+        // the blocks, then MMQ_TAIL zeroed bytes: a row shorter than MMQ's 256-value tile reads past the last one
+        const size_t wb = mmq::matrix_bytes(kGgmlQ8_0, w->ne1, w->ne0), had = d.blocks_bytes;
+        if (dense_grow(&d.blocks, d.blocks_bytes, wb + MMQ_TAIL)) {
+            if (d.blocks_bytes != had)
+                cudaMemsetAsync(d.blocks, 0, d.blocks_bytes, (cudaStream_t) cs);
+            else
+                cudaMemsetAsync((uint8_t*) d.blocks + wb, 0, MMQ_TAIL, (cudaStream_t) cs);
+            hc_q8_to_blocks(w->hc_q8, w->ne1, w->ne0, d.blocks, cs);
+            bf16_to_f32(X, X_lo, d.x32, T * w->ne0, cs);
+            if (dense_mmq_run(gm, d.blocks, kGgmlQ8_0, Y, T, w->ne1, w->ne0))
+                return true;
+        }
+    }
     if (w->hc_q8 && hc16) {
         hc_q8_to_bf16(w->hc_q8, w->ne1, w->ne0, hc16, cs);
         W = hc16;
