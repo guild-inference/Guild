@@ -5,6 +5,7 @@
 // (dense or MoE) -> mHC post-mix. The MoE layer hands the normed activations and the router's choice to the CPU, which
 // computes the routed experts while the GPU computes the shared one.
 #include "guild/core/glm5.hpp"
+#include "guild/core/dense_quant.hpp"
 #include "guild/core/cpu_moe.hpp"
 #include "guild/core/dflash.hpp"
 #include "guild/core/dense_mm.hpp"
@@ -42,6 +43,7 @@
 #include <map>
 #include <mutex>
 #include <thread>
+#include <unordered_map>
 
 #if defined(__x86_64__)
 #include <immintrin.h>
@@ -138,6 +140,9 @@ struct Glm5Engine::Impl {
     std::unique_ptr<GgufModel> gguf;
     Glm5Geometry g;
     Glm5Options opt;
+    std::unordered_map<const Mat*, std::string> mat_names; // mat()'s tensor names (the imatrix and --dense-map)
+    std::unique_ptr<Imatrix> imatrix;                      // opt.imatrix
+    size_t imatrix_used = 0;                               // matrices it weighted
     std::vector<Layer> L;
     Layer mtp; ///< the NextN block (when the GGUF has it and Glm5Options::mtp)
     bool has_mtp = false;
@@ -377,6 +382,7 @@ struct Glm5Engine::Impl {
             err = "glm5: missing tensor " + name;
             return false;
         }
+        mat_names[&m] = name;
         m.type = (int) t->type;
         m.n_in = (int64_t) t->shape[0];
         m.n_out = 1;
@@ -397,6 +403,15 @@ struct Glm5Engine::Impl {
     void requant(Mat& m, ggml_type to) {
         if (m.type != kQ8_0 || m.n_in % 256 != 0)
             return;
+        const auto nm = mat_names.find(&m);
+        const std::string name = nm == mat_names.end() ? std::string() : nm->second;
+        if (const int t = name.empty() ? 0 : dense_map_type(opt.dense_map, name)) {
+            if (t == kQ8_0)
+                return; // --dense-map keeps this kind as the GGUF has it
+            to = (ggml_type) t;
+        }
+        const std::vector<float> im = imatrix && !name.empty() ? imatrix->weights(name, m.n_in) : std::vector<float>();
+        imatrix_used += !im.empty();
         const size_t q6_row = ggml_row_size(to, m.n_in), q8_row = m.row_bytes();
         m.owned.resize(q6_row * (size_t) m.n_out);
         const int64_t rows_per = 64;
@@ -415,7 +430,8 @@ struct Glm5Engine::Impl {
                         out[b * 32 + k] = d * (float) (int8_t) q[b * 34 + 2 + k];
                 }
             }
-            ggml_quantize_chunk(to, buf.data(), m.owned.data() + (size_t) r0 * q6_row, 0, nr, m.n_in, nullptr);
+            ggml_quantize_chunk(to, buf.data(), m.owned.data() + (size_t) r0 * q6_row, 0, nr, m.n_in,
+                                im.empty() ? nullptr : im.data());
         };
         if (pool)
             pool->run(n_items, body);
@@ -663,6 +679,19 @@ struct Glm5Engine::Impl {
 
 bool Glm5Engine::Impl::load(const std::string& path, const Glm5Options& o, std::string& err) {
     opt = o;
+    // GUILD_DENSE_IMATRIX / GUILD_DENSE_MAP when the options leave them empty (tests/core/glm5_kl.cpp, glm5_run)
+    if (const char* e = std::getenv("GUILD_DENSE_IMATRIX"); e && opt.imatrix.empty())
+        opt.imatrix = e;
+    if (const char* e = std::getenv("GUILD_DENSE_MAP"); e && opt.dense_map.empty())
+        opt.dense_map = e;
+    if (!opt.imatrix.empty()) {
+        try {
+            imatrix = std::make_unique<Imatrix>(opt.imatrix);
+        } catch (const std::exception& e) {
+            err = "glm5: --dense-imatrix " + opt.imatrix + ": " + e.what();
+            return false;
+        }
+    }
     try {
         gguf = std::make_unique<GgufModel>(GgufModel::open(path));
     } catch (const std::exception& ex) {
@@ -1041,12 +1070,16 @@ bool Glm5Engine::Impl::load(const std::string& path, const Glm5Options& o, std::
                 requant(*m, to);
                 after += m->bytes;
             }
-        std::fprintf(stderr, "guild glm5: attention matrices Q8_0 -> %s%s: %llu -> %llu MiB in %.1f s\n",
+        std::fprintf(stderr,
+                     "guild glm5: attention matrices Q8_0 -> %s%s%s: %llu -> %llu MiB in %.1f s, %zu weighted by the "
+                     "importance matrix\n",
                      to == GGML_TYPE_Q5_K   ? "Q5_K"
                      : to == GGML_TYPE_Q4_K ? "Q4_K"
                                             : "Q6_K",
+                     opt.dense_map.empty() ? "" : " (--dense-map's types for its kinds)",
                      opt.dense == Glm5Dense::Auto ? " (for the context; GUILD_GLM_DENSE=q8_0 keeps Q8_0)" : "",
-                     (unsigned long long) (before >> 20), (unsigned long long) (after >> 20), ms_since(tq) / 1000.0);
+                     (unsigned long long) (before >> 20), (unsigned long long) (after >> 20), ms_since(tq) / 1000.0,
+                     imatrix_used);
     }
 
     // ---- placement: everything but the FFNs must be on the GPU; then the FFNs, layer by layer --------------------
@@ -1546,8 +1579,13 @@ bool Glm5Engine::Impl::load(const std::string& path, const Glm5Options& o, std::
         }
         const size_t node_bytes[2] = {arena_bytes[0], arena_bytes[1]};
         // the routed experts' pages of the shards are no longer read: let the kernel drop them (only theirs: the
-        // embedding copy may still be reading token_embd's)
-        for (size_t sh = 0; sh < gguf->size(); ++sh) {
+        // embedding copy may still be reading token_embd's).  GUILD_GLM_KEEP_CACHE=1 leaves them, so the next load
+        // reads RAM, not the disk (back-to-back test runs; it holds ~147 GiB more of the page cache)
+        static const bool keep_cache = [] {
+            const char* e = std::getenv("GUILD_GLM_KEEP_CACHE");
+            return e && e[0] == '1';
+        }();
+        for (size_t sh = 0; sh < gguf->size() && !keep_cache; ++sh) {
             const int fd = ::open(gguf->shard(sh).path().c_str(), O_RDONLY);
             if (fd < 0)
                 continue;

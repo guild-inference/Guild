@@ -1,0 +1,2 @@
+perplexity of the text: 5.6446 (1973 predictions)
+against /home/ubuntu/work/nemotron/opt/r18/base1.f16: top-1 the same 1770 of 1973 (89.71%); KL mean 0.054279, median 0.022355, 99th percentile 0.397184, max 1.770237; perplexity 5.6237 (base) -> 5.6446

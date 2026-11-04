@@ -1,4 +1,5 @@
 #include "guild/core/native_dense.hpp"
+#include "guild/core/dense_quant.hpp"
 #include <cstdlib>
 #include "guild/core/weights.hpp"
 #include "guild/artifact/gguf_reader.hpp"
@@ -77,55 +78,27 @@ const std::string& imatrix_path() {
 }
 // the column weights for `name` ([n_in]), or empty
 std::vector<float> imatrix_of(const std::string& name, int64_t n_in) {
-    static std::unique_ptr<guild::GgufFile> f;
+    static std::unique_ptr<Imatrix> f;
     static std::string opened;
     const std::string& path = imatrix_path();
     if (path.empty())
         return {};
     if (!f || opened != path) {
-        f = std::make_unique<guild::GgufFile>(path);
+        f = std::make_unique<Imatrix>(path);
         opened = path;
     }
-    const guild::TensorInfo* sums = f->find(name + ".in_sum2");
-    const guild::TensorInfo* counts = f->find(name + ".counts");
-    if (!sums || !counts || sums->type != 0 || counts->type != 0 || sums->elements() != (uint64_t) n_in ||
-        counts->elements() != 1)
-        return {};
-    float c = 0.0f;
-    std::memcpy(&c, f->tensor_data(*counts), 4);
-    if (!(c > 0.0f))
-        return {};
-    std::vector<float> w((size_t) n_in);
-    std::memcpy(w.data(), f->tensor_data(*sums), (size_t) n_in * 4);
-    for (float& v : w)
-        v /= c;
-    return w;
+    return f->weights(name, n_in);
 }
 // GUILD_DENSE_MAP="attn_qkv=q6_k,ssm_out=q4_k,..." (NativeDense::set_dense_map): a type per matrix kind (the name's
 // part after "blk.N."), over --dense's for those kinds; "q8_0" keeps a kind as the GGUF has it.
 std::string g_dense_map; // NativeDense::set_dense_map
-int type_of(const std::string& v) {
-    return v == "q6_k" ? 14 : v == "q5_k" ? 13 : v == "q4_k" ? 12 : v == "q8_0" ? 8 : -1;
-}
 int dense_type_for(const std::string& name) {
     static const std::string env = [] {
         const char* e = std::getenv("GUILD_DENSE_MAP");
         return std::string(e ? e : "");
     }();
-    const std::string& map = g_dense_map.empty() ? env : g_dense_map;
-    const size_t dot = name.find('.', 4);
-    const std::string kind = dot == std::string::npos ? name : name.substr(dot + 1);
-    for (size_t at = 0; at < map.size();) {
-        const size_t end = std::min(map.find(',', at), map.size()), eq = map.find('=', at);
-        if (eq != std::string::npos && eq < end &&
-            map.compare(at, eq - at, kind.substr(0, kind.rfind(".weight"))) == 0) {
-            const int t = type_of(map.substr(eq + 1, end - eq - 1));
-            if (t > 0)
-                return t == 8 ? 0 : t;
-        }
-        at = end + 1;
-    }
-    return dense_type();
+    const int t = dense_map_type(g_dense_map.empty() ? env : g_dense_map, name);
+    return t == 8 ? 0 : t ? t : dense_type();
 }
 std::vector<uint8_t> q8_0_requant(const uint8_t* q8, int64_t n_in, int64_t n_out, int type,
                                   const float* imatrix = nullptr) {
