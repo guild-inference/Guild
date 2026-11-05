@@ -1,0 +1,9 @@
+p1_11_1 47.08 frames/s, 2.19x real time; tower 2144 ms, codec 40 ms 6e04c9b1
+p0_11_1 45.84 frames/s, 2.13x real time; tower 1785 ms, codec 40 ms 6e04c9b1
+p1_12_1 46.73 frames/s, 2.17x real time; tower 1932 ms, codec 31 ms f84288c9
+p0_12_1 45.91 frames/s, 2.13x real time; tower 1605 ms, codec 31 ms f84288c9
+p1_11_2 46.45 frames/s, 2.16x real time; tower 2163 ms, codec 40 ms 6e04c9b1
+p0_11_2 45.85 frames/s, 2.13x real time; tower 1792 ms, codec 40 ms 6e04c9b1
+p1_12_2 46.35 frames/s, 2.15x real time; tower 1940 ms, codec 31 ms f84288c9
+p0_12_2 46.05 frames/s, 2.14x real time; tower 1600 ms, codec 31 ms f84288c9
+done

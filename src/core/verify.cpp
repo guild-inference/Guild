@@ -693,8 +693,20 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
         err = "verify: copy stream create failed";
         return false;
     }
-    if (cudaStreamCreateWithFlags(&cs_, cudaStreamNonBlocking) != cudaSuccess ||
-        cudaStreamCreateWithFlags(&sh_cs_, cudaStreamNonBlocking) != cudaSuccess ||
+    // The window's own streams at the GDN stream's priority too (Pascal has two levels), so work beside the window -
+    // Drama 3's tower layers and codec chunks - fills the gaps instead of delaying it: a GTX 1070's Drama 3 frames
+    // +0.7-2.7%, Qwen3.8 decode the same (bench/results/2026-11-05-round15).  GUILD_VERIFY_STREAM_PRIO=0: the
+    // default priority, as before.  Scheduling only: the same results.
+    static const bool all_prio = [] {
+        const char* e = std::getenv("GUILD_VERIFY_STREAM_PRIO");
+        return !(e && e[0] == '0');
+    }();
+    int top = 0, least_p = 0;
+    cudaDeviceGetStreamPriorityRange(&least_p, &top);
+    if ((all_prio ? cudaStreamCreateWithPriority(&cs_, cudaStreamNonBlocking, top)
+                  : cudaStreamCreateWithFlags(&cs_, cudaStreamNonBlocking)) != cudaSuccess ||
+        (all_prio ? cudaStreamCreateWithPriority(&sh_cs_, cudaStreamNonBlocking, top)
+                  : cudaStreamCreateWithFlags(&sh_cs_, cudaStreamNonBlocking)) != cudaSuccess ||
         !create_gdn_stream(&gdn_cs_, &gdn_prio_)) {
         err = "verify: stream create failed";
         return false;
