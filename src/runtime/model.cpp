@@ -1209,9 +1209,9 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
     // 512-token chunks: each chunk streams the experts over PCIe once, so a ~4K-token prompt took 52.2 s in chunks of
     // 512 and 19.7 s in one of 4096 on a GTX 1070 (bench/results/2026-11-03-decode-round11).  On Pascal the rows
     // give the 512-token chunks' results bit for bit (llama.cpp's MMQ without stream-k); newer cards keep 512 unless
-    // GUILD_PREFILL_GROW=1 (and --prefill N keeps N).  A chunk took ~0.40 MiB of VRAM a token (Qwen3.8, n_embd 2560:
-    // 5925 MiB in use after a 4K prompt in chunks of 512, 7353 in one of 4096), counted as 168 bytes a unit of n_embd,
-    // with 768 MiB left over (the planner's 512 MiB reserve, and 256 for what the prompt path adds later).
+    // GUILD_PREFILL_GROW=1 (and --prefill N keeps N).  The chunk is the largest, up to 8192, whose prompt-path buffers
+    // (Prefill::bytes_needed, the ring of a 512-token chunk) leave 768 MiB free (the planner's 512 MiB reserve, and
+    // 256 for what the prompt path adds later), and the dense MMQ path's slices another 48.
     if (plan.prefill_chunk_auto && impl->config.prefill_chunk == 512 && prefill_rows == 0 && impl->g.n_embd > 0) {
         int dev = 0, major = 0;
         cudaGetDevice(&dev);
@@ -1219,10 +1219,11 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
         const char* grow = std::getenv("GUILD_PREFILL_GROW");
         size_t free = 0, total = 0;
         if ((grow ? grow[0] == '1' : major < 7) && cudaMemGetInfo(&free, &total) == cudaSuccess) {
-            const uint64_t per_token = 168ull * (uint64_t) impl->g.n_embd, keep = 768ull << 20;
+            const uint64_t keep = (768ull << 20) + (plan.prefill_mmq > 0 ? (48ull << 20) : 0);
+            prefill::Prefill::set_rows(512); // bytes_needed counts the ring a 512-row chunk takes
             int64_t chunk = 512;
-            for (int64_t c = 4096; c > 512 && chunk == 512; c -= 512)
-                if ((uint64_t) c * per_token + keep <= free)
+            for (int64_t c = 8192; c > 512 && chunk == 512; c -= 512)
+                if (prefill::Prefill::bytes_needed(impl->g, impl->ss, c) + keep <= free)
                     chunk = c;
             if (chunk > 512) {
                 impl->config.prefill_chunk = chunk;

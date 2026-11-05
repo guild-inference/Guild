@@ -695,6 +695,14 @@ struct Prefill::Impl {
     // row map, the group bounds, the group buffers of gathered experts
     void *Xq = nullptr, *Hq = nullptr;
     float* H = nullptr;
+    bool local_moe = false; // group_local: Xq, GU, H and Hq hold one group's rows (local_rows at most)
+    int64_t local_rows = 0;
+    struct SubGroup { // group_local: a part of an MMQ group whose rows fit local_rows
+        size_t j0;    // the group's first entry of `order`
+        int a, b;     // its experts [a, b) within the group
+        size_t table; // its bounds (relative to its first row) in bounds_host / bounds_dev
+    };
+    std::vector<SubGroup> subs;
     int32_t *ids_identity = nullptr, *bounds_dev = nullptr;
     uint8_t *grp_gu = nullptr, *grp_d = nullptr;
     std::vector<int32_t> bounds_host;
@@ -932,9 +940,24 @@ bool fused_layout(size_t T, bool src) {
 struct MoeBufs {
     size_t gu, h, xq, hq;
 };
+// The MMQ path's gate/up rows, H and quantized activations: for every one of the chunk's T * K expert slots, or
+// (group_local: MMQ on every layer, not fused, one GPU) for one expert group's rows, at most kLocalRows * T of them -
+// a group of more is run in parts, and one expert has at most T.  The same products of the same rows, into the same
+// Dm rows; ~100 KB less a token, so a larger chunk fits.  GUILD_PREFILL_GROUP_LOCAL=0: all slots, as before.
+constexpr size_t kLocalRows = 2;
+bool group_local(bool fused) {
+    static const bool env = [] {
+        const char* v = std::getenv("GUILD_PREFILL_GROUP_LOCAL");
+        return v == nullptr || std::atoi(v) != 0;
+    }();
+    const MmqPlan& mp = mmq_plan();
+    return env && !fused && mp.any && !mp.fallback && !core::peer_portable();
+}
 MoeBufs moe_bufs(size_t T, int64_t n_expert, bool fused) {
-    if (!fused)
-        return {T * K * 1280, T * K * 640, mmq::q8_bytes((int64_t) (T * K), N), mmq::q8_bytes((int64_t) (T * K), 640)};
+    if (!fused) {
+        const size_t rows = group_local(false) ? kLocalRows * T : T * K;
+        return {rows * 1280, rows * 640, mmq::q8_bytes((int64_t) rows, N), mmq::q8_bytes((int64_t) rows, 640)};
+    }
     const size_t ts = (size_t) std::min<int64_t>((int64_t) T, stream_all_min() - 1); // MMQ's last small chunk
     return {std::max(ts * K * 1280, (fused::group_bytes((int64_t) (T * K), (int) n_expert) + 3) / 4),
             std::max(ts * K * 640, (fused::act_bytes((int64_t) (T * K), 640) + 3) / 4),
@@ -1064,7 +1087,8 @@ bool Prefill::init(const core::WeightTable& wt, const core::ModelGeometry& g, co
                 kernels::cpu::restore_thread_affinity(prev);
             }
         } local_alloc;
-        const size_t need = 3 * T * K + (size_t) (2 * (m.g->n_expert + m.g->n_expert / MMQ_GROUP + 2));
+        const size_t need =
+            3 * T * K + (size_t) (2 * (m.g->n_expert + m.g->n_expert / MMQ_GROUP + 2) + 2 * m.g->n_expert + 2);
         const char* gc = std::getenv("GUILD_GROUP_COPY");
         if (m.grp_n < need && !(gc && gc[0] == '1')) {
             if (m.grp_host)
@@ -1155,7 +1179,7 @@ bool Prefill::carve(size_t T, void* alloc) {
     m.xn16 = o.take<uint16_t>(T * D, ok);
     m.lo = o.take<float>(T * LR, ok);
     m.lo16 = o.take<uint16_t>(T * LR, ok);
-    m.gated = o.take<float>(T * D, ok);
+    m.gated = nullptr; // the region's first T * D floats (below): read only by the mix, before a half's scratch
     m.inj = o.take<float>(T * HC, ok);
     m.mixed = o.take<float>(T * N, ok);
     m.mixed_bf = o.take<uint16_t>(T * N, ok);
@@ -1180,11 +1204,16 @@ bool Prefill::carve(size_t T, void* alloc) {
         // one region for the attention half's and the MoE half's scratch (see gdn_set_bytes)
         const bool fz = fused_layout(T, m.src != nullptr);
         const MoeBufs mb = moe_bufs(T, m.g->n_expert, fz);
+        m.local_moe = !fz && group_local(false);
+        m.local_rows = m.local_moe ? (int64_t) (kLocalRows * T) : 0;
         const uint64_t region =
             std::max({gdn_set_bytes(T), qsa_set_bytes(T, m.cap, m.max_blocks, m.sel_batch, m.attn_batch, s),
-                      moe_set_bytes(T, m.g->n_expert, fz)});
+                      moe_set_bytes(T, m.g->n_expert, fz), (uint64_t) T * D * 4});
         uint8_t* base = o.take<uint8_t>((size_t) region, ok);
         m.region = base;
+        // the hyper-connection read's up product: written and read by the mix before the half's scratch (or the PLE
+        // block, or a drafter's pass) takes the region
+        m.gated = (float*) base;
         m.region_bytes = region;
         Alloc a;
         a.base = base;
@@ -1248,7 +1277,9 @@ bool Prefill::carve(size_t T, void* alloc) {
     if (mmq_plan().any) {
         const MmqPlan& mp = mmq_plan();
         m.ids_identity = o.take<int32_t>(T * K, ok);
-        m.bounds_dev = o.take<int32_t>((size_t) (2 * (m.g->n_expert + m.g->n_expert / MMQ_GROUP + 2)), ok);
+        // the global bounds, each group's relative ones, then group_local's split parts' (at most 2 n_expert)
+        m.bounds_dev =
+            o.take<int32_t>((size_t) (2 * (m.g->n_expert + m.g->n_expert / MMQ_GROUP + 2) + 2 * m.g->n_expert + 2), ok);
         m.grp_gu = o.take<uint8_t>(MMQ_GROUP * mp.gu_max + MMQ_TAIL, ok);
         m.grp_d = o.take<uint8_t>(MMQ_GROUP * mp.d_max + MMQ_TAIL, ok);
         // (written at every run's start, not here: when serving, these are live expert-cache slots until a request
@@ -1537,6 +1568,10 @@ bool Prefill::set_stage_helper(Prefill* helper, std::string& err) {
     m.help_pp.reset();
     if (helper == nullptr || helper == this || !split_help_env())
         return true;
+    if (m.local_moe) { // its MoE buffers hold one group's rows; a helper reads every slot's
+        err = "prefill: a layer split's helper needs GUILD_PREFILL_GROUP_LOCAL=0";
+        return false;
+    }
     const Impl& h = *helper->impl_;
     if (m.device < 0 || h.device < 0 || h.device == m.device || !mmq_plan().any)
         return true;
@@ -1656,6 +1691,10 @@ bool Prefill::set_peer(core::PeerExperts* peer, int64_t cap_rows, std::string& e
     if (peer == nullptr || !peer->valid()) {
         m.pp.reset();
         return true;
+    }
+    if (m.local_moe) { // its MoE buffers hold one group's rows; the peer's share reads every slot's
+        err = "prefill: a --peer-device prompt path needs GUILD_PREFILL_GROUP_LOCAL=0";
+        return false;
     }
     if (!peer->p2p()) {
         err = "prefill peer: the two GPUs cannot access each other (no P2P)";
@@ -1826,8 +1865,7 @@ uint64_t Prefill::bytes_needed(const core::ModelGeometry& g, const core::Session
     o.take<uint16_t>(T * D, ok);
     f(T * LR);
     o.take<uint16_t>(T * LR, ok);
-    f(T * D);
-    f(T * HC);
+    f(T * HC); // (gated: in the region)
     f(T * N);
     o.take<uint16_t>(T * N, ok);
     o.take<uint16_t>(T * N, ok);
@@ -1848,7 +1886,7 @@ uint64_t Prefill::bytes_needed(const core::ModelGeometry& g, const core::Session
     const int64_t cap = guild::kernels::qsa_selection_width(guild::kernels::kTopkMaxCells, s);
     const int64_t max_blocks = ss.qsa_states[ss.qsa_primary()].max_cells / s.idx_block + 2;
     o.take<uint8_t>((size_t) std::max({gdn_set_bytes(T), qsa_set_bytes(T, cap, max_blocks, 256, 32, s),
-                                       moe_set_bytes(T, g.n_expert, fused_layout(T, true))}),
+                                       moe_set_bytes(T, g.n_expert, fused_layout(T, true)), (uint64_t) T * D * 4}),
                     ok);
     for (int i = 0; i < DQ; ++i) {
         o.take<uint16_t>(1280 * 2560, ok);
@@ -1857,7 +1895,7 @@ uint64_t Prefill::bytes_needed(const core::ModelGeometry& g, const core::Session
     if (mmq_plan().any) {
         const MmqPlan& mp = mmq_plan();
         o.take<int32_t>(T * K, ok);
-        o.take<int32_t>((size_t) (2 * (g.n_expert + g.n_expert / MMQ_GROUP + 2)), ok);
+        o.take<int32_t>((size_t) (2 * (g.n_expert + g.n_expert / MMQ_GROUP + 2) + 2 * g.n_expert + 2), ok);
         o.take<uint8_t>(MMQ_GROUP * mp.gu_max + MMQ_TAIL, ok);
         o.take<uint8_t>(MMQ_GROUP * mp.d_max + MMQ_TAIL, ok);
     }
@@ -1913,8 +1951,8 @@ const core::WeightRef* need(const core::LayerView& v, const char* suffix, std::s
 // GGUF blocks against q8_1 activations (the rounding decode's MMVQ applies), all of a chunk's rows in one launch,
 // instead of an FP16 or BF16 copy through cuBLAS: the native projections, and with 2 the hyper-connection's Q8_0
 // matrices too (--hc q8_0, rebuilt as the GGUF's blocks).  Its buffers are its own, grown on first use and kept
-// (a 4096-token chunk: ~130 MB, the widest input's FP32 rows and their q8_1 copy); a failed allocation keeps the
-// cuBLAS path.  One set for the process: the prompt path reads one prompt at a time.
+// (a slice of kDenseSlice rows: ~30 MB, the widest input's FP32 rows and their q8_1 copy); a failed allocation keeps
+// the cuBLAS path.  One set for the process: the prompt path reads one prompt at a time.
 struct DenseMmq {
     std::unique_ptr<mmq::Context> ctx;
     float* x32 = nullptr;
@@ -1987,6 +2025,25 @@ bool dense_mmq_x32(int64_t elems) {
     DenseMmq& d = dense_mmq_state();
     return dense_grow((void**) &d.x32, d.x32_bytes, (size_t) elems * 4);
 }
+// Y[T, N] = X . W^T through MMQ in slices of kDenseSlice rows (each row's product is its own: the same as one launch),
+// so the FP32 and q8_1 copies of X stay a slice's size whatever the chunk.  X: FP16 rows, or BF16 ones (bf16, with
+// X_lo added when given).  false before any product when the buffers cannot be had.
+constexpr int64_t kDenseSlice = 1024;
+bool dense_mmq_slices(Gemm& gm, const void* w, int type, const uint16_t* X, const uint16_t* X_lo, bool bf16, float* Y,
+                      int64_t T, int64_t N, int64_t K) {
+    if (!dense_mmq_x32(std::min(T, kDenseSlice) * K))
+        return false;
+    for (int64_t t0 = 0; t0 < T; t0 += kDenseSlice) {
+        const int64_t r = std::min(kDenseSlice, T - t0);
+        if (bf16)
+            bf16_to_f32(X + t0 * K, X_lo ? X_lo + t0 * K : nullptr, dense_mmq_state().x32, r * K, gm.stream());
+        else
+            f16_to_f32(X + t0 * K, dense_mmq_state().x32, r * K, gm.stream());
+        if (!dense_mmq_run(gm, w, type, Y + t0 * N, r, N, K))
+            return t0 == 0 ? false : (std::fprintf(stderr, "prefill: dense MMQ buffers lost mid-product\n"), false);
+    }
+    return true;
+}
 bool native_proj(Gemm& gm, const core::WeightRef* w, const uint16_t* X, float* Y, int64_t T, const std::string& name,
                  std::string& err, int64_t ldy = 0) {
     if (!w->native_data) {
@@ -1994,11 +2051,8 @@ bool native_proj(Gemm& gm, const core::WeightRef* w, const uint16_t* X, float* Y
         return false;
     }
     if (dense_mmq_on() && (ldy == 0 || ldy == w->ne1) && w->ne0 % 256 == 0 && mmq::fits(w->native_type, w->ne1) &&
-        dense_mmq_x32(T * w->ne0)) {
-        f16_to_f32(X, dense_mmq_state().x32, T * w->ne0, gm.stream());
-        if (dense_mmq_run(gm, w->native_data, w->native_type, Y, T, w->ne1, w->ne0))
-            return true;
-    }
+        dense_mmq_slices(gm, w->native_data, w->native_type, X, nullptr, false, Y, T, w->ne1, w->ne0))
+        return true;
     gemm_native(gm, X, w->native_type, w->native_data, Y, T, w->ne1, w->ne0, ldy);
     return true;
 }
@@ -2009,7 +2063,7 @@ bool bf16_proj(Gemm& gm, const core::WeightRef* w, const uint16_t* X, float* Y, 
                cudaStream_t cs = nullptr) {
     const uint16_t* W = (const uint16_t*) w->data;
     if (dense_mmq_mode() >= 2 && w->hc_q8 && cs && (ldy == 0 || ldy == w->ne1) && w->ne0 % 32 == 0 &&
-        mmq::fits(kGgmlQ8_0, w->ne1) && dense_mmq_x32(T * w->ne0)) {
+        mmq::fits(kGgmlQ8_0, w->ne1)) {
         DenseMmq& d = dense_mmq_state();
         // the blocks, then MMQ_TAIL zeroed bytes: a row shorter than MMQ's 256-value tile reads past the last one
         const size_t wb = mmq::matrix_bytes(kGgmlQ8_0, w->ne1, w->ne0), had = d.blocks_bytes;
@@ -2019,8 +2073,7 @@ bool bf16_proj(Gemm& gm, const core::WeightRef* w, const uint16_t* X, float* Y, 
             else
                 cudaMemsetAsync((uint8_t*) d.blocks + wb, 0, MMQ_TAIL, (cudaStream_t) cs);
             hc_q8_to_blocks(w->hc_q8, w->ne1, w->ne0, d.blocks, cs);
-            bf16_to_f32(X, X_lo, d.x32, T * w->ne0, cs);
-            if (dense_mmq_run(gm, d.blocks, kGgmlQ8_0, Y, T, w->ne1, w->ne0))
+            if (dense_mmq_slices(gm, d.blocks, kGgmlQ8_0, X, X_lo, true, Y, T, w->ne1, w->ne0))
                 return true;
         }
     }
@@ -3224,7 +3277,9 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                         pt.mark(kPfGather, cs);
                         if (use_mmq) {
                             // step 2b: the layer's activations as q8_1 rows in expert order, straight from `mixed`
-                            mmq::quantize(m.mixed, m.src_dev, m.Xq, mmq_gt, N, N, T * K, m.cs);
+                            // (group_local: each group's own, when it runs)
+                            if (!m.local_moe)
+                                mmq::quantize(m.mixed, m.src_dev, m.Xq, mmq_gt, N, N, T * K, m.cs);
                             // each group's rows: absolute bounds (gate/up reads the layer's rows), relative ones (down
                             // reads the group's own quantized H)
                             const size_t n = order.size(), ng = (n + MMQ_GROUP - 1) / MMQ_GROUP;
@@ -3236,6 +3291,26 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                 for (size_t i = 0; i <= MMQ_GROUP; ++i)
                                     m.bounds_host[n + 1 + g * (MMQ_GROUP + 1) + i] =
                                         m.bounds_host[std::min(n, g * MMQ_GROUP + i)] - m.bounds_host[g * MMQ_GROUP];
+                            // group_local: each group in parts of at most local_rows rows (one part, its own relative
+                            // bounds, unless its rows are more), the split parts' bounds after the groups'
+                            m.subs.clear();
+                            for (size_t g = 0; g < ng && m.local_moe; ++g) {
+                                const size_t j0 = g * MMQ_GROUP, cnt = std::min<size_t>(MMQ_GROUP, n - j0);
+                                if (m.bounds_host[j0 + cnt] - m.bounds_host[j0] <= m.local_rows) {
+                                    m.subs.push_back({j0, 0, (int) cnt, n + 1 + g * (MMQ_GROUP + 1)});
+                                    continue;
+                                }
+                                for (size_t a = 0; a < cnt;) {
+                                    size_t b = a + 1; // one expert has at most T <= local_rows rows
+                                    while (b < cnt && m.bounds_host[j0 + b + 1] - m.bounds_host[j0 + a] <= m.local_rows)
+                                        ++b;
+                                    const size_t table = m.bounds_host.size();
+                                    for (size_t i = a; i <= b; ++i)
+                                        m.bounds_host.push_back(m.bounds_host[j0 + i] - m.bounds_host[j0 + a]);
+                                    m.subs.push_back({j0, (int) a, (int) b, table});
+                                    a = b;
+                                }
+                            }
                             if (grp_mapped) {
                                 int32_t* bh = m.grp_host + 3 * m.grp_tk;
                                 std::memcpy(bh, m.bounds_host.data(), m.bounds_host.size() * 4);
@@ -3660,6 +3735,58 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                 // the zeroed tail after the group's last expert (see MMQ_TAIL)
                                 cudaMemsetAsync(m.grp_gu + (size_t) ngx * mmq_gub, 0, MMQ_TAIL, m.cs);
                                 cudaMemsetAsync(m.grp_d + (size_t) ngx * mmq_db, 0, MMQ_TAIL, m.cs);
+                                if (m.local_moe) {
+                                    // the group's parts (one, unless its rows are more than local_rows): its rows'
+                                    // activations quantized here, the products in the group's own rows, down into the
+                                    // same Dm rows as the all-slot layout
+                                    for (const Impl::SubGroup& sg : m.subs) {
+                                        if (sg.j0 != j0)
+                                            continue;
+                                        const int64_t ra = m.bounds_host[j0 + (size_t) sg.a] - r0,
+                                                      rn = m.bounds_host[j0 + (size_t) sg.b] - r0 - ra;
+                                        int64_t mx = 0;
+                                        for (int i = sg.a; i < sg.b; ++i)
+                                            mx = std::max<int64_t>(mx, m.cnt[(size_t) order[j0 + (size_t) i]]);
+                                        if (rn <= 0)
+                                            continue;
+                                        mmq::quantize(m.mixed, m.src_dev + r0 + ra, m.Xq, mmq_gt, N, N, rn, m.cs);
+                                        mmq::Product gl;
+                                        gl.w = m.grp_gu + (size_t) sg.a * mmq_gub;
+                                        gl.type = mmq_gt;
+                                        gl.w_rows = 1280;
+                                        gl.w_cols = N;
+                                        gl.expert_bytes = mmq_gub;
+                                        gl.n = sg.b - sg.a;
+                                        gl.xq = m.Xq;
+                                        gl.bounds = m.bounds_dev + sg.table;
+                                        gl.ids = m.ids_identity;
+                                        gl.total_rows = rn;
+                                        gl.max_rows = mx;
+                                        gl.dst = m.GU;
+                                        gl.ld_dst = 1280;
+                                        m.mmq_ctx->run(gl, m.cs);
+                                        mmq::swiglu(m.GU, m.H, rn, 640, !lay.native || lay.gate_up_interleaved, m.cs);
+                                        pt.mark(kPfGemmD, cs);
+                                        mmq::quantize(m.H, nullptr, m.Hq, mmq_dt, 640, 640, rn, m.cs);
+                                        mmq::Product dl;
+                                        dl.w = m.grp_d + (size_t) sg.a * mmq_db;
+                                        dl.type = mmq_dt;
+                                        dl.w_rows = N;
+                                        dl.w_cols = 640;
+                                        dl.expert_bytes = mmq_db;
+                                        dl.n = sg.b - sg.a;
+                                        dl.xq = m.Hq;
+                                        dl.bounds = m.bounds_dev + sg.table;
+                                        dl.ids = m.ids_identity;
+                                        dl.total_rows = rn;
+                                        dl.max_rows = mx;
+                                        dl.dst = m.Dm + (r0 + ra) * N;
+                                        dl.ld_dst = N;
+                                        m.mmq_ctx->run(dl, m.cs);
+                                        pt.mark(kPfGemmGU, cs);
+                                    }
+                                    return true;
+                                }
                                 mmq::Product gu;
                                 gu.w = m.grp_gu;
                                 gu.type = mmq_gt;
@@ -3813,9 +3940,10 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                             return c;
                         };
                         // (fused: GU and H hold the grouping tables and int8 rows, not floats)
-                        const int64_t bgu = fused_l ? 0 : bad(m.GU, T * K * 1280), bdm = bad(m.Dm, T * K * N),
-                                      bbo = bad(m.bo, T * N);
-                        const int64_t bh = m.H && !fused_l ? bad(m.H, T * K * 640) : -1;
+                        // (group_local: GU and H hold the last group's rows only)
+                        const int64_t bgu = fused_l || m.local_moe ? 0 : bad(m.GU, T * K * 1280),
+                                      bdm = bad(m.Dm, T * K * N), bbo = bad(m.bo, T * N);
+                        const int64_t bh = m.H && !fused_l && !m.local_moe ? bad(m.H, T * K * 640) : -1;
                         static int64_t reported = -1;
                         if ((bgu || bdm || bbo || bh > 0) && reported != stats_.chunks) {
                             reported = stats_.chunks;

@@ -1,0 +1,3 @@
+chunk 1024 wall 30794 ms wait copy 11999 dequant 2063 gemm gate/up 6364 gemm down 2186 
+chunk 2048 wall 21169 ms wait copy 5757 dequant 1158 gemm gate/up 4559 gemm down 1643 
+chunk 4096 wall 15975 ms wait copy 2875 dequant 620 gemm gate/up 3094 gemm down 1295 
