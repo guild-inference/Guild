@@ -1,0 +1,5 @@
+c1_11_1 45.60 frames/s, 2.12x real time; tower 1753 ms, codec 20 ms 31da4ec0 | GPU cache 1004 slots (1906851840 bytes)
+c0_11_1 45.46 frames/s, 2.11x real time; tower 1789 ms, codec 40 ms 6e04c9b1 | GPU cache 0 slots (0 bytes)
+c1_11_2 45.64 frames/s, 2.12x real time; tower 1743 ms, codec 20 ms 31da4ec0 | GPU cache 1004 slots (1906851840 bytes)
+c0_11_2 45.33 frames/s, 2.11x real time; tower 1793 ms, codec 40 ms 6e04c9b1 | GPU cache 0 slots (0 bytes)
+done

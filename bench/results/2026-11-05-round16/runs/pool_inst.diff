@@ -1,0 +1,121 @@
+--- pool_orig.cpp	2026-11-06 01:00:01.813155967 +0000
++++ pool_instD.cpp	2026-11-05 23:21:12.414423577 +0000
+@@ -25,6 +25,12 @@
+ #endif
+ 
+ namespace guild::kernels::cpu {
++struct alignas(64) InstSlot { int64_t seen, first, last, parked; int tasks; int64_t gu, q, wait, down, gu_end_max; };
++InstSlot g_inst[80];
++int64_t g_pub, g_hdrain, g_wdone, g_wpark;
++double g_acc[8]; double g_acc_w[80][9]; int g_calls; bool g_inst_on;
++static inline int64_t inst_now() { return std::chrono::steady_clock::now().time_since_epoch().count(); }
++
+ #if GUILD_BUNDLED_CPU_ARITHMETIC && defined(GUILD_NATIVE_EXPERTS)
+ extern "C" const guild_cpu_backend_ext_v2_t* guild_cpu_backend_table_v2();
+ #endif
+@@ -607,6 +613,7 @@
+             return;
+         // acquire: the batch this epoch published (`head`, and the description before it) is visible from here
+         seen = epoch_.load(std::memory_order_acquire);
++        if (g_inst_on) { auto& S = g_inst[id+1]; S.seen = inst_now(); S.first = 0; S.tasks = 0; S.gu = S.q = S.wait = S.down = S.gu_end_max = 0; }
+         parked_.fetch_sub(1, std::memory_order_acq_rel); // leaving the park
+ 
+         // Drain: one claim per iteration, so a slow worker takes fewer experts and a fast one takes more.
+@@ -616,6 +623,7 @@
+         drain(id, scratch_[(size_t) id], seen);
+         wstate_[(size_t) id].store(kParked, std::memory_order_relaxed);
+         parked_.fetch_add(1, std::memory_order_acq_rel); // back at the park
++        if (g_inst_on) g_inst[id+1].parked = inst_now();
+     }
+ }
+ 
+@@ -728,7 +736,9 @@
+     const bool numa_batch = numa_batch_.load(std::memory_order_relaxed);
+     const int node = numa_batch ? current_numa_node() : 0;
+     for (;;) {
++        const int64_t C0 = g_inst_on ? inst_now() : 0;
+         int ci = numa_batch ? claim_numa(epoch, node) : claim(epoch);
++        if (g_inst_on) g_inst[id+1].q += inst_now() - C0;
+         if (ci < 0)
+             break;
+         // A NUMA batch's (queue, index): mode 11 maps it back to the single queue's task, modes 5/6 below cut
+@@ -747,6 +757,7 @@
+             }
+         }
+         const uint32_t i = (uint32_t) ci;
++        if (g_inst_on && g_inst[id+1].first == 0) g_inst[id+1].first = inst_now();
+         if (id >= 0)
+             wstate_[(size_t) id].store(ci, std::memory_order_relaxed);
+         else {
+@@ -879,6 +890,7 @@
+                 std::chrono::steady_clock::time_point t_a, t_b, t_c;
+                 if (time_phases)
+                     t_a = std::chrono::steady_clock::now();
++                const int64_t I0 = g_inst_on ? inst_now() : 0;
+                 if (r0 < r1) {
+                     if (q2_native_kernels(nfmt_->gu_type)) {
+                         thread_local float gbuf[MAXT][FF], ubuf[MAXT][FF];
+@@ -901,6 +913,7 @@
+                         native_gu_rows(*nfmt_, mjobs_[e].gu(), mjobs_[e].nact, mjobs_[e].nt, ff, r0, r1);
+                     }
+                 }
++                if (g_inst_on) { const int64_t I1 = inst_now(); g_inst[id+1].gu += I1 - I0; }
+                 if (time_phases) {
+                     t_b = std::chrono::steady_clock::now();
+                     host_gu_ms_ += std::chrono::duration<double, std::milli>(t_b - t_a).count();
+@@ -938,9 +951,12 @@
+                                    : ((emb_q >= fused_down_parts_) ? ((emb_q * (part + 1) / fused_down_parts_) * 4)
+                                                                    : (n_embd * (part + 1) / fused_down_parts_));
+                 SplitBufMulti& sb = split_multi_[(size_t) e];
++                const int64_t W0 = g_inst_on ? inst_now() : 0;
+                 while (sb.hq_ready.load(std::memory_order_acquire) == 0) {
+                     _mm_pause();
+                 }
++                const int64_t W1 = g_inst_on ? inst_now() : 0;
++                if (g_inst_on) g_inst[id+1].wait += W1 - W0;
+                 std::chrono::steady_clock::time_point t_c, t_d;
+                 if (time_phases)
+                     t_c = std::chrono::steady_clock::now();
+@@ -963,6 +979,7 @@
+                         }
+                     }
+                 }
++                if (g_inst_on) g_inst[id+1].down += inst_now() - W1;
+                 if (time_phases) {
+                     t_d = std::chrono::steady_clock::now();
+                     host_down_ms_ += std::chrono::duration<double, std::milli>(t_d - t_c).count();
+@@ -1060,7 +1077,10 @@
+             else if (mode_ == 7 || mode_ == 9)
+                 p.quant += value;
+         }
++        if (g_inst_on) { g_inst[id+1].last = inst_now(); g_inst[id+1].tasks++; }
++        const int64_t D0 = g_inst_on ? inst_now() : 0;
+         done_.fetch_add(1, std::memory_order_release);
++        if (g_inst_on) g_inst[id+1].gu_end_max += inst_now() - D0;
+     }
+ }
+ 
+@@ -1083,11 +1103,23 @@
+     njobs_ = n[0] + n[1];
+     numa_first_[0] = (uint32_t) first[0];
+     numa_first_[1] = (uint32_t) first[1];
++    if (g_inst_on) { auto& S = g_inst[0]; S.first = 0; S.tasks = 0; S.gu = S.q = S.wait = S.down = S.gu_end_max = 0; g_pub = inst_now(); g_inst[0].seen = g_pub; }
+     const uint32_t e = begin_batch(n[0], n[1]);
+     if (host_works_)
+         drain(-1, host_scratch_, e);
++    if (g_inst_on) g_hdrain = inst_now();
+     wait_done(n[0] + n[1]);
++    if (g_inst_on) g_wdone = inst_now();
+     wait_parked("after a phase");
++    if (g_inst_on) {
++        g_wpark = inst_now();
++        g_acc[0] += (g_hdrain - g_pub) * 1e-3; g_acc[1] += (g_wdone - g_pub) * 1e-3; g_acc[2] += (g_wpark - g_pub) * 1e-3;
++        for (int w = 0; w <= n_; ++w) {
++            g_acc_w[w][0] += (g_inst[w].seen - g_pub) * 1e-3; g_acc_w[w][1] += (g_inst[w].first - g_pub) * 1e-3;
++            g_acc_w[w][2] += (g_inst[w].last - g_pub) * 1e-3; g_acc_w[w][3] += g_inst[w].tasks; g_acc_w[w][4] += (g_inst[w].parked - g_pub) * 1e-3; g_acc_w[w][5] += g_inst[w].gu*1e-3; g_acc_w[w][6] += g_inst[w].wait*1e-3; g_acc_w[w][7] += g_inst[w].down*1e-3; g_acc_w[w][8] += g_inst[w].gu_end_max*1e-3; g_acc_w[w][4] += g_inst[w].q*1e-3 - (g_inst[w].parked - g_pub)*1e-3;
++        }
++        g_calls++;
++    }
+     numa_batch_.store(false, std::memory_order_relaxed);
+     hstate_.store(kIdle, std::memory_order_relaxed);
+     hstate_ms_.store(now_ms(), std::memory_order_relaxed);

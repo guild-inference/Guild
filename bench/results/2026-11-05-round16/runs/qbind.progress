@@ -1,0 +1,5 @@
+bind round 1 node0 free before 28137.42 MB | SUMMARY {"prose": 49.40519989999791, "code": 61.9624929983752} [38747, 38747, 41916, 41916] | resident NUMA split: 1536/1536
+nobind round 1 node0 free before 31104.55 MB | SUMMARY {"prose": 45.868071301078245, "code": 55.172868234275015} [38747, 38747, 41916, 41916] | resident NUMA split: 1536/1536
+bind round 2 node0 free before 31035.41 MB | SUMMARY {"prose": 48.706272192443734, "code": 62.02460191323637} [38747, 38747, 41916, 41916] | resident NUMA split: 1536/1536
+nobind round 2 node0 free before 50119.75 MB | SUMMARY {"prose": 49.24028609252315, "code": 61.86707316404957} [38747, 38747, 41916, 41916] | resident NUMA split: 1536/1536
+done

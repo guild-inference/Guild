@@ -1,0 +1,5 @@
+bind round 3 node0 free before 1384.85 MB | SUMMARY {"prose": 49.23552498575135, "code": 62.024774366841996} [38747, 38747, 41916, 41916] | resident NUMA split: 1536/1536 | engine MB by node: Total                    48202.02        51352.88        99554.90
+nobind round 3 node0 free before 1363.60 MB | SUMMARY {"prose": 44.7870909294828, "code": 53.92742941238255} [38747, 38747, 41916, 41916] | resident NUMA split: 24/1536 | engine MB by node: Total                    16853.79        82700.43        99554.22
+bind round 4 node0 free before 1380.41 MB | SUMMARY {"prose": 48.886649565798194, "code": 62.16937154911622} [38747, 38747, 41916, 41916] | resident NUMA split: 1536/1536 | engine MB by node: Total                    48284.36        51270.12        99554.48
+nobind round 4 node0 free before 1025.71 MB | SUMMARY {"prose": 43.80225591041916, "code": 53.550123052661725} [38747, 38747, 41916, 41916] | resident NUMA split: 3/1536 | engine MB by node: Total                    10703.39        88849.02        99552.41
+done
