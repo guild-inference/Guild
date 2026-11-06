@@ -1,0 +1,6 @@
+guild glm5: experts split across 2 NUMA nodes, IQ3_S gate/up as NL4: 77.9 + 77.9 GiB in 1149.8 s
+glm5 timing (prompt): activations 4 ms, gate/up 0, hidden 4, down 0, both in one phase 141; launches 44; waits for a group's router 4 (KDA layers) / 0 (DSA), for the launcher 0; threads busy 0% / 0% / 96%; 20.98 GB of expert rows (gate/up 13.76 GB, down 7.22) at 149.2 GB/s
+glm5 timing (prompt + decode): activations 169 ms, gate/up 77, hidden 257, down 34, both in one phase 8468; launches 1923; waits for a group's router 546 (KDA layers) / 208 (DSA), for the launcher 46; threads busy 94% / 88% / 95%; 1569.67 GB of expert rows (gate/up 1030.74 GB, down 538.94) at 183.0 GB/s
+MTP: 117 of 138 drafts accepted (85%); per step: draft 4.6 ms, verify 74.6, accept 0.7
+per step: 78.6 / 79.1 / 80.7 ms (10th / 50th / 90th percentile), CPU experts 63.5 / 64.3 / 65.4
+prompt 5 tokens in 198 ms (25.30 tok/s); decode 256 tokens in 11027 ms (23.13 tok/s, CPU experts 64.5 ms per step)

@@ -33,4 +33,9 @@ private:
 /// 14 q6_k, 13 q5_k, 12 q4_k, 8 q8_0; 0 when the map does not name its kind.
 int dense_map_type(const std::string& map, const std::string& name);
 
+/// `n_out` rows of `n_in` Q8_0 weights as ggml type `type` (12-14 above): each row dequantized to floats, then
+/// ggml_quantize_chunk with `imatrix` ([n_in] or null), on up to 32 threads.  `n_in` % 256 == 0.
+std::vector<uint8_t> q8_0_requant(const uint8_t* q8, int64_t n_in, int64_t n_out, int type,
+                                  const float* imatrix = nullptr);
+
 } // namespace guild::core

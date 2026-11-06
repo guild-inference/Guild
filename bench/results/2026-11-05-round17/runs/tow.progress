@@ -1,0 +1,24 @@
+ref 46.13 frames/s, 2.14x real time; tower 2075 ms, codec 40 ms 6e04c9b1 
+kl_q6_k 49.74 frames/s, 2.31x real time; tower 1912 ms, codec 40 ms 6e04c9b1 tower matrices re-quantized (q6_k): 88 of them, 1420 -> 1181 MiB
+q6_k.logits: 480 steps; main 0.0003 top1 99.2%; codes 0.0066 0.0092 0.0133 0.0168 0.0163 0.0198 0.0203 0.0237 0.0230 | mean 0.0166 top1 86.6%
+kl_q5_k 49.32 frames/s, 2.29x real time; tower 1760 ms, codec 40 ms 6e04c9b1 tower matrices re-quantized (q5_k): 88 of them, 1420 -> 1049 MiB
+q5_k.logits: 480 steps; main 0.0010 top1 97.5%; codes 0.0254 0.0394 0.0461 0.0569 0.0613 0.0626 0.0648 0.0744 0.0930 | mean 0.0582 top1 74.5%
+kl_q4_k 51.13 frames/s, 2.37x real time; tower 1643 ms, codec 40 ms 6e04c9b1 tower matrices re-quantized (q4_k): 88 of them, 1420 -> 925 MiB
+q4_k.logits: 480 steps; main 0.0039 top1 91.0%; codes 0.0761 0.1343 0.1648 0.2021 0.2204 0.2686 0.2664 0.2685 0.3000 | mean 0.2112 top1 57.2%
+sp_q8_0_11_1 46.22 frames/s, 2.15x real time; tower 2155 ms, codec 40 ms 6e04c9b1 
+sp_q8_0_12_1 46.06 frames/s, 2.14x real time; tower 1942 ms, codec 31 ms f84288c9 
+sp_q6_k_11_1 47.58 frames/s, 2.21x real time; tower 2138 ms, codec 22 ms e651d1f3 tower matrices re-quantized (q6_k): 88 of them, 1420 -> 1181 MiB
+sp_q6_k_12_1 47.51 frames/s, 2.21x real time; tower 2132 ms, codec 16 ms 4b7ed8a7 tower matrices re-quantized (q6_k): 88 of them, 1420 -> 1181 MiB
+sp_q5_k_11_1 49.45 frames/s, 2.30x real time; tower 1997 ms, codec 34 ms f41b9f5b tower matrices re-quantized (q5_k): 88 of them, 1420 -> 1049 MiB
+sp_q5_k_12_1 49.68 frames/s, 2.31x real time; tower 1685 ms, codec 24 ms e851dc81 tower matrices re-quantized (q5_k): 88 of them, 1420 -> 1049 MiB
+sp_q4_k_11_1 52.65 frames/s, 2.44x real time; tower 1966 ms, codec 11 ms 25f1ca88 tower matrices re-quantized (q4_k): 88 of them, 1420 -> 925 MiB
+sp_q4_k_12_1 52.50 frames/s, 2.44x real time; tower 2032 ms, codec 26 ms 3c65b301 tower matrices re-quantized (q4_k): 88 of them, 1420 -> 925 MiB
+sp_q8_0_11_2 46.21 frames/s, 2.15x real time; tower 2164 ms, codec 40 ms 6e04c9b1 
+sp_q8_0_12_2 46.08 frames/s, 2.14x real time; tower 1942 ms, codec 32 ms f84288c9 
+sp_q6_k_11_2 48.94 frames/s, 2.27x real time; tower 2149 ms, codec 22 ms e651d1f3 tower matrices re-quantized (q6_k): 88 of them, 1420 -> 1181 MiB
+sp_q6_k_12_2 48.74 frames/s, 2.26x real time; tower 2139 ms, codec 17 ms 4b7ed8a7 tower matrices re-quantized (q6_k): 88 of them, 1420 -> 1181 MiB
+sp_q5_k_11_2 50.60 frames/s, 2.35x real time; tower 1985 ms, codec 34 ms f41b9f5b tower matrices re-quantized (q5_k): 88 of them, 1420 -> 1049 MiB
+sp_q5_k_12_2 50.71 frames/s, 2.36x real time; tower 1682 ms, codec 25 ms e851dc81 tower matrices re-quantized (q5_k): 88 of them, 1420 -> 1049 MiB
+sp_q4_k_11_2 50.83 frames/s, 2.36x real time; tower 1973 ms, codec 11 ms 25f1ca88 tower matrices re-quantized (q4_k): 88 of them, 1420 -> 925 MiB
+sp_q4_k_12_2 52.55 frames/s, 2.44x real time; tower 2032 ms, codec 26 ms 3c65b301 tower matrices re-quantized (q4_k): 88 of them, 1420 -> 925 MiB
+done

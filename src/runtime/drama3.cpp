@@ -412,6 +412,30 @@ bool GuildModel::synthesize(const SpeechRequest& req, const SpeechCallback& on_a
     // tower_ms is the time this thread spends in the tower.  `tower_row` is the step's frame row, kept until the join.
     std::vector<int32_t> tower_row(kWidth);
     std::string beside_err;
+    // Test hooks: GUILD_DRAMA3_DUMP_LOGITS writes each step's tower logits (float32: the main token's CS + 1, then CS
+    // for each of the n_codebooks - 1 heads), which runs every head even when GUILD_DRAMA3_FORCE gives the codes;
+    // GUILD_DRAMA3_DUMP_FRAMES writes each decoded frame (int32 [kWidth], as GUILD_DRAMA3_FORCE reads them).
+    struct Dump {
+        std::FILE* f = nullptr;
+        explicit Dump(const char* var) {
+            if (const char* path = std::getenv(var); path && *path)
+                f = std::fopen(path, "wb");
+        }
+        ~Dump() {
+            if (f)
+                std::fclose(f);
+        }
+    } logits_dump("GUILD_DRAMA3_DUMP_LOGITS"), frames_dump("GUILD_DRAMA3_DUMP_FRAMES");
+    std::vector<float> cand_logits(logits_dump.f ? (size_t) tg.codebook_size + 1 : 0),
+        code_logits(logits_dump.f ? (size_t) (tg.n_codebooks - 1) * tg.codebook_size : 0);
+    bool logits_pending = false; // a step's logits are written once its codes are all made
+    auto write_logits = [&] {
+        if (logits_pending && logits_dump.f) {
+            std::fwrite(cand_logits.data(), 4, cand_logits.size(), logits_dump.f);
+            std::fwrite(code_logits.data(), 4, code_logits.size(), logits_dump.f);
+        }
+        logits_pending = false;
+    };
     std::unique_ptr<Beside> beside; // after what its job reads and writes, so it joins before they go
     if (overlap)
         beside = std::make_unique<Beside>(device);
@@ -423,19 +447,23 @@ bool GuildModel::synthesize(const SpeechRequest& req, const SpeechCallback& on_a
         tower_ms += ms_since(t0);
         if (!ok)
             error_msg = beside_err;
+        else
+            write_logits();
         return ok;
     };
     auto tower_step = [&](const float* hidden, int64_t p, const int32_t* row, const int32_t* forced) -> bool {
         const auto t0 = Clock::now();
         std::copy(row, row + kWidth, tower_row.begin());
         const int n_hist = (int) std::min<size_t>(mains.size(), (size_t) p + 1);
-        bool ok =
-            m.tower->step_begin(hidden, p, tower_row.data(), forced, mains.data() + (n_hist - std::min(n_hist, 16)),
-                                std::min(n_hist, 16), sp, frame.data(), error_msg);
+        bool ok = m.tower->step_begin(hidden, p, tower_row.data(), forced,
+                                      mains.data() + (n_hist - std::min(n_hist, 16)), std::min(n_hist, 16), sp,
+                                      frame.data(), error_msg, logits_dump.f ? cand_logits.data() : nullptr,
+                                      logits_dump.f ? code_logits.data() : nullptr);
+        logits_pending = ok;
         if (ok && beside)
             beside->start([&] { return m.tower->step_finish(beside_err); });
-        else if (ok)
-            ok = m.tower->step_finish(error_msg);
+        else if (ok && (ok = m.tower->step_finish(error_msg)))
+            write_logits();
         tower_ms += ms_since(t0);
         return ok;
     };
@@ -544,6 +572,8 @@ bool GuildModel::synthesize(const SpeechRequest& req, const SpeechCallback& on_a
         }
         if (!tower_join())
             return false;
+        if (frames_dump.f)
+            std::fwrite(frame.data(), 4, frame.size(), frames_dump.f);
         pending.insert(pending.end(), frame.begin() + 1, frame.end());
         if ((int) (pending.size() / (size_t) tg.n_codebooks) >= std::max(1, req.chunk_frames) && !flush(false)) {
             if (!error_msg.empty())
@@ -560,6 +590,8 @@ bool GuildModel::synthesize(const SpeechRequest& req, const SpeechCallback& on_a
     }
     if (!tower_join())
         return false;
+    if (frames_dump.f && frame[0] == tg.eos) // the end, so a run forced with these frames ends there too
+        std::fwrite(frame.data(), 4, frame.size(), frames_dump.f);
     const bool codec_ok = codec_join(); // the chunk on codec_side counts toward the decode, as when it ran here
     telemetry.decode_ms = ms_since(t_decode);
     if (hidden_dump)

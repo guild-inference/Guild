@@ -1,6 +1,7 @@
 // src/core/drama3_tower.cpp - Drama 3's codebook tower (include/guild/core/drama3_tower.hpp).
 #include "guild/core/drama3_tower.hpp"
 
+#include "guild/core/dense_quant.hpp"
 #include "guild/core/drama3_tower_kernels.hpp"
 #include "guild/kernels/native_mmvq.hpp"
 
@@ -9,6 +10,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <map>
@@ -129,14 +131,57 @@ bool Drama3Tower::load(const std::string& dir, int64_t max_frames, std::string& 
         err = "drama3 tower: cannot read " + dir + "/dense.bin or dense.txt";
         return false;
     }
-    const uint64_t size = (uint64_t) bin.tellg();
-    std::vector<char> host(size);
+    const uint64_t file_size = (uint64_t) bin.tellg();
+    std::vector<char> host(file_size);
     bin.seekg(0);
-    bin.read(host.data(), (std::streamsize) size);
+    bin.read(host.data(), (std::streamsize) file_size);
     if (!bin) {
         err = "drama3 tower: short read of dense.bin";
         return false;
     }
+    // GUILD_DRAMA3_TOWER=q6_k|q5_k|q4_k, or kind=type,... (kinds eh_proj, wqkv, wo, w1, w2, w3, head): the Q8_0
+    // matrices re-quantized at load (dense_quant's q8_0_requant), each row's bytes fewer to read a frame.  It changes
+    // the codes' logits, so it is opt-in; unset, the matrices are the file's.
+    std::map<std::string, int> retyped;
+    if (const char* e = std::getenv("GUILD_DRAMA3_TOWER"); e && *e) {
+        const std::string spec = e;
+        const bool one = spec.find('=') == std::string::npos;
+        std::vector<std::pair<uint64_t, std::string>> order; // the file's order, so offsets grow as they did
+        for (const auto& [name, en] : index)
+            order.push_back({en.offset, name});
+        std::sort(order.begin(), order.end());
+        std::vector<char> out;
+        out.reserve(host.size());
+        for (const auto& [offset, name] : order) {
+            Entry& en = index[name];
+            const std::string kind = name.rfind("head.", 0) == 0 ? "head" : name.substr(name.rfind('.') + 1);
+            const int type = en.kind != "q8_0" || en.cols % 256 ? 0
+                             : one                              ? dense_map_type("x=" + spec, "x")
+                                                                : dense_map_type(spec, "blk.0." + kind + ".weight");
+            if (offset + en.bytes > file_size) {
+                err = "drama3 tower: dense.txt: " + name + " runs past dense.bin";
+                return false;
+            }
+            const size_t at = (out.size() + 255) & ~(size_t) 255; // the device copy's rows stay 256-byte aligned
+            out.resize(at);
+            if (type == 12 || type == 13 || type == 14) {
+                const std::vector<uint8_t> rq =
+                    q8_0_requant((const uint8_t*) host.data() + offset, en.cols, en.rows, type, nullptr);
+                out.insert(out.end(), rq.begin(), rq.end());
+                en.bytes = rq.size();
+                en.kind = "q8_0"; // found as a matrix; `retyped` says which type it is now
+                retyped[name] = type;
+            } else {
+                out.insert(out.end(), host.begin() + (std::ptrdiff_t) offset,
+                           host.begin() + (std::ptrdiff_t)(offset + en.bytes));
+            }
+            en.offset = at;
+        }
+        std::fprintf(stderr, "guild drama3: tower matrices re-quantized (%s): %zu of them, %.0f -> %.0f MiB\n", e,
+                     retyped.size(), file_size / 1048576.0, out.size() / 1048576.0);
+        host.swap(out);
+    }
+    const uint64_t size = host.size();
     if (!cuda_ok(cudaMalloc(&dense_, size), "dense weights", err) ||
         !cuda_ok(cudaMemcpy(dense_, host.data(), size, cudaMemcpyHostToDevice), "dense upload", err))
         return false;
@@ -152,7 +197,8 @@ bool Drama3Tower::load(const std::string& dir, int64_t max_frames, std::string& 
     const int D = g_.dim, Q = g_.n_head * g_.head_dim, KV = g_.n_kv_head * g_.head_dim, CS = g_.codebook_size;
     try {
         auto mat = [&](const std::string& name, int rows, int cols) {
-            return Mat{find(name, "q8_0", rows, cols), rows, cols};
+            const auto it = retyped.find(name);
+            return Mat{find(name, "q8_0", rows, cols), rows, cols, it == retyped.end() ? kQ8_0 : it->second};
         };
         auto vec = [&](const std::string& name, int n) { return (const float*) find(name, "f32", 1, n); };
         const int n_layers = g_.n_shared + g_.n_codebooks - 1;
@@ -259,7 +305,7 @@ bool Drama3Tower::matvec(const Mat& m, const float* x, float* y, std::string& er
     void* xq = ncols > 1 ? bxq_ : xq_;
     try {
         guild::kernels::native_quantize_q8_1(x, xq, m.cols, ncols, stream_);
-        guild::kernels::native_mmvq(kQ8_0, m.w, xq, y, m.cols, m.rows, ncols, stream_);
+        guild::kernels::native_mmvq(m.type, m.w, xq, y, m.cols, m.rows, ncols, stream_);
     } catch (const std::exception& e) {
         err = std::string("drama3 tower matvec: ") + e.what();
         return false;
@@ -292,7 +338,7 @@ bool Drama3Tower::layer_forward(Layer& L, const float* e, int64_t pos, std::stri
         return false;
     try {
         guild::kernels::native_swiglu_quantize_q8_1(ff1_, ff3_, xq_, g_.ffn, 1, stream_);
-        guild::kernels::native_mmvq(kQ8_0, L.w2.w, xq_, proj_, g_.ffn, D, 1, stream_);
+        guild::kernels::native_mmvq(L.w2.type, L.w2.w, xq_, proj_, g_.ffn, D, 1, stream_);
     } catch (const std::exception& ex) {
         err = std::string("drama3 tower ffn: ") + ex.what();
         return false;
@@ -559,7 +605,7 @@ bool Drama3Tower::prefill_chunk(const float* hidden, int64_t pos0, int n, const 
             return false;
         try {
             guild::kernels::native_swiglu_quantize_q8_1(bff1_, bff3_, bxq_, g_.ffn, n, stream_);
-            guild::kernels::native_mmvq(kQ8_0, L.w2.w, bxq_, bproj_, g_.ffn, D, n, stream_);
+            guild::kernels::native_mmvq(L.w2.type, L.w2.w, bxq_, bproj_, g_.ffn, D, n, stream_);
         } catch (const std::exception& ex) {
             err = std::string("drama3 tower ffn: ") + ex.what();
             return false;

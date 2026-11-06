@@ -110,6 +110,7 @@ private:
     struct Mat {
         const void* w = nullptr;
         int rows = 0, cols = 0;
+        int type = 8; ///< ggml type: Q8_0 as tools/drama3_tower_rt.py writes it, or GUILD_DRAMA3_TOWER's
     };
     struct Layer {
         const uint16_t* embedding = nullptr;

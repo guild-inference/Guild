@@ -1,0 +1,3 @@
+layer 12: worst cosine 0.988071
+40 steps: worst cosine 0.972483; KL mean 0.09667, worst 0.64982 nats; argmax agreement 0.585 (400 rows)
+FAIL
