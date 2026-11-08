@@ -1743,7 +1743,15 @@ static int bench_shapes() {
                   {"glm dsa out q5", 13, 16384, 4096},
                   {"glm dsa out q4", 12, 16384, 4096},
                   {"glm head", 14, 4096, 154880},
-                  {"glm head q4", 12, 4096, 154880}};
+                  {"glm head q4", 12, 4096, 154880},
+                  // Q4_K rows of 8 to 16 blocks (native_mmvq's one-chunk staged rows): GLM5_SHAPES_ONLY=q4w
+                  {"q4w 8 bl", 12, 2048, 8192},
+                  {"q4w 9 bl", 12, 2304, 8192},
+                  {"q4w 10 bl", 12, 2560, 8192},
+                  {"q4w 11 bl", 12, 2816, 8192},
+                  {"q4w 12 bl", 12, 3072, 8192},
+                  {"q4w 14 bl", 12, 3584, 8192},
+                  {"q4w 16 bl", 12, 4096, 8192}};
     cudaStream_t st;
     cudaStreamCreate(&st);
     // GLM5_SHAPES_ONLY=<part of a name>: those shapes only; GLM5_SHAPES_COLS=<n>: that column count only (profiling)
