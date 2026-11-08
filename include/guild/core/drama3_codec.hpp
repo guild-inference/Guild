@@ -12,6 +12,7 @@
 // codebook 0 to 4095, the rest to 1023 (the tower's heads are 4096-way).
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -47,6 +48,12 @@ public:
     bool can_encode() const {
         return can_encode_;
     }
+    /// Pacing beside a latency-bound neighbour (Drama 3's tower step_begin).  With `hold` set, `decode` keeps at most
+    /// `depth` SGEMMs in flight (an event after each; depth 0: no bound) and issues nothing new while *hold is true,
+    /// so a neighbour that sets it waits for at most `depth` GEMMs.  Only the host's launch timing changes: the same
+    /// calls in the same order on the same stream and handle.  nullptr (the default) is the unpaced decode.  Call it
+    /// only while no `decode` runs.
+    void set_hold(const std::atomic<bool>* hold, int depth = 2);
 
     struct Impl;
 

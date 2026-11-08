@@ -101,6 +101,13 @@ public:
     void* stream() const {
         return stream_;
     }
+    /// step_begin's stream: with `top` (the default) a second stream at the device's greatest priority, so a codec
+    /// chunk queued beside it at the default priority yields the SMs to it; otherwise `stream()`, as step_finish and
+    /// prefill use.  Only the stream changes: the kernels, their order and their buffers are the same.  step_begin
+    /// ends synchronized, and step_finish and prefill end synchronized, so the two streams never hold work at once.
+    void set_step_priority(bool top) {
+        top_ = top && prio_stream_ != nullptr;
+    }
     /// Restarts the sampler's draw counter (a request with a seed replays its draws)
     void reset_sampling() {
         draws_ = 0;
@@ -119,14 +126,14 @@ private:
         Mat eh_proj, wqkv, wo, w1, w2, w3;
         uint16_t *k_cache = nullptr, *v_cache = nullptr; // [max_frames][n_kv_head][head_dim] FP16
     };
-    bool layer_forward(Layer& L, const float* e_dev, int64_t pos, std::string& err);
-    bool matvec(const Mat& m, const float* x, float* y, std::string& err, int ncols = 1);
+    bool layer_forward(Layer& L, const float* e_dev, int64_t pos, std::string& err, void* st);
+    bool matvec(const Mat& m, const float* x, float* y, std::string& err, void* st, int ncols = 1);
     bool prefill_chunk(const float* hidden, int64_t pos0, int n, const int32_t* rows, std::string& err,
                        float* layer_out);
     static constexpr int kPrefillCols = 64;
     int sample(const float* logits, int n, const Drama3Sampling& sp, std::string& err);
-    bool step_layers(int l0, int l1, std::string& err);     // layers [l0, l1) of the step in `cur_`
-    bool read_logits(int n, float* also, std::string& err); // logits_ -> host_logits_ (and `also`), synchronized
+    bool step_layers(int l0, int l1, std::string& err, void* st);     // layers [l0, l1) of the step in `cur_`
+    bool read_logits(int n, float* also, std::string& err, void* st); // logits_ -> host_logits_ (and `also`), synced
 
     // the step between step_begin and step_finish
     struct Step {
@@ -149,6 +156,8 @@ private:
     Mat cand_;
     const uint16_t* codebook_embeddings_ = nullptr;
     void* stream_ = nullptr;
+    void* prio_stream_ = nullptr; // step_begin's, at the greatest priority (set_step_priority)
+    bool top_ = true;
     // device scratch
     float *h_ = nullptr, *e_ = nullptr, *cat_ = nullptr, *x_ = nullptr, *xn_ = nullptr, *qkv_ = nullptr, *q_ = nullptr,
           *att_ = nullptr, *proj_ = nullptr, *ff1_ = nullptr, *ff3_ = nullptr, *logits_ = nullptr, *part_ = nullptr;

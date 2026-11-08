@@ -374,9 +374,37 @@ bool GuildModel::synthesize(const SpeechRequest& req, const SpeechCallback& on_a
         codec_stopped = true;
         return false;
     };
+    // GUILD_DRAMA3_PRIO (default on; 0: one tower stream, an unpaced codec queued before the step, as before):
+    // step_begin, the critical path between two backbone steps, runs on the tower's top-priority stream with the
+    // codec held (Drama3Codec::set_hold: at most GUILD_DRAMA3_CODEC_DEPTH SGEMMs in flight, default 2, none issued
+    // while held), and a full chunk goes to the codec after the step instead of before it.  Pascal does not preempt
+    // running blocks, so priority alone leaves step_begin waiting behind the codec's queued GEMMs.  Only stream
+    // priorities and the host's launch timing change; the kernels, their order on each stream and the chunk
+    // boundaries are the same, so the audio is the same bits.
+    const char* prio_env = std::getenv("GUILD_DRAMA3_PRIO");
+    const bool prio = !(prio_env && prio_env[0] == '0');
+    const char* depth_env = std::getenv("GUILD_DRAMA3_CODEC_DEPTH");
+    const int codec_depth = depth_env && *depth_env ? std::atoi(depth_env) : 2;
+    m.tower->set_step_priority(prio);
+    std::atomic<bool> codec_hold{false};
     std::unique_ptr<Beside> codec_side; // after what its job reads and writes, so it joins before they go
     if (overlap)
         codec_side = std::make_unique<Beside>(device);
+    // the codec's pacing (set before the decode loop): cleared once codec_side is idle, here on every return
+    struct CodecHold {
+        core::Drama3Codec* codec = nullptr;
+        Beside* side = nullptr;
+        void clear() {
+            if (codec) {
+                side->join();
+                codec->set_hold(nullptr);
+            }
+            codec = nullptr;
+        }
+        ~CodecHold() {
+            clear();
+        }
+    } codec_hold_guard;
     auto codec_join = [&]() -> bool { // false: the last chunk failed (error_msg) or on_audio stopped (no error)
         if (!codec_side)
             return true;
@@ -455,10 +483,13 @@ bool GuildModel::synthesize(const SpeechRequest& req, const SpeechCallback& on_a
         const auto t0 = Clock::now();
         std::copy(row, row + kWidth, tower_row.begin());
         const int n_hist = (int) std::min<size_t>(mains.size(), (size_t) p + 1);
+        if (prio)
+            codec_hold.store(true, std::memory_order_release);
         bool ok = m.tower->step_begin(hidden, p, tower_row.data(), forced,
                                       mains.data() + (n_hist - std::min(n_hist, 16)), std::min(n_hist, 16), sp,
                                       frame.data(), error_msg, logits_dump.f ? cand_logits.data() : nullptr,
                                       logits_dump.f ? code_logits.data() : nullptr);
+        codec_hold.store(false, std::memory_order_release);
         logits_pending = ok;
         if (ok && beside)
             beside->start([&] { return m.tower->step_finish(beside_err); });
@@ -550,6 +581,12 @@ bool GuildModel::synthesize(const SpeechRequest& req, const SpeechCallback& on_a
     // the loop's `frame` holds main, c0 and c1 at the top; the rest after tower_join
 
     // ---- decode: `frame` holds the frame after row R - 1
+    if (prio && codec_side) { // no chunk is on codec_side yet
+        m.codec->set_hold(&codec_hold, codec_depth);
+        codec_hold_guard.codec = m.codec.get();
+        codec_hold_guard.side = codec_side.get();
+    }
+    auto chunk_full = [&] { return (int) (pending.size() / (size_t) tg.n_codebooks) >= std::max(1, req.chunk_frames); };
     const auto t_decode = Clock::now();
     telemetry.finish_reason = "length";
     for (int step = 0; step < req.max_new_frames; ++step) {
@@ -575,7 +612,7 @@ bool GuildModel::synthesize(const SpeechRequest& req, const SpeechCallback& on_a
         if (frames_dump.f)
             std::fwrite(frame.data(), 4, frame.size(), frames_dump.f);
         pending.insert(pending.end(), frame.begin() + 1, frame.end());
-        if ((int) (pending.size() / (size_t) tg.n_codebooks) >= std::max(1, req.chunk_frames) && !flush(false)) {
+        if ((!prio || last) && chunk_full() && !flush(false)) {
             if (!error_msg.empty())
                 return false;
             telemetry.finish_reason = "cancel";
@@ -587,12 +624,19 @@ bool GuildModel::synthesize(const SpeechRequest& req, const SpeechCallback& on_a
         dump_hidden(m.ver->head_input(0));
         if (!tower_step(m.ver->head_input(0), p, row.data(), forced_at(step + 1)))
             return false;
+        if (prio && chunk_full() && !flush(false)) { // the chunk after step_begin, so it does not queue ahead of it
+            if (!error_msg.empty())
+                return false;
+            telemetry.finish_reason = "cancel";
+            break;
+        }
     }
     if (!tower_join())
         return false;
     if (frames_dump.f && frame[0] == tg.eos) // the end, so a run forced with these frames ends there too
         std::fwrite(frame.data(), 4, frame.size(), frames_dump.f);
     const bool codec_ok = codec_join(); // the chunk on codec_side counts toward the decode, as when it ran here
+    codec_hold_guard.clear(); // the last chunk runs alone: unpaced
     telemetry.decode_ms = ms_since(t_decode);
     if (hidden_dump)
         std::fclose(hidden_dump);
