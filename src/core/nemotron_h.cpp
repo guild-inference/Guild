@@ -1027,6 +1027,11 @@ bool NemotronHEngine::save_prefix(std::string& err) {
             return false;
         s.cells = m.ctx_end;
     }
+    // dalloc zeroes on the legacy default stream, which does not order with the engine's (non-blocking) stream
+    if (cudaDeviceSynchronize() != cudaSuccess) {
+        err = "nemotron_h: CUDA error: " + std::string(cudaGetErrorString(cudaGetLastError()));
+        return false;
+    }
     for (size_t l = 0; l < m.L.size(); ++l) {
         const Layer& y = m.L[l];
         if (y.kind == 'M') {
