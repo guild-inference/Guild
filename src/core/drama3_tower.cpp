@@ -300,12 +300,14 @@ bool Drama3Tower::load(const std::string& dir, int64_t max_frames, std::string& 
     if (!cuda_ok(cudaStreamCreateWithFlags(&st, cudaStreamNonBlocking), "stream", err))
         return false;
     stream_ = st;
+    // the top-priority stream for step_begin; without one (a backend without priorities) every step stays on stream_
     int least = 0, greatest = 0;
     cudaStream_t ps = nullptr;
-    if (!cuda_ok(cudaDeviceGetStreamPriorityRange(&least, &greatest), "stream priorities", err) ||
-        !cuda_ok(cudaStreamCreateWithPriority(&ps, cudaStreamNonBlocking, greatest), "priority stream", err))
-        return false;
-    prio_stream_ = ps;
+    if (cudaDeviceGetStreamPriorityRange(&least, &greatest) == cudaSuccess &&
+        cudaStreamCreateWithPriority(&ps, cudaStreamNonBlocking, greatest) == cudaSuccess)
+        prio_stream_ = ps;
+    else
+        cudaGetLastError();
     const char* prio = std::getenv("GUILD_DRAMA3_PRIO");
     set_step_priority(!(prio && prio[0] == '0'));
     return true;
