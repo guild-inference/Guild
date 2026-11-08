@@ -14,7 +14,8 @@
 // end is not 16-byte aligned (the last piece read in 2-byte parts), fewer rows than a block's 8 warps, Q6_K rows of
 // 9 to 12 blocks (staged as one piece a row) and of 13, and the shapes of the models' products; every column count
 // from 1 to 8 on the same Q8_1 bytes.  The one-chunk rows of Q4_K (8 to 16 blocks; from three columns 8 to 10) and
-// Q6_K (8 to 12) and Q4_K's four columns as two calls of two take matrices above the staged kernels' size threshold
+// Q6_K (8 to 12) and Q4_K's four columns as two calls of two (rows of 9 to 12 blocks; the 8- and 16-block cases check
+// the 4-column kernel beside it) take matrices above the staged kernels' size threshold
 // (15 SMs x 100 KiB = 1.5 MB on a GTX 1070; Q4_K 2048 x 1000 is 1.15 MB, so it is not staged): Qwen3.8-Flash-Next's
 // 2560-wide Q4_K, Ornith-1.5-35B's 2048- and 4096-wide Q4_K and 2048-wide Q6_K, 9 and 12 blocks, and row counts that
 // are not a multiple of a block's 8 warps.  The data is random with finite fp16 scales (mmvq_multi_parity's THE
