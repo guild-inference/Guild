@@ -385,17 +385,11 @@ bool GuildModel::synthesize(const SpeechRequest& req, const SpeechCallback& on_a
     const bool prio = !(prio_env && prio_env[0] == '0');
     const char* depth_env = std::getenv("GUILD_DRAMA3_CODEC_DEPTH");
     const int codec_depth = depth_env && *depth_env ? std::atoi(depth_env) : 2;
-    // GUILD_DRAMA3_CODEC_SYNC=1 (with PRIO, to measure): the chunk is decoded right after step_begin and the backbone
-    // waits for it, so only step_finish runs beside it
-    const char* sync_env = std::getenv("GUILD_DRAMA3_CODEC_SYNC");
-    const bool codec_sync = prio && sync_env && sync_env[0] == '1';
-    // GUILD_DRAMA3_HOLD=between (to measure): the codec is also held from the backbone step's return, while this
-    // thread waits for step_finish, so it runs only beside backbone steps; default: only around step_begin
+    // GUILD_DRAMA3_HOLD=between (opt-in): the codec is also held from the backbone step's return, while this thread
+    // waits for step_finish, so it runs only beside backbone steps; default: only around step_begin
     const char* hold_env = std::getenv("GUILD_DRAMA3_HOLD");
     const bool hold_between = prio && hold_env && std::strcmp(hold_env, "between") == 0;
     m.tower->set_step_priority(prio);
-    const char* finish_env = std::getenv("GUILD_DRAMA3_FINISH_PRIO"); // to measure: step_finish at top priority too
-    m.tower->set_finish_priority(prio && finish_env && finish_env[0] == '1');
     std::atomic<bool> codec_hold{false};
     std::unique_ptr<Beside> codec_side; // after what its job reads and writes, so it joins before they go
     if (overlap)
@@ -593,7 +587,7 @@ bool GuildModel::synthesize(const SpeechRequest& req, const SpeechCallback& on_a
     // the loop's `frame` holds main, c0 and c1 at the top; the rest after tower_join
 
     // ---- decode: `frame` holds the frame after row R - 1
-    if (prio && codec_side && !codec_sync) { // no chunk is on codec_side yet
+    if (prio && codec_side) { // no chunk is on codec_side yet
         m.codec->set_hold(&codec_hold, codec_depth);
         codec_hold_guard.codec = m.codec.get();
         codec_hold_guard.side = codec_side.get();
@@ -639,7 +633,7 @@ bool GuildModel::synthesize(const SpeechRequest& req, const SpeechCallback& on_a
         dump_hidden(m.ver->head_input(0));
         if (!tower_step(m.ver->head_input(0), p, row.data(), forced_at(step + 1)))
             return false;
-        if (prio && chunk_full() && (!flush(false) || (codec_sync && !codec_join()))) { // after step_begin
+        if (prio && chunk_full() && !flush(false)) { // the chunk after step_begin, so it does not queue ahead of it
             if (!error_msg.empty())
                 return false;
             telemetry.finish_reason = "cancel";
