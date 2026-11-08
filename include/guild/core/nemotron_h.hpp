@@ -84,12 +84,12 @@ public:
     bool step(int32_t token, int64_t pos, float* logits, std::string& err, int32_t* top = nullptr);
 
     /// Speculative decoding with the MTP block (one layer used repeatedly).  draft: up to `k` guesses for the tokens
-    /// after `last` (which sits at `pos`, not yet fed), each the argmax of the block's head.  verify: runs tokens[0 ..
-    /// n) (the last token and the drafts, n <= 1 + max drafts) at pos0 and gives every row's logits ([n][n_vocab],
-    /// host; may be null) and / or every row's argmax (`top`, n ids computed on the GPU, the first of equal maxima;
-    /// may be null).  accept: keeps the first n_keep tokens of that window (the recurrent states roll back to after
-    /// them). A verify window's rows are computed as one-token steps would be, so greedy output does not depend on the
-    /// drafts.
+    /// after `last` (which sits at `pos`, not yet fed), each the argmax of the block's head (over the draft_vocab
+    /// rows when the options name them).  verify: runs tokens[0 .. n) (the last token and the drafts, n <= 1 + max
+    /// drafts) at pos0 and gives every row's logits ([n][n_vocab], host; may be null) and / or every row's argmax
+    /// (`top`, n ids computed on the GPU, the first of equal maxima; may be null).  accept: keeps the first n_keep
+    /// tokens of that window (the states roll back to after them). A verify window's rows are computed as one-token
+    /// steps would be, so greedy output does not depend on the drafts.
     bool has_mtp() const;
     int max_drafts() const;
     bool draft(int32_t last, int64_t pos, int k, int32_t* drafts, std::string& err);
