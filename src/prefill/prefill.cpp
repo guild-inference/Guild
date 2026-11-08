@@ -3209,13 +3209,15 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                         (use_mmq && stream_all && no_peer && !lay.native && fused::enabled()) || fused_nat;
                     size_t n_order = 0;    // the routed experts (the debug report; unknown when fused)
                     bool peer_now = false; // multi-GPU: the peer computed rows of this layer (MMQ path only)
-                    // The host groups the routed pairs while the GPU computes the shared expert: the host waits for an
-                    // event recorded after the ids' copy instead of the whole stream, then issues the first expert
-                    // copies (the same kernels on the same inputs; only the host's wait moves).  Not with the phase
-                    // timer, whose fold needs every mark done.  GUILD_PREFILL_SHEXP_EARLY=0: the shared expert first.
+                    // GUILD_PREFILL_SHEXP_EARLY=1 (opt-in): the host groups the routed pairs while the GPU computes the
+                    // shared expert - it waits for an event recorded after the ids' copy instead of the whole stream,
+                    // then issues the first expert copies (the same kernels on the same inputs; only the host's wait
+                    // moves).  Not with the phase timer, whose fold needs every mark done.  Off by default: GTX 1070,
+                    // UD-IQ4_XS, 2 pairs, 1K / 2K / 4K prompts -0.6% / -0.9% / -0.84% (the same tokens), under the 1%
+                    // a default needed (it can hide at most the shared expert's time: 135 ms over 48 MoE layers at 4K).
                     static const bool shexp_early_env = [] {
                         const char* e = std::getenv("GUILD_PREFILL_SHEXP_EARLY");
-                        return e == nullptr || e[0] != '0';
+                        return e != nullptr && e[0] == '1';
                     }();
                     const bool shexp_early = shexp_early_env && !fused_l && !pt.on && m.ids_ready != nullptr;
                     if (!shexp_early && !shared_expert())
