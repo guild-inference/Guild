@@ -1,0 +1,120 @@
+{
+ "lanes": [
+  {
+   "lane": "kcuda-onechunk",
+   "title": "One-chunk staged MMVQ for Q4_K rows of 8-16 blocks and Q6_K rows of 8 blocks, plus 4-column Q4_K run as two 2-column launches (kernel repo, lock bump)",
+   "goal": "Remove the half-empty second chunk of every 10-block Qwen Q4_K row and the chunked path for Ornith's 8-block Q4_K/Q6_K rows, which today run at 141/111 GB/s at 2/3 columns instead of ~196/147. Expected Qwen +4-5% tok/s, Ornith +2.5-4%, bit-identical.",
+   "expected_gain": "Qwen: prose -2.4 to -2.9 ms of 57.0 ms a window (+4.2-5.1% tok/s), code -1.9 to -2.7 ms plus ~0.4 ms from the split (+3.5-4.9%), the range set by how much of the saving the CPU experts' slack absorbs in T = 5/7 windows. Ornith: Q4_K -0.68/-0.80 ms a window if fully critical (assume 50-80%) plus the Q6_K head -0.28/-0.34 ms: +2.5-4%. Drama 3 backbone: 0 to +1.5% (not modelled). GLM: none.",
+   "stop_rule": "If after 2 Qwen pairs the gain is under +1.5% on both prompts (the harness gain did not survive the engine), try the rule for 10-block Q4_K rows only and one more pair; if still under +1.5%, stop and report the numbers. Any id or md5 mismatch: stop, bisect by format (Q4_K / Q6_K / split) and drop the part that changes bits. Do not spend more than ~1 day."
+  },
+  {
+   "lane": "d3-prio",
+   "title": "Drama 3: step_begin on a top-priority stream, the codec held while it runs and queued after it",
+   "goal": "Stop the codec's cuBLAS chunk (every 16 frames) from landing on step_begin, which is on the critical path: today frames 13/14 of each 16-frame cycle cost 22.9/44.2 ms against ~20.1, i.e. 1.8-1.9 ms a frame; ~1.0 ms of it sits in the between-steps phase that this lane targets. Expected +2-5% frames/s, same WAV bits.",
+   "expected_gain": "Between-steps codec share 16 ms per 16-frame chunk -> ~0.5 ms: ~0.95 ms a frame, 46.35 -> ~48.5 frames/s (+4.7%) as a ceiling; part of it may reappear in the backbone step, so expect +2-5%. The optional commit priority adds 0-0.36 ms a frame (0 to +1.7%).",
+   "stop_rule": "If 2 rounds x 2 seeds show under +1% frames/s and positions 13/14 do not move, stop. If they move but the backbone-step share grows by the same amount, try pacing at depth 2 for the whole chunk once; if still under +1%, stop and report. Any md5 change: stop and find the reordering."
+  },
+  {
+   "lane": "qwen-prompt",
+   "title": "Qwen prompt processing: head-less ingest windows, shared expert beside the host grouping, streamed expert walk for big --prefill-rows chunks (plus the fused head mix as decode default)",
+   "goal": "Shorter time to first token at every prompt length on the 8 GB card: -8% for 100-512-token tails (agentic turns after a cached prefix), -2.5% at 4K, -7% on 8K chunks and 32K prompts; bit-identical tokens. A small decode rider (+0.6%) rides along because it is the same file.",
+   "expected_gain": "A: -6.2 ms per 8-token window (-8%): 400-token tail 3.81 -> ~3.5 s, 100 tokens 0.95 -> ~0.87 s. B: ~-0.4 s at 4K (-2.5%), -0.2 s at 2K, -0.1 s at 1K. C: -2.1 s per 8K chunk: 7.6K -7.8%, 32K ~-8.5 s of 115.8 (-7%) if the chunk stays 8192 (only -1.9% at 7,680). D: -0.8 s at 32K (-0.7%). E: decode -0.35/-0.46 ms a window (+0.6/+0.7%).",
+   "stop_rule": "A: if the head-less window is not >= 5 ms faster per 8 tokens, stop A. B: drop if the 4K A/B gain is under 1%. C: if the carve aliasing cannot be shown live-safe within about half a day, ship only the ring rule when 7.6K gains >= 5% and 32K does not regress, else drop C. D/E: skip if the item's own check (phase time / nsys prelude) does not show the predicted drop. Any hash mismatch: stop that item."
+  },
+  {
+   "lane": "glm-pipe",
+   "title": "GLM decode: group A's shared expert on a low-priority side stream, fewer kernels in the group chains, then the CPU rows (lean IQ4_XS down, layer 11's IQ4_XS gate/up)",
+   "goal": "Shorten the GPU half of each MoE layer (today ~1593 us of GPU against ~1426 us of CPU a layer, so the GPU is the steady-state limit by ~119 us a layer), then make the CPU rows faster so the gain is not capped by the CPU. Expected -2.5 to -4 ms of the 79.4 ms step (+3-5% tok/s), same ids.",
+   "expected_gain": "Side stream -0.8 to -1.6 ms a step; fusions -1 to -2.5 ms; lean IQ4_XS down -0.4 to -1.5 ms (more once the GPU half is shorter); layer 11 -0.3 to -0.4 ms. Total -2.5 to -4 ms of 79.4 (+3-5% tok/s, ~23.0 -> ~24), capped by the CPU's ~5 ms a step of slack until the CPU items land.",
+   "stop_rule": "Per item: if 3 --ab rounds give under 0.5 ms a step (median of step p50 differences) or any ids differ, leave it off and move on. Stop the fusions after (a)-(b) if neither reaches 0.3 ms. Stop the lane after ~1.5 days."
+  },
+  {
+   "lane": "nem-decode",
+   "title": "Nemotron 3.5 Transcribe: coalesced Mamba-2 scan state, device argmax of verify rows, an English draft-head subset, then a prefix snapshot",
+   "goal": "Cut the per-step GPU waste in the transcription decode (a 4x-too-slow scan, a 2 MB pageable logits copy, a full 131,072-row draft head) and, if exact, the fixed 43-token prefix every clip re-reads. Expected -8 to -11% on the 30 s clip and ~-15% on 5 s clips, identical transcripts.",
+   "expected_gain": "1: verify -4.6 to -6.2 ms of GPU, wall ~-1.9 ms a step: 30 s clip -50 ms (-2.2%), 5 s -10 ms; greedy -11% decode, -7% end to end. 2: -0.5 to -1.1 ms a step: -13 to -29 ms on 30 s. 3: -1.16 ms per draft pass x 3 = -3.5 ms a step: -45 to -90 ms on 30 s (-2 to -4%), -17 ms on 5 s. 4: 5 s clip -60 to -95 ms (-10 to -15%), 30 s -70 to -85 ms (-3 to -4%). Total ~-8 to -11% (30 s), ~-15 to -20% (5 s).",
+   "stop_rule": "Item 4: stop at the first gate clip whose last-row logits differ (keep 1-3). Item 3: drop it if the net gain on the 30 s clip is under 1% (acceptance losses) or VRAM leaves the audio model under 512 MiB. Any gate mismatch for items 1-3: stop that item and find why. Stop the lane after ~1 day."
+  }
+ ],
+ "reserve": [
+  {
+   "lane": "cpu-kq-rows",
+   "title": "Lean two-row AVX-512 Q4_K / Q6_K expert rows with software prefetch for the pool (Drama 3, Ornith); plus a cheap GUILD_CPU_PROFILE",
+   "expected_gain": "Drama 3: -4.5 us a layer x 40 = -0.18 ms a frame on the median, -0.24 to -0.34 ms on frame means: +0.8-1.6% frames/s. Ornith: -1.3 ms of CPU per 2-token group but GPU-bound windows: 0-2%, unmeasured end to end."
+  },
+  {
+   "lane": "d3-tower-fuse",
+   "title": "Drama 3 tower kernels: add+rms_norm and rms_norm+q8_1 fusions, w1|w3 as one matvec, staged attention, faster exact sampler (after d3-prio merges)",
+   "expected_gain": "~0.32 ms a frame on the critical path (5 layers x ~50 us + 2 samples x ~37 us) plus less contention beside the step: +2-2.5% (46.35 -> ~47.3-47.5)."
+  },
+  {
+   "lane": "kcuda-prompt",
+   "title": "QSA attention chunk grid with the query fastest, and BF16 weights widened once per product on Pascal (kernel repo, lock bump; after qwen-prompt merges)",
+   "expected_gain": "QSA order -4.4 us per query: 32K -1.7 s (-1.5%), 16K -0.8 s. Widen-once: 4K -0.26 s (-1.6%), 32K -2.1 s (-1.9%)."
+  }
+ ],
+ "rejected": [
+  {
+   "id": "qwen-decode/P4",
+   "reason": "DFlash draft as one CUDA graph: 0.2-0.5 ms a window (+0.4-0.9%) estimated from nsys-inflated idle (launch cost roughly halves without the profiler), below run-to-run noise, and M effort with per-window ring scalars (ctx_lo/ctx_hi, anchor, start) that must move to device memory."
+  },
+  {
+   "id": "qwen-decode/P5",
+   "reason": "Routing chain (publish x before the router, doorbell in route's tail): kernel-repo change with mapped-memory ordering across kernels/streams and HIP variants; round 2's stored-ring doorbell A/Bs were inconclusive and reverted; +0.9-1.4% is an estimate only."
+  },
+  {
+   "id": "qwen-decode/P6",
+   "reason": "PLE projections once a window: ~0.18 ms (+0.3%), below noise, and needs a separate buffer for group B's rows (xn_/z_ are rewritten by group A): aliasing risk for an unmeasurable gain."
+  },
+  {
+   "id": "qwen-decode/P8",
+   "reason": "Window-size rule: the cost rule measured a loss this round (49.01 vs 49.33 and 61.16 vs 62.04 tok/s) as in round 8; the replay's +0.7/+1.3% depends on the T = 5/7 cost steps that kcuda-onechunk shrinks. Re-evaluate after that lane."
+  },
+  {
+   "id": "glm/glm-verify-prologue",
+   "reason": "Start group A's layer 0 inside the draft: L effort with state hygiene on mismatch (KDA conv state, rollback rows, KV rows written early), for ~0.6-1.0 ms a step; do it after glm-pipe if the GPU half is still the limit."
+  },
+  {
+   "id": "drama3/D3-G",
+   "reason": "Gating step_finish's matvecs to the CPU-expert windows: L effort, evidence is a proxy (spin windows stand in for wait_flag), medium-low confidence, and it adds event nodes to every model's captured window graph; revisit after d3-tower-fuse shortens the tower."
+  },
+  {
+   "id": "drama3/D3-D",
+   "reason": "Residual tower layers pre-queued behind a GPU-side code wait: ~0.05-0.1 ms a frame (+0.25-0.5%), below noise, only sensible after D3-C, and needs a release path for a wait kernel that never sees its flag."
+  },
+  {
+   "id": "drama3/D3-E",
+   "reason": "T=1 window commits its own GDN state: kernel lock bump and shared-verifier change for 0.1-0.3 ms net (the window gains 30 x 2 MB of state writes); d3-prio's optional low-priority commit targets the same interference without a kernel change."
+  },
+  {
+   "id": "ornith-startlux-nemotron/SL-1",
+   "reason": "StartLux last token in the batched prefill: -1.7% a question for M effort, exactness not yet shown (needs a 258-question bitwise ScoreResult test and the verifier's norm kernel), and StartLux's gate decision is still open."
+  },
+  {
+   "id": "ornith-startlux-nemotron/SL-2",
+   "reason": "Exact tiled many-column MMVQ for StartLux/Ornith prefill: L effort, high risk (pass 2's first tiled try was 2x slower), kernel lock bump, and the gain is modelled, not measured."
+  },
+  {
+   "id": "ornith-startlux-nemotron/SL-3",
+   "reason": "Hyper-thread siblings in the prefill pool: kernel bench only (+7.6-8.3% at 64 threads); the GPU is ~85% busy so the balanced pipeline caps it, and round 5 found the SMT pool worse for decode; unproven in the engine."
+  },
+  {
+   "id": "cpu-kernels/P3",
+   "reason": "Lean IQ4_NL down rows for Qwen: Qwen decode is GPU-bound (CPU experts run behind 57-65 ms windows), expected <= 1%, and the scout's Qwen pool harness produced non-finite outputs, so no in-pool bit check exists."
+  },
+  {
+   "id": "glm/glm-layer11-rows (Q6_K kernel part)",
+   "reason": "The new two-row AVX-512 Q6_K down kernel (layers 11/12/44) is new code for ~60 us a step; kept only as an optional tail item inside glm-pipe, not a lane of its own. The IQ4_XS gate/up part is in glm-pipe."
+  }
+ ],
+ "numerics_options": [
+  "Qwen decode (qwen-decode/P7): the drafter's k4_mm arithmetic (one scale multiply per 32 values, shared activation loads, ~205-214 GB/s at 1-8 columns) for the verifier's Q4_K products, opt-in. Estimated +1-2 ms a prose window and +2-3 ms a code window on top of kcuda-onechunk; changes the greedy text, needs qwen_kl (round 13 method) on texts 1 and 2.",
+  "Qwen prompt (qwen-prompt/N1): run the verifier on a prompt's small last chunk (remainder below ~680 tokens, ~780 after qwen-prompt's head-less windows) instead of a nearly empty chunk that re-streams most experts: an 8,400-token prompt ~-2.2 s (-7%); the tail's KV/state come from decode arithmetic, so tokens change for those lengths. KL against the verifier-only read.",
+  "Qwen prompt: raise GUILD_PREFILL_VERIFY_MAX from 512 toward ~780 once head-less ingest windows land (the crossover moves); 513-780-token tails would then be ingested by the verifier instead of the prompt path, which changes their bits.",
+  "User's server configs: /home/ubuntu/Guild/guild-qwen-256k-fp16.json and guild-ornith-256k-fp16.json run the Oct 30 build-cuda12 binary with --prefill 512 (chunk growth off; round 11 measured a ~4K prompt at 52.2 s in 512-token chunks vs 19.7 s in one chunk) and --spec 4 --mtp rather than setup's DFlash flags. Moving them to the current binary and setup's flags would speed prompts a lot but changes prompt-path bits and the drafter; the user's decision.",
+  "GLM: --dense q5_k (-6 ms a step, KL 0.033/0.039 vs noise 0.023/0.025) or q4_k (-14%, KL 0.054/0.060) as the server flag; or a draft-only Q4_K head with Q6_K attention (~-0.8 ms a step, needs ~340 MiB of VRAM that --ctx 32768 does not leave; with the shared-expert split, different drafts can change the text).",
+  "Drama 3: GPU sampling with graph-captured tower layers (drama3/D3-X), ~+1-1.5% frames/s, changes the audio (GPU exp and sum order differ from glibc); and round 17's tower formats (Q6_K/Q5_K/Q4_K +4.5/+8.7/+13% frames/s at 6/18/66x Q8_0's error). Both need a listening/WER decision.",
+  "StartLux/Ornith prompt (ornith-startlux-nemotron/NX-2): llama.cpp-style MMQ for the prompt's dense products instead of decode-order MMVQ, -10 to -30% a question with 512-row chunks; probabilities move and the prefill no longer equals sequential ingestion.",
+  "Nemotron (ornith-startlux-nemotron/NX-1): a lower-bit copy of the draft-head subset. Transcripts stay identical (the verify window decides), only drafts/acceptance change. Correction to the scout: the rows are 2,688 wide, not a multiple of 256, so Q4_K is impossible; it would need a 32-value-block format (Q4_0/IQ4_NL), which has no staged MMVQ kernel today, so the ~-0.8 ms a step is doubtful."
+ ]
+}
