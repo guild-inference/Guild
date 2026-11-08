@@ -1548,9 +1548,12 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
     };
 
     // ---------------------------------------------------------------- post(l, group): experts, combine
+    // the head's hyper-connection read over all T rows in one launch (fused_gr_read_multi: fused_gr_read per row, its
+    // write applied to R as the plain path's gr_write does) instead of a write and a BF16 read per row after the last
+    // expert wait.  GUILD_FUSE_HEAD_GR=0: the per-row path.
     static const bool fuse_head_gr_env = [] {
         const char* e = std::getenv("GUILD_FUSE_HEAD_GR");
-        return e && e[0] == '1';
+        return !e || e[0] != '0';
     }();
     const bool fuse_head_gr = fuse_head_gr_env && (le_ == g.n_layers) && (head_ != nullptr && head_->loaded()) &&
                               !cvec().covers(g.n_layers - 1);
