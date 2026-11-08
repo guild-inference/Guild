@@ -146,6 +146,15 @@ public:
         if (next_)
             next_->set_head_sampling(on);
     }
+    /// The NEXT `run` only: a prompt read through windows (every token committed, the picks discarded).  Its window
+    /// stops after the head's input - the final mix into head_input(), as Drama 3's head-less windows do - so the
+    /// head's product, the finite check and the greedy pick are not run and `out` is -1 per row.  The layers write
+    /// everything the state keeps (K/V, GDN and conv state, PLE history, the drafter features, final_R), so the window
+    /// leaves the same state.  A second graph per window size, captured on first use.  GUILD_INGEST_NO_HEAD=0: the
+    /// full window, as before.  A layer split's first stage passes it to the next stage's run.
+    void set_ingest(bool on) {
+        ingest_ = on;
+    }
 
     /// LAYER SPLIT (multi-GPU): this verifier runs layers [layer_begin, layer_end) of every window.  A stage that
     /// does not start at layer 0 takes its residual from `handoff_in` instead of embedding the tokens; a stage that
@@ -312,7 +321,8 @@ public:
 
 private:
     RemoteExpertOpt* remote_opt_ = nullptr;
-    bool capture(int T, std::string& err);
+    bool capture(int T, std::string& err, bool nohead = false);
+    bool ingest_ = false; ///< set_ingest: the next run takes exec_nohead_[T]
     // batch windows (see init_slots)
     std::vector<SessionState*> slots_;
     bool batch_rec_ = false;  ///< record_window is capturing a batch window
@@ -408,6 +418,7 @@ private:
     bool gdn_node_prio_ = false;
     cudaEvent_t ev_gdn_fork_ = nullptr, ev_gdn_join_ = nullptr;
     cudaGraphExec_t exec_[9] = {};
+    cudaGraphExec_t exec_nohead_[9] = {}; ///< set_ingest's windows: recorded with no_head_ (only the sizes ingested)
     cudaGraphExec_t commit_exec_ = nullptr;
 
     // mapped staging (host pointer, device alias)

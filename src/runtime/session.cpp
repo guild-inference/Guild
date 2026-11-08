@@ -350,6 +350,9 @@ Ingest ingest_prompt(GuildModel::Impl& m, const std::vector<int64_t>& ids, int64
                 }
                 m_impl->drive.d.layers = 0;
                 m_impl->drive.d.experts = 0;
+                // nobody reads these picks (the first decode window runs its own head on ids[to]): a head-less
+                // window, the state it leaves the same (GUILD_INGEST_NO_HEAD=0: the full window)
+                m_impl->ver->set_ingest(true);
                 if (!m_impl->ver->run(T, window_tok.data(), pos, drive_pool_multi, &m_impl->drive, sink_out.data(),
                                       error_msg)) {
                     return Ingest::Failed;

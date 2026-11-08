@@ -368,6 +368,9 @@ Verifier::~Verifier() {
     for (auto& e : exec_)
         if (e)
             cudaGraphExecDestroy(e);
+    for (auto& e : exec_nohead_)
+        if (e)
+            cudaGraphExecDestroy(e);
     if (commit_exec_)
         cudaGraphExecDestroy(commit_exec_);
     for (auto& kv : exec_bm_)
@@ -730,7 +733,8 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
 
 bool Verifier::configure_expert_cache(const VerifyHits& hits, std::string& err) {
     if (!g_ || last_t_ || b_running_ ||
-        std::any_of(std::begin(exec_), std::end(exec_), [](auto graph) { return graph != nullptr; })) {
+        std::any_of(std::begin(exec_), std::end(exec_), [](auto graph) { return graph != nullptr; }) ||
+        std::any_of(std::begin(exec_nohead_), std::end(exec_nohead_), [](auto graph) { return graph != nullptr; })) {
         err = "verify: expert cache must be configured before graph capture";
         return false;
     }
@@ -1886,8 +1890,9 @@ std::string Verifier::profile_report() {
     return out;
 }
 
-bool Verifier::capture(int T, std::string& err) {
-    if (exec_[T] != nullptr)
+bool Verifier::capture(int T, std::string& err, bool nohead) {
+    cudaGraphExec_t& exec = nohead ? exec_nohead_[T] : exec_[T];
+    if (exec != nullptr)
         return true;
     const Clock::time_point cap_t0 = Clock::now();
     if (cudaStreamBeginCapture(cs_, cudaStreamCaptureModeThreadLocal) != cudaSuccess) {
@@ -1895,7 +1900,10 @@ bool Verifier::capture(int T, std::string& err) {
         return false;
     }
     std::string rerr;
+    const bool keep_no_head = no_head_;
+    no_head_ = no_head_ || nohead; // set_ingest's variant: the window stops after the head's input
     const bool ok = record_window(T, cs_, rerr);
+    no_head_ = keep_no_head;
     cudaGraph_t graph = nullptr;
     const cudaError_t ce = cudaStreamEndCapture(cs_, &graph);
     if (!ok) {
@@ -1944,17 +1952,17 @@ bool Verifier::capture(int T, std::string& err) {
         std::fprintf(stderr, "\n");
     }
 #endif
-    const cudaError_t ie = cudaGraphInstantiate(&exec_[T], graph, gdn_node_prio_ ? kUseNodePriority : 0);
+    const cudaError_t ie = cudaGraphInstantiate(&exec, graph, gdn_node_prio_ ? kUseNodePriority : 0);
     cudaGraphDestroy(graph);
     if (ie != cudaSuccess) {
         err = std::string("verify: instantiate: ") + cudaGetErrorString(ie);
         return false;
     }
-    const cudaError_t ue = cudaGraphUpload(exec_[T], cs_);
+    const cudaError_t ue = cudaGraphUpload(exec, cs_);
     const cudaError_t us = cudaStreamSynchronize(cs_);
     ms_capture += ms_since(cap_t0);
-    std::fprintf(stderr, "guild verify: captured the %d-token window (upload %s, sync %s)\n", T, cudaGetErrorString(ue),
-                 cudaGetErrorString(us));
+    std::fprintf(stderr, "guild verify: captured the %d-token %swindow (upload %s, sync %s)\n", T,
+                 nohead ? "head-less ingest " : "", cudaGetErrorString(ue), cudaGetErrorString(us));
     return true;
 }
 
@@ -2153,6 +2161,14 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
     }
     ScopedModelExecution exec_scope(ss_->exec_state);
     last_batch_ = false;
+    // set_ingest is for this run only (cleared first, so a failed run leaves no head-less window behind)
+    static const bool ingest_env = [] {
+        const char* e = std::getenv("GUILD_INGEST_NO_HEAD");
+        return e == nullptr || e[0] != '0';
+    }();
+    const bool ingest_asked = ingest_ && ingest_env;
+    ingest_ = false;
+    const bool ingest = ingest_asked && !no_head_ && le_ == g_->n_layers; // the stage with the head skips it
     if (T < 1 || T > max_t_) {
         err = "verify: window size out of range";
         return false;
@@ -2167,7 +2183,7 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
         err = "verify: the window runs past the context";
         return false;
     }
-    if (!capture(T, err) || !capture_commit(err))
+    if (!capture(T, err, ingest) || !capture_commit(err))
         return false;
     VDBG("captured; staging\n");
     const Clock::time_point t0 = Clock::now();
@@ -2191,7 +2207,7 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
     trace_ev("WINDOW", -1, -1, pos0 * 16 + T);
     ms_host += ms_since(t0);
     VDBG("staged; launching\n");
-    const cudaError_t le = cudaGraphLaunch(exec_[T], cs_);
+    const cudaError_t le = cudaGraphLaunch(ingest ? exec_nohead_[T] : exec_[T], cs_);
     trace_ev("LAUNCHED", -1, -1, (int64_t) le);
     if (le != cudaSuccess) {
         err = std::string("verify: launch: ") + cudaGetErrorString(le);
@@ -2392,9 +2408,11 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
     // the drafts were. Exact: a rejected row's draw is discarded, and no kept decision depends on a reused draw.
     if (le_ < g.n_layers) { // a layer split's earlier stage: the hand-off is written (synced above)
         ++windows;
+        if (next_ != nullptr)
+            next_->ingest_ = ingest_asked;
         return next_ == nullptr || next_->run(T, tokens, pos0, pool, next_user_, out, err);
     }
-    if (no_head_) { // the caller runs its own head on head_input()
+    if (no_head_ || ingest) { // the caller runs its own head on head_input(), or nobody reads the picks
         for (int t = 0; t < T; ++t)
             out[t] = -1;
         ++windows;
@@ -2630,6 +2648,11 @@ bool Verifier::reset_graphs(std::string& err) {
         return false;
     }
     for (auto& graph : exec_) {
+        if (graph)
+            cudaGraphExecDestroy(graph);
+        graph = nullptr;
+    }
+    for (auto& graph : exec_nohead_) {
         if (graph)
             cudaGraphExecDestroy(graph);
         graph = nullptr;
@@ -3245,6 +3268,11 @@ bool Verifier::set_feature_layers(const std::vector<int>& layers, std::string& e
         return false;
     }
     for (const cudaGraphExec_t e : exec_)
+        if (e != nullptr) {
+            err = "verify: set_feature_layers after a window graph was recorded";
+            return false;
+        }
+    for (const cudaGraphExec_t e : exec_nohead_)
         if (e != nullptr) {
             err = "verify: set_feature_layers after a window graph was recorded";
             return false;
