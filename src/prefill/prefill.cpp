@@ -265,7 +265,44 @@ inline int ring_budget_slots() {
     const int cap = ring_cap();
     return (int) (n <= 0 ? 0 : (n > cap ? cap : n));
 }
+// --prefill-rows below stream_all_min() (setup's 512 on Pascal, where MMQ computes each row alone: no stream-k) took
+// the routed 8-slot walk at every chunk - arith_rows() is the row count, never 1024 - so each copy waited for the
+// gather 8 experts back and an 8K chunk re-streamed ~469 of 512 experts a layer, the copy engine idle in every dense
+// half.  There the chunk's own size decides: from kRowsStreamMin tokens on the streamed walk through a kRowsRing-slot
+// ring (GUILD_PREFILL_RING still overrides), below it the routed walk.  GTX 1070, one 7,600-token chunk: 27.3 -> 25.1
+// s, the same tokens.  Each expert's MMQ reads the same blob bytes; only where they are staged changes.  A smaller ring
+// than the default's: at 1K a 160-slot one was 15% slower, and the slots come out of the chunk.  Pascal only (the
+// exactness rests on its MMQ); GUILD_PREFILL_STREAM_ROWS=0: the routed walk at every chunk, as before.
+constexpr int64_t kRowsStreamMin = 4096;
+constexpr int kRowsRing = 32;
+inline bool rows_stream() {
+    static const bool on = [] {
+        const char* e = std::getenv("GUILD_PREFILL_STREAM_ROWS");
+        if (e != nullptr && e[0] == '0')
+            return false;
+#if defined(GUILD_USE_HIP)
+        return false;
+#else
+        int dev = 0, major = 0;
+        return cudaGetDevice(&dev) == cudaSuccess &&
+               cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev) == cudaSuccess && major < 7;
+#endif
+    }();
+    const int64_t r = g_rows.load(std::memory_order_relaxed);
+    return on && r > 0 && r < stream_all_min() && !fused_ring();
+}
+// the chunk size from which a chunk streams every non-resident expert (the streamed walk)
+inline int64_t stream_chunk_min() {
+    return rows_stream() ? kRowsStreamMin : stream_all_min();
+}
 inline int ring_slots(size_t T) {
+    if (rows_stream()) { // the chunk's own size decides (above)
+        const char* v = std::getenv("GUILD_PREFILL_RING");
+        const int r = v ? std::atoi(v) : g_ring_override > 0 ? g_ring_override : kRowsRing;
+        if ((int64_t) T < kRowsStreamMin || (v && r == STAGE))
+            return STAGE;
+        return r < 16 ? 16 : r > ring_cap() ? ring_cap() : r;
+    }
     T = arith_rows(T);
     const char* v = std::getenv("GUILD_PREFILL_RING");
 #if defined(GUILD_USE_HIP)
@@ -865,6 +902,30 @@ uint64_t gdn_set_bytes(size_t T) {
     a.take<uint16_t>(T * ZV, ok);
     return a.used;
 }
+// The hyper-connection read's own buffers - xn16 (the normed rows; the previous half's write fills it when fused, F-2),
+// emb (the chunk's embeddings, read once by the broadcast into R), lo and lo16 - live only between a half's end and the
+// next half's mix (emb: the chunk's start), when no half's scratch, PLE block or drafter pass holds the region.  So
+// they sit in the region too, after `gated` (whose T * D floats the up product writes while xn16 is still read): 32.6
+// KB a token less outside it (267 MB at 8192), in a region that stays its size (the GDN set, 141 KB a token, is
+// larger).  GUILD_PREFILL_HC_REGION=0: their own buffers, as before.
+inline bool hc_in_region() {
+    static const bool on = [] {
+        const char* e = std::getenv("GUILD_PREFILL_HC_REGION");
+        return e == nullptr || e[0] != '0';
+    }();
+    return on;
+}
+// what they take in the region, past its first T * D floats (the same sequence as `carve`'s)
+uint64_t hc_set_bytes(size_t T) {
+    Alloc a;
+    a.count_only = true;
+    bool ok = true;
+    a.take<uint16_t>(T * D, ok);  // xn16
+    a.take<float>(T * N, ok);     // emb
+    a.take<float>(T * LR, ok);    // lo
+    a.take<uint16_t>(T * LR, ok); // lo16
+    return a.used;
+}
 uint64_t qsa_set_bytes(size_t T, int64_t cap, int64_t max_blocks, int64_t sel_batch, int64_t attn_batch,
                        const guild::kernels::QsaShapes& s) {
     Alloc a;
@@ -1177,13 +1238,14 @@ bool Prefill::carve(size_t T, void* alloc) {
     const core::ModelGeometry& g = *m.g;
     core::SessionState& ss = *m.ss;
     bool ok = true;
-    m.emb = o.take<float>(T * N, ok);
+    const bool hr = hc_in_region(); // xn16, emb, lo and lo16 in the region (hc_set_bytes)
+    m.emb = hr ? nullptr : o.take<float>(T * N, ok);
     m.R = o.take<float>(T * D, ok);
     m.xn = gr_unfused() ? o.take<float>(T * D, ok) : nullptr; // F-1: not needed (gr_mix_r reads R)
     m.grs = o.take<float>(T * HC, ok);
-    m.xn16 = o.take<uint16_t>(T * D, ok);
-    m.lo = o.take<float>(T * LR, ok);
-    m.lo16 = o.take<uint16_t>(T * LR, ok);
+    m.xn16 = hr ? nullptr : o.take<uint16_t>(T * D, ok);
+    m.lo = hr ? nullptr : o.take<float>(T * LR, ok);
+    m.lo16 = hr ? nullptr : o.take<uint16_t>(T * LR, ok);
     m.gated = nullptr; // the region's first T * D floats (below): read only by the mix, before a half's scratch
     m.inj = o.take<float>(T * HC, ok);
     m.mixed = o.take<float>(T * N, ok);
@@ -1213,13 +1275,23 @@ bool Prefill::carve(size_t T, void* alloc) {
         m.local_rows = m.local_moe ? (int64_t) (kLocalRows * T) : 0;
         const uint64_t region =
             std::max({gdn_set_bytes(T), qsa_set_bytes(T, m.cap, m.max_blocks, m.sel_batch, m.attn_batch, s),
-                      moe_set_bytes(T, m.g->n_expert, fz), (uint64_t) T * D * 4});
+                      moe_set_bytes(T, m.g->n_expert, fz), (uint64_t) T * D * 4 + (hr ? hc_set_bytes(T) : 0)});
         uint8_t* base = o.take<uint8_t>((size_t) region, ok);
         m.region = base;
         // the hyper-connection read's up product: written and read by the mix before the half's scratch (or the PLE
         // block, or a drafter's pass) takes the region
         m.gated = (float*) base;
         m.region_bytes = region;
+        if (hr && base != nullptr) { // and its other buffers, past `gated` (see hc_in_region)
+            Alloc h;
+            h.base = base + (size_t) T * D * 4;
+            h.cap = region - (uint64_t) T * D * 4;
+            h.owned = &m.owned;
+            m.xn16 = h.take<uint16_t>(T * D, ok);
+            m.emb = h.take<float>(T * N, ok);
+            m.lo = h.take<float>(T * LR, ok);
+            m.lo16 = h.take<uint16_t>(T * LR, ok);
+        }
         Alloc a;
         a.base = base;
         a.cap = region;
@@ -1625,7 +1697,7 @@ bool Prefill::bind_stage_helper(int64_t T) {
     if (!m.help_pp || helper_ == nullptr || m.pp)
         return false;
     const double frac = split_help_frac(T);
-    if (frac <= 0.0 || T < stream_all_min() || m.src == nullptr || m.ring <= STAGE || fused_ring())
+    if (frac <= 0.0 || T < stream_chunk_min() || m.src == nullptr || m.ring <= STAGE || fused_ring())
         return false;
     const guild::kernels::cpu::ExpertLayout& lay = guild::kernels::cpu::expert_layout();
     for (int64_t l = stage_lb_; l < stage_le_; ++l) {
@@ -1856,8 +1928,11 @@ uint64_t Prefill::bytes_needed(const core::ModelGeometry& g, const core::Session
     // `grs`.  Net over-count T*(D-HC)*4 bytes: 42 MB at a 1024-token chunk, 252 MB (48 Q8_0 slots) at 6144 - the
     // prompt path was told it had less room than it did.  Safe - the direction is over-estimating, and `take`
     // still bounds-checks - but it under-sizes every loan, so every chunk the scan picks is one step smaller.
+    // With hc_in_region() emb, xn16, lo and lo16 are in the region (GUILD_RING_BYTES=0 still counts them: over).
+    const bool hr = hc_in_region() && ring_bytes_on();
     if (ring_bytes_on()) {
-        f(T * N);
+        if (!hr)
+            f(T * N);
         f(T * D);
         if (gr_unfused())
             f(T * D);
@@ -1867,9 +1942,11 @@ uint64_t Prefill::bytes_needed(const core::ModelGeometry& g, const core::Session
         f(T * D);
         f(T * D);
     }
-    o.take<uint16_t>(T * D, ok);
-    f(T * LR);
-    o.take<uint16_t>(T * LR, ok);
+    if (!hr) {
+        o.take<uint16_t>(T * D, ok);
+        f(T * LR);
+        o.take<uint16_t>(T * LR, ok);
+    }
     f(T * HC); // (gated: in the region)
     f(T * N);
     o.take<uint16_t>(T * N, ok);
@@ -1891,7 +1968,8 @@ uint64_t Prefill::bytes_needed(const core::ModelGeometry& g, const core::Session
     const int64_t cap = guild::kernels::qsa_selection_width(guild::kernels::kTopkMaxCells, s);
     const int64_t max_blocks = ss.qsa_states[ss.qsa_primary()].max_cells / s.idx_block + 2;
     o.take<uint8_t>((size_t) std::max({gdn_set_bytes(T), qsa_set_bytes(T, cap, max_blocks, 256, 32, s),
-                                       moe_set_bytes(T, g.n_expert, fused_layout(T, true)), (uint64_t) T * D * 4}),
+                                       moe_set_bytes(T, g.n_expert, fused_layout(T, true)),
+                                       (uint64_t) T * D * 4 + (hc_in_region() ? hc_set_bytes(T) : 0)}),
                     ok);
     for (int i = 0; i < DQ; ++i) {
         o.take<uint16_t>(1280 * 2560, ok);
@@ -2431,7 +2509,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
         // k lands in ring slot k % ring); a copy is issued once the entry `ring` before it is consumed (its slot's
         // `used` event recorded), so the copy stream never waits on an event that is not queued yet
         const guild::kernels::cpu::ExpertLayout& lay0 = guild::kernels::cpu::expert_layout();
-        const bool stream_all = m.ring > STAGE && T >= stream_all_min() && m.src != nullptr;
+        const bool stream_all = m.ring > STAGE && T >= stream_chunk_min() && m.src != nullptr;
         const bool ps_on = stream_all && m.pp && m.pp->ps_frac > 0.0;
         if (m.pp && !ps_on)
             m.pp->ps_flag.clear();
