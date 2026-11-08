@@ -1318,6 +1318,64 @@ static void test_narrow() {
         }
 }
 
+// kda_fg (GUILD_GLM_FUSE2 bit 1): one token's f_b, gates and g_b in one launch against q8_0_narrow, kda_gates and
+// q8_0_narrow from two quantizations, bitwise (both one-wave settings, every narrow width, GLM's 128 -> 8192)
+static void test_kda_fg() {
+    cudaStream_t st;
+    cudaStreamCreate(&st);
+    std::uniform_int_distribution<int> byte(0, 255);
+    for (const int on : {1, 0})
+        for (const int n_in : {128, 64, 256})
+            for (const int D : {8192, 1024}) {
+                k::set_one_wave(on == 1);
+                const int H = D / 128, nb = n_in / 32;
+                auto mat = [&] {
+                    std::vector<uint8_t> W((size_t) D * nb * 34);
+                    for (size_t blk = 0; blk < (size_t) D * nb; ++blk) {
+                        for (int i = 0; i < 34; ++i)
+                            W[blk * 34 + i] = (uint8_t) byte(rng);
+                        const __half d = __float2half(0.001f * (float) (1 + byte(rng) % 50));
+                        std::memcpy(&W[blk * 34], &d, 2);
+                    }
+                    return up(W);
+                };
+                uint8_t *dWf = mat(), *dWg = mat();
+                auto x = rnd((size_t) 2 * n_in + H); // f_a | g_a | beta logits, as the fgb product writes them
+                float* dx = up(x);
+                auto dtb = rnd(D, 0.5f), sa = rnd(H, 0.5f);
+                float *ddt = up(dtb), *dsa = up(sa);
+                void *xq2, *xqa, *xqb;
+                cudaMalloc(&xq2, guild::kernels::native_q8_1_bytes(2 * n_in, 1));
+                cudaMalloc(&xqa, guild::kernels::native_q8_1_bytes(n_in, 1));
+                cudaMalloc(&xqb, guild::kernels::native_q8_1_bytes(n_in, 1));
+                float *g0, *b0, *o0, *g1, *b1, *o1, *fp;
+                for (float** q : {&g0, &o0, &g1, &o1, &fp})
+                    cudaMalloc(q, (size_t) D * 4);
+                cudaMalloc(&b0, (size_t) H * 4);
+                cudaMalloc(&b1, (size_t) H * 4);
+                const float lb = -5.f;
+                // the three launches (and two quantizations)
+                guild::kernels::native_quantize_q8_1(dx, xqa, n_in, 1, st);
+                k::q8_0_narrow(dWf, xqa, fp, n_in, D, 1, st);
+                k::kda_gates(fp, ddt, dsa, g0, dx + 2 * n_in, b0, D, H, 1, lb, st);
+                guild::kernels::native_quantize_q8_1(dx + n_in, xqb, n_in, 1, st);
+                k::q8_0_narrow(dWg, xqb, o0, n_in, D, 1, st);
+                // the fused one
+                guild::kernels::native_quantize_q8_1(dx, xq2, 2 * n_in, 1, st);
+                k::kda_fg(dWf, dWg, xq2, ddt, dsa, g1, dx + 2 * n_in, b1, o1, n_in, D, H, lb, st);
+                const std::string what = "kda_fg " + std::to_string(n_in) + " x " + std::to_string(D) +
+                                         (on ? " one wave" : " before");
+                same_attend(what + " g", down(g1, D), down(g0, D));
+                same_attend(what + " beta", down(b1, H), down(b0, H));
+                same_attend(what + " gate", down(o1, D), down(o0, D));
+                for (void* q : {(void*) dWf, (void*) dWg, (void*) dx, (void*) ddt, (void*) dsa, xq2, xqa, xqb,
+                                (void*) g0, (void*) b0, (void*) o0, (void*) g1, (void*) b1, (void*) o1, (void*) fp})
+                    cudaFree(q);
+            }
+    k::set_one_wave(true);
+    cudaStreamDestroy(st);
+}
+
 // `glm5_kernels_test bench`: the GPU products at GLM-5.3-Flash's shapes (Q8_0 and Q6_K), GB/s of weights read
 // `glm5_kernels_test q6k`: glm5k::q6k_mmvq (the attention's Q6_K products) at GLM-5.3-Flash's shapes, GB/s
 static int bench_q6k() {
@@ -1806,6 +1864,7 @@ int main(int argc, char** argv) {
     test_staged_mmvq(8);
     test_mmvq_rows();
     test_narrow();
+    test_kda_fg();
     test_indexer();
     test_attend_staged();
     test_row_cache();

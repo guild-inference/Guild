@@ -566,6 +566,7 @@ int main(int argc, char** argv) {
                 report(r, tag);
                 std::fprintf(stderr, "%sdecode %zu tokens in %.0f ms (%.2f tok/s)\n", tag.c_str(), r.out.size(),
                              r.dec_ms, tok_s(r));
+                eng.print_timing(tag.c_str()); // GUILD_GLM_TIMING: the totals so far (an arm's: the difference)
                 runs[a].push_back(std::move(r));
             }
         // every run against the first arm's first, and where it parts from it

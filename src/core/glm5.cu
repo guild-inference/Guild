@@ -961,20 +961,49 @@ __global__ void __launch_bounds__(NW * 32) q8_0_mmvq_k(const uint8_t* __restrict
 // C chunks of 32 blocks (1088 bytes: 32 / nb whole rows each) with 16-byte loads, issued before the activations are
 // read, a lane takes one block's 32 products and the row's nb lanes add up with shuffles.  native_mmvq read these rows
 // at 48 GB/s.
-template <int T, int NB, int C = 1>
+// Pair (one token): the blocks past `p.blocks1` take a second matrix of the same shape (p.W2, its activations p.x2,
+// rows to p.y2), and the first matrix's rows are kda_gates' g = lb * sigmoid(-(y + dt_b) * ssm_a[head]) (block 0 also
+// writes beta = sigmoid(bpre)): the KDA gates' f_b and g_b products and the gates in one launch, each value computed
+// as by the three launches.
+struct NarrowPair {
+    const uint8_t* W2 = nullptr;
+    const uint8_t* x2 = nullptr;
+    float* y2 = nullptr;
+    int blocks1 = 0;
+    const float *dt_b = nullptr, *ssm_a = nullptr, *bpre = nullptr;
+    float* beta = nullptr;
+    int H = 0;
+    float lb = 0.f;
+};
+template <int T, int NB, int C = 1, bool Pair = false>
 __global__ void __launch_bounds__(256)
-    q8_0_narrow_k(const uint8_t* __restrict__ W, const uint8_t* __restrict__ x, float* __restrict__ y, int n_out) {
+    q8_0_narrow_k(const uint8_t* __restrict__ W, const uint8_t* __restrict__ x, float* __restrict__ y, int n_out,
+                  NarrowPair p = NarrowPair()) {
     __shared__ __align__(16) uint8_t stage[8][C][kQ8Chunk * kQ8Block];
     __shared__ __align__(16) uint8_t xs[T * NB * kQ6Q81];
     constexpr int R = 32 / NB; // rows a chunk
     constexpr int KV = (kQ8Chunk * kQ8Block / 16 + 31) / 32;
     const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
-    // the warp's C chunks (chunk j: rows (blockIdx.x * 8 * C + j * 8 + warp) * R ...), loaded before the activations
+    int bx = (int) blockIdx.x;
+    bool gates = false;
+    if (Pair) {
+        gates = bx < p.blocks1;
+        if (!gates) {
+            bx -= p.blocks1;
+            W = p.W2;
+            x = p.x2;
+            y = p.y2;
+        } else if (bx == 0) {
+            for (int i = (int) threadIdx.x; i < p.H; i += 256)
+                p.beta[i] = sigmoidf_(p.bpre[i]);
+        }
+    }
+    // the warp's C chunks (chunk j: rows (bx * 8 * C + j * 8 + warp) * R ...), loaded before the activations
     int4 v16[C][KV];
     int rows[C];
 #pragma unroll
     for (int j = 0; j < C; ++j) {
-        const int row0 = (blockIdx.x * 8 * C + j * 8 + warp) * R;
+        const int row0 = (bx * 8 * C + j * 8 + warp) * R;
         rows[j] = row0 < n_out ? min(R, n_out - row0) : 0;
         const int bytes = rows[j] * NB * kQ8Block;
         const uint8_t* src = W + (size_t) row0 * NB * kQ8Block;
@@ -990,7 +1019,7 @@ __global__ void __launch_bounds__(256)
     for (int j = 0; j < C; ++j) {
         if (rows[j] == 0)
             break;
-        const int row0 = (blockIdx.x * 8 * C + j * 8 + warp) * R, bytes = rows[j] * NB * kQ8Block;
+        const int row0 = (bx * 8 * C + j * 8 + warp) * R, bytes = rows[j] * NB * kQ8Block;
         uint8_t* sm = stage[warp][j];
 #pragma unroll
         for (int k = 0; k < KV; ++k)
@@ -1025,8 +1054,14 @@ __global__ void __launch_bounds__(256)
 #pragma unroll
             for (int o = NB / 2; o > 0; o >>= 1)
                 acc[t] += __shfl_xor_sync(0xffffffffu, acc[t], o);
-            if (b == 0 && r < rows[j])
-                y[(size_t) t * n_out + row0 + r] = acc[t];
+            if (b == 0 && r < rows[j]) {
+                if (Pair && gates) {
+                    const int c = row0 + r;
+                    y[c] = p.lb * sigmoidf_(-(acc[t] + p.dt_b[c]) * p.ssm_a[c / kKdaDim]);
+                } else {
+                    y[(size_t) t * n_out + row0 + r] = acc[t];
+                }
+            }
         }
     }
 }
@@ -2124,6 +2159,37 @@ void q8_0_narrow(const void* W, const void* xq8_1, float* y, int n_in, int n_out
     else
         nb == 2 ? GLM5_NARROW(2, 2) : nb == 4 ? GLM5_NARROW(2, 4) : GLM5_NARROW(2, 8);
 #undef GLM5_NARROW
+}
+
+bool kda_fg_supported(int n_in, int D) {
+    return q8_0_narrow_supported(n_in, 1) && D % kKdaDim == 0;
+}
+
+void kda_fg(const void* Wf, const void* Wg, const void* xq8_1, const float* dt_b, const float* ssm_a, float* g,
+            const float* bpre, float* beta, float* gate, int n_in, int D, int H, float lower_bound, void* st) {
+    // q8_0_narrow's launch for each matrix, the second's blocks after the first's
+    const int C = one_wave() && D >= 4096 ? 2 : 1;
+    const int nb = n_in / 32, rows_per_block = 8 * C * (32 / nb);
+    const int blocks = (D + rows_per_block - 1) / rows_per_block;
+    NarrowPair p;
+    p.W2 = (const uint8_t*) Wg;
+    p.x2 = (const uint8_t*) xq8_1 + (size_t) nb * kQ6Q81;
+    p.y2 = gate;
+    p.blocks1 = blocks;
+    p.dt_b = dt_b;
+    p.ssm_a = ssm_a;
+    p.bpre = bpre;
+    p.beta = beta;
+    p.H = H;
+    p.lb = lower_bound;
+    const auto* w = (const uint8_t*) Wf;
+    const auto* x = (const uint8_t*) xq8_1;
+    const dim3 grid((unsigned) (2 * blocks));
+#define GLM5_FG(NB)                                                                                                    \
+    (C == 2 ? q8_0_narrow_k<1, NB, 2, true><<<grid, 256, 0, S(st)>>>(w, x, g, D, p)                                    \
+            : q8_0_narrow_k<1, NB, 1, true><<<grid, 256, 0, S(st)>>>(w, x, g, D, p))
+    nb == 2 ? GLM5_FG(2) : nb == 4 ? GLM5_FG(4) : GLM5_FG(8);
+#undef GLM5_FG
 }
 
 void bf16_matvec(const uint16_t* W, const float* x, float* y, int n_in, int n_out, int T, void* st) {

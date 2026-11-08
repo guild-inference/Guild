@@ -90,6 +90,12 @@ void q8_0_mmvq(const void* W, const void* xq8_1, float* y, int n_in, int n_out, 
 /// activations
 bool q8_0_narrow_supported(int n_in, int T);
 void q8_0_narrow(const void* W, const void* xq8_1, float* y, int n_in, int n_out, int T, void* st);
+/// One token's KDA gates in one launch, bitwise q8_0_narrow(Wf, the first n_in values' blocks) -> kda_gates (g, and
+/// beta from bpre) and q8_0_narrow(Wg, the next n_in values' blocks) -> gate: xq8_1 holds the two inputs one after
+/// the other (one quantization of both), Wf and Wg are Q8_0 [D][n_in] (kda_fg_supported)
+bool kda_fg_supported(int n_in, int D);
+void kda_fg(const void* Wf, const void* Wg, const void* xq8_1, const float* dt_b, const float* ssm_a, float* g,
+            const float* bpre, float* beta, float* gate, int n_in, int D, int H, float lower_bound, void* st);
 /// y[t][r] = W[r] . x[t], W [n_out][n_in] F32
 void f32_matvec(const float* W, const float* x, float* y, int n_in, int n_out, int T, void* st);
 /// f32_matvec on a matrix whose F32 values are all bf16 values, held as their high 16 bits: the same products and sums

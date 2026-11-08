@@ -15,8 +15,9 @@ bool iq4xs_rows512_ok();
 
 /// out[t][r] = row r . act[t] for rows [r0, r1) of `w` (`row_bytes` apart, `n` values each, n % 256 == 0) and `nt`
 /// tokens' block_q8_K rows.  Each row pair asks for the next pair before it is read; the last asks for `next` (null:
-/// nothing), the first two rows of the caller's next call, `next_row_bytes` apart.
+/// nothing), the first two rows of the caller's next call, `next_row_bytes` apart.  lean: the variant with fewer
+/// instructions a sub-block (the same bits; false: the first, for A/Bs).
 void iq4xs_rows512(const uint8_t* w, size_t row_bytes, int n, const void* const* act, int nt, float* const* out, int r0,
-                   int r1, const uint8_t* next = nullptr, size_t next_row_bytes = 0);
+                   int r1, const uint8_t* next = nullptr, size_t next_row_bytes = 0, bool lean = true);
 
 } // namespace guild::core::cpu_moe

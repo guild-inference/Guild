@@ -173,13 +173,14 @@ struct Glm5Engine::Impl {
     // A pipelined window's group A computes its GPU shared expert on `side` (the device's least priority; st has the
     // greatest), beside B's attention and router on st, with scratch of its own for up to kSideT tokens; ev_route
     // (st, after A's router and input) and ev_join (side, after its down rows) by the layer's parity.
-    // GUILD_GLM_SHEXP_STREAM=0 (read each window): on st, as before (the same kernels and bits either way).
+    // GUILD_GLM_SHEXP_STREAM=1 (read each window; off by default: no gain measured): on `side`; otherwise on st, as
+    // before (the same kernels and bits either way).
     static constexpr int kSideT = 4;
     cudaStream_t side = nullptr;
     cudaEvent_t ev_route[2] = {nullptr, nullptr}, ev_join[2] = {nullptr, nullptr};
     void *xq_s = nullptr, *xq2_s = nullptr;
     float *a_s = nullptr, *b_s = nullptr, *c_s = nullptr;
-    bool shexp_stream = true;
+    bool shexp_stream = false;
     uint64_t vram = 0;
     std::string placement;
     std::unique_ptr<Pool> pool;
@@ -671,6 +672,9 @@ struct Glm5Engine::Impl {
     // token's q, k and v as three products and its FFN's gate and up as two, GUILD_GLM_Q6K_ROWS=0 takes the
     // block-per-8-rows Q6_K kernel for every shape, GUILD_GLM_ONE_WAVE=0 the launches before glm5k::set_one_wave
     bool merged = true;
+    // GUILD_GLM_FUSE2 (read each window; default all bits on): bit 1 the KDA gates' f_b, gates and g_b in one launch
+    // (glm5k::kda_fg).  The same bits either way.
+    unsigned fuse2 = ~0u;
     void read_switches() {
         const char* e = std::getenv("GUILD_GLM_MERGED");
         merged = !(e && e[0] == '0');
@@ -685,7 +689,9 @@ struct Glm5Engine::Impl {
         e = std::getenv("GUILD_GLM_FUSE");
         fuse = !(e && e[0] == '0');
         e = std::getenv("GUILD_GLM_SHEXP_STREAM");
-        shexp_stream = !(e && e[0] == '0');
+        shexp_stream = e && e[0] == '1';
+        e = std::getenv("GUILD_GLM_FUSE2");
+        fuse2 = e && e[0] ? (unsigned) std::strtoul(e, nullptr, 0) : ~0u;
     }
     bool embed_rows(const int32_t* tokens, int T, std::string& err);
     const char* Y_kind(int l) const;
@@ -1739,11 +1745,21 @@ void Glm5Engine::Impl::attn_kda(Layer& Y, int T, int off) {
                         st);
     else
         glm5k::kda_conv(a, b, c, Y.conv_state, Y.conv_q, Y.conv_k, Y.conv_v, rq, (int) D, T, cmid, nmid, st);
-    quant(fa, Y.f_a.n_out, T, xq2);
-    mm(Y.f_b, xq2, a, T); // fpre [T][D]
-    glm5k::kda_gates(a, Y.dt_b, Y.ssm_a, rg, bl, rb, (int) D, (int) H, T, g.kda_lower_bound, st);
-    quant(ga, Y.g_a.n_out, T, xq2);
-    mm(Y.g_b, xq2, b, T); // output gate [T][D]
+    // a token's f_a and g_a rows are consecutive: one quantization of both and one launch for f_b, the gates and g_b
+    // (GUILD_GLM_FUSE2 bit 1; the same bits)
+    if ((fuse2 & 1) && T == 1 && Y.fgb.dev && ga == fa + Y.f_a.n_out && Y.f_a.n_out == Y.g_a.n_out &&
+        Y.f_b.type == kQ8_0 && Y.g_b.type == kQ8_0 && Y.f_b.n_in == Y.f_a.n_out && Y.g_b.n_in == Y.g_a.n_out &&
+        Y.f_b.n_out == D && Y.g_b.n_out == D && glm5k::kda_fg_supported((int) Y.f_b.n_in, (int) D)) {
+        quant(fa, 2 * Y.f_a.n_out, 1, xq2);
+        glm5k::kda_fg(Y.f_b.dev, Y.g_b.dev, xq2, Y.dt_b, Y.ssm_a, rg, bl, rb, b, (int) Y.f_b.n_in, (int) D, (int) H,
+                      g.kda_lower_bound, st);
+    } else {
+        quant(fa, Y.f_a.n_out, T, xq2);
+        mm(Y.f_b, xq2, a, T); // fpre [T][D]
+        glm5k::kda_gates(a, Y.dt_b, Y.ssm_a, rg, bl, rb, (int) D, (int) H, T, g.kda_lower_bound, st);
+        quant(ga, Y.g_a.n_out, T, xq2);
+        mm(Y.g_b, xq2, b, T); // output gate [T][D]
+    }
     glm5k::kda_step(win && off > 0 ? Y.kda_alt : Y.kda_state, win ? Y.kda_alt : Y.kda_state, rq, rg, rb, c, (int) H, T,
                     nullptr, st);
     glm5k::kda_out(c, b, Y.ssm_norm, d, (int) H, T, g.rms_eps, st);

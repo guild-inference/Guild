@@ -1,6 +1,7 @@
 // tests/core/iq4xs_rows512_test.cpp - the AVX-512 IQ4_XS rows (include/guild/core/iq4xs_rows512.hpp) against
 // ggml-cpu's one-token ggml_vec_dot_iq4_xs_q8_K, bitwise, for 1-8 tokens, odd and even row ranges, and blocks of
-// random bytes (every code and 6-bit scale, f16 scales from tiny to large) against ggml-quantized activations.
+// random bytes (every code and 6-bit scale, f16 scales from tiny to large) against ggml-quantized activations; the
+// lean variant and the first one.
 // Exit 77 without AVX-512BW.
 //
 //   iq4xs_rows512_test --dram [threads] [tokens]   threads 0 .. threads - 1 each streaming 128 MB of its own
@@ -68,7 +69,7 @@ int main(int argc, char** argv) {
         const int threads = argc > 2 ? std::atoi(argv[2]) : 32, nt = argc > 3 ? std::atoi(argv[3]) : 1, n = 2048;
         const size_t rb = ggml_row_size(GGML_TYPE_IQ4_XS, n);
         const int rows = (int) (((size_t) 128 << 20) / rb), item = 64;
-        for (int mode = 0; mode < 2; ++mode) {
+        for (int mode = 0; mode < 3; ++mode) {
             std::vector<double> gbs((size_t) threads);
             std::atomic<int> ready{0};
             std::vector<std::thread> th;
@@ -98,8 +99,8 @@ int main(int argc, char** argv) {
                     for (int k = 0; k < 3; ++k)
                         for (int q0 : order) {
                             const int q1 = std::min(q0 + item, rows);
-                            if (mode == 1) {
-                                iq4xs_rows512(w.data(), rb, n, act, nt, out, q0, q1);
+                            if (mode >= 1) {
+                                iq4xs_rows512(w.data(), rb, n, act, nt, out, q0, q1, nullptr, 0, mode == 2);
                                 continue;
                             }
                             for (int t = 0; t < nt; ++t)
@@ -115,7 +116,7 @@ int main(int argc, char** argv) {
             for (double g : gbs)
                 s += g;
             std::printf("dram: %d threads, %d tokens, %s: %.1f GB/s\n", threads, nt,
-                        mode ? "iq4xs_rows512" : "ggml vec_dot", s * 1e-9);
+                        mode == 2 ? "iq4xs_rows512 lean" : mode ? "iq4xs_rows512 first" : "ggml vec_dot", s * 1e-9);
         }
         return 0;
     }
@@ -126,6 +127,7 @@ int main(int argc, char** argv) {
         const size_t rb = ggml_row_size(GGML_TYPE_IQ4_XS, n);
         const auto w = random_rows(rng, rows, n);
         const auto a = random_acts(rng, n, 8);
+        for (int lean = 0; lean < 2; ++lean)
         for (int nt = 1; nt <= 8; ++nt)
             for (int r0 : {0, 3})
                 for (int r1 : {rows, rows - 1, r0 + 1}) {
@@ -136,15 +138,15 @@ int main(int argc, char** argv) {
                         act[t] = a[(size_t) t].data();
                         out[t] = got.data() + (size_t) t * rows;
                     }
-                    iq4xs_rows512(w.data(), rb, n, act, nt, out, r0, r1);
+                    iq4xs_rows512(w.data(), rb, n, act, nt, out, r0, r1, nullptr, 0, lean == 1);
                     for (int t = 0; t < nt; ++t)
                         for (int r = r0; r < r1; ++r) {
                             float want = 0.f;
                             dot(n, &want, 0, w.data() + (size_t) r * rb, 0, act[t], 0, 1);
                             ++checked;
                             if (std::memcmp(&want, &out[t][r], 4) != 0 && failures++ < 10)
-                                std::printf("FAIL n %d nt %d rows [%d, %d) row %d token %d: %.9g, ggml %.9g\n", n, nt,
-                                            r0, r1, r, t, out[t][r], want);
+                                std::printf("FAIL %s n %d nt %d rows [%d, %d) row %d token %d: %.9g, ggml %.9g\n",
+                                            lean ? "lean" : "first", n, nt, r0, r1, r, t, out[t][r], want);
                         }
                 }
     }

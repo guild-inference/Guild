@@ -516,6 +516,13 @@ void Experts::run(Pool& pool, int64_t N, int T, int max_t, const int32_t* ids, c
     // call, for A/Bs in one process): ggml-cpu's dot, or the multi-token kernel above.
     const char* x512 = std::getenv("GUILD_IQ4XS_512");
     const bool iq4xs = iq4xs_rows512_ok() && !(x512 && x512[0] == '0');
+    // GUILD_IQ4XS_LEAN=0 (read each call): those rows' first kernel, not the lean one (the same bits)
+    const char* xl = std::getenv("GUILD_IQ4XS_LEAN");
+    const bool iq4xs_lean = !(xl && xl[0] == '0');
+    // and IQ4_XS gate/up rows (GLM-5.3-Flash's layer 11) through the same kernel, for any window, instead of a
+    // one-token dot a (row, token); GUILD_IQ4XS_GU=0 (read each call): those dots, as before (the same bits)
+    const char* xg = std::getenv("GUILD_IQ4XS_GU");
+    const bool iq4xs_gu = iq4xs && !(xg && xg[0] == '0');
     constexpr int RB = 64, MT = kQ8Rows512MaxT > kcpu::MAXT ? kQ8Rows512MaxT : kcpu::MAXT;
     // a down item's rows of every group (down_rows, at most RB)
     const int DRB = std::clamp(down_rows, 4, RB) / 4 * 4;
@@ -686,6 +693,7 @@ void Experts::run(Pool& pool, int64_t N, int T, int max_t, const int32_t* ids, c
         const bool nl4 = f.gu_type == kcpu::kIq3sNl4Type;
         const ggml_type_traits_cpu* tr = nl4 ? nullptr : cpu_traits(f.gu_type);
         const RowsFn mt = !nl4 && !single && gr.units.size() >= 2 ? multi(f.gu_type) : nullptr;
+        const bool x4 = iq4xs_gu && f.gu_type == (int) GGML_TYPE_IQ4_XS;
         float gbuf[MT][RB], ubuf[MT][RB];
         for (size_t c = 0; c + 1 < gr.gu_c.size(); ++c) {
             const size_t c0 = (size_t) gr.gu_c[c];
@@ -707,6 +715,11 @@ void Experts::run(Pool& pool, int64_t N, int T, int max_t, const int32_t* ids, c
                 if (gated)
                     glm5cpu::nl4_rows(wg, f.gu_row, (int) N, act, nt, go, r0, r1);
                 glm5cpu::nl4_rows(wu, f.gu_row, (int) N, act, nt, uo, r0, r1);
+            } else if (x4) { // each (row, token) bitwise ggml-cpu's one-token dot, whatever nt
+                if (gated)
+                    iq4xs_rows512(wg, f.gu_row, (int) N, act, nt, go, r0, r1, wu + (size_t) r0 * f.gu_row, f.gu_row,
+                                  iq4xs_lean);
+                iq4xs_rows512(wu, f.gu_row, (int) N, act, nt, uo, r0, r1, nullptr, 0, iq4xs_lean);
             } else if (mt && nt >= 2) {
                 if (gated)
                     mt(f.gu_type, wg, f.gu_row, (int) N, act, nt, go, r0, r1);
@@ -870,7 +883,7 @@ void Experts::run(Pool& pool, int64_t N, int T, int max_t, const int32_t* ids, c
                     const CpuFfn* nf = c + 2 == gr.d_c.size() && gnext ? &gnext->f : nullptr;
                     iq4xs_rows512(wd, f.d_row, (int) f.n_ff, hq, nt, dout, r0, r1,
                                   nf ? nf->down[r0 >= nf->d_split] + (size_t) r0 * nf->d_row : nullptr,
-                                  nf ? nf->d_row : 0);
+                                  nf ? nf->d_row : 0, iq4xs_lean);
                 } else if (mt && nt >= 2) {
                     mt(f.d_type, wd, f.d_row, (int) f.n_ff, hq, nt, dout, r0, r1);
                 } else {
