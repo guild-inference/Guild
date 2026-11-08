@@ -2157,13 +2157,6 @@ void Verifier::collect_profile() {
 bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool, void* user, int32_t* out,
                    std::string& err) try {
     using namespace guild::kernels;
-    const OnDevice on_device(device_);
-    if (!g_ || !ss_ || !wt_ || !tokens || !out || pos0 < 0) {
-        err = "verify: uninitialized verifier or invalid input";
-        return false;
-    }
-    ScopedModelExecution exec_scope(ss_->exec_state);
-    last_batch_ = false;
     // set_ingest is for this run only (cleared first, so a failed run leaves no head-less window behind)
     static const bool ingest_env = [] {
         const char* e = std::getenv("GUILD_INGEST_NO_HEAD");
@@ -2171,6 +2164,13 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
     }();
     const bool ingest_asked = ingest_ && ingest_env;
     ingest_ = false;
+    const OnDevice on_device(device_);
+    if (!g_ || !ss_ || !wt_ || !tokens || !out || pos0 < 0) {
+        err = "verify: uninitialized verifier or invalid input";
+        return false;
+    }
+    ScopedModelExecution exec_scope(ss_->exec_state);
+    last_batch_ = false;
     const bool ingest = ingest_asked && !no_head_ && le_ == g_->n_layers; // the stage with the head skips it
     if (T < 1 || T > max_t_) {
         err = "verify: window size out of range";
