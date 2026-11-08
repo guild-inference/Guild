@@ -481,8 +481,9 @@ bool Drama3Tower::step_begin(const float* hidden, int64_t pos, const int32_t* fr
 }
 
 bool Drama3Tower::step_finish(std::string& err) {
-    if (!step_layers(cur_.next_layer, (int) layers_.size(), err, stream_) ||
-        !cuda_ok(cudaStreamSynchronize((cudaStream_t) stream_), "tower step", err))
+    void* const st = finish_top_ ? prio_stream_ : stream_;
+    if (!step_layers(cur_.next_layer, (int) layers_.size(), err, st) ||
+        !cuda_ok(cudaStreamSynchronize((cudaStream_t) st), "tower step", err))
         return false;
     for (int k = 2; cur_.out && k < g_.n_codebooks; ++k)
         cur_.out[1 + k] = cur_.codes[k];

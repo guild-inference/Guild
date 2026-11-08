@@ -389,7 +389,13 @@ bool GuildModel::synthesize(const SpeechRequest& req, const SpeechCallback& on_a
     // waits for it, so only step_finish runs beside it
     const char* sync_env = std::getenv("GUILD_DRAMA3_CODEC_SYNC");
     const bool codec_sync = prio && sync_env && sync_env[0] == '1';
+    // GUILD_DRAMA3_HOLD=between (to measure): the codec is also held from the backbone step's return, while this
+    // thread waits for step_finish, so it runs only beside backbone steps; default: only around step_begin
+    const char* hold_env = std::getenv("GUILD_DRAMA3_HOLD");
+    const bool hold_between = prio && hold_env && std::strcmp(hold_env, "between") == 0;
     m.tower->set_step_priority(prio);
+    const char* finish_env = std::getenv("GUILD_DRAMA3_FINISH_PRIO"); // to measure: step_finish at top priority too
+    m.tower->set_finish_priority(prio && finish_env && finish_env[0] == '1');
     std::atomic<bool> codec_hold{false};
     std::unique_ptr<Beside> codec_side; // after what its job reads and writes, so it joins before they go
     if (overlap)
@@ -398,8 +404,10 @@ bool GuildModel::synthesize(const SpeechRequest& req, const SpeechCallback& on_a
     struct CodecHold {
         core::Drama3Codec* codec = nullptr;
         Beside* side = nullptr;
+        std::atomic<bool>* hold = nullptr;
         void clear() {
             if (codec) {
+                hold->store(false, std::memory_order_release); // a held chunk would never end
                 side->join();
                 codec->set_hold(nullptr);
             }
@@ -589,6 +597,7 @@ bool GuildModel::synthesize(const SpeechRequest& req, const SpeechCallback& on_a
         m.codec->set_hold(&codec_hold, codec_depth);
         codec_hold_guard.codec = m.codec.get();
         codec_hold_guard.side = codec_side.get();
+        codec_hold_guard.hold = &codec_hold;
     }
     auto chunk_full = [&] { return (int) (pending.size() / (size_t) tg.n_codebooks) >= std::max(1, req.chunk_frames); };
     const auto t_decode = Clock::now();
@@ -611,6 +620,8 @@ bool GuildModel::synthesize(const SpeechRequest& req, const SpeechCallback& on_a
             tower_join();
             return false;
         }
+        if (hold_between && codec_hold_guard.codec) // tower_step clears it once step_begin returns
+            codec_hold.store(true, std::memory_order_release);
         if (!tower_join())
             return false;
         if (frames_dump.f)
@@ -635,6 +646,7 @@ bool GuildModel::synthesize(const SpeechRequest& req, const SpeechCallback& on_a
             break;
         }
     }
+    codec_hold.store(false, std::memory_order_release); // the last frame's break leaves it set
     if (!tower_join())
         return false;
     if (frames_dump.f && frame[0] == tg.eos) // the end, so a run forced with these frames ends there too

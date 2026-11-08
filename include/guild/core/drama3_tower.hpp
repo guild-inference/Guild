@@ -108,6 +108,10 @@ public:
     void set_step_priority(bool top) {
         top_ = top && prio_stream_ != nullptr;
     }
+    /// step_finish on the top-priority stream as well (to measure; off by default)
+    void set_finish_priority(bool top) {
+        finish_top_ = top && prio_stream_ != nullptr;
+    }
     /// Restarts the sampler's draw counter (a request with a seed replays its draws)
     void reset_sampling() {
         draws_ = 0;
@@ -157,7 +161,7 @@ private:
     const uint16_t* codebook_embeddings_ = nullptr;
     void* stream_ = nullptr;
     void* prio_stream_ = nullptr; // step_begin's, at the greatest priority (set_step_priority)
-    bool top_ = true;
+    bool top_ = true, finish_top_ = false;
     // device scratch
     float *h_ = nullptr, *e_ = nullptr, *cat_ = nullptr, *x_ = nullptr, *xn_ = nullptr, *qkv_ = nullptr, *q_ = nullptr,
           *att_ = nullptr, *proj_ = nullptr, *ff1_ = nullptr, *ff3_ = nullptr, *logits_ = nullptr, *part_ = nullptr;
