@@ -1555,8 +1555,9 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         const char* e = std::getenv("GUILD_FUSE_HEAD_GR");
         return !e || e[0] != '0';
     }();
-    const bool fuse_head_gr = fuse_head_gr_env && (le_ == g.n_layers) && (head_ != nullptr && head_->loaded()) &&
-                              !cvec().covers(g.n_layers - 1);
+    // hyper-connection models only: with one residual stream (hc = 1) the fused read would skip the last layer's add
+    const bool fuse_head_gr = fuse_head_gr_env && g.hc > 1 && (le_ == g.n_layers) &&
+                              (head_ != nullptr && head_->loaded()) && !cvec().covers(g.n_layers - 1);
     auto post = [&](int64_t l, int grp) -> bool {
         const int tb = tb_[grp], te = te_[grp], n = te - tb;
         const uint32_t ring = (uint32_t) ((l - lb_) * G + grp + 1);
