@@ -14,7 +14,9 @@
 // and / shift / and / blend; |w| from a shuffle of the codebook's magnitudes and the negative lanes from the nibble
 // (codes 0-7 are the negative values: vptestnmb with 8), instead of a shuffle, vpabsb and vpmovb2m; each sub-block's
 // scale by one in-lane byte shuffle of the block's scales laid out once a block per 128-bit lane, instead of a
-// vpermw a sub-block.  The same integer sums and the same float steps, so the same bits.
+// vpermw a sub-block.  The same integer sums and the same float steps, so the same bits.  32 threads of 2x Xeon Gold
+// 6130 streaming 2,048-value rows (iq4xs_rows512_test --dram): 184.5 -> 190.9 GB/s at one token, 155.9 -> 165.6 at
+// two.
 #include "guild/core/iq4xs_rows512.hpp"
 #include "guild/kernels/cpu/features.hpp"
 

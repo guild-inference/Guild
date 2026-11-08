@@ -392,7 +392,9 @@ struct Item {
 } // namespace
 
 // The containers a call fills, kept for the next call: a decode step's ~91 calls each built ~150 small vectors and a
-// map on the calling thread while the pool's threads waited.
+// map on the calling thread while the pool's threads waited.  GLM-5.3-Flash UD-IQ4_XS decode (2x Xeon Gold 6130 +
+// GTX 1070, --spec): the timed setup phases of a step 2.8 -> 1.9 ms (activations 1.15-1.22 -> 0.83-1.03, the hidden
+// rows' setup 1.60-1.67 -> 0.93-1.09), the step 0.5 ms shorter (the median of three alternated pairs).
 struct Experts::Scratch {
     std::vector<Group> groups, spare; // spare: groups of earlier calls, their vectors' memory kept
     std::vector<int> group_of, order, unit_t, unit_g, qbase;
@@ -572,11 +574,14 @@ void Experts::run(Pool& pool, int64_t N, int T, int max_t, const int32_t* ids, c
     // call, for A/Bs in one process): ggml-cpu's dot, or the multi-token kernel above.
     const char* x512 = std::getenv("GUILD_IQ4XS_512");
     const bool iq4xs = iq4xs_rows512_ok() && !(x512 && x512[0] == '0');
-    // GUILD_IQ4XS_LEAN=0 (read each call): those rows' first kernel, not the lean one (the same bits)
+    // GUILD_IQ4XS_LEAN=0 (read each call): those rows' first kernel, not the lean one (the same bits).  GLM-5.3-Flash
+    // UD-IQ4_XS decode (2x Xeon Gold 6130 + GTX 1070, --spec): the lean rows take 0.7 ms off a ~80 ms step (the
+    // median of three alternated pairs in one process).
     const char* xl = std::getenv("GUILD_IQ4XS_LEAN");
     const bool iq4xs_lean = !(xl && xl[0] == '0');
     // and IQ4_XS gate/up rows (GLM-5.3-Flash's layer 11) through the same kernel, for any window, instead of a
-    // one-token dot a (row, token); GUILD_IQ4XS_GU=0 (read each call): those dots, as before (the same bits)
+    // one-token dot a (row, token); GUILD_IQ4XS_GU=0 (read each call): those dots, as before (the same bits).  The
+    // same decode: 0.6 ms a step (with the lean rows and the kept containers; 0.4 without the containers).
     const char* xg = std::getenv("GUILD_IQ4XS_GU");
     const bool iq4xs_gu = iq4xs && !(xg && xg[0] == '0');
     constexpr int RB = 64, MT = kQ8Rows512MaxT > kcpu::MAXT ? kQ8Rows512MaxT : kcpu::MAXT;
