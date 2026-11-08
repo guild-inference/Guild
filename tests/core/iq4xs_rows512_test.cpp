@@ -116,7 +116,10 @@ int main(int argc, char** argv) {
             for (double g : gbs)
                 s += g;
             std::printf("dram: %d threads, %d tokens, %s: %.1f GB/s\n", threads, nt,
-                        mode == 2 ? "iq4xs_rows512 lean" : mode ? "iq4xs_rows512 first" : "ggml vec_dot", s * 1e-9);
+                        mode == 2 ? "iq4xs_rows512 lean"
+                        : mode    ? "iq4xs_rows512 first"
+                                  : "ggml vec_dot",
+                        s * 1e-9);
         }
         return 0;
     }
@@ -128,27 +131,27 @@ int main(int argc, char** argv) {
         const auto w = random_rows(rng, rows, n);
         const auto a = random_acts(rng, n, 8);
         for (int lean = 0; lean < 2; ++lean)
-        for (int nt = 1; nt <= 8; ++nt)
-            for (int r0 : {0, 3})
-                for (int r1 : {rows, rows - 1, r0 + 1}) {
-                    std::vector<float> got((size_t) nt * rows, -1.f);
-                    const void* act[8];
-                    float* out[8];
-                    for (int t = 0; t < nt; ++t) {
-                        act[t] = a[(size_t) t].data();
-                        out[t] = got.data() + (size_t) t * rows;
-                    }
-                    iq4xs_rows512(w.data(), rb, n, act, nt, out, r0, r1, nullptr, 0, lean == 1);
-                    for (int t = 0; t < nt; ++t)
-                        for (int r = r0; r < r1; ++r) {
-                            float want = 0.f;
-                            dot(n, &want, 0, w.data() + (size_t) r * rb, 0, act[t], 0, 1);
-                            ++checked;
-                            if (std::memcmp(&want, &out[t][r], 4) != 0 && failures++ < 10)
-                                std::printf("FAIL %s n %d nt %d rows [%d, %d) row %d token %d: %.9g, ggml %.9g\n",
-                                            lean ? "lean" : "first", n, nt, r0, r1, r, t, out[t][r], want);
+            for (int nt = 1; nt <= 8; ++nt)
+                for (int r0 : {0, 3})
+                    for (int r1 : {rows, rows - 1, r0 + 1}) {
+                        std::vector<float> got((size_t) nt * rows, -1.f);
+                        const void* act[8];
+                        float* out[8];
+                        for (int t = 0; t < nt; ++t) {
+                            act[t] = a[(size_t) t].data();
+                            out[t] = got.data() + (size_t) t * rows;
                         }
-                }
+                        iq4xs_rows512(w.data(), rb, n, act, nt, out, r0, r1, nullptr, 0, lean == 1);
+                        for (int t = 0; t < nt; ++t)
+                            for (int r = r0; r < r1; ++r) {
+                                float want = 0.f;
+                                dot(n, &want, 0, w.data() + (size_t) r * rb, 0, act[t], 0, 1);
+                                ++checked;
+                                if (std::memcmp(&want, &out[t][r], 4) != 0 && failures++ < 10)
+                                    std::printf("FAIL %s n %d nt %d rows [%d, %d) row %d token %d: %.9g, ggml %.9g\n",
+                                                lean ? "lean" : "first", n, nt, r0, r1, r, t, out[t][r], want);
+                            }
+                    }
     }
     std::printf("%s: %d results, %d differ from ggml-cpu's dot\n", failures ? "FAIL" : "ok", checked, failures);
     return failures ? 1 : 0;

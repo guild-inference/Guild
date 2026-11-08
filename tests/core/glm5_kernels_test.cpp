@@ -1363,8 +1363,8 @@ static void test_kda_fg() {
                 // the fused one
                 guild::kernels::native_quantize_q8_1(dx, xq2, 2 * n_in, 1, st);
                 k::kda_fg(dWf, dWg, xq2, ddt, dsa, g1, dx + 2 * n_in, b1, o1, n_in, D, H, lb, st);
-                const std::string what = "kda_fg " + std::to_string(n_in) + " x " + std::to_string(D) +
-                                         (on ? " one wave" : " before");
+                const std::string what =
+                    "kda_fg " + std::to_string(n_in) + " x " + std::to_string(D) + (on ? " one wave" : " before");
                 same_attend(what + " g", down(g1, D), down(g0, D));
                 same_attend(what + " beta", down(b1, H), down(b0, H));
                 same_attend(what + " gate", down(o1, D), down(o0, D));
@@ -1373,6 +1373,133 @@ static void test_kda_fg() {
                     cudaFree(q);
             }
     k::set_one_wave(true);
+    cudaStreamDestroy(st);
+}
+
+// GUILD_GLM_FUSE2 bit 2: the kernels that write their output's Q8_1 too (rms_norm_q8_1, hc_pre_mixed, kda_out,
+// swiglu_clamp) against the same kernel without it and native_quantize_q8_1, byte for byte; the norm's weights make
+// all-zero blocks, blocks of subnormal values and blocks whose sum is past FP16 (the q8_1_finite clamp)
+static void test_q8_1_producers() {
+    cudaStream_t st;
+    cudaStreamCreate(&st);
+    auto same_bytes = [&](const std::string& what, const void* a, const void* b, size_t n) {
+        std::vector<uint8_t> x(n), y(n);
+        cudaDeviceSynchronize();
+        cudaMemcpy(x.data(), a, n, cudaMemcpyDeviceToHost);
+        cudaMemcpy(y.data(), b, n, cudaMemcpyDeviceToHost);
+        const bool same = std::memcmp(x.data(), y.data(), n) == 0;
+        failures += !same;
+        std::printf("%-44s %s\n", what.c_str(), same ? "ok (bitwise)" : "FAIL (bytes differ)");
+    };
+    auto qbuf = [](int n, int T) {
+        void* p = nullptr;
+        cudaMalloc(&p, guild::kernels::native_q8_1_bytes(n, T));
+        cudaMemset(p, 0xAB, guild::kernels::native_q8_1_bytes(n, T));
+        return p;
+    };
+    for (const int T : {1, 2, 8}) {
+        { // rms_norm_q8_1, rows of 1536 (DSA q_a) and 512
+            for (const int n : {1536, 512}) {
+                auto x = rnd((size_t) T * n), w = rnd(n);
+                for (int i = 0; i < n; ++i) {
+                    const int blk = i / 32;
+                    if (blk % 7 == 1)
+                        w[i] = 0.f; // an all-zero block
+                    else if (blk % 7 == 3)
+                        w[i] *= 1e-39f; // subnormal outputs
+                    else if (blk % 7 == 5)
+                        w[i] *= 1e5f; // the block's sum past 65504
+                }
+                float *dx = up(x), *dw = up(w), *y0, *y1;
+                cudaMalloc(&y0, (size_t) T * n * 4);
+                cudaMalloc(&y1, (size_t) T * n * 4);
+                void *q0 = qbuf(n, T), *q1 = qbuf(n, T);
+                k::rms_norm(dx, dw, y0, n, T, 1e-5f, st);
+                guild::kernels::native_quantize_q8_1(y0, q0, n, T, st);
+                k::rms_norm_q8_1(dx, dw, y1, n, T, 1e-5f, q1, st);
+                const std::string what = "rms_norm_q8_1 " + std::to_string(n) + " T " + std::to_string(T);
+                same_attend(what + " y", down(y1, (size_t) T * n), down(y0, (size_t) T * n));
+                same_bytes(what + " q8_1", q1, q0, guild::kernels::native_q8_1_bytes(n, T));
+                for (void* p : {(void*) dx, (void*) dw, (void*) y0, (void*) y1, q0, q1})
+                    cudaFree(p);
+            }
+        }
+        { // kda_out, 64 heads of 128
+            const int H = 64, D = H * 128;
+            auto o = rnd((size_t) T * D), gt = rnd((size_t) T * D), nw = rnd(128);
+            float *d_o = up(o), *dg = up(gt), *dn = up(nw), *y0, *y1;
+            cudaMalloc(&y0, (size_t) T * D * 4);
+            cudaMalloc(&y1, (size_t) T * D * 4);
+            void *q0 = qbuf(D, T), *q1 = qbuf(D, T);
+            k::kda_out(d_o, dg, dn, y0, H, T, 1e-5f, st);
+            guild::kernels::native_quantize_q8_1(y0, q0, D, T, st);
+            k::kda_out(d_o, dg, dn, y1, H, T, 1e-5f, st, q1);
+            const std::string what = "kda_out q8_1 T " + std::to_string(T);
+            same_attend(what + " y", down(y1, (size_t) T * D), down(y0, (size_t) T * D));
+            same_bytes(what + " q8_1", q1, q0, guild::kernels::native_q8_1_bytes(D, T));
+            for (void* p : {(void*) d_o, (void*) dg, (void*) dn, (void*) y0, (void*) y1, q0, q1})
+                cudaFree(p);
+        }
+        { // swiglu_clamp, the shared expert's 2048 (with and without a limit)
+            const int F = 2048;
+            for (const float lim : {7.f, 3.0e38f}) {
+                auto gt = rnd((size_t) T * F, 4.f), u = rnd((size_t) T * F, 4.f);
+                float *dg = up(gt), *du = up(u), *y0, *y1;
+                cudaMalloc(&y0, (size_t) T * F * 4);
+                cudaMalloc(&y1, (size_t) T * F * 4);
+                void *q0 = qbuf(F, T), *q1 = qbuf(F, T);
+                k::swiglu_clamp(dg, du, y0, F, T, lim, st);
+                guild::kernels::native_quantize_q8_1(y0, q0, F, T, st);
+                k::swiglu_clamp(dg, du, y1, F, T, lim, st, q1);
+                const std::string what = "swiglu_clamp q8_1 T " + std::to_string(T) + (lim < 1e30f ? " lim" : "");
+                same_attend(what + " y", down(y1, (size_t) T * F), down(y0, (size_t) T * F));
+                same_bytes(what + " q8_1", q1, q0, guild::kernels::native_q8_1_bytes(F, T));
+                for (void* p : {(void*) dg, (void*) du, (void*) y0, (void*) y1, q0, q1})
+                    cudaFree(p);
+            }
+        }
+        { // the mHC pre-mix from hc_mix's slices, both one-wave settings
+            const int N = 4096, iters = 20;
+            std::uniform_int_distribution<int> byte(0, 255), qd(-127, 127);
+            auto R = rnd((size_t) T * 4 * N), nwv = rnd(N, 0.1f);
+            for (auto& v : nwv)
+                v += 1.f;
+            for (int i = 0; i < 64; ++i)
+                nwv[(size_t) 32 * 5 + i] = 0.f; // two all-zero blocks
+            std::vector<float> sc = {0.7f, 0.9f, 1.1f}, base = rnd(24, 0.3f);
+            std::vector<uint8_t> W((size_t) 24 * (4 * N / 32) * 34);
+            for (size_t blk = 0; blk < W.size() / 34; ++blk) {
+                const __half d = __float2half(0.0005f * (float) (1 + byte(rng) % 50));
+                std::memcpy(&W[blk * 34], &d, 2);
+                for (int i = 0; i < 32; ++i)
+                    W[blk * 34 + 2 + i] = (uint8_t) (int8_t) qd(rng);
+            }
+            uint8_t* dW = up(W);
+            float *dR = up(R), *dn = up(nwv), *ds = up(sc), *db = up(base), *dpost, *dcomb, *x0, *x1, *dpart;
+            cudaMalloc(&dpost, (size_t) T * 4 * 4);
+            cudaMalloc(&dcomb, (size_t) T * 16 * 4);
+            cudaMalloc(&x0, (size_t) T * N * 4);
+            cudaMalloc(&x1, (size_t) T * N * 4);
+            cudaMalloc(&dpart, k::hc_mix_floats(T) * 4);
+            for (const int on : {1, 0}) {
+                k::set_one_wave(on == 1);
+                void *q0 = qbuf(N, T), *q1 = qbuf(N, T);
+                k::hc_mix(dW, dR, dpart, N, T, st);
+                k::hc_pre_mixed(dpart, ds, db, dR, dn, dpost, dcomb, x0, N, T, iters, 1e-6f, 1e-6f, st);
+                guild::kernels::native_quantize_q8_1(x0, q0, N, T, st);
+                k::hc_pre_mixed(dpart, ds, db, dR, dn, dpost, dcomb, x1, N, T, iters, 1e-6f, 1e-6f, st, nullptr, q1);
+                const std::string what = "hc_pre_mixed q8_1 T " + std::to_string(T) + (on ? " one wave" : " before");
+                same_attend(what + " xn", down(x1, (size_t) T * N), down(x0, (size_t) T * N));
+                same_bytes(what + " q8_1", q1, q0, guild::kernels::native_q8_1_bytes(N, T));
+                cudaFree(q0);
+                cudaFree(q1);
+            }
+            k::set_one_wave(true);
+            for (float* p : {dR, dn, ds, db, dpost, dcomb, x0, x1, dpart})
+                cudaFree(p);
+            cudaFree(dW);
+        }
+    }
     cudaStreamDestroy(st);
 }
 
@@ -1865,6 +1992,7 @@ int main(int argc, char** argv) {
     test_mmvq_rows();
     test_narrow();
     test_kda_fg();
+    test_q8_1_producers();
     test_indexer();
     test_attend_staged();
     test_row_cache();

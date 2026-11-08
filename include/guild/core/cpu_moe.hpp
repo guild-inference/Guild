@@ -249,6 +249,8 @@ int act_type(int gu_type);
 /// one row partition, and the partition follows the window's experts).
 class Experts {
 public:
+    Experts();
+    ~Experts();
     /// t_first: the tokens before it are not computed (their rows of y are 0); the groups keep the order the whole
     /// window's tokens give them, so a computed token's sums are the ones the whole window computes
     void run(Pool& pool, int64_t n_embd, int T, int max_t, const int32_t* ids, const float* w, int n_used,
@@ -278,6 +280,8 @@ private:
     };
     std::unique_ptr<Line[]> gflow_;
     size_t qcnt_cap_ = 0, gflow_cap_ = 0;
+    struct Scratch; ///< the containers a call fills, kept for the next (cpu_moe.cpp)
+    std::unique_ptr<Scratch> s_;
 };
 
 } // namespace guild::core::cpu_moe
