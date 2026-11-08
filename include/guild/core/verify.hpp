@@ -150,8 +150,10 @@ public:
     /// stops after the head's input - the final mix into head_input(), as Drama 3's head-less windows do - so the
     /// head's product, the finite check and the greedy pick are not run and `out` is -1 per row.  The layers write
     /// everything the state keeps (K/V, GDN and conv state, PLE history, the drafter features, final_R), so the window
-    /// leaves the same state.  A second graph per window size, captured on first use.  GUILD_INGEST_NO_HEAD=0: the
-    /// full window, as before.  A layer split's first stage passes it to the next stage's run.
+    /// leaves the same state.  A second graph per window size, captured on first use (the caller asks only for full
+    /// windows: ~26 MiB of VRAM a graph); if it cannot be captured, the full window from then on.
+    /// GUILD_INGEST_NO_HEAD=0: the full window, as before.  A layer split's first stage passes it to the next stage's
+    /// run.
     void set_ingest(bool on) {
         ingest_ = on;
     }
@@ -322,7 +324,8 @@ public:
 private:
     RemoteExpertOpt* remote_opt_ = nullptr;
     bool capture(int T, std::string& err, bool nohead = false);
-    bool ingest_ = false; ///< set_ingest: the next run takes exec_nohead_[T]
+    bool ingest_ = false;     ///< set_ingest: the next run takes exec_nohead_[T]
+    bool nohead_off_ = false; ///< a head-less window could not be captured: full windows from then on
     // batch windows (see init_slots)
     std::vector<SessionState*> slots_;
     bool batch_rec_ = false;  ///< record_window is capturing a batch window

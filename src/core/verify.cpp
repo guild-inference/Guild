@@ -2171,7 +2171,7 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
     }
     ScopedModelExecution exec_scope(ss_->exec_state);
     last_batch_ = false;
-    const bool ingest = ingest_asked && !no_head_ && le_ == g_->n_layers; // the stage with the head skips it
+    bool ingest = ingest_asked && !no_head_ && le_ == g_->n_layers && !nohead_off_; // the stage with the head skips it
     if (T < 1 || T > max_t_) {
         err = "verify: window size out of range";
         return false;
@@ -2186,7 +2186,16 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
         err = "verify: the window runs past the context";
         return false;
     }
-    if (!capture(T, err, ingest) || !capture_commit(err))
+    if (ingest && !capture(T, err, true)) {
+        // the head-less graph did not record or instantiate (~26 MiB of VRAM a graph on the GTX 1070, out of the
+        // load's reserve for the window graphs): full windows from now on, as before set_ingest
+        std::fprintf(stderr, "guild verify: no head-less ingest window (%s); full windows from now on\n", err.c_str());
+        (void) cudaGetLastError(); // an instantiate failure is not sticky: leave nothing for a later check
+        err.clear();
+        nohead_off_ = true;
+        ingest = false;
+    }
+    if ((!ingest && !capture(T, err)) || !capture_commit(err))
         return false;
     VDBG("captured; staging\n");
     const Clock::time_point t0 = Clock::now();
