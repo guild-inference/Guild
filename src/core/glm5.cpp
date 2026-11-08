@@ -174,7 +174,8 @@ struct Glm5Engine::Impl {
     // greatest), beside B's attention and router on st, with scratch of its own for up to kSideT tokens; ev_route
     // (st, after A's router and input) and ev_join (side, after its down rows) by the layer's parity.
     // GUILD_GLM_SHEXP_STREAM=1 (read each window; off by default: no gain measured): on `side`; otherwise on st, as
-    // before (the same kernels and bits either way).
+    // before (the same kernels and bits either way).  `side`, its events and its scratch exist only when the variable
+    // is set at load (to 0 or 1: an A/B's arms switch it later); otherwise the load allocates nothing for them.
     static constexpr int kSideT = 4;
     cudaStream_t side = nullptr;
     cudaEvent_t ev_route[2] = {nullptr, nullptr}, ev_join[2] = {nullptr, nullptr};
@@ -830,18 +831,20 @@ bool Glm5Engine::Impl::load(const std::string& path, const Glm5Options& o, std::
     opt.max_context = (opt.max_context + glm5k::kKpool - 1) / glm5k::kKpool * glm5k::kKpool;
 
     ggml_cpu_init(); // the i-quant grids the CPU dot products read
-    // st at the device's greatest priority and `side` (group A's shared expert) at its least: the GPU starts the blocks
-    // of st's kernels first, and side's fill the SMs they leave
+    // st at the device's greatest priority and `side` (group A's shared expert, with GUILD_GLM_SHEXP_STREAM set) at its
+    // least: the GPU starts the blocks of st's kernels first, and side's fill the SMs they leave.  Without `side`, st
+    // is the engine's only stream and its priority orders nothing.
     int prio_least = 0, prio_greatest = 0;
     cudaDeviceGetStreamPriorityRange(&prio_least, &prio_greatest);
+    const bool want_side = std::getenv("GUILD_GLM_SHEXP_STREAM") != nullptr;
     if (cudaStreamCreateWithPriority(&st, cudaStreamNonBlocking, prio_greatest) != cudaSuccess ||
-        cudaStreamCreateWithPriority(&side, cudaStreamNonBlocking, prio_least) != cudaSuccess ||
+        (want_side && cudaStreamCreateWithPriority(&side, cudaStreamNonBlocking, prio_least) != cudaSuccess) ||
         cudaEventCreateWithFlags(&ev, cudaEventDisableTiming) != cudaSuccess ||
         cudaEventCreateWithFlags(&ev2, cudaEventDisableTiming) != cudaSuccess) {
         err = "glm5: no CUDA stream";
         return false;
     }
-    for (int k = 0; k < 2; ++k)
+    for (int k = 0; want_side && k < 2; ++k)
         if (cudaEventCreateWithFlags(&ev_route[k], cudaEventDisableTiming) != cudaSuccess ||
             cudaEventCreateWithFlags(&ev_join[k], cudaEventDisableTiming) != cudaSuccess) {
             err = "glm5: no CUDA event";
@@ -1558,7 +1561,7 @@ bool Glm5Engine::Impl::load(const std::string& path, const Glm5Options& o, std::
         return false;
     xq = dp.xq[0];
     xq2 = dp.xq[1];
-    {
+    if (side) {
         // group A's shared expert on `side`: its scratch for up to kSideT tokens (~160 KB); none: on st
         int64_t F = 0;
         for (const Layer& y : L)
