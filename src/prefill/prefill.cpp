@@ -2989,11 +2989,30 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                         // the scores on tensor cores (3xTF32: FP32-level, not bitwise); GUILD_SELECT_OLD=1: the warp
                         // kernel
                         static const bool old_sel = std::getenv("GUILD_SELECT_OLD") != nullptr;
+                        // Far into a long prompt the warp kernel's (block, query) grid re-reads every key block per
+                        // query; from kSelMultiFrom on, 8 queries a call with no active count, which takes the kernel
+                        // that reads each block once for them (block_scores_multi_kernel: the same arithmetic in the
+                        // same order).  GTX 1070, 24-31K: 0.74x the time; slower below ~12K.
+                        // GUILD_PREFILL_SEL_MULTI=0: the warp kernel's grid at every position.
+                        static const bool sel_multi = [] {
+                            const char* e = std::getenv("GUILD_PREFILL_SEL_MULTI");
+                            return e == nullptr || e[0] != '0';
+                        }();
+                        constexpr int64_t kSelMultiFrom = 16384, kSelMultiQ = 8;
                         if (old_sel ||
                             !guild::kernels::qsa_block_scores_tc(st.idx_pooled, st.idx_dead, m.q_idx + t0 * 512, steps0,
-                                                                 nb, m.max_blocks, s, m.sel_scores, m.cs, active))
-                            guild::kernels::qsa_block_scores(st.idx_pooled, st.idx_dead, m.q_idx + t0 * 512, steps0, nb,
-                                                             m.max_blocks, s, m.sel_scores, m.cs, active);
+                                                                 nb, m.max_blocks, s, m.sel_scores, m.cs, active)) {
+                            if (sel_multi && p0 + t0 >= kSelMultiFrom) {
+                                for (int64_t q0 = 0; q0 < nb; q0 += kSelMultiQ)
+                                    guild::kernels::qsa_block_scores(
+                                        st.idx_pooled, st.idx_dead, m.q_idx + (t0 + q0) * 512,
+                                        steps0 + q0 * guild::kernels::kStepCount, std::min(kSelMultiQ, nb - q0),
+                                        m.max_blocks, s, m.sel_scores + q0 * m.max_blocks, m.cs, 0);
+                            } else {
+                                guild::kernels::qsa_block_scores(st.idx_pooled, st.idx_dead, m.q_idx + t0 * 512, steps0,
+                                                                 nb, m.max_blocks, s, m.sel_scores, m.cs, active);
+                            }
+                        }
                         guild::kernels::qsa_block_topk(m.sel_scores, steps0, nb, m.max_blocks, m.cap, s,
                                                        m.sel_ids + t0 * m.cap, m.cs, active);
                     }
