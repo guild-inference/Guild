@@ -652,7 +652,7 @@ bool GuildModel::synthesize(const SpeechRequest& req, const SpeechCallback& on_a
     if (frames_dump.f && frame[0] == tg.eos) // the end, so a run forced with these frames ends there too
         std::fwrite(frame.data(), 4, frame.size(), frames_dump.f);
     const bool codec_ok = codec_join(); // the chunk on codec_side counts toward the decode, as when it ran here
-    codec_hold_guard.clear(); // the last chunk runs alone: unpaced
+    codec_hold_guard.clear();           // the last chunk runs alone: unpaced
     telemetry.decode_ms = ms_since(t_decode);
     if (hidden_dump)
         std::fclose(hidden_dump);
