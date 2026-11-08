@@ -60,6 +60,19 @@ public:
 
     /// Forgets the context (K/V and recurrent states, the MTP block's too).
     void reset();
+    /// The context so far kept on the GPU (every Mamba-2 layer's states, the attention layers' and the MTP block's K/V
+    /// cells, the MTP block's waiting row): restore_prefix() returns to it, so that a request's fixed prefix is read
+    /// once.  A prompt continued from there computes what the whole prompt computes, as long as every token is
+    /// computed as alone (the scan and convolution token by token, attention per query, MMQ and the CPU experts per
+    /// row; transcribe_run's TRANSCRIBE_PREFIX_CHECK compares the logits bit for bit).  save_prefix follows a forward.
+    bool save_prefix(std::string& err);
+    bool restore_prefix(std::string& err);
+    /// the saved prefix's tokens (0: none)
+    int64_t prefix_end() const;
+    /// whether a prompt of n tokens that starts with the saved prefix, read from there, computes what it computes read
+    /// whole: neither reading ends in a window of 1 to 8 rows, whose products take MMVQ rather than MMQ and whose
+    /// router takes the one-token kernel (its rows would not be the same rows of a wider window)
+    bool prefix_exact(int64_t n) const;
     /// Runs rows [0, n) at positions pos0 .. pos0 + n - 1: row i is token tokens[i]'s embedding, or, where tokens[i] is
     /// negative, `embeds` row i (n_embd floats, host: an audio embedding).  A prompt: windows of up to the prompt
     /// window (llama.cpp's MMQ for the wide products); the Mamba-2 scan clamps the time step at 0.001 there, as the

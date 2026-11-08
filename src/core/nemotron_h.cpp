@@ -129,6 +129,16 @@ struct NemotronHEngine::Impl {
         return {x, y, ycpu, hn, h_x, h_y, h_w, h_emb, h_ids, ev, snap0, snap_last};
     }
     int64_t ctx_end = 0;
+    // save_prefix(): per layer its states (Mamba-2) or its K/V cells [0, end) (attention), the MTP block's cells, its
+    // waiting row
+    struct Saved {
+        std::vector<float*> ssm, conv;
+        std::vector<void*> kc, vc;
+        void *mkc = nullptr, *mvc = nullptr;
+        float* pending = nullptr;
+        bool has_pending = false;
+        int64_t end = 0, cells = 0; ///< the prefix's tokens; the cells allocated
+    } saved;
     // the last verify window, until accept()
     std::vector<int32_t> win_tok;
     int64_t win_pos = 0;
@@ -983,6 +993,107 @@ void NemotronHEngine::reset() {
     m.has_pending = false;
     m.win_tok.clear();
     m.wait_tok.clear();
+}
+
+bool NemotronHEngine::save_prefix(std::string& err) {
+    Impl& m = *p_;
+    Impl::Saved& s = m.saved;
+    if (!m.wait_tok.empty() || !m.win_tok.empty() || m.ctx_end < 1) {
+        err = "nemotron_h: save_prefix follows a forward";
+        return false;
+    }
+    const int64_t C = m.g.ssm_inner + 2 * m.g.ssm_groups * m.g.ssm_state, kv_dim = m.g.n_head_kv * m.g.head_dim;
+    const size_t ssm_bytes = (size_t) m.g.ssm_heads * (m.g.ssm_inner / m.g.ssm_heads) * m.g.ssm_state * 4;
+    const size_t kv_bytes = (size_t) m.ctx_end * kv_dim * 2;
+    if (s.ssm.empty()) {
+        s.ssm.assign(m.L.size(), nullptr), s.conv.assign(m.L.size(), nullptr);
+        s.kc.assign(m.L.size(), nullptr), s.vc.assign(m.L.size(), nullptr);
+        for (size_t l = 0; l < m.L.size(); ++l)
+            if (m.L[l].kind == 'M' && (!(s.ssm[l] = m.dalloc<float>(ssm_bytes / 4, err)) ||
+                                       !(s.conv[l] = m.dalloc<float>((size_t) C * 3, err))))
+                return false;
+        if (m.has_mtp && !(s.pending = m.dalloc<float>((size_t) m.g.n_embd, err)))
+            return false;
+    }
+    if (s.cells < m.ctx_end) { // the K/V cells (the old ones stay allocated until the engine goes)
+        for (size_t l = 0; l < m.L.size(); ++l)
+            if (m.L[l].kind == '*' && (!(s.kc[l] = m.dalloc<uint8_t>(kv_bytes, err)) ||
+                                       !(s.vc[l] = m.dalloc<uint8_t>(kv_bytes, err))))
+                return false;
+        if (m.has_mtp && (!(s.mkc = m.dalloc<uint8_t>(kv_bytes, err)) || !(s.mvc = m.dalloc<uint8_t>(kv_bytes, err))))
+            return false;
+        s.cells = m.ctx_end;
+    }
+    for (size_t l = 0; l < m.L.size(); ++l) {
+        const Layer& y = m.L[l];
+        if (y.kind == 'M') {
+            cudaMemcpyAsync(s.ssm[l], y.ssm_state, ssm_bytes, cudaMemcpyDeviceToDevice, m.st);
+            cudaMemcpyAsync(s.conv[l], y.conv_state, (size_t) C * 3 * 4, cudaMemcpyDeviceToDevice, m.st);
+        } else if (y.kind == '*') {
+            cudaMemcpyAsync(s.kc[l], y.kc, kv_bytes, cudaMemcpyDeviceToDevice, m.st);
+            cudaMemcpyAsync(s.vc[l], y.vc, kv_bytes, cudaMemcpyDeviceToDevice, m.st);
+        }
+    }
+    if (m.has_mtp) {
+        cudaMemcpyAsync(s.mkc, m.mtp.kc, kv_bytes, cudaMemcpyDeviceToDevice, m.st);
+        cudaMemcpyAsync(s.mvc, m.mtp.vc, kv_bytes, cudaMemcpyDeviceToDevice, m.st);
+        cudaMemcpyAsync(s.pending, m.pending, (size_t) m.g.n_embd * 4, cudaMemcpyDeviceToDevice, m.st);
+    }
+    s.has_pending = m.has_pending;
+    s.end = m.ctx_end;
+    if (cudaStreamSynchronize(m.st) != cudaSuccess) {
+        err = "nemotron_h: CUDA error: " + std::string(cudaGetErrorString(cudaGetLastError()));
+        return false;
+    }
+    return true;
+}
+
+bool NemotronHEngine::restore_prefix(std::string& err) {
+    Impl& m = *p_;
+    const Impl::Saved& s = m.saved;
+    if (s.end < 1) {
+        err = "nemotron_h: no saved prefix";
+        return false;
+    }
+    const int64_t C = m.g.ssm_inner + 2 * m.g.ssm_groups * m.g.ssm_state, kv_dim = m.g.n_head_kv * m.g.head_dim;
+    const size_t ssm_bytes = (size_t) m.g.ssm_heads * (m.g.ssm_inner / m.g.ssm_heads) * m.g.ssm_state * 4;
+    const size_t kv_bytes = (size_t) s.end * kv_dim * 2;
+    for (size_t l = 0; l < m.L.size(); ++l) {
+        Layer& y = m.L[l];
+        if (y.kind == 'M') {
+            cudaMemcpyAsync(y.ssm_state, s.ssm[l], ssm_bytes, cudaMemcpyDeviceToDevice, m.st);
+            cudaMemcpyAsync(y.conv_state, s.conv[l], (size_t) C * 3 * 4, cudaMemcpyDeviceToDevice, m.st);
+        } else if (y.kind == '*') {
+            cudaMemcpyAsync(y.kc, s.kc[l], kv_bytes, cudaMemcpyDeviceToDevice, m.st);
+            cudaMemcpyAsync(y.vc, s.vc[l], kv_bytes, cudaMemcpyDeviceToDevice, m.st);
+        }
+    }
+    if (m.has_mtp) {
+        cudaMemcpyAsync(m.mtp.kc, s.mkc, kv_bytes, cudaMemcpyDeviceToDevice, m.st);
+        cudaMemcpyAsync(m.mtp.vc, s.mvc, kv_bytes, cudaMemcpyDeviceToDevice, m.st);
+        cudaMemcpyAsync(m.pending, s.pending, (size_t) m.g.n_embd * 4, cudaMemcpyDeviceToDevice, m.st);
+    }
+    m.has_pending = s.has_pending;
+    m.ctx_end = s.end;
+    m.win_tok.clear();
+    m.wait_tok.clear();
+    if (cudaStreamSynchronize(m.st) != cudaSuccess) {
+        err = "nemotron_h: CUDA error: " + std::string(cudaGetErrorString(cudaGetLastError()));
+        return false;
+    }
+    return true;
+}
+
+int64_t NemotronHEngine::prefix_end() const {
+    return p_->saved.end;
+}
+
+bool NemotronHEngine::prefix_exact(int64_t n) const {
+    const int64_t np = p_->saved.end;
+    auto narrow_end = [](int64_t rows) {
+        return rows % kPromptT != 0 && rows % kPromptT <= DenseProducts::kMmvqCols;
+    };
+    return np > 0 && n > np && !narrow_end(n) && !narrow_end(n - np);
 }
 
 bool NemotronHEngine::forward(const int32_t* tokens, const float* embeds, int n, int64_t pos0, float* logits,
