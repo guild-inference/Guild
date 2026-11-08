@@ -1250,6 +1250,9 @@ if(GUILD_ENABLE_CUDA OR GUILD_ENABLE_HIP)
   # Nemotron 3.5 Transcribe: offline transcription of WAV clips (the audio model and the Nemotron-H engine)
   add_executable(transcribe_run src/program/transcribe_run.cpp)
   target_link_libraries(transcribe_run PRIVATE guild_engine guild_audio guild_server)
+  # the draft head's token subset by default (tools/nemotron_draft_vocab.py)
+  target_compile_definitions(transcribe_run PRIVATE
+    GUILD_NEMOTRON_DRAFT_VOCAB="${CMAKE_CURRENT_SOURCE_DIR}/data/nemotron_draft_vocab.bin")
 endif()
 
 # ---- guild_server (Native HTTP & OpenAI serving layer) --------------------

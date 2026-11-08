@@ -8,7 +8,9 @@
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
 
+#include <climits>
 #include <cmath>
+#include <cstdint>
 #include <cstdlib>
 
 namespace guild::core::nhk {
@@ -241,6 +243,57 @@ __global__ void __launch_bounds__(128) gqa_attend_k(const float* q, const __half
     out[((size_t) t * Hq + h) * D + d] = acc / sum;
 }
 
+/// a block of 1024 threads per row: each thread's first maximum (strict >, its indices rising), then the block's
+/// lowest index among equal maxima: std::max_element's first maximum for any values but NaN
+__global__ void __launch_bounds__(1024)
+    argmax_rows_k(const float* x, int n, int64_t ld, int32_t* out, const int32_t* ids, bool vec) {
+    const float* row = x + (size_t) blockIdx.x * ld;
+    float v = -INFINITY;
+    int idx = INT_MAX;
+    int i0 = 0;
+    if (vec) {
+        const int n4 = n / 4;
+        const float4* r4 = (const float4*) row;
+        for (int j = threadIdx.x; j < n4; j += blockDim.x) {
+            const float4 f = r4[j];
+            if (f.x > v)
+                v = f.x, idx = 4 * j;
+            if (f.y > v)
+                v = f.y, idx = 4 * j + 1;
+            if (f.z > v)
+                v = f.z, idx = 4 * j + 2;
+            if (f.w > v)
+                v = f.w, idx = 4 * j + 3;
+        }
+        i0 = 4 * n4;
+    }
+    for (int i = i0 + threadIdx.x; i < n; i += blockDim.x)
+        if (row[i] > v)
+            v = row[i], idx = i;
+#pragma unroll
+    for (int o = 16; o > 0; o >>= 1) {
+        const float v2 = __shfl_xor_sync(0xffffffffu, v, o);
+        const int i2 = __shfl_xor_sync(0xffffffffu, idx, o);
+        if (v2 > v || (v2 == v && i2 < idx))
+            v = v2, idx = i2;
+    }
+    __shared__ float bv[32];
+    __shared__ int bi[32];
+    if ((threadIdx.x & 31) == 0) {
+        bv[threadIdx.x >> 5] = v;
+        bi[threadIdx.x >> 5] = idx;
+    }
+    __syncthreads();
+    if (threadIdx.x == 0) {
+        for (int w = 1; w < (int) (blockDim.x >> 5); ++w)
+            if (bv[w] > v || (bv[w] == v && bi[w] < idx))
+                v = bv[w], idx = bi[w];
+        if (idx == INT_MAX) // every value -inf: the first
+            idx = 0;
+        out[blockIdx.x] = ids ? ids[idx] : idx;
+    }
+}
+
 int grid_for(int64_t n) {
     return (int) std::min<int64_t>((n + 255) / 256, 4096);
 }
@@ -292,6 +345,11 @@ void kv_store(const float* k, const float* v, void* kc, void* vc, int64_t pos0, 
 
 int64_t attend_max_cells() {
     return kMaxCells;
+}
+
+void argmax_rows(const float* x, int n, int64_t ld, int rows, int32_t* out, const int32_t* ids, void* st) {
+    const bool vec = (uintptr_t) x % 16 == 0 && (rows == 1 || ld % 4 == 0);
+    argmax_rows_k<<<rows, 1024, 0, S(st)>>>(x, n, ld, out, ids, vec);
 }
 
 void gqa_attend(const float* q, const void* kc, const void* vc, float* out, int Hq, int Hk, int D, int64_t pos0, int T,

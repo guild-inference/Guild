@@ -44,6 +44,10 @@ void layer_norm(const float* x, const float* w, float* y, int n, int rows, float
 /// K/V rows into the cache: kc / vc [cells][kv_dim] FP16, rows pos0 .. pos0 + T - 1 from k / v [T][kv_dim]
 void kv_store(const float* k, const float* v, void* kc, void* vc, int64_t pos0, int kv_dim, int T, void* st);
 
+/// Each row's argmax: out[r] = the first index of the largest of x[r * ld .. r * ld + n) (std::max_element's choice
+/// for any values but NaN), or ids[that index] when ids is given (a subset's row to its token id); `rows` rows.
+void argmax_rows(const float* x, int n, int64_t ld, int rows, int32_t* out, const int32_t* ids, void* st);
+
 /// Causal grouped-query attention without positional encoding: query t (position pos0 + t) over the cells
 /// [0, pos0 + t]; q / out [T][Hq * D], head h reads key/value head h / (Hq / Hk); scores scaled by `scale`, softmax in
 /// float32.  D = 128; up to attend_max_cells() cells.
