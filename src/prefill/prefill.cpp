@@ -721,6 +721,7 @@ struct Prefill::Impl {
     int ring = STAGE;               // the slots of this layout's ring (ring_slots)
     std::unique_ptr<Stager> stager; // the unpinned experts' host copies (step 4)
     cudaEvent_t copied[RING_MAX] = {}, used[RING_MAX] = {};
+    cudaEvent_t ids_ready = nullptr; // a MoE layer's routed ids are on the host (GUILD_PREFILL_SHEXP_EARLY)
     bool stage_live[RING_MAX] = {};
     // the event that releases each ring slot: its own `used`, or - when an MMQ group is gathered in one launch - the
     // `used` of the last slot gathered with it, recorded once for all of them (a later record only waits longer)
@@ -823,6 +824,8 @@ void Prefill::release() {
         if (impl_->used[i])
             cudaEventDestroy(impl_->used[i]);
     }
+    if (impl_->ids_ready)
+        cudaEventDestroy(impl_->ids_ready);
     for (int b = 0; b < 2; ++b) {
         if (impl_->hand[b])
             cudaFreeHost(impl_->hand[b]);
@@ -1055,6 +1058,8 @@ bool Prefill::init(const core::WeightTable& wt, const core::ModelGeometry& g, co
         if (cudaEventCreateWithFlags(&m.used[i], cudaEventDisableTiming) != cudaSuccess)
             ok = false;
     }
+    if (!m.ids_ready && cudaEventCreateWithFlags(&m.ids_ready, cudaEventDisableTiming) != cudaSuccess)
+        ok = false;
     if (!m.stager) {
         m.stager = std::make_unique<Stager>();
         const int hw = (int) std::thread::hardware_concurrency();
@@ -3069,21 +3074,24 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                    m.mixed_bf_lo))
                         return false;
                     route(m.logits, m.ids, m.w, T, m.g->n_expert, m.cs);
-                    // the shared expert and its scalar gate
-                    if (!native_proj(m.gemm, wsg, m.mixed_h, m.sgate, T, v.name("ffn_gate_shexp.weight"), err))
-                        return false;
-                    if (!native_proj(m.gemm, wsu, m.mixed_h, m.sup, T, v.name("ffn_up_shexp.weight"), err))
-                        return false;
-                    swiglu_pair(m.sgate, m.sup, m.sh_h, T, m.cs);
-                    if (!native_proj(m.gemm, wsd, m.sh_h, m.shared, T, v.name("ffn_down_shexp.weight"), err))
-                        return false;
-                    if (wgi->kind != core::WeightKind::Bf16InF32) {
-                        err = "prefill: shared gate is not BF16";
-                        return false;
-                    }
-                    gemm_bf16(m.gemm, m.mixed_bf, (const uint16_t*) wgi->data, m.sg, T, 1, N);
-                    if (m.mixed_bf_lo)
-                        gemm_bf16(m.gemm, m.mixed_bf_lo, (const uint16_t*) wgi->data, m.sg, T, 1, N, 0, 1.0f);
+                    // the shared expert and its scalar gate (own buffers in the MoE scratch; read by the combine)
+                    auto shared_expert = [&]() -> bool {
+                        if (!native_proj(m.gemm, wsg, m.mixed_h, m.sgate, T, v.name("ffn_gate_shexp.weight"), err))
+                            return false;
+                        if (!native_proj(m.gemm, wsu, m.mixed_h, m.sup, T, v.name("ffn_up_shexp.weight"), err))
+                            return false;
+                        swiglu_pair(m.sgate, m.sup, m.sh_h, T, m.cs);
+                        if (!native_proj(m.gemm, wsd, m.sh_h, m.shared, T, v.name("ffn_down_shexp.weight"), err))
+                            return false;
+                        if (wgi->kind != core::WeightKind::Bf16InF32) {
+                            err = "prefill: shared gate is not BF16";
+                            return false;
+                        }
+                        gemm_bf16(m.gemm, m.mixed_bf, (const uint16_t*) wgi->data, m.sg, T, 1, N);
+                        if (m.mixed_bf_lo)
+                            gemm_bf16(m.gemm, m.mixed_bf_lo, (const uint16_t*) wgi->data, m.sg, T, 1, N, 0, 1.0f);
+                        return true;
+                    };
                     // #136: GUILD_PF_FUSED=1 - the Q2_0 pack's experts on the fused int8 kernels (moe_fused.hpp),
                     // grouped on the GPU: no host sync.  Only where every expert's place is known before the routing -
                     // the streamed walk, in which every non-resident expert of the layer comes through the ring in id
@@ -3104,6 +3112,17 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                         (use_mmq && stream_all && no_peer && !lay.native && fused::enabled()) || fused_nat;
                     size_t n_order = 0;    // the routed experts (the debug report; unknown when fused)
                     bool peer_now = false; // multi-GPU: the peer computed rows of this layer (MMQ path only)
+                    // The host groups the routed pairs while the GPU computes the shared expert: the host waits for an
+                    // event recorded after the ids' copy instead of the whole stream, then issues the first expert
+                    // copies (the same kernels on the same inputs; only the host's wait moves).  Not with the phase
+                    // timer, whose fold needs every mark done.  GUILD_PREFILL_SHEXP_EARLY=0: the shared expert first.
+                    static const bool shexp_early_env = [] {
+                        const char* e = std::getenv("GUILD_PREFILL_SHEXP_EARLY");
+                        return e == nullptr || e[0] != '0';
+                    }();
+                    const bool shexp_early = shexp_early_env && !fused_l && !pt.on && m.ids_ready != nullptr;
+                    if (!shexp_early && !shared_expert())
+                        return false;
                     if (fused_l) {
                         if (static bool said = false; !said) {
                             said = true;
@@ -3183,7 +3202,14 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                         // work), not the host: the watchdog's report says so (only its text changes)
                         core::progress_at(
                             "reading the prompt (batched): waiting for the GPU (attention, router) at layer", l, p0);
-                        cudaStreamSynchronize(m.cs);
+                        if (shexp_early) { // the event covers all earlier work on the stream, as the sync did
+                            cudaEventRecord(m.ids_ready, m.cs);
+                            if (!shared_expert())
+                                return false;
+                            cudaEventSynchronize(m.ids_ready);
+                        } else {
+                            cudaStreamSynchronize(m.cs);
+                        }
                         core::progress_at("reading the prompt (batched): layer", l, p0);
                         pt.fold();
                         if (pe.on) { // the peer's marks so far are done: the primary waited for its last rows
