@@ -170,6 +170,16 @@ struct Glm5Engine::Impl {
     float* out_norm = nullptr;
     cudaStream_t st = nullptr;
     cudaEvent_t ev = nullptr, ev2 = nullptr;
+    // A pipelined window's group A computes its GPU shared expert on `side` (the device's least priority; st has the
+    // greatest), beside B's attention and router on st, with scratch of its own for up to kSideT tokens; ev_route
+    // (st, after A's router and input) and ev_join (side, after its down rows) by the layer's parity.
+    // GUILD_GLM_SHEXP_STREAM=0 (read each window): on st, as before (the same kernels and bits either way).
+    static constexpr int kSideT = 4;
+    cudaStream_t side = nullptr;
+    cudaEvent_t ev_route[2] = {nullptr, nullptr}, ev_join[2] = {nullptr, nullptr};
+    void *xq_s = nullptr, *xq2_s = nullptr;
+    float *a_s = nullptr, *b_s = nullptr, *c_s = nullptr;
+    bool shexp_stream = true;
     uint64_t vram = 0;
     std::string placement;
     std::unique_ptr<Pool> pool;
@@ -278,13 +288,21 @@ struct Glm5Engine::Impl {
         cudaEvent_t ev;
         bool twin;  ///< the CPU computes the shared expert (its twin) for these rows
         bool dtwin; ///< and a dense layer's FFN, whose other rows the GPU computes
+        bool side;  ///< a pipelined window's group A: its GPU shared expert may run on `side`
     } rows0{};
-    bool twin = false, dtwin = false;
+    bool twin = false, dtwin = false, side_grp = false;
+    /// whether these rows' shared expert of layer Y runs on `side` (ffn_begin enqueues it, ffn_end joins it)
+    bool on_side(const Layer& Y, int T, bool grp) const {
+        return grp && shexp_stream && side && Y.moe && Y.ffn_gpu && T <= kSideT;
+    }
+    int side_slot(const Layer& Y) const {
+        return (int) ((&Y - L.data()) & 1);
+    }
     /// whether these rows' FFN half of layer Y runs on its CPU twin
     static bool on_twin(const Layer& Y, bool tw, bool dtw) {
         return Y.ffn_twin && (Y.moe ? tw : dtw);
     }
-    void group_rows(int t0, cudaEvent_t e, bool tw = false, bool dtw = false) {
+    void group_rows(int t0, cudaEvent_t e, bool tw = false, bool dtw = false, bool sd = false) {
         const int64_t N = g.n_embd, U = g.n_used;
         R = rows0.R + (size_t) t0 * 4 * N;
         post = rows0.post + (size_t) t0 * 4;
@@ -298,9 +316,10 @@ struct Glm5Engine::Impl {
         ev = e;
         twin = tw;
         dtwin = dtw;
+        side_grp = sd;
     }
     Rows rows() const {
-        return {R, post, comb, y, ycpu, h_x, h_y, h_w, h_ids, ev, twin, dtwin};
+        return {R, post, comb, y, ycpu, h_x, h_y, h_w, h_ids, ev, twin, dtwin, side_grp};
     }
     std::unique_ptr<Launcher> launcher; // the pipelined window's GPU launches, beside the calling thread's CPU work
 
@@ -327,6 +346,14 @@ struct Glm5Engine::Impl {
             cudaEventDestroy(ev);
         if (ev2)
             cudaEventDestroy(ev2);
+        for (int k = 0; k < 2; ++k)
+            for (cudaEvent_t e : {ev_route[k], ev_join[k]})
+                if (e)
+                    cudaEventDestroy(e);
+        if (side) {
+            cudaStreamSynchronize(side);
+            cudaStreamDestroy(side);
+        }
         if (st)
             cudaStreamDestroy(st);
     }
@@ -550,11 +577,11 @@ struct Glm5Engine::Impl {
         const char* e = std::getenv("GUILD_GLM_PIPE");
         return !(e && e[0] == '0') && std::getenv("GUILD_GLM_DEBUG") == nullptr;
     }();
-    void quant(const float* x, int64_t n, int T, void* dst) {
-        dp.quant(x, n, T, dst);
+    void quant(const float* x, int64_t n, int T, void* dst, cudaStream_t s = nullptr) {
+        dp.quant(x, n, T, dst, s);
     }
-    void mm(const Mat& m, const void* xq_, float* out, int T) {
-        const char* path = dp.mm(m, xq_, out, T);
+    void mm(const Mat& m, const void* xq_, float* out, int T, cudaStream_t s = nullptr) {
+        const char* path = dp.mm(m, xq_, out, T, s);
         debug_check(out, (size_t) T * m.n_out, m, T, path);
     }
     // GUILD_GLM_DEBUG=2: every product's output checked; the first non-finite one is reported
@@ -657,6 +684,8 @@ struct Glm5Engine::Impl {
         dhead_on = !(e && e[0] == '0');
         e = std::getenv("GUILD_GLM_FUSE");
         fuse = !(e && e[0] == '0');
+        e = std::getenv("GUILD_GLM_SHEXP_STREAM");
+        shexp_stream = !(e && e[0] == '0');
     }
     bool embed_rows(const int32_t* tokens, int T, std::string& err);
     const char* Y_kind(int l) const;
@@ -776,12 +805,23 @@ bool Glm5Engine::Impl::load(const std::string& path, const Glm5Options& o, std::
     opt.max_context = (opt.max_context + glm5k::kKpool - 1) / glm5k::kKpool * glm5k::kKpool;
 
     ggml_cpu_init(); // the i-quant grids the CPU dot products read
-    if (cudaStreamCreateWithFlags(&st, cudaStreamNonBlocking) != cudaSuccess ||
+    // st at the device's greatest priority and `side` (group A's shared expert) at its least: the GPU starts the blocks
+    // of st's kernels first, and side's fill the SMs they leave
+    int prio_least = 0, prio_greatest = 0;
+    cudaDeviceGetStreamPriorityRange(&prio_least, &prio_greatest);
+    if (cudaStreamCreateWithPriority(&st, cudaStreamNonBlocking, prio_greatest) != cudaSuccess ||
+        cudaStreamCreateWithPriority(&side, cudaStreamNonBlocking, prio_least) != cudaSuccess ||
         cudaEventCreateWithFlags(&ev, cudaEventDisableTiming) != cudaSuccess ||
         cudaEventCreateWithFlags(&ev2, cudaEventDisableTiming) != cudaSuccess) {
         err = "glm5: no CUDA stream";
         return false;
     }
+    for (int k = 0; k < 2; ++k)
+        if (cudaEventCreateWithFlags(&ev_route[k], cudaEventDisableTiming) != cudaSuccess ||
+            cudaEventCreateWithFlags(&ev_join[k], cudaEventDisableTiming) != cudaSuccess) {
+            err = "glm5: no CUDA event";
+            return false;
+        }
 
     const int64_t N = g.n_embd, H = g.n_head, D = H * g.kda_dim, T = kMaxT;
     const std::string bp = "blk.";
@@ -1493,6 +1533,23 @@ bool Glm5Engine::Impl::load(const std::string& path, const Glm5Options& o, std::
         return false;
     xq = dp.xq[0];
     xq2 = dp.xq[1];
+    {
+        // group A's shared expert on `side`: its scratch for up to kSideT tokens (~160 KB); none: on st
+        int64_t F = 0;
+        for (const Layer& y : L)
+            F = y.moe && y.ffn_gpu ? std::max(F, y.gate.n_out) : F;
+        const size_t q1 = guild::kernels::native_q8_1_bytes((int) N, kSideT);
+        const size_t q2 = F > 0 && F % 32 == 0 ? guild::kernels::native_q8_1_bytes((int) F, kSideT) : 0;
+        std::string serr;
+        if (q2 == 0 || !(xq_s = dalloc<uint8_t>(q1, serr)) || !(xq2_s = dalloc<uint8_t>(q2, serr)) ||
+            !(a_s = dalloc<float>((size_t) std::max<int64_t>(2 * F, kSideT * F), serr)) ||
+            !(b_s = dalloc<float>((size_t) kSideT * F, serr)) || !(c_s = dalloc<float>((size_t) kSideT * F, serr))) {
+            cudaGetLastError();
+            cudaStreamDestroy(side);
+            side = nullptr;
+            std::fprintf(stderr, "guild glm5: no VRAM for the side stream's scratch: the shared experts stay on st\n");
+        }
+    }
     if (dp.mmq_on()) {
         int n_mmq = 0;
         std::vector<Layer*> all_layers;
@@ -1515,7 +1572,7 @@ bool Glm5Engine::Impl::load(const std::string& path, const Glm5Options& o, std::
         err = "glm5: no pinned host memory";
         return false;
     }
-    rows0 = {R, post, comb, y, ycpu, h_x, h_y, h_w, h_ids, ev, false};
+    rows0 = {R, post, comb, y, ycpu, h_x, h_y, h_w, h_ids, ev, false, false, false};
 
     // the routed experts: halves of every expert's rows in memory bound to each node, or the GGUF mapping itself
     const auto t0 = std::chrono::steady_clock::now();
@@ -1823,18 +1880,30 @@ void Glm5Engine::Impl::ffn_begin(const Layer& Y, int T) {
     }
     if (gpu_ffn) { // the shared expert or the dense FFN, while the CPU computes the routed experts
         const int64_t F = Y.gate.n_out;
-        quant(xn, N, T, xq);
+        // on `side`: its input quantized here on st (B's pre-mix rewrites xn next), the rest in side's scratch
+        const bool sd = on_side(Y, T, side_grp);
+        cudaStream_t s = sd ? side : st;
+        void *q1 = sd ? xq_s : xq, *q2 = sd ? xq2_s : xq2;
+        float *pa = sd ? a_s : a, *pb = sd ? b_s : b, *pc = sd ? c_s : c;
+        quant(xn, N, T, q1);
+        if (sd) {
+            const int k = side_slot(Y);
+            cudaEventRecord(ev_route[k], st);
+            cudaStreamWaitEvent(side, ev_route[k], 0);
+        }
         // a token's gate and up rows in one product, when both fit the row of `a`
         if (T == 1 && Y.gu.dev && merged && 2 * F <= a_floats) {
-            mm(Y.gu, xq, a, 1);
-            glm5k::swiglu_clamp(a, a + F, c, (int) F, 1, Y.lim_ffn > 0.f ? Y.lim_ffn : 3.0e38f, st);
+            mm(Y.gu, q1, pa, 1, s);
+            glm5k::swiglu_clamp(pa, pa + F, pc, (int) F, 1, Y.lim_ffn > 0.f ? Y.lim_ffn : 3.0e38f, s);
         } else {
-            mm(Y.gate, xq, a, T);
-            mm(Y.up, xq, b, T);
-            glm5k::swiglu_clamp(a, b, c, (int) F, T, Y.lim_ffn > 0.f ? Y.lim_ffn : 3.0e38f, st);
+            mm(Y.gate, q1, pa, T, s);
+            mm(Y.up, q1, pb, T, s);
+            glm5k::swiglu_clamp(pa, pb, pc, (int) F, T, Y.lim_ffn > 0.f ? Y.lim_ffn : 3.0e38f, s);
         }
-        quant(c, F, T, xq2);
-        mm(Y.down, xq2, y, T);
+        quant(pc, F, T, q2, s);
+        mm(Y.down, q2, y, T, s);
+        if (sd)
+            cudaEventRecord(ev_join[side_slot(Y)], side);
     }
 }
 
@@ -1854,6 +1923,8 @@ bool Glm5Engine::Impl::ffn_end(const Layer& Y, int T, const Rows& io, std::strin
         cpu_ffn(Y, T, io);
         cpu_ms += ms_since(t0);
         if (Y.ffn_gpu && !on_cpu) {
+            if (on_side(Y, T, io.side)) // the GPU's rows (the shared expert on `side`) before st reads them
+                cudaStreamWaitEvent(st, ev_join[side_slot(Y)], 0);
             if (zc && y_add) { // the caller's kernel adds the CPU's rows, reading them in mapped host memory
                 *y_add = io.h_y;
             } else if (zc) { // the add reads the CPU's rows in mapped host memory
@@ -2180,7 +2251,7 @@ bool Glm5Engine::Impl::main_window(const int32_t* tokens, int T, int64_t pos0, b
         const bool split_shexp = sse && sse[0] ? sse[0] != '0' : !narrow_attention;
         group_rows(TA, ev2, split_shexp, split_shexp && dense_twin);
         const Rows rB = rows();
-        group_rows(0, rows0.ev);
+        group_rows(0, rows0.ev, false, false, true);
         const Rows rA = rows();
         // a group's attention and the GPU half of its FFN, on the launcher (which owns the row pointers meanwhile);
         // the calling thread runs the other group's CPU experts and enqueues its FFN's end with that group's rows
@@ -2188,7 +2259,8 @@ bool Glm5Engine::Impl::main_window(const int32_t* tokens, int T, int64_t pos0, b
         std::string launch_err;
         auto launch = [&](int l, bool a) {
             const auto tq = std::chrono::steady_clock::now();
-            group_rows(a ? 0 : TA, a ? rA.ev : rB.ev, a ? rA.twin : rB.twin, a ? rA.dtwin : rB.dtwin);
+            group_rows(a ? 0 : TA, a ? rA.ev : rB.ev, a ? rA.twin : rB.twin, a ? rA.dtwin : rB.dtwin,
+                       a ? rA.side : rB.side);
             if (!layer_attention(l, a ? TA : TB, a ? pos0 : pos0 + TA, save_mid ? (a ? 0 : TA) : -1, launch_err))
                 launch_ok = false;
             layer_ffn_begin(l, a ? TA : TB);

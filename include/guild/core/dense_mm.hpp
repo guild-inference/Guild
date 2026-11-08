@@ -104,9 +104,10 @@ public:
         return m.mmq;
     }
 
-    /// x [T][n] -> dst (xq[0] or xq[1]), and its MMQ twin for a wide window
-    void quant(const float* x, int64_t n, int T, void* dst) {
-        guild::kernels::native_quantize_q8_1(x, dst, (int) n, T, st_);
+    /// x [T][n] -> dst (xq[0] or xq[1], or for up to kMmvqCols tokens a buffer of the caller's, on stream s when
+    /// given), and its MMQ twin for a wide window
+    void quant(const float* x, int64_t n, int T, void* dst, cudaStream_t s = nullptr) {
+        guild::kernels::native_quantize_q8_1(x, dst, (int) n, T, s ? s : st_);
 #if defined(GUILD_GLM_MMQ)
         if (T > kMmvqCols && ctx_) {
             guild::prefill::mmq::quantize(x, nullptr, dst == xq[0] ? xqm_[0] : xqm_[1], kQ8_0, n, n, T, st_);
@@ -115,8 +116,10 @@ public:
         }
 #endif
     }
-    /// out [T][m.n_out] = the window xq_ (xq[0] or xq[1], quantized by quant()) times m's rows; returns the path taken
-    const char* mm(const GgufMat& m, const void* xq_, float* out, int T) {
+    /// out [T][m.n_out] = the window xq_ (xq[0] or xq[1], quantized by quant()) times m's rows; returns the path taken.
+    /// s: another stream than init's, for products of up to kMmvqCols tokens (MMQ's tables and scratch are one set)
+    const char* mm(const GgufMat& m, const void* xq_, float* out, int T, cudaStream_t s = nullptr) {
+        const cudaStream_t ss = s ? s : st_;
 #if defined(GUILD_GLM_MMQ)
         if (T > kMmvqCols && m.mmq && ctx_ && (xq_ == xq[0] || xq_ == xq[1])) {
             namespace mmq = guild::prefill::mmq;
@@ -135,21 +138,21 @@ public:
             p.max_rows = T;
             p.dst = out;
             p.ld_dst = m.n_out;
-            ctx_->run(p, st_);
+            ctx_->run(p, ss);
             return "mmq";
         }
 #endif
         // one or two tokens of Q6_K / Q5_K / Q8_0: the staged kernels (bitwise native_mmvq's, fewer load instructions)
         if (m.type == kQ6_K && glm5k::q6k_mmvq_supported((int) m.n_in, (int) m.n_out, T))
-            glm5k::q6k_mmvq(m.dev, xq_, out, (int) m.n_in, (int) m.n_out, T, st_);
+            glm5k::q6k_mmvq(m.dev, xq_, out, (int) m.n_in, (int) m.n_out, T, ss);
         else if (m.type == kQ5_K && glm5k::q5k_mmvq_supported((int) m.n_in, (int) m.n_out, T))
-            glm5k::q5k_mmvq(m.dev, xq_, out, (int) m.n_in, (int) m.n_out, T, st_);
+            glm5k::q5k_mmvq(m.dev, xq_, out, (int) m.n_in, (int) m.n_out, T, ss);
         else if (m.type == kQ8_0 && glm5k::q8_0_mmvq_supported((int) m.n_in, (int) m.n_out, T))
-            glm5k::q8_0_mmvq(m.dev, xq_, out, (int) m.n_in, (int) m.n_out, T, st_);
+            glm5k::q8_0_mmvq(m.dev, xq_, out, (int) m.n_in, (int) m.n_out, T, ss);
         else if (m.type == kQ8_0 && glm5k::q8_0_narrow_supported((int) m.n_in, T))
-            glm5k::q8_0_narrow(m.dev, xq_, out, (int) m.n_in, (int) m.n_out, T, st_);
+            glm5k::q8_0_narrow(m.dev, xq_, out, (int) m.n_in, (int) m.n_out, T, ss);
         else
-            guild::kernels::native_mmvq(m.type, m.dev, xq_, out, (int) m.n_in, (int) m.n_out, T, st_);
+            guild::kernels::native_mmvq(m.type, m.dev, xq_, out, (int) m.n_in, (int) m.n_out, T, ss);
         return "mmvq";
     }
 
