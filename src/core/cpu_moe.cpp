@@ -581,7 +581,7 @@ void Experts::run(Pool& pool, int64_t N, int T, int max_t, const int32_t* ids, c
     const bool iq4xs_lean = !(xl && xl[0] == '0');
     // and IQ4_XS gate/up rows (GLM-5.3-Flash's layer 11) through the same kernel, for any window, instead of a
     // one-token dot a (row, token); GUILD_IQ4XS_GU=0 (read each call): those dots, as before (the same bits).  The
-    // same decode: 0.6 ms a step (with the lean rows and the kept containers; 0.4 without the containers).
+    // same decode: 0.45-0.6 ms a step with the lean rows and the kept containers (two processes), 0.4 without them.
     const char* xg = std::getenv("GUILD_IQ4XS_GU");
     const bool iq4xs_gu = iq4xs && !(xg && xg[0] == '0');
     constexpr int RB = 64, MT = kQ8Rows512MaxT > kcpu::MAXT ? kQ8Rows512MaxT : kcpu::MAXT;

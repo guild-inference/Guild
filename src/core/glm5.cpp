@@ -693,9 +693,9 @@ struct Glm5Engine::Impl {
     // GUILD_GLM_FUSE2 (read each window; default all bits on): bit 1 the KDA gates' f_b, gates and g_b in one launch
     // (glm5k::kda_fg); bit 2 the Q8_1 activations of up to kMmvqCols tokens written by the kernels that compute them
     // (the pre-mix, the KDA output, the DSA q_a norm, the SwiGLU) instead of a quantization launch after each.  The
-    // same bits either way (glm5_kernels_test).  UD-IQ4_XS decode on a GTX 1070 + 2x Xeon Gold 6130 (--spec): both
-    // bits 0.7 ms off a ~80 ms step once the CPU half is shorter (the lean IQ4_XS rows and cpu_moe's kept containers
-    // on); each bit alone, before those, under 0.3 ms.
+    // same bits either way (glm5_kernels_test).  UD-IQ4_XS decode on a GTX 1070 + 2x Xeon Gold 6130 (--spec), with
+    // the lean IQ4_XS rows and cpu_moe's kept containers on: both bits 0.5-0.7 ms off a ~80 ms step (two processes),
+    // each bit alone 0.3-0.4 (they shorten the same GPU half, which the CPU caps).
     unsigned fuse2 = ~0u;
     void read_switches() {
         const char* e = std::getenv("GUILD_GLM_MERGED");
