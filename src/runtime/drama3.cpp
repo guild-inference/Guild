@@ -620,7 +620,7 @@ bool GuildModel::synthesize(const SpeechRequest& req, const SpeechCallback& on_a
             tower_join();
             return false;
         }
-        if (hold_between && codec_hold_guard.codec) // tower_step clears it once step_begin returns
+        if (hold_between && !last && codec_hold_guard.codec) // tower_step clears it once step_begin returns
             codec_hold.store(true, std::memory_order_release);
         if (!tower_join())
             return false;
@@ -646,7 +646,7 @@ bool GuildModel::synthesize(const SpeechRequest& req, const SpeechCallback& on_a
             break;
         }
     }
-    codec_hold.store(false, std::memory_order_release); // the last frame's break leaves it set
+    codec_hold.store(false, std::memory_order_release); // a break between the store and tower_step leaves it set
     if (!tower_join())
         return false;
     if (frames_dump.f && frame[0] == tg.eos) // the end, so a run forced with these frames ends there too
