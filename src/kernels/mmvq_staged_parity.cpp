@@ -131,8 +131,8 @@ bool run_all(std::vector<uint32_t>& out) {
         std::vector<uint32_t> single((std::size_t) MAX_T * c.n_out);
         for (int j = 0; j < MAX_T; ++j) {
             try {
-                guild::kernels::native_mmvq(c.type, dw, static_cast<const uint8_t*>(xq) + j * xcol, dy, c.n_in,
-                                            c.n_out, 1, s);
+                guild::kernels::native_mmvq(c.type, dw, static_cast<const uint8_t*>(xq) + j * xcol, dy, c.n_in, c.n_out,
+                                            1, s);
             } catch (const std::exception& e) {
                 std::printf("%s column %d alone: %s\n", c.name, j, e.what());
                 return false;
