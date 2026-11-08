@@ -757,6 +757,10 @@ if(GUILD_ENABLE_CUDA OR GUILD_ENABLE_HIP)
     add_test(NAME mmvq_staged_parity
              COMMAND mmvq_staged_parity --compare ${CMAKE_CURRENT_BINARY_DIR}/mmvq_staged_reference.bin)
     set_tests_properties(mmvq_staged_parity PROPERTIES FIXTURES_REQUIRED mmvq_staged_reference)
+    add_test(NAME mmvq_staged_parity_one_wide_off
+             COMMAND mmvq_staged_parity --compare ${CMAKE_CURRENT_BINARY_DIR}/mmvq_staged_reference.bin)
+    set_tests_properties(mmvq_staged_parity_one_wide_off PROPERTIES ENVIRONMENT "GUILD_MMVQ_ONE_WIDE=0"
+                         FIXTURES_REQUIRED mmvq_staged_reference)
     # the verify windows' GDN recurrence and commit (column-block kernels) against the kernels before them, bitwise:
     # two processes, since the switch is an environment variable read once
     add_executable(gdn_step_parity src/kernels/gdn_step_parity.cpp)

@@ -13,8 +13,16 @@
 // warp stages), rows that start inside a 16-byte piece (Q6_K and Q8_0 rows of 2100 and 340 bytes), matrices whose
 // end is not 16-byte aligned (the last piece read in 2-byte parts), fewer rows than a block's 8 warps, Q6_K rows of
 // 9 to 12 blocks (staged as one piece a row) and of 13, and the shapes of the models' products; every column count
-// from 1 to 8 on the same Q8_1 bytes.  The data is random with
-// finite fp16 scales (mmvq_multi_parity's THE DATA), and a non-finite output fails the test.
+// from 1 to 8 on the same Q8_1 bytes.  The one-chunk rows of Q4_K (8 to 16 blocks; from three columns 8 to 10) and
+// Q6_K (8 to 12) and Q4_K's four columns as two calls of two take matrices above the staged kernels' size threshold
+// (15 SMs x 100 KiB = 1.5 MB on a GTX 1070; Q4_K 2048 x 1000 is 1.15 MB, so it is not staged): Qwen3.8-Flash-Next's
+// 2560-wide Q4_K, Ornith-1.5-35B's 2048- and 4096-wide Q4_K and 2048-wide Q6_K, 9 and 12 blocks, and row counts that
+// are not a multiple of a block's 8 warps.  The data is random with finite fp16 scales (mmvq_multi_parity's THE
+// DATA), and a non-finite output fails the test.
+//
+// Each run also checks, in its own process, that every column of a T-column call is bitwise the one-column call on
+// that column's activations (the native MMVQ contract, which the 4-column split rests on).  GUILD_MMVQ_ONE_WIDE=0
+// (the rule before Q4_K's one-chunk rows) is registered as a third run against the same reference.
 #include "guild/kernels/iq_kernels.hpp"
 #include "guild/kernels/native_mmvq.hpp"
 
@@ -42,7 +50,12 @@ const Case CASES[] = {
     {"Q4_K 512 (2 blocks)", 12, 512, 512, 256, 144, {0, 2}},
     {"Q4_K 2048", 12, 2048, 1000, 256, 144, {0, 2}},
     {"Q4_K 2304 (9 blocks)", 12, 2304, 7, 256, 144, {0, 2}},
-    {"Q4_K 4096", 12, 4096, 2048, 256, 144, {0, 2}},
+    {"Q4_K 4096", 12, 4096, 2048, 256, 144, {0, 2}}, // 16 blocks: one chunk at 1-2 columns, chunked at 3
+    {"Q4_K 2560 x 10240 (10 bl)", 12, 2560, 10240, 256, 144, {0, 2}},
+    {"Q4_K 2048 x 4096 (8 bl)", 12, 2048, 4096, 256, 144, {0, 2}},
+    {"Q4_K 2048 x 8195 (8 bl)", 12, 2048, 8195, 256, 144, {0, 2}},
+    {"Q4_K 2304 x 2001 (9 bl)", 12, 2304, 2001, 256, 144, {0, 2}},
+    {"Q4_K 3072 x 1501 (12 bl)", 12, 3072, 1501, 256, 144, {0, 2}},
     {"Q5_K 512 (2 blocks)", 13, 512, 512, 256, 176, {0, 2}},
     {"Q5_K 2304 (9 blocks)", 13, 2304, 7, 256, 176, {0, 2}},
     {"Q5_K 2560 (10 blocks)", 13, 2560, 1001, 256, 176, {0, 2}},
@@ -50,6 +63,8 @@ const Case CASES[] = {
     {"Q5_K 6144 (24 blocks)", 13, 6144, 300, 256, 176, {0, 2}},
     {"Q6_K 512", 14, 512, 13, 256, 210, {208, -1}},
     {"Q6_K 2048", 14, 2048, 512, 256, 210, {208, -1}},
+    {"Q6_K 2048 x 8192 (8 bl)", 14, 2048, 8192, 256, 210, {208, -1}},
+    {"Q6_K 2048 x 4099 (8 bl)", 14, 2048, 4099, 256, 210, {208, -1}},
     {"Q6_K 2304 (9 blocks)", 14, 2304, 1003, 256, 210, {208, -1}},
     {"Q6_K 2560 (2100 B rows)", 14, 2560, 1001, 256, 210, {208, -1}},
     {"Q6_K 2560 x 4099", 14, 2560, 4099, 256, 210, {208, -1}},
@@ -111,6 +126,23 @@ bool run_all(std::vector<uint32_t>& out) {
             !ck(cudaMemcpy(dx, x.data(), x.size() * 4, cudaMemcpyHostToDevice), "copy x"))
             return false;
         guild::kernels::quantize_q8_1_rows(dx, MAX_T, c.n_in, xq, s);
+        // each column alone: column j's activations are the Q8_1 blocks j * xcol bytes in
+        const std::size_t xcol = guild::kernels::native_q8_1_bytes(c.n_in, 1);
+        std::vector<uint32_t> single((std::size_t) MAX_T * c.n_out);
+        for (int j = 0; j < MAX_T; ++j) {
+            try {
+                guild::kernels::native_mmvq(c.type, dw, static_cast<const uint8_t*>(xq) + j * xcol, dy, c.n_in,
+                                            c.n_out, 1, s);
+            } catch (const std::exception& e) {
+                std::printf("%s column %d alone: %s\n", c.name, j, e.what());
+                return false;
+            }
+            if (!ck(cudaStreamSynchronize(s), "mmvq") ||
+                !ck(cudaMemcpy(single.data() + (std::size_t) j * c.n_out, dy, (std::size_t) c.n_out * 4,
+                               cudaMemcpyDeviceToHost),
+                    "read y"))
+                return false;
+        }
         for (int T = 1; T <= MAX_T; ++T) {
             if (!ck(cudaMemset(dy, 0xff, (std::size_t) T * c.n_out * 4), "clear y"))
                 return false;
@@ -125,6 +157,14 @@ bool run_all(std::vector<uint32_t>& out) {
             if (!ck(cudaStreamSynchronize(s), "mmvq") ||
                 !ck(cudaMemcpy(out.data() + at, dy, (std::size_t) T * c.n_out * 4, cudaMemcpyDeviceToHost), "read y"))
                 return false;
+            long long d = 0;
+            for (std::size_t i = 0; i < (std::size_t) T * c.n_out; ++i)
+                d += out[at + i] != single[i];
+            if (d) {
+                std::printf("%-26s T=%d: %lld of %d outputs differ from the one-column calls\n", c.name, T, d,
+                            T * c.n_out);
+                return false;
+            }
         }
         cudaFree(dw);
         cudaFree(xq);
