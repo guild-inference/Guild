@@ -21,9 +21,10 @@ void ssm_conv(const float* in, int ld_in, float* state, const float* w, const fl
 /// The Mamba-2 selective scan, one token after another: per head h (group h / (H / G)),
 ///   dt = max(softplus(dt_raw[t][h] + dt_bias[h]), dt_min), s[h][p][n] = s * exp(dt A[h]) + dt B[t][g][n] x[t][h][p],
 ///   y[t][h][p] = sum_n s[h][p][n] C[t][g][n] + D[h] x[t][h][p]
-/// xbc [T][ld]: x (H * P) | B (G * N) | C (G * N); dt_raw rows of ld_dt; state [H][P][N] (float32, kept);
-/// y [T][H * P].  P = 64 and N = 128 (ssm_scan_supported).  `snaps` (may be null): the state after each of the
-/// window's first n_snaps tokens ([n_snaps][H][P][N]).
+/// xbc [T][ld]: x (H * P) | B (G * N) | C (G * N); dt_raw rows of ld_dt; state: H * P * N float32 values (kept) in
+/// the scan's own order (by thread: zeroed for a new context, copied whole, never read elsewhere); y [T][H * P].
+/// P = 64 and N = 128 (ssm_scan_supported).  `snaps` (may be null): the state after each of the window's first
+/// n_snaps tokens ([n_snaps][H * P * N], each in the state's order).
 bool ssm_scan_supported(int P, int N);
 void ssm_scan(const float* xbc, int ld, const float* dt_raw, int ld_dt, const float* dt_bias, const float* A,
               const float* D, float* state, float* y, int H, int P, int N, int G, int T, float dt_min, float* snaps,

@@ -9,6 +9,7 @@
 #include <cuda_runtime.h>
 
 #include <cmath>
+#include <cstdlib>
 
 namespace guild::core::nhk {
 
@@ -77,9 +78,15 @@ __global__ void ssm_conv_k(const float* in, int ld_in, float* state, const float
 }
 
 // ---- the scan: a block of 256 threads per head; thread (p, q) holds s[p][q * 32 .. q * 32 + 31] ---------------------
+//
+// The state (and its snapshots) is engine-private and stored by thread: thread tid = p * 4 + q of head h keeps its
+// s[i] at h * 8192 + i * 256 + tid, so that a warp's 32 loads or stores of s[i] are 128 consecutive bytes (stored as
+// [h][p][n], each was 32 lines: a one-token scan took 4x as long).  CO = false is that [h][p][n] layout
+// (GUILD_NEM_SCAN_LAYOUT=0, for the A/B): the same values in every register, the same arithmetic.
 
 constexpr int kP = 64, kN = 128, kQ = 4, kPer = kN / kQ;
 
+template <bool CO>
 __global__ void __launch_bounds__(kP* kQ)
     ssm_scan_k(const float* xbc, int ld, const float* dt_raw, int ld_dt, const float* dt_bias, const float* A,
                const float* Dv, float* state, float* y, int H, int G, int T, float dt_min, float* snaps, int n_snaps) {
@@ -87,10 +94,13 @@ __global__ void __launch_bounds__(kP* kQ)
     const int p = threadIdx.x / kQ, q = threadIdx.x % kQ;
     const int HP = H * kP;
     float s[kPer];
-    float* sp = state + ((size_t) h * kP + p) * kN + q * kPer;
+    // s[i] of this thread at at(i) from a head's base; CO: stride kP * kQ floats
+    const size_t base = CO ? (size_t) h * kP * kN + threadIdx.x : ((size_t) h * kP + p) * kN + q * kPer;
+    constexpr int stride = CO ? kP * kQ : 1;
+    float* sp = state + base;
 #pragma unroll
     for (int i = 0; i < kPer; ++i)
-        s[i] = sp[i];
+        s[i] = sp[i * stride];
     __shared__ float Bs[kN], Cs[kN], xs[kP];
     __shared__ float dts;
     const float a = A[h], d = Dv[h], bias = dt_bias[h];
@@ -121,16 +131,16 @@ __global__ void __launch_bounds__(kP* kQ)
         if (q == 0)
             y[(size_t) t * HP + h * kP + p] = acc + d * x;
         if (snaps && t < n_snaps) {
-            float* o = snaps + (size_t) t * H * kP * kN + ((size_t) h * kP + p) * kN + q * kPer;
+            float* o = snaps + (size_t) t * H * kP * kN + base;
 #pragma unroll
             for (int i = 0; i < kPer; ++i)
-                o[i] = s[i];
+                o[i * stride] = s[i];
         }
         __syncthreads();
     }
 #pragma unroll
     for (int i = 0; i < kPer; ++i)
-        sp[i] = s[i];
+        sp[i * stride] = s[i];
 }
 
 // ---- norms and activations -----------------------------------------------------------------------------------------
@@ -251,8 +261,16 @@ void ssm_scan(const float* xbc, int ld, const float* dt_raw, int ld_dt, const fl
               int n_snaps, void* st) {
     (void) P;
     (void) N;
-    ssm_scan_k<<<H, kP * kQ, 0, S(st)>>>(xbc, ld, dt_raw, ld_dt, dt_bias, A, D, state, y, H, G, T, dt_min, snaps,
-                                         n_snaps);
+    static const bool coalesced = [] {
+        const char* e = std::getenv("GUILD_NEM_SCAN_LAYOUT");
+        return !(e && e[0] == '0');
+    }();
+    if (coalesced)
+        ssm_scan_k<true><<<H, kP * kQ, 0, S(st)>>>(xbc, ld, dt_raw, ld_dt, dt_bias, A, D, state, y, H, G, T, dt_min,
+                                                   snaps, n_snaps);
+    else
+        ssm_scan_k<false><<<H, kP * kQ, 0, S(st)>>>(xbc, ld, dt_raw, ld_dt, dt_bias, A, D, state, y, H, G, T, dt_min,
+                                                    snaps, n_snaps);
 }
 
 void gated_group_norm(const float* y, const float* z, int ld_z, const float* w, float* out, int I, int group, float eps,
