@@ -274,25 +274,6 @@ int main(int argc, char** argv) {
     }();
     std::FILE* out = out_path.empty() ? nullptr : std::fopen(out_path.c_str(), "w");
     const auto& cfg = enc.mel_config();
-    // the request's prefix ids read once (NemotronHEngine::save_prefix): each clip's prompt then continues from them
-    // (GUILD_NEM_PREFIX=0: every prompt read whole).  TRANSCRIBE_PREFIX_CHECK=1 (debugging): every prompt both ways,
-    // its last row's logits compared bit for bit, the decode from the whole prompt's.
-    const bool use_prefix = [] {
-        const char* e = std::getenv("GUILD_NEM_PREFIX");
-        return !(e && e[0] == '0');
-    }();
-    const bool prefix_check = std::getenv("TRANSCRIBE_PREFIX_CHECK") != nullptr;
-    if (use_prefix && !prefix.empty() && (int64_t) prefix.size() < lm.max_context()) {
-        const auto q0 = std::chrono::steady_clock::now();
-        std::vector<float> none(prefix.size() * (size_t) N, 0.f);
-        lm.reset();
-        if (!lm.forward(prefix.data(), none.data(), (int) prefix.size(), 0, nullptr, err) || !lm.save_prefix(err)) {
-            std::fprintf(stderr, "transcribe_run: the prefix: %s\n", err.c_str());
-            return 1;
-        }
-        std::fprintf(stderr, "transcribe_run: the request's %zu prefix ids read once (%.1f ms)\n", prefix.size(),
-                     ms_since(q0));
-    }
     for (const Clip& c : clips)
         for (int r = 0; r < repeat; ++r) {
             const auto c0 = std::chrono::steady_clock::now();
@@ -338,42 +319,13 @@ int main(int argc, char** argv) {
                 rows.assign(ids.size() * (size_t) N, 0.f);
                 std::memcpy(rows.data() + prefix.size() * (size_t) N, emb.data(), emb.size() * sizeof(float));
             }
+            lm.reset();
             const auto p0 = std::chrono::steady_clock::now();
-            // from the saved prefix when the prompt starts with it and reads alike both ways (prefix_exact)
-            const int64_t np = lm.prefix_end();
-            const bool from_prefix = np > 0 && np == (int64_t) prefix.size() && (int64_t) ids.size() > np &&
-                                     std::equal(prefix.begin(), prefix.end(), ids.begin()) &&
-                                     lm.prefix_exact((int64_t) ids.size());
-            if (from_prefix) {
-                if (!lm.restore_prefix(err) || !lm.forward(ids.data() + np, rows.data() + (size_t) np * N,
-                                                           (int) (ids.size() - (size_t) np), np, logits.data(), err)) {
-                    std::fprintf(stderr, "transcribe_run: %s: %s\n", c.id.c_str(), err.c_str());
-                    return 1;
-                }
-            } else {
-                lm.reset();
-                if (!lm.forward(ids.data(), rows.data(), (int) ids.size(), 0, logits.data(), err)) {
-                    std::fprintf(stderr, "transcribe_run: %s: %s\n", c.id.c_str(), err.c_str());
-                    return 1;
-                }
+            if (!lm.forward(ids.data(), rows.data(), (int) ids.size(), 0, logits.data(), err)) {
+                std::fprintf(stderr, "transcribe_run: %s: %s\n", c.id.c_str(), err.c_str());
+                return 1;
             }
             const double prefill_ms = ms_since(p0);
-            if (!from_prefix && prefix_check)
-                std::fprintf(stderr, "prefix check: %s: read whole (%zu rows)\n", c.id.c_str(), ids.size());
-            if (from_prefix && prefix_check) {
-                std::vector<float> part(logits.begin(), logits.begin() + V);
-                lm.reset();
-                if (!lm.forward(ids.data(), rows.data(), (int) ids.size(), 0, logits.data(), err))
-                    return 1;
-                size_t differ = 0;
-                float dmax = 0;
-                for (int64_t i = 0; i < V; ++i) {
-                    differ += std::memcmp(&part[(size_t) i], &logits[(size_t) i], 4) != 0;
-                    dmax = std::max(dmax, std::fabs(part[(size_t) i] - logits[(size_t) i]));
-                }
-                std::fprintf(stderr, "prefix check: %s: %zu of %lld last-row logits differ (max |d| %g)\n",
-                             c.id.c_str(), differ, (long long) V, dmax);
-            }
             if (std::getenv("TRANSCRIBE_TOP5")) {
                 std::vector<int> idx((size_t) V);
                 for (int64_t i = 0; i < V; ++i)
