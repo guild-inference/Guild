@@ -491,8 +491,8 @@ int main(int argc, char** argv) {
                     for (int r = 0; r <= k && rows_host; ++r) {
                         const int32_t h = argmax(logits.data() + (size_t) r * V, V);
                         if (dev_argmax && top[r] != h)
-                            std::fprintf(stderr, "check: window row %d: the GPU's argmax %d, the host's %d\n", r, top[r],
-                                         h);
+                            std::fprintf(stderr, "check: window row %d: the GPU's argmax %d, the host's %d\n", r,
+                                         top[r], h);
                         top[r] = h;
                     }
                     if (!greedy_logits.empty()) {

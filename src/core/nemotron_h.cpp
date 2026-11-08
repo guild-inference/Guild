@@ -618,8 +618,10 @@ bool NemotronHEngine::Impl::check_draft_head(std::string& err) {
     static size_t checks = 0, outside = 0;
     ++checks;
     outside += !in;
-    std::fprintf(stderr, "draft check %zu: %zu of %zu subset logits differ from the head's; the head's argmax %d %s "
-                 "(%zu outside so far)\n", checks, differ, n, best, in ? "in the subset" : "outside", outside);
+    std::fprintf(stderr,
+                 "draft check %zu: %zu of %zu subset logits differ from the head's; the head's argmax %d %s "
+                 "(%zu outside so far)\n",
+                 checks, differ, n, best, in ? "in the subset" : "outside", outside);
     return true;
 }
 
@@ -861,7 +863,8 @@ bool NemotronHEngine::Impl::head_rows(const float* rows, int n, float* host, int
         nhk::argmax_rows(logits, (int) g.n_vocab, g.n_vocab, n, d_arg, nullptr, st);
         cudaMemcpyAsync(h_arg, d_arg, (size_t) n * 4, cudaMemcpyDeviceToHost, st);
     }
-    if ((host && cudaMemcpyAsync(host, logits, (size_t) n * g.n_vocab * 4, cudaMemcpyDeviceToHost, st) != cudaSuccess) ||
+    if ((host &&
+         cudaMemcpyAsync(host, logits, (size_t) n * g.n_vocab * 4, cudaMemcpyDeviceToHost, st) != cudaSuccess) ||
         cudaStreamSynchronize(st) != cudaSuccess) {
         err = "nemotron_h: CUDA error: " + std::string(cudaGetErrorString(cudaGetLastError()));
         return false;
@@ -1017,8 +1020,8 @@ bool NemotronHEngine::save_prefix(std::string& err) {
     }
     if (s.cells < m.ctx_end) { // the K/V cells (the old ones stay allocated until the engine goes)
         for (size_t l = 0; l < m.L.size(); ++l)
-            if (m.L[l].kind == '*' && (!(s.kc[l] = m.dalloc<uint8_t>(kv_bytes, err)) ||
-                                       !(s.vc[l] = m.dalloc<uint8_t>(kv_bytes, err))))
+            if (m.L[l].kind == '*' &&
+                (!(s.kc[l] = m.dalloc<uint8_t>(kv_bytes, err)) || !(s.vc[l] = m.dalloc<uint8_t>(kv_bytes, err))))
                 return false;
         if (m.has_mtp && (!(s.mkc = m.dalloc<uint8_t>(kv_bytes, err)) || !(s.mvc = m.dalloc<uint8_t>(kv_bytes, err))))
             return false;
@@ -1090,9 +1093,7 @@ int64_t NemotronHEngine::prefix_end() const {
 
 bool NemotronHEngine::prefix_exact(int64_t n) const {
     const int64_t np = p_->saved.end;
-    auto narrow_end = [](int64_t rows) {
-        return rows % kPromptT != 0 && rows % kPromptT <= DenseProducts::kMmvqCols;
-    };
+    auto narrow_end = [](int64_t rows) { return rows % kPromptT != 0 && rows % kPromptT <= DenseProducts::kMmvqCols; };
     return np > 0 && n > np && !narrow_end(n) && !narrow_end(n - np);
 }
 
