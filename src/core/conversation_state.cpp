@@ -222,21 +222,34 @@ bool conversation_checkpoint_restore(const ConversationCheckpoint& c, SessionSta
 
 bool conversation_state_copy(const SessionState& from, SessionState& to, const ModelGeometry& g, size_t tokens,
                              std::string& error) {
-    ConversationStateSizes zf, zt;
-    if (!checkpoint_targets(from, g, tokens, zf, error) || !checkpoint_targets(to, g, tokens, zt, error))
-        return false;
-    if (zf.gdn != zt.gdn || from.gdn_ord0 != to.gdn_ord0 || from.qsa_ord0 != to.qsa_ord0 ||
-        owned_qsa(from) != owned_qsa(to) || (from.ple_hist == nullptr) != (to.ple_hist == nullptr))
+    // Sized here rather than by conversation_session_sizes: that one (the snapshots') needs an indexer, and a model
+    // with dense attention (Ornith) has none - its QSA states then carry only K/V, which conversation_kv_copy moves.
+    if (from.gdn_alloc < 0 || from.gdn_alloc != to.gdn_alloc || from.gdn_ord0 != to.gdn_ord0 ||
+        from.qsa_ord0 != to.qsa_ord0 || owned_qsa(from) != owned_qsa(to) ||
+        (from.ple_hist == nullptr) != (to.ple_hist == nullptr))
         return fail(error, "the two sessions are carved differently");
-    if (!copy(to.gdn_state, from.gdn_state, zf.gdn, error) ||
-        (from.ple_hist != nullptr && !copy(to.ple_hist, from.ple_hist, zf.ple, error)))
+    if (from.max_cells < 0 || tokens > (uint64_t) from.max_cells ||
+        tokens > (uint64_t) std::max<int64_t>(0, to.max_cells))
+        return fail(error, "the conversation is longer than a session's context");
+    size_t gdn = 0, rec = 0, conv = 0;
+    if (!product(rec, {(uint64_t) g.ssm_state_size, (uint64_t) g.ssm_v_heads, (uint64_t) g.ssm_state_size}) ||
+        !product(conv, {(uint64_t) g.ssm_conv_channels, (uint64_t) std::max<int64_t>(0, g.ssm_d_conv - 1)}) ||
+        !add(rec, conv) || !product(gdn, {(uint64_t) from.gdn_alloc, rec, sizeof(float)}))
+        return fail(error, "running-state byte count overflow");
+    const size_t ple = (size_t) guild::kernels::NG_HIST * guild::kernels::NG_HC_DIM * sizeof(float);
+    if ((gdn && (!from.gdn_state || !to.gdn_state)) || !copy(to.gdn_state, from.gdn_state, gdn, error) ||
+        (from.ple_hist != nullptr && !copy(to.ple_hist, from.ple_hist, ple, error)))
         return false;
-    for (size_t j = 0; j < owned_qsa(from); ++j) {
-        const auto& a = owned(from, j);
-        const auto& b = owned(to, j);
-        if (!copy(b.idx_tail, a.idx_tail, zf.tail, error) || !copy(b.idx_dead, a.idx_dead, zf.dead, error) ||
-            !copy(b.idx_block_pos, a.idx_block_pos, zf.block_pos, error))
-            return false;
+    if (g.idx_key_dim > 0 && g.idx_q_heads > 0) {
+        const size_t tail = (size_t) (guild::kernels::qsa_real_shapes().idx_block - 1) * g.idx_key_dim * sizeof(float);
+        const size_t dead = (size_t) g.idx_key_dim * sizeof(float);
+        for (size_t j = 0; j < owned_qsa(from); ++j) {
+            const auto& a = owned(from, j);
+            const auto& b = owned(to, j);
+            if (!copy(b.idx_tail, a.idx_tail, tail, error) || !copy(b.idx_dead, a.idx_dead, dead, error) ||
+                !copy(b.idx_block_pos, a.idx_block_pos, sizeof(int32_t), error))
+                return false;
+        }
     }
     to.ple_prev[0] = from.ple_prev[0];
     to.ple_prev[1] = from.ple_prev[1];

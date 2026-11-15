@@ -57,9 +57,11 @@ struct GuildBatch::Impl {
             err = "batch: the device failed before a slot copy";
             return false;
         }
+        // (with the indexer's pooled keys where the attention has an indexer; Ornith's dense attention has none)
+        const bool index = m->g.idx_key_dim > 0 && m->g.idx_q_heads > 0;
         for (int64_t j = 0; j < from.qsa_alloc; ++j)
             if (!core::conversation_kv_copy(from.qsa_states[from.qsa_ord0 + j], to.qsa_states[to.qsa_ord0 + j], m->g, n,
-                                            true, err))
+                                            index, err))
                 return false;
         if (!core::conversation_state_copy(from, to, m->g, (size_t) n, err))
             return false;
