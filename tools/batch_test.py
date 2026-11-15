@@ -128,6 +128,7 @@ def main():
                 done[int(line.split()[1])] = line
             elif line.startswith("ERR"):
                 print("batch:", line)
+                eng.p.wait(timeout=180)   # the next run needs the GPU back
                 return 1
             elif line.startswith("BADM "):
                 if line.split()[2] == "0":
@@ -145,6 +146,7 @@ def main():
                 break
         elif line.startswith("ERR"):
             print("batch:", line)
+            eng.p.wait(timeout=180)   # the next run needs the GPU back
             return 1
     t_end = time.time()
     total = sum(len(v) for v in got.values())

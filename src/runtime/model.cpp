@@ -1287,6 +1287,19 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
             error_msg = "DFlash drafter: no stream";
             return nullptr;
         }
+        // the batch slots' own contexts, so their windows carry drafts too (GuildBatch); GUILD_BATCH_DFLASH=0: none
+        const char* bdf = std::getenv("GUILD_BATCH_DFLASH");
+        if (!impl->slot_ss.empty() && (bdf == nullptr || std::atoi(bdf) != 0)) {
+            const uint64_t v0 = impl->dflash->vram_bytes();
+            std::string derr;
+            if (impl->dflash->add_contexts((int) impl->slot_ss.size(), derr))
+                std::fprintf(stderr,
+                             "guild batch: the DFlash drafter keeps a context for each of the %zu slots (%.0f "
+                             "MiB)\n",
+                             impl->slot_ss.size(), (double) (impl->dflash->vram_bytes() - v0) / 1048576.0);
+            else
+                std::fprintf(stderr, "guild batch: the slots draft nothing: %s\n", derr.c_str());
+        }
         sp.mtp_init_ms += ms_since(df_t0);
     }
 

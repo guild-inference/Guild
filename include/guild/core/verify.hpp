@@ -211,6 +211,14 @@ public:
     /// Keep every row of the last batch window: each slot's state advances by its one token.
     bool commit_slots(std::string& err);
 
+    // ---- SPECULATIVE BATCH WINDOWS.  A slot's rows may follow each other in `rows` (run_slot_rows): its token, then
+    // its drafts, at consecutive positions.  Row t's arithmetic is row t of that slot's own speculative window - its
+    // recurrence over the slot's rows from the first up to t, from the slot's untouched state; its attention over the
+    // slot's K/V with the rows before it appended - so a draft is accepted exactly when the slot's greedy decode
+    // would have produced it.  Such a window leaves every slot's recurrence as it was; then:
+    /// keep the first keep[k] (1 .. its rows) rows of the k-th slot of the last batch window, in its rows' order.
+    bool commit_slot_rows(const int* keep, std::string& err);
+
     // ---- The stages of a layer split as a PIPELINE.  A batch window over the slot GROUP
     // [base, base + S) is launched on ONE stage with its commit right behind it on the stage's stream (a batch window
     // keeps every row, so the commit needs no host decision), and the host serves the rings of every stage that has
@@ -328,10 +336,13 @@ private:
     bool nohead_off_ = false; ///< a head-less window could not be captured: full windows from then on
     // batch windows (see init_slots)
     std::vector<SessionState*> slots_;
-    bool batch_rec_ = false;  ///< record_window is capturing a batch window
-    int row_base_ = 0;        ///< ... its hand-off rows start here (a pipeline group's own rows)
-    int brow_[8] = {};        ///< ... and row t is slot brow_[t]
-    bool last_batch_ = false; ///< the last run was a batch window (set_plan_slot: one group)
+    bool batch_rec_ = false;   ///< record_window is capturing a batch window
+    int row_base_ = 0;         ///< ... its hand-off rows start here (a pipeline group's own rows)
+    int brow_[8] = {};         ///< ... and row t is slot brow_[t]
+    int bseg0_[8] = {};        ///< ... whose rows start at row bseg0_[t] (a slot's token, then its drafts)
+    bool bdrafts_ = false;     ///< ... and some slot has more than one row
+    bool last_drafts_ = false; ///< the last batch window carried drafts: commit_slot_rows keeps what each slot keeps
+    bool last_batch_ = false;  ///< the last run was a batch window (set_plan_slot: one group)
     /// The batch windows' graphs, one per window SHAPE (rows, hand-off base), not one per set of slots: a window over
     /// other slots of the same shape updates the instantiated graph in place (cudaGraphExecUpdate - the same kernels,
     /// other state pointers), so the VRAM holds one graph per row count however requests come and go, where one per
@@ -346,7 +357,7 @@ private:
             k |= (uint64_t) (rows[t] & 15) << (4 * t);
         return k;
     }
-    static uint64_t batch_graph_key(const int* rows, int S, int hbase);
+    static uint64_t batch_graph_key(const int* rows, int S, int hbase, bool commit);
     /// `graph` (just captured for `rows_key`) into `ex`: an in-place update of the graph this shape has, else a new
     /// instantiation.  Consumes `graph`.
     bool install_batch_graph(cudaGraphExec_t& ex, uint64_t& have, uint64_t rows_key, cudaGraph_t graph,

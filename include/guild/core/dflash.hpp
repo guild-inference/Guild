@@ -124,6 +124,23 @@ public:
     uint64_t vram_bytes() const {
         return vram_;
     }
+
+    // ---- Several sequences' contexts (the batch slots, runtime/batch.hpp): each set is its own K/V rings and
+    // positions; reset / rewind / add_context / draft / context_end work on the set in use.  Set 0 is the drafter's
+    // own (the one there is without add_contexts).
+    /// `n` more sets (ring_ positions of every layer's K and V each: 40 MiB for Qwen3.8-Flash-Next's drafter); false
+    /// with `err` when VRAM runs out (the sets made so far stay).
+    bool add_contexts(int n, std::string& err);
+    int contexts() const {
+        return sets_.empty() ? 1 : (int) sets_.size();
+    }
+    void use_context(int i);
+    int context_in_use() const {
+        return cur_set_;
+    }
+    /// set `to` := set `from` (rings and positions; device to device on `stream`, not waited for)
+    bool copy_context(int from, int to, void* stream, std::string& err);
+
     double ms_draft = 0, ms_context = 0;
     int64_t rounds = 0;
 
@@ -179,7 +196,13 @@ private:
     int32_t* d_idx_ = nullptr;
     float *d_val_ = nullptr, *d_lse_ = nullptr, *d_hp_ = nullptr;
     int64_t ctx_lo_ = 0, ctx_hi_ = 0; ///< positions [ctx_lo_, ctx_hi_) are in the rings (the last `ring_` of them)
-    int R_ = 0;                       ///< scratch columns: the block, or a batch of context rows
+    struct ContextSet {
+        std::vector<uint16_t*> k, v; ///< every layer's rings
+        int64_t lo = 0, hi = 0;
+    };
+    std::vector<ContextSet> sets_; ///< add_contexts: set 0 is the rings the layers were loaded with
+    int cur_set_ = 0;
+    int R_ = 0; ///< scratch columns: the block, or a batch of context rows
     uint64_t vram_ = 0;
     std::vector<void*> allocs_;
     // llama.cpp's MMQ, for a head k4_mm does not take (GUILD_DFLASH_K4=0 forces it: the A/B switch)
