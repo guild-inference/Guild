@@ -103,6 +103,9 @@ struct SessionState {
 /// Configure host-only QSA staging policy across layers: -1 = resource-aware auto, 0 = per-layer staging, 1 = shared
 /// staging.
 void session_set_kv_share_staging(int mode);
+/// The window rows the streamed K/V staging of the sessions carved from now on is sized for (0: the largest verify
+/// window, the default; ModelExecutionState::kv_stage_rows).
+void session_set_kv_stage_rows(int rows);
 /// Returns true when each QSA layer in [layer_lo, layer_hi) allocates its own device staging tile.
 bool session_own_qsa_staging(const ModelGeometry& g, int64_t max_cells, int64_t layer_lo = 0, int64_t layer_hi = -1);
 

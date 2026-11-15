@@ -34,6 +34,10 @@ struct ModelExecutionState {
     bool kv_q4 = false;
     bool kv_hybrid = false;
     int kv_share_staging_mode = -1;
+    /// The window rows a streamed (host-only) K/V staging pool is sized for: 0 = the largest legal verify window
+    /// (kVerifyMaxT), the main session's.  A batch slot's session has one row a window, so it stages for 2 (still past
+    /// the resolver's 1,024-slot floor): ~8 MiB a QSA layer instead of ~34.
+    int kv_stage_rows = 0;
 
     // Native token embedding (src/core/native_head.cpp)
     const NativeEmbed* native_embed = nullptr;

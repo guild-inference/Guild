@@ -64,9 +64,9 @@ public:
     void stop(int b);
 
     /// From GenerationRequest::between_chunks only (the generating thread holds the model): the session's first
-    /// `prefix.size()` tokens - the part of a prompt read so far - into the idle slot `b`, which then holds them, so the
-    /// same request, sent again, reads on from there (restore_for) with the same chunks.  The server's BYIELD: a long
-    /// prompt read gives way to a short request at a chunk boundary.  False with `err` when the copy failed.
+    /// `prefix.size()` tokens - the part of a prompt read so far - into the idle slot `b`, which then holds them, so
+    /// the same request, sent again, reads on from there (restore_for) with the same chunks.  The server's BYIELD: a
+    /// long prompt read gives way to a short request at a chunk boundary.  False with `err` when the copy failed.
     bool park_inside(int b, const std::vector<int32_t>& prefix, std::string& err);
 
     struct Token {
@@ -84,8 +84,8 @@ public:
     bool step(const std::function<void(const Token&)>& on_token, const std::function<void(const Done&)>& on_done,
               std::string& err);
     /// The same, from inside a generation (GenerationRequest::between_chunks: the generating thread holds the lock).
-    bool step_inside(const std::function<void(const Token&)>& on_token,
-                     const std::function<void(const Done&)>& on_done, std::string& err);
+    bool step_inside(const std::function<void(const Token&)>& on_token, const std::function<void(const Done&)>& on_done,
+                     std::string& err);
 
     /// The timing of the windows since the slots were last all idle, one line ("" when no window ran); resets it.
     std::string take_report();

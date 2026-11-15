@@ -1018,6 +1018,18 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
         if (plan.batch_slots > want)
             std::fprintf(stderr, "guild batch: a batch window holds at most %d rows, so %d slots, not %d\n", want, want,
                          plan.batch_slots);
+        // A slot's streamed K/V stages one window row's selection (twice over), not a speculative window's eight:
+        // ~300 MiB less a slot on Qwen3.8-Flash-Next (GUILD_BATCH_STAGE_ROWS: the rows; 8 = the main session's).
+        const int stage_rows = [] {
+            const char* v = std::getenv("GUILD_BATCH_STAGE_ROWS");
+            return v != nullptr && std::atoi(v) > 0 ? std::atoi(v) : 2;
+        }();
+        core::session_set_kv_stage_rows(stage_rows);
+        struct StageRowsReset {
+            ~StageRowsReset() {
+                core::session_set_kv_stage_rows(0);
+            }
+        } stage_rows_reset;
         const uint64_t slot_bytes = core::session_bytes(impl->g, impl->config.max_context, impl->K);
         if (std::getenv("GUILD_BATCH_TRACE") != nullptr) {
             const bool own = core::session_own_qsa_staging(impl->g, impl->config.max_context);

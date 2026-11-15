@@ -28,8 +28,8 @@ struct GuildBatch::Impl {
     GuildModel::Impl* m = nullptr;
     struct Slot {
         bool active = false, stop = false;
-        int32_t x = 0;   ///< the token the next window feeds (not yet in the slot's state)
-        int64_t p = 0;   ///< its position
+        int32_t x = 0; ///< the token the next window feeds (not yet in the slot's state)
+        int64_t p = 0; ///< its position
         int64_t produced = 0, max_new = 0;
         Clock::time_point t0;
         /// what the slot's sessions hold: the prompt, then every token a window fed it.  Kept when the request ends,
@@ -58,8 +58,8 @@ struct GuildBatch::Impl {
             return false;
         }
         for (int64_t j = 0; j < from.qsa_alloc; ++j)
-            if (!core::conversation_kv_copy(from.qsa_states[from.qsa_ord0 + j], to.qsa_states[to.qsa_ord0 + j], m->g,
-                                            n, true, err))
+            if (!core::conversation_kv_copy(from.qsa_states[from.qsa_ord0 + j], to.qsa_states[to.qsa_ord0 + j], m->g, n,
+                                            true, err))
                 return false;
         if (!core::conversation_state_copy(from, to, m->g, (size_t) n, err))
             return false;
@@ -153,11 +153,11 @@ struct GuildBatch::Impl {
             if (on_token)
                 on_token(Token{b, y});
             const bool is_eos = std::find(eos.begin(), eos.end(), (int64_t) y) != eos.end();
-            const char* fin = is_eos                           ? "stop"
-                              : sl.stop                        ? "cancel"
-                              : sl.produced >= sl.max_new      ? "length"
+            const char* fin = is_eos                             ? "stop"
+                              : sl.stop                          ? "cancel"
+                              : sl.produced >= sl.max_new        ? "length"
                               : sl.p + 2 > m->config.max_context ? "length"
-                                                               : nullptr;
+                                                                 : nullptr;
             if (fin != nullptr) {
                 sl.active = false;
                 sl.stop = false;
@@ -249,8 +249,8 @@ int GuildBatch::restore_for(const std::vector<int32_t>& prompt, std::string& err
     // prefixes stay (a checkpoint's K/V cells are the live ones, and those before its end now hold this conversation).
     m.live_committed_tokens = sl.ids;
     for (auto it = m.prefix_checkpoints.begin(); it != m.prefix_checkpoints.end();) {
-        const bool keep = it->tokens.size() <= sl.ids.size() &&
-                          std::equal(it->tokens.begin(), it->tokens.end(), sl.ids.begin());
+        const bool keep =
+            it->tokens.size() <= sl.ids.size() && std::equal(it->tokens.begin(), it->tokens.end(), sl.ids.begin());
         if (keep) {
             ++it;
         } else {
@@ -332,7 +332,8 @@ bool GuildBatch::park_inside(int b, const std::vector<int32_t>& prefix, std::str
         return false;
     }
     sl.ids = prefix;
-    std::fprintf(stderr, "guild batch: the prompt read gives way at %zu tokens; slot %d holds them (copied in %.1f ms)\n",
+    std::fprintf(stderr,
+                 "guild batch: the prompt read gives way at %zu tokens; slot %d holds them (copied in %.1f ms)\n",
                  prefix.size(), b, ms_between(t0, Clock::now()));
     return true;
 }
@@ -359,15 +360,20 @@ std::string GuildBatch::take_report() {
     const double w = (double) b.windows, wall = ms_between(b.start, Clock::now());
     const double L = (double) std::max<int64_t>(1, b.m->g.n_layers);
     char line[512];
-    std::snprintf(line, sizeof line,
-                  "guild batch: %lld windows, %.2f rows a window, %.2f ms a window (run %.2f = GPU-reach wait %.2f + CPU "
-                  "experts %.2f; commit %.2f), %.2f CPU experts a layer-window; %.1f rows/s over %.0f ms",
-                  (long long) b.windows, b.rows / w, (b.run_ms + b.commit_ms) / w, b.run_ms / w,
-                  (b.m->ver->ms_wait - b.wait0) / w, (b.m->drive.cpu_ms - b.pool0) / w, b.commit_ms / w,
-                  (b.m->drive.d.multi_misses - b.miss0) / (w * L), 1000.0 * b.rows / std::max(wall, 1e-9), wall);
+    std::snprintf(
+        line, sizeof line,
+        "guild batch: %lld windows, %.2f rows a window, %.2f ms a window (run %.2f = GPU-reach wait %.2f + CPU "
+        "experts %.2f; commit %.2f), %.2f CPU experts a layer-window; %.1f rows/s over %.0f ms",
+        (long long) b.windows, b.rows / w, (b.run_ms + b.commit_ms) / w, b.run_ms / w,
+        (b.m->ver->ms_wait - b.wait0) / w, (b.m->drive.cpu_ms - b.pool0) / w, b.commit_ms / w,
+        (b.m->drive.d.multi_misses - b.miss0) / (w * L), 1000.0 * b.rows / std::max(wall, 1e-9), wall);
     b.windows = b.rows = 0;
     b.run_ms = b.commit_ms = 0;
-    return line;
+    std::string out = line;
+    // GUILD_VERIFY_PROFILE=1 (one-group windows: GUILD_BATCH_SPLIT=0): the GPU's stages of these windows
+    if (const std::string prof = b.m->ver->profile_report(); !prof.empty())
+        out += "\nguild batch GPU stages (ms a window):" + prof;
+    return out;
 }
 
 } // namespace guild::runtime
@@ -405,8 +411,7 @@ const std::vector<int32_t>& GuildBatch::held(int) const {
 int GuildBatch::restore_for(const std::vector<int32_t>&, std::string&) {
     return -1;
 }
-bool GuildBatch::admit(int, const std::vector<int32_t>&, int32_t, int64_t, const GenerationRequest&,
-                       std::string& err) {
+bool GuildBatch::admit(int, const std::vector<int32_t>&, int32_t, int64_t, const GenerationRequest&, std::string& err) {
     err = impl_->note;
     return false;
 }
@@ -416,8 +421,7 @@ bool GuildBatch::park_inside(int, const std::vector<int32_t>&, std::string& err)
     err = impl_->note;
     return false;
 }
-bool GuildBatch::step(const std::function<void(const Token&)>&, const std::function<void(const Done&)>&,
-                      std::string&) {
+bool GuildBatch::step(const std::function<void(const Token&)>&, const std::function<void(const Done&)>&, std::string&) {
     return true;
 }
 bool GuildBatch::step_inside(const std::function<void(const Token&)>&, const std::function<void(const Done&)>&,

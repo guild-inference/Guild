@@ -50,7 +50,12 @@ class Engine:
         self.log = open(self.log_path, "w")
         self.p = subprocess.Popen([exe, "--serve", *args], cwd=cfg.get("cwd"), stdin=subprocess.PIPE,
                                   stdout=subprocess.PIPE, stderr=self.log, text=True, bufsize=1, env=env)
+        self.info = {}
         for line in self.p.stdout:
+            if line.startswith("INFO "):   # INFO batch_slots=N ...: the slots the engine runs (as many as fit)
+                for kv in line.split()[1:]:
+                    k, _, v = kv.partition("=")
+                    self.info[k] = v
             if line.startswith("READY"):
                 return
         raise SystemExit(f"the engine ended before READY - see {self.log_path}")
@@ -87,6 +92,10 @@ def main():
         env["GUILD_IQ_MT_MIN"] = a.mt_min
     eng = Engine(a.exe, cfg, a.batch, env, a.extra.split())
     out = eng.lines()
+    slots = int(eng.info.get("batch_slots", a.batch))
+    if slots < len(prompts):
+        print(f"the engine runs {slots} slots (asked {a.batch}): {slots} prompts", flush=True)
+        prompts = prompts[:slots]
 
     solo = []
     if not a.skip_solo:
