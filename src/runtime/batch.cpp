@@ -185,11 +185,17 @@ struct GuildBatch::Impl {
                 if (trace)
                     std::fprintf(stderr, "guild batch: slot %d drafts %d at %lld from set %d (context to %lld)\n",
                                  act[i], r - 1, (long long) sl.p, d->context_in_use(), (long long) d->context_end());
-                // a whole block, as the solo path drafts it (its first r - 1 drafts are this slot's rows)
+                // a whole block, as the solo path drafts it (its first r - 1 drafts are this slot's rows);
+                // GUILD_BATCH_DRAFT_BLOCK=rows: a block of the slot's rows only (a cheaper pass, other drafts: the
+                // block's queries see one another)
+                static const bool block_of_rows = [] {
+                    const char* v = std::getenv("GUILD_BATCH_DRAFT_BLOCK");
+                    return v != nullptr && std::string(v) == "rows";
+                }();
                 float probs[kMax] = {};
                 int32_t block[kMax] = {};
-                const bool drafted =
-                    d->context_end() == sl.p && d->draft(sl.x, sl.p, d->block(), block, probs, m->dflash_stream, err);
+                const bool drafted = d->context_end() == sl.p && d->draft(sl.x, sl.p, block_of_rows ? r : d->block(),
+                                                                          block, probs, m->dflash_stream, err);
                 for (int j = 0; drafted && j < r - 1; ++j)
                     drafts[i][j] = block[j];
                 if (!drafted) {

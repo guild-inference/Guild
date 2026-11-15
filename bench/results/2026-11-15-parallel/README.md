@@ -33,8 +33,9 @@ windows (`init_slots`, `run_slot_rows`) were still there, unused.
   own DFlash context (40 MiB, kept current every window, copied in at admission and back with the conversation).
   Each row computes what row t of that slot's own speculative window computes, and a commit keeps each slot's
   accepted rows.
-- **Exactness.** With greedy decoding (`GUILD_IQ_MT_MIN=1`), every slot produces exactly its solo tokens. This held
-  in `tools/batch_test.py` at 2, 3 and 7 slots, with and without drafts, and in all seven checks of
+- **Exactness.** With greedy decoding, every slot produces exactly its solo tokens. This held in
+  `tools/batch_test.py` (which sets `GUILD_IQ_MT_MIN=1`) at 2, 3 and 7 slots, with and without drafts, with the
+  default kernels too (`--mt-min ""`, 3 slots with drafts, `runs/dflt.out`), and in all seven checks of
   `tools/batch_interleave_test.py`: a 11,713-token prompt read beside two decoding slots, a next turn continued from
   its slot, a prompt that gave way and went on, a request moved back to the solo path mid-answer, and a history sent
   back without the reply's thinking. The solo path's tokens are unchanged (Qwen bench ids
@@ -121,5 +122,8 @@ users at once, but a long prompt then reads 2.5 times slower.
 - **Ornith.** Its MTP layer drafts only on the solo path; its slots carry one row each.
 - **Sampling.** Penalties are not applied in batch windows. Sampled slots draw row by row with the solo window's
   Philox(seed, position).
-- **DFlash blocks.** A DFlash block shorter than 8 rows faults in the drafter (never used on the solo path, which
-  always drafts whole blocks), so the slots also draft whole blocks and take the rows they need.
+- **DFlash blocks.** The slots draft whole blocks, as the solo path does, and take the rows they need. A block
+  shorter than the drafter's (8) used to fault: `topk_lse` kept its counts behind the parts, at an offset that moved
+  with the rows, so they were not zero. It is fixed (the counts come first), and `GUILD_BATCH_DRAFT_BLOCK=rows` drafts
+  blocks of a slot's rows. That saved 0.5-1.5 ms of drafting a window and was within noise (2 slots 52.0 -> 53.0, 3
+  slots 61.9 -> 61.0 tok/s, `runs/blk-*.out`), so whole blocks stay the default.

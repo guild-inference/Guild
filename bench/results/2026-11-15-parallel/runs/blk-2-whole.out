@@ -1,0 +1,7 @@
+solo 0: 160 tokens in 4.1s  DONE 160 23 306.235 3771.02 length 92 162 0 0 110400 89006 0
+solo 1: 160 tokens in 2.1s  DONE 160 25 224.103 1885.34 length 134 148 0 0 83520 56543 0
+batch: 2 slots, 320 tokens; admissions 0.7s; then 5.9s -> aggregate 48.8 tok/s overall, 52.0 tok/s from the first batch token
+slot 0: 160 tokens, solo 160: IDENTICAL
+    'Le **B-tree** (pour *Balanced Tree*) est une structure de donn\xe9es arborescente \xe9quilibr\xe9e, largement utilis\xe9e dans les syst\xe8mes de fichiers et les bases de donn'
+slot 1: 160 tokens, solo 160: IDENTICAL
+    '```python\ndef merge_intervals(intervals: list[list[int]]) -> list[list[int]]:\n    """\n    Merge overlapping intervals.\n    \n    Args:\n        intervals: A list '
