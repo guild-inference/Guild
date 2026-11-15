@@ -848,7 +848,15 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
     }();
     const bool batch_split = batch_split_env && next_ == nullptr && lb_ == 0 && le_ == g.n_layers && row_base_ == 0;
     const bool defer_on = defer_k_ > 0 && !batch_rec_ && remote_opt_ == nullptr && !all_resident_;
-    const int G = (split_ && !all_resident_ && T >= 2 && (!batch_rec_ || batch_split) && !defer_on) ? 2 : 1;
+    // GUILD_SPLIT_MIN_T: the fewest rows a speculative window splits at (default 2); below it, one group
+    static const int split_min_t = [] {
+        const char* v = std::getenv("GUILD_SPLIT_MIN_T");
+        return v != nullptr && std::atoi(v) >= 2 ? std::atoi(v) : 2;
+    }();
+    const int G =
+        (split_ && !all_resident_ && T >= (batch_rec_ ? 2 : split_min_t) && (!batch_rec_ || batch_split) && !defer_on)
+            ? 2
+            : 1;
     static const bool dec_batch = [] {
         const char* v = std::getenv("GUILD_DEC_BATCH");
         return v == nullptr || std::atoi(v) != 0;
