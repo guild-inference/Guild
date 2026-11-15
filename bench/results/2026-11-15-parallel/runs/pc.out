@@ -1,0 +1,8 @@
+batch 0 slots 0: 4000 tokens read in 15260 ms
+batch 0 slots 0: 4000 tokens read in 15314 ms
+guild prefill: chunks of 8192 tokens in the 3098 MiB of VRAM free
+batch 3 slots 3: 4000 tokens read in 15291 ms
+batch 3 slots 3: 4000 tokens read in 15320 ms
+guild prefill: chunks of 4608 tokens in the 2146 MiB of VRAM free
+batch 7 slots 6: 4000 tokens read in 37934 ms
+batch 7 slots 6: 4000 tokens read in 37983 ms

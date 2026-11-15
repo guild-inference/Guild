@@ -234,6 +234,36 @@ Qwen settings, the load left 2,954 MiB free and the chunks grew to 4096: a 4,008
 31,918-token one 432.6 -> 169.7 s, the same tokens after each
 ([bench/results/2026-11-03-decode-round11](bench/results/2026-11-03-decode-round11/README.md)).
 
+### Several requests at once (`"parallel"`)
+
+By default the server runs one request at a time and the others wait. `"parallel": N` in the run config (setup's
+`--parallel N`, the engine's `--batch N`) lets up to N requests decode together in the engine's batch slots. The
+engine runs as many slots as fit in the VRAM, at most 8, and says so in its log.
+
+- **A request alone** runs on the solo path with its drafts, so it keeps its speed.
+- **When others arrive**, every request in a slot gets rows in one verify window. While at most three decode, each
+  slot drafts from its own DFlash context.
+- **A finished slot** keeps its conversation: its next turn continues from it.
+- **Exactness.** With greedy decoding, every request produces exactly the tokens it produces alone.
+
+On a GTX 1070 + dual Xeon Gold 6130 with setup's Qwen3.8-Flash-Next settings at 32K, `"parallel": 7`, 200-token
+answers:
+
+| At once | Total tok/s off / on | First token of the last request, off / on |
+| ---: | ---: | ---: |
+| 1 | 75.3 / 74.7 | 0.31 / 0.32 s |
+| 2 | 63.6 / 62.1 | 2.76 / 0.85 s |
+| 4 | 52.9 / 61.0 | 11.33 / 1.76 s |
+| 7 | 51.1 / 72.9 | 23.63 / 2.99 s |
+
+What it costs:
+- **VRAM.** Each slot takes ~0.3 GB (Qwen at 32K, with its drafter context), which the expert cache and the prompt
+  chunks would otherwise use. A 4,000-token prompt reads in 15.3 s with 0 or 3 slots, but 37.9 s with 6.
+- **Pinned RAM.** With `--kv-host-only`, each slot holds its K/V in pinned RAM: 0.75 GiB at 32K in fp16.
+- **Models.** Qwen3.8-Flash-Next and Ornith-1.5-35B only. GLM-5.3-Flash and Drama 3 run one request at a time.
+
+Details: [bench/results/2026-11-15-parallel](bench/results/2026-11-15-parallel/README.md).
+
 ### Qwen3.8-Flash-Next with the DFlash 2 drafter
 
 Setup fetches incoai's DFlash 2 drafter for Qwen3.8-Flash-Next (Apache-2.0, ~1.2 GB) and writes `--dflash <dir>`,

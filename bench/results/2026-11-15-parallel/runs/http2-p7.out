@@ -1,0 +1,14 @@
+loaded in 74 s; parallel 7, the engine serves 7 at once
+warm-up: 8 tokens
+C=1 round 1: 200 tokens in 3.9 s = 51.0 tok/s; per request 56.1 tok/s; first token median 0.36 s, last 0.36 s
+C=1 round 2: 200 tokens in 2.7 s = 74.7 tok/s; per request 84.9 tok/s; first token median 0.32 s, last 0.32 s
+C=2 round 1: 400 tokens in 6.4 s = 62.1 tok/s; per request 36.7 tok/s; first token median 0.60 s, last 0.85 s
+C=2 round 2: 400 tokens in 7.6 s = 52.5 tok/s; per request 29.0 tok/s; first token median 0.61 s, last 0.86 s
+C=3 round 1: 600 tokens in 9.5 s = 63.4 tok/s; per request 24.9 tok/s; first token median 0.86 s, last 1.28 s
+C=3 round 2: 600 tokens in 10.4 s = 57.8 tok/s; per request 22.0 tok/s; first token median 0.83 s, last 1.30 s
+C=4 round 1: 800 tokens in 13.1 s = 61.0 tok/s; per request 16.9 tok/s; first token median 1.09 s, last 1.75 s
+C=4 round 2: 800 tokens in 13.1 s = 61.0 tok/s; per request 17.0 tok/s; first token median 1.08 s, last 1.76 s
+C=7 round 1: 1400 tokens in 19.3 s = 72.6 tok/s; per request 11.6 tok/s; first token median 1.72 s, last 3.00 s
+C=7 round 2: 1400 tokens in 19.2 s = 72.9 tok/s; per request 11.7 tok/s; first token median 1.78 s, last 2.99 s
+SUMMARY {"1": {"aggregate_tok_s": 74.7, "per_request_tok_s": 84.9, "ttft_median_s": 0.32, "ttft_last_s": 0.32}, "2": {"aggregate_tok_s": 62.1, "per_request_tok_s": 36.7, "ttft_median_s": 0.6, "ttft_last_s": 0.85}, "3": {"aggregate_tok_s": 63.4, "per_request_tok_s": 24.9, "ttft_median_s": 0.86, "ttft_last_s": 1.28}, "4": {"aggregate_tok_s": 61.0, "per_request_tok_s": 17.0, "ttft_median_s": 1.08, "ttft_last_s": 1.76}, "7": {"aggregate_tok_s": 72.9, "per_request_tok_s": 11.7, "ttft_median_s": 1.78, "ttft_last_s": 2.99}}
+(server and engine logs in /tmp/parallel_bench_c6dt3zpa)

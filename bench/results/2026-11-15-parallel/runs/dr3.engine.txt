@@ -1,0 +1,12 @@
+guild batch: a session's bytes: gdn bufs 3490096, gdn state 3268608 x 36 layers, qsa state first 21061312 rest 12672704 x 12 (own staging 1), qsa bufs 5317200, moe 34704, block 169024
+guild batch: 3 slot sessions, 274 MiB of VRAM each (2.3 GiB of pinned RAM for their K/V); 3790 MiB of VRAM free before, 2958 after
+guild batch: the DFlash drafter keeps a context for each of the 3 slots (120 MiB)
+guild batch: slot 0 takes 23 tokens (copied in 2.2 ms)
+guild verify: captured the batch window over slots 0,0,0,0,0,0,0,0 in 53.1 ms
+guild batch: slot 1 takes 25 tokens (copied in 2.1 ms)
+guild verify: updated the batch window over slots 0,0,0,0,1,1,1,1 in 33.8 ms
+guild batch: slot 2 takes 27 tokens (copied in 2.1 ms)
+guild verify: updated the batch window over slots 0,0,0,1,1,1,2,2 in 32.5 ms
+guild verify: updated the batch window over slots 0,0,0,0,2,2,2,2 in 32.7 ms
+guild verify: updated the batch window over slots 2,2,2,2,2,2,2,2 in 32.1 ms
+guild batch: 46 windows, 8.00 rows and 6.20 tokens a window, 96.55 ms a window (drafts 11.32, run 84.99 = GPU-reach wait 13.57 + CPU experts 65.36; commit 0.25), drafts accepted 164 of 247, 65.74 CPU experts a layer-window; 56.1 tokens/s over 5079 ms

@@ -2876,7 +2876,24 @@ bool Verifier::install_batch_graph(cudaGraphExec_t& ex, uint64_t& have, uint64_t
     static const bool trace = std::getenv("GUILD_BATCH_TRACE") != nullptr;
     if (trace)
         cudaMemGetInfo(&free0, &total);
-    const cudaError_t ie = cudaGraphInstantiate(&ex, graph, flags);
+    cudaError_t ie = cudaGraphInstantiate(&ex, graph, flags);
+    if (ie == cudaErrorMemoryAllocation) {
+        // A batch window graph takes ~36 MiB of VRAM (Qwen3.8-Flash-Next, GTX 1070), instantiated when its shape is
+        // first used, out of what the load left: give the other shapes' graphs back (they are captured again when
+        // they come back) and try once more, rather than fail the request.
+        (void) cudaGetLastError();
+        ex = nullptr;
+        cudaStreamSynchronize(cs_);
+        for (auto* m : {&exec_bm_, &commit_bm_})
+            for (auto& kv : *m)
+                if (kv.second != nullptr && &kv.second != &ex) {
+                    cudaGraphExecDestroy(kv.second);
+                    kv.second = nullptr;
+                }
+        std::fprintf(stderr, "guild verify: VRAM ran out for a batch %s graph: the other batch graphs given back\n",
+                     what);
+        ie = cudaGraphInstantiate(&ex, graph, flags);
+    }
     cudaGraphDestroy(graph);
     if (ie != cudaSuccess) {
         ex = nullptr;

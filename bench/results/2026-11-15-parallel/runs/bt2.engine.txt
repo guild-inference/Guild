@@ -1,0 +1,6 @@
+guild batch: a session's bytes: gdn bufs 3490096, gdn state 3268608 x 36 layers, qsa state first 46387120 rest 37998512 x 12 (own staging 1), qsa bufs 5317200, moe 34704, block 169024
+guild batch: 3 slot sessions, 564 MiB of VRAM each (2.3 GiB of pinned RAM for their K/V); 3790 MiB of VRAM free before, 2088 after
+guild batch: slot 0 takes 23 tokens (copied in 1.8 ms)
+guild batch: slot 1 takes 25 tokens (copied in 1.7 ms)
+guild batch: slot 2 takes 27 tokens (copied in 1.8 ms)
+guild batch: 97 windows, 2.94 rows a window, 63.20 ms a window (run 58.63 = GPU-reach wait 30.38 + CPU experts 28.46; commit 4.57), 31.11 CPU experts a layer-window; 42.5 rows/s over 6710 ms

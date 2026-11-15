@@ -1,0 +1,24 @@
+the engine runs 7 slots (asked 8): 7 prompts
+solo 0: 96 tokens in 2.7s  DONE 96 23 301.714 2425.49 length 52 98 0 0 68160 55775 0 0 
+solo 1: 96 tokens in 1.4s  DONE 96 25 224.214 1193.05 length 79 89 0 0 50880 34841 0 0 
+solo 2: 96 tokens in 2.1s  DONE 96 27 266.867 1778.01 length 67 104 0 0 63840 48302 0 0
+solo 3: 96 tokens in 2.5s  DONE 96 32 293.966 2220.9 length 55 94 0 0 64800 53219 0 0 3
+solo 4: 96 tokens in 2.0s  DONE 96 22 210.71 1753.49 length 68 109 0 0 65760 48383 0 0 
+solo 5: 96 tokens in 2.2s  DONE 96 25 224.294 1982.86 length 62 108 0 0 68160 53452 0 0
+solo 6: 96 tokens in 2.8s  DONE 96 28 272.248 2497.66 length 50 114 0 0 76800 59199 0 0
+batch: 7 slots, 672 tokens; admissions 2.5s; then 7.5s -> aggregate 67.0 tok/s overall, 69.1 tok/s from the first batch token
+slot 0: 96 tokens, solo 96: IDENTICAL
+    'Le **B-tree** (pour *Balanced Tree*) est une structure de donn\xe9es arborescente \xe9quilibr\xe9e, largement utilis\xe9e dans les syst\xe8mes de fichiers et les bases de donn'
+slot 1: 96 tokens, solo 96: IDENTICAL
+    '```python\ndef merge_intervals(intervals: list[list[int]]) -> list[list[int]]:\n    """\n    Merge overlapping intervals.\n    \n    Args:\n        intervals: A list '
+slot 2: 96 tokens, solo 96: IDENTICAL
+    'Here is a detailed comparison between **TCP** (Transmission Control Protocol) and **QUIC** (Quick UDP Internet Connections), focusing on **Handshake**, **Conges'
+slot 3: 96 tokens, solo 96: IDENTICAL
+    "L'histoire du calcul de $\\pi$ (pi) est l'une des plus longues et des plus fascinantes de l'histoire des sciences. Elle traverse les mill\xe9naires, passant de la g"
+slot 4: 96 tokens, solo 96: IDENTICAL
+    'The French Revolution (1789\u20131799) was not caused by a single event, but rather by a convergence of long-term structural issues and short-term crises. Historians'
+slot 5: 96 tokens, solo 96: IDENTICAL
+    'The attention mechanism is the core innovation behind Transformer models (like BERT, GPT, and Llama). It allows the model to weigh the importance of different w'
+slot 6: 96 tokens, solo 96: IDENTICAL
+    'Voici une recette classique et inratable de la **Tarte aux Pommes \xe0 la Cr\xe8me P\xe2tissi\xe8re** (ou simplement aux pommes, selon votre pr\xe9f\xe9rence). Cette version util'
+rc 0

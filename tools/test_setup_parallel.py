@@ -36,12 +36,12 @@ class Parallel(unittest.TestCase):
         note = S.parallel_note(None, 12, q2, 32768, "int8", False)
         self.assertEqual(len(note), 1)
         self.assertIn("one at a time", note[0])
-        self.assertIn("costs about 10-25% speed per request on this card", note[0])
+        self.assertIn("take VRAM the expert cache and the prompt chunks would use on this card", note[0])
         self.assertIn("--parallel 3", S.parallel_note(None, 24, q2, 32768, "int8", False)[0])
         # asked on 12 GB: kept, with the cost said
         lines = S.parallel_note(4, 12, q2, 32768, "int8", False)
         self.assertIn("4 at once", lines[0])
-        self.assertTrue(any("one at a time" in x and "kept as you chose" in x and "10-25%" in x for x in lines))
+        self.assertTrue(any("one at a time" in x and "kept as you chose" in x and "prompt chunks" in x for x in lines))
         # asked above the recommendation where it pays
         lines = S.parallel_note(4, 24, q2, 32768, "int8", False)
         self.assertTrue(any("recommended for this card: 3" in x for x in lines))
