@@ -332,7 +332,13 @@ private:
     int row_base_ = 0;        ///< ... its hand-off rows start here (a pipeline group's own rows)
     int brow_[8] = {};        ///< ... and row t is slot brow_[t]
     bool last_batch_ = false; ///< the last run was a batch window (set_plan_slot: one group)
-    std::map<uint64_t, cudaGraphExec_t> exec_bm_, commit_bm_; ///< key: batch_key(rows, S, hand-off base)
+    /// The batch windows' graphs, one per window SHAPE (rows, hand-off base), not one per set of slots: a window over
+    /// other slots of the same shape updates the instantiated graph in place (cudaGraphExecUpdate - the same kernels,
+    /// other state pointers), so the VRAM holds one graph per row count however requests come and go, where one per
+    /// set of slots took up to 2^N - 1 of them (and a set of slots seen before is re-captured: tens of ms on the host).
+    /// `*_rows_` is the set each graph was last captured for.  GUILD_BATCH_GRAPH_KEEP=1: one graph per set, as before.
+    std::map<uint64_t, cudaGraphExec_t> exec_bm_, commit_bm_; ///< key: batch_graph_key
+    std::map<uint64_t, uint64_t> exec_rows_, commit_rows_;    ///< ... the batch_key each was captured for
     int last_rows_[8] = {};                                   ///< the slots of the last batch window's rows
     static uint64_t batch_key(const int* rows, int S, int hbase) {
         uint64_t k = (uint64_t) hbase << 40 | (uint64_t) S << 32;
@@ -340,6 +346,11 @@ private:
             k |= (uint64_t) (rows[t] & 15) << (4 * t);
         return k;
     }
+    static uint64_t batch_graph_key(const int* rows, int S, int hbase);
+    /// `graph` (just captured for `rows_key`) into `ex`: an in-place update of the graph this shape has, else a new
+    /// instantiation.  Consumes `graph`.
+    bool install_batch_graph(cudaGraphExec_t& ex, uint64_t& have, uint64_t rows_key, cudaGraph_t graph,
+                             unsigned long long flags, const char* what, std::string& err);
     // batch_launch / batch_poll
     bool b_running_ = false;
     int64_t b_k_ = 0, b_steps_ = 0;
@@ -352,6 +363,10 @@ private:
     int32_t* commitb_ = nullptr;
     float* tail_snap_b_ = nullptr; ///< per (slot, QSA layer) indexer tail snapshot
     void* arena_b_ = nullptr;
+    /// A batch window advances its slots' GDN recurrence and conv history as it reads them (every row is kept): it has
+    /// no commit graph.  `one_b_`: the device count of one those kernels' commit form takes.
+    bool batch_inplace_ = false;
+    int32_t* one_b_ = nullptr;
     int64_t last_pos_b_[8] = {};
     bool capture_batch(const int* rows, int S, int hbase, std::string& err);
     void collect_profile(); ///< GUILD_VERIFY_PROFILE: add the last window's stamps to prof_sum_
@@ -487,6 +502,11 @@ private:
     // longer wait for the GPU's layer work (bench/results/2026-10-24-split-window).
     bool split_ = false;
     int groups_[9] = {};
+    // The same per batch window size (a batch window's rows are independent sequences, so its two groups are any
+    // two sets of slots; GUILD_BATCH_SPLIT=0 keeps one group), and its host combine.  A single stage only: the
+    // pipelined stages (batch_launch / batch_poll) serve one group a layer.
+    int groups_b_[9] = {};
+    bool host_combine_b_[9] = {};
     float* h_ymiss_ = nullptr;
     float* m_ymiss_ = nullptr; // T * k * n_embd
     // When the CPU serves every routed expert, it also does the combine's weighted sum (host_combine.hpp) and only
