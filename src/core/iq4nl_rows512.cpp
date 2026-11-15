@@ -13,6 +13,7 @@
 
 #include <immintrin.h>
 
+#include <cstdlib>
 #include <cstring>
 
 namespace guild::core::cpu_moe {
@@ -28,6 +29,8 @@ static_assert(sizeof(BlockQ8_0) == 34, "block_q8_0 is 34 bytes");
 
 // ggml's kvalues_iq4nl
 alignas(16) const int8_t kValues[16] = {-127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113};
+// their magnitudes: codes 0-7 are the negative values
+alignas(16) const int8_t kAbs[16] = {127, 104, 83, 65, 49, 35, 22, 10, 1, 13, 25, 38, 53, 69, 89, 113};
 
 inline float h2f(uint16_t h) {
     return _mm_cvtss_f32(_mm_cvtph_ps(_mm_cvtsi32_si128((int) h)));
@@ -119,6 +122,136 @@ void rows(const uint8_t* w, size_t row_bytes, int n, const void* const* act, flo
     }
 }
 
+// ---- v2 (GUILD_IQ4NL_V2=0 keeps the kernel above): the same lanes, the same integer sums and the same float steps,
+// with the scales' work taken out of the token loop.  Per call, every token's block scales once (dy, floats).  Per
+// block pair, the pair of rows' four weight scales by one conversion, spread into the two blocks' scale vectors
+// (row 0's d_x in the low 8 lanes, row 1's in the high 8) by two permutes; a block's d_y * d_x is then one multiply of
+// that vector by the token's scale, broadcast from memory: the single-precision product ggml forms (fp16 -> fp32 is
+// exact, and the multiply rounds once, the same for a * b and b * a), lane for lane.  The high nibbles come from one
+// 64-bit variable shift instead of a shift and a blend.  v1 converted d_y for every row pair and built each product
+// with two scalar multiplies, two broadcasts and an insert; on a Xeon Gold 6130 the down rows ran compute-bound at
+// 145 / 89 / 70 / 56 GB/s for 1-4 tokens on 32 cores (640-value rows), v2 at 170 / 139 / 112 / 95.
+constexpr int kMaxBlocks = 128; // rows of up to 4096 values (Qwen3.8-Flash-Next's down rows: 640)
+
+// the codes of block b0 (row 0) and b1 (row 1): 128-bit lanes b0's low nibbles, its high nibbles, b1's likewise
+inline __m512i codes2(const uint8_t* b0, const uint8_t* b1, __m512i m4, __m512i shift) {
+    const __m512i bits = _mm512_mask_broadcast_i32x4(_mm512_broadcast_i32x4(_mm_loadu_si128((const __m128i*) (b0 + 2))),
+                                                     0xFF00, _mm_loadu_si128((const __m128i*) (b1 + 2)));
+    return _mm512_and_si512(_mm512_srlv_epi64(bits, shift), m4);
+}
+// |w| and the lanes where w < 0.  One token: from the values (shuffle, abs, sign bits); more: from the codes (a
+// shuffle of the magnitudes, and bit 3 clear), one instruction fewer on port 0, where the token loop's multiplies run
+// (2-4 tokens 5-6% faster, one the same).  The same bytes and the same mask either way.
+template <bool LEAN>
+inline void decode2v(const uint8_t* b0, const uint8_t* b1, __m512i values, __m512i absv, __m512i m4, __m512i eight,
+                     __m512i shift, __m512i& aw, __mmask64& neg) {
+    const __m512i c = codes2(b0, b1, m4, shift);
+    if constexpr (LEAN) {
+        aw = _mm512_shuffle_epi8(absv, c);
+        neg = _mm512_testn_epi8_mask(c, eight);
+    } else {
+        const __m512i w = _mm512_shuffle_epi8(values, c);
+        aw = _mm512_abs_epi8(w);
+        neg = _mm512_movepi8_mask(w);
+    }
+}
+
+// d_x of blocks ib (words 0, 1: rows 0, 1) and ib + 1 (words 2, 3) as floats.  One token: the words inserted into a
+// vector; more: assembled in a 64-bit register first (each the faster there, by 2-8%).
+template <bool GPR> inline __m128 scales4(const uint8_t* a0, const uint8_t* a1) {
+    uint16_t h00, h10, h01, h11;
+    std::memcpy(&h00, a0, 2);
+    std::memcpy(&h10, a1, 2);
+    std::memcpy(&h01, a0 + kBlock, 2);
+    std::memcpy(&h11, a1 + kBlock, 2);
+    if constexpr (GPR) {
+        const uint64_t hw = (uint64_t) h00 | ((uint64_t) h10 << 16) | ((uint64_t) h01 << 32) | ((uint64_t) h11 << 48);
+        return _mm_cvtph_ps(_mm_cvtsi64_si128((long long) hw));
+    } else {
+        return _mm_cvtph_ps(_mm_set_epi16(0, 0, 0, 0, (short) h11, (short) h01, (short) h10, (short) h00));
+    }
+}
+
+template <int NT>
+inline void row2_v2(const uint8_t* row0, const uint8_t* row1, int nblocks, const BlockQ8_0* const* y, const float* dy,
+                    float* res0, float* res1, const char* pf0, const char* pf1) {
+    const __m512i values = _mm512_broadcast_i32x4(_mm_load_si128((const __m128i*) kValues));
+    const __m512i absv = _mm512_broadcast_i32x4(_mm_load_si128((const __m128i*) kAbs));
+    const __m512i m4 = _mm512_set1_epi8(0x0f), zero = _mm512_setzero_si512(), ones = _mm512_set1_epi16(1);
+    const __m512i eight = _mm512_set1_epi8(8);
+    const __m512i shift = _mm512_set_epi64(4, 4, 0, 0, 4, 4, 0, 0); // 128-bit lanes 1 and 3: the high nibbles
+    const __m512i i1 = _mm512_set_epi32(1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0); // [x00 x 8 | x10 x 8]
+    const __m512i i2 = _mm512_set_epi32(3, 3, 3, 3, 3, 3, 3, 3, 2, 2, 2, 2, 2, 2, 2, 2); // [x01 x 8 | x11 x 8]
+    __m512 acc1[NT], acc2[NT];
+    for (int t = 0; t < NT; ++t)
+        acc1[t] = acc2[t] = _mm512_setzero_ps();
+    for (int ib = 0; ib + 1 < nblocks; ib += 2) {
+        if ((ib & 3) == 0) {
+            _mm_prefetch(pf0 + (size_t) ib * kBlock, _MM_HINT_T0);
+            _mm_prefetch(pf1 + (size_t) ib * kBlock, _MM_HINT_T0);
+        }
+        const uint8_t *a0 = row0 + (size_t) ib * kBlock, *a1 = row1 + (size_t) ib * kBlock;
+        __m512i aw1, aw2;
+        __mmask64 n1, n2;
+        decode2v<(NT > 1)>(a0, a1, values, absv, m4, eight, shift, aw1, n1);
+        decode2v<(NT > 1)>(a0 + kBlock, a1 + kBlock, values, absv, m4, eight, shift, aw2, n2);
+        const __m512 f = _mm512_castps128_ps512(scales4<(NT > 1)>(a0, a1));
+        const __m512 x1 = _mm512_permutexvar_ps(i1, f), x2 = _mm512_permutexvar_ps(i2, f);
+        for (int t = 0; t < NT; ++t) {
+            const BlockQ8_0& yb1 = y[t][ib];
+            const BlockQ8_0& yb2 = y[t][ib + 1];
+            const __m512i y1 = _mm512_broadcast_i64x4(_mm256_loadu_si256((const __m256i*) yb1.qs));
+            const __m512i y2 = _mm512_broadcast_i64x4(_mm256_loadu_si256((const __m256i*) yb2.qs));
+            const __m512i p1 =
+                _mm512_madd_epi16(_mm512_maddubs_epi16(aw1, _mm512_mask_sub_epi8(y1, n1, zero, y1)), ones);
+            const __m512i p2 =
+                _mm512_madd_epi16(_mm512_maddubs_epi16(aw2, _mm512_mask_sub_epi8(y2, n2, zero, y2)), ones);
+            const float* dt = dy + (size_t) t * nblocks;
+            const __m512 d1 = _mm512_mul_ps(x1, _mm512_set1_ps(dt[ib])); // ggml: set1(d_y * d_x)
+            const __m512 d2 = _mm512_mul_ps(x2, _mm512_set1_ps(dt[ib + 1]));
+            acc1[t] = _mm512_fmadd_ps(d1, _mm512_cvtepi32_ps(p1), acc1[t]);
+            acc2[t] = _mm512_fmadd_ps(d2, _mm512_cvtepi32_ps(p2), acc2[t]);
+        }
+    }
+    for (int t = 0; t < NT; ++t) {
+        const __m512 s = _mm512_add_ps(acc1[t], acc2[t]); // ggml: hsum_float_8(accum1 + accum2)
+        res0[t] = hsum_ggml(_mm512_castps512_ps256(s));
+        res1[t] = hsum_ggml(_mm512_extractf32x8_ps(s, 1));
+    }
+}
+
+template <int NT>
+void rows_v2(const uint8_t* w, size_t row_bytes, int n, const void* const* act, float* const* out, int r0, int r1) {
+    const int nb = n / 32;
+    const BlockQ8_0* y[NT];
+    alignas(64) float dy[NT * kMaxBlocks];
+    for (int t = 0; t < NT; ++t) {
+        y[t] = (const BlockQ8_0*) act[t];
+        for (int b = 0; b < nb; ++b)
+            dy[t * nb + b] = h2f(y[t][b].d);
+    }
+    float a[NT], b[NT];
+    for (int r = r0; r < r1; r += 2) {
+        const uint8_t* row0 = w + (size_t) r * row_bytes;
+        const bool two = r + 1 < r1;
+        const char* pf = (const char*) row0 + 2 * row_bytes;
+        row2_v2<NT>(row0, two ? row0 + row_bytes : row0, nb, y, dy, a, b, pf, pf + row_bytes);
+        for (int t = 0; t < NT; ++t) {
+            out[t][r] = a[t];
+            if (two)
+                out[t][r + 1] = b[t];
+        }
+    }
+}
+
+bool v2_on() {
+    static const bool v = [] {
+        const char* e = std::getenv("GUILD_IQ4NL_V2");
+        return e == nullptr || std::atoi(e) != 0;
+    }();
+    return v;
+}
+
 } // namespace
 
 bool iq4nl_rows512_ok() {
@@ -127,6 +260,18 @@ bool iq4nl_rows512_ok() {
 
 void iq4nl_rows512(const uint8_t* w, size_t row_bytes, int n, const void* const* act, int nt, float* const* out, int r0,
                    int r1) {
+    if (v2_on() && n / 32 <= kMaxBlocks) {
+        for (int t0 = 0; t0 < nt; t0 += 4) {
+            const int k = nt - t0 < 4 ? nt - t0 : 4;
+            switch (k) {
+            case 1: rows_v2<1>(w, row_bytes, n, act + t0, out + t0, r0, r1); break;
+            case 2: rows_v2<2>(w, row_bytes, n, act + t0, out + t0, r0, r1); break;
+            case 3: rows_v2<3>(w, row_bytes, n, act + t0, out + t0, r0, r1); break;
+            default: rows_v2<4>(w, row_bytes, n, act + t0, out + t0, r0, r1); break;
+            }
+        }
+        return;
+    }
     for (int t0 = 0; t0 < nt; t0 += 4) {
         const int k = nt - t0 < 4 ? nt - t0 : 4;
         switch (k) {

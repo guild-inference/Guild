@@ -65,7 +65,8 @@ int main(int argc, char** argv) {
     ggml_cpu_init();
     const auto dot = ggml_get_type_traits_cpu(GGML_TYPE_IQ4_NL)->vec_dot;
     if (argc > 1 && std::string(argv[1]) == "--dram") {
-        const int threads = argc > 2 ? std::atoi(argv[2]) : 32, nt = argc > 3 ? std::atoi(argv[3]) : 1, n = 512;
+        const int threads = argc > 2 ? std::atoi(argv[2]) : 32, nt = argc > 3 ? std::atoi(argv[3]) : 1,
+                  n = std::getenv("IQ4NL_TEST_N") ? std::atoi(std::getenv("IQ4NL_TEST_N")) : 512;
         const size_t rb = ggml_row_size(GGML_TYPE_IQ4_NL, n);
         const int rows = (int) (((size_t) 128 << 20) / rb), item = 64;
         for (int mode = 0; mode < 2; ++mode) {
@@ -121,7 +122,7 @@ int main(int argc, char** argv) {
     }
     std::mt19937 rng(20261102);
     int failures = 0, checked = 0;
-    for (int n : {64, 512, 2048}) {
+    for (int n : {64, 512, 640, 2048}) {
         const int rows = 37;
         const size_t rb = ggml_row_size(GGML_TYPE_IQ4_NL, n);
         const auto w = random_rows(rng, rows, n);
