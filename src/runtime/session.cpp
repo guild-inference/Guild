@@ -234,11 +234,36 @@ enum class Ingest {
     Failed
 };
 
+using BetweenChunks = std::function<bool(int64_t pos, int64_t end, bool can_stop)>;
+
+// The prompt engines read [from, to) in one run, or - with `between` (GenerationRequest::between_chunks) - one chunk a
+// run, calling it between two runs.  Each run starts where the last ended, at a multiple of the engine's chunk from
+// `from`, so the chunks are the ones one run reads and the arithmetic is unchanged.  `tail_max`: a rest of at most
+// this many tokens would be read through the verifier's windows (ingest_prompt), another arithmetic, so the read stops
+// (`between` returns false: `err` "cancelled") only before a longer rest.
+bool run_in_chunks(const std::function<bool(int64_t a, int64_t b)>& run, int64_t from, int64_t to, int64_t chunk,
+                   int64_t tail_max, const BetweenChunks* between, std::string& err) {
+    if (between == nullptr || !*between || chunk <= 0 || to - from <= chunk)
+        return run(from, to);
+    for (int64_t a = from; a < to;) {
+        const int64_t b = std::min(to, a + chunk);
+        if (!run(a, b))
+            return false;
+        a = b;
+        if (a < to && !(*between)(a, to, to - a > std::max(chunk, tail_max))) {
+            err = "cancelled";
+            return false;
+        }
+    }
+    return true;
+}
+
 // Reads prompt tokens [from, to) into the state (K/V cells, GDN and convolution state, PLE history), with the MTP
 // drafter's K/V too when `use_mtp`, and the DFlash drafter's context from position `dflash_from` on when that is not
-// negative.  The next token, ids[to], is the one a window reads after it.
+// negative.  The next token, ids[to], is the one a window reads after it.  `between`: see run_in_chunks.
 Ingest ingest_prompt(GuildModel::Impl& m, const std::vector<int64_t>& ids, int64_t from, int64_t to, bool use_mtp,
-                     int S, const std::function<bool()>& stop, std::string& error_msg, int64_t dflash_from = -1) {
+                     int S, const std::function<bool()>& stop, std::string& error_msg, int64_t dflash_from = -1,
+                     const BetweenChunks* between = nullptr) {
     auto* m_impl = &m;
     const bool use_dflash = dflash_from >= 0 && m_impl->dflash != nullptr;
     const size_t dflash_stride =
@@ -320,20 +345,20 @@ Ingest ingest_prompt(GuildModel::Impl& m, const std::vector<int64_t>& ids, int64
             };
         }
 
-        const int64_t n_to_prefill = to - from;
-        if (n_to_prefill > 0) {
-            if (!m_impl->prefill->run(ids.data() + from, n_to_prefill, from, error_msg))
-                return error_msg == "cancelled" ? Ingest::Cancelled : Ingest::Failed;
-        }
+        if (to > from &&
+            !run_in_chunks(
+                [&](int64_t a, int64_t b) { return m_impl->prefill->run(ids.data() + a, b - a, a, error_msg); }, from,
+                to, m_impl->prefill->chunk(), verify_max, between, error_msg))
+            return error_msg == "cancelled" ? Ingest::Cancelled : Ingest::Failed;
     } else if (m_impl->batched_prefill && !verify_ingest && std::getenv("GUILD_PREFILL_SEQUENTIAL") == nullptr) {
         m_impl->batched_prefill->should_stop = stop;
         if (use_mtp)
             m_impl->batched_prefill->on_chunk = mtp_chunk(false);
-        const int64_t n_to_prefill = to - from;
-        if (n_to_prefill > 0) {
-            if (!m_impl->batched_prefill->run(ids.data() + from, n_to_prefill, from, error_msg))
-                return error_msg == "cancelled" ? Ingest::Cancelled : Ingest::Failed;
-        }
+        if (to > from &&
+            !run_in_chunks(
+                [&](int64_t a, int64_t b) { return m_impl->batched_prefill->run(ids.data() + a, b - a, a, error_msg); },
+                from, to, m_impl->batched_prefill->batch_size(), verify_max, between, error_msg))
+            return error_msg == "cancelled" ? Ingest::Cancelled : Ingest::Failed;
     } else {
         // Architecture-independent prompt ingestion via Verifier (sequential fallback)
         // in windows of up to the verifier's S tokens, as decode runs them
@@ -599,7 +624,7 @@ bool GuildSession::generate(const GenerationRequest& req, TokenStreamCallback on
     switch (ingest_prompt(
         *m_impl, ids, reused_pos, n_prompt - 1, use_mtp, S,
         [this, &req] { return impl_->cancelled.load() || (req.cancel_flag && req.cancel_flag->load()); }, error_msg,
-        dflash_from)) {
+        dflash_from, req.between_chunks ? &req.between_chunks : nullptr)) {
     case Ingest::Done: break;
     case Ingest::Cancelled:
         m_impl->clear_prefix_cache();
@@ -854,8 +879,9 @@ bool GuildSession::generate(const GenerationRequest& req, TokenStreamCallback on
         return true;
     };
     // the first window drafts too: the prompt is in the drafter's context up to its last token, the window's row 0
+    // (not for a request of one token - a batch slot's admission -, whose window holds that row alone)
     bool first_drafted = false;
-    if (use_dflash && m_impl->dflash->context_end() == p) {
+    if (use_dflash && m_impl->dflash->context_end() == p && req.max_new_tokens > 1) {
         if (!dflash_next(x, p, m_impl->dflash->ms_draft + m_impl->dflash->ms_context))
             return runtime_failure();
         first_drafted = cur_proposed_k > 0;
@@ -1188,12 +1214,14 @@ bool GuildSession::generate(const GenerationRequest& req, TokenStreamCallback on
     // A successful request must leave completed state before reset, another session, or teardown.
     if (!m_impl->ver->wait_commit(error_msg))
         return runtime_failure();
-    if (kv_cache_enabled && !m_impl->live_committed_tokens.empty()) {
+    // (an admission into a batch slot saves none: the slot holds this state, GenerationRequest::into_slot)
+    if (kv_cache_enabled && !m_impl->live_committed_tokens.empty() && !req.into_slot) {
         m_impl->save_prefix_checkpoint(m_impl->live_committed_tokens);
     }
+    // The decoder's held bytes (a character cut by the end of the output): text only, so its id is -1, not a token.
     std::string flushed = decoder->flush();
     if (!flushed.empty() && on_token && !client_aborted) {
-        on_token(TokenEvent{0, flushed, false});
+        on_token(TokenEvent{-1, flushed, false});
     }
 
     auto t_decode_end = Clock::now();

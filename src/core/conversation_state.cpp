@@ -220,6 +220,30 @@ bool conversation_checkpoint_restore(const ConversationCheckpoint& c, SessionSta
     return sync(error);
 }
 
+bool conversation_state_copy(const SessionState& from, SessionState& to, const ModelGeometry& g, size_t tokens,
+                             std::string& error) {
+    ConversationStateSizes zf, zt;
+    if (!checkpoint_targets(from, g, tokens, zf, error) || !checkpoint_targets(to, g, tokens, zt, error))
+        return false;
+    if (zf.gdn != zt.gdn || from.gdn_ord0 != to.gdn_ord0 || from.qsa_ord0 != to.qsa_ord0 ||
+        owned_qsa(from) != owned_qsa(to) || (from.ple_hist == nullptr) != (to.ple_hist == nullptr))
+        return fail(error, "the two sessions are carved differently");
+    if (!copy(to.gdn_state, from.gdn_state, zf.gdn, error) ||
+        (from.ple_hist != nullptr && !copy(to.ple_hist, from.ple_hist, zf.ple, error)))
+        return false;
+    for (size_t j = 0; j < owned_qsa(from); ++j) {
+        const auto& a = owned(from, j);
+        const auto& b = owned(to, j);
+        if (!copy(b.idx_tail, a.idx_tail, zf.tail, error) || !copy(b.idx_dead, a.idx_dead, zf.dead, error) ||
+            !copy(b.idx_block_pos, a.idx_block_pos, zf.block_pos, error))
+            return false;
+    }
+    to.ple_prev[0] = from.ple_prev[0];
+    to.ple_prev[1] = from.ple_prev[1];
+    to.ple_token = from.ple_token;
+    return sync(error);
+}
+
 bool conversation_snapshot_bytes(const ConversationView& view, const SessionState& ss, const ModelGeometry& g,
                                  const QsaState* draft, size_t& bytes, std::string& error) {
     bytes = 0;

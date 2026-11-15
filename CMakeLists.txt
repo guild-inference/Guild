@@ -1176,6 +1176,7 @@ if(GUILD_ENABLE_CUDA OR GUILD_ENABLE_HIP)
     src/runtime/performance.cpp
     src/runtime/chat_template.cpp
     src/runtime/batched_prefill.cpp
+    src/runtime/batch.cpp
     src/runtime/tokenizer.cpp)
   target_include_directories(guild_runtime PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include PRIVATE ${_guild_gpu_include_directories})
   target_link_libraries(guild_runtime PUBLIC guild_engine guild_prefill guild_spec guild_memory guild_model guild_artifact ${_guild_gpu_runtime_target} ${CMAKE_DL_LIBS})
@@ -1190,6 +1191,7 @@ else()
     src/model/runner.cpp
     src/runtime/model_stub.cpp
     src/runtime/session_stub.cpp
+    src/runtime/batch.cpp
     src/runtime/chat_template.cpp
     src/runtime/tokenizer.cpp)
   target_include_directories(guild_runtime PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)

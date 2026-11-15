@@ -71,6 +71,17 @@ struct GenerationRequest {
     int spec_max_draft = -1;     // Optional per-request override (-1 = use model config)
     std::vector<std::string> stop;
     std::shared_ptr<std::atomic<bool>> cancel_flag;
+    /// Called between the prompt's chunks when it is read in more than one (GuildBatch: the batch slots decode there,
+    /// so a long prompt slows the other conversations instead of stopping them).  The prompt is then read one chunk a
+    /// call, at the chunk boundaries one uninterrupted read has, so its arithmetic is unchanged.  Runs on the
+    /// generating thread, which holds the model; it may run batch windows (GuildBatch::step_inside) or park the part
+    /// read (GuildBatch::park_inside) and nothing else.  `pos`: the tokens the state holds now, `end`: where the read
+    /// ends; `can_stop`: the rest would be read the same way from `pos` (more than a chunk and more than a short tail
+    /// is left).  Returning false then stops the read there: the request ends as cancelled.
+    std::function<bool(int64_t pos, int64_t end, bool can_stop)> between_chunks;
+    /// GuildBatch's admission: the request's state moves into a batch slot after its first token, so the end of the
+    /// request saves no prompt-cache checkpoint of it (the slot holds it).
+    bool into_slot = false;
 };
 
 /// Scoring a prompt without generating (GuildSession::score): the next-token logits at its last position.

@@ -99,7 +99,9 @@ const char* model_options_usage() {
            "  --decode-strategy <s>      auto|normal|mtp|lookup|retrieval|adaptive (default auto: MTP when\n"
            "                             --mtp is given, otherwise none)\n"
            "  --pool-workers <n>         CPU expert pool worker count\n"
-           "  --dump-routing <file>      Append every decode layer's routed experts (tools/make_profile.py)\n";
+           "  --dump-routing <file>      Append every decode layer's routed experts (tools/make_profile.py)\n"
+           "  --batch <n> / --slots <n>  --serve: up to n requests (2..8) decode together in batch slots (the\n"
+           "                             server's \"parallel\": n); as many as fit, or none, said in the log\n";
 }
 
 int parse_model_option(int argc, char** argv, int& i, ModelOptions& o, const char* program) {
@@ -221,6 +223,18 @@ int parse_model_option(int argc, char** argv, int& i, ModelOptions& o, const cha
 #endif
     } else if (a == "--pool-workers") {
         o.pool_workers = std::stoi(next("--pool-workers"));
+    } else if (a == "--batch" || a == "--slots") {
+        const std::string value = next(a.c_str());
+        size_t used = 0;
+        try {
+            o.batch = std::stoi(value, &used);
+        } catch (...) {
+            used = 0;
+        }
+        if (used != value.size() || o.batch < 0) {
+            std::fprintf(stderr, "%s: %s requires a count of requests (0: one at a time)\n", program, a.c_str());
+            return 2;
+        }
     } else {
         return 0;
     }
@@ -313,6 +327,9 @@ int load_model(ModelOptions& o, const char* program, LoadedModel& out) {
     plan.dense_imatrix = o.dense_imatrix;
     plan.hc_q8 = o.hc == "q8_0";
     plan.defer_experts = o.defer_experts;
+    plan.batch_slots = o.batch >= 2 ? o.batch : 0;
+    if (o.batch == 1)
+        std::fprintf(stderr, "%s: --batch 1 is one request at a time: batching needs 2 or more slots\n", program);
 
     // Model Paths
     ModelPaths paths;

@@ -87,6 +87,8 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
         impl->desc = requested_desc;
         if (!glm5_load(*impl, paths, plan, error_msg))
             return nullptr;
+        if (plan.batch_slots > 0)
+            impl->batch_note = "GLM-5.3-Flash's engine runs one request at a time";
         if (!paths.tokenizer_dir.empty()) {
             std::string tok_err;
             if (!model->tokenizer_->load(paths.tokenizer_dir, tok_err)) {
@@ -1006,6 +1008,92 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
     }
     sp.kv_host_bytes = model_kv_host_bytes;
 
+    // --batch N: the batch windows' slot sessions (GuildBatch), carved like the main one - the same context and K/V
+    // mode, so a conversation's state copies between them byte for byte - before the drafter, the verifier, the expert
+    // cache and the prompt chunk take their shares of the VRAM left.  As many as fit beside what the rest of the load
+    // needs, at most a window's rows; none when not two fit (the engine then serves one request at a time and says
+    // why).  A slot's K/V streams like the main session's (--kv-host-only: its whole K/V in pinned RAM).
+    if (plan.batch_slots > 0) {
+        const int want = std::min(plan.batch_slots, kernels::kVerifyMaxT);
+        if (plan.batch_slots > want)
+            std::fprintf(stderr, "guild batch: a batch window holds at most %d rows, so %d slots, not %d\n", want, want,
+                         plan.batch_slots);
+        const uint64_t slot_bytes = core::session_bytes(impl->g, impl->config.max_context, impl->K);
+        if (std::getenv("GUILD_BATCH_TRACE") != nullptr) {
+            const bool own = core::session_own_qsa_staging(impl->g, impl->config.max_context);
+            std::fprintf(
+                stderr,
+                "guild batch: a session's bytes: gdn bufs %llu, gdn state %llu x %lld layers, qsa state "
+                "first %llu rest %llu x %lld (own staging %d), qsa bufs %llu, moe %llu, block %llu\n",
+                (unsigned long long) core::gdn_buffers_bytes(impl->g),
+                (unsigned long long) ((uint64_t) impl->g.ssm_state_size * impl->g.ssm_v_heads * impl->g.ssm_state_size +
+                                      (uint64_t) impl->g.ssm_conv_channels * (impl->g.ssm_d_conv - 1)) *
+                    4,
+                (long long) impl->g.n_gdn_layers(),
+                (unsigned long long) core::qsa_state_bytes(impl->g, impl->config.max_context, true, 0, own),
+                (unsigned long long) core::qsa_state_bytes(impl->g, impl->config.max_context, false, 0, own),
+                (long long) impl->g.n_qsa_layers(), (int) own,
+                (unsigned long long) core::qsa_buffers_bytes(impl->g, impl->config.max_context),
+                (unsigned long long) core::moe_buffers_bytes(impl->g, impl->K),
+                (unsigned long long) core::block_buffers_bytes(impl->g));
+        }
+        const bool drafter = !paths.dflash_dir.empty() || !paths.mtp_dir.empty();
+        const uint64_t keep = (drafter ? (plan.mtp_bytes ? plan.mtp_bytes : (896ull << 20)) : 0) +
+                              std::max<uint64_t>(plan.prompt_scratch_bytes, 1024ull << 20) + (512ull << 20);
+        size_t free0 = 0, total0 = 0;
+        cudaMemGetInfo(&free0, &total0);
+        for (int b = 0; b < want; ++b) {
+            size_t free_b = 0, total_b = 0;
+            if (cudaMemGetInfo(&free_b, &total_b) != cudaSuccess || free_b < slot_bytes + keep)
+                break;
+            void* buf = nullptr;
+            if (cudaMalloc(&buf, slot_bytes) != cudaSuccess) {
+                (void) cudaGetLastError();
+                break;
+            }
+            auto s = std::make_unique<core::SessionState>();
+            if (core::session_init(impl->g, impl->config.max_context, impl->K, buf, *s, 0, -1) == 0) {
+                (void) cudaGetLastError();
+                impl->slot_ss.push_back(std::move(s)); // released with the rest below
+                impl->slot_buf.push_back(buf);
+                impl->batch_note = "a slot's K/V did not fit in pinned RAM";
+                impl->release_slots();
+                break;
+            }
+            core::session_zero(*s, impl->g, nullptr, impl->main_stream);
+            impl->slot_ss.push_back(std::move(s));
+            impl->slot_buf.push_back(buf);
+        }
+        if (cudaStreamSynchronize(impl->main_stream) != cudaSuccess) {
+            error_msg = "model load: the batch slots' initialization failed";
+            return nullptr;
+        }
+        uint64_t slot_host = 0;
+        for (const auto& s : impl->slot_ss)
+            for (int64_t j = 0; s->qsa_states && j < s->qsa_alloc; ++j)
+                slot_host += s->qsa_states[s->qsa_ord0 + j].host_allocation_bytes;
+        size_t free1 = 0, total1 = 0;
+        cudaMemGetInfo(&free1, &total1);
+        if (impl->slot_ss.size() < 2) {
+            if (impl->batch_note.empty())
+                impl->batch_note = "not two slot sessions fit in the VRAM (" + std::to_string(slot_bytes >> 20) +
+                                   " MiB each, " + std::to_string(free0 >> 20) + " MiB free, " +
+                                   std::to_string(keep >> 20) +
+                                   " MiB kept for the rest of the load; a smaller --max-context makes them smaller)";
+            impl->release_slots();
+            std::fprintf(stderr, "guild batch: off: %s\n", impl->batch_note.c_str());
+        } else {
+            if ((int) impl->slot_ss.size() < want)
+                impl->batch_note = std::to_string(impl->slot_ss.size()) + " of " + std::to_string(want) +
+                                   " slot sessions fit in the VRAM (" + std::to_string(slot_bytes >> 20) + " MiB each)";
+            std::fprintf(stderr,
+                         "guild batch: %zu slot sessions, %llu MiB of VRAM each (%.1f GiB of pinned RAM for their "
+                         "K/V); %zu MiB of VRAM free before, %zu after\n",
+                         impl->slot_ss.size(), (unsigned long long) (slot_bytes >> 20), (double) slot_host / (1 << 30),
+                         free0 >> 20, free1 >> 20);
+        }
+    }
+
     const auto ple_t0 = Clock::now();
     if (use_gpack) {
         if (!bind_required_ple_gpack(*impl, *impl->gpack, error_msg))
@@ -1136,12 +1224,25 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
     impl->ver = std::make_unique<core::Verifier>();
     if (plan.defer_experts > 0)
         core::Verifier::set_defer_experts(plan.defer_experts);
+    // the window buffers hold the larger of a speculative window and a batch window (one row a slot)
+    const int ver_rows = std::max<int>(impl->config.spec, (int) impl->slot_ss.size());
     if (!impl->ver->init(impl->wt, impl->g, impl->ss, vh, impl->native_head.loaded() ? &impl->native_head : nullptr,
-                         impl->config.spec, error_msg)) {
+                         ver_rows, error_msg)) {
         error_msg = "Verifier::init failed: " + error_msg;
         return nullptr;
     }
     impl->ver->set_async_commit(true);
+    if (!impl->slot_ss.empty()) {
+        std::vector<core::SessionState*> slots;
+        for (const auto& s : impl->slot_ss)
+            slots.push_back(s.get());
+        std::string serr;
+        if (!impl->ver->init_slots(slots, serr)) {
+            impl->batch_note = "the verifier refused the slots: " + serr;
+            std::fprintf(stderr, "guild batch: off: %s\n", impl->batch_note.c_str());
+            impl->release_slots();
+        }
+    }
     if (impl->tower) { // before any window is captured (the warm-up below runs some)
         const core::Drama3TowerGeometry& tg = impl->tower->geometry();
         impl->ver->set_audio_embed(impl->tower->code1_rows(), tg.semantic_start, tg.semantic_end);
