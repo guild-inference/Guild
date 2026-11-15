@@ -2872,12 +2872,23 @@ bool Verifier::install_batch_graph(cudaGraphExec_t& ex, uint64_t& have, uint64_t
         cudaGraphExecDestroy(ex);
         ex = nullptr;
     }
+    size_t free0 = 0, free1 = 0, total = 0;
+    static const bool trace = std::getenv("GUILD_BATCH_TRACE") != nullptr;
+    if (trace)
+        cudaMemGetInfo(&free0, &total);
     const cudaError_t ie = cudaGraphInstantiate(&ex, graph, flags);
     cudaGraphDestroy(graph);
     if (ie != cudaSuccess) {
         ex = nullptr;
         err = std::string("verify: batch ") + what + " instantiate: " + cudaGetErrorString(ie);
         return false;
+    }
+    if (trace) {
+        cudaGraphUpload(ex, cs_);
+        cudaStreamSynchronize(cs_);
+        cudaMemGetInfo(&free1, &total);
+        std::fprintf(stderr, "guild verify: a batch %s graph instantiated: %.1f MiB of VRAM\n", what,
+                     ((double) free0 - (double) free1) / 1048576.0);
     }
     have = rows_key;
     return true;

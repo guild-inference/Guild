@@ -1056,7 +1056,10 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
         cudaMemGetInfo(&free0, &total0);
         for (int b = 0; b < want; ++b) {
             size_t free_b = 0, total_b = 0;
-            if (cudaMemGetInfo(&free_b, &total_b) != cudaSuccess || free_b < slot_bytes + keep)
+            // (with the DFlash drafter, every slot also takes a context of its own later: ~40 MiB)
+            const uint64_t slot_ctx = paths.dflash_dir.empty() ? 0 : (48ull << 20);
+            if (cudaMemGetInfo(&free_b, &total_b) != cudaSuccess ||
+                free_b < slot_bytes + (uint64_t) (b + 1) * slot_ctx + keep)
                 break;
             void* buf = nullptr;
             if (cudaMalloc(&buf, slot_bytes) != cudaSuccess) {

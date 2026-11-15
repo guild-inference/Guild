@@ -35,7 +35,10 @@ def tokenizer(path):
 
 
 class Engine:
+    started = []   # every engine this process started (batch_interleave_test.py ends them on its way out)
+
     def __init__(self, exe, cfg, batch, extra_env, extra_args):
+        Engine.started.append(self)
         args = list(cfg["args"])
         if len(cfg.get("gpu") or []) > 1:
             args += ["--layer-split", str(cfg.get("layer_split") or "auto")]
