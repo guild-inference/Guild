@@ -1,8 +1,9 @@
 # Several requests at once: batch slots on the runtime, with drafts
 
 PC: 2x Xeon Gold 6130 (16 cores each, AVX-512 BW without VNNI, 2 NUMA nodes, 376 GiB RAM), GTX 1070 8 GB (sm_61,
-15 SMs, 151 W cap, PCIe 3.0 x16), CUDA 12. Branch `perf/parallel` (from `perf/next` 6066936), the pinned kernel
-revisions (guild-kernels-cpu `9b7281a`, guild-kernels-cuda `de65d60`).
+15 SMs, 151 W cap, PCIe 3.0 x16), CUDA 12. Branch `perf/parallel` (from `perf/next` 6066936), the kernel revisions
+pinned then (guild-kernels-cpu `9b7281a`, guild-kernels-cuda `de65d60`). The CUDA pin is now `11936b5`
+([below](#the-cuda-kernels-at-11936b5)).
 
 Model: Qwen3.8-Flash-Next UD-IQ4_XS with setup's flags (`--dflash` with `data/dflash_vocab.bin`, `--spec 8`,
 `--dense q4_k --dense-map ssm_out=q5_k,attn_output=q8_0 --dense-imatrix`, `--hc q8_0`, `--prefill-mmq dense`,
@@ -35,7 +36,7 @@ windows (`init_slots`, `run_slot_rows`) were still there, unused.
   accepted rows.
 - **Exactness.** With greedy decoding, every slot produces exactly its solo tokens. This held in
   `tools/batch_test.py` (which sets `GUILD_IQ_MT_MIN=1`) at 2, 3 and 7 slots, with and without drafts, with the
-  default kernels too (`--mt-min ""`, 3 slots with drafts, `runs/dflt.out`), and in all seven checks of
+  default kernels too (`--mt-min ""`, 3 slots with drafts, `runs/dflt.out`), and in all eight comparisons of
   `tools/batch_interleave_test.py`: a 11,713-token prompt read beside two decoding slots, a next turn continued from
   its slot, a prompt that gave way and went on, a request moved back to the solo path mid-answer, and a history sent
   back without the reply's thinking. The solo path's tokens are unchanged (Qwen bench ids
@@ -114,6 +115,31 @@ Where the time goes (`runs/prof*.engine.txt`, one-group windows under `GUILD_VER
 
 On this card, 3 slots keep prompts of up to ~4.6K tokens at full speed. Six or seven slots give the most to several
 users at once, but a long prompt then reads 2.5 times slower.
+
+## The CUDA kernels at 11936b5
+
+After the measurements above, `backends.lock.json`'s guild-kernels-cuda revision moved from `de65d60` to `11936b5`
+(round 18's `kcuda-onechunk`, pushed as `perf/onechunk-mmvq`). Q4_K rows of 8-16 blocks and Q6_K rows of exactly 8
+blocks now run as one chunk, and 4-column Q4_K calls on rows of 9-12 blocks run as two 2-column calls. The arithmetic
+and its order are the same. The tables above were measured at `de65d60`.
+
+A build from the pins alone (no kernel source overrides) against the development build at `de65d60`, same Guild
+sources, one request at a time (`qwen-bench-r18` / `ornith-bench-r18`: setup's flags, 2 runs x 256 tokens, prose and
+code). Two pairs, run alternately:
+
+| Model | prose tok/s, `de65d60` -> `11936b5` | code tok/s, `de65d60` -> `11936b5` | ids, both |
+| --- | --- | --- | --- |
+| Qwen3.8 | 49.78 / 49.40 -> 51.71 / 51.38 (+3.9%) | 62.61 / 62.39 -> 64.81 / 64.64 (+3.6%) | `[38747, 38747, 41916, 41916]` |
+| Ornith-1.5 | 80.03 / 80.09 -> 83.10 / 82.85 (+3.6%) | 92.75 / 92.94 -> 97.24 / 96.81 (+4.5%) | `[30936, 30936, 65886, 65886]` |
+
+With the pinned build:
+- **Parity tests.** The 23 GPU parity tests pass: `mmvq`, `gr_parity`, `route_window`, `router_fast`, `host_combine`,
+  `native_expert`, `dflash`, `gdn_step` and `glm5_kernels`. `mmvq_staged_parity_one_wide_off` covers the old path.
+- **Exact slots.** Every slot still gives its solo tokens: `batch_test.py` at 3 slots with drafts, at 6 slots, and
+  Ornith at 5 (`runs/pin-*.out`), plus all eight comparisons of `batch_interleave_test.py --long 12000`.
+- **Smaller batch gain.** The batch windows gain less, because the CPU's experts limit them. 3 slots with drafts gave
+  58.9 tok/s (58.3 above) and Ornith at 5 slots 130.4 (126.8), one run each.
+- **Drama 3.** Its WAVs keep their md5s: seed 11 `6e04c9b1`, seed 12 `f84288c9`.
 
 ## Limits
 

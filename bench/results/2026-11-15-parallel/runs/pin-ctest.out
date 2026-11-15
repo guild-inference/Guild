@@ -1,0 +1,51 @@
+Test project /home/ubuntu/work/par/build-pin
+      Start   5: glm5_kernels_test
+ 1/23 Test   #5: glm5_kernels_test ...................   Passed    2.27 sec
+      Start   6: dflash_kernels_test
+ 2/23 Test   #6: dflash_kernels_test .................   Passed    7.38 sec
+      Start  18: mmvq_multi_parity
+ 3/23 Test  #18: mmvq_multi_parity ...................   Passed    1.03 sec
+      Start  19: mmvq_staged_reference
+ 4/23 Test  #19: mmvq_staged_reference ...............   Passed    0.55 sec
+      Start  20: mmvq_staged_parity
+ 5/23 Test  #20: mmvq_staged_parity ..................   Passed    0.58 sec
+      Start  21: mmvq_staged_parity_one_wide_off
+ 6/23 Test  #21: mmvq_staged_parity_one_wide_off .....   Passed    0.53 sec
+      Start  22: gdn_step_reference
+ 7/23 Test  #22: gdn_step_reference ..................   Passed    1.19 sec
+      Start  23: gdn_step_parity
+ 8/23 Test  #23: gdn_step_parity .....................   Passed    1.33 sec
+      Start  24: router_fast_parity
+ 9/23 Test  #24: router_fast_parity ..................   Passed    1.61 sec
+      Start  30: host_combine_parity
+10/23 Test  #30: host_combine_parity .................   Passed    0.17 sec
+      Start  36: gr_parity
+11/23 Test  #36: gr_parity ...........................   Passed    0.40 sec
+      Start  37: gr_parity_staged
+12/23 Test  #37: gr_parity_staged ....................   Passed    0.40 sec
+      Start  38: gr_parity_staged_pf
+13/23 Test  #38: gr_parity_staged_pf .................   Passed    0.40 sec
+      Start  47: route_window_parity
+14/23 Test  #47: route_window_parity .................   Passed    0.23 sec
+      Start 112: native_expert_parity_q4_K_q5_1
+15/23 Test #112: native_expert_parity_q4_K_q5_1 ......   Passed    0.68 sec
+      Start 113: native_expert_parity_q4_K_q8_0
+16/23 Test #113: native_expert_parity_q4_K_q8_0 ......   Passed    0.65 sec
+      Start 114: native_expert_parity_q5_K_q8_0
+17/23 Test #114: native_expert_parity_q5_K_q8_0 ......   Passed    0.58 sec
+      Start 115: native_expert_parity_q8_0_q8_0
+18/23 Test #115: native_expert_parity_q8_0_q8_0 ......   Passed    0.35 sec
+      Start 116: native_expert_parity_q4_K_q5_0
+19/23 Test #116: native_expert_parity_q4_K_q5_0 ......   Passed    0.64 sec
+      Start 117: native_expert_parity_q5_0_q8_0
+20/23 Test #117: native_expert_parity_q5_0_q8_0 ......   Passed    0.32 sec
+      Start 118: native_expert_parity_q5_1_min
+21/23 Test #118: native_expert_parity_q5_1_min .......   Passed    0.12 sec
+      Start 119: native_expert_parity_bf16_embd
+22/23 Test #119: native_expert_parity_bf16_embd ......   Passed    0.14 sec
+      Start 120: native_expert_parity_refuses_q6_K
+23/23 Test #120: native_expert_parity_refuses_q6_K ...   Passed    0.43 sec
+
+100% tests passed, 0 tests failed out of 23
+
+Total Test time (real) =  22.01 sec

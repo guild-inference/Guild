@@ -141,6 +141,10 @@ The 4-column split alone is +0.5% on Qwen's code windows. Drama 3's WAVs and GLM
 means moving `backends.lock.json`'s CUDA revision to `11936b5`, which is the user's decision; its Guild-side tests
 are on `lane18/kcuda-onechunk` too.
 
+**Since 2026-11-15** the lock pins `11936b5` (pushed to guild-kernels-cuda as `perf/onechunk-mmvq`), with the four
+Guild-side tests. The check on a fresh build from the pins is in
+[2026-11-15-parallel](../2026-11-15-parallel/README.md#the-cuda-kernels-at-11936b5).
+
 ## Measured and not taken
 
 - **Ideas the judge dropped,** with reasons, in `lanes/judge_summary.json`:
