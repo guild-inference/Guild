@@ -1,0 +1,4 @@
+run,layer,groups,tokens,cores,iterations,weight_bytes_per_iteration,wall_ms,avx512bw,provider
+0,0,8,1,32,2000,16318464,226.763584,1,native
+1,0,8,1,32,2000,16318464,219.590179,1,native
+2,0,8,1,32,2000,16318464,222.172821,1,native
