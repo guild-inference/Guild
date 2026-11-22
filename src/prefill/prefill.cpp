@@ -303,7 +303,9 @@ inline int64_t stream_chunk_min() {
 // half); the 8192-token chunk keeps its size.  Each expert's MMQ reads the same blob bytes in the same groups; only the
 // slot it is staged in and the buffers' addresses (256-byte aligned as before) change.  GTX 1070, UD-IQ4_XS, 2
 // alternated pairs, the same tokens: 2,007 / 3,007 / 4,007-token prompts 10.34 / 13.25 / 16.18 s -> 9.38 / 11.44 /
-// 14.28 s (-9.3% / -13.6% / -11.7%), 1,007 and 1,507 unchanged (routed: the layout as carved).
+// 14.28 s (-9.3% / -13.6% / -11.7%), 1,007 and 1,507 unchanged (routed: the layout as carved); 6,007 / 7,599 tokens,
+// which streamed through the 32 slots before, 21.18 / 24.13 s -> 20.84 / 24.04 s (-1.6% / -0.4%: fewer slots lent, and
+// the copies beside the attention half's hyper-connection read slow it - 2.82 -> 3.35 s at 6,007).
 // GUILD_PREFILL_TAIL_RING=0: the layout and the ring stay as carved (the A/B).
 inline bool tail_ring_on() {
     static const bool on = [] {
