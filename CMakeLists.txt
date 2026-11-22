@@ -463,13 +463,13 @@ if(GUILD_ENABLE_CUDA OR GUILD_ENABLE_HIP)
     src/core/expert_cache.cpp src/core/native_head.cpp src/core/native_dense.cpp src/core/dense_quant.cpp src/core/verify.cpp src/core/mtp.cpp
     src/core/conversation_snapshot.cpp src/core/conversation_state.cpp src/core/conversation_memory.cpp src/core/peer_experts.cpp
     src/core/drama3_tower.cpp src/core/drama3_codec.cu src/core/glm5.cpp src/core/glm5_nl4.cpp src/core/host_combine.cpp
-    src/core/cpu_moe.cpp src/core/q8_0_rows512.cpp src/core/iq4xs_rows512.cpp src/core/iq4nl_rows512.cpp src/core/pool_rows.cpp
+    src/core/cpu_moe.cpp src/core/q8_0_rows512.cpp src/core/iq4xs_rows512.cpp src/core/iq4nl_rows512.cpp src/core/kq_rows512.cpp src/core/pool_rows.cpp
     src/core/nemotron_h.cpp src/core/dflash.cpp src/audio/encoder.cu)
   # AVX2 kernels behind a runtime check (cpu_avx2_ok), as guild-kernels-cpu builds its own
   if(MSVC)
     set_source_files_properties(src/core/glm5_nl4.cpp src/core/host_combine.cpp PROPERTIES COMPILE_OPTIONS /arch:AVX2)
     set_source_files_properties(src/core/q8_0_rows512.cpp src/core/iq4xs_rows512.cpp src/core/iq4nl_rows512.cpp
-                                PROPERTIES COMPILE_OPTIONS
+                                src/core/kq_rows512.cpp PROPERTIES COMPILE_OPTIONS
       /arch:AVX512)
   else()
     set_source_files_properties(src/core/glm5_nl4.cpp PROPERTIES COMPILE_OPTIONS "-mavx2;-mfma;-mf16c")
@@ -477,7 +477,7 @@ if(GUILD_ENABLE_CUDA OR GUILD_ENABLE_HIP)
     set_source_files_properties(src/core/host_combine.cpp PROPERTIES COMPILE_OPTIONS "-mavx2;-mfma;-ffp-contract=off")
     # AVX-512 behind q8_0_rows512_ok(); the mul and fma intrinsics stay what they are (ggml's order)
     set_source_files_properties(src/core/q8_0_rows512.cpp src/core/iq4xs_rows512.cpp src/core/iq4nl_rows512.cpp
-                                PROPERTIES COMPILE_OPTIONS
+                                src/core/kq_rows512.cpp PROPERTIES COMPILE_OPTIONS
       "-mavx512f;-mavx512bw;-mavx512dq;-mavx512vl;-mfma;-mf16c;-ffp-contract=off")
   endif()
   target_include_directories(guild_engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
@@ -522,6 +522,10 @@ if(GUILD_ENABLE_CUDA OR GUILD_ENABLE_HIP)
   target_link_libraries(iq4nl_rows512_test PRIVATE guild_engine)
   add_test(NAME iq4nl_rows512_test COMMAND iq4nl_rows512_test)
   set_tests_properties(iq4nl_rows512_test PROPERTIES SKIP_RETURN_CODE 77)
+  add_executable(kq_rows512_test tests/core/kq_rows512_test.cpp)
+  target_link_libraries(kq_rows512_test PRIVATE guild_engine)
+  add_test(NAME kq_rows512_test COMMAND kq_rows512_test)
+  set_tests_properties(kq_rows512_test PROPERTIES SKIP_RETURN_CODE 77)
   add_executable(q8_0_rows512_test tests/core/q8_0_rows512_test.cpp)
   target_link_libraries(q8_0_rows512_test PRIVATE guild_engine)
   add_test(NAME q8_0_rows512_test COMMAND q8_0_rows512_test)

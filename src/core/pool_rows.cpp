@@ -3,6 +3,7 @@
 
 #include "guild/core/glm5_nl4.hpp"
 #include "guild/core/iq4nl_rows512.hpp"
+#include "guild/core/kq_rows512.hpp"
 #include "guild/kernels/cpu/iq_avx2.hpp"
 
 #include <cmath>
@@ -24,9 +25,25 @@ bool on() {
     return v;
 }
 
+// Q4_K gate/up and Q4_K / Q6_K down rows (Drama 3, Ornith) on cpu_moe::kq_rows512: two rows a pass at every token
+// count, where the library takes ggml's dot one row at a time at one token (native_expert.cpp) and its AVX2-pair
+// kernel from two.  Every (row, token) is ggml's one-token dot either way (kq_rows512_test), so only the speed
+// changes.  GUILD_KQ_ROWS512=0 (read once): the library's rows, as before.
+bool kq_on() {
+    static const bool v = [] {
+        const char* e = std::getenv("GUILD_KQ_ROWS512");
+        return (e == nullptr || std::atoi(e) != 0) && cpu_moe::kq_rows512_ok();
+    }();
+    return v;
+}
+
 // gate and up rows [r0, r1) of every token, then the library's SwiGLU expression on them (native_gu_rows)
 void gate_up(const guild_cpu_expert_format_v1_t* f, const uint8_t* b, const void* const* x, int32_t nt,
              float* const* ff, int32_t r0, int32_t r1) {
+    if (f->gu_type == 12 && kq_on() && cpu_moe::kq_rows512_supported(12, (int) f->n_embd)) {
+        cpu_moe::q4k_gu_rows512(b, f->gu_row, f->up_off, (int) f->n_embd, x, nt, ff, r0, r1);
+        return;
+    }
     if (f->gu_type != guild::kernels::cpu::kIq3sNl4Type || f->n_embd % 256 != 0) {
         g_base.gate_up(f, b, x, nt, ff, r0, r1);
         return;
@@ -51,6 +68,10 @@ void gate_up(const guild_cpu_expert_format_v1_t* f, const uint8_t* b, const void
 
 void down(const guild_cpu_expert_format_v1_t* f, const uint8_t* b, const void* const* h, int32_t nt, float* const* out,
           int32_t r0, int32_t r1) {
+    if ((f->d_type == 12 || f->d_type == 14) && kq_on() && cpu_moe::kq_rows512_supported(f->d_type, (int) f->n_ff)) {
+        cpu_moe::kq_rows512(f->d_type, b + f->down_off, f->d_row, (int) f->n_ff, h, nt, out, r0, r1);
+        return;
+    }
     if (f->d_type != 20 || f->n_ff % 64 != 0) { // IQ4_NL rows of an even number of blocks
         g_base.down(f, b, h, nt, out, r0, r1);
         return;
