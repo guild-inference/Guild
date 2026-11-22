@@ -28,6 +28,10 @@
 
 namespace guild::core {
 
+namespace drama3 {
+struct EmbedAdd; // drama3_tower_kernels.hpp
+}
+
 struct Drama3Sampling {
     float temperature = 1.0f;
     float top_p = 0.9f;
@@ -126,8 +130,15 @@ private:
         Mat eh_proj, wqkv, wo, w1, w2, w3;
         uint16_t *k_cache = nullptr, *v_cache = nullptr; // [max_frames][n_kv_head][head_dim] FP16
     };
-    bool layer_forward(Layer& L, const float* e_dev, int64_t pos, std::string& err, void* st);
+    /// one layer of a step: its input embeds table row `row` (zeros when < 0) plus `add`; `head`: a head reads h_
+    /// next (the fused path then leaves h_'s Q8_1 blocks in xq_ for it)
+    bool layer_forward(Layer& L, int row, const drama3::EmbedAdd& add, int64_t pos, bool head, std::string& err,
+                       void* st);
     bool matvec(const Mat& m, const float* x, float* y, std::string& err, void* st, int ncols = 1);
+    bool quantize(const float* x, void* xq, int n, std::string& err, void* st);
+    bool mmvq(const Mat& m, const void* xq, float* y, std::string& err, void* st);
+    /// the fused kernels against the ones they replace on test rows (layer 0's weights): true when every byte matches
+    bool fused_self_check(std::string& why);
     bool prefill_chunk(const float* hidden, int64_t pos0, int n, const int32_t* rows, std::string& err,
                        float* layer_out);
     static constexpr int kPrefillCols = 64;
@@ -158,6 +169,8 @@ private:
     void* stream_ = nullptr;
     void* prio_stream_ = nullptr; // step_begin's, at the greatest priority (set_step_priority)
     bool top_ = true;
+    // GUILD_DRAMA3_FUSE (read in load; unset = all on, 0 = all off): the step's fused small kernels (k)
+    bool fuse_ = false;
     // device scratch
     float *h_ = nullptr, *e_ = nullptr, *cat_ = nullptr, *x_ = nullptr, *xn_ = nullptr, *qkv_ = nullptr, *q_ = nullptr,
           *att_ = nullptr, *proj_ = nullptr, *ff1_ = nullptr, *ff3_ = nullptr, *logits_ = nullptr, *part_ = nullptr;

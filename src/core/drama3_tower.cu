@@ -44,19 +44,207 @@ __global__ void rms_norm_kernel(const float* __restrict__ x, const float* __rest
         out[i] = x[i] * inv * w[i];
 }
 
+// ---- rms_norm_kernel's arithmetic as the fused kernels take it (the same expressions, so the same operations in the
+// same order: drama3_fuse_test compares the bytes)
+// thread t's sum of squares: x[i]^2 for i = t, t + stride, ... < n, in that order (a fma chain from 0)
+__device__ __forceinline__ float sum_sq(const float* x, int t, int n, int stride) {
+    float ss = 0.0f;
+    for (int i = t; i < n; i += stride)
+        ss += x[i] * x[i];
+    return ss;
+}
+// block_sum's xor tree
+__device__ __forceinline__ float warp_tree(float v) {
+    for (int o = 16; o > 0; o >>= 1)
+        v += __shfl_xor_sync(0xffffffffu, v, o);
+    return v;
+}
+// block_sum's partial sums, added in order from 0
+__device__ __forceinline__ float sum_partials(const float* red, int nw) {
+    float s = 0.0f;
+    for (int w = 0; w < nw; ++w)
+        s += red[w];
+    return s;
+}
+
+// element i of row `row` of a BF16 table (zero when row < 0), plus the sum of the add rows
+__device__ __forceinline__ float embed_value(const uint16_t* __restrict__ table, int row, const EmbedAdd& add,
+                                             const uint16_t* __restrict__ add_table, int n, int i) {
+    float v = row >= 0 ? bf16_to_f32(table[(size_t) row * n + i]) : 0.0f;
+    if (add.n > 0) {
+        float s = 0.0f;
+        for (int k = 0; k < add.n; ++k)
+            s += bf16_to_f32(add_table[(size_t) add.rows[k] * n + i]);
+        v += s;
+    }
+    return v;
+}
+
 // out = row `row` of a BF16 table (zeros when row < 0), plus, when `n_add` > 0, the sum of the rows in `add_rows`
 __global__ void embed_kernel(const uint16_t* __restrict__ table, int row, EmbedAdd add,
                              const uint16_t* __restrict__ add_table, float* __restrict__ out, int n) {
-    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n; i += gridDim.x * blockDim.x) {
-        float v = row >= 0 ? bf16_to_f32(table[(size_t) row * n + i]) : 0.0f;
-        if (add.n > 0) {
-            float s = 0.0f;
-            for (int k = 0; k < add.n; ++k)
-                s += bf16_to_f32(add_table[(size_t) add.rows[k] * n + i]);
-            v += s;
-        }
-        out[i] = v;
+    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n; i += gridDim.x * blockDim.x)
+        out[i] = embed_value(table, row, add, add_table, n, i);
+}
+
+// ---- the fused kernels' Q8_1 stage: the block of 32 values a warp holds (lane = element), as guild-kernels-cuda's
+// native_quantize_q8_1_kernel stores it.  That kernel's file is built with --use_fast_math and this one is not, so
+// its instructions (cuobjdump -ptx of native_mmvq.cu.o) are written here one for one:
+//   amax = max.ftz tree of abs.ftz(v), sum = add.ftz tree of v (xor 16, 8, 4, 2, 1)
+//   d = div.approx.ftz(amax, 127), held to +-65504 (q8_1_finite: abs.ftz, setp.gt.ftz, copysign)
+//   q = amax == 0 (setp.eq.ftz) ? 0 : t = div.approx.ftz(v, d), roundf(t) = cvt.rzi(add.rz.ftz(t, copysign(0.5, t))),
+//       held to +-127 (setp.gt / setp.lt.ftz), cvt.rzi.ftz.s32
+//   ds = (half(q8_1_finite(d)), half(q8_1_finite(sum))), cvt.rn.f16.f32 (cuda_fp16's own asm)
+// The adds say .rn, the rounding of the plain add.ftz, so that nothing can contract them with the product that made v.
+struct Q81 {
+    half2 ds;
+    int8_t qs[32];
+};
+static_assert(sizeof(Q81) == kFusedQ81Bytes, "the Q8_1 block of the native MMVQ");
+namespace fm {
+__device__ __forceinline__ float abs(float x) {
+    float r;
+    asm("abs.ftz.f32 %0, %1;" : "=f"(r) : "f"(x));
+    return r;
+}
+__device__ __forceinline__ float max(float a, float b) {
+    float r;
+    asm("max.ftz.f32 %0, %1, %2;" : "=f"(r) : "f"(a), "f"(b));
+    return r;
+}
+__device__ __forceinline__ float add(float a, float b) {
+    float r;
+    asm("add.rn.ftz.f32 %0, %1, %2;" : "=f"(r) : "f"(a), "f"(b));
+    return r;
+}
+__device__ __forceinline__ float div(float a, float b) {
+    float r;
+    asm("div.approx.ftz.f32 %0, %1, %2;" : "=f"(r) : "f"(a), "f"(b));
+    return r;
+}
+__device__ __forceinline__ float add_rz(float a, float b) {
+    float r;
+    asm("add.rz.ftz.f32 %0, %1, %2;" : "=f"(r) : "f"(a), "f"(b));
+    return r;
+}
+__device__ __forceinline__ float trunc(float a) {
+    float r;
+    asm("cvt.rzi.f32.f32 %0, %1;" : "=f"(r) : "f"(a));
+    return r;
+}
+__device__ __forceinline__ bool gt(float a, float b) {
+    unsigned r;
+    asm("{\n\t.reg .pred p;\n\tsetp.gt.ftz.f32 p, %1, %2;\n\tselp.u32 %0, 1, 0, p;\n\t}" : "=r"(r) : "f"(a), "f"(b));
+    return r != 0;
+}
+__device__ __forceinline__ bool lt(float a, float b) {
+    unsigned r;
+    asm("{\n\t.reg .pred p;\n\tsetp.lt.ftz.f32 p, %1, %2;\n\tselp.u32 %0, 1, 0, p;\n\t}" : "=r"(r) : "f"(a), "f"(b));
+    return r != 0;
+}
+__device__ __forceinline__ bool eq(float a, float b) {
+    unsigned r;
+    asm("{\n\t.reg .pred p;\n\tsetp.eq.ftz.f32 p, %1, %2;\n\tselp.u32 %0, 1, 0, p;\n\t}" : "=r"(r) : "f"(a), "f"(b));
+    return r != 0;
+}
+__device__ __forceinline__ int to_int(float a) {
+    int r;
+    asm("cvt.rzi.ftz.s32.f32 %0, %1;" : "=r"(r) : "f"(a));
+    return r;
+}
+__device__ __forceinline__ float copysign(float mag_bits_of, float sign_of) {
+    return __int_as_float((__float_as_int(sign_of) & (int) 0x80000000) | __float_as_int(mag_bits_of));
+}
+// q8_1_finite: |v| > 65504 -> +-65504
+__device__ __forceinline__ float finite(float v) {
+    return gt(abs(v), 65504.0f) ? copysign(65504.0f, v) : v;
+}
+} // namespace fm
+
+__device__ __forceinline__ void q8_1_warp(float v, Q81* __restrict__ blk, int lane) {
+    float amax = fm::abs(v), sum = v;
+#pragma unroll
+    for (int o = 16; o > 0; o >>= 1)
+        amax = fm::max(amax, __shfl_xor_sync(0xffffffffu, amax, o));
+#pragma unroll
+    for (int o = 16; o > 0; o >>= 1)
+        sum = fm::add(sum, __shfl_xor_sync(0xffffffffu, sum, o));
+    const float d = fm::finite(fm::div(amax, 127.0f));
+    int8_t q = 0;
+    if (!fm::eq(amax, 0.0f)) {
+        const float t = fm::div(v, d);
+        const float r = fm::trunc(fm::add_rz(t, fm::copysign(0.5f, t)));
+        q = (int8_t) fm::to_int(fm::gt(r, 127.0f) ? 127.0f : fm::lt(r, -127.0f) ? -127.0f : r);
     }
+    blk->qs[lane] = q;
+    if (lane == 0)
+        blk->ds = make_half2(__float2half(fm::finite(d)), __float2half(fm::finite(sum)));
+}
+
+// ---- the fused kernels: one row of n = kFusedDim floats, kWide threads, the row in shared memory.  Threads
+// 0..kThreads-1 take rms_norm_kernel's reduction (its block is kThreads wide: elements t + kThreads k, the same trees),
+// every thread then normalizes kFusedDim / kWide elements, and warp w quantizes Q8_1 blocks w, w + 32, ...
+constexpr int kWide = 1024;
+static_assert(kFusedDim % kWide == 0 && kFusedDim % kThreads == 0 && kThreads % 32 == 0, "fused kernel shape");
+
+__device__ __forceinline__ void norm_q8_row(const float* xs, const float* __restrict__ w, float* __restrict__ out,
+                                            Q81* __restrict__ q, int n, float eps, float* red) {
+    const int t = threadIdx.x, lane = t & 31, warp = t >> 5;
+    if (t < kThreads) {
+        const float v = warp_tree(sum_sq(xs, t, n, kThreads));
+        if (lane == 0)
+            red[warp] = v;
+    }
+    __syncthreads();
+    const float inv = rsqrtf(sum_partials(red, kThreads / 32) / (float) n + eps);
+#pragma unroll
+    for (int k = 0; k < kFusedDim / kWide; ++k) {
+        const int i = t + kWide * k;
+        const float o = xs[i] * inv * w[i];
+        if (out)
+            out[i] = o;
+        if (q)
+            q8_1_warp(o, q + i / 32, lane);
+    }
+}
+
+// block 0: the embedding row (embed_kernel's value) normed by w0 into q's first n / 32 blocks; block 1: h normed by w1
+// into the next n / 32
+__global__ void __launch_bounds__(kWide)
+    embed_norm2_q8_kernel(const uint16_t* __restrict__ table, int row, EmbedAdd add,
+                          const uint16_t* __restrict__ add_table, const float* __restrict__ h,
+                          const float* __restrict__ w0, const float* __restrict__ w1, float* __restrict__ cat,
+                          Q81* __restrict__ q, int n, float eps) {
+    __shared__ float xs[kFusedDim];
+    __shared__ float red[kThreads / 32];
+    const int r = blockIdx.x;
+#pragma unroll
+    for (int k = 0; k < kFusedDim / kWide; ++k) {
+        const int i = threadIdx.x + kWide * k;
+        xs[i] = r == 0 ? embed_value(table, row, add, add_table, n, i) : h[i];
+    }
+    __syncthreads();
+    norm_q8_row(xs, r == 0 ? w0 : w1, cat ? cat + (size_t) r * n : nullptr, q + (size_t) r * (n / 32), n, eps, red);
+}
+
+// x += y (when y, as add_kernel), then rms_norm(x, w) into out and / or q
+__global__ void __launch_bounds__(kWide)
+    add_norm_q8_kernel(float* __restrict__ x, const float* __restrict__ y, const float* __restrict__ w,
+                       float* __restrict__ out, Q81* __restrict__ q, int n, float eps) {
+    __shared__ float xs[kFusedDim];
+    __shared__ float red[kThreads / 32];
+#pragma unroll
+    for (int k = 0; k < kFusedDim / kWide; ++k) {
+        const int i = threadIdx.x + kWide * k;
+        float xi = x[i];
+        if (y) {
+            xi += y[i];
+            x[i] = xi;
+        }
+        xs[i] = xi;
+    }
+    __syncthreads();
+    norm_q8_row(xs, w, out, q, n, eps, red);
 }
 
 // row r of out = table row rows[r] (zeros when < 0) + the sum of add_table's rows add[r * 9 .. + add_n[r]]
@@ -269,6 +457,15 @@ void embed(const uint16_t* table, int row, const EmbedAdd& add, const uint16_t* 
 
 void add(float* x, const float* y, int n, cudaStream_t st) {
     add_kernel<<<(n + kThreads - 1) / kThreads, kThreads, 0, st>>>(x, y, n);
+}
+
+void embed_norm2_q8(const uint16_t* table, int row, const EmbedAdd& add, const uint16_t* add_table, const float* h,
+                    const float* w0, const float* w1, float eps, void* xq, cudaStream_t st, float* cat) {
+    embed_norm2_q8_kernel<<<2, kWide, 0, st>>>(table, row, add, add_table, h, w0, w1, cat, (Q81*) xq, kFusedDim, eps);
+}
+
+void add_norm_q8(float* x, const float* y, const float* w, float eps, float* out, void* xq, cudaStream_t st) {
+    add_norm_q8_kernel<<<1, kWide, 0, st>>>(x, y, w, out, (Q81*) xq, kFusedDim, eps);
 }
 
 void qk_norm_rope(const float* qkv, const float* q_w, const float* k_w, float* q_out, uint16_t* k_cache,
