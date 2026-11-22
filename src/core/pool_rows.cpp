@@ -3,6 +3,7 @@
 
 #include "guild/core/glm5_nl4.hpp"
 #include "guild/core/iq4nl_rows512.hpp"
+#include "guild/core/iq4xs_rows512.hpp"
 #include "guild/core/kq_rows512.hpp"
 #include "guild/kernels/cpu/iq_avx2.hpp"
 
@@ -37,6 +38,20 @@ bool kq_on() {
     return v;
 }
 
+// IQ4_XS gate/up rows (Qwen3.8-Flash-Next's layer 2, the one gate/up layer that is not IQ3_S) on
+// cpu_moe::iq4xs_rows512, GLM's lean rows: bitwise ggml-cpu's one-token dot at any token count (iq4xs_rows512_test),
+// as the library's rows are (ggml's vec_dot one row at a time below two tokens, its AVX-512 i-quant rows from two),
+// so only the speed changes.  GUILD_POOL_IQ4XS=0 (read once): the library's rows, as before.
+bool iq4xs_on() {
+    static const bool v = [] {
+        const char* e = std::getenv("GUILD_POOL_IQ4XS");
+        return (e == nullptr || std::atoi(e) != 0) && cpu_moe::iq4xs_rows512_ok();
+    }();
+    return v;
+}
+
+constexpr int32_t kIq4XsType = 23; // GGML_TYPE_IQ4_XS
+
 // gate and up rows [r0, r1) of every token, then the library's SwiGLU expression on them (native_gu_rows)
 void gate_up(const guild_cpu_expert_format_v1_t* f, const uint8_t* b, const void* const* x, int32_t nt,
              float* const* ff, int32_t r0, int32_t r1) {
@@ -44,7 +59,9 @@ void gate_up(const guild_cpu_expert_format_v1_t* f, const uint8_t* b, const void
         cpu_moe::q4k_gu_rows512(b, f->gu_row, f->up_off, (int) f->n_embd, x, nt, ff, r0, r1);
         return;
     }
-    if (f->gu_type != guild::kernels::cpu::kIq3sNl4Type || f->n_embd % 256 != 0) {
+    const bool nl4 = f->gu_type == guild::kernels::cpu::kIq3sNl4Type;
+    const bool xs = f->gu_type == kIq4XsType && iq4xs_on();
+    if ((!nl4 && !xs) || f->n_embd % 256 != 0) {
         g_base.gate_up(f, b, x, nt, ff, r0, r1);
         return;
     }
@@ -57,8 +74,16 @@ void gate_up(const guild_cpu_expert_format_v1_t* f, const uint8_t* b, const void
         g[(size_t) t] = buf.data() + (size_t) (2 * t) * per;
         u[(size_t) t] = buf.data() + (size_t) (2 * t + 1) * per;
     }
-    glm5cpu::nl4_rows(b, f->gu_row, (int) f->n_embd, x, nt, g.data(), r0, r1);
-    glm5cpu::nl4_rows(b + f->up_off, f->gu_row, (int) f->n_embd, x, nt, u.data(), r0, r1);
+    if (nl4) {
+        glm5cpu::nl4_rows(b, f->gu_row, (int) f->n_embd, x, nt, g.data(), r0, r1);
+        glm5cpu::nl4_rows(b + f->up_off, f->gu_row, (int) f->n_embd, x, nt, u.data(), r0, r1);
+    } else {
+        // the gate rows' last pair asks for the first up rows
+        const uint8_t* up = b + f->up_off;
+        cpu_moe::iq4xs_rows512(b, f->gu_row, (int) f->n_embd, x, nt, g.data(), r0, r1, up + (size_t) r0 * f->gu_row,
+                               f->gu_row);
+        cpu_moe::iq4xs_rows512(up, f->gu_row, (int) f->n_embd, x, nt, u.data(), r0, r1);
+    }
     for (int t = 0; t < nt; ++t)
         for (int r = r0; r < r1; ++r) {
             const float gv = g[(size_t) t][r], uv = u[(size_t) t][r];
