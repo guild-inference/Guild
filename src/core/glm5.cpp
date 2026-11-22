@@ -704,6 +704,8 @@ struct Glm5Engine::Impl {
         glm5k::set_q6k_rows(!(e && e[0] == '0'));
         e = std::getenv("GUILD_GLM_ONE_WAVE");
         glm5k::set_one_wave(!(e && e[0] == '0'));
+        e = std::getenv("GUILD_GLM_ATTEND3");
+        glm5k::set_attend3(!(e && e[0] == '0'));
         e = std::getenv("GUILD_GLM_ZC");
         zc = !(e && e[0] == '0');
         e = std::getenv("GUILD_GLM_DRAFT_HEAD_COPY");

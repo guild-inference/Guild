@@ -82,6 +82,9 @@ void set_q6k_rows(bool on);
 /// Q8_0 products of 512-row heads and the narrow Q8_0 rows two row groups a warp, and the mHC pre-mix's Sinkhorn on a
 /// block of its own beside the stream sum
 void set_one_wave(bool on);
+/// GUILD_GLM_ATTEND3=0 (glm5.cpp reads it each window): mla_attend2_k and mla_reduce_k instead of mla_attend3_k
+/// (two heads a warp, the latent's 512 values fixed) and mla_reduce2_k; the same bits either way
+void set_attend3(bool on);
 /// One token over a subset of the rows (q6k_mmvq_supported(n_in, n, 1)): y[i] = row ids[i] times the token, bitwise
 /// q6k_mmvq's y[ids[i]] (the draft head over a token subset)
 void q6k_mmvq_rows(const void* W, const int32_t* ids, int n_ids, const void* xq8_1, float* y, int n_in, void* st);

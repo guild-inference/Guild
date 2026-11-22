@@ -20,6 +20,7 @@ inline cudaStream_t S(void* st) {
 }
 
 std::atomic<bool> g_one_wave{true};
+std::atomic<bool> g_attend3{true}; // set_attend3 (GUILD_GLM_ATTEND3=0: mla_attend2_k and mla_reduce_k)
 bool one_wave() {
     return g_one_wave.load(std::memory_order_relaxed);
 }
@@ -1443,6 +1444,129 @@ __global__ void __launch_bounds__(256, kMinB)
             out[2 + lane + 32 * k] = acc[k];
 }
 
+// mla_attend2_k's arithmetic for L = 512 (the latent's width; PER = 16 values a lane) at compile time, two heads a
+// warp and eight warps a block (16 heads): a cell's 16 FP16 values a lane are converted once and used for both heads,
+// and no `k < nl` predicate is left.  Every head's operations are mla_attend2_k's in its order (qr = q * scale; per
+// cell one fma chain over k from 0, warp_sum, fmaxf in cell order; per chunk of kCh cells corr = expf(m - mx); per
+// cell p = expf(s - mx), l += p, acc += p * x), over the same splits and chunks, so the partial rows are its bytes.
+// GTX 1070, 64 heads, 2,051 selected cells of 65,536 (scout attn_bench.cu, the L2 flushed before each launch): a
+// token 311 -> 225 us, two tokens 597 -> 379 us; every partial value and output bitwise equal.
+template <int NW, int HPW, int kMinB>
+__global__ void __launch_bounds__(NW * 32, kMinB)
+    mla_attend3_k(const float* q, const __half* cache, int64_t pos0, int H, float scale, const int32_t* sel,
+                  const int32_t* n_sel, int sel_stride, int kSplits, float* part) {
+    constexpr int L = kMaxL, PER = L / 32, n8 = L / 8, HB = NW * HPW;
+    __shared__ __align__(16) __half kv_s[kCh][32 * PER];
+    const int split = blockIdx.x, hg = blockIdx.y, t = blockIdx.z;
+    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
+    const int h0 = hg * HB + warp * HPW;
+    const int n_cells = sel ? n_sel[t] : (int) (pos0 + t + 1);
+    const int per = (n_cells + kSplits - 1) / kSplits;
+    const int c0 = split * per, c1 = min(n_cells, c0 + per);
+    const int32_t* tsel = sel ? sel + (size_t) t * sel_stride : nullptr;
+    float qr[HPW][PER], acc[HPW][PER], m[HPW], l[HPW];
+#pragma unroll
+    for (int j = 0; j < HPW; ++j) {
+        const float* qh = q + ((size_t) t * H + h0 + j) * L;
+#pragma unroll
+        for (int k = 0; k < PER; ++k) {
+            qr[j][k] = qh[lane + 32 * k] * scale;
+            acc[j][k] = 0.f;
+        }
+        m[j] = -FLT_MAX;
+        l[j] = 0.f;
+    }
+    for (int cb = c0; cb < c1; cb += kCh) {
+        const int nc = min(kCh, c1 - cb);
+        __syncthreads();
+        for (int i = threadIdx.x; i < nc * n8; i += NW * 32) {
+            const int c = i / n8, d = (i - c * n8) * 8;
+            const int cell = tsel ? tsel[cb + c] : cb + c;
+            const uint4 v = *(const uint4*) (cache + (size_t) cell * L + d);
+            const __half* hv = (const __half*) &v;
+#pragma unroll
+            for (int j = 0; j < 8; ++j)
+                kv_s[c][lane_at_h((d & 31) + j, d >> 5)] = hv[j];
+        }
+        __syncthreads();
+        float s[HPW][kCh], mx[HPW];
+#pragma unroll
+        for (int j = 0; j < HPW; ++j)
+            mx[j] = m[j];
+#pragma unroll
+        for (int c = 0; c < kCh; ++c) {
+            if (c < nc) {
+                float x[PER];
+                const uint4 p0 = *(const uint4*) &kv_s[c][lane_at_h(lane, 0)];
+                const uint4 p1 = *(const uint4*) &kv_s[c][lane_at_h(lane, 8)];
+                const __half* a0 = (const __half*) &p0;
+                const __half* a1 = (const __half*) &p1;
+#pragma unroll
+                for (int k = 0; k < PER; ++k)
+                    x[k] = __half2float(k < 8 ? a0[k] : a1[k - 8]);
+#pragma unroll
+                for (int j = 0; j < HPW; ++j) {
+                    float v = 0.f;
+#pragma unroll
+                    for (int k = 0; k < PER; ++k)
+                        v += qr[j][k] * x[k];
+                    v = warp_sum(v);
+                    mx[j] = fmaxf(mx[j], v);
+                    s[j][c] = v;
+                }
+            } else {
+#pragma unroll
+                for (int j = 0; j < HPW; ++j)
+                    s[j][c] = 0.f;
+            }
+        }
+#pragma unroll
+        for (int j = 0; j < HPW; ++j) {
+            const float corr = expf(m[j] - mx[j]);
+            l[j] *= corr;
+#pragma unroll
+            for (int k = 0; k < PER; ++k)
+                acc[j][k] *= corr;
+        }
+#pragma unroll
+        for (int c = 0; c < kCh; ++c) {
+            if (c >= nc)
+                break;
+            float x[PER];
+            const uint4 p0 = *(const uint4*) &kv_s[c][lane_at_h(lane, 0)];
+            const uint4 p1 = *(const uint4*) &kv_s[c][lane_at_h(lane, 8)];
+            const __half* a0 = (const __half*) &p0;
+            const __half* a1 = (const __half*) &p1;
+#pragma unroll
+            for (int k = 0; k < PER; ++k)
+                x[k] = __half2float(k < 8 ? a0[k] : a1[k - 8]);
+#pragma unroll
+            for (int j = 0; j < HPW; ++j) {
+                const float p = expf(s[j][c] - mx[j]);
+                l[j] += p;
+#pragma unroll
+                for (int k = 0; k < PER; ++k)
+                    acc[j][k] += p * x[k];
+            }
+        }
+#pragma unroll
+        for (int j = 0; j < HPW; ++j)
+            m[j] = mx[j];
+    }
+#pragma unroll
+    for (int j = 0; j < HPW; ++j) {
+        float* out = part + (((size_t) t * H + h0 + j) * kSplits + split) * (L + 2);
+        if (lane == 0) {
+            out[0] = c0 < c1 ? m[j] : -FLT_MAX;
+            out[1] = l[j];
+        }
+#pragma unroll
+        for (int k = 0; k < PER; ++k)
+            out[2 + lane + 32 * k] = acc[j][k];
+    }
+}
+constexpr int kAttend3Heads = 16; // NW * HPW of the launch below
+
 __global__ void mla_reduce_k(const float* part, float* lat, int H, int L, int kSplits) {
     const int h = blockIdx.x, t = blockIdx.y;
     const float* p = part + ((size_t) t * H + h) * kSplits * (L + 2);
@@ -1462,6 +1586,44 @@ __global__ void mla_reduce_k(const float* part, float* lat, int H, int L, int kS
             if (ms > -FLT_MAX)
                 v += expf(ms - M) * p[(size_t) s * (L + 2) + 2 + d];
         }
+        lat[((size_t) t * H + h) * L + d] = v / den;
+    }
+}
+
+// mla_reduce_k's arithmetic with the splits' (max, sum) read once a block and each output's kS loads issued
+// together (mla_reduce_k's loop waits on one load at a time): the same M (fmaxf in split order), the same den and v
+// (fma chains in split order with the same expf arguments), the same division.
+template <int kS> __global__ void __launch_bounds__(256) mla_reduce2_k(const float* part, float* lat, int H, int L) {
+    const int h = blockIdx.x, t = blockIdx.y;
+    const float* p = part + ((size_t) t * H + h) * kS * (L + 2);
+    __shared__ float ms_s[kS], l_s[kS];
+    if (threadIdx.x < kS) {
+        ms_s[threadIdx.x] = p[(size_t) threadIdx.x * (L + 2)];
+        l_s[threadIdx.x] = p[(size_t) threadIdx.x * (L + 2) + 1];
+    }
+    __syncthreads();
+    float M = -FLT_MAX;
+#pragma unroll
+    for (int s = 0; s < kS; ++s)
+        M = fmaxf(M, ms_s[s]);
+    float den = 0.f, w[kS];
+#pragma unroll
+    for (int s = 0; s < kS; ++s) {
+        const float ms = ms_s[s];
+        w[s] = ms > -FLT_MAX ? expf(ms - M) : 0.f;
+        if (ms > -FLT_MAX)
+            den += w[s] * l_s[s];
+    }
+    for (int d = threadIdx.x; d < L; d += blockDim.x) {
+        float x[kS];
+#pragma unroll
+        for (int s = 0; s < kS; ++s)
+            x[s] = p[(size_t) s * (L + 2) + 2 + d];
+        float v = 0.f;
+#pragma unroll
+        for (int s = 0; s < kS; ++s)
+            if (ms_s[s] > -FLT_MAX)
+                v += w[s] * x[s];
         lat[((size_t) t * H + h) * L + d] = v / den;
     }
 }
@@ -2463,13 +2625,23 @@ void mla_attend(const float* q, const void* cache, int64_t pos0, int H, int L, i
     if (legacy)
         mla_attend_k<<<dim3(splits, H / kHg, T), 256, 0, S(st)>>>(q, (const __half*) cache, pos0, H, L, scale, sel,
                                                                   n_sel, sel_stride, splits, part);
+    else if (g_attend3.load(std::memory_order_relaxed) && L == kMaxL && H % kAttend3Heads == 0)
+        mla_attend3_k<8, 2, 2><<<dim3(splits, H / kAttend3Heads, T), 256, 0, S(st)>>>(
+            q, (const __half*) cache, pos0, H, scale, sel, n_sel, sel_stride, splits, part);
     else if (splits * (H / kHg) * T >= 256) // a long launch: four blocks an SM (a decode step's 128: three)
         mla_attend2_k<4><<<dim3(splits, H / kHg, T), 256, 0, S(st)>>>(q, (const __half*) cache, pos0, H, L, scale, sel,
                                                                       n_sel, sel_stride, splits, part);
     else
         mla_attend2_k<3><<<dim3(splits, H / kHg, T), 256, 0, S(st)>>>(q, (const __half*) cache, pos0, H, L, scale, sel,
                                                                       n_sel, sel_stride, splits, part);
-    mla_reduce_k<<<dim3(H, T), 256, 0, S(st)>>>(part, lat, H, L, splits);
+    if (!legacy && g_attend3.load(std::memory_order_relaxed) && splits == 16)
+        mla_reduce2_k<16><<<dim3(H, T), 256, 0, S(st)>>>(part, lat, H, L);
+    else
+        mla_reduce_k<<<dim3(H, T), 256, 0, S(st)>>>(part, lat, H, L, splits);
+}
+
+void set_attend3(bool on) {
+    g_attend3.store(on, std::memory_order_relaxed);
 }
 
 void idx_store(const float* kraw, const float* ln_w, const float* ln_b, const float* gate, void* kcache, void* gcache,
