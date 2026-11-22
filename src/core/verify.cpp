@@ -202,6 +202,30 @@ constexpr unsigned kUseNodePriority = 0;
 constexpr unsigned kUseNodePriority = cudaGraphInstantiateFlagUseNodePriority;
 #endif
 
+// Every kernel node of `graph` at priority `prio` (honored when the graph is instantiated with kUseNodePriority);
+// it overrides the priorities prioritize_captured gave some of them.
+void prioritize_all(cudaGraph_t graph, int prio) {
+#if defined(GUILD_USE_HIP) || defined(GUILD_HIP_GFX906)
+    (void) graph; // the HIP builds use no stream or node priorities
+    (void) prio;
+#else
+    size_t nn = 0;
+    if (cudaGraphGetNodes(graph, nullptr, &nn) != cudaSuccess || nn == 0)
+        return;
+    std::vector<cudaGraphNode_t> nodes(nn);
+    if (cudaGraphGetNodes(graph, nodes.data(), &nn) != cudaSuccess)
+        return;
+    for (cudaGraphNode_t nd : nodes) {
+        cudaGraphNodeType ty = cudaGraphNodeTypeEmpty;
+        if (cudaGraphNodeGetType(nd, &ty) != cudaSuccess || ty != cudaGraphNodeTypeKernel)
+            continue;
+        cudaKernelNodeAttrValue v{};
+        v.priority = prio;
+        cudaGraphKernelNodeSetAttribute(nd, cudaKernelNodeAttributePriority, &v);
+    }
+#endif
+}
+
 std::atomic<const Verifier*> g_diag_verifier{nullptr};
 void diag_active_verifier(std::FILE* f) {
     if (const Verifier* v = g_diag_verifier.load())
@@ -248,6 +272,18 @@ const int64_t g_test_stall = [] {
     return e != nullptr ? (int64_t) std::atoll(e) : (int64_t) 0;
 }();
 } // namespace
+
+bool window_priorities() {
+#if defined(GUILD_USE_HIP) || defined(GUILD_HIP_GFX906)
+    return false; // the HIP builds keep their drafter streams and the commit as they were
+#else
+    static const bool on = [] {
+        const char* e = std::getenv("GUILD_WINDOW_PRIO");
+        return !e || e[0] != '0';
+    }();
+    return on;
+#endif
+}
 
 bool Verifier::release_gpu_waits(int timeout_ms) {
     released_.store(true);
@@ -2138,8 +2174,17 @@ bool Verifier::capture_commit(std::string& err) {
             cudaGraphDestroy(graph);
         return false;
     }
+    // GUILD_WINDOW_PRIO (window_priorities): every commit kernel at the device's least priority, gdn_cs_'s small
+    // commits too, so the drafter's top-priority stream (and Drama 3's step_begin) beside it wins dispatch.  The commit
+    // is off the critical path: the next window waits for the draft, and follows the commit on cs_ as before.
+    const bool commit_low = window_priorities() && ce == cudaSuccess && graph != nullptr;
+    if (commit_low) {
+        int least = 0, greatest = 0;
+        cudaDeviceGetStreamPriorityRange(&least, &greatest);
+        prioritize_all(graph, least);
+    }
     if (ce != cudaSuccess ||
-        cudaGraphInstantiate(&commit_exec_, graph, commit_fork ? kUseNodePriority : 0) != cudaSuccess) {
+        cudaGraphInstantiate(&commit_exec_, graph, commit_fork || commit_low ? kUseNodePriority : 0) != cudaSuccess) {
         if (graph)
             cudaGraphDestroy(graph);
         err = std::string("verify: commit capture: ") + cudaGetErrorString(ce);

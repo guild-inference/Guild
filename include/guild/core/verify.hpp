@@ -43,6 +43,12 @@ namespace guild::core {
 class NativeHead;
 class RemoteExpertOpt;
 
+/// GUILD_WINDOW_PRIO (default 1, read once; CUDA only): the drafters' streams (DFlash, MTP) at the device's greatest
+/// priority and the commit graph's kernels at its least, so the critical work after a window - the draft, Drama 3's
+/// step_begin - wins SM dispatch over the commit beside it; the next window still follows the commit on its stream.
+/// 0: default-priority drafter streams and the commit at its stream's priority, as before.  Scheduling only.
+bool window_priorities();
+
 /// The CPU pool for a window: x_f (n_tok, n_embd), ids (n_tok, k) -> out (n_tok * k, n_embd), hit rows zeroed.
 using PoolMultiFn = void (*)(void* user, const float* x_f, const int32_t* ids, int64_t n_tok, int64_t k, float* out,
                              int64_t layer);

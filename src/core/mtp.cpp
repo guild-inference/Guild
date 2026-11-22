@@ -5,6 +5,7 @@
 
 #include "guild/core/native_head.hpp"
 #include "guild/core/peer_experts.hpp"
+#include "guild/core/verify.hpp"
 #include "guild/kernels/bf16_gemv.hpp"
 #include "guild/kernels/cpu/expert.hpp"
 #include "guild/kernels/cpu/pool.hpp"
@@ -515,7 +516,12 @@ bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, Session
                 id[(size_t) (t * (uint64_t) cap_ + (uint64_t) i)] = (int32_t) i;
         cudaMemcpy(ident_, id.data(), id.size() * 4, cudaMemcpyHostToDevice);
     }
-    if (cudaStreamCreateWithFlags(&cs_, cudaStreamNonBlocking) != cudaSuccess) {
+    // GUILD_WINDOW_PRIO (window_priorities): the draft layer's graphs, instantiated without node priorities, run at
+    // this stream's - the device's greatest - so the draft after a window wins dispatch over the commit beside it
+    int least = 0, greatest = 0;
+    const bool hi = window_priorities() && cudaDeviceGetStreamPriorityRange(&least, &greatest) == cudaSuccess;
+    if ((hi ? cudaStreamCreateWithPriority(&cs_, cudaStreamNonBlocking, greatest)
+            : cudaStreamCreateWithFlags(&cs_, cudaStreamNonBlocking)) != cudaSuccess) {
         err = "mtp: stream";
         return false;
     }

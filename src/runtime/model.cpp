@@ -1286,7 +1286,13 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
             error_msg = "DFlash drafter: its width differs from the model's";
             return nullptr;
         }
-        if (cudaStreamCreateWithFlags(&impl->dflash_stream, cudaStreamNonBlocking) != cudaSuccess) {
+        // GUILD_WINDOW_PRIO (core::window_priorities): the draft at the device's greatest stream priority, so its
+        // blocks are dispatched before the commit graph's beside it (scheduling only)
+        int dflash_least = 0, dflash_greatest = 0;
+        const bool dflash_hi = core::window_priorities() &&
+                               cudaDeviceGetStreamPriorityRange(&dflash_least, &dflash_greatest) == cudaSuccess;
+        if ((dflash_hi ? cudaStreamCreateWithPriority(&impl->dflash_stream, cudaStreamNonBlocking, dflash_greatest)
+                       : cudaStreamCreateWithFlags(&impl->dflash_stream, cudaStreamNonBlocking)) != cudaSuccess) {
             error_msg = "DFlash drafter: no stream";
             return nullptr;
         }
