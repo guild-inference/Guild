@@ -1410,6 +1410,97 @@ static void test_narrow() {
         }
 }
 
+// kda_conv's one launch (GUILD_GLM_FUSE2 bit 4) against kda_conv_k + kda_l2_k, to the bit: the outputs, the state and
+// the verify window's mid states, for GLM-5.3-Flash's 64 heads and for 4, decode to prompt windows, and one token in
+// place as glm5.cpp's merged q|k|v runs it
+static void test_kda_conv_one_launch() {
+    for (const int H : {64, 4})
+        for (const int T : {1, 2, 3, 8, 64})
+            for (const bool in_place : {false, true}) {
+                if (in_place && T != 1)
+                    continue;
+                const int D = H * k::kKdaDim, C = 3 * D, nmid = T - 1;
+                const auto x = rnd((size_t) T * C), st0 = rnd((size_t) C * 3), w = rnd((size_t) 3 * D * 4, 0.5f);
+                float *dw = up(w), *dx[2], *dst[2], *dout[2], *dmid[2];
+                for (int on = 0; on < 2; ++on) {
+                    dx[on] = up(x);
+                    dst[on] = up(st0);
+                    cudaMalloc(&dout[on], (size_t) T * C * 4);
+                    cudaMemset(dout[on], 0xff, (size_t) T * C * 4);
+                    cudaMalloc(&dmid[on], (size_t) std::max(1, nmid) * C * 3 * 4);
+                    cudaMemset(dmid[on], 0xff, (size_t) std::max(1, nmid) * C * 3 * 4);
+                    // in place: the merged product's [q|k|v] row is the input and the output (one token)
+                    const float* xq = dx[on];
+                    const float* xk = in_place ? dx[on] + D : dx[on] + (size_t) T * D;
+                    const float* xv = in_place ? dx[on] + 2 * D : dx[on] + (size_t) 2 * T * D;
+                    k::kda_conv(xq, xk, xv, dst[on], dw, dw + (size_t) D * 4, dw + (size_t) 2 * D * 4,
+                                in_place ? dx[on] : dout[on], D, T, nmid > 0 ? dmid[on] : nullptr, nmid, nullptr,
+                                on == 1);
+                }
+                const std::string what = "kda_conv one launch H " + std::to_string(H) + " T " + std::to_string(T) +
+                                         (in_place ? " in place" : "");
+                const size_t no = (size_t) T * C, nm = (size_t) std::max(1, nmid) * C * 3;
+                same_attend(what + " out", down(in_place ? dx[1] : dout[1], no), down(in_place ? dx[0] : dout[0], no));
+                same_attend(what + " state", down(dst[1], (size_t) C * 3), down(dst[0], (size_t) C * 3));
+                if (nmid > 0)
+                    same_attend(what + " mid", down(dmid[1], nm), down(dmid[0], nm));
+                for (int on = 0; on < 2; ++on)
+                    for (float* p : {dx[on], dst[on], dout[on], dmid[on]})
+                        cudaFree(p);
+                cudaFree(dw);
+            }
+}
+
+// `glm5_kernels_test kdaconv`: kda_conv's two launches against one, GLM-5.3-Flash's 64 heads, T 1, 2 and 64 (median of
+// 5 alternated passes of 200 calls each)
+static int bench_kda_conv() {
+    const int H = 64, D = H * k::kKdaDim, C = 3 * D;
+    cudaStream_t st;
+    cudaStreamCreate(&st);
+    for (const int T : {1, 2, 64}) {
+        const auto x = rnd((size_t) T * C), st0 = rnd((size_t) C * 3), w = rnd((size_t) 3 * D * 4, 0.5f);
+        float *dw = up(w), *dx = up(x), *dst = up(st0), *dout, *dmid;
+        cudaMalloc(&dout, (size_t) T * C * 4);
+        cudaMalloc(&dmid, (size_t) T * C * 3 * 4);
+        auto run = [&](bool one, int n) {
+            for (int i = 0; i < n; ++i)
+                k::kda_conv(dx, dx + (size_t) T * D, dx + (size_t) 2 * T * D, dst, dw, dw + (size_t) D * 4,
+                            dw + (size_t) 2 * D * 4, dout, D, T, T > 1 ? dmid : nullptr, T - 1, st, one);
+        };
+        run(false, 300);
+        run(true, 300);
+        cudaEvent_t a, b, c;
+        for (cudaEvent_t* e : {&a, &b, &c})
+            cudaEventCreate(e);
+        std::vector<float> p2, p1;
+        const int n = T >= 64 ? 50 : 200;
+        for (int pass = 0; pass < 5; ++pass) {
+            cudaEventRecord(a, st);
+            run(false, n);
+            cudaEventRecord(b, st);
+            run(true, n);
+            cudaEventRecord(c, st);
+            cudaEventSynchronize(c);
+            float ms = 0;
+            cudaEventElapsedTime(&ms, a, b);
+            p2.push_back(ms);
+            cudaEventElapsedTime(&ms, b, c);
+            p1.push_back(ms);
+        }
+        std::sort(p2.begin(), p2.end());
+        std::sort(p1.begin(), p1.end());
+        std::printf("kda_conv H %d T %2d: kda_conv_k + kda_l2_k %6.2f us, kda_conv_l2_k %6.2f us (a call, back to "
+                    "back)\n",
+                    H, T, 1000.0 * p2[2] / n, 1000.0 * p1[2] / n);
+        for (cudaEvent_t e : {a, b, c})
+            cudaEventDestroy(e);
+        for (float* p : {dw, dx, dst, dout, dmid})
+            cudaFree(p);
+    }
+    cudaStreamDestroy(st);
+    return 0;
+}
+
 // kda_fg (GUILD_GLM_FUSE2 bit 1): one token's f_b, gates and g_b in one launch against q8_0_narrow, kda_gates and
 // q8_0_narrow from two quantizations, bitwise (both one-wave settings, every narrow width, GLM's 128 -> 8192)
 static void test_kda_fg() {
@@ -2075,6 +2166,8 @@ int main(int argc, char** argv) {
         return bench_attend();
     if (argc > 1 && std::string(argv[1]) == "q6k")
         return bench_q6k();
+    if (argc > 1 && std::string(argv[1]) == "kdaconv")
+        return bench_kda_conv();
     if (argc > 1 && std::string(argv[1]) == "wave")
         return test_one_wave(true);
     test_hc();
@@ -2091,6 +2184,7 @@ int main(int argc, char** argv) {
     test_staged_mmvq(8);
     test_mmvq_rows();
     test_narrow();
+    test_kda_conv_one_launch();
     test_kda_fg();
     test_q8_1_producers();
     test_indexer();

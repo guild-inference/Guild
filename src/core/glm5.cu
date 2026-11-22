@@ -372,6 +372,49 @@ __global__ void kda_l2_k(float* qkv, int D, float eps) {
     v[threadIdx.x] = x / fmaxf(sqrtf(s), eps);
 }
 
+// kda_conv_k then kda_l2_k in one launch (GUILD_GLM_FUSE2 bit 4; D a multiple of kKdaDim): a block is one head of
+// q|k|v, a thread its channel's convolution, silu and state exactly as kda_conv_k; a q or k head then normalises each
+// token's row exactly as kda_l2_k (warp_sum(x * x), red[0] + red[1] + red[2] + red[3], x / fmaxf(sqrtf(s), eps))
+// from the values in registers, where kda_l2_k reads them back.  The same bits (glm5_kernels_test).
+__global__ void __launch_bounds__(kKdaDim)
+    kda_conv_l2_k(const float* xq, const float* xk, const float* xv, float* state, const float* wq, const float* wk,
+                  const float* wv, float* out, int D, int T, float* mid, int nmid, float eps) {
+    const int c = blockIdx.x * kKdaDim + threadIdx.x;
+    const int C = 3 * D;
+    const int part = c / D, cc = c - part * D; // the same for the whole block
+    const float* w = (part == 0 ? wq : part == 1 ? wk : wv) + (size_t) cc * 4;
+    const float* x = part == 0 ? xq : part == 1 ? xk : xv;
+    __shared__ float red[2][4]; // two tokens' sums in turn: a token's are read before the next token's barrier
+    float s0 = state[(size_t) c * 3], s1 = state[(size_t) c * 3 + 1], s2 = state[(size_t) c * 3 + 2];
+    for (int t = 0; t < T; ++t) {
+        const float xi = x[(size_t) t * D + cc];
+        const float v = w[0] * s0 + w[1] * s1 + w[2] * s2 + w[3] * xi;
+        float o = v / (1.f + expf(-v));
+        s0 = s1;
+        s1 = s2;
+        s2 = xi;
+        if (t < nmid) { // the state after token t: a verify window's rollback point
+            float* m = mid + ((size_t) t * C + c) * 3;
+            m[0] = s0;
+            m[1] = s1;
+            m[2] = s2;
+        }
+        if (part < 2) {
+            float* r = red[t & 1];
+            float s = warp_sum(o * o);
+            if ((threadIdx.x & 31) == 0)
+                r[threadIdx.x >> 5] = s;
+            __syncthreads();
+            s = r[0] + r[1] + r[2] + r[3];
+            o = o / fmaxf(sqrtf(s), eps);
+        }
+        out[(size_t) t * C + c] = o;
+    }
+    state[(size_t) c * 3] = s0;
+    state[(size_t) c * 3 + 1] = s1;
+    state[(size_t) c * 3 + 2] = s2;
+}
+
 __global__ void kda_gates_k(const float* fpre, const float* dt_b, const float* ssm_a, float* g, const float* bpre,
                             float* beta, int D, int H, int T, float lb) {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
@@ -2187,7 +2230,12 @@ void hc_init(const float* e, float* R, int N, int T, void* st) {
 }
 
 void kda_conv(const float* xq, const float* xk, const float* xv, float* state, const float* wq, const float* wk,
-              const float* wv, float* out, int D, int T, float* mid, int nmid, void* st) {
+              const float* wv, float* out, int D, int T, float* mid, int nmid, void* st, bool one_launch) {
+    if (one_launch && D % kKdaDim == 0) {
+        kda_conv_l2_k<<<3 * D / kKdaDim, kKdaDim, 0, S(st)>>>(xq, xk, xv, state, wq, wk, wv, out, D, T, mid,
+                                                              mid ? std::min(nmid, T) : 0, 1e-6f);
+        return;
+    }
     kda_conv_k<<<(3 * D + 255) / 256, 256, 0, S(st)>>>(xq, xk, xv, state, wq, wk, wv, out, D, T, mid,
                                                        mid ? std::min(nmid, T) : 0);
     kda_l2_k<<<dim3(2 * D / kKdaDim, T), kKdaDim, 0, S(st)>>>(out, D, 1e-6f);

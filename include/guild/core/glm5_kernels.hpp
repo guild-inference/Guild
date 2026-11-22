@@ -48,9 +48,10 @@ void hc_init(const float* e, float* R, int N, int T, void* st);
 /// silu(conv), state = the last 3 inputs per channel ([C][3], oldest first).  w: q, k, v taps, each [D][4].  Then q
 /// and k are L2-normalised per head of 128.
 /// `mid` (may be null): the states after the window's first `nmid` tokens, [nmid][C][3] (a verify window's rollback
-/// points).  One token may run in place: xk = xq + D, xv = xq + 2 * D and out = xq.
+/// points).  One token may run in place: xk = xq + D, xv = xq + 2 * D and out = xq.  `one_launch` (GUILD_GLM_FUSE2
+/// bit 4; D a multiple of kKdaDim): the convolution and the normalisation in one kernel, the same bits
 void kda_conv(const float* xq, const float* xk, const float* xv, float* state, const float* wq, const float* wk,
-              const float* wv, float* out, int D, int T, float* mid, int nmid, void* st);
+              const float* wv, float* out, int D, int T, float* mid, int nmid, void* st, bool one_launch = false);
 /// g = lower_bound * sigmoid(-(fpre + dt_b) * ssm_a[head]) (per channel), beta = sigmoid(bpre) (per head)
 void kda_gates(const float* fpre, const float* dt_b, const float* ssm_a, float* g, const float* bpre, float* beta,
                int D, int H, int T, float lower_bound, void* st);
