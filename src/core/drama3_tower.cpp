@@ -18,6 +18,7 @@
 #include <cstring>
 #include <fstream>
 #include <map>
+#include <memory>
 #include <numeric>
 #include <sstream>
 #include <stdexcept>
@@ -634,8 +635,16 @@ GUILD_D3_AVX512 int sample_fast_avx512(const float* logits, int n, const Drama3S
     const int k = std::max(1, std::min(sp.top_k, n));
     if (k > kFastMaxK || n > kFastMaxN)
         return -2;
-    alignas(64) static thread_local float xs[kFastMaxN];
-    alignas(64) static thread_local double es[kFastMaxN];
+    // the scratch on the heap, once a thread (static TLS of this size would be copied into every thread's block)
+    struct alignas(64) Scratch {
+        float xs[kFastMaxN];
+        double es[kFastMaxN];
+    };
+    static thread_local std::unique_ptr<Scratch> scratch;
+    if (!scratch)
+        scratch = std::make_unique<Scratch>();
+    float* const xs = scratch->xs;
+    double* const es = scratch->es;
     // the finite check and the max, 16 at a time
     const __m512 vt = _mm512_set1_ps(temp);
     __m512 vmx = _mm512_set1_ps(-INFINITY);
