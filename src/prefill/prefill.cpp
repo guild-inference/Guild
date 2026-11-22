@@ -298,10 +298,13 @@ inline int64_t stream_chunk_min() {
 // pf-tail-ring: the buffers are carved once for the layout's chunk (8192 tokens here), so a shorter chunk - a prompt
 // of 2K-8K tokens, the last chunk of a longer one - leaves the rest of the scratch region and of R idle.  With
 // rows_stream()'s ring such a chunk lays the region out for its own T and lends both idle tails to the ring as
-// whole-blob slots: ~250 of them at 4K, ~360 at 2K instead of 32 (or the routed walk's 8, whose copies start only after
-// each layer's routing, the copy engine idle through every dense half), and the 8192-token chunk keeps its size.  Each
-// expert's MMQ reads the same blob bytes in the same groups; only the slot it is staged in and the buffers' addresses
-// (256-byte aligned as before) change.  GUILD_PREFILL_TAIL_RING=0: the layout and the ring stay as carved (the A/B).
+// whole-blob slots after its own 32 (302 in all at 4K, 433 at 2K, with tail_bufs_on()), instead of the routed walk's 8
+// below 4096 tokens, whose copies start only after each layer's routing (the copy engine idle through every dense
+// half); the 8192-token chunk keeps its size.  Each expert's MMQ reads the same blob bytes in the same groups; only the
+// slot it is staged in and the buffers' addresses (256-byte aligned as before) change.  GTX 1070, UD-IQ4_XS, 2
+// alternated pairs, the same tokens: 2,007 / 3,007 / 4,007-token prompts 10.34 / 13.25 / 16.18 s -> 9.38 / 11.44 /
+// 14.28 s (-9.3% / -13.6% / -11.7%), 1,007 and 1,507 unchanged (routed: the layout as carved).
+// GUILD_PREFILL_TAIL_RING=0: the layout and the ring stay as carved (the A/B).
 inline bool tail_ring_on() {
     static const bool on = [] {
         const char* e = std::getenv("GUILD_PREFILL_TAIL_RING");
@@ -309,14 +312,26 @@ inline bool tail_ring_on() {
     }();
     return on;
 }
+// GUILD_PREFILL_TAIL_BUFS=0: only those two; by default the idle rows of the chunk's other per-token buffers (mixed,
+// its BF16 and FP16 copies, bo, the PLE rows: 40 KB a token, 48 more slots at 4K) as well - 2 pairs, the same tokens:
+// 3,007 / 4,007 tokens 11.80 / 14.58 s with only the two, 11.44 / 14.28 with them (2,007: 9.42 / 9.38, copy-bound).
+inline bool tail_bufs_on() {
+    static const bool on = [] {
+        const char* e = std::getenv("GUILD_PREFILL_TAIL_BUFS");
+        return e == nullptr || e[0] != '0';
+    }();
+    return on;
+}
 // ...and a chunk below stream_chunk_min() whose tails lent the ring at least kTailWalkRing slots takes the streamed
-// walk from this many tokens on (GUILD_PREFILL_TAIL_STREAM_MIN); below it the routed walk, which copies only the routed
-// experts (~370 of 512 a layer at 1K: the streamed walk measured 11-14% slower there).
+// walk from this many tokens on (GUILD_PREFILL_TAIL_STREAM_MIN); below it the routed walk, which copies only the
+// routed experts (~370 of 512 a layer at 1K: the streamed walk measured 11-14% slower there).  GTX 1070, UD-IQ4_XS,
+// the tail lent (2 pairs, the same tokens), streamed / routed: 1,507 tokens 8.82-8.90 / 8.82-8.83 s, 2,007 9.45-9.46 /
+// 10.34-10.39, 3,007 11.73-11.74 / 13.23-13.29, 4,007 14.46-14.55 / 16.13-16.18.
 constexpr int kTailWalkRing = 192;
 inline int64_t tail_stream_min() {
     static const int64_t v = [] {
         const char* e = std::getenv("GUILD_PREFILL_TAIL_STREAM_MIN");
-        return e ? (int64_t) std::atoll(e) : (int64_t) 2048;
+        return e ? (int64_t) std::atoll(e) : (int64_t) 1536;
     }();
     return v;
 }
@@ -2459,10 +2474,12 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
     const bool tail_ok = tail_ring_on() && !m.borrowed && m.cache == nullptr && m.pp == nullptr && next_ == nullptr &&
                          hand_in_ == nullptr && m.src != nullptr && !fused_ring() && rows_stream() &&
                          m.ring_owned > STAGE;
-    // A chunk of T tokens: below the layout's chunk the region laid out for T and its idle tails lent to the ring, at
-    // the layout's chunk the layout as carved.  Before either stream takes this chunk's work.
+    // A chunk of T tokens: below the layout's chunk, when it streams its experts (tail_stream_min(), or
+    // stream_chunk_min() on), the region laid out for T and its idle tails lent to the ring; otherwise the layout as
+    // carved.  Before either stream takes this chunk's work.
     auto lay_out = [&](int64_t T) -> bool {
-        const int64_t lt = tail_ok && T < m.T ? T : m.T; // the tokens to lay the region out for
+        const bool tail = tail_ok && T < m.T && (T >= tail_stream_min() || T >= stream_chunk_min());
+        const int64_t lt = tail ? T : m.T; // the tokens to lay the region out for
         if (lt == m.region_T && lt == m.T)
             return true; // as carved: nothing lent
         // the copy stream waits for the compute stream's work so far: the lent memory held its buffers (the previous
@@ -2491,6 +2508,14 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
             };
             lend(m.region + eff, m.region_bytes - eff);
             lend((uint8_t*) (m.R + (size_t) lt * D), (uint64_t) (m.T - lt) * D * 4);
+            if (tail_bufs_on()) { // every reader and writer of these takes the chunk's T rows
+                const uint64_t rest = (uint64_t) (m.T - lt) * N;
+                lend((uint8_t*) (m.mixed + (size_t) lt * N), rest * 4);
+                lend((uint8_t*) (m.bo + (size_t) lt * N), rest * 4);
+                lend((uint8_t*) (m.ple_emb + (size_t) lt * N), rest * 4);
+                lend((uint8_t*) (m.mixed_bf + (size_t) lt * N), rest * 2);
+                lend((uint8_t*) (m.mixed_h + (size_t) lt * N), rest * 2);
+            }
         }
         for (int i = ring; i < m.ring; ++i)
             m.stage_dev[i] = nullptr;
@@ -2644,7 +2669,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
         if (pt.on && m.ring_lent > 0)
             std::fprintf(stderr,
                          "guild prefill: a chunk of %lld tokens: the region laid out in %.0f of its %.0f MiB, %d ring "
-                         "slots lent by it and R's idle rows (%d in all), the %s walk\n",
+                         "slots lent by its idle buffers (%d in all), the %s walk\n",
                          (long long) T, (double) m.region_eff / (1 << 20), (double) m.region_bytes / (1 << 20),
                          m.ring_lent, m.ring, stream_all ? "streamed" : "routed");
         const bool ps_on = stream_all && m.pp && m.pp->ps_frac > 0.0;
