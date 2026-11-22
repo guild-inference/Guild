@@ -103,7 +103,8 @@ void row2(const uint8_t* row0, const uint8_t* row1, int nblocks, const BlockQ8_0
 }
 
 template <int NT>
-void rows(const uint8_t* w, size_t row_bytes, int n, const void* const* act, float* const* out, int r0, int r1) {
+void rows(const uint8_t* w, size_t row_bytes, int n, const void* const* act, float* const* out, int r0, int r1,
+          int pf_rows) {
     const BlockQ8_0* y[NT];
     for (int t = 0; t < NT; ++t)
         y[t] = (const BlockQ8_0*) act[t];
@@ -111,8 +112,8 @@ void rows(const uint8_t* w, size_t row_bytes, int n, const void* const* act, flo
     for (int r = r0; r < r1; r += 2) {
         const uint8_t* row0 = w + (size_t) r * row_bytes;
         const bool two = r + 1 < r1;
-        // the rows after this pair, while it is read
-        const char* pf = (const char*) row0 + 2 * row_bytes;
+        // the two rows pf_rows ahead, while this pair is read
+        const char* pf = (const char*) row0 + (size_t) pf_rows * row_bytes;
         row2<NT>(row0, two ? row0 + row_bytes : row0, n / 32, y, a, b, pf, pf + row_bytes);
         for (int t = 0; t < NT; ++t) {
             out[t][r] = a[t];
@@ -221,7 +222,8 @@ inline void row2_v2(const uint8_t* row0, const uint8_t* row1, int nblocks, const
 }
 
 template <int NT>
-void rows_v2(const uint8_t* w, size_t row_bytes, int n, const void* const* act, float* const* out, int r0, int r1) {
+void rows_v2(const uint8_t* w, size_t row_bytes, int n, const void* const* act, float* const* out, int r0, int r1,
+             int pf_rows) {
     const int nb = n / 32;
     const BlockQ8_0* y[NT];
     alignas(64) float dy[NT * kMaxBlocks];
@@ -234,7 +236,7 @@ void rows_v2(const uint8_t* w, size_t row_bytes, int n, const void* const* act, 
     for (int r = r0; r < r1; r += 2) {
         const uint8_t* row0 = w + (size_t) r * row_bytes;
         const bool two = r + 1 < r1;
-        const char* pf = (const char*) row0 + 2 * row_bytes;
+        const char* pf = (const char*) row0 + (size_t) pf_rows * row_bytes;
         row2_v2<NT>(row0, two ? row0 + row_bytes : row0, nb, y, dy, a, b, pf, pf + row_bytes);
         for (int t = 0; t < NT; ++t) {
             out[t][r] = a[t];
@@ -252,6 +254,22 @@ bool v2_on() {
     return v;
 }
 
+// How many rows ahead a row pair's prefetch reads: the two rows from there, every second block pair (a 64-byte line
+// holds ~3.5 blocks).  A 640-value row is 360 bytes, so the next pair (2, as before) is only ~720 bytes ahead of the
+// loads.  2x Xeon Gold 6130, Qwen3.8-Flash-Next's down rows in 172-row tasks, six rows ahead against two: 196 -> 203
+// GB/s at one token and 148 -> 157 at two on 32 threads, 55.8 -> 60.3 and 42.4 -> 45.2 on 8; but in 64-row items in a
+// shuffled order (iq4nl_rows512_test --dram, IQ4NL_TEST_N=640) one token loses 2% (the six rows past an item's end
+// are read for nothing) and two gain 1%.  A prefetch has no architectural effect, so the bits are the same at any
+// distance.  GUILD_IQ4NL_PF (read once, 0-64; default 6, 2 the earlier distance).
+int pf_rows() {
+    static const int v = [] {
+        const char* e = std::getenv("GUILD_IQ4NL_PF");
+        const int k = e ? std::atoi(e) : 6;
+        return k >= 0 && k <= 64 ? k : 6;
+    }();
+    return v;
+}
+
 } // namespace
 
 bool iq4nl_rows512_ok() {
@@ -260,14 +278,15 @@ bool iq4nl_rows512_ok() {
 
 void iq4nl_rows512(const uint8_t* w, size_t row_bytes, int n, const void* const* act, int nt, float* const* out, int r0,
                    int r1) {
+    const int pf = pf_rows();
     if (v2_on() && n / 32 <= kMaxBlocks) {
         for (int t0 = 0; t0 < nt; t0 += 4) {
             const int k = nt - t0 < 4 ? nt - t0 : 4;
             switch (k) {
-            case 1: rows_v2<1>(w, row_bytes, n, act + t0, out + t0, r0, r1); break;
-            case 2: rows_v2<2>(w, row_bytes, n, act + t0, out + t0, r0, r1); break;
-            case 3: rows_v2<3>(w, row_bytes, n, act + t0, out + t0, r0, r1); break;
-            default: rows_v2<4>(w, row_bytes, n, act + t0, out + t0, r0, r1); break;
+            case 1: rows_v2<1>(w, row_bytes, n, act + t0, out + t0, r0, r1, pf); break;
+            case 2: rows_v2<2>(w, row_bytes, n, act + t0, out + t0, r0, r1, pf); break;
+            case 3: rows_v2<3>(w, row_bytes, n, act + t0, out + t0, r0, r1, pf); break;
+            default: rows_v2<4>(w, row_bytes, n, act + t0, out + t0, r0, r1, pf); break;
             }
         }
         return;
@@ -275,10 +294,10 @@ void iq4nl_rows512(const uint8_t* w, size_t row_bytes, int n, const void* const*
     for (int t0 = 0; t0 < nt; t0 += 4) {
         const int k = nt - t0 < 4 ? nt - t0 : 4;
         switch (k) {
-        case 1: rows<1>(w, row_bytes, n, act + t0, out + t0, r0, r1); break;
-        case 2: rows<2>(w, row_bytes, n, act + t0, out + t0, r0, r1); break;
-        case 3: rows<3>(w, row_bytes, n, act + t0, out + t0, r0, r1); break;
-        default: rows<4>(w, row_bytes, n, act + t0, out + t0, r0, r1); break;
+        case 1: rows<1>(w, row_bytes, n, act + t0, out + t0, r0, r1, pf); break;
+        case 2: rows<2>(w, row_bytes, n, act + t0, out + t0, r0, r1, pf); break;
+        case 3: rows<3>(w, row_bytes, n, act + t0, out + t0, r0, r1, pf); break;
+        default: rows<4>(w, row_bytes, n, act + t0, out + t0, r0, r1, pf); break;
         }
     }
 }

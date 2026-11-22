@@ -14,7 +14,8 @@ namespace guild::core::cpu_moe {
 bool iq4nl_rows512_ok();
 
 /// out[t][r] = row r . act[t] for rows [r0, r1) of `w` (`row_bytes` apart, `n` values each, n % 64 == 0) and `nt`
-/// tokens' block_q8_0 rows.  Each row pair asks for the pair after next before it is read.
+/// tokens' block_q8_0 rows.  Each row pair asks for the two rows GUILD_IQ4NL_PF (default 6) rows ahead while it is
+/// read.
 void iq4nl_rows512(const uint8_t* w, size_t row_bytes, int n, const void* const* act, int nt, float* const* out, int r0,
                    int r1);
 
