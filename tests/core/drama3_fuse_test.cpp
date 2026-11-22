@@ -1,12 +1,15 @@
 // tests/core/drama3_fuse_test.cpp - Drama 3 tower's faster step paths (GUILD_DRAMA3_FUSE) against the paths they
 // replace, bit for bit.
 //
-//     drama3_fuse_test
+//     drama3_fuse_test [logits.bin]
 //
 // The fused small kernels (drama3_tower_kernels.hpp) against the separate ones they replace (add, rms_norm, embed and
 // guild-kernels-cuda's own native_quantize_q8_1, as linked, not a copy) on random rows, massive activations, zeros,
-// subnormal products and blocks past FP16's range.  Exit 0 when everything matches, 1 on a difference, 77 without a
-// GPU.
+// subnormal products and blocks past FP16's range; the fast sampler against the reference on synthetic logits (ties,
+// signed zeros, wide ranges, nine settings) and, given a GUILD_DRAMA3_DUMP_LOGITS file, on every row of it, plus its
+// exp against std::exp on a stride of all float patterns.  Exit 0 when everything matches, 1 on a difference, 77
+// without a GPU.
+#include "guild/core/drama3_tower.hpp"
 #include "guild/core/drama3_tower_kernels.hpp"
 #include "guild/kernels/native_mmvq.hpp"
 
@@ -256,6 +259,113 @@ void test_embed_norm2(cudaStream_t st) {
                 bad ? "DIFFER" : "same  ", trials, bad);
 }
 
+// ---- the sampler: sample_fast against sample_reference, the same index for every draw
+struct Setting {
+    float temperature, top_p;
+    int top_k;
+};
+const Setting kSettings[] = {{1.0f, 0.9f, 30},  {1.0f, 0.95f, 30}, {0.7f, 0.9f, 30},
+                             {1.3f, 0.8f, 50},  {1.0f, 1.0f, 64},  {0.5f, 0.5f, 1},
+                             {2.0f, 0.99f, 64}, {1e-7f, 0.9f, 30}, {1.0f, 1.0f, 4096}};
+
+struct SampleCount {
+    uint64_t draws = 0, fast = 0, differ = 0;
+};
+
+void compare_rows(const float* logits, int n, uint64_t seed, int draws, SampleCount& c) {
+    for (const Setting& s : kSettings) {
+        guild::core::Drama3Sampling sp;
+        sp.temperature = s.temperature;
+        sp.top_p = s.top_p;
+        sp.top_k = s.top_k;
+        sp.seed = seed;
+        for (int d = 0; d < draws; ++d) {
+            const uint64_t draw = seed * 31 + (uint64_t) d;
+            const int a = d3::sample_reference(logits, n, sp, draw), b = d3::sample_fast(logits, n, sp, draw);
+            c.draws += 1;
+            if (b == -2)
+                continue;
+            c.fast += 1;
+            if (a != b && ++c.differ <= 5)
+                std::printf("DIFFER sample: n %d T %g top_p %g top_k %d draw %llu: %d vs %d\n", n, s.temperature,
+                            s.top_p, s.top_k, (unsigned long long) draw, a, b);
+        }
+    }
+}
+
+void test_sampler(const char* dump) {
+    if (!d3::sample_fast_ok()) {
+        std::printf("skip   sampler: no fast path here (needs AVX-512 F/DQ/BW/VL and glibc's exp)\n");
+        return;
+    }
+    std::mt19937 rng(13);
+    std::normal_distribution<float> nd(0.0f, 1.0f);
+    SampleCount c;
+    std::vector<float> l(4097);
+    for (int row = 0; row < 1500; ++row) {
+        const int n = row % 2 ? 4096 : 4097, shape = row % 6;
+        const float scale = shape == 0 ? 1.0f : shape == 1 ? 3.0f : 8.0f;
+        for (int i = 0; i < n; ++i)
+            l[i] = scale * nd(rng);
+        if (shape == 3) // ties: logits on a 1/4 grid
+            for (int i = 0; i < n; ++i)
+                l[i] = std::round(l[i] * 4.0f) / 4.0f;
+        if (shape == 4) { // one peaked logit, and signed zeros
+            l[(size_t) (rng() % n)] = 25.0f;
+            for (int i = 0; i < n; i += 5)
+                l[i] = (i / 5) % 2 ? 0.0f : -0.0f;
+        }
+        if (shape == 5) // a wide range: most exps underflow
+            for (int i = 0; i < n; ++i)
+                l[i] = -1.0e3f * std::fabs(nd(rng)) + (i % 97 == 0 ? 50.0f : 0.0f);
+        compare_rows(l.data(), n, (uint64_t) row, 4, c);
+    }
+    // a non-finite logit: both refuse
+    for (const float bad : {NAN, INFINITY, -INFINITY}) {
+        for (int i = 0; i < 4097; ++i)
+            l[i] = nd(rng);
+        l[1234] = bad;
+        guild::core::Drama3Sampling sp;
+        const int a = d3::sample_reference(l.data(), 4097, sp, 0), b = d3::sample_fast(l.data(), 4097, sp, 0);
+        if (a != -1 || b != -1) {
+            ++g_fail;
+            std::printf("DIFFER sample of a non-finite row: %d and %d, not -1\n", a, b);
+        }
+    }
+    g_fail += c.differ != 0;
+    std::printf("%s sampler, synthetic rows: %llu draws, %llu on the fast path, %llu differ\n",
+                c.differ ? "DIFFER" : "same  ", (unsigned long long) c.draws, (unsigned long long) c.fast,
+                (unsigned long long) c.differ);
+    if (dump) { // a GUILD_DRAMA3_DUMP_LOGITS file: per frame 4097 candidate logits, then 9 x 4096 code logits
+        std::FILE* f = std::fopen(dump, "rb");
+        if (!f) {
+            ++g_fail;
+            std::printf("FAIL: cannot read %s\n", dump);
+            return;
+        }
+        std::vector<float> fr(4097 + 9 * 4096);
+        SampleCount cd;
+        uint64_t frames = 0;
+        while (std::fread(fr.data(), 4, fr.size(), f) == fr.size()) {
+            compare_rows(fr.data(), 4097, frames * 10, 4, cd);
+            for (int h = 0; h < 9; ++h)
+                compare_rows(fr.data() + 4097 + (size_t) h * 4096, 4096, frames * 10 + 1 + h, 4, cd);
+            ++frames;
+        }
+        std::fclose(f);
+        g_fail += cd.differ != 0 || frames == 0;
+        std::printf("%s sampler, %llu dumped frames: %llu draws, %llu on the fast path, %llu differ\n",
+                    cd.differ || !frames ? "DIFFER" : "same  ", (unsigned long long) frames,
+                    (unsigned long long) cd.draws, (unsigned long long) cd.fast, (unsigned long long) cd.differ);
+    }
+    // the exp itself on every 97th negative float (the sampler's inputs are <= 0) and every 997th positive one
+    const uint64_t neg = d3::exp_mismatches(0x80000000ull, 0xff800001ull, 97),
+                   pos = d3::exp_mismatches(0x00000000ull, 0x7f800001ull, 997);
+    g_fail += neg + pos != 0;
+    std::printf("%s exp8 against std::exp: %llu negative and %llu positive float patterns differ\n",
+                neg + pos ? "DIFFER" : "same  ", (unsigned long long) neg, (unsigned long long) pos);
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -273,8 +383,7 @@ int main(int argc, char** argv) {
     CK(cudaStreamCreateWithFlags(&st, cudaStreamNonBlocking));
     test_add_norm(st);
     test_embed_norm2(st);
-    (void) argc;
-    (void) argv;
+    test_sampler(argc > 1 ? argv[1] : nullptr);
     CK(cudaStreamDestroy(st));
     std::printf("%s\n", g_fail ? "FAIL" : "PASS");
     return g_fail ? 1 : 0;

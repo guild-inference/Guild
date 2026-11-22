@@ -3,9 +3,13 @@
 
 #include "guild/core/dense_quant.hpp"
 #include "guild/core/drama3_tower_kernels.hpp"
+#include "guild/kernels/cpu/expert_layout.hpp"
 #include "guild/kernels/native_mmvq.hpp"
 
 #include <cuda_runtime.h>
+#if defined(__x86_64__) && defined(__GNUC__) && !defined(_MSC_VER)
+#include <immintrin.h>
+#endif
 
 #include <algorithm>
 #include <cmath>
@@ -312,7 +316,7 @@ bool Drama3Tower::load(const std::string& dir, int64_t max_frames, std::string& 
     set_step_priority(!(prio && prio[0] == '0'));
 
     // GUILD_DRAMA3_FUSE: unset or 1, every faster step path below; 0, the separate kernels of before; letters pick
-    // parts (k: the fused small kernels).  Each part gives the same bits as the path it replaces.
+    // parts (k: the fused small kernels, s: the fast sampler).  Each part gives the same bits as the path it replaces.
     {
         const char* fz = std::getenv("GUILD_DRAMA3_FUSE");
         const std::string f = fz ? fz : "";
@@ -329,7 +333,9 @@ bool Drama3Tower::load(const std::string& dir, int64_t max_frames, std::string& 
                          why.c_str());
             fuse_ = false;
         }
-        std::fprintf(stderr, "guild drama3: tower step: %s small kernels\n", fuse_ ? "fused" : "separate");
+        fast_sample_ = want('s') && drama3::sample_fast_ok();
+        std::fprintf(stderr, "guild drama3: tower step: %s small kernels, %s sampler\n", fuse_ ? "fused" : "separate",
+                     fast_sample_ ? "AVX-512" : "reference");
     }
     return true;
 }
@@ -512,17 +518,27 @@ bool Drama3Tower::layer_forward(Layer& L, int row, const drama3::EmbedAdd& add, 
     return cuda_ok(cudaGetLastError(), "layer launch", err);
 }
 
+int Drama3Tower::sample(const float* logits, int n, const Drama3Sampling& sp, std::string& err) {
+    int c = fast_sample_ ? drama3::sample_fast(logits, n, sp, draws_) : -2;
+    if (c == -2)
+        c = drama3::sample_reference(logits, n, sp, draws_);
+    if (c < 0) {
+        err = "drama3 tower: non-finite logits; refusing to sample invalid audio";
+        return -1;
+    }
+    ++draws_;
+    return c;
+}
+
 // The reference's sample_top_k_top_p (fish_omni/tower.py): logits / T sorted descending; drop rank >= top_k and
 // every token whose cumulative probability (over the full softmax) passes top_p, except the first; draw from the
 // softmax of the rest.  The draw is the engine's (inverse CDF of one uniform), not torch's exponential race.
-int Drama3Tower::sample(const float* logits, int n, const Drama3Sampling& sp, std::string& err) {
+int drama3::sample_reference(const float* logits, int n, const Drama3Sampling& sp, uint64_t draw) {
     const float temp = std::max(sp.temperature, 1e-5f);
     float mx = -INFINITY;
     for (int i = 0; i < n; ++i) {
-        if (!std::isfinite(logits[i])) {
-            err = "drama3 tower: non-finite logits; refusing to sample invalid audio";
+        if (!std::isfinite(logits[i]))
             return -1;
-        }
         mx = std::max(mx, logits[i] / temp);
     }
     double z = 0.0;
@@ -547,7 +563,7 @@ int Drama3Tower::sample(const float* logits, int n, const Drama3Sampling& sp, st
     double tot = 0.0;
     for (int r = 0; r < kept; ++r)
         tot += p[(size_t) r];
-    const uint64_t bits = splitmix64(sp.seed * 0x100000001b3ull + draws_++);
+    const uint64_t bits = splitmix64(sp.seed * 0x100000001b3ull + draw);
     const double u = (double) (bits >> 11) * (1.0 / 9007199254740992.0) * tot;
     double acc = 0.0;
     for (int r = 0; r < kept; ++r) {
@@ -557,6 +573,228 @@ int Drama3Tower::sample(const float* logits, int n, const Drama3Sampling& sp, st
     }
     return idx[(size_t) kept - 1];
 }
+
+#if defined(__x86_64__) && defined(__GNUC__) && !defined(_MSC_VER)
+namespace {
+
+#include "drama3_exp_table.inc"
+
+#define GUILD_D3_AVX512 __attribute__((target("avx512f,avx512dq,avx512bw,avx512vl,fma")))
+
+// std::exp of eight doubles as glibc's __exp_fma computes it (e_exp.c with FMA contraction): x = k ln2 / 128 + r,
+// exp(x) = 2^(k / 128) (1 + tail + r + r^2 (C2 + r C3) + r^4 (C4 + r C5)).  Lanes outside its fast path (|x| < 2^-54,
+// |x| >= 512, inf, NaN) are std::exp's own.  sample_fast_ok() checks it against std::exp before it is used.
+GUILD_D3_AVX512 inline __m512d exp8(__m512d x) {
+    const __m512i bits = _mm512_castpd_si512(x);
+    const __m512i abstop = _mm512_and_si512(_mm512_srli_epi64(bits, 52), _mm512_set1_epi64(0x7ff));
+    // glibc's test: abstop - top12(0x1p-54) < top12(512) - top12(0x1p-54), unsigned
+    const __mmask8 fast =
+        _mm512_cmplt_epu64_mask(_mm512_sub_epi64(abstop, _mm512_set1_epi64(0x3c9)), _mm512_set1_epi64(0x3f));
+    const __m512d shift = _mm512_set1_pd(kExpConsts[1]);
+    const __m512d z = _mm512_fmadd_pd(x, _mm512_set1_pd(kExpConsts[0]), shift);
+    const __m512i ki = _mm512_castpd_si512(z);
+    const __m512d kd = _mm512_sub_pd(z, shift);
+    __m512d r = _mm512_fmadd_pd(kd, _mm512_set1_pd(kExpConsts[2]), x);
+    r = _mm512_fmadd_pd(kd, _mm512_set1_pd(kExpConsts[3]), r);
+    const __m512i idx = _mm512_slli_epi64(_mm512_and_si512(ki, _mm512_set1_epi64(127)), 1);
+    const __m512i top = _mm512_slli_epi64(ki, 45);
+    const auto* tab = (const long long*) kExpTable;
+    const __m512d tail = _mm512_castsi512_pd(_mm512_i64gather_epi64(idx, tab, 8));
+    const __m512i sb =
+        _mm512_add_epi64(_mm512_i64gather_epi64(_mm512_add_epi64(idx, _mm512_set1_epi64(1)), tab, 8), top);
+    const __m512d p23 = _mm512_fmadd_pd(r, _mm512_set1_pd(kExpConsts[5]), _mm512_set1_pd(kExpConsts[4]));
+    const __m512d tr = _mm512_add_pd(r, tail);
+    const __m512d r2 = _mm512_mul_pd(r, r);
+    const __m512d p45 = _mm512_fmadd_pd(r, _mm512_set1_pd(kExpConsts[7]), _mm512_set1_pd(kExpConsts[6]));
+    const __m512d q = _mm512_fmadd_pd(p23, r2, tr);
+    const __m512d r4 = _mm512_mul_pd(r2, r2);
+    const __m512d tmp = _mm512_fmadd_pd(r4, p45, q);
+    const __m512d scale = _mm512_castsi512_pd(sb);
+    __m512d y = _mm512_fmadd_pd(scale, tmp, scale);
+    if (fast != 0xff) {
+        alignas(64) double xs[8], ys[8];
+        _mm512_store_pd(xs, x);
+        _mm512_store_pd(ys, y);
+        for (int i = 0; i < 8; ++i)
+            if (!((fast >> i) & 1))
+                ys[i] = std::exp(xs[i]);
+        y = _mm512_load_pd(ys);
+    }
+    return y;
+}
+
+constexpr int kFastMaxN = 8192, kFastMaxK = 64;
+
+// sample_reference's draw with the same numbers: mx is the same maximum (order-free once every logit is finite; a
+// zero's sign does not reach exp), x_i the same float expression, e_i = exp8(x_i) = std::exp's bits, z their sum in
+// index order, the top k the same indices in the same order (the strict order logit descending, index ascending; a
+// row enters only past the k-th, so a later index never displaces an equal logit), and p_r = e_i / z as before.
+GUILD_D3_AVX512 int sample_fast_avx512(const float* logits, int n, const Drama3Sampling& sp, uint64_t draw) {
+    const float temp = std::max(sp.temperature, 1e-5f);
+    const int k = std::max(1, std::min(sp.top_k, n));
+    if (k > kFastMaxK || n > kFastMaxN)
+        return -2;
+    alignas(64) static thread_local float xs[kFastMaxN];
+    alignas(64) static thread_local double es[kFastMaxN];
+    // the finite check and the max, 16 at a time
+    const __m512 vt = _mm512_set1_ps(temp);
+    __m512 vmx = _mm512_set1_ps(-INFINITY);
+    __mmask16 bad = 0;
+    int i = 0;
+    for (; i + 16 <= n; i += 16) {
+        const __m512 v = _mm512_loadu_ps(logits + i);
+        bad |= _mm512_cmpeq_epi32_mask(_mm512_and_si512(_mm512_castps_si512(v), _mm512_set1_epi32(0x7f800000)),
+                                       _mm512_set1_epi32(0x7f800000));
+        vmx = _mm512_max_ps(vmx, _mm512_div_ps(v, vt));
+    }
+    if (bad)
+        return -1;
+    float mx = _mm512_reduce_max_ps(vmx);
+    for (; i < n; ++i) {
+        if (!std::isfinite(logits[i]))
+            return -1;
+        mx = std::max(mx, logits[i] / temp);
+    }
+    const __m512 vm = _mm512_set1_ps(mx);
+    for (i = 0; i + 16 <= n; i += 16)
+        _mm512_store_ps(xs + i, _mm512_sub_ps(_mm512_div_ps(_mm512_loadu_ps(logits + i), vt), vm));
+    for (; i < n; ++i)
+        xs[i] = logits[i] / temp - mx;
+    for (i = 0; i + 8 <= n; i += 8)
+        _mm512_store_pd(es + i, exp8(_mm512_cvtps_pd(_mm256_load_ps(xs + i))));
+    for (; i < n; ++i)
+        es[i] = std::exp((double) xs[i]);
+    double z = 0.0;
+    for (i = 0; i < n; ++i)
+        z += es[i];
+    // the best k so far, sorted
+    int top[kFastMaxK];
+    int nt = 0;
+    auto better = [&](int a, int b) { return logits[a] > logits[b] || (logits[a] == logits[b] && a < b); };
+    auto insert = [&](int c) {
+        if (nt == k && !better(c, top[k - 1]))
+            return;
+        int j = nt < k ? nt++ : k - 1;
+        while (j > 0 && better(c, top[j - 1])) {
+            top[j] = top[j - 1];
+            --j;
+        }
+        top[j] = c;
+    };
+    for (i = 0; i < n && nt < k; ++i)
+        insert(i);
+    for (; i + 16 <= n; i += 16) {
+        // only a logit above the k-th's can enter (an equal one has the larger index)
+        const __mmask16 m =
+            _mm512_cmp_ps_mask(_mm512_loadu_ps(logits + i), _mm512_set1_ps(logits[top[k - 1]]), _CMP_GT_OQ);
+        for (unsigned mm = m; mm; mm &= mm - 1)
+            insert(i + __builtin_ctz(mm));
+    }
+    for (; i < n; ++i)
+        insert(i);
+    double cum = 0.0;
+    int kept = 0;
+    double p[kFastMaxK];
+    for (int r = 0; r < k; ++r) {
+        const double pr = es[top[r]] / z;
+        cum += pr;
+        if (r > 0 && cum > sp.top_p)
+            break;
+        p[r] = pr;
+        kept = r + 1;
+    }
+    double tot = 0.0;
+    for (int r = 0; r < kept; ++r)
+        tot += p[r];
+    const uint64_t bits = splitmix64(sp.seed * 0x100000001b3ull + draw);
+    const double u = (double) (bits >> 11) * (1.0 / 9007199254740992.0) * tot;
+    double acc = 0.0;
+    for (int r = 0; r < kept; ++r) {
+        acc += p[r];
+        if (u < acc)
+            return top[r];
+    }
+    return top[kept - 1];
+}
+
+// the first m of xs[8] where exp8 differs from std::exp (the rest are set to 0)
+GUILD_D3_AVX512 int exp8_differ(double* xs, int m) {
+    alignas(64) double in[8], ys[8];
+    for (int j = 0; j < 8; ++j)
+        in[j] = j < m ? xs[j] : 0.0;
+    _mm512_store_pd(ys, exp8(_mm512_load_pd(in)));
+    int bad = 0;
+    for (int j = 0; j < m; ++j) {
+        const double e = std::exp(in[j]);
+        bad += std::memcmp(&e, &ys[j], 8) != 0;
+    }
+    return bad;
+}
+
+// float bit patterns lo, lo + step, ... < hi (NaNs skipped) whose exp8 differs from std::exp
+uint64_t exp8_mismatches(uint64_t lo, uint64_t hi, uint64_t step) {
+    uint64_t bad = 0;
+    double xs[8];
+    int m = 0;
+    for (uint64_t u = lo; u < hi; u += step) {
+        const uint32_t v = (uint32_t) u;
+        float f;
+        std::memcpy(&f, &v, 4);
+        if (std::isnan(f))
+            continue;
+        xs[m++] = (double) f;
+        if (m == 8) {
+            bad += (uint64_t) exp8_differ(xs, m);
+            m = 0;
+        }
+    }
+    if (m)
+        bad += (uint64_t) exp8_differ(xs, m);
+    return bad;
+}
+
+bool fast_sampler_check() {
+    if (!guild::kernels::cpu::cpu_avx512bw_ok())
+        return false;
+    // the sampler's inputs are logit / T - max <= 0 as doubles: about a million float patterns spread over [-200, 0],
+    // a slice of every exponent near 0 and past 512, and the edges of glibc's fast path
+    uint64_t bad = exp8_mismatches(0x80000000ull, 0xc3480000ull, 1077);
+    bad += exp8_mismatches(0x00000000ull, 0x7f800001ull, 1u << 16);
+    bad += exp8_mismatches(0x80000000ull, 0xff800001ull, 1u << 16);
+    for (const float f : {0.0f, -0.0f, 0x1p-54f, -0x1p-54f, 0x1.fffffep-55f, -0x1.fffffep-55f, -511.99997f, -512.0f,
+                          -700.0f, -745.2f, -1000.0f, 88.0f, -INFINITY}) {
+        uint32_t v;
+        std::memcpy(&v, &f, 4);
+        bad += exp8_mismatches(v, (uint64_t) v + 1, 1);
+    }
+    return bad == 0;
+}
+
+} // namespace
+
+int drama3::sample_fast(const float* logits, int n, const Drama3Sampling& sp, uint64_t draw) {
+    return sample_fast_ok() ? sample_fast_avx512(logits, n, sp, draw) : -2;
+}
+
+bool drama3::sample_fast_ok() {
+    static const bool ok = fast_sampler_check();
+    return ok;
+}
+
+uint64_t drama3::exp_mismatches(uint64_t lo, uint64_t hi, uint64_t step) {
+    return guild::kernels::cpu::cpu_avx512bw_ok() ? exp8_mismatches(lo, hi, step) : 0;
+}
+#else
+int drama3::sample_fast(const float*, int, const Drama3Sampling&, uint64_t) {
+    return -2;
+}
+bool drama3::sample_fast_ok() {
+    return false;
+}
+uint64_t drama3::exp_mismatches(uint64_t, uint64_t, uint64_t) {
+    return 0;
+}
+#endif
 
 bool Drama3Tower::step(const float* hidden, int64_t pos, const int32_t* frame, const int32_t* forced,
                        const int32_t* history, int n_history, const Drama3Sampling& sp, int32_t* out, std::string& err,

@@ -39,6 +39,22 @@ struct Drama3Sampling {
     uint64_t seed = 0;
 };
 
+namespace drama3 {
+/// The tower's sampler (Drama3Tower::sample) for draw number `draw` of a request: the reference's top-k / top-p rule
+/// and the engine's inverse-CDF draw.  -1 when a logit is not finite.
+int sample_reference(const float* logits, int n, const Drama3Sampling& sp, uint64_t draw);
+/// The same draw, faster (AVX-512: the softmax's exps eight at a time with std::exp's bits, the sum in index order, the
+/// top k kept sorted by the same (logit descending, index ascending) order): the same index for every input.  -2 when
+/// it does not take the call (top_k past 64, or sample_fast_ok() false); then sample_reference does.
+int sample_fast(const float* logits, int n, const Drama3Sampling& sp, uint64_t draw);
+/// Whether sample_fast runs here: an x86-64 GCC / Clang build, AVX-512 F/DQ/BW/VL (cpu_avx512bw_ok), and its exp
+/// equal to this process's std::exp bit for bit on a test of about a million inputs (checked once)
+bool sample_fast_ok();
+/// Tests: float bit patterns lo, lo + step, ... < hi as doubles where sample_fast's exp differs from std::exp
+/// (NaN patterns skipped); 0 without the fast path
+uint64_t exp_mismatches(uint64_t lo, uint64_t hi, uint64_t step);
+} // namespace drama3
+
 struct Drama3TowerGeometry {
     int dim = 0, n_head = 0, n_kv_head = 0, head_dim = 0, ffn = 0, rope_dim = 0;
     float rope_base = 0.0f, norm_eps = 0.0f, backbone_eps = 0.0f;
@@ -169,8 +185,9 @@ private:
     void* stream_ = nullptr;
     void* prio_stream_ = nullptr; // step_begin's, at the greatest priority (set_step_priority)
     bool top_ = true;
-    // GUILD_DRAMA3_FUSE (read in load; unset = all on, 0 = all off): the step's fused small kernels (k)
-    bool fuse_ = false;
+    // GUILD_DRAMA3_FUSE (read in load; unset = all on, 0 = all off): the step's fused small kernels (k), the fast
+    // sampler (s)
+    bool fuse_ = false, fast_sample_ = false;
     // device scratch
     float *h_ = nullptr, *e_ = nullptr, *cat_ = nullptr, *x_ = nullptr, *xn_ = nullptr, *qkv_ = nullptr, *q_ = nullptr,
           *att_ = nullptr, *proj_ = nullptr, *ff1_ = nullptr, *ff3_ = nullptr, *logits_ = nullptr, *part_ = nullptr;
