@@ -42,16 +42,16 @@ uint64_t splitmix64(uint64_t x) {
     return x ^ (x >> 31);
 }
 
-// GUILD_DRAMA3_FUSE: unset or 1, every faster step path; 0, the separate kernels, the reference sampler and the file's
-// layout of before; letters pick parts (k: the fused small kernels, s: the fast sampler, a: the staged attention,
-// w: [w1|w3] as one matvec).  Each part gives the same bits as the path it replaces.
+// GUILD_DRAMA3_FUSE: unset or 1, "ksaw"; 0, the separate kernels, the reference sampler and the file's layout of
+// before; letters pick parts (k: the fused small kernels, s: the fast sampler, a: the staged attention, w: [w1|w3] as
+// one matvec, f: a and w in step_finish's layers too).  Without f, a and w run in step_begin's layers only, the
+// critical path (the backbone waits for them); in every layer they shortened the tower step but lengthened the
+// backbone step beside step_finish about as much.  Each part gives the same bits as the path it replaces.
 bool fuse_part(char part) {
     const char* fz = std::getenv("GUILD_DRAMA3_FUSE");
-    const std::string f = fz ? fz : "";
-    if (f.empty())
-        return true;
-    if (f.find_first_not_of("0123456789") == std::string::npos)
-        return f != "0";
+    std::string f = fz ? fz : "";
+    if (f.find_first_not_of("0123456789") == std::string::npos) // unset or a number
+        f = f != "0" ? "ksaw" : "";
     return f.find(part) != std::string::npos;
 }
 
@@ -362,14 +362,18 @@ bool Drama3Tower::load(const std::string& dir, int64_t max_frames, std::string& 
         }
         fast_sample_ = fuse_part('s') && drama3::sample_fast_ok();
         fast_attn_ = fuse_part('a');
-        int w13 = 0;
-        for (const Layer& L : layers_)
-            w13 += L.w13.w != nullptr && fuse_;
-        std::fprintf(
-            stderr,
-            "guild drama3: tower step: %s small kernels, %s sampler, %s attention, [w1|w3] in %d of %zu layers\n",
-            fuse_ ? "fused" : "separate", fast_sample_ ? "AVX-512" : "reference", fast_attn_ ? "staged" : "chunked",
-            w13, layers_.size());
+        fast_finish_ = fuse_part('f');
+        const int n = (int) layers_.size(), n_begin = std::min(g_.n_shared + 1, n); // step_begin's layers
+        int attn = 0, w13 = 0;
+        for (int l = 0; l < n; ++l) {
+            const bool fast = l < n_begin || fast_finish_;
+            attn += fast_attn_ && fast;
+            w13 += layers_[(size_t) l].w13.w != nullptr && fuse_ && fast;
+        }
+        std::fprintf(stderr,
+                     "guild drama3: tower step: %s small kernels, %s sampler, staged attention in %d and [w1|w3] in %d "
+                     "of %d layers\n",
+                     fuse_ ? "fused" : "separate", fast_sample_ ? "AVX-512" : "reference", attn, w13, n);
     }
     return true;
 }
@@ -485,12 +489,15 @@ bool Drama3Tower::fused_self_check(std::string& why) {
     return ok && cuda_ok(cudaGetLastError(), "fused self-check", why);
 }
 
-bool Drama3Tower::layer_forward(Layer& L, int row, const drama3::EmbedAdd& add, int64_t pos, bool head,
+bool Drama3Tower::layer_forward(Layer& L, int row, const drama3::EmbedAdd& add, int64_t pos, bool head, bool finish,
                                 std::string& err, void* stream) {
     const auto st = (cudaStream_t) stream;
     const int D = g_.dim, Q = g_.n_head * g_.head_dim;
     const float eps = g_.norm_eps;
     const drama3::QkvShape qs{g_.n_head, g_.n_kv_head, g_.head_dim, g_.rope_dim, g_.rope_base, eps};
+    // the staged attention and [w1|w3]: in step_begin's layers, and in step_finish's only with f (fast_finish_)
+    const bool fast = !finish || fast_finish_;
+    const auto attend = fast_attn_ && fast ? drama3::attention_fast : drama3::attention;
     if (fuse_) {
         // the same operations as below in fewer kernels: the norms take their adds and write the next matvec's Q8_1
         // blocks themselves, and w1 and w3 read one quantization
@@ -501,16 +508,15 @@ bool Drama3Tower::layer_forward(Layer& L, int row, const drama3::EmbedAdd& add, 
         if (!mmvq(L.wqkv, xq_, qkv_, err, stream))
             return false;
         drama3::qk_norm_rope(qkv_, L.q_norm, L.k_norm, q_, L.k_cache, L.v_cache, qs, pos, st);
-        if (!(fast_attn_ ? drama3::attention_fast : drama3::attention)(q_, L.k_cache, L.v_cache, qkv_ + Q, part_, att_,
-                                                                       qs, pos + 1, st)) {
+        if (!attend(q_, L.k_cache, L.v_cache, qkv_ + Q, part_, att_, qs, pos + 1, st)) {
             err = "drama3 tower: unsupported attention shape";
             return false;
         }
         if (!quantize(att_, xq_, Q, err, stream) || !mmvq(L.wo, xq_, proj_, err, stream))
             return false;
         drama3::add_norm_q8(x_, proj_, L.ffn_norm, eps, nullptr, xq_, st);
-        if (L.w13.w ? !mmvq(L.w13, xq_, ff1_, err, stream) // ff1_ then ff3_ = ff1_ + ffn
-                    : !mmvq(L.w1, xq_, ff1_, err, stream) || !mmvq(L.w3, xq_, ff3_, err, stream))
+        if (L.w13.w && fast ? !mmvq(L.w13, xq_, ff1_, err, stream) // ff1_ then ff3_ = ff1_ + ffn
+                            : !mmvq(L.w1, xq_, ff1_, err, stream) || !mmvq(L.w3, xq_, ff3_, err, stream))
             return false;
         try {
             guild::kernels::native_swiglu_quantize_q8_1(ff1_, ff3_, xq_, g_.ffn, 1, stream);
@@ -532,8 +538,7 @@ bool Drama3Tower::layer_forward(Layer& L, int row, const drama3::EmbedAdd& add, 
     if (!matvec(L.wqkv, xn_, qkv_, err, stream))
         return false;
     drama3::qk_norm_rope(qkv_, L.q_norm, L.k_norm, q_, L.k_cache, L.v_cache, qs, pos, st);
-    if (!(fast_attn_ ? drama3::attention_fast : drama3::attention)(q_, L.k_cache, L.v_cache, qkv_ + Q, part_, att_, qs,
-                                                                   pos + 1, st)) {
+    if (!attend(q_, L.k_cache, L.v_cache, qkv_ + Q, part_, att_, qs, pos + 1, st)) {
         err = "drama3 tower: unsupported attention shape";
         return false;
     }
@@ -908,7 +913,7 @@ bool Drama3Tower::step_begin(const float* hidden, int64_t pos, const int32_t* fr
     // through the first residual layer, whose head gives c1
     const int split = std::min(g_.n_shared + 1, (int) layers_.size());
     // synchronized: `hidden` (the backbone's) is free to change once this returns
-    if (!step_layers(0, split, err, st) || !cuda_ok(cudaStreamSynchronize(st), "tower step", err))
+    if (!step_layers(0, split, false, err, st) || !cuda_ok(cudaStreamSynchronize(st), "tower step", err))
         return false;
     out[0] = main;
     out[1] = cur_.codes[0];
@@ -918,7 +923,7 @@ bool Drama3Tower::step_begin(const float* hidden, int64_t pos, const int32_t* fr
 }
 
 bool Drama3Tower::step_finish(std::string& err) {
-    if (!step_layers(cur_.next_layer, (int) layers_.size(), err, stream_) ||
+    if (!step_layers(cur_.next_layer, (int) layers_.size(), true, err, stream_) ||
         !cuda_ok(cudaStreamSynchronize((cudaStream_t) stream_), "tower step", err))
         return false;
     for (int k = 2; cur_.out && k < g_.n_codebooks; ++k)
@@ -936,7 +941,7 @@ bool Drama3Tower::read_logits(int n, float* also, std::string& err, void* stream
     return true;
 }
 
-bool Drama3Tower::step_layers(int l0, int l1, std::string& err, void* stream) {
+bool Drama3Tower::step_layers(int l0, int l1, bool finish, std::string& err, void* stream) {
     const auto st = (cudaStream_t) stream;
     const int D = g_.dim, CS = g_.codebook_size, NC = g_.n_codebooks;
     Step& c = cur_;
@@ -951,8 +956,8 @@ bool Drama3Tower::step_layers(int l0, int l1, std::string& err, void* stream) {
                 unseen.rows[unseen.n++] = k * CS + std::clamp(c.frame[1 + k], 0, CS - 1);
         // a teacher-forced step takes the next code from `forced`, and runs the head only when its logits are asked for
         const bool head = !shared && (!c.forced || c.code_logits);
-        if (!layer_forward(layers_[(size_t) l], c.semantic ? std::clamp(code, 0, CS - 1) : -1, unseen, c.pos, head, err,
-                           stream))
+        if (!layer_forward(layers_[(size_t) l], c.semantic ? std::clamp(code, 0, CS - 1) : -1, unseen, c.pos, head,
+                           finish, err, stream))
             return false;
         if (c.layer_out &&
             !cuda_ok(cudaMemcpyAsync(c.layer_out + (size_t) l * D, h_, (size_t) D * 4, cudaMemcpyDeviceToHost, st),

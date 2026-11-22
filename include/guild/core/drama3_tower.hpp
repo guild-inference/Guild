@@ -148,9 +148,9 @@ private:
         uint16_t *k_cache = nullptr, *v_cache = nullptr; // [max_frames][n_kv_head][head_dim] FP16
     };
     /// one layer of a step: its input embeds table row `row` (zeros when < 0) plus `add`; `head`: a head reads h_
-    /// next (the fused path then leaves h_'s Q8_1 blocks in xq_ for it)
-    bool layer_forward(Layer& L, int row, const drama3::EmbedAdd& add, int64_t pos, bool head, std::string& err,
-                       void* st);
+    /// next (the fused path then leaves h_'s Q8_1 blocks in xq_ for it); `finish`: one of step_finish's layers
+    bool layer_forward(Layer& L, int row, const drama3::EmbedAdd& add, int64_t pos, bool head, bool finish,
+                       std::string& err, void* st);
     bool matvec(const Mat& m, const float* x, float* y, std::string& err, void* st, int ncols = 1);
     bool quantize(const float* x, void* xq, int n, std::string& err, void* st);
     bool mmvq(const Mat& m, const void* xq, float* y, std::string& err, void* st);
@@ -160,7 +160,8 @@ private:
                        float* layer_out);
     static constexpr int kPrefillCols = 64;
     int sample(const float* logits, int n, const Drama3Sampling& sp, std::string& err);
-    bool step_layers(int l0, int l1, std::string& err, void* st);     // layers [l0, l1) of the step in `cur_`
+    // layers [l0, l1) of the step in `cur_`; `finish`: step_finish's
+    bool step_layers(int l0, int l1, bool finish, std::string& err, void* st);
     bool read_logits(int n, float* also, std::string& err, void* st); // logits_ -> host_logits_ (and `also`), synced
 
     // the step between step_begin and step_finish
@@ -186,9 +187,9 @@ private:
     void* stream_ = nullptr;
     void* prio_stream_ = nullptr; // step_begin's, at the greatest priority (set_step_priority)
     bool top_ = true;
-    // GUILD_DRAMA3_FUSE (read in load; unset = all on, 0 = all off): the step's fused small kernels (k), the fast
-    // sampler (s), the staged attention (a); [w1|w3] (w) is each Layer's w13
-    bool fuse_ = false, fast_sample_ = false, fast_attn_ = false;
+    // GUILD_DRAMA3_FUSE (read in load; unset = ksaw, 0 = none): the step's fused small kernels (k), the fast sampler
+    // (s), the staged attention (a); [w1|w3] (w) is each Layer's w13; a and w in step_finish's layers too (f)
+    bool fuse_ = false, fast_sample_ = false, fast_attn_ = false, fast_finish_ = false;
     // device scratch
     float *h_ = nullptr, *e_ = nullptr, *cat_ = nullptr, *x_ = nullptr, *xn_ = nullptr, *qkv_ = nullptr, *q_ = nullptr,
           *att_ = nullptr, *proj_ = nullptr, *ff1_ = nullptr, *ff3_ = nullptr, *logits_ = nullptr, *part_ = nullptr;
