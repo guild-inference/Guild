@@ -1,0 +1,104 @@
+diff --git a/src/qwen/fused_gr.cu b/src/qwen/fused_gr.cu
+index 6af292b..22cc1a4 100644
+--- a/src/qwen/fused_gr.cu
++++ b/src/qwen/fused_gr.cu
+@@ -1324,9 +1324,11 @@ __device__ __forceinline__ float dot16(const float (&f)[16], const float4 x0, co
+ }
+ 
+ // The down projection: warp w has rows 2w and 2w + 1 (Q8_0 rows, or the bf16 inject rows), lane l the values
+-// [512 s + 16 l, +16) of step s of both.  The block's warps share each step's activations, staged in shared memory
++// [512 s + 16 l, +16) of step s of both.  Q8_ROWS / Q8_WARPS (GUILD_GR_Q8_DOWN, below) only move rows between warps:
++// each lane still takes its chunks of a row in the same order and each row ends in the same xor tree, so every
++// output is the same bits.  The block's warps share each step's activations, staged in shared memory
+ // a step ahead (plane q, lane l: floats 16 l + 4 q .. + 3, so no two float4 reads hit one bank).
+-template <int T>
++template <int T, int Q8_ROWS = 2, int Q8_WARPS = 4, bool XREG = false>
+ __global__ void __launch_bounds__(Q8_WARPS * 32) gr_down_q8_kernel(GrMulti m) {
+     constexpr int NT = Q8_WARPS * 32, PER = (T * 128 + NT - 1) / NT;
+     __shared__ __align__(16) float4 xs[2][T][4][32];
+@@ -1399,16 +1401,35 @@ __global__ void __launch_bounds__(Q8_WARPS * 32) gr_down_q8_kernel(GrMulti m) {
+             const int s = s0 + p, b = s & 1;
+             if (s + 1 < Q8_STEPS) fetch_x(s + 1);
+             if (live) {
++                if constexpr (XREG) {
++                    // a token's activations read from shared memory once a step, for all the warp's rows: the same
++                    // fmaf chains in the same order
++                    float f[Q8_ROWS][16];
++#pragma unroll
++                    for (int r = 0; r < Q8_ROWS; ++r) {
++                        if (inj) bf16_values16(ra[p][r], rb[p][r], f[r]);
++                        else q8_values16(ra[p][r], f[r]);
++                    }
++#pragma unroll
++                    for (int k = 0; k < T; ++k) {
++                        const float4 x0 = xs[b][k][0][lane], x1 = xs[b][k][1][lane], x2 = xs[b][k][2][lane],
++                                     x3 = xs[b][k][3][lane];
++#pragma unroll
++                        for (int r = 0; r < Q8_ROWS; ++r)
++                            acc[r][k] = fmaf(rd[p][r], dot16(f[r], x0, x1, x2, x3), acc[r][k]);
++                    }
++                } else {
+ #pragma unroll
+-                for (int r = 0; r < Q8_ROWS; ++r) {
+-                    float f[16];
+-                    if (inj) bf16_values16(ra[p][r], rb[p][r], f);
+-                    else q8_values16(ra[p][r], f);
++                    for (int r = 0; r < Q8_ROWS; ++r) {
++                        float f[16];
++                        if (inj) bf16_values16(ra[p][r], rb[p][r], f);
++                        else q8_values16(ra[p][r], f);
+ #pragma unroll
+-                    for (int k = 0; k < T; ++k)
+-                        acc[r][k] = fmaf(rd[p][r],
+-                                         dot16(f, xs[b][k][0][lane], xs[b][k][1][lane], xs[b][k][2][lane], xs[b][k][3][lane]),
+-                                         acc[r][k]);
++                        for (int k = 0; k < T; ++k)
++                            acc[r][k] = fmaf(rd[p][r],
++                                             dot16(f, xs[b][k][0][lane], xs[b][k][1][lane], xs[b][k][2][lane], xs[b][k][3][lane]),
++                                             acc[r][k]);
++                    }
+                 }
+                 if (s + Q8_RING < Q8_STEPS) fetch_w(p, s + Q8_RING);
+             }
+@@ -1525,9 +1546,40 @@ __global__ void __launch_bounds__(THREADS) gr_up_q8_kernel(GrMulti m) {
+     }
+ }
+ 
++// GUILD_GR_Q8_DOWN=<rows a warp>x<warps a block> (1x4, 1x8, 2x2, 2x8; default 2x4): the down kernel's shape
++int gr_q8_down_shape() {
++    static const int v = [] {
++        const char* e = std::getenv("GUILD_GR_Q8_DOWN");
++        if (e == nullptr) return 24;
++        const int r = std::atoi(e), w = std::strchr(e, 'x') ? std::atoi(std::strchr(e, 'x') + 1) : 4;
++        const int k = 10 * r + w + (std::strchr(e, 'r') ? 100 : 0); // a trailing r: activations in registers
++        switch (k) {
++            case 14: case 18: case 22: case 28: case 24: case 124: case 122: case 128: case 142: case 144: return k;
++            default: return 24;
++        }
++    }();
++    return v;
++}
++
++template <int T, int R, int W, bool XREG = false>
++void launch_down_q8(const GrMulti& m, cudaStream_t st) {
++    gr_down_q8_kernel<T, R, W, XREG><<<(LR + HC + R * W - 1) / (R * W), W * 32, 0, st>>>(m);
++}
++
+ template <int T>
+ void launch_q8_t(const GrMulti& m, cudaStream_t st, unsigned long long* stamp_buf, int stamp_i0) {
+-    gr_down_q8_kernel<T><<<Q8_BLOCKS, Q8_WARPS * 32, 0, st>>>(m);
++    switch (gr_q8_down_shape()) {
++        case 14: launch_down_q8<T, 1, 4>(m, st); break;
++        case 18: launch_down_q8<T, 1, 8>(m, st); break;
++        case 22: launch_down_q8<T, 2, 2>(m, st); break;
++        case 28: launch_down_q8<T, 2, 8>(m, st); break;
++        case 124: launch_down_q8<T, 2, 4, true>(m, st); break;
++        case 122: launch_down_q8<T, 2, 2, true>(m, st); break;
++        case 128: launch_down_q8<T, 2, 8, true>(m, st); break;
++        case 142: launch_down_q8<T, 4, 2, true>(m, st); break;
++        case 144: launch_down_q8<T, 4, 4, true>(m, st); break;
++        default: launch_down_q8<T, 2, 4>(m, st); break;
++    }
+     if (stamp_buf) gpu_stamp(stamp_buf, stamp_i0 + 1, (void*) st);
+     launch_up(gr_up_q8_kernel<T>, 8 + T - 1, m, st);
+ }

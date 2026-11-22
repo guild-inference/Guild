@@ -3395,8 +3395,9 @@ def small_card_note(ctx: int, draft_vocab: str | None) -> list[str]:
 PARALLEL_MAX = 8               # #465: the engine's batch window holds at most 8 requests
 PARALLEL_SHARE = 0.2           # #465: the slots' sessions may take this share of the VRAM the expert cache would hold
 PARALLEL_HELD = 0.5            # #465: ... and only where the cache still holds this share of the experts beside them
-PARALLEL_COST_NOTE = ("parallel N reduces waiting for several users but costs about 10-25% speed per request on this "
-                      "card")
+PARALLEL_COST_NOTE = ("parallel N lets several users decode at once instead of waiting for whole answers, but its slots "
+                      "take VRAM the expert cache and the prompt chunks would use on this card")
+PARALLEL_DOC = "README: Several requests at once"
 
 
 def parallel_slot_gb(ctx: int, kv: str, streaming: bool, host_only=False) -> float:
@@ -3412,9 +3413,11 @@ def parallel_recommend(vram_gbs, arena_gb: float, ctx: int, kv: str, streaming: 
     """#465: how many requests at once ("parallel") to recommend: 0 = none (one at a time).  Only where the experts
     mostly fit in VRAM - the expert cache (each card's VRAM less ~5 GB, every card of a layer split) still holds
     PARALLEL_HELD of the model's experts beside the slots' sessions, which take at most PARALLEL_SHARE of it, up to 4.
-    Where the experts mostly run on the CPU a batch reads about as many experts as the requests one by one and every
-    slot's VRAM is expert cache lost: measured on a 12 GB RTX 5070 (Q2_0, 32K), a request alone 11-24% slower with 2-4
-    slots, 4 requests together 63 tok/s against 71 one after the other (docs/BATCHING.md)."""
+    The earlier engine measured that trade on a 12 GB RTX 5070 (Q2_0, 32K): a request alone 11-24% slower with 2-4 slots,
+    4 requests together 63 tok/s against 71 one after the other.  The runtime's slots (2026-11-15, GTX 1070 8 GB with no
+    expert cache, Qwen at 32K) keep a request alone at its speed and decode 4 together at 61 against 53 tok/s, but there
+    the slots took the prompt chunks' VRAM (bench/results/2026-11-15-parallel); the rule is kept until it is measured on
+    cards with a cache."""
     if isinstance(vram_gbs, (int, float)):
         vram_gbs = [vram_gbs]
     cache_gb = sum(max(0.0, v - 5) for v in vram_gbs)
@@ -3434,9 +3437,9 @@ def parallel_note(asked: int | None, vram_gbs, arena_gb: float, ctx: int, kv: st
     slot = parallel_slot_gb(ctx, kv, streaming, host_only)
     if asked is None or asked <= 1:
         if not rec:
-            return [f"Several requests at once: left at one at a time - {PARALLEL_COST_NOTE} (docs/BATCHING.md)."]
+            return [f"Several requests at once: left at one at a time - {PARALLEL_COST_NOTE} ({PARALLEL_DOC})."]
         return [f"Several requests at once (opt-in): --parallel {rec} decodes up to {rec} together instead of one "
-                f"after the other (each takes ~{slot:.1f} GB of VRAM from the expert cache; docs/BATCHING.md)."]
+                f"after the other (each takes ~{slot:.1f} GB of VRAM from the expert cache; {PARALLEL_DOC})."]
     lines = [f"parallel requests: {asked} at once (each takes ~{slot:.1f} GB of VRAM from the expert cache, "
              f"{asked * slot:.1f} GB in all)"]
     if asked > PARALLEL_MAX:

@@ -1,0 +1,25 @@
+## iq4nl_rows512_test (640-value rows), v1 then v2, 32 and 8 threads
+v2=0 dram: 32 threads, 1 tokens, iq4nl_rows512: 145.5 GB/s
+v2=1 dram: 32 threads, 1 tokens, iq4nl_rows512: 169.7 GB/s
+v2=0 dram: 32 threads, 2 tokens, iq4nl_rows512: 89.2 GB/s
+v2=1 dram: 32 threads, 2 tokens, iq4nl_rows512: 136.8 GB/s
+v2=0 dram: 32 threads, 3 tokens, iq4nl_rows512: 69.4 GB/s
+v2=1 dram: 32 threads, 3 tokens, iq4nl_rows512: 111.0 GB/s
+v2=0 dram: 32 threads, 4 tokens, iq4nl_rows512: 56.4 GB/s
+v2=1 dram: 32 threads, 4 tokens, iq4nl_rows512: 93.4 GB/s
+v2=0 dram: 8 threads, 1 tokens, iq4nl_rows512: 39.7 GB/s
+v2=1 dram: 8 threads, 1 tokens, iq4nl_rows512: 47.5 GB/s
+v2=0 dram: 8 threads, 2 tokens, iq4nl_rows512: 24.1 GB/s
+v2=1 dram: 8 threads, 2 tokens, iq4nl_rows512: 37.3 GB/s
+v2=0 dram: 8 threads, 3 tokens, iq4nl_rows512: 19.1 GB/s
+v2=1 dram: 8 threads, 3 tokens, iq4nl_rows512: 30.5 GB/s
+v2=0 dram: 8 threads, 4 tokens, iq4nl_rows512: 15.4 GB/s
+v2=1 dram: 8 threads, 4 tokens, iq4nl_rows512: 26.0 GB/s
+
+## bitwise
+ok: 20448 results, 0 differ from ggml-cpu's dot
+
+## glm5_nl4_test --dram (2560-value rows: Qwen gate/up as NL4)
+dram: 32 threads, 1 tokens, avx512: 199.8 GB/s
+dram: 32 threads, 2 tokens, avx512: 185.3 GB/s
+dram: 32 threads, 4 tokens, avx512: 118.4 GB/s

@@ -91,6 +91,14 @@ double kl(const float* ref, const float* got, int n) {
     return d;
 }
 
+// FNV-1a over raw bytes: the run's outputs as bits, so two builds or switches (GUILD_DRAMA3_PRIO) compare exactly
+uint64_t fnv(uint64_t h, const void* p, size_t n) {
+    const auto* b = static_cast<const unsigned char*>(p);
+    for (size_t i = 0; i < n; ++i)
+        h = (h ^ b[i]) * 0x100000001b3ull;
+    return h;
+}
+
 int argmax(const float* a, int n) {
     int best = 0;
     for (int i = 1; i < n; ++i)
@@ -186,12 +194,17 @@ int main(int argc, char** argv) {
         kl_worst = std::max(kl_worst, d);
     };
     std::vector<double> layer_cos((size_t) NL, 1.0);
+    uint64_t bits = 0xcbf29ce484222325ull;
     const int checked = std::min(steps, n); // a step whose frame is eos has no forced codes to replay
     for (int s = 0; s < checked; ++s) {
         const int p = R - 1 + s;
         const int32_t* row =
             s == 0 ? prompt.as<int32_t>() + (size_t) (R - 1) * W : frames.as<int32_t>() + (size_t) (s - 1) * W;
         run(tower, p, row, frames.as<int32_t>() + (size_t) s * W, c.data(), cl.data(), lo.data());
+        bits = fnv(bits, c.data(), c.size() * 4);
+        bits = fnv(bits, cl.data(), cl.size() * 4);
+        bits = fnv(bits, lo.data(), lo.size() * 4);
+        bits = fnv(bits, out.data(), out.size() * 4);
         const float* rc = cand.as<float>() + (size_t) s * (CS + 1);
         worst_cos = std::min(worst_cos, cosine(c.data(), rc, CS + 1));
         argmax_same += argmax(c.data(), CS + 1) == argmax(rc, CS + 1);
@@ -211,6 +224,16 @@ int main(int argc, char** argv) {
             ++argmax_rows;
         }
     }
+    {
+        const int KV = g.n_kv_head * g.head_dim;
+        std::vector<uint16_t> k(KV), v(KV);
+        for (int l = 0; l < NL; ++l)
+            for (int p = 0; p < R - 1 + checked; ++p) {
+                tower.read_kv(l, p, k.data(), v.data());
+                bits = fnv(fnv(bits, k.data(), k.size() * 2), v.data(), v.size() * 2);
+            }
+    }
+    std::printf("bits of every step's logits, layer outputs, frames and K/V: %016llx\n", (unsigned long long) bits);
     for (int l = 0; l < NL; ++l)
         std::printf("layer %2d: worst cosine %.6f\n", l, layer_cos[(size_t) l]);
     const double agree = argmax_rows ? (double) argmax_same / argmax_rows : 0.0;

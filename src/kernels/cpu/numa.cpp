@@ -9,6 +9,8 @@
 
 #if defined(__linux__)
 #include <sched.h>
+#include <sys/syscall.h>
+#include <unistd.h>
 #endif
 
 namespace guild::kernels::cpu {
@@ -91,6 +93,51 @@ int current_numa_node() {
         return t.cpu_node[(size_t) cpu];
 #endif
     return -1;
+}
+
+bool numa_node_can_hold(int node, uint64_t bytes) {
+#if defined(__linux__)
+    std::ifstream f("/sys/devices/system/node/node" + std::to_string(node) + "/meminfo");
+    if (!f.is_open())
+        return false;
+    // "Node 0 MemFree:        30560504 kB"
+    uint64_t kb = 0;
+    int found = 0;
+    std::string line;
+    while (std::getline(f, line)) {
+        for (const char* key : {"MemFree:", "Active(file):", "Inactive(file):"}) {
+            const size_t at = line.find(key);
+            if (at != std::string::npos) {
+                kb += std::strtoull(line.c_str() + at + std::strlen(key), nullptr, 10);
+                ++found;
+            }
+        }
+    }
+    return found == 3 && kb * 1024ull >= bytes + (4ull << 30);
+#else
+    (void) node;
+    (void) bytes;
+    return false;
+#endif
+}
+
+NodeBind::NodeBind(int node, bool enable) {
+#if defined(__linux__) && defined(SYS_set_mempolicy)
+    if (!enable || node < 0 || node >= 64)
+        return;
+    const unsigned long mask = 1ul << node;
+    bound_ = syscall(SYS_set_mempolicy, 2 /* MPOL_BIND */, &mask, 64ul) == 0;
+#else
+    (void) node;
+    (void) enable;
+#endif
+}
+
+NodeBind::~NodeBind() {
+#if defined(__linux__) && defined(SYS_set_mempolicy)
+    if (bound_)
+        (void) syscall(SYS_set_mempolicy, 0 /* MPOL_DEFAULT */, nullptr, 0ul);
+#endif
 }
 
 int numa_node0_ranges(const guild_cpu_expert_format_v1_t& f, bool gate_up_interleaved, uint64_t ranges[3][2]) {

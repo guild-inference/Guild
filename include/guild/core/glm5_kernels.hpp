@@ -17,6 +17,10 @@ inline constexpr int kHc = 4;
 
 /// y[r] = x[r] / sqrt(mean(x[r]^2) + eps) * w (w may be null), rows of n
 void rms_norm(const float* x, const float* w, float* y, int n, int rows, float eps, void* st);
+/// rms_norm, and y's Q8_1 into xq: guild::kernels::native_quantize_q8_1(y, xq, n, rows)'s bytes, from the kernel that
+/// computes y (rms_norm_q8_1_supported(n): the rows rms_norm computes with 256 threads, n % 32 == 0)
+bool rms_norm_q8_1_supported(int n);
+void rms_norm_q8_1(const float* x, const float* w, float* y, int n, int rows, float eps, void* xq, void* st);
 
 /// The mHC mix before a sublayer.  mixes [T][24] = hc_fn . rms_norm(flat R); from them pre/post/comb (comb by
 /// Sinkhorn, `iters` iterations), xn[t] = rms_norm(sum_h pre[h] R[t][h]) * norm_w.  post [T][4], comb [T][16].
@@ -27,10 +31,11 @@ void hc_pre(const float* mixes, const float* scale, const float* base, const flo
 /// streams writes hc_mix_floats(T) partial sums, which hc_pre_mixed turns into the mixes (the RMS norm of R as a scale)
 void hc_mix(const void* hc_fn, const float* R, float* part, int N, int T, void* st);
 size_t hc_mix_floats(int T);
-/// (xn_host, when given: the same xn rows also stored to that mapped host memory)
+/// (xn_host, when given: the same xn rows also stored to that mapped host memory; xq, when given: xn's Q8_1, the
+/// bytes of guild::kernels::native_quantize_q8_1(xn, xq, N, T); N % 32 == 0)
 void hc_pre_mixed(const float* part, const float* scale, const float* base, const float* R, const float* norm_w,
                   float* post, float* comb, float* xn, int N, int T, int iters, float hc_eps, float rms_eps, void* st,
-                  float* xn_host = nullptr);
+                  float* xn_host = nullptr, void* xq = nullptr);
 /// R[t][dst] = y[t] * post[t][dst] + sum_src R[t][src] * comb[t][dst + 4 * src], in place
 void hc_post(const float* y, float* R, const float* post, const float* comb, int N, int T, void* st,
              const float* y2 = nullptr);
@@ -54,8 +59,9 @@ void kda_gates(const float* fpre, const float* dt_b, const float* ssm_a, float* 
 /// same layout.
 void kda_step(const float* S_in, float* S_out, const float* qkv, const float* g, const float* beta, float* o, int H,
               int T, float* mid, void* st);
-/// y = rms_norm(o per head) * norm_w * sigmoid(gate)
-void kda_out(const float* o, const float* gate, const float* norm_w, float* y, int H, int T, float eps, void* st);
+/// y = rms_norm(o per head) * norm_w * sigmoid(gate); xq (when given): y's Q8_1 as native_quantize_q8_1 writes it
+void kda_out(const float* o, const float* gate, const float* norm_w, float* y, int H, int T, float eps, void* st,
+             void* xq = nullptr);
 
 /// Per-head Q8_0 products: y[t][h][r] = W[h][r] . x[t][h], W [H][n_out][n_in] in q8_0_split's layout
 /// (q8_0_heads_supported: n_in a multiple of 32 up to 1024, n_out a multiple of 32)
@@ -90,6 +96,12 @@ void q8_0_mmvq(const void* W, const void* xq8_1, float* y, int n_in, int n_out, 
 /// activations
 bool q8_0_narrow_supported(int n_in, int T);
 void q8_0_narrow(const void* W, const void* xq8_1, float* y, int n_in, int n_out, int T, void* st);
+/// One token's KDA gates in one launch, bitwise q8_0_narrow(Wf, the first n_in values' blocks) -> kda_gates (g, and
+/// beta from bpre) and q8_0_narrow(Wg, the next n_in values' blocks) -> gate: xq8_1 holds the two inputs one after
+/// the other (one quantization of both), Wf and Wg are Q8_0 [D][n_in] (kda_fg_supported)
+bool kda_fg_supported(int n_in, int D);
+void kda_fg(const void* Wf, const void* Wg, const void* xq8_1, const float* dt_b, const float* ssm_a, float* g,
+            const float* bpre, float* beta, float* gate, int n_in, int D, int H, float lower_bound, void* st);
 /// y[t][r] = W[r] . x[t], W [n_out][n_in] F32
 void f32_matvec(const float* W, const float* x, float* y, int n_in, int n_out, int T, void* st);
 /// f32_matvec on a matrix whose F32 values are all bf16 values, held as their high 16 bits: the same products and sums
@@ -159,8 +171,9 @@ int64_t attend_scratch_floats(int64_t max_cells, int H, int L, int T);
 /// and w_host (mapped host memory) both also stored there
 void route(const float* logits, const float* bias, int E, int k, bool norm, float scale, int32_t* ids, float* w, int T,
            void* st, int32_t* ids_host = nullptr, float* w_host = nullptr);
-/// y = silu(min(gate, lim)) * clamp(up, -lim, lim), [T][n] each
-void swiglu_clamp(const float* gate, const float* up, float* y, int n, int T, float lim, void* st);
+/// y = silu(min(gate, lim)) * clamp(up, -lim, lim), [T][n] each; xq (when given and n % 32 == 0): y's Q8_1 as
+/// native_quantize_q8_1 writes it
+void swiglu_clamp(const float* gate, const float* up, float* y, int n, int T, float lim, void* st, void* xq = nullptr);
 /// y += x (n floats)
 void add(float* y, const float* x, int64_t n, void* st);
 /// out[0] = the index of the largest of x[0 .. n) (the lowest on ties); with ids, ids[that index]

@@ -19,6 +19,7 @@
 #include <map>
 #include <sstream>
 #include <stdexcept>
+#include <thread>
 
 namespace guild::core {
 
@@ -509,6 +510,12 @@ struct Drama3Codec::Impl {
     std::vector<void*> allocs;
     std::vector<void*>* list = &allocs; // where alloc() records (an Encoder's own list while it is built)
     uint64_t vram = 0;
+    // set_hold's pacing: ring[i % kRing] is recorded after GEMM i; GEMMs [0, done) are known to have ended
+    static constexpr int kRing = 4;
+    const std::atomic<bool>* hold = nullptr;
+    int depth = 2;
+    cudaEvent_t ring[kRing] = {};
+    uint64_t issued = 0, done = 0;
 
     float* alloc(size_t floats) {
         void* p = nullptr;
@@ -536,10 +543,23 @@ struct Drama3Codec::Impl {
     }
 
     // ------------------------------------------------------------ the operations
+    // set_hold: wait while held (before a large launch)
+    void hold_wait() const {
+        if (hold)
+            while (hold->load(std::memory_order_acquire))
+                std::this_thread::yield();
+    }
     // Y[o][t] (ld ldy) (+)= sum_c W[o][c] X[c][t] (ld ldx), T columns
     void gemm(const float* X, int ldx, const float* W, int cout, int cin, float* Y, int ldy, int T, float beta) {
         const float one = 1.0f;
+        if (hold && depth > 0 && issued - done >= (uint64_t) depth) { // at most `depth` in flight once this is
+            ck(cudaEventSynchronize(ring[(issued - (uint64_t) depth) % kRing]), "pace");
+            done = issued - (uint64_t) depth + 1;
+        }
+        hold_wait();
         ckb(cublasSgemm(blas, CUBLAS_OP_N, CUBLAS_OP_N, T, cout, cin, &one, X, ldx, W, cin, &beta, Y, ldy), "sgemm");
+        if (hold)
+            ck(cudaEventRecord(ring[issued++ % kRing], st), "pace");
     }
     // keep the last P columns of [context | T new columns] as the next chunk's context
     void shift(Act& a, int T) {
@@ -578,10 +598,13 @@ struct Drama3Codec::Impl {
     }
     // x (ld cap) += the residual unit's output, in place
     void residual_unit(RU& r, float* x, float* y, int cap, int C, int T) {
+        hold_wait();
         snake_kernel<<<grid_ct(T, C), kT, 0, st>>>(x, cap, r.snake1.p, r.conv1.in.data(), r.conv1.in.ld(), T);
         conv(r.conv1, y, cap, T);
+        hold_wait();
         snake_kernel<<<grid_ct(T, C), kT, 0, st>>>(y, cap, r.snake2.p, r.conv2.in.data(), r.conv2.in.ld(), T);
         conv(r.conv2, y, cap, T);
+        hold_wait();
         scale_add_kernel<<<grid_ct(T, C), kT, 0, st>>>(x, cap, nullptr, y, cap, T);
     }
     // the ConvNeXt block over the T columns already in c.in.data(); the result in c.g (ld c.cap)
@@ -828,6 +851,7 @@ struct Drama3Codec::Impl {
         int ldh = dec_in.in.cap;
         conv(dec_in, h, ldh, T);
         for (DecBlock& B : blocks) {
+            hold_wait();
             snake_kernel<<<grid_ct(T, B.up.cin), kT, 0, st>>>(h, ldh, B.snake.p, B.up_in, B.up_ldi, T);
             conv_t(B.up, B.up_in, B.up_ldi, B.x, B.cap, T);
             T *= B.up.s;
@@ -836,6 +860,7 @@ struct Drama3Codec::Impl {
             h = B.x;
             ldh = B.cap;
         }
+        hold_wait();
         snake_kernel<<<grid_ct(T, dec_out.cin), kT, 0, st>>>(h, ldh, out_snake.p, dec_out.in.data(), dec_out.in.ld(),
                                                              T);
         conv(dec_out, pcm, T, T);
@@ -973,6 +998,9 @@ Drama3Codec::~Drama3Codec() {
         cublasDestroy(impl_->blas);
     if (impl_->st)
         cudaStreamDestroy(impl_->st);
+    for (cudaEvent_t e : impl_->ring)
+        if (e)
+            cudaEventDestroy(e);
     delete impl_;
 }
 
@@ -1025,6 +1053,8 @@ bool Drama3Codec::load(const std::string& dir, int max_chunk, std::string& err) 
         ck(cudaStreamCreateWithFlags(&m.st, cudaStreamNonBlocking), "stream");
         ckb(cublasCreate(&m.blas), "create");
         ckb(cublasSetStream(m.blas, m.st), "set stream");
+        for (cudaEvent_t& e : m.ring)
+            ck(cudaEventCreateWithFlags(&e, cudaEventDisableTiming), "pace events");
         // the decode tensors stay on the device; the encode tensors stay in host memory until encode()
         ck(cudaMalloc(&m.dense, decode_bytes), "weights");
         std::vector<char> packed(decode_bytes);
@@ -1052,6 +1082,14 @@ bool Drama3Codec::load(const std::string& dir, int max_chunk, std::string& err) 
         return false;
     }
     return true;
+}
+
+void Drama3Codec::set_hold(const std::atomic<bool>* hold, int depth) {
+    if (!impl_)
+        return;
+    impl_->hold = hold;
+    impl_->depth = std::clamp(depth, 0, Impl::kRing);
+    impl_->issued = impl_->done = 0; // no decode runs, so every recorded GEMM has ended
 }
 
 void Drama3Codec::reset() {

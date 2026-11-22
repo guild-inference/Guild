@@ -1,0 +1,11 @@
+solo 0: 96 tokens in 2.8s  DONE 96 23 302.301 2463.43 length 52 98 0 0 68160 55775 0 0 
+solo 1: 96 tokens in 1.4s  DONE 96 25 225.995 1191.23 length 79 89 0 0 50880 34841 0 0 
+solo 2: 96 tokens in 2.0s  DONE 96 27 267.557 1775.73 length 67 104 0 0 63840 48302 0 0
+batch: 3 slots, 288 tokens; admissions 1.0s; then 4.8s -> aggregate 49.8 tok/s overall, 52.6 tok/s from the first batch token
+slot 0: 96 tokens, solo 96: IDENTICAL
+    'Le **B-tree** (pour *Balanced Tree*) est une structure de donn\xe9es arborescente \xe9quilibr\xe9e, largement utilis\xe9e dans les syst\xe8mes de fichiers et les bases de donn'
+slot 1: 96 tokens, solo 96: IDENTICAL
+    '```python\ndef merge_intervals(intervals: list[list[int]]) -> list[list[int]]:\n    """\n    Merge overlapping intervals.\n    \n    Args:\n        intervals: A list '
+slot 2: 96 tokens, solo 96: IDENTICAL
+    'Here is a detailed comparison between **TCP** (Transmission Control Protocol) and **QUIC** (Quick UDP Internet Connections), focusing on **Handshake**, **Conges'
+rc 0

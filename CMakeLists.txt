@@ -757,6 +757,10 @@ if(GUILD_ENABLE_CUDA OR GUILD_ENABLE_HIP)
     add_test(NAME mmvq_staged_parity
              COMMAND mmvq_staged_parity --compare ${CMAKE_CURRENT_BINARY_DIR}/mmvq_staged_reference.bin)
     set_tests_properties(mmvq_staged_parity PROPERTIES FIXTURES_REQUIRED mmvq_staged_reference)
+    add_test(NAME mmvq_staged_parity_one_wide_off
+             COMMAND mmvq_staged_parity --compare ${CMAKE_CURRENT_BINARY_DIR}/mmvq_staged_reference.bin)
+    set_tests_properties(mmvq_staged_parity_one_wide_off PROPERTIES ENVIRONMENT "GUILD_MMVQ_ONE_WIDE=0"
+                         FIXTURES_REQUIRED mmvq_staged_reference)
     # the verify windows' GDN recurrence and commit (column-block kernels) against the kernels before them, bitwise:
     # two processes, since the switch is an environment variable read once
     add_executable(gdn_step_parity src/kernels/gdn_step_parity.cpp)
@@ -1176,6 +1180,7 @@ if(GUILD_ENABLE_CUDA OR GUILD_ENABLE_HIP)
     src/runtime/performance.cpp
     src/runtime/chat_template.cpp
     src/runtime/batched_prefill.cpp
+    src/runtime/batch.cpp
     src/runtime/tokenizer.cpp)
   target_include_directories(guild_runtime PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include PRIVATE ${_guild_gpu_include_directories})
   target_link_libraries(guild_runtime PUBLIC guild_engine guild_prefill guild_spec guild_memory guild_model guild_artifact ${_guild_gpu_runtime_target} ${CMAKE_DL_LIBS})
@@ -1190,6 +1195,7 @@ else()
     src/model/runner.cpp
     src/runtime/model_stub.cpp
     src/runtime/session_stub.cpp
+    src/runtime/batch.cpp
     src/runtime/chat_template.cpp
     src/runtime/tokenizer.cpp)
   target_include_directories(guild_runtime PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
@@ -1250,6 +1256,9 @@ if(GUILD_ENABLE_CUDA OR GUILD_ENABLE_HIP)
   # Nemotron 3.5 Transcribe: offline transcription of WAV clips (the audio model and the Nemotron-H engine)
   add_executable(transcribe_run src/program/transcribe_run.cpp)
   target_link_libraries(transcribe_run PRIVATE guild_engine guild_audio guild_server)
+  # the draft head's token subset by default (tools/nemotron_draft_vocab.py)
+  target_compile_definitions(transcribe_run PRIVATE
+    GUILD_NEMOTRON_DRAFT_VOCAB="${CMAKE_CURRENT_SOURCE_DIR}/data/nemotron_draft_vocab.bin")
 endif()
 
 # ---- guild_server (Native HTTP & OpenAI serving layer) --------------------

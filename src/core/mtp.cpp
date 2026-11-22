@@ -912,9 +912,9 @@ bool MtpDrafter::record_forward(int T, int step_row0, cudaStream_t cs, std::stri
         nsw.q8_1 = xq_;
         const SForm none{};
         const bool need_bf16_x = !shared_expert_native_bf16_enabled();
-        static const bool fuse_head_gr = [] {
+        static const bool fuse_head_gr = [] { // as the verifier's head (GUILD_FUSE_HEAD_GR=0: per row)
             const char* v = std::getenv("GUILD_FUSE_HEAD_GR");
-            return v != nullptr && std::atoi(v) != 0;
+            return v == nullptr || std::atoi(v) != 0;
         }();
         for (int t = 0; t < T; ++t) {
             if (need_bf16_x)

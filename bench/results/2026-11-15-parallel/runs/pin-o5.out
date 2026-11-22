@@ -1,0 +1,16 @@
+solo 0: 96 tokens in 1.5s  DONE 96 23 135.954 1370.74 length 40 77 0 0 42560 37452 0 0 
+solo 1: 96 tokens in 1.1s  DONE 96 25 101.781 969.046 length 58 76 0 0 36480 31441 0 0 
+solo 2: 96 tokens in 1.3s  DONE 96 27 108.701 1164.37 length 45 62 0 0 36160 32969 0 0 
+solo 3: 96 tokens in 1.4s  DONE 96 32 118.955 1226.35 length 44 62 0 0 36480 33456 0 0 
+solo 4: 96 tokens in 1.3s  DONE 96 22 96.8921 1148.54 length 49 72 0 0 38080 33633 0 0 
+batch: 5 slots, 480 tokens; admissions 0.8s; then 3.0s -> aggregate 125.4 tok/s overall, 130.4 tok/s from the first batch token
+slot 0: 96 tokens, solo 96: IDENTICAL
+    "# Fonctionnement d'un B-Arbre (B-Tree)\n\n## D\xe9finition et concept g\xe9n\xe9ral\n\nUn **B-arbre** est une structure de donn\xe9es en arbre qui maintient ses donn\xe9es **tri\xe9e"
+slot 1: 96 tokens, solo 96: IDENTICAL
+    '# Merging Overlapping Intervals\n\nHere\'s a Python function that merges overlapping intervals:\n\n```python\ndef merge_intervals(intervals):\n    """\n    Merge overla'
+slot 2: 96 tokens, solo 96: IDENTICAL
+    '# TCP vs QUIC: A Technical Comparison\n\n## 1. Handshake\n\n### TCP (3-way handshake)\n- **Process**: SYN \u2192 SYN-ACK \u2192 ACK (3 round trips)\n- **Connection establishmen'
+slot 3: 96 tokens, solo 96: IDENTICAL
+    "# L'histoire du calcul de \u03c0 : d'Archim\xe8de \xe0 nos jours\n\n## Les origines anciennes\n\nAvant Archim\xe8de, diverses civilisations avaient d\xe9j\xe0 estim\xe9 cette constante. L"
+slot 4: 96 tokens, solo 96: IDENTICAL
+    "# Main Causes of the French Revolution (1789)\n\n## Financial Crisis\nFrance was essentially bankrupt due to:\n- Massive debt from wars, including France's involvem"

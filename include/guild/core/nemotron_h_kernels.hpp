@@ -21,9 +21,10 @@ void ssm_conv(const float* in, int ld_in, float* state, const float* w, const fl
 /// The Mamba-2 selective scan, one token after another: per head h (group h / (H / G)),
 ///   dt = max(softplus(dt_raw[t][h] + dt_bias[h]), dt_min), s[h][p][n] = s * exp(dt A[h]) + dt B[t][g][n] x[t][h][p],
 ///   y[t][h][p] = sum_n s[h][p][n] C[t][g][n] + D[h] x[t][h][p]
-/// xbc [T][ld]: x (H * P) | B (G * N) | C (G * N); dt_raw rows of ld_dt; state [H][P][N] (float32, kept);
-/// y [T][H * P].  P = 64 and N = 128 (ssm_scan_supported).  `snaps` (may be null): the state after each of the
-/// window's first n_snaps tokens ([n_snaps][H][P][N]).
+/// xbc [T][ld]: x (H * P) | B (G * N) | C (G * N); dt_raw rows of ld_dt; state: H * P * N float32 values (kept) in
+/// the scan's own order (by thread: zeroed for a new context, copied whole, never read elsewhere); y [T][H * P].
+/// P = 64 and N = 128 (ssm_scan_supported).  `snaps` (may be null): the state after each of the window's first
+/// n_snaps tokens ([n_snaps][H * P * N], each in the state's order).
 bool ssm_scan_supported(int P, int N);
 void ssm_scan(const float* xbc, int ld, const float* dt_raw, int ld_dt, const float* dt_bias, const float* A,
               const float* D, float* state, float* y, int H, int P, int N, int G, int T, float dt_min, float* snaps,
@@ -42,6 +43,10 @@ void layer_norm(const float* x, const float* w, float* y, int n, int rows, float
 
 /// K/V rows into the cache: kc / vc [cells][kv_dim] FP16, rows pos0 .. pos0 + T - 1 from k / v [T][kv_dim]
 void kv_store(const float* k, const float* v, void* kc, void* vc, int64_t pos0, int kv_dim, int T, void* st);
+
+/// Each row's argmax: out[r] = the first index of the largest of x[r * ld .. r * ld + n) (std::max_element's choice
+/// for any values but NaN), or ids[that index] when ids is given (a subset's row to its token id); `rows` rows.
+void argmax_rows(const float* x, int n, int64_t ld, int rows, int32_t* out, const int32_t* ids, void* st);
 
 /// Causal grouped-query attention without positional encoding: query t (position pos0 + t) over the cells
 /// [0, pos0 + t]; q / out [T][Hq * D], head h reads key/value head h / (Hq / Hk); scores scaled by `scale`, softmax in

@@ -100,42 +100,6 @@ int dense_type_for(const std::string& name) {
     const int t = dense_map_type(g_dense_map.empty() ? env : g_dense_map, name);
     return t == 8 ? 0 : t ? t : dense_type();
 }
-std::vector<uint8_t> q8_0_requant(const uint8_t* q8, int64_t n_in, int64_t n_out, int type,
-                                  const float* imatrix = nullptr) {
-    const size_t q_row = ggml_row_size((ggml_type) type, n_in), q8_row = (size_t) (n_in / 32) * 34;
-    std::vector<uint8_t> out(q_row * (size_t) n_out);
-    constexpr int64_t kRows = 64;
-    std::atomic<int64_t> next{0};
-    auto work = [&] {
-        std::vector<float> buf((size_t) kRows * n_in);
-        for (;;) {
-            const int64_t r0 = next.fetch_add(kRows);
-            if (r0 >= n_out)
-                return;
-            const int64_t nr = std::min(kRows, n_out - r0);
-            for (int64_t r = 0; r < nr; ++r) {
-                const uint8_t* q = q8 + (size_t) (r0 + r) * q8_row;
-                float* f = buf.data() + (size_t) r * n_in;
-                for (int64_t b = 0; b < n_in / 32; ++b) {
-                    ggml_fp16_t h;
-                    std::memcpy(&h, q + b * 34, 2);
-                    const float d = ggml_fp16_to_fp32(h);
-                    for (int k = 0; k < 32; ++k)
-                        f[b * 32 + k] = d * (float) (int8_t) q[b * 34 + 2 + k];
-                }
-            }
-            ggml_quantize_chunk((ggml_type) type, buf.data(), out.data() + (size_t) r0 * q_row, 0, nr, n_in, imatrix);
-        }
-    };
-    const unsigned n = std::max(1u, std::min(32u, std::thread::hardware_concurrency()));
-    std::vector<std::thread> th;
-    for (unsigned i = 1; i < n; ++i)
-        th.emplace_back(work);
-    work();
-    for (auto& t : th)
-        t.join();
-    return out;
-}
 bool g_hc_q8 = false; // NativeDense::set_hc_q8
 // a layer's hyper-connection down / up matrix in the GGUF's Q8_0, its shape the read's ([320][10240] or [10240][320])
 bool hc_q8_tensor(const guild::TensorInfo& tensor) {

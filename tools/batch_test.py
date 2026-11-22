@@ -35,7 +35,10 @@ def tokenizer(path):
 
 
 class Engine:
+    started = []   # every engine this process started (batch_interleave_test.py ends them on its way out)
+
     def __init__(self, exe, cfg, batch, extra_env, extra_args):
+        Engine.started.append(self)
         args = list(cfg["args"])
         if len(cfg.get("gpu") or []) > 1:
             args += ["--layer-split", str(cfg.get("layer_split") or "auto")]
@@ -50,7 +53,12 @@ class Engine:
         self.log = open(self.log_path, "w")
         self.p = subprocess.Popen([exe, "--serve", *args], cwd=cfg.get("cwd"), stdin=subprocess.PIPE,
                                   stdout=subprocess.PIPE, stderr=self.log, text=True, bufsize=1, env=env)
+        self.info = {}
         for line in self.p.stdout:
+            if line.startswith("INFO "):   # INFO batch_slots=N ...: the slots the engine runs (as many as fit)
+                for kv in line.split()[1:]:
+                    k, _, v = kv.partition("=")
+                    self.info[k] = v
             if line.startswith("READY"):
                 return
         raise SystemExit(f"the engine ended before READY - see {self.log_path}")
@@ -87,6 +95,10 @@ def main():
         env["GUILD_IQ_MT_MIN"] = a.mt_min
     eng = Engine(a.exe, cfg, a.batch, env, a.extra.split())
     out = eng.lines()
+    slots = int(eng.info.get("batch_slots", a.batch))
+    if slots < len(prompts):
+        print(f"the engine runs {slots} slots (asked {a.batch}): {slots} prompts", flush=True)
+        prompts = prompts[:slots]
 
     solo = []
     if not a.skip_solo:
@@ -119,6 +131,7 @@ def main():
                 done[int(line.split()[1])] = line
             elif line.startswith("ERR"):
                 print("batch:", line)
+                eng.p.wait(timeout=180)   # the next run needs the GPU back
                 return 1
             elif line.startswith("BADM "):
                 if line.split()[2] == "0":
@@ -136,6 +149,7 @@ def main():
                 break
         elif line.startswith("ERR"):
             print("batch:", line)
+            eng.p.wait(timeout=180)   # the next run needs the GPU back
             return 1
     t_end = time.time()
     total = sum(len(v) for v in got.values())

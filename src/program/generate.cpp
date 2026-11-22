@@ -1,5 +1,6 @@
 // src/program/generate.cpp - Thin CLI / process wrapper around GuildModel and GuildSession
 #include "guild/program/model_options.hpp"
+#include "guild/runtime/batch.hpp"
 #include "guild/runtime/model.hpp"
 #include "guild/runtime/session.hpp"
 #include "guild/model/model_descriptor.hpp"
@@ -358,6 +359,35 @@ public:
         s_->lines.pop_front();
         return true;
     }
+    /// A queued line without waiting (false: none now; `eof()` says whether more can come) - the batch slots decode
+    /// while nothing is queued.
+    bool try_next(std::string& line) {
+        std::lock_guard<std::mutex> lk(s_->mu);
+        if (s_->lines.empty())
+            return false;
+        line = std::move(s_->lines.front());
+        s_->lines.pop_front();
+        return true;
+    }
+    bool eof() const {
+        std::lock_guard<std::mutex> lk(s_->mu);
+        return s_->eof && s_->lines.empty();
+    }
+    /// Takes the queued lines that start with `prefix` out of the queue (a BSTOP that comes while a prompt is read
+    /// ends its slot at the next window between two chunks), the others keep their order.
+    std::vector<std::string> take_prefixed(const char* prefix) {
+        std::vector<std::string> out;
+        std::lock_guard<std::mutex> lk(s_->mu);
+        for (auto it = s_->lines.begin(); it != s_->lines.end();) {
+            if (it->rfind(prefix, 0) == 0) {
+                out.push_back(std::move(*it));
+                it = s_->lines.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        return out;
+    }
     void begin(std::shared_ptr<std::atomic<bool>> flag) {
         std::lock_guard<std::mutex> lk(s_->mu);
         s_->active = std::move(flag);
@@ -540,17 +570,149 @@ int main(int argc, char** argv) try {
     const int64_t context = loaded.context;
 
     if (serve_mode) {
+        // --batch N: the batch slots (runtime/batch.hpp).  The engine says how many it runs (INFO batch_slots=N: as
+        // many as fit, or none) and that a finished slot keeps its conversation (slot_cache=1): the server then
+        // continues a request from its slot on the solo path, and a conversation's next turn from the slot it used.
+        std::unique_ptr<GuildBatch> batch;
+        if (mo.batch >= 2) {
+            if (model->is_speech_model()) {
+                std::fprintf(stderr,
+                             "guild-generate: --batch %d is off: a text-to-speech model speaks one request at "
+                             "a time\n",
+                             mo.batch);
+            } else {
+                batch = std::make_unique<GuildBatch>(session.get());
+                if (batch->slots() == 0)
+                    std::fprintf(stderr, "guild-generate: --batch %d is off: %s\n", mo.batch, batch->note().c_str());
+                else if (batch->slots() < std::min(mo.batch, 8))
+                    std::fprintf(stderr, "guild-generate: --batch %d runs %d slots: %s\n", mo.batch, batch->slots(),
+                                 batch->note().c_str());
+            }
+            const int n = batch ? batch->slots() : 0;
+            std::cout << "INFO batch_slots=" << n << (n > 0 ? " slot_cache=1" : "") << "\n";
+            if (n == 0)
+                batch.reset();
+        }
         std::cout << "READY " << context << " stop" << (model->is_speech_model() ? " speech" : "") << "\n"
                   << std::flush;
 
         ServeInput input;
         std::string line;
-        while (input.next(line)) {
+        // the batch slots' lines: BT <slot> <token> per window, BDONE <slot> <generated> <finish> <ms> when one ends
+        std::string batch_err;
+        bool batch_failed = false;
+        auto emit_token = [](const GuildBatch::Token& t) {
+            std::cout << "BT " << t.slot << " " << t.id << "\n" << std::flush;
+        };
+        auto emit_done = [](const GuildBatch::Done& d) {
+            char buf[96];
+            std::snprintf(buf, sizeof buf, "BDONE %d %lld %s %.1f\n", d.slot, (long long) d.produced, d.finish, d.ms);
+            std::cout << buf << std::flush;
+        };
+        auto batch_report = [&] {
+            if (batch && !batch->any_active())
+                if (const std::string r = batch->take_report(); !r.empty())
+                    std::fprintf(stderr, "%s\n", r.c_str());
+        };
+        auto take_bstops = [&] {
+            for (const std::string& l : input.take_prefixed("BSTOP "))
+                if (batch)
+                    batch->stop(std::atoi(l.c_str() + 6));
+        };
+        // Between two chunks of a prompt being read (an admission or a solo request), the slots decode for this
+        // share of the time the chunk took (GUILD_BATCH_DECODE_SHARE, default 0.5), so a long prompt slows the other
+        // conversations down instead of stopping them.
+        static const double decode_share = [] {
+            const char* v = std::getenv("GUILD_BATCH_DECODE_SHARE");
+            return v != nullptr ? std::max(0.0, std::atof(v)) : 0.5;
+        }();
+        // BYIELD <slot> (#656): the server asks the read on the control lines to give way to a waiting request with a
+        // much shorter prompt.  At the next chunk boundary that leaves more than a chunk and a short tail to read, the
+        // part read is parked in <slot> (the admission's own, or the idle one the server reserved for a solo request),
+        // the request ends with YIELDED <slot> <tokens> + DONE cancel, and the server sends it again later: it reads on
+        // from the slot with the same chunks.
+        struct Yield {
+            int slot = -1;
+            int64_t at = -1;
+        };
+        auto between_chunks = [&](const std::shared_ptr<std::atomic<bool>>& cancel, const std::vector<int32_t>* prompt,
+                                  int admit_slot, Yield* yielded) -> std::function<bool(int64_t, int64_t, bool)> {
+            if (!batch)
+                return {};
+            auto last = std::make_shared<std::chrono::steady_clock::time_point>(std::chrono::steady_clock::now());
+            return [&, cancel, last, prompt, admit_slot, yielded](int64_t pos, int64_t end, bool can_stop) -> bool {
+                take_bstops();
+                for (const std::string& l : input.take_prefixed("BYIELD")) {
+                    const int ys = std::atoi(l.c_str() + 6);
+                    const bool slot_ok = ys >= 0 && ys < batch->slots() && !batch->slot_active(ys) &&
+                                         (admit_slot < 0 || ys == admit_slot);
+                    if (yielded->slot < 0 && slot_ok && can_stop && pos > 0 && pos <= (int64_t) prompt->size()) {
+                        std::string perr;
+                        const std::vector<int32_t> part(prompt->begin(), prompt->begin() + pos);
+                        if (batch->park_inside(ys, part, perr)) {
+                            yielded->slot = ys;
+                            yielded->at = pos;
+                            return false;
+                        }
+                        std::fprintf(stderr, "guild-generate: the prompt read could not give way: %s\n", perr.c_str());
+                        if (!model->is_ready()) {
+                            batch_err = perr;
+                            batch_failed = true;
+                            cancel->store(true);
+                            return false;
+                        }
+                    } else {
+                        std::fprintf(stderr, "guild batch: BYIELD %d not taken at %lld of %lld\n", ys, (long long) pos,
+                                     (long long) end);
+                    }
+                }
+                const auto t0 = std::chrono::steady_clock::now();
+                const double chunk_ms = std::chrono::duration<double, std::milli>(t0 - *last).count();
+                while (batch->any_active() && !batch_failed) {
+                    if (!batch->step_inside(emit_token, emit_done, batch_err)) {
+                        batch_failed = true;
+                        cancel->store(true); // the read stops at its next chunk; the loop then ends the engine
+                        break;
+                    }
+                    const double spent =
+                        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+                    if (spent >= decode_share * chunk_ms)
+                        break;
+                }
+                batch_report();
+                *last = std::chrono::steady_clock::now();
+                return !batch_failed;
+            };
+        };
+        for (;;) {
+            if (batch && batch->any_active()) {
+                if (!input.try_next(line)) {
+                    if (input.eof())
+                        break;
+                    if (!batch->step(emit_token, emit_done, batch_err)) {
+                        std::cout << "ERR " << batch_err << "\n" << std::flush;
+                        return 1;
+                    }
+                    batch_report();
+                    continue;
+                }
+            } else if (!input.next(line)) {
+                break;
+            }
             if (line.empty())
                 continue;
             if (line == "QUIT") {
                 break;
             }
+            // --batch: BSTOP <slot> ends that slot at its next window (BDONE ... cancel); a BYIELD (the server asks a
+            // long prompt read to give way to a short request) is not taken: the read goes on, which the server allows
+            if (line.rfind("BSTOP ", 0) == 0) {
+                if (batch)
+                    batch->stop(std::atoi(line.c_str() + 6));
+                continue;
+            }
+            if (line.rfind("BYIELD", 0) == 0)
+                continue;
             // Text to speech (a --drama3 model).  VOICE <sample rate> <base64 float32 samples> -> CODES <frames>
             // <codes>; SAY ... -> A <base64 16-bit PCM> per chunk, then SDONE <frames> <prompt rows> <prompt ms>
             // <decode ms> <finish reason> <sample rate>
@@ -622,18 +784,57 @@ int main(int argc, char** argv) try {
                           << std::flush;
                 continue;
             }
-            if (line.rfind("GEN ", 0) == 0) {
+            // GEN <max_new> [keys] <ids>: one request on the solo path (its drafts), T per token, then DONE.
+            // BGEN <slot> <max_new> [keys] <ids> (--batch): the request's prompt and first token as a GEN 1, then
+            // BADM <slot> <1: it continues in that batch slot (BT/BDONE) | 0: it is done>.
+            const bool bgen = line.rfind("BGEN ", 0) == 0;
+            if (bgen || line.rfind("GEN ", 0) == 0) {
+                int admit_slot = -1;
+                std::string rest = line.substr(bgen ? 5 : 4);
+                if (bgen) {
+                    char* end = nullptr;
+                    const long b = std::strtol(rest.c_str(), &end, 10);
+                    if (!batch || end == rest.c_str() || b < 0 || b >= batch->slots() || batch->slot_active((int) b)) {
+                        std::cout << "ERR BGEN: no such free slot (--batch " << (batch ? batch->slots() : 0) << ")\n"
+                                  << std::flush;
+                        continue;
+                    }
+                    admit_slot = (int) b;
+                    rest = std::string(end);
+                }
                 GenerationRequest req;
                 std::string parse_err;
-                if (!parse_gen_line(line.substr(4), req, parse_err)) {
+                if (!parse_gen_line(rest, req, parse_err)) {
                     std::cout << "ERR " << parse_err << "\n" << std::flush;
                     continue;
                 }
                 req.cancel_flag = std::make_shared<std::atomic<bool>>(false);
+                const int64_t max_new = req.max_new_tokens;
+                if (admit_slot >= 0) { // the read and the first token; the slot decodes the rest
+                    req.max_new_tokens = 1;
+                    req.into_slot = max_new > 1;
+                }
+                Yield yielded;
+                if (batch) {
+                    // an idle slot holding a longer start of this prompt (its conversation's last turn, this request's
+                    // own tokens before it went back to the solo path, or the part of it read before it gave way):
+                    // only the rest is read
+                    std::string rerr;
+                    if (batch->restore_for(req.prompt_tokens, rerr) < 0 && !rerr.empty()) {
+                        std::cout << "ERR " << rerr << "\n" << std::flush;
+                        return 1;
+                    }
+                    req.between_chunks = between_chunks(req.cancel_flag, &req.prompt_tokens, admit_slot, &yielded);
+                }
 
                 RuntimeTelemetry telem;
                 std::string gen_err;
-                auto on_tok = [](const TokenEvent& ev) -> bool {
+                int32_t first = -1;
+                auto on_tok = [&first](const TokenEvent& ev) -> bool {
+                    if (ev.token_id < 0) // the decoder's held bytes: the server decodes the ids itself
+                        return true;
+                    if (first < 0)
+                        first = ev.token_id;
                     std::cout << "T " << ev.token_id << "\n" << std::flush;
                     return true;
                 };
@@ -645,6 +846,12 @@ int main(int argc, char** argv) try {
                 input.begin(req.cancel_flag);
                 bool ok = session->generate(req, on_tok, telem, gen_err, on_pref);
                 input.end();
+                if (batch_failed) { // a batch window failed between the prompt's chunks: the GPU state is unknown
+                    std::cout << "ERR " << batch_err << "\n" << std::flush;
+                    return 1;
+                }
+                if (yielded.slot >= 0)
+                    std::cout << "YIELDED " << yielded.slot << " " << yielded.at << "\n" << std::flush;
                 if (!ok) {
                     std::cout << "ERR " << gen_err << "\n" << std::flush;
                 } else {
@@ -658,6 +865,23 @@ int main(int argc, char** argv) try {
                               << "\n"
                               << std::flush;
                 }
+                if (admit_slot >= 0) {
+                    bool cont = ok && telem.completion_tokens == 1 && telem.finish_reason == "length" && max_new > 1 &&
+                                first >= 0 && !req.cancel_flag->load() && yielded.slot < 0;
+                    if (cont) {
+                        std::string aerr;
+                        if (!batch->admit(admit_slot, req.prompt_tokens, first, max_new, req, aerr)) {
+                            std::fprintf(stderr, "guild-generate: batch admission failed: %s\n", aerr.c_str());
+                            if (!model->is_ready()) {
+                                std::cout << "ERR " << aerr << "\n" << std::flush;
+                                return 1;
+                            }
+                            cont = false;
+                        }
+                    }
+                    std::cout << "BADM " << admit_slot << " " << (cont ? 1 : 0) << "\n" << std::flush;
+                }
+                batch_report();
             }
         }
         return 0;

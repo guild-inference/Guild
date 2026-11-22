@@ -42,6 +42,7 @@ struct ModelOptions {
     std::string ple_gguf, ple_io;
     double rope_scale = 0;
     int pool_workers = 0;
+    int batch = 0; ///< --batch / --slots: conversations decoded together in batch slots (0: one request at a time)
 };
 
 /// argv[i] as a model option: consumes it and its value (advancing i) and returns 1; 0 when it is not one; 2 when its

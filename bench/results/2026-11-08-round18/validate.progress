@@ -1,0 +1,33 @@
+14:53:34 ctest 100% tests passed, 0 tests failed out of 32
+14:53:39 drama3_tower_test rc 0 PASS
+14:57:04 qwen i1 SUMMARY {"prose": 49.546408747405835, "code": 62.5556599971362} ids [38747, 38747, 41916, 41916]
+14:58:48 qwen b1 SUMMARY {"prose": 49.2284321816397, "code": 62.01618052140189} ids [38747, 38747, 41916, 41916]
+15:00:32 qwen i2 SUMMARY {"prose": 49.408860799634496, "code": 61.98454093363557} ids [38747, 38747, 41916, 41916]
+15:02:15 qwen b2 SUMMARY {"prose": 49.20302606720096, "code": 61.85553246135967} ids [38747, 38747, 41916, 41916]
+15:09:22 qwen prompts i done
+15:16:43 qwen prompts b done
+15:17:11 ornith i1 SUMMARY {"prose": 79.63027976016718, "code": 92.00411201079922} ids [30936, 30936, 65886, 65886]
+15:17:36 ornith b1 SUMMARY {"prose": 79.71041306585462, "code": 92.300164413582} ids [30936, 30936, 65886, 65886]
+15:18:02 ornith i2 SUMMARY {"prose": 79.74369346750797, "code": 92.13173983115936} ids [30936, 30936, 65886, 65886]
+15:18:28 ornith b2 SUMMARY {"prose": 79.54279658547941, "code": 91.9873754934989} ids [30936, 30936, 65886, 65886]
+15:18:54 drama3 di_11_1 47.64 frames/s, 2.21x real time; tower 1920 ms, codec 41 ms 6e04c9b1
+15:19:20 drama3 db_11_1 47.33 frames/s, 2.20x real time; tower 2174 ms, codec 41 ms 6e04c9b1
+15:19:44 drama3 di_12_1 47.79 frames/s, 2.22x real time; tower 1708 ms, codec 31 ms f84288c9
+15:20:09 drama3 db_12_1 47.22 frames/s, 2.19x real time; tower 1943 ms, codec 31 ms f84288c9
+15:20:35 drama3 di_11_2 47.58 frames/s, 2.21x real time; tower 1914 ms, codec 40 ms 6e04c9b1
+15:21:01 drama3 db_11_2 47.37 frames/s, 2.20x real time; tower 2164 ms, codec 41 ms 6e04c9b1
+15:21:25 drama3 di_12_2 47.83 frames/s, 2.22x real time; tower 1720 ms, codec 31 ms f84288c9
+15:21:50 drama3 db_12_2 47.18 frames/s, 2.19x real time; tower 1948 ms, codec 31 ms f84288c9
+15:35:21 glm i1 per step: 76.9 / 77.5 / 78.9 ms decode 256 tokens in 10759 ms (23.70 tok/s, CPU experts 58.4 ms per step) ids 5714f4a1
+15:40:07 glm b1 per step: 78.1 / 78.5 / 79.8 ms decode 256 tokens in 10888 ms (23.42 tok/s, CPU experts 62.3 ms per step) ids 5714f4a1
+15:41:03 glm i2 per step: 77.3 / 78.3 / 79.4 ms decode 256 tokens in 10853 ms (23.50 tok/s, CPU experts 61.2 ms per step) ids 5714f4a1
+15:41:57 glm b2 per step: 79.8 / 80.2 / 81.4 ms decode 256 tokens in 11147 ms (22.88 tok/s, CPU experts 66.9 ms per step) ids 5714f4a1
+15:42:52 glm i3 per step: 77.7 / 78.9 / 79.8 ms decode 256 tokens in 10950 ms (23.29 tok/s, CPU experts 62.9 ms per step) ids 5714f4a1
+15:43:46 glm b3 per step: 78.6 / 79.7 / 81.1 ms decode 256 tokens in 11008 ms (23.17 tok/s, CPU experts 64.2 ms per step) ids 5714f4a1
+15:48:34 nemotron i done
+15:48:56 nemotron b done
+15:49:18 nemotron b done
+15:49:39 nemotron i done
+15:54:15 startlux i rc 0
+15:54:55 startlux b rc 0
+15:54:55 done

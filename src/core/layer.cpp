@@ -992,7 +992,10 @@ int64_t staging_slots(const QsaShapes& s, bool is_dense = false, int64_t max_cel
         return std::max<int64_t>(1024, (cap + s.page_size - 1) / s.page_size + 2);
     }
     const int64_t cap = guild::kernels::qsa_selection_width(guild::kernels::kTopkMaxCells, s);
-    return std::max<int64_t>(1024, guild::kernels::kVerifyMaxT * (cap / s.page_size + 2));
+    // the rows of the windows that read this pool (kv_stage_rows: a batch slot's session; else the largest window)
+    const int rows =
+        active_exec_state().kv_stage_rows > 0 ? active_exec_state().kv_stage_rows : (int) guild::kernels::kVerifyMaxT;
+    return std::max<int64_t>(1024, (int64_t) rows * (cap / s.page_size + 2));
 }
 
 inline int64_t qsa_effective_cap(const ModelGeometry& g, const QsaShapes& s, int64_t max_cells) {

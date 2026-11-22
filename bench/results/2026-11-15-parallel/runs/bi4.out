@@ -1,0 +1,26 @@
+prompts: A 25, B 27, C 11713 tokens
+solo: A 120, A2 120, B 120, C 53, D 120, E 120 tokens
+slots: admissions 53.6s; 238 slot tokens arrived while the admissions read their prompts
+slot 0 (A): 120 tokens, solo 120: IDENTICAL
+slot 1 (B): 120 tokens, solo 120: IDENTICAL
+slot 2 (C): 53 tokens, solo 53: IDENTICAL
+A's next turn from its slot: 120 tokens, solo 120: IDENTICAL
+D gave way: YIELDED 2 4608
+slot 1 E (short, admitted while D waited): 120 tokens, solo 120: IDENTICAL
+slot 2 D (gave way, then went on): 120 tokens, solo 120: IDENTICAL
+A in a slot, then solo again after 66 tokens: 120 tokens, solo 120: IDENTICAL
+solo next turn from a slot: drafts accepted 93 of 145 (120 tokens in 2030.12 ms)
+F (A's history without the reply's thinking) from slot 1's turn checkpoint: 120 tokens, solo 120: IDENTICAL
+  log: guild batch: 40 windows, 8.00 rows and 5.95 tokens a window, 93.60 ms a window (drafts 7.68, run 85.72 = GPU-reach wait 16.56 + CPU experts 59.77; commit 0.19),
+  log: guild batch: 20 windows, 8.00 rows and 2.60 tokens a window, 101.07 ms a window (drafts 5.64, run 95.28 = GPU-reach wait 23.83 + CPU experts 57.28; commit 0.15)
+  log: guild batch: 23 windows, 8.00 rows and 5.17 tokens a window, 88.40 ms a window (drafts 4.65, run 83.61 = GPU-reach wait 17.69 + CPU experts 52.96; commit 0.14),
+  log: guild batch: 37 windows, 8.00 rows and 3.22 tokens a window, 87.99 ms a window (drafts 4.42, run 83.43 = GPU-reach wait 16.82 + CPU experts 53.68; commit 0.14),
+  log: guild batch: 38 windows, 8.00 rows and 3.13 tokens a window, 100.56 ms a window (drafts 5.70, run 94.73 = GPU-reach wait 23.69 + CPU experts 57.70; commit 0.14)
+  log: guild batch: 10 windows, 8.00 rows and 6.50 tokens a window, 88.90 ms a window (drafts 4.46, run 84.30 = GPU-reach wait 17.70 + CPU experts 52.83; commit 0.14),
+  log: guild batch: 26 windows, 8.00 rows and 4.58 tokens a window, 87.93 ms a window (drafts 4.47, run 83.32 = GPU-reach wait 16.10 + CPU experts 54.35; commit 0.14),
+engine log 'gave back': 0 lines
+engine log 'its turn checkpoint': 0 lines
+engine log 'takes': 8 lines
+engine log 'the prompt was read in': 0 lines
+engine log 'gives way': 1 lines
+rc 0

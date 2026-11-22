@@ -38,6 +38,51 @@ __device__ __forceinline__ float warp_max(float v) {
     return v;
 }
 
+__device__ __forceinline__ float q8_1_finite_(float v) { // guild::kernels::q8_1_finite
+    return fabsf(v) > 65504.0f ? __int_as_float((__float_as_int(v) & (int) 0x80000000) | 0x477FE000) : v;
+}
+
+// guild::kernels::native_quantize_q8_1's bytes for the 32-value block a warp holds, value `lane` of the block in lane
+// `lane`, written by the kernel that computed the values (GUILD_GLM_FUSE2 bit 2): no quantization launch after it.
+// native_quantize_q8_1 is built with --use_fast_math and this file is not, so its operations are spelled here as the
+// instructions it compiles to (flush-to-zero abs, max and add in the same butterfly order, approximate division,
+// roundf as a round-toward-zero add of +-0.5 and a truncation, the clamp and the flush-to-zero conversion); each
+// Q8_1 block is 36 bytes (ds, then 32 int8).  Every lane of the warp calls it.
+__device__ __forceinline__ void q8_1_warp(float xi, uint8_t* blk, int lane) {
+    float amax, sum = xi, o;
+    asm("abs.ftz.f32 %0, %1;" : "=f"(amax) : "f"(xi));
+#pragma unroll
+    for (int k = 16; k > 0; k >>= 1) {
+        o = __shfl_xor_sync(0xffffffffu, amax, k);
+        asm("max.ftz.f32 %0, %0, %1;" : "+f"(amax) : "f"(o));
+    }
+#pragma unroll
+    for (int k = 16; k > 0; k >>= 1) {
+        o = __shfl_xor_sync(0xffffffffu, sum, k);
+        asm("add.ftz.f32 %0, %0, %1;" : "+f"(sum) : "f"(o));
+    }
+    float d;
+    asm("div.approx.ftz.f32 %0, %1, %2;" : "=f"(d) : "f"(amax), "f"(127.0f));
+    d = q8_1_finite_(d);
+    int q = 0;
+    if (amax != 0.0f) { // amax is flushed already (max.ftz): the flush-to-zero compare's result
+        float r, t;
+        asm("div.approx.ftz.f32 %0, %1, %2;" : "=f"(r) : "f"(xi), "f"(d));
+        const float half = __int_as_float((__float_as_int(r) & (int) 0x80000000) | 0x3F000000);
+        asm("add.rz.ftz.f32 %0, %1, %2;" : "=f"(t) : "f"(r), "f"(half));
+        asm("cvt.rzi.f32.f32 %0, %1;" : "=f"(t) : "f"(t));
+        t = t > 127.0f ? 127.0f : t < -127.0f ? -127.0f : t; // t is integral (or NaN): no flush to tell apart
+        asm("cvt.rzi.ftz.s32.f32 %0, %1;" : "=r"(q) : "f"(t));
+    }
+    blk[4 + lane] = (uint8_t) q;
+    if (lane == 0)
+        *reinterpret_cast<__half2*>(blk) = make_half2(__float2half(q8_1_finite_(d)), __float2half(q8_1_finite_(sum)));
+}
+// the Q8_1 block of value i of rows stored one after the other (i counts from the first row's first value)
+__device__ __forceinline__ uint8_t* q8_1_blk(void* xq, size_t i) {
+    return reinterpret_cast<uint8_t*>(xq) + (i / 32) * 36;
+}
+
 // a block-wide sum (blockDim.x a multiple of 32, at most 1024); every thread gets the result
 __device__ float block_sum(float v) {
     __shared__ float red[32];
@@ -57,15 +102,20 @@ __device__ __forceinline__ float sigmoidf_(float x) {
     return 1.f / (1.f + expf(-x));
 }
 
-__global__ void rms_norm_k(const float* x, const float* w, float* y, int n, float eps) {
+// xq (when given, n % 32 == 0): y's Q8_1 too
+__global__ void rms_norm_k(const float* x, const float* w, float* y, int n, float eps, void* xq = nullptr) {
     const float* xr = x + (size_t) blockIdx.x * n;
     float* yr = y + (size_t) blockIdx.x * n;
     float ss = 0.f;
     for (int i = threadIdx.x; i < n; i += blockDim.x)
         ss += xr[i] * xr[i];
     const float inv = rsqrtf(block_sum(ss) / n + eps);
-    for (int i = threadIdx.x; i < n; i += blockDim.x)
-        yr[i] = xr[i] * inv * (w ? w[i] : 1.f);
+    for (int i = threadIdx.x; i < n; i += blockDim.x) {
+        const float v = xr[i] * inv * (w ? w[i] : 1.f);
+        yr[i] = v;
+        if (xq)
+            q8_1_warp(v, q8_1_blk(xq, (size_t) blockIdx.x * n + i), i & 31);
+    }
 }
 // rows of 4096 values or more (the mHC pre-mix's 4 x 4096): 1024 threads and float4 loads.  256 threads read the
 // 16384 floats in 16.7 us on a GTX 1070.
@@ -137,7 +187,7 @@ __global__ void __launch_bounds__(128)
 // mixes the same way.  As one block, the stream sum waited for the 20 Sinkhorn rounds on one warp.
 __global__ void hc_pre_k(const float* mixes, const float* part, int K, const float* scale, const float* base,
                          const float* R, const float* nw, float* post, float* comb, float* xn, int N, int iters,
-                         float hc_eps, float rms_eps, float* xh) {
+                         float hc_eps, float rms_eps, float* xh, void* xq) {
     extern __shared__ float xs[]; // N floats
     __shared__ float pre_s[kHc], c[kHc * kHc], msh[(2 + kHc) * kHc];
     const int t = blockIdx.x;
@@ -218,6 +268,8 @@ __global__ void hc_pre_k(const float* mixes, const float* part, int K, const flo
         xn[(size_t) t * N + i] = v;
         if (xh) // the same row in mapped host memory, for the CPU's FFN (no copy queued behind this kernel)
             xh[(size_t) t * N + i] = v;
+        if (xq) // and its Q8_1 (N % 32 == 0: a warp's lanes hold one block's 32 values)
+            q8_1_warp(v, q8_1_blk(xq, (size_t) t * N + i), i & 31);
     }
 }
 
@@ -405,7 +457,7 @@ __global__ void __launch_bounds__(256) kda_step_k(const float* S_in, float* S_ou
         Oh[(sl * kKdaPer + i) * DK + j] = col[i];
 }
 
-__global__ void kda_out_k(const float* o, const float* gate, const float* nw, float* y, int H, float eps) {
+__global__ void kda_out_k(const float* o, const float* gate, const float* nw, float* y, int H, float eps, void* xq) {
     const int h = blockIdx.x, t = blockIdx.y, j = threadIdx.x;
     const size_t off = (size_t) t * H * kKdaDim + (size_t) h * kKdaDim + j;
     const float x = o[off];
@@ -415,7 +467,10 @@ __global__ void kda_out_k(const float* o, const float* gate, const float* nw, fl
         red[j >> 5] = s;
     __syncthreads();
     s = red[0] + red[1] + red[2] + red[3];
-    y[off] = x * rsqrtf(s / kKdaDim + eps) * nw[j] * sigmoidf_(gate[off]);
+    const float v = x * rsqrtf(s / kKdaDim + eps) * nw[j] * sigmoidf_(gate[off]);
+    y[off] = v;
+    if (xq)
+        q8_1_warp(v, q8_1_blk(xq, off), j & 31);
 }
 
 // GGUF Q8_0: an FP16 scale and 32 int8 values, 34 bytes
@@ -961,20 +1016,48 @@ __global__ void __launch_bounds__(NW * 32) q8_0_mmvq_k(const uint8_t* __restrict
 // C chunks of 32 blocks (1088 bytes: 32 / nb whole rows each) with 16-byte loads, issued before the activations are
 // read, a lane takes one block's 32 products and the row's nb lanes add up with shuffles.  native_mmvq read these rows
 // at 48 GB/s.
-template <int T, int NB, int C = 1>
-__global__ void __launch_bounds__(256)
-    q8_0_narrow_k(const uint8_t* __restrict__ W, const uint8_t* __restrict__ x, float* __restrict__ y, int n_out) {
+// Pair (one token): the blocks past `p.blocks1` take a second matrix of the same shape (p.W2, its activations p.x2,
+// rows to p.y2), and the first matrix's rows are kda_gates' g = lb * sigmoid(-(y + dt_b) * ssm_a[head]) (block 0 also
+// writes beta = sigmoid(bpre)): the KDA gates' f_b and g_b products and the gates in one launch, each value computed
+// as by the three launches.
+struct NarrowPair {
+    const uint8_t* W2 = nullptr;
+    const uint8_t* x2 = nullptr;
+    float* y2 = nullptr;
+    int blocks1 = 0;
+    const float *dt_b = nullptr, *ssm_a = nullptr, *bpre = nullptr;
+    float* beta = nullptr;
+    int H = 0;
+    float lb = 0.f;
+};
+template <int T, int NB, int C = 1, bool Pair = false>
+__global__ void __launch_bounds__(256) q8_0_narrow_k(const uint8_t* __restrict__ W, const uint8_t* __restrict__ x,
+                                                     float* __restrict__ y, int n_out, NarrowPair p = NarrowPair()) {
     __shared__ __align__(16) uint8_t stage[8][C][kQ8Chunk * kQ8Block];
     __shared__ __align__(16) uint8_t xs[T * NB * kQ6Q81];
     constexpr int R = 32 / NB; // rows a chunk
     constexpr int KV = (kQ8Chunk * kQ8Block / 16 + 31) / 32;
     const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
-    // the warp's C chunks (chunk j: rows (blockIdx.x * 8 * C + j * 8 + warp) * R ...), loaded before the activations
+    int bx = (int) blockIdx.x;
+    bool gates = false;
+    if (Pair) {
+        gates = bx < p.blocks1;
+        if (!gates) {
+            bx -= p.blocks1;
+            W = p.W2;
+            x = p.x2;
+            y = p.y2;
+        } else if (bx == 0) {
+            for (int i = (int) threadIdx.x; i < p.H; i += 256)
+                p.beta[i] = sigmoidf_(p.bpre[i]);
+        }
+    }
+    // the warp's C chunks (chunk j: rows (bx * 8 * C + j * 8 + warp) * R ...), loaded before the activations
     int4 v16[C][KV];
     int rows[C];
 #pragma unroll
     for (int j = 0; j < C; ++j) {
-        const int row0 = (blockIdx.x * 8 * C + j * 8 + warp) * R;
+        const int row0 = (bx * 8 * C + j * 8 + warp) * R;
         rows[j] = row0 < n_out ? min(R, n_out - row0) : 0;
         const int bytes = rows[j] * NB * kQ8Block;
         const uint8_t* src = W + (size_t) row0 * NB * kQ8Block;
@@ -990,7 +1073,7 @@ __global__ void __launch_bounds__(256)
     for (int j = 0; j < C; ++j) {
         if (rows[j] == 0)
             break;
-        const int row0 = (blockIdx.x * 8 * C + j * 8 + warp) * R, bytes = rows[j] * NB * kQ8Block;
+        const int row0 = (bx * 8 * C + j * 8 + warp) * R, bytes = rows[j] * NB * kQ8Block;
         uint8_t* sm = stage[warp][j];
 #pragma unroll
         for (int k = 0; k < KV; ++k)
@@ -1025,8 +1108,14 @@ __global__ void __launch_bounds__(256)
 #pragma unroll
             for (int o = NB / 2; o > 0; o >>= 1)
                 acc[t] += __shfl_xor_sync(0xffffffffu, acc[t], o);
-            if (b == 0 && r < rows[j])
-                y[(size_t) t * n_out + row0 + r] = acc[t];
+            if (b == 0 && r < rows[j]) {
+                if (Pair && gates) {
+                    const int c = row0 + r;
+                    y[c] = p.lb * sigmoidf_(-(acc[t] + p.dt_b[c]) * p.ssm_a[c / kKdaDim]);
+                } else {
+                    y[(size_t) t * n_out + row0 + r] = acc[t];
+                }
+            }
         }
     }
 }
@@ -1831,13 +1920,17 @@ __global__ void __launch_bounds__(32) route_k(const float* logits, const float* 
     }
 }
 
-__global__ void swiglu_clamp_k(const float* gate, const float* up, float* y, int64_t n, float lim) {
+// xq (when given): y's Q8_1 too
+__global__ void swiglu_clamp_k(const float* gate, const float* up, float* y, int64_t n, float lim, void* xq) {
     const int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= n)
         return;
     const float g = fminf(gate[i], lim);
     const float u = fminf(fmaxf(up[i], -lim), lim);
-    y[i] = g / (1.f + expf(-g)) * u;
+    const float v = g / (1.f + expf(-g)) * u;
+    y[i] = v;
+    if (xq) // n % 32 == 0: whole warps
+        q8_1_warp(v, q8_1_blk(xq, (size_t) i), (int) (i & 31));
 }
 
 // ids: out[0] = ids[the index] (x holds the rows of a subset, ids their token ids)
@@ -1890,10 +1983,17 @@ void rms_norm(const float* x, const float* w, float* y, int n, int rows, float e
         rms_norm_k<<<rows, 256, 0, S(st)>>>(x, w, y, n, eps);
 }
 
+bool rms_norm_q8_1_supported(int n) {
+    return !(n >= 4096 && n % 4 == 0) && n % 32 == 0;
+}
+void rms_norm_q8_1(const float* x, const float* w, float* y, int n, int rows, float eps, void* xq, void* st) {
+    rms_norm_k<<<rows, 256, 0, S(st)>>>(x, w, y, n, eps, xq);
+}
+
 void hc_pre(const float* mixes, const float* scale, const float* base, const float* R, const float* norm_w, float* post,
             float* comb, float* xn, int N, int T, int iters, float hc_eps, float rms_eps, void* st, float* xn_host) {
     hc_pre_k<<<dim3(T, one_wave() ? 2 : 1), 1024, (size_t) N * sizeof(float), S(st)>>>(
-        mixes, nullptr, 0, scale, base, R, norm_w, post, comb, xn, N, iters, hc_eps, rms_eps, xn_host);
+        mixes, nullptr, 0, scale, base, R, norm_w, post, comb, xn, N, iters, hc_eps, rms_eps, xn_host, nullptr);
 }
 
 void hc_mix(const void* hc_fn, const float* R, float* part, int N, int T, void* st) {
@@ -1907,9 +2007,9 @@ size_t hc_mix_floats(int T) {
 
 void hc_pre_mixed(const float* part, const float* scale, const float* base, const float* R, const float* norm_w,
                   float* post, float* comb, float* xn, int N, int T, int iters, float hc_eps, float rms_eps, void* st,
-                  float* xn_host) {
+                  float* xn_host, void* xq) {
     hc_pre_k<<<dim3(T, one_wave() ? 2 : 1), 1024, (size_t) N * sizeof(float), S(st)>>>(
-        nullptr, part, kHc * N, scale, base, R, norm_w, post, comb, xn, N, iters, hc_eps, rms_eps, xn_host);
+        nullptr, part, kHc * N, scale, base, R, norm_w, post, comb, xn, N, iters, hc_eps, rms_eps, xn_host, xq);
 }
 
 void hc_post(const float* y, float* R, const float* post, const float* comb, int N, int T, void* st, const float* y2) {
@@ -1941,8 +2041,9 @@ void kda_step(const float* S_in, float* S_out, const float* qkv, const float* g,
     kda_step_k<<<dim3(H, kKdaDim / kKdaTile), 256, 0, S(st)>>>(S_in, S_out, qkv, g, beta, o, H, T, mid);
 }
 
-void kda_out(const float* o, const float* gate, const float* norm_w, float* y, int H, int T, float eps, void* st) {
-    kda_out_k<<<dim3(H, T), kKdaDim, 0, S(st)>>>(o, gate, norm_w, y, H, eps);
+void kda_out(const float* o, const float* gate, const float* norm_w, float* y, int H, int T, float eps, void* st,
+             void* xq) {
+    kda_out_k<<<dim3(H, T), kKdaDim, 0, S(st)>>>(o, gate, norm_w, y, H, eps, xq);
 }
 
 void q8_0_heads(const void* W, const float* x, float* y, int H, int n_in, int n_out, int T, void* st) {
@@ -2124,6 +2225,37 @@ void q8_0_narrow(const void* W, const void* xq8_1, float* y, int n_in, int n_out
     else
         nb == 2 ? GLM5_NARROW(2, 2) : nb == 4 ? GLM5_NARROW(2, 4) : GLM5_NARROW(2, 8);
 #undef GLM5_NARROW
+}
+
+bool kda_fg_supported(int n_in, int D) {
+    return q8_0_narrow_supported(n_in, 1) && D % kKdaDim == 0;
+}
+
+void kda_fg(const void* Wf, const void* Wg, const void* xq8_1, const float* dt_b, const float* ssm_a, float* g,
+            const float* bpre, float* beta, float* gate, int n_in, int D, int H, float lower_bound, void* st) {
+    // q8_0_narrow's launch for each matrix, the second's blocks after the first's
+    const int C = one_wave() && D >= 4096 ? 2 : 1;
+    const int nb = n_in / 32, rows_per_block = 8 * C * (32 / nb);
+    const int blocks = (D + rows_per_block - 1) / rows_per_block;
+    NarrowPair p;
+    p.W2 = (const uint8_t*) Wg;
+    p.x2 = (const uint8_t*) xq8_1 + (size_t) nb * kQ6Q81;
+    p.y2 = gate;
+    p.blocks1 = blocks;
+    p.dt_b = dt_b;
+    p.ssm_a = ssm_a;
+    p.bpre = bpre;
+    p.beta = beta;
+    p.H = H;
+    p.lb = lower_bound;
+    const auto* w = (const uint8_t*) Wf;
+    const auto* x = (const uint8_t*) xq8_1;
+    const dim3 grid((unsigned) (2 * blocks));
+#define GLM5_FG(NB)                                                                                                    \
+    (C == 2 ? q8_0_narrow_k<1, NB, 2, true><<<grid, 256, 0, S(st)>>>(w, x, g, D, p)                                    \
+            : q8_0_narrow_k<1, NB, 1, true><<<grid, 256, 0, S(st)>>>(w, x, g, D, p))
+    nb == 2 ? GLM5_FG(2) : nb == 4 ? GLM5_FG(4) : GLM5_FG(8);
+#undef GLM5_FG
 }
 
 void bf16_matvec(const uint16_t* W, const float* x, float* y, int n_in, int n_out, int T, void* st) {
@@ -2381,9 +2513,10 @@ void route(const float* logits, const float* bias, int E, int k, bool norm, floa
     route_k<<<T, 32, 0, S(st)>>>(logits, bias, E, k, norm, scale, ids, w, ids_host, w_host);
 }
 
-void swiglu_clamp(const float* gate, const float* up, float* y, int n, int T, float lim, void* st) {
+void swiglu_clamp(const float* gate, const float* up, float* y, int n, int T, float lim, void* st, void* xq) {
     const int64_t total = (int64_t) n * T;
-    swiglu_clamp_k<<<(unsigned) ((total + 255) / 256), 256, 0, S(st)>>>(gate, up, y, total, lim);
+    swiglu_clamp_k<<<(unsigned) ((total + 255) / 256), 256, 0, S(st)>>>(gate, up, y, total, lim,
+                                                                        n % 32 == 0 ? xq : nullptr);
 }
 
 void argmax(const float* x, int n, int32_t* out, void* st, const int32_t* ids) {

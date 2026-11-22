@@ -1,0 +1,9 @@
+guild batch: 3 slot sessions, 274 MiB of VRAM each (2.3 GiB of pinned RAM for their K/V); 3790 MiB of VRAM free before, 2958 after
+guild batch: slot 0 takes 23 tokens (copied in 1.8 ms)
+guild verify: captured the batch window over slots 0 in 28.9 ms
+guild batch: slot 1 takes 25 tokens (copied in 1.7 ms)
+guild verify: captured the batch window over slots 0,1 in 23.8 ms
+guild batch: slot 2 takes 27 tokens (copied in 1.7 ms)
+guild verify: captured the batch window over slots 0,1,2 in 26.2 ms
+guild batch: 97 windows, 2.94 rows a window, 62.54 ms a window (run 62.54 = GPU-reach wait 36.39 + CPU experts 27.64; commit 0.00), 30.46 CPU experts a layer-window; 41.0 rows/s over 6956 ms
+guild batch GPU stages (ms a window): GDN layers: q8+qkv/q-idx gemv 4.89 conv 0.65 ab 0.55 z 2.88 rec 4.14 out-proj 3.16 hc-read1+router 3.98 shared+quant 2.12 waitCPU 17.27 copy+combine 1.24 (gap) 0.04 head 2.83   hc0 norm 0.54   hc0 down 1.33   hc0 up 1.06 | QSA layers: q8+kv-idx 0.12 k/v+norm-rope 0.46 kv+idx append 0.26 q+q-idx 2.28 attention 1.13 gate 0.04 out-proj 1.16 hc-read1+router 1.33 shared+quant 0.71 waitCPU 5.42 copy+combine 0.41 (gap) 0.01   hc0 norm 0.07   hc0 down 0.44   hc0 up 0.35 | total 60.89 ms/window over 95 windows

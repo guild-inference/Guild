@@ -1,0 +1,11 @@
+75 windows: span 72.14 ms, GPU busy (union) 58.99, idle 13.16
+    33.73 ms  dense mmvq
+    13.68 ms  hc read
+     7.44 ms  GDN
+     3.58 ms  draft head k4_mm/d8_mm
+     3.32 ms  bf16 gemv (router/indexer/PLE)
+     2.89 ms  routing/doorbell/copies
+     2.37 ms  attention
+     2.17 ms  other
+     2.13 ms  wait CPU experts
+span p10/p50/p90 60.9 / 69.6 / 90.1

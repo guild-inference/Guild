@@ -548,6 +548,90 @@ void DFlashDrafter::reset(int64_t pos0) {
     ctx_lo_ = ctx_hi_ = std::max<int64_t>(0, pos0);
 }
 
+bool DFlashDrafter::add_contexts(int n, std::string& err) {
+    const int kvd = kv_heads_ * hd_;
+    if (sets_.empty()) { // set 0: the rings the layers have
+        ContextSet s0;
+        for (const Layer& y : L_) {
+            s0.k.push_back(y.kring);
+            s0.v.push_back(y.vring);
+        }
+        s0.lo = ctx_lo_;
+        s0.hi = ctx_hi_;
+        sets_.push_back(std::move(s0));
+        cur_set_ = 0;
+    }
+    for (int i = 0; i < n; ++i) {
+        ContextSet s;
+        for (int l = 0; l < layers_; ++l)
+            for (std::vector<uint16_t*>* r : {&s.k, &s.v}) {
+                uint16_t* p = nullptr;
+                if (cudaMalloc((void**) &p, (size_t) ring_ * kvd * 2) != cudaSuccess) {
+                    (void) cudaGetLastError();
+                    for (uint16_t* q : s.k)
+                        cudaFree(q);
+                    for (uint16_t* q : s.v)
+                        cudaFree(q);
+                    err = "dflash: no VRAM for another context's rings";
+                    return false;
+                }
+                r->push_back(p);
+            }
+        for (uint16_t* p : s.k)
+            allocs_.push_back(p);
+        for (uint16_t* p : s.v)
+            allocs_.push_back(p);
+        vram_ += (uint64_t) 2 * layers_ * ring_ * kvd * 2;
+        sets_.push_back(std::move(s));
+    }
+    return true;
+}
+
+void DFlashDrafter::use_context(int i) {
+    if (sets_.empty() || i < 0 || i >= (int) sets_.size() || i == cur_set_)
+        return;
+    ContextSet& out = sets_[(size_t) cur_set_];
+    out.lo = ctx_lo_;
+    out.hi = ctx_hi_;
+    const ContextSet& in = sets_[(size_t) i];
+    for (int l = 0; l < layers_; ++l) {
+        L_[(size_t) l].kring = in.k[(size_t) l];
+        L_[(size_t) l].vring = in.v[(size_t) l];
+    }
+    ctx_lo_ = in.lo;
+    ctx_hi_ = in.hi;
+    cur_set_ = i;
+}
+
+bool DFlashDrafter::copy_context(int from, int to, void* stream, std::string& err) {
+    if (sets_.empty() || from < 0 || to < 0 || from >= (int) sets_.size() || to >= (int) sets_.size()) {
+        err = "dflash: no such context set";
+        return false;
+    }
+    if (from == to)
+        return true;
+    sets_[(size_t) cur_set_].lo = ctx_lo_; // the set in use keeps its positions in ctx_lo_ / ctx_hi_
+    sets_[(size_t) cur_set_].hi = ctx_hi_;
+    const ContextSet& a = sets_[(size_t) from];
+    ContextSet& b = sets_[(size_t) to];
+    const size_t bytes = (size_t) ring_ * kv_heads_ * hd_ * 2;
+    for (int l = 0; l < layers_; ++l)
+        if (cudaMemcpyAsync(b.k[(size_t) l], a.k[(size_t) l], bytes, cudaMemcpyDeviceToDevice, (cudaStream_t) stream) !=
+                cudaSuccess ||
+            cudaMemcpyAsync(b.v[(size_t) l], a.v[(size_t) l], bytes, cudaMemcpyDeviceToDevice, (cudaStream_t) stream) !=
+                cudaSuccess) {
+            err = "dflash: a context copy failed";
+            return false;
+        }
+    b.lo = a.lo;
+    b.hi = a.hi;
+    if (to == cur_set_) {
+        ctx_lo_ = b.lo;
+        ctx_hi_ = b.hi;
+    }
+    return true;
+}
+
 bool DFlashDrafter::rewind(int64_t pos) {
     const int64_t lo = std::max<int64_t>(ctx_lo_, ctx_hi_ - ring_); // the positions the ring still holds
     if (pos < lo || pos > ctx_hi_ || (pos == lo && pos > ctx_lo_))

@@ -620,43 +620,58 @@ void ExpertPool::worker(int id) {
 }
 
 int ExpertPool::claim_from(std::atomic<uint64_t>& head, uint32_t epoch, uint32_t limit) {
-    uint64_t h = head.load(std::memory_order_acquire);
-    for (;;) {
-        if ((uint32_t) (h >> 32) != epoch)
-            return -1; // not the batch this thread woke for
-        const uint32_t n = (uint32_t) (h >> 16) & 0xffffu, i = (uint32_t) h & 0xffffu;
-        if (i >= n || i >= limit)
-            return -1; // exhausted
-        if (head.compare_exchange_weak(h, h + 1, std::memory_order_acq_rel, std::memory_order_acquire))
-            return (int) i;
-    }
+    const uint64_t h = head.load(std::memory_order_acquire);
+    if ((uint32_t) (h >> 32) != epoch)
+        return -1; // not the batch this thread woke for
+    const uint32_t n = (uint32_t) (h >> 16) & 0xffffu;
+    if (((uint32_t) h & 0xffffu) >= (std::min)(n, limit))
+        return -1; // exhausted
+    // This thread is out of the park, so the host cannot publish another batch before the add lands: the index is
+    // this batch's.  Racing threads can take it past `njobs` (they get -1; begin_batch leaves room in the 16 bits)
+    // or past `limit` (a later task, still this batch's: see claim_numa).
+    const uint32_t i = (uint32_t) head.fetch_add(1, std::memory_order_acq_rel) & 0xffffu;
+    return i < n ? (int) i : -1;
 }
 
 int ExpertPool::claim(uint32_t epoch) {
     return claim_from(head_, epoch, 0xffffu);
 }
 
-int ExpertPool::claim_numa(uint32_t epoch, int node) {
+int ExpertPool::claim_numa(uint32_t epoch, int node, unsigned& gone) {
     // Own node's queue first, then the other's, so a node that finishes early takes the remainder rather than
     // waiting.  The `first` tasks of BOTH queues go before any later one: a down task spins until its expert's
     // gate/up tasks are done, and this order means those have all been claimed by threads that are running them.
+    // (Two threads racing for a queue's last `first` task can leave one with a later task of that queue.  Its own
+    // queue's first tasks are then all claimed, and the other queue's are claimed by that node's threads, which try
+    // their own queue first: the wait still ends.)  A part found exhausted stays so for the batch: `gone` skips it.
     const int own = node == 1 ? 1 : 0, other = 1 - own;
     std::atomic<uint64_t>* q[2] = {&head_, &head1_};
     int j;
-    if ((j = claim_from(*q[own], epoch, numa_first_[own])) >= 0)
-        return own << 16 | j;
-    if ((j = claim_from(*q[other], epoch, numa_first_[other])) >= 0)
-        return other << 16 | j;
-    if ((j = claim_from(*q[own], epoch, 0xffffu)) >= 0)
-        return own << 16 | j;
+    if (!(gone & 1u)) {
+        if ((j = claim_from(*q[own], epoch, numa_first_[own])) >= 0)
+            return own << 16 | j;
+        gone |= 1u;
+    }
+    if (!(gone & 2u)) {
+        if ((j = claim_from(*q[other], epoch, numa_first_[other])) >= 0)
+            return other << 16 | j;
+        gone |= 2u;
+    }
+    if (!(gone & 4u)) {
+        if ((j = claim_from(*q[own], epoch, 0xffffu)) >= 0)
+            return own << 16 | j;
+        gone |= 4u;
+    }
     if ((j = claim_from(*q[other], epoch, 0xffffu)) >= 0)
         return other << 16 | j;
     return -1;
 }
 
 uint32_t ExpertPool::begin_batch(int n, int n1) {
-    if (n < 0 || n > 0xffff || n1 > 0xffff) {
-        std::fprintf(stderr, "guild: expert pool batch of %d jobs is out of range\n", n1 > 0xffff ? n1 : n);
+    // below 0xffff by the claims that can race past the end (one a thread): the index must not carry into `njobs`
+    constexpr int kMaxJobs = 0xffff - 1024;
+    if (n < 0 || n > kMaxJobs || n1 > kMaxJobs) {
+        std::fprintf(stderr, "guild: expert pool batch of %d jobs is out of range\n", n1 > kMaxJobs ? n1 : n);
         std::abort();
     }
     // Every job of the previous batch has completed (`wait_done`), and a claim of it can no longer succeed, so
@@ -727,8 +742,12 @@ void ExpertPool::drain(int id, ExpertScratch& scratch, uint32_t epoch) {
     (void) id;
     const bool numa_batch = numa_batch_.load(std::memory_order_relaxed);
     const int node = numa_batch ? current_numa_node() : 0;
+    unsigned gone = 0;
+    // `done` once a drain rather than once a job: one locked add on a line both sockets write, instead of five or
+    // so a layer for each thread
+    uint32_t n_done = 0;
     for (;;) {
-        int ci = numa_batch ? claim_numa(epoch, node) : claim(epoch);
+        int ci = numa_batch ? claim_numa(epoch, node, gone) : claim(epoch);
         if (ci < 0)
             break;
         // A NUMA batch's (queue, index): mode 11 maps it back to the single queue's task, modes 5/6 below cut
@@ -1060,8 +1079,10 @@ void ExpertPool::drain(int id, ExpertScratch& scratch, uint32_t epoch) {
             else if (mode_ == 7 || mode_ == 9)
                 p.quant += value;
         }
-        done_.fetch_add(1, std::memory_order_release);
+        ++n_done;
     }
+    if (n_done != 0)
+        done_.fetch_add(n_done, std::memory_order_release);
 }
 
 void ExpertPool::run_phase(int mode, int n_tasks) {

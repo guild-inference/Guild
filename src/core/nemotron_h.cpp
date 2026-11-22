@@ -24,6 +24,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
 
 #if defined(__linux__)
 #include <sys/mman.h>
@@ -73,6 +74,11 @@ struct NemotronHEngine::Impl {
     bool has_mtp = false;
     GgufMat head;
     float* out_norm = nullptr;
+    // the draft head: a copy of the subset's rows of `head` (opt.draft_vocab), and the token id of each
+    GgufMat dhead;
+    int32_t* d_dvocab = nullptr;
+    bool read_draft_head(std::string& err);
+    bool check_draft_head(std::string& err);
     // the token embedding, read on the host: a row's float32 values (BF16 and F16 exactly)
     const uint8_t* embd = nullptr;
     int embd_type = -1;
@@ -263,7 +269,7 @@ struct NemotronHEngine::Impl {
                      std::string& err);
     bool window(const int32_t* tokens, const float* embeds, int T, int64_t pos0, bool prompt, bool snaps,
                 std::string& err);
-    bool head_rows(const float* rows, int n, float* host, std::string& err);
+    bool head_rows(const float* rows, int n, float* host, int32_t* top, std::string& err);
     bool mtp_rows(const float* h_rows, const int32_t* tokens, const float* embeds, int T, int64_t pos0, float* out,
                   std::string& err);
     bool mtp_catch_up(const int32_t* tokens, const float* embeds, int T, int64_t pos0, std::string& err);
@@ -443,6 +449,9 @@ bool NemotronHEngine::Impl::load(const std::string& path, const NemotronHOptions
             std::fprintf(stderr, "guild nemotron_h: no usable MTP block (%s); decoding without MTP\n", why.c_str());
     }
 
+    if (has_mtp && !read_draft_head(err))
+        return false;
+
     // scratch for kPromptT rows
     const int W = kPromptT;
     const int64_t widest = std::max<int64_t>({2 * N, g.ssm_inner, g.n_ff_shexp, g.n_head * g.head_dim});
@@ -459,7 +468,7 @@ bool NemotronHEngine::Impl::load(const std::string& path, const NemotronHOptions
         !(rw = dalloc<float>((size_t) W * g.n_used, err)) || !(rids = dalloc<int32_t>((size_t) W * g.n_used, err)) ||
         !(logits = dalloc<float>((size_t) kMaxVerify * g.n_vocab, err)) || !(hn = dalloc<float>((size_t) W * N, err)) ||
         !(cat = dalloc<float>((size_t) W * 2 * N, err)) || !(pending = dalloc<float>((size_t) N, err)) ||
-        !(mh = dalloc<float>((size_t) W * N, err)) || !(d_arg = dalloc<int32_t>(1, err)))
+        !(mh = dalloc<float>((size_t) W * N, err)) || !(d_arg = dalloc<int32_t>(kMaxVerify, err)))
         return false;
     if (!dp.init(
             st, widest, W, std::getenv("GUILD_NEMOTRON_MMQ") == nullptr,
@@ -528,6 +537,81 @@ bool NemotronHEngine::Impl::load(const std::string& path, const NemotronHOptions
                   (int) std::count(g.kinds.begin(), g.kinds.end(), '*'), has_mtp ? " + MTP" : "", wk.pool->size(),
                   wk.split ? " on 2 NUMA nodes" : "", (unsigned long long) (vram >> 20), (long long) ctx, n_mmq);
     placement = line;
+    return true;
+}
+
+/// The draft head's token subset (opt.draft_vocab: int32 token ids, tools/nemotron_draft_vocab.py): those rows of the
+/// head copied as they are (a row's product does not depend on the rows around it, so each subset logit is the whole
+/// head's), the ids kept ascending so that a tie goes to the lower token id as over the whole head.
+bool NemotronHEngine::Impl::read_draft_head(std::string& err) {
+    if (opt.draft_vocab.empty())
+        return true;
+    std::vector<int32_t> ids;
+    std::ifstream f(opt.draft_vocab, std::ios::binary | std::ios::ate);
+    const std::streamoff size = f ? (std::streamoff) f.tellg() : -1;
+    if (size > 0 && size % 4 == 0) {
+        ids.resize((size_t) size / 4);
+        f.seekg(0);
+        f.read((char*) ids.data(), size);
+    }
+    if (size <= 0 || size % 4 != 0 || !f) {
+        err = "nemotron_h: the draft vocabulary " + opt.draft_vocab + " is missing or not a list of int32 token ids";
+        return false;
+    }
+    std::sort(ids.begin(), ids.end());
+    ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
+    if (ids.front() < 0 || ids.back() >= g.n_vocab) {
+        err = "nemotron_h: the draft vocabulary " + opt.draft_vocab + " has ids outside the vocabulary (" +
+              std::to_string(g.n_vocab) + ")";
+        return false;
+    }
+    dhead.type = head.type;
+    dhead.n_in = head.n_in;
+    dhead.n_out = (int64_t) ids.size();
+    const size_t row = head.row_bytes();
+    dhead.bytes = row * (size_t) dhead.n_out;
+    std::vector<uint8_t> rows(dhead.bytes);
+    for (size_t i = 0; i < ids.size(); ++i)
+        std::memcpy(rows.data() + i * row, head.host + (size_t) ids[i] * row, row);
+    uint8_t* p = dalloc<uint8_t>(dhead.bytes + ggml_row_size((ggml_type) dhead.type, 512), err);
+    if (!p || !(d_dvocab = dalloc<int32_t>(ids.size(), err)))
+        return false;
+    cudaMemcpy(p, rows.data(), dhead.bytes, cudaMemcpyHostToDevice);
+    cudaMemcpy(d_dvocab, ids.data(), ids.size() * 4, cudaMemcpyHostToDevice);
+    dhead.dev = p;
+    std::fprintf(stderr, "guild nemotron_h: draft head over %lld of %lld tokens (%s; %.0f of %.0f MiB of rows)\n",
+                 (long long) dhead.n_out, (long long) g.n_vocab, opt.draft_vocab.c_str(), dhead.bytes / 1048576.0,
+                 head.bytes / 1048576.0);
+    return true;
+}
+
+/// GUILD_NEM_DRAFT_CHECK: the draft's subset logits (logits, row 0) against the whole head's product of the same
+/// activations (xq[0]), to stderr when they differ
+bool NemotronHEngine::Impl::check_draft_head(std::string& err) {
+    const size_t n = (size_t) dhead.n_out, V = (size_t) g.n_vocab;
+    std::vector<float> sub(n), all(V);
+    std::vector<int32_t> ids(n);
+    float* whole = logits + V; // row 1 of the scratch
+    mm(head, 0, whole, 1);
+    if (cudaMemcpyAsync(sub.data(), logits, n * 4, cudaMemcpyDeviceToHost, st) != cudaSuccess ||
+        cudaMemcpyAsync(all.data(), whole, V * 4, cudaMemcpyDeviceToHost, st) != cudaSuccess ||
+        cudaMemcpyAsync(ids.data(), d_dvocab, n * 4, cudaMemcpyDeviceToHost, st) != cudaSuccess ||
+        cudaStreamSynchronize(st) != cudaSuccess) {
+        err = "nemotron_h: CUDA error: " + std::string(cudaGetErrorString(cudaGetLastError()));
+        return false;
+    }
+    size_t differ = 0;
+    for (size_t i = 0; i < n; ++i)
+        differ += std::memcmp(&sub[i], &all[(size_t) ids[i]], 4) != 0;
+    const int32_t best = (int32_t) (std::max_element(all.begin(), all.end()) - all.begin());
+    const bool in = std::binary_search(ids.begin(), ids.end(), best);
+    static size_t checks = 0, outside = 0;
+    ++checks;
+    outside += !in;
+    std::fprintf(stderr,
+                 "draft check %zu: %zu of %zu subset logits differ from the head's; the head's argmax %d %s "
+                 "(%zu outside so far)\n",
+                 checks, differ, n, best, in ? "in the subset" : "outside", outside);
     return true;
 }
 
@@ -760,15 +844,23 @@ bool NemotronHEngine::Impl::window_pair(const int32_t* tokens, const float* embe
     return ok;
 }
 
-/// logits of n rows of normed hidden states (device), to the host
-bool NemotronHEngine::Impl::head_rows(const float* rows, int n, float* host, std::string& err) {
+/// logits of n rows of normed hidden states (device): to the host (`host`, may be null) and / or each row's argmax
+/// (`top`, may be null: n token ids, computed on the GPU, the first of equal maxima)
+bool NemotronHEngine::Impl::head_rows(const float* rows, int n, float* host, int32_t* top, std::string& err) {
     quant(rows, g.n_embd, n, 0);
     mm(head, 0, logits, n);
-    if (cudaMemcpyAsync(host, logits, (size_t) n * g.n_vocab * 4, cudaMemcpyDeviceToHost, st) != cudaSuccess ||
+    if (top) {
+        nhk::argmax_rows(logits, (int) g.n_vocab, g.n_vocab, n, d_arg, nullptr, st);
+        cudaMemcpyAsync(h_arg, d_arg, (size_t) n * 4, cudaMemcpyDeviceToHost, st);
+    }
+    if ((host &&
+         cudaMemcpyAsync(host, logits, (size_t) n * g.n_vocab * 4, cudaMemcpyDeviceToHost, st) != cudaSuccess) ||
         cudaStreamSynchronize(st) != cudaSuccess) {
         err = "nemotron_h: CUDA error: " + std::string(cudaGetErrorString(cudaGetLastError()));
         return false;
     }
+    if (top)
+        std::memcpy(top, h_arg, (size_t) n * 4);
     return true;
 }
 
@@ -917,7 +1009,8 @@ bool NemotronHEngine::forward(const int32_t* tokens, const float* embeds, int n,
         if (T1 > 0) {
             if (!m.window_pair(tokens + done, e, T, T1, pos0 + done, true, false, err))
                 return false;
-            if (done + T + T1 == n && logits && !m.head_rows(m.win[1].hn + (size_t) (T1 - 1) * N, 1, logits, err))
+            if (done + T + T1 == n && logits &&
+                !m.head_rows(m.win[1].hn + (size_t) (T1 - 1) * N, 1, logits, nullptr, err))
                 return false;
             if (m.has_mtp) {
                 if (!m.mtp_catch_up(tokens + done, e, T, pos0 + done, err))
@@ -936,7 +1029,7 @@ bool NemotronHEngine::forward(const int32_t* tokens, const float* embeds, int n,
         if (!m.window(tokens + done, e, T, pos0 + done, true, false, err))
             return false;
         if (done + T == n && logits &&
-            !m.head_rows(m.hn + (size_t) (T - 1) * N, 1, logits, err)) // before mtp_catch_up reuses hn
+            !m.head_rows(m.hn + (size_t) (T - 1) * N, 1, logits, nullptr, err)) // before mtp_catch_up reuses hn
             return false;
         if (m.has_mtp && !m.mtp_catch_up(tokens + done, e, T, pos0 + done, err))
             return false;
@@ -950,7 +1043,7 @@ bool NemotronHEngine::forward(const int32_t* tokens, const float* embeds, int n,
     return true;
 }
 
-bool NemotronHEngine::step(int32_t token, int64_t pos, float* logits, std::string& err) {
+bool NemotronHEngine::step(int32_t token, int64_t pos, float* logits, std::string& err, int32_t* top) {
     Impl& m = *p_;
     if (pos != m.ctx_end || pos + 1 > m.opt.max_context) {
         err = "nemotron_h: a step continues the context at its end";
@@ -959,7 +1052,8 @@ bool NemotronHEngine::step(int32_t token, int64_t pos, float* logits, std::strin
     const cpu_moe::PinCaller pin(m.wk.caller_cpu);
     m.cpu_ms = 0;
     if (!m.flush_wait(err) || !m.window(&token, nullptr, 1, pos, false, false, err) ||
-        (logits && !m.head_rows(m.hn, 1, logits, err)) || (m.has_mtp && !m.mtp_catch_up(&token, nullptr, 1, pos, err)))
+        ((logits || top) && !m.head_rows(m.hn, 1, logits, top, err)) ||
+        (m.has_mtp && !m.mtp_catch_up(&token, nullptr, 1, pos, err)))
         return false;
     m.ctx_end = pos + 1;
     if (cudaStreamSynchronize(m.st) != cudaSuccess) {
@@ -982,6 +1076,8 @@ bool NemotronHEngine::draft(int32_t last, int64_t pos, int kd, int32_t* drafts, 
     // ones the block's own output with the previous draft (the repeated layer).  The first step also takes the kept
     // rows accept() left (hn's first rows, then the waiting row: one pass of at most kMaxVerify rows, each computed
     // as alone), its draft from its last row.
+    // GUILD_NEM_DRAFT_CHECK=1 (debugging): every draft's subset logits against the whole head's rows, bit for bit
+    static const bool check_dhead = std::getenv("GUILD_NEM_DRAFT_CHECK") != nullptr;
     int32_t tok = last;
     const float* h = m.pending;
     const int wait = (int) m.wait_tok.size();
@@ -997,8 +1093,15 @@ bool NemotronHEngine::draft(int32_t last, int64_t pos, int kd, int32_t* drafts, 
             return false;
         }
         m.quant(out, N, 1, 0);
-        m.mm(m.head, 0, m.logits, 1);
-        glm5k::argmax(m.logits, (int) m.g.n_vocab, m.d_arg, m.st);
+        if (m.dhead.dev) { // the subset's rows only
+            m.mm(m.dhead, 0, m.logits, 1);
+            nhk::argmax_rows(m.logits, (int) m.dhead.n_out, m.dhead.n_out, 1, m.d_arg, m.d_dvocab, m.st);
+            if (check_dhead && !m.check_draft_head(err))
+                return false;
+        } else {
+            m.mm(m.head, 0, m.logits, 1);
+            glm5k::argmax(m.logits, (int) m.g.n_vocab, m.d_arg, m.st);
+        }
         cudaMemcpyAsync(m.h_arg, m.d_arg, 4, cudaMemcpyDeviceToHost, m.st);
         if (cudaStreamSynchronize(m.st) != cudaSuccess) {
             err = "nemotron_h: CUDA error: " + std::string(cudaGetErrorString(cudaGetLastError()));
@@ -1010,7 +1113,8 @@ bool NemotronHEngine::draft(int32_t last, int64_t pos, int kd, int32_t* drafts, 
     return true;
 }
 
-bool NemotronHEngine::verify(const int32_t* tokens, int n, int64_t pos0, float* logits_rows, std::string& err) {
+bool NemotronHEngine::verify(const int32_t* tokens, int n, int64_t pos0, float* logits_rows, std::string& err,
+                             int32_t* top) {
     Impl& m = *p_;
     if (n < 1 || n > kMaxVerify || pos0 != m.ctx_end || pos0 + n > m.opt.max_context) {
         err = "nemotron_h: a verify window is 1.." + std::to_string(kMaxVerify) + " tokens at the context's end";
@@ -1035,7 +1139,7 @@ bool NemotronHEngine::verify(const int32_t* tokens, int n, int64_t pos0, float* 
     } else if (!m.window(tokens, nullptr, n, pos0, false, n > 1, err)) {
         return false;
     }
-    if (!m.head_rows(m.hn, n, logits_rows, err))
+    if (!m.head_rows(m.hn, n, logits_rows, top, err))
         return false;
     m.win_tok.assign(tokens, tokens + n);
     m.win_pos = pos0;

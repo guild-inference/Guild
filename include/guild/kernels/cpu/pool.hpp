@@ -22,9 +22,12 @@
 // before a sleeper is awake, and that moment comes round constantly: a late worker could claim from the NEXT
 // batch while the host was still writing it, run a job twice, or add to `done` after the host had reset it -
 // and `done != n` then never ended, with the GPU waiting on the pool forever.  So every claim carries its
-// batch: `head` is one 64-bit word `epoch | njobs | index`, a claim is a CAS that only succeeds for the epoch
-// the worker woke for, and a late worker's claim simply fails.  A claim that succeeds belongs to the current
-// batch, whose description the host cannot change until that job's `done` has landed.
+// batch: `head` is one 64-bit word `epoch | njobs | index`, and a claim takes an index (a `fetch_add`) only after
+// reading a `head` of the epoch the worker woke for with an index left, so a late worker's claim simply fails:
+// its own batch is exhausted (or already replaced) by the time the host can believe it parked.  A claim that
+// succeeds belongs to the current batch, whose description the host cannot change until that job's `done` has
+// landed.  (The claim was a CAS loop, retried by every thread that lost a race: one Drama 3 expert on a dual Xeon
+// 6130's 32 threads took 52 us a layer, 46 with the add.)
 #pragma once
 
 #include "guild/kernels/cpu/expert.hpp"
@@ -377,8 +380,9 @@ private:
     int claim(uint32_t epoch);
     /// The same on one queue, refusing indices at or past `limit`.
     static int claim_from(std::atomic<uint64_t>& head, uint32_t epoch, uint32_t limit);
-    /// A NUMA batch's claim for a thread on `node`: `queue << 16 | index`, or -1.
-    int claim_numa(uint32_t epoch, int node);
+    /// A NUMA batch's claim for a thread on `node`: `queue << 16 | index`, or -1.  `gone`, zero at the start of a
+    /// drain, remembers the parts of the queues found exhausted, so later claims do not read their heads again.
+    int claim_numa(uint32_t epoch, int node, unsigned& gone);
     /// Publish the batch whose description the caller has just written: reset `done`, then `head`, then the epoch.
     /// `n1 >= 0` publishes a NUMA batch with `n` tasks in node 0's queue and `n1` in node 1's.
     uint32_t begin_batch(int n, int n1 = -1);
@@ -423,12 +427,16 @@ private:
     static constexpr int32_t kParked = -1, kSleeping = -2, kBetween = -3, kIdle = -10, kWaitParked = -11,
                              kWaitDone = -12;
     std::unique_ptr<std::atomic<int32_t>[]> wstate_;
-    std::atomic<int32_t> hstate_{kIdle};
+    // The host writes these on every job it claims: not on the line of `wstate_`, which every worker reads at every
+    // claim.
+    alignas(64) std::atomic<int32_t> hstate_{kIdle};
     std::atomic<int64_t> hstate_ms_{0};
     alignas(64) std::atomic<uint64_t> head_{0}; // epoch << 32 | njobs << 16 | next index (issue #29)
     // The NUMA split (numa.hpp): node 1's queue of a NUMA batch, in the same form as `head_` (node 0's).
     alignas(64) std::atomic<uint64_t> head1_{0};
-    bool numa_ = false;                           ///< workers on both nodes of a two-node machine, split requested
+    // Read at every claim, so not on node 1's `head1_` line: node 0's claims pulled that line across the sockets
+    // (a dual Xeon 6130: one Drama 3 expert on 32 threads 44 -> 35 us).
+    alignas(64) bool numa_ = false;               ///< workers on both nodes of a two-node machine, split requested
     std::atomic<bool> numa_batch_{false};         ///< the current batch is two node queues
     uint32_t numa_first_[2] = {0xffffu, 0xffffu}; ///< see run_phase_numa
     int numa_nb_ = 0;                             ///< mode 11: experts in the batch

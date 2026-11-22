@@ -38,6 +38,10 @@ struct NemotronHOptions {
     /// the MTP block's last norm: LayerNorm (llama.cpp's nemotron-h-moe graph) or RMSNorm (vLLM's NemotronHMTP); only
     /// the drafts depend on it
     bool mtp_layer_norm = true;
+    /// the draft head's token subset (a file of int32 token ids, data/nemotron_draft_vocab.bin): drafts are the argmax
+    /// over a copy of these rows of the head only; verify keeps the whole head, so the output does not depend on it.
+    /// Empty: drafts over the whole head.
+    std::string draft_vocab;
 };
 
 class NemotronHEngine {
@@ -62,18 +66,22 @@ public:
     /// reference's chunked scan does.  `logits` (n_vocab floats, host): the last row's when not null.
     bool forward(const int32_t* tokens, const float* embeds, int n, int64_t pos0, float* logits, std::string& err);
     /// One generated token at `pos`, as the reference's one-token decode step computes it (no time-step clamp);
-    /// `logits` (n_vocab floats, host) when not null.
-    bool step(int32_t token, int64_t pos, float* logits, std::string& err);
+    /// `logits` (n_vocab floats, host) when not null; `top` (when not null): the logits' argmax, computed on the GPU
+    /// (the first of equal maxima, as std::max_element's).
+    bool step(int32_t token, int64_t pos, float* logits, std::string& err, int32_t* top = nullptr);
 
     /// Speculative decoding with the MTP block (one layer used repeatedly).  draft: up to `k` guesses for the tokens
-    /// after `last` (which sits at `pos`, not yet fed), each the argmax of the block's head.  verify: runs tokens[0 ..
-    /// n) (the last token and the drafts, n <= 1 + max drafts) at pos0 and gives every row's logits ([n][n_vocab],
-    /// host).  accept: keeps the first n_keep tokens of that window (the recurrent states roll back to after them).
-    /// A verify window's rows are computed as one-token steps would be, so greedy output does not depend on the drafts.
+    /// after `last` (which sits at `pos`, not yet fed), each the argmax of the block's head (over the draft_vocab
+    /// rows when the options name them).  verify: runs tokens[0 .. n) (the last token and the drafts, n <= 1 + max
+    /// drafts) at pos0 and gives every row's logits ([n][n_vocab], host; may be null) and / or every row's argmax
+    /// (`top`, n ids computed on the GPU, the first of equal maxima; may be null).  accept: keeps the first n_keep
+    /// tokens of that window (the states roll back to after them). A verify window's rows are computed as one-token
+    /// steps would be, so greedy output does not depend on the drafts.
     bool has_mtp() const;
     int max_drafts() const;
     bool draft(int32_t last, int64_t pos, int k, int32_t* drafts, std::string& err);
-    bool verify(const int32_t* tokens, int n, int64_t pos0, float* logits_rows, std::string& err);
+    bool verify(const int32_t* tokens, int n, int64_t pos0, float* logits_rows, std::string& err,
+                int32_t* top = nullptr);
     bool accept(int n_keep, std::string& err);
 
     /// Milliseconds of the last forward / verify spent in the CPU experts

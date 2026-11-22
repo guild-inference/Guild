@@ -208,6 +208,26 @@ struct GuildModel::Impl {
     std::shared_ptr<core::ModelExecutionState> exec_state;
     core::SessionState ss;
     void* sbuf = nullptr;
+    /// --batch N (the server's "parallel": N): the batch windows' slot sessions (core/verify.hpp init_slots,
+    /// GuildBatch), each carved like `ss` in a device allocation of its own (`slot_buf`); empty when batching is off,
+    /// and then `batch_note` says why when it was asked for
+    std::vector<std::unique_ptr<core::SessionState>> slot_ss;
+    std::vector<void*> slot_buf;
+    std::string batch_note;
+    void release_slots() {
+        for (size_t b = 0; b < slot_ss.size(); ++b) {
+            core::SessionState& s = *slot_ss[b];
+            core::session_release(s);
+            for (int64_t j = 0; s.qsa_states && j < s.qsa_alloc; ++j)
+                core::qsa_state_release_host(s.qsa_states[s.qsa_ord0 + j]);
+            delete[] s.qsa_states;
+            s.qsa_states = nullptr;
+            if (b < slot_buf.size() && slot_buf[b] != nullptr)
+                cudaFree(slot_buf[b]);
+        }
+        slot_ss.clear();
+        slot_buf.clear();
+    }
     std::unique_ptr<prefill::Prefill> prefill;
     std::unique_ptr<BatchedPrefill> batched_prefill;
 
@@ -499,6 +519,7 @@ struct GuildModel::Impl {
         ss.qsa_states = nullptr;
         if (core::native_embed() == &native_embed)
             core::set_native_embed(nullptr);
+        release_slots();
         if (sbuf) {
             cudaFree(sbuf);
             sbuf = nullptr;

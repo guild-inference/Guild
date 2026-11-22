@@ -377,26 +377,82 @@ bool place_ffns(Pool& pool, const std::vector<CpuFfn*>& all, int64_t N, bool spl
 
 // ---- the expert phases --------------------------------------------------------------------------------------------
 
+namespace {
+// Groups: one FFN slice and the tokens it serves (a routed expert and the tokens routed to it, or the layer's own
+// FFN for every token).  Units: (group, token) pairs, each with its hidden activation.
+struct Group {
+    CpuFfn f;
+    std::vector<int> units;          // indices into `unit_t` / `unit_w`
+    std::vector<int> gu_c, d_c;      // the units' chunks for gate/up and for down: [c[i], c[i + 1])
+    std::vector<size_t> gu_pk, d_pk; // q8_0_rows512's rows: each chunk's packed activations in pkbuf_ (else empty)
+};
+struct Item {
+    int gi, r0, r1; // group, rows
+};
+} // namespace
+
+// The containers a call fills, kept for the next call: a decode step's ~91 calls each built ~150 small vectors and a
+// map on the calling thread while the pool's threads waited.  GLM-5.3-Flash UD-IQ4_XS decode (2x Xeon Gold 6130 +
+// GTX 1070, --spec): the timed setup phases of a step 2.8 -> 1.9 ms (activations 1.15-1.22 -> 0.83-1.03, the hidden
+// rows' setup 1.60-1.67 -> 0.93-1.09), the step 0.5 ms shorter (the median of three alternated pairs).
+struct Experts::Scratch {
+    std::vector<Group> groups, spare; // spare: groups of earlier calls, their vectors' memory kept
+    std::vector<int> group_of, order, unit_t, unit_g, qbase;
+    std::vector<float> unit_w;
+    std::vector<std::pair<int, size_t>> act_off; // (vec_dot_type * max_t + t, offset), in the order first met
+    std::vector<size_t> act_at, h_off, hq_off;
+    std::vector<std::pair<int, int>> gu_pack, d_pack;
+    std::vector<Item> items[2], tail;
+    std::vector<std::vector<Item>> per;
+    std::vector<std::vector<int>> token_units;
+};
+
+Experts::Experts() : s_(std::make_unique<Scratch>()) {
+}
+Experts::~Experts() = default;
+
 void Experts::run(Pool& pool, int64_t N, int T, int max_t, const int32_t* ids, const float* wts, int n_used,
                   const std::vector<CpuFfn>& experts, const CpuFfn* own, const float* x, float* y, bool single,
                   int t_first) {
     ggml_cpu_ready();
-    // Groups: one FFN slice and the tokens it serves (a routed expert and the tokens routed to it, or the layer's own
-    // FFN for every token).  Units: (group, token) pairs, each with its hidden activation.
-    struct Group {
-        CpuFfn f;
-        std::vector<int> units;          // indices into `unit_t` / `unit_w`
-        std::vector<int> gu_c, d_c;      // the units' chunks for gate/up and for down: [c[i], c[i + 1])
-        std::vector<size_t> gu_pk, d_pk; // q8_0_rows512's rows: each chunk's packed activations in pkbuf_ (else empty)
+    // GUILD_CPU_MOE_REUSE=0 (read each call): every container made afresh, as before (the same items in the same order)
+    const char* ru = std::getenv("GUILD_CPU_MOE_REUSE");
+    if (ru && ru[0] == '0')
+        s_ = std::make_unique<Scratch>();
+    Scratch& S = *s_;
+    std::vector<Group>& groups = S.groups;
+    for (Group& g : groups)
+        S.spare.push_back(std::move(g));
+    groups.clear();
+    // a group for FFN f at the end of `groups` (references to earlier groups do not survive it)
+    auto new_group = [&](const CpuFfn& f) -> Group& {
+        if (S.spare.empty()) {
+            groups.emplace_back();
+        } else {
+            groups.push_back(std::move(S.spare.back()));
+            S.spare.pop_back();
+        }
+        Group& gr = groups.back();
+        gr.f = f;
+        gr.units.clear();
+        gr.gu_c.clear();
+        gr.d_c.clear();
+        gr.gu_pk.clear();
+        gr.d_pk.clear();
+        return gr;
     };
-    std::vector<Group> groups;
-    std::vector<int> unit_t, unit_g;
-    std::vector<float> unit_w;
+    std::vector<int>&unit_t = S.unit_t, &unit_g = S.unit_g;
+    std::vector<float>& unit_w = S.unit_w;
+    unit_t.clear();
+    unit_g.clear();
+    unit_w.clear();
     t_first = std::clamp(t_first, 0, T);
     if (ids) {
         // the experts in the order the window's tokens first name them, those a computed token names
-        std::vector<int> group_of(experts.size(), -1);
-        std::vector<int> order;
+        std::vector<int>& group_of = S.group_of;
+        group_of.assign(experts.size(), -1);
+        std::vector<int>& order = S.order;
+        order.clear();
         for (int t = 0; t < T; ++t)
             for (int j = 0; j < n_used; ++j) {
                 const int ex = ids[t * n_used + j];
@@ -411,9 +467,7 @@ void Experts::run(Pool& pool, int64_t N, int T, int max_t, const int32_t* ids, c
         for (int ex : order)
             if (group_of[(size_t) ex] == -3) {
                 group_of[(size_t) ex] = (int) groups.size();
-                Group gr;
-                gr.f = experts[(size_t) ex];
-                groups.push_back(std::move(gr));
+                new_group(experts[(size_t) ex]);
             }
         for (int t = t_first; t < T; ++t)
             for (int j = 0; j < n_used; ++j) {
@@ -425,32 +479,34 @@ void Experts::run(Pool& pool, int64_t N, int T, int max_t, const int32_t* ids, c
             }
     }
     if (own) {
-        Group gr;
-        gr.f = *own;
         const int gi = (int) groups.size();
+        Group& gr = new_group(*own);
         for (int t = t_first; t < T; ++t) {
             gr.units.push_back((int) unit_t.size());
             unit_t.push_back(t);
             unit_g.push_back(gi);
             unit_w.push_back(1.f);
         }
-        groups.push_back(std::move(gr));
     }
     const int U = (int) unit_t.size();
 
     // the quantized inputs: one per (token, activation type)
-    std::map<int, size_t> act_off; // (vec_dot_type * max_t + t) -> offset
-    std::vector<size_t> act_at((size_t) U);
+    std::vector<std::pair<int, size_t>>& act_off = S.act_off; // (vec_dot_type * max_t + t) -> offset
+    act_off.clear();
+    std::vector<size_t>& act_at = S.act_at;
+    act_at.assign((size_t) U, 0);
     size_t total = 0;
     for (int u = 0; u < U; ++u) {
         const int at = act_type(groups[(size_t) unit_g[(size_t) u]].f.gu_type);
         const int key = at * max_t + unit_t[(size_t) u];
-        auto it = act_off.find(key);
-        if (it == act_off.end()) {
-            it = act_off.emplace(key, total).first;
+        size_t k = 0;
+        while (k < act_off.size() && act_off[k].first != key)
+            ++k;
+        if (k == act_off.size()) {
+            act_off.emplace_back(key, total);
             total += ggml_row_size((ggml_type) at, N);
         }
-        act_at[(size_t) u] = it->second;
+        act_at[(size_t) u] = act_off[k].second;
     }
     static const bool timing = std::getenv("GUILD_GLM_TIMING") != nullptr || std::getenv("GUILD_MOE_TIMING") != nullptr;
     auto tp = std::chrono::steady_clock::now();
@@ -483,12 +539,14 @@ void Experts::run(Pool& pool, int64_t N, int T, int max_t, const int32_t* ids, c
             v.resize(n);
     };
     grow(actbuf_, total + 64);
-    const std::vector<std::pair<int, size_t>> act_rows(act_off.begin(), act_off.end());
+    const std::vector<std::pair<int, size_t>>& act_rows = act_off; // each row its own bytes: any order
     each((int) act_rows.size(), total, [&](int i) {
         const int at = act_rows[(size_t) i].first / max_t, t = act_rows[(size_t) i].first % max_t;
         from_float_of(at)(x + (size_t) t * N, actbuf_.data() + act_rows[(size_t) i].second, N);
     });
-    std::vector<size_t> h_off((size_t) U + 1, 0), hq_off((size_t) U + 1, 0);
+    std::vector<size_t>&h_off = S.h_off, &hq_off = S.hq_off;
+    h_off.assign((size_t) U + 1, 0);
+    hq_off.assign((size_t) U + 1, 0);
     for (int u = 0; u < U; ++u) {
         const CpuFfn& f = groups[(size_t) unit_g[(size_t) u]].f;
         h_off[(size_t) u + 1] = h_off[(size_t) u] + (size_t) f.n_ff;
@@ -516,6 +574,16 @@ void Experts::run(Pool& pool, int64_t N, int T, int max_t, const int32_t* ids, c
     // call, for A/Bs in one process): ggml-cpu's dot, or the multi-token kernel above.
     const char* x512 = std::getenv("GUILD_IQ4XS_512");
     const bool iq4xs = iq4xs_rows512_ok() && !(x512 && x512[0] == '0');
+    // GUILD_IQ4XS_LEAN=0 (read each call): those rows' first kernel, not the lean one (the same bits).  GLM-5.3-Flash
+    // UD-IQ4_XS decode (2x Xeon Gold 6130 + GTX 1070, --spec): the lean rows take 0.7 ms off a ~80 ms step (the
+    // median of three alternated pairs in one process).
+    const char* xl = std::getenv("GUILD_IQ4XS_LEAN");
+    const bool iq4xs_lean = !(xl && xl[0] == '0');
+    // and IQ4_XS gate/up rows (GLM-5.3-Flash's layer 11) through the same kernel, for any window, instead of a
+    // one-token dot a (row, token); GUILD_IQ4XS_GU=0 (read each call): those dots, as before (the same bits).  The
+    // same decode: 0.45-0.6 ms a step with the lean rows and the kept containers (two processes), 0.4 without them.
+    const char* xg = std::getenv("GUILD_IQ4XS_GU");
+    const bool iq4xs_gu = iq4xs && !(xg && xg[0] == '0');
     constexpr int RB = 64, MT = kQ8Rows512MaxT > kcpu::MAXT ? kQ8Rows512MaxT : kcpu::MAXT;
     // a down item's rows of every group (down_rows, at most RB)
     const int DRB = std::clamp(down_rows, 4, RB) / 4 * 4;
@@ -535,7 +603,9 @@ void Experts::run(Pool& pool, int64_t N, int T, int max_t, const int32_t* ids, c
             c.push_back((int) (even ? units * i / k : std::min(units, i * most)));
     };
     size_t pk_bytes = 0;
-    std::vector<std::pair<int, int>> gu_pack, d_pack; // (group, chunk)
+    std::vector<std::pair<int, int>>&gu_pack = S.gu_pack, &d_pack = S.d_pack; // (group, chunk)
+    gu_pack.clear();
+    d_pack.clear();
     for (int gi = 0; gi < (int) groups.size(); ++gi) {
         Group& gr = groups[(size_t) gi];
         const bool pg = q8 && gr.f.gu_type == (int) GGML_TYPE_Q8_0, pd = q8 && gr.f.d_type == (int) GGML_TYPE_Q8_0;
@@ -564,9 +634,6 @@ void Experts::run(Pool& pool, int64_t N, int T, int max_t, const int32_t* ids, c
     });
     lap(0);
     // phase 1: gate/up, each row block on the queue of the node that holds it
-    struct Item {
-        int gi, r0, r1; // group, rows
-    };
     // A node's threads take the items in queue order, so the items next to each other in a queue run at the same
     // time.  In each group's order, sixteen threads read sixteen adjacent row blocks of one expert at once, which a
     // DRAM channel serves slower than the same reads apart: 32 threads over 2x Xeon Gold 6130 read 137 KiB items at
@@ -576,9 +643,14 @@ void Experts::run(Pool& pool, int64_t N, int T, int max_t, const int32_t* ids, c
     const bool spread = !(spr && spr[0] == '0');
     // the k-th of n blocks in the spread order: 0, h, 1, h + 1, ... (h = ceil(n / 2))
     auto spread_at = [](size_t k, size_t n) { return k % 2 == 0 ? k / 2 : (n + 1) / 2 + k / 2; };
-    std::vector<Item> items[2];
+    std::vector<Item>(&items)[2] = S.items;
+    std::vector<std::vector<Item>>& per = S.per;
+    if (per.size() < groups.size())
+        per.resize(groups.size());
     for (int node = 0; node < 2; ++node) {
-        std::vector<std::vector<Item>> per(groups.size());
+        items[node].clear();
+        for (auto& v : per) // (past the groups: empty)
+            v.clear();
         size_t most = 0;
         for (int gi = 0; gi < (int) groups.size(); ++gi) {
             const CpuFfn& f = groups[(size_t) gi].f;
@@ -599,7 +671,8 @@ void Experts::run(Pool& pool, int64_t N, int T, int max_t, const int32_t* ids, c
     }
     for (auto& v : items) {
         const size_t k0 = v.size() > (size_t) kTail ? v.size() - kTail : 0;
-        std::vector<Item> tail;
+        std::vector<Item>& tail = S.tail;
+        tail.clear();
         for (size_t k = k0; k < v.size(); ++k)
             for (int r = v[k].r0; r < v[k].r1; r += GTR)
                 tail.push_back({v[k].gi, r, std::min(r + GTR, v[k].r1)});
@@ -617,7 +690,8 @@ void Experts::run(Pool& pool, int64_t N, int T, int max_t, const int32_t* ids, c
         if (gr.f.n_ff % QB != 0 || QB % ggml_blck_size((ggml_type) dt) != 0)
             fuse = false;
     }
-    std::vector<int> qbase(groups.size() + 1, 0);
+    std::vector<int>& qbase = S.qbase;
+    qbase.assign(groups.size() + 1, 0);
     if (fuse) {
         for (size_t gi = 0; gi < groups.size(); ++gi)
             qbase[gi + 1] = qbase[gi] + (int) (groups[gi].f.n_ff / QB);
@@ -686,6 +760,7 @@ void Experts::run(Pool& pool, int64_t N, int T, int max_t, const int32_t* ids, c
         const bool nl4 = f.gu_type == kcpu::kIq3sNl4Type;
         const ggml_type_traits_cpu* tr = nl4 ? nullptr : cpu_traits(f.gu_type);
         const RowsFn mt = !nl4 && !single && gr.units.size() >= 2 ? multi(f.gu_type) : nullptr;
+        const bool x4 = iq4xs_gu && f.gu_type == (int) GGML_TYPE_IQ4_XS;
         float gbuf[MT][RB], ubuf[MT][RB];
         for (size_t c = 0; c + 1 < gr.gu_c.size(); ++c) {
             const size_t c0 = (size_t) gr.gu_c[c];
@@ -707,6 +782,11 @@ void Experts::run(Pool& pool, int64_t N, int T, int max_t, const int32_t* ids, c
                 if (gated)
                     glm5cpu::nl4_rows(wg, f.gu_row, (int) N, act, nt, go, r0, r1);
                 glm5cpu::nl4_rows(wu, f.gu_row, (int) N, act, nt, uo, r0, r1);
+            } else if (x4) { // each (row, token) bitwise ggml-cpu's one-token dot, whatever nt
+                if (gated)
+                    iq4xs_rows512(wg, f.gu_row, (int) N, act, nt, go, r0, r1, wu + (size_t) r0 * f.gu_row, f.gu_row,
+                                  iq4xs_lean);
+                iq4xs_rows512(wu, f.gu_row, (int) N, act, nt, uo, r0, r1, nullptr, 0, iq4xs_lean);
             } else if (mt && nt >= 2) {
                 if (gated)
                     mt(f.gu_type, wg, f.gu_row, (int) N, act, nt, go, r0, r1);
@@ -806,9 +886,12 @@ void Experts::run(Pool& pool, int64_t N, int T, int max_t, const int32_t* ids, c
     }
     // single: each unit's rows kept, then each token's units summed in the order a one-token window sums them (its
     // routing slots, then its own FFN): the group order follows the window's other tokens
-    std::vector<std::vector<int>> token_units;
+    std::vector<std::vector<int>>& token_units = S.token_units;
+    for (auto& v : token_units)
+        v.clear();
     if (single) {
-        token_units.resize((size_t) T);
+        if (token_units.size() < (size_t) T)
+            token_units.resize((size_t) T);
         for (int u = 0; u < U; ++u)
             token_units[(size_t) unit_t[(size_t) u]].push_back(u);
     }
@@ -870,7 +953,7 @@ void Experts::run(Pool& pool, int64_t N, int T, int max_t, const int32_t* ids, c
                     const CpuFfn* nf = c + 2 == gr.d_c.size() && gnext ? &gnext->f : nullptr;
                     iq4xs_rows512(wd, f.d_row, (int) f.n_ff, hq, nt, dout, r0, r1,
                                   nf ? nf->down[r0 >= nf->d_split] + (size_t) r0 * nf->d_row : nullptr,
-                                  nf ? nf->d_row : 0);
+                                  nf ? nf->d_row : 0, iq4xs_lean);
                 } else if (mt && nt >= 2) {
                     mt(f.d_type, wd, f.d_row, (int) f.n_ff, hq, nt, dout, r0, r1);
                 } else {

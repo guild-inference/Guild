@@ -1,0 +1,9 @@
+prof_1 def SUMMARY {"prose": 60.78166556197307, "code": 69.18054710332754} | GPU cache 1634 slots (3100286976 bytes)
+prof_1 more SUMMARY {"story": 56.92213067320844, "sql": 71.58936786532746, "zh": 59.752494039642336, "ru": 47.23392506892424} | GPU cache 1634 slots (3100286976 bytes)
+none_1 def SUMMARY {"prose": 79.87347540553758, "code": 92.05478527080436} | GPU cache 0 slots (0 bytes)
+none_1 more SUMMARY {"story": 71.30814112245432, "sql": 90.20719043752564, "zh": 75.92541587026128, "ru": 59.742128921626936} | GPU cache 0 slots (0 bytes)
+prof_2 def SUMMARY {"prose": 60.34251053699421, "code": 68.39954563151223} | GPU cache 1634 slots (3100286976 bytes)
+prof_2 more SUMMARY {"story": 56.66707420023573, "sql": 71.03101792257763, "zh": 59.472990769594944, "ru": 47.02617607036246} | GPU cache 1634 slots (3100286976 bytes)
+none_2 def SUMMARY {"prose": 79.25546756605397, "code": 91.88627845825815} | GPU cache 0 slots (0 bytes)
+none_2 more SUMMARY {"story": 71.08394060722586, "sql": 89.93283030271294, "zh": 75.71215559507355, "ru": 59.723362165212244} | GPU cache 0 slots (0 bytes)
+done

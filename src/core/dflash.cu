@@ -865,16 +865,19 @@ void block_attention(const float* q, size_t q_stride, const uint16_t* kring, con
     attn_combine_k<<<dim3(kv_heads, (heads / kv_heads) * B), kD, 0, S(st)>>>(scratch, runs, B, heads, kv_heads, out);
 }
 size_t topk_scratch_floats(int rows, int n) {
-    // the parts' (max, sum), the counts, then the gathered (value, index) pairs: room for every logit
-    return (size_t) rows * kTopBlocks * 2 + 64 + (size_t) rows * n * 2;
+    // the counts, the parts' (max, sum), then the gathered (value, index) pairs: room for every logit
+    return 64 + (size_t) rows * kTopBlocks * 2 + (size_t) rows * n * 2;
 }
 void topk_lse(const float* logits, int n, int rows, int k, int32_t* idx, float* val, float* lse, float* scratch,
               void* st) {
     const bool vec = n % 4 == 0; // rows of whole float4s, 16-byte aligned
     const int per = ((n + kTopBlocks - 1) / kTopBlocks + 3) / 4 * 4;
-    float* part = scratch;
-    int* cnt = reinterpret_cast<int*>(scratch + (size_t) rows * kTopBlocks * 2);
-    float2* cand = reinterpret_cast<float2*>(scratch + (size_t) rows * kTopBlocks * 2 + 64);
+    // The counts first, at the same place whatever `rows` is: they must be zero when a call starts (zeroed once, and
+    // every call leaves them zero), and behind the parts they sat where a call with more rows had written its parts -
+    // a call with fewer rows (a block shorter than the drafter's) read those as counts and gathered out of bounds.
+    int* cnt = reinterpret_cast<int*>(scratch);
+    float* part = scratch + 64;
+    float2* cand = reinterpret_cast<float2*>(scratch + 64 + (size_t) rows * kTopBlocks * 2);
     const dim3 grid(kTopBlocks, rows);
     if (vec) {
         topk_max_k<true><<<grid, 256, 0, S(st)>>>(logits, n, per, part);

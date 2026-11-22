@@ -234,4 +234,17 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    finally:   # an engine still alive (an error above) holds the GPU the next run needs: end it first
+        for e in list(Engine.started):
+            if e.p.poll() is None:
+                try:
+                    e.p.stdin.close()
+                except OSError:
+                    pass
+                try:
+                    e.p.wait(timeout=120)
+                except Exception:
+                    e.p.kill()
+                    e.p.wait()

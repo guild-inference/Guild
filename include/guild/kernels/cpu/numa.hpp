@@ -38,6 +38,28 @@ inline int numa_half_rows(int rows) {
     return rows >= 8 ? (rows / 4 / 2) * 4 : rows / 2;
 }
 
+/// Whether `node` can take `bytes` more from its free memory and its page cache (`MemFree` + `Active(file)` +
+/// `Inactive(file)` of /sys/devices/system/node/nodeN/meminfo), with 4 GiB to spare.  False off Linux.
+bool numa_node_can_hold(int node, uint64_t bytes);
+
+/// While alive, the calling thread's new pages come from `node` only (`MPOL_BIND`), when `enable`.  The split places
+/// its pages by first touch from each node's threads, and with Linux's default `zone_reclaim_mode` 0 a node short of
+/// free memory hands a local allocation to the other node rather than reclaim its own page cache: on the dual Xeon
+/// 6130 with node 0's memory mostly page cache, 19-37 GiB of Qwen3.8's node-0 pages went to node 1 and decode was
+/// 7-14% slower (bench/results/2026-11-05-round16).  Bound, the touch reclaims node 0's cache instead.  Pass
+/// `numa_node_can_hold` for `enable`: a node that cannot give the bytes back is left to fall back as before, where a
+/// bind would end in the OOM killer.
+class NodeBind {
+public:
+    NodeBind(int node, bool enable);
+    ~NodeBind();
+    NodeBind(const NodeBind&) = delete;
+    NodeBind& operator=(const NodeBind&) = delete;
+
+private:
+    bool bound_ = false;
+};
+
 /// Node 0's byte ranges of one native expert blob (`[begin, end)` pairs, up to three); the rest belongs to node 1.
 /// `gate_up_interleaved` is the GEXEC layout (gate row r at 2r, up row r at 2r + 1).
 int numa_node0_ranges(const guild_cpu_expert_format_v1_t& f, bool gate_up_interleaved, uint64_t ranges[3][2]);

@@ -3,13 +3,15 @@
 //
 //   transcribe_run --model <LM GGUF> --audio <runtime dir> --tokenizer <tokenizer.json>
 //                  (--clips clips.jsonl | file.wav ...) [--out out.jsonl] [--mtp K] [--no-mtp] [--max-new N]
-//                  [--repeat N] [--threads N] [--max-context N] [--mtp-rms]
+//                  [--repeat N] [--threads N] [--max-context N] [--mtp-rms] [--draft-vocab FILE|0]
 //
 // The request is the checkpoint's default transcription request (verbatim, thinking off): the runtime dir's
 // prompt.json holds its token ids around the audio, one audio row per 80 ms (tools/nemotron_audio_rt.py).  Decoding
 // is greedy (temperature 0) up to an end-of-turn token or --max-new tokens; --mtp K drafts K tokens a step with the
 // MTP block and verifies them (the output is the greedy output: a verify window's rows are one-token steps).
-// --no-mtp loads no MTP block.  One JSON line per clip and run: ids, text, and the time of each stage.
+// --no-mtp loads no MTP block.  --draft-vocab: the draft head's token subset (int32 ids; 0: the whole head), by default
+// the source tree's data/nemotron_draft_vocab.bin (GUILD_NEM_DRAFT_VOCAB, a file or 0, overrides both); it changes
+// which drafts are offered, not the output.  One JSON line per clip and run: ids, text, and the time of each stage.
 #include "guild/audio/encoder.hpp"
 #include "guild/audio/frontend.hpp"
 #include "guild/core/nemotron_h.hpp"
@@ -141,6 +143,11 @@ int argmax(const float* x, int64_t n) {
 
 int main(int argc, char** argv) {
     std::string model, audio_dir, tok_path, clips_path, out_path, rows_path;
+#if defined(GUILD_NEMOTRON_DRAFT_VOCAB)
+    std::string draft_vocab = GUILD_NEMOTRON_DRAFT_VOCAB;
+#else
+    std::string draft_vocab;
+#endif
     std::vector<std::string> wavs;
     int mtp_k = 0, max_new = 256, repeat = 1;
     guild::core::NemotronHOptions opt;
@@ -165,6 +172,8 @@ int main(int argc, char** argv) {
             opt.mtp = false;
         else if (a == "--mtp-rms")
             opt.mtp_layer_norm = false;
+        else if (a == "--draft-vocab")
+            draft_vocab = next();
         else if (a == "--max-new")
             max_new = std::atoi(next());
         else if (a == "--repeat")
@@ -183,9 +192,19 @@ int main(int argc, char** argv) {
         (clips_path.empty() && wavs.empty() && rows_path.empty())) {
         std::fprintf(stderr, "usage: transcribe_run --model <LM GGUF> --audio <runtime dir> --tokenizer "
                              "<tokenizer.json> (--clips clips.jsonl | file.wav ...) [--out out.jsonl] [--mtp K] "
-                             "[--no-mtp] [--max-new N] [--repeat N]\n");
+                             "[--no-mtp] [--max-new N] [--repeat N] [--draft-vocab FILE|0]\n");
         return 2;
     }
+    if (const char* e = std::getenv("GUILD_NEM_DRAFT_VOCAB"))
+        draft_vocab = e;
+    if (draft_vocab == "0")
+        draft_vocab.clear();
+    else if (!draft_vocab.empty() && !std::filesystem::exists(draft_vocab)) {
+        std::fprintf(stderr, "transcribe_run: no draft vocabulary %s; drafting over the whole head\n",
+                     draft_vocab.c_str());
+        draft_vocab.clear();
+    }
+    opt.draft_vocab = draft_vocab;
     std::vector<Clip> clips;
     std::string err;
     if (!clips_path.empty()) {
@@ -247,6 +266,12 @@ int main(int argc, char** argv) {
     mtp_k = std::min(mtp_k, lm.max_drafts());
     const int64_t V = lm.geometry().n_vocab, N = lm.geometry().n_embd;
     std::vector<float> logits((size_t) (lm.max_drafts() + 1) * V);
+    // each decode step's or verify row's argmax on the GPU (n ids to the host, not n rows of logits);
+    // GUILD_NEM_DEVICE_ARGMAX=0: the logits to the host and std::max_element there (both: the first of equal maxima)
+    const bool dev_argmax = [] {
+        const char* e = std::getenv("GUILD_NEM_DEVICE_ARGMAX");
+        return !(e && e[0] == '0');
+    }();
     std::FILE* out = out_path.empty() ? nullptr : std::fopen(out_path.c_str(), "w");
     const auto& cfg = enc.mel_config();
     for (const Clip& c : clips)
@@ -406,11 +431,22 @@ int main(int argc, char** argv) {
                     win.insert(win.end(), d, d + k);
                     t_draft += ms_since(q0);
                     q0 = std::chrono::steady_clock::now();
-                    if (!lm.verify(win.data(), (int) win.size(), pos, logits.data(), err)) {
+                    // the rows' logits to the host for the check or without the GPU's argmax
+                    const bool rows_host = !greedy_logits.empty() || !dev_argmax;
+                    int32_t top[8];
+                    if (!lm.verify(win.data(), (int) win.size(), pos, rows_host ? logits.data() : nullptr, err,
+                                   dev_argmax ? top : nullptr)) {
                         std::fprintf(stderr, "transcribe_run: %s\n", err.c_str());
                         return 1;
                     }
                     t_cpu += lm.last_cpu_ms();
+                    for (int r = 0; r <= k && rows_host; ++r) {
+                        const int32_t h = argmax(logits.data() + (size_t) r * V, V);
+                        if (dev_argmax && top[r] != h)
+                            std::fprintf(stderr, "check: window row %d: the GPU's argmax %d, the host's %d\n", r,
+                                         top[r], h);
+                        top[r] = h;
+                    }
                     if (!greedy_logits.empty()) {
                         const size_t step0 = gen.size(); // the greedy step whose logits row 0 of the window gives
                         bool prefix_ok = true;
@@ -429,10 +465,10 @@ int main(int argc, char** argv) {
                     }
                     // keep the drafts the model agrees with, stopping at an end-of-turn token
                     int keep = 1;
-                    int32_t nt = argmax(logits.data(), V);
+                    int32_t nt = top[0];
                     while (keep <= k && nt == d[keep - 1] && !is_eos(nt) && (int) gen.size() < max_new) {
                         gen.push_back(nt);
-                        nt = argmax(logits.data() + (size_t) keep * V, V);
+                        nt = top[keep];
                         ++keep;
                     }
                     drafted += k;
@@ -447,13 +483,14 @@ int main(int argc, char** argv) {
                     pos += keep;
                     next = nt;
                 } else {
-                    if (!lm.step(next, pos, logits.data(), err)) {
+                    int32_t top = -1;
+                    if (!lm.step(next, pos, dev_argmax ? nullptr : logits.data(), err, dev_argmax ? &top : nullptr)) {
                         std::fprintf(stderr, "transcribe_run: %s\n", err.c_str());
                         return 1;
                     }
                     t_cpu += lm.last_cpu_ms();
                     ++pos;
-                    next = argmax(logits.data(), V);
+                    next = dev_argmax ? top : argmax(logits.data(), V);
                 }
             }
             const double decode_ms = ms_since(d0);

@@ -70,6 +70,11 @@ void session_set_kv_share_staging(int mode) {
         g_kv_share_staging_mode.store(mode, std::memory_order_relaxed);
 }
 
+void session_set_kv_stage_rows(int rows) {
+    if (auto* st = active_model_execution_state())
+        st->kv_stage_rows = rows > 0 ? rows : 0;
+}
+
 bool session_own_qsa_staging(const ModelGeometry& g, int64_t max_cells, int64_t layer_lo, int64_t layer_hi) {
     const int env_mode = parse_share_staging_env(std::getenv("GUILD_KV_SHARE_STAGING"));
     if (env_mode == 1)

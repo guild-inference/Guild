@@ -1318,6 +1318,191 @@ static void test_narrow() {
         }
 }
 
+// kda_fg (GUILD_GLM_FUSE2 bit 1): one token's f_b, gates and g_b in one launch against q8_0_narrow, kda_gates and
+// q8_0_narrow from two quantizations, bitwise (both one-wave settings, every narrow width, GLM's 128 -> 8192)
+static void test_kda_fg() {
+    cudaStream_t st;
+    cudaStreamCreate(&st);
+    std::uniform_int_distribution<int> byte(0, 255);
+    for (const int on : {1, 0})
+        for (const int n_in : {128, 64, 256})
+            for (const int D : {8192, 1024}) {
+                k::set_one_wave(on == 1);
+                const int H = D / 128, nb = n_in / 32;
+                auto mat = [&] {
+                    std::vector<uint8_t> W((size_t) D * nb * 34);
+                    for (size_t blk = 0; blk < (size_t) D * nb; ++blk) {
+                        for (int i = 0; i < 34; ++i)
+                            W[blk * 34 + i] = (uint8_t) byte(rng);
+                        const __half d = __float2half(0.001f * (float) (1 + byte(rng) % 50));
+                        std::memcpy(&W[blk * 34], &d, 2);
+                    }
+                    return up(W);
+                };
+                uint8_t *dWf = mat(), *dWg = mat();
+                auto x = rnd((size_t) 2 * n_in + H); // f_a | g_a | beta logits, as the fgb product writes them
+                float* dx = up(x);
+                auto dtb = rnd(D, 0.5f), sa = rnd(H, 0.5f);
+                float *ddt = up(dtb), *dsa = up(sa);
+                void *xq2, *xqa, *xqb;
+                cudaMalloc(&xq2, guild::kernels::native_q8_1_bytes(2 * n_in, 1));
+                cudaMalloc(&xqa, guild::kernels::native_q8_1_bytes(n_in, 1));
+                cudaMalloc(&xqb, guild::kernels::native_q8_1_bytes(n_in, 1));
+                float *g0, *b0, *o0, *g1, *b1, *o1, *fp;
+                for (float** q : {&g0, &o0, &g1, &o1, &fp})
+                    cudaMalloc(q, (size_t) D * 4);
+                cudaMalloc(&b0, (size_t) H * 4);
+                cudaMalloc(&b1, (size_t) H * 4);
+                const float lb = -5.f;
+                // the three launches (and two quantizations)
+                guild::kernels::native_quantize_q8_1(dx, xqa, n_in, 1, st);
+                k::q8_0_narrow(dWf, xqa, fp, n_in, D, 1, st);
+                k::kda_gates(fp, ddt, dsa, g0, dx + 2 * n_in, b0, D, H, 1, lb, st);
+                guild::kernels::native_quantize_q8_1(dx + n_in, xqb, n_in, 1, st);
+                k::q8_0_narrow(dWg, xqb, o0, n_in, D, 1, st);
+                // the fused one
+                guild::kernels::native_quantize_q8_1(dx, xq2, 2 * n_in, 1, st);
+                k::kda_fg(dWf, dWg, xq2, ddt, dsa, g1, dx + 2 * n_in, b1, o1, n_in, D, H, lb, st);
+                const std::string what =
+                    "kda_fg " + std::to_string(n_in) + " x " + std::to_string(D) + (on ? " one wave" : " before");
+                same_attend(what + " g", down(g1, D), down(g0, D));
+                same_attend(what + " beta", down(b1, H), down(b0, H));
+                same_attend(what + " gate", down(o1, D), down(o0, D));
+                for (void* q : {(void*) dWf, (void*) dWg, (void*) dx, (void*) ddt, (void*) dsa, xq2, xqa, xqb,
+                                (void*) g0, (void*) b0, (void*) o0, (void*) g1, (void*) b1, (void*) o1, (void*) fp})
+                    cudaFree(q);
+            }
+    k::set_one_wave(true);
+    cudaStreamDestroy(st);
+}
+
+// GUILD_GLM_FUSE2 bit 2: the kernels that write their output's Q8_1 too (rms_norm_q8_1, hc_pre_mixed, kda_out,
+// swiglu_clamp) against the same kernel without it and native_quantize_q8_1, byte for byte; the norm's weights make
+// all-zero blocks, blocks of subnormal values and blocks whose sum is past FP16 (the q8_1_finite clamp)
+static void test_q8_1_producers() {
+    cudaStream_t st;
+    cudaStreamCreate(&st);
+    auto same_bytes = [&](const std::string& what, const void* a, const void* b, size_t n) {
+        std::vector<uint8_t> x(n), y(n);
+        cudaDeviceSynchronize();
+        cudaMemcpy(x.data(), a, n, cudaMemcpyDeviceToHost);
+        cudaMemcpy(y.data(), b, n, cudaMemcpyDeviceToHost);
+        const bool same = std::memcmp(x.data(), y.data(), n) == 0;
+        failures += !same;
+        std::printf("%-44s %s\n", what.c_str(), same ? "ok (bitwise)" : "FAIL (bytes differ)");
+    };
+    auto qbuf = [](int n, int T) {
+        void* p = nullptr;
+        cudaMalloc(&p, guild::kernels::native_q8_1_bytes(n, T));
+        cudaMemset(p, 0xAB, guild::kernels::native_q8_1_bytes(n, T));
+        return p;
+    };
+    for (const int T : {1, 2, 8}) {
+        { // rms_norm_q8_1, rows of 1536 (DSA q_a) and 512
+            for (const int n : {1536, 512}) {
+                auto x = rnd((size_t) T * n), w = rnd(n);
+                for (int i = 0; i < n; ++i) {
+                    const int blk = i / 32;
+                    if (blk % 7 == 1)
+                        w[i] = 0.f; // an all-zero block
+                    else if (blk % 7 == 3)
+                        w[i] *= 1e-39f; // subnormal outputs
+                    else if (blk % 7 == 5)
+                        w[i] *= 1e5f; // the block's sum past 65504
+                }
+                float *dx = up(x), *dw = up(w), *y0, *y1;
+                cudaMalloc(&y0, (size_t) T * n * 4);
+                cudaMalloc(&y1, (size_t) T * n * 4);
+                void *q0 = qbuf(n, T), *q1 = qbuf(n, T);
+                k::rms_norm(dx, dw, y0, n, T, 1e-5f, st);
+                guild::kernels::native_quantize_q8_1(y0, q0, n, T, st);
+                k::rms_norm_q8_1(dx, dw, y1, n, T, 1e-5f, q1, st);
+                const std::string what = "rms_norm_q8_1 " + std::to_string(n) + " T " + std::to_string(T);
+                same_attend(what + " y", down(y1, (size_t) T * n), down(y0, (size_t) T * n));
+                same_bytes(what + " q8_1", q1, q0, guild::kernels::native_q8_1_bytes(n, T));
+                for (void* p : {(void*) dx, (void*) dw, (void*) y0, (void*) y1, q0, q1})
+                    cudaFree(p);
+            }
+        }
+        { // kda_out, 64 heads of 128
+            const int H = 64, D = H * 128;
+            auto o = rnd((size_t) T * D), gt = rnd((size_t) T * D), nw = rnd(128);
+            float *d_o = up(o), *dg = up(gt), *dn = up(nw), *y0, *y1;
+            cudaMalloc(&y0, (size_t) T * D * 4);
+            cudaMalloc(&y1, (size_t) T * D * 4);
+            void *q0 = qbuf(D, T), *q1 = qbuf(D, T);
+            k::kda_out(d_o, dg, dn, y0, H, T, 1e-5f, st);
+            guild::kernels::native_quantize_q8_1(y0, q0, D, T, st);
+            k::kda_out(d_o, dg, dn, y1, H, T, 1e-5f, st, q1);
+            const std::string what = "kda_out q8_1 T " + std::to_string(T);
+            same_attend(what + " y", down(y1, (size_t) T * D), down(y0, (size_t) T * D));
+            same_bytes(what + " q8_1", q1, q0, guild::kernels::native_q8_1_bytes(D, T));
+            for (void* p : {(void*) d_o, (void*) dg, (void*) dn, (void*) y0, (void*) y1, q0, q1})
+                cudaFree(p);
+        }
+        { // swiglu_clamp, the shared expert's 2048 (with and without a limit)
+            const int F = 2048;
+            for (const float lim : {7.f, 3.0e38f}) {
+                auto gt = rnd((size_t) T * F, 4.f), u = rnd((size_t) T * F, 4.f);
+                float *dg = up(gt), *du = up(u), *y0, *y1;
+                cudaMalloc(&y0, (size_t) T * F * 4);
+                cudaMalloc(&y1, (size_t) T * F * 4);
+                void *q0 = qbuf(F, T), *q1 = qbuf(F, T);
+                k::swiglu_clamp(dg, du, y0, F, T, lim, st);
+                guild::kernels::native_quantize_q8_1(y0, q0, F, T, st);
+                k::swiglu_clamp(dg, du, y1, F, T, lim, st, q1);
+                const std::string what = "swiglu_clamp q8_1 T " + std::to_string(T) + (lim < 1e30f ? " lim" : "");
+                same_attend(what + " y", down(y1, (size_t) T * F), down(y0, (size_t) T * F));
+                same_bytes(what + " q8_1", q1, q0, guild::kernels::native_q8_1_bytes(F, T));
+                for (void* p : {(void*) dg, (void*) du, (void*) y0, (void*) y1, q0, q1})
+                    cudaFree(p);
+            }
+        }
+        { // the mHC pre-mix from hc_mix's slices, both one-wave settings
+            const int N = 4096, iters = 20;
+            std::uniform_int_distribution<int> byte(0, 255), qd(-127, 127);
+            auto R = rnd((size_t) T * 4 * N), nwv = rnd(N, 0.1f);
+            for (auto& v : nwv)
+                v += 1.f;
+            for (int i = 0; i < 64; ++i)
+                nwv[(size_t) 32 * 5 + i] = 0.f; // two all-zero blocks
+            std::vector<float> sc = {0.7f, 0.9f, 1.1f}, base = rnd(24, 0.3f);
+            std::vector<uint8_t> W((size_t) 24 * (4 * N / 32) * 34);
+            for (size_t blk = 0; blk < W.size() / 34; ++blk) {
+                const __half d = __float2half(0.0005f * (float) (1 + byte(rng) % 50));
+                std::memcpy(&W[blk * 34], &d, 2);
+                for (int i = 0; i < 32; ++i)
+                    W[blk * 34 + 2 + i] = (uint8_t) (int8_t) qd(rng);
+            }
+            uint8_t* dW = up(W);
+            float *dR = up(R), *dn = up(nwv), *ds = up(sc), *db = up(base), *dpost, *dcomb, *x0, *x1, *dpart;
+            cudaMalloc(&dpost, (size_t) T * 4 * 4);
+            cudaMalloc(&dcomb, (size_t) T * 16 * 4);
+            cudaMalloc(&x0, (size_t) T * N * 4);
+            cudaMalloc(&x1, (size_t) T * N * 4);
+            cudaMalloc(&dpart, k::hc_mix_floats(T) * 4);
+            for (const int on : {1, 0}) {
+                k::set_one_wave(on == 1);
+                void *q0 = qbuf(N, T), *q1 = qbuf(N, T);
+                k::hc_mix(dW, dR, dpart, N, T, st);
+                k::hc_pre_mixed(dpart, ds, db, dR, dn, dpost, dcomb, x0, N, T, iters, 1e-6f, 1e-6f, st);
+                guild::kernels::native_quantize_q8_1(x0, q0, N, T, st);
+                k::hc_pre_mixed(dpart, ds, db, dR, dn, dpost, dcomb, x1, N, T, iters, 1e-6f, 1e-6f, st, nullptr, q1);
+                const std::string what = "hc_pre_mixed q8_1 T " + std::to_string(T) + (on ? " one wave" : " before");
+                same_attend(what + " xn", down(x1, (size_t) T * N), down(x0, (size_t) T * N));
+                same_bytes(what + " q8_1", q1, q0, guild::kernels::native_q8_1_bytes(N, T));
+                cudaFree(q0);
+                cudaFree(q1);
+            }
+            k::set_one_wave(true);
+            for (float* p : {dR, dn, ds, db, dpost, dcomb, x0, x1, dpart})
+                cudaFree(p);
+            cudaFree(dW);
+        }
+    }
+    cudaStreamDestroy(st);
+}
+
 // `glm5_kernels_test bench`: the GPU products at GLM-5.3-Flash's shapes (Q8_0 and Q6_K), GB/s of weights read
 // `glm5_kernels_test q6k`: glm5k::q6k_mmvq (the attention's Q6_K products) at GLM-5.3-Flash's shapes, GB/s
 static int bench_q6k() {
@@ -1558,7 +1743,15 @@ static int bench_shapes() {
                   {"glm dsa out q5", 13, 16384, 4096},
                   {"glm dsa out q4", 12, 16384, 4096},
                   {"glm head", 14, 4096, 154880},
-                  {"glm head q4", 12, 4096, 154880}};
+                  {"glm head q4", 12, 4096, 154880},
+                  // Q4_K rows of 8 to 16 blocks (native_mmvq's one-chunk staged rows): GLM5_SHAPES_ONLY=q4w
+                  {"q4w 8 bl", 12, 2048, 8192},
+                  {"q4w 9 bl", 12, 2304, 8192},
+                  {"q4w 10 bl", 12, 2560, 8192},
+                  {"q4w 11 bl", 12, 2816, 8192},
+                  {"q4w 12 bl", 12, 3072, 8192},
+                  {"q4w 14 bl", 12, 3584, 8192},
+                  {"q4w 16 bl", 12, 4096, 8192}};
     cudaStream_t st;
     cudaStreamCreate(&st);
     // GLM5_SHAPES_ONLY=<part of a name>: those shapes only; GLM5_SHAPES_COLS=<n>: that column count only (profiling)
@@ -1806,6 +1999,8 @@ int main(int argc, char** argv) {
     test_staged_mmvq(8);
     test_mmvq_rows();
     test_narrow();
+    test_kda_fg();
+    test_q8_1_producers();
     test_indexer();
     test_attend_staged();
     test_row_cache();

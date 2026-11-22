@@ -1,0 +1,345 @@
+{
+ "parallel": 7,
+ "results": {
+  "1": {
+   "median_round": {
+    "wall_s": 2.66380698280409,
+    "tokens": 200,
+    "aggregate_tok_s": 75.08051495137515,
+    "per_request_tok_s": [
+     85.05147026243611
+    ],
+    "ttft_s": [
+     0.3119806628674269
+    ],
+    "total_s": [
+     2.663497919216752
+    ],
+    "texts": [
+     "```python\ndef merge_intervals(intervals: list[list[int]]) -> list[list[int]]:\n  "
+    ]
+   },
+   "rounds": [
+    {
+     "wall_s": 3.9045718209818006,
+     "tokens": 200,
+     "aggregate_tok_s": 51.222005681972625,
+     "per_request_tok_s": [
+      56.42826642541605
+     ],
+     "ttft_s": [
+      0.35947218583896756
+     ],
+     "total_s": [
+      3.9037951407954097
+     ],
+     "texts": [
+      "# B-Tree: Detailed Explanation\n\n## What is a B-Tree?\n\nA **B-tree** is a self-bal"
+     ]
+    },
+    {
+     "wall_s": 2.66380698280409,
+     "tokens": 200,
+     "aggregate_tok_s": 75.08051495137515,
+     "per_request_tok_s": [
+      85.05147026243611
+     ],
+     "ttft_s": [
+      0.3119806628674269
+     ],
+     "total_s": [
+      2.663497919216752
+     ],
+     "texts": [
+      "```python\ndef merge_intervals(intervals: list[list[int]]) -> list[list[int]]:\n  "
+     ]
+    }
+   ]
+  },
+  "2": {
+   "median_round": {
+    "wall_s": 9.696961598936468,
+    "tokens": 400,
+    "aggregate_tok_s": 41.250034448302934,
+    "per_request_tok_s": [
+     21.654004251189036,
+     22.379775801091014
+    ],
+    "ttft_s": [
+     0.3509967909194529,
+     0.7596218171529472
+    ],
+    "total_s": [
+     9.587163814809173,
+     9.696261834353209
+    ],
+    "texts": [
+     "# B-Tree: Detailed Explanation\n\n## What is a B-Tree?\n\nA **B-tree** is a self-bal",
+     "```python\ndef merge_intervals(intervals: list[list[int]]) -> list[list[int]]:\n  "
+    ]
+   },
+   "rounds": [
+    {
+     "wall_s": 9.696961598936468,
+     "tokens": 400,
+     "aggregate_tok_s": 41.250034448302934,
+     "per_request_tok_s": [
+      21.654004251189036,
+      22.379775801091014
+     ],
+     "ttft_s": [
+      0.3509967909194529,
+      0.7596218171529472
+     ],
+     "total_s": [
+      9.587163814809173,
+      9.696261834353209
+     ],
+     "texts": [
+      "# B-Tree: Detailed Explanation\n\n## What is a B-Tree?\n\nA **B-tree** is a self-bal",
+      "```python\ndef merge_intervals(intervals: list[list[int]]) -> list[list[int]]:\n  "
+     ]
+    },
+    {
+     "wall_s": 9.822352801449597,
+     "tokens": 400,
+     "aggregate_tok_s": 40.723440512233225,
+     "per_request_tok_s": [
+      21.312507053746117,
+      22.094749931647055
+     ],
+     "ttft_s": [
+      0.3609935846179724,
+      0.7695058360695839
+     ],
+     "total_s": [
+      9.745154701638967,
+      9.821429963689297
+     ],
+     "texts": [
+      "Here is a detailed comparison between **TCP** (Transmission Control Protocol) an",
+      "The history of the computation of $\\pi$ (pi) is a fascinating journey that mirro"
+     ]
+    }
+   ]
+  },
+  "4": {
+   "median_round": {
+    "wall_s": 12.760907681193203,
+    "tokens": 800,
+    "aggregate_tok_s": 62.69146521442402,
+    "per_request_tok_s": [
+     16.484983425010167,
+     16.797257261032854,
+     17.85904297785072,
+     17.272436015524143
+    ],
+    "ttft_s": [
+     0.3750469838269055,
+     0.7620076932944357,
+     1.5609914939850569,
+     1.143101654946804
+    ],
+    "total_s": [
+     12.507300613913685,
+     12.668713466264307,
+     12.759799865074456,
+     12.722244273871183
+    ],
+    "texts": [
+     "# B-Tree: Detailed Explanation\n\n## What is a B-Tree?\n\nA **B-tree** is a self-bal",
+     "```python\ndef merge_intervals(intervals: list[list[int]]) -> list[list[int]]:\n  ",
+     "Here is a detailed comparison between **TCP** (Transmission Control Protocol) an",
+     "The history of the computation of $\\pi$ (pi) is a fascinating journey that mirro"
+    ]
+   },
+   "rounds": [
+    {
+     "wall_s": 12.760907681193203,
+     "tokens": 800,
+     "aggregate_tok_s": 62.69146521442402,
+     "per_request_tok_s": [
+      16.484983425010167,
+      16.797257261032854,
+      17.85904297785072,
+      17.272436015524143
+     ],
+     "ttft_s": [
+      0.3750469838269055,
+      0.7620076932944357,
+      1.5609914939850569,
+      1.143101654946804
+     ],
+     "total_s": [
+      12.507300613913685,
+      12.668713466264307,
+      12.759799865074456,
+      12.722244273871183
+     ],
+     "texts": [
+      "# B-Tree: Detailed Explanation\n\n## What is a B-Tree?\n\nA **B-tree** is a self-bal",
+      "```python\ndef merge_intervals(intervals: list[list[int]]) -> list[list[int]]:\n  ",
+      "Here is a detailed comparison between **TCP** (Transmission Control Protocol) an",
+      "The history of the computation of $\\pi$ (pi) is a fascinating journey that mirro"
+     ]
+    },
+    {
+     "wall_s": 12.900085533969104,
+     "tokens": 800,
+     "aggregate_tok_s": 62.01509268240144,
+     "per_request_tok_s": [
+      16.407357618303468,
+      16.615726059855703,
+      17.048351775268564,
+      17.574057579431162
+     ],
+     "ttft_s": [
+      0.34375196835026145,
+      0.7659934358671308,
+      1.126047417987138,
+      1.5183767220005393
+     ],
+     "total_s": [
+      12.533405211288482,
+      12.802783118095249,
+      12.857386766001582,
+      12.898787824902683
+     ],
+     "texts": [
+      "The French Revolution (1789\u20131799) was not triggered by a single event but by a c",
+      "Here is a step-by-step explanation of how the **Scaled Dot-Product Attention** m",
+      "Here is a classic, reliable recipe for a homemade Apple Pie. This recipe yields ",
+      "The life cycle of a star like our Sun is a process governed by the balance betwe"
+     ]
+    }
+   ]
+  },
+  "7": {
+   "median_round": {
+    "wall_s": 18.573777514975518,
+    "tokens": 1400,
+    "aggregate_tok_s": 75.37508182550475,
+    "per_request_tok_s": [
+     12.055214055942052,
+     11.41092646714741,
+     11.324549407640703,
+     12.31850112785906,
+     11.815232218343606,
+     11.60036004946084,
+     12.611372924723735
+    ],
+    "ttft_s": [
+     1.8917715437710285,
+     0.7475600522011518,
+     0.32522142492234707,
+     2.299586550332606,
+     1.4880336350761354,
+     1.106723845936358,
+     2.7120348820462823
+    ],
+    "total_s": [
+     18.482103251852095,
+     18.274620679207146,
+     17.985968250315636,
+     18.535328052006662,
+     18.41533529991284,
+     18.347568022087216,
+     18.57073648367077
+    ],
+    "texts": [
+     "The life cycle of a star like our Sun is a process governed by the balance betwe",
+     "# B-Tree: Detailed Explanation\n\n## What is a B-Tree?\n\nA **B-tree** is a self-bal",
+     "```python\ndef merge_intervals(intervals: list[list[int]]) -> list[list[int]]:\n  ",
+     "Here is a detailed comparison between **TCP** (Transmission Control Protocol) an",
+     "The history of the computation of $\\pi$ (pi) is a fascinating journey that mirro",
+     "The French Revolution (1789\u20131799) was not triggered by a single event but by a c",
+     "Here is a step-by-step explanation of how the **Scaled Dot-Product Attention** m"
+    ]
+   },
+   "rounds": [
+    {
+     "wall_s": 18.720231383107603,
+     "tokens": 1400,
+     "aggregate_tok_s": 74.78540042316489,
+     "per_request_tok_s": [
+      11.340302599383588,
+      11.525256893399485,
+      11.16658506233593,
+      11.742680621793863,
+      11.968150161302543,
+      12.539224729998386,
+      12.226553874695034
+     ],
+     "ttft_s": [
+      0.7900561569258571,
+      1.1471558879129589,
+      0.36558574298396707,
+      1.5345197157002985,
+      1.9156422880478203,
+      2.767964513041079,
+      2.322039718274027
+     ],
+     "total_s": [
+      18.426269851159304,
+      18.500348259229213,
+      18.276164392009377,
+      18.566405912861228,
+      18.62666256306693,
+      18.71791391633451,
+      18.67987873405218
+     ],
+     "texts": [
+      "# B-Tree: Detailed Explanation\n\n## What is a B-Tree?\n\nA **B-tree** is a self-bal",
+      "```python\ndef merge_intervals(intervals: list[list[int]]) -> list[list[int]]:\n  ",
+      "Here is a detailed comparison between **TCP** (Transmission Control Protocol) an",
+      "The history of the computation of $\\pi$ (pi) is a fascinating journey that mirro",
+      "The French Revolution (1789\u20131799) was not triggered by a single event but by a c",
+      "Here is a step-by-step explanation of how the **Scaled Dot-Product Attention** m",
+      "Here is a classic, reliable recipe for a homemade Apple Pie. This recipe yields "
+     ]
+    },
+    {
+     "wall_s": 18.573777514975518,
+     "tokens": 1400,
+     "aggregate_tok_s": 75.37508182550475,
+     "per_request_tok_s": [
+      12.055214055942052,
+      11.41092646714741,
+      11.324549407640703,
+      12.31850112785906,
+      11.815232218343606,
+      11.60036004946084,
+      12.611372924723735
+     ],
+     "ttft_s": [
+      1.8917715437710285,
+      0.7475600522011518,
+      0.32522142492234707,
+      2.299586550332606,
+      1.4880336350761354,
+      1.106723845936358,
+      2.7120348820462823
+     ],
+     "total_s": [
+      18.482103251852095,
+      18.274620679207146,
+      17.985968250315636,
+      18.535328052006662,
+      18.41533529991284,
+      18.347568022087216,
+      18.57073648367077
+     ],
+     "texts": [
+      "The life cycle of a star like our Sun is a process governed by the balance betwe",
+      "# B-Tree: Detailed Explanation\n\n## What is a B-Tree?\n\nA **B-tree** is a self-bal",
+      "```python\ndef merge_intervals(intervals: list[list[int]]) -> list[list[int]]:\n  ",
+      "Here is a detailed comparison between **TCP** (Transmission Control Protocol) an",
+      "The history of the computation of $\\pi$ (pi) is a fascinating journey that mirro",
+      "The French Revolution (1789\u20131799) was not triggered by a single event but by a c",
+      "Here is a step-by-step explanation of how the **Scaled Dot-Product Attention** m"
+     ]
+    }
+   ]
+  }
+ }
+}

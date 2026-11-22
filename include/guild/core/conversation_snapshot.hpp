@@ -47,6 +47,22 @@ bool conversation_checkpoint_save(ConversationCheckpoint& checkpoint, const Sess
 bool conversation_checkpoint_restore(const ConversationCheckpoint& checkpoint, SessionState& session,
                                      const ModelGeometry& g, std::string& error);
 
+// ---- One session's conversation into another's, both carved alike on one device (the batch slots: the session a
+// prompt was read in -> a slot, and a slot's conversation back for its next turn).  No host image: each buffer goes
+// straight to its twin (device to device, or host to host for streamed K/V), so the copy costs what the bytes cost.
+// Both synchronous; the caller makes sure no window or prompt chunk is writing either session.
+//
+// The K/V cells [0, upto) - the page they end in whole - and with `include_index` the indexer's pooled rows up to
+// and including the moving spare row; then `to`'s VRAM residency is reset (streamed K/V refills from the copied
+// authoritative pools), as conversation_kv_restore does.
+bool conversation_kv_copy(const QsaState& from, const QsaState& to, const ModelGeometry& g, int64_t upto,
+                          bool include_index, std::string& error);
+/// The running state the K/V does not hold: every owned GDN layer's recurrence and conv history, the PLE history and
+/// its token window, and each QSA layer's indexer tail, dead row and block position.  `tokens` is the conversation's
+/// length (checked against both sessions' extents).
+bool conversation_state_copy(const SessionState& from, SessionState& to, const ModelGeometry& g, size_t tokens,
+                             std::string& error);
+
 struct ConversationView {
     const std::vector<int32_t>& ids;
     const std::vector<ConversationImageKey>& images;

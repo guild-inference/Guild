@@ -1,0 +1,23 @@
+guild batch: 3 slot sessions, 274 MiB of VRAM each (2.3 GiB of pinned RAM for their K/V); 3790 MiB of VRAM free before, 2958 after
+guild batch: the DFlash drafter keeps a context for each of the 3 slots (120 MiB)
+guild batch: slot 0 takes 25 tokens (copied in 2.3 ms)
+guild verify: captured the batch window over slots 0,0,0,0,0,0,0,0 in 55.7 ms
+guild batch: slot 1 takes 27 tokens (copied in 2.1 ms)
+guild batch: 40 windows, 8.00 rows and 5.95 tokens a window, 93.60 ms a window (drafts 7.68, run 85.72 = GPU-reach wait 16.56 + CPU experts 59.77; commit 0.19), drafts accepted 168 of 250, 57.70 CPU experts a layer-window; 10.7 tokens/s over 22316 ms
+guild batch: slot 2 takes 11713 tokens (copied in 32.5 ms)
+guild batch: 20 windows, 8.00 rows and 2.60 tokens a window, 101.07 ms a window (drafts 5.64, run 95.28 = GPU-reach wait 23.83 + CPU experts 57.28; commit 0.15), drafts accepted 32 of 140, 56.82 CPU experts a layer-window; 25.6 tokens/s over 2033 ms
+guild batch: slot 0's 144 tokens back into the session (copied in 3.6 ms)
+guild batch: slot 0 takes 164 tokens (copied in 2.5 ms)
+guild batch: 23 windows, 8.00 rows and 5.17 tokens a window, 88.40 ms a window (drafts 4.65, run 83.61 = GPU-reach wait 17.69 + CPU experts 52.96; commit 0.14), drafts accepted 96 of 161, 50.49 CPU experts a layer-window; 58.1 tokens/s over 2047 ms
+guild batch: the prompt read gives way at 4608 tokens; slot 2 holds them (copied in 13.9 ms)
+guild batch: slot 1 takes 23 tokens (copied in 2.1 ms)
+guild batch: slot 2's 4608 tokens back into the session (copied in 27.0 ms)
+guild batch: 37 windows, 8.00 rows and 3.22 tokens a window, 87.99 ms a window (drafts 4.42, run 83.43 = GPU-reach wait 16.82 + CPU experts 53.68; commit 0.14), drafts accepted 82 of 259, 51.35 CPU experts a layer-window; 5.2 tokens/s over 22685 ms
+guild batch: slot 2 takes 11715 tokens (copied in 32.4 ms)
+guild batch: 38 windows, 8.00 rows and 3.13 tokens a window, 100.56 ms a window (drafts 5.70, run 94.73 = GPU-reach wait 23.69 + CPU experts 57.70; commit 0.14), drafts accepted 81 of 266, 55.96 CPU experts a layer-window; 31.0 tokens/s over 3844 ms
+guild batch: slot 1 takes 25 tokens (copied in 2.1 ms)
+guild batch: 10 windows, 8.00 rows and 6.50 tokens a window, 88.90 ms a window (drafts 4.46, run 84.30 = GPU-reach wait 17.70 + CPU experts 52.83; commit 0.14), drafts accepted 55 of 70, 49.96 CPU experts a layer-window; 72.6 tokens/s over 895 ms
+guild batch: slot 1's 90 tokens back into the session (copied in 3.4 ms)
+guild batch: slot 0's 283 tokens back into the session (copied in 3.6 ms)
+guild batch: slot 2 takes 43 tokens (copied in 2.1 ms)
+guild batch: 26 windows, 8.00 rows and 4.58 tokens a window, 87.93 ms a window (drafts 4.47, run 83.32 = GPU-reach wait 16.10 + CPU experts 54.35; commit 0.14), drafts accepted 93 of 182, 52.86 CPU experts a layer-window; 51.7 tokens/s over 2301 ms

@@ -8,7 +8,9 @@
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
 
+#include <climits>
 #include <cmath>
+#include <cstdint>
 
 namespace guild::core::nhk {
 
@@ -77,6 +79,12 @@ __global__ void ssm_conv_k(const float* in, int ld_in, float* state, const float
 }
 
 // ---- the scan: a block of 256 threads per head; thread (p, q) holds s[p][q * 32 .. q * 32 + 31] ---------------------
+//
+// The state (and its snapshots) is engine-private and stored by thread: thread tid = p * 4 + q of head h keeps its
+// s[i] at h * 8192 + i * 256 + tid, so that a warp's 32 loads or stores of s[i] are 128 consecutive bytes.  Stored as
+// [h][p][n], each touched 32 lines, and a decode window's scan took ~4x as long (GTX 1070, in isolation: 128 against
+// 30 us for one token and its snapshot, 179 against 44 for two; a 30 s clip's verify windows 1.4 ms a step less); the
+// values in every register and the arithmetic are the same either way.
 
 constexpr int kP = 64, kN = 128, kQ = 4, kPer = kN / kQ;
 
@@ -87,10 +95,13 @@ __global__ void __launch_bounds__(kP* kQ)
     const int p = threadIdx.x / kQ, q = threadIdx.x % kQ;
     const int HP = H * kP;
     float s[kPer];
-    float* sp = state + ((size_t) h * kP + p) * kN + q * kPer;
+    // this thread's s[i] at base + i * stride
+    const size_t base = (size_t) h * kP * kN + threadIdx.x;
+    constexpr int stride = kP * kQ;
+    float* sp = state + base;
 #pragma unroll
     for (int i = 0; i < kPer; ++i)
-        s[i] = sp[i];
+        s[i] = sp[i * stride];
     __shared__ float Bs[kN], Cs[kN], xs[kP];
     __shared__ float dts;
     const float a = A[h], d = Dv[h], bias = dt_bias[h];
@@ -121,16 +132,16 @@ __global__ void __launch_bounds__(kP* kQ)
         if (q == 0)
             y[(size_t) t * HP + h * kP + p] = acc + d * x;
         if (snaps && t < n_snaps) {
-            float* o = snaps + (size_t) t * H * kP * kN + ((size_t) h * kP + p) * kN + q * kPer;
+            float* o = snaps + (size_t) t * H * kP * kN + base;
 #pragma unroll
             for (int i = 0; i < kPer; ++i)
-                o[i] = s[i];
+                o[i * stride] = s[i];
         }
         __syncthreads();
     }
 #pragma unroll
     for (int i = 0; i < kPer; ++i)
-        sp[i] = s[i];
+        sp[i * stride] = s[i];
 }
 
 // ---- norms and activations -----------------------------------------------------------------------------------------
@@ -231,6 +242,57 @@ __global__ void __launch_bounds__(128) gqa_attend_k(const float* q, const __half
     out[((size_t) t * Hq + h) * D + d] = acc / sum;
 }
 
+/// a block of 1024 threads per row: each thread's first maximum (strict >, its indices rising), then the block's
+/// lowest index among equal maxima: std::max_element's first maximum for any values but NaN
+__global__ void __launch_bounds__(1024)
+    argmax_rows_k(const float* x, int n, int64_t ld, int32_t* out, const int32_t* ids, bool vec) {
+    const float* row = x + (size_t) blockIdx.x * ld;
+    float v = -INFINITY;
+    int idx = INT_MAX;
+    int i0 = 0;
+    if (vec) {
+        const int n4 = n / 4;
+        const float4* r4 = (const float4*) row;
+        for (int j = threadIdx.x; j < n4; j += blockDim.x) {
+            const float4 f = r4[j];
+            if (f.x > v)
+                v = f.x, idx = 4 * j;
+            if (f.y > v)
+                v = f.y, idx = 4 * j + 1;
+            if (f.z > v)
+                v = f.z, idx = 4 * j + 2;
+            if (f.w > v)
+                v = f.w, idx = 4 * j + 3;
+        }
+        i0 = 4 * n4;
+    }
+    for (int i = i0 + threadIdx.x; i < n; i += blockDim.x)
+        if (row[i] > v)
+            v = row[i], idx = i;
+#pragma unroll
+    for (int o = 16; o > 0; o >>= 1) {
+        const float v2 = __shfl_xor_sync(0xffffffffu, v, o);
+        const int i2 = __shfl_xor_sync(0xffffffffu, idx, o);
+        if (v2 > v || (v2 == v && i2 < idx))
+            v = v2, idx = i2;
+    }
+    __shared__ float bv[32];
+    __shared__ int bi[32];
+    if ((threadIdx.x & 31) == 0) {
+        bv[threadIdx.x >> 5] = v;
+        bi[threadIdx.x >> 5] = idx;
+    }
+    __syncthreads();
+    if (threadIdx.x == 0) {
+        for (int w = 1; w < (int) (blockDim.x >> 5); ++w)
+            if (bv[w] > v || (bv[w] == v && bi[w] < idx))
+                v = bv[w], idx = bi[w];
+        if (idx == INT_MAX) // every value -inf: the first
+            idx = 0;
+        out[blockIdx.x] = ids ? ids[idx] : idx;
+    }
+}
+
 int grid_for(int64_t n) {
     return (int) std::min<int64_t>((n + 255) / 256, 4096);
 }
@@ -274,6 +336,11 @@ void kv_store(const float* k, const float* v, void* kc, void* vc, int64_t pos0, 
 
 int64_t attend_max_cells() {
     return kMaxCells;
+}
+
+void argmax_rows(const float* x, int n, int64_t ld, int rows, int32_t* out, const int32_t* ids, void* st) {
+    const bool vec = (uintptr_t) x % 16 == 0 && (rows == 1 || ld % 4 == 0);
+    argmax_rows_k<<<rows, 1024, 0, S(st)>>>(x, n, ld, out, ids, vec);
 }
 
 void gqa_attend(const float* q, const void* kc, const void* vc, float* out, int Hq, int Hk, int D, int64_t pos0, int T,

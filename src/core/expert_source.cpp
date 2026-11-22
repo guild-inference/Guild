@@ -117,6 +117,13 @@ void numa_split_touch(uint8_t* arena, uint64_t bytes, const guild::kernels::cpu:
         add(n > 0 ? 1 : 0, off + at, off + blob);
     }
     const auto& numa = kc::numa_topology();
+    bool bind[2];
+    for (int node = 0; node < 2; ++node) {
+        uint64_t node_bytes = 0;
+        for (const auto& sp : spans[node])
+            node_bytes += sp.second - sp.first;
+        bind[node] = kc::numa_node_can_hold(node, node_bytes);
+    }
     std::vector<std::thread> threads;
     for (int node = 0; node < 2; ++node) {
         const auto& cpus = numa.node_cpus[(size_t) node];
@@ -124,6 +131,7 @@ void numa_split_touch(uint8_t* arena, uint64_t bytes, const guild::kernels::cpu:
         for (int t = 0; t < per_node; ++t)
             threads.emplace_back([&, node, t, per_node, cpu = cpus[(size_t) t * cpus.size() / (size_t) per_node]] {
                 const auto previous = kc::pin_current_thread(cpu);
+                const kc::NodeBind bound(node, bind[node]); // reclaim this node's page cache rather than spill
                 const auto& v = spans[node];
                 for (size_t s = (size_t) t; s < v.size(); s += (size_t) per_node)
                     for (uint64_t at = v[s].first - v[s].first % page; at < v[s].second && at < bytes; at += page)
@@ -2422,13 +2430,18 @@ void FileExpertSource::build_cpu_repack(uint64_t headroom_bytes, std::string& no
     };
     const auto t0 = std::chrono::steady_clock::now();
     std::vector<std::thread> threads;
+    bool bind[2] = {false, false};
     if (split) {
+        // each node writes about half of the copy (as numa_split_touch)
+        bind[0] = kc::numa_node_can_hold(0, total / 2);
+        bind[1] = kc::numa_node_can_hold(1, total / 2);
         for (int node = 0; node < 2; ++node) {
             const auto& cpus = numa.node_cpus[(size_t) node];
             const int n = (int) std::min<size_t>(16, cpus.size());
             for (int t = 0; t < n; ++t)
                 threads.emplace_back([&, node, cpu = cpus[(size_t) t * cpus.size() / (size_t) n]] {
                     const auto previous = kc::pin_current_thread(cpu);
+                    const kc::NodeBind bound(node, bind[node]);
                     work(node, 2);
                     kc::restore_thread_affinity(previous);
                 });
@@ -2463,7 +2476,9 @@ void FileExpertSource::build_cpu_repack(uint64_t headroom_bytes, std::string& no
     cpu_repack_off_ = std::move(off);
     cpu_repack_blob_ = std::move(per);
     std::snprintf(msg, sizeof msg, "%d layers, %.2f GiB, %s, in %.1f s; ", layers, (double) total / 1073741824.0,
-                  split ? "rows split by NUMA node" : "interleaved",
+                  !split               ? "interleaved"
+                  : bind[0] && bind[1] ? "rows split by NUMA node"
+                                       : "rows split by NUMA node (a node short of memory: some on the other node)",
                   std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
     note = msg + lr.note;
 #else

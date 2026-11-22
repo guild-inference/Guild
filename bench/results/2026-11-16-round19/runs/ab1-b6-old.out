@@ -1,0 +1,9 @@
+the engine runs 6 slots (asked 7): 6 prompts
+batch: 6 slots, 576 tokens; admissions 2.3s; then 6.3s -> aggregate 66.9 tok/s overall, 70.2 tok/s from the first batch token
+slot 0: 96 tokens, solo 96: IDENTICAL
+slot 1: 96 tokens, solo 96: IDENTICAL
+slot 2: 96 tokens, solo 96: IDENTICAL
+slot 3: 96 tokens, solo 96: IDENTICAL
+slot 4: 96 tokens, solo 96: IDENTICAL
+slot 5: 96 tokens, solo 96: IDENTICAL
+guild batch: 98 windows, 5.97 rows and 5.82 tokens a window, 69.61 ms a window (drafts 0.44, run 69.15 = GPU-reach wait 9.72 + CPU experts 58.50; commit 0.02), drafts accepted 14 of 29, 63.79 CPU experts a layer-window; 68.3 tokens/s over 8352 ms
