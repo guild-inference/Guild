@@ -317,7 +317,8 @@ bool Drama3Tower::load(const std::string& dir, int64_t max_frames, std::string& 
     set_step_priority(!(prio && prio[0] == '0'));
 
     // GUILD_DRAMA3_FUSE: unset or 1, every faster step path below; 0, the separate kernels of before; letters pick
-    // parts (k: the fused small kernels, s: the fast sampler).  Each part gives the same bits as the path it replaces.
+    // parts (k: the fused small kernels, s: the fast sampler, a: the staged attention).  Each part gives the same bits
+    // as the path it replaces.
     {
         const char* fz = std::getenv("GUILD_DRAMA3_FUSE");
         const std::string f = fz ? fz : "";
@@ -335,8 +336,10 @@ bool Drama3Tower::load(const std::string& dir, int64_t max_frames, std::string& 
             fuse_ = false;
         }
         fast_sample_ = want('s') && drama3::sample_fast_ok();
-        std::fprintf(stderr, "guild drama3: tower step: %s small kernels, %s sampler\n", fuse_ ? "fused" : "separate",
-                     fast_sample_ ? "AVX-512" : "reference");
+        fast_attn_ = want('a');
+        std::fprintf(stderr, "guild drama3: tower step: %s small kernels, %s sampler, %s attention\n",
+                     fuse_ ? "fused" : "separate", fast_sample_ ? "AVX-512" : "reference",
+                     fast_attn_ ? "staged" : "chunked");
     }
     return true;
 }
@@ -468,7 +471,8 @@ bool Drama3Tower::layer_forward(Layer& L, int row, const drama3::EmbedAdd& add, 
         if (!mmvq(L.wqkv, xq_, qkv_, err, stream))
             return false;
         drama3::qk_norm_rope(qkv_, L.q_norm, L.k_norm, q_, L.k_cache, L.v_cache, qs, pos, st);
-        if (!drama3::attention(q_, L.k_cache, L.v_cache, qkv_ + Q, part_, att_, qs, pos + 1, st)) {
+        if (!(fast_attn_ ? drama3::attention_fast : drama3::attention)(q_, L.k_cache, L.v_cache, qkv_ + Q, part_, att_,
+                                                                       qs, pos + 1, st)) {
             err = "drama3 tower: unsupported attention shape";
             return false;
         }
@@ -497,7 +501,8 @@ bool Drama3Tower::layer_forward(Layer& L, int row, const drama3::EmbedAdd& add, 
     if (!matvec(L.wqkv, xn_, qkv_, err, stream))
         return false;
     drama3::qk_norm_rope(qkv_, L.q_norm, L.k_norm, q_, L.k_cache, L.v_cache, qs, pos, st);
-    if (!drama3::attention(q_, L.k_cache, L.v_cache, qkv_ + Q, part_, att_, qs, pos + 1, st)) {
+    if (!(fast_attn_ ? drama3::attention_fast : drama3::attention)(q_, L.k_cache, L.v_cache, qkv_ + Q, part_, att_, qs,
+                                                                   pos + 1, st)) {
         err = "drama3 tower: unsupported attention shape";
         return false;
     }

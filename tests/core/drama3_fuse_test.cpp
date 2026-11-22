@@ -5,7 +5,8 @@
 //
 // The fused small kernels (drama3_tower_kernels.hpp) against the separate ones they replace (add, rms_norm, embed and
 // guild-kernels-cuda's own native_quantize_q8_1, as linked, not a copy) on random rows, massive activations, zeros,
-// subnormal products and blocks past FP16's range; the fast sampler against the reference on synthetic logits (ties,
+// subnormal products and blocks past FP16's range; the staged attention against attention() at contexts across both
+// of its kernels; the fast sampler against the reference on synthetic logits (ties,
 // signed zeros, wide ranges, nine settings) and, given a GUILD_DRAMA3_DUMP_LOGITS file, on every row of it, plus its
 // exp against std::exp on a stride of all float patterns.  Exit 0 when everything matches, 1 on a difference, 77
 // without a GPU.
@@ -13,6 +14,7 @@
 #include "guild/core/drama3_tower_kernels.hpp"
 #include "guild/kernels/native_mmvq.hpp"
 
+#include <cuda_fp16.h>
 #include <cuda_runtime.h>
 
 #include <cmath>
@@ -366,6 +368,54 @@ void test_sampler(const char* dump) {
                 neg + pos ? "DIFFER" : "same  ", (unsigned long long) neg, (unsigned long long) pos);
 }
 
+// ---- attention_fast (staged K/V, two blocks a K/V head at short contexts) against attention, partials and output
+void test_attention(cudaStream_t st) {
+    const d3::QkvShape s{16, 2, 256, 64, 1e7f, 1e-6f};
+    const int max_pos = 2048, Q = s.n_head * s.head_dim, KV = s.n_kv * s.head_dim;
+    std::mt19937 rng(14);
+    std::normal_distribution<float> nd(0.0f, 1.0f);
+    std::vector<uint16_t> hk((size_t) max_pos * KV), hv(hk.size());
+    for (auto& v : hk) {
+        const __half h = __float2half(2.0f * nd(rng));
+        std::memcpy(&v, &h, 2);
+    }
+    for (auto& v : hv) {
+        const __half h = __float2half(nd(rng));
+        std::memcpy(&v, &h, 2);
+    }
+    std::vector<float> hq((size_t) Q), hg((size_t) Q);
+    for (auto& v : hq)
+        v = 0.5f * nd(rng);
+    for (auto& v : hg)
+        v = nd(rng);
+    Dev<uint16_t> k(hk.size()), v(hv.size());
+    k.put(hk);
+    v.put(hv);
+    Dev<float> q(Q), g(Q), o0(Q), o1(Q);
+    q.put(hq);
+    g.put(hg);
+    const size_t pf = d3::attn_part_floats(s, max_pos);
+    Dev<float> p0(pf), p1(pf);
+    int bad = 0;
+    for (const int64_t n_pos : {1, 63, 64, 65, 130, 319, 320, 321, 565, 2000}) {
+        const size_t used = (size_t) s.n_kv * (size_t) ((n_pos + 63) / 64) * 8 * (s.head_dim + 2);
+        CK(cudaMemset(p0.p, 0, pf * 4));
+        CK(cudaMemset(p1.p, 0xff, pf * 4));
+        if (!d3::attention(q.p, k.p, v.p, g.p, p0.p, o0.p, s, n_pos, st) ||
+            !d3::attention_fast(q.p, k.p, v.p, g.p, p1.p, o1.p, s, n_pos, st)) {
+            ++g_fail;
+            std::printf("FAIL: attention refused the tower's shape\n");
+            return;
+        }
+        const std::string what = "attention n_pos " + std::to_string(n_pos);
+        bool ok = same(p0.p, p1.p, used * 4, what + " partials", true);
+        ok &= same(o0.p, o1.p, (size_t) Q * 4, what + " output", true);
+        bad += !ok;
+    }
+    std::printf("%s attention_fast at n_pos 1, 63, 64, 65, 130, 319, 320, 321, 565, 2000: %d differ\n",
+                bad ? "DIFFER" : "same  ", bad);
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -383,6 +433,7 @@ int main(int argc, char** argv) {
     CK(cudaStreamCreateWithFlags(&st, cudaStreamNonBlocking));
     test_add_norm(st);
     test_embed_norm2(st);
+    test_attention(st);
     test_sampler(argc > 1 ? argv[1] : nullptr);
     CK(cudaStreamDestroy(st));
     std::printf("%s\n", g_fail ? "FAIL" : "PASS");

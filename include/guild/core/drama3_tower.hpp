@@ -186,8 +186,8 @@ private:
     void* prio_stream_ = nullptr; // step_begin's, at the greatest priority (set_step_priority)
     bool top_ = true;
     // GUILD_DRAMA3_FUSE (read in load; unset = all on, 0 = all off): the step's fused small kernels (k), the fast
-    // sampler (s)
-    bool fuse_ = false, fast_sample_ = false;
+    // sampler (s), the staged attention (a)
+    bool fuse_ = false, fast_sample_ = false, fast_attn_ = false;
     // device scratch
     float *h_ = nullptr, *e_ = nullptr, *cat_ = nullptr, *x_ = nullptr, *xn_ = nullptr, *qkv_ = nullptr, *q_ = nullptr,
           *att_ = nullptr, *proj_ = nullptr, *ff1_ = nullptr, *ff3_ = nullptr, *logits_ = nullptr, *part_ = nullptr;

@@ -63,5 +63,12 @@ void embed_norm2_q8(const uint16_t* table, int row, const EmbedAdd& add, const u
 /// x += y (when y), then out = rms_norm(x, w) (when out) and xq = its Q8_1 blocks (when xq).  Replaces add, rms_norm
 /// and a quantize.
 void add_norm_q8(float* x, const float* y, const float* w, float eps, float* out, void* xq, cudaStream_t st);
+/// attention() with faster partial kernels for the tower's shape (8 query heads a K/V head of dim 256): each chunk's K
+/// and V rows staged in shared memory, and at n_pos <= kAttnSplitMax two blocks a K/V head of four query heads each.
+/// The same partials bit for bit (each head's sums are the same chains) and the same combine; other shapes take
+/// attention().
+constexpr int64_t kAttnSplitMax = 320;
+bool attention_fast(const float* q, const uint16_t* k_cache, const uint16_t* v_cache, const float* gate, float* part,
+                    float* out, const QkvShape& s, int64_t n_pos, cudaStream_t st);
 
 } // namespace guild::core::drama3
