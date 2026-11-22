@@ -295,6 +295,31 @@ inline bool rows_stream() {
 inline int64_t stream_chunk_min() {
     return rows_stream() ? kRowsStreamMin : stream_all_min();
 }
+// pf-tail-ring: the buffers are carved once for the layout's chunk (8192 tokens here), so a shorter chunk - a prompt
+// of 2K-8K tokens, the last chunk of a longer one - leaves the rest of the scratch region and of R idle.  With
+// rows_stream()'s ring such a chunk lays the region out for its own T and lends both idle tails to the ring as
+// whole-blob slots: ~250 of them at 4K, ~360 at 2K instead of 32 (or the routed walk's 8, whose copies start only after
+// each layer's routing, the copy engine idle through every dense half), and the 8192-token chunk keeps its size.  Each
+// expert's MMQ reads the same blob bytes in the same groups; only the slot it is staged in and the buffers' addresses
+// (256-byte aligned as before) change.  GUILD_PREFILL_TAIL_RING=0: the layout and the ring stay as carved (the A/B).
+inline bool tail_ring_on() {
+    static const bool on = [] {
+        const char* e = std::getenv("GUILD_PREFILL_TAIL_RING");
+        return e == nullptr || e[0] != '0';
+    }();
+    return on;
+}
+// ...and a chunk below stream_chunk_min() whose tails lent the ring at least kTailWalkRing slots takes the streamed
+// walk from this many tokens on (GUILD_PREFILL_TAIL_STREAM_MIN); below it the routed walk, which copies only the routed
+// experts (~370 of 512 a layer at 1K: the streamed walk measured 11-14% slower there).
+constexpr int kTailWalkRing = 192;
+inline int64_t tail_stream_min() {
+    static const int64_t v = [] {
+        const char* e = std::getenv("GUILD_PREFILL_TAIL_STREAM_MIN");
+        return e ? (int64_t) std::atoll(e) : (int64_t) 2048;
+    }();
+    return v;
+}
 inline int ring_slots(size_t T) {
     if (rows_stream()) { // the chunk's own size decides (above)
         const char* v = std::getenv("GUILD_PREFILL_RING");
@@ -346,6 +371,10 @@ inline bool bf16x2() {
 }
 inline bool bf16x2_hc() {
     return bf16x2_mode() == 1;
+}
+// the batched PLE block's region bytes a token (its sub-batches are carved from the scratch region; run_impl)
+inline uint64_t ple_batch_token_bytes() {
+    return (uint64_t) (3 * guild::kernels::NG_HC_DIM + N + 4) * 4 + (uint64_t) N * (bf16x2() ? 4 : 2) + 4096;
 }
 
 // F-1: GUILD_GR_UNFUSED=1 keeps the FP32 copy of the normalized rows (gr_norm + gr_mix), the A/B arm
@@ -772,6 +801,13 @@ struct Prefill::Impl {
     float* ple_norm = nullptr;
     uint8_t* region = nullptr; // the attention/MoE scratch region (idle while the PLE block runs)
     uint64_t region_bytes = 0;
+    // pf-tail-ring (tail_ring_on): a chunk of fewer tokens than the layout's lays the region out for its own T
+    // (carve_region) and lends the region past region_eff and R's rows past the chunk to the ring, as stage_dev
+    // [ring_owned, ring)
+    uint64_t region_eff = 0;                          // what the current layout's chunk uses (region_bytes at m.T)
+    int64_t region_T = 0;                             // the tokens the region is laid out for
+    int ring_owned = 0, ring_lent = 0;                // the ring's own slots (carve's), the slots lent
+    cudaEvent_t tail_cs = nullptr, tail_cp = nullptr; // the two streams' fences when the layout changes
     PrefillStats* stats = nullptr;
     // KV streaming: one layer's whole K/V, staged from the host copy per layer and chunk (identity layout)
     guild::kernels::KvHostPools stage;
@@ -863,6 +899,10 @@ void Prefill::release() {
     }
     if (impl_->ids_ready)
         cudaEventDestroy(impl_->ids_ready);
+    if (impl_->tail_cs)
+        cudaEventDestroy(impl_->tail_cs);
+    if (impl_->tail_cp)
+        cudaEventDestroy(impl_->tail_cp);
     for (int b = 0; b < 2; ++b) {
         if (impl_->hand[b])
             cudaFreeHost(impl_->hand[b]);
@@ -1057,6 +1097,12 @@ uint64_t moe_set_bytes(size_t T, int64_t n_expert, bool fused) {
     }
     return a.used;
 }
+// The region of a chunk of T tokens: its largest set (carve_region lays them out; bytes_needed counts the same)
+uint64_t region_need(size_t T, int64_t n_expert, bool fused, int64_t cap, int64_t max_blocks, int64_t sel_batch,
+                     int64_t attn_batch, const guild::kernels::QsaShapes& s) {
+    return std::max({gdn_set_bytes(T), qsa_set_bytes(T, cap, max_blocks, sel_batch, attn_batch, s),
+                     moe_set_bytes(T, n_expert, fused), (uint64_t) T * D * 4 + (hc_in_region() ? hc_set_bytes(T) : 0)});
+}
 } // namespace
 
 void Prefill::set_expert_cache(const core::ExpertCache* cache, const int32_t* host_res) {
@@ -1121,6 +1167,9 @@ bool Prefill::init(const core::WeightTable& wt, const core::ModelGeometry& g, co
     }
     if (!m.ids_ready && cudaEventCreateWithFlags(&m.ids_ready, cudaEventDisableTiming) != cudaSuccess)
         ok = false;
+    for (cudaEvent_t* e : {&m.tail_cs, &m.tail_cp})
+        if (!*e && cudaEventCreateWithFlags(e, cudaEventDisableTiming) != cudaSuccess)
+            ok = false;
     if (!m.stager) {
         m.stager = std::make_unique<Stager>();
         const int hw = (int) std::thread::hardware_concurrency();
@@ -1268,83 +1317,13 @@ bool Prefill::carve(size_t T, void* alloc) {
     m.cap = guild::kernels::qsa_selection_width(guild::kernels::kTopkMaxCells, s);
     m.max_blocks = ss.qsa_states[ss.qsa_primary()].max_cells / s.idx_block + 2;
     {
-        // one region for the attention half's and the MoE half's scratch (see gdn_set_bytes)
-        const bool fz = fused_layout(T, m.src != nullptr);
-        const MoeBufs mb = moe_bufs(T, m.g->n_expert, fz);
-        m.local_moe = !fz && group_local(false);
-        m.local_rows = m.local_moe ? (int64_t) (kLocalRows * T) : 0;
-        const uint64_t region =
-            std::max({gdn_set_bytes(T), qsa_set_bytes(T, m.cap, m.max_blocks, m.sel_batch, m.attn_batch, s),
-                      moe_set_bytes(T, m.g->n_expert, fz), (uint64_t) T * D * 4 + (hr ? hc_set_bytes(T) : 0)});
-        uint8_t* base = o.take<uint8_t>((size_t) region, ok);
-        m.region = base;
-        // the hyper-connection read's up product: written and read by the mix before the half's scratch (or the PLE
-        // block, or a drafter's pass) takes the region
-        m.gated = (float*) base;
-        m.region_bytes = region;
-        if (hr && base != nullptr) { // and its other buffers, past `gated` (see hc_in_region)
-            Alloc h;
-            h.base = base + (size_t) T * D * 4;
-            h.cap = region - (uint64_t) T * D * 4;
-            h.owned = &m.owned;
-            m.xn16 = h.take<uint16_t>(T * D, ok);
-            m.emb = h.take<float>(T * N, ok);
-            m.lo = h.take<float>(T * LR, ok);
-            m.lo16 = h.take<uint16_t>(T * LR, ok);
-        }
-        Alloc a;
-        a.base = base;
-        a.cap = region;
-        a.owned = &m.owned;
-        m.qkv = a.take<float>(T * C, ok);
-        m.z = a.take<float>(T * ZV, ok);
-        m.ab = a.take<float>(T * 2 * HV, ok);
-        m.gate = a.take<float>(T * HV, ok);
-        m.beta = a.take<float>(T * HV, ok);
-        m.hbuf = a.take<float>(T * C, ok);
-        m.y = a.take<float>(T * ZV, ok);
-        m.y_h = a.take<uint16_t>(T * ZV, ok);
-        Alloc b;
-        b.base = base;
-        b.cap = region;
-        b.owned = &m.owned;
-        m.Kc = b.take<float>(T * 512, ok);
-        m.Vc = b.take<float>(T * 512, ok);
-        m.Qf = b.take<float>(T * 12288, ok);
-        m.q = b.take<float>(T * ZV, ok);
-        m.idx_raw = b.take<float>(T * 128, ok);
-        m.q_idx = b.take<float>(T * 512, ok);
-        m.attn = b.take<float>(T * ZV, ok);
-        m.attn_h = b.take<uint16_t>(T * ZV, ok);
-        m.sel_ids = b.take<int32_t>(T * (size_t) m.cap, ok);
-        m.sel_scores = b.take<float>((size_t) m.sel_batch * (size_t) m.max_blocks, ok);
-        m.attn_scratch =
-            b.take<float>((size_t) m.attn_batch * guild::kernels::qsa_decode_attn_scratch_floats(m.cap, s), ok);
-        Alloc c;
-        c.base = base;
-        c.cap = region;
-        c.owned = &m.owned;
-        m.logits = c.take<float>(T * m.g->n_expert, ok);
-        m.w = c.take<float>(T * K, ok);
-        m.ids = c.take<int32_t>(T * K, ok);
-        m.slot_dev = c.take<int32_t>(T * K, ok);
-        m.src_dev = c.take<int32_t>(T * K, ok);
-        const MmqPlan& mp = mmq_plan();
-        m.Xs = mp.fallback ? c.take<uint16_t>(T * K * N, ok) : nullptr;
-        m.GU = c.take<float>(mb.gu, ok);
-        m.Hh = mp.fallback ? c.take<uint16_t>(T * K * 640, ok) : nullptr;
-        m.Dm = c.take<float>(T * K * N, ok);
-        m.sgate = c.take<float>(T * 640, ok);
-        m.sup = c.take<float>(T * 640, ok);
-        m.sh_h = c.take<uint16_t>(T * 640, ok);
-        m.shared = c.take<float>(T * N, ok);
-        m.sg = c.take<float>(T, ok);
-        if (mp.any) {
-            m.Xq = c.take<uint8_t>(mb.xq, ok);
-            m.H = c.take<float>(mb.h, ok);
-            m.Hq = c.take<uint8_t>(mb.hq, ok);
-        }
-        if (base == nullptr)
+        // one region for the attention half's and the MoE half's scratch (see gdn_set_bytes), laid out by carve_region
+        const uint64_t region = region_need(T, m.g->n_expert, fused_layout(T, m.src != nullptr), m.cap, m.max_blocks,
+                                            m.sel_batch, m.attn_batch, s);
+        m.region = o.take<uint8_t>((size_t) region, ok);
+        m.region_bytes = m.region_eff = region;
+        m.region_T = (int64_t) T;
+        if (m.region == nullptr || carve_region(T) != region)
             ok = false;
     }
     for (int i = 0; i < DQ; ++i) {
@@ -1370,11 +1349,104 @@ bool Prefill::carve(size_t T, void* alloc) {
         m.stage_live[i] = false; // a new buffer: nothing of an earlier layout to wait for
         m.used_of[i] = i;
     }
+    m.ring_owned = m.ring;
+    m.ring_lent = 0;
     m.ple_emb = o.take<float>(T * N, ok);
     m.ple_norm = o.take<float>((size_t) guild::kernels::NG_HC_DIM, ok);
     take_stage(o, ss, s, m.stage, ok);
     m.T = (int64_t) T;
     return ok;
+}
+
+// The region's buffers for a chunk of T tokens (see gdn_set_bytes): the hyper-connection read's from its base, and the
+// GDN, QSA and MoE sets each from its base too.  `carve` lays them out for the layout's chunk; run_impl again for a
+// chunk of fewer tokens (pf-tail-ring), whose sets then end sooner - the same takes in the same order, so for the
+// layout's chunk the same pointers.  The bytes they take (the largest set), or 0 when the region does not hold them.
+uint64_t Prefill::carve_region(size_t T) {
+    Impl& m = *impl_;
+    const core::ModelGeometry& g = *m.g;
+    guild::kernels::QsaShapes s = guild::kernels::qsa_real_shapes();
+    s.n_head = g.n_head;
+    s.n_head_kv = g.n_head_kv;
+    s.head_dim = g.head_dim;
+    s.idx_n_head = g.idx_q_heads;
+    s.idx_dim = g.idx_key_dim;
+    const bool hr = hc_in_region(); // xn16, emb, lo and lo16 in the region (hc_set_bytes)
+    const bool fz = fused_layout(T, m.src != nullptr);
+    const MoeBufs mb = moe_bufs(T, g.n_expert, fz);
+    const uint64_t region = region_need(T, g.n_expert, fz, m.cap, m.max_blocks, m.sel_batch, m.attn_batch, s);
+    uint8_t* base = m.region;
+    if (base == nullptr || region > m.region_bytes)
+        return 0;
+    bool ok = true;
+    m.local_moe = !fz && group_local(false);
+    m.local_rows = m.local_moe ? (int64_t) (kLocalRows * T) : 0;
+    // the hyper-connection read's up product: written and read by the mix before the half's scratch (or the PLE
+    // block, or a drafter's pass) takes the region
+    m.gated = (float*) base;
+    if (hr) { // and its other buffers, past `gated` (see hc_in_region)
+        Alloc h;
+        h.base = base + (size_t) T * D * 4;
+        h.cap = region - (uint64_t) T * D * 4;
+        h.owned = &m.owned;
+        m.xn16 = h.take<uint16_t>(T * D, ok);
+        m.emb = h.take<float>(T * N, ok);
+        m.lo = h.take<float>(T * LR, ok);
+        m.lo16 = h.take<uint16_t>(T * LR, ok);
+    }
+    Alloc a;
+    a.base = base;
+    a.cap = region;
+    a.owned = &m.owned;
+    m.qkv = a.take<float>(T * C, ok);
+    m.z = a.take<float>(T * ZV, ok);
+    m.ab = a.take<float>(T * 2 * HV, ok);
+    m.gate = a.take<float>(T * HV, ok);
+    m.beta = a.take<float>(T * HV, ok);
+    m.hbuf = a.take<float>(T * C, ok);
+    m.y = a.take<float>(T * ZV, ok);
+    m.y_h = a.take<uint16_t>(T * ZV, ok);
+    Alloc b;
+    b.base = base;
+    b.cap = region;
+    b.owned = &m.owned;
+    m.Kc = b.take<float>(T * 512, ok);
+    m.Vc = b.take<float>(T * 512, ok);
+    m.Qf = b.take<float>(T * 12288, ok);
+    m.q = b.take<float>(T * ZV, ok);
+    m.idx_raw = b.take<float>(T * 128, ok);
+    m.q_idx = b.take<float>(T * 512, ok);
+    m.attn = b.take<float>(T * ZV, ok);
+    m.attn_h = b.take<uint16_t>(T * ZV, ok);
+    m.sel_ids = b.take<int32_t>(T * (size_t) m.cap, ok);
+    m.sel_scores = b.take<float>((size_t) m.sel_batch * (size_t) m.max_blocks, ok);
+    m.attn_scratch =
+        b.take<float>((size_t) m.attn_batch * guild::kernels::qsa_decode_attn_scratch_floats(m.cap, s), ok);
+    Alloc c;
+    c.base = base;
+    c.cap = region;
+    c.owned = &m.owned;
+    m.logits = c.take<float>(T * g.n_expert, ok);
+    m.w = c.take<float>(T * K, ok);
+    m.ids = c.take<int32_t>(T * K, ok);
+    m.slot_dev = c.take<int32_t>(T * K, ok);
+    m.src_dev = c.take<int32_t>(T * K, ok);
+    const MmqPlan& mp = mmq_plan();
+    m.Xs = mp.fallback ? c.take<uint16_t>(T * K * N, ok) : nullptr;
+    m.GU = c.take<float>(mb.gu, ok);
+    m.Hh = mp.fallback ? c.take<uint16_t>(T * K * 640, ok) : nullptr;
+    m.Dm = c.take<float>(T * K * N, ok);
+    m.sgate = c.take<float>(T * 640, ok);
+    m.sup = c.take<float>(T * 640, ok);
+    m.sh_h = c.take<uint16_t>(T * 640, ok);
+    m.shared = c.take<float>(T * N, ok);
+    m.sg = c.take<float>(T, ok);
+    if (mp.any) {
+        m.Xq = c.take<uint8_t>(mb.xq, ok);
+        m.H = c.take<float>(mb.h, ok);
+        m.Hq = c.take<uint8_t>(mb.hq, ok);
+    }
+    return ok ? region : 0;
 }
 
 bool Prefill::relayout(int64_t chunk, void* borrow, uint64_t borrow_bytes, std::string& err) {
@@ -1463,6 +1535,7 @@ bool Prefill::draft_kv(core::MtpDrafter& mtp, const float* R_rows, const int32_t
     const bool q8 = !f16_only && mmq::built() && mmq::fits(kQ8_0, Nn) && mmq::fits(kQ8_0, KV); // #420
     const uint64_t per_row = 4 * (2 * Nn + 4 * HCN + LR + HC + Nn + 2 * KV + 1) + 2 * (Nn + 2 * HCN + LR + Nn) + 64 +
                              (q8 ? (uint64_t) mmq::q8_bytes(g.hc, Nn) + 4 * g.hc : 0);
+    // (the whole region: idle when on_chunk runs - a chunk that lent its tail to the ring waited for its copies)
     int64_t B = std::min<int64_t>(n - r0, (int64_t) (m.region_bytes / per_row) & ~(int64_t) 63);
     if (st.kv_mode == 2) // a ring: one batch's cells must not share a slot (a batch can straddle one page more)
         B = std::min<int64_t>(B, ((st.n_slots - 1) * guild::kernels::qsa_real_shapes().page_size) & ~(int64_t) 63);
@@ -2381,6 +2454,56 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
     std::string ple_next_err;
     std::future<bool> ple_next; // declared after everything it reads: an early return waits for it
     int ple_buf = 0;
+    // pf-tail-ring (tail_ring_on): the layout's own buffers on one GPU and one stage, no expert cache, the ring of
+    // rows_stream() (not the fused path's)
+    const bool tail_ok = tail_ring_on() && !m.borrowed && m.cache == nullptr && m.pp == nullptr && next_ == nullptr &&
+                         hand_in_ == nullptr && m.src != nullptr && !fused_ring() && rows_stream() &&
+                         m.ring_owned > STAGE;
+    // A chunk of T tokens: below the layout's chunk the region laid out for T and its idle tails lent to the ring, at
+    // the layout's chunk the layout as carved.  Before either stream takes this chunk's work.
+    auto lay_out = [&](int64_t T) -> bool {
+        const int64_t lt = tail_ok && T < m.T ? T : m.T; // the tokens to lay the region out for
+        if (lt == m.region_T && lt == m.T)
+            return true; // as carved: nothing lent
+        // the copy stream waits for the compute stream's work so far: the lent memory held its buffers (the previous
+        // chunk's or request's)
+        if (cudaEventRecord(m.tail_cs, m.cs) != cudaSuccess || cudaStreamWaitEvent(m.copy, m.tail_cs, 0) != cudaSuccess)
+            return false;
+        if (lt == m.region_T)
+            return true; // laid out for this T already (an earlier request): the same buffers and slots
+        // ...and the compute stream for the copies so far: the new layout's buffers may cover the slots they fill
+        if (cudaEventRecord(m.tail_cp, m.copy) != cudaSuccess || cudaStreamWaitEvent(m.cs, m.tail_cp, 0) != cudaSuccess)
+            return false;
+        const uint64_t used = carve_region((size_t) lt);
+        if (used == 0)
+            return false;
+        int ring = m.ring_owned;
+        uint64_t eff = m.region_bytes;
+        if (lt < m.T) {
+            // the PLE block's sub-batches keep their size (they are carved from the region: region_eff decides them)
+            const uint64_t pb = ple_batch_token_bytes();
+            const uint64_t ple = ple_batch ? (uint64_t) std::min<int64_t>(lt, (int64_t) (m.region_bytes / pb)) * pb : 0;
+            eff = std::min<uint64_t>(m.region_bytes, (std::max(used, ple) + 255) & ~(uint64_t) 255);
+            const uint64_t per = (uint64_t) MAXBLOB();
+            auto lend = [&](uint8_t* p, uint64_t bytes) { // whole blobs from a 256-byte aligned start
+                for (; bytes >= per && ring < ring_cap(); p += per, bytes -= per)
+                    m.stage_dev[ring++] = p;
+            };
+            lend(m.region + eff, m.region_bytes - eff);
+            lend((uint8_t*) (m.R + (size_t) lt * D), (uint64_t) (m.T - lt) * D * 4);
+        }
+        for (int i = ring; i < m.ring; ++i)
+            m.stage_dev[i] = nullptr;
+        for (int i = 0; i < RING_MAX; ++i) {
+            m.stage_live[i] = false; // the two fences above: nothing earlier to wait for
+            m.used_of[i] = i;
+        }
+        m.region_eff = eff;
+        m.region_T = lt;
+        m.ring_lent = ring - m.ring_owned;
+        m.ring = ring;
+        return true;
+    };
 
     for (int64_t c0 = 0; c0 < n; c0 += m.T) {
         if (should_stop && should_stop()) {
@@ -2396,6 +2519,11 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
         ++stats_.chunks;
         pt.mark(kPfStart, cs);
         const auto tsetup = Clock::now();
+        if (!lay_out(T)) {
+            err = "prefill: the scratch region for a chunk of " + std::to_string(T) +
+                  " tokens: " + cudaGetErrorString(cudaGetLastError());
+            return false;
+        }
         // ---- embeddings, broadcast to the four streams - or, in a later stage of a layer split, the rows the
         // previous stage handed on
         if (hand_in_ != nullptr) {
@@ -2509,7 +2637,16 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
         // k lands in ring slot k % ring); a copy is issued once the entry `ring` before it is consumed (its slot's
         // `used` event recorded), so the copy stream never waits on an event that is not queued yet
         const guild::kernels::cpu::ExpertLayout& lay0 = guild::kernels::cpu::expert_layout();
-        const bool stream_all = m.ring > STAGE && T >= stream_chunk_min() && m.src != nullptr;
+        // (pf-tail-ring: and a shorter chunk from tail_stream_min() tokens on, when its idle tails lent the ring
+        // enough)
+        const bool tail_walk = m.ring_lent > 0 && m.ring >= kTailWalkRing && T >= tail_stream_min();
+        const bool stream_all = m.ring > STAGE && (T >= stream_chunk_min() || tail_walk) && m.src != nullptr;
+        if (pt.on && m.ring_lent > 0)
+            std::fprintf(stderr,
+                         "guild prefill: a chunk of %lld tokens: the region laid out in %.0f of its %.0f MiB, %d ring "
+                         "slots lent by it and R's idle rows (%d in all), the %s walk\n",
+                         (long long) T, (double) m.region_eff / (1 << 20), (double) m.region_bytes / (1 << 20),
+                         m.ring_lent, m.ring, stream_all ? "streamed" : "routed");
         const bool ps_on = stream_all && m.pp && m.pp->ps_frac > 0.0;
         if (m.pp && !ps_on)
             m.pp->ps_flag.clear();
@@ -2744,8 +2881,9 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                 const auto tp = Clock::now();
                 const guild::kernels::PleWeights& pw = ss.ple.w;
                 constexpr int64_t HD = guild::kernels::NG_HC_DIM;
-                const uint64_t per_token = (uint64_t) (3 * HD + N + 4) * 4 + (uint64_t) N * (bf16x2() ? 4 : 2) + 4096;
-                const int64_t SB = std::min<int64_t>(T, (int64_t) (m.region_bytes / per_token));
+                const uint64_t per_token = ple_batch_token_bytes();
+                // (pf-tail-ring: the part of the region the chunk's layout uses; lay_out keeps SB what it was)
+                const int64_t SB = std::min<int64_t>(T, (int64_t) (m.region_eff / per_token));
                 for (int64_t s0 = 0; s0 < T; s0 += SB) {
                     const int64_t nb = std::min(SB, T - s0);
                     uint8_t* q = m.region;
@@ -4163,7 +4301,11 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
         }
         if (on_chunk || on_stage_chunk) {
             const auto toc = Clock::now();
-            if (cudaStreamSynchronize(m.cs) != cudaSuccess) {
+            // pf-tail-ring: and the copy stream when the chunk lent the ring its region's tail - an entry the routing
+            // did not pick gives its slot back without waiting for its copy, and on_chunk's draft layer (draft_kv)
+            // takes the whole region for its batches
+            if (cudaStreamSynchronize(m.cs) != cudaSuccess ||
+                (m.ring_lent > 0 && cudaStreamSynchronize(m.copy) != cudaSuccess)) {
                 err = std::string("prefill: ") + cudaGetErrorString(cudaGetLastError());
                 return false;
             }
