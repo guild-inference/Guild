@@ -3,8 +3,12 @@
 // expert added by native_moe_combine_multi at k = 1 with a weight of 1.0, against native_moe_combine_multi over the
 // K rows.  Rows of plain values, exact zeros of both signs, subnormals (the kernel is built with -ftz=true),
 // products that underflow or come near the float range, subnormal and zero weights and shared values; 1-4 tokens,
-// widths that are and are not a multiple of the 32-column blocks.
+// widths that are and are not a multiple of the 32-column blocks.  Then the window's mapped forms
+// (GUILD_COMBINE_MAPPED): the sums in mapped host memory, some made infinite, NaN or the largest float, read by the
+// combine kernel itself (2) and by guild::core::combine_sums_f4 (1, widths of a multiple of 4), against the combine of
+// their device copy, bitwise.
 #include "guild/core/host_combine.hpp"
+#include "guild/core/verify_combine.hpp"
 #include "guild/kernels/native_moe.hpp"
 
 #include <cuda_runtime.h>
@@ -108,9 +112,57 @@ static int compare(int n_tok, int k, int n, unsigned seed, cudaStream_t st) {
     }
     std::printf("%s %d token(s), k %d, width %d: %d of %zu values differ\n", bad ? "FAIL" : "PASS", n_tok, k, n, bad,
                 a.size());
+    // the mapped forms: the same sums (every 97th made infinite, NaN or the largest float) in mapped host memory,
+    // combined without a copy, against the combine of their device copy
+    for (size_t i = 0; i < ysum.size(); i += 97)
+        ysum[i] = (i / 97) % 4 == 0   ? INFINITY
+                  : (i / 97) % 4 == 1 ? -INFINITY
+                  : (i / 97) % 4 == 2 ? NAN
+                                      : -3.4028235e38f;
+    CHECK(cudaMemcpy(d_ysum, ysum.data(), ysum.size() * 4, cudaMemcpyHostToDevice));
+    guild::kernels::native_moe_combine_multi(d_ysum, d_ones, d_shared, d_b, n, 1, n_tok, st); // the copy's combine
+    CHECK(cudaStreamSynchronize(st));
+    CHECK(cudaMemcpy(b.data(), d_b, b.size() * 4, cudaMemcpyDeviceToHost));
+    float *h_map = nullptr, *m_map = nullptr;
+    CHECK(cudaHostAlloc((void**) &h_map, ysum.size() * 4, cudaHostAllocMapped));
+    CHECK(cudaHostGetDevicePointer((void**) &m_map, h_map, 0));
+    std::memcpy(h_map, ysum.data(), ysum.size() * 4);
+    int bad_map = 0;
+    for (int form = 2; form >= 1; --form) {
+        CHECK(cudaMemset(d_a, 0xff, ysum.size() * 4));
+        bool ran = true;
+        if (form == 2)
+            guild::kernels::native_moe_combine_multi(m_map, d_ones, d_shared, d_a, n, 1, n_tok, st);
+        else
+            ran = guild::core::combine_sums_f4(m_map, d_ones, d_shared, d_a, n, n_tok, st);
+        CHECK(cudaStreamSynchronize(st));
+        if (!ran) { // only a width that is not a multiple of 4 may refuse
+            std::printf("%s %d token(s), width %d: combine_sums_f4 refused\n", (n & 3) ? "PASS" : "FAIL", n_tok, n);
+            bad_map += (n & 3) ? 0 : 1;
+            continue;
+        }
+        CHECK(cudaMemcpy(a.data(), d_a, a.size() * 4, cudaMemcpyDeviceToHost));
+        int diff = 0;
+        for (size_t i = 0; i < a.size(); ++i) {
+            uint32_t ua, ub;
+            std::memcpy(&ua, &a[i], 4);
+            std::memcpy(&ub, &b[i], 4);
+            if (ua != ub) {
+                if (diff < 3)
+                    std::printf("  token %zu column %zu: mapped %08x (%.9g), copied %08x (%.9g)\n", i / n, i % n, ua,
+                                a[i], ub, b[i]);
+                ++diff;
+            }
+        }
+        std::printf("%s %d token(s), width %d, mapped sums through %s: %d of %zu values differ\n",
+                    diff ? "FAIL" : "PASS", n_tok, n, form == 2 ? "the combine kernel" : "combine_sums_f4", diff,
+                    a.size());
+        bad_map += diff ? 1 : 0;
+    }
+    cudaFreeHost(h_map);
     for (float* p : {d_parts, d_w, d_shared, d_ysum, d_ones, d_a, d_b})
         cudaFree(p);
-    return bad ? 1 : 0;
+    return (bad ? 1 : 0) + bad_map;
 }
 
 int main() {

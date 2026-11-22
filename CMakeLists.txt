@@ -270,7 +270,8 @@ endif()
 # Only built when a GPU backend is on, so the Phase 1 targets keep working without a toolkit.
 if(GUILD_ENABLE_CUDA OR GUILD_ENABLE_HIP)
   add_library(guild_core STATIC src/core/device.cu src/core/pinned.cu src/platform/memory.cpp src/core/graph.cpp src/core/weights.cpp
-                               src/core/layout.cpp src/core/drama3_tower.cu src/core/glm5.cu src/core/nemotron_h.cu src/core/dflash.cu)
+                               src/core/layout.cpp src/core/drama3_tower.cu src/core/glm5.cu src/core/nemotron_h.cu src/core/dflash.cu
+                               src/core/verify_combine.cu)
   target_include_directories(guild_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
   if(GUILD_ENABLE_CUDA AND GUILD_EXPERIMENTAL_SM60)
     # the runtime device check (src/core/device.cu) admits the cards this build was made for (#236)
