@@ -42,6 +42,19 @@ uint64_t splitmix64(uint64_t x) {
     return x ^ (x >> 31);
 }
 
+// GUILD_DRAMA3_FUSE: unset or 1, every faster step path; 0, the separate kernels, the reference sampler and the file's
+// layout of before; letters pick parts (k: the fused small kernels, s: the fast sampler, a: the staged attention,
+// w: [w1|w3] as one matvec).  Each part gives the same bits as the path it replaces.
+bool fuse_part(char part) {
+    const char* fz = std::getenv("GUILD_DRAMA3_FUSE");
+    const std::string f = fz ? fz : "";
+    if (f.empty())
+        return true;
+    if (f.find_first_not_of("0123456789") == std::string::npos)
+        return f != "0";
+    return f.find(part) != std::string::npos;
+}
+
 bool cuda_ok(cudaError_t e, const char* what, std::string& err) {
     if (e == cudaSuccess)
         return true;
@@ -56,9 +69,8 @@ Drama3Tower::~Drama3Tower() {
         cudaFree(L.k_cache);
         cudaFree(L.v_cache);
     }
-    for (void* p :
-         {(void*) h_, (void*) e_, (void*) cat_, (void*) x_, (void*) xn_, (void*) qkv_, (void*) q_, (void*) att_,
-          (void*) proj_, (void*) ff1_, (void*) ff3_, (void*) logits_, (void*) part_, xq_, dense_})
+    for (void* p : {(void*) h_, (void*) e_, (void*) cat_, (void*) x_, (void*) xn_, (void*) qkv_, (void*) q_,
+                    (void*) att_, (void*) proj_, (void*) ff1_, (void*) logits_, (void*) part_, xq_, dense_})
         cudaFree(p);
     for (void* p : {(void*) bh_, (void*) be_, (void*) bcat_, (void*) bx_, (void*) bxn_, (void*) bqkv_, (void*) bq_,
                     (void*) batt_, (void*) bproj_, (void*) bff1_, (void*) bff3_, bxq_, (void*) bidx_})
@@ -188,6 +200,29 @@ bool Drama3Tower::load(const std::string& dir, int64_t max_frames, std::string& 
                      retyped.size(), file_size / 1048576.0, out.size() / 1048576.0);
         host.swap(out);
     }
+    // [w1|w3] (fuse_part w): the file holds each layer's w1, w2 and w3 in that order; with w3 moved to w2's place and
+    // w2 to w3's (the same bytes, the same VRAM), w1 and w3 are one matrix of 2 ffn rows, and the step computes both
+    // in one MMVQ call, each row summed alone as before (the native Q8_0 MMVQ's rows are independent:
+    // drama3_fuse_test).  Only the file's own Q8_0 matrices (not GUILD_DRAMA3_TOWER's).
+    if (fuse_part('w') && retyped.empty()) {
+        const int n_layers = g_.n_shared + g_.n_codebooks - 1;
+        for (int l = 0; l < n_layers; ++l) {
+            const std::string p = l < g_.n_shared ? "shared." + std::to_string(l) + "."
+                                                  : "residual." + std::to_string(l - g_.n_shared) + ".";
+            const auto i1 = index.find(p + "w1"), i2 = index.find(p + "w2"), i3 = index.find(p + "w3");
+            if (i1 == index.end() || i2 == index.end() || i3 == index.end())
+                continue;
+            Entry &e1 = i1->second, &e2 = i2->second, &e3 = i3->second;
+            if (e1.kind != "q8_0" || e2.kind != "q8_0" || e3.kind != "q8_0" || e1.bytes != e3.bytes ||
+                e2.bytes != e3.bytes || e1.offset + e1.bytes != e2.offset || e2.offset + e2.bytes != e3.offset ||
+                e3.offset + e3.bytes > host.size())
+                continue;
+            std::swap_ranges(host.begin() + (std::ptrdiff_t) e2.offset,
+                             host.begin() + (std::ptrdiff_t)(e2.offset + e2.bytes),
+                             host.begin() + (std::ptrdiff_t) e3.offset);
+            std::swap(e2.offset, e3.offset);
+        }
+    }
     const uint64_t size = host.size();
     if (!cuda_ok(cudaMalloc(&dense_, size), "dense weights", err) ||
         !cuda_ok(cudaMemcpy(dense_, host.data(), size, cudaMemcpyHostToDevice), "dense upload", err))
@@ -227,6 +262,10 @@ bool Drama3Tower::load(const std::string& dir, int64_t max_frames, std::string& 
             L.wo = mat(p + "wo", D, Q);
             L.w1 = mat(p + "w1", g_.ffn, D);
             L.w3 = mat(p + "w3", g_.ffn, D);
+            if (L.w1.type == kQ8_0 && L.w3.type == kQ8_0 &&
+                (const char*) L.w3.w ==
+                    (const char*) L.w1.w + guild::kernels::native_mmvq_weight_bytes(kQ8_0, D, g_.ffn))
+                L.w13 = Mat{L.w1.w, 2 * g_.ffn, D, kQ8_0};
             L.w2 = mat(p + "w2", D, g_.ffn);
         }
         for (int j = 0; j + 1 < g_.n_codebooks; ++j)
@@ -250,24 +289,18 @@ bool Drama3Tower::load(const std::string& dir, int64_t max_frames, std::string& 
     struct Buf {
         float** p;
         size_t n;
-    } bufs[] = {{&h_, (size_t) D},
-                {&e_, (size_t) D},
-                {&cat_, (size_t) 2 * D},
-                {&x_, (size_t) D},
-                {&xn_, (size_t) D},
-                {&qkv_, (size_t) (2 * Q + 2 * KV)},
-                {&q_, (size_t) Q},
-                {&att_, (size_t) Q},
-                {&proj_, (size_t) D},
-                {&ff1_, (size_t) g_.ffn},
-                {&ff3_, (size_t) g_.ffn},
-                {&logits_, (size_t) CS + 1},
-                {&part_, drama3::attn_part_floats(qs, max_frames)}};
+    } bufs[] = {{&h_, (size_t) D},           {&e_, (size_t) D},
+                {&cat_, (size_t) 2 * D},     {&x_, (size_t) D},
+                {&xn_, (size_t) D},          {&qkv_, (size_t) (2 * Q + 2 * KV)},
+                {&q_, (size_t) Q},           {&att_, (size_t) Q},
+                {&proj_, (size_t) D},        {&ff1_, (size_t) 2 * g_.ffn},
+                {&logits_, (size_t) CS + 1}, {&part_, drama3::attn_part_floats(qs, max_frames)}};
     for (const Buf& b : bufs) {
         if (!cuda_ok(cudaMalloc((void**) b.p, b.n * 4), "scratch", err))
             return false;
         vram_ += b.n * 4;
     }
+    ff3_ = ff1_ + g_.ffn;
     {
         const size_t P = kPrefillCols;
         struct PBuf {
@@ -316,17 +349,9 @@ bool Drama3Tower::load(const std::string& dir, int64_t max_frames, std::string& 
     const char* prio = std::getenv("GUILD_DRAMA3_PRIO");
     set_step_priority(!(prio && prio[0] == '0'));
 
-    // GUILD_DRAMA3_FUSE: unset or 1, every faster step path below; 0, the separate kernels of before; letters pick
-    // parts (k: the fused small kernels, s: the fast sampler, a: the staged attention).  Each part gives the same bits
-    // as the path it replaces.
+    // the faster step paths (fuse_part; [w1|w3] was laid out above)
     {
-        const char* fz = std::getenv("GUILD_DRAMA3_FUSE");
-        const std::string f = fz ? fz : "";
-        const bool letters = f.find_first_not_of("0123456789") != std::string::npos;
-        auto want = [&](char part) {
-            return f.empty() ? true : letters ? f.find(part) != std::string::npos : f != "0";
-        };
-        fuse_ = want('k') && g_.dim == drama3::kFusedDim &&
+        fuse_ = fuse_part('k') && g_.dim == drama3::kFusedDim &&
                 guild::kernels::native_q8_1_bytes(32, 1) == (size_t) drama3::kFusedQ81Bytes;
         std::string why;
         if (fuse_ && !fused_self_check(why)) {
@@ -335,11 +360,16 @@ bool Drama3Tower::load(const std::string& dir, int64_t max_frames, std::string& 
                          why.c_str());
             fuse_ = false;
         }
-        fast_sample_ = want('s') && drama3::sample_fast_ok();
-        fast_attn_ = want('a');
-        std::fprintf(stderr, "guild drama3: tower step: %s small kernels, %s sampler, %s attention\n",
-                     fuse_ ? "fused" : "separate", fast_sample_ ? "AVX-512" : "reference",
-                     fast_attn_ ? "staged" : "chunked");
+        fast_sample_ = fuse_part('s') && drama3::sample_fast_ok();
+        fast_attn_ = fuse_part('a');
+        int w13 = 0;
+        for (const Layer& L : layers_)
+            w13 += L.w13.w != nullptr && fuse_;
+        std::fprintf(
+            stderr,
+            "guild drama3: tower step: %s small kernels, %s sampler, %s attention, [w1|w3] in %d of %zu layers\n",
+            fuse_ ? "fused" : "separate", fast_sample_ ? "AVX-512" : "reference", fast_attn_ ? "staged" : "chunked",
+            w13, layers_.size());
     }
     return true;
 }
@@ -479,7 +509,8 @@ bool Drama3Tower::layer_forward(Layer& L, int row, const drama3::EmbedAdd& add, 
         if (!quantize(att_, xq_, Q, err, stream) || !mmvq(L.wo, xq_, proj_, err, stream))
             return false;
         drama3::add_norm_q8(x_, proj_, L.ffn_norm, eps, nullptr, xq_, st);
-        if (!mmvq(L.w1, xq_, ff1_, err, stream) || !mmvq(L.w3, xq_, ff3_, err, stream))
+        if (L.w13.w ? !mmvq(L.w13, xq_, ff1_, err, stream) // ff1_ then ff3_ = ff1_ + ffn
+                    : !mmvq(L.w1, xq_, ff1_, err, stream) || !mmvq(L.w3, xq_, ff3_, err, stream))
             return false;
         try {
             guild::kernels::native_swiglu_quantize_q8_1(ff1_, ff3_, xq_, g_.ffn, 1, stream);

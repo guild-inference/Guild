@@ -6,10 +6,10 @@
 // The fused small kernels (drama3_tower_kernels.hpp) against the separate ones they replace (add, rms_norm, embed and
 // guild-kernels-cuda's own native_quantize_q8_1, as linked, not a copy) on random rows, massive activations, zeros,
 // subnormal products and blocks past FP16's range; the staged attention against attention() at contexts across both
-// of its kernels; the fast sampler against the reference on synthetic logits (ties,
-// signed zeros, wide ranges, nine settings) and, given a GUILD_DRAMA3_DUMP_LOGITS file, on every row of it, plus its
-// exp against std::exp on a stride of all float patterns.  Exit 0 when everything matches, 1 on a difference, 77
-// without a GPU.
+// of its kernels; [w1|w3] as one 12288-row Q8_0 call against two 6144-row ones; the fast sampler against the reference
+// on synthetic logits (ties, signed zeros, wide ranges, nine settings) and, given a GUILD_DRAMA3_DUMP_LOGITS file, on
+// every row of it, plus its exp against std::exp on a stride of all float patterns.  Exit 0 when everything matches, 1
+// on a difference, 77 without a GPU.
 #include "guild/core/drama3_tower.hpp"
 #include "guild/core/drama3_tower_kernels.hpp"
 #include "guild/kernels/native_mmvq.hpp"
@@ -17,6 +17,7 @@
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -416,6 +417,40 @@ void test_attention(cudaStream_t st) {
                 bad ? "DIFFER" : "same  ", bad);
 }
 
+// ---- [w1|w3]: one 12288-row Q8_0 call against the two 6144-row calls (gkc's MMVQ sums every row alone)
+void test_w13(cudaStream_t st) {
+    const int D = 2048, F = 6144, rb = D / 32 * 34;
+    std::mt19937 rng(15);
+    std::normal_distribution<float> nd(0.0f, 1.0f);
+    std::vector<uint8_t> w((size_t) 2 * F * rb);
+    for (size_t b = 0; b < w.size() / 34; ++b) { // Q8_0 blocks: an FP16 scale and 32 int8
+        const __half d = __float2half(0.002f * (1.0f + 0.3f * nd(rng)));
+        std::memcpy(&w[b * 34], &d, 2);
+        for (int i = 0; i < 32; ++i)
+            w[b * 34 + 2 + i] = (uint8_t) (int8_t) std::max(-127.0f, std::min(127.0f, std::round(40.0f * nd(rng))));
+    }
+    Dev<uint8_t> dw(w.size());
+    dw.put(w);
+    const size_t qbytes = guild::kernels::native_q8_1_bytes(D, 1);
+    Dev<float> x(D), y0(2 * F), y1(2 * F);
+    Dev<unsigned char> xq(qbytes);
+    int bad = 0;
+    for (int t = 0; t < 20; ++t) {
+        std::vector<float> hx(D);
+        for (auto& e : hx)
+            e = nd(rng);
+        x.put(hx);
+        guild::kernels::native_quantize_q8_1(x.p, xq.p, D, 1, st);
+        CK(cudaMemset(y1.p, 0xff, (size_t) 2 * F * 4));
+        guild::kernels::native_mmvq(8, dw.p, xq.p, y0.p, D, F, 1, st);
+        guild::kernels::native_mmvq(8, dw.p + (size_t) F * rb, xq.p, y0.p + F, D, F, 1, st);
+        guild::kernels::native_mmvq(8, dw.p, xq.p, y1.p, D, 2 * F, 1, st);
+        bad += !same(y0.p, y1.p, (size_t) 2 * F * 4, "w13 trial " + std::to_string(t), true);
+    }
+    std::printf("%s [w1|w3] as one 12288-row Q8_0 call against two 6144-row calls: 20 trials, %d differ\n",
+                bad ? "DIFFER" : "same  ", bad);
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -434,6 +469,7 @@ int main(int argc, char** argv) {
     test_add_norm(st);
     test_embed_norm2(st);
     test_attention(st);
+    test_w13(st);
     test_sampler(argc > 1 ? argv[1] : nullptr);
     CK(cudaStreamDestroy(st));
     std::printf("%s\n", g_fail ? "FAIL" : "PASS");

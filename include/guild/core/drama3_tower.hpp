@@ -144,6 +144,7 @@ private:
         const float *enorm = nullptr, *hnorm = nullptr, *final_norm = nullptr, *attn_norm = nullptr,
                     *ffn_norm = nullptr, *q_norm = nullptr, *k_norm = nullptr;
         Mat eh_proj, wqkv, wo, w1, w2, w3;
+        Mat w13; ///< w1 and w3 as one matrix of 2 ffn rows (w3's rows right after w1's), or w == nullptr
         uint16_t *k_cache = nullptr, *v_cache = nullptr; // [max_frames][n_kv_head][head_dim] FP16
     };
     /// one layer of a step: its input embeds table row `row` (zeros when < 0) plus `add`; `head`: a head reads h_
@@ -186,11 +187,12 @@ private:
     void* prio_stream_ = nullptr; // step_begin's, at the greatest priority (set_step_priority)
     bool top_ = true;
     // GUILD_DRAMA3_FUSE (read in load; unset = all on, 0 = all off): the step's fused small kernels (k), the fast
-    // sampler (s), the staged attention (a)
+    // sampler (s), the staged attention (a); [w1|w3] (w) is each Layer's w13
     bool fuse_ = false, fast_sample_ = false, fast_attn_ = false;
     // device scratch
     float *h_ = nullptr, *e_ = nullptr, *cat_ = nullptr, *x_ = nullptr, *xn_ = nullptr, *qkv_ = nullptr, *q_ = nullptr,
           *att_ = nullptr, *proj_ = nullptr, *ff1_ = nullptr, *ff3_ = nullptr, *logits_ = nullptr, *part_ = nullptr;
+    // ff1_ holds 2 ffn floats and ff3_ = ff1_ + ffn: w13's output
     void* xq_ = nullptr;
     // the prompt's batch (kPrefillCols rows)
     float *bh_ = nullptr, *be_ = nullptr, *bcat_ = nullptr, *bx_ = nullptr, *bxn_ = nullptr, *bqkv_ = nullptr,
