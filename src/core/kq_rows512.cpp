@@ -13,7 +13,10 @@
 //
 // Ported from the round-18 scout prototype (kexp2.cpp z3pf): 2x Xeon Gold 6130, Drama 3's rows, one core:
 // Q4_K gate/up 11.89 -> 13.21 GB/s, Q4_K down 8.80 -> 11.03, Q6_K down 15.23 -> 22.37 at one token (ggml's dot);
-// 32 threads streaming: 199.6 -> 213.3, 176.3 -> 205.6, 209.2 -> 223.4 GB/s.
+// 32 threads streaming: 199.6 -> 213.3, 176.3 -> 205.6, 209.2 -> 223.4 GB/s.  In Drama 3 (the same PC, GTX 1070,
+// GUILD_CPU_PROFILE): the 32 pool threads' time a decode layer, summed, 2.88 -> 2.57 ms (-11%), the 86-row prompt
+// 492-513 -> 468-481 ms; but the decode layers' walls only 4.75 -> 4.74 ms a frame: 13 of the 40 layers (2, 3, 15,
+// 18, ..., 33, 36-39, the same ones in every run) got 5-9 us slower, the others up to 11 us faster (cause not known).
 #include "guild/core/kq_rows512.hpp"
 #include "guild/kernels/cpu/features.hpp"
 

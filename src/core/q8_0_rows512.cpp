@@ -11,7 +11,11 @@
 // ib + 1 of both rows assembled in one 64-bit register, converted by one vcvtph2ps and spread into the two blocks'
 // [row 0 | row 1] vectors by two vpermps, instead of two scalar conversions, two broadcasts and an insert a block.
 // fp16 -> fp32 is exact, so each lane holds the same float as before; the blocks are still taken in order and each
-// one's lanes computed as before, so the bits are the same.  An odd last block keeps the one-block build.
+// one's lanes computed as before, so the bits are the same.  An odd last block keeps the one-block build.  2x Xeon
+// Gold 6130, 32 threads streaming Nemotron's 2688-value rows: 168.8 -> 185.8 GB/s at 4 tokens, 193 -> 206 at 3, the
+// same ~210 at 1-2 (DRAM).  Nemotron 3.5 Transcribe (GTX 1070): prompt -3.6% (a 5 s clip 345.7 -> 333.4 ms, 30 s
+// 915.7 -> 881.9; -3.7% and -3.5% in a second A/B), decode -0.1 to -0.9% (two A/Bs, within noise): a 4-token verify
+// window spreads its 24 routings over ~22 experts, one token each.
 #include "guild/core/q8_0_rows512.hpp"
 #include "guild/kernels/cpu/features.hpp"
 

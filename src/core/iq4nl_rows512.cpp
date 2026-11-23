@@ -259,8 +259,11 @@ bool v2_on() {
 // loads.  2x Xeon Gold 6130, Qwen3.8-Flash-Next's down rows in 172-row tasks, six rows ahead against two: 196 -> 203
 // GB/s at one token and 148 -> 157 at two on 32 threads, 55.8 -> 60.3 and 42.4 -> 45.2 on 8; but in 64-row items in a
 // shuffled order (iq4nl_rows512_test --dram, IQ4NL_TEST_N=640) one token loses 2% (the six rows past an item's end
-// are read for nothing) and two gain 1%.  A prefetch has no architectural effect, so the bits are the same at any
-// distance.  GUILD_IQ4NL_PF (read once, 0-64; default 6, 2 the earlier distance).
+// are read for nothing) and two gain 1%.  The engine's down tasks are 256-640 rows: Qwen3.8-Flash-Next decode (GTX
+// 1070, with layer 2's IQ4_XS gate/up rows, GUILD_POOL_IQ4XS) took 28.17 -> 27.79 ms of CPU experts a prose window
+// and 33.87 -> 33.13 a code window in two alternated pairs, 28.20 -> 28.08 and 33.64 -> 33.22 in two more; tok/s
+// moved within noise (decode is GPU-bound on that PC).  A prefetch has no architectural effect, so the bits are the
+// same at any distance.  GUILD_IQ4NL_PF (read once, 0-64; default 6, 2 the earlier distance).
 int pf_rows() {
     static const int v = [] {
         const char* e = std::getenv("GUILD_IQ4NL_PF");
