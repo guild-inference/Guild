@@ -2158,8 +2158,8 @@ bool dense_grow(void** p, size_t& have, size_t need) {
     have = need;
     return true;
 }
-// d.x32 holds the T x K activations; Y[T, N] = x . W^T with W `type` blocks at `w`
-bool dense_mmq_run(Gemm& gm, const void* w, int type, float* Y, int64_t T, int64_t N, int64_t K) {
+// d.x32 holds the T x K activations: their q8_1 rows for `type` into d.xq, with the bounds and the row map
+bool dense_mmq_quantize(Gemm& gm, int type, int64_t T, int64_t K) {
     DenseMmq& d = dense_mmq_state();
     const auto s = (cudaStream_t) gm.stream();
     const size_t ident_had = d.ident_bytes;
@@ -2174,6 +2174,12 @@ bool dense_mmq_run(Gemm& gm, const void* w, int type, float* Y, int64_t T, int64
     if (cudaMemcpyAsync(d.bounds, b, sizeof b, cudaMemcpyHostToDevice, s) != cudaSuccess)
         return false;
     mmq::quantize(d.x32, nullptr, d.xq, type, K, K, T, s);
+    return true;
+}
+// Y[T, N] = x . W^T with W `type` blocks at `w`, from d.xq (dense_mmq_quantize)
+void dense_mmq_product(Gemm& gm, const void* w, int type, float* Y, int64_t T, int64_t N, int64_t K) {
+    DenseMmq& d = dense_mmq_state();
+    const auto s = (cudaStream_t) gm.stream();
     mmq::Product p;
     p.w = w;
     p.type = type;
@@ -2189,6 +2195,12 @@ bool dense_mmq_run(Gemm& gm, const void* w, int type, float* Y, int64_t T, int64
     p.dst = Y;
     p.ld_dst = N;
     d.ctx->run(p, s);
+}
+// d.x32 holds the T x K activations; Y[T, N] = x . W^T with W `type` blocks at `w`
+bool dense_mmq_run(Gemm& gm, const void* w, int type, float* Y, int64_t T, int64_t N, int64_t K) {
+    if (!dense_mmq_quantize(gm, type, T, K))
+        return false;
+    dense_mmq_product(gm, w, type, Y, T, N, K);
     return true;
 }
 constexpr int kGgmlQ8_0 = 8; // GGML_TYPE_Q8_0
@@ -2225,6 +2237,60 @@ bool native_proj(Gemm& gm, const core::WeightRef* w, const uint16_t* X, float* Y
         dense_mmq_slices(gm, w->native_data, w->native_type, X, nullptr, false, Y, T, w->ne1, w->ne0))
         return true;
     gemm_native(gm, X, w->native_type, w->native_data, Y, T, w->ne1, w->ne0, ldy);
+    return true;
+}
+// pf-dense-xq: products of the same FP16 rows X - the GDN's qkv and gate, QSA's k, v and q, the shared expert's gate
+// and up - convert and quantize each kDenseSlice-row slice of X once for all of them, when every one would take dense
+// MMQ (native_proj's test) with the same type: the q8_1 rows are a function of each row's FP32 values and the type, so
+// every product multiplies the bytes it did.  Otherwise native_proj for each (here QSA's k, v and q: not one type).
+// GTX 1070, UD-IQ4_XS, 2 pairs, the same tokens: 6,007 / 7,599-token chunks 20.92 / 24.12 s -> 20.84 / 24.04 s (the
+// GDN projections -30 / -39 ms, router+shared -42 / -53 ms).  GUILD_PREFILL_SHARE_XQ=0: native_proj for each (the A/B).
+struct NativeOut {
+    const core::WeightRef* w;
+    float* y;
+    const char* name;
+};
+bool native_proj_multi(Gemm& gm, const NativeOut* o, int n, const uint16_t* X, int64_t T, const core::LayerView& v,
+                       std::string& err) {
+    static const bool share = [] {
+        const char* e = std::getenv("GUILD_PREFILL_SHARE_XQ");
+        return e == nullptr || e[0] != '0';
+    }();
+    const core::WeightRef* w0 = o[0].w;
+    bool same = share && dense_mmq_on() && n > 1;
+    for (int i = 0; same && i < n; ++i) {
+        const core::WeightRef* w = o[i].w;
+        same = w->native_data && w->native_type == w0->native_type && w->ne0 == w0->ne0 && w->ne0 % 256 == 0 &&
+               mmq::fits(w->native_type, w->ne1);
+    }
+    if (same && dense_mmq_x32(std::min(T, kDenseSlice) * w0->ne0)) {
+        if (static bool said = false; !said) {
+            said = true;
+            std::fprintf(stderr,
+                         "guild prefill: dense MMQ products of the same rows quantize them once (%s and %d more, "
+                         "type %d; GUILD_PREFILL_SHARE_XQ=0: each its own)\n",
+                         o[0].name, n - 1, w0->native_type);
+        }
+        const int64_t K = w0->ne0;
+        for (int64_t t0 = 0; t0 < T; t0 += kDenseSlice) {
+            const int64_t r = std::min(kDenseSlice, T - t0);
+            f16_to_f32(X + t0 * K, dense_mmq_state().x32, r * K, gm.stream());
+            if (!dense_mmq_quantize(gm, w0->native_type, r, K)) {
+                if (t0 == 0)
+                    break; // no buffers: each its own product (below)
+                err = "prefill: dense MMQ buffers lost mid-product";
+                return false;
+            }
+            for (int i = 0; i < n; ++i)
+                dense_mmq_product(gm, o[i].w->native_data, w0->native_type, o[i].y + t0 * o[i].w->ne1, r, o[i].w->ne1,
+                                  K);
+            if (t0 + r >= T)
+                return true;
+        }
+    }
+    for (int i = 0; i < n; ++i)
+        if (!native_proj(gm, o[i].w, X, o[i].y, T, v.name(o[i].name), err))
+            return false;
     return true;
 }
 // `hc16` (with `cs`): a hyper-connection matrix held as the GGUF's Q8_0 blocks (--hc q8_0) is first written there as
@@ -3006,9 +3072,8 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                     pt.mark(kPfGdn, cs);
                     float* state = ss.gdn_state + (size_t) (gdn_index - ss.gdn_ord0) * gdn_floats;
                     float* conv = state + (uint64_t) g.ssm_state_size * g.ssm_v_heads * g.ssm_state_size;
-                    if (!native_proj(m.gemm, wqkv, m.mixed_h, m.qkv, T, v.name("attn_qkv.weight"), err))
-                        return false;
-                    if (!native_proj(m.gemm, wg, m.mixed_h, m.z, T, v.name("attn_gate.weight"), err))
+                    const NativeOut gdn_in[2] = {{wqkv, m.qkv, "attn_qkv.weight"}, {wg, m.z, "attn_gate.weight"}};
+                    if (!native_proj_multi(m.gemm, gdn_in, 2, m.mixed_h, T, v, err))
                         return false;
                     if (!bf16_proj(m.gemm, wa, m.mixed_bf, m.ab, T, v.name("ssm_alpha.weight"), err, 2 * HV,
                                    m.mixed_bf_lo))
@@ -3040,11 +3105,9 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                     if (!wq || !wk || !wv || !wo || !wik || !wiq || !wqn || !wkn || !wiqn || !wikn)
                         return false;
                     pt.mark(kPfQsa, cs);
-                    if (!native_proj(m.gemm, wk, m.mixed_h, m.Kc, T, v.name("attn_k.weight"), err))
-                        return false;
-                    if (!native_proj(m.gemm, wv, m.mixed_h, m.Vc, T, v.name("attn_v.weight"), err))
-                        return false;
-                    if (!native_proj(m.gemm, wq, m.mixed_h, m.Qf, T, v.name("attn_q.weight"), err))
+                    const NativeOut qsa_in[3] = {
+                        {wk, m.Kc, "attn_k.weight"}, {wv, m.Vc, "attn_v.weight"}, {wq, m.Qf, "attn_q.weight"}};
+                    if (!native_proj_multi(m.gemm, qsa_in, 3, m.mixed_h, T, v, err))
                         return false;
                     if (!bf16_proj(m.gemm, wik, m.mixed_bf, m.idx_raw, T, v.name("indexer.k_proj.weight"), err, 0,
                                    m.mixed_bf_lo))
@@ -3336,9 +3399,9 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                     route(m.logits, m.ids, m.w, T, m.g->n_expert, m.cs);
                     // the shared expert and its scalar gate (own buffers in the MoE scratch; read by the combine)
                     auto shared_expert = [&]() -> bool {
-                        if (!native_proj(m.gemm, wsg, m.mixed_h, m.sgate, T, v.name("ffn_gate_shexp.weight"), err))
-                            return false;
-                        if (!native_proj(m.gemm, wsu, m.mixed_h, m.sup, T, v.name("ffn_up_shexp.weight"), err))
+                        const NativeOut sh_in[2] = {{wsg, m.sgate, "ffn_gate_shexp.weight"},
+                                                    {wsu, m.sup, "ffn_up_shexp.weight"}};
+                        if (!native_proj_multi(m.gemm, sh_in, 2, m.mixed_h, T, v, err))
                             return false;
                         swiglu_pair(m.sgate, m.sup, m.sh_h, T, m.cs);
                         if (!native_proj(m.gemm, wsd, m.sh_h, m.shared, T, v.name("ffn_down_shexp.weight"), err))
