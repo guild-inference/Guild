@@ -336,6 +336,17 @@ inline bool tail_bufs_on() {
 // the tail lent (2 pairs, the same tokens), streamed / routed: 1,507 tokens 8.82-8.90 / 8.82-8.83 s, 2,007 9.45-9.46 /
 // 10.34-10.39, 3,007 11.73-11.74 / 13.23-13.29, 4,007 14.46-14.55 / 16.13-16.18.
 constexpr int kTailWalkRing = 192;
+// ...and a chunk lends its tails only when it then takes the streamed walk (the routed walk uses STAGE slots: lending
+// to it only re-carved the region and fenced the two streams; GTX 1070, the 4608-token layout, 2 alternated pairs, the
+// same tokens: 2,200-4,090-token chunks routed 0.0-0.3% faster without).  GUILD_PREFILL_TAIL_LEND_STREAMED=0: every
+// chunk of tail_stream_min() tokens or more lends them.
+inline bool tail_lend_streamed() {
+    static const bool on = [] {
+        const char* e = std::getenv("GUILD_PREFILL_TAIL_LEND_STREAMED");
+        return e == nullptr || e[0] != '0';
+    }();
+    return on;
+}
 inline int64_t tail_stream_min() {
     static const int64_t v = [] {
         const char* e = std::getenv("GUILD_PREFILL_TAIL_STREAM_MIN");
@@ -2726,13 +2737,17 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
     // stride) reads its experts in place; one that does not keeps the group buffers.  Before either stream takes
     // this chunk's work.
     auto lay_out = [&](int64_t T) -> bool {
-        const bool tail = tail_ok && T < m.T && (T >= tail_stream_min() || T >= stream_chunk_min());
-        const int64_t lt = tail ? T : m.T; // the tokens to lay the region out for
+        bool tail = tail_ok && T < m.T && (T >= tail_stream_min() || T >= stream_chunk_min());
         bool zc = false;
         if (zc_ok) {
-            const int r = ring_for(lt, true);
+            const int r = ring_for(tail ? T : m.T, true);
             zc = streams(T, r, r - (m.ring_owned + MMQ_GROUP));
         }
+        if (tail && !zc && tail_lend_streamed()) { // lent only to a chunk that then streams
+            const int r = ring_for(T, false);
+            tail = streams(T, r, r - m.ring_owned);
+        }
+        const int64_t lt = tail ? T : m.T; // the tokens to lay the region out for
         if (lt == m.region_T && lt == m.T && zc == m.zc_mode)
             return true; // as carved: nothing lent
         // the copy stream waits for the compute stream's work so far: the lent memory held its buffers (the previous
