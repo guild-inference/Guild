@@ -102,6 +102,40 @@ struct Q81 {
 };
 static_assert(sizeof(Q81) == kFusedQ81Bytes, "the Q8_1 block of the native MMVQ");
 namespace fm {
+#if defined(GUILD_USE_HIP) || defined(GUILD_HIP_GFX906) || defined(__HIPCC__) || defined(__HIP_PLATFORM_AMD__)
+// HIP: these PTX instructions are NVIDIA's.  The fused kernels stay off there (fuse_part in drama3_tower.cpp), so
+// plain operations stand in only for the file to compile (add_rz here rounds to nearest, not toward zero).
+__device__ __forceinline__ float abs(float x) {
+    return fabsf(x);
+}
+__device__ __forceinline__ float max(float a, float b) {
+    return fmaxf(a, b);
+}
+__device__ __forceinline__ float add(float a, float b) {
+    return a + b;
+}
+__device__ __forceinline__ float div(float a, float b) {
+    return a / b;
+}
+__device__ __forceinline__ float add_rz(float a, float b) {
+    return a + b;
+}
+__device__ __forceinline__ float trunc(float a) {
+    return truncf(a);
+}
+__device__ __forceinline__ bool gt(float a, float b) {
+    return a > b;
+}
+__device__ __forceinline__ bool lt(float a, float b) {
+    return a < b;
+}
+__device__ __forceinline__ bool eq(float a, float b) {
+    return a == b;
+}
+__device__ __forceinline__ int to_int(float a) {
+    return (int) a;
+}
+#else
 __device__ __forceinline__ float abs(float x) {
     float r;
     asm("abs.ftz.f32 %0, %1;" : "=f"(r) : "f"(x));
@@ -152,6 +186,7 @@ __device__ __forceinline__ int to_int(float a) {
     asm("cvt.rzi.ftz.s32.f32 %0, %1;" : "=r"(r) : "f"(a));
     return r;
 }
+#endif
 __device__ __forceinline__ float copysign(float mag_bits_of, float sign_of) {
     return __int_as_float((__float_as_int(sign_of) & (int) 0x80000000) | __float_as_int(mag_bits_of));
 }

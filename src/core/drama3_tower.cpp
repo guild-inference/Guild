@@ -46,8 +46,13 @@ uint64_t splitmix64(uint64_t x) {
 // before; letters pick parts (k: the fused small kernels, s: the fast sampler, a: the staged attention, w: [w1|w3] as
 // one matvec, f: a and w in step_finish's layers too).  Without f, a and w run in step_begin's layers only, the
 // critical path (the backbone waits for them); in every layer they shortened the tower step but lengthened the
-// backbone step beside step_finish about as much.  Each part gives the same bits as the path it replaces.
+// backbone step beside step_finish about as much.  Each part gives the same bits as the path it replaces.  The HIP
+// builds take s only: the GPU parts are measured on CUDA, and the fused kernels' Q8_1 stage is NVIDIA's PTX.
 bool fuse_part(char part) {
+#if defined(GUILD_USE_HIP) || defined(GUILD_HIP_GFX906)
+    if (part != 's')
+        return false;
+#endif
     const char* fz = std::getenv("GUILD_DRAMA3_FUSE");
     std::string f = fz ? fz : "";
     if (f.find_first_not_of("0123456789") == std::string::npos) // unset or a number

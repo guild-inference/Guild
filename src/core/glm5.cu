@@ -50,6 +50,21 @@ __device__ __forceinline__ float q8_1_finite_(float v) { // guild::kernels::q8_1
 // roundf as a round-toward-zero add of +-0.5 and a truncation, the clamp and the flush-to-zero conversion); each
 // Q8_1 block is 36 bytes (ds, then 32 int8).  Every lane of the warp calls it.
 __device__ __forceinline__ void q8_1_warp(float xi, uint8_t* blk, int lane) {
+#if defined(GUILD_USE_HIP) || defined(GUILD_HIP_GFX906) || defined(__HIPCC__) || defined(__HIP_PLATFORM_AMD__)
+    // HIP: the PTX below is NVIDIA's, so the same block in plain operations (roundf, then the clamp to +-127)
+    float amax = fabsf(xi), sum = xi;
+#pragma unroll
+    for (int k = 16; k > 0; k >>= 1) {
+        amax = fmaxf(amax, __shfl_xor_sync(0xffffffffu, amax, k));
+        sum += __shfl_xor_sync(0xffffffffu, sum, k);
+    }
+    const float d = q8_1_finite_(amax / 127.0f);
+    int q = 0;
+    if (amax != 0.0f) {
+        const float t = roundf(xi / d);
+        q = (int) (t > 127.0f ? 127.0f : t < -127.0f ? -127.0f : t);
+    }
+#else
     float amax, sum = xi, o;
     asm("abs.ftz.f32 %0, %1;" : "=f"(amax) : "f"(xi));
 #pragma unroll
@@ -75,6 +90,7 @@ __device__ __forceinline__ void q8_1_warp(float xi, uint8_t* blk, int lane) {
         t = t > 127.0f ? 127.0f : t < -127.0f ? -127.0f : t; // t is integral (or NaN): no flush to tell apart
         asm("cvt.rzi.ftz.s32.f32 %0, %1;" : "=r"(q) : "f"(t));
     }
+#endif
     blk[4 + lane] = (uint8_t) q;
     if (lane == 0)
         *reinterpret_cast<__half2*>(blk) = make_half2(__float2half(q8_1_finite_(d)), __float2half(q8_1_finite_(sum)));
