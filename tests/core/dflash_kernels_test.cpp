@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -24,8 +25,6 @@
 #include <random>
 #include <string>
 #include <vector>
-
-#include <unistd.h>
 
 using namespace guild::core;
 
@@ -354,6 +353,18 @@ void test_norm_rope(std::mt19937& rng) {
     std::printf("head_norm_rope: 8 heads of 128 at positions near 5000 match (max error %.2g)\n", e);
 }
 
+// an environment variable for what follows (null: none)
+void set_env(const char* name, const char* value) {
+#ifdef _WIN32
+    _putenv_s(name, value != nullptr ? value : "");
+#else
+    if (value != nullptr)
+        setenv(name, value, 1);
+    else
+        unsetenv(name);
+#endif
+}
+
 // a bf16 value, rounded to nearest even
 uint16_t to_bf16(float f) {
     uint32_t u;
@@ -439,8 +450,10 @@ void write_checkpoint(const std::string& dir, std::mt19937& rng, int V) {
 void test_shared_head(std::mt19937& rng, bool int8_weights) {
     const int V = 4098; // even (two rows a task in k4_mm) but not a multiple of 4, as Qwen's 163778-token head
     const int H = 512, n_feat = 2;
-    const std::string dir =
-        (std::filesystem::temp_directory_path() / ("guild_dflash_test_" + std::to_string((long) getpid()))).string();
+    const std::string dir = (std::filesystem::temp_directory_path() /
+                             ("guild_dflash_test_" + std::to_string(std::random_device{}()) + "_" +
+                              std::to_string(std::chrono::steady_clock::now().time_since_epoch().count())))
+                                .string();
     std::filesystem::create_directories(dir);
     write_checkpoint(dir, rng, V);
     std::normal_distribution<float> nd(0.f, 1.f);
@@ -457,15 +470,15 @@ void test_shared_head(std::mt19937& rng, bool int8_weights) {
     t.head_type = (int) GGML_TYPE_F16;
     t.head_row_bytes = (size_t) H * 2;
     t.n_vocab = V;
-    t.embed = [d_emb](int32_t token, float* out, void* st) {
-        cudaMemcpyAsync(out, d_emb + (size_t) token * H, (size_t) H * 4, cudaMemcpyDeviceToDevice, (cudaStream_t) st);
+    t.embed = [d_emb, row = (size_t) H](int32_t token, float* out, void* st) {
+        cudaMemcpyAsync(out, d_emb + (size_t) token * row, row * 4, cudaMemcpyDeviceToDevice, (cudaStream_t) st);
     };
     if (int8_weights)
-        setenv("GUILD_DFLASH_WEIGHTS", "int8", 1);
+        set_env("GUILD_DFLASH_WEIGHTS", "int8");
     DFlashDrafter d;
     std::string err;
     const bool loaded = d.load(dir, t, "", err);
-    unsetenv("GUILD_DFLASH_WEIGHTS");
+    set_env("GUILD_DFLASH_WEIGHTS", nullptr);
     std::filesystem::remove_all(dir);
     if (!loaded)
         std::fprintf(stderr, "dflash load: %s\n", err.c_str());
