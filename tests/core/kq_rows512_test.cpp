@@ -56,7 +56,7 @@ void randomize(std::mt19937& rng, uint8_t* p, size_t bytes, int type) {
     }
 }
 
-// pool_rows512(base) against base: gate_up and down of one random expert of format (gu, d, n_embd, n_ff)
+// pool_rows512(base, false) against base: gate_up and down of one random expert of format (gu, d, n_embd, n_ff)
 int check_table(const guild_cpu_expert_ext_v1_t& base, const guild_cpu_expert_ext_v1_t& wrapped, int gu, int d,
                 int n_embd, int n_ff, std::mt19937& rng, int& checked) {
     namespace cpu = guild::kernels::cpu;
