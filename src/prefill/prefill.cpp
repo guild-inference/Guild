@@ -1191,7 +1191,8 @@ uint64_t region_need(size_t T, int64_t n_expert, bool fused, int64_t cap, int64_
 // 8192 tokens, 2 alternated pairs, the same tokens: 2,007 / 3,007 / 4,007 / 6,007 / 7,599-token prompts 9.41 / 11.43 /
 // 14.31 / 20.22 / 24.14 s -> 8.01 / 9.75 / 12.45 / 18.38 / 23.18 s, 31,917 tokens 105.7 -> 102.1 s (there the 48-slot
 // ring is copy-bound: 'wait copy' 2.4 -> 4.3 s, the gather's 2.8 s gone); 1,007 unchanged (routed).
-// GUILD_PREFILL_ZERO_COPY=0: the ring and the group buffers as before, and the gather.
+// GUILD_PREFILL_ZERO_COPY=0: the ring and the group buffers as before, and the gather (pf-tail-ring's whole path with
+// GUILD_PREFILL_TAIL_LEND_STREAMED=0 too: that switch's rule holds either way).
 inline bool zero_copy_on() {
     static const bool on = [] {
         const char* e = std::getenv("GUILD_PREFILL_ZERO_COPY");
@@ -1311,6 +1312,9 @@ bool Prefill::init(const core::WeightTable& wt, const core::ModelGeometry& g, co
     for (cudaEvent_t* e : {&m.tail_cs, &m.tail_cp})
         if (!*e && cudaEventCreateWithFlags(e, cudaEventDisableTiming) != cudaSuccess)
             ok = false;
+    // pf-zero-copy: carve's condition for the ring's zero-copy block - only then do the Stager's DMAs carry a blob's
+    // zero tail (every other layout copies the blobs alone, as before)
+    const bool zc_carve = zc_layout(T) && !m.borrowed && next_ == nullptr && stage_lb_ == 0;
     if (!m.stager) {
         m.stager = std::make_unique<Stager>();
         const int hw = (int) std::thread::hardware_concurrency();
@@ -1325,7 +1329,7 @@ bool Prefill::init(const core::WeightTable& wt, const core::ModelGeometry& g, co
         const int threads = stv ? std::clamp(std::atoi(stv), 1, 32) : files ? 32 : std::clamp(hw / 2, 4, 32);
         if (files && std::getenv("GUILD_STAGER_RING") == nullptr)
             m.stager->kRing = 4 * threads;
-        const size_t zt = zero_copy_on() ? kZcTail : 0; // pf-zero-copy: a DMA carries a blob's zero tail
+        const size_t zt = zc_carve ? kZcTail : 0; // pf-zero-copy: a DMA carries a blob's zero tail
         if (!m.stager->init((size_t) MAXBLOB() + zt, threads, zt))
             ok = false;
     }
