@@ -2771,8 +2771,14 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
         // gathered
         if (cudaEventRecord(m.tail_cs, m.cs) != cudaSuccess || cudaStreamWaitEvent(m.copy, m.tail_cs, 0) != cudaSuccess)
             return false;
-        if (lt == m.region_T && zc == m.zc_mode)
-            return true; // laid out for this T already (an earlier request): the same buffers and slots
+        if (lt == m.region_T && zc == m.zc_mode) {
+            // laid out for this T already (an earlier request): the same buffers and slots, but what lies past a blob
+            // in a lent slot is not known any more (on_chunk's draft layer, draft_kv, carves its batches from the
+            // whole region), so a pinned DMA into one zeroes its tail again (stage_copy)
+            for (int i = m.ring - m.ring_lent; i < m.ring; ++i)
+                m.ztail[i] = 0;
+            return true;
+        }
         // ...and the compute stream for the copies so far: the new layout's buffers (or the group buffers) may cover
         // the slots they fill
         if (cudaEventRecord(m.tail_cp, m.copy) != cudaSuccess || cudaStreamWaitEvent(m.cs, m.tail_cp, 0) != cudaSuccess)
