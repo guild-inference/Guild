@@ -44,6 +44,10 @@ struct GuildBatch::Impl {
     // evenly as fits, a slot's rows its token and its drafts (GUILD_BATCH_DRAFT_SLOTS, GUILD_BATCH_ROWS; 0: none)
     bool dflash_sets = false;
     int draft_slots = 0, draft_rows = 0;
+    // the drafting slots' blocks through the drafter's layers one after another, then one pass of its head over all
+    // their rows and one wait (DFlashDrafter::draft_slots: the same drafts, bit for bit), else a draft() a slot
+    // (GUILD_BATCH_DFLASH_SHARED_HEAD=0)
+    bool shared_head = true;
     // the windows since the slots were last all idle (take_report)
     int64_t windows = 0, rows = 0, tokens = 0, offered = 0, accepted = 0;
     double run_ms = 0, commit_ms = 0, draft_ms = 0, pool0 = 0, wait0 = 0;
@@ -173,6 +177,15 @@ struct GuildBatch::Impl {
         int nrows[kMax] = {};
         int32_t drafts[kMax][kMax] = {};
         const bool drafting = d != nullptr && n_act <= draft_slots && draft_rows > n_act;
+        // a whole block, as the solo path drafts it (its first r - 1 drafts are this slot's rows);
+        // GUILD_BATCH_DRAFT_BLOCK=rows: a block of the slot's rows only (a cheaper pass, other drafts: the block's
+        // queries see one another)
+        static const bool block_of_rows = [] {
+            const char* v = std::getenv("GUILD_BATCH_DRAFT_BLOCK");
+            return v != nullptr && std::string(v) == "rows";
+        }();
+        core::DFlashDrafter::SlotDraft jobs[kMax];
+        int n_jobs = 0;
         const auto td0 = Clock::now();
         for (int i = 0; i < n_act; ++i) {
             Slot& sl = slots[(size_t) act[i]];
@@ -185,29 +198,32 @@ struct GuildBatch::Impl {
                 if (trace)
                     std::fprintf(stderr, "guild batch: slot %d drafts %d at %lld from set %d (context to %lld)\n",
                                  act[i], r - 1, (long long) sl.p, d->context_in_use(), (long long) d->context_end());
-                // a whole block, as the solo path drafts it (its first r - 1 drafts are this slot's rows);
-                // GUILD_BATCH_DRAFT_BLOCK=rows: a block of the slot's rows only (a cheaper pass, other drafts: the
-                // block's queries see one another)
-                static const bool block_of_rows = [] {
-                    const char* v = std::getenv("GUILD_BATCH_DRAFT_BLOCK");
-                    return v != nullptr && std::string(v) == "rows";
-                }();
-                float probs[kMax] = {};
-                int32_t block[kMax] = {};
-                const bool drafted = d->context_end() == sl.p && d->draft(sl.x, sl.p, block_of_rows ? r : d->block(),
-                                                                          block, probs, m->dflash_stream, err);
-                for (int j = 0; drafted && j < r - 1; ++j)
-                    drafts[i][j] = block[j];
-                if (!drafted) {
-                    if (d->context_end() == sl.p) {
+                if (d->context_end() != sl.p) {
+                    r = 1; // its context fell behind (a stale set): no drafts for it this window
+                } else if (shared_head) {
+                    core::DFlashDrafter::SlotDraft& job = jobs[n_jobs++];
+                    job.set = 1 + act[i];
+                    job.anchor = sl.x;
+                    job.start = sl.p;
+                    job.B = block_of_rows ? r : d->block();
+                    job.n = r - 1;
+                    job.drafts = drafts[i];
+                } else {
+                    float probs[kMax] = {};
+                    int32_t block[kMax] = {};
+                    if (!d->draft(sl.x, sl.p, block_of_rows ? r : d->block(), block, probs, m->dflash_stream, err)) {
                         m->ready->store(false);
                         return false;
                     }
-                    err.clear(); // its context fell behind (a stale set): no drafts for it this window
-                    r = 1;
+                    for (int j = 0; j < r - 1; ++j)
+                        drafts[i][j] = block[j];
                 }
             }
             nrows[i] = std::max(1, r);
+        }
+        if (n_jobs > 0 && !d->draft_slots(jobs, n_jobs, m->dflash_stream, err)) {
+            m->ready->store(false);
+            return false;
         }
         draft_ms += ms_between(td0, Clock::now());
         if (!phase_ok("drafts", err))
@@ -338,6 +354,7 @@ GuildBatch::GuildBatch(GuildSession* session) : impl_(std::make_unique<Impl>()) 
         };
         impl_->draft_slots = env_int("GUILD_BATCH_DRAFT_SLOTS", 3);
         impl_->draft_rows = std::min(env_int("GUILD_BATCH_ROWS", kernels::kVerifyMaxT), kernels::kVerifyMaxT);
+        impl_->shared_head = env_int("GUILD_BATCH_DFLASH_SHARED_HEAD", 1) != 0;
     }
 }
 
