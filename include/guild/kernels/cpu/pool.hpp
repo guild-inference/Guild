@@ -426,7 +426,42 @@ private:
     // (kIdle, kWaitParked, kWaitDone, or its job), printed by the serve watchdog through `diag`
     static constexpr int32_t kParked = -1, kSleeping = -2, kBetween = -3, kIdle = -10, kWaitParked = -11,
                              kWaitDone = -12;
+    // A worker writes its state at wake, at every claim and at park.  With `ack_` (GUILD_POOL_ACK=1, below) the
+    // states are kWStride ints apart, each on a cache line of its own: adjacent, 31 workers' states share two lines,
+    // and every claim pulls a line other workers are writing (both sockets).  By default (`ack_` false) they are
+    // adjacent.  The padding's own effect was not measured: it was only ever measured together with the acks.
+    static constexpr size_t kWStride = 64 / sizeof(std::atomic<int32_t>);
     std::unique_ptr<std::atomic<int32_t>[]> wstate_;
+    size_t wstride_ = 1;
+    std::atomic<int32_t>& wstate(int i) {
+        return wstate_[(size_t) i * wstride_];
+    }
+    const std::atomic<int32_t>& wstate(int i) const {
+        return wstate_[(size_t) i * wstride_];
+    }
+    // THE PARK COUNT AS ACKS (GUILD_POOL_ACK=1, read once; OFF by default).  With `ack_`, a worker adds 1 to
+    // `parked_` when it starts and 1 each time it parks after draining an epoch, and does not subtract at wake: all
+    // n_ workers are parked after epoch e when `parked_ == n_ * (e + 1)` (both mod 2^32: the host waits for that
+    // before every publish, so no worker can skip an epoch, and n * (e mod 2^32) == n * e mod 2^32).  That is one
+    // locked add on the line every worker and the host share per worker and phase instead of two.  `ack_` false (the
+    // default): a subtract at wake and an add at park, and the host waits for `parked_ == n_`.
+    //
+    // **WHY THE ACKS ARE OFF: WITH THEM THE HOST WAITS FOR EVERY WORKER TO ACK EVERY EPOCH.**  A worker the OS has
+    // descheduled, or one asleep after `kSpinBeforeSleep` (between requests, and mid-request with most experts in
+    // VRAM), then holds up the whole layer until it runs again; without acks a worker that has not left the park
+    // counts as parked and holds up nothing.  2x Xeon Gold 6130 + GTX 1070, 31 workers, one binary with and without
+    // acks: with two busy loops pinned to two workers' CPUs, Drama 3 21.3 and 16.2 against 41.6 and 40.5 frames/s and
+    // Qwen3.8-Flash-Next 21.1 / 26.1 against 36.1 / 43.0 tok/s (prose / code); a task busy 2 ms every 20 ms on one
+    // worker's CPU, Drama 3 -2.9%; the workers sleeping between frames (GUILD_POOL_SPIN_US=1000), -1.3%.  A PC with
+    // no free SMT sibling (SMT off, 6-core 6-thread parts, VMs) or running a parallel build is in the first case.
+    // On the idle machine Drama 3's 40 pool calls a frame took 4.74-4.75 ms with acks against 4.88-4.90 without
+    // (GUILD_CPU_PROFILE), but four frames/s pairs did not resolve a gain (+0.21, +0.13, -0.95, +0.61 frames/s).
+    bool ack_ = false;
+    /// Workers parked for the current epoch (diagnostics; racy reads).
+    uint32_t parked_now() const {
+        const uint32_t p = parked_.load(std::memory_order_relaxed);
+        return ack_ ? p - (uint32_t) n_ * epoch_.load(std::memory_order_relaxed) : p;
+    }
     // The host writes these on every job it claims: not on the line of `wstate_`, which every worker reads at every
     // claim.
     alignas(64) std::atomic<int32_t> hstate_{kIdle};
