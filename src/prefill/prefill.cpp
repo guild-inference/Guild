@@ -330,12 +330,24 @@ inline bool tail_bufs_on() {
     }();
     return on;
 }
-// ...and a chunk below stream_chunk_min() whose tails lent the ring at least kTailWalkRing slots takes the streamed
+// ...and a chunk below stream_chunk_min() whose tails lent the ring at least tail_walk_ring() slots takes the streamed
 // walk from this many tokens on (GUILD_PREFILL_TAIL_STREAM_MIN); below it the routed walk, which copies only the
 // routed experts (~370 of 512 a layer at 1K: the streamed walk measured 11-14% slower there).  GTX 1070, UD-IQ4_XS,
 // the tail lent (2 pairs, the same tokens), streamed / routed: 1,507 tokens 8.82-8.90 / 8.82-8.83 s, 2,007 9.45-9.46 /
 // 10.34-10.39, 3,007 11.73-11.74 / 13.23-13.29, 4,007 14.46-14.55 / 16.13-16.18.
-constexpr int kTailWalkRing = 192;
+// That ring is 192 slots for the gather walk (unmeasured); for the walk that reads the experts in place (pf-zero-copy)
+// 78: GTX 1070, UD-IQ4_XS, the 4608-token layout of a 3-slot server, 2 alternated pairs, the same tokens, routed /
+// streamed in place: 2,200 tokens (202 slots) 11.08 / 9.61 s, 2,500 (183) 11.97 / 10.61, 3,000 (148) 13.51 / 12.20,
+// 3,400 (122) 14.81 / 13.57, 3,700 (103) 15.51 / 14.62, 4,000 (83) 16.42 / 15.60, 4,090 (78) 16.79 / 15.81 - 78 is the
+// fewest a chunk below 4,096 tokens lends there.  GUILD_PREFILL_TAIL_WALK_RING overrides both (the A/B).
+constexpr int kTailWalkRing = 192, kTailWalkRingInPlace = 78;
+inline int tail_walk_ring(bool in_place) {
+    static const int v = [] {
+        const char* e = std::getenv("GUILD_PREFILL_TAIL_WALK_RING");
+        return e ? std::atoi(e) : -1;
+    }();
+    return v >= 0 ? v : in_place ? kTailWalkRingInPlace : kTailWalkRing;
+}
 // ...and a chunk lends its tails only when it then takes the streamed walk (the routed walk uses STAGE slots: lending
 // to it only re-carved the region and fenced the two streams; GTX 1070, the 4608-token layout, 2 alternated pairs, the
 // same tokens: 2,200-4,090-token chunks routed 0.0-0.3% faster without).  GUILD_PREFILL_TAIL_LEND_STREAMED=0: every
@@ -2726,10 +2738,11 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
         }
         return ring;
     };
-    // whether a chunk of T tokens takes the streamed walk through a ring of `ring` slots, `lent` of them lent
-    auto streams = [&](int64_t T, int ring, int lent) {
+    // whether a chunk of T tokens takes the streamed walk through a ring of `ring` slots, `lent` of them lent, read in
+    // place or gathered
+    auto streams = [&](int64_t T, int ring, int lent, bool in_place) {
         return ring > STAGE && m.src != nullptr &&
-               (T >= stream_chunk_min() || (lent > 0 && ring >= kTailWalkRing && T >= tail_stream_min()));
+               (T >= stream_chunk_min() || (lent > 0 && ring >= tail_walk_ring(in_place) && T >= tail_stream_min()));
     };
     // A chunk of T tokens: below the layout's chunk, when it streams its experts (tail_stream_min(), or
     // stream_chunk_min() on), the region laid out for T and its idle tails lent to the ring; otherwise the layout as
@@ -2741,11 +2754,11 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
         bool zc = false;
         if (zc_ok) {
             const int r = ring_for(tail ? T : m.T, true);
-            zc = streams(T, r, r - (m.ring_owned + MMQ_GROUP));
+            zc = streams(T, r, r - (m.ring_owned + MMQ_GROUP), true);
         }
         if (tail && !zc && tail_lend_streamed()) { // lent only to a chunk that then streams
             const int r = ring_for(T, false);
-            tail = streams(T, r, r - m.ring_owned);
+            tail = streams(T, r, r - m.ring_owned, false);
         }
         const int64_t lt = tail ? T : m.T; // the tokens to lay the region out for
         if (lt == m.region_T && lt == m.T && zc == m.zc_mode)
@@ -2934,7 +2947,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
         const guild::kernels::cpu::ExpertLayout& lay0 = guild::kernels::cpu::expert_layout();
         // (pf-tail-ring: and a shorter chunk from tail_stream_min() tokens on, when its idle tails lent the ring
         // enough)
-        const bool stream_all = streams(T, m.ring, m.ring_lent);
+        const bool stream_all = streams(T, m.ring, m.ring_lent, m.zc_mode);
         // pf-zero-copy: lay_out chose the in-place ring for a chunk that streams (it has no group buffers)
         const bool zc_chunk = m.zc_mode && stream_all;
         if (m.zc_mode && !stream_all) {
