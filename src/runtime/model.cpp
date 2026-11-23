@@ -348,8 +348,9 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
     // such a sibling and every expert is in RAM or on the GPU (helper_request_pin, below the RAM copy), the request's
     // own thread on the host core (GUILD_HOST_AFFINITY=0: not); drama3.cpp.  The pins are hard, so the threads cannot
     // leave a CPU another program keeps busy: with a busy loop pinned to CPU 32 (the helpers' CPU here) through both
-    // arms, GUILD_HELPER_PIN=1 was 0.8% slower than 0 (2 pairs), where it is 2.6-2.9% faster on an idle CPU 32; the
-    // text decode's host-core pin has the same exposure.
+    // arms, GUILD_HELPER_PIN=1 was 0.8% slower than 0 (2 pairs), where it is 1.4-2.9% faster on an idle CPU 32 (by
+    // where the OS would have put the unpinned request thread: drama3.cpp); the text decode's host-core pin has the
+    // same exposure.
     if (const char* e = std::getenv("GUILD_HELPER_PIN"))
         impl->helper_pin = std::atoi(e) != 0;
     if (impl->helper_pin)
