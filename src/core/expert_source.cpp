@@ -1288,9 +1288,9 @@ void FileExpertSource::fill_many(const std::vector<Fill>& todo) {
 #endif
     // the page faults of a mapped read are one outstanding request each: several threads keep the SSD's queue full.
     // They start where the loading thread could run (SpawnAffinity), not on their caller's CPUs, which a new Linux
-    // thread inherits: a caller pinned to the pool's host core (a text decode, a Drama 3 request) would run every copy
-    // on that one CPU.  2x Xeon Gold 6130, Drama 3 at --resident-budget-gib 6 with its request thread pinned there:
-    // 7.06 / 6.99 frames/s with them on CPU 0 against 17.62 / 16.36 unpinned.
+    // thread inherits: a caller pinned to the pool's host core (GuildSession::generate's decode) would run every copy
+    // on that one CPU.  2x Xeon Gold 6130, Qwen at --resident-budget-gib 24 (10643 of 24576 experts in RAM): 7.11 tok/s
+    // with them on CPU 0, 13.66 started here, 13.40 with the decode unpinned (GUILD_HOST_AFFINITY=0); the same tokens.
     std::atomic<size_t> next{0};
     auto work = [&] {
         for (size_t i; (i = next.fetch_add(1)) < todo.size();)
