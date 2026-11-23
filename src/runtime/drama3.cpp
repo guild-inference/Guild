@@ -486,20 +486,23 @@ bool GuildModel::synthesize(const SpeechRequest& req, const SpeechCallback& on_a
     if (overlap)
         beside = std::make_unique<Beside>(device, "d3-tower", m.helper_cpus);
     // GUILD_HELPER_PIN: this thread runs a share of every pool phase and the backbone's launches, so for the request
-    // it goes on the pool's host core, which has no worker, as GuildSession::generate pins its decode
-    // (GUILD_HOST_AFFINITY=0: not); after the two threads above, which would otherwise inherit the mask.  Left to
-    // the OS (2x Xeon Gold 6130, 31 workers), it sat on worker 16's SMT sibling (CPU 48) in 14 of 18 runs and the
-    // two threads above on other workers' siblings: pool walls 4.95 -> 4.78 ms a frame and the gaps between the
-    // layers' pool calls 263 -> 251 us once pinned (profiled); GUILD_HELPER_PIN=0 / 1 alternated, 6 pairs, seeds 11
-    // and 12: 48.36-48.60 -> 49.65-49.86 frames/s (+2.6%), the 86-row prompt 486 -> 477 ms, the same WAVs.
+    // it goes on the pool's host core, which has no worker, as GuildSession::generate pins its decode; after the two
+    // threads above, which would otherwise inherit the mask.  Left to the OS (2x Xeon Gold 6130, 31 workers), it sat
+    // on worker 16's SMT sibling (CPU 48) in 14 of 18 runs and the two threads above on other workers' siblings: pool
+    // walls 4.95 -> 4.78 ms a frame and the gaps between the layers' pool calls 263 -> 251 us once pinned (profiled);
+    // GUILD_HELPER_PIN=0 / 1 alternated, 6 pairs, seeds 11 and 12: 48.36-48.60 -> 49.65-49.86 frames/s (+2.6%), the
+    // 86-row prompt 486 -> 477 ms, the same WAVs.  Only with the two threads on the host core's free sibling and
+    // every expert in RAM (m.helper_request_pin, decided at load; GUILD_HOST_AFFINITY=0: not): with no free sibling
+    // (the process under taskset -c 0-31, one CPU a core) the tower thread then ran on CPU 0 beside this one, -0.4%
+    // (se 0.9, 6 pairs); with GUILD_POOL_WORKERS=16 the pin kept this thread off the free node-1 cores the OS chose in
+    // 2 of 4 runs (-3.1%, -3.7%); with experts read from the files (model.cpp) it cost 9.8%.
     struct RequestAffinity {
         kernels::cpu::ThreadAffinity previous;
         ~RequestAffinity() {
             kernels::cpu::restore_thread_affinity(previous);
         }
     } affinity;
-    const char* host_affinity = std::getenv("GUILD_HOST_AFFINITY");
-    if (m.helper_pin && (!host_affinity || std::atoi(host_affinity) != 0))
+    if (m.helper_request_pin)
         affinity.previous = kernels::cpu::pin_current_thread_if_allowed(m.pool->host_core());
     auto tower_join = [&]() -> bool {
         if (!beside)

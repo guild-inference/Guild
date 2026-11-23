@@ -370,6 +370,29 @@ static bool host_siblings_and_helper_pin(const std::vector<int>& allowed) {
     return pinned && refused && expect_affinity(allowed, "a helper's pin leaves its creator's affinity");
 }
 
+// ExpertPool::helper_cpus' policy (it also decides Drama 3's request pin): the host siblings with the workers pinned
+// one to each other core (the default pool), none with the workers unpinned or with fewer or more workers than those
+// cores (GUILD_POOL_WORKERS).
+static bool helper_cpus_policy(const std::vector<int>& allowed) {
+    const auto topo = cpu::detect_cpu_topology(true);
+    const int cores = (int) topo.worker_cores.size();
+    auto check = [&](int workers, bool pin, const std::vector<int>& expected, const char* label) {
+        const cpu::ExpertPool pool(workers, pin, true);
+        if (pool.helper_cpus() == expected)
+            return true;
+        std::fprintf(stderr, "Linux affinity test: %s (%d workers, pin %d): %zu helper CPUs, expected %zu\n", label,
+                     pool.workers(), (int) pin, pool.helper_cpus().size(), expected.size());
+        return false;
+    };
+    bool ok = check(0, true, topo.host_siblings, "default pool") && check(0, false, {}, "workers unpinned") &&
+              check(cores + 1, true, {}, "more workers than cores");
+    if (ok && cores >= 2)
+        ok = check(cores - 1, true, {}, "fewer workers than cores");
+    if (ok && topo.host_siblings.empty())
+        std::puts("SKIP helper CPUs: the host core has no SMT sibling here (only the empty cases checked)");
+    return ok && expect_affinity(allowed, "pools leave their creator's affinity");
+}
+
 // SpawnAffinity: a thread started by a thread pinned to one CPU inherits that CPU; started inside a SpawnAffinity of
 // the mask taken before the pin (current_thread_affinity) it has that mask, and its creator has its pin back when the
 // scope ends; a SpawnAffinity of the creator's own mask, or an invalid one, changes nothing.  This is what
@@ -446,13 +469,15 @@ int main(int argc, char** argv) {
     if (ok)
         ok = host_siblings_and_helper_pin(allowed);
     if (ok)
+        ok = helper_cpus_policy(allowed);
+    if (ok)
         ok = spawn_affinity_leaves_the_pin(allowed);
     const bool restored = original.restore() && expect_affinity(allowed, "final original affinity cleanup");
     if (!ok || !restored)
         return 1;
 
     std::printf("Linux affinity test: full, sparse/nested, worker helper, invalid-target, failed-pin, host-sibling, "
-                "helper-pin, spawn-affinity and cleanup checks passed (%zu allowed CPUs)\n",
+                "helper-pin, helper-CPU policy, spawn-affinity and cleanup checks passed (%zu allowed CPUs)\n",
                 allowed.size());
     return 0;
 }

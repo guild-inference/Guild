@@ -343,13 +343,19 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
     }
     impl->pool = std::make_unique<kernels::cpu::ExpertPool>(n_workers, true, true, kernels::cpu::PoolAffinity::All);
     impl->config.pool_workers = impl->pool->workers();
-    // GUILD_HELPER_PIN (default 1; 0: where the OS puts them, as before): a Drama 3 request's thread on the pool's
-    // host core and its tower and codec threads on the host core's free SMT siblings (ExpertPool::helper_cpus), not
-    // on a worker's core (drama3.cpp)
+    // GUILD_HELPER_PIN (default 1; 0: where the OS puts them, as before): a Drama 3 request's tower and codec threads
+    // on the host core's free SMT siblings (ExpertPool::helper_cpus), not on a worker's core, and, only when there is
+    // such a sibling and every expert is in RAM or on the GPU (helper_request_pin, below the RAM copy), the request's
+    // own thread on the host core (GUILD_HOST_AFFINITY=0: not); drama3.cpp.  The pins are hard, so the threads cannot
+    // leave a CPU another program keeps busy: with a busy loop pinned to CPU 32 (the helpers' CPU here) through both
+    // arms, GUILD_HELPER_PIN=1 was 0.8% slower than 0 (2 pairs), where it is 2.6-2.9% faster on an idle CPU 32; the
+    // text decode's host-core pin has the same exposure.
     if (const char* e = std::getenv("GUILD_HELPER_PIN"))
         impl->helper_pin = std::atoi(e) != 0;
     if (impl->helper_pin)
         impl->helper_cpus = impl->pool->helper_cpus();
+    const char* host_affinity_env = std::getenv("GUILD_HOST_AFFINITY");
+    const bool host_affinity = !host_affinity_env || std::atoi(host_affinity_env) != 0;
     sp.kernel_provider_resolve_ms += ms_since(kprov_t0);
 
     // CUDA stream
@@ -960,6 +966,12 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
         }
         sp.numa_expert_pin_ms += ms_since(pin_t0);
     }
+    // Drama 3's request pin only when no expert is read from the files: FileExpertSource::fill_many then copies the
+    // misses on the request thread too, and with them (--resident-budget-gib 6, 3362 of 10240 experts in RAM) the pin
+    // cost 9.8% (4 pairs, 16.3-17.6 -> 15.1-15.7 frames/s) where the helpers' pin alone cost nothing.
+    const bool experts_in_ram =
+        impl->src.complement_ready() && impl->src.resident_experts() + slots >= static_cast<int64_t>(total_experts);
+    impl->helper_request_pin = !impl->helper_cpus.empty() && host_affinity && experts_in_ram;
     // IQ3_S gate/up rows repacked for the CPU pool (FileExpertSource::build_cpu_repack), with 16 GiB of RAM to spare:
     // only with the bundled CPU kernels, the ones that compute the repacked rows, and only when the RAM budget holds
     // every expert (a smaller --resident-budget-gib is a request to use less RAM, not more).
@@ -1183,16 +1195,21 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
                      (unsigned long long) (impl->codec->vram_bytes() >> 20));
         std::string helpers;
         for (int cpu : impl->helper_cpus)
-            helpers += (helpers.empty() ? "on CPU " : ",") + std::to_string(cpu);
-        if (impl->helper_pin)
-            std::fprintf(
-                stderr,
-                "guild drama3: a request's thread on the pool's host core (CPU %d), its tower and codec threads "
-                "%s (GUILD_HELPER_PIN=0: where the OS puts them)\n",
-                impl->pool->host_core(),
-                helpers.empty() ? "where the OS puts them (no free SMT sibling of that core)" : helpers.c_str());
+            helpers += (helpers.empty() ? "" : ",") + std::to_string(cpu);
+        if (impl->helper_request_pin)
+            std::fprintf(stderr,
+                         "guild drama3: a request's thread on the pool's host core (CPU %d), its tower and codec "
+                         "threads on CPU %s (GUILD_HELPER_PIN=0: where the OS puts them)\n",
+                         impl->pool->host_core(), helpers.c_str());
+        else if (!impl->helper_cpus.empty())
+            std::fprintf(stderr,
+                         "guild drama3: a request's tower and codec threads on CPU %s, its own thread where the OS "
+                         "puts it (%s)\n",
+                         helpers.c_str(), host_affinity ? "experts read from the files" : "GUILD_HOST_AFFINITY=0");
         else
-            std::fprintf(stderr, "guild drama3: a request's threads where the OS puts them (GUILD_HELPER_PIN=0)\n");
+            std::fprintf(stderr, "guild drama3: a request's threads where the OS puts them (%s)\n",
+                         impl->helper_pin ? "no free SMT sibling of the pool's host core, or not one worker a core"
+                                          : "GUILD_HELPER_PIN=0");
     }
 
     // Initialize speculative cost calibration (from GEXEC artifact when present, or model geometry priors).

@@ -230,7 +230,8 @@ public:
     /// other cores.  Empty (leave the thread to the OS) without SMT, on Windows, with the workers unpinned, with
     /// fewer or more workers than cores (GUILD_POOL_WORKERS) or when a worker sits on one of them (the hybrid
     /// layouts put workers on P-core siblings).  2x Xeon Gold 6130, Drama 3 with its request thread on the host
-    /// core: the two threads here rather than on two workers' siblings, 4 rounds, +0.7% frames/s (4 of 4).
+    /// core: the two threads here rather than on two workers' siblings, 4 rounds, +0.7% frames/s (4 of 4).  Drama 3
+    /// pins its request thread to the host core only when this is not empty (drama3.cpp).
     const std::vector<int>& helper_cpus() const {
         return helper_cpus_;
     }
