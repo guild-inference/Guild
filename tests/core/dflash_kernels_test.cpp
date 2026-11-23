@@ -1,6 +1,8 @@
 // tests/core/dflash_kernels_test.cpp - the DFlash drafter's kernels (include/guild/core/dflash.hpp) against host
 // references on random data: the activation quantization, the int8 ("D8") and Q4_K products at one to eight columns,
-// the top 16 with the log-sum-exp, the block attention over a context ring, and the per-head norm with RoPE.
+// the top 16 with the log-sum-exp, the block attention over a context ring, and the per-head norm with RoPE; then a
+// drafter with random weights, whose drafts for several contexts with one pass of the head (draft_slots, the batch
+// slots') must equal draft()'s on each context alone, bit for bit.
 // `dflash_kernels_test rates` times the two products instead.
 #include "../check.hpp"
 #include "guild/core/dflash.hpp"
@@ -10,13 +12,20 @@
 #include <cuda_runtime.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <numeric>
 #include <random>
+#include <string>
 #include <vector>
+
+#include <unistd.h>
 
 using namespace guild::core;
 
@@ -345,6 +354,238 @@ void test_norm_rope(std::mt19937& rng) {
     std::printf("head_norm_rope: 8 heads of 128 at positions near 5000 match (max error %.2g)\n", e);
 }
 
+// a bf16 value, rounded to nearest even
+uint16_t to_bf16(float f) {
+    uint32_t u;
+    std::memcpy(&u, &f, 4);
+    return (uint16_t) ((u + 0x7FFFu + ((u >> 16) & 1u)) >> 16);
+}
+
+// A DFlash 2 checkpoint of random bf16 weights in `dir`: 2 layers of 512 (4 heads, 2 KV heads, an MLP of 1024), a
+// block of 8, a window of 128 (the ring wraps), features of 2 target layers, and a vocabulary of V tokens
+void write_checkpoint(const std::string& dir, std::mt19937& rng, int V) {
+    const int H = 512, layers = 2, heads = 4, kvh = 2, hd = 128, ffn = 1024, n_feat = 2, rank = 256;
+    const int groups = H / 16, kp_rows = 2 * 2 * groups, qd = heads * hd, kvd = kvh * hd;
+    {
+        std::ofstream c(dir + "/config.json");
+        c << "{\"hidden_size\": " << H << ", \"num_hidden_layers\": " << layers
+          << ", \"num_attention_heads\": " << heads << ", \"num_key_value_heads\": " << kvh << ", \"head_dim\": " << hd
+          << ", \"intermediate_size\": " << ffn
+          << ", \"sliding_window\": 128, \"rms_norm_eps\": 1e-6, \"rope_parameters\": {\"rope_theta\": 10000.0}, "
+             "\"dflash_config\": {\"block_size\": 8, \"conv_kernel_size\": 2, \"conv_group_size\": 16, "
+             "\"selector_rank\": "
+          << rank << ", \"selector_top_k\": 16, \"mask_token_id\": " << V - 3 << ", \"target_layer_ids\": [1, 3]}}\n";
+        CHECK((bool) c);
+    }
+    struct T {
+        std::string name;
+        std::vector<int64_t> shape;
+        float mean, sd;
+    };
+    std::vector<T> ts;
+    const float wi = 1.f / std::sqrt((float) H);
+    for (int l = 0; l < layers; ++l) {
+        const std::string p = "layers." + std::to_string(l) + ".";
+        ts.push_back({p + "input_layernorm.weight", {H}, 1.f, 0.1f});
+        ts.push_back({p + "post_attention_layernorm.weight", {H}, 1.f, 0.1f});
+        ts.push_back({p + "self_attn.q_norm.weight", {hd}, 1.f, 0.1f});
+        ts.push_back({p + "self_attn.k_norm.weight", {hd}, 1.f, 0.1f});
+        ts.push_back({p + "attention_conv.base_kernel", {2, 2, H}, 0.f, 0.3f});
+        ts.push_back({p + "mlp_conv.base_kernel", {2, 2, H}, 0.f, 0.3f});
+        ts.push_back({p + "attention_conv.kernel_projection.weight", {kp_rows, H}, 0.f, 0.3f * wi});
+        ts.push_back({p + "mlp_conv.kernel_projection.weight", {kp_rows, H}, 0.f, 0.3f * wi});
+        ts.push_back({p + "self_attn.q_proj.weight", {qd, H}, 0.f, wi});
+        ts.push_back({p + "self_attn.k_proj.weight", {kvd, H}, 0.f, wi});
+        ts.push_back({p + "self_attn.v_proj.weight", {kvd, H}, 0.f, wi});
+        ts.push_back({p + "self_attn.o_proj.weight", {H, qd}, 0.f, 1.f / std::sqrt((float) qd)});
+        ts.push_back({p + "mlp.gate_proj.weight", {ffn, H}, 0.f, wi});
+        ts.push_back({p + "mlp.up_proj.weight", {ffn, H}, 0.f, wi});
+        ts.push_back({p + "mlp.down_proj.weight", {H, ffn}, 0.f, 1.f / std::sqrt((float) ffn)});
+    }
+    ts.push_back({"fc.weight", {H, n_feat * H}, 0.f, 1.f / std::sqrt((float) (n_feat * H))});
+    ts.push_back({"hidden_norm.weight", {H}, 1.f, 0.1f});
+    ts.push_back({"norm.weight", {H}, 1.f, 0.1f});
+    ts.push_back({"candidate_selector.hidden_projection.weight", {rank, H}, 0.f, wi});
+    ts.push_back({"candidate_selector.predecessor_codebook", {V, rank}, 0.f, 0.3f});
+    ts.push_back({"candidate_selector.successor_codebook", {V, rank}, 0.f, 0.3f});
+    std::string hdr = "{";
+    std::vector<uint16_t> data;
+    std::normal_distribution<float> nd(0.f, 1.f);
+    for (const T& t : ts) {
+        int64_t n = 1;
+        for (int64_t d : t.shape)
+            n *= d;
+        const size_t begin = data.size() * 2;
+        for (int64_t i = 0; i < n; ++i)
+            data.push_back(to_bf16(t.mean + t.sd * nd(rng)));
+        std::string shape;
+        for (int64_t d : t.shape)
+            shape += (shape.empty() ? "" : ",") + std::to_string(d);
+        hdr += (hdr.size() > 1 ? "," : "") + std::string("\"") + t.name + "\":{\"dtype\":\"BF16\",\"shape\":[" + shape +
+               "],\"data_offsets\":[" + std::to_string(begin) + "," + std::to_string(data.size() * 2) + "]}";
+    }
+    hdr += "}";
+    std::ofstream f(dir + "/model.safetensors", std::ios::binary);
+    const uint64_t hlen = hdr.size();
+    f.write((const char*) &hlen, 8);
+    f.write(hdr.data(), (std::streamsize) hdr.size());
+    f.write((const char*) data.data(), (std::streamsize)(data.size() * 2));
+    CHECK((bool) f);
+}
+
+// draft_slots (the batch slots' drafts with one pass of the head) against draft() on each context alone: over 2-4
+// contexts (one past its ring, one of a few positions), whole blocks and blocks of the rows wanted, more rows than one
+// pass of the head takes, the drafts and their probabilities the same bits
+void test_shared_head(std::mt19937& rng, bool int8_weights) {
+    const int V = 4098; // even (two rows a task in k4_mm) but not a multiple of 4, as Qwen's 163778-token head
+    const int H = 512, n_feat = 2;
+    const std::string dir =
+        (std::filesystem::temp_directory_path() / ("guild_dflash_test_" + std::to_string((long) getpid()))).string();
+    std::filesystem::create_directories(dir);
+    write_checkpoint(dir, rng, V);
+    std::normal_distribution<float> nd(0.f, 1.f);
+    std::vector<uint16_t> head((size_t) V * H); // the target's head, f16 rows in host memory
+    for (auto& v : head)
+        v = ggml_fp32_to_fp16(nd(rng) / std::sqrt((float) H));
+    std::vector<float> emb((size_t) V * H);
+    for (auto& v : emb)
+        v = nd(rng);
+    float* d_emb = dev(emb);
+    DFlashTarget t;
+    t.head = head.data();
+    t.head_on_device = false;
+    t.head_type = (int) GGML_TYPE_F16;
+    t.head_row_bytes = (size_t) H * 2;
+    t.n_vocab = V;
+    t.embed = [d_emb](int32_t token, float* out, void* st) {
+        cudaMemcpyAsync(out, d_emb + (size_t) token * H, (size_t) H * 4, cudaMemcpyDeviceToDevice, (cudaStream_t) st);
+    };
+    if (int8_weights)
+        setenv("GUILD_DFLASH_WEIGHTS", "int8", 1);
+    DFlashDrafter d;
+    std::string err;
+    const bool loaded = d.load(dir, t, "", err);
+    unsetenv("GUILD_DFLASH_WEIGHTS");
+    std::filesystem::remove_all(dir);
+    if (!loaded)
+        std::fprintf(stderr, "dflash load: %s\n", err.c_str());
+    CHECK(loaded);
+    CHECK(d.block() == 8 && d.add_contexts(3, err));
+    cudaStream_t st = nullptr;
+    CHECK(cudaStreamCreateWithFlags(&st, cudaStreamNonBlocking) == cudaSuccess);
+    // four contexts: 37 positions; 70 from 1000 (two batches of rows); 5; 300 from 10 (the 128-slot ring wrapped)
+    const int64_t pos0[4] = {0, 1000, 0, 10}, len[4] = {37, 70, 5, 300};
+    std::vector<float> feats((size_t) 300 * n_feat * H);
+    for (auto& v : feats)
+        v = nd(rng);
+    float* d_feats = dev(feats);
+    for (int s = 0; s < 4; ++s) {
+        d.use_context(s);
+        d.reset(pos0[s]);
+        CHECK(d.add_context(d_feats, (size_t) n_feat * H, len[s], pos0[s], st, err));
+        CHECK(d.context_end() == pos0[s] + len[s]);
+    }
+    CHECK(cudaStreamSynchronize(st) == cudaSuccess);
+    std::uniform_int_distribution<int> tok(0, V - 1);
+    int32_t anchor[4];
+    for (auto& a : anchor)
+        a = tok(rng);
+    // the references: draft() on each context alone, every block size (twice: the same bits each time)
+    int32_t ref_d[4][9][8];
+    float ref_p[4][9][8];
+    for (int s = 0; s < 4; ++s) {
+        d.use_context(s);
+        for (int B = 2; B <= 8; ++B) {
+            CHECK(d.draft(anchor[s], d.context_end(), B, ref_d[s][B], ref_p[s][B], st, err));
+            int32_t again_d[8];
+            float again_p[8];
+            CHECK(d.draft(anchor[s], d.context_end(), B, again_d, again_p, st, err));
+            CHECK(std::memcmp(again_d, ref_d[s][B], (size_t) (B - 1) * 4) == 0);
+            CHECK(std::memcmp(again_p, ref_p[s][B], (size_t) (B - 1) * 4) == 0);
+            for (int i = 0; i < B - 1; ++i)
+                CHECK(ref_d[s][B][i] >= 0 && ref_d[s][B][i] < V && std::isfinite(ref_p[s][B][i]) &&
+                      ref_p[s][B][i] > 0.f && ref_p[s][B][i] <= 1.f);
+        }
+    }
+    // the references are not constant: the contexts give other drafts, and a block of 2 rows other probabilities
+    // than a whole one (its queries see one another)
+    bool ctx_matters = false, block_matters = false;
+    for (int s = 1; s < 4; ++s)
+        ctx_matters |= std::memcmp(ref_d[s][8], ref_d[0][8], 7 * 4) != 0;
+    for (int s = 0; s < 4; ++s)
+        block_matters |= ref_p[s][2][0] != ref_p[s][8][0];
+    CHECK(ctx_matters && block_matters);
+    struct Case {
+        std::vector<int> sets, n, B; // B 0: the whole block
+    };
+    const std::vector<Case> cases = {
+        {{1, 2}, {2, 2}, {0, 0}},                   // 2 slots, 2 drafts each (a window of 6 rows)
+        {{0, 1, 2}, {2, 2, 1}, {0, 0, 0}},          // 3 slots, 8 rows
+        {{0, 1, 2, 3}, {1, 1, 1, 1}, {0, 0, 0, 0}}, // 4 slots, a draft each
+        {{3, 0, 2, 1}, {3, 2, 2, 1}, {0, 0, 0, 0}}, // 8 rows of drafts: one pass of 8 columns
+        {{0, 1, 2, 3}, {7, 7, 7, 7}, {0, 0, 0, 0}}, // more than a pass takes: four passes
+        {{2, 3, 0, 1}, {6, 1, 1, 5}, {0, 0, 0, 0}}, // 8 + 5 rows: two passes
+        {{0, 1, 2}, {2, 2, 1}, {3, 3, 2}},          // blocks of the rows wanted (GUILD_BATCH_DRAFT_BLOCK=rows)
+        {{3, 1, 0, 2}, {1, 4, 2, 7}, {2, 6, 3, 8}}, // mixed block sizes
+        {{2}, {7}, {0}},                            // one slot
+    };
+    int checked = 0;
+    for (const Case& c : cases) {
+        const int nj = (int) c.sets.size();
+        std::vector<DFlashDrafter::SlotDraft> jobs((size_t) nj);
+        std::vector<std::array<int32_t, 8>> got_d((size_t) nj);
+        std::vector<std::array<float, 8>> got_p((size_t) nj);
+        for (int j = 0; j < nj; ++j) {
+            DFlashDrafter::SlotDraft& s = jobs[(size_t) j];
+            s.set = c.sets[(size_t) j];
+            s.anchor = anchor[s.set];
+            s.start = pos0[s.set] + len[s.set];
+            s.B = c.B[(size_t) j] == 0 ? d.block() : c.B[(size_t) j];
+            s.n = c.n[(size_t) j];
+            got_d[(size_t) j].fill(-1);
+            got_p[(size_t) j].fill(-1.f);
+            s.drafts = got_d[(size_t) j].data();
+            s.probs = got_p[(size_t) j].data();
+        }
+        CHECK(d.draft_slots(jobs.data(), nj, st, err));
+        for (int j = 0; j < nj; ++j) {
+            const DFlashDrafter::SlotDraft& s = jobs[(size_t) j];
+            const bool same = std::memcmp(s.drafts, ref_d[s.set][s.B], (size_t) s.n * 4) == 0 &&
+                              std::memcmp(s.probs, ref_p[s.set][s.B], (size_t) s.n * 4) == 0;
+            if (!same) {
+                std::fprintf(stderr, "draft_slots: set %d, block %d, %d drafts differ from draft()'s:\n", s.set, s.B,
+                             s.n);
+                for (int i = 0; i < s.n; ++i)
+                    std::fprintf(stderr, "  %d: %d %.9g against %d %.9g\n", i, s.drafts[i], s.probs[i],
+                                 ref_d[s.set][s.B][i], ref_p[s.set][s.B][i]);
+            }
+            CHECK(same);
+            CHECK(s.drafts[s.n] == -1); // nothing past the drafts asked for (n <= 7 of 8)
+            ++checked;
+        }
+    }
+    // a job that does not start at its context's end: refused, nothing changed
+    DFlashDrafter::SlotDraft bad;
+    int32_t bd[8];
+    bad.set = 1;
+    bad.anchor = anchor[1];
+    bad.start = pos0[1] + len[1] - 1;
+    bad.B = 8;
+    bad.n = 2;
+    bad.drafts = bd;
+    err.clear();
+    CHECK(!d.draft_slots(&bad, 1, st, err) && !err.empty());
+    for (int s = 0; s < 4; ++s) {
+        d.use_context(s);
+        CHECK(d.context_end() == pos0[s] + len[s]);
+    }
+    cudaStreamDestroy(st);
+    cudaFree(d_feats);
+    cudaFree(d_emb);
+    std::printf("draft_slots (%s weights): %d jobs over 1-4 contexts, the drafts and probabilities equal draft()'s\n",
+                int8_weights ? "int8" : "Q4_K", checked);
+}
+
 // `dflash_kernels_test rates`: GB/s of the two products at 1-8 columns on random rows (d8_mm 15360 x 2560, k4_mm
 // 248320 x 2560), the median of 20 runs after 3
 void rates(std::mt19937& rng) {
@@ -425,6 +666,8 @@ int main(int argc, char** argv) {
     test_topk(rng, 106299); // a draft vocabulary of an odd size
     test_attention(rng);
     test_norm_rope(rng);
+    test_shared_head(rng, false);
+    test_shared_head(rng, true);
     std::printf("dflash kernels: all match\n");
     return 0;
 }

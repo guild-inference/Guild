@@ -141,6 +141,23 @@ public:
     /// set `to` := set `from` (rings and positions; device to device on `stream`, not waited for)
     bool copy_context(int from, int to, void* stream, std::string& err);
 
+    /// One context's part of draft_slots: the first `n` (1 <= n < B) of the B - 1 tokens draft() gives after `anchor`
+    /// at `start` on context set `set` (`start` its context's end), and their probabilities (`probs` may be null)
+    struct SlotDraft {
+        int set = 0;
+        int32_t anchor = 0;
+        int64_t start = 0;
+        int B = 0, n = 0;
+        int32_t* drafts = nullptr;
+        float* probs = nullptr;
+    };
+    /// Several contexts' drafts with one pass of the head and one wait: every block goes through the layers as draft()
+    /// takes it, then the head (236 MB for Qwen3.8-Flash-Next's draft vocabulary) reads the rows wanted of all of
+    /// them at once.  Each job's drafts and probabilities are bit for bit the first n of draft(anchor, start, B) on
+    /// its set: the head's products, top 16 and log-sum-exp work row by row whatever the rows beside them, and a
+    /// draft depends only on the rows before it.  The last job's set is in use afterwards.
+    bool draft_slots(const SlotDraft* jobs, int n_jobs, void* stream, std::string& err);
+
     double ms_draft = 0, ms_context = 0;
     int64_t rounds = 0;
 
@@ -167,6 +184,15 @@ private:
         prep(m, x, cols, st);
         run(m, y, cols, st);
     }
+    /// draft()'s parts: the block [anchor, mask, ...] through the layers (its final rows in h_); the head over `rows`
+    /// normed rows at `xn` (their top candidates, log-sum-exp and selector projections to the host, waited for); the
+    /// selector's path over `rows` of those from row `row0`
+    void draft_layers(int32_t anchor, int64_t start, int B, void* st);
+    bool draft_head(const float* xn, int rows, void* st, std::string& err);
+    void select(int32_t anchor, int row0, int rows, int32_t* drafts, float* probs) const;
+    /// the head is the Q4_K kernel, exact per column at any column count (else MMQ from mmq_min_ columns, MMVQ
+    /// below: a column's bits then depend on how many there are)
+    bool head_k4() const;
 
     int H_ = 0, layers_ = 0, heads_ = 0, kv_heads_ = 0, hd_ = 0, ffn_ = 0, block_ = 0, window_ = 0, ring_ = 0;
     int taps_ = 2, group_ = 16, rank_ = 256, topk_ = 16, mask_id_ = 0, n_feat_ = 0;
