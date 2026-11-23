@@ -94,6 +94,9 @@ struct CpuTopology {
     int e_cores = 0;               ///< Efficient cores
     std::vector<int> worker_cores; ///< Ordered CPU IDs; on Windows, group * 64 + processor within the group
     int host_core = -1;            ///< Logical core reserved for host thread
+    /// The host core's other logical CPUs (its SMT siblings) that this process may run on, in CPU order.  Linux
+    /// only (from the same sysfs package and core ids); empty on Windows, without SMT and without sysfs.
+    std::vector<int> host_siblings;
 };
 
 CpuTopology detect_cpu_topology(bool skip_first, PoolAffinity affinity = PoolAffinity::All);
@@ -136,6 +139,9 @@ ThreadAffinity pin_current_thread(int core);
 /// host processor is outside the current thread's eligibility mask.
 ThreadAffinity pin_current_thread_if_allowed(int core);
 void restore_thread_affinity(const ThreadAffinity& previous);
+/// Puts the calling thread on `cpus` for the rest of its life (a helper thread's place, ExpertPool::helper_cpus; no
+/// restore).  Linux only: false elsewhere, for an empty list or when the kernel refuses (the placement is unchanged).
+bool pin_current_thread_to(const std::vector<int>& cpus);
 
 class ExpertPool {
 public:
@@ -199,6 +205,15 @@ public:
     }
     int host_core() const {
         return topo_.host_core;
+    }
+    /// Where a busy helper thread beside the decode (Drama 3's tower and codec threads) can run without sharing a
+    /// physical core with a worker: the host core's SMT siblings, when the workers are pinned one to each of the
+    /// other cores.  Empty (leave the thread to the OS) without SMT, on Windows, with the workers unpinned, with
+    /// fewer or more workers than cores (GUILD_POOL_WORKERS) or when a worker sits on one of them (the hybrid
+    /// layouts put workers on P-core siblings).  2x Xeon Gold 6130, Drama 3 with its request thread on the host
+    /// core: the two threads here rather than on two workers' siblings, 4 rounds, +0.7% frames/s (4 of 4).
+    const std::vector<int>& helper_cpus() const {
+        return helper_cpus_;
     }
     /// Whether the host thread also drains.  Reported at startup, because "the engine adapts to the machine it
     /// is on" is only true if the engine says which adaptation it took.
@@ -543,6 +558,7 @@ private:
     std::vector<SplitBufMulti> split_multi_;
     PoolAffinity affinity_ = PoolAffinity::All;
     CpuTopology topo_;
+    std::vector<int> helper_cpus_;
 };
 
 } // namespace guild::kernels::cpu

@@ -306,6 +306,69 @@ static bool request_pin_respects_restricted_mask(const std::vector<int>& allowed
     return kept && selected && expect_affinity(allowed, "request pin restores caller mask");
 }
 
+static long sysfs_topology(int cpu, const char* what) {
+    char path[96];
+    std::snprintf(path, sizeof path, "/sys/devices/system/cpu/cpu%d/topology/%s", cpu, what);
+    long v = -1;
+    if (std::FILE* f = std::fopen(path, "r")) {
+        if (std::fscanf(f, "%ld", &v) != 1)
+            v = -1;
+        std::fclose(f);
+    }
+    return v;
+}
+
+// ExpertPool::helper_cpus' source: detect_cpu_topology(true)'s host_siblings are exactly the other allowed CPUs with
+// the host core's package and core ids, none of them a worker core; under a mask of one CPU a core there are none;
+// and pin_current_thread_to puts a new thread on exactly that list (an empty or negative list changes nothing).
+static bool host_siblings_and_helper_pin(const std::vector<int>& allowed) {
+    const auto topo = cpu::detect_cpu_topology(true);
+    if (topo.host_core < 0) {
+        std::puts("SKIP host siblings: no host core");
+        return true;
+    }
+    const long pkg = sysfs_topology(topo.host_core, "physical_package_id");
+    const long core = sysfs_topology(topo.host_core, "core_id");
+    std::vector<int> expected;
+    if (pkg >= 0 && core >= 0)
+        for (int c : allowed)
+            if (c != topo.host_core && sysfs_topology(c, "physical_package_id") == pkg &&
+                sysfs_topology(c, "core_id") == core)
+                expected.push_back(c);
+    if (topo.host_siblings != expected) {
+        std::fprintf(stderr, "Linux affinity test: host core %d: %zu siblings listed, sysfs has %zu\n", topo.host_core,
+                     topo.host_siblings.size(), expected.size());
+        return false;
+    }
+    for (int c : topo.host_siblings)
+        if (std::find(topo.worker_cores.begin(), topo.worker_cores.end(), c) != topo.worker_cores.end()) {
+            std::fprintf(stderr, "Linux affinity test: host sibling %d is a worker core\n", c);
+            return false;
+        }
+    std::vector<int> firsts = topo.worker_cores; // one CPU a core: the topology's own choice, and the host
+    firsts.push_back(topo.host_core);
+    std::sort(firsts.begin(), firsts.end());
+    if (!set_affinity(firsts))
+        return false;
+    const bool none = cpu::detect_cpu_topology(true).host_siblings.empty();
+    if (!set_affinity(allowed) || !none) {
+        if (!none)
+            std::fprintf(stderr, "Linux affinity test: host siblings listed under a one-CPU-a-core mask\n");
+        return false;
+    }
+    const std::vector<int> target = topo.host_siblings.empty() ? std::vector<int>{allowed.back()} : topo.host_siblings;
+    bool pinned = false, refused = false;
+    std::thread([&] {
+        std::vector<int> before;
+        refused = get_affinity(before) && !cpu::pin_current_thread_to({}) && !cpu::pin_current_thread_to({-1}) &&
+                  expect_affinity(before, "refused helper pin");
+        pinned = cpu::pin_current_thread_to(target) && expect_affinity(target, "helper pin");
+    }).join();
+    if (topo.host_siblings.empty())
+        std::puts("SKIP host siblings: the host core has no SMT sibling here (the helper pin checked on one CPU)");
+    return pinned && refused && expect_affinity(allowed, "a helper's pin leaves its creator's affinity");
+}
+
 int main(int argc, char** argv) {
     bool require_high = false;
     for (int i = 1; i < argc; ++i) {
@@ -335,12 +398,14 @@ int main(int argc, char** argv) {
         ok = failed_pin_preserves_affinity();
     if (ok)
         ok = request_pin_respects_restricted_mask(allowed);
+    if (ok)
+        ok = host_siblings_and_helper_pin(allowed);
     const bool restored = original.restore() && expect_affinity(allowed, "final original affinity cleanup");
     if (!ok || !restored)
         return 1;
 
-    std::printf("Linux affinity test: full, sparse/nested, worker helper, invalid-target, failed-pin, and cleanup "
-                "checks passed (%zu allowed CPUs)\n",
+    std::printf("Linux affinity test: full, sparse/nested, worker helper, invalid-target, failed-pin, host-sibling, "
+                "helper-pin and cleanup checks passed (%zu allowed CPUs)\n",
                 allowed.size());
     return 0;
 }

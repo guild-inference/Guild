@@ -283,6 +283,16 @@ CpuTopology detect_cpu_topology(bool skip_first, PoolAffinity affinity) {
         all_cpus.push_back(cl);
     }
 
+    // the host core's other logical CPUs (ExpertPool::helper_cpus), by the same package and core ids
+    auto add_host_siblings = [&] {
+        for (const auto& h : all_cpus)
+            if (h.cpu == topo.host_core && h.pkg >= 0 && h.core >= 0)
+                for (const auto& cl : all_cpus)
+                    if (cl.cpu != h.cpu && cl.pkg == h.pkg && cl.core == h.core)
+                        topo.host_siblings.push_back(cl.cpu);
+        std::sort(topo.host_siblings.begin(), topo.host_siblings.end());
+    };
+
     topo.is_hybrid = (max_cap > 0 && max_cap > min_cap);
     if (topo.is_hybrid) {
         for (const auto& cl : all_cpus) {
@@ -312,6 +322,7 @@ CpuTopology detect_cpu_topology(bool skip_first, PoolAffinity affinity) {
             topo.host_core = topo.worker_cores.front();
             topo.worker_cores.erase(topo.worker_cores.begin());
         }
+        add_host_siblings();
         return topo;
     }
 
@@ -335,6 +346,7 @@ CpuTopology detect_cpu_topology(bool skip_first, PoolAffinity affinity) {
         topo.host_core = p_primaries.front();
         p_primaries.erase(p_primaries.begin());
     }
+    add_host_siblings();
 
     for (int cpu : p_primaries)
         topo.worker_cores.push_back(cpu);
@@ -423,6 +435,25 @@ ThreadAffinity pin_current_thread_if_allowed(int core) {
         return {};
 #endif
     return pin_current_thread(core);
+}
+
+bool pin_current_thread_to(const std::vector<int>& cpus) {
+#if defined(__linux__)
+    if (cpus.empty())
+        return false;
+    const int top = *std::max_element(cpus.begin(), cpus.end());
+    if (*std::min_element(cpus.begin(), cpus.end()) < 0 || top == INT_MAX)
+        return false;
+    detail::LinuxCpuSet target(top < CPU_SETSIZE ? CPU_SETSIZE : top + 1);
+    if (!target.set)
+        return false;
+    for (int cpu : cpus)
+        CPU_SET_S(cpu, target.bytes, target.set);
+    return pthread_setaffinity_np(pthread_self(), target.bytes, target.set) == 0;
+#else
+    (void) cpus;
+    return false;
+#endif
 }
 
 void restore_thread_affinity(const ThreadAffinity& previous) {
@@ -533,6 +564,11 @@ ExpertPool::ExpertPool(int n_workers, bool pin, bool host_works, PoolAffinity af
         }
         numa_ = on[0] > 0 && on[1] > 0;
     }
+    // Free only when each worker has a core of its own and none of these CPUs is a worker's.
+    if (pin && n_ == (int) topo_.worker_cores.size())
+        for (int cpu : topo_.host_siblings)
+            if (std::find(topo_.worker_cores.begin(), topo_.worker_cores.end(), cpu) == topo_.worker_cores.end())
+                helper_cpus_.push_back(cpu);
     threads_.reserve((size_t) n_);
     for (int i = 0; i < n_; ++i) {
         const int core = pin ? (i < (int) topo_.worker_cores.size() ? topo_.worker_cores[(size_t) i] : -1) : -1;
