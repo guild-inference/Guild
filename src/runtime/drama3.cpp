@@ -25,6 +25,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <thread>
+#if defined(__linux__)
+#include <pthread.h>
+#endif
 
 namespace guild::runtime {
 
@@ -37,11 +40,17 @@ double ms_since(Clock::time_point t) {
 
 // A thread that runs one job at a time while the caller goes on: the tower's step_finish (a frame's codes 2..9) beside
 // the backbone's next row, which reads only main and c1, and the codec's chunks.  The GPU has room for them: the
-// backbone's step waits on its CPU experts.
+// backbone's step waits on its CPU experts.  `name` (a literal of at most 15 characters) is the thread's name in ps
+// and top -H (Linux), so its placement can be read from /proc; it changes nothing the thread does.
 class Beside {
 public:
-    explicit Beside(int device)
-        : t_([this, device] {
+    Beside(int device, const char* name)
+        : t_([this, device, name] {
+#if defined(__linux__)
+              pthread_setname_np(pthread_self(), name);
+#else
+              (void) name;
+#endif
               cudaSetDevice(device);
               std::unique_lock<std::mutex> lk(mu_);
               for (;;) {
@@ -393,7 +402,7 @@ bool GuildModel::synthesize(const SpeechRequest& req, const SpeechCallback& on_a
     std::atomic<bool> codec_hold{false};
     std::unique_ptr<Beside> codec_side; // after what its job reads and writes, so it joins before they go
     if (overlap)
-        codec_side = std::make_unique<Beside>(device);
+        codec_side = std::make_unique<Beside>(device, "d3-codec");
     // the codec's pacing (set before the decode loop): cleared once codec_side is idle, here on every return
     struct CodecHold {
         core::Drama3Codec* codec = nullptr;
@@ -472,7 +481,7 @@ bool GuildModel::synthesize(const SpeechRequest& req, const SpeechCallback& on_a
     };
     std::unique_ptr<Beside> beside; // after what its job reads and writes, so it joins before they go
     if (overlap)
-        beside = std::make_unique<Beside>(device);
+        beside = std::make_unique<Beside>(device, "d3-tower");
     auto tower_join = [&]() -> bool {
         if (!beside)
             return true;
