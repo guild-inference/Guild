@@ -5,6 +5,7 @@
 #include "guild/kernels/cpu/pool.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cerrno>
 #include <climits>
 #include <cstdio>
@@ -369,6 +370,50 @@ static bool host_siblings_and_helper_pin(const std::vector<int>& allowed) {
     return pinned && refused && expect_affinity(allowed, "a helper's pin leaves its creator's affinity");
 }
 
+// SpawnAffinity: a thread started by a thread pinned to one CPU inherits that CPU; started inside a SpawnAffinity of
+// the mask taken before the pin (current_thread_affinity) it has that mask, and its creator has its pin back when the
+// scope ends; a SpawnAffinity of the creator's own mask, or an invalid one, changes nothing.  This is what
+// FileExpertSource::fill_many does for its threads under a request thread pinned to the pool's host core.
+static bool spawn_affinity_leaves_the_pin(const std::vector<int>& allowed) {
+    if (allowed.size() < 2) {
+        std::puts("SKIP spawn affinity: fewer than two allowed CPUs");
+        return true;
+    }
+    const cpu::ThreadAffinity before = cpu::current_thread_affinity();
+    const std::vector<int> one{allowed.front()};
+    if (!before.valid || !set_affinity(one))
+        return false;
+    std::vector<int> inherited, spawned;
+    bool got_inherited = false, got_spawned = false, during = false;
+    std::thread([&] { got_inherited = get_affinity(inherited); }).join();
+    {
+        const cpu::SpawnAffinity spawn(before);
+        during = expect_affinity(allowed, "the creator inside a SpawnAffinity");
+        std::thread([&] { got_spawned = get_affinity(spawned); }).join();
+    }
+    const bool back = expect_affinity(one, "a SpawnAffinity gives its creator its pin back");
+    bool unchanged = false;
+    {
+        const cpu::SpawnAffinity own(cpu::current_thread_affinity());
+        const cpu::SpawnAffinity invalid{cpu::ThreadAffinity{}};
+        unchanged = expect_affinity(one, "a SpawnAffinity of the creator's own mask, or an invalid one");
+    }
+    unchanged = unchanged && expect_affinity(one, "after a SpawnAffinity that changed nothing");
+    if (!set_affinity(allowed))
+        return false;
+    if (!got_inherited || inherited != one) {
+        std::fprintf(stderr, "Linux affinity test: a new thread of a pinned thread has %zu CPUs, expected 1\n",
+                     inherited.size());
+        return false;
+    }
+    if (!got_spawned || spawned != allowed) {
+        std::fprintf(stderr, "Linux affinity test: a thread started in a SpawnAffinity has %zu CPUs, expected %zu\n",
+                     spawned.size(), allowed.size());
+        return false;
+    }
+    return during && back && unchanged && expect_affinity(allowed, "restore after the spawned threads");
+}
+
 int main(int argc, char** argv) {
     bool require_high = false;
     for (int i = 1; i < argc; ++i) {
@@ -400,12 +445,14 @@ int main(int argc, char** argv) {
         ok = request_pin_respects_restricted_mask(allowed);
     if (ok)
         ok = host_siblings_and_helper_pin(allowed);
+    if (ok)
+        ok = spawn_affinity_leaves_the_pin(allowed);
     const bool restored = original.restore() && expect_affinity(allowed, "final original affinity cleanup");
     if (!ok || !restored)
         return 1;
 
     std::printf("Linux affinity test: full, sparse/nested, worker helper, invalid-target, failed-pin, host-sibling, "
-                "helper-pin and cleanup checks passed (%zu allowed CPUs)\n",
+                "helper-pin, spawn-affinity and cleanup checks passed (%zu allowed CPUs)\n",
                 allowed.size());
     return 0;
 }

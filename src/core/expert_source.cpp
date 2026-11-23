@@ -535,6 +535,7 @@ FileExpertSource::~FileExpertSource() {
 
 bool FileExpertSource::open(const std::string& pack_dir, int64_t n_layers, int64_t n_expert, std::string& err) {
     close();
+    fetch_affinity_ = guild::kernels::cpu::current_thread_affinity();
     if (n_layers <= 0 || n_expert <= 0) {
         err = "FileExpertSource: the geometry is empty";
         return false;
@@ -723,6 +724,7 @@ bool FileExpertSource::open(const std::string& pack_dir, int64_t n_layers, int64
 bool FileExpertSource::open_gpack(const uint8_t* exp_base, uint64_t exp_bytes, int64_t n_layers, int64_t n_expert,
                                   std::string& err) {
     close();
+    fetch_affinity_ = guild::kernels::cpu::current_thread_affinity();
     if (!exp_base || n_layers <= 0 || n_expert <= 0) {
         err = "FileExpertSource::open_gpack: invalid arguments";
         return false;
@@ -1284,7 +1286,11 @@ void FileExpertSource::fill_many(const std::vector<Fill>& todo) {
         }
     }
 #endif
-    // the page faults of a mapped read are one outstanding request each: several threads keep the SSD's queue full
+    // the page faults of a mapped read are one outstanding request each: several threads keep the SSD's queue full.
+    // They start where the loading thread could run (SpawnAffinity), not on their caller's CPUs, which a new Linux
+    // thread inherits: a caller pinned to the pool's host core (a text decode, a Drama 3 request) would run every copy
+    // on that one CPU.  2x Xeon Gold 6130, Drama 3 at --resident-budget-gib 6 with its request thread pinned there:
+    // 7.06 / 6.99 frames/s with them on CPU 0 against 17.62 / 16.36 unpinned.
     std::atomic<size_t> next{0};
     auto work = [&] {
         for (size_t i; (i = next.fetch_add(1)) < todo.size();)
@@ -1292,8 +1298,11 @@ void FileExpertSource::fill_many(const std::vector<Fill>& todo) {
     };
     const size_t nt = std::min<size_t>(todo.size(), (size_t) fetch_threads_);
     std::vector<std::thread> th;
-    for (size_t t = 1; t < nt; ++t)
-        th.emplace_back(work);
+    if (nt > 1) {
+        const guild::kernels::cpu::SpawnAffinity spawn(fetch_affinity_);
+        for (size_t t = 1; t < nt; ++t)
+            th.emplace_back(work);
+    }
     work();
     for (auto& t : th)
         t.join();

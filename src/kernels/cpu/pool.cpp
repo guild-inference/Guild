@@ -456,6 +456,28 @@ bool pin_current_thread_to(const std::vector<int>& cpus) {
 #endif
 }
 
+ThreadAffinity current_thread_affinity() {
+    ThreadAffinity now;
+#if defined(__linux__)
+    now.valid = detail::get_thread_affinity(now.mask) == 0;
+#endif
+    return now;
+}
+
+SpawnAffinity::SpawnAffinity(const ThreadAffinity& affinity) {
+#if defined(__linux__)
+    // valid only when this changed the mask: equal masks, or a refused change, leave nothing to put back
+    own_.valid = affinity.valid && detail::get_thread_affinity(own_.mask) == 0 && own_.mask != affinity.mask &&
+                 detail::set_thread_affinity(affinity.mask) == 0;
+#else
+    (void) affinity;
+#endif
+}
+
+SpawnAffinity::~SpawnAffinity() {
+    restore_thread_affinity(own_);
+}
+
 void restore_thread_affinity(const ThreadAffinity& previous) {
     if (!previous.valid)
         return;

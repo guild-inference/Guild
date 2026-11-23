@@ -142,6 +142,25 @@ void restore_thread_affinity(const ThreadAffinity& previous);
 /// Puts the calling thread on `cpus` for the rest of its life (a helper thread's place, ExpertPool::helper_cpus; no
 /// restore).  Linux only: false elsewhere, for an empty list or when the kernel refuses (the placement is unchanged).
 bool pin_current_thread_to(const std::vector<int>& cpus);
+/// The calling thread's placement, kept for the threads a thread pinned later starts (SpawnAffinity): its CPU mask
+/// on Linux.  Invalid elsewhere.
+ThreadAffinity current_thread_affinity();
+/// For the threads the calling thread starts while this lives: it runs on `affinity` (from current_thread_affinity)
+/// meanwhile, so they inherit that instead of its own mask, a single CPU when it is a request thread pinned to the
+/// pool's host core (GUILD_HOST_AFFINITY, GUILD_HELPER_PIN); its own mask comes back at the end.  A new Linux thread
+/// gets its mask at creation this way.  Setting it afterwards, pthread_setaffinity_np on the new thread's handle, is
+/// not safe: once that thread has exited, the handle's TID reads 0, and 0 is the calling thread (glibc 2.39: the
+/// caller's own mask changed).  Nothing changes for an invalid `affinity`, when the masks are equal, or outside Linux.
+class SpawnAffinity {
+public:
+    explicit SpawnAffinity(const ThreadAffinity& affinity);
+    ~SpawnAffinity();
+    SpawnAffinity(const SpawnAffinity&) = delete;
+    SpawnAffinity& operator=(const SpawnAffinity&) = delete;
+
+private:
+    ThreadAffinity own_; ///< the caller's mask to put back; invalid when nothing was changed
+};
 
 class ExpertPool {
 public:
