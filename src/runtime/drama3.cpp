@@ -41,16 +41,19 @@ double ms_since(Clock::time_point t) {
 // A thread that runs one job at a time while the caller goes on: the tower's step_finish (a frame's codes 2..9) beside
 // the backbone's next row, which reads only main and c1, and the codec's chunks.  The GPU has room for them: the
 // backbone's step waits on its CPU experts.  `name` (a literal of at most 15 characters) is the thread's name in ps
-// and top -H (Linux), so its placement can be read from /proc; it changes nothing the thread does.
+// and top -H (Linux), so its placement can be read from /proc; it changes nothing the thread does.  `cpus` (empty:
+// none) is where it runs, the pool's helper CPUs (GUILD_HELPER_PIN): only which CPU runs it changes.
 class Beside {
 public:
-    Beside(int device, const char* name)
-        : t_([this, device, name] {
+    Beside(int device, const char* name, const std::vector<int>& cpus)
+        : t_([this, device, name, cpus] {
 #if defined(__linux__)
               pthread_setname_np(pthread_self(), name);
 #else
               (void) name;
 #endif
+              if (!cpus.empty())
+                  kernels::cpu::pin_current_thread_to(cpus);
               cudaSetDevice(device);
               std::unique_lock<std::mutex> lk(mu_);
               for (;;) {
@@ -402,7 +405,7 @@ bool GuildModel::synthesize(const SpeechRequest& req, const SpeechCallback& on_a
     std::atomic<bool> codec_hold{false};
     std::unique_ptr<Beside> codec_side; // after what its job reads and writes, so it joins before they go
     if (overlap)
-        codec_side = std::make_unique<Beside>(device, "d3-codec");
+        codec_side = std::make_unique<Beside>(device, "d3-codec", m.helper_cpus);
     // the codec's pacing (set before the decode loop): cleared once codec_side is idle, here on every return
     struct CodecHold {
         core::Drama3Codec* codec = nullptr;
@@ -481,7 +484,23 @@ bool GuildModel::synthesize(const SpeechRequest& req, const SpeechCallback& on_a
     };
     std::unique_ptr<Beside> beside; // after what its job reads and writes, so it joins before they go
     if (overlap)
-        beside = std::make_unique<Beside>(device, "d3-tower");
+        beside = std::make_unique<Beside>(device, "d3-tower", m.helper_cpus);
+    // GUILD_HELPER_PIN: this thread runs a share of every pool phase and the backbone's launches, so for the request
+    // it goes on the pool's host core, which has no worker, as GuildSession::generate pins its decode
+    // (GUILD_HOST_AFFINITY=0: not); after the two threads above, which would otherwise inherit the mask.  Left to
+    // the OS (2x Xeon Gold 6130, 31 workers), it sat on worker 16's SMT sibling (CPU 48) in 14 of 18 runs and the
+    // two threads above on other workers' siblings: pool walls 4.95 -> 4.78 ms a frame and the gaps between the
+    // layers' pool calls 263 -> 251 us once pinned (profiled); GUILD_HELPER_PIN=0 / 1 alternated, 6 pairs, seeds 11
+    // and 12: 48.36-48.60 -> 49.65-49.86 frames/s (+2.6%), the 86-row prompt 486 -> 477 ms, the same WAVs.
+    struct RequestAffinity {
+        kernels::cpu::ThreadAffinity previous;
+        ~RequestAffinity() {
+            kernels::cpu::restore_thread_affinity(previous);
+        }
+    } affinity;
+    const char* host_affinity = std::getenv("GUILD_HOST_AFFINITY");
+    if (m.helper_pin && (!host_affinity || std::atoi(host_affinity) != 0))
+        affinity.previous = kernels::cpu::pin_current_thread_if_allowed(m.pool->host_core());
     auto tower_join = [&]() -> bool {
         if (!beside)
             return true;

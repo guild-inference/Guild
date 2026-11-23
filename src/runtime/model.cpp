@@ -343,6 +343,13 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
     }
     impl->pool = std::make_unique<kernels::cpu::ExpertPool>(n_workers, true, true, kernels::cpu::PoolAffinity::All);
     impl->config.pool_workers = impl->pool->workers();
+    // GUILD_HELPER_PIN (default 1; 0: where the OS puts them, as before): a Drama 3 request's thread on the pool's
+    // host core and its tower and codec threads on the host core's free SMT siblings (ExpertPool::helper_cpus), not
+    // on a worker's core (drama3.cpp)
+    if (const char* e = std::getenv("GUILD_HELPER_PIN"))
+        impl->helper_pin = std::atoi(e) != 0;
+    if (impl->helper_pin)
+        impl->helper_cpus = impl->pool->helper_cpus();
     sp.kernel_provider_resolve_ms += ms_since(kprov_t0);
 
     // CUDA stream
@@ -1174,6 +1181,18 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
         std::fprintf(stderr, "guild drama3: tower %llu MiB (K/V for %lld frames), codec %llu MiB of VRAM\n",
                      (unsigned long long) (impl->tower->vram_bytes() >> 20), (long long) tower_frames,
                      (unsigned long long) (impl->codec->vram_bytes() >> 20));
+        std::string helpers;
+        for (int cpu : impl->helper_cpus)
+            helpers += (helpers.empty() ? "on CPU " : ",") + std::to_string(cpu);
+        if (impl->helper_pin)
+            std::fprintf(
+                stderr,
+                "guild drama3: a request's thread on the pool's host core (CPU %d), its tower and codec threads "
+                "%s (GUILD_HELPER_PIN=0: where the OS puts them)\n",
+                impl->pool->host_core(),
+                helpers.empty() ? "where the OS puts them (no free SMT sibling of that core)" : helpers.c_str());
+        else
+            std::fprintf(stderr, "guild drama3: a request's threads where the OS puts them (GUILD_HELPER_PIN=0)\n");
     }
 
     // Initialize speculative cost calibration (from GEXEC artifact when present, or model geometry priors).
