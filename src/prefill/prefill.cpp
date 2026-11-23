@@ -45,6 +45,7 @@
 #include <future>
 #include <memory>
 #include <mutex>
+#include <numeric>
 #include <thread>
 #include <vector>
 
@@ -142,6 +143,11 @@ constexpr int kSplitHelpRing = 48; // layer split help: the helper stage's ring 
 // ring_slots()-slot ring (nearly all 512 are routed at such a chunk), so the copy engine keeps working through the
 // attention halves instead of waiting for each layer's routing.
 constexpr int RING_MAX = 1024; // the arrays; the ring itself is ring_slots(), at most ring_cap()
+// pf-zero-copy (zero_copy_on): the zeroed bytes a ring slot keeps after its blob - MMQ reads up to one 256-value tile
+// past a matrix's last row (the down product's 640-value rows: 72 B of IQ4_NL, 136 B of Q8_0), which in place is the
+// slot past the blob.  The Stager's buffers hold them after every blob (MAXBLOB() + kZcTail), so a DMA carries them.
+constexpr size_t kZcTail = 256;
+constexpr uint64_t kZcZero = ~0ull; // a ring slot's ztail: the whole slot is zero
 // The chunk size from which every expert streams: 1024 since 0.1.30 (was 2048).  Measured on the 5070, Q2_0 / IQ2_XS,
 // fixed cache: 1,500-token prompts 621 -> 785 / 612 -> 735 tok/s, 2,000 727 -> 934 / 712 -> 892, 4,000 (its last
 // chunk) 779 -> 912 / 766 -> 844, the same output.  Below ~1,000 tokens the output changed on Q2_0 (a smaller chunk
@@ -476,8 +482,11 @@ struct Stager {
     std::condition_variable cv;
     std::vector<std::thread> threads;
     int device = 0;
+    size_t zero_tail = 0; // pf-zero-copy: the bytes after each copied blob written as zeros (kZcTail)
 
-    bool init(size_t blob_bytes, int nthreads) {
+    /// `blob_bytes` holds the largest blob and `tail` bytes after it, which every job leaves zero past its own blob.
+    bool init(size_t blob_bytes, int nthreads, size_t tail = 0) {
+        zero_tail = tail;
         if (const char* v = std::getenv("GUILD_STAGER_RING"))
             kRing = std::clamp(std::atoi(v), 2, 256);
         buf.assign((size_t) kRing, nullptr);
@@ -560,6 +569,8 @@ struct Stager {
                                  jb.l);
                     std::abort();
                 }
+                if (zero_tail > 0) // (an earlier, larger blob's bytes would be there)
+                    std::memset(buf[b] + jb.bytes, 0, zero_tail);
                 ready[(size_t) j].store(1, std::memory_order_release);
                 active.fetch_sub(1, std::memory_order_acq_rel);
             }
@@ -825,6 +836,33 @@ struct Prefill::Impl {
     int64_t region_T = 0;                             // the tokens the region is laid out for
     int ring_owned = 0, ring_lent = 0;                // the ring's own slots (carve's), the slots lent
     cudaEvent_t tail_cs = nullptr, tail_cp = nullptr; // the two streams' fences when the layout changes
+    // pf-zero-copy (zc_layout): the ring's own slots, and MMQ_GROUP more, in one block zc_stride bytes apart; those
+    // MMQ_GROUP slots are also the group buffers (grp_gu, grp_d) of a chunk that gathers.  A chunk in zc_mode reads
+    // its experts in place (the slots up to the end of each one's block, zrun, at that stride) and gathers none.
+    uint8_t* zc_block = nullptr;
+    uint64_t zc_stride = 0;
+    bool zc_mode = false;
+    int zrun[RING_MAX] = {};
+    // each slot's blob size whose kZcTail bytes past it are known zero in the slot (0: not known)
+    uint64_t ztail[RING_MAX] = {};
+    struct ZcPart {   // a zero-copy group's experts [a, b) whose rows fit local_rows (all of them without local_moe)
+        int a, b;     // within the group
+        int64_t ra;   // its first row, past the group's
+        int64_t rn;   // its rows
+        int64_t mx;   // the most rows one of its experts has
+        size_t table; // its bounds, relative to its first row, in bounds_host / bounds_dev
+    };
+    struct ZcGroup {   // consecutive ring entries of one layer in consecutive slots of one block
+        size_t k0;     // its first entry
+        int n, s0;     // entries, first slot
+        int64_t r0;    // its experts' first row
+        int64_t rows;  // and their rows
+        int64_t mx;    // the most rows one of them has
+        size_t abs;    // without local_moe: its absolute bounds (gate/up reads the layer's rows)
+        size_t p0, p1; // its parts in zparts
+    };
+    std::vector<ZcGroup> zgroups;
+    std::vector<ZcPart> zparts;
     PrefillStats* stats = nullptr;
     // KV streaming: one layer's whole K/V, staged from the host copy per layer and chunk (identity layout)
     guild::kernels::KvHostPools stage;
@@ -1120,6 +1158,66 @@ uint64_t region_need(size_t T, int64_t n_expert, bool fused, int64_t cap, int64_
     return std::max({gdn_set_bytes(T), qsa_set_bytes(T, cap, max_blocks, sel_batch, attn_batch, s),
                      moe_set_bytes(T, n_expert, fused), (uint64_t) T * D * 4 + (hc_in_region() ? hc_set_bytes(T) : 0)});
 }
+// pf-zero-copy: the streamed walk's MMQ products read a group's experts in place, from consecutive ring slots a
+// constant stride apart (Context::run takes a weight pointer and one stride), instead of gathering them into the group
+// buffers first (the 'dequant' phase: 0.6 s of a 4K prompt, 2.8 s at 32K), and those buffers become MMQ_GROUP more ring
+// slots (a slot is now held until its group's down product).  The same weight bytes in the same products: each expert's
+// rows are its own on Pascal (no stream-k: every output is one thread's whole-K sum, whatever the launch holds -
+// rows_stream() is Pascal-only), and the bytes MMQ reads past a down matrix are zero, as after a group buffer's last
+// expert (the scout's mb_ring: 0 of 9.8M words differ; a 0xFF tail gave 2,560 NaNs).  GUILD_PREFILL_ZERO_COPY=0: the
+// ring and the group buffers as before, and the gather.
+inline bool zero_copy_on() {
+    static const bool on = [] {
+        const char* e = std::getenv("GUILD_PREFILL_ZERO_COPY");
+        return e == nullptr || e[0] != '0';
+    }();
+    return on;
+}
+// The slot stride: a multiple of every expert type's 256-value byte count (a whole number of blocks: Context::run takes
+// the stride in blocks) and of 16, holding the largest blob and kZcTail bytes - 3,500,640 B for UD-IQ4_XS (52 x 67,320:
+// IQ3_S 110, IQ4_XS 136, IQ4_NL 18 and Q8_0 34-byte blocks).  0 when a layer cannot be read in place: not MMQ, gate and
+// up not one [gate | up] matrix at the blob's start, a down matrix past the blob, the fused kernels.
+uint64_t zc_stride() {
+    const guild::kernels::cpu::ExpertLayout& lay = guild::kernels::cpu::expert_layout();
+    const MmqPlan& mp = mmq_plan();
+    if (!lay.native || lay.gate_up_interleaved || !mp.any || mp.fallback || lay.fmt.empty() ||
+        (int64_t) lay.fmt.size() != lay.n_layers)
+        return 0;
+    uint64_t L = 16;
+    for (size_t l = 0; l < lay.fmt.size(); ++l) {
+        const auto& f = lay.fmt[l];
+        const uint64_t gub = mmq::matrix_bytes(f.gu_type, 1280, N), db = mmq::matrix_bytes(f.d_type, N, 640);
+        if (!mp.layer[l] || gub == 0 || db == 0 || f.up_off != gub / 2 || f.down_off < gub ||
+            f.down_off + db > lay.blob_bytes((int64_t) l) || f.down_off % 16 != 0 ||
+            fused::native_supported(f.gu_type, f.d_type))
+            return 0;
+        for (const int t : {f.gu_type, f.d_type}) {
+            const uint64_t b = mmq::matrix_bytes(t, 1, 256);
+            if (b == 0)
+                return 0;
+            L = std::lcm(L, b);
+        }
+    }
+    const uint64_t need = (uint64_t) MAXBLOB() + kZcTail;
+    return (need + L - 1) / L * L;
+}
+// A layout of T tokens whose ring is one zero-copy block: its ring_slots(T) slots and MMQ_GROUP more, or the group
+// buffers where those are larger (Prefill::carve; bytes_needed counts the same)
+bool zc_layout(size_t T) {
+    return zero_copy_on() && rows_stream() && !fused_ring() && !core::peer_portable() && ring_slots(T) > STAGE &&
+           zc_stride() > 0;
+}
+inline uint64_t round256(uint64_t b) {
+    return (b + 255) & ~(uint64_t) 255;
+}
+uint64_t zc_grp_bytes() { // the group buffers' bytes in the block (grp_gu, then grp_d)
+    const MmqPlan& mp = mmq_plan();
+    return round256(MMQ_GROUP * mp.gu_max + MMQ_TAIL) + round256(MMQ_GROUP * mp.d_max + MMQ_TAIL);
+}
+uint64_t zc_block_bytes(size_t T) {
+    const uint64_t S = zc_stride();
+    return (uint64_t) ring_slots(T) * S + std::max<uint64_t>(MMQ_GROUP * S, zc_grp_bytes());
+}
 } // namespace
 
 void Prefill::set_expert_cache(const core::ExpertCache* cache, const int32_t* host_res) {
@@ -1201,7 +1299,8 @@ bool Prefill::init(const core::WeightTable& wt, const core::ModelGeometry& g, co
         const int threads = stv ? std::clamp(std::atoi(stv), 1, 32) : files ? 32 : std::clamp(hw / 2, 4, 32);
         if (files && std::getenv("GUILD_STAGER_RING") == nullptr)
             m.stager->kRing = 4 * threads;
-        if (!m.stager->init((size_t) MAXBLOB(), threads))
+        const size_t zt = zero_copy_on() ? kZcTail : 0; // pf-zero-copy: a DMA carries a blob's zero tail
+        if (!m.stager->init((size_t) MAXBLOB() + zt, threads, zt))
             ok = false;
     }
     m.steps_host.resize(T * guild::kernels::kStepCount);
@@ -1347,24 +1446,57 @@ bool Prefill::carve(size_t T, void* alloc) {
         m.dq_gu[i] = o.take<uint16_t>(1280 * 2560, ok);
         m.dq_d[i] = o.take<uint16_t>(2560 * 640, ok);
     }
+    // pf-zero-copy: the ring as one block (zc_layout; owned buffers of a single-stage prompt path)
+    const bool zc = zc_layout(T) && !m.borrowed && next_ == nullptr && stage_lb_ == 0;
     if (mmq_plan().any) {
         const MmqPlan& mp = mmq_plan();
         m.ids_identity = o.take<int32_t>(T * K, ok);
         // the global bounds, each group's relative ones, then group_local's split parts' (at most 2 n_expert)
         m.bounds_dev =
             o.take<int32_t>((size_t) (2 * (m.g->n_expert + m.g->n_expert / MMQ_GROUP + 2) + 2 * m.g->n_expert + 2), ok);
-        m.grp_gu = o.take<uint8_t>(MMQ_GROUP * mp.gu_max + MMQ_TAIL, ok);
-        m.grp_d = o.take<uint8_t>(MMQ_GROUP * mp.d_max + MMQ_TAIL, ok);
+        if (!zc) { // (zc: in the ring's block, below)
+            m.grp_gu = o.take<uint8_t>(MMQ_GROUP * mp.gu_max + MMQ_TAIL, ok);
+            m.grp_d = o.take<uint8_t>(MMQ_GROUP * mp.d_max + MMQ_TAIL, ok);
+        }
         // (written at every run's start, not here: when serving, these are live expert-cache slots until a request
         // lends them - a write now would corrupt a resident expert)
         if (!m.mmq_ctx)
             m.mmq_ctx = std::make_unique<mmq::Context>();
     }
     m.ring = ring_slots(T);
-    for (int i = 0; i < m.ring; ++i) {
-        m.stage_dev[i] = o.take<uint8_t>((size_t) MAXBLOB(), ok);
-        m.stage_live[i] = false; // a new buffer: nothing of an earlier layout to wait for
-        m.used_of[i] = i;
+    m.zc_block = nullptr;
+    m.zc_stride = 0;
+    m.zc_mode = false;
+    if (zc) {
+        // slot i at zc_block + i * S; slots [ring, ring + MMQ_GROUP) are the group buffers too, for a chunk that
+        // gathers (lay_out switches between the two with fences); zeroed once, so every slot's bytes past a blob start
+        // zero
+        const uint64_t S = zc_stride(), bytes = zc_block_bytes(T);
+        uint8_t* blk = o.take<uint8_t>((size_t) bytes, ok);
+        if (blk != nullptr && (cudaMemsetAsync(blk, 0, (size_t) bytes, m.cs) != cudaSuccess ||
+                               cudaStreamSynchronize(m.cs) != cudaSuccess))
+            ok = false;
+        if (blk != nullptr && ok) {
+            m.zc_block = blk;
+            m.zc_stride = S;
+            for (int i = 0; i < m.ring + MMQ_GROUP; ++i) {
+                m.stage_dev[i] = blk + (size_t) i * S;
+                m.ztail[i] = kZcZero;
+            }
+            m.grp_gu = blk + (size_t) m.ring * S;
+            m.grp_d = m.grp_gu + round256(MMQ_GROUP * mmq_plan().gu_max + MMQ_TAIL);
+        }
+        for (int i = 0; i < m.ring; ++i) {
+            m.stage_live[i] = false; // a new buffer: nothing of an earlier layout to wait for
+            m.used_of[i] = i;
+        }
+    } else {
+        for (int i = 0; i < m.ring; ++i) {
+            m.stage_dev[i] = o.take<uint8_t>((size_t) MAXBLOB(), ok);
+            m.stage_live[i] = false; // a new buffer: nothing of an earlier layout to wait for
+            m.used_of[i] = i;
+            m.ztail[i] = 0;
+        }
     }
     m.ring_owned = m.ring;
     m.ring_lent = 0;
@@ -2065,15 +2197,21 @@ uint64_t Prefill::bytes_needed(const core::ModelGeometry& g, const core::Session
         o.take<uint16_t>(1280 * 2560, ok);
         o.take<uint16_t>(2560 * 640, ok);
     }
+    const bool zc = zc_layout(T); // (a layer split's stages and borrowed layouts carve the smaller separate buffers)
     if (mmq_plan().any) {
         const MmqPlan& mp = mmq_plan();
         o.take<int32_t>(T * K, ok);
         o.take<int32_t>((size_t) (2 * (g.n_expert + g.n_expert / MMQ_GROUP + 2) + 2 * g.n_expert + 2), ok);
-        o.take<uint8_t>(MMQ_GROUP * mp.gu_max + MMQ_TAIL, ok);
-        o.take<uint8_t>(MMQ_GROUP * mp.d_max + MMQ_TAIL, ok);
+        if (!zc) {
+            o.take<uint8_t>(MMQ_GROUP * mp.gu_max + MMQ_TAIL, ok);
+            o.take<uint8_t>(MMQ_GROUP * mp.d_max + MMQ_TAIL, ok);
+        }
     }
-    for (int i = 0; i < ring_slots(T); ++i)
-        o.take<uint8_t>((size_t) MAXBLOB(), ok);
+    if (zc)
+        o.take<uint8_t>((size_t) zc_block_bytes(T), ok);
+    else
+        for (int i = 0; i < ring_slots(T); ++i)
+            o.take<uint8_t>((size_t) MAXBLOB(), ok);
     f(T * N);
     f((size_t) guild::kernels::NG_HC_DIM);
     guild::kernels::KvHostPools stage;
@@ -2542,59 +2680,112 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
     const bool tail_ok = tail_ring_on() && !m.borrowed && m.cache == nullptr && m.pp == nullptr && next_ == nullptr &&
                          hand_in_ == nullptr && m.src != nullptr && !fused_ring() && rows_stream() &&
                          m.ring_owned > STAGE;
+    // pf-zero-copy: this request's streamed chunks read their experts in place (zc_layout's block): no expert cache (no
+    // resident experts), no peer, one stage - every layer then streams all of its experts
+    const bool zc_ok = m.zc_block != nullptr && m.cache == nullptr && m.pp == nullptr && next_ == nullptr &&
+                       hand_in_ == nullptr && m.src != nullptr;
+    // the region's bytes a layout of lt tokens uses: its largest set (carve_region), and the PLE block's sub-batches
+    // keep their size (they are carved from the region: region_eff decides them)
+    auto region_eff_for = [&](int64_t lt) -> uint64_t {
+        const uint64_t used = region_need((size_t) lt, g.n_expert, fused_layout((size_t) lt, m.src != nullptr), m.cap,
+                                          m.max_blocks, m.sel_batch, m.attn_batch, s);
+        const uint64_t pb = ple_batch_token_bytes();
+        const uint64_t ple = ple_batch ? (uint64_t) std::min<int64_t>(lt, (int64_t) (m.region_bytes / pb)) * pb : 0;
+        return std::min<uint64_t>(m.region_bytes, round256(std::max(used, ple)));
+    };
+    // the idle tails a layout of lt < m.T tokens lends: the region past eff, R's rows past lt, and (tail_bufs_on) the
+    // other per-token buffers' - each from a 256-byte aligned start
+    auto tails = [&](int64_t lt, uint64_t eff, const auto& f) {
+        f(m.region + eff, m.region_bytes - eff);
+        f((uint8_t*) (m.R + (size_t) lt * D), (uint64_t) (m.T - lt) * D * 4);
+        if (tail_bufs_on()) { // every reader and writer of these takes the chunk's T rows
+            const uint64_t rest = (uint64_t) (m.T - lt) * N;
+            f((uint8_t*) (m.mixed + (size_t) lt * N), rest * 4);
+            f((uint8_t*) (m.bo + (size_t) lt * N), rest * 4);
+            f((uint8_t*) (m.ple_emb + (size_t) lt * N), rest * 4);
+            f((uint8_t*) (m.mixed_bf + (size_t) lt * N), rest * 2);
+            f((uint8_t*) (m.mixed_h + (size_t) lt * N), rest * 2);
+        }
+    };
+    // the slots a layout of lt tokens holds: its own (and zc's MMQ_GROUP), and whole slots of the tails at the stride
+    auto ring_for = [&](int64_t lt, bool zc) -> int {
+        int ring = m.ring_owned + (zc ? MMQ_GROUP : 0);
+        if (lt < m.T) {
+            const uint64_t per = zc ? m.zc_stride : (uint64_t) MAXBLOB();
+            tails(lt, region_eff_for(lt), [&](uint8_t*, uint64_t bytes) {
+                for (; bytes >= per && ring < ring_cap(); bytes -= per)
+                    ++ring;
+            });
+        }
+        return ring;
+    };
+    // whether a chunk of T tokens takes the streamed walk through a ring of `ring` slots, `lent` of them lent
+    auto streams = [&](int64_t T, int ring, int lent) {
+        return ring > STAGE && m.src != nullptr &&
+               (T >= stream_chunk_min() || (lent > 0 && ring >= kTailWalkRing && T >= tail_stream_min()));
+    };
     // A chunk of T tokens: below the layout's chunk, when it streams its experts (tail_stream_min(), or
     // stream_chunk_min() on), the region laid out for T and its idle tails lent to the ring; otherwise the layout as
-    // carved.  Before either stream takes this chunk's work.
+    // carved.  zc_ok: a chunk that streams through the zero-copy ring (MMQ_GROUP more slots, the tails lent at its
+    // stride) reads its experts in place; one that does not keeps the group buffers.  Before either stream takes
+    // this chunk's work.
     auto lay_out = [&](int64_t T) -> bool {
         const bool tail = tail_ok && T < m.T && (T >= tail_stream_min() || T >= stream_chunk_min());
         const int64_t lt = tail ? T : m.T; // the tokens to lay the region out for
-        if (lt == m.region_T && lt == m.T)
+        bool zc = false;
+        if (zc_ok) {
+            const int r = ring_for(lt, true);
+            zc = streams(T, r, r - (m.ring_owned + MMQ_GROUP));
+        }
+        if (lt == m.region_T && lt == m.T && zc == m.zc_mode)
             return true; // as carved: nothing lent
         // the copy stream waits for the compute stream's work so far: the lent memory held its buffers (the previous
-        // chunk's or request's)
+        // chunk's or request's), and the zero-copy ring's last MMQ_GROUP slots the group buffers of a chunk that
+        // gathered
         if (cudaEventRecord(m.tail_cs, m.cs) != cudaSuccess || cudaStreamWaitEvent(m.copy, m.tail_cs, 0) != cudaSuccess)
             return false;
-        if (lt == m.region_T)
+        if (lt == m.region_T && zc == m.zc_mode)
             return true; // laid out for this T already (an earlier request): the same buffers and slots
-        // ...and the compute stream for the copies so far: the new layout's buffers may cover the slots they fill
+        // ...and the compute stream for the copies so far: the new layout's buffers (or the group buffers) may cover
+        // the slots they fill
         if (cudaEventRecord(m.tail_cp, m.copy) != cudaSuccess || cudaStreamWaitEvent(m.cs, m.tail_cp, 0) != cudaSuccess)
             return false;
-        const uint64_t used = carve_region((size_t) lt);
-        if (used == 0)
+        if (lt != m.region_T && carve_region((size_t) lt) == 0)
             return false;
-        int ring = m.ring_owned;
+        const int own = m.ring_owned + (zc ? MMQ_GROUP : 0);
+        int ring = own;
+        if (m.zc_block != nullptr) // its slots (a chunk that gathers lends its tails past the group buffers' slots)
+            for (int i = 0; i < own; ++i) {
+                m.stage_dev[i] = m.zc_block + (size_t) i * m.zc_stride;
+                m.zrun[i] = zc ? own - i : 0;
+            }
         uint64_t eff = m.region_bytes;
         if (lt < m.T) {
-            // the PLE block's sub-batches keep their size (they are carved from the region: region_eff decides them)
-            const uint64_t pb = ple_batch_token_bytes();
-            const uint64_t ple = ple_batch ? (uint64_t) std::min<int64_t>(lt, (int64_t) (m.region_bytes / pb)) * pb : 0;
-            eff = std::min<uint64_t>(m.region_bytes, (std::max(used, ple) + 255) & ~(uint64_t) 255);
-            const uint64_t per = (uint64_t) MAXBLOB();
-            auto lend = [&](uint8_t* p, uint64_t bytes) { // whole blobs from a 256-byte aligned start
+            eff = region_eff_for(lt);
+            const uint64_t per = zc ? m.zc_stride : (uint64_t) MAXBLOB();
+            tails(lt, eff, [&](uint8_t* p, uint64_t bytes) { // whole slots, `per` apart
+                const int first = ring;
                 for (; bytes >= per && ring < ring_cap(); p += per, bytes -= per)
                     m.stage_dev[ring++] = p;
-            };
-            lend(m.region + eff, m.region_bytes - eff);
-            lend((uint8_t*) (m.R + (size_t) lt * D), (uint64_t) (m.T - lt) * D * 4);
-            if (tail_bufs_on()) { // every reader and writer of these takes the chunk's T rows
-                const uint64_t rest = (uint64_t) (m.T - lt) * N;
-                lend((uint8_t*) (m.mixed + (size_t) lt * N), rest * 4);
-                lend((uint8_t*) (m.bo + (size_t) lt * N), rest * 4);
-                lend((uint8_t*) (m.ple_emb + (size_t) lt * N), rest * 4);
-                lend((uint8_t*) (m.mixed_bf + (size_t) lt * N), rest * 2);
-                lend((uint8_t*) (m.mixed_h + (size_t) lt * N), rest * 2);
-            }
+                for (int i = first; i < ring; ++i)
+                    m.zrun[i] = zc ? ring - i : 0;
+            });
         }
-        for (int i = ring; i < m.ring; ++i)
+        for (int i = ring; i < m.ring; ++i) {
             m.stage_dev[i] = nullptr;
+            m.zrun[i] = 0;
+        }
         for (int i = 0; i < RING_MAX; ++i) {
             m.stage_live[i] = false; // the two fences above: nothing earlier to wait for
             m.used_of[i] = i;
+            if (i >= m.ring_owned)
+                m.ztail[i] = 0; // lent, or the group buffers: what lies past a blob there is not known
         }
         m.region_eff = eff;
         m.region_T = lt;
-        m.ring_lent = ring - m.ring_owned;
+        m.ring_lent = ring - own;
         m.ring = ring;
+        m.zc_mode = zc;
         return true;
     };
 
@@ -2732,14 +2923,27 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
         const guild::kernels::cpu::ExpertLayout& lay0 = guild::kernels::cpu::expert_layout();
         // (pf-tail-ring: and a shorter chunk from tail_stream_min() tokens on, when its idle tails lent the ring
         // enough)
-        const bool tail_walk = m.ring_lent > 0 && m.ring >= kTailWalkRing && T >= tail_stream_min();
-        const bool stream_all = m.ring > STAGE && (T >= stream_chunk_min() || tail_walk) && m.src != nullptr;
+        const bool stream_all = streams(T, m.ring, m.ring_lent);
+        // pf-zero-copy: lay_out chose the in-place ring for a chunk that streams (it has no group buffers)
+        const bool zc_chunk = m.zc_mode && stream_all;
+        if (m.zc_mode && !stream_all) {
+            err = "prefill: the zero-copy ring for a chunk that does not stream";
+            return false;
+        }
         if (pt.on && m.ring_lent > 0)
             std::fprintf(stderr,
                          "guild prefill: a chunk of %lld tokens: the region laid out in %.0f of its %.0f MiB, %d ring "
-                         "slots lent by its idle buffers (%d in all), the %s walk\n",
+                         "slots lent by its idle buffers (%d in all), the %s walk%s\n",
                          (long long) T, (double) m.region_eff / (1 << 20), (double) m.region_bytes / (1 << 20),
-                         m.ring_lent, m.ring, stream_all ? "streamed" : "routed");
+                         m.ring_lent, m.ring, stream_all ? "streamed" : "routed",
+                         zc_chunk ? ", its experts read in place" : "");
+        if (static bool said = false; zc_chunk && !said) {
+            said = true;
+            std::fprintf(stderr,
+                         "guild prefill: the streamed walk reads its experts in place from ring slots %llu B apart "
+                         "(%d slots at the layout's chunk; GUILD_PREFILL_ZERO_COPY=0: gathered into group buffers)\n",
+                         (unsigned long long) m.zc_stride, m.ring_owned + MMQ_GROUP);
+        }
         const bool ps_on = stream_all && m.pp && m.pp->ps_frac > 0.0;
         if (m.pp && !ps_on)
             m.pp->ps_flag.clear();
@@ -2836,6 +3040,28 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                     st->finish();
             }
         } chunk_stager_done{stream_all ? m.stager.get() : nullptr};
+        // A blob into ring slot `sl` on the copy stream.  pf-zero-copy: a slot a group's MMQ reads in place (zc_mode)
+        // gets kZcTail zero bytes after the blob: a Stager buffer (`zeroed`) carries them; a blob DMA'd straight from
+        // the pinned arena gets a memset there unless the slot's bytes past a blob of this size are known zero (the
+        // block starts zeroed; a slot keeps the size of its last blob).
+        auto stage_copy = [&](int sl, const uint8_t* src, size_t bytes, bool zeroed) {
+            uint64_t& zt = m.ztail[sl];
+            const bool in_place = m.zc_mode && m.zrun[sl] > 0;
+            if (in_place && zeroed && m.stager->zero_tail >= kZcTail) {
+                cudaMemcpyAsync(m.stage_dev[sl], src, bytes + kZcTail, cudaMemcpyHostToDevice, m.copy);
+                zt = bytes;
+                return;
+            }
+            cudaMemcpyAsync(m.stage_dev[sl], src, bytes, cudaMemcpyHostToDevice, m.copy);
+            if (zt == bytes || zt == kZcZero) {
+                zt = bytes; // the bytes past it are as they were: zero
+            } else if (in_place) {
+                cudaMemsetAsync(m.stage_dev[sl] + bytes, 0, kZcTail, m.copy);
+                zt = bytes;
+            } else {
+                zt = 0;
+            }
+        };
         auto issue_until = [&](size_t limit) {
             limit = std::min(limit, seq.size());
             while (issued < limit) {
@@ -2846,11 +3072,11 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                 if (m.stage_live[sl])
                     cudaStreamWaitEvent(m.copy, m.used[m.used_of[sl]], 0);
                 if (en.job < 0) {
-                    cudaMemcpyAsync(m.stage_dev[sl], en.blob, bytes, cudaMemcpyHostToDevice, m.copy);
+                    stage_copy(sl, en.blob, bytes, false);
                     ++stats_.experts_dma;
                 } else {
                     const uint8_t* hb = m.stager->wait(en.job);
-                    cudaMemcpyAsync(m.stage_dev[sl], hb, bytes, cudaMemcpyHostToDevice, m.copy);
+                    stage_copy(sl, hb, bytes, true);
                     m.stager->issued_one(en.job, m.copy);
                 }
                 cudaEventRecord(m.copied[sl], m.copy);
@@ -2900,11 +3126,11 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                     if (m.stage_live[sl])
                         cudaStreamWaitEvent(m.copy, m.used[m.used_of[sl]], 0);
                     if (en.job < 0) {
-                        cudaMemcpyAsync(m.stage_dev[sl], en.blob, bytes, cudaMemcpyHostToDevice, m.copy);
+                        stage_copy(sl, en.blob, bytes, false);
                         ++iss_dma;
                     } else {
                         const uint8_t* hb = m.stager->wait(en.job);
-                        cudaMemcpyAsync(m.stage_dev[sl], hb, bytes, cudaMemcpyHostToDevice, m.copy);
+                        stage_copy(sl, hb, bytes, true);
                         m.stager->issued_one(en.job, m.copy);
                     }
                     cudaEventRecord(m.copied[sl], m.copy);
@@ -2929,6 +3155,63 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                 a_consumed.store(upto, std::memory_order_release);
             else
                 issue_until(upto + (size_t) m.ring);
+        };
+        // pf-zero-copy: layer l's groups - consecutive entries in consecutive slots of one block (MMQ_GROUP at most;
+        // the end of a block and of the ring cut them), every expert in them (one the routing skipped has empty
+        // bounds) - and their bounds: each part's relative to its first row, and without local_moe each group's
+        // absolute ones (gate/up then reads the layer's quantized rows).  After the host grouping (m.cnt, m.off).
+        const size_t bounds_cap = (size_t) (2 * (g.n_expert + g.n_expert / MMQ_GROUP + 2) + 2 * g.n_expert + 2);
+        auto zc_tables = [&](int64_t l) -> bool {
+            m.bounds_host.clear();
+            m.zgroups.clear();
+            m.zparts.clear();
+            const size_t ks = seq_start[(size_t) l], ke = seq_start[(size_t) l + 1];
+            for (size_t k = ks; k < ke;) {
+                Impl::ZcGroup zg{};
+                zg.k0 = k;
+                zg.s0 = (int) (k % (size_t) m.ring);
+                zg.n = (int) std::min<size_t>({(size_t) MMQ_GROUP, ke - k, (size_t) std::max(m.zrun[zg.s0], 0)});
+                const int32_t e0 = seq[k].e;
+                if (zg.n <= 0 || e0 + zg.n > g.n_expert || seq[k + (size_t) zg.n - 1].e != e0 + zg.n - 1) {
+                    err = "prefill: a zero-copy group's ring entries are not consecutive experts in one block";
+                    return false;
+                }
+                const int32_t* off = m.off.data() + e0;
+                zg.r0 = off[0];
+                zg.rows = off[zg.n] - off[0];
+                for (int i = 0; i < zg.n; ++i)
+                    zg.mx = std::max<int64_t>(zg.mx, m.cnt[(size_t) (e0 + i)]);
+                if (!m.local_moe) {
+                    zg.abs = m.bounds_host.size();
+                    m.bounds_host.insert(m.bounds_host.end(), off, off + zg.n + 1);
+                }
+                zg.p0 = m.zparts.size();
+                for (int a = 0; a < zg.n;) { // (one part without local_moe)
+                    int b = a + 1;           // one expert has at most T <= local_rows rows
+                    while (b < zg.n && (!m.local_moe || off[b + 1] - off[a] <= m.local_rows))
+                        ++b;
+                    Impl::ZcPart zp{};
+                    zp.a = a;
+                    zp.b = b;
+                    zp.ra = off[a] - off[0];
+                    zp.rn = off[b] - off[a];
+                    for (int i = a; i < b; ++i)
+                        zp.mx = std::max<int64_t>(zp.mx, m.cnt[(size_t) (e0 + i)]);
+                    zp.table = m.bounds_host.size();
+                    for (int i = a; i <= b; ++i)
+                        m.bounds_host.push_back(off[i] - off[a]);
+                    m.zparts.push_back(zp);
+                    a = b;
+                }
+                zg.p1 = m.zparts.size();
+                m.zgroups.push_back(zg);
+                k += (size_t) zg.n;
+            }
+            if (m.bounds_host.size() > bounds_cap) {
+                err = "prefill: the zero-copy groups' bounds do not fit";
+                return false;
+            }
+            return true;
         };
         if (ps_on) {
             int pd = 0;
@@ -3627,41 +3910,56 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                         n_order = order.size();
                         const size_t mmq_gub = use_mmq ? mmq::matrix_bytes(mmq_gt, 1280, N) : 0;
                         const size_t mmq_db = use_mmq ? mmq::matrix_bytes(mmq_dt, N, 640) : 0;
+                        // pf-zero-copy: a zero-copy chunk's layers stream every expert (no resident, none on a peer)
+                        // and read them in place
+                        const bool zc_l = zc_chunk && use_mmq && on_peer.empty() &&
+                                          seq_start[(size_t) l + 1] - seq_start[(size_t) l] == (size_t) m.g->n_expert;
+                        if (zc_chunk && !zc_l) {
+                            err = "prefill: a zero-copy chunk's layer does not stream every expert";
+                            return false;
+                        }
                         pt.mark(kPfGather, cs);
                         if (use_mmq) {
                             // step 2b: the layer's activations as q8_1 rows in expert order, straight from `mixed`
                             // (group_local: each group's own, when it runs)
                             if (!m.local_moe)
                                 mmq::quantize(m.mixed, m.src_dev, m.Xq, mmq_gt, N, N, T * K, m.cs);
-                            // each group's rows: absolute bounds (gate/up reads the layer's rows), relative ones (down
-                            // reads the group's own quantized H)
-                            const size_t n = order.size(), ng = (n + MMQ_GROUP - 1) / MMQ_GROUP;
-                            m.bounds_host.resize(n + 1 + ng * (MMQ_GROUP + 1));
-                            for (size_t j = 0; j < n; ++j)
-                                m.bounds_host[j] = m.off[(size_t) order[j]];
-                            m.bounds_host[n] = (int32_t) rows_local;
-                            for (size_t g = 0; g < ng; ++g)
-                                for (size_t i = 0; i <= MMQ_GROUP; ++i)
-                                    m.bounds_host[n + 1 + g * (MMQ_GROUP + 1) + i] =
-                                        m.bounds_host[std::min(n, g * MMQ_GROUP + i)] - m.bounds_host[g * MMQ_GROUP];
-                            // group_local: each group in parts of at most local_rows rows (one part, its own relative
-                            // bounds, unless its rows are more), the split parts' bounds after the groups'
-                            m.subs.clear();
-                            for (size_t g = 0; g < ng && m.local_moe; ++g) {
-                                const size_t j0 = g * MMQ_GROUP, cnt = std::min<size_t>(MMQ_GROUP, n - j0);
-                                if (m.bounds_host[j0 + cnt] - m.bounds_host[j0] <= m.local_rows) {
-                                    m.subs.push_back({j0, 0, (int) cnt, n + 1 + g * (MMQ_GROUP + 1)});
-                                    continue;
-                                }
-                                for (size_t a = 0; a < cnt;) {
-                                    size_t b = a + 1; // one expert has at most T <= local_rows rows
-                                    while (b < cnt && m.bounds_host[j0 + b + 1] - m.bounds_host[j0 + a] <= m.local_rows)
-                                        ++b;
-                                    const size_t table = m.bounds_host.size();
-                                    for (size_t i = a; i <= b; ++i)
-                                        m.bounds_host.push_back(m.bounds_host[j0 + i] - m.bounds_host[j0 + a]);
-                                    m.subs.push_back({j0, (int) a, (int) b, table});
-                                    a = b;
+                            if (zc_l) { // pf-zero-copy: the groups of the ring's slots, every expert in them
+                                if (!zc_tables(l))
+                                    return false;
+                            } else {
+                                // each group's rows: absolute bounds (gate/up reads the layer's rows), relative ones
+                                // (down reads the group's own quantized H)
+                                const size_t n = order.size(), ng = (n + MMQ_GROUP - 1) / MMQ_GROUP;
+                                m.bounds_host.resize(n + 1 + ng * (MMQ_GROUP + 1));
+                                for (size_t j = 0; j < n; ++j)
+                                    m.bounds_host[j] = m.off[(size_t) order[j]];
+                                m.bounds_host[n] = (int32_t) rows_local;
+                                for (size_t g = 0; g < ng; ++g)
+                                    for (size_t i = 0; i <= MMQ_GROUP; ++i)
+                                        m.bounds_host[n + 1 + g * (MMQ_GROUP + 1) + i] =
+                                            m.bounds_host[std::min(n, g * MMQ_GROUP + i)] -
+                                            m.bounds_host[g * MMQ_GROUP];
+                                // group_local: each group in parts of at most local_rows rows (one part, its own
+                                // relative bounds, unless its rows are more), the split parts' bounds after the groups'
+                                m.subs.clear();
+                                for (size_t g = 0; g < ng && m.local_moe; ++g) {
+                                    const size_t j0 = g * MMQ_GROUP, cnt = std::min<size_t>(MMQ_GROUP, n - j0);
+                                    if (m.bounds_host[j0 + cnt] - m.bounds_host[j0] <= m.local_rows) {
+                                        m.subs.push_back({j0, 0, (int) cnt, n + 1 + g * (MMQ_GROUP + 1)});
+                                        continue;
+                                    }
+                                    for (size_t a = 0; a < cnt;) {
+                                        size_t b = a + 1; // one expert has at most T <= local_rows rows
+                                        while (b < cnt &&
+                                               m.bounds_host[j0 + b + 1] - m.bounds_host[j0 + a] <= m.local_rows)
+                                            ++b;
+                                        const size_t table = m.bounds_host.size();
+                                        for (size_t i = a; i <= b; ++i)
+                                            m.bounds_host.push_back(m.bounds_host[j0 + i] - m.bounds_host[j0 + a]);
+                                        m.subs.push_back({j0, (int) a, (int) b, table});
+                                        a = b;
+                                    }
                                 }
                             }
                             if (grp_mapped) {
@@ -3985,16 +4283,14 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                 // DMA straight from the page-locked arena: the copy stream only waits for the slot
                                 if (m.stage_live[sl])
                                     cudaStreamWaitEvent(m.copy, m.used[m.used_of[sl]], 0);
-                                cudaMemcpyAsync(m.stage_dev[sl], b, (size_t) lay.blob_bytes(l), cudaMemcpyHostToDevice,
-                                                m.copy);
+                                stage_copy(sl, b, (size_t) lay.blob_bytes(l), false);
                                 ++stats_.experts_dma;
                             } else {
                                 // copied to a pinned buffer by the stager (waits only if it is behind), then DMA
                                 const uint8_t* hb = m.stager->wait(job_of[j]);
                                 if (m.stage_live[sl])
                                     cudaStreamWaitEvent(m.copy, m.used[m.used_of[sl]], 0);
-                                cudaMemcpyAsync(m.stage_dev[sl], hb, (size_t) lay.blob_bytes(l), cudaMemcpyHostToDevice,
-                                                m.copy);
+                                stage_copy(sl, hb, (size_t) lay.blob_bytes(l), true);
                                 m.stager->issued_one(job_of[j], m.copy);
                             }
                             cudaEventRecord(m.copied[sl], m.copy);
@@ -4220,6 +4516,74 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                     if (!compute(j, m.stage_dev[stage_of[j]], stage_of[j]))
                                         return false;
                                 }
+                            }
+                        } else if (zc_l) {
+                            // pf-zero-copy: each group's products read its experts where they were staged - gate/up
+                            // from its first slot, down past each blob's gate/up, zc_stride apart - after one wait on
+                            // its last copy (the copy stream is in order); one event gives its slots back after its
+                            // down product.  A group with no rows only gives them back.
+                            const uint64_t S = m.zc_stride;
+                            const size_t down_off = (size_t) lay.fmt[(size_t) l].down_off;
+                            auto product = [&](const uint8_t* w, int type, int64_t w_rows, int64_t w_cols, int ne,
+                                               const void* xq, size_t table, int64_t rows, int64_t mx, float* dst,
+                                               int64_t ld) {
+                                mmq::Product p;
+                                p.w = w;
+                                p.type = type;
+                                p.w_rows = w_rows;
+                                p.w_cols = w_cols;
+                                p.expert_bytes = (size_t) S;
+                                p.n = ne;
+                                p.xq = xq;
+                                p.bounds = m.bounds_dev + table;
+                                p.ids = m.ids_identity;
+                                p.total_rows = rows;
+                                p.max_rows = mx;
+                                p.dst = dst;
+                                p.ld_dst = ld;
+                                m.mmq_ctx->run(p, m.cs);
+                            };
+                            for (const Impl::ZcGroup& zg : m.zgroups) {
+                                const int last = zg.s0 + zg.n - 1;
+                                if (zg.rows > 0) {
+                                    wait_issued(zg.k0 + (size_t) zg.n - 1);
+                                    pt.mark(kPfWaitCopy, cs);
+                                    cudaStreamWaitEvent(m.cs, m.copied[last], 0);
+                                    pt.mark(kPfGemmGU, cs);
+                                    const uint8_t* w0 = m.stage_dev[zg.s0];
+                                    if (m.local_moe) {
+                                        for (size_t p = zg.p0; p < zg.p1; ++p) {
+                                            const Impl::ZcPart& zp = m.zparts[p];
+                                            if (zp.rn <= 0)
+                                                continue;
+                                            const uint8_t* wa = w0 + (size_t) zp.a * S;
+                                            mmq::quantize(m.mixed, m.src_dev + zg.r0 + zp.ra, m.Xq, mmq_gt, N, N, zp.rn,
+                                                          m.cs);
+                                            product(wa, mmq_gt, 1280, N, zp.b - zp.a, m.Xq, zp.table, zp.rn, zp.mx,
+                                                    m.GU, 1280);
+                                            mmq::swiglu(m.GU, m.H, zp.rn, 640, false, m.cs);
+                                            pt.mark(kPfGemmD, cs);
+                                            mmq::quantize(m.H, nullptr, m.Hq, mmq_dt, 640, 640, zp.rn, m.cs);
+                                            product(wa + down_off, mmq_dt, N, 640, zp.b - zp.a, m.Hq, zp.table, zp.rn,
+                                                    zp.mx, m.Dm + (zg.r0 + zp.ra) * N, N);
+                                            pt.mark(kPfGemmGU, cs);
+                                        }
+                                    } else {
+                                        const Impl::ZcPart& zp = m.zparts[zg.p0];
+                                        product(w0, mmq_gt, 1280, N, zg.n, m.Xq, zg.abs, T * K, zg.mx, m.GU, 1280);
+                                        mmq::swiglu(m.GU + zg.r0 * 1280, m.H + zg.r0 * 640, zg.rows, 640, false, m.cs);
+                                        pt.mark(kPfGemmD, cs);
+                                        mmq::quantize(m.H + zg.r0 * 640, nullptr, m.Hq, mmq_dt, 640, 640, zg.rows,
+                                                      m.cs);
+                                        product(w0 + down_off, mmq_dt, N, 640, zg.n, m.Hq, zp.table, zg.rows, zg.mx,
+                                                m.Dm + zg.r0 * N, N);
+                                    }
+                                }
+                                cudaEventRecord(m.used[last], m.cs);
+                                for (int i = 0; i < zg.n; ++i)
+                                    m.used_of[zg.s0 + i] = last;
+                                consumed = zg.k0 + (size_t) zg.n;
+                                give_back(consumed);
                             }
                         } else {
                             // the streamed walk: this layer's entries [k, kend) in id order; an entry the routing did
