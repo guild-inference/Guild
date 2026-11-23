@@ -1,0 +1,75 @@
+# pool-rows-iso: the implementer's fields the README quotes (implementer's numbers, not the verifier's)
+# Extracted from /home/ubuntu/lanes/r20/pool-rows-iso/impl-result.json
+
+## commits
+
+- 535feac fix(cpu): the pool's AVX-512BW rows wrap only the library's table, each model's its own
+- a48ac48 test(cpu): pool_rows_slots_test, and Model B's own CPU table in the multi-model test
+
+## change_summary
+
+pool_rows512 now takes `(base, gate_up_interleaved)` (include/guild/core/pool_rows.hpp, src/core/pool_rows.cpp). It returns `base` unchanged unless both hold:
+- library_table(base): quant_act, quant_h, gate_up and down all equal guild_cpu_backend_table_v2()->native's. That is the bundled guild-kernels-cpu table, the one kq_rows512_test compares the rows with. The registry's default split_multi_native kernel carries it, and ExpertPool binds it at construction. In a build without the bundled CPU arithmetic this is always false.
+- gate_up_interleaved is false.
+
+So a GEXEC table (fused or interleaved), an external CPU package's table, or an already-wrapped table keeps its own rows.
+
+This is safe because the library's table is still wrapped and still delegates to itself, so its bits are unchanged. If the check ever failed to recognise it, the model would get the library's own rows, which kq_rows512_test proves bit-identical to the wrapped ones (only slower). The only tables that change are the unproven ones, which now get their own rows.
+
+Per-model wrappers replace the single g_base:
+- detail::kPoolRowsSlots = 8 slots. Each slot has its own pair of template functions, gate_up_slot<S> and down_slot<S>, which call the old bodies (now taking the base as an argument) with g_base[S].
+- detail::pool_rows512_slot takes a slot under a mutex. A base with the same gate_up and down reuses its slot, so every model on the library's table shares slot 0.
+- With all slots taken, the base comes back unchanged and one line goes to stderr. A table it already returned comes back as it is.
+- A slot's base is written once, before any table that uses it exists. Calls read it without the lock, as they read the old g_base.
+
+src/runtime/model.cpp:506-512 passes is_gexec_interleaved_impl(sp.gexec_cpu_expert_impl). This is a superset of the layout decision made later at :578, so it errs on the side of not wrapping. The comments there and in the header are rewritten; the "Process-wide: the last base given is the one wrapped" sentence is gone. kq_rows512_test now calls pool_rows512(base, false).
+
+Tests:
+- New tests/core/pool_rows_slots_test.cpp, registered beside kq_rows512_test and linked with guild_engine and guild_runtime (the registry lives in guild_runtime). It uses fake tables that write markers: each wrapped table reaches its own base for the formats it does not reroute and not for those it does, including after later tables are wrapped. It also covers concurrent wraps, slot reuse and slot exhaustion, and checks that the registry's and ExpertPool's library tables are wrapped into one slot while the interleaved flag, the four GEXEC tables, external-package-like tables and wrapped tables come back unchanged.
+- multi_model_isolation_test now checks that Model B's pool table is its selected GEXEC table, and prints whether A's table is wrapped.
+
+## switches
+
+- No new switch. GUILD_POOL_ROWS512=0, GUILD_KQ_ROWS512=0 and GUILD_POOL_IQ4XS=0 behave as before; pool_rows_slots_test exits 77 (skip) with GUILD_POOL_ROWS512=0 or GUILD_IQ_GGML_ORDER=0.
+
+## root_cause
+
+Both bugs are in pool_rows512 (line numbers at 4f3ce6d).
+
+Bug 1, from fc15389: one process-wide base. src/core/pool_rows.cpp:17 declares a single `g_base`. pool_rows512 (:109-117) overwrites it on every call and returns the same two wrapper functions every time. src/runtime/model.cpp:508 calls it at every model load. The wrappers pass every format they do not reroute to g_base (:65 gate_up, :101 down), so once Model B loads, Model A's rows go to B's table. In the test, B's table is make_gexec_table<false,true> (src/kernels/cpu/gexec_expert.cpp:2055-2073), which uses gexec_gu_rows_interleaved_safe (:1833). That function reads gate row r at 2r*gu_row and up row r at (2r+1)*gu_row (Q4_K branch :1764-1766). Before cpu-rows, none of Ornith's formats was rerouted (gate/up Q4_K; down Q4_K or Q6_K). So A's [gate | up] rows were read as interleaved, and the test failed at tests/core/multi_model_isolation_test.cpp:381.
+
+Bug 2, from 5bda3af and b9ba668: every table was wrapped, but the rows are only proven against the library's table. 5bda3af added the Q4_K gate/up reroute, `q4k_gu_rows512(b, f->gu_row, f->up_off, ...)` at pool_rows.cpp:58-60, and the Q4_K / Q6_K down reroute at :96-98. b9ba668 added the IQ4_XS gate/up reroute at :80-86. Both gate/up reroutes assume the [gate | up] layout. Model B's GEXEC interleaved table was wrapped too, so its interleaved rows were read wrongly and B produced 220 220 16 15 19 24 instead of its own table's 781 513 5904 3808 660 14145. The test still passed because it compares B only with B. 5bda3af also rerouted all of Ornith's formats, which took A's rows away from g_base and hid bug 1.
+
+The round-19 reroutes never met interleaved rows: the NL4 repack is skipped for interleaved layouts (src/core/expert_source.cpp:2338), and down rows are never interleaved.
+
+A scratch row-level comparison confirms that both bugs are layout errors, not arithmetic ones:
+- On their own layouts, the four GEXEC tables give the library's bits for Q4_K/Q4_K, Q4_K/Q6_K, IQ4_XS/Q8_0, IQ4_XS/IQ4_NL and IQ3_S/IQ4_NL at 1-16 tokens (0 differ).
+- B's interleaved table on [gate | up] rows (bug 1) and the wrapped library table on interleaved rows (bug 2) differ in 57-64% of gate/up results. Down rows are unaffected.
+
+## ab_table
+
+Drama 3 seed 11, frames/s. Base = int/build/guild-generate (4f3ce6d, md5 af922153); lane = this build (md5 332d91ef). Same command line as drama3-run-r18. Every run's WAV md5 was 6e04c9b1.
+
+Hold 07:03-07:05, base first in each pair:
+- int-1 49.82, lane-1 49.66 (lane -0.16)
+- int-2 49.41, lane-2 49.28 (lane -0.13)
+
+Hold 07:18, lane first:
+- lane-3 48.73, int-3 48.37 (lane +0.36)
+
+Mean: base 49.20, lane 49.22 (+0.02). Within a hold each run is 0.13-0.36 frames/s slower than the one before it, whichever binary it is, so the first of a pair wins. Across both orders there is no difference.
+
+## open_issues
+
+- A model bound to a GEXEC table or an external CPU package's table no longer gets the AVX-512BW rows, so it is slower but computes its own table's bits. No such model is used on this PC. The scratch comparison shows the GEXEC tables give the library's bits for the rerouted formats on their own layouts, so wrapping fused GEXEC tables could be allowed later, but only after adding a test like kq_rows512_test's table check for each GEXEC table. That is your decision; I did not do it.
+- The gate_up_interleaved argument is redundant today: only a GEXEC interleaved kernel interleaves rows, and its table never passes the library-table check. It is kept so the 'portable layout' half of the rule is explicit.
+- multi_model_isolation_test still does not pin Model B's tokens, since they depend on the model files. The new check pins the mechanism instead: B's pool table must be its selected GEXEC table.
+- Slots are never freed. In practice only the library's table reaches them through pool_rows512, so only slot 0 is used.
+- Nothing pushed. lane20/pool-rows-iso is local: 535feac and a48ac48 on top of 4f3ce6d.
+
+## not_taken
+
+- Wrapping GEXEC fused tables. Their rows match the library's bits here per the scratch comparison, but no committed test proves it.
+- Forcing gate_up to inline into each slot to remove the thunk. gate_up_slot<S> is a 12-instruction thunk per pool task, and the Drama 3 pairs show no measurable cost.
+- Moving the pool_rows512 binding after the layout decision at model.cpp:578 to pass the exact interleave flag. The superset available at :508 is more conservative and keeps the diff small.
+- Detecting the standard table by impl_id or package_id strings. Comparing the four function pointers identifies exactly the functions the tests prove.

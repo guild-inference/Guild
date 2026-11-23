@@ -1,0 +1,159 @@
+# pf-tail-ring: the implementer's fields the README quotes (implementer's numbers, not the verifier's)
+# Extracted from /home/ubuntu/lanes/r20/pf-tail-ring/impl-result.json
+
+## commits
+
+- 62de4662212ff09c8f92b441d2031bb82a734f38 perf(prefill): a chunk below the layout's lends its idle region and R rows to the streamed ring
+- 62b4ee2ac16d2f4590a527a97404bb5fc5de0fc5 perf(prefill): the tail ring from 1,536 tokens, with the per-token buffers' idle rows too
+- fe418d4a03f4763b7190f7a511dec6aa34f0d455 perf(prefill): dense MMQ products of the same rows quantize them once (WIP, to measure)
+- 70d277a8fb558a550cf7417076658a0aef5d7b5d perf(prefill): measured, the shared q8_1 rows of the dense products
+- d8d921472e2f546ed41cfa247fe0fe79766010a1 docs(prefill): the tail ring's 6K and 7.6K numbers in its comment
+
+## change_summary
+
+All in src/prefill/prefill.cpp, plus one private declaration (carve_region) in include/guild/prefill/prefill.hpp. No kernel-repo, ABI or backends.lock.json change. No new device code or VRAM (two CUDA events).
+
+1) carve_region(T): carve()'s scratch-region block is moved verbatim into a member. It lays out the hyper-connection set (gated, xn16, emb, lo, lo16), the GDN set, the QSA set, the MoE set and local_moe/local_rows for T tokens on the existing region. region_need() gives the size and is shared with carve. At the layout's T it makes the same takes in the same order, so the init layout is unchanged.
+
+2) lay_out(T) runs at each chunk start in run_impl, before the embedding gather. It acts when all of these hold:
+   - GUILD_PREFILL_TAIL_RING is on;
+   - the layout owns its buffers (not borrowed), with no expert cache, no peer, helper or layer split;
+   - the ring is rows_stream()'s, not the fused one;
+   - the chunk is below the layout's 8192 tokens and will stream (T >= 1536, or >= 4096).
+   It then lays the region out for T and adds whole-blob ring slots (3,481,600 B each, 256-B aligned starts) after the 32 owned slots, up to ring_cap() 512. The slots come from:
+   - the region past what the chunk uses (region_eff);
+   - R's rows past T;
+   - the idle rows of mixed, mixed_bf, mixed_h, bo and ple_emb.
+   Ring sizes: 433 at 2,007 tokens, 367 at 3,007, 302 at 4,007, 171 at 6,007, 65 at 7,599, and 85 for a 32K prompt's 7,341-token last chunk.
+   Fences:
+   - Whenever a tail is lent, an event recorded on the compute stream makes the copy stream wait for it.
+   - When the layout changes, the compute stream also waits for the copy stream, and stage_live/used_of are reset.
+   - A full chunk lays the 8192 layout out again.
+
+3) Walk rule: stream_all is also true when slots are lent, the ring has at least 192 slots and T >= tail_stream_min(). The default 1536 was measured against 2048 and 3072.
+
+4) Region users:
+   - The PLE batch's sub-batch now comes from region_eff, and lay_out keeps region_eff large enough that the sub-batch size is what it was.
+   - draft_kv keeps sizing from region_bytes. Instead, on_chunk syncs the copy stream first for a chunk that lent slots, because an entry the routing did not pick is released without waiting for its copy.
+
+5) Step 8 (pf-dense-xq, stretch): native_proj_multi. The GDN's qkv and gate, and the shared expert's gate and up, convert and quantize each 1,024-row slice once when all of them pass native_proj's dense-MMQ test with the same type. QSA's k, v and q are not one type here, so each keeps its own native_proj.
+
+Unchanged: bytes_needed, the auto chunk scan, the 8192-token chunk, and the borrowed, peer, fused and HIP paths.
+
+Why the bits stay the same:
+- Each expert's MMQ multiplies the same blob bytes, gathered into the same group buffers, in the same 16-expert groups in id order. The streamed and routed walks were already hash-identical.
+- Only buffer addresses change, still 256-B aligned, so cuBLAS and MMQ pick the same kernels. The slot a blob is staged in also changes.
+- local_rows is now 2T instead of 2*T_max, so a group with more rows is split into parts. MMQ on Pascal computes each row on its own (the premise of --prefill-rows).
+- The PLE sub-batches and draft_kv's batches are the same sizes as before.
+- Step 8's q8_1 rows depend only on each row's FP32 values and the type.
+The hashes below prove all of this on 9 prompt sizes.
+
+## switches
+
+- GUILD_PREFILL_TAIL_RING: default on. 0 = the layout and ring as carved at load, which is perf/r19's prompt path (32 slots, and the routed 8-slot walk below 4096 tokens).
+- GUILD_PREFILL_TAIL_BUFS: default on. 0 = only the region's and R's idle tails are lent (not mixed, mixed_bf, mixed_h, bo, ple_emb): 254 instead of 302 slots at 4K.
+- GUILD_PREFILL_TAIL_STREAM_MIN: default 1536. Below 4096 tokens, a chunk lends its tails and takes the streamed walk from this many tokens. A very large value keeps the routed walk and the carved layout below 4096.
+- GUILD_PREFILL_SHARE_XQ: default on. 0 = each dense-MMQ product converts and quantizes its own input, as before.
+
+## ab_table
+
+Common to every run: the lane binary, GUILD_NO_KV_CACHE=1 GUILD_PREFILL_TIMING=1, qwen-bench-r18's command line without its own lock (ab/qb.sh), QWEN_RUNS=1, --max-new 32 --warmup 1, one gpu-run hold per session. Times are prompt_ms in ms.
+
+Session thr (10:06-10:15, commit 62de466): tail on, streamed (s) = TAIL_STREAM_MIN=1024, routed (r) = 100000. Prompts p1k / p15 / p2k / p3k / p4k (p1k is routed in all four runs because 1007 < 1024).
+- 1 ts1: 7443 / 8820 / 9448 / 11737 / 14458
+- 2 tr1: 7450 / 8820 / 10343 / 13229 / 16127
+- 3 tr2: 7472 / 8829 / 10386 / 13290 / 16180
+- 4 ts2: 7463 / 8901 / 9461 / 11725 / 14554
+
+Session ab2 (10:44-10:59, commit 62b4ee2's code, pE). Arms: on = defaults, off = TAIL_RING=0, bz = TAIL_BUFS=0. Times p1k / p15 / p2k / p3k / p4k, then wait copy at 2K / 3K / 4K.
+- 5 on1: 7450 / 8793 / 9380 / 11436 / 14278; wait 1632 / 810 / 954
+- 6 off1: 7449 / 8807 / 10344 / 13246 / 16183; wait 2845 / 2877 / 2911
+- 7 bz1: 7428 / 8774 / 9391 / 11769 / 14555; wait 1643 / 1233 / 1196
+- 8 bz2: 7452 / 8785 / 9450 / 11825 / 14597; wait 1708 / 1149 / 1229
+- 9 off2: 7442 / 8803 / 10344 / 13252 / 16180; wait 2841 / 2880 / 2893
+- 10 on2: 7429 / 8798 / 9376 / 11449 / 14291; wait 1557 / 729 / 956
+
+Session ab3a (11:06-11:24, commit fe418d4). pF = p6k / p7600; x = SHARE_XQ=0.
+- 11 pFon1: 20852 / 24054
+- 12 pFoff1: 21136 / 24094
+- 13 pFx1: 20930 / 24109
+- 14 pFx2: 20914 / 24134
+- 15 pFoff2: 21230 / 24167
+- 16 pFon2: 20837 / 24027
+- 17 iss0 (pE, GUILD_PREFILL_ISSUER=0): 7412 / 8774 / 11503 / 13684 / 16019
+- 18 pEon3 (pE, defaults): 7423 / 8769 / 9352 / 11365 / 14232
+
+Session ab3b (11:26-11:36, commit fe418d4):
+- 19 pBon: p4k 14733, ctx32k 105909
+- 20 decode bench: prose 51.49, code 64.94 tok/s (base20 52.19 / 65.81, another process; the decode path is not touched)
+- 21 batch_test: 54.7 tok/s overall, 59.2 from the first batch token
+
+Session ab4 (11:43-11:52, fe418d4's code plus the step-7 gate patch, switched by env). pG = p3k / p4k / p6k.
+- 22 gon1: 11720 / 14227 / 20262
+- 23 gate1 (COPY_GATE=1): 11954 / 14078 / 19675
+- 24 gate2: 11915 / 14027 / 19721
+- 25 gon2: 11697 / 14239 / 20322
+
+Session ab5 (12:21-12:24, HEAD d8d9214, pH, QWEN_RUNS=2):
+- p2k 9455, 9361; p4k 14306, 14215; p3k 11406, 11397
+
+Summary, tail on vs off. Each line: prompt (tokens): on ms x2 | off ms x2 | wait copy on / off | hash.
+- p1k (1,008): 7450, 7429 | 7449, 7442 | 2888, 2925 / 2900, 2906 | 86557
+- p15 (1,508): 8793, 8798 | 8807, 8803 | 2817, 2836 / 2802, 2837 | 46675
+- p2k (2,008): 9380, 9376 | 10344, 10344 | 1632, 1557 / 2845, 2841 | 81685
+- p3k (3,008): 11436, 11449 | 13246, 13252 | 810, 729 / 2877, 2880 | 95757
+- p4k (4,008): 14278, 14291 | 16183, 16180 | 954, 956 / 2911, 2893 | 59650
+- p6k (6,008): 20852, 20837 | 21136, 21230 | 948, 939 / 1675, 1677 | 60700
+- p7600 (7,600): 24054, 24027 | 24094, 24167 | 722, 708 / 877, 899 | 77730
+
+## gain_summary
+
+Measured with the same binary, tail on vs GUILD_PREFILL_TAIL_RING=0, 2 alternated pairs, the same tokens:
+
+| Prompt | Off | On | Change |
+| --- | ---: | ---: | ---: |
+| 2,008 tokens | 10.34 s | 9.38 s | -9.3% |
+| 3,008 tokens | 13.25 s | 11.44 s | -13.6% |
+| 4,008 tokens | 16.18 s | 14.28 s | -11.7% |
+| 6,008 tokens | 21.18 s | 20.84 s | -1.6% |
+| 7,600 tokens | 24.13 s | 24.04 s | -0.4% |
+| 1,008 tokens | 7.45 s | 7.45 s | same (routed, layout as carved) |
+| 1,508 tokens | 8.81 s | 8.80 s | same (routed, layout as carved) |
+
+Parts of that gain:
+- Lending the per-token buffers too (TAIL_BUFS): -2.0% at 4K, -3.0% at 3K, -0.45% at 2K, compared with lending only the region's and R's tails.
+- Streamed vs routed walk with the tail lent: 1.5K +0.4%, 2K -8.8%, 3K -11.5%, 4K -10.2%. This is why the threshold is 1536.
+
+Against the expected gain:
+- 4K: expected -8.5% (14.74 s); measured -11.7%.
+- 2K: expected -5.1%; measured -9.3%.
+- 1K: expected unchanged; it is unchanged.
+- 5-6K: expected -5 to -8%; measured only -1.6% at 6K. Three reasons:
+  - The base already streamed there through 32 slots.
+  - The tail lends only 139 slots.
+  - The copies running beside the attention half's hyper-connection read slow it from 2.82 to 3.35 s. Gating those copies (step 7) brings it back to 2.83 s.
+- 7.6K: expected about -1%; measured -0.4%.
+- 32K: not A/B'd. One run took 105.9 s with the right hash; round 18 measured 105.9 s.
+
+Stretch (step 8): expected -0.07 s at 4K and -0.55 s at 32K. Measured -0.08 s at 6K and at 7.6K (-0.37% / -0.34%, 2 pairs). The time came out of the GDN projections (-30 / -39 ms) and router+shared (-42 / -53 ms). 4K and 32K were not A/B'd separately.
+
+The stop rule (4K gain of at least 3%) is passed. Lock use was about 63 minutes in 6 holds.
+
+## open_issues
+
+- REPORT.md was not written because the harness blocks report files from subagents. The verifier should read this result and NOTES.md.
+- Copies running beside the dense half slow it. In the streamed walk the hc read, combine and router+shared phases take 18-37% longer, while the MMQ phases do not. This limits the gain at 6-8K. A size-aware gate is the next lever: gate when T is at least about 10 times the ring size, which would keep the measured 4K/6K wins and avoid the 3K loss. It is not measured at 7.6K or for 8192-token chunks.
+- VRAM headroom: nothing was added (two events). gpu_after stays 7585 MiB, and 'chunks of 8192 tokens in the 3098 MiB' and 'GPU cache 0 slots' are unchanged. Integration watch from judge.json: if glm-attend3's or d3-tower-fuse's new device code lowers free VRAM, the auto chunk can drop below 8192. The tail follows the layout's chunk, but a prompt of exactly that chunk lends nothing.
+- Interactions with the other lanes' files: none. This lane touches only src/prefill/prefill.cpp and one private declaration in include/guild/prefill/prefill.hpp. win-combine edits src/runtime/model.cpp, where the auto chunk scan is, but not that scan. The pf-zero-copy reserve must be rebased on lane20/pf-tail-ring: its strided ring has to cover the lent slots, which sit at a 3,481,600-B stride inside 7 separate allocations.
+- Not A/B'd: 32K prompts (only the hash and one on-arm time, 105.9 s), and step 8 at 4K and 32K.
+- The HIP build was not compiled here (no ROCm on this PC). The new CUDA calls are mapped in include/guild/hip_compat, and rows_stream() is off on HIP, so the tail never applies there.
+- The ple_parity ctest fails in this environment, and in build-pin too, because its fixture files are missing.
+
+## not_taken
+
+- Step 7, the copy gate (patch at /home/ubuntu/lanes/r20/pf-tail-ring/patches/step7_copy_gate.py, switch GUILD_PREFILL_COPY_GATE=1). A layer's copies wait for an event recorded after its attention half's hyper-connection read. Results over 2 pairs, hashes identical: 3,008 tokens +1.9% (wait copy 817 -> 1255 ms), 4,008 -1.3%, 6,008 -2.9% (hc read 3.37 -> 2.83 s). It loses at 3K, so it is not on the branch.
+- The GUILD_PREFILL_ISSUER=0 check that step 7 asks for first. It is slower overall (2K 11.50 vs 9.35 s, 4K 16.02 vs 14.23 s) because the inline issuer blocks the launching thread during the MoE walk. Its dense phases are back to routed-walk speed. On its own it cannot separate the issuer thread from the DMA; the gate experiment can, and it shows that gating only the DMA restores the HC read.
+- Thresholds of 2048 or 3072 for the streamed walk: 2048 leaves 2,007 tokens routed (giving up -8.8%), and 3072 also gives up 3K's -11.5%.
+- Lending at routed chunks below 1536 tokens: no gain there, because the streamed walk is copy-bound (1,507 tokens is a wash), so those chunks keep the carved layout.
+- Sharing the q8_1 rows of QSA's k, v and q: their native types differ in this config, so native_proj_multi falls back to one product each.
+- Lending the FP16-fallback dequant buffers (about 20 MB) or the GEMM scratch and workspace: they are used by the FP16 and cuBLAS paths, so they are left alone.

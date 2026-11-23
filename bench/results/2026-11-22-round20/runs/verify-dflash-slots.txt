@@ -1,0 +1,73 @@
+# dflash-slots: the verifier's measured runs and problems
+# Extracted from /home/ubuntu/lanes/r20/dflash-slots/verify-result.json
+
+## verdict
+
+accept
+
+## head_checked
+
+86c5f74e0fdb844404100a44e90172d7022f0bd2 (lane20/dflash-slots, clean worktree; commits from c412de7: 0479fae, a1fe7d1, 86c5f74). I recompiled dflash.cpp, batch.cpp and dflash_kernels_test.cpp from the HEAD worktree with each target's own flags. All three objects are byte-identical to the build dir's, so the binaries I ran are HEAD. The incremental rebuild under build-run found everything up to date.
+
+## bits_evidence
+
+Each check below is expected -> got. All runs are mine, on HEAD's build.
+- ctest -R 'dflash|verify|host_combine' (gpu-run, 04:20): expected 2/2 pass -> 2/2 passed (dflash_kernels_test 8.34 s, host_combine_parity 0.21 s).
+- dflash_kernels_test, test_shared_head (draft_slots vs draft() per context, memcmp of drafts and probabilities over 1-4 contexts): expected identical -> "29 jobs ... equal draft()'s" for Q4_K and for int8 weights, "dflash kernels: all match".
+- My own real-weights check (verify/slots_check.cpp, built against the lane's libraries):
+  - Setup: the real Qwen DFlash drafter, its real 163778-row head and draft vocabulary, and 4 real feature dumps (q_prose, q_code, q_ru, q_zh) as 4 context sets. At each of 48 positions, draft() at every B from 2 to 8 on each set is the reference. Ten job lists run against it, rotated over the sets each step: 3 slots 2,2,1; 4x1; 2x3; 1x7; rows blocks; 8 rows in one pass; 4 passes; mixed blocks; 1+2. Drafts and probabilities are compared with memcmp.
+  - Expected 0 differences -> 1488 jobs, 0 differ, with Q4_K and with int8 drafter weights.
+  - The references are not degenerate: 18.2% / 17.9% of whole-block drafts lead the text, and the first-draft probability changes at 192 of 192 drafts.
+- batch_test --batch 3 --n 3, 4 runs (shared head off/on/off/on):
+  - Expected: every slot IDENTICAL, and 46 windows with 164/247 accepted (base20 b3, int b3).
+  - Got: 3/3 IDENTICAL in all 4; 46 windows and 164/247 in all 4; every slot's token count and printed text equal to base20/bl/b3.out's.
+- batch_test --batch 4 --n 4 with GUILD_BATCH_DRAFT_SLOTS=4, 4 runs (off/on/off/on): expected IDENTICAL, and the same accepted count on and off -> 4/4 IDENTICAL, 57 windows and 172/248 in all 4.
+- batch_test --batch 7 --n 7 (the engine runs 6 slots): expected IDENTICAL, 98 windows and 14/29 (base20 b6) -> 6/6 IDENTICAL, 98 windows, 14/29; texts and token counts equal to base20 b6's.
+- qwen-bench-r18 (single request):
+  - Expected ids [38747, 38747, 41916, 41916] -> got those ids, and all 4 full 256-token sequences equal base20/bl/b-q1.json's.
+  - Expected the lines 'chunks of 8192 tokens in the 3098 MiB of VRAM free' and 'GPU cache 0 slots (0 bytes)' -> both present.
+  - Window and draft counts equal base20's: 7 windows 9/16; 91 windows 165/265 x2; 65 windows 191/265 x2.
+- Solo A/B, base c412de7 against the lane: ids [38747, 41916] in all 4 runs, with the same window and draft counts.
+- Batch-mode VRAM: unchanged. The 3-slot logs read 'chunks of 4608 tokens in the 2146 MiB of VRAM free' as in base20 and int, and the engine still runs 6 slots when 7 are asked.
+- format_code.py --check: "all 551 files are formatted (clang-format 18.1.8)".
+
+## measured
+
+Every run used the same lane binary build/guild-generate (HEAD), one process per run, the off arm first. Arms are GUILD_BATCH_DFLASH_SHARED_HEAD=0 (off) or 1 (on).
+Command: BATCH_TEST_LOG=<log> /home/ubuntu/Guild/.venv/bin/python /home/ubuntu/work/par/guild/tools/batch_test.py --exe <lane exe> --config /home/ubuntu/work/par/cfg/qwen32k.json --batch B --n N --max-new 96.
+Columns: windows, ms a window, drafts ms, run ms, accepted, tok/s from the engine line, tok/s from batch_test.
+
+AB1, 3 slots (--batch 3 --n 3), one gpu-run hold 04:37:31-04:43:50:
+1. off: 46, 93.55, 11.36, 82.00, 164/247, 57.9, 60.1
+2. on: 46, 91.05, 9.03, 81.81, 164/247, 59.3, 61.6
+3. off: 46, 94.65, 11.33, 83.08, 164/247, 57.2, 59.6
+4. on: 46, 90.92, 9.00, 81.73, 164/247, 59.4, 61.8
+- Pair 1: window -2.50 ms, drafts -2.33 ms, +2.5% tok/s.
+- Pair 2: window -3.73 ms, drafts -2.33 ms, +3.7%. The off run's run phase was +1.3 ms, which is noise.
+
+AB2, 4 slots x 1 draft (--batch 4 --n 4, GUILD_BATCH_DRAFT_SLOTS=4), one hold 05:11:36-05:18:15:
+1. off: 57, 99.47, 15.59, 83.57, 172/248, 57.0, 58.8
+2. on: 57, 95.80, 11.84, 83.65, 172/248, 58.8, 60.8
+3. off: 57, 100.77, 15.65, 84.80, 172/248, 56.3, 58.1
+4. on: 57, 95.39, 11.89, 83.21, 172/248, 59.0, 61.0
+- Pair 1: window -3.67 ms, drafts -3.75 ms, +3.4%.
+- Pair 2: window -5.38 ms, drafts -3.76 ms, +5.0%.
+
+Single runs, exactness only:
+- Hold E: 6 slots, 98 windows, 68.91 ms, drafts 0.35, 14/29, 70.9 tok/s.
+- qwen-bench-r18 05:33-05:36: 51.81 / 65.10 tok/s.
+
+Hold S, the solo path, 05:58:14-06:04:22. The lane's base binary runs/base/guild-generate (c412de7) against the lane binary, qwen-bench-r18's command with --runs 1, inside one hold:
+1. base: prose 51.64 tok/s (54.48 ms/win), code 65.24 (60.37)
+2. lane: prose 52.12 (53.97), code 65.49 (60.13)
+3. base: prose 52.02 (54.08), code 65.60 (60.03)
+4. lane: prose 52.17 (53.93), code 65.68 (59.97)
+- Lane against base: prose +0.9 / +0.3%, code +0.4 / +0.1%. That is noise: no solo regression.
+
+Reference points from other runs: int's own b3 gave 93.68 ms, drafts 11.33, 60.0 tok/s. That equals my off arm, so off is the base.
+
+## problems
+
+- {"severity": "minor", "what": "The HIP and MSVC builds were not compiled, by the lane or by me. The new code uses only runtime calls dflash.cpp already made, plus standard C++; the test uses _putenv_s on Windows. If a per-column difference appeared on HIP, it would change drafts (acceptance and speed), not tokens.", "where": "src/core/dflash.cpp draft_slots; tests/core/dflash_kernels_test.cpp set_env", "fix": "Build the HIP and Windows CI jobs once after merging. No code change expected."}
+- {"severity": "minor", "what": "The shared head is exact only because k4_mm / d8_mm are exact per column at every column count. A future head kernel chosen by column count (for example a wide k4 pass, or MMQ) would make shared drafts differ from solo drafts. That affects speed only.", "where": "src/core/dflash.cpp head_k4(), draft_slots", "fix": "None now. Keep test_shared_head in ctest, and keep head_k4() false for any head path whose bits depend on column count."}
+- {"severity": "minor", "what": "The old err.clear() in the stale-set branch of GuildBatch::step was dropped. It is harmless: step does not set err there, and callers read err only when step returns false.", "where": "src/runtime/batch.cpp step(), drafting loop", "fix": "None needed."}

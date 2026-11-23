@@ -1,0 +1,115 @@
+# cpu-rows: the fixer's runs (acks off by default, aa12065)
+# Extracted from /home/ubuntu/lanes/r20/cpu-rows/fix-result.json
+
+## commits
+
+- 3005f15 perf(cpu): Q4_K and Q6_K expert rows two to an AVX-512BW pass in the pool
+- e5ee392 perf(cpu): IQ4_NL down rows prefetch six rows ahead (GUILD_IQ4NL_PF)
+- 62b6d6c perf(cpu): Qwen3.8-Flash-Next's IQ4_XS gate/up rows on the AVX-512BW rows in the pool
+- aa492f7 perf(cpu): the expert pool's park count as acks, each worker's state on its own line
+- bce66f4 perf(cpu): Q8_0 rows' weight scales a block pair at a time (GUILD_Q8_PAIR)
+- dddb6d4 docs(cpu): the engine measurements of the expert rows and the pool's acks in their comments
+- aa12065 fix(cpu): the expert pool's acks off by default (GUILD_POOL_ACK=1 opts in)
+- 9f34736 test(cpu): q8_0_rows512_test at odd block counts and GLM-5.3-Flash's row lengths
+
+## switches
+
+- GUILD_KQ_ROWS512, default 1: Q4_K gate/up and Q4_K / Q6_K down expert rows on kq_rows512; 0 restores the library's rows.
+- GUILD_IQ4NL_PF, default 6: IQ4_NL down rows prefetch 6 rows ahead (0-64 accepted); 2 restores the old distance.
+- GUILD_POOL_IQ4XS, default 1: IQ4_XS gate/up rows on iq4xs_rows512; 0 restores the library's rows.
+- GUILD_POOL_ACK, default 0 since aa12065 (read when the pool is made): unset or 0 is the pool's protocol (subtract at wake, add at park) and adjacent worker states, as before the lane; 1 opts in to the ack-count parking and 64-byte worker states.
+- GUILD_Q8_PAIR, default 1: Q8_0 rows' weight scales a block pair at a time; 0 restores the one-block build.
+
+## exactness_evidence
+
+All on the build of 9f34736 (HEAD), /home/ubuntu/lanes/r20/cpu-rows/build. Each check is expected, then got.
+
+Unit tests:
+- ctest, 20 tests (kq_rows512, iq4nl/iq4xs/q8_0_rows512, host_combine_parity, native_grouped_parity, shared_expert_parity, native_expert_parity x9, pool_affinity, expert_multi, pool_numa, pool_stress): expected pass; got 20 of 20 pass. expert_multi_test and pool_stress are SKIPPED (exit 77, no VNNI).
+- kq_rows512_test: expected 0 differ; got 173,808 results equal to ggml-cpu's dot and 2,453,760 equal to the library's table.
+- q8_0_rows512_test with the new sizes (32, 64, 1856, 2688, 96, 1888, 2048, 4096, 12288): expected 0 differ; got 271,728 results, 0 differ, in each of default, GUILD_Q8_PAIR=0 and GUILD_Q8_PAIR=1.
+- iq4nl_rows512_test: expected 0 differ; got 20,448, 0 differ.
+- iq4xs_rows512_test: expected 0 differ; got 30,672, 0 differ.
+- pool_affinity_test: expected pass; got pass.
+- pool_numa_test, 300 batches: expected every row bitwise; got 60,753 rows bitwise in each of GUILD_POOL_SPIN_US=0 with the new default, GUILD_POOL_SPIN_US=0 GUILD_POOL_ACK=1, and the default spin.
+
+Models:
+- Drama 3: expected seed 11 6e04c9b1 and seed 12 f84288c9. Got all 11 WAVs as expected (9 x 6e04c9b1, 2 x f84288c9), in both arms and under all three stresses.
+- Qwen: expected ids [38747, 38747, 41916, 41916]. Got the same in all 4 runs (default, ACK=1, both contended runs), each at "GPU cache 0 slots".
+- Ornith: expected [30936, 30936, 65886, 65886]; got the same.
+- batch_test 3 slots with drafts: expected every slot IDENTICAL to its solo run and the slot lines and texts equal to base20's b3.out. Got 3 of 3 IDENTICAL, md5 7e55b7c4 on both sides.
+- batch_test 7: same expectation against base20's b6.out. Got 6 of 6 IDENTICAL, md5 384be92e on both sides.
+- StartLux: expected base20's sl.jsonl. Got ids, answers (choices, confidences, probabilities) and usage identical for all 4 requests; only timing differs.
+
+Objects and binaries:
+- objdump -d before and after: kq_rows512, iq4nl_rows512, q8_0_rows512 and pool_rows are identical; pool.cpp.o differs in only the two constructor initializers.
+- glm5_run (ab52f56f) and transcribe_run (0da3dfb0) have the same md5 as before the fix, so GLM and Nemotron run byte-identical binaries.
+
+Other:
+- format_code.py --check: passes (551 files).
+- Read-only git merge-tree against d3-tower-fuse, win-combine, pf-tail-ring, int, pf-zero-copy, dflash-slots and glm-attend3: no conflict markers.
+
+## ab_table
+
+One binary (9f34736), arms set by environment and alternated inside one gpu-run hold per model group.
+- def = defaults (acks off now).
+- ack1 = GUILD_POOL_ACK=1 (the old default).
+- h = two busy loops pinned to worker CPUs 7 and 23.
+- s = GUILD_POOL_SPIN_US=1000.
+- d = a task busy 2 ms every 20 ms pinned to worker CPU 7.
+
+Drama 3, 01:59:52-02:04:46, drama3-run-r18's command (fix/f_d3.sh). Seed 11 unless the name ends in 12. Frames/s, md5, then the 86-row prompt in ms:
+- w-11, def warm-up (not paired): 48.24, 6e04c9b1, 469
+- def-11: 47.48, 6e04c9b1, 475
+- ack1-11: 47.77, 6e04c9b1, 475
+- ack1-12: 48.81, f84288c9, 469
+- def-12: 47.18, f84288c9, 476
+- h-def: 41.51, 6e04c9b1, 761
+- h-ack1: 23.14, 6e04c9b1, 853
+- s-def: 47.30, 6e04c9b1, 474
+- s-ack1: 46.83, 6e04c9b1, 482
+- d-def: 46.80, 6e04c9b1, 501
+- d-ack1: 44.70, 6e04c9b1, 510
+
+Qwen, 02:23:29-02:31:27, qwen-bench-r18's command (fix/f_qw.sh: 2 runs x prose + code x 256 tokens). Tok/s prose / code, then CPU dispatch ms a window prose / code (mean of the two runs); ids [38747, 38747, 41916, 41916] in all four:
+- def-1: 51.72 / 65.19, CPU 28.12 / 33.30
+- ack1-1: 51.74 / 64.95, CPU 27.64 / 33.32
+- qh-def (busy loops on CPUs 7 and 23): 34.17 / 43.33, CPU 58.06 / 66.49
+- qh-ack1 (same load): 19.86 / 24.24, CPU 123.41 / 142.73
+
+Not A/Bs:
+- Ornith, defaults: 83.07 / 97.47 tok/s.
+- Batch slots: 3 slots 59.3 tok/s, 6 slots 71.4.
+
+The lane's and the verifier's earlier A/B tables are unchanged in /home/ubuntu/lanes/r20/cpu-rows/NOTES.md and /home/ubuntu/lanes/r20/cpu-rows/verify/NOTES.md.
+
+## gain_summary
+
+The fix, measured on the 2x Xeon Gold 6130 + GTX 1070:
+- Two busy worker cores: the default now runs Drama 3 at 41.51 frames/s against 23.14 with the acks (1.79x). That is the old protocol's speed (the verifier measured 41.61 and 40.54).
+- Same load on Qwen: 34.17 / 43.33 tok/s against 19.86 / 24.24 (+72% / +79%).
+- A 10%-duty task on one worker core: Drama 3 +4.7% (46.80 vs 44.70).
+- Workers sleeping between frames: Drama 3 +1.0% (47.30 vs 46.83).
+- Idle, the default gives up whatever the acks might gain, which is still not resolved: Drama 3 ack1 minus def was +0.29 and +1.63 frames/s here. Over all 6 idle pairs from three agents the mean is +0.32 frames/s, se 0.34 (+0.7%).
+- Idle Qwen tok/s did not move (-0.04% prose, +0.37% code). Prose CPU dispatch was +0.48 ms with the default, one pair.
+
+What the lane delivers with item 4 off (the verifier's A/Bs):
+- Drama 3: the kq rows give decode +0.75% over 3 pairs with acks off in both arms, and the 86-row prompt -5%.
+- Nemotron: prefill -3.7% / -3.5%, decode within noise.
+- Qwen items 2+3: CPU dispatch -0.42% prose and -1.23% code (measured with acks on in both arms), tok/s within noise.
+- Ornith: neutral.
+
+## not_taken
+
+- Keeping the 64-byte worker-state padding on without the acks (the verifier's optional suggestion): its effect alone was never measured, so it stays tied to GUILD_POOL_ACK=1.
+- Dropping aa492f7 entirely: kept as an opt-in. Its profiled idle effect (-0.14 ms of pool walls a Drama 3 frame) may matter on CPU-bound PCs with free cores; nothing changes unless GUILD_POOL_ACK=1 is set.
+- Rewriting aa492f7's message by rebase: the fix is a new commit on top, so the SHAs the verifier reviewed stay valid.
+- Running GLM end to end now: deferred to integration (see open issues).
+
+## open_issues
+
+- GLM end-to-end id check (glm-run against base20's glm1.out) at integration, as the verifier asked. glm5_run is byte-identical to the verified build and its Q8_0 row lengths are now in q8_0_rows512_test. I did not run it now: a load holds the lock 11-22 min, puts ~156 GiB of experts into memory and reads ~70 GB of uncached GGUF, which would evict the page cache the concurrent lanes' A/Bs use.
+- A VNNI host (Ice Lake or later, Zen 4) before release: run kq_rows512_test (its pool_rows512 table check against the library's iq512 rows) and pool_stress. expert_multi_test, pool_stress and pool_test skip on this CPU.
+- After merging with d3-tower-fuse: Drama 3 md5s and a kq-rows A/B. The kq rows' decode gain depends on where Drama 3's unpinned busy threads land.
+- After merging with dflash-slots: batch_test 3 and 7. The pool protocol is shared with them.
+- Not tried: a pool protocol that tolerates descheduled workers and also saves the wake-time locked subtract, e.g. per-worker drain flags the host scans. The host must still wait for workers that are mid-drain (claim_from relies on that), and the subtract at wake is how it tells them from workers that never woke.

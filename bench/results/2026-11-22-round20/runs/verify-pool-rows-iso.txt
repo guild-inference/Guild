@@ -1,0 +1,52 @@
+# pool-rows-iso: the verifier's runs (its result has no "measured" field; the speed pairs are in bits_evidence)
+# Extracted from /home/ubuntu/lanes/r20/pool-rows-iso/verify-result.json
+
+## verdict
+
+accept
+
+## head_checked
+
+a48ac48 (fix 535feac + tests a48ac48 on lane20/int 4f3ce6d). Worktree clean. git diff f69306f..535feac and 98f509f..a48ac48 are both empty, so the lane's tested trees match the rewritten commits. I rebuilt /home/ubuntu/lanes/r20/pool-rows-iso/build incrementally under build-run (08:24, rc 0). Nothing was recompiled. guild-generate, transcribe_run, decision_run and multi_model_isolation_test were relinked, because libguild_runtime.a (build-metadata objects rebuilt at 06:52 when cmake re-ran) was newer than the lane's 06:32 executables. guild-generate is now md5 a5d0dcec (was 332d91ef). All my runs used these relinked binaries.
+
+## bits_evidence
+
+All runs on 2x Xeon Gold 6130 + GTX 1070, from the lane build at a48ac48. Outputs are in /home/ubuntu/lanes/r20/pool-rows-iso/verify/runs.
+
+multi_model_isolation_test (hold A, 08:37-08:41):
+- mmi1 and mmi2: ALL TESTS PASSED. Model A 271 248068 198 760 1156 369, Model B 781 513 5904 3808 660 14145. Each run printed "B's CPU expert table as selected, A's wrapped by pool_rows512".
+- With GUILD_KQ_ROWS512=0 GUILD_POOL_IQ4XS=0 GUILD_IQ4NL_PF=2 GUILD_Q8_PAIR=0 (the switches with which round 19's bug reproduced at cpu-rows): passed, same tokens. This is the direct test of bug 1: every row of A reaches the wrappers' base, and A still matches its reference after B loads.
+- With GUILD_POOL_ROWS512=0: passed, same A and B tokens. So A gives the same bits unwrapped as wrapped.
+- Controls, to show my environment reproduces both bugs: the main session's mmi_4f3ce6d passes with B = 220 220 16 15 19 24 (bug 2), and mmi_base (round 19) fails at :381 afterB_A == refA (bug 1).
+
+gdb wrap check (/home/ubuntu/lanes/r20/pool-rows-iso/verify/wrapcheck.gdb):
+- Loads checked: Qwen with qwen-bench-r18's flags, Ornith with ornith-bench-r18's, Drama 3, and StartLux (decision_run).
+- In each, pool_rows512 is called once, with gate_up_interleaved=0. The base's quant_act, quant_h, gate_up and down all equal guild_cpu_backend_table_v2()->native's.
+- The pool workers' calls then go through gate_up_slot<0> (from ExpertPool::drain). The slot count g_used is 1, and g_base[0] is kcpu's backend.cpp table.
+- Formats reached: Qwen gu 1021 (NL4) / d 20 (IQ4_NL); Ornith and Drama 3 gu 12 (Q4_K) / d 14 (Q6_K); StartLux gu 8 / d 8 (Q8_0).
+- So every single-model load still gets the AVX-512BW rows.
+
+Checks on the final commit, all under gpu-run:
+- ctest -R: 17 of 17 passed (kq/iq4nl/iq4xs/q8_0_rows512_test, pool_rows_slots_test, host_combine_parity, the 9 native_expert_parity_*, pool_affinity_test, pool_numa_test).
+- pool_rows_slots_test: "ok: 8 slots (8 taken here, 3 bases refused), 0 failures", also with GUILD_KQ_ROWS512=0 and with GUILD_POOL_IQ4XS=0. It exits 77 (skip) with GUILD_POOL_ROWS512=0 and with GUILD_IQ_GGML_ORDER=0.
+- kq_rows512_test: 173808 results, 0 differ from ggml-cpu; 2453760 table results, 0 differ from the library's table.
+- Qwen: ids [38747, 38747, 41916, 41916]; 52.30 / 65.68 tok/s; "chunks of 8192 tokens in the 3098 MiB of VRAM free" and "GPU cache 0 slots (0 bytes)".
+- Ornith: ids [30936, 30936, 65886, 65886]; 83.74 / 98.14 tok/s.
+- Drama 3: d11 6e04c9b1, d12 f84288c9, and d11 with GUILD_DRAMA3_FUSE=0, ks and ksawf all 6e04c9b1. All 8 speed-run WAVs are 6e04c9b1.
+- Nemotron: 12 of 12 transcript lines identical to base20/bl/nem.jsonl.
+- StartLux: cmp_sl.py reports 4 of 4 answers identical.
+- batch_test --batch 7 --n 7: 6 of 6 IDENTICAL. --batch 3 --n 3: 3 of 3 IDENTICAL. Slot texts equal base20's b6.out and b3.out.
+- cmp.py on runs/chk: 15 of 15 pass. Its only note is the known would-be auto cache line (45 slots in base20, 47 here).
+
+Speed, Drama 3 seed 11 against int/build/guild-generate (af922153 = 4f3ce6d), frames/s, in two blocks (int,lane,lane,int then lane,int,int,lane):
+- int 49.38 / lane 48.53
+- lane 48.73 / int 48.46
+- lane 48.79 / int 48.71
+- int 48.32 / lane 48.89
+- Mean with positions balanced: int 48.72, lane 48.74 (+0.02, +0.04%). No measurable cost.
+- The extra cost per pool task is one direct call: gate_up_slot<0> is a 14-instruction thunk that calls gate_up, and down_slot<0> has down inlined.
+
+## problems
+
+- {"severity": "minor", "what": "multi_model_isolation_test prints whether Model A's table is wrapped but does not CHECK it. If a future change to model.cpp's call site (the flag, or binding a copy of the library table) stopped the wrapping, every single-model bit would stay the same, only slower, and every test would still pass. pool_rows_slots_test and kq_rows512_test check pool_rows512 itself, not the call in model.cpp.", "where": "tests/core/multi_model_isolation_test.cpp:381-384 (a_wrapped)", "fix": "CHECK(a_wrapped) when the AVX-512BW rows are on: glm5cpu::nl4_rows512_ok() && cpu_moe::iq4nl_rows512_ok(), and neither GUILD_POOL_ROWS512=0 nor GUILD_IQ_GGML_ORDER=0 is set. Optional; not needed to accept."}
+- {"severity": "minor", "what": "A comment still names the old one-argument form pool_rows512(base).", "where": "tests/core/kq_rows512_test.cpp:59", "fix": "Write pool_rows512(base, false)."}

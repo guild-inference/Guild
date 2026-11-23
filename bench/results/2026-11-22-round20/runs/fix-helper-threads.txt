@@ -1,0 +1,69 @@
+# helper-threads: the fixer's runs (SpawnAffinity, the request-pin gate)
+# Extracted from /home/ubuntu/lanes/r20/helper-threads/fix-result.json
+
+## commits
+
+- e4894e0 feat(drama3): the tower and codec threads named d3-tower and d3-codec
+- 7004613 feat(cpu): the expert pool's helper CPUs, its host core's free SMT siblings
+- a61963a perf(drama3): a request's thread on the pool's host core, its tower and codec threads on that core's sibling
+- 5114561 fix(cpu): FileExpertSource::fill_many's threads start where the loading thread could run
+- 0eb63a0 fix(drama3): the request thread on the host core only with a helper CPU and every expert in RAM
+- d9a3dda docs(core): fill_many's thread start with the text decode's numbers
+
+## switches
+
+- GUILD_HELPER_PIN (lane switch, read once at load, default 1): pins a Drama 3 request's tower and codec threads to ExpertPool::helper_cpus(), the host core's free SMT siblings, CPU 32 on this PC. It pins the request's own thread to the pool's host core only when all three hold: helper_cpus is not empty, every expert is in the RAM copy or the GPU cache, and GUILD_HOST_AFFINITY is not 0. 0 restores the old placement, with all three threads where the OS puts them.
+- GUILD_HOST_AFFINITY (existing, default on): for Drama 3 it is now read at load. =0 skips the request-thread pin and keeps the helpers pinned; the load line then says '(GUILD_HOST_AFFINITY=0)'. For the text decode it is unchanged: still read per request, and =0 skips the decode-loop pin.
+- No new switch for SpawnAffinity. It only gives fill_many's threads the placement they had before any pin. When the caller is not pinned it does nothing: one mask read, then no change.
+
+## ab_table
+
+Same binary in each hold; arms set by environment variables at load; every GUILD_* variable unset first; drama3-run-r18's command line. Each run: label, frames/s, md5.
+hold_f3, 09:09-09:14, b3, the final default A/B at budget 24 (off = GUILD_HELPER_PIN=0, on = 1):
+- off-11-r1 48.90 6e04c9b1; on-11-r1 50.09; on-12-r2 50.23 f84288c9; off-12-r2 49.72 (main on CPU 32); on-11-r3 50.04; off-11-r3 49.03; off-12-r4 48.77; on-12-r4 49.94; off-11-r5 48.58; on-11-r5 49.95; on-12-r6 50.00; off-12-r6 48.77.
+- on - off: +2.43, +1.03, +2.06, +2.40, +2.82, +2.52%. Mean +2.21% (se 0.26), 6 of 6 > 0. Tower ms 1530-1712 off, 1441-1616 on. Prompt the same.
+hold_f6, 08:48-08:55, b3, budget 6 (experts read from the files):
+- lr-off-11-r1 17.47; lr-on-11-r1 17.19; lr-on-12-r2 17.23; lr-off-12-r2 14.83; lr-off-11-r3 16.89; lr-on-11-r3 17.66.
+- Pairs -1.60, +16.18, +4.56%. The on arm's request thread is now unpinned and the helpers stay on CPU 32.
+- Same hold: ha0-12 49.35; nosmt-on-11 44.66; w16-on-12 42.02.
+hold_f5, 08:25-08:31, b2 (SpawnAffinity, request still pinned in low RAM), budget 6:
+- w-11 50.29; lr-off-11-r1 16.32; lr-on-11-r1 15.65; lr-on-12-r2 15.09; lr-off-12-r2 17.48; lr-on-11-r3 15.73; lr-off-11-r3 17.50; lr-off-12-r4 17.58; lr-on-12-r4 15.57.
+- Mean -9.83% (se 2.05), 0 of 4 > 0. This is why the request pin now also waits for every expert in RAM.
+hold_f4, 08:31-08:37, Qwen, budget 24, 64 tokens (tok/s):
+- warm (new, default) 12.31; old-def 7.11; old-ha0 13.36; new-ha0 13.40; new-def 13.66.
+hold_f1, 07:56-08:03, b1 (place_thread, later dropped):
+- w-11 50.25; w-12 49.94.
+- lr-off-11 17.57; lr-on-11 17.37; lr-on-12 17.04; lr-off-12 17.47. INVALID: the race had unpinned the request thread.
+- ha0-11 48.94; nosmt-off-11 43.38; nosmt-on-11 44.04; w16-on-12 40.63; w16-off-12 42.07.
+hold_f7, b4: w-11 50.39; w-12 50.19.
+
+## gain_summary
+
+On this PC's default layout (every expert in RAM, 31 workers, CPU 32 free), the final code keeps the lane's gain. GUILD_HELPER_PIN=1 against 0, 6 alternated pairs over both seeds: +2.21% (se 0.26), 48.96 -> 50.04 frames/s, 6 of 6 > 0, the same WAVs. The lane measured +2.61% and the verifier +2.88%.
+
+The blocker is gone. At --resident-budget-gib 6 the pinned arm ran at 7.06 / 6.99 frames/s; now both arms run 14.8-17.7 (on arm 17.19 / 17.23 / 17.66).
+
+On the emulated no-SMT and 16-worker layouts, both arms now place every thread the same way, where the OS puts them.
+
+The pre-existing text decode problem (6) was real and is fixed. Qwen at --resident-budget-gib 24 ran at 7.11 tok/s with the pinned decode against 13.36 unpinned on a61963a's binary. With SpawnAffinity the pinned decode runs at 13.66 against 13.40 unpinned (one pair).
+
+## not_taken
+
+- place_thread (pthread_setaffinity_np on each new thread's handle): racy. When the thread has already exited, the call sets the creator's own mask, so the request thread lost its pin. Replaced by SpawnAffinity; the commits were rewritten.
+- Keeping Drama 3's request pin when experts are read from the files: with SpawnAffinity it still cost 9.83% (4 pairs, 0 of 4 > 0), so it now waits for every expert in RAM.
+- A new switch for the fetch-thread placement: not added. It only restores the placement these threads had before any pin.
+- Sampling the old binary's Qwen fetch threads: its copy's comm name is truncated to 'guild-generate-', so --find missed it. The speeds carry the result.
+
+## open_issues
+
+- Re-check after merging into lane20/int, which has moved to 95b5898 and now holds pf-zero-copy, dflash-slots and pool-rows-iso; merge-tree is clean. Check: Drama 3 md5s 6e04c9b1 / f84288c9; the default A/B (about +2.2-2.9%); one --resident-budget-gib 6 pair (both arms about 17 frames/s, load line '... its own thread where the OS puts it (experts read from the files)'); pool_affinity_test; one Qwen --resident-budget-gib 24 pair (fix/bin/hold_f4.sh).
+- The text decode's pinned decode with experts read from the files was measured on one pair only: 13.66 against 13.40 tok/s. Batch slots (batch.cpp's pin) with experts read from the files were not measured.
+- SpawnAffinity starts the fetch threads on every fill_many call. In Drama 3's pinned low-RAM runs (b2), the request thread sat on the wide mask for about 2/3 of the 50 ms polls: starting 7 threads a layer takes most of a layer's time there. A persistent fetch-thread pool would avoid this; not tried.
+- Windows: SpawnAffinity does nothing there, and helper_cpus is empty there, so Drama 3 no longer pins its request thread on Windows. Whether Windows threads inherit a CPU Set selection was not measured (no Windows machine here).
+- The hold_f1 low-RAM on-arm numbers (b1) are invalid: the place_thread race had unpinned the request thread. Its other runs, all at budget 24, are valid for the gate.
+- In hold_f6 the lr-off-12-r2 run (14.83 frames/s) is the slowest low-RAM run of the day; the other 9 off runs were 16.3-17.6.
+
+## user_decisions
+
+- Whether to take 5114561 into main as a fix for the existing text-decode pin. Measured: Qwen with experts read from the files, 7.11 -> 13.66 tok/s, one pair.
+- Whether to keep GUILD_HELPER_PIN on by default. It was measured only on this dual Xeon + GTX 1070: +2.2-2.9%. Its pins are hard and cost 0.8% against a busy CPU 32.

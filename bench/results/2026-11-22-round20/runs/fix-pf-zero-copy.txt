@@ -1,0 +1,107 @@
+# pf-zero-copy: the fixer's runs (F1 fix, Stager gating, the dropped F2 DMA tail, GUILD_PREFILL_RING=64)
+# Extracted from /home/ubuntu/lanes/r20/pf-zero-copy/fix-result.json
+
+## commits
+
+- a264d4c perf(prefill): the streamed walk's MMQ reads its experts in place from the ring slots
+- 074efc5 fix(prefill): shared q8_1 rows lost past the first slice fall back to each product's own
+- 0fd81fb perf(prefill): a chunk lends its idle tails only when it then streams
+- 3dcaf6f perf(prefill): the in-place walk streams from 78 ring slots, measured
+- 7650c77 docs(prefill): the in-place walk's measured prompt times in its comment
+- 6f32e76 fix(prefill): a lent slot's zero tail is zeroed again after a same-layout return
+- 0714336 fix(prefill): the Stager zeroes blob tails only for the zero-copy block's layouts
+
+## change_summary
+
+The fix pass adds two commits on 7650c77, both in src/prefill/prefill.cpp. There is no header, ABI or lock change.
+
+F1 is real but latent, and 6f32e76 fixes it. I confirmed the verifier's chain in the code:
+- draft_kv carves B x per_row bytes from m.region, past region_eff and over the lent slots.
+- lay_out's second early return ("laid out for this T already") returned before the loop that resets ztail.
+- stage_copy skips the pinned path's tail op when zt == bytes.
+
+That early return now sets ztail = 0 for the lent slots [ring - ring_lent, ring). In both modes those are exactly the lent slots. The only effect is extra tail ops on the pinned-arena path; a Stager DMA carries its own zero tail whatever ztail says. Note: bench_runtime's --warmup 1 warms up on the first prompt only. With QWEN_RUNS=1, no two consecutive runs share a lent layout, so no earlier check (the implementer's or the verifier's) ever reached this return. My checks use QWEN_RUNS=2.
+
+Problem 6 and the ZERO_COPY=0 wording, 0714336:
+- The Stager's +256 B buffers and per-job tail memset now depend on carve's own condition (zc_layout(T) && !borrowed && next_ == nullptr && stage_lb_ == 0), evaluated in init before the Stager is created. Configs that never get the zero-copy block (HIP, cc >= 7, no --prefill-rows, layer split, borrowed buffers, the user's --prefill 512 server) get the pre-lane Stager back.
+- The GUILD_PREFILL_ZERO_COPY=0 comment now says pf-tail-ring's whole path also needs GUILD_PREFILL_TAIL_LEND_STREAMED=0. I kept the two switches independent, each restoring its own change.
+
+F2: the observation is real, the suspected cause is not. I implemented the verifier's fix exactly: the pinned blob's tail as a 256-B DMA from pinned zeros on the copy stream, with GUILD_PREFILL_ZERO_TAIL_DMA=0 as the memset arm (commit 0f22566). It measured no gain in the abP A/B, so I dropped it from the branch with git reset --hard to 0714336; it was my own unpushed commit and its file is kept in fix/split/final.cpp. Why the gain is missing: a 2K chunk streams all 24,576 blobs (55.43 GiB) and is copy-bound with zero-copy on both paths ('wait copy' 1.66 s pinned, 1.21 s unpinned). The page-locked arena delivers about 7.0 GB/s against about 7.45 GB/s through the Stager (estimates: bytes over the GPU timeline). The gather arm's GPU work fits under the same copies, so at 2K on a pinned arena there is nothing to gain. At 4K the chunk is GPU-bound and zero-copy gains 9.4%.
+
+The -22 MiB VRAM: one 160.25 MiB block replaces 34 allocations that the allocator rounds up. No code change is possible short of wasting memory on purpose. Integration should compare texts only at equal 'GPU cache N slots'.
+
+'wait copy' rising at whole 8192-token chunks is not a defect. I measured the optional lever with the same binary (GUILD_PREFILL_RING=64) and did not make it a default.
+
+## switches
+
+- GUILD_PREFILL_ZERO_COPY: default 1. =0 restores the ring slots and group buffers as separate allocations, no Stager zero tail, the group gather, and the gather walk's 192-slot threshold. pf-tail-ring's whole path is GUILD_PREFILL_ZERO_COPY=0 plus GUILD_PREFILL_TAIL_LEND_STREAMED=0; the verifier's F0 run of that pair gave identical hashes. =0 alone keeps follow-up (a)'s lending rule.
+- GUILD_PREFILL_TAIL_LEND_STREAMED: default 1. =0 restores pf-tail-ring's rule: every chunk of tail_stream_min() (1,536) tokens or more lends its idle tails, even when it then takes the routed walk.
+- GUILD_PREFILL_TAIL_WALK_RING: default unset (78 slots for the in-place walk, 192 for the gather walk). N sets both thresholds to N; 192 restores pf-tail-ring's threshold.
+- The fix pass adds no switch. F1 is a bug fix that only adds zero-tail ops on the pinned path. The Stager gating restores the pre-lane Stager exactly where no zero-copy block is carved. GUILD_PREFILL_ZERO_COPY=0 still turns the tail off everywhere, because zc_layout() tests zero_copy_on(). The tried GUILD_PREFILL_ZERO_TAIL_DMA was dropped together with its commit.
+
+## ab_table
+
+All values are prompt_ms from the same binary with load-time switches, QWEN_RUNS=1, GUILD_NO_KV_CACHE=1, GUILD_PREFILL_TIMING=1, each round inside one gpu-run hold.
+
+abP, build b1, 07:29:35-07:44:33 UTC.
+- Setup: qb.sh, GUILD_PIN_EXPERTS=1 in every arm, pP prompts, 8192 layout.
+- Arms: Z = GUILD_PREFILL_ZERO_COPY=0 (the gather), M = GUILD_PREFILL_ZERO_TAIL_DMA=0 (the memset, which is the final code), D = the DMA tail (dropped).
+- Order: Z1 M1 D1 D2 M2 Z2.
+
+| prompt | Z1 | M1 | D1 | D2 | M2 | Z2 | D vs M | M vs Z |
+|---|---|---|---|---|---|---|---|---|
+| p2k (2008 tokens) | 8659 | 8615 | 8617 | 8609 | 8531 | 8635 | +0.5% | -0.9% |
+| p4k (4008 tokens) | 13756 | 12506 | 12473 | 12494 | 12413 | 13746 | +0.2% | -9.4% |
+
+- Means: p2k Z 8647, M 8573, D 8613; p4k Z 13751, M 12460, D 12484.
+- 2K chunk phases (Z / M / D): GPU timeline 8598,8574 / 8555,8471 / 8558,8549; wait copy 322,295 / 1672,1629 / 1674,1659; dequant 643,642 / 0 / 0; gate/up 2236,2230 / 1512,1506 / 1495,1498.
+- 4K chunk phases: GPU timeline 13693,13684 / 12444,12351 / 12410,12431; wait copy 28,27 / 73,69 / 69,71.
+
+abR, build b2 = HEAD, 08:09:11-08:17:00 UTC.
+- Setup: qb.sh with pZ (w16, then x9000: a whole 8192-token chunk plus an 808-token routed chunk).
+- Arms: R32 = default (48-slot block), R64 = GUILD_PREFILL_RING=64 (80-slot block).
+- Order and x9000 prompt_ms: R32a 33233, R64a 32796, R64b 32856, R32b 33091.
+- Means: R32 33162, R64 32826, -1.0% (-0.34 s).
+- Phases, R32 to R64: wait copy 4304,4323 to 3796,3779; hc read 4240,4225 to 4412,4411.
+- The auto GPU cache's would-be size goes from 57 to 11 slots; none is kept in either arm.
+
+Single exactness runs, not A/Bs:
+- e1 TD (unpinned): p1k 7410, p2k 8050, p4k 12469, p3k 9775, p6k 18417, p7600 23177.
+- e3 TDf: p1k 7434, p2k 8050, p4k 12469, p3k 9737, p6k 18396, p7600 23220.
+- PM2 / PM2f (pinned, MTP, 6656 layout, run 1 / run 2): p2k 8756/8486 and 8716/8534; p4k about 13560.
+- e2 decode: 51.87 / 65.24 tok/s. batch_test: 55.3 tok/s overall, 59.8 tok/s from the first batch token.
+
+## gain_summary
+
+The kept fix-pass changes owe no speed A/B, because they change no device operation in any measured configuration. On the default Stager path, ztail decides nothing, and the gated tail is unchanged wherever the block is carved. On this pack's pinned path, F1's reset adds no tail op, because every slot's first pinned DMA of a request already zeroed its tail (layer 0's blob is 2,329,600 B, layers 46-47's are 3,148,800 B). The single runs on HEAD match the verifier's 'on' arms: TD p2k 8050 vs 8123, p4k 12469 vs 12470, p7600 23220 vs 23170.
+
+So the lane's measured gains stand (the verifier's alternated A/Bs on 7650c77): 2K -13.3%, 3K -14.6%, 4K -13.5%, 6K -9.1%, 7.6K -3.9%, 32K -3.3%, one whole 8192-token chunk -2.7%, 1K unchanged.
+
+On a page-locked arena (abP, M vs Z): 2K -0.9%, 4K -9.4%. The 2K pinned chunk is bound by the expert copies, so zero-copy cannot gain there, and it is not a regression.
+
+The F2 DMA tail gained nothing (2K +0.5%, 4K +0.2% against the memset) and was not kept.
+
+The optional ring lever (GUILD_PREFILL_RING=64 at 8192-token chunks) gives -1.0% on one whole 8192-token chunk for +107 MiB of VRAM. It is not made a default.
+
+## not_taken
+
+- The verifier's F2 fix (the pinned blob's zero tail as a 256-B DMA from pinned zeros on the copy stream, switch GUILD_PREFILL_ZERO_TAIL_DMA). Implemented as 0f22566, measured in abP: no gain at 2K (+0.5% against the memset) or 4K (+0.2%). Dropped from the branch; the file is kept in /home/ubuntu/lanes/r20/pf-zero-copy/fix/split/final.cpp.
+- Making GUILD_PREFILL_ZERO_COPY=0 imply GUILD_PREFILL_TAIL_LEND_STREAMED=0. The two switches stay independent and the comment and switch list now say so.
+- A larger default ring at 8192-token chunks: measured as an option only (abR), not made a default in a fix pass.
+- Resetting ztail after on_chunk instead of at lay_out's early return. The early return covers any writer between two chunks, not only draft_kv.
+- A forced debug demonstration of F1 (a fake equal-size first and last layer): not built, to save shared build and GPU time.
+- Keeping VRAM use equal to the separate allocations, which would mean wasting allocator rounding on purpose.
+
+## open_issues
+
+- F1 cannot be reached on UD-IQ4_XS, so the checks only show that the fix changes nothing here: the pinned MTP repeats give identical hashes before and after. The bug itself was not demonstrated; that needs a pack whose first and last layers' blobs are the same size, or a debug build that fakes one.
+- HIP and MSVC were not compiled: there is no hipcc or MSVC on this PC, and CI needs a push. The kept code adds no runtime call or language feature. Under HIP rows_stream() is false, so the Stager there is exactly the pre-lane one.
+- Only guild-generate and the 6 ctest targets that link guild_prefill were rebuilt in /home/ubuntu/lanes/r20/pf-zero-copy/build. glm5_run, transcribe_run, decision_run and the other targets there are still 7650c77's.
+- Pinned arena at 2K: copy-bound, at about 7.0 GB/s against about 7.45 GB/s through the Stager (estimates). Why the arena's DMAs are slower on this two-node PC is not isolated; NUMA placement is a guess.
+- VRAM is about 22 MiB lower than with ZERO_COPY=0, so the auto GPU cache's would-be size reads 57 slots instead of 47. Integration should compare texts only at equal 'GPU cache N slots' on configs that keep a cache.
+- 'wait copy' still rises at whole 8192-token chunks. GUILD_PREFILL_RING=64 wins back about 0.5 s of it, -1.0% per whole chunk for +107 MiB. 32K was not measured with it.
+- lane20/int has moved to 4f3ce6d (cpu-rows); prefill.cpp is untouched there, so the merge should be clean. After merging dflash-slots, re-run bt_long.py --batch 3 and batch_test --batch 3 --n 3.
+
+## user_decisions
+
+- Optional, measured, and not a default: GUILD_PREFILL_RING=64 at the 8192-token layout. One whole 8192-token chunk (x9000) 33.16 -> 32.83 s (-1.0%, 2 alternated pairs), 'wait copy' 4.31 -> 3.79 s, identical hashes. It costs +107 MiB of VRAM: the chunk scan still picks 8192 here, but the auto GPU cache's would-be size drops from 57 to 11 slots, which changes decode text on cards that keep an auto cache. 32K was not measured with it.

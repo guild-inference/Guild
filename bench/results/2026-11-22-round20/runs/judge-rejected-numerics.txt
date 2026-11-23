@@ -1,0 +1,32 @@
+# Extracted from /home/ubuntu/lanes/r20/scout/judge.json: the rejected proposals and the numerics options (estimates, not measured)
+
+## rejected
+
+- qg-2: Shared expert at the low stream priority or forked later: priority does not pre-empt resident blocks, and the shared expert's staged blocks are dispatched first when it forks at post()'s start; the 1.0 ms penalty comes from a node-level trace, and spec-window measured node tracing inflating small-kernel contention ~10x (the traced 0.85 ms commit/draft interference was 57-83 us untraced). Low confidence.
+- qg-3: Capping the shared expert's staged grid: the same traced-only evidence as qg-2, needs a CUDA lock bump, and risks overrunning its slack. Revisit only with an untraced measurement of the HC read beside it.
+- qg-4: Step-major HC down planes: the scout's own go/no-go (mb/hcq8c_run.txt, finished after the report) gave T=1 21.6 vs 22.4 us (-0.8 us, under the 2 us bar) and slower at T=2-4 (28.6 vs 24.8, 29.5 vs 29.0, 41.8 vs 34.0 us). Dead.
+- qg-5: HC norm folded into the down: L effort, untested, the norm's reduction tree must be reproduced across another block shape, the extra L2 reads of R grow with T, and the fused down+up attempt showed a removed boundary pays only if the down keeps its blocks and registers.
+- sw-3: Launching the next draft before the commit and emission: ~0.07 ms a window (0.1-0.25%), below what an A/B resolves, and it touches the end-of-request paths in session.cpp, dflash.cpp and mtp.cpp. Later, with a drafter lane.
+- sw-4: Speculative add_context in the last-layer bubble: the bubble's untraced size is unmeasured (363 us traced), it needs ring_ = window_ + block_ and an event node inside the verify graph; M effort, low confidence, ~0.4%.
+- sw-5: Drafter attention split over 2-4 blocks: traced kernel times only, 0.1-0.2 ms a draft below ~1,000 tokens of context and nothing at 2K+.
+- sw-6: DFlash draft as one graph behind the verify graph: L effort with many kernel signature changes; round 18 measured a draft graph at 0.2-0.5 ms a window (below noise).
+- sw-7: Ornith MTP argmax and top probability in one multi-block pass: ~100 us a window (0.4%) for a CUDA lock bump and a merge that must replay the 1024-thread reduction tree; low value per effort this round.
+- sw-8: Faster one-token Ornith MTP expert kernels: low confidence, kernel repo (lock bump), and multi-token GPU-cache users on other PCs must not regress.
+- sw-9: MTP step 0 reusing the catch-up's row-a products: ~60 us a window (0.25%) in the intricate MTP / coupled-sampling graphs; low confidence.
+- glm-route: Faster route_k: where its 7.6 us above the launch floor goes is not pinned (a one-warp latency floor or the arithmetic); ~0.4-0.5 ms a step at best, low confidence. Time the sigmoid-only and selection-only copies first in a later GLM lane.
+- glm-nextn-q3k: AVX-512 Q3_K rows for the NextN block: ~0.15-0.45 ms a step (0.2-0.6%) for M effort with a new source file; its A/B needs its own GLM load and GLM's ~3 ms CPU noise hides it. Next round, with other GLM CPU items.
+- glm-idxsel: Multi-block top-k selection: pays only past ~64K cells (52 us at 128K, 96 at 262K); an engine A/B needs a 128K prompt (~40 min at 55 tok/s).
+- glm-idxscore: idx_score block size and unrolling: estimates only for an issue-bound kernel, small at 16-32K.
+- pf-prefetch: Profile-ranked prefetch in the routed walk: L effort and the hit rate is unknown (data/expert-profile.bin holds only a rank order, no counts); first a host-only hit-rate counter for 512-2K prompts, next round.
+- pool-combine: The CPU rows' combine inside the pool: the scouts disagree. d3-nem models -4.5 us a layer barrier-free (+0.9% Drama 3); cpu-experts measured the combine split over the 12 down parts' writers slower (11.7-15.3 us against 5.7-6.1 serial, one barrier more). It also touches verify.cpp (owned by win-combine) and the pool every model shares. Needs a barrier-free microbenchmark first.
+- d3-finish-gate: Host-side gating of step_finish's matvecs: L effort, low confidence, an extra spinning host thread; only worth a look after d3-tower-fuse shortens the tower (round 18 rejected it too).
+- iq4xs-dvec: IQ4_XS lean rows' d vector: +5.5% on GLM's 2-token down rows but ~-0.2 ms a step after the ~40% pass-through, far below GLM's ~3 ms CPU noise, and its A/B would cost a GLM load. Bundle with a later GLM CPU lane.
+- q8-pair-scales (guild-kernels-cpu part): The library's Q8_0 rows already stream at the memory ceiling at 1-2 tokens here (224 GB/s), so Qwen and StartLux decode gain nothing on this PC, and it needs a CPU lock bump; worth it for 8-core PCs and 4-token windows (+14-18%). The Guild part (Nemotron's cpu_moe rows) is step 5 of the cpu-rows reserve.
+- pool-tail-split: Unmeasured, and round 18's pbench measured several pool schedule variants slower or equal.
+
+## numerics_options
+
+- GLM, opt-in: group A's shared expert on its CPU twin in DSA layers once a request passes 2,048 cells (GUILD_GLM_SHEXP_DSA=1, off by default): estimated -1.5 ms a step at long context (~+1.6%), unmeasured; it changes row A's rounding (the CPU twin's Q8_0 sums and expf), so it needs the 64-step teacher-forced KL replay and draft acceptance on separate loads.
+- Qwen prompt: the shared expert's down (K = 640) through MMQ instead of dequant + FP16 SGEMM: changes the prompt path's bits for ~-0.4 s at 32K (~-0.4%); the prompt scout judged it not worth an opt-in.
+- Qwen prompt: a chunked (WY) delta rule for the GDN recurrence: changes the summation order; the recurrence is 3.37 s of a ~106 s 32K prompt (2.94 us a token-layer, state already in registers), so at most ~3%; unmeasured.
+- Already measured and still the user's decision (not lanes): --dense q5_k / q4_k for GLM, K-quant Drama 3 towers, GUILD_PREFILL_DENSE_MMQ, --defer-experts, the English-only DFlash head.

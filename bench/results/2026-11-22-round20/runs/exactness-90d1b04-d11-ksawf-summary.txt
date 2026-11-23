@@ -1,0 +1,1 @@
+d11-ksawf 49.98 frames/s, 2.32x real time; tower 1604 ms, codec 41 ms 6e04c9b1

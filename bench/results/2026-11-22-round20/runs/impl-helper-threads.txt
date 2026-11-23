@@ -1,0 +1,92 @@
+# helper-threads: the implementer's fields the README quotes (implementer's numbers, not the verifier's)
+# Extracted from /home/ubuntu/lanes/r20/helper-threads/impl-result.json
+
+## commits
+
+- e4894e0 feat(drama3): the tower and codec threads named d3-tower and d3-codec
+- 7004613 feat(cpu): the expert pool's helper CPUs, its host core's free SMT siblings
+- a61963a perf(drama3): a request's thread on the pool's host core, its tower and codec threads on that core's sibling
+
+## change_summary
+
+- CpuTopology::host_siblings: detect_cpu_topology's Linux branches fill it from the same sysfs package and core ids, so there is no second parser.
+- ExpertPool::helper_cpus(): the host core's free SMT siblings. It is non-empty only when the workers are pinned one per other core and no worker sits on a sibling.
+- pin_current_thread_to(cpus): Linux only; returns false elsewhere.
+- pool_affinity_linux_test checks the sibling list against sysfs, checks it is empty under a one-CPU-a-core mask, and checks the pin on a new thread.
+- model.cpp reads GUILD_HELPER_PIN once at load and prints where the threads go.
+- In drama3.cpp the Beside threads name themselves (d3-tower, d3-codec) and pin themselves to helper_cpus (CPU 32 here).
+- synthesize pins its calling thread to the pool's host core (CPU 0) for the request, after both Beside threads exist so they don't inherit that pin. It restores the old affinity at return and is skipped with GUILD_HOST_AFFINITY=0, as GuildSession::generate does.
+- 6 files, +175 -7. No ABI, lock-file or kernel-repo change.
+
+## switches
+
+- GUILD_HELPER_PIN (new): read once at load, default 1. It pins a Drama 3 request's calling thread to the pool's host core and its tower and codec threads to ExpertPool::helper_cpus() (the host core's free SMT siblings; when there are none, they go where the OS puts them). 0 restores today's unpinned generation, tower and codec threads.
+- GUILD_HOST_AFFINITY (existing, default on): =0 now also skips Drama 3's request-thread pin, as it already did for GuildSession::generate's decode.
+
+## ab_table
+
+hold_b, 04:09-04:20. Same binary (build b1 = a61963a's code), arms set by GUILD_HELPER_PIN at load: off = 0, on = 1 (the default), kq0 = GUILD_KQ_ROWS512=0 with the pin on, p = GUILD_CPU_PROFILE on. Each run: label, frames/s, md5, 86-row prompt ms.
+- w-11 (on, warm-up) 49.84 6e04c9b1 474
+- off-11-r1 48.54 6e04c9b1 491
+- on-11-r1 49.66 6e04c9b1 473
+- on-12-r2 49.78 f84288c9 478
+- off-12-r2 48.36 f84288c9 484
+- on-11-r3 49.86 6e04c9b1 482
+- off-11-r3 48.39 6e04c9b1 482
+- off-12-r4 48.52 f84288c9 487
+- on-12-r4 49.65 f84288c9 473
+- off-11-r5 48.50 6e04c9b1 488
+- on-11-r5 49.75 6e04c9b1 478
+- on-12-r6 49.79 f84288c9 478
+- off-12-r6 48.60 f84288c9 481
+- kq0-11-r7 49.65 6e04c9b1 501
+- on-11-r7 49.63 6e04c9b1 471
+- on-12-r8 49.93 f84288c9 478
+- kq0-12-r8 49.61 f84288c9 502
+- on-11-r9 49.93 6e04c9b1 481
+- kq0-11-r9 49.40 6e04c9b1 494
+- kq0-12-r10 49.70 f84288c9 500
+- on-12-r10 49.80 f84288c9 479
+- poff-11-r11 46.35 6e04c9b1 516; pool walls 4.95 ms a frame, layer median 122.1 us, gap 263.4 us
+- pon-11-r11 47.74 6e04c9b1 487; 4.78 ms, 117.5 us, 250.6 us
+- pon-12-r12 47.90 f84288c9 480; 4.76 ms
+- poff-12-r12 47.54 f84288c9 482; 4.78 ms (main on core 0 by chance)
+
+On minus off over 6 pairs: +1.12, +1.47, +1.25 (seed 11) and +1.42, +1.13, +1.19 (seed 12). Mean +1.26 frames/s (+2.61%), se 0.06. Prompt mean 477 vs 486 ms.
+On minus kq0: -0.02, +0.32, +0.53, +0.10 (mean +0.47%).
+Final build, not an A/B: f-11 50.05, f-12 49.78 frames/s.
+
+## gain_summary
+
+- Drama 3: +2.61% frames/s (6 alternated pairs, both seeds, se 0.06 frames/s, every pair +2.31 to +3.04%). The expected gain was +0.8-1.5%.
+- Most of the gain comes from pinning the generation thread, which the spec assumed was already pinned. Tower and codec on the host core's sibling add about +0.5% on top (M minus H, 4 of 4 rounds) and beat them on workers' siblings by 0.7% (4 of 4).
+- 86-row prompt: 486 -> 477 ms (-1.9%).
+- Profiled: pool walls 4.95 -> 4.78 ms a frame, and the gaps between the layers' pool calls 263 -> 251 us.
+- The kq rows' decode gain with the threads placed is +0.47% (4 pairs), within noise of the unpinned +0.3..+0.75%.
+- Other models: no change. Their busy threads were already pinned, or on core 0 for StartLux.
+
+## open_issues
+
+- After merging into lane20/int, re-check Drama 3 md5s and frames/s. git merge-tree against int, pf-zero-copy and dflash-slots is clean, and those lanes don't touch the six files.
+- StartLux's prompt-only requests (and Qwen prompts) leave the request thread unpinned, as session.cpp intends. It stayed on core 0 in the one sample; whether it ever lands on a worker's sibling, as Drama 3's did, was not measured.
+- The tower and codec threads share one logical CPU (CPU 32), using about 49% of it in decode here. A heavier codec load could make the tower thread wait; not measured.
+- cpu-rows' 13 slow kq layers were not re-profiled per layer with the threads placed. The whole-frame kq gain is +0.47%, within noise.
+- Windows: host_siblings is not filled, so the Beside threads stay unpinned there. The request-thread pin uses the existing CPU Set helper and is unmeasured on Windows.
+- GLM was not run end to end (load cost). Its engine uses cpu_moe, which already pins its caller and Launcher, and this code does not reach it.
+
+## not_taken
+
+- Arm M of hold_a (main pinned at +0 s) was invalid: the pool sized itself from a one-CPU mask and ran at about 5.1 frames/s. It was redone as hold_a2's M with the pin applied after load.
+- Tower alone on CPU 32 (C) and the two threads on other workers' siblings (B, MB): C and B gave no gain, and MB came in 0.7% below M.
+- A free core for the helpers (GUILD_POOL_WORKERS=30): cpu-rows already measured 30 workers slower overall.
+- Pins for other models: none had a busy helper on a worker's sibling. Nemotron and GLM's cpu_moe already pins its Launcher to the caller core's sibling.
+- Filling host_siblings on Windows from GetLogicalProcessorInformationEx: it can't be measured here.
+- Why the tower time drops about 100 ms a run when both threads share CPU 32 was not investigated further.
+
+## risks
+
+- GUILD_HELPER_PIN=1 is the default and was measured only on this dual Xeon 6130 + GTX 1070, with 32 drain threads.
+- On machines with few cores the host thread does a larger share of the drain (1/8 on an 8-core part vs 1/32 here). Two busy helpers on the host core's sibling could cost more there, which this PC can't measure.
+- The policy stays conservative. Helpers are pinned only on Linux, only when every non-host core has a pinned worker and the host core has a free SMT sibling. Otherwise, as with no SMT, GUILD_POOL_WORKERS different from the core count, hybrid layouts that put workers on siblings, or Windows, the helpers stay where the OS puts them.
+- The request-thread pin applies wherever the host core is in the thread's allowed mask, the same rule the text decode already uses. On machines where CPU 0 takes many interrupts, the pinned thread shares CPU 0 with them, as the text decode already does.
+- Output bits are unaffected: only affinity and thread names changed.

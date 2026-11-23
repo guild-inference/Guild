@@ -1,0 +1,2 @@
+guild glm5: VRAM: 8010 MiB free, 6140 MiB fixed, context 32768 tokens x 13184 B, 2 MiB left; 1 shared experts on the CPU
+glm5: 45 layers (34 KDA, 11 DSA) + MTP, 42 of 46 FFNs on the GPU, 32 CPU threads on 2 NUMA nodes, 7596 MiB VRAM, context 32768

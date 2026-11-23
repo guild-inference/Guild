@@ -1,0 +1,99 @@
+# dflash-slots: the implementer's fields the README quotes (implementer's numbers, not the verifier's)
+# Extracted from /home/ubuntu/lanes/r20/dflash-slots/impl-result.json
+
+## commits
+
+- 0479fae perf(dflash): draft_slots, several contexts' drafts with one pass of the head
+- a1fe7d1 perf(batch): the drafting slots' drafts with one pass of the DFlash head
+- 86c5f74 test(dflash): the shared-head check without POSIX-only calls
+
+## change_summary
+
+Batch slots used to run one full DFlash draft() per drafting slot: an 8-row block through the layers, the 236 MB head over 7 rows, a sync and a 7-row selector, although each slot keeps only 1-2 drafts. Now all drafting slots share one pass of the head.
+
+- **DFlashDrafter::draft() split.** It is now three parts: draft_layers (positions, embed, mask rows, the 5 layers), draft_head (mm(hp_), q8_act + k4_mm, topk_lse, four D2H copies, one sync) and select (the host selector with a row offset). draft() calls them in the same order as before, so the solo path does the same GPU work.
+- **New DFlashDrafter::draft_slots(jobs).** Each job's block runs draft_layers exactly as draft() does. Its first n final rows are normed into x_'s idle rows (x_ has 64 rows; the layers use at most 8). Then one draft_head reads all jobs' rows (up to 8 per pass), followed by one sync, and each job's selector walks its own rows. If the head is not k4_mm (GUILD_DFLASH_K4=0) it falls back to one draft() per job.
+- **GuildBatch::step.** Drafting slots become draft_slots jobs with B = block() (or r under GUILD_BATCH_DRAFT_BLOCK=rows) and n = r - 1. The switch is GUILD_BATCH_DFLASH_SHARED_HEAD.
+- **Test.** dflash_kernels_test builds a drafter with random weights (Q4_K and int8 weights) and checks that draft_slots and draft() alone give bit-identical drafts and probabilities. It was made portable for MSVC.
+- **No other changes.** No new VRAM allocation, no device code, no ABI, lock or kernel-repo change. Files: dflash.hpp, dflash.cpp, batch.cpp, dflash_kernels_test.cpp (+414 -38).
+
+## switches
+
+- GUILD_BATCH_DFLASH_SHARED_HEAD: default 1, read once when the GuildBatch is made (like GUILD_BATCH_DRAFT_SLOTS); 0 restores the old loop, one draft() per drafting slot.
+- Unchanged and still honoured: GUILD_BATCH_DRAFT_BLOCK (default whole blocks; 'rows' works with the shared head on or off), GUILD_BATCH_DRAFT_SLOTS (default 3), GUILD_DFLASH_K4 (0 makes draft_slots fall back to one draft() per job).
+
+## ab_table
+
+Qwen3.8-Flash-Next UD-IQ4_XS, qwen32k config, batch_test --max-new 96, one process per run, arms alternating inside one gpu-run hold. Columns: windows, ms a window, drafts ms, accepted, tok/s from the first batch token.
+
+Step 0, base binary c412de7, 3 slots:
+- default: 46 windows, 94.38 ms, 11.35 ms drafts, 164/247, 59.7 tok/s
+- rows: 48 windows, 92.76 ms, 9.96 ms, 160/259, 58.2 tok/s
+- default: 46 windows, 94.40 ms, 11.29 ms, 164/247, 59.6 tok/s
+- rows: 48 windows, 92.16 ms, 9.95 ms, 160/259, 58.6 tok/s
+
+Hold 1, lane binary, 3 slots, GUILD_BATCH_DFLASH_SHARED_HEAD:
+- on: 46 windows, 91.72 ms, 9.02 ms, 164/247, 61.1 tok/s
+- off: 46 windows, 94.04 ms, 11.31 ms, 164/247, 59.8 tok/s
+- on: 46 windows, 90.66 ms, 8.99 ms, 164/247, 61.8 tok/s
+- off: 46 windows, 94.14 ms, 11.28 ms, 164/247, 59.8 tok/s
+
+Hold 2, 4 slots (d4 = GUILD_BATCH_DRAFT_SLOTS=4; d3 = defaults):
+- d4 shared off: 57 windows, 99.90 ms, 15.60 ms, 172/248, 58.5 tok/s
+- d4 shared on: 57 windows, 95.39 ms, 11.93 ms, 172/248, 60.9 tok/s
+- d3: 94 windows, 57.85 ms, 0.57 ms, 20/48, 61.2 tok/s
+- d3: 94 windows, 57.66 ms, 0.57 ms, 20/48, 61.5 tok/s
+- d4 shared on: 57 windows, 94.72 ms, 11.85 ms, 172/248, 61.3 tok/s
+- d4 shared off: 57 windows, 99.09 ms, 15.63 ms, 172/248, 59.0 tok/s
+
+Hold 3, single runs (exactness, not speed claims):
+- 6 slots: 98 windows, 68.36 ms, 0.34 ms, 14/29, 71.4 tok/s (base20 b6: 71.0)
+- 3 slots rows + shared head: 48 windows, 90.58 ms, 8.12 ms, 160/259, 59.5 tok/s
+
+Hold 4, 4 slots (d4r = GUILD_BATCH_DRAFT_SLOTS=4 + GUILD_BATCH_DRAFT_BLOCK=rows):
+- d3: 94 windows, 57.92 ms, 0.57 ms, 20/48, 61.3 tok/s
+- d4r: 57 windows, 93.67 ms, 10.62 ms, 171/247, 61.9 tok/s
+- d4r: 57 windows, 93.27 ms, 10.56 ms, 171/247, 62.1 tok/s
+- d3: 94 windows, 57.99 ms, 0.57 ms, 20/48, 61.2 tok/s
+
+Hold 5, binary with the trial GUILD_BATCH_DRAFT_BLOCK=single option (since reverted):
+- 3 slots def: 46 windows, 91.30 ms, 8.99 ms, 164/247, 61.4 tok/s
+- 3 slots single: 47 windows, 91.11 ms, 8.60 ms, 163/254, 60.3 tok/s
+- 3 slots single: 47 windows, 91.93 ms, 8.61 ms, 163/254, 59.8 tok/s
+- 3 slots def: 46 windows, 91.42 ms, 8.99 ms, 164/247, 61.4 tok/s
+- 4 slots d4 + single: 57 windows, 93.16 ms, 10.74 ms, 169/245, 62.1 tok/s
+- 4 slots d4: 57 windows, 94.94 ms, 11.89 ms, 172/248, 61.2 tok/s
+- 6 slots: 98 windows, 68.17 ms, 0.34 ms, 14/29, 71.6 tok/s
+
+Hold 6, the build dir rebuilt from HEAD:
+- 3 slots def: 46 windows, 90.96 ms, 9.04 ms, 164/247, 61.7 tok/s
+
+## gain_summary
+
+- **3 slots with drafts (the default policy).** Drafts went from 11.30 to 9.01 ms a window (−2.29 ms in both pairs, −20%). The window shrank by 2.32 / 3.48 ms, and throughput rose from 59.8 / 59.8 to 61.1 / 61.8 tok/s (+2.2 / +3.3%). The judge expected drafts at about 9 ms and +2.5%: met. The stop rule (a 3-slot gain under 1 ms) was not hit.
+- **4 slots with one draft each (GUILD_BATCH_DRAFT_SLOTS=4).** Drafts went from 15.62 to 11.89 ms a window. The window shrank by 4.51 / 4.37 ms, and throughput rose from 58.5 / 59.0 to 60.9 / 61.3 tok/s (+4.1 / +3.9%). The judge expected about 13 ms and +3.5%: met.
+- **Drafts at 4 slots still do not pay with whole blocks.** 60.9 / 61.3 tok/s against 61.2 / 61.5 for the default 3 slots (−0.3 to −0.5%; round 19 measured −1.1 to −2.0%).
+- **Unchanged paths.** The solo path and 5+ slots run the same code as before, so no gain there.
+- **Step 0's rows policy.** GUILD_BATCH_DRAFT_BLOCK=rows loses 2.5 / 1.7% at 3 slots on the base binary: acceptance falls from 66.4% to 61.8% (48 windows instead of 46). So the judge's "up to ~+8% if acceptance holds" does not hold at 3 slots. At 4 slots, where each slot drafts one token, acceptance does hold (see user_decisions).
+
+## open_issues
+
+- The lane is based on lane20/int c412de7 and touches only include/guild/core/dflash.hpp, src/core/dflash.cpp, src/runtime/batch.cpp and tests/core/dflash_kernels_test.cpp.
+- The shared head runs only in batch windows with drafting slots. The solo draft() does the same GPU work as before (Qwen window and draft counts equal base20's). GLM calls the same unchanged draft() but was not run here.
+- No new VRAM and no device code: Qwen's 'chunks of 8192 tokens in the 3098 MiB of VRAM free' and 'GPU cache 0 slots' lines are unchanged.
+- dflash_kernels_test now writes a ~15 MB random-weight checkpoint into the temp directory and deletes it afterwards; as before it needs a CUDA device (exit 77 without one).
+- Not built or run here: HIP (draft_slots uses only runtime calls dflash.cpp already made) and Windows/MSVC (the test was made portable with _putenv_s and no getpid or unistd.h, but was not compiled with MSVC).
+- The 'drafts' field of the 'guild batch:' line now covers all slots' layers plus one head pass. The per-slot add_context after each window is still outside the line's 'ms a window'.
+- Remaining levers, estimated and not measured: (1) all slots' drafter contexts in one fc + ctx_kv product after a window, about 0.4 ms of a 3-slot window; (2) the per-slot bodies' small kernels batched across slots, about 0.5 ms per extra body, but it needs per-slot scratch VRAM; (3) 2-row blocks only when 4 slots draft, a draft policy.
+
+## not_taken
+
+- sw-10 (one mask-row copy instead of 7). Priced from the round-19 node trace: the 7 copies cost about 24 us of host time a draft, under 0.05% of a window, which no A/B resolves, and they would need a persistent VRAM buffer that risks the VRAM log line.
+- GUILD_BATCH_DRAFT_BLOCK=rows as the default: loses 2.5 / 1.7% at 3 slots (step 0).
+- GUILD_BATCH_DRAFT_SLOTS=4 with whole blocks: −0.3 to −0.5% at 4 slots even with the shared head.
+- GUILD_BATCH_DRAFT_BLOCK=single (a 2-row block only for a slot drafting one token): built and measured, −1.8 / −2.6% at 3 slots (163/254 accepted, one more window) and no better than rows at 4 slots. Reverted; the source is kept at runs/batch.cpp.single-option.
+- A shared head for GUILD_DFLASH_K4=0 (MMQ/MMVQ): those kernels are chosen by column count, so draft_slots falls back to one draft() per job.
+
+## user_decisions
+
+- GUILD_BATCH_DRAFT_SLOTS=4 together with GUILD_BATCH_DRAFT_BLOCK=rows (existing switches, no code), with the shared head: +1.0 / +1.5% at 4 slots (61.9 / 62.1 against 61.3 / 61.2 tok/s; acceptance 171/247 against 172/248 with whole blocks). But the rows setting also applies to 3-slot windows, where it loses 2.5 / 1.7% (step 0). It is only worth it where 4 concurrent requests dominate. The defaults are unchanged.

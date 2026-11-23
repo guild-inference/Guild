@@ -1,0 +1,152 @@
+# pf-zero-copy: the verifier's measured runs and problems
+# Extracted from /home/ubuntu/lanes/r20/pf-zero-copy/verify-result.json
+# Note (README): abZ's x9000 prompt has 9,001 tokens and its logs prefill 9,000 ('guild prefill timing: 9000 tokens'
+# in /home/ubuntu/lanes/r20/pf-zero-copy/verify/abZ/b-off1.log and b-on1.log), an 8,192-token chunk and 808; the
+# text below says 809.
+
+## verdict
+
+needs-fix
+
+## head_checked
+
+7650c777c99128fe2db1ceb8e88921d46501efc9
+
+## bits_evidence
+
+All checks ran on HEAD 7650c77. The worktree is clean. The incremental rebuild under build-run recompiled nothing, so the binaries are HEAD's. Every prompt run used GUILD_NO_KV_CACHE=1. Each item gives expected, then got.
+
+pT, in abT's 4 arms (ZERO_COPY 0/1):
+- Expected: w16 86768, p1k 86557, p2k 81685, p4k 59650, p3k 95757, p6k 60700.
+- Got: the same in all 4 arms.
+
+pD, in abT's 4 arms: p7600 77730, got 77730 x4.
+
+pB, in abB's 4 arms:
+- Expected: w16 86768, p4k 59650, ctx32k 3242.
+- Got: the same x4.
+
+MTP drafter (qb_mtp.sh on pM, 7168 layout):
+- Expected: w16 78230, p2k 26759, x10700 86410, p4k 89156, p3k 18125.
+- Got: the same.
+
+6144 layout (qb6.sh on pT, --prefill 6144 --prefill-rows 512): expected the 8192 hashes, got the same.
+
+pX (verify-a1's edge set):
+- Expected: w16 86768, x1600 9017, x1535 46284, x2501 91712, x2501b 91712, rep 66518, x10700 85550, x5003 51696, x9000 51596, p7600 77730, x3333 99701.
+- Got: the same.
+- Its 10 GDN_HASH lines equal verify-a1's base run (b-xB.log). The md5 of the hash fields is fe983cd9cb915dc65c9dd789ab1d735f in both. I could not rebuild the implementer's ea0f8f26 checksum, but the lines themselves are equal.
+- Final residual dump: expected verify-a1's base R-B.bin, md5 f0e45a0f816fb378dcfd0d3b3bdb21fb. Got f0e45a0f816fb378dcfd0d3b3bdb21fb.
+
+pTD with GDN hashes and the R dump, ZERO_COPY=0 vs default (direct bitwise comparison, not run by the implementer):
+- Expected: equal.
+- Got: 6 GDN lines identical (6122677f...), R-G0.bin = R-G1.bin (a021b4da..., 4.9 MB). Output hashes = pT/pD.
+
+bt_long.py --batch 3 (4608 layout):
+- Expected: every slot IDENTICAL.
+- Got: slots 0, 1, 2 IDENTICAL; drafts 57/115, 78/85, 63/118 as before.
+
+Decode:
+- Expected: ids [38747, 38747, 41916, 41916], 'chunks of 8192 tokens in the 3098 MiB of VRAM free', 'GPU cache 0 slots'.
+- Got: all three. Every 8192-layout run in every arm says the same two lines.
+
+batch_test --batch 3 --n 3: expected IDENTICAL, got IDENTICAL x3.
+
+mb_ring and mb_ring2 (lane's libguild_mmq.a), 160 and 40 rows:
+- Expected: 0 differ with a zero tail.
+- Got: 0 of 3,276,800 / 6,553,600 and 819,200 / 1,638,400 words. A 0xFF tail gives 2,560 / 640 NaN. Composition: 0 of 204,800 / 51,200.
+
+My own mb_j.cu (lane's libguild_mmq.a):
+- Setup: uneven routed rows 0..400 including empty experts, for IQ3_S/IQ4_NL, IQ3_S/Q8_0 and IQ4_XS/Q8_0. Variants: 16 consecutive ids, each expert alone (own J), max_rows 512, groups cut 3/6/7 and 5/1/10, and the non-local path.
+- Expected: bit-identical to the gather path.
+- Got: 0 gate/up and 0 down words differ in all 48 cases.
+
+pV (w16 86768, p2k 81685, x10700 85550, p4k 59650) under other switches:
+- GUILD_PREFILL_GROUP_LOCAL=0 with ZERO_COPY=0 and =1 (zero-copy's non-local path; the auto chunk becomes 6144): same hashes.
+- GUILD_PREFILL_RING=20 (a 36-slot block): same.
+- GUILD_PREFILL_ISSUER=0: same.
+- ZERO_COPY=0 + TAIL_LEND_STREAMED=0: same.
+
+abZ, x9000 (a whole 8192-token chunk): 51596 x4.
+
+Forced GPU cache (bench --cache 300, 'GPU cache 300 slots' in both arms), ZERO_COPY=0 vs default:
+- Expected: equal to each other.
+- Got: 86768 / 81685 / 35967 / 59650 in both.
+
+Pinned arena (GUILD_PIN_EXPERTS=1, abP's 4 arms):
+- Expected: w16 86768, p2k 81685, p4k 59650.
+- Got: the same x4.
+
+ctest (pf-tail-ring's -R set, 34 tests): 31 passed, 2 skipped (fused, cc < 8), 1 failed. The failure is ple_parity: its fixture ../../Q2_0/... is missing on this PC. It is the same failure as on pf-tail-ring and build-pin.
+
+format_code.py --check: all 551 files formatted.
+
+## measured
+
+All runs below are prompt_ms from the same HEAD binary, in run order. For the A/Bs, off = GUILD_PREFILL_ZERO_COPY=0 and on = the default plus a dummy variable. All used GUILD_NO_KV_CACHE=1 and GUILD_PREFILL_TIMING=1. Each A/B round ran ABBA (off1 on1 on2 off2) inside one gpu-run hold.
+
+1. abT: pTD, one hold 04:25:17-04:36:51. Values are off1/on1/on2/off2.
+
+| prompt | off1 | on1 | on2 | off2 | change |
+|---|---|---|---|---|---|
+| p1k | 7458 | 7456 | 7448 | 7452 | 0.0% |
+| p2k | 9334 | 8135 | 8111 | 9414 | -13.3% |
+| p4k | 14484 | 12464 | 12477 | 14361 | -13.5% |
+| p3k | 11427 | 9782 | 9755 | 11459 | -14.6% |
+| p6k | 20214 | 18385 | 18404 | 20258 | -9.1% |
+| p7600 | 24106 | 23181 | 23159 | 24111 | -3.9% |
+
+4K phases, off to on: dequant 606 to 0, wait copy 940/948 to 51/50, gate/up 2810/2823 to 2425/2421 ms.
+
+2. abB: pB, one hold 04:49:28-05:03:05.
+
+| prompt | off1 | on1 | on2 | off2 | change |
+|---|---|---|---|---|---|
+| p4k | 14623 | 12814 | 12879 | 14698 | -12.4% |
+| ctx32k | 105263 | 101990 | 102190 | 105886 | -3.3% (-3.48 s) |
+
+32K phases, off to on: dequant 2826 to 0, wait copy 2486/2423 to 4334/4258, gate/up 19386/19559 to 16426/16481 ms.
+
+3. ex1: exactness, single runs, 05:19:59-05:35:01.
+- M (MTP): p2k 8213, x10700 35033, p4k 12865, p3k 9830.
+- T6 (6144 layout): p2k 8279, p4k 13723, p6k 19897.
+- X: x1600 8183 (streams in place) and x1535 9008 (routed), x10700 34778, x9000 32433, p7600 23388.
+- G0/G1 (GDN hash on, ZERO_COPY=0/1): p2k 9520/8203, p4k 14473/12651, p6k 20408/18584, p7600 24289/23357.
+
+4. mbj: 05:35:01-04, the microtest above.
+
+5. ex2: 05:38:40-05:49:18.
+- bt_long: solo 8536 / 14198 / 44215 ms.
+- Decode: 51.99 / 65.33 tok/s. This is one process, not an A/B; base20's morning baseline was 52.19 / 65.81.
+- batch_test: 54.4 tok/s overall, 58.8 tok/s from the first batch token.
+
+6. ex3: pV single runs, p2k / x10700 / p4k, from 06:04:22.
+
+| arm | p2k | x10700 | p4k |
+|---|---|---|---|
+| L0 (GROUP_LOCAL=0, ZERO_COPY=0) | 9481 | 38607 | 14796 |
+| L1 (GROUP_LOCAL=0) | 8127 | 36638 | 13074 |
+| R20 (RING=20) | 8123 | 34951 | 12559 |
+| I0 (ISSUER=0) | 11499 | 39488 | 15905 |
+| F0 (ZERO_COPY=0 + TAIL_LEND_STREAMED=0) | 9487 | 37080 | 14341 |
+
+7. abZ: x9000 (one whole 8192 chunk plus an 809-token routed chunk), 06:16:46-06:24:47.
+- 34087 / 33127 / 33112 / 34023: -2.7% (-0.94 s).
+- Wait copy 3742/3758 to 4330/4303 ms.
+
+8. ex4: --cache 300, C0/C1, 06:24:47-06:29:55.
+- p2k 10417 / 10438, x10700 38555 / 38559, p4k 16301 / 16329.
+
+9. abP: GUILD_PIN_EXPERTS=1, pP, 06:40:58-06:51:04.
+- p2k: 8617 / 8637 / 8628 / 8610, +0.2%.
+- p4k: 13687 / 12432 / 12451 / 13633, -8.9%.
+- 2K wait copy: 334/362 to 1680/1706 ms.
+
+## problems
+
+- {"severity": "major", "what": "F1, latent NaN risk. The zero-tail cache (ztail) for lent slots in the scratch region goes stale after the MTP drafter's draft_kv, which uses the whole region including the lent slots, in place. When the next request repeats the lent layout (lay_out's early return for lt == region_T && zc == zc_mode), ztail is kept. A pinned-arena DMA of a blob the same size as the slot's ztail then skips its 256-B memset, and MMQ's down over-read reads draft_kv's fp32 leftovers. A scale that decodes as NaN or Inf (about 1/32 per low half-word) gives NaN * 0 = NaN in that expert's output. Not reachable with UD-IQ4_XS, because layer 0's blob (2,329,600 B) differs from layers 46-47's (3,148,800 B), so every slot's first pinned DMA memsets. It is reachable on a pack whose first and last layers' blobs are the same size. That also needs pinned DMAs (GUILD_PIN_EXPERTS=1, a PCIe-offload plan, or the automatic page-locking on a one-NUMA-node PC with a RAM budget <= 24 GiB), the MTP drafter on Pascal, and two consecutive single-chunk prompts of the same length (always true for benchmarks with --warmup and GUILD_NO_KV_CACHE).", "where": "src/prefill/prefill.cpp: lay_out's early return (line ~2774, 'laid out for this T already'), stage_copy's skip (line ~3083, 'zt == bytes || zt == kZcZero'), draft_kv's whole-region carve (line ~1713-1745).", "fix": "On that early return, set m.ztail[i] = 0 for i in [m.ring - m.ring_lent, m.ring). Alternatively, reset them after on_chunk when m.ring_lent > 0. It only adds memsets in the pinned path and is exact. Re-check pM through qb_mtp.sh with GUILD_PIN_EXPERTS=1: its hashes must equal the unpinned pM's."}
+- {"severity": "minor", "what": "F2. On a page-locked arena, the 2K gain is lost. Measured with 2 pairs at GUILD_PIN_EXPERTS=1: p2k +0.2% (8613 to 8633 ms), against -13.3% unpinned; p4k -8.9%. The 2K wait copy rises 0.35 to 1.69 s. The likely cause, not isolated, is about 3,600 256-B cudaMemsetAsync kernels per 2K chunk on the in-order copy stream, each waiting for an SM behind the compute stream's MMQ. It is not a regression against ZERO_COPY=0, but page-locking is a default on one-socket PCs with a RAM budget <= 24 GiB.", "where": "src/prefill/prefill.cpp stage_copy, the memset branch (line ~3086).", "fix": "Write the 256 zero bytes as a cudaMemcpyAsync H2D from a small pinned zero buffer on m.copy, so it stays on the copy engine. Measure with a 2-pair A/B and re-run the pinned and MTP hashes."}
+- {"severity": "minor", "what": "GUILD_PREFILL_ZERO_COPY=0 alone does not restore pf-tail-ring's path, because follow-up (a) (lend only to a chunk that streams) stays on. The result's text says ZERO_COPY=0 'restores pf-tail-ring's path exactly'. The full old path is ZERO_COPY=0 plus GUILD_PREFILL_TAIL_LEND_STREAMED=0. My F0 run of that combination gives identical hashes.", "where": "zero_copy_on() comment and the lane report's switch list.", "fix": "State it in the comment and report, or make ZERO_COPY=0 also imply the old lending rule."}
+- {"severity": "minor", "what": "The ring block uses about 22 MiB less VRAM than 34 separate allocations (gpu_after 7557 vs 7579 MiB). The auto cache's would-be size goes from 47 to 57 slots here; none is kept. On a card that keeps an auto GPU expert cache, the decode text can therefore differ from base (the brief's GPU-cache trap).", "where": "Prefill::carve, the zc block.", "fix": "Nothing to change in code. Integration should compare texts only at equal 'GPU cache N slots'."}
+- {"severity": "minor", "what": "The ab_protocol's 'wait copy must not rise' does not hold at 7.6K (0.71 to 0.90 s), at a whole 8192-token chunk (3.75 to 4.32 s) or at 32K (2.45 to 4.30 s). Slots are held until each group's down product. The prompt is still faster: x9000 -2.7%, 32K -3.3%.", "where": "The 48-slot block at the layout's chunk.", "fix": "Optional follow-up: more slots at 8192-token chunks (the scan has margin), measured."}
+- {"severity": "minor", "what": "The Stager's +256 B buffers and per-job 256-B tail memset run whenever ZERO_COPY is on, also on configs that can never take zero-copy (HIP, cc >= 7, no --prefill-rows, the user's --prefill 512 server). Negligible cost. Also, HIP and MSVC were not compiled here (no toolchain).", "where": "Prefill::init, the Stager init.", "fix": "Optionally gate the tail on zc_layout(chunk); compile once on HIP and Windows CI."}

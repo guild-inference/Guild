@@ -1,0 +1,20 @@
+the engine runs 6 slots (asked 7): 6 prompts
+solo 0: 96 tokens in 2.6s  DONE 96 23 295.139 2335.17 length 52 98 0 0 68160 55775 0 0 
+solo 1: 96 tokens in 1.4s  DONE 96 25 214.354 1136.1 length 79 89 0 0 50880 34841 0 0 2
+solo 2: 96 tokens in 2.0s  DONE 96 27 256.846 1707.55 length 67 104 0 0 63840 48302 0 0
+solo 3: 96 tokens in 2.4s  DONE 96 32 280.43 2121.17 length 55 94 0 0 64800 53219 0 0 3
+solo 4: 96 tokens in 1.9s  DONE 96 22 199.494 1648.68 length 68 109 0 0 65760 48383 0 0
+solo 5: 96 tokens in 2.1s  DONE 96 25 212.213 1873.96 length 62 108 0 0 68160 53452 0 0
+batch: 6 slots, 576 tokens; admissions 2.2s; then 6.2s -> aggregate 68.6 tok/s overall, 71.8 tok/s from the first batch token
+slot 0: 96 tokens, solo 96: IDENTICAL
+    'Le **B-tree** (pour *Balanced Tree*) est une structure de donn\xe9es arborescente \xe9quilibr\xe9e, largement utilis\xe9e dans les syst\xe8mes de fichiers et les bases de donn'
+slot 1: 96 tokens, solo 96: IDENTICAL
+    '```python\ndef merge_intervals(intervals: list[list[int]]) -> list[list[int]]:\n    """\n    Merge overlapping intervals.\n    \n    Args:\n        intervals: A list '
+slot 2: 96 tokens, solo 96: IDENTICAL
+    'Here is a detailed comparison between **TCP** (Transmission Control Protocol) and **QUIC** (Quick UDP Internet Connections), focusing on **Handshake**, **Conges'
+slot 3: 96 tokens, solo 96: IDENTICAL
+    "L'histoire du calcul de $\\pi$ (pi) est l'une des plus longues et des plus fascinantes de l'histoire des sciences. Elle traverse les mill\xe9naires, passant de la g"
+slot 4: 96 tokens, solo 96: IDENTICAL
+    'The French Revolution (1789\u20131799) was not caused by a single event, but rather by a convergence of long-term structural issues and short-term crises. Historians'
+slot 5: 96 tokens, solo 96: IDENTICAL
+    'The attention mechanism is the core innovation behind Transformer models (like BERT, GPT, and Llama). It allows the model to weigh the importance of different w'

@@ -1,0 +1,19 @@
+# dc65310 (HIP guards): the CUDA SASS before (sass0, 00:16 UTC) and after (sass1, 00:24 UTC) the change, from /home/ubuntu/lanes/r20/int/fix
+# (the .sass files are 40 KB-7.3 MB and are not copied; this is cmp and md5sum of them, run 2026-11-23 ~12:10 UTC)
+drama3_tower.sass: before 5bef589e1de70bc34d5de5d0f08f5477 after 5bef589e1de70bc34d5de5d0f08f5477: identical
+glm5.sass: before 7bf1d6ca6de912f5b7d9f4dbb8f5d57e after 7bf1d6ca6de912f5b7d9f4dbb8f5d57e: identical
+verify_combine.sass: before 3ca704d9d3cae8317594050dd6fbc2a2 after 3ca704d9d3cae8317594050dd6fbc2a2: identical
+
+# The HIP branches compiled with nvcc -D__HIP_PLATFORM_AMD__ (type check only; no ROCm on this PC). Their logs:
+== hipcheck_glm5.log
+../guild/src/core/glm5.cu(209): warning #177-D: variable "c" was declared but never referenced
+
+Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+
+../guild/src/core/glm5.cu(35): warning #177-D: function "guild::core::glm5k::<unnamed>::warp_max" was declared but never referenced
+
+../guild/src/core/glm5.cu(537): warning #177-D: function "guild::core::glm5k::<unnamed>::q8_0_scale" was declared but never referenced
+
+== hipcheck_drama3_tower.log (empty: no warnings)
+object: /home/ubuntu/lanes/r20/int/fix/hipcheck_drama3_tower.o 317368 bytes
+object: /home/ubuntu/lanes/r20/int/fix/hipcheck_glm5.o 1251544 bytes

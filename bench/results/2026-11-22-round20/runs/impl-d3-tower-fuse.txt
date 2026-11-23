@@ -1,0 +1,70 @@
+# d3-tower-fuse: the implementer's fields the README quotes (implementer's numbers, not the verifier's)
+# Extracted from /home/ubuntu/lanes/r20/d3-tower-fuse/impl-result.json
+
+## commits
+
+- ef51882 perf(drama3): the tower step's norms, adds and Q8_1 quantizes in fused kernels
+- 3fbb524 perf(drama3): the tower's sampler with AVX-512, the same draws
+- 9973c3c fix(drama3): the fast sampler's scratch on the heap, not in static TLS
+- 3c774d9 perf(drama3): the tower step's attention with K and V staged in shared memory
+- 38498ed perf(drama3): the tower's w1 and w3 as one 12288-row matvec
+- 2bd32b8 perf(drama3): the staged attention and [w1|w3] in step_begin's layers only
+
+## change_summary
+
+The Drama 3 tower step now uses four faster paths, each giving the same bits as the one it replaces:
+- k: fused 1024-thread embed+norm+Q8_1 and add+norm+Q8_1 kernels.
+- s: an AVX-512 sampler that keeps glibc's exp bits.
+- a: attention with K/V staged in shared memory (split into more blocks at 320 positions or fewer).
+- w: [w1|w3] as one 12288-row Q8_0 matvec.
+
+This session's commit, 2bd32b8, changes where a and w run. By default they now run only in step_begin's 5 layers, the critical path where the backbone waits for the tower. step_finish's 8 layers, which run beside the backbone step, keep the chunked attention and the two separate w1/w3 calls.
+
+Why: in clean rounds, with a and w in all 13 layers (38498ed's default, now GUILD_DRAMA3_FUSE=ksawf), the main thread's tower time fell 0.19-0.20 ms a frame against ks in every pair. But the rest of the frame (the backbone step) grew 0.10-0.14 ms, so the net was only +0.24% over 8 pairs (SE 0.37) and +0.50% over 6 (SE 0.52). ab2's apparent 'on' loss against off (-0.7%) came from other jobs running between its arms.
+
+The new default beats off by +2.29% (SE 0.51, 6 clean pairs), ks by +1.08% (6 of 6 pairs at or above 0) and ksawf by +0.58% (5 of 6). All output bits are unchanged.
+
+Files changed: src/core/drama3_tower.cu, drama3_tower.cpp, include/guild/core/drama3_tower.hpp, drama3_tower_kernels.hpp, src/core/drama3_exp_table.inc (new), tests/core/drama3_fuse_test.cpp (new ctest), and CMakeLists.txt (that test target only). No ABI, lock or kernel-repo change.
+
+## switches
+
+- GUILD_DRAMA3_FUSE (read once in Drama3Tower::load), default unset or 1 = "ksaw": k, s, a and w, with a and w only in step_begin's 5 layers. The log reads 'staged attention in 5 and [w1|w3] in 5 of 13 layers'.
+- GUILD_DRAMA3_FUSE=0 restores the exact old path: separate small kernels, the reference sampler, the file's w1/w2/w3 layout, the chunked attention and two w1/w3 calls. Its tower bits and both WAV md5s equal build-pin's and base's.
+- Letters pick the parts; each part keeps the old path when its letter is absent:
+- k: fused small kernels; also needs dim 2048, 36-byte Q8_1 blocks and the load-time self-check.
+- s: AVX-512 sampler; also needs AVX-512 F/DQ/BW/VL, top_k <= 64 and the load-time exp check.
+- a: staged/split attention; the tower's shape only.
+- w: the [w1|w3] layout and one 12288-row call; the call needs k.
+- f: a and w also in step_finish's 8 layers. GUILD_DRAMA3_FUSE=ksawf restores 38498ed's default (a and w in all 13 layers).
+
+## gain_summary
+
+Expected (judge): about -0.37 ms of a 20.8 ms frame, +1.8% (48.1 to about 49.0 frames/s); the measured parts (k and s) alone about +0.9%.
+
+Measured with the final default (unset = ksaw) against GUILD_DRAMA3_FUSE=0, over 6 clean alternated pairs in ab6 (each round under one lock hold, same code):
+- +2.29% (SE 0.51) overall.
+- Seed 11: 47.61 to 49.07 frames/s (+3.08%).
+- Seed 12: 47.76 to 48.48 frames/s (+1.51%).
+- The main thread's tower time fell 0.44 ms a frame (3.94-4.00 to 3.51-3.56 ms).
+
+k and s alone (ks) gave +1.2-1.7% over off, more than the +0.9% expected for them. a and w add about +1.1% over ks once they are kept out of step_finish; in all 13 layers they added only +0.2-0.5%.
+
+Stop rule: steps 1-3 gained +1.9% / +3.2% (ab1) and +1.7% (ab4), above the +0.5% threshold, so the lane continued. No bit check failed.
+
+## open_issues
+
+- VRAM headroom: eager-loaded device code grows. drama3_tower.cu's sm_61 cubin goes from 106,392 to 212,832 bytes: SASS text +90,368 B (embed_norm2_q8 39,040, attn_partial_staged<4> 22,336, attn_partial_staged<8> 22,016, add_norm_q8 6,976) and constants +1,624 B. 2bd32b8 adds no device code. With glm-attend3's +46 KB that is about 150 KB beside GLM, which had 2 MiB left at --ctx 32768. GLM's load at --ctx 32768 (and the server's 262144) needs checking after the merge; it was not run here because no GLM load was expected in this batch. If space gets tight, embed_norm2_q8's 39 KB is the place to trim.
+- Qwen still says 'chunks of 8192 tokens in the 3098 MiB of VRAM free' and keeps no GPU expert cache. This was measured with the 38498ed binary; 2bd32b8 changes no device code. Re-check once merged with the other lanes. Drama 3 shows 'chunks of 6144 tokens in the 3254 MiB' and 'GPU cache 0 slots', as in base.
+- HIP: the fused kernels' Q8_1 stage is inline PTX, as glm5.cu's already is in 67a2802 (since 4f7523a). A HIP build of either file needs a guard that keeps the separate kernels on HIP. Not built here.
+- Windows: the load-time exp check turns the fast sampler off wherever the CRT's exp differs from glibc's. Not run here.
+- Why a and w lengthen the backbone step when they run beside it (in step_finish) was not traced; nsys was not run for lack of time. GUILD_DRAMA3_FUSE=ksawf reproduces it.
+- Not measured together with the other round-20 lanes. win-combine and cpu-rows also change Drama 3's frame through the CPU experts and the pool, so an integration A/B is needed.
+- Noise: frames/s moves ±1-2% from run to run (the rest moves ±0.3-0.5 ms) while tower ms moves only ±0.01-0.03. Keep both arms of a pair inside one lock hold (runs/round.sh) and pool pairs.
+
+## not_taken
+
+- f (a and w also in step_finish's 8 layers) as the default: against def it measured -0.58% over 6 pairs and the rest grew 0.24 ms. Kept as the letter f.
+- ks (no a or w) as the default: def beat it in all 6 ab6 pairs (+1.08%).
+- Fusing prefill_chunk: the spec allowed it to stay unfused, and the prompt's tower pass runs once a request.
+- A per-phase timing switch in src/runtime/drama3.cpp: that file is outside the lane's list. The log's decode / tower / codec split gave the tower and rest columns. The backbone step's own split (GPU against CPU experts) and an nsys trace were not done for lack of time.
+- Kernel-repo changes and a lock bump: none needed, because the Q8_1 stage reuses gkc's operations inside this file.

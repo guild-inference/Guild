@@ -1,0 +1,31 @@
+PASS qwen ids: ids [38747, 38747, 41916, 41916]
+PASS ornith ids: ids [30936, 30936, 65886, 65886]
+PASS qwen vram lines: 9 lines
+PASS ornith vram lines: 6 lines
+PASS drama3 vram lines: 6 lines
+PASS startlux vram lines: 5 lines
+PASS drama3 d11-0.summary: d11-0 49.38 frames/s, 2.29x real time; tower 1737 ms, codec 40 ms 6e04c9b1
+PASS drama3 d11-ks.summary: d11-ks 49.85 frames/s, 2.32x real time; tower 1651 ms, codec 40 ms 6e04c9b1
+PASS drama3 d11-ksawf.summary: d11-ksawf 49.98 frames/s, 2.32x real time; tower 1604 ms, codec 41 ms 6e04c9b1
+PASS drama3 d11.summary: d11 50.21 frames/s, 2.33x real time; tower 1606 ms, codec 40 ms 6e04c9b1
+PASS drama3 d12.summary: d12 50.25 frames/s, 2.33x real time; tower 1441 ms, codec 32 ms f84288c9
+PASS drama3 tower_0.txt: 
+PASS drama3 tower_ks.txt: 
+PASS drama3 tower_ksawf.txt: 
+PASS drama3 tower_unset.txt: 
+PASS nemotron transcripts: 12 of 12 lines
+PASS startlux answers: 4 of 4 requests: answers identical (base /home/ubuntu/lanes/r20/base20/bl/sl.jsonl, lane chk3/sl.jsonl)
+PASS slots b6.out: 6 of 6 IDENTICAL, slot texts equal to base20
+PASS slots b3.out: 3 of 3 IDENTICAL, slot texts equal to base20
+PASS slots btl.out: 3 of 3 IDENTICAL
+PASS prompt hashes pT: w16 86768 p1k 86557 p2k 81685 p4k 59650 p3k 95757 p6k 60700
+PASS prompt layout pT: 
+PASS prompt hashes pD: w16 86768 p7600 77730
+PASS prompt layout pD: 
+PASS prompt hashes pB: w16 86768 p4k 59650 ctx32k 3242
+PASS prompt layout pB: 
+PASS prompt hashes pM: w16 78230 p2k 26759 x10700 86410 p4k 89156 p3k 18125
+PASS ctest: 99% tests passed, 1 tests failed out of 133 [('ple_parity', 'Failed')]
+NOTE b-q1.log: would-be GPU cache 45 slots
+NOTE b-q1.log: would-be GPU cache 57 slots
+28 of 28 checks pass

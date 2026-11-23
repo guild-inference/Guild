@@ -1,0 +1,21 @@
+guild drama3: tower step: fused small kernels, AVX-512 sampler, staged attention in 5 and [w1|w3] in 5 of 13 layers
+guild drama3: tower step: fused small kernels, AVX-512 sampler, staged attention in 5 and [w1|w3] in 5 of 13 layers
+prompt 40 rows, 40 frames (length), 40 decode steps recorded
+prompt K/V, batched against one step per row: 0 of 507 (layer, position) rows differ
+bits of every step's logits, layer outputs, frames and K/V: 8d3fea1524964286
+layer  0: worst cosine 0.999945
+layer  1: worst cosine 0.999843
+layer  2: worst cosine 0.999782
+layer  3: worst cosine 0.999817
+layer  4: worst cosine 0.999759
+layer  5: worst cosine 0.999751
+layer  6: worst cosine 0.999764
+layer  7: worst cosine 0.999750
+layer  8: worst cosine 0.999742
+layer  9: worst cosine 0.999708
+layer 10: worst cosine 0.999684
+layer 11: worst cosine 0.999495
+layer 12: worst cosine 0.999781
+40 steps: worst cosine 0.999495; KL mean 0.00147, worst 0.00655 nats; argmax agreement 0.940 (400 rows)
+PASS
+rc 0

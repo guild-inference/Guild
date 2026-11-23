@@ -1,0 +1,25 @@
+generations in run order:
+ 0 long  r0 C both-off prompt   39019 ms logits 72bd24ad | steps 140 acc 115 (82.1%) draft 5.206 verify 81.47 accept 0.76 cpu 65.1 step med 86.81 | 20.83 tok/s | ids md5 ddad1ae1
+ 1 long  r0 A new      prompt   38419 ms logits 72bd24ad | steps 140 acc 115 (82.1%) draft 5.001 verify 79.31 accept 0.78 cpu 65.8 step med 84.69 | 21.40 tok/s | ids md5 ddad1ae1
+ 2 short r0 C both-off prompt     134 ms logits c0ba3244 | steps 138 acc 117 (84.8%) draft 4.663 verify 74.62 accept 0.77 cpu 66.6 step med 79.87 | 23.08 tok/s | ids md5 7aee0c4c
+ 3 short r0 A new      prompt     133 ms logits c0ba3244 | steps 138 acc 117 (84.8%) draft 4.648 verify 74.64 accept 0.77 cpu 66.7 step med 79.69 | 23.08 tok/s | ids md5 7aee0c4c
+ 4 long  r1 A new      prompt   38425 ms logits 72bd24ad | steps 140 acc 115 (82.1%) draft 5.001 verify 79.17 accept 0.77 cpu 65.5 step med 84.73 | 21.44 tok/s | ids md5 ddad1ae1
+ 5 long  r1 C both-off prompt   39109 ms logits 72bd24ad | steps 140 acc 115 (82.1%) draft 5.203 verify 81.67 accept 0.75 cpu 65.0 step med 87.09 | 20.78 tok/s | ids md5 ddad1ae1
+ 6 short r1 A new      prompt     131 ms logits c0ba3244 | steps 138 acc 117 (84.8%) draft 4.632 verify 74.02 accept 0.73 cpu 65.5 step med 79.17 | 23.27 tok/s | ids md5 7aee0c4c
+ 7 short r1 C both-off prompt     130 ms logits c0ba3244 | steps 138 acc 117 (84.8%) draft 4.663 verify 74.43 accept 0.73 cpu 65.5 step med 79.63 | 23.15 tok/s | ids md5 7aee0c4c
+ 8 long  r2 C both-off prompt   39008 ms logits 72bd24ad | steps 140 acc 115 (82.1%) draft 5.202 verify 81.30 accept 0.75 cpu 64.1 step med 87.08 | 20.87 tok/s | ids md5 ddad1ae1
+ 9 long  r2 A new      prompt   38298 ms logits 72bd24ad | steps 140 acc 115 (82.1%) draft 5.004 verify 79.49 accept 0.78 cpu 64.5 step med 84.57 | 21.36 tok/s | ids md5 ddad1ae1
+10 short r2 C both-off prompt     128 ms logits c0ba3244 | steps 138 acc 117 (84.8%) draft 4.654 verify 74.22 accept 0.72 cpu 64.9 step med 79.43 | 23.21 tok/s | ids md5 7aee0c4c
+11 short r2 A new      prompt     128 ms logits c0ba3244 | steps 138 acc 117 (84.8%) draft 4.631 verify 74.26 accept 0.72 cpu 65.2 step med 79.15 | 23.21 tok/s | ids md5 7aee0c4c
+
+prompt long:
+  C both-off step med 86.81 87.09 87.08 (mean 86.99) | tok/s 20.83 20.78 20.87 (mean 20.83) | prompt ms 39019 39109 39008 (mean 39045) | draft 5.204 verify 81.48 | accepted 115 115 115
+  A new      step med 84.69 84.73 84.57 (mean 84.66) | tok/s 21.40 21.44 21.36 (mean 21.40) | prompt ms 38419 38425 38298 (mean 38381) | draft 5.002 verify 79.32 | accepted 115 115 115
+  ids: 6 generations, 1 distinct id lines; prompt logits hashes: 1 distinct
+  A new - C both-off: step med -2.12 -2.36 -2.51 ms (mean -2.33); tok/s +2.74% +3.18% +2.35% (mean +2.75%); prompt -600 -684 -710 ms (mean -665)
+prompt short:
+  C both-off step med 79.87 79.63 79.43 (mean 79.64) | tok/s 23.08 23.15 23.21 (mean 23.15) | prompt ms 134 130 128 (mean 131) | draft 4.660 verify 74.42 | accepted 117 117 117
+  A new      step med 79.69 79.17 79.15 (mean 79.34) | tok/s 23.08 23.27 23.21 (mean 23.19) | prompt ms 133 131 128 (mean 131) | draft 4.637 verify 74.31 | accepted 117 117 117
+  ids: 6 generations, 1 distinct id lines; prompt logits hashes: 1 distinct
+  short vs base id line (md5 7aee0c4c56f9d17cedd399684372d687): 6 of 6 equal
+  A new - C both-off: step med -0.18 -0.46 -0.28 ms (mean -0.31); tok/s +0.00% +0.52% +0.00% (mean +0.17%); prompt -1 +1 +0 ms (mean +0)

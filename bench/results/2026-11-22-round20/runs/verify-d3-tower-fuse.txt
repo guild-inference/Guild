@@ -1,0 +1,74 @@
+# d3-tower-fuse: the verifier's measured runs and problems
+# Extracted from /home/ubuntu/lanes/r20/d3-tower-fuse/verify-result.json
+
+## verdict
+
+accept
+
+## head_checked
+
+2bd32b84168784e0cf3916211c245e008523d316
+
+## bits_evidence
+
+All checks ran on the HEAD build, under gpu-run, from 23:27 to 00:07 UTC.
+- Build matches HEAD: an incremental rebuild under build-run found every target up to date. build-info.json has commit 2bd32b84 and tracked_source_dirty false. guild-generate md5 c9e53e4b, the same as runs/bin-s7 (bincmp: 0 bytes differ).
+- drama3_fuse_test (with m1_logits.bin): expected 0 differ on every line; got PASS with 0 differ on every line:
+  - add_norm_q8 in 6 kinds
+  - embed_norm2_q8: 480 trials
+  - attention_fast at 10 values of n_pos
+  - [w1|w3]: 20 trials
+  - sampler: 54,000 synthetic draws (48,000 on the fast path) and 172,800 dumped draws (153,600 fast)
+  - exp8, strided check
+- ctest -R drama3_fuse_test: expected pass; got 1/1 passed in 10.5 s.
+- drama3_tower_test (tower + ref.npz.d): expected 8d3fea1524964286, which build-pin printed in the same lock hold. Got 8d3fea1524964286 in all 20 lane settings, and prompt K/V 0 of 507 rows differ in each. The settings were unset, 1, 0, ksaw, ksawf, ks, k, s, a, w, kw, kwf, ka, kaf, aw, awf, saw, sawf, and unset with GUILD_DRAMA3_PRIO=0.
+- Exhaustive exp8 check: the lane's exp8 and table, copied verbatim and built with the engine's -O3 -std=c++20, compared with std::exp on every non-NaN float bit pattern (0x0 to 0xffffffff). Expected 0 differ; got 0 differ.
+  - Negative control: with the final fma split into a multiply and an add, 844 and 619 of 2^20 patterns differ, so the check does see a one-rounding change.
+- drama3_codec_test, chunks 7 and 16: expected build-pin's 110.4 / 109.9 dB, worst error 0.00000; got the same.
+- WAV md5s: expected 6e04c9b1 (seed 11) and f84288c9 (seed 12). Got 60 of 60 across the base, off, def, ks and ksawf arms: 30 x 6e04c9b1 and 30 x f84288c9 (full hashes in ab/wav_md5.txt).
+- Qwen (qwen-bench-r18, lane HEAD binary):
+  - ids: expected [38747, 38747, 41916, 41916]; got the same.
+  - 'chunks of 8192 tokens in the 3098 MiB of VRAM free' and 'GPU cache 0 slots', as in base20/bl/b-q1.log.
+- Drama 3 VRAM: 'chunks of 6144 tokens in the 3254 MiB' and 'GPU cache 0 slots' in every one of the 60 runs, lane and base alike.
+- Static TLS: 0x2ebc0 in both binaries.
+- tools/format_code.py --check: all 549 files formatted.
+
+## measured
+
+Drama 3, drama3-run-r18's command, with the inner gpu-run removed (verify/d3run.sh).
+
+Six rounds of 10 runs. Each round ran under ONE gpu-run hold, with no other job inside it, and the order rotated from round to round. Round 1 started with the off arm, and rounds 4-6 are rounds 1-3's orders reversed.
+
+Arms:
+- base = /home/ubuntu/lanes/r20/base20/guild-generate (67a2802)
+- off = lane HEAD binary with GUILD_DRAMA3_FUSE=0
+- def = lane with the variable unset (ksaw)
+- ks, ksawf = the same binary with those letters
+
+Each run in order: time, round, arm, seed, frames/s, tower ms a frame, rest ms a frame (decode - tower - codec), md5.
+
+23:29:50 r1 off s11 48.31 3.939 16.676 6e04c9b1; 23:30:14 r1 def s11 48.90 3.526 16.841 6e04c9b1; 23:30:38 r1 base s11 47.99 3.950 16.804 6e04c9b1; 23:31:02 r1 ks s11 48.88 3.595 16.779 6e04c9b1; 23:31:26 r1 ksawf s11 49.14 3.399 16.866 6e04c9b1; 23:31:50 r1 ksawf s12 48.81 3.437 16.979 f84288c9; 23:32:13 r1 ks s12 48.88 3.646 16.739 f84288c9; 23:32:36 r1 base s12 48.12 3.965 16.744 f84288c9; 23:33:00 r1 def s12 48.20 3.538 17.138 f84288c9; 23:33:23 r1 off s12 47.35 4.012 17.038 f84288c9; 23:38:22 r2 def s12 47.56 3.556 17.399; 23:38:46 r2 off s12 46.96 3.993 17.228; 23:39:11 r2 ksawf s12 47.54 3.425 17.533; 23:39:35 r2 base s12 46.96 3.986 17.237; 23:39:59 r2 ks s12 47.79 3.643 17.207; 23:40:24 r2 ks s11 47.40 3.587 17.426; 23:40:49 r2 base s11 47.13 3.973 17.159; 23:41:14 r2 ksawf s11 47.46 3.405 17.582; 23:41:40 r2 off s11 46.97 3.952 17.255; 23:42:05 r2 def s11 47.87 3.503 17.305; 23:46:32 r3 base s11 47.02 3.981 17.203; 23:46:58 r3 ksawf s11 47.90 3.430 17.361; 23:47:23 r3 off s11 46.61 3.965 17.403; 23:47:49 r3 def s11 47.38 3.501 17.524; 23:48:15 r3 ks s11 47.43 3.597 17.401; 23:48:41 r3 ks s12 48.71 3.667 16.789; 23:49:05 r3 def s12 47.03 3.542 17.650; 23:49:31 r3 off s12 47.18 3.986 17.138; 23:49:55 r3 ksawf s12 47.86 3.451 17.371; 23:50:20 r3 base s12 47.06 3.998 17.176; 23:54:50 r4 off s12 47.16 3.991 17.143; 23:55:15 r4 def s12 49.12 3.538 16.746; 23:55:39 r4 base s12 47.85 3.986 16.840; 23:56:03 r4 ks s12 48.78 3.643 16.786; 23:56:27 r4 ksawf s12 48.66 3.423 17.054; 23:56:51 r4 ksawf s11 48.69 3.397 17.058; 23:57:16 r4 ks s11 47.61 3.585 17.338; 23:57:42 r4 base s11 48.02 3.969 16.772; 23:58:07 r4 def s11 49.00 3.509 16.812; 23:58:32 r4 off s11 48.17 3.958 16.716; 23:58:58 r5 def s11 47.85 3.501 17.315; 23:59:24 r5 off s11 47.13 3.958 17.175; 23:59:49 r5 ksawf s11 47.59 3.411 17.518; 00:00:15 r5 base s11 46.92 3.967 17.261; 00:00:40 r5 ks s11 47.48 3.582 17.395; 00:01:06 r5 ks s12 49.02 3.655 16.671; 00:01:30 r5 base s12 46.75 4.002 17.317; 00:01:54 r5 ksawf s12 47.79 3.423 17.430; 00:02:19 r5 off s12 46.89 3.984 17.272; 00:02:43 r5 def s12 47.99 3.542 17.223; 00:03:18 r6 base s12 46.85 3.991 17.282; 00:03:42 r6 ksawf s12 47.63 3.465 17.458; 00:04:06 r6 off s12 47.06 4.000 17.176; 00:04:31 r6 def s12 47.69 3.535 17.359; 00:04:55 r6 ks s12 47.72 3.641 17.244; 00:05:20 r6 ks s11 47.64 3.597 17.309; 00:05:45 r6 def s11 48.04 3.493 17.238; 00:06:10 r6 off s11 46.94 3.939 17.280; 00:06:36 r6 ksawf s11 47.74 3.386 17.476; 00:07:01 r6 base s11 47.12 3.969 17.167. (md5: every s11 run 6e04c9b1, every s12 run f84288c9.)
+
+Paired over 12 (round, seed) pairs; SE is over the pairs:
+- def vs base: +1.56% (SE 0.25), 11 of 12 pairs at or above 0. Tower -0.454 ms a frame, rest +0.133 (SE 0.052).
+- def vs off: +1.75% (SE 0.30), 11 of 12. Tower -0.449, rest +0.088. Seed 11 +1.73%, seed 12 +1.77%.
+- off vs base: -0.18% (SE 0.22).
+- ks vs off: +1.88% (SE 0.44).
+- ksawf vs off: +1.78% (SE 0.23), 12 of 12.
+- def vs ks: -0.11% (SE 0.47), 6 of 12. Tower -0.096, rest +0.122.
+- def vs ksawf: -0.03% (SE 0.26). Tower +0.103, rest -0.095.
+- ksawf vs ks: -0.08% (SE 0.35). Tower -0.199, rest +0.217 (SE 0.077).
+
+Per-arm means: base 47.32, off 47.23, def 48.05, ks 48.11, ksawf 48.07 frames/s. Tower ms a frame: base 3.98, off 3.97, def 3.52, ks 3.62, ksawf 3.42.
+
+Other runs:
+- Qwen, one lane run, not an A/B: 51.59 / 62.71 tok/s. The code figure's gap to base20's morning 65.81 comes from one window's CPU expert time (42.2 ms against 33.9-34.1 ms), which this lane does not touch.
+- Exhaustive exp8 check: 3.9 s with 32 threads, under gpu-run.
+
+## problems
+
+- {"severity": "minor", "what": "The claimed gain is above what this verifier measured. The result claims +2.29% (SE 0.51, n 6) for def vs off. Here, over 12 clean pairs, def vs off was +1.75% (SE 0.30) and def vs base20 was +1.56% (SE 0.25). The main thread's tower saving reproduces exactly: -0.45 ms a frame.", "where": "implementer's result gain_summary / NOTES.md '## Report (23:00)'", "fix": "Report about +1.6% against base and +1.75% against off, measured on the GTX 1070 + 2x Xeon 6130 (verify/ab/summary_all.txt)."}
+- {"severity": "minor", "what": "2bd32b8's speed rationale is not reproduced. The claim was def beats ks by +1.08% (6 of 6 pairs) and ksawf by +0.58%. Here, over 12 pairs, def vs ks was -0.11% (SE 0.47, 6 of 12) and def vs ksawf -0.03% (SE 0.26). In both placements, a and w cut the main-thread tower time (0.10 ms with step_begin only, 0.20 ms in every layer), but the rest of the frame grows by about as much (+0.12 / +0.22 ms; the ksawf figure is 2.8 SE). The measured gain comes from k and s: ks vs off +1.88%. All settings are bit-exact.", "where": "src/core/drama3_tower.cpp fuse_part default (\"ksaw\"); commits 3c774d9, 38498ed, 2bd32b8", "fix": "Pick the default in the integration A/B: unset vs GUILD_DRAMA3_FUSE=ks vs ksawf in the merged build. If they stay equal and VRAM is tight, leave out 3c774d9's staged-attention kernels (44 KB of eagerly loaded SASS)."}
+- {"severity": "minor", "what": "The HIP build cannot compile the fused kernels' Q8_1 stage. cmake/hip_backend.cmake compiles every src/*.cu as HIP, and guild_core is built for GUILD_ENABLE_HIP, but the fm:: helpers are unguarded inline PTX. glm5.cu's q8_1_warp already has the same break in base 67a2802 (4f7523a). Not built here: there is no ROCm.", "where": "src/core/drama3_tower.cu, namespace fm and q8_1_warp", "fix": "Guard the PTX with #if !defined(__HIP_PLATFORM_AMD__) (or the project's HIP macro) and keep fuse_ false on HIP, which leaves the separate kernels in use. Do this together with glm5.cu before main."}
+- {"severity": "minor", "what": "L.w13 is set whenever w3's bytes sit right after w1's, and used whenever k is on, regardless of the 'w' letter. With this file that happens only after the 'w' swap, so 'k' without 'w' still makes two calls. The switch's meaning therefore depends on the file's order. It is harmless for the bits, because both paths are exact.", "where": "src/core/drama3_tower.cpp load(), the L.w13 assignment", "fix": "Set L.w13 only when fuse_part('w') (and retyped.empty())."}
+- {"severity": "minor", "what": "The VRAM effect of the +106 KB of eager device code was checked only for Drama 3 and Qwen in guild-generate (free-VRAM lines equal base). Two other binaries also carry the tower's code: the user's GLM server (guild-generate, --max-context 262144, context sized to free VRAM) and StartLux's decision_run. Neither was run.", "where": "integration", "fix": "After merging (glm-attend3 adds about 46 KB more), check the GLM server's context line through guild-generate and StartLux's 'chunks of 8192 tokens in the 4764 MiB'."}

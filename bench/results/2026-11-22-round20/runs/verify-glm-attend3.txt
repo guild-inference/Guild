@@ -1,0 +1,136 @@
+# glm-attend3: the verifier's measured runs and problems
+# Extracted from /home/ubuntu/lanes/r20/glm-attend3/verify-result.json
+
+## verdict
+
+accept
+
+## head_checked
+
+8128758ff653e763bd467ca2f708170c7f37ae0e
+
+## bits_evidence
+
+All checks below ran on HEAD 8128758. lane20/glm-attend3 is clean, and 67a2802..HEAD is 1d991ba and 8128758. My incremental build-run rebuild (verify/build.log, rc 0) left glm5.cu.o, glm5_run, glm5_kernels_test and guild-generate as they were: the objects date from 10:02 and the sources from 10:01.
+
+1) ctest -R glm5 --output-on-failure -V under gpu-run (verify/ctest.txt).
+- Expected 3 of 3 pass; got 3 of 3 (glm5_kernels_test, glm5_nl4_test, glm5_tokenizer_test).
+- glm5_kernels_test: expected PASS; got PASS with 283 "ok" lines, the lane's count.
+- The lane's 64 new lines: 32 attend3 (2,051 selected cells at T 1/2/3/4/20/64, causal 1/16/17/200/2047 cells at T 1/2) and 32 kda_conv one-launch (H 64 and 4, T 1/2/3/8/64, in place). Expected all "ok (bitwise)"; got 64 of 64.
+
+2) My own cross-check, verify/xtest/xcheck.cpp, linked against the lane's libraries.
+- What it does: memcmp of every partial row, output, state and mid state, with set_attend3 off then on, and kda_conv with two launches then one. Every launch is error-checked and every output is checked for leftover 0xff, so two failed launches cannot compare equal.
+- Coverage beyond the lane's test:
+  - attention: H 16, 64 and 128; causal n 1/2/15/16/17/33/257/2049 x T 1/2/3/4/5/16/31/64; selections of 0, 1, 15, 16, 17, 2,048, 2,051 and random sizes at T 1/2/3/4/8/33; staged per-query calls with splits_of 2/3/4/16/37/64;
+  - values: peaky softmaxes (exp underflow, denormals) and +-0 inputs;
+  - kda_conv: H 1/2/4/64/96, T 1-5/8/9/17/64/65, nmid 0, T-1 and T, in place, and zero taps (the eps branch, signed zeros).
+- Expected 0 differences; got 3,312 attend checks and 1,290 kda_conv checks with 0 failures, 3.65e9 values compared (verify/xcheck.txt).
+
+3) GLM long prompt, 3,000 corpus ids. I regenerated the ids without the GPU; they are byte-identical to the lane's ids3k.txt (md5 d8ef7e57...).
+- Expected all 9 id lines equal; got 1 distinct 256-token line over 9 generations, the same string as the lane's 9 generations.
+- Prompt logits 72bd24ad5c876edc in all 9; 115 drafts accepted in all 9.
+
+4) GLM short prompt (785,6722,315,9621,374).
+- Expected base20 bl/glm1.out's id line; got 9 of 9 equal.
+- Logits c0ba3244b5fa38da in all 9; 117 of 138 drafts accepted in all 9.
+
+5) GLM placement. Expected base20's lines; got them unchanged:
+- "VRAM: 8010 MiB free, 6140 MiB fixed, context 32768 tokens x 13184 B, 2 MiB left; 1 shared experts on the CPU"
+- "42 of 46 FFNs on the GPU, ... 7596 MiB VRAM, context 32768"
+
+6) Qwen, qwen-bench-r18 with the lane's guild-generate.
+- Expected ids [38747, 38747, 41916, 41916]; got them.
+- Expected "chunks of 8192 tokens" and "GPU cache 0 slots"; got "chunks of 8192 tokens in the 3098 MiB of VRAM free" and "GPU cache 0 slots (0 bytes)".
+- Every VRAM/MiB line of the log is identical to base20 b-q1.log.
+
+7) Qwen batch slots, batch_test --batch 3 --n 3 --max-new 96.
+- Expected 3 of 3 slots IDENTICAL to solo; got 3 of 3.
+- Slot texts and the solo DONE fields are identical to base20 b3.out.
+- "chunks of 4608 tokens in the 2146 MiB of VRAM free" and "GPU cache 0 slots" match base.
+
+8) format_code.py --check: expected pass; got "all 548 files are formatted (clang-format 18.1.8)".
+
+9) PTX and SASS of glm5.cu.o. Expected mla_attend3_k's float ops to be exactly twice mla_attend2_k<3>'s; got:
+- PTX: fma.rn 1126/563, mul 100/50, add 226/113, sub 34/17, ex2 34/17.
+- SASS: FFMA 1160/580, FMUL 100/50, FADD 226/113.
+- Every dot product starts with FFMA ..., RZ in both kernels.
+- ptxas fused no mul+add pair in either kernel: the SASS FMUL and FADD counts equal the PTX counts.
+
+## measured
+
+All runs on the GTX 1070 + 2x Xeon Gold 6130, under gpu-run, in this order.
+
+(1) 11:23-11:24, glm5_kernels_test attend, two runs. 64 heads, 2,048 selected cells; us for attend2 -> attend3, reduce included.
+- T 1: 331.1 / 326.3 -> 244.0 / 239.9
+- T 2: 615.6 / 616.1 -> 412.6 / 412.9
+- T 4: 1135.8 / 1150.5 -> 820.1 / 834.8
+- T 8: 2160.9 / 2179.0 -> 1460.2 / 1470.6
+- T 32: 8379.6 / 8429.8 -> 5577.9 / 5625.9
+- T 128: 32290.8 / 32328.7 -> 20373.9 / 20356.3
+- Legacy kernel at T 1: 683.4 / 675.0.
+
+(2) glm5_kernels_test kdaconv, two runs, us a call, two launches -> one.
+- T 1: 7.46 / 7.48 -> 5.79 / 5.79
+- T 2: 11.64 / 11.63 -> 8.84 / 8.86
+- T 64: 312.71 / 315.99 -> 202.59 / 203.51
+
+(3) 11:36-11:38, qwen-bench-r18 with the lane's binary. A placement and ids check, not an A/B: 51.55 / 64.99 tok/s (base20 52.19 / 65.81).
+
+(4) 11:38-11:41, batch_test with 3 slots: 54.7 tok/s overall, 59.1 from the first batch token (base20 55.0 / 59.3). Not an A/B.
+
+(5) 11:41-12:13, the GLM A/B, one process.
+- Before: numastat -m MemFree 50.4 GB on node 0 and 74.1 GB on node 1.
+- Load 741.1 s. During decode the process held 137.8 GB private on node 0 and 170.2 GB on node 1, the same for every arm.
+- Command: glm-run build/glm5_run verify/glm-ab.out 0 256 --ctx 32768 --spec --prompts verify/prompts.txt --ab GUILD_GLM_ATTEND3=0,1,1 --ab GUILD_GLM_FUSE2=0xfffffffb,0xfffffffb,0xffffffff --reps 3 -- GLM5_RUN_STEPS=1.
+- Arms: C = the r19 kernels (off), B = attend3 + reduce2 only, A = the default. Order, off arm first: round 0 C B A, round 1 A B C, round 2 C B A.
+
+Columns: prompt round arm | prompt ms | step median ms | tok/s (draft ms, verify ms, CPU experts ms where noted)
+- long r0 C | 40887 (first prompt after the load) | 86.10 | 21.04 (draft 5.118, verify 80.65, CPU 62.7)
+- long r0 B | 38540 | 84.44 | 21.37 (4.965, 79.42, 65.6)
+- long r0 A | 38599 | 84.69 | 21.46 (4.955, 79.04, 66.1)
+- short r0 C | 139 | 80.19 | 22.96
+- short r0 B | 140 | 80.13 | 22.93
+- short r0 A | 139 | 79.87 | 23.04
+- long r1 A | 38532 | 84.68 | 21.31
+- long r1 B | 38457 | 84.77 | 21.41
+- long r1 C | 39008 | 86.76 | 20.74
+- short r1 A | 132 | 78.66 | 23.39
+- short r1 B | 132 | 78.87 | 23.34
+- short r1 C | 132 | 79.01 | 23.35
+- long r2 C | 39000 | 86.69 | 20.94
+- long r2 B | 38151 | 84.50 | 21.41
+- long r2 A | 38195 | 84.25 | 21.57
+- short r2 C | 131 | 79.07 | 23.19
+- short r2 B | 132 | 78.77 | 23.41
+- short r2 A | 131 | 78.58 | 23.48
+
+Long-prompt means over the 3 rounds:
+- C: 86.52 ms, 20.91 tok/s. B: 84.57 ms, 21.40 tok/s. A: 84.54 ms, 21.45 tok/s.
+- B - C: -1.66 / -1.99 / -2.19 ms (mean -1.95, +2.35% tok/s).
+- A - B: +0.25 / -0.09 / -0.25 ms (mean -0.03).
+- A - C: mean -1.98 ms, +2.58% tok/s.
+- NextN draft: C 5.138 -> B 4.955 ms. Verify: C 81.19 -> B 79.34 -> A 79.12 ms.
+- Prompt, B - C in rounds 1-2 (round 0's C was the cold first prompt): -551 and -849 ms (about -1.8%).
+
+Short-prompt means:
+- B - C: -0.06 / -0.14 / -0.30 ms (mean -0.17).
+- A - B: -0.26 / -0.21 / -0.19 ms (mean -0.22).
+- A - C: mean -0.39 ms.
+
+(6) After the GLM run, xtest/xbench: shapes the staged host-row paths launch. 64 heads, 2,048 of 65,536 cells, median of 7 alternated passes; us for attend2 + reduce -> attend3 + reduce2.
+- T 1: 358.5 -> 263.6
+- T 2: 624.4 -> 411.7
+- staged, 1 query of a T 2 window: 325.5 -> 237.8
+- staged, 1 query of a T 64 window: 1134.2 -> 902.5
+- staged, 8 queries of a T 64 window: 2836.7 -> 1961.7
+- T 8: 2229.6 -> 1450.9
+- T 64: 16589 -> 10158
+
+## problems
+
+- {"severity": "minor", "what": "The stretch (FUSE2 bit 4) gain claimed in the report, -0.49 ms a step (+0.53%) at long context, does not reproduce. In my off-first run A - B was +0.25 / -0.09 / -0.25 ms at long context (mean -0.03) and -0.26 / -0.21 / -0.19 at short context (mean -0.22). The kernel bench predicts about 0.1-0.2 ms a step (1.7-2.8 us a call, 34-68 calls). The change is exact and shows no loss, so keeping it on is fine, but its end-to-end gain is within GLM's noise.", "where": "lane result gain_summary / NOTES.md (stretch A - B)", "fix": "Report the stretch as exact and faster at the kernel level (7.46 -> 5.79 us at T 1), with an end-to-end gain within noise. Across both runs' 12 pairs the mean is about -0.2 ms. Do not claim +0.53%."}
+- {"severity": "minor", "what": "The headline gain is at the top of the range. The report has B - C -2.43 ms (+2.93%); my run has -1.95 ms (-1.66 / -1.99 / -2.19, +2.35% tok/s, 20.91 -> 21.40). Both runs clear the 0.7 ms stop rule and match the judge's expected ~-2.1 ms and +2.2-2.5%.", "where": "lane result ab_table / gain_summary", "fix": "Quote both runs: -1.95 to -2.43 ms a step and +2.35 to +2.93% tok/s at long context, 6 pairs with mean -2.19 ms."}
+- {"severity": "minor", "what": "A code comment cites a measurement from a file outside the repository ('scout attn_bench.cu'), which a reader of the tree cannot find.", "where": "src/core/glm5.cu:1495", "fix": "Cite the in-repo bench instead: glm5_kernels_test attend, T 1 326 -> 239 us, T 2 616 -> 412 us."}
+- {"severity": "minor", "what": "Paths reached but not exercised here. (a) The HIP build compiles glm5.cu in guild_core, but there is no ROCm on this PC; the new kernels use only primitives already in the file. (b) Bit equality between the old and new kernels is proven for sm_61's ptxas only; other CUDA architectures rely on ptxas making the same contraction choices. (c) End-to-end speed at 32K-262K with host rows was not run. My bench of the staged-path shapes shows attend3 faster in every one: 1 query of a T 64 window 1134 -> 903 us, 8 queries 2837 -> 1962 us.", "where": "src/core/glm5.cu (mla_attend3_k, mla_reduce2_k, kda_conv_l2_k)", "fix": "No code change. Run glm5_kernels_test (test_attend3, test_kda_conv_one_launch) on any HIP or other-architecture build before shipping there."}
+- {"severity": "minor", "what": "The sm_61 device code grows by 46 KB and is loaded eagerly. GLM still has only 2 MiB of slack at --ctx 32768, and d3-tower-fuse also adds device code.", "where": "integration", "fix": "After merging with d3-tower-fuse, re-check GLM's line 'context 32768 tokens ... 2 MiB left; 1 shared experts on the CPU', '42 of 46 FFNs', and Qwen's 'chunks of 8192 tokens in the 3098 MiB' and 'GPU cache 0 slots'."}
+- {"severity": "minor", "what": "The lane has no REPORT.md (the harness refused it). The report lives in NOTES.md and the lane's structured result.", "where": "/home/ubuntu/lanes/r20/glm-attend3/", "fix": "Copy the structured result into the round's results README when integrating."}

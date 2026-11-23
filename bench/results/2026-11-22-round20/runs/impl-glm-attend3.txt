@@ -1,0 +1,115 @@
+# glm-attend3: the implementer's fields the README quotes (implementer's numbers, not the verifier's)
+# Extracted from /home/ubuntu/lanes/r20/glm-attend3/impl-result.json
+
+## commits
+
+- 1d991ba perf(glm5): DSA attention two heads a warp, the split reduce's loads together
+- 8128758 perf(glm5): the KDA short convolution and q and k's L2 norm in one launch
+
+## change_summary
+
+Four files changed, the four the spec names: src/core/glm5.cu, include/guild/core/glm5_kernels.hpp, src/core/glm5.cpp and tests/core/glm5_kernels_test.cpp. There is no ABI change, no backends.lock.json change and no kernel-repo change.
+
+1) mla_attend3_k<8,2,2> is the scout's mla_attend3.patch, applied unchanged apart from clang-format joining one template line.
+- L is fixed at 512 and each warp computes two heads (16 a block). A cell's 16 FP16 values a lane are converted once for both heads, and the `k < nl` predicates are gone.
+- The kernel uses 128 registers with STACK 0 and LOCAL 0, so nothing spills. The load loop is unrolled 4x. Per 16-cell chunk the SASS has F2F 512, FFMA 1160 and SHFL 160, the same counts as the scout's measured H2 NW8 B2 variant.
+- mla_attend takes it when the call is not legacy, the switch is on, L == 512 and H % 16 == 0. Every other case keeps mla_attend2_k.
+
+2) mla_reduce2_k<16> reads the 16 splits' (max, sum) once a block and issues a row's 16 loads together. It is used when splits == 16 (windows of 1-3 tokens); other split counts keep mla_reduce_k.
+
+3) The stretch, kda_conv_l2_k, replaces kda_conv_k + kda_l2_k when D % 128 == 0.
+- A block of 128 threads is one head of q|k|v. Each thread runs its channel's convolution, silu, state and mid states as kda_conv_k does.
+- A q or k head then normalises each token's row as kda_l2_k does, from registers instead of reading the values back from memory. 31 registers, no spills.
+- glm5k::kda_conv gained a defaulted trailing `bool one_launch`, and glm5.cpp passes `fuse2 & 4`.
+
+4) Tests in glm5_kernels_test:
+- test_attend3: memcmp of the partial rows and the outputs, the new kernels against the old.
+- test_kda_conv_one_launch: memcmp of out, state and mid states, one launch against two.
+- bench_attend now warms up the GPU and reports the median of 5 alternated passes over the legacy, attend2 and attend3 kernels.
+- A new `kdaconv` bench mode.
+
+The full report could not be written to REPORT.md: the harness refused report files from this agent. It is in this result, and /home/ubuntu/lanes/r20/glm-attend3/NOTES.md has every number with timestamps.
+
+## switches
+
+- GUILD_GLM_ATTEND3: default on (unset, or any value but one starting with '0'). It is read each window in glm5.cpp read_switches and applied through glm5k::set_attend3. GUILD_GLM_ATTEND3=0 restores the perf/r19 kernels, mla_attend2_k + mla_reduce_k.
+- GUILD_GLM_FUSE2 bit value 4: default on (FUSE2 defaults to ~0u; bits 1 and 2 were already taken). It is read each window. GUILD_GLM_FUSE2=0xfffffffb (every bit but 4) restores the two launches, kda_conv_k + kda_l2_k.
+
+## ab_table
+
+The run: one GLM process, the arms alternating in-process, the order reversed every other round, --reps 3. Command: /home/ubuntu/lanes/bin/glm-run build/glm5_run ab/glm-ab.out 0 256 --ctx 32768 --spec --prompts ab/prompts.txt --ab GUILD_GLM_ATTEND3=1,1,0 --ab GUILD_GLM_FUSE2=0xffffffff,0xfffffffb,0xfffffffb --reps 3 -- GLM5_RUN_STEPS=1.
+- ab/prompts.txt has two lines: 'long @ab/ids3k.txt' (3,000 corpus ids) and 'short 785,6722,315,9621,374'.
+- Before the run, numastat -m showed MemFree 77.4 GB on node 0 and 47.8 GB on node 1. Mid-load the process held 135.7 GB private on node 0 and 131.5 GB on node 1 (balanced).
+- The load took 833.6 s. The lock was held 10:15-10:38 UTC, with no other run in between.
+
+Arms:
+- A = ATTEND3=1, FUSE2=0xffffffff: both new paths, the default.
+- B = ATTEND3=1, FUSE2=0xfffffffb: attend3 only.
+- C = ATTEND3=0, FUSE2=0xfffffffb: the perf/r19 kernels.
+
+Columns: # prompt round arm | prompt ms | steps | drafts accepted | draft ms | verify ms | CPU experts ms | step median ms | tok/s
+ 0 long  r0 A | 45396 (first prompt after the load, cold) | 140 | 115 | 4.926 | 78.64 | 64.2 | 83.87 | 21.58
+ 1 long  r0 B | 38267 | 140 | 115 | 4.922 | 79.12 | 66.4 | 84.64 | 21.46
+ 2 long  r0 C | 39120 | 140 | 115 | 5.151 | 81.60 | 66.9 | 87.39 | 20.79
+ 3 short r0 A | 138 | 138 | 117 | 4.616 | 76.51 | 69.1 | 80.72 | 22.54
+ 4 short r0 B | 136 | 138 | 117 | 4.619 | 75.94 | 68.4 | 80.62 | 22.70
+ 5 short r0 C | 137 | 138 | 117 | 4.638 | 75.19 | 67.7 | 80.46 | 22.90
+ 6 long  r1 C | 39179 | 140 | 115 | 5.151 | 82.07 | 66.7 | 87.23 | 20.68
+ 7 long  r1 B | 38268 | 140 | 115 | 4.952 | 79.65 | 65.7 | 84.92 | 21.31
+ 8 long  r1 A | 38290 | 140 | 115 | 4.940 | 78.90 | 63.8 | 84.43 | 21.51
+ 9 short r1 C | 131 | 138 | 117 | 4.603 | 74.32 | 64.8 | 79.35 | 23.18
+10 short r1 B | 132 | 138 | 117 | 4.573 | 74.18 | 64.7 | 78.91 | 23.23
+11 short r1 A | 132 | 138 | 117 | 4.577 | 73.73 | 64.1 | 78.72 | 23.36
+12 long  r2 A | 38131 | 140 | 115 | 4.958 | 78.94 | 62.7 | 84.33 | 21.50
+13 long  r2 B | 38061 | 140 | 115 | 4.940 | 79.05 | 62.7 | 84.53 | 21.48
+14 long  r2 C | 38848 | 140 | 115 | 5.140 | 80.99 | 62.4 | 86.76 | 20.95
+15 short r2 A | 131 | 138 | 117 | 4.582 | 73.66 | 64.2 | 78.72 | 23.38
+16 short r2 B | 131 | 138 | 117 | 4.589 | 74.23 | 64.5 | 78.90 | 23.21
+17 short r2 C | 131 | 138 | 117 | 4.603 | 73.83 | 63.9 | 79.10 | 23.32
+
+Paired differences, by round 0 / 1 / 2 (mean):
+- Long, B - C: step median -2.75 / -2.31 / -2.23 ms (mean -2.43); tok/s +3.22 / +3.05 / +2.53% (mean +2.93%); prompt -853 / -911 / -787 ms (mean -850, -2.2%).
+- Long, A - B: step median -0.77 / -0.49 / -0.20 ms (mean -0.49); tok/s +0.56 / +0.94 / +0.09% (mean +0.53%).
+- Long, A - C: step median -3.52 / -2.80 / -2.43 ms (mean -2.92); tok/s +3.80 / +4.01 / +2.63% (mean +3.48%).
+- Short, B - C: step median +0.16 / -0.44 / -0.20 ms (mean -0.16).
+- Short, A - B: step median +0.10 / -0.19 / -0.18 ms (mean -0.09).
+- Short, A - C: step median +0.26 / -0.63 / -0.38 ms (mean -0.25); tok/s mean -0.18% (noise).
+
+Long-prompt time per step (means over the 3 rounds):
+- NextN draft: C 5.147 -> B 4.938 ms.
+- Verify: C 81.55 -> B 79.27 -> A 78.83 ms.
+
+Kernel benches on the final binary, GTX 1070, 64 heads, median of 5 alternated passes:
+- glm5_kernels_test attend (2,048 selected cells of 65,536, reduce included), attend2 -> attend3: T 1 326.0 -> 239.4 us; T 2 616.5 -> 411.5; T 4 1132.7 -> 818.8; T 8 2161.0 -> 1466.6; T 32 8404.6 -> 5584.1; T 128 32284 -> 20281. Legacy kernel at T 1: 674.9 us.
+- glm5_kernels_test kdaconv (calls back to back), two launches -> one: T 1 7.44 -> 5.75 us; T 2 11.56 -> 8.79; T 64 313.86 -> 204.19.
+
+## gain_summary
+
+Long context (decode at 3,000-3,256 cells, where every DSA query attends 2,048 selected cells):
+- attend3 + reduce2 (B - C): -2.43 ms a step, -2.23 to -2.75 in each of 3 rounds, and +2.93% tok/s (20.81 -> 21.42). Expected about -2.1 ms and +2.2-2.5%.
+- The split of that saving: the NextN draft -0.21 ms a step (expected -0.218 for the two-token pass) and the verify -2.28 ms.
+- The 3,000-token prompt: -850 ms (-2.2%).
+- The stop rule (at least 0.7 ms) is met, so attend3 is taken.
+
+Stretch, conv + L2 in one launch (A - B):
+- -0.49 ms a step at long context (+0.53%), against an expected -0.3 ms.
+- It favoured A in all 3 rounds (-0.20 to -0.77 ms), which is close to GLM's run-to-run spread. It showed no loss, so it stays on by default.
+
+Both together (A - C): -2.92 ms a step, +3.48% tok/s at long context (20.81 -> 21.53).
+
+Short context (the 5-token bench): -0.16 ms (B - C) and -0.25 ms (A - C) mean, inside the noise as expected. Its ids are identical to base20.
+
+## open_issues
+
+- REPORT.md was not written: the harness refused report files from this agent. The full report is this structured result, and NOTES.md (report_path) has every command and number with timestamps.
+- VRAM headroom: the sm_61 cubin code of glm5.cu grows from 430,720 to 478,016 bytes (+46 KB); EAGER module loading maps it in every model. GLM's placement is unchanged: 8010 MiB free, 2 MiB left, 1 shared expert on the CPU, 42 of 46 FFNs on the GPU, context 32768. Qwen's prefill still sees 3098 MiB free with 'GPU cache 0 slots'. GLM still has only 2 MiB of slack at --ctx 32768: any later device code costing 2 MiB or more would move a shared expert to the CPU and change GLM's ids.
+- Integration watch (judge.json notes): d3-tower-fuse also adds device code to every model's EAGER load. After merging both lanes, re-check GLM's placement line ('context 32768 tokens', '2 MiB left; 1 shared experts on the CPU', '42 of 46 FFNs') and Qwen's 'chunks of 8192 tokens' / 'GPU cache 0 slots'.
+- Other lanes' files: none are touched. This lane changes only glm5.cu, glm5_kernels.hpp, glm5.cpp and glm5_kernels_test.cpp, which no other lane lists. glm5k::kda_conv gained a defaulted trailing parameter; its only callers are glm5.cpp and the test.
+- Not measured: contexts past 3,256 cells. The user's server runs --max-context 262144, where some cells' rows live in host memory. Those queries use the same mla_attend through the staged-rows and row-cache paths, which the tests cover bitwise. Their end-to-end speed at 32K-262K was not measured; the per-query saving should be the same, since every query still attends 2,048 selected cells, but that is an expectation, not a measurement.
+- glm5_ctx32k_test was not run: it needs GUILD_GLM5_MODEL configured and a second GLM load.
+
+## not_taken
+
+- The scout's prefetching mla_attend4_k: the scout measured it at 235.5 us at T 1, slower than the unrolled load loop without prefetch (225.3). Forcing 3 blocks an SM also lost (288.8). Neither was built here.
+- A 16-warp block (NW16 B1) for windows of 2+ tokens: in the scout's non-unrolled set b it was faster at T 2 (391.2 vs 406.5 us) and T 64 (9,972 vs 10,428). Decode is dominated by one-token queries (22 a step), where NW8 B2 is the scout's best, and the only two-token pass is the NextN draft's: at most about 15 us a step. Not measured here.
+- The scout's other GLM proposals (NextN Q3_K gate/up rows on the CPU, multi-block idx_select, a faster route_k): outside this lane's spec; none was attempted.

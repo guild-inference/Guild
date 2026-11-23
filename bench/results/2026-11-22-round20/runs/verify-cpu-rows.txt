@@ -1,0 +1,68 @@
+# cpu-rows: the verifier's measured runs and problems
+# Extracted from /home/ubuntu/lanes/r20/cpu-rows/verify-result.json
+
+## verdict
+
+needs-fix
+
+## head_checked
+
+dddb6d45060a8fa14aa67a86bd819180e8731681
+
+## bits_evidence
+
+All runs were mine, on HEAD dddb6d4. The worktree is clean and HEAD matches the summary. The incremental rebuild had nothing to do, and guild-generate embeds dddb6d45060a. I also recompiled the 5 changed TUs from the worktree with the build's flags: objdump -d of each is identical to the build's object. Each check below is expected, then got.
+- ctests (kq_rows512, iq4nl/iq4xs/q8_0_rows512, native_expert_parity x9, native_grouped_parity, shared_expert_parity, host_combine_parity, pool_affinity, pool_numa, expert_multi, pool_stress): expected pass; 20 of 20 passed. expert_multi_test and pool_stress SKIPPED (exit 77: they need VNNI, which this CPU lacks).
+- kq_rows512_test: expected 0 differ; 173,808 results equal ggml's dot and 2,453,760 equal the library's table.
+- q8_0_rows512_test, default and GUILD_Q8_PAIR=0: expected 0 differ; 120,768 results each, 0 differ.
+- My q8x_test: block counts 3, 5, 59 and 85 (pair loop then the odd tail), GLM's 2048/4096/12288-value rows, nt 1-16, and a pass with zero, subnormal and 65504 fp16 scales and many -128s. Expected 0 differ from ggml; got 239,904 results, 0 differ, with GUILD_Q8_PAIR unset, =0 and =1.
+- iq4nl_rows512_test with GUILD_IQ4NL_PF=0, 2, 6, 64 and 65: expected 0 differ; 20,448 results each, 0 differ.
+- iq4xs_rows512_test: expected 0 differ; 30,672 results, 0 differ.
+- pool_numa_test, 300 batches in each of SPIN_US 0 and 50 x ACK 0 and 1, plus the default: expected bitwise; 60,753 rows bitwise in all 5.
+- Drama 3: expected seed 11 6e04c9b1 and seed 12 f84288c9. Got all 34 WAVs as expected (24 x 6e04c9b1, 10 x f84288c9), in every arm, including the stress arms.
+- Qwen: expected ids [38747, 38747, 41916, 41916]; the same in all 8 runs (pf2, on, alloff and both contended arms).
+- Ornith: expected [30936, 30936, 65886, 65886]; the same in all 5 runs.
+- Nemotron: expected transcripts identical to base20/bl/nem.jsonl (12 rows, ids and text); identical in all 4 runs (GUILD_Q8_PAIR 0 and 1).
+- batch_test 3 slots (drafts) and 7: expected every slot IDENTICAL to its solo run and the texts equal to base20's b3.out and b6.out; got that (md5 7e55b7c4 and 384be92e on both sides).
+- StartLux decision_run: expected base20's sl.jsonl; answers and probabilities identical for all 4 requests.
+- format_code.py --check: passes (551 files).
+Not checked end to end: GLM, which item 5 reaches through its CPU-twin Q8_0 FFNs; it is covered at the unit level by q8x_test. Also not checkable here: the VNNI paths.
+
+## measured
+
+All runs are in order, with the same binary and arms set by environment, each group inside one gpu-run hold. Arms: on = defaults; off = GUILD_KQ_ROWS512=0 GUILD_POOL_ACK=0; ack0 = GUILD_POOL_ACK=0 only; kq0 = GUILD_KQ_ROWS512=0 only.
+
+Drama 3, 00:16:39-00:23:11, frames/s (prompt of 86 rows, ms):
+off-11 48.02 (719, cold first run), on-11 48.93 (463), on-12 48.73 (468), off-12 48.04 (492), off-11b 48.19 (490), on-11b 48.55 (468), on-12b 48.67 (468), off-12b 47.84 (492), ack0-11 48.46 (473), on-11c 47.51 (472), on-12c 48.63 (468), ack0-12 48.02 (470), kq0-11 48.02 (491), on-11d 48.35 (469), on-12d 48.46 (472), kq0-12 48.29 (492).
+- on minus off: +0.91, +0.69, +0.36, +0.83. Mean +0.70 frames/s, +1.45%, se 0.12.
+- on minus ack0: -0.95, +0.61.
+- on minus kq0: +0.33, +0.17.
+
+Stress hold, 00:23:45-00:27:45, Drama 3 seed 11. h = busy loops pinned to worker CPUs 7 and 23; s = GUILD_POOL_SPIN_US=1000.
+h-ack0 41.61, h-ack1 21.32, h-ack1 16.17, h-ack0 40.54; s-ack0 47.45, s-ack1 46.73, s-ack1 46.73, s-ack0 47.19.
+
+Qwen, 00:28:00-00:38:22. pf2 = GUILD_IQ4NL_PF=2 GUILD_POOL_IQ4XS=0; alloff = all five switches off. Each run: tok/s prose/code, then CPU dispatch ms a window prose/code:
+pf2-1 51.78/65.33, 28.37/33.77; on-1 51.78/65.52, 28.18/33.15; on-2 51.82/65.17, 27.97/33.29; pf2-2 51.83/65.21, 28.02/33.50; alloff-1 51.69/65.14, 28.77/34.10; on-3 51.88/65.20, 27.94/33.43.
+Ornith with defaults: 82.83/97.12.
+
+Nemotron, 00:40:59-00:42:25. Prefill/decode ms, medians of repeats 2-6, 5 s clip | 30 s clip:
+pair0-1 348.3/179.3 | 909.3/966.4; pair1-1 332.5/178.5 | 877.4/962.9; pair1-2 333.9/179.3 | 878.0/958.3; pair0-2 344.0/178.8 | 909.9/962.9.
+
+Ornith A/B, 00:44:54-00:46:32, tok/s prose/code:
+off1 83.24/97.26, on1 82.79/97.28, on2 82.64/96.58, off2 82.58/96.62.
+
+Extra hold, 00:53:55-01:02:15:
+- Drama 3, acks off in both arms (x-ack0 = kq rows on): x-off-11 48.29, x-ack0-11 48.32, x-ack0-12 48.16, x-off-12 47.85, x-off-11b 47.74, x-ack0-11b 48.48. Prompt 465-469 against 490-497 ms.
+- A periodic task (2 ms busy every 20 ms) pinned to worker CPU 7: d-ack0 46.81, d-ack1 45.97, d-ack1 44.91, d-ack0 46.76.
+- Qwen with the busy loops on CPUs 7 and 23: qh-ack0 36.10/43.03 tok/s (CPU dispatch about 53/67 ms), qh-ack1 21.06/26.14 (about 114/131 ms).
+
+Slots and StartLux, 01:05-01:09 (not A/Bs): 3 slots 59.8 tok/s, 6 slots 71.4 tok/s.
+
+Unit hold, 00:13-00:16: pool_numa_test 300 batches, SPIN_US=0: ACK=1 30.11 s, ACK=0 30.32 s.
+
+## problems
+
+- {"severity": "blocker", "what": "GUILD_POOL_ACK defaults to 1, and then the host waits for every worker to ack every epoch. Any worker the OS deschedules or puts to sleep while parked stalls the whole layer, where the old protocol counted it as parked. Measured, bits unchanged: two busy loops pinned to worker CPUs 7 and 23 give Drama 3 21.3/16.2 frames/s against 41.6/40.5 with GUILD_POOL_ACK=0 (2.2x slower) and Qwen 21.1/26.1 tok/s against 36.1/43.0 (-42%/-39%). A periodic task (2 ms every 20 ms) on one worker CPU costs Drama 3 2.9% (2 pairs). Workers sleeping between frames (GUILD_POOL_SPIN_US=1000) cost 1.25% (2 pairs). The gain on an idle machine is not resolved by A/B (on minus ack0: -0.95, +0.61 frames/s). PCs without free SMT siblings (SMT off, 6C/6T parts, VMs) or running a parallel build hit this case.", "where": "aa492f7: include/guild/kernels/cpu/pool.hpp (`bool ack_ = true;` and its comment); src/kernels/cpu/pool.cpp worker() and wait_parked()", "fix": "Default GUILD_POOL_ACK to 0: set ack_ to false and keep the env parse so GUILD_POOL_ACK=1 opts in. Or drop aa492f7. Optionally keep the 64-byte worker-state padding on unconditionally (no contention cost; its gain alone is unmeasured). Rewrite the comment: the cost is every descheduled or sleeping worker, every epoch, not only after 20 ms of idling."}
+- {"severity": "minor", "what": "Item 5 (q8_0_rows512 pair scales) also reaches GLM: glm5.cpp's CPU twin of the Q8_0 dense FFN and shared expert runs through cpu_moe in pipelined windows. GLM is not in the lane's checks. q8_0_rows512_test also runs no odd block count above 1 and none of GLM's sizes, so the pair loop followed by the one-block tail never ran.", "where": "src/core/q8_0_rows512.cpp; tests/core/q8_0_rows512_test.cpp (n = 32, 64, 1856, 2688 only)", "fix": "Add n = 96, 1888, 4096 and 12288 to the test's sizes. My scratch verify/tools/q8x_test.cpp ran these: 239,904 results, 0 differ, in both GUILD_Q8_PAIR arms. Run one GLM id check (glm-run, against base20's glm1.out) at integration."}
+- {"severity": "minor", "what": "On AVX512-VNNI hosts (Ice Lake and later, Zen 4) the old IQ4_XS gate/up path at 2+ tokens is the library's iq512 rows (9b7281a), and Q4_K/Q6_K may take other library kernels. Their bit equality with the new rows cannot be checked on this CPU, and pool_stress, expert_multi_test and pool_test skip here.", "where": "src/core/pool_rows.cpp (GUILD_POOL_IQ4XS, GUILD_KQ_ROWS512)", "fix": "Before release, run kq_rows512_test (its pool_rows512 table check) and pool_stress on a VNNI machine."}
+- {"severity": "minor", "what": "Qwen's claimed CPU-dispatch gain from items 2+3 (-1.3% prose, -2.2% code) came out at about half in my 2 alternated pairs: -0.42% prose and -1.23% code, both pairs the same sign. tok/s +0.0% and +0.1%, within noise on this GPU-bound PC.", "where": "e5ee392, 62b6d6c", "fix": "None needed; quote the smaller numbers when integrating."}

@@ -1,0 +1,7 @@
+START ["/mnt/models-ssd/guild-r20/base20/guild-generate", "--serve", "--native", "/mnt/models-ssd/Strata-data/models/unsloth-UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf", "--pack", "/mnt/models-ssd/Strata-data/packs/unsloth-ud-iq4_xs", "--tokenizer", "/mnt/models-ssd/Strata-data/packs/unsloth-ud-iq4_xs/tokenizer", "--max-context", "32768", "--kv", "fp16", "--kv-host-only", "--spec", "8", "--spec-min-p", "0.5", "--expert-cache", "auto", "--prefill", "auto", "--pool-workers", "0", "--expert-profile", "/home/ubuntu/Guild/data/expert-profile.bin", "--mtp", "/mnt/models-ssd/Strata-data/mtp/rt", "--resident-budget-gib", "56", "--dflash", "/home/ubuntu/work/dflash/drafter", "--dflash-vocab", "/home/ubuntu/work/nemotron/guild/data/dflash_vocab.bin", "--dense", "q4_k", "--dense-map", "ssm_out=q5_k,attn_output=q8_0", "--dense-imatrix", "/home/ubuntu/work/imatrix/dl/imatrix_unsloth.gguf", "--hc", "q8_0", "--prefill-mmq", "dense"]
+READY load_s=68.56 READY 32768 stop
+RESULT {"prompt": "prose", "repeat": 1, "generated": 256, "decode_tok_s": 51.24283901341522, "ttft_s": 0.06344721606001258}
+RESULT {"prompt": "prose", "repeat": 2, "generated": 256, "decode_tok_s": 51.5971952087167, "ttft_s": 0.06715326523408294}
+RESULT {"prompt": "code", "repeat": 1, "generated": 256, "decode_tok_s": 65.10251102419474, "ttft_s": 0.40556572983041406}
+RESULT {"prompt": "code", "repeat": 2, "generated": 256, "decode_tok_s": 65.21561914078421, "ttft_s": 0.0633921530097723}
+SUMMARY {"prose": 51.42001711106596, "code": 65.15906508248948}

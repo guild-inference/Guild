@@ -1,0 +1,118 @@
+# helper-threads: the SECOND verifier's runs, on lane20/int's build 90d1b04
+# Extracted from /home/ubuntu/lanes/r20/helper-threads/verify2-result.json
+
+## verdict
+
+accept
+
+## head_checked
+
+lane20/int 90d1b0414d647dc03fc4c49f37c3aa18b157fbb5: /home/ubuntu/lanes/r20/int/build, build-info commit 90d1b04, tracked_source_dirty false, guild-generate md5 5ee2ebec. Every run used it, except the lane arm of hold D3. lane20/helper-threads d9a3ddaa83288e1450b77ff5598d1708541e0a32: the code review, plus the lane's build (md5 9a8acb30) for D3's lane arm. The six int cherry-picks a731b64 4e2ad70 2b08576 b57ebfa f1262df 90d1b04 have the same `git patch-id --stable` as e4894e0 7004613 a61963a 5114561 0eb63a0 d9a3dda (6 of 6). In the lane's 8 files, d9a3dda and 90d1b04 differ only in model.cpp's pool_rows512 call (pool-rows-iso), which the lane does not touch.
+
+## measured
+
+Every run is listed in order: arm, numbers, and the request or decode thread's CPU where it matters. Drama 3 runs use drama3-run-r18's command line without its own gpu-run (off = GUILD_HELPER_PIN=0, on = no variable). Qwen runs use qwen-bench-r18's command line with --runs 1 --max-new 64 (prose / code tok/s). Every pair ran inside one gpu-run hold, off arm first.
+
+D1, 09:33:55-09:37:43, int, budget 24:
+- w-11 (default warm-up): 50.14 frames/s, 6e04c9b1.
+- p1 seed 11: off 49.65 (main on CPU 32), on 49.88.
+- p2 seed 12: off 49.70 (CPU 0/32), on 49.60.
+- p3 seed 11: off 49.76 (CPU 32), on 49.93.
+- p4 seed 12: off 49.74 (CPU 0/32), on 50.10.
+- on - off: +0.46, -0.20, +0.34, +0.72%. Tower 1707/1708 -> 1610/1606 ms (seed 11), 1529/1545 -> 1442/1444 ms (seed 12).
+
+D2, 09:40:05-09:42:49, int, budget 6:
+- p1 seed 11: lr-off 16.30, lr-on 17.64.
+- p2 seed 12: lr-off 17.43, lr-on 17.49.
+- on - off: +8.22, +0.34%.
+- The main thread was allowed 0-63 through every run, in both arms. On-arm load line: "a request's tower and codec threads on CPU 32, its own thread where the OS puts it (experts read from the files)".
+
+Q1, 09:44:36-09:48:55:
+- ex56 (int, budget 56, 2 runs x 256 tokens): 51.83 / 51.81 prose, 65.39 / 65.55 code.
+- base-p1 (base20, budget 24): 6.43 / 12.41. Window 398 / 246 ms, CPU dispatch 386 / 232 ms. Its 6 fetch threads that were caught were all allowed CPU 0.
+- int-p1: 13.80 / 18.86. Window 186 / 162 ms.
+
+Q2, 09:52:12-09:57:18, budget 24:
+- base-p2: 7.16 / 12.85.
+- int-p2: 11.24 / 15.58. This run's unpinned prompt was also the slowest of the day: 1446 ms against 1230-1290.
+- int-ha0 (GUILD_HOST_AFFINITY=0): 13.43 / 18.10.
+- base-ha0: 13.35 / 17.92.
+
+B1, 09:59:46-10:03:40, budget 24, 3 slots:
+- base20: solo runs 15.0 / 11.7 / 8.4 s; batch 8.4 tok/s overall, 8.8 tok/s from the first batch token.
+- int: solo runs 8.7 / 5.4 / 6.0 s; batch 16.2 overall, 17.5 from the first batch token.
+
+Q4, 10:09:23-10:16:50, int, budget 24, unpinned (ha0) then default in each pair:
+- p1: ha0 13.26 / 18.00, default 13.51 / 18.92.
+- p2: ha0 13.44 / 18.18, default 13.85 / 18.98.
+- p3: ha0 15.61 / 17.26, default 13.88 / 19.04.
+- Default minus unpinned, decode time: -3.1, -3.5, +2.0%.
+- CPU 32 was about 48% busy in every pinned run.
+
+D3, 10:23:35-10:30:27, budget 24, rounds of lane off / int off / lane on / int on:
+- r1 seed 11: lane off 49.74 (CPU 32), int off 49.70 (CPU 32), lane on 50.32, int on 50.23.
+- r2 seed 12: lane off 49.63 (CPU 32), int off 48.72 (CPU 63), lane on 50.34, int on 50.01.
+- r3 seed 11: lane off 48.90 (CPU 50), int off 48.61 (CPU 51), lane on 49.88, int on 50.04.
+- r4 seed 12: lane off 48.58 (CPU 49), int off 48.54 (CPU 49), lane on 50.18, int on 50.20.
+- int on - off: +1.07, +2.65, +2.94, +3.42%. Lane on - off: +1.17, +1.43, +2.00, +3.29%.
+
+Q3, 10:32:09-10:34:49, diagnostic runs, not A/B arms (a poller listing new threads every 0.5 ms, pinned to CPU 63):
+- int: 12.98 / 18.22; 4018 new threads caught, all allowed 0-63.
+- base20: 5.50 / 10.47; 2510 caught, all allowed 0.
+
+B2, 10:39:10-10:44:43, budget 24, 3 slots:
+- base20: 8.4 overall / 8.7 from the first batch token.
+- int: 16.6 / 17.9.
+- int with GUILD_HOST_AFFINITY=0: 16.3 / 17.5.
+
+Totals:
+- Drama 3 default layout on int, all 8 pairs: mean +1.43% (se 0.48), 7 of 8 > 0, 49.30 -> 50.00 frames/s. In the 5 pairs where the OS put the off arm's thread on core 0 the mean is +0.48%; in the 3 where it put it on a worker's SMT sibling, +3.00%.
+- Qwen at budget 24, round 19 -> 20 over 2 pairs: prose 2.15x / 1.57x, code 1.52x / 1.21x.
+- Batch, 2 pairs: 2.0x / 2.06x.
+
+## bits_evidence
+
+All runs below were on int's build unless they say otherwise.
+- Drama 3: 29 WAVs over holds D1 (9 runs, budget 24), D2 (4 runs, --resident-budget-gib 6) and D3 (16 runs, 8 on the lane's build and 8 on int's, budget 24), every arm. Expected 6e04c9b1 for seed 11 and f84288c9 for seed 12. Got 15 x 6e04c9b1 and 14 x f84288c9 (verify2/d1, d2, d3 md5.txt).
+- Qwen, qwen-bench-r18's exact command line (budget 56). Got ids [38747, 38747, 41916, 41916], 'GPU cache 0 slots' and 'chunks of 8192 tokens in the 3098 MiB of VRAM free'.
+- Qwen at --resident-budget-gib 24, 64 tokens: 14 runs (base20 and int, pinned, unpinned and diagnostic). Every run gave prose hash 49139 and code hash 71109. The windows and drafts were the same in every run (7/25/21 windows; drafts 9/16, 39/64, 43/63), and so were the DONE counts (ram_blobs 20606/24337, file_blobs 14217/6322).
+- Batch slots at budget 24 (batch_test.py --batch 3 --n 3 --max-new 96 with cfg/qwen32k-b24.json): 5 runs (base20 twice, int twice, int with GUILD_HOST_AFFINITY=0). Every slot was IDENTICAL to its solo run (15 of 15). The slot texts were the same in all 5 runs and equal to base20/bl/b3.out (budget 56).
+- int's pool_affinity_test passes: '... host-sibling, helper-pin, helper-CPU policy, spawn-affinity and cleanup checks passed (64 allowed CPUs)'.
+- tools/format_code.py --check on the lane worktree: 'all 554 files are formatted (clang-format 18.1.8)'.
+
+## problems
+
+- {"severity": "minor", "what": "The default Drama 3 gain on the integrated build is smaller than the lane's comments and results say, and it depends on where the OS puts the unpinned request thread. Measured on int: +1.43% over 8 pairs (se 0.48, 7 of 8 > 0). It is +0.48% in the 5 pairs where the OS had already put the thread on core 0, and +3.00% in the 3 where it put it on a worker's SMT sibling. The lane measured +2.61%, the first verifier +2.88% and the fixer +2.21%; in those off runs the OS had mostly chosen CPU 48. In D3 the lane's build in the same hold gave +1.97%, so the cause is the machine's state at the time, not the build.", "where": "src/runtime/model.cpp, the comment at GUILD_HELPER_PIN ('2.6-2.9% faster on an idle CPU 32'); src/runtime/drama3.cpp, the request-pin comment (+2.6%); the round's README", "fix": "Have the README quote int's 8-pair number with the split by placement (below). Optionally reword the model.cpp comment to '+1.4% on the integrated build (+0.5% when the OS already uses core 0, +3% when it uses a worker's sibling)'. No code change."}
+- {"severity": "minor", "what": "SpawnAffinity starts fill_many's threads on the mask recorded at load, not on their caller's. A restriction applied after load by someone else (taskset -a -p on the running process, or an embedding application narrowing its request thread to a node) no longer reaches the per-layer fetch threads, and the caller widens briefly while it starts them. cpusets are still enforced by the kernel. This is a behaviour change, not a bug in Guild's own flows.", "where": "src/kernels/cpu/pool.cpp, SpawnAffinity::SpawnAffinity; src/core/expert_source.cpp:1301-1305 (fill_many)", "fix": "Optional: widen only when the caller's current mask is a single CPU (Guild's host-core pin), or document the behaviour next to fetch_affinity_."}
+- {"severity": "minor", "what": "This predates the lane and is not a regression. fill_many still starts up to 7 threads per layer call, about 1000 thread starts a second in Qwen at budget 24. With the decode pinned to CPU 0, CPU 32 (core 0's SMT sibling) was about 48% busy in every pinned run. One of the 5 pinned int runs was 16-19% slower (11.24 / 15.58 tok/s), though its unpinned prompt was also the slowest of the day, which points to a disturbed run rather than the pin.", "where": "src/core/expert_source.cpp, FileExpertSource::fill_many", "fix": "Not needed for this lane. A persistent fetch-thread pool started once at load would remove both the thread starts and the SpawnAffinity calls; it is untried."}
+- {"severity": "minor", "what": "Nit: on Windows, host_siblings is never filled, so the load line reports 'no free SMT sibling of the pool's host core, or not one worker a core'. The actual reason is that the sibling detection is Linux-only.", "where": "src/runtime/model.cpp, the third load-line branch (~1205-1208)", "fix": "Add 'or not detected on this OS' to the wording."}
+- {"severity": "minor", "what": "Nit, pre-existing and unchanged: if th.emplace_back throws (pthread_create failing with EAGAIN), the threads already started are still joinable when `th` is destroyed, which calls std::terminate. SpawnAffinity's destructor still restores the caller's mask first.", "where": "src/core/expert_source.cpp, FileExpertSource::fill_many", "fix": "Optional: join the threads already started in a catch block, or use a joining guard."}
+
+## integration_notes
+
+Can lane20/int's cherry-picks stay? Yes. All six (a731b64 4e2ad70 2b08576 b57ebfa f1262df 90d1b04) can stay:
+- They are patch-identical to the lane's e4894e0..d9a3dda.
+- int's own build passes every check: the bits, the low-RAM fix, the text-decode fix, batch slots, and pool_affinity_test with the new checks.
+- The only other round-20 change in the lane's 8 files is pool-rows-iso's pool_rows512 call in model.cpp, which does not overlap.
+- Nothing needs reverting or adding.
+
+Numbers the round's README may quote (all measured on 2x Xeon Gold 6130 + GTX 1070, int build 90d1b04, the same outputs in every arm):
+- Default Drama 3 gain: drama3-run-r18, budget 24, GUILD_HELPER_PIN=0 against the default, 8 alternated pairs over seeds 11 and 12. +1.4% (se 0.5), 49.30 -> 50.00 frames/s. Split by where the OS had put the unpinned request thread: +0.5% when it was already on the host core (5 pairs), +3.0% when it was on a worker's SMT sibling (3 pairs). Tower time is 90-100 ms shorter a run. Do not quote the lane's +2.6% / +2.9% / +2.2% as the integrated build's gain without that condition.
+- Low-RAM Drama 3: the same command with --resident-budget-gib 6. The request thread is left where the OS puts it and the helpers stay on CPU 32; the load line says so. 17.64 / 17.49 frames/s default against 16.30 / 17.43 off (2 pairs, noisy; the fixer had 14.8-17.7). Quote this as 'no loss'. The pin before the fix ran 7.06 / 6.99.
+- Text decode with experts read from the files: Qwen with qwen-bench-r18's flags at --resident-budget-gib 24, 1 run x 64 tokens.
+  - Round 19 (base20): 6.43 / 7.16 tok/s prose, 12.41 / 12.85 code.
+  - Round 20 (int): 13.80 / 11.24 prose, 18.86 / 15.58 code (2 alternated pairs, the same tokens). Three more int runs gave 13.51-13.88 prose and 18.92-19.04 code.
+  - Unpinned (GUILD_HOST_AFFINITY=0), both rounds: 13.35 / 17.92 (round 19), 13.43 / 18.10 (round 20). So the whole round 19 -> 20 difference at this budget is the fix.
+  - Batch slots (3 slots, budget 24): 8.8 / 8.7 -> 17.5 / 17.9 tok/s from the first batch token.
+  - Mechanism, seen in the engine: round 19's pinned decode started all 2510 caught fetch threads on CPU 0; round 20 started all 4018 caught on 0-63.
+
+Compared with the fixer:
+- Budget 6 and Qwen at budget 24 agree with my runs (theirs: 7.11 -> 13.66 against 13.40 unpinned, one pair).
+- The batch case, which the fixer did not measure, is now measured: 2.0x, every slot IDENTICAL.
+- The default gain is smaller on int in my holds only because of where the OS placed the unpinned thread.
+
+Decisions for the user:
+- 5114561 fixes a problem that already existed in round 19 (the text decode's and the batch host's pin with experts read from the files). It is worth taking even without the Drama 3 part.
+- GUILD_HELPER_PIN defaulting to on was measured only on this PC.
+
+All my runs are in /home/ubuntu/lanes/r20/helper-threads/verify2/ (1.1 MB; WAVs deleted after their md5s).

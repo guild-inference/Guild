@@ -1,0 +1,11 @@
+prompt tokens: [1803, 3671, 10546]
+solo 0: 96 tokens in 10.8s  DONE 96 1803 8490.5 2257.89 length 57 115 0 0 73920 59695 0 
+solo 1: 96 tokens in 15.4s  DONE 96 3671 14142.4 1254.23 length 78 85 0 0 49440 35170 0 
+solo 2: 96 tokens in 46.2s  DONE 96 10546 44092.5 2055.11 length 63 118 0 0 72480 55778 
+batch: 3 slots, 288 tokens; admissions 70.5s; then 3.0s -> aggregate 3.9 tok/s overall, 4.4 tok/s from the first batch token
+slot 0: 96 tokens, solo 96: IDENTICAL
+    'Il semble y avoir une d\xe9connexion importante entre le texte fourni et votre question.\n\nLe texte fourni est un **rapport technique de performance et une feuille '
+slot 1: 96 tokens, solo 96: IDENTICAL
+    'Here is a Python function that merges overlapping intervals, followed by an explanation of how it works.\n\n### Python Function\n\n```python\ndef merge_intervals(int'
+slot 2: 96 tokens, solo 96: IDENTICAL
+    'Based on the provided text, it is **not possible** to answer the question regarding the comparison of TCP and QUIC.\n\n**Reasoning:**\nThe provided passage contain'

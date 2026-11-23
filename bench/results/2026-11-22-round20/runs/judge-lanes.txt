@@ -1,0 +1,60 @@
+# Extracted from /home/ubuntu/lanes/r20/scout/judge.json (lanes and reserve: title, models, goal, expected_gain, stop_rule) and
+# /home/ubuntu/lanes/r20/scout/batch3.json (helper-threads). The expected gains are the judge's estimates before the lanes ran.
+
+## pf-tail-ring
+- title: Prompt chunks below 8,192 tokens: re-carve the prompt region for the chunk's own T, lend its idle tail and R's idle rows to the expert ring, and take the streamed walk from ~2K tokens
+- models: ["Qwen3.8-Flash-Next (prompts of ~2K-8K new tokens, and the last chunk of longer prompts)"]
+- goal: Cut the ~3.1 s of 'wait copy' that 1-4K prompts spend today (below 4,096 tokens the routed 8-slot walk issues copies only after each layer's routing sync, so the copy engine idles through every dense half) by giving chunks shorter than T_max = 8192 a ~250-360-slot streamed ring carved from VRAM the chunk leaves unused, without shrinking the 8192-token chunk long prompts use.
+- expected_gain: Measured with the env equivalent (a 256-slot ring carved at init, one run each, hashes identical): 4,008-token prompt 16.10 -> 14.74 s (-8.5%), 2,008 -> 9.90 s (-5.1%). The tail gives ~254 slots at 4K and ~359 at 2K without the env runs' smaller auto chunk (8192 kept). 1K unchanged (stays routed); 5-6K single chunks likely -5 to -8%; 7.6K ~-1% (~31 more slots); 32K only its last chunk (~-0.3 s of ~106 s). Stretch pf-dense-xq: -0.07 s at 4K, -0.55 s at 32K.
+- stop_rule: Stop and report (WIP commits kept, the NOTES.md table) if the 4K prompt gains less than 3% over the 2 alternated pairs, or if any hash differs and the cause is not found within ~1 hour. Steps 7 and 8 only after 1-6 are committed and measured; drop either if it gains nothing.
+
+## glm-attend3
+- title: GLM DSA attention two heads a warp with the latent's 512 values fixed (mla_attend3_k) and the split reduce with its loads issued together (mla_reduce2_k); stretch: kda_conv and kda_l2 in one kernel
+- models: ["GLM-5.3-Flash"]
+- goal: Take ~2.1 ms off every GLM decode step past 2,048 cells of context (each DSA query then attends the indexer's 2,048 selected cells on the GPU-bound DSA layers), bit for bit, with a patch the scout already wrote from bit-checked kernels.
+- expected_gain: Long context (decode at >= 2,048 cells): -86 us a one-token verify query (311.3 -> 225.3 us, 22 a step) and -218 us for the two-token NextN pass (597 -> 379): ~-2.1 ms a step, +2.2-2.5% tok/s at 85-95 ms steps, the same ms at 32K-262K contexts. Short context (the 5-token bench, causal under 2,048 cells): ~-0.1-0.2 ms a step (+0.2%, under GLM's ~2 ms run-to-run noise). Prompt: DSA attention -34% a 64-token window on the GPU (prompts are CPU-expert-bound, so end to end small). Stretch: 68 calls of 10.4 + 3.2 us -> ~9 us: -0.3 ms a step (+0.4%).
+- stop_rule: Stop and report if the bitwise test fails and the cause is not found within ~1 hour. If the long prompt's step median gains less than 0.7 ms over the 3 rounds, report it as not taken with the numbers. Never take a second GLM load for the stretch: it rides in the same --ab process or stays unmeasured.
+
+## d3-tower-fuse
+- title: Drama 3 tower: 1024-thread fused norm / add / q8_1 kernels, round 18's exact AVX-512 sampler, split / staged attention, and [w1|w3] in one matvec
+- models: ["Fish Audio Drama 3"]
+- goal: Shorten step_begin (cand head, 5 tower layers, 2 samples), which runs alone at top priority on the critical path between two backbone steps, and the 8 step_finish layers beside the backbone, with kernels and a sampler already bit-checked in microbenchmarks.
+- expected_gain: About -0.37 ms of a 20.8 ms frame, +1.8% (48.1 -> ~49.0 frames/s). Critical path: fusions -24 us a tower layer (measured L2-cold: 36.9-37.6 -> 13.1-13.7 us of small kernels a layer), attention ~-14 us a layer (round 18: 30-33 -> 12-22 us), one quantize fewer and [w1|w3] ~-5 us a layer (estimate), each sample -35.5 us (measured 55.9 -> 20.5 us): ~0.29 ms over step_begin's 5 layers and 2 samples, plus ~0.08 ms less contention beside the backbone from step_finish's 8 layers and 8 samples. The measured parts alone (fusions + sampler) are ~0.19 ms, +0.9%.
+- stop_rule: After steps 1-3, run the A/B: if Drama 3 gains less than +0.5% over 2 pairs, stop and report. A step whose bit check fails and is not fixed within ~45 minutes keeps its old path. The stretch only once 1-4 are committed and measured.
+
+## win-combine
+- title: Verify windows: the combine reads the CPU's expert sums straight from mapped memory (no copy kernel), and the commit graph runs at the least priority under top-priority drafter streams
+- models: ["Qwen3.8-Flash-Next", "Ornith-1.5-35B", "Fish Audio Drama 3 (backbone)", "Qwen batch slots", "StartLux-Decision (ids only)"]
+- goal: Take one kernel and one boundary off every post() on the GPU-bound critical path (96 posts a Qwen window, ~80 an Ornith window, 40 a Drama 3 frame), and let the critical work after a window (the DFlash / MTP draft, Drama 3's step_begin) win SM dispatch over the off-path commit graph.
+- expected_gain: Part A, modeled from the round-19 node trace: Qwen's post chain from the wait's end to the HC norm is 10.3 / 11.7 / 14.3 / 18.8 us at T = 1..4 (copy 4.6-9.0 + combine 3.3-7.5 + gaps), 1.38 ms a traced window; dropping the copy's boundary and the separate combine saves ~3.5-8 us a post: -0.3-0.5 ms of a 54-60 ms window untraced (+0.5-0.9%). Ornith ~4 us x 80 posts = -0.25-0.3 ms of 24.6 ms (+1-1.2%). Drama 3 40 posts x ~4 us = ~-0.15 ms of 20.8 ms (+0.7%). Part B, measured in-process by the scout: Qwen window boundary -57 / -83 us (prose / code), Ornith MTP draft -42 / -46 us (+0.1-0.17%); Drama 3 unmeasured today: in round 17's trace step_begin's layer 0 took 862 us beside the commit against 505 us for its other layers, so up to -0.36 ms a frame (+0.5-1.5%) if the commit still slows it.
+- stop_rule: Drop Part A for any T where the mapped combine is slower than copy + combine even with a float4 kernel. If after the A/Bs neither part moves Qwen or Ornith by >= 0.1 ms a window nor Drama 3 by >= 0.5% frames/s, stop and report the numbers. Do not extend into the shared expert's stream priority or grid (rejected: traced contention is inflated ~10x).
+
+## cpu-rows
+- title: CPU expert rows and pool: Q4_K / Q6_K rows two to an AVX-512 pass (built and measured), IQ4_NL prefetch 6 rows ahead, Qwen layer 2's IQ4_XS gate/up, the pool's wake without a locked add, and Q8_0 block-pair scales in Guild's rows
+- models: ["Fish Audio Drama 3", "Qwen3.8-Flash-Next", "Nemotron 3.5 Transcribe", "Ornith-1.5-35B (ids only)"]
+- goal: Shorten the CPU expert layer where it is serial (Drama 3's 40 pool calls a frame, Nemotron's CPU-bound 4-token verify) and trim Qwen's CPU experts, all in Guild, with no CPU lock bump.
+- expected_gain: Drama 3: +0.7-1.0% from the kq rows (measured: 47.75 / 47.64 vs 47.28 / 47.28 frames/s seed 11, 47.54 vs 47.23 seed 12, md5s equal) and ~+0.5% from the pool wake (poolbench2: -2.7 us a layer, 40 a frame): +1.2-1.5% together. Qwen: IQ4_NL down rows +3.6% / +6.1% at 1 / 2 tokens on 32 threads -> -1-2% of the CPU experts a window, +0.1-0.4% tok/s here (GPU-bound; more on CPU-bound PCs). Nemotron: if the 4-token rows gain 8-15%, its CPU-bound verify (step_cpu 27 of 37 ms a step) gives decode -5-9% on the 30 s clip; nothing if the go/no-go fails. Ornith ~0 (GPU-bound).
+- stop_rule: Each item keeps its own switch; drop an item whose engine A/B shows nothing or whose test still fails after ~45 minutes of fixing. Step 5 stops at the microbenchmark if 4 tokens gain < 8%. Report after ~4 hours with whatever is measured.
+
+## pf-zero-copy
+- title: Streamed prompt walk: MMQ reads the experts in place from the ring slots (one strided ring, zeroed tails), no gather, and the group buffers become 16 more slots
+- models: ["Qwen3.8-Flash-Next (prompts)"]
+- goal: Remove the streamed walk's group gather (2.83 s at 32K, 0.62 s at 4K) and give its 55.7 MB of group buffers to the ring.
+- expected_gain: 32K ~-1 s (-1%): there the MoE half is copy-bound (512 blobs x ~0.35 ms against ~162 ms of compute a layer-chunk), so the 16 freed slots matter more than the gather. 2-4K on top of pf-tail-ring: -0.3 to -0.6 s (-2 to -4% at 4K). Estimates.
+- stop_rule: Stop if any hash differs (a tail not zeroed, a wrong down_off) and the cause is not found in ~1 hour, or if the 4K, 7.6K and 32K prompts all gain < 1%.
+
+## dflash-slots
+- title: Batch slots: one DFlash head pass for every drafting slot (bit-identical drafts), after measuring the existing GUILD_BATCH_DRAFT_BLOCK=rows
+- models: ["Qwen3.8-Flash-Next batch slots (the server's 'parallel': N)"]
+- goal: Stop paying the memory-bound 236 MB DFlash head once per drafting slot: today 3 slots draft 3 full B = 8 passes (11.34 ms of a 95.6 ms window) although each slot keeps 1-2 drafts.
+- expected_gain: 3 slots with drafts: -2 heads (~1.15 ms each) and 2 syncs: drafts 11.34 -> ~9 ms a window (95.6 -> ~93.3 ms, +2.5%). 4 slots x 1 draft: 16.46 -> ~13 ms (99.05 -> ~95.6 ms, +3.5%), which may make drafts at 4 slots pay (round 19: 64.9 vs 64.2 tok/s). Plus whatever step 0's policy gives (modeled up to ~+8% if acceptance holds).
+- stop_rule: Stop if the bitwise check of step 1 fails and is not fixed within ~1 hour, or if 3-slot windows gain < 1 ms.
+
+## helper-threads (batch3.json)
+- goal: Keep the busy helper threads that run beside a model's decode (Drama 3's two Beside threads first) off the physical cores of the CPU expert pool's workers, so the pool's rows stop losing to a busy SMT sibling. Output bits identical: only which CPU a thread runs on changes.
+- evidence:
+  - cpu-rows/NOTES.md, ps -L samples during a default Drama 3 decode (48.52 frames/s, 6e04c9b1): the 31 pool workers on CPUs 1-31 (one a physical core), the generation thread on core 0 (CPU 0 / sibling 32, ~91%), and two unpinned busy threads, ~40% CPU on CPU 36 and ~15-19% on CPU 35, the SMT siblings of pool workers 4 and 3, in all 8 samples.
+  - With GUILD_POOL_WORKERS=30 (core 31 left free) the kq rows (GUILD_KQ_ROWS512) took 0.17-0.31 ms a frame off the pool walls, against 0.01-0.02 ms with 31 workers; 13 of the 40 layers (2, 3, 15, 18, ..., 33, 36-39) got 5-9 us slower with the kq rows when a busy sibling shared their core. 30 workers were slower overall than 31 (pool walls 4.82-4.94 against 4.71-4.74 ms a frame), so freeing a core by dropping a worker is not the fix.
+  - The two threads are very likely src/runtime/drama3.cpp's two Beside threads (class Beside, std::thread t_, cudaSetDevice then a job loop): `beside` runs the tower's step_finish (a frame's codes 2..9) beside the backbone's next row, `codec_side` runs the codec's chunks. Neither is pinned. The generation thread is pinned to the pool's host core (src/runtime/session.cpp / src/core/cpu_moe.cpp pin helpers; the pool's topology code is include/guild/kernels/cpu/pool.hpp detect_cpu_topology / physical_cores / PoolAffinity). Confirm by thread name and TID before acting.
+- expected_gain: Drama 3 +0.8-1.5% frames/s (0.17-0.31 ms of ~20.6 ms a frame), if the Beside threads cost the pool what the 30-worker hold suggests and the host core's sibling absorbs them without slowing the generation thread. Unknown for the other models.
+- stop_rule: If every placement in step 1 gives < +0.3% over 2 pairs on both seeds, stop: report the measured no-go (with the thread identification and the numbers) and change no code beyond, at most, the thread names. Budget about 3 hours.

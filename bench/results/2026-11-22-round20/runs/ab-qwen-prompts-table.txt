@@ -1,0 +1,30 @@
+# Extracted from int/ab/b-p-<arm>.json (bench_runtime.py --prompts pT.json, GUILD_NO_KV_CACHE=1, 32 new tokens).
+# hash = hash(tuple(output_ids)) % 100000, as abcmp.py computes it.
+== b1 (round 19, base20) gpu_after 7585 MiB, 75, 63.21 W
+  w16      16 tokens  prompt_ms     132.00  hash 86768
+  p1k    1008 tokens  prompt_ms    7389.40  hash 86557
+  p2k    2008 tokens  prompt_ms   10309.40  hash 81685
+  p4k    4008 tokens  prompt_ms   16141.10  hash 59650
+  p3k    3008 tokens  prompt_ms   13171.30  hash 95757
+  p6k    6008 tokens  prompt_ms   20539.10  hash 60700
+== i1 (round 20, int/build 90d1b04) gpu_after 7557 MiB, 75, 57.10 W
+  w16      16 tokens  prompt_ms     135.97  hash 86768
+  p1k    1008 tokens  prompt_ms    7387.92  hash 86557
+  p2k    2008 tokens  prompt_ms    8103.50  hash 81685
+  p4k    4008 tokens  prompt_ms   12414.90  hash 59650
+  p3k    3008 tokens  prompt_ms    9699.42  hash 95757
+  p6k    6008 tokens  prompt_ms   18350.50  hash 60700
+== i2 (round 20, int/build 90d1b04) gpu_after 7557 MiB, 75, 60.85 W
+  w16      16 tokens  prompt_ms     134.64  hash 86768
+  p1k    1008 tokens  prompt_ms    7405.72  hash 86557
+  p2k    2008 tokens  prompt_ms    8045.09  hash 81685
+  p4k    4008 tokens  prompt_ms   12431.20  hash 59650
+  p3k    3008 tokens  prompt_ms    9725.46  hash 95757
+  p6k    6008 tokens  prompt_ms   18337.50  hash 60700
+== b2 (round 19, base20) gpu_after 7585 MiB, 76, 62.22 W
+  w16      16 tokens  prompt_ms     137.51  hash 86768
+  p1k    1008 tokens  prompt_ms    7404.08  hash 86557
+  p2k    2008 tokens  prompt_ms   10342.00  hash 81685
+  p4k    4008 tokens  prompt_ms   16169.50  hash 59650
+  p3k    3008 tokens  prompt_ms   13197.60  hash 95757
+  p6k    6008 tokens  prompt_ms   20536.80  hash 60700

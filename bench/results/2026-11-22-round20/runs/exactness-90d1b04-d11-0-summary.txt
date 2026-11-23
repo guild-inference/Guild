@@ -1,0 +1,1 @@
+d11-0 49.38 frames/s, 2.29x real time; tower 1737 ms, codec 40 ms 6e04c9b1
