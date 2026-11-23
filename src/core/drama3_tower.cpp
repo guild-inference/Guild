@@ -267,7 +267,7 @@ bool Drama3Tower::load(const std::string& dir, int64_t max_frames, std::string& 
             L.wo = mat(p + "wo", D, Q);
             L.w1 = mat(p + "w1", g_.ffn, D);
             L.w3 = mat(p + "w3", g_.ffn, D);
-            if (L.w1.type == kQ8_0 && L.w3.type == kQ8_0 &&
+            if (fuse_part('w') && L.w1.type == kQ8_0 && L.w3.type == kQ8_0 &&
                 (const char*) L.w3.w ==
                     (const char*) L.w1.w + guild::kernels::native_mmvq_weight_bytes(kQ8_0, D, g_.ffn))
                 L.w13 = Mat{L.w1.w, 2 * g_.ffn, D, kQ8_0};
