@@ -98,12 +98,14 @@ const bool g_coherent = env_on("GUILD_VERIFY_COHERENT");
 const bool g_doorbell_store = env_on("GUILD_DOORBELL_STORE");
 #endif
 const bool g_trace = env_on("GUILD_VERIFY_TRACE");
-// GUILD_COMBINE_MAPPED (Verifier::combine_mode_): 0, 1 or 2; measured on CUDA only, so opt-in on both HIP builds
+// GUILD_COMBINE_MAPPED (Verifier::combine_mode_): 0, 1 or 2; measured on CUDA only, so opt-in on both HIP builds.
+// 1 spells the bundled CDM1 combine's flush-to-zero operations (verify_combine.hpp), so it is the default only with
+// that backend: an external one may be built without --use_fast_math.
 const int g_combine_mode = [] {
     const char* e = std::getenv("GUILD_COMBINE_MAPPED");
     if (e != nullptr && e[0] >= '0' && e[0] <= '2' && e[1] == 0)
         return e[0] - '0';
-#if defined(GUILD_USE_HIP) || defined(GUILD_HIP_GFX906)
+#if defined(GUILD_USE_HIP) || defined(GUILD_HIP_GFX906) || !GUILD_BUNDLED_CUDA_MOE
     return 0;
 #else
     return 1;

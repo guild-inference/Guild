@@ -531,11 +531,12 @@ private:
     bool host_combine_[9] = {};
     float* h_ysum_ = nullptr;
     float* m_ysum_ = nullptr; // T * n_embd
-    // GUILD_COMBINE_MAPPED (read at init; default 1 on CUDA, opt-in on HIP): the host combine reads the CPU's sums
-    // where the CPU wrote them (m_ysum_), after the same flag wait, instead of a copy kernel staging them in parts_
-    // first: one kernel and one kernel boundary less a post().  1: combine_sums_f4 (verify_combine.hpp: float4 loads,
-    // the combine kernel's operations); 2: the combine kernel itself on the mapped rows (4-byte loads); 0: the copy, as
-    // before.  The same floats through the same arithmetic, so the same bits.  An expert deferral keeps the copy.
+    // GUILD_COMBINE_MAPPED (read at init; default 1 with the bundled CUDA MoE backend, else opt-in): the host combine
+    // reads the CPU's sums where the CPU wrote them (m_ysum_), after the same flag wait, instead of a copy kernel
+    // staging them in parts_ first: one kernel and one kernel boundary less a post().  1: combine_sums_f4
+    // (verify_combine.hpp: float4 loads, the combine kernel's operations); 2: the combine kernel itself on the mapped
+    // rows (4-byte loads); 0: the copy, as before.  The same floats through the same arithmetic, so the same bits.  An
+    // expert deferral keeps the copy.
     int combine_mode_ = 0;
     // GUILD_DEFER_EXPERTS=k (0 < k < the experts a token; read at init): expert deferral, which changes the model's
     // computation.  A layer's first k routed experts (the router's top k by weight) are summed into its output as
