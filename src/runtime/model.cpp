@@ -503,9 +503,13 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
             return nullptr;
         }
 #endif
-        // the IQ3_S (NL4) gate/up and IQ4_NL down rows two to an AVX-512BW register, the same bits
-        // (GUILD_POOL_ROWS512=0: the table as bound)
-        impl->pool->bind_native_kernels(core::pool_rows512(impl->pool->native_table()));
+        // the IQ3_S (NL4), IQ4_XS and Q4_K gate/up and IQ4_NL, Q4_K and Q6_K down rows two to an AVX-512BW register,
+        // the same bits as the library's table - and so only on that table, and only when the gate/up rows are not
+        // interleaved (the layout below interleaves them for a GEXEC interleaved kernel only).  Any other table keeps
+        // its own rows; each model's table leaves the formats it does not reroute to its own base (pool_rows.hpp;
+        // GUILD_POOL_ROWS512=0: the table as bound)
+        impl->pool->bind_native_kernels(core::pool_rows512(
+            impl->pool->native_table(), kernels::cpu::is_gexec_interleaved_impl(sp.gexec_cpu_expert_impl.c_str())));
     }
     std::optional<kernels::ScopedCudaDense> dense_scope;
     std::optional<kernels::ScopedCudaAttn> attn_scope;

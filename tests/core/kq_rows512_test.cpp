@@ -218,7 +218,7 @@ int main() {
     {
         guild::kernels::cpu::ExpertPool pool(1, false, true);
         const guild_cpu_expert_ext_v1_t base = pool.native_table();
-        const guild_cpu_expert_ext_v1_t wrapped = guild::core::pool_rows512(base);
+        const guild_cpu_expert_ext_v1_t wrapped = guild::core::pool_rows512(base, false);
         if (wrapped.gate_up == base.gate_up || wrapped.down == base.down) {
             std::printf("FAIL: pool_rows512 did not wrap the table (GUILD_POOL_ROWS512=0?)\n");
             return 1;
