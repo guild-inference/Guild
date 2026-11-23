@@ -2415,12 +2415,8 @@ bool native_proj_multi(Gemm& gm, const NativeOut* o, int n, const uint16_t* X, i
         for (int64_t t0 = 0; t0 < T; t0 += kDenseSlice) {
             const int64_t r = std::min(kDenseSlice, T - t0);
             f16_to_f32(X + t0 * K, dense_mmq_state().x32, r * K, gm.stream());
-            if (!dense_mmq_quantize(gm, w0->native_type, r, K)) {
-                if (t0 == 0)
-                    break; // no buffers: each its own product (below)
-                err = "prefill: dense MMQ buffers lost mid-product";
-                return false;
-            }
+            if (!dense_mmq_quantize(gm, w0->native_type, r, K))
+                break; // no buffers (or lost past the first slice): each its own product, every row again (below)
             for (int i = 0; i < n; ++i)
                 dense_mmq_product(gm, o[i].w->native_data, w0->native_type, o[i].y + t0 * o[i].w->ne1, r, o[i].w->ne1,
                                   K);
