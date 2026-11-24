@@ -157,8 +157,15 @@ void prioritize_captured(cudaStream_t s, int prio) {
     cudaStreamCaptureStatus st = cudaStreamCaptureStatusNone;
     const cudaGraphNode_t* deps = nullptr;
     size_t nd = 0;
-    if (prio == 0 || cudaStreamGetCaptureInfo(s, &st, nullptr, nullptr, &deps, &nd) != cudaSuccess ||
-        st != cudaStreamCaptureStatusActive)
+    if (prio == 0)
+        return;
+#if CUDART_VERSION >= 13000
+    // CUDA 13 puts the dependencies' edge data, not wanted here, before their count
+    const cudaError_t e = cudaStreamGetCaptureInfo(s, &st, nullptr, nullptr, &deps, nullptr, &nd);
+#else
+    const cudaError_t e = cudaStreamGetCaptureInfo(s, &st, nullptr, nullptr, &deps, &nd);
+#endif
+    if (e != cudaSuccess || st != cudaStreamCaptureStatusActive)
         return;
     for (size_t i = 0; i < nd; ++i) {
         cudaGraphNodeType ty = cudaGraphNodeTypeEmpty;
