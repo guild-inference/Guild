@@ -1,7 +1,7 @@
 {
   "cpu": {
     "repository": "https://github.com/guild-inference/guild-kernels-cpu.git",
-    "revision": "9b7281a365649f65c31bae6fba9a446a3a550911",
+    "revision": "d86cecd1848498aa22ae455c267b06a9c1bde8a8",
     "version": "1.1.1"
   },
   "cuda": {
@@ -17,7 +17,7 @@
     "ownership": "independent RMD1 description runner, compiled bundled or loaded externally"
   },
   "integration": {
-    "cpu": {"repository": "guild-inference/guild-kernels-cpu", "revision": "9b7281a365649f65c31bae6fba9a446a3a550911"},
+    "cpu": {"repository": "guild-inference/guild-kernels-cpu", "revision": "d86cecd1848498aa22ae455c267b06a9c1bde8a8"},
     "cuda": {"repository": "guild-inference/guild-kernels-cuda", "revision": "11936b50ba8c2e3d4e8e0e9f227d3dcbb2bc32cb"},
     "qwen": {"repository": "guild-inference/guild-runners-qwen", "revision": "650b09cef3a1dec184a96605111fa6d44622ebe6"}
   }
