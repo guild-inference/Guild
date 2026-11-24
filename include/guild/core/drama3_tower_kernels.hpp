@@ -45,4 +45,30 @@ size_t attn_part_floats(const QkvShape& s, int64_t max_pos);
 bool attention(const float* q, const uint16_t* k_cache, const uint16_t* v_cache, const float* gate, float* part,
                float* out, const QkvShape& s, int64_t n_pos, cudaStream_t st);
 
+// ---- fused small kernels (one row of kFusedDim floats, 1024 threads).  Each writes what the kernels it replaces
+// write, bit for bit: rms_norm's reduction by its 256 threads and the same trees, and the Q8_1 blocks of the native
+// MMVQ's own quantize kernel (guild-kernels-cuda's native_quantize_q8_1, 36-byte blocks: half2 d and sum, 32 int8).
+// The tower checks them at load against those kernels (fused_self_check) and keeps the separate kernels on any
+// difference.
+
+/// The only row width the fused kernels take
+constexpr int kFusedDim = 2048;
+/// Bytes of the Q8_1 block the fused kernels write (native_q8_1_bytes(32, 1) must equal it)
+constexpr int kFusedQ81Bytes = 36;
+/// The layer's input: xq's first kFusedDim / 32 Q8_1 blocks = rms_norm(e, w0), the next = rms_norm(h, w1), where e is
+/// embed(table, row, add, add_table) (zeros for row < 0).  Replaces embed, two rms_norm and a quantize of the two
+/// rows; `cat` (optional) receives the two normed rows as rms_norm writes them.
+void embed_norm2_q8(const uint16_t* table, int row, const EmbedAdd& add, const uint16_t* add_table, const float* h,
+                    const float* w0, const float* w1, float eps, void* xq, cudaStream_t st, float* cat = nullptr);
+/// x += y (when y), then out = rms_norm(x, w) (when out) and xq = its Q8_1 blocks (when xq).  Replaces add, rms_norm
+/// and a quantize.
+void add_norm_q8(float* x, const float* y, const float* w, float eps, float* out, void* xq, cudaStream_t st);
+/// attention() with faster partial kernels for the tower's shape (8 query heads a K/V head of dim 256): each chunk's K
+/// and V rows staged in shared memory, and at n_pos <= kAttnSplitMax two blocks a K/V head of four query heads each.
+/// The same partials bit for bit (each head's sums are the same chains) and the same combine; other shapes take
+/// attention().
+constexpr int64_t kAttnSplitMax = 320;
+bool attention_fast(const float* q, const uint16_t* k_cache, const uint16_t* v_cache, const float* gate, float* part,
+                    float* out, const QkvShape& s, int64_t n_pos, cudaStream_t st);
+
 } // namespace guild::core::drama3

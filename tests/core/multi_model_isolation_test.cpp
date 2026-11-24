@@ -33,6 +33,7 @@
 #endif
 
 #include <atomic>
+#include <cstring>
 #include <iostream>
 #include <string>
 #include <thread>
@@ -365,7 +366,22 @@ void test_real_multi_model_coexistence() {
         CHECK(modelB->startup_profile().gexec_active == true);
         CHECK(modelB->impl()->exec_state->expert_layout.gate_up_interleaved == true);
         CHECK(modelB->impl()->src.gate_up_interleaved() == true);
-        std::cout << "  -> GEXEC interleaved Model B coexisting with portable Model A verified\n";
+        // Model B's CPU expert rows are its GEXEC table's own: pool_rows512's rows read [gate | up] rows and are
+        // proven against the library's table only, so they wrap neither B's table nor, through A's, reach it
+        const auto selected_table = [](const auto& impl, guild_cpu_expert_ext_v1_t& t) {
+            if (!impl->cpu_binding || !impl->cpu_binding->next_ext)
+                return false;
+            std::memcpy(&t, impl->cpu_binding->next_ext, sizeof(t));
+            return true;
+        };
+        guild_cpu_expert_ext_v1_t selA{}, selB{};
+        CHECK(selected_table(modelB->impl(), selB));
+        CHECK(modelB->impl()->pool->native_table().gate_up == selB.gate_up);
+        CHECK(modelB->impl()->pool->native_table().down == selB.down);
+        const bool a_wrapped =
+            selected_table(modelA->impl(), selA) && modelA->impl()->pool->native_table().gate_up != selA.gate_up;
+        std::cout << "  -> GEXEC interleaved Model B coexisting with portable Model A verified (B's CPU expert table "
+                  << "as selected, A's " << (a_wrapped ? "wrapped by pool_rows512" : "as selected") << ")\n";
     }
 
     // Step 3.3: Execute Model B and verify its trajectory differs from Model A due to RoPE config

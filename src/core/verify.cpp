@@ -12,6 +12,7 @@
 #include "guild/core/on_device.hpp"
 #include "guild/core/peer_experts.hpp"
 #include "guild/core/host_combine.hpp"
+#include "guild/core/verify_combine.hpp"
 #include "guild/kernels/iq_kernels.hpp"
 #include "guild/kernels/cpu/expert_layout.hpp"
 #include "guild/kernels/cpu/pool.hpp"
@@ -97,6 +98,19 @@ const bool g_coherent = env_on("GUILD_VERIFY_COHERENT");
 const bool g_doorbell_store = env_on("GUILD_DOORBELL_STORE");
 #endif
 const bool g_trace = env_on("GUILD_VERIFY_TRACE");
+// GUILD_COMBINE_MAPPED (Verifier::combine_mode_): 0, 1 or 2; measured on CUDA only, so opt-in on both HIP builds.
+// 1 spells the bundled CDM1 combine's flush-to-zero operations (verify_combine.hpp), so it is the default only with
+// that backend: an external one may be built without --use_fast_math.
+const int g_combine_mode = [] {
+    const char* e = std::getenv("GUILD_COMBINE_MAPPED");
+    if (e != nullptr && e[0] >= '0' && e[0] <= '2' && e[1] == 0)
+        return e[0] - '0';
+#if defined(GUILD_USE_HIP) || defined(GUILD_HIP_GFX906) || !GUILD_BUNDLED_CUDA_MOE
+    return 0;
+#else
+    return 1;
+#endif
+}();
 
 bool mapped(size_t bytes, void** h, void** d) {
 #if defined(GUILD_USE_HIP)
@@ -197,6 +211,30 @@ constexpr unsigned kUseNodePriority = 0;
 constexpr unsigned kUseNodePriority = cudaGraphInstantiateFlagUseNodePriority;
 #endif
 
+// Every kernel node of `graph` at priority `prio` (honored when the graph is instantiated with kUseNodePriority);
+// it overrides the priorities prioritize_captured gave some of them.
+void prioritize_all(cudaGraph_t graph, int prio) {
+#if defined(GUILD_USE_HIP) || defined(GUILD_HIP_GFX906)
+    (void) graph; // the HIP builds use no stream or node priorities
+    (void) prio;
+#else
+    size_t nn = 0;
+    if (cudaGraphGetNodes(graph, nullptr, &nn) != cudaSuccess || nn == 0)
+        return;
+    std::vector<cudaGraphNode_t> nodes(nn);
+    if (cudaGraphGetNodes(graph, nodes.data(), &nn) != cudaSuccess)
+        return;
+    for (cudaGraphNode_t nd : nodes) {
+        cudaGraphNodeType ty = cudaGraphNodeTypeEmpty;
+        if (cudaGraphNodeGetType(nd, &ty) != cudaSuccess || ty != cudaGraphNodeTypeKernel)
+            continue;
+        cudaKernelNodeAttrValue v{};
+        v.priority = prio;
+        cudaGraphKernelNodeSetAttribute(nd, cudaKernelNodeAttributePriority, &v);
+    }
+#endif
+}
+
 std::atomic<const Verifier*> g_diag_verifier{nullptr};
 void diag_active_verifier(std::FILE* f) {
     if (const Verifier* v = g_diag_verifier.load())
@@ -243,6 +281,18 @@ const int64_t g_test_stall = [] {
     return e != nullptr ? (int64_t) std::atoll(e) : (int64_t) 0;
 }();
 } // namespace
+
+bool window_priorities() {
+#if defined(GUILD_USE_HIP) || defined(GUILD_HIP_GFX906)
+    return false; // the HIP builds keep their drafter streams and the commit as they were
+#else
+    static const bool on = [] {
+        const char* e = std::getenv("GUILD_WINDOW_PRIO");
+        return !e || e[0] != '0';
+    }();
+    return on;
+#endif
+}
 
 bool Verifier::release_gpu_waits(int timeout_ms) {
     released_.store(true);
@@ -460,6 +510,7 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
                          defer_out_ ? "in the next layer's output" : "before the next layer's experts read");
     }
     async_commit_ = g_commit_async && !env_on("GUILD_COMMIT_SYNC");
+    combine_mode_ = g_combine_mode;
     device_logit_validation_ = !env_on("GUILD_LOGITS_VALIDATION_HOST");
     sampling_.greedy = true; // a fresh verifier samples greedily until set_sampling says otherwise
     sampling_.temperature = 0.0f;
@@ -899,12 +950,17 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         host_combine_b_[T] = host_combine;
     }
     const bool defer_w = !batch_rec_ && defer_[T]; // (defer_[T] is the speculative window's of this size)
+    // the combine reads the CPU's sums from the mapped rows (combine_mode_; a deferral keeps the copy)
+    const bool combine_mapped = host_combine && combine_mode_ != 0 && !defer_w;
     static std::atomic<bool> host_combine_said{false};
     if (host_combine && !host_combine_said.exchange(true))
         std::fprintf(stderr,
                      "guild verify: the CPU sums its experts' rows and %lld floats a token cross PCIe, not %lld "
-                     "(GUILD_HOST_COMBINE=0: the GPU sums them)\n",
-                     (long long) N, (long long) (K * N));
+                     "(GUILD_HOST_COMBINE=0: the GPU sums them); the combine reads them %s\n",
+                     (long long) N, (long long) (K * N),
+                     !combine_mapped      ? "after a copy"
+                     : combine_mode_ == 1 ? "from mapped memory, float4 loads (GUILD_COMBINE_MAPPED=0: copied first)"
+                                          : "from mapped memory (GUILD_COMBINE_MAPPED=0: copied first)");
     const int64_t nQall = g.n_qsa_layers();
     // a batch window: row t is slot t, whose state lives in its own session
     auto slot_ss = [&](int t) -> SessionState& { return batch_rec_ ? *slots_[(size_t) brow_[t]] : ss; };
@@ -1653,9 +1709,12 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         } else if (!need_gpu_plan) {
             wait_flag_ge(m_flag_, ring, cs); // all routed experts are served by the CPU pool
             stamp(l, 23, grp);
-            if (host_combine) // the CPU's weighted sums, n_embd floats a token
-                copy_from_mapped(parts_out, m_ysum_ + (size_t) tb * N, (int64_t) n * N, cs);
-            else
+            if (host_combine) { // the CPU's weighted sums, n_embd floats a token
+                // (combine_mapped: the combine below reads them where they are, with the plain loads the copy kernel
+                // uses; the CPU next writes this group's rows after the next layer's ring, which follows the combine)
+                if (!combine_mapped)
+                    copy_from_mapped(parts_out, m_ysum_ + (size_t) tb * N, (int64_t) n * N, cs);
+            } else
                 copy_from_mapped(parts_out, m_ymiss_ + (size_t) tb * K * N, (int64_t) n * K * N, cs);
         } else {
             if (device_plan_) { // E-6: skipped when the device planned this group (all its experts resident)
@@ -1710,9 +1769,14 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             cudaStreamWaitEvent(cs, ev_join_, 0);
         }
         if (host_combine) { // the shared expert added to the CPU's sums: the combine kernel at k = 1, weight 1.0
+            // (a token's sum at stride N in both: the mapped rows, or their copy at the group's parts)
+            const float* sums = combine_mapped ? m_ysum_ + (size_t) tb * N : parts_ + (size_t) tb * K * N;
             try {
-                native_moe_combine_multi(parts_ + (size_t) tb * K * N, ones_, shared_ + tb * N, bo_ + tb * N, N, 1, n,
-                                         cs);
+                // GUILD_COMBINE_MAPPED=1: combine_sums_f4, the combine kernel's arithmetic with float4 loads (false:
+                // the rows are not 16-byte aligned, or a HIP build: the combine kernel then)
+                if (!(combine_mapped && combine_mode_ == 1 &&
+                      combine_sums_f4(sums, ones_, shared_ + tb * N, bo_ + tb * N, N, n, cs)))
+                    native_moe_combine_multi(sums, ones_, shared_ + tb * N, bo_ + tb * N, N, 1, n, cs);
             } catch (const std::exception& e) {
                 err = "verify combine: " + std::string(e.what());
                 return false;
@@ -2119,8 +2183,17 @@ bool Verifier::capture_commit(std::string& err) {
             cudaGraphDestroy(graph);
         return false;
     }
+    // GUILD_WINDOW_PRIO (window_priorities): every commit kernel at the device's least priority, gdn_cs_'s small
+    // commits too, so the drafter's top-priority stream (and Drama 3's step_begin) beside it wins dispatch.  The commit
+    // is off the critical path: the next window waits for the draft, and follows the commit on cs_ as before.
+    const bool commit_low = window_priorities() && ce == cudaSuccess && graph != nullptr;
+    if (commit_low) {
+        int least = 0, greatest = 0;
+        cudaDeviceGetStreamPriorityRange(&least, &greatest);
+        prioritize_all(graph, least);
+    }
     if (ce != cudaSuccess ||
-        cudaGraphInstantiate(&commit_exec_, graph, commit_fork ? kUseNodePriority : 0) != cudaSuccess) {
+        cudaGraphInstantiate(&commit_exec_, graph, commit_fork || commit_low ? kUseNodePriority : 0) != cudaSuccess) {
         if (graph)
             cudaGraphDestroy(graph);
         err = std::string("verify: commit capture: ") + cudaGetErrorString(ce);

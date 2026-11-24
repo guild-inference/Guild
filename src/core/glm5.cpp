@@ -692,10 +692,11 @@ struct Glm5Engine::Impl {
     bool merged = true;
     // GUILD_GLM_FUSE2 (read each window; default all bits on): bit 1 the KDA gates' f_b, gates and g_b in one launch
     // (glm5k::kda_fg); bit 2 the Q8_1 activations of up to kMmvqCols tokens written by the kernels that compute them
-    // (the pre-mix, the KDA output, the DSA q_a norm, the SwiGLU) instead of a quantization launch after each.  The
+    // (the pre-mix, the KDA output, the DSA q_a norm, the SwiGLU) instead of a quantization launch after each; bit 4
+    // the KDA short convolution and q and k's L2 normalisation in one launch (glm5k::kda_conv's one_launch).  The
     // same bits either way (glm5_kernels_test).  UD-IQ4_XS decode on a GTX 1070 + 2x Xeon Gold 6130 (--spec), with
-    // the lean IQ4_XS rows and cpu_moe's kept containers on: both bits 0.5-0.7 ms off a ~80 ms step (two processes),
-    // each bit alone 0.3-0.4 (they shorten the same GPU half, which the CPU caps).
+    // the lean IQ4_XS rows and cpu_moe's kept containers on: bits 1 and 2 0.5-0.7 ms off a ~80 ms step (two
+    // processes), each alone 0.3-0.4 (they shorten the same GPU half, which the CPU caps).
     unsigned fuse2 = ~0u;
     void read_switches() {
         const char* e = std::getenv("GUILD_GLM_MERGED");
@@ -704,6 +705,8 @@ struct Glm5Engine::Impl {
         glm5k::set_q6k_rows(!(e && e[0] == '0'));
         e = std::getenv("GUILD_GLM_ONE_WAVE");
         glm5k::set_one_wave(!(e && e[0] == '0'));
+        e = std::getenv("GUILD_GLM_ATTEND3");
+        glm5k::set_attend3(!(e && e[0] == '0'));
         e = std::getenv("GUILD_GLM_ZC");
         zc = !(e && e[0] == '0');
         e = std::getenv("GUILD_GLM_DRAFT_HEAD_COPY");
@@ -1764,11 +1767,13 @@ void Glm5Engine::Impl::attn_kda(Layer& Y, int T, int off) {
         mm(Y.g_a, xq, small2, T);
         mm(Y.beta, xq, d, T);
     }
+    // (GUILD_GLM_FUSE2 bit 4: the convolution and q and k's L2 normalisation in one launch; the same bits)
     if (one)
         glm5k::kda_conv(rq, rq + D, rq + 2 * D, Y.conv_state, Y.conv_q, Y.conv_k, Y.conv_v, rq, (int) D, 1, cmid, nmid,
-                        st);
+                        st, (fuse2 & 4) != 0);
     else
-        glm5k::kda_conv(a, b, c, Y.conv_state, Y.conv_q, Y.conv_k, Y.conv_v, rq, (int) D, T, cmid, nmid, st);
+        glm5k::kda_conv(a, b, c, Y.conv_state, Y.conv_q, Y.conv_k, Y.conv_v, rq, (int) D, T, cmid, nmid, st,
+                        (fuse2 & 4) != 0);
     // a token's f_a and g_a rows are consecutive: one quantization of both and one launch for f_b, the gates and g_b
     // (GUILD_GLM_FUSE2 bit 1; the same bits)
     if ((fuse2 & 1) && T == 1 && Y.fgb.dev && ga == fa + Y.f_a.n_out && Y.f_a.n_out == Y.g_a.n_out &&

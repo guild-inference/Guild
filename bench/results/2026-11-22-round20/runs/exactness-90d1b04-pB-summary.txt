@@ -1,0 +1,6 @@
+load_s 67.9 gpu_after 7557 MiB, 77, 53.73 W
+w16 16 prompt_ms 132 hash 86768
+p4k 4008 prompt_ms 12744 hash 59650
+ctx32k 31918 prompt_ms 101534 hash 3242
+guild prefill: chunks of 8192 tokens in the 3098 MiB of VRAM free
+guild prefill: chunks of 8192 tokens computed as chunks of 512 (--prefill-rows)

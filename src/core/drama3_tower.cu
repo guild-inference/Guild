@@ -44,19 +44,242 @@ __global__ void rms_norm_kernel(const float* __restrict__ x, const float* __rest
         out[i] = x[i] * inv * w[i];
 }
 
+// ---- rms_norm_kernel's arithmetic as the fused kernels take it (the same expressions, so the same operations in the
+// same order: drama3_fuse_test compares the bytes)
+// thread t's sum of squares: x[i]^2 for i = t, t + stride, ... < n, in that order (a fma chain from 0)
+__device__ __forceinline__ float sum_sq(const float* x, int t, int n, int stride) {
+    float ss = 0.0f;
+    for (int i = t; i < n; i += stride)
+        ss += x[i] * x[i];
+    return ss;
+}
+// block_sum's xor tree
+__device__ __forceinline__ float warp_tree(float v) {
+    for (int o = 16; o > 0; o >>= 1)
+        v += __shfl_xor_sync(0xffffffffu, v, o);
+    return v;
+}
+// block_sum's partial sums, added in order from 0
+__device__ __forceinline__ float sum_partials(const float* red, int nw) {
+    float s = 0.0f;
+    for (int w = 0; w < nw; ++w)
+        s += red[w];
+    return s;
+}
+
+// element i of row `row` of a BF16 table (zero when row < 0), plus the sum of the add rows
+__device__ __forceinline__ float embed_value(const uint16_t* __restrict__ table, int row, const EmbedAdd& add,
+                                             const uint16_t* __restrict__ add_table, int n, int i) {
+    float v = row >= 0 ? bf16_to_f32(table[(size_t) row * n + i]) : 0.0f;
+    if (add.n > 0) {
+        float s = 0.0f;
+        for (int k = 0; k < add.n; ++k)
+            s += bf16_to_f32(add_table[(size_t) add.rows[k] * n + i]);
+        v += s;
+    }
+    return v;
+}
+
 // out = row `row` of a BF16 table (zeros when row < 0), plus, when `n_add` > 0, the sum of the rows in `add_rows`
 __global__ void embed_kernel(const uint16_t* __restrict__ table, int row, EmbedAdd add,
                              const uint16_t* __restrict__ add_table, float* __restrict__ out, int n) {
-    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n; i += gridDim.x * blockDim.x) {
-        float v = row >= 0 ? bf16_to_f32(table[(size_t) row * n + i]) : 0.0f;
-        if (add.n > 0) {
-            float s = 0.0f;
-            for (int k = 0; k < add.n; ++k)
-                s += bf16_to_f32(add_table[(size_t) add.rows[k] * n + i]);
-            v += s;
-        }
-        out[i] = v;
+    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n; i += gridDim.x * blockDim.x)
+        out[i] = embed_value(table, row, add, add_table, n, i);
+}
+
+// ---- the fused kernels' Q8_1 stage: the block of 32 values a warp holds (lane = element), as guild-kernels-cuda's
+// native_quantize_q8_1_kernel stores it.  That kernel's file is built with --use_fast_math and this one is not, so
+// its instructions (cuobjdump -ptx of native_mmvq.cu.o) are written here one for one:
+//   amax = max.ftz tree of abs.ftz(v), sum = add.ftz tree of v (xor 16, 8, 4, 2, 1)
+//   d = div.approx.ftz(amax, 127), held to +-65504 (q8_1_finite: abs.ftz, setp.gt.ftz, copysign)
+//   q = amax == 0 (setp.eq.ftz) ? 0 : t = div.approx.ftz(v, d), roundf(t) = cvt.rzi(add.rz.ftz(t, copysign(0.5, t))),
+//       held to +-127 (setp.gt / setp.lt.ftz), cvt.rzi.ftz.s32
+//   ds = (half(q8_1_finite(d)), half(q8_1_finite(sum))), cvt.rn.f16.f32 (cuda_fp16's own asm)
+// The adds say .rn, the rounding of the plain add.ftz, so that nothing can contract them with the product that made v.
+struct Q81 {
+    half2 ds;
+    int8_t qs[32];
+};
+static_assert(sizeof(Q81) == kFusedQ81Bytes, "the Q8_1 block of the native MMVQ");
+namespace fm {
+#if defined(GUILD_USE_HIP) || defined(GUILD_HIP_GFX906) || defined(__HIPCC__) || defined(__HIP_PLATFORM_AMD__)
+// HIP: these PTX instructions are NVIDIA's.  The fused kernels stay off there (fuse_part in drama3_tower.cpp), so
+// plain operations stand in only for the file to compile (add_rz here rounds to nearest, not toward zero).
+__device__ __forceinline__ float abs(float x) {
+    return fabsf(x);
+}
+__device__ __forceinline__ float max(float a, float b) {
+    return fmaxf(a, b);
+}
+__device__ __forceinline__ float add(float a, float b) {
+    return a + b;
+}
+__device__ __forceinline__ float div(float a, float b) {
+    return a / b;
+}
+__device__ __forceinline__ float add_rz(float a, float b) {
+    return a + b;
+}
+__device__ __forceinline__ float trunc(float a) {
+    return truncf(a);
+}
+__device__ __forceinline__ bool gt(float a, float b) {
+    return a > b;
+}
+__device__ __forceinline__ bool lt(float a, float b) {
+    return a < b;
+}
+__device__ __forceinline__ bool eq(float a, float b) {
+    return a == b;
+}
+__device__ __forceinline__ int to_int(float a) {
+    return (int) a;
+}
+#else
+__device__ __forceinline__ float abs(float x) {
+    float r;
+    asm("abs.ftz.f32 %0, %1;" : "=f"(r) : "f"(x));
+    return r;
+}
+__device__ __forceinline__ float max(float a, float b) {
+    float r;
+    asm("max.ftz.f32 %0, %1, %2;" : "=f"(r) : "f"(a), "f"(b));
+    return r;
+}
+__device__ __forceinline__ float add(float a, float b) {
+    float r;
+    asm("add.rn.ftz.f32 %0, %1, %2;" : "=f"(r) : "f"(a), "f"(b));
+    return r;
+}
+__device__ __forceinline__ float div(float a, float b) {
+    float r;
+    asm("div.approx.ftz.f32 %0, %1, %2;" : "=f"(r) : "f"(a), "f"(b));
+    return r;
+}
+__device__ __forceinline__ float add_rz(float a, float b) {
+    float r;
+    asm("add.rz.ftz.f32 %0, %1, %2;" : "=f"(r) : "f"(a), "f"(b));
+    return r;
+}
+__device__ __forceinline__ float trunc(float a) {
+    float r;
+    asm("cvt.rzi.f32.f32 %0, %1;" : "=f"(r) : "f"(a));
+    return r;
+}
+__device__ __forceinline__ bool gt(float a, float b) {
+    unsigned r;
+    asm("{\n\t.reg .pred p;\n\tsetp.gt.ftz.f32 p, %1, %2;\n\tselp.u32 %0, 1, 0, p;\n\t}" : "=r"(r) : "f"(a), "f"(b));
+    return r != 0;
+}
+__device__ __forceinline__ bool lt(float a, float b) {
+    unsigned r;
+    asm("{\n\t.reg .pred p;\n\tsetp.lt.ftz.f32 p, %1, %2;\n\tselp.u32 %0, 1, 0, p;\n\t}" : "=r"(r) : "f"(a), "f"(b));
+    return r != 0;
+}
+__device__ __forceinline__ bool eq(float a, float b) {
+    unsigned r;
+    asm("{\n\t.reg .pred p;\n\tsetp.eq.ftz.f32 p, %1, %2;\n\tselp.u32 %0, 1, 0, p;\n\t}" : "=r"(r) : "f"(a), "f"(b));
+    return r != 0;
+}
+__device__ __forceinline__ int to_int(float a) {
+    int r;
+    asm("cvt.rzi.ftz.s32.f32 %0, %1;" : "=r"(r) : "f"(a));
+    return r;
+}
+#endif
+__device__ __forceinline__ float copysign(float mag_bits_of, float sign_of) {
+    return __int_as_float((__float_as_int(sign_of) & (int) 0x80000000) | __float_as_int(mag_bits_of));
+}
+// q8_1_finite: |v| > 65504 -> +-65504
+__device__ __forceinline__ float finite(float v) {
+    return gt(abs(v), 65504.0f) ? copysign(65504.0f, v) : v;
+}
+} // namespace fm
+
+__device__ __forceinline__ void q8_1_warp(float v, Q81* __restrict__ blk, int lane) {
+    float amax = fm::abs(v), sum = v;
+#pragma unroll
+    for (int o = 16; o > 0; o >>= 1)
+        amax = fm::max(amax, __shfl_xor_sync(0xffffffffu, amax, o));
+#pragma unroll
+    for (int o = 16; o > 0; o >>= 1)
+        sum = fm::add(sum, __shfl_xor_sync(0xffffffffu, sum, o));
+    const float d = fm::finite(fm::div(amax, 127.0f));
+    int8_t q = 0;
+    if (!fm::eq(amax, 0.0f)) {
+        const float t = fm::div(v, d);
+        const float r = fm::trunc(fm::add_rz(t, fm::copysign(0.5f, t)));
+        q = (int8_t) fm::to_int(fm::gt(r, 127.0f) ? 127.0f : fm::lt(r, -127.0f) ? -127.0f : r);
     }
+    blk->qs[lane] = q;
+    if (lane == 0)
+        blk->ds = make_half2(__float2half(fm::finite(d)), __float2half(fm::finite(sum)));
+}
+
+// ---- the fused kernels: one row of n = kFusedDim floats, kWide threads, the row in shared memory.  Threads
+// 0..kThreads-1 take rms_norm_kernel's reduction (its block is kThreads wide: elements t + kThreads k, the same trees),
+// every thread then normalizes kFusedDim / kWide elements, and warp w quantizes Q8_1 blocks w, w + 32, ...
+constexpr int kWide = 1024;
+static_assert(kFusedDim % kWide == 0 && kFusedDim % kThreads == 0 && kThreads % 32 == 0, "fused kernel shape");
+
+__device__ __forceinline__ void norm_q8_row(const float* xs, const float* __restrict__ w, float* __restrict__ out,
+                                            Q81* __restrict__ q, int n, float eps, float* red) {
+    const int t = threadIdx.x, lane = t & 31, warp = t >> 5;
+    if (t < kThreads) {
+        const float v = warp_tree(sum_sq(xs, t, n, kThreads));
+        if (lane == 0)
+            red[warp] = v;
+    }
+    __syncthreads();
+    const float inv = rsqrtf(sum_partials(red, kThreads / 32) / (float) n + eps);
+#pragma unroll
+    for (int k = 0; k < kFusedDim / kWide; ++k) {
+        const int i = t + kWide * k;
+        const float o = xs[i] * inv * w[i];
+        if (out)
+            out[i] = o;
+        if (q)
+            q8_1_warp(o, q + i / 32, lane);
+    }
+}
+
+// block 0: the embedding row (embed_kernel's value) normed by w0 into q's first n / 32 blocks; block 1: h normed by w1
+// into the next n / 32
+__global__ void __launch_bounds__(kWide)
+    embed_norm2_q8_kernel(const uint16_t* __restrict__ table, int row, EmbedAdd add,
+                          const uint16_t* __restrict__ add_table, const float* __restrict__ h,
+                          const float* __restrict__ w0, const float* __restrict__ w1, float* __restrict__ cat,
+                          Q81* __restrict__ q, int n, float eps) {
+    __shared__ float xs[kFusedDim];
+    __shared__ float red[kThreads / 32];
+    const int r = blockIdx.x;
+#pragma unroll
+    for (int k = 0; k < kFusedDim / kWide; ++k) {
+        const int i = threadIdx.x + kWide * k;
+        xs[i] = r == 0 ? embed_value(table, row, add, add_table, n, i) : h[i];
+    }
+    __syncthreads();
+    norm_q8_row(xs, r == 0 ? w0 : w1, cat ? cat + (size_t) r * n : nullptr, q + (size_t) r * (n / 32), n, eps, red);
+}
+
+// x += y (when y, as add_kernel), then rms_norm(x, w) into out and / or q
+__global__ void __launch_bounds__(kWide)
+    add_norm_q8_kernel(float* __restrict__ x, const float* __restrict__ y, const float* __restrict__ w,
+                       float* __restrict__ out, Q81* __restrict__ q, int n, float eps) {
+    __shared__ float xs[kFusedDim];
+    __shared__ float red[kThreads / 32];
+#pragma unroll
+    for (int k = 0; k < kFusedDim / kWide; ++k) {
+        const int i = threadIdx.x + kWide * k;
+        float xi = x[i];
+        if (y) {
+            xi += y[i];
+            x[i] = xi;
+        }
+        xs[i] = xi;
+    }
+    __syncthreads();
+    norm_q8_row(xs, w, out, q, n, eps, red);
 }
 
 // row r of out = table row rows[r] (zeros when < 0) + the sum of add_table's rows add[r * 9 .. + add_n[r]]
@@ -233,6 +456,98 @@ __global__ void attn_combine_kernel(const float* __restrict__ part, const float*
     }
 }
 
+// ---- attention_fast's partial kernel, for the tower's shape only (G = 8 query heads a K/V head, head dim 256): the
+// chunk's K rows, then its V rows, copied into shared memory with 16-byte loads first, then attn_partial_kernel's
+// arithmetic in its order (lane + 32 j of a score's channels, the same fma chains and xor trees, the same exps and V
+// sums), so each head's partials are that kernel's bits.  GH query heads a block: GH = kFastG is one block a K/V head
+// (the K/V rows staged once), GH = kFastG / 2 two blocks a K/V head (twice the blocks, for the short contexts).
+constexpr int kFastG = 8, kFastHd = 256;
+template <int GH>
+__global__ void __launch_bounds__(kThreads)
+    attn_partial_staged_kernel(const float* __restrict__ q, const __half* __restrict__ k_cache,
+                               const __half* __restrict__ v_cache, float* __restrict__ part, QkvShape s,
+                               int64_t n_pos) {
+    constexpr int G = kFastG, hd = kFastHd, GS = G / GH;
+    static_assert(G % GH == 0 && hd == kThreads, "one V channel a thread");
+    __shared__ float sq[GH][hd];
+    __shared__ float sc[GH][kChunk];
+    __shared__ float ml[GH][2];
+    __shared__ __align__(16) __half skv[kChunk][hd]; // 32 KiB: the chunk's K rows, then its V rows
+    const int kv = blockIdx.x / GS, g0 = (blockIdx.x % GS) * GH, chunk = blockIdx.y, t = threadIdx.x, lane = t & 31,
+              warp = t >> 5;
+    const float scale = rsqrtf((float) hd);
+    const int64_t p0 = (int64_t) chunk * kChunk;
+    const int np = (int) min((int64_t) kChunk, n_pos - p0); // the chunk's positions
+    // a row's 256 halves are 32 16-byte pieces: lane l copies piece l of rows warp, warp + 8, ...
+    auto stage = [&](const __half* cache) {
+        for (int p = warp; p < np; p += kThreads / 32)
+            reinterpret_cast<int4*>(&skv[p][0])[lane] =
+                __ldg(reinterpret_cast<const int4*>(cache + ((size_t) (p0 + p) * s.n_kv + kv) * hd) + lane);
+    };
+    stage(k_cache);
+    for (int i = t; i < GH * hd; i += kThreads)
+        sq[i / hd][i % hd] = q[(size_t) (kv * G + g0 + i / hd) * hd + i % hd];
+    __syncthreads();
+    for (int p = warp; p < kChunk; p += kThreads / 32) {
+        float acc[GH];
+#pragma unroll
+        for (int g = 0; g < GH; ++g)
+            acc[g] = 0.0f;
+        if (p < np) {
+#pragma unroll
+            for (int dd = lane; dd < hd; dd += 32) {
+                const float kd = __half2float(skv[p][dd]);
+#pragma unroll
+                for (int g = 0; g < GH; ++g)
+                    acc[g] += kd * sq[g][dd];
+            }
+        }
+#pragma unroll
+        for (int g = 0; g < GH; ++g) {
+            float v = acc[g];
+            for (int o = 16; o > 0; o >>= 1)
+                v += __shfl_xor_sync(0xffffffffu, v, o);
+            if (lane == 0)
+                sc[g][p] = p < np ? v * scale : -INFINITY;
+        }
+    }
+    __syncthreads(); // the scores are in, and every warp is done with K
+    stage(v_cache);
+    if (t < GH) {
+        float m = -INFINITY;
+        for (int p = 0; p < kChunk; ++p)
+            m = fmaxf(m, sc[t][p]);
+        float l = 0.0f;
+        for (int p = 0; p < kChunk; ++p) {
+            const float e = sc[t][p] == -INFINITY ? 0.0f : __expf(sc[t][p] - m);
+            sc[t][p] = e;
+            l += e;
+        }
+        ml[t][0] = m;
+        ml[t][1] = l;
+    }
+    __syncthreads();
+    float* out = part + ((size_t) kv * gridDim.y + chunk) * (size_t) G * (hd + 2);
+    if (t < GH) {
+        out[(g0 + t) * (hd + 2)] = ml[t][0];
+        out[(g0 + t) * (hd + 2) + 1] = ml[t][1];
+    }
+    const int dd = t;
+    float acc[GH];
+#pragma unroll
+    for (int g = 0; g < GH; ++g)
+        acc[g] = 0.0f;
+    for (int p = 0; p < np; ++p) {
+        const float vd = __half2float(skv[p][dd]);
+#pragma unroll
+        for (int g = 0; g < GH; ++g)
+            acc[g] += sc[g][p] * vd;
+    }
+#pragma unroll
+    for (int g = 0; g < GH; ++g)
+        out[(g0 + g) * (hd + 2) + 2 + dd] = acc[g];
+}
+
 __global__ void backbone_embed_add_kernel(float* __restrict__ emb, const int32_t* __restrict__ tok,
                                           const int32_t* __restrict__ code1, const uint16_t* __restrict__ rows,
                                           int32_t lo, int32_t hi, int n) {
@@ -271,6 +586,15 @@ void add(float* x, const float* y, int n, cudaStream_t st) {
     add_kernel<<<(n + kThreads - 1) / kThreads, kThreads, 0, st>>>(x, y, n);
 }
 
+void embed_norm2_q8(const uint16_t* table, int row, const EmbedAdd& add, const uint16_t* add_table, const float* h,
+                    const float* w0, const float* w1, float eps, void* xq, cudaStream_t st, float* cat) {
+    embed_norm2_q8_kernel<<<2, kWide, 0, st>>>(table, row, add, add_table, h, w0, w1, cat, (Q81*) xq, kFusedDim, eps);
+}
+
+void add_norm_q8(float* x, const float* y, const float* w, float eps, float* out, void* xq, cudaStream_t st) {
+    add_norm_q8_kernel<<<1, kWide, 0, st>>>(x, y, w, out, (Q81*) xq, kFusedDim, eps);
+}
+
 void qk_norm_rope(const float* qkv, const float* q_w, const float* k_w, float* q_out, uint16_t* k_cache,
                   uint16_t* v_cache, const QkvShape& s, int64_t pos, cudaStream_t st, int rows) {
     qk_norm_rope_kernel<<<dim3(s.n_head + 2 * s.n_kv, rows), s.head_dim, 0, st>>>(
@@ -292,6 +616,21 @@ bool attention(const float* q, const uint16_t* k_cache, const uint16_t* v_cache,
     const int nc = attn_chunks(n_pos);
     attn_partial_kernel<<<dim3(s.n_kv, nc), kThreads, 0, st>>>(q, (const __half*) k_cache, (const __half*) v_cache,
                                                                part, s, n_pos);
+    attn_combine_kernel<<<s.n_head, kThreads, 0, st>>>(part, gate, out, s, nc);
+    return true;
+}
+
+bool attention_fast(const float* q, const uint16_t* k_cache, const uint16_t* v_cache, const float* gate, float* part,
+                    float* out, const QkvShape& s, int64_t n_pos, cudaStream_t st) {
+    if (s.n_head != kFastG * s.n_kv || s.head_dim != kFastHd)
+        return attention(q, k_cache, v_cache, gate, part, out, s, n_pos, st);
+    const int nc = attn_chunks(n_pos);
+    const auto* k = (const __half*) k_cache;
+    const auto* v = (const __half*) v_cache;
+    if (n_pos <= kAttnSplitMax)
+        attn_partial_staged_kernel<kFastG / 2><<<dim3(2 * s.n_kv, nc), kThreads, 0, st>>>(q, k, v, part, s, n_pos);
+    else
+        attn_partial_staged_kernel<kFastG><<<dim3(s.n_kv, nc), kThreads, 0, st>>>(q, k, v, part, s, n_pos);
     attn_combine_kernel<<<s.n_head, kThreads, 0, st>>>(part, gate, out, s, nc);
     return true;
 }

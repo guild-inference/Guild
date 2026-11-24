@@ -1,6 +1,9 @@
 // tests/core/q8_0_rows512_test.cpp - the AVX-512 Q8_0 rows (include/guild/core/q8_0_rows512.hpp) against ggml-cpu's
 // one-token ggml_vec_dot_q8_0_q8_0, bitwise, for 1-16 tokens, odd and even row ranges, and blocks of random bytes
-// (every int8, -128 included, and scales from tiny to large).  Exit 77 without AVX-512BW.
+// (every int8, -128 included, and scales from tiny to large).  Row lengths of 1, 2, 58 and 84 blocks (Nemotron 3.5
+// Transcribe's 1856 and 2688 values), 3 and 59 (odd: the weight scales' block-pair loop, then its one-block tail;
+// GUILD_Q8_PAIR) and GLM-5.3-Flash's 2048, 4096 and 12288 values (its CPU twin of the Q8_0 dense FFN and shared
+// expert).  Exit 77 without AVX-512BW.
 //
 //   q8_0_rows512_test [--bench]                 one thread's rows a second against guild-kernels-cpu's AVX2 kq256_rows
 //   q8_0_rows512_test --dram [threads] [tokens]  threads 0 .. threads - 1 each streaming 128 MB of its own rows
@@ -54,7 +57,7 @@ int main(int argc, char** argv) {
     const ggml_type_traits_cpu* tr = ggml_get_type_traits_cpu(GGML_TYPE_Q8_0);
     std::mt19937 rng(20261101);
     int failures = 0, checked = 0;
-    for (int n : {32, 64, 1856, 2688}) {
+    for (int n : {32, 64, 1856, 2688, 96, 1888, 2048, 4096, 12288}) {
         const int rows = 37;
         const size_t rb = (size_t) (n / 32) * kBlock;
         const std::vector<uint8_t> w = random_rows(rng, rows, n);

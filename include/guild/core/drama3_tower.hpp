@@ -28,12 +28,32 @@
 
 namespace guild::core {
 
+namespace drama3 {
+struct EmbedAdd; // drama3_tower_kernels.hpp
+}
+
 struct Drama3Sampling {
     float temperature = 1.0f;
     float top_p = 0.9f;
     int top_k = 30;
     uint64_t seed = 0;
 };
+
+namespace drama3 {
+/// The tower's sampler (Drama3Tower::sample) for draw number `draw` of a request: the reference's top-k / top-p rule
+/// and the engine's inverse-CDF draw.  -1 when a logit is not finite.
+int sample_reference(const float* logits, int n, const Drama3Sampling& sp, uint64_t draw);
+/// The same draw, faster (AVX-512: the softmax's exps eight at a time with std::exp's bits, the sum in index order, the
+/// top k kept sorted by the same (logit descending, index ascending) order): the same index for every input.  -2 when
+/// it does not take the call (top_k past 64, or sample_fast_ok() false); then sample_reference does.
+int sample_fast(const float* logits, int n, const Drama3Sampling& sp, uint64_t draw);
+/// Whether sample_fast runs here: an x86-64 GCC / Clang build, AVX-512 F/DQ/BW/VL (cpu_avx512bw_ok), and its exp
+/// equal to this process's std::exp bit for bit on a test of about a million inputs (checked once)
+bool sample_fast_ok();
+/// Tests: float bit patterns lo, lo + step, ... < hi as doubles where sample_fast's exp differs from std::exp
+/// (NaN patterns skipped); 0 without the fast path
+uint64_t exp_mismatches(uint64_t lo, uint64_t hi, uint64_t step);
+} // namespace drama3
 
 struct Drama3TowerGeometry {
     int dim = 0, n_head = 0, n_kv_head = 0, head_dim = 0, ffn = 0, rope_dim = 0;
@@ -124,15 +144,24 @@ private:
         const float *enorm = nullptr, *hnorm = nullptr, *final_norm = nullptr, *attn_norm = nullptr,
                     *ffn_norm = nullptr, *q_norm = nullptr, *k_norm = nullptr;
         Mat eh_proj, wqkv, wo, w1, w2, w3;
+        Mat w13; ///< w1 and w3 as one matrix of 2 ffn rows (w3's rows right after w1's), or w == nullptr
         uint16_t *k_cache = nullptr, *v_cache = nullptr; // [max_frames][n_kv_head][head_dim] FP16
     };
-    bool layer_forward(Layer& L, const float* e_dev, int64_t pos, std::string& err, void* st);
+    /// one layer of a step: its input embeds table row `row` (zeros when < 0) plus `add`; `head`: a head reads h_
+    /// next (the fused path then leaves h_'s Q8_1 blocks in xq_ for it); `finish`: one of step_finish's layers
+    bool layer_forward(Layer& L, int row, const drama3::EmbedAdd& add, int64_t pos, bool head, bool finish,
+                       std::string& err, void* st);
     bool matvec(const Mat& m, const float* x, float* y, std::string& err, void* st, int ncols = 1);
+    bool quantize(const float* x, void* xq, int n, std::string& err, void* st);
+    bool mmvq(const Mat& m, const void* xq, float* y, std::string& err, void* st);
+    /// the fused kernels against the ones they replace on test rows (layer 0's weights): true when every byte matches
+    bool fused_self_check(std::string& why);
     bool prefill_chunk(const float* hidden, int64_t pos0, int n, const int32_t* rows, std::string& err,
                        float* layer_out);
     static constexpr int kPrefillCols = 64;
     int sample(const float* logits, int n, const Drama3Sampling& sp, std::string& err);
-    bool step_layers(int l0, int l1, std::string& err, void* st);     // layers [l0, l1) of the step in `cur_`
+    // layers [l0, l1) of the step in `cur_`; `finish`: step_finish's
+    bool step_layers(int l0, int l1, bool finish, std::string& err, void* st);
     bool read_logits(int n, float* also, std::string& err, void* st); // logits_ -> host_logits_ (and `also`), synced
 
     // the step between step_begin and step_finish
@@ -158,9 +187,13 @@ private:
     void* stream_ = nullptr;
     void* prio_stream_ = nullptr; // step_begin's, at the greatest priority (set_step_priority)
     bool top_ = true;
+    // GUILD_DRAMA3_FUSE (read in load; unset = ksaw, 0 = none): the step's fused small kernels (k), the fast sampler
+    // (s), the staged attention (a); [w1|w3] (w) is each Layer's w13; a and w in step_finish's layers too (f)
+    bool fuse_ = false, fast_sample_ = false, fast_attn_ = false, fast_finish_ = false;
     // device scratch
     float *h_ = nullptr, *e_ = nullptr, *cat_ = nullptr, *x_ = nullptr, *xn_ = nullptr, *qkv_ = nullptr, *q_ = nullptr,
           *att_ = nullptr, *proj_ = nullptr, *ff1_ = nullptr, *ff3_ = nullptr, *logits_ = nullptr, *part_ = nullptr;
+    // ff1_ holds 2 ffn floats and ff3_ = ff1_ + ffn: w13's output
     void* xq_ = nullptr;
     // the prompt's batch (kPrefillCols rows)
     float *bh_ = nullptr, *be_ = nullptr, *bcat_ = nullptr, *bx_ = nullptr, *bxn_ = nullptr, *bqkv_ = nullptr,

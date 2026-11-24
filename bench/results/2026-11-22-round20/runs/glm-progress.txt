@@ -1,0 +1,7 @@
+b1 start 11:17:14
+b1 rc 0 11:41:24
+int start 11:41:24
+int done 11:49:18
+b2 start 11:49:18
+b2 rc 0 11:53:19
+done 11:53:19

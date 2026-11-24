@@ -812,8 +812,76 @@ static void test_row_cache() {
     cudaFreeHost(far);
 }
 
-// `glm5_kernels_test attend`: mla_attend over 2,048 selected cells of a long context, legacy and new, and the
-// gather of those rows from mapped host memory
+// glm5k::set_attend3 (GUILD_GLM_ATTEND3): mla_attend3_k and mla_reduce2_k against mla_attend2_k and mla_reduce_k, to
+// the bit - every split's partial row (max, sum, accumulator) and the reduced outputs - for 2,051 selected cells of
+// 65,536 (decode and verify windows, a prompt window) and for causal windows short enough to leave splits empty
+static void test_attend3() {
+    const int AH = 64, L = 512;
+    auto both = [&](const std::string& what, int T, int64_t pos0, const __half* dc, const int32_t* dsel,
+                    const int32_t* dnsel, int sel_stride) {
+        const auto q = rnd((size_t) T * AH * L, 3.f);
+        float* dq = up(q);
+        const size_t n_part = (size_t) k::attend_scratch_floats(pos0 + T, AH, L, T), n_lat = (size_t) T * AH * L;
+        float *dlat, *dpart;
+        cudaMalloc(&dlat, n_lat * 4);
+        cudaMalloc(&dpart, n_part * 4);
+        std::vector<float> part[2], lat[2];
+        for (int on = 0; on < 2; ++on) { // 0: mla_attend2_k + mla_reduce_k, 1: mla_attend3_k + mla_reduce2_k
+            k::set_attend3(on == 1);
+            cudaMemset(dpart, 0xff, n_part * 4); // a row one kernel leaves unwritten shows as a difference
+            cudaMemset(dlat, 0xff, n_lat * 4);
+            k::mla_attend(dq, dc, pos0, AH, L, T, 1.f / 16.f, dsel, dnsel, sel_stride, dlat, dpart, nullptr);
+            part[on] = down(dpart, n_part);
+            lat[on] = down(dlat, n_lat);
+        }
+        k::set_attend3(true);
+        same_attend("attend3 " + what + " T " + std::to_string(T) + ", partial rows", part[1], part[0]);
+        same_attend("attend3 " + what + " T " + std::to_string(T) + ", outputs", lat[1], lat[0]);
+        cudaFree(dq);
+        cudaFree(dlat);
+        cudaFree(dpart);
+    };
+    auto fp16_rows = [&](int64_t cells) {
+        const auto f = rnd((size_t) cells * L, 0.6f);
+        std::vector<__half> h(f.size());
+        for (size_t i = 0; i < f.size(); ++i)
+            h[i] = __float2half(f[i]);
+        return h;
+    };
+    { // selected cells: each query 2,051 distinct cells of 65,536 in ascending order (idx_select's), the counts
+      // differing a little between queries
+        const int64_t cells = 65536;
+        const int n_max = 2051;
+        __half* dc = up(fp16_rows(cells));
+        std::vector<int32_t> all((size_t) cells);
+        for (int64_t i = 0; i < cells; ++i)
+            all[(size_t) i] = (int32_t) i;
+        for (const int T : {1, 2, 3, 4, 20, 64}) {
+            std::vector<int32_t> sel((size_t) T * n_max, 0), nsel((size_t) T);
+            for (int t = 0; t < T; ++t) {
+                nsel[(size_t) t] = n_max - (t % 5);
+                std::shuffle(all.begin(), all.end(), rng);
+                std::sort(all.begin(), all.begin() + nsel[(size_t) t]);
+                std::copy(all.begin(), all.begin() + nsel[(size_t) t], sel.begin() + (size_t) t * n_max);
+            }
+            int32_t *dsel = up(sel), *dnsel = up(nsel);
+            both("2,051 selected cells", T, cells - T, dc, dsel, dnsel, n_max);
+            cudaFree(dsel);
+            cudaFree(dnsel);
+        }
+        cudaFree(dc);
+    }
+    for (const int n : {1, 16, 17, 200, 2047}) // causal: the window's first query sees n cells
+        for (const int T : {1, 2}) {
+            __half* dc = up(fp16_rows(n - 1 + T));
+            both("causal, " + std::to_string(n) + " cells", T, n - 1, dc, nullptr, nullptr, 0);
+            cudaFree(dc);
+        }
+}
+
+// `glm5_kernels_test attend`: mla_attend over 2,048 selected cells of a long context - the legacy kernel,
+// mla_attend2_k (GUILD_GLM_ATTEND3=0) and the default mla_attend3_k - and the gather of those rows from mapped host
+// memory
 static int bench_attend() {
     const int AH = 64, L = 512, n_max = 2052, n = 2048;
     const int64_t cells = 65536;
@@ -859,20 +927,44 @@ static int bench_attend() {
         cudaMalloc(&dlat, (size_t) T * AH * L * 4);
         cudaMalloc(&dpart, (size_t) k::attend_scratch_floats(cells, AH, L, T) * 4);
         cudaMalloc(&stage, (size_t) std::min(T, 8) * n_max * L * 2);
-        cudaEvent_t a, b, c, d, f;
-        for (cudaEvent_t* e : {&a, &b, &c, &d, &f})
+        cudaEvent_t a, b, c, d, f, b2;
+        for (cudaEvent_t* e : {&a, &b, &c, &d, &f, &b2})
             cudaEventCreate(e);
         const int reps = T >= 32 ? 5 : 30;
-        for (int i = 0; i < 2; ++i) {
+        // warm-up (the first row's longer: the GPU's clock ramps up), then five passes over the three kernels in turn,
+        // each kernel's median pass reported
+        for (int i = 0; i < (T == 1 ? 300 : 2); ++i) {
             k::mla_attend(dq, dc, cells - 100, AH, L, T, 0.05f, dsel, dnsel, n_max, dlat, dpart, st, 0, true);
             k::mla_attend(dq, dc, cells - 100, AH, L, T, 0.05f, dsel, dnsel, n_max, dlat, dpart, st);
         }
-        cudaEventRecord(a, st);
-        for (int i = 0; i < reps; ++i)
-            k::mla_attend(dq, dc, cells - 100, AH, L, T, 0.05f, dsel, dnsel, n_max, dlat, dpart, st, 0, true);
-        cudaEventRecord(b, st);
-        for (int i = 0; i < reps; ++i)
-            k::mla_attend(dq, dc, cells - 100, AH, L, T, 0.05f, dsel, dnsel, n_max, dlat, dpart, st);
+        std::vector<float> pass_l, pass_2, pass_n;
+        for (int pass = 0; pass < 5; ++pass) {
+            cudaEventRecord(a, st);
+            for (int i = 0; i < reps; ++i)
+                k::mla_attend(dq, dc, cells - 100, AH, L, T, 0.05f, dsel, dnsel, n_max, dlat, dpart, st, 0, true);
+            cudaEventRecord(b, st);
+            k::set_attend3(false); // read as each launch is enqueued: mla_attend2_k and mla_reduce_k
+            for (int i = 0; i < reps; ++i)
+                k::mla_attend(dq, dc, cells - 100, AH, L, T, 0.05f, dsel, dnsel, n_max, dlat, dpart, st);
+            k::set_attend3(true);
+            cudaEventRecord(b2, st);
+            for (int i = 0; i < reps; ++i)
+                k::mla_attend(dq, dc, cells - 100, AH, L, T, 0.05f, dsel, dnsel, n_max, dlat, dpart, st);
+            cudaEventRecord(c, st);
+            cudaEventSynchronize(c);
+            float ms = 0;
+            cudaEventElapsedTime(&ms, a, b);
+            pass_l.push_back(ms);
+            cudaEventElapsedTime(&ms, b, b2);
+            pass_2.push_back(ms);
+            cudaEventElapsedTime(&ms, b2, c);
+            pass_n.push_back(ms);
+        }
+        auto median = [](std::vector<float> v) {
+            std::sort(v.begin(), v.end());
+            return v[v.size() / 2];
+        };
+        const float ms_l = median(pass_l), ms_2 = median(pass_2), ms_n = median(pass_n);
         cudaEventRecord(c, st);
         for (int i = 0; i < reps; ++i)
             for (int q0 = 0; q0 < T; q0 += 8)
@@ -885,17 +977,17 @@ static int bench_attend() {
                                    cells, mask, base, list, usel, stage, 8 * n_max, L, st);
         cudaEventRecord(f, st);
         cudaEventSynchronize(f);
-        float ms_l = 0, ms_n = 0, ms_g = 0, ms_u = 0;
-        cudaEventElapsedTime(&ms_l, a, b);
-        cudaEventElapsedTime(&ms_n, b, c);
+        float ms_g = 0, ms_u = 0;
         cudaEventElapsedTime(&ms_g, c, d);
         cudaEventElapsedTime(&ms_u, d, f);
-        std::printf("attend T %3d: legacy %8.1f us, new %8.1f us; rows from host: each query's %8.1f us (%.1f GB/s), "
-                    "the union's %8.1f us\n",
-                    T, 1000.0 * ms_l / reps, 1000.0 * ms_n / reps, 1000.0 * ms_g / reps,
+        std::printf("attend T %3d: legacy %8.1f us, attend2 %8.1f us, new (attend3) %8.1f us; rows from host: each "
+                    "query's %8.1f us (%.1f GB/s), the union's %8.1f us\n",
+                    T, 1000.0 * ms_l / reps, 1000.0 * ms_2 / reps, 1000.0 * ms_n / reps, 1000.0 * ms_g / reps,
                     (double) T * n * L * 2 / (1e6 * ms_g / reps), 1000.0 * ms_u / reps);
         for (void* p : {(void*) dq, (void*) dsel, (void*) dnsel, (void*) dlat, (void*) dpart, (void*) stage})
             cudaFree(p);
+        for (cudaEvent_t e : {a, b, c, d, f, b2})
+            cudaEventDestroy(e);
     }
     for (void* p : {(void*) dc, (void*) mask, (void*) base, (void*) list, (void*) usel})
         cudaFree(p);
@@ -1316,6 +1408,97 @@ static void test_narrow() {
             cudaFree(dy);
             cudaFree(dr);
         }
+}
+
+// kda_conv's one launch (GUILD_GLM_FUSE2 bit 4) against kda_conv_k + kda_l2_k, to the bit: the outputs, the state and
+// the verify window's mid states, for GLM-5.3-Flash's 64 heads and for 4, decode to prompt windows, and one token in
+// place as glm5.cpp's merged q|k|v runs it
+static void test_kda_conv_one_launch() {
+    for (const int H : {64, 4})
+        for (const int T : {1, 2, 3, 8, 64})
+            for (const bool in_place : {false, true}) {
+                if (in_place && T != 1)
+                    continue;
+                const int D = H * k::kKdaDim, C = 3 * D, nmid = T - 1;
+                const auto x = rnd((size_t) T * C), st0 = rnd((size_t) C * 3), w = rnd((size_t) 3 * D * 4, 0.5f);
+                float *dw = up(w), *dx[2], *dst[2], *dout[2], *dmid[2];
+                for (int on = 0; on < 2; ++on) {
+                    dx[on] = up(x);
+                    dst[on] = up(st0);
+                    cudaMalloc(&dout[on], (size_t) T * C * 4);
+                    cudaMemset(dout[on], 0xff, (size_t) T * C * 4);
+                    cudaMalloc(&dmid[on], (size_t) std::max(1, nmid) * C * 3 * 4);
+                    cudaMemset(dmid[on], 0xff, (size_t) std::max(1, nmid) * C * 3 * 4);
+                    // in place: the merged product's [q|k|v] row is the input and the output (one token)
+                    const float* xq = dx[on];
+                    const float* xk = in_place ? dx[on] + D : dx[on] + (size_t) T * D;
+                    const float* xv = in_place ? dx[on] + 2 * D : dx[on] + (size_t) 2 * T * D;
+                    k::kda_conv(xq, xk, xv, dst[on], dw, dw + (size_t) D * 4, dw + (size_t) 2 * D * 4,
+                                in_place ? dx[on] : dout[on], D, T, nmid > 0 ? dmid[on] : nullptr, nmid, nullptr,
+                                on == 1);
+                }
+                const std::string what = "kda_conv one launch H " + std::to_string(H) + " T " + std::to_string(T) +
+                                         (in_place ? " in place" : "");
+                const size_t no = (size_t) T * C, nm = (size_t) std::max(1, nmid) * C * 3;
+                same_attend(what + " out", down(in_place ? dx[1] : dout[1], no), down(in_place ? dx[0] : dout[0], no));
+                same_attend(what + " state", down(dst[1], (size_t) C * 3), down(dst[0], (size_t) C * 3));
+                if (nmid > 0)
+                    same_attend(what + " mid", down(dmid[1], nm), down(dmid[0], nm));
+                for (int on = 0; on < 2; ++on)
+                    for (float* p : {dx[on], dst[on], dout[on], dmid[on]})
+                        cudaFree(p);
+                cudaFree(dw);
+            }
+}
+
+// `glm5_kernels_test kdaconv`: kda_conv's two launches against one, GLM-5.3-Flash's 64 heads, T 1, 2 and 64 (median of
+// 5 alternated passes of 200 calls each)
+static int bench_kda_conv() {
+    const int H = 64, D = H * k::kKdaDim, C = 3 * D;
+    cudaStream_t st;
+    cudaStreamCreate(&st);
+    for (const int T : {1, 2, 64}) {
+        const auto x = rnd((size_t) T * C), st0 = rnd((size_t) C * 3), w = rnd((size_t) 3 * D * 4, 0.5f);
+        float *dw = up(w), *dx = up(x), *dst = up(st0), *dout, *dmid;
+        cudaMalloc(&dout, (size_t) T * C * 4);
+        cudaMalloc(&dmid, (size_t) T * C * 3 * 4);
+        auto run = [&](bool one, int n) {
+            for (int i = 0; i < n; ++i)
+                k::kda_conv(dx, dx + (size_t) T * D, dx + (size_t) 2 * T * D, dst, dw, dw + (size_t) D * 4,
+                            dw + (size_t) 2 * D * 4, dout, D, T, T > 1 ? dmid : nullptr, T - 1, st, one);
+        };
+        run(false, 300);
+        run(true, 300);
+        cudaEvent_t a, b, c;
+        for (cudaEvent_t* e : {&a, &b, &c})
+            cudaEventCreate(e);
+        std::vector<float> p2, p1;
+        const int n = T >= 64 ? 50 : 200;
+        for (int pass = 0; pass < 5; ++pass) {
+            cudaEventRecord(a, st);
+            run(false, n);
+            cudaEventRecord(b, st);
+            run(true, n);
+            cudaEventRecord(c, st);
+            cudaEventSynchronize(c);
+            float ms = 0;
+            cudaEventElapsedTime(&ms, a, b);
+            p2.push_back(ms);
+            cudaEventElapsedTime(&ms, b, c);
+            p1.push_back(ms);
+        }
+        std::sort(p2.begin(), p2.end());
+        std::sort(p1.begin(), p1.end());
+        std::printf("kda_conv H %d T %2d: kda_conv_k + kda_l2_k %6.2f us, kda_conv_l2_k %6.2f us (a call, back to "
+                    "back)\n",
+                    H, T, 1000.0 * p2[2] / n, 1000.0 * p1[2] / n);
+        for (cudaEvent_t e : {a, b, c})
+            cudaEventDestroy(e);
+        for (float* p : {dw, dx, dst, dout, dmid})
+            cudaFree(p);
+    }
+    cudaStreamDestroy(st);
+    return 0;
 }
 
 // kda_fg (GUILD_GLM_FUSE2 bit 1): one token's f_b, gates and g_b in one launch against q8_0_narrow, kda_gates and
@@ -1983,6 +2166,8 @@ int main(int argc, char** argv) {
         return bench_attend();
     if (argc > 1 && std::string(argv[1]) == "q6k")
         return bench_q6k();
+    if (argc > 1 && std::string(argv[1]) == "kdaconv")
+        return bench_kda_conv();
     if (argc > 1 && std::string(argv[1]) == "wave")
         return test_one_wave(true);
     test_hc();
@@ -1999,11 +2184,13 @@ int main(int argc, char** argv) {
     test_staged_mmvq(8);
     test_mmvq_rows();
     test_narrow();
+    test_kda_conv_one_launch();
     test_kda_fg();
     test_q8_1_producers();
     test_indexer();
     test_attend_staged();
     test_row_cache();
+    test_attend3();
     test_one_wave(false);
     const cudaError_t e = cudaDeviceSynchronize();
     if (e != cudaSuccess) {

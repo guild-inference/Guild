@@ -1,0 +1,147 @@
+# win-combine: the verifier's measured runs and problems
+# Extracted from /home/ubuntu/lanes/r20/win-combine/verify-result.json
+
+## verdict
+
+accept
+
+## head_checked
+
+b6f616afd8befba5e2a0390742f73a663cecc797 (lane20/win-combine, git status clean before and after; commits from 67a2802: c7297c2 Part A, ede8f50 Part B, b6f616a scaffolding). The incremental rebuild of /home/ubuntu/lanes/r20/win-combine/build under build-run (TMPDIR=r20/tmp, 21:16 UTC) recompiled nothing for guild-generate, decision_run or the ctest binaries: they were already current with HEAD from the 12:24 build. glm5_run was linked new. build-info shows gkc 11936b5 (the lane's gkc worktree, clean) and CPU kernels 9b7281a. guild-generate sha256 a9b70e12444a...
+
+## bits_evidence
+
+All checks below are mine, run on the HEAD binary under gpu-run.
+
+**Qwen**
+- In-process A/B (GUILD_R20_AB=fp,cd, 8 runs a prompt): expected 38747 for prose and 41916 for code. Got 38747 in all 8 prose runs and 41916 in all 8 code runs, in both arms.
+- Full token sequences: all 16 A/B runs equal base20/bl/b-q1.json token for token.
+- Load-time switches, against base20 token for token:
+  - off (GUILD_COMBINE_MAPPED=0 GUILD_WINDOW_PRIO=0): 4 of 4 runs identical.
+  - defaults: 4 of 4 identical.
+  - GUILD_COMBINE_MAPPED=2: 2 of 2 identical.
+
+**Ornith**
+- In-process A/B: expected 30936 for prose and 65886 for code. Got 30936 x8 and 65886 x8 in both arms.
+- Full sequences: 16 of 16 equal base20/bl/b-o1.json.
+- Load-time switches: off 4 of 4 and defaults 4 of 4 identical to base20.
+
+**Drama 3**
+- 12 runs (6 off, 6 on): expected md5 6e04c9b1 for seed 11 and f84288c9 for seed 12. Got 6e04c9b1 x6 and f84288c9 x6 (verify/d3-md5.txt).
+
+**Batch slots (defaults)**
+- batch_test --batch 3 --n 3: expected every slot IDENTICAL to its solo run. Got 3 of 3.
+- batch_test --batch 7 --n 7 (6 slots): got 6 of 6 IDENTICAL.
+
+**StartLux**
+- decision_run --repeat 1 --fresh: expected answers equal to base20/bl/sl.jsonl. Got 4 of 4 requests exactly equal (my own comparison of choice, confidence, probabilities and scores).
+
+**Parity tests**
+- ctest -R 'host_combine|expert_parity|route_window|native_expert|gr_parity|gdn|verify|dflash|coupled_draft|mtp|pool': 24 tests, 23 passed. pool_stress was skipped by its own CPU-feature check (77).
+- host_combine_parity run directly: 39 PASS lines and FAILURES 0. Both mapped forms show 0 differing values at 1-4 tokens and widths 2048/2560/4096, with special values included. combine_sums_f4 refuses width 2563, as designed.
+
+**SASS (cuobjdump of the lane's guild-generate)**
+- The only `combine` kernel (cuda_moe_math, --use_fast_math), at k = 1: FMUL.FTZ, then @!P0 FADD.FTZ.
+- combine_sums_f4_kernel: LDG.E.CI.128, FMUL.FTZ x4, FADD.FTZ x4, STG.E.128.
+- The arithmetic is the same, with the weight ones_[t] in both.
+
+**VRAM lines**
+- Qwen logs: 'chunks of 8192 tokens in the 3098 MiB of VRAM free' and 'GPU cache 0 slots (0 bytes)' in every run.
+- Possible cache slots: off 45 (same as base20's 45), defaults 47, mode 2 47.
+
+**Module memory** (every cubin loaded into a fresh context, measured with cuMemGetInfo, two repeats)
+- base20 guild-generate (71 modules): 8.00 MiB.
+- Lane (72 modules): 8.00 MiB.
+- Lane without the new 5.7 KB module: 8.00 MiB.
+- glm5_run contains no combine_sums_f4 (nm) and has 63 modules in both lane and base.
+- So GLM's 'context 32768 tokens ... 2 MiB left' cannot move.
+
+## measured
+
+All runs on the GTX 1070 + 2x Xeon Gold 6130, 2026-11-22 UTC, lane HEAD binary. Commands are in /home/ubuntu/lanes/r20/win-combine/verify: q_inner.sh, o_inner.sh and d3_inner.sh are the r18 helpers' commands without the lock, run under one gpu-run per hold. Parsers are tools/abparse.py and tools/d3sum.py.
+
+**Hold A (21:53-21:57)**
+
+Qwen, one process, QWEN_RUNS=8, GUILD_R20_AB=fp,cd GUILD_R20_TIMING=1. The warm-up took fp, so each prompt runs off-first: cd fp cd fp...
+
+Prose, ms a window, in request order:
+
+| run | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| arm | cd | fp | cd | fp | cd | fp | cd | fp |
+| ms/win | 54.53 | 55.66* | 55.87* | 54.10 | 54.27 | 54.01 | 54.33 | 54.07 |
+
+\* Runs 2 and 3 were disturbed (span +1.4 ms in both consecutive requests). They fall in different pairs.
+
+Code, ms a window:
+
+| run | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| arm | cd | fp | cd | fp | cd | fp | cd | fp |
+| ms/win | 60.55 | 60.11 | 60.42 | 60.41 | 60.67 | 60.25 | 60.62 | 60.32 |
+
+| prompt | cd ms/win | fp ms/win | diff | tok/s cd -> fp | pairs (fp - cd) | GPU boundary | draft (next) |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| prose | 54.750 | 54.460 | -0.290 | 51.39 -> 51.66 (+0.53%) | +1.13, -1.77, -0.26, -0.26 (clean pairs -0.26 / -0.26) | -0.088 | -0.114 |
+| code | 60.565 | 60.273 | -0.292 | 65.03 -> 65.35 (+0.49%) | 4 of 4 faster: -0.44, -0.01, -0.42, -0.30 | -0.098 | -0.095 |
+
+Code is faster at every window size, T2-T8: -105 to -260 us of GPU span.
+
+Ornith, one process, --runs 8, same arms and order:
+- prose ms/win: cd 24.58, fp 24.26, cd 24.46, fp 24.32, cd 24.64, fp 24.45, cd 24.61, fp 24.58
+- code ms/win: cd 25.29, fp 25.09, cd 25.29, fp 25.09, cd 25.31, fp 25.09, cd 25.29, fp 25.11
+
+| prompt | cd ms/win | fp ms/win | diff | tok/s cd -> fp | pairs | boundary | MTP draft |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| prose | 24.572 | 24.402 | -0.170 | 82.68 -> 83.25 (+0.70%) | 4 of 4 faster | -0.039 | -0.035 |
+| code | 25.295 | 25.095 | -0.200 | 96.39 -> 97.15 (+0.79%) | 4 of 4 faster | -0.042 | -0.041 |
+
+GPU span by window size, fp - cd: prose T1 -62, T2 -190, T3 -166, T4 -56 us; code T1 -109, T2 -296, T3 -154, T4 -82 us. T4 is no longer slower.
+
+**Hold B (22:07-22:16)**
+
+Drama 3, frames/s, one process a run. off = GUILD_COMBINE_MAPPED=0 GUILD_WINDOW_PRIO=0, on = defaults.
+
+| order | run | frames/s |
+| --- | --- | --- |
+| 1 | off-11 | 46.96 |
+| 2 | on-11 | 46.51 |
+| 3 | on-12 | 47.24 |
+| 4 | off-12 | 46.98 |
+| 5 | off-12b | 47.08 |
+| 6 | on-12b | 47.17 |
+| 7 | on-11b | 47.02 |
+| 8 | off-11b | 46.91 |
+
+Load-time switches, one process each (supporting only):
+
+| model | run | prose tok/s | code tok/s |
+| --- | --- | --- | --- |
+| Qwen | off, 2 runs a prompt | 51.65 | 65.06 |
+| Qwen | defaults, 2 runs | 51.94 (+0.56%) | 65.49 (+0.66%) |
+| Qwen | GUILD_COMBINE_MAPPED=2, 1 run | 51.52 | 65.31 |
+| Ornith | off, 2 runs | 83.09 | 97.16 |
+| Ornith | defaults, 2 runs | 83.18 (+0.10%) | 97.31 (+0.15%) |
+
+**Hold C (22:28-22:33)**
+- host_combine_parity passed.
+- Batch 3 slots: 60.1 tok/s from the first batch token (base20 59.3). Batch 7 (6 slots): 71.6 (base20 71.0). One run each.
+- StartLux: done (4 of 4 identical, above).
+- Drama 3: off-11c 47.85, on-11c 48.62, on-12c 48.26, off-12c 46.98.
+
+**Drama 3 summary**
+- My 6 pairs: -0.96%, +0.55%, +0.19%, +0.23%, +1.61%, +2.72%.
+- Mean +0.73%, median +0.39%, on faster in 5 of 6. Noisy: consecutive processes differed by up to 2.7%.
+- Tower time is +10 to +30 ms a generation with the defaults, in every pair.
+
+**Lock time**
+- About 4 min (A) + 9 min (B) + 5.5 min (C).
+
+## problems
+
+- {"severity": "minor", "what": "combine_sums_f4 is a generic elementwise device primitive in Core, but docs/architecture/CUDA_BACKEND_OWNERSHIP.md (class A) and cuda_moe_bridge.cpp ('All device arithmetic belongs to the backend') put that arithmetic in guild-kernels-cuda. It matches CDM1's combine only as the bundled gkc builds it (--use_fast_math, so FTZ). In a -DGUILD_BUILTIN_CUDA_MOE=OFF build with an external CDM1 package compiled differently, mode 1 could differ from mode 0 on subnormal values. The judge's spec allowed a Guild-side kernel, so this is not a blocker.", "where": "src/core/verify_combine.cu; src/core/verify.cpp g_combine_mode (~line 102)", "fix": "Make 1 the default only under #if GUILD_BUNDLED_CUDA_MOE (else 2: the backend's own combine on the mapped rows). Or move the float4 combine into gkc as a CDM1 op, which needs a CUDA lock bump (the user's decision). Note it in the ownership doc."}
+- {"severity": "minor", "what": "The header says the function returns false 'with nothing launched', but combine_sums_f4 returns cudaPeekAtLastError()==cudaSuccess after the launch. A stale earlier runtime error therefore gives false after the kernel was already launched, and the caller launches the combine kernel as well. The output is identical, and the stale error then throws from native_moe_combine_multi as it did on the old path.", "where": "include/guild/core/verify_combine.hpp:15-16, src/core/verify_combine.cu:64", "fix": "Correct the comment, or check only the launch's own status."}
+- {"severity": "minor", "what": "b6f616a is measurement scaffolding: the GUILD_R20_AB / GUILD_R20_TIMING environment paths, Clock::now() calls in GuildSession::generate's decode loop and around every Verifier::run launch, a function-static request counter, and alternate DFlash/MTP streams and a second commit exec under the environment. It must not ship.", "where": "b6f616a: src/runtime/session.cpp, src/core/verify.cpp, model.cpp, model_impl.hpp, mtp.*, dflash.*", "fix": "Integrate only c7297c2 and ede8f50. Both compile alone with 0 warnings."}
+- {"severity": "minor", "what": "The auto GPU expert cache is sized from free VRAM while the host-combine window graphs are resident. Those graphs are now smaller (47 possible slots here against 45). A PC that keeps a cache may therefore get 1-2 more slots than base, which changes which experts run on the GPU and possibly the text (the brief's GPU-cache trap; both computations are exact). This PC keeps no cache, so it was not observable here.", "where": "src/runtime/model.cpp ~1440-1515 with the graphs from c7297c2", "fix": "No code change needed. When comparing texts on such PCs, compare only at equal 'GPU cache N slots'; say so in the integration notes."}
+- {"severity": "minor", "what": "With the defaults, Drama 3's tower time is 10-30 ms longer per generation in every pair (mine and the implementer's): the commit at the least priority now sits beside the tower. frames/s is still +0.73% on average over 6 noisy pairs (median +0.39%), so this is not a loss.", "where": "ede8f50 (commit priority) beside drama3_tower step_begin", "fix": "Re-measure Drama 3 once d3-tower-fuse is merged."}
+- {"severity": "minor", "what": "HIP, Windows and peer/multi-GPU builds were neither built nor run. By code reading the guards are right: mode 0 is the HIP default, verify_combine.cu compiles to a stub that returns false (glob-compiled as HIP), and the priority calls do nothing. The opt-in modes 1/2 on HIP are not measured.", "where": "verify.cpp g_combine_mode, window_priorities(), verify_combine.cu", "fix": "Document GUILD_COMBINE_MAPPED as CUDA-measured only, or build HIP once in CI."}

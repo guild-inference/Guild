@@ -1,0 +1,7 @@
+tok/win 2.29  ms/win 64.79  cpu 25.38  draft 4.60
+tok/win 2.81  ms/win 53.88  cpu 27.98  draft 4.83
+tok/win 2.81  ms/win 53.84  cpu 28.04  draft 4.87
+tok/win 3.94  ms/win 59.83  cpu 33.46  draft 4.89
+tok/win 3.94  ms/win 59.60  cpu 33.44  draft 4.91
+SUMMARY {"prose": 52.231421452570544, "code": 65.95411837371904}
+ids [38747, 38747, 41916, 41916]

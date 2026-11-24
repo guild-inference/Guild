@@ -1,0 +1,15 @@
+generations in run order:
+ 0 long  r0 full       prompt   38750 ms logits 72bd24ad | steps 140 acc 115 (82.1%) draft 5.136 verify 81.16 accept 0.79 cpu 63.9 step med 86.86 | 20.91 tok/s | ids md5 ddad1ae1
+ 1 short r0 full       prompt     131 ms logits c0ba3244 | steps 138 acc 117 (84.8%) draft 4.594 verify 74.30 accept 0.79 cpu 65.9 step med 79.46 | 23.19 tok/s | ids md5 7aee0c4c
+ 2 long  r1 full       prompt   38772 ms logits 72bd24ad | steps 140 acc 115 (82.1%) draft 5.146 verify 81.40 accept 0.81 cpu 65.2 step med 87.15 | 20.85 tok/s | ids md5 ddad1ae1
+ 3 short r1 full       prompt     131 ms logits c0ba3244 | steps 138 acc 117 (84.8%) draft 4.609 verify 74.79 accept 0.79 cpu 66.8 step med 80.04 | 23.04 tok/s | ids md5 7aee0c4c
+ 4 long  r2 full       prompt   38796 ms logits 72bd24ad | steps 140 acc 115 (82.1%) draft 5.152 verify 81.44 accept 0.81 cpu 65.0 step med 87.19 | 20.84 tok/s | ids md5 ddad1ae1
+ 5 short r2 full       prompt     131 ms logits c0ba3244 | steps 138 acc 117 (84.8%) draft 4.609 verify 74.66 accept 0.79 cpu 66.4 step med 79.88 | 23.08 tok/s | ids md5 7aee0c4c
+
+prompt long:
+  full       step med 86.86 87.15 87.19 (mean 87.07) | tok/s 20.91 20.85 20.84 (mean 20.87) | prompt ms 38750 38772 38796 (mean 38773) | draft 5.145 verify 81.33 | accepted 115 115 115
+  ids: 3 generations, 1 distinct id lines; prompt logits hashes: 1 distinct
+prompt short:
+  full       step med 79.46 80.04 79.88 (mean 79.79) | tok/s 23.19 23.04 23.08 (mean 23.10) | prompt ms 131 131 131 (mean 131) | draft 4.604 verify 74.58 | accepted 117 117 117
+  ids: 3 generations, 1 distinct id lines; prompt logits hashes: 1 distinct
+  short vs base id line (md5 7aee0c4c56f9d17cedd399684372d687): 3 of 3 equal

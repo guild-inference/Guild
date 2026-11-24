@@ -48,9 +48,10 @@ void hc_init(const float* e, float* R, int N, int T, void* st);
 /// silu(conv), state = the last 3 inputs per channel ([C][3], oldest first).  w: q, k, v taps, each [D][4].  Then q
 /// and k are L2-normalised per head of 128.
 /// `mid` (may be null): the states after the window's first `nmid` tokens, [nmid][C][3] (a verify window's rollback
-/// points).  One token may run in place: xk = xq + D, xv = xq + 2 * D and out = xq.
+/// points).  One token may run in place: xk = xq + D, xv = xq + 2 * D and out = xq.  `one_launch` (GUILD_GLM_FUSE2
+/// bit 4; D a multiple of kKdaDim): the convolution and the normalisation in one kernel, the same bits
 void kda_conv(const float* xq, const float* xk, const float* xv, float* state, const float* wq, const float* wk,
-              const float* wv, float* out, int D, int T, float* mid, int nmid, void* st);
+              const float* wv, float* out, int D, int T, float* mid, int nmid, void* st, bool one_launch = false);
 /// g = lower_bound * sigmoid(-(fpre + dt_b) * ssm_a[head]) (per channel), beta = sigmoid(bpre) (per head)
 void kda_gates(const float* fpre, const float* dt_b, const float* ssm_a, float* g, const float* bpre, float* beta,
                int D, int H, int T, float lower_bound, void* st);
@@ -82,6 +83,9 @@ void set_q6k_rows(bool on);
 /// Q8_0 products of 512-row heads and the narrow Q8_0 rows two row groups a warp, and the mHC pre-mix's Sinkhorn on a
 /// block of its own beside the stream sum
 void set_one_wave(bool on);
+/// GUILD_GLM_ATTEND3=0 (glm5.cpp reads it each window): mla_attend2_k and mla_reduce_k instead of mla_attend3_k
+/// (two heads a warp, the latent's 512 values fixed) and mla_reduce2_k; the same bits either way
+void set_attend3(bool on);
 /// One token over a subset of the rows (q6k_mmvq_supported(n_in, n, 1)): y[i] = row ids[i] times the token, bitwise
 /// q6k_mmvq's y[ids[i]] (the draft head over a token subset)
 void q6k_mmvq_rows(const void* W, const int32_t* ids, int n_ids, const void* xq8_1, float* y, int n_in, void* st);

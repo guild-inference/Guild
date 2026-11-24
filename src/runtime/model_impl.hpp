@@ -169,6 +169,13 @@ struct GuildModel::Impl {
     std::vector<int32_t> host_res;
     int32_t* d_res = nullptr;
     std::unique_ptr<kernels::cpu::ExpertPool> pool;
+    /// GUILD_HELPER_PIN (read at load; 0: as before): a Drama 3 request's tower and codec threads on helper_cpus, the
+    /// pool's helper_cpus() (empty: where the OS puts them), and its own thread on the pool's host core when
+    /// helper_request_pin (helper_cpus not empty, GUILD_HOST_AFFINITY not 0, read at load too, and every expert in the
+    /// RAM copy or the GPU cache)
+    bool helper_pin = true;
+    std::vector<int> helper_cpus;
+    bool helper_request_pin = false;
     kernels::PleTable ple_table;
     bool ple_required = false;
     std::vector<float> ple_emb_host;

@@ -1,0 +1,280 @@
+# Second verifier NOTES: lane helper-threads (round 20), started 2026-11-23 09:32 UTC
+
+Job: decide whether the fix stage's three commits (5114561 SpawnAffinity, 0eb63a0 the request-pin gate, d9a3dda
+comments; on a61963a) are correct and whether the lane's claims hold on the integrated binary
+(/home/ubuntu/lanes/r20/int/build, lane20/int 90d1b04, used read-only).  Default answer: no, until my own runs say yes.
+
+Files: bin/ (samp.py copied from fix/bin, my hold scripts), d1/ d2/ q1/ q2/ b1/ (run outputs), cfg/ (the budget-24
+batch config copy).
+
+## 1. Trees (09:20-09:32)
+- Lane worktree clean, HEAD d9a3dda; 4f3ce6d..d9a3dda = e4894e0, 7004613, a61963a, 5114561, 0eb63a0, d9a3dda
+  (8 files, +327 -10).
+- lane20/int = 90d1b04; its last six commits a731b64 4e2ad70 2b08576 b57ebfa f1262df 90d1b04 have the same
+  `git patch-id --stable` as e4894e0 7004613 a61963a 5114561 0eb63a0 d9a3dda (6 of 6 SAME).  Between d9a3dda and
+  90d1b04 the lane's 8 files differ only in model.cpp's pool_rows512 call (pool-rows-iso), which the lane does not
+  touch: no semantic overlap.
+- int build: build-info commit 90d1b04, tracked_source_dirty false, built 09:20:28; guild-generate md5 5ee2ebec and it
+  holds the new load-line strings.  base20 guild-generate md5 c15c56de (no d3-tower string: round 19).
+- MemFree at 09:32 (while the main session's Qwen btlong runs): node 0 20.0 GB, node 1 25.0 GB.
+
+## 2. Hold D1 (09:33:55-09:37:43, bin/hold_d1.sh, d1/): Drama 3 default layout on int's build, 4 pairs off first
+drama3-run-r18's command line without its own gpu-run, every GUILD_* unset first; off = GUILD_HELPER_PIN=0, on = no
+variable (the default); seeds 11, 12, 11, 12; every run sampled (samp.py, 10 samples) and the main thread's mask
+watched every 50 ms.  MemFree at the start 69.0 / 78.3 GB.
+| run | frames/s | md5 | tower ms | prompt ms | main / d3-tower / d3-codec CPUs (allowed) |
+| --- | ---: | --- | ---: | ---: | --- |
+| w-11 (default, warm-up) | 50.14 | 6e04c9b1 | 1611 | 476 | 0 (0) / 32 (32) / 32 (32) |
+| off-11-p1 | 49.65 | 6e04c9b1 | 1707 | 472 | 32 (0-63) / 35 / 33 (0-63) |
+| on-11-p1 | 49.88 | 6e04c9b1 | 1610 | 471 | 0 (0) / 32 (32) / 32 (32) |
+| off-12-p2 | 49.70 | f84288c9 | 1529 | 469 | 0(4),32(6) (0-63) / 4x / 3x (0-63) |
+| on-12-p2 | 49.60 | f84288c9 | 1442 | 472 | 0 (0) / 32 / 32 |
+| off-11-p3 | 49.76 | 6e04c9b1 | 1708 | 469 | 32 (0-63) / 41 / 37 (0-63) |
+| on-11-p3 | 49.93 | 6e04c9b1 | 1606 | 472 | 0 (0) / 32 / 32 |
+| off-12-p4 | 49.74 | f84288c9 | 1545 | 470 | 0(6),32(4) (0-63) / 40 / 36 (0-63) |
+| on-12-p4 | 50.10 | f84288c9 | 1444 | 471 | 0 (0) / 32 / 32 |
+- on - off: +0.46, -0.20, +0.34, +0.72%: mean +0.33% (se 0.19), 3 of 4 > 0.  Much smaller than the lane's +2.61%,
+  the first verifier's +2.88% and the fixer's +2.21%.
+- Why: in all 4 off runs the OS put the unpinned request thread on core 0 itself (CPU 32 or 0/32), the placement the
+  pin forces; in the lane's and verifiers' off runs it sat on worker 16's sibling (CPU 48) in most runs (14 of 18,
+  5 of 6, 4 of 6).  The pairs where the OS chose core 0 were the small ones there too (+0.40%, +1.03%).  So the
+  request pin removes a bad placement that the OS makes in some runs and not in others.
+- The helpers' pin still shows: tower ms 1707/1708 -> 1610/1606 (seed 11), 1529/1545 -> 1442/1444 (seed 12).
+- Load lines: on "a request's thread on the pool's host core (CPU 0), its tower and codec threads on CPU 32
+  (GUILD_HELPER_PIN=0: where the OS puts them)"; off "a request's threads where the OS puts them
+  (GUILD_HELPER_PIN=0)".  Every off run: all three threads allowed 0-63 (the old placement); every on run main allowed
+  0 during the request (mainwatch: 0-63 -> 0 at ~12.2-12.7 s -> 0-63 at ~22.3-22.7 s), helpers 32.
+- md5s: 9 of 9 the base's (5 x 6e04c9b1, 4 x f84288c9).
+- Open: is the off arm's placement a property of int's build or of the machine's state now?  Hold D3 alternates the
+  lane's build (d9a3dda) and int's in the same hold.
+
+## 3. Hold D2 (09:40:05-09:42:49, bin/hold_d2.sh, d2/): Drama 3 with experts read from the files, int's build
+drama3-run-r18's command line with only --resident-budget-gib 6 (engine: "RAM budget 6.00 GiB: 3362 of the 18.16 GiB of
+experts ...; the rest are read from the files"); off = GUILD_HELPER_PIN=0 first, then on = the default.
+| run | frames/s | md5 | tower ms | prompt ms | load line | main / tower / codec CPUs (allowed) |
+| --- | ---: | --- | ---: | ---: | --- | --- |
+| lr-off-11-p1 | 16.30 | 6e04c9b1 | 1580 | 1828 | "a request's threads where the OS puts them (GUILD_HELPER_PIN=0)" | 48(9),54 (0-63) / 50 / 49 (0-63) |
+| lr-on-11-p1 | 17.64 | 6e04c9b1 | 1577 | 1828 | "a request's tower and codec threads on CPU 32, its own thread where the OS puts it (experts read from the files)" | 48(4),53(6) (0-63) / 32 (32) / 32 (32) |
+| lr-off-12-p2 | 17.43 | f84288c9 | 1418 | 1853 | (GUILD_HELPER_PIN=0) | 48(8),54(2) (0-63) / 51 / 50 (0-63) |
+| lr-on-12-p2 | 17.49 | f84288c9 | 1415 | 1893 | (experts read from the files) | 48(9),56 (0-63) / 32 (32) / 32 (32) |
+- on - off: +8.22%, +0.34% (mean +4.3%, 2 of 2 >= 0); the old pinned arm ran 7.06 / 6.99 (first verifier, a61963a).
+  Fixed: the request thread is unpinned in both arms (mainwatch: allowed 0-63 for the whole run, apart from one 50 ms
+  poll at CPU 0 during the load in lr-off-12-p2, verify.cpp's allocation pin), helpers on CPU 32 in the on arm.
+  Budget-6 runs are noisy (the fixer: 14.83-17.66; lr-off-11-p1 here 16.30): the +8.2% pair is not a gain claim.
+- fill_many's short-lived threads were not caught by the 0.5 s sampler in any of the 4 runs (unpinned, they live
+  ~1 ms); the first verifier's pinned runs had 22-29 caught, all allowed "0".  Hold Q3 uses a fast catcher.
+- md5s: 4 of 4 the base's.
+
+## 4. Hold Q1 (09:44:36-09:48:55, bin/hold_q1.sh, q1/): Qwen exactness, then pair 1 with experts read from the files
+- ex56 = qwen-bench-r18's exact command line (budget 56, 2 runs x prose + code x 256) on int: ids [38747, 38747, 41916,
+  41916], "GPU cache 0 slots", "chunks of 8192 tokens in the 3098 MiB of VRAM free", 51.82 / 65.47 tok/s, file_blobs 0
+  (fill_many never reached); decode thread allowed 0 (session.cpp's pin).
+- Budget 24 ("RAM budget 24.00 GiB: 10643 of the 55.43 GiB of experts ...; the rest are read from the files", GPU
+  cache 0 slots), --runs 1 --max-new 64 (warm-up 16), base20 first:
+| run | prose tok/s | code tok/s | ms a window (warm-up, prose, code) | CPU dispatch ms a window | ids (prose, code) | file_blobs | fetch threads caught |
+| --- | ---: | ---: | --- | --- | --- | --- | --- |
+| base-p1 (round 19) | 6.43 | 12.41 | 443.4 / 398.4 / 245.6 | 420.7 / 386.1 / 232.1 | 49139, 71109 | 14217, 6322 | 6, all allowed "0", on CPU 0 |
+| int-p1 | 13.80 | 18.86 | 190.4 / 185.5 / 161.6 | 168.1 / 173.8 / 148.2 | 49139, 71109 | 14217, 6322 | none caught (short-lived) |
+- So round 19's text decode with experts read from the files runs every fetch thread on CPU 0 (the pre-existing
+  problem 6, confirmed on round 19's own binary), and int's runs 2.15x (prose) / 1.52x (code) faster with the same
+  tokens (prose hash 49139 = the fixer's).  int's decode thread: allowed 0 in 161 of the 50 ms polls and 0-63 in the
+  others of the process's life (the SpawnAffinity scopes and the load/prompt), samples "allowed 0|0-63", 95.9% on CPU 0.
+
+## 5. Hold Q2 (09:52:12-09:57:18, bin/hold_q2.sh, q2/): pair 2, int with GUILD_HOST_AFFINITY=0, base20 with it
+| run | prose tok/s | code tok/s | ms a window (warm-up, prose, code) | CPU dispatch ms a window | ids | decode thread |
+| --- | ---: | ---: | --- | --- | --- | --- |
+| base-p2 (round 19) | 7.16 | 12.85 | 365.1 / 357.3 / 237.2 | 342.4 / 345.3 / 223.7 | 49139, 71109 | CPU 0 (allowed 0), 62.5% |
+| int-p2 | 11.24 | 15.58 | 237.3 / 227.7 / 195.7 | 212.8 / 216.0 / 182.2 | 49139, 71109 | CPU 0 (allowed 0 / 0-63), 94.8% |
+| int-ha0 (decode unpinned) | 13.43 | 18.10 | 200.3 / 190.7 / 168.3 | 177.7 / 178.6 / 154.8 | 49139, 71109 | CPU 34 (0-63), 83.6% |
+| base-ha0 (round 19, unpinned) | 13.35 | 17.92 | 201.6 / 191.8 / 170.1 | 178.8 / 179.8 / 156.5 | 49139, 71109 | CPU 35 (0-63), 83.2% |
+- Round 19 vs round 20, both pairs (prose / code): pair 1 6.43 -> 13.80 / 12.41 -> 18.86; pair 2 7.16 -> 11.24 /
+  12.85 -> 15.58.  Tokens equal in all 6 budget-24 runs (prose 49139, code 71109; windows and drafts identical).
+- int-p2 is 16-19% below int-p1 and below the unpinned int-ha0 (11.24 vs 13.43 prose), with the same windows and
+  drafts (7 / 25 / 21 windows, drafts 9/16, 39/64, 43/63): CPU dispatch 213-216 against 168-174 ms a window.  So the
+  pinned decode with experts read from the files is not reliably as fast as unpinned: 13.80 and 11.24 pinned against
+  13.43 unpinned (and the fixer's 13.66 against 13.40, one pair).
+- base-ha0 = int-ha0 (13.35 / 17.92 against 13.43 / 18.10): with the decode unpinned, round 19 is as fast as round 20
+  here, so the whole round 19 -> 20 difference at budget 24 is the pin's fetch threads (the fix), not other lanes.
+- fincore after Q2: Qwen shard 2 19.5 of 46.4 GB in the page cache, shard 3 40.6 of 40.8 GB: some expert pages come
+  from the SSD on their first read (the same prompts in every run, so later runs find them cached).
+- Next: hold Q4, 3 pairs int GUILD_HOST_AFFINITY=0 first vs the default, per-CPU busy shares recorded.
+
+## 6. Hold B1 (09:59:46-10:03:40, bin/hold_b1.sh, b1/): batch slots with experts read from the files
+batch_test.py as int/check2.sh runs it (/home/ubuntu/work/par/guild/tools/batch_test.py --batch 3 --n 3 --max-new 96,
+BATCH_TEST_LOG) with cfg/qwen32k-b24.json (a copy of /home/ubuntu/work/par/cfg/qwen32k.json, only
+--resident-budget-gib 56 -> 24); engine: "RAM budget 24.00 GiB: 10643 of the 55.43 GiB ...", GPU cache 0 slots.
+| run | solo 0 / 1 / 2 (96 tokens) | batch: tok/s overall, from the first batch token | slots | batch host thread |
+| --- | --- | --- | --- | --- |
+| base-p1 (round 19) | 15.0 / 11.7 / 8.4 s | 8.4, 8.8 | 3 of 3 IDENTICAL | CPU 0 (allowed 0, 0-63 in the admissions), 79.3% |
+| int-p1 | 8.7 / 5.4 / 6.0 s | 16.2, 17.5 | 3 of 3 IDENTICAL | CPU 0 (allowed 0 / 0-63), 94.7% |
+- Slot texts and the solo DONE counts (prompt tokens, drafts, RAM / file blobs) identical between base20 and int, and
+  the slot texts identical to base20/bl/b3.out (budget 56).  Round 19 -> 20 with experts read from the files: the
+  batch 8.8 -> 17.5 tok/s (2.0x), the solo runs 1.4-2.2x faster: the batch host's pin (batch.cpp) had the same
+  problem and SpawnAffinity fixes it there too.  One pair (a 2x difference against run-to-run noise of up to ~20%).
+- CPU 32 (core 0's sibling) busy 29% (base20) / 46% (int) during the batch samples, while the host is pinned to CPU 0.
+
+## 7. Hold Q4 (10:09:23-10:16:50, bin/hold_q4.sh, q4/): int's kept text-decode pin vs unpinned, experts from the files
+int's build, budget 24, 1 x prose + code x 64 tokens; each pair GUILD_HOST_AFFINITY=0 (unpinned) first, then the
+default (pinned to CPU 0, fill_many's threads started through SpawnAffinity).  cpu busy = /proc/stat over the 3 s of
+samples (the first measured decode).
+| run | prose tok/s | code tok/s | decode s (64/prose + 64/code) | decode thread | cpu0 / cpu32 busy % | rest of the machine % |
+| --- | ---: | ---: | ---: | --- | --- | ---: |
+| ha0-p1 | 13.26 | 18.00 | 8.38 | CPU 34 (0-63) | 45.9 / 41.3 | 181 |
+| def-p1 | 13.51 | 18.92 | 8.12 | CPU 0 (0 / 0-63) | 94.8 / 48.0 | 181 |
+| ha0-p2 | 13.44 | 18.18 | 8.28 | CPU 33 (0-63) | 44.6 / 44.6 | 173 |
+| def-p2 | 13.85 | 18.98 | 7.99 | CPU 0 | 95.8 / 48.4 | 148 |
+| ha0-p3 | 15.61 | 17.26 | 7.81 | CPU 54 (0-63) | 2.4 / 1.3 | 145 |
+| def-p3 | 13.88 | 19.04 | 7.97 | CPU 0 | 95.8 / 47.7 | 156 |
+- default - unpinned, decode time: -3.1%, -3.5%, +2.0% (pinned faster in 2 of 3); prose +1.9, +3.1, -11.1%; code
+  +5.1, +4.4, +10.3%.  Tokens equal in all 6 (49139, 71109; windows and drafts identical).
+- All 12 budget-24 Qwen runs (Q1, Q2, Q4): int pinned 13.51-13.88 prose / 18.86-19.04 code in 4 of 5 runs, one slow
+  run (int-p2 11.24 / 15.58, whose unpinned prompt was also the slowest, 1446 against 1230-1290 ms: a disturbed run);
+  unpinned (int and base20) 13.26-13.44 / 17.92-18.18 in 4 of 5, one fast prose (15.61).  So with SpawnAffinity the
+  kept pin costs nothing measurable against unpinned (decode time mean -1.5%, 3 pairs), and round 19's pinned decode
+  (6.43 / 7.16 prose, 12.41 / 12.85 code) was the fetch threads on CPU 0.
+- With the decode pinned to CPU 0, CPU 32 (its SMT sibling) is ~48% busy in every pinned run (41-45% unpinned, 1% in
+  ha0-p3): something, likely the per-layer fetch threads placed next to their creator, shares core 0 with the pinned
+  decode thread (not identified; the pinned arm is not slower for it here).
+- fincore before and after: shard 2 19.5 / 46.4 GB cached, shard 3 40.6 / 40.8 GB: unchanged by the hold.
+
+## 8. Hold D3 (10:23:35-10:30:27, bin/hold_d3.sh, d3/): the lane's build against int's, the same hold
+- int's pool_affinity_test: "... host-sibling, helper-pin, helper-CPU policy, spawn-affinity and cleanup checks passed
+  (64 allowed CPUs)", rc 0.
+- drama3-run-r18's command line (budget 24); per round: lane off, int off, lane on, int on (off = GUILD_HELPER_PIN=0
+  first, on = the default); lane = helper-threads/build (d9a3dda, 9a8acb30), int = int/build (90d1b04, 5ee2ebec).
+| run | frames/s | md5 | tower ms | prompt ms | main thread CPUs (allowed) |
+| --- | ---: | --- | ---: | ---: | --- |
+| lane-off-11-r1 | 49.74 | 6e04c9b1 | 1707 | 467 | 32 (0-63) |
+| int-off-11-r1 | 49.70 | 6e04c9b1 | 1699 | 469 | 32 (0-63) |
+| lane-on-11-r1 | 50.32 | 6e04c9b1 | 1605 | 469 | 0 (0) |
+| int-on-11-r1 | 50.23 | 6e04c9b1 | 1604 | 469 | 0 (0) |
+| lane-off-12-r2 | 49.63 | f84288c9 | 1532 | 470 | 32 (0-63) |
+| int-off-12-r2 | 48.72 | f84288c9 | 1536 | 483 | 63 (0-63) |
+| lane-on-12-r2 | 50.34 | f84288c9 | 1442 | 477 | 0 (0) |
+| int-on-12-r2 | 50.01 | f84288c9 | 1450 | 477 | 0 (0) |
+| lane-off-11-r3 | 48.90 | 6e04c9b1 | 1704 | 478 | 50 (0-63) |
+| int-off-11-r3 | 48.61 | 6e04c9b1 | 1710 | 474 | 51 (0-63) |
+| lane-on-11-r3 | 49.88 | 6e04c9b1 | 1606 | 472 | 0 (0) |
+| int-on-11-r3 | 50.04 | 6e04c9b1 | 1617 | 478 | 0 (0) |
+| lane-off-12-r4 | 48.58 | f84288c9 | 1544 | 477 | 49 (0-63) |
+| int-off-12-r4 | 48.54 | f84288c9 | 1532 | 480 | 49 (0-63) |
+| lane-on-12-r4 | 50.18 | f84288c9 | 1449 | 479 | 0 (0) |
+| int-on-12-r4 | 50.20 | f84288c9 | 1451 | 472 | 0 (0) |
+- lane on - off: +1.17, +1.43, +2.00, +3.29% (mean +1.97%, se 0.47, 4 of 4); int: +1.07, +2.65, +2.94, +3.42%
+  (mean +2.52%, se 0.51, 4 of 4).  The two builds' arms agree run for run (on 49.88-50.34 both); where the OS puts the
+  unpinned thread changed during the hold for both builds (core 0 in rounds 1-2, workers' siblings 49-63 in 2-4): it is
+  the machine's state at the time, not the build.  D1's 4 of 4 off runs on core 0 were the same chance.
+- int's default-layout gain over all 8 pairs (D1 + D3): +0.46, -0.20, +0.34, +0.72, +1.07, +2.65, +2.94, +3.42%:
+  mean +1.43% (se 0.48), 7 of 8 > 0; on 49.60-50.23 (mean 50.00) against off 48.54-49.76 (mean 49.30) frames/s.
+  Split by the off run's placement: off on core 0 (5 of 8) +0.48%; off on a worker's SMT sibling (3 of 8) +3.00%.
+- md5s: 16 of 16 the base's (8 x 6e04c9b1, 8 x f84288c9).
+
+## 9. Hold Q3 (10:32:09-10:34:49, bin/hold_q3.sh, q3/): the masks fill_many's threads start with (diagnostic)
+Budget-24 Qwen (1 x prose + code x 64), the default (decode pinned), with samp.py tcatch (lists /proc/<pid>/task every
+0.5 ms for 4 s of decode and reads every new thread's Cpus_allowed_list; a busy poller pinned to CPU 63, so these two
+runs are not A/B arms):
+| run | new threads caught in 4 s | their allowed mask | prose / code tok/s | ids |
+| --- | ---: | --- | --- | --- |
+| int-diag | 4018 | 0-63 (all) | 12.98 / 18.22 | 49139, 71109 |
+| base-diag (round 19) | 2510 | 0 (all) | 5.50 / 10.47 | 49139, 71109 |
+- So in the engine every fetch thread of round 19's pinned decode inherits CPU 0, and with SpawnAffinity every one starts
+  on the load's mask (0-63), while the decode thread itself stays pinned (Q1/Q2/Q4 mainwatch).  ~1000 threads a second
+  are started (up to 7 a layer call): the per-call threads are the old design, not this lane's.
+
+## 10. Hold B2 (10:39:10-10:44:43, bin/hold_b2.sh, b2/): batch pair 2 and int with GUILD_HOST_AFFINITY=0
+| run | solo 0 / 1 / 2 (96 tokens) | batch: tok/s overall, from the first batch token | slots | batch host thread |
+| --- | --- | --- | --- | --- |
+| base-p2 (round 19) | 13.8 / 11.5 / 8.3 s | 8.4, 8.7 | 3 of 3 IDENTICAL | CPU 0 (allowed 0 / 0-63), 79.1% |
+| int-p2 | 8.7 / 5.4 / 6.0 s | 16.6, 17.9 | 3 of 3 IDENTICAL | CPU 0 (allowed 0 / 0-63), 96.6% |
+| int-ha0 (host unpinned) | 9.2 / 5.7 / 6.2 s | 16.3, 17.5 | 3 of 3 IDENTICAL | CPU 36 (0-63), 86.9% |
+- Both pairs: round 19 -> 20 with experts read from the files 8.8 / 8.7 -> 17.5 / 17.9 tok/s from the first batch
+  token (2.0x), solo runs 1.4-2.2x; int pinned = int unpinned (17.9 against 17.5).  Every slot IDENTICAL to its solo
+  run in all 5 batch runs, and the slot texts of all 5 are the same (and = base20/bl/b3.out at budget 56).
+- (The solo DONE lines batch_test prints are cut at 60 characters, so their last field's digits differ with the
+  length of the timing fields before it; not a difference in the runs.)
+
+## 11. Format check
+- tools/format_code.py --check in the lane worktree (d9a3dda; the lane's hunks are byte-identical in int), under
+  build-run: "all 554 files are formatted (clang-format 18.1.8)"; git status clean afterwards.
+
+## 12. Code review of 4f3ce6d..d9a3dda, the fix commits most closely
+SpawnAffinity (5114561):
+- Correct mechanism: a Linux thread's mask is copied at clone(), so a thread started while its creator runs on the
+  recorded mask keeps that mask whatever the creator does next; the creator's own mask comes back in the destructor,
+  before its own share of the copies (work()) and the joins.  The fixer's reason to drop place_thread is right (glibc's
+  pthread_setaffinity_np on an exited thread's handle passes TID 0, the caller).
+- Per-thread only: get/set act on pthread_self(); fetch_affinity_ is written in open()/open_gpack() (after close())
+  and only read afterwards, so concurrent fill_many calls (none exist today: one drive thread a model) cannot race.
+- Recorded where intended: open()/open_gpack() run on the loading thread (model.cpp ~792-814) before any temporary pin
+  of that thread (the verifier's HostAllocAffinity at ~1275, the prefill Stager's at its init); the ExpertPool built
+  before them pins only its workers.  Checked in the engine: with the decode unpinned (GUILD_HOST_AFFINITY=0)
+  SpawnAffinity is a no-op (equal masks) and the speeds equal round 19's unpinned ones.
+- Failure paths: a refused widening (EINVAL: no CPU of the recorded mask left in a shrunken cpuset or online) leaves
+  own_ invalid, nothing changed, the threads inherit the caller's mask (the old behaviour); a partly valid mask is
+  intersected by the kernel; a refused restore prints "host affinity restoration failed" once and leaves the caller on
+  the wide mask until the request's own restore.  An exception from th.emplace_back unwinds through the destructor
+  (mask restored), then reaches `th` with joinable threads -> std::terminate: pre-existing, unchanged.
+- Cost: one sched_getaffinity + compare per call with nt > 1; two sets more when the caller is pinned.  Not measurable:
+  int pinned vs unpinned decode time -3.1, -3.5, +2.0% (Q4).
+- Behaviour change to note (nit): the threads take the LOAD-time mask, not the caller's, so a restriction applied
+  after load by someone else (taskset -a -p on the running process, an embedding app narrowing its request thread to
+  a node) no longer reaches fill_many's threads; cpusets still do (kernel-enforced).  A cheap guard if wanted: widen
+  only when the caller's mask is one CPU (Guild's host-core pin).
+- The Windows direct path (open_direct, the only one that sets direct_) starts its threads without SpawnAffinity; it is
+  a no-op there anyway (Windows thread selections are per thread; not measured here).
+
+The gate (0eb63a0):
+- experts_in_ram = complement_ready && resident_experts() + slots >= total.  Explicit --expert-cache N: the cache is
+  filled before pin_cache_complement, whose plan excludes exactly the cached pairs (lend_from_slot -1: no overlap), so
+  the sum means "every expert on the GPU or in RAM".  Auto cache: slots is 0 at this point (filled later), so it needs
+  every expert in RAM: conservative.  Partial copy (budget, or the source clamping to free memory): false.  Zero-copy
+  mmap (GUILD_EXPERT_MMAP=1) or no copy: complement_ready false -> no pin (conservative).  Later changes: none (the
+  complement is set once, cleared only by close(); the GPU cache is filled only at load; override_ exchanges do not
+  remove complement entries).  With the gate true, prefetch() returns before fill_many for every CPU expert.
+- GUILD_HOST_AFFINITY parsed as session.cpp/batch.cpp do (unset or atoi != 0), read at load for Drama 3 only.
+- Load lines checked in D1/D2: the three wordings match the three gate outcomes.  Nit: on Windows the third wording
+  gives "no free SMT sibling ..., or not one worker a core" where the reason is that host_siblings is not filled there.
+- GUILD_HELPER_PIN=0: helper_cpus empty -> neither pin (D1/D3 off arms: all three threads 0-63, every run).
+  GUILD_HOST_AFFINITY=0: text decode and batch host unpinned (Q2/Q4/B2 ha0 arms: 0-63; SpawnAffinity then a no-op);
+  for Drama 3 the request thread unpinned, the helpers still on CPU 32 (as documented).
+- Windows / HIP: every new Linux-only call (pthread_setname_np, CPU_*_S, pthread_*affinity_np, detail::) is inside
+  `#if defined(__linux__)` (pool.cpp's includes are in the #else of _WIN32); ThreadAffinity's `mask` member is only
+  touched inside those blocks (Windows has cpu_sets); pool_affinity_linux_test is built only for Linux; no CUDA/HIP
+  API added.  Not compiled here for Windows or HIP.
+- d9a3dda: comments only (two comment blocks, same line count).
+
+## 13. Verdict (10:50): accept
+- Bits: identical everywhere I looked: 29 Drama 3 WAVs (15 x 6e04c9b1, 14 x f84288c9; budget 24 and 6, both builds,
+  every arm); Qwen ids [38747, 38747, 41916, 41916] at budget 56 with GPU cache 0 slots and the 8192-token chunk line;
+  the same tokens in all 14 budget-24 Qwen runs (prose 49139, code 71109; round 19 and 20, pinned and unpinned); 15 of
+  15 batch slots IDENTICAL to their solo runs and the same texts in all 5 batch runs (= base20/bl/b3.out).
+- The blocker is gone on int: budget 6 both arms ~17 frames/s with the request thread unpinned (was 7.06 / 6.99).
+- The text decode's (pre-existing) problem is fixed on int: round 19 -> 20 at budget 24 2.0x prose, 1.5x code, batch
+  2.0x, and every fetch thread now starts on 0-63 (4018 of 4018) where round 19's started on CPU 0 (2510 of 2510).
+- The default gain holds but is smaller on int than the lane's number: +1.43% (8 pairs), +0.48% when the OS already
+  puts the unpinned thread on core 0, +3.0% when it puts it on a worker's sibling; it never cost more than 0.2%.
+
+## 14. Against the fixer's numbers
+| claim | fixer (lane build) | mine (int build unless noted) |
+| --- | --- | --- |
+| default A/B, GUILD_HELPER_PIN=0 vs default | +2.21% (6 pairs, se 0.26); off main on CPU 48 in 4 of 6 | +1.43% (8 pairs, se 0.48, 7 of 8 > 0); off main on core 0 in 5 of 8 (+0.48%), on a worker's sibling in 3 (+3.00%); lane build in the same hold +1.97% (4 pairs) |
+| default, on arm | 49.94-50.23 frames/s | 49.60-50.23 (lane 49.88-50.34 in D3) |
+| budget 6, both arms | on 17.19 / 17.23 / 17.66, off 17.47 / 14.83 / 16.89 | on 17.64 / 17.49, off 16.30 / 17.43; request thread unpinned in both, load line right |
+| Qwen budget 24 prose, round-19-like pinned / round 20 pinned / unpinned | 7.11 / 13.66 / 13.40 (1 run each, a61963a's binary as "old") | base20 6.43, 7.16 / int 13.80, 11.24 (+ 13.51, 13.85, 13.88 in Q4) / int 13.43, 13.26, 13.44, 15.61, base20 13.35 |
+| Qwen budget 24 code | not measured | base20 12.41, 12.85 / int 18.86, 15.58 (+ 18.92, 18.98, 19.04) / unpinned 17.26-18.18 |
+| batch 3 slots, budget 24 | not measured | base20 8.8, 8.7 -> int 17.5, 17.9 tok/s from the first batch token; int unpinned 17.5; 15 of 15 slots IDENTICAL |
+The fixer's numbers hold; the default gain is smaller on int's build in my runs because the OS chose core 0 for the
+unpinned thread more often during my holds (D3 shows the same for the lane's build in the same hold).
+
+## 15. For the round's README
+- Default Drama 3 (int, drama3-run-r18, budget 24, GUILD_HELPER_PIN=0 against the default, 8 alternated pairs, seeds 11
+  and 12): +1.4% (se 0.5; 49.30 -> 50.00 frames/s), +0.5% where the OS had put the unpinned request thread on the host
+  core anyway (5 pairs), +3.0% where it had put it on a worker's SMT sibling (3 pairs); tower -90..-100 ms a run; the
+  same WAVs.  Do not quote the lane's +2.6% / +2.9% / +2.2% as the integrated build's gain without that condition.
+- Low RAM (budget 6): the request thread is left to the OS, the helpers on CPU 32: 17.64 / 17.49 against 16.30 / 17.43
+  frames/s (2 pairs, noisy; the unfixed pin ran 7.06 / 6.99).  "No loss", not a gain.
+- Text decode with experts read from the files (Qwen, qwen-bench-r18's flags at --resident-budget-gib 24, 1 x 64
+  tokens): round 19 6.43 / 7.16 tok/s prose, 12.41 / 12.85 code; round 20 13.80 / 11.24 prose, 18.86 / 15.58 code
+  (2 alternated pairs, the same tokens; 3 more round-20 runs 13.51-13.88 / 18.92-19.04); unpinned both rounds 13.35 /
+  17.92 (19) and 13.43 / 18.10 (20).  Batch, 3 slots: 8.8 / 8.7 -> 17.5 / 17.9 tok/s.  Round 19's pinned decode started
+  all its fetch threads on CPU 0 (2510 of 2510 caught), round 20's on 0-63 (4018 of 4018).

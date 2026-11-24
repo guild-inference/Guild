@@ -729,6 +729,9 @@ private:
     std::vector<char> stage_busy_; ///< being filled (outside stage_mu_): never a victim
     std::condition_variable stage_cv_;
     int fetch_threads_ = 8;
+    /// The loading thread's placement (open, open_gpack), which fill_many's threads take instead of their caller's:
+    /// the caller can be a thread pinned to the pool's host core (a text decode's, a batch's host).
+    kernels::cpu::ThreadAffinity fetch_affinity_;
     std::atomic<uint64_t> file_blob_bytes_{0}, file_us_{0};
     std::unique_ptr<std::atomic<uint32_t>[]> warm_stamp_; ///< per (layer, expert): epoch_ + 1 when warmed
     std::atomic<int64_t> warm_hits_{0}, warm_count_{0};

@@ -683,6 +683,69 @@ bool DFlashDrafter::draft(int32_t anchor, int64_t start, int B, int32_t* drafts,
         return false;
     }
     const Clock::time_point t0 = Clock::now();
+    draft_layers(anchor, start, B, st);
+    const int D = B - 1;
+    dflashk::rms_rows(h_ + H_, norm_, x_, H_, D, eps_, (cudaStream_t) st);
+    if (!draft_head(x_, D, st, err))
+        return false;
+    select(anchor, 0, D, drafts, probs);
+    ms_draft += ms_since(t0);
+    ++rounds;
+    return true;
+}
+
+bool DFlashDrafter::draft_slots(const SlotDraft* jobs, int n_jobs, void* st, std::string& err) {
+    const int sets = contexts();
+    for (int j = 0; j < n_jobs; ++j) { // all checked before anything runs
+        const SlotDraft& s = jobs[j];
+        if (s.set < 0 || s.set >= sets || s.B < 2 || s.B > block_ || s.n < 1 || s.n >= s.B || s.drafts == nullptr ||
+            s.start != (s.set == cur_set_ || sets_.empty() ? ctx_hi_ : sets_[(size_t) s.set].hi)) {
+            err = "dflash: draft arguments out of range";
+            return false;
+        }
+    }
+    if (!head_k4()) { // the head's bits would depend on its column count: a draft() each
+        for (int j = 0; j < n_jobs; ++j) {
+            const SlotDraft& s = jobs[j];
+            int32_t d[8];
+            float p[8];
+            use_context(s.set);
+            if (!draft(s.anchor, s.start, s.B, d, p, st, err))
+                return false;
+            std::copy(d, d + s.n, s.drafts);
+            if (s.probs != nullptr)
+                std::copy(p, p + s.n, s.probs);
+        }
+        return true;
+    }
+    const Clock::time_point t0 = Clock::now();
+    cudaStream_t cs = (cudaStream_t) st;
+    // the rows wanted, normed, in x_'s rows past the block's (draft_layers uses B <= block_ of them), as many jobs a
+    // pass of the head as its scratch (block_ rows) holds
+    const int cap = std::min(block_, R_ - block_);
+    float* xn = x_ + (size_t) block_ * H_;
+    for (int j0 = 0; j0 < n_jobs;) {
+        int rows = 0, j1 = j0;
+        while (j1 < n_jobs && rows + jobs[j1].n <= cap)
+            rows += jobs[j1++].n;
+        for (int j = j0, row = 0; j < j1; row += jobs[j++].n) {
+            const SlotDraft& s = jobs[j];
+            use_context(s.set);
+            draft_layers(s.anchor, s.start, s.B, cs);
+            dflashk::rms_rows(h_ + H_, norm_, xn + (size_t) row * H_, H_, s.n, eps_, cs);
+        }
+        if (!draft_head(xn, rows, cs, err))
+            return false;
+        for (int j = j0, row = 0; j < j1; row += jobs[j++].n)
+            select(jobs[j].anchor, row, jobs[j].n, jobs[j].drafts, jobs[j].probs);
+        j0 = j1;
+    }
+    ms_draft += ms_since(t0);
+    rounds += n_jobs;
+    return true;
+}
+
+void DFlashDrafter::draft_layers(int32_t anchor, int64_t start, int B, void* st) {
     cudaStream_t cs = (cudaStream_t) st;
     const int groups = H_ / group_, kp_rows = 2 * taps_ * groups, qd = heads_ * hd_, kvd = kv_heads_ * hd_;
     const int half = taps_ * groups; // a dynamic row's prepare part, then its finish part
@@ -716,34 +779,51 @@ bool DFlashDrafter::draft(int32_t anchor, int64_t start, int B, int32_t* drafts,
         dflashk::block_conv(a_, dyn_ + half, kp_rows, y.mlp_base + (size_t) taps_ * H_, c_, H_, B, taps_, group_, cs);
         dflashk::add_rows(c_, h_, H_, B, cs);
     }
-    const int D = B - 1;
-    dflashk::rms_rows(h_ + H_, norm_, x_, H_, D, eps_, cs);
-    mm(hp_, x_, d_hp_, D, cs);
+}
+
+namespace {
+bool k4_off() { // GUILD_DFLASH_K4=0: the head through MMQ / MMVQ (the A/B switch)
+    static const bool off = std::getenv("GUILD_DFLASH_K4") && std::atoi(std::getenv("GUILD_DFLASH_K4")) == 0;
+    return off;
+}
+} // namespace
+
+bool DFlashDrafter::head_k4() const {
+    return head_type_ == (int) GGML_TYPE_Q4_K && !k4_off() && H_ % 256 == 0;
+}
+
+bool DFlashDrafter::draft_head(const float* xn, int rows, void* st, std::string& err) {
+    cudaStream_t cs = (cudaStream_t) st;
+    mm(hp_, xn, d_hp_, rows, cs);
     Mat hm;
     hm.w = head_;
     hm.n_in = H_;
     hm.n_out = n_sub_;
     hm.type = head_type_;
-    static const bool k4_off = std::getenv("GUILD_DFLASH_K4") && std::atoi(std::getenv("GUILD_DFLASH_K4")) == 0;
     bool head_done = false;
-    if (head_type_ == (int) GGML_TYPE_Q4_K && !k4_off) { // the Q4_K head kernel, else MMQ / MMVQ
-        dflashk::q8_act(x_, H_, D, xq8_, xs8_, cs, xm8_);
-        head_done = dflashk::k4_mm(head_, xq8_, xs8_, xm8_, logits_, H_, n_sub_, D, cs);
+    if (head_type_ == (int) GGML_TYPE_Q4_K && !k4_off()) { // the Q4_K head kernel, else MMQ / MMVQ
+        dflashk::q8_act(xn, H_, rows, xq8_, xs8_, cs, xm8_);
+        head_done = dflashk::k4_mm(head_, xq8_, xs8_, xm8_, logits_, H_, n_sub_, rows, cs);
     }
     if (!head_done)
-        mm(hm, x_, logits_, D, cs);
-    dflashk::topk_lse(logits_, n_sub_, D, topk_, d_idx_, d_val_, d_lse_, tscratch_, cs);
-    cudaMemcpyAsync(h_idx_, d_idx_, (size_t) D * topk_ * 4, cudaMemcpyDeviceToHost, cs);
-    cudaMemcpyAsync(h_val_, d_val_, (size_t) D * topk_ * 4, cudaMemcpyDeviceToHost, cs);
-    cudaMemcpyAsync(h_lse_, d_lse_, (size_t) D * 4, cudaMemcpyDeviceToHost, cs);
-    cudaMemcpyAsync(h_hp_, d_hp_, (size_t) D * rank_ * 4, cudaMemcpyDeviceToHost, cs);
+        mm(hm, xn, logits_, rows, cs);
+    dflashk::topk_lse(logits_, n_sub_, rows, topk_, d_idx_, d_val_, d_lse_, tscratch_, cs);
+    cudaMemcpyAsync(h_idx_, d_idx_, (size_t) rows * topk_ * 4, cudaMemcpyDeviceToHost, cs);
+    cudaMemcpyAsync(h_val_, d_val_, (size_t) rows * topk_ * 4, cudaMemcpyDeviceToHost, cs);
+    cudaMemcpyAsync(h_lse_, d_lse_, (size_t) rows * 4, cudaMemcpyDeviceToHost, cs);
+    cudaMemcpyAsync(h_hp_, d_hp_, (size_t) rows * rank_ * 4, cudaMemcpyDeviceToHost, cs);
     if (cudaStreamSynchronize(cs) != cudaSuccess) {
         err = std::string("dflash draft: ") + cudaGetErrorString(cudaGetLastError());
         return false;
     }
-    // the selector: from the anchor, each position's candidate with the best unary + pairwise score
+    return true;
+}
+
+void DFlashDrafter::select(int32_t anchor, int row0, int rows, int32_t* drafts, float* probs) const {
+    // from the anchor, each position's candidate with the best unary + pairwise score
     int32_t pred = anchor;
-    for (int i = 0; i < D; ++i) {
+    for (int d = 0; d < rows; ++d) {
+        const int i = row0 + d;
         const float* hp = h_hp_ + (size_t) i * rank_;
         const uint16_t* pc = pred_cb_.data() + (size_t) pred * rank_;
         float pw[256];
@@ -764,13 +844,10 @@ bool DFlashDrafter::draft(int32_t anchor, int64_t start, int B, int32_t* drafts,
             }
         }
         pred = vocab_[(size_t) h_idx_[i * topk_ + best]];
-        drafts[i] = pred;
+        drafts[d] = pred;
         if (probs)
-            probs[i] = std::exp(h_val_[i * topk_ + best] - h_lse_[i]);
+            probs[d] = std::exp(h_val_[i * topk_ + best] - h_lse_[i]);
     }
-    ms_draft += ms_since(t0);
-    ++rounds;
-    return true;
 }
 
 } // namespace guild::core

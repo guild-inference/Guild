@@ -1,0 +1,72 @@
+== qwen decode (tok/s, prose / code)
+  q-b1     prose  51.53 code  65.03 ids ok ms/window 64.11 4.70 0.000 54.90 4.92 0.000 54.29 4.97 0.000 60.61 4.98 0.000 60.53 5.00 0.000
+  q-i1     prose  52.02 code  65.35 ids ok ms/window 63.35 4.72 0.000 54.10 4.89 0.000 54.05 4.86 0.000 60.23 4.95 0.000 60.30 4.94 0.000
+  q-i2     prose  52.07 code  65.77 ids ok ms/window 64.22 4.62 0.000 54.09 4.85 0.000 53.96 4.88 0.000 59.94 4.91 0.000 59.82 4.93 0.000
+  q-b2     prose  51.42 code  65.16 ids ok ms/window 62.75 4.62 0.000 54.90 4.94 0.000 54.52 4.96 0.000 60.50 4.99 0.000 60.39 5.01 0.000
+  prose tok/s                  base     51.53     51.42 | int     52.02     52.07 tok/s | pairs  +0.96%  +1.27% | mean  +1.12% (faster)
+  code tok/s                   base     65.03     65.16 | int     65.35     65.77 tok/s | pairs  +0.50%  +0.94% | mean  +0.72% (faster)
+== ornith decode (tok/s, prose / code)
+  o-b1     prose  82.79 code  96.92 ids ok ms/window 29.37 2.92 0.000 24.60 3.47 0.000 24.48 3.48 0.000 25.18 3.67 0.000 25.13 3.67 0.000
+  o-i1     prose  83.24 code  98.17 ids ok ms/window 27.50 2.84 0.000 24.21 3.44 0.000 24.61 3.45 0.000 24.86 3.63 0.000 24.81 3.64 0.000
+  o-i2     prose  83.46 code  97.71 ids ok ms/window 28.18 2.82 0.000 24.40 3.42 0.000 24.29 3.44 0.000 24.96 3.62 0.000 24.95 3.63 0.000
+  o-b2     prose  82.55 code  96.66 ids ok ms/window 29.78 2.87 0.000 24.67 3.47 0.000 24.55 3.49 0.000 25.23 3.68 0.000 25.22 3.68 0.000
+  prose tok/s                  base     82.79     82.55 | int     83.24     83.46 tok/s | pairs  +0.54%  +1.10% | mean  +0.82% (faster)
+  code tok/s                   base     96.92     96.66 | int     98.17     97.71 tok/s | pairs  +1.29%  +1.09% | mean  +1.19% (faster)
+== Drama 3 seed 11 (frames/s, run order)
+  d11-b1          47.06 md5 6e04c9b1 ok
+  d11-i1          50.19 md5 6e04c9b1 ok
+  d11-ks1         49.77 md5 6e04c9b1 ok
+  d11-ksawf1      49.89 md5 6e04c9b1 ok
+  d11-f01         49.56 md5 6e04c9b1 ok
+  d11-f02         49.60 md5 6e04c9b1 ok
+  d11-ksawf2      49.72 md5 6e04c9b1 ok
+  d11-ks2         49.72 md5 6e04c9b1 ok
+  d11-i2          50.25 md5 6e04c9b1 ok
+  d11-b2          47.07 md5 6e04c9b1 ok
+  arm b      mean  47.06 (47.06 47.07) vs base  +0.00%
+  arm i      mean  50.22 (50.19 50.25) vs base  +6.70%
+  arm ks     mean  49.75 (49.77 49.72) vs base  +5.69%
+  arm ksawf  mean  49.80 (49.89 49.72) vs base  +5.82%
+  arm f      mean  49.58 (49.56 49.60) vs base  +5.34%
+== Drama 3 seed 12 (frames/s, run order)
+  d12-b1          48.12 md5 f84288c9 ok
+  d12-i1          50.02 md5 f84288c9 ok
+  d12-ks1         49.78 md5 f84288c9 ok
+  d12-ksawf1      49.56 md5 f84288c9 ok
+  d12-f01         49.47 md5 f84288c9 ok
+  d12-f02         49.23 md5 f84288c9 ok
+  d12-ksawf2      49.96 md5 f84288c9 ok
+  d12-ks2         50.06 md5 f84288c9 ok
+  d12-i2          50.18 md5 f84288c9 ok
+  d12-b2          46.99 md5 f84288c9 ok
+  arm b      mean  47.55 (48.12 46.99) vs base  +0.00%
+  arm i      mean  50.10 (50.02 50.18) vs base  +5.35%
+  arm ks     mean  49.92 (49.78 50.06) vs base  +4.97%
+  arm ksawf  mean  49.76 (49.56 49.96) vs base  +4.64%
+  arm f      mean  49.35 (49.47 49.23) vs base  +3.77%
+== Nemotron (medians of repeats 2-6, ms)
+  perf05s-1580 prefill_ms      base    347.30    347.90 | int    336.80    335.90 ms | pairs  -3.02%  -3.45% | mean  -3.24% (faster)
+  perf05s-1580 decode_ms       base    179.40    178.80 | int    179.70    179.20 ms | pairs  +0.17%  +0.22% | mean  +0.20% (slower)
+  perf05s-1580 total_ms        base    569.40    569.50 | int    559.70    559.20 ms | pairs  -1.70%  -1.81% | mean  -1.76% (faster)
+  perf30s-4970 prefill_ms      base    912.50    921.80 | int    883.70    878.70 ms | pairs  -3.16%  -4.68% | mean  -3.92% (faster)
+  perf30s-4970 decode_ms       base    965.60   1018.20 | int    965.70    963.50 ms | pairs  +0.01%  -5.37% | mean  -2.75% (faster)
+  perf30s-4970 total_ms        base   2050.60   2108.20 | int   2014.90   2009.90 ms | pairs  -1.74%  -4.66% | mean  -3.22% (faster)
+== StartLux (mean ms of 5 repeats)
+  lat-1q-500                   base   1098.75   1095.73 | int   1087.33   1090.89 ms | pairs  -1.04%  -0.44% | mean  -0.74% (faster)
+  lat-3q-500                   base   1472.18   1475.87 | int   1461.87   1471.92 ms | pairs  -0.70%  -0.27% | mean  -0.48% (faster)
+  prefill-1k                   base   2080.04   2057.06 | int   2029.45   2042.54 ms | pairs  -2.43%  -0.71% | mean  -1.57% (faster)
+== batch slots b3
+  tok/s overall                base     54.70     55.20 | int     56.50     56.20 tok/s | pairs  +3.29%  +1.81% | mean  +2.55% (faster)
+  tok/s from first batch tok   base     59.10     59.50 | int     61.20     60.90 tok/s | pairs  +3.55%  +2.35% | mean  +2.95% (faster)
+== batch slots b7
+  tok/s overall                base     67.60     67.70 | int     68.20     68.00 tok/s | pairs  +0.89%  +0.44% | mean  +0.67% (faster)
+  tok/s from first batch tok   base     70.90     70.90 | int     71.40     71.30 tok/s | pairs  +0.71%  +0.56% | mean  +0.63% (faster)
+== Qwen prompts (prompt ms, GUILD_NO_KV_CACHE=1)
+  w16 (86768)                  base    132.00    137.51 | int    135.97    134.64 ms | pairs  +3.00%  -2.09% | mean  +0.40% (slower)
+  p1k (86557)                  base   7389.40   7404.08 | int   7387.92   7405.72 ms | pairs  -0.02%  +0.02% | mean  +0.00% (slower)
+  p2k (81685)                  base  10309.40  10342.00 | int   8103.50   8045.09 ms | pairs -21.40% -22.21% | mean -21.80% (faster)
+  p4k (59650)                  base  16141.10  16169.50 | int  12414.90  12431.20 ms | pairs -23.09% -23.12% | mean -23.10% (faster)
+  p3k (95757)                  base  13171.30  13197.60 | int   9699.42   9725.46 ms | pairs -26.36% -26.31% | mean -26.33% (faster)
+  p6k (60700)                  base  20539.10  20536.80 | int  18350.50  18337.50 ms | pairs -10.66% -10.71% | mean -10.68% (faster)
+
+BITS: all runs identical to round 19

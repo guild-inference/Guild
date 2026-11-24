@@ -1,0 +1,7 @@
+START ["/mnt/models-ssd/guild-r20/int/build/guild-generate", "--serve", "--native", "/home/ubuntu/models/ornith-1.5-35b/Ornith-1.5-35B-Q4_K_M.gguf", "--pack", "/mnt/models-ssd/Strata-data/packs/ornith-1.5-35b", "--tokenizer", "/mnt/models-ssd/Strata-data/packs/ornith-1.5-35b/tokenizer", "--max-context", "32768", "--kv", "fp16", "--kv-host-only", "--spec", "4", "--spec-min-p", "0.5", "--expert-cache", "auto", "--prefill", "512", "--pool-workers", "0", "--mtp", "/mnt/models-ssd/Strata-data/mtp/ornith-rt", "--resident-budget-gib", "24"]
+READY load_s=8.42 READY 32768 stop
+RESULT {"prompt": "prose", "repeat": 1, "generated": 256, "decode_tok_s": 83.91131622766189, "ttft_s": 0.030238991137593985}
+RESULT {"prompt": "prose", "repeat": 2, "generated": 256, "decode_tok_s": 82.56253466981437, "ttft_s": 0.02937826467677951}
+RESULT {"prompt": "code", "repeat": 1, "generated": 256, "decode_tok_s": 98.08429118773947, "ttft_s": 0.15878110891208053}
+RESULT {"prompt": "code", "repeat": 2, "generated": 256, "decode_tok_s": 98.25859666765182, "ttft_s": 0.02945818193256855}
+SUMMARY {"prose": 83.23692544873813, "code": 98.17144392769563}

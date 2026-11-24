@@ -1,0 +1,16 @@
+== base 05:36:48 mmi_base 
+rc 1 05:37:00
+== pftail 05:37:00 mmi_pftail_d8d9214 
+rc 1 05:37:12
+== glm 05:37:12 mmi_glm_1d991ba 
+rc 1 05:37:24
+== int4f 05:37:24 mmi_4f3ce6d 
+rc 0 05:37:44
+== cpuoff 05:37:44 mmi_cpurows_9f34736 GUILD_KQ_ROWS512=0 GUILD_POOL_IQ4XS=0 GUILD_IQ4NL_PF=2 GUILD_Q8_PAIR=0
+rc 1 05:37:56
+== cpudef 05:37:56 mmi_cpurows_9f34736 
+rc 0 05:38:16
+== hc0 05:38:16 mmi_c412de7 GUILD_HOST_COMBINE=0
+rc 1 05:38:28
+== base2 05:38:28 mmi_base 
+rc 1 05:38:40

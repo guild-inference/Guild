@@ -1,0 +1,78 @@
+# cpu-rows: the implementer's fields the README quotes (implementer's numbers, not the verifier's)
+# Extracted from /home/ubuntu/lanes/r20/cpu-rows/impl-result.json
+
+## commits
+
+- 3005f15 perf(cpu): Q4_K and Q6_K expert rows two to an AVX-512BW pass in the pool
+- e5ee392 perf(cpu): IQ4_NL down rows prefetch six rows ahead (GUILD_IQ4NL_PF)
+- 62b6d6c perf(cpu): Qwen3.8-Flash-Next's IQ4_XS gate/up rows on the AVX-512BW rows in the pool
+- aa492f7 perf(cpu): the expert pool's park count as acks, each worker's state on its own line
+- bce66f4 perf(cpu): Q8_0 rows' weight scales a block pair at a time (GUILD_Q8_PAIR)
+- dddb6d4 docs(cpu): the engine measurements of the expert rows and the pool's acks in their comments
+
+## change_summary
+
+All five spec items are in Guild only, each with its own load-time switch, and all five default to on. (1) cpu-kq-rows: the scout's bf7da01 and 28c63a2, squashed into one commit. Q4_K gate/up rows and Q4_K/Q6_K down rows for Drama 3 and Ornith go to src/core/kq_rows512.cpp, routed from pool_rows.cpp. (2) The IQ4_NL down rows prefetch 6 rows ahead instead of 2, still on every second block pair. (3) Qwen layer 2's IQ4_XS gate/up rows go to iq4xs_rows512, with the same SwiGLU expression as the NL4 branch. (4) Pool wake: no parked_.fetch_sub at wake, and wait_parked waits for parked_ == n*(epoch+1) mod 2^32. Each worker's state is 64 bytes apart: a stride of 16 int32 rather than alignas(64) slots, so that GUILD_POOL_ACK=0 also brings back the old layout. diag() and the stall messages print parked_ - n*epoch. The after-park wait is kept. (5) Q8_0 pair scales in Guild's q8_0_rows512: the go/no-go microbenchmark passed (+10% at 4 tokens), so the item went ahead. The four fp16 scales of a block pair are loaded as one uint64, converted with one vcvtph2ps and spread with two vpermps; the block body is unchanged and an odd last block uses the old build. The forced inline is behind a macro so MSVC also builds it. kq_rows512_test now also checks the table that model.cpp binds (pool_rows512) against the library's own table for every format it reroutes: 2,453,760 results, all the same bits. The last commit changes code comments only, adding the measured engine numbers. 11 files changed, +836 -62. No ABI change, no backends.lock.json edit, no kernel-repo change.
+
+## switches
+
+- GUILD_KQ_ROWS512 (default 1): Q4_K gate/up and Q4_K/Q6_K down rows on kq_rows512; 0 restores the library's rows (ggml vec_dot at 1 token, kq256 from 2)
+- GUILD_IQ4NL_PF (default 6, accepts 0-64): how many rows ahead the IQ4_NL down rows prefetch; 2 restores the old distance
+- GUILD_POOL_IQ4XS (default 1): IQ4_XS gate/up rows on iq4xs_rows512; 0 restores the library's rows
+- GUILD_POOL_ACK (default 1, read when the pool is made): parking counted as acks plus padded worker states; 0 restores the old park protocol (subtract at wake, add at park, parked_ == n) and the adjacent wstate layout
+- GUILD_Q8_PAIR (default 1): Q8_0 rows build their weight scales one block pair at a time; 0 restores the one-block scale build
+
+## ab_table
+
+Same binary throughout, arms set by environment and alternated, each model group inside one machine-lock hold.
+
+Drama 3, hold 1 (22:33-22:39). Arms: on = GUILD_KQ_ROWS512=1 GUILD_POOL_ACK=1; off = both 0; ack0 = GUILD_POOL_ACK=0 only. Frames/s in run order:
+on-11 48.54, off-11 48.29, off-12 47.17, on-12 47.12, off-11b 47.20, on-11b 47.44, on-12b 47.50, off-12b 48.08, ack0-11 47.45, on-11c 47.66, on-12c 47.42, ack0-12 47.29.
+86-row prompt: on 468-481 ms, off 492-510 ms.
+
+Drama 3, profiled (23:00-23:03, seed 11, GUILD_CPU_PROFILE). Each run: frames/s / pool walls ms a frame / summed thread ms a layer:
+p-on 46.54 / 4.74 / 2.57; p-kq0 46.76 / 4.75 / 2.88; p-ack0 45.59 / 4.88 / 2.63; p-off 46.60 / 4.90 / 2.88; p-on2 46.70 / 4.71 / 2.58; p-off2 45.42 / 5.19 / 3.00.
+
+Drama 3, hold 2 (23:21-23:27; kq0 = GUILD_KQ_ROWS512=0 only). Frames/s:
+on-11d 48.65, off-11d 47.09, off-12d 47.08, on-12d 47.61, kq0-11 47.30, on-11e 47.45, on-12e 47.26, kq0-12 47.21, off-11f 47.20, on-11f 47.70, on-12f 47.34, off-12f 47.08.
+Prompt: on 474-479 ms, off 509-513 ms, kq0 512-513 ms.
+One earlier unpaired run: on-11 48.19.
+
+Qwen (22:44-22:51). Arms: pf6 = GUILD_IQ4NL_PF=6 GUILD_POOL_IQ4XS=1; pf2 = 2 and 0. Each run: tok/s prose/code, then CPU dispatch ms a window prose/code:
+pf6-1 51.70/65.17, 28.03/33.33; pf2-1 51.65/65.04, 28.14/33.89; pf2-2 51.66/64.98, 28.19/33.85; pf6-2 51.80/65.24, 27.55/32.93.
+Base ids in all four runs.
+
+Ornith, one run with defaults: 82.94/97.04 tok/s, ids as the base.
+
+Nemotron (23:16-23:22), GUILD_Q8_PAIR 1 against 0. Each run: prefill/decode ms, medians of repeats 2-6, 5 s clip | 30 s clip:
+pair1-1 332.6/178.2 | 886.0/956.7; pair0-1 346.1/179.4 | 913.8/968.1; pair0-2 345.2/179.6 | 917.5/961.5; pair1-2 334.1/177.7 | 877.7/960.3.
+Transcripts identical in all four.
+
+Drama 3 thread placement (23:50-23:53). GUILD_POOL_WORKERS=30, profiled, kq on against kq0. Each run: frames/s / pool walls ms a frame:
+w30-on 45.77/4.94, w30-kq0 45.63/5.11, w30-on2 46.76/4.82, w30-kq02 45.54/5.13.
+
+Microbenchmarks:
+- q8_0_rows512_test --dram 32, pair against old, 2 passes: 4 tokens 185.5/168.7 and 186.0/168.9 GB/s; 3 tokens 206.2/193.9 and 206.2/192.0; 1-2 tokens equal (~208-213).
+- iq4nl_rows512_test --dram 32, 640-value rows in 64-row shuffled items, pf6 against pf2: 1 token 165.8/170.1 and 167.3/170.1; 2 tokens 137.6/135.3 and 136.3/135.8.
+
+## gain_summary
+
+Drama 3 (expected +1.2-1.5%): both items together averaged +0.34 frames/s over 8 alternated pairs, +0.7% with a standard error of ±0.45%; leaving out each hold's first pair, +0.3%. Profiled, the pool time per frame fell 0.15 ms (-3%), and nearly all of that came from the ack protocol (about 3.7 us a layer). The kq rows cut the pool threads' CPU time by 11%, but the pool time per frame by only 0.01-0.02 ms: 13 layers got 5-9 us slower. Two unpinned busy Drama 3 threads were seen on the hyperthread siblings of pool workers 3 and 4. With one core left free, the kq rows saved 0.17-0.31 ms a frame. The kq rows also cut the 86-row prompt 4.5-7%.
+Qwen (expected -1-2% CPU experts, +0.1-0.4% tok/s): CPU dispatch -1.3% on prose and -2.2% on code; tok/s +0.17% and +0.29%. Qwen is GPU-bound here.
+Nemotron (expected decode -5-9% if the 4-token rows gained 8-15%): the rows did gain 10% at 4 tokens, but decode improved only -0.7%. A 4-token verify window sends one token each to about 22 different experts, so the rows run at 1 token and stay DRAM-bound. The prompt improved -3.6% (5 s clip) and -3.7% (30 s clip).
+Ornith: ids unchanged; speed was not A/B'd, as the protocol asks for one run.
+
+## open_issues
+
+- CMakeLists.txt: this lane adds kq_rows512.cpp to guild_engine's sources and to both AVX-512 flag lists (lines 462-479) and adds the kq_rows512_test target after iq4nl_rows512_test (line 516). d3-tower-fuse's drama3_fuse_test hunk is at line 488 and win-combine's is at line 270. They do not overlap: git merge-tree with d3-tower-fuse, win-combine, pf-tail-ring and int reports no conflict.
+- Drama 3 kq rows: 13 of the 40 layers (2, 3, 15, 18, ..., 33, 36-39) are 5-9 us slower, so the decode gain is close to zero. Two unpinned busy threads (about 40% and 15-19% CPU) run on CPUs 36 and 35, the hyperthread siblings of pool workers 4 and 3. Pinning them, for example to CPU 32 (the host core's idle sibling), would be done in Drama 3 runtime code. Re-measure after d3-tower-fuse lands, since it changes that thread's work.
+- Cost of the ack protocol: after the workers have slept (20 ms without work), the host waits for every sleeper to wake and ack. The slowest of about 46,000 tiny batches took 4.17 ms with acks against 1.88 ms without. A worker descheduled while parked now also delays the host.
+- pool_stress, pool_test and expert_multi_test cannot run on this CPU (they need VNNI), so the new pool protocol was checked only by pool_numa_test and the scratch stress. Run pool_stress on a VNNI machine before release.
+- Nemotron decode stays DRAM-bound at one token per expert, so the remaining Q8_0 gain there is in prompts.
+
+## not_taken
+
+- The guild-kernels-cpu half of the Q8_0 pair scales (the library's Q8_0 rows used by StartLux and Qwen): it needs a CPU lock bump, which is out of scope
+- A prefetch-distance knob for the kq rows: not tried, because the thread-placement measurement points to core sharing rather than prefetch
+- Pinning Drama 3's busy unpinned threads off the pool workers' cores: those files belong to other lanes (d3-tower-fuse, verify), so it is listed as an integration item
+- The scout's rejected ideas (nl3, NL4 v2, combining in the pool, 2 MiB pages): not in this lane's spec

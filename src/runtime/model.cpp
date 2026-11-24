@@ -343,6 +343,20 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
     }
     impl->pool = std::make_unique<kernels::cpu::ExpertPool>(n_workers, true, true, kernels::cpu::PoolAffinity::All);
     impl->config.pool_workers = impl->pool->workers();
+    // GUILD_HELPER_PIN (default 1; 0: where the OS puts them, as before): a Drama 3 request's tower and codec threads
+    // on the host core's free SMT siblings (ExpertPool::helper_cpus), not on a worker's core, and, only when there is
+    // such a sibling and every expert is in RAM or on the GPU (helper_request_pin, below the RAM copy), the request's
+    // own thread on the host core (GUILD_HOST_AFFINITY=0: not); drama3.cpp.  The pins are hard, so the threads cannot
+    // leave a CPU another program keeps busy: with a busy loop pinned to CPU 32 (the helpers' CPU here) through both
+    // arms, GUILD_HELPER_PIN=1 was 0.8% slower than 0 (2 pairs), where it is 1.4-2.9% faster on an idle CPU 32 (by
+    // where the OS would have put the unpinned request thread: drama3.cpp); the text decode's host-core pin has the
+    // same exposure.
+    if (const char* e = std::getenv("GUILD_HELPER_PIN"))
+        impl->helper_pin = std::atoi(e) != 0;
+    if (impl->helper_pin)
+        impl->helper_cpus = impl->pool->helper_cpus();
+    const char* host_affinity_env = std::getenv("GUILD_HOST_AFFINITY");
+    const bool host_affinity = !host_affinity_env || std::atoi(host_affinity_env) != 0;
     sp.kernel_provider_resolve_ms += ms_since(kprov_t0);
 
     // CUDA stream
@@ -503,9 +517,13 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
             return nullptr;
         }
 #endif
-        // the IQ3_S (NL4) gate/up and IQ4_NL down rows two to an AVX-512BW register, the same bits
-        // (GUILD_POOL_ROWS512=0: the table as bound)
-        impl->pool->bind_native_kernels(core::pool_rows512(impl->pool->native_table()));
+        // the IQ3_S (NL4), IQ4_XS and Q4_K gate/up and IQ4_NL, Q4_K and Q6_K down rows two to an AVX-512BW register,
+        // the same bits as the library's table - and so only on that table, and only when the gate/up rows are not
+        // interleaved (the layout below interleaves them for a GEXEC interleaved kernel only).  Any other table keeps
+        // its own rows; each model's table leaves the formats it does not reroute to its own base (pool_rows.hpp;
+        // GUILD_POOL_ROWS512=0: the table as bound)
+        impl->pool->bind_native_kernels(core::pool_rows512(
+            impl->pool->native_table(), kernels::cpu::is_gexec_interleaved_impl(sp.gexec_cpu_expert_impl.c_str())));
     }
     std::optional<kernels::ScopedCudaDense> dense_scope;
     std::optional<kernels::ScopedCudaAttn> attn_scope;
@@ -949,6 +967,12 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
         }
         sp.numa_expert_pin_ms += ms_since(pin_t0);
     }
+    // Drama 3's request pin only when no expert is read from the files: FileExpertSource::fill_many then copies the
+    // misses on the request thread too, and with them (--resident-budget-gib 6, 3362 of 10240 experts in RAM) the pin
+    // cost 9.8% (4 pairs, 16.3-17.6 -> 15.1-15.7 frames/s) where the helpers' pin alone cost nothing.
+    const bool experts_in_ram =
+        impl->src.complement_ready() && impl->src.resident_experts() + slots >= static_cast<int64_t>(total_experts);
+    impl->helper_request_pin = !impl->helper_cpus.empty() && host_affinity && experts_in_ram;
     // IQ3_S gate/up rows repacked for the CPU pool (FileExpertSource::build_cpu_repack), with 16 GiB of RAM to spare:
     // only with the bundled CPU kernels, the ones that compute the repacked rows, and only when the RAM budget holds
     // every expert (a smaller --resident-budget-gib is a request to use less RAM, not more).
@@ -1170,6 +1194,23 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
         std::fprintf(stderr, "guild drama3: tower %llu MiB (K/V for %lld frames), codec %llu MiB of VRAM\n",
                      (unsigned long long) (impl->tower->vram_bytes() >> 20), (long long) tower_frames,
                      (unsigned long long) (impl->codec->vram_bytes() >> 20));
+        std::string helpers;
+        for (int cpu : impl->helper_cpus)
+            helpers += (helpers.empty() ? "" : ",") + std::to_string(cpu);
+        if (impl->helper_request_pin)
+            std::fprintf(stderr,
+                         "guild drama3: a request's thread on the pool's host core (CPU %d), its tower and codec "
+                         "threads on CPU %s (GUILD_HELPER_PIN=0: where the OS puts them)\n",
+                         impl->pool->host_core(), helpers.c_str());
+        else if (!impl->helper_cpus.empty())
+            std::fprintf(stderr,
+                         "guild drama3: a request's tower and codec threads on CPU %s, its own thread where the OS "
+                         "puts it (%s)\n",
+                         helpers.c_str(), host_affinity ? "experts read from the files" : "GUILD_HOST_AFFINITY=0");
+        else
+            std::fprintf(stderr, "guild drama3: a request's threads where the OS puts them (%s)\n",
+                         impl->helper_pin ? "no free SMT sibling of the pool's host core, or not one worker a core"
+                                          : "GUILD_HELPER_PIN=0");
     }
 
     // Initialize speculative cost calibration (from GEXEC artifact when present, or model geometry priors).
@@ -1286,7 +1327,13 @@ std::unique_ptr<GuildModel> GuildModel::load(const ModelPaths& paths, const mode
             error_msg = "DFlash drafter: its width differs from the model's";
             return nullptr;
         }
-        if (cudaStreamCreateWithFlags(&impl->dflash_stream, cudaStreamNonBlocking) != cudaSuccess) {
+        // GUILD_WINDOW_PRIO (core::window_priorities): the draft at the device's greatest stream priority, so its
+        // blocks are dispatched before the commit graph's beside it (scheduling only)
+        int dflash_least = 0, dflash_greatest = 0;
+        const bool dflash_hi = core::window_priorities() &&
+                               cudaDeviceGetStreamPriorityRange(&dflash_least, &dflash_greatest) == cudaSuccess;
+        if ((dflash_hi ? cudaStreamCreateWithPriority(&impl->dflash_stream, cudaStreamNonBlocking, dflash_greatest)
+                       : cudaStreamCreateWithFlags(&impl->dflash_stream, cudaStreamNonBlocking)) != cudaSuccess) {
             error_msg = "DFlash drafter: no stream";
             return nullptr;
         }

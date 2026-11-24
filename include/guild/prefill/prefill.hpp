@@ -208,8 +208,9 @@ private:
     std::future<bool> next_run_;
     int hand_buf_ = 0;
 
-    bool carve(std::size_t T, void* alloc); // the device buffers of a chunk (prefill.cpp's Alloc)
-    void release();                         // the destructor's cleanup (also `reset`'s)
+    bool carve(std::size_t T, void* alloc);    // the device buffers of a chunk (prefill.cpp's Alloc)
+    std::uint64_t carve_region(std::size_t T); // the scratch region's buffers for T tokens (prefill.cpp)
+    void release();                            // the destructor's cleanup (also `reset`'s)
     struct Impl;
     std::unique_ptr<Impl> impl_;
     PrefillStats stats_;

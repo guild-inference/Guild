@@ -1,0 +1,70 @@
+# win-combine: the implementer's fields the README quotes (implementer's numbers, not the verifier's)
+# Extracted from /home/ubuntu/lanes/r20/win-combine/impl-result.json
+
+## commits
+
+- c7297c2f6081b594327783168ed378e7f0ec9583 perf(verify): the host combine reads the CPU's sums from mapped memory
+- ede8f50293a545e4991a65eab03009cd0253604c perf(window): drafter streams at the top priority, the commit graph at the least
+- b6f616afd8befba5e2a0390742f73a663cecc797 bench(r20): per-request A/B arms and window timing (scaffolding; not for merging, the two perf commits stand alone and each was compile-checked from its own checkout with the build's flags)
+
+## change_summary
+
+Part A (c7297c2). With the host combine (the CPU serves every routed expert: Qwen, Ornith, Drama 3's backbone, the batch slots), each post() used to wait for the layer's flag, copy the CPU's sums from mapped memory into parts_ (copy_from_mapped), then run gkc's k = 1 combine to add the shared expert. Now one kernel reads the sums where the CPU wrote them. That is one kernel and one kernel boundary less per post on the critical path: 96 a Qwen window, 80 an Ornith window, 40 a Drama 3 frame.
+- The spec's first form (gkc's combine kernel reading the mapped rows with 4-byte loads, 128 B a warp request) ran Ornith's 4-row windows slower than the copy in 4 of 4 measurements (+58 to +113 us a window).
+- So, per step 5, a Guild-side kernel replaced it: combine_sums_f4 in the new files src/core/verify_combine.cu and include/guild/core/verify_combine.hpp. It uses float4 loads and spells the combine's --use_fast_math k = 1 operations (mul.rn.ftz, then add.rn.ftz) as inline PTX. One CMakeLists.txt line adds it to guild_core's sources.
+- The first form stays selectable as GUILD_COMBINE_MAPPED=2, which needs no new device code.
+- Batch windows use the same post() and get it too. Expert deferral keeps the copy.
+- host_combine_parity now also checks both mapped forms bitwise against the combine of the device copy.
+
+Part B (ede8f50).
+- The DFlash stream (model.cpp) and the MTP layer's stream (mtp.cpp) are created at the device's greatest priority. The MTP graphs are instantiated without node priorities, so they run at their stream's.
+- Every kernel node of the commit graph (capture_commit) is set to the least priority and the graph is instantiated with node priorities. This also covers gdn_cs_'s small commits, which prioritize_captured had put at the top.
+- The commit stays off the critical path: the next window still follows it on cs_.
+- The batch windows' commit graphs are unchanged: they install through cudaGraphExecUpdate, so this was not "the same few lines".
+
+Scaffolding (b6f616a), env-gated: the spec-window prototype's timing and per-request A/B arms. Every request start captures the window graphs again, because a second resident graph set does not fit in VRAM.
+
+## switches
+
+- GUILD_COMBINE_MAPPED (read once at Verifier::init): default 1 on CUDA = combine_sums_f4 reads the mapped sums. 2 = gkc's combine kernel reads the mapped rows (no new device code; equal speed overall, but Ornith's 4-row windows ran slower than the copy). 0 = the copy kernel and then the combine, as before. HIP default is 0 (not measured there); a HIP build has no combine_sums_f4, so mode 1 falls back to the combine kernel.
+- GUILD_WINDOW_PRIO (read once, core::window_priorities()): default 1 on CUDA = DFlash and MTP streams at the greatest priority, commit-graph kernel nodes at the least. 0 restores the default-priority drafter streams and the commit graph as built. It does nothing on HIP builds.
+- Scaffolding only, b6f616a, unset by default: GUILD_R20_AB=<arms> gives per-request arms; the first letter is c copy / f float4 / m combine kernel, the second d default priorities / p window priorities, e.g. cd,fp. GUILD_R20_TIMING=1 prints 'guild r20 window' and 'guild r20 span by T' lines.
+
+## gain_summary
+
+Measured, final defaults against both switches off, one process each with arms alternating by request:
+- Qwen3.8-Flash-Next UD-IQ4_XS: prose 54.48 -> 54.22 ms a window (-0.27 ms, +0.48% tok/s; paired median -0.37); code 60.99 -> 60.48 (-0.51 ms, +0.84%).
+- Ornith-1.5-35B: prose 24.46 -> 24.24 (-0.23 ms, +0.92%); code 25.17 -> 24.99 (-0.18 ms, +0.72%).
+- Drama 3: +1.30% and +0.92% (seeds 11 and 12, first set), +0.74% and +0.45% (second set); mean of 4 pairs +0.85% frames/s.
+
+Per part:
+- Part A (float4 form, priorities on in both arms): Qwen -0.26 / -0.35 ms (+0.5% / +0.6%), Ornith -0.12 / -0.10 ms (+0.5% / +0.4%), Drama 3 alone +0.34% / +0.77%.
+- Part B (mp against md): Qwen GPU boundary -0.09 / -0.09 ms (prose) and -0.12 / -0.08 (code) over two processes; window -0.11 / -0.15 (prose) and -0.05 (code, clean process). Ornith boundary and MTP draft -0.04 ms, window -0.05 / -0.06 ms. Drama 3: no measurable effect (+0.15% / -0.04% alone).
+
+Against the expected gain:
+- Part A expected +0.5-0.9% Qwen, +1-1.2% Ornith, +0.7% Drama 3. Measured: Qwen at the low end (+0.5-0.6%), Ornith about half (+0.4-0.5%), Drama 3 +0.3-0.8%.
+- Part B expected Qwen boundary -57 / -83 us and Ornith draft -42 / -46 us. Measured: Qwen -80 to -124 us, Ornith -37 to -44 us, as expected.
+- Part B's Drama 3 upside (up to +0.5-1.5%, if the commit still slowed step_begin) did not show.
+
+Stop rule: no window size is slower than the copy with the float4 form. Ornith T4 was -6 / -36 us in the final A/B. Qwen was faster at every T except one prose T4 cell (+104 us). Both parts stay on by default: no A/B showed a loss.
+
+Lock time used: about 75 minutes, including the float4 step and one noisy Ornith run.
+
+## open_issues
+
+- VRAM / integration watch: combine_sums_f4 adds one small device module (verify_combine.cu), which EAGER loading maps in every model. No change was visible at MiB granularity: Qwen 3098 MiB free with 46-47 cache slots and none kept; Ornith 4862 MiB free after the MTP layer, with and without it. GLM was not run in this lane, and judge.json notes GLM had 2 MiB left. After merging, check GLM's 'context 32768 tokens' line together with glm-attend3's and d3-tower-fuse's device code. If GLM loses context, set GUILD_COMBINE_MAPPED=2 as the default (no device code, equal speed overall) and drop verify_combine.cu.
+- CMakeLists.txt: one line adds src/core/verify_combine.cu to guild_core's source list. d3-tower-fuse's CMakeLists.txt change is a new test target elsewhere, so the hunks are disjoint.
+- File overlap with this batch: none. pf-tail-ring (prefill.cpp), glm-attend3 (glm5.*) and d3-tower-fuse (drama3_tower.*) touch other files. Behaviour overlap with d3-tower-fuse: Part B puts the commit graph below Drama 3's step_begin; its effect alone on Drama 3 was within noise, but d3-tower-fuse's frame timings were measured with the commit at top priority, so re-measure Drama 3 after merging both.
+- dflash-slots (a reserve lane) was told to follow win-combine for the dflash.* timing hooks. Those hooks exist only in the scaffolding commit b6f616a; if that commit is dropped, dflash.* is untouched by this lane.
+- Part B also raises the priority of prompt-time work on those streams: the DFlash add_context of each prompt chunk, and the MTP prefill graphs. Prompt time was not measured (the bench prompts reuse their prefix). It is scheduling only.
+- The batch windows' commit graphs keep their priorities. Adding the least priority there would mean checking that cudaGraphExecUpdate keeps node priorities.
+- HIP: both switches are opt-in or no-ops there and were not measured.
+
+## not_taken
+
+- The spec's first Part A form as the default (gkc's combine kernel reading the mapped rows): equal overall but slower than the copy on Ornith's 4-row windows (+58 to +113 us in 4 of 4). Kept as GUILD_COMBINE_MAPPED=2.
+- A rule that picks the combine form by rows a group: the per-T differences between the two mapped forms are 0.1-0.4% of a window and change sign between Qwen and Ornith.
+- A second resident set of window graphs for the in-process A/B: about 8 x ~26 MiB would not fit (Qwen had ~46 cache slots, about 100 MB, left). The scaffolding captures the graphs again at each request instead.
+- Part B for capture_commit_batch: it installs through cudaGraphExecUpdate, not the same few lines.
+- The protocol's extra Drama 3 pairs were not required (first pairs +1.11%); one more set was run anyway, for the per-switch attribution.
+- The shared expert's stream priority or grid: excluded by the stop rule.

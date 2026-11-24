@@ -1,0 +1,125 @@
+# pf-zero-copy: the implementer's fields the README quotes (implementer's numbers, not the verifier's)
+# Extracted from /home/ubuntu/lanes/r20/pf-zero-copy/impl-result.json
+
+## commits
+
+- a264d4c perf(prefill): the streamed walk's MMQ reads its experts in place from the ring slots
+- 074efc5 fix(prefill): shared q8_1 rows lost past the first slice fall back to each product's own
+- 0fd81fb perf(prefill): a chunk lends its idle tails only when it then streams
+- 3dcaf6f perf(prefill): the in-place walk streams from 78 ring slots, measured
+- 7650c77 docs(prefill): the in-place walk's measured prompt times in its comment
+
+## change_summary
+
+All changes are in src/prefill/prefill.cpp. There is no header, ABI, kernel-repo or lock change.
+
+(1) Zero-copy (GUILD_PREFILL_ZERO_COPY). The ring's own 32 slots plus 16 more are now one block, zeroed once. The slots sit 3,500,640 B apart. That stride is computed from the pack: the smallest multiple of 16 and of every layer type's 256-value byte count that holds MAXBLOB + 256 B. In a chunk that takes the streamed walk, each group of up to 16 consecutive ring entries in consecutive slots of one block runs MMQ in place:
+- gate/up: Product.w = the group's first slot, expert_bytes = the stride
+- down: the same pointer + the layer's down_off
+- one wait on the group's last copy, and one used event after its down product
+
+There is no gather and no group-buffer memset. A group ends at the end of a block or of the ring, which just makes a smaller launch.
+
+The 16 extra slots alias the group buffers. A chunk that takes the routed walk (short prompts, a long prompt's tail under 1,536 tokens) gathers into them as before. lay_out switches between the two modes with pf-tail-ring's two stream fences. pf-tail-ring's lent tails are lent at the same stride.
+
+Zero tail: the Stager's buffers are MAXBLOB + 256 and zero the 256 B after each blob, so the DMA carries them. A blob DMA'd straight from a pinned arena gets a 256 B cudaMemsetAsync, unless the slot is already known to be zero there.
+
+Zero-copy runs only for a request with no GPU expert cache, no peer and one stage, on rows_stream() (Pascal, CUDA, --prefill-rows).
+
+(2) Follow-up (a): lay_out lends the idle tails only to a chunk that then streams.
+
+(3) Follow-up (b): below 4,096 tokens, the in-place walk streams once the lent ring reaches 78 slots (measured). The gather walk keeps 192.
+
+(4) Follow-up (c): native_proj_multi now falls back to native_proj for every product if quantizing fails after the first slice. This path was not reached in any run.
+
+Differences from the spec (the code won):
+- The group buffers alias the extra 16 slots rather than being dropped, because the routed walk and GPU-cache configs still need them.
+- Groups are runs cut at block ends rather than fixed groups with ring % 16 == 0. So no lent slot needs the gather path.
+- "Layers with residents or peers keep the gather" became a per-request rule.
+
+## switches
+
+- GUILD_PREFILL_ZERO_COPY: default 1. =0 restores pf-tail-ring's path exactly: ring slots and group buffers as separate allocations as before, no Stager zero tail, the group gather, and the gather walk's 192-slot threshold.
+- GUILD_PREFILL_TAIL_LEND_STREAMED: default 1. =0 restores pf-tail-ring's rule: every chunk of tail_stream_min() (1,536) tokens or more lends its idle tails, even when it then takes the routed walk.
+- GUILD_PREFILL_TAIL_WALK_RING: default unset (78 slots for the in-place walk, 192 for the gather walk). N sets both thresholds to N; 192 restores pf-tail-ring's threshold.
+- Follow-up (c) has no switch: its old path was an error return in a case that is never reached.
+
+## ab_table
+
+Every run below is prompt_ms from the same lane binary, with arms set by load-time switches.
+
+Smoke (one run, not an A/B), a264d4c, zero-copy on, pT, 01:02-01:05 UTC: p1k 7432, p2k 8043, p4k 12456, p3k 9668, p6k 18384.
+
+abTD, a264d4c, pTD, one hold 01:16:11-01:27:27, off = ZERO_COPY=0:
+
+| prompt | off1 | on1 | on2 | off2 | change |
+|---|---|---|---|---|---|
+| p1k | 7444 | 7445 | 7445 | 7449 | 0.0% |
+| p2k | 9399 | 7969 | 8053 | 9427 | -14.9% |
+| p4k | 14280 | 12436 | 12463 | 14331 | -13.0% |
+| p3k | 11396 | 9746 | 9760 | 11460 | -14.7% |
+| p6k | 20170 | 18355 | 18402 | 20276 | -9.1% |
+| p7600 | 24090 | 23180 | 23173 | 24183 | -4.0% |
+
+4K phases off to on: dequant 605 to 0, wait copy 972 to 50, gate/up 2802 to 2429 ms.
+
+abB, a264d4c, pB, one hold 01:38:17-01:51:42:
+
+| prompt | off1 | on1 | on2 | off2 | change |
+|---|---|---|---|---|---|
+| p4k | 14597 | 12864 | 12847 | 14640 | -12.1% |
+| ctx32k | 105059 | 102085 | 102132 | 106328 | -3.4% |
+
+32K: dequant 2829 to 0, wait copy 2481 to 4383 (48 slots are copy-bound at 8192-token chunks), gate/up 19317 to 16424 ms.
+
+abW (follow-ups b and a), 4608-token layout, pW, zero-copy on in every arm, one hold 02:04:46-02:23:10. R = routed (TAIL_WALK_RING=100000), S = streamed in place (TAIL_WALK_RING=1), Z = R with TAIL_LEND_STREAMED=0. Order R1 S1 Z1 Z2 S2 R2:
+
+| prompt (in-place ring) | R1 | S1 | Z1 | Z2 | S2 | R2 | S vs R | Z vs R |
+|---|---|---|---|---|---|---|---|---|
+| w2200 (202) | 11072 | 9622 | 11081 | 11100 | 9592 | 11080 | -13.3% | +0.1% |
+| w2500 (183) | 11970 | 10625 | 11987 | 11994 | 10604 | 11978 | -11.4% | +0.1% |
+| w3000 (148) | 13500 | 12196 | 13527 | 13502 | 12211 | 13516 | -9.7% | +0.05% |
+| w3400 (122) | 14798 | 13569 | 14872 | 14827 | 13562 | 14820 | -8.4% | +0.3% |
+| w3700 (103) | 15496 | 14623 | 15525 | 15557 | 14615 | 15514 | -5.7% | +0.2% |
+| w4000 (83) | 16412 | 15601 | 16422 | 16441 | 15595 | 16422 | -5.0% | +0.1% |
+| w4090 (78) | 16786 | 15817 | 16770 | 16779 | 15810 | 16792 | -5.8% | -0.1% |
+
+Exactness runs on HEAD (single runs): pTD p4k 12439; pB ctx32k 101745; bt_long solo prompts 8593 / 14207 / 44149 ms.
+
+Pinned arena (one run each, not an A/B): p2k 8372 to 8626 ms, p4k 13708 to 12490 ms.
+
+## gain_summary
+
+The judge expected about -1 s (-1%) at 32K and -0.3 to -0.6 s (-2 to -4%) at 2-4K. Measured with 2 alternated pairs each on the GTX 1070, with the same tokens:
+
+- 32K: -3.6 s (-3.4%)
+- 2K: -1.40 s (-14.9%)
+- 3K: -1.68 s (-14.7%)
+- 4K: -1.86 s (-13.0%)
+- 6K: -1.84 s (-9.1%)
+- 7.6K: -0.96 s (-4.0%)
+- 1K: unchanged (it takes the routed walk)
+
+The gather's 'dequant' phase is gone (0.57-0.70 s a chunk, 2.8 s at 32K). 'wait copy' fell at 2-6K and rose at 7.6K and 32K. The 'gemm gate/up' phase also fell 0.37-2.9 s; the cause of that part is not isolated.
+
+Follow-up (b): at a 3-slot server's 4608-token layout, chunks of 2.5K-4.1K tokens are 5.0-11.4% faster than the routed walk they took before. The 2.2K chunk already streamed in place at 202 slots.
+
+Follow-up (a): routed chunks are 0.0-0.3% faster without the re-carve. Follow-up (c): no measurable effect (the path is not reached).
+
+## open_issues
+
+- Pinned arena (GUILD_PIN_EXPERTS=1; the default on a single-NUMA-node PC with 24 GiB of experts or less, not on this PC). One run each, not an A/B: 2K was +3.0% (8372 to 8626 ms, wait copy 128 to 1670 ms) and 4K -8.9% (13708 to 12490 ms), with identical hashes. Likely cause, not measured: the zero-tail cudaMemsetAsync is a kernel on the copy stream and has to wait for an SM behind the compute stream's kernels. A 256-byte host-to-device copy from a pinned zero buffer would keep that stream on the copy engine. It needs a 2-pair A/B before integration relies on the pinned path.
+- VRAM: one block replaces 34 allocations, so the load leaves about 22 MiB more VRAM free (gpu_after 7557 vs 7579 MiB at 8192). bytes_needed counts 0.86 MB more, and the auto scan's margin at 8192 is about 229 MiB, so the 8192 chunk is kept. On a configuration that keeps a GPU expert cache, the cache is sized after the prompt path and could get about 6 more slots, and with them different decode text (the brief's GPU-cache trap). No configuration run here keeps a cache.
+- 8192-token chunks are copy-bound with 48 ring slots (32K wait copy 2.4 to 4.3 s). More slots there, using the scan's ~229 MiB margin, is the next lever; unmeasured.
+- The 'gemm gate/up' phase drop in the zero-copy arms is measured but not explained. The hc read is 0.2-0.3 s slower at 6K-32K because the copies run beside the attention half; pf-tail-ring's step-7 gate idea is still open.
+- Commits 074efc5 and 0fd81fb were made with git commit-tree from derived files and were not built on their own; HEAD is the built file. HIP and Windows were not compiled here; zero-copy is off at run time off CUDA Pascal.
+- Nothing is measured below 78 slots for the in-place walk. The gather walk's 192 threshold was not re-measured.
+
+## not_taken
+
+- Dropping the group buffers outright (spec step 4): the routed walk and configs with a GPU cache still gather, so the buffers alias the 16 extra ring slots instead.
+- Fixed 16-aligned groups with m.ring % 16 == 0, and the gather path for lent slots that cannot hold whole groups: groups cut at block ends read every slot in place instead.
+- A per-layer gather for layers with resident or peer experts: zero-copy is decided per request instead (no cache, no peer, one stage).
+- An in-place threshold below 78 slots: nothing below 78 is measured, since no chunk below 4,096 tokens lends fewer slots at the 4608 layout.
+- A forced-failure test of follow-up (c): its path is not reached and no test hook was added.
+- The copy-engine zero tail for pinned DMAs: found late; changing the code would have needed the whole exactness set again, which did not fit the budget.

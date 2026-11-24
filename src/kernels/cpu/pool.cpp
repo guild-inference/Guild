@@ -283,6 +283,16 @@ CpuTopology detect_cpu_topology(bool skip_first, PoolAffinity affinity) {
         all_cpus.push_back(cl);
     }
 
+    // the host core's other logical CPUs (ExpertPool::helper_cpus), by the same package and core ids
+    auto add_host_siblings = [&] {
+        for (const auto& h : all_cpus)
+            if (h.cpu == topo.host_core && h.pkg >= 0 && h.core >= 0)
+                for (const auto& cl : all_cpus)
+                    if (cl.cpu != h.cpu && cl.pkg == h.pkg && cl.core == h.core)
+                        topo.host_siblings.push_back(cl.cpu);
+        std::sort(topo.host_siblings.begin(), topo.host_siblings.end());
+    };
+
     topo.is_hybrid = (max_cap > 0 && max_cap > min_cap);
     if (topo.is_hybrid) {
         for (const auto& cl : all_cpus) {
@@ -312,6 +322,7 @@ CpuTopology detect_cpu_topology(bool skip_first, PoolAffinity affinity) {
             topo.host_core = topo.worker_cores.front();
             topo.worker_cores.erase(topo.worker_cores.begin());
         }
+        add_host_siblings();
         return topo;
     }
 
@@ -335,6 +346,7 @@ CpuTopology detect_cpu_topology(bool skip_first, PoolAffinity affinity) {
         topo.host_core = p_primaries.front();
         p_primaries.erase(p_primaries.begin());
     }
+    add_host_siblings();
 
     for (int cpu : p_primaries)
         topo.worker_cores.push_back(cpu);
@@ -425,6 +437,47 @@ ThreadAffinity pin_current_thread_if_allowed(int core) {
     return pin_current_thread(core);
 }
 
+bool pin_current_thread_to(const std::vector<int>& cpus) {
+#if defined(__linux__)
+    if (cpus.empty())
+        return false;
+    const int top = *std::max_element(cpus.begin(), cpus.end());
+    if (*std::min_element(cpus.begin(), cpus.end()) < 0 || top == INT_MAX)
+        return false;
+    detail::LinuxCpuSet target(top < CPU_SETSIZE ? CPU_SETSIZE : top + 1);
+    if (!target.set)
+        return false;
+    for (int cpu : cpus)
+        CPU_SET_S(cpu, target.bytes, target.set);
+    return pthread_setaffinity_np(pthread_self(), target.bytes, target.set) == 0;
+#else
+    (void) cpus;
+    return false;
+#endif
+}
+
+ThreadAffinity current_thread_affinity() {
+    ThreadAffinity now;
+#if defined(__linux__)
+    now.valid = detail::get_thread_affinity(now.mask) == 0;
+#endif
+    return now;
+}
+
+SpawnAffinity::SpawnAffinity(const ThreadAffinity& affinity) {
+#if defined(__linux__)
+    // valid only when this changed the mask: equal masks, or a refused change, leave nothing to put back
+    own_.valid = affinity.valid && detail::get_thread_affinity(own_.mask) == 0 && own_.mask != affinity.mask &&
+                 detail::set_thread_affinity(affinity.mask) == 0;
+#else
+    (void) affinity;
+#endif
+}
+
+SpawnAffinity::~SpawnAffinity() {
+    restore_thread_affinity(own_);
+}
+
 void restore_thread_affinity(const ThreadAffinity& previous) {
     if (!previous.valid)
         return;
@@ -459,10 +512,10 @@ void ExpertPool::diag(std::FILE* f) const {
                  "  expert pool: epoch %u, batch epoch %u: %u of %u jobs claimed, %u done; %u of %d workers parked, "
                  "%u sleeping; mode %d\n",
                  epoch_.load(), (uint32_t) (h >> 32), (uint32_t) h & 0xffffu, (uint32_t) (h >> 16) & 0xffffu,
-                 done_.load(), parked_.load(), n_, sleepers_.load(), mode_);
+                 done_.load(), parked_now(), n_, sleepers_.load(), mode_);
     std::fprintf(f, "  expert pool threads:");
     for (int i = 0; i < n_; ++i) {
-        const int32_t s = wstate_[(size_t) i].load();
+        const int32_t s = wstate(i).load();
         if (s == kParked)
             std::fprintf(f, " w%d=parked", i);
         else if (s == kSleeping)
@@ -510,10 +563,13 @@ ExpertPool::ExpertPool(int n_workers, bool pin, bool host_works, PoolAffinity af
                    "thread_cpu_ms\n",
                    profile_file_);
     }
+    if (const char* e = std::getenv("GUILD_POOL_ACK")) // =1: the acks and the padded states (off: see pool.hpp)
+        ack_ = std::atoi(e) != 0;
+    wstride_ = ack_ ? kWStride : 1;
     scratch_.resize((size_t) n_);
-    wstate_.reset(new std::atomic<int32_t>[(size_t) n_]);
+    wstate_.reset(new std::atomic<int32_t>[(size_t) n_ * wstride_]);
     for (int i = 0; i < n_; ++i)
-        wstate_[(size_t) i].store(kParked);
+        wstate(i).store(kParked);
     hstate_ms_.store(now_ms());
     g_diag_pool.store(this);
     guild::core::diag_pool_fn().store(&diag_active_pool);
@@ -530,6 +586,11 @@ ExpertPool::ExpertPool(int n_workers, bool pin, bool host_works, PoolAffinity af
         }
         numa_ = on[0] > 0 && on[1] > 0;
     }
+    // Free only when each worker has a core of its own and none of these CPUs is a worker's.
+    if (pin && n_ == (int) topo_.worker_cores.size())
+        for (int cpu : topo_.host_siblings)
+            if (std::find(topo_.worker_cores.begin(), topo_.worker_cores.end(), cpu) == topo_.worker_cores.end())
+                helper_cpus_.push_back(cpu);
     threads_.reserve((size_t) n_);
     for (int i = 0; i < n_; ++i) {
         const int core = pin ? (i < (int) topo_.worker_cores.size() ? topo_.worker_cores[(size_t) i] : -1) : -1;
@@ -595,26 +656,27 @@ void ExpertPool::worker(int id) {
             if (std::chrono::steady_clock::now() - parked_at < spin_before_sleep_)
                 continue;
             std::unique_lock<std::mutex> lk(sleep_mu_);
-            wstate_[(size_t) id].store(kSleeping, std::memory_order_relaxed);
+            wstate(id).store(kSleeping, std::memory_order_relaxed);
             sleepers_.fetch_add(1, std::memory_order_seq_cst);
             sleep_cv_.wait(lk, [&] {
                 return epoch_.load(std::memory_order_seq_cst) != seen || stop_.load(std::memory_order_relaxed);
             });
             sleepers_.fetch_sub(1, std::memory_order_relaxed);
-            wstate_[(size_t) id].store(kParked, std::memory_order_relaxed);
+            wstate(id).store(kParked, std::memory_order_relaxed);
         }
         if (stop_.load(std::memory_order_acquire))
             return;
         // acquire: the batch this epoch published (`head`, and the description before it) is visible from here
         seen = epoch_.load(std::memory_order_acquire);
-        parked_.fetch_sub(1, std::memory_order_acq_rel); // leaving the park
+        if (!ack_)
+            parked_.fetch_sub(1, std::memory_order_acq_rel); // leaving the park (ack_: the add below acks the epoch)
 
         // Drain: one claim per iteration, so a slow worker takes fewer experts and a fast one takes more.
         // Every job is the same size (all experts are 1,382,400 bytes), so there is nothing to schedule.  Only
         // this epoch's jobs: if the host has already moved on, the claims fail and the worker parks again.
-        wstate_[(size_t) id].store(kBetween, std::memory_order_relaxed);
+        wstate(id).store(kBetween, std::memory_order_relaxed);
         drain(id, scratch_[(size_t) id], seen);
-        wstate_[(size_t) id].store(kParked, std::memory_order_relaxed);
+        wstate(id).store(kParked, std::memory_order_relaxed);
         parked_.fetch_add(1, std::memory_order_acq_rel); // back at the park
     }
 }
@@ -690,7 +752,9 @@ void ExpertPool::wait_parked(const char* what) {
     hstate_ms_.store(now_ms(), std::memory_order_relaxed);
     uint32_t spins = 0;
     std::chrono::steady_clock::time_point t0{};
-    while (parked_.load(std::memory_order_acquire) != (uint32_t) n_) {
+    // ack_: every worker has acked the current epoch (only the host writes `epoch_`)
+    const uint32_t want = ack_ ? (uint32_t) n_ * (epoch_.load(std::memory_order_relaxed) + 1u) : (uint32_t) n_;
+    while (parked_.load(std::memory_order_acquire) != want) {
         _mm_pause();
         if ((++spins & 1023u) != 0)
             continue;
@@ -701,7 +765,7 @@ void ExpertPool::wait_parked(const char* what) {
             std::fprintf(stderr,
                          "guild: the CPU expert pool stalled %s (%u of %d workers parked) - stopping the engine "
                          "so the server can start it again (issue #29)\n",
-                         what, parked_.load(), n_);
+                         what, parked_now(), n_);
             guild::core::release_gpu_waits(stderr); // #267: the GPU may be spinning on this layer's flag
             std::fflush(stderr);
             std::abort();
@@ -730,7 +794,7 @@ void ExpertPool::wait_done(int n) {
             std::fprintf(stderr,
                          "guild: the CPU expert pool stalled: %u of %d jobs done, %u of %d workers parked - "
                          "stopping the engine so the server can start it again (issue #29)\n",
-                         d, n, parked_.load(), n_);
+                         d, n, parked_now(), n_);
             guild::core::release_gpu_waits(stderr); // #267
             std::fflush(stderr);
             std::abort();
@@ -767,7 +831,7 @@ void ExpertPool::drain(int id, ExpertScratch& scratch, uint32_t epoch) {
         }
         const uint32_t i = (uint32_t) ci;
         if (id >= 0)
-            wstate_[(size_t) id].store(ci, std::memory_order_relaxed);
+            wstate(id).store(ci, std::memory_order_relaxed);
         else {
             hstate_.store(ci, std::memory_order_relaxed);
             hstate_ms_.store(now_ms(), std::memory_order_relaxed);

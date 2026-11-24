@@ -1,0 +1,4 @@
+guild experts: the pool's AVX-512BW rows already serve 8 CPU expert tables; this one keeps its own rows
+guild experts: the pool's AVX-512BW rows already serve 8 CPU expert tables; this one keeps its own rows
+guild experts: the pool's AVX-512BW rows already serve 8 CPU expert tables; this one keeps its own rows
+ok: 8 slots (8 taken here, 3 bases refused), 0 failures

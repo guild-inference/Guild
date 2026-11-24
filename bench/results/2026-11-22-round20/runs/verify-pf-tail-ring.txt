@@ -1,0 +1,104 @@
+# pf-tail-ring: the verifier's measured runs and problems
+# Extracted from /home/ubuntu/lanes/r20/pf-tail-ring/verify-result.json
+
+## verdict
+
+accept
+
+## head_checked
+
+d8d921472e2f546ed41cfa247fe0fe79766010a1
+
+## bits_evidence
+
+Every run used build/guild-generate from 12:18:29 (md5 d0b79b434fc916818985909789796b31). That is HEAD d8d9214: prefill.cpp was last changed at 12:04, and my incremental rebuild under build-run at 21:22 rebuilt nothing. All prompt runs set GUILD_NO_KV_CACHE=1. Each line below gives what was expected, then what came back.
+
+**My runs**
+- ab, 2 alternated pairs (off1 on1 on2 off2) on pT:
+  - Expected: w16 86768, p1k 86557, p2k 81685, p4k 59650 (pC's known hashes), plus p3k 95757 and p6k 60700 (the implementer's).
+  - Got: exactly these in all 4 arms. Drafts accepted/offered were also identical in every arm.
+- h5 off3/on3 (no phase timer, pT): the same 6 hashes in both arms.
+- h5 x1/on4 (GUILD_PREFILL_SHARE_XQ=0 against the default): expected p6k 60700 and p7600 77730 (pD's known); got both in both arms.
+- pB on HEAD: expected w16 86768, p4k 59650, ctx32k 3242; got 86768, 59650, 3242. The 32K prompt ran as 3 x 8192 plus a lent 7341-token chunk (85 slots).
+- Default decode bench, run twice on the lane (h2 and h5 decL):
+  - Expected ids [38747, 38747, 41916, 41916]; got the same both times.
+  - The log says 'chunks of 8192 tokens in the 3098 MiB of VRAM free' and 'GPU cache 0 slots'. gpu_after is 7509 MiB.
+  - base20 run back to back gives the same ids, the same drafts (165/265 and 191/265) and the same gpu_after.
+- batch_test --batch 3 --n 3 --max-new 96: expected every slot equal to its solo run; got slots 0-2 IDENTICAL.
+  - Its prompts are only 23-27 tokens, so they go through the verifier's windows and never reach the prompt engine.
+- Long-prompt batch test (verify-a1's bt_long.py): prompts of 1803, 3671 and 10546 tokens, solo and then as 3 slots. With batch slots the auto chunk is 4608.
+  - Lane defaults: 3 of 3 IDENTICAL. Both switches off: 3 of 3 IDENTICAL.
+  - Both arms print the same texts and the same DONE draft counts.
+  - The 3670-token chunk took the routed walk on a re-carved layout.
+- MTP drafter instead of DFlash (the draft layer runs after each chunk; auto chunk 7168):
+  - Defaults and both-switches-off give the same hashes: w16 78230, p2k 26759, x10700 86410, p4k 89156, p3k 18125.
+  - Drafts identical.
+- Layout chunk 6144 (--prefill 6144 --prefill-rows 512):
+  - Defaults and both-switches-off both give the 8192 hashes: 86768, 86557, 81685, 59650, 95757, 60700.
+  - This includes 4007 tokens on the routed walk with a re-carved layout (169 slots).
+- ctest with the lane's -R list (34 tests): 31 passed, 2 skipped (prefill_fused_moe and prefill_fused_iq: no fused path here), 1 failed.
+  - The failure is ple_parity: 'required PLE table is missing ../../Q2_0/...gguf'. Its fixtures exist nowhere on this PC, and the binary links only guild_kernels, not guild_prefill. It is the environment.
+- format_code.py --check passes (548 files).
+
+**verify-a1's finished runs on the same HEAD binary (counted)**
+- pX, 11 prompts: 1600, 1535 (routed), 2501 twice, a repetitive 2301, 10700 (8192 + a lent 2508), 5003, 9000 (8192 + a routed 808), p7600, 3333.
+  - Run on lane defaults, on base20, and on the lane with both switches off.
+  - Output hashes, drafts, all 10 GDN state hash lines (GUILD_STATE_HASH_GDN) and the R dump (md5 f0e45a0f816fb378dcfd0d3b3bdb21fb) are identical across the three.
+- Its A/B: 4 arms, all hashes identical.
+
+## measured
+
+All runs are mine unless marked as verify-a1's. Lane HEAD binary, arms by env, prompt_ms in ms.
+
+1. ab, 21:29:48-21:39:57, one hold, phase timer on, pT. Order off1 / on1 / on2 / off2; off = GUILD_PREFILL_TAIL_RING=0.
+   - p1k: 7461 / 7437 / 7441 / 7448 (-0.2%)
+   - p2k: 10308 / 9381 / 9346 / 10315 (-9.19%)
+   - p3k: 13220 / 11355 / 11402 / 13218 (-13.92%)
+   - p4k: 16148 / 14277 / 14308 / 16159 (-11.52%)
+   - p6k: 20488 / 20193 / 20214 / 20540 (-1.51%)
+   - Wait copy at 4K: 2916 and 2909 ms off, 966 and 948 ms on.
+   - HC read at 4K goes from 1891-1898 to 2301-2304 ms: the copies run beside it.
+   - numastat stayed steady across the arms, so nothing evicted the page cache between them.
+2. h2, 21:44-21:51.
+   - pB, defaults: p4k 14650, ctx32k 105345 (round 18 measured 105.9 s; no off arm).
+   - Decode: prose 51.63, code 65.01 tok/s.
+   - batch_test: 55.2 tok/s overall, 59.5 from the first batch token.
+3. h3, 21:57-22:05, bt_long at the batch-slot layout (4608). Solo prompt_ms, lane defaults / both switches off:
+   - 1803 tokens: 9547 / 10237 (-6.7%; streamed through 213 slots)
+   - 3671 tokens: 15326 / 15381 (routed with 89 slots)
+   - 10546 tokens: 45075 / 45191
+4. h4, 22:16-22:25, MTP-drafter config (layout 7168), one run each arm, lane defaults / both off:
+   - p2k: 9519 / 10516
+   - x10700: 37574 / 39684
+   - p4k: 14748 / 16246
+   - p3k: 11734 / 13298
+5. h6, 22:39-22:44, layout 6144, lane defaults / both off:
+   - p2k: 9588 / 10380
+   - p3k: 12162 / 13309
+   - p4k: 16162 / 16251 (routed in both arms)
+   - p6k: 20567 / 20633
+6. h5, 23:03-23:16.
+   - No-timer pair, off3 then on3:
+     - p1k: 7400 / 7450
+     - p2k: 10254 / 9415 (-8.2%)
+     - p4k: 16087 / 14325 (-11.0%)
+     - p3k: 13188 / 11323 (-14.1%)
+     - p6k: 20450 / 20190 (-1.3%)
+   - Step-8 pair, x1 (SHARE_XQ=0) then on4:
+     - p6k: 20923 / 20869
+     - p7600: 24102 / 23997
+     - The gdn phase drops 32 and 42 ms, router+shared 42 and 52 ms. That reproduces the implementer's -30/-39 and -42/-53 ms.
+   - Decode pair, base20 then the lane: prose 51.70 / 51.60, code 65.12 / 65.11 tok/s. ms/window: 54.47 / 54.62 and 60.53 / 60.49.
+
+verify-a1's A/B (12:47-12:57, same protocol, counted): 2K -10.1%, 3K -13.7%, 4K -11.8%, 6K -1.3%, 1K -0.2%.
+
+My lock use was about 51 minutes in 6 holds.
+
+## problems
+
+- {"severity": "minor", "what": "lay_out re-carves the region and lends slots whenever T >= tail_stream_min(), even when the ring stays under kTailWalkRing (192). The chunk then takes the routed walk and the lent slots sit unused, costing two fences for nothing. The batch-slot config (--batch 3, auto chunk 4608) reaches this at about 2.2K-4.1K tokens: the 3670-token chunk got 89 slots and ran routed, 15326 ms against 15381 with the switches off. The 6144 layout reaches it at 4007 tokens (169 slots). It was exact both times, with no loss and no gain.", "where": "src/prefill/prefill.cpp, lay_out (around line 2549) and kTailWalkRing (around line 343)", "fix": "In lay_out, add up the slots it would lend first (simple arithmetic), and lend only when the ring would reach kTailWalkRing or T >= stream_chunk_min(). Better still, measure the streamed walk at 64-191 slots and lower the threshold: on batch-slot servers the 2.2K-4.1K prompts get no gain today."}
+- {"severity": "minor", "what": "kTailWalkRing = 192 comes from the judge's spec and was never measured. On this PC it only matters on the smaller layouts (batch slots: 4608; MTP drafter: 7168; a 6144 layout).", "where": "src/prefill/prefill.cpp kTailWalkRing", "fix": "Measure the streamed walk against the routed walk at about 64, 96 and 128 slots for 2.5K-4K chunks at the 4608 layout, and set the threshold from the result."}
+- {"severity": "minor", "what": "If quantizing a slice after the first fails, native_proj_multi returns the error 'dense MMQ buffers lost mid-product'. native_proj used to recompute the whole product through cuBLAS in that case. It cannot happen in practice, because the buffers only grow on the first slice.", "where": "src/prefill/prefill.cpp native_proj_multi (around line 2396)", "fix": "When it fails at t0 > 0, fall back to native_proj for every product, which rewrites all the rows. Or leave it and note it."}
+- {"severity": "minor", "what": "The subject of commit fe418d4 ends with '(WIP, to measure)'.", "where": "lane20/pf-tail-ring commit fe418d4", "fix": "Squash it with 70d277a, or reword it at integration."}
+- {"severity": "minor", "what": "The ple_parity ctest fails on this PC because its fixtures (../../Q2_0/...gguf and bench/micro/ple_in.bin) do not exist. The binary links only guild_kernels, not guild_prefill. This is the environment, not the change.", "where": "ctest #59 ple_parity", "fix": "None in this lane."}
+- {"severity": "minor", "what": "The HIP and Windows builds were not compiled, because neither toolchain is on this PC. The change uses only CUDA calls the file already used, and rows_stream() is false on HIP, so none of the new path runs there.", "where": "src/prefill/prefill.cpp", "fix": "Compile both in the release pipeline."}

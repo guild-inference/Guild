@@ -1,0 +1,61 @@
+# helper-threads: the FIRST verifier's measured runs (on the lane head a61963a, before the fix)
+# Extracted from /home/ubuntu/lanes/r20/helper-threads/verify-result.json
+
+## verdict
+
+needs-fix
+
+## head_checked
+
+a61963ad664d714af4fadf53bedc4664fca2276b
+
+## bits_evidence
+
+All checks ran on HEAD a61963a. The incremental rebuild of the 7 targets had nothing to do: build-info commit a61963a, guild-generate a57b240e, transcribe_run f92a8198, decision_run 99c46f2c.
+- Drama 3 CLI WAV md5 (drama3-run-r18 command line) in every run of my holds: the A/B with its profiled and contended pairs, the emulated no-SMT and 16-worker topologies, and the low-RAM runs. Expected 6e04c9b1 for seed 11 and f84288c9 for seed 12. Got 25 x 6e04c9b1 and 24 x f84288c9 over 49 runs, every arm (verify/wav_md5.txt).
+- Drama 3 through guild-generate --serve: three SAY requests (seeds 11, 12, 11) in one process, the PCM wrapped in write_wav's header. Expected 6e04c9b1, f84288c9, 6e04c9b1. Got the same.
+- Qwen, qwen-bench-r18's command. Expected ids [38747, 38747, 41916, 41916] plus 'GPU cache 0 slots' and 'chunks of 8192 tokens in the 3098 MiB of VRAM free'. Got the same ids and both lines (52.29 / 65.49 tok/s).
+- Ornith. Expected ids [30936, 30936, 65886, 65886]. Got the same (83.63 / 97.94 tok/s).
+- Nemotron. Expected the rows of base20/bl/nem.jsonl. Got 12 of 12 rows identical (id, ids, text).
+- StartLux, compared with win-combine/tools/cmp_sl.py. Expected the answers in base20/bl/sl.jsonl. Got 4 of 4 identical.
+- batch_test --batch 3 --n 3. Expected every slot IDENTICAL to its solo run and texts as in b3.out. Got 3 of 3 IDENTICAL; slot lines and texts identical.
+- batch_test --batch 7 --n 7. Expected every slot IDENTICAL and texts as in b6.out. Got 6 of 6 IDENTICAL; identical.
+- ctest pool_affinity_test, pool_numa_test, drama3_fuse_test, host_combine_parity. Expected pass. Got 4 of 4 passed. pool_affinity_test run directly prints '... host-sibling, helper-pin and cleanup checks passed (64 allowed CPUs)'.
+- tools/format_code.py --check. Expected pass. Got 'all 554 files are formatted (clang-format 18.1.8)'.
+
+## measured
+
+All runs used the same binary (a61963a), with arms set by environment variables at load and every GUILD_* variable unset first. Each run reads: label, frames/s, md5, prompt ms, tower ms.
+
+hold_v1 (05:49:18-05:58:14, one gpu-run hold). Order: ABBA starting with off; off = GUILD_HELPER_PIN=0, on = 1.
+- Runs in order: w-11 (default, no variable) 50.13 6e04c9b1 469 1603; off-11-r1 48.49 6e04c9b1 484 1697; on-11-r1 50.14 6e04c9b1 468 1601; on-12-r2 50.12 f84288c9 481 1445; off-12-r2 48.30 f84288c9 487 1533; on-11-r3 50.04 6e04c9b1 481 1607; off-11-r3 48.37 6e04c9b1 485 1706; off-12-r4 49.74 f84288c9 470 1537; on-12-r4 49.94 f84288c9 478 1443; off-11-r5 48.39 6e04c9b1 485 1692; on-11-r5 49.90 6e04c9b1 471 1607; on-12-r6 50.07 f84288c9 470 1445; off-12-r6 48.56 f84288c9 481 1534.
+- Profiled runs (GUILD_CPU_PROFILE): poff-11-r7 46.52 6e04c9b1 519 1678; pon-11-r7 47.73 6e04c9b1 481 1605; pon-12-r8 47.88 f84288c9 491 1458; poff-12-r8 46.49 f84288c9 514 1507.
+- Contended runs (an integer busy loop, `taskset -c 32`, running through both arms): coff-11-r9 48.86 6e04c9b1 476 1711; con-11-r9 48.20 6e04c9b1 487 1845; con-12-r10 48.17 f84288c9 495 1718; coff-12-r10 48.32 f84288c9 486 1531.
+- on - off over the 6 plain pairs: +3.40, +3.77, +3.45, +0.40, +3.12, +3.11%. Mean +1.39 frames/s (+2.88%), se 0.50%, 6 of 6 > 0.
+- The +0.40% pair is the one off run where the OS put the generation thread on core 0 (CPUs 0/32). In the other 5 off runs it sat on a worker's SMT sibling (CPU 48, once 52).
+- 86-row prompt: on 468-481 ms against off 470-487 ms (mean -7 ms).
+- Profiled pairs: +2.60%, +2.99%. Pool walls a frame (my prof_ana.py, median of 480 / 426 full frames): 4.940 / 4.900 ms (off) -> 4.729 / 4.737 ms (on). Layer median 121.7 / 120.7 -> 116.4 us. Gap between consecutive layers' pool calls 260.9 / 262.2 -> 251.0 / 251.2 us. Frame period 20.10 / 20.09 -> 19.56 / 19.49 ms.
+- Contended pairs: con - coff -1.35%, -0.31% (mean -0.83%). con against the uncontended on arm: -3.7%.
+- Thread placement from samples: in every on run the main thread was allowed CPU 0 only and d3-tower / d3-codec CPU 32 only. In every off run all three threads were allowed 0-63.
+
+Emulated topologies (hold_v3 06:58:52-07:02:25 and hold_v5 07:12:10-07:17:28):
+- nosmt (whole process under `taskset -c 0-31`, so no free host sibling): r1 s11 off 46.03 / on 44.55; r2 s12 on 44.83 / off 43.62; r3 s11 off 44.81 / on 44.58; r4 s12 on 44.36 / off 44.65; r5 s11 on 44.45 / off 45.32; r6 s12 off 43.95 / on 44.52.
+- nosmt on - off: -3.22, +2.77, -0.51, -0.65, -1.92, +1.30%. Mean -0.37%, se 0.88. Tower time was higher with the pin in 6 of 6 pairs: the tower thread sat on CPU 0 next to the pinned request thread.
+- w16 (GUILD_POOL_WORKERS=16): r3 s11 off 42.08 / on 40.54; r4 s12 on 40.45 / off 40.39; r5 s11 on 40.45 / off 41.76; r6 s12 off 40.50 / on 40.54.
+- w16 on - off: -3.66, +0.15, -3.14, +0.10%. Mean -1.64%. The two losses are the runs where the OS had put the unpinned request thread on a free node-1 core.
+
+Low RAM (--resident-budget-gib 6, so most experts are read from the files, which are in the page cache):
+- hold_v4 (07:05:06-07:09:16): lr-off-11 17.62 frames/s, prompt 1835 ms; lr-on-11 7.06, 7375 ms; lr-on-12 6.99, 6012 ms; lr-off-12 16.36, 1856 ms. on - off -59.9% and -57.3%.
+- In the on runs the sampler saw 22 and 29 short-lived threads, all allowed CPU 0 only and all on CPU 0. The request thread got 29-39% of CPU 0.
+- hold_v6 (07:18:52-07:21:32), ha0 = GUILD_HELPER_PIN=1 with GUILD_HOST_AFFINITY=0 (helpers pinned, request thread not): off-11 17.12; ha0-11 17.58; ha0-12 17.16; off-12 17.26. ha0 - off +2.69%, -0.58%: the old speed. So the cause is the request thread's pin.
+
+Serve mode (hold_v2): 50.23, 50.25, 50.28 frames/s. Between requests the main thread was back to 0-63 and the helper threads were gone.
+
+## problems
+
+- {"severity": "blocker", "what": "With the default GUILD_HELPER_PIN=1, Drama 3 runs about 2.4x slower on Linux when its experts do not all fit the RAM copy (a PC with less RAM, or a smaller --resident-budget-gib). The engine reads the missing experts on threads it starts every layer (FileExpertSource::fill_many, up to 8). Those threads inherit the request thread's CPU-0-only mask, so the request thread and all of them share CPU 0. Measured with --resident-budget-gib 6: 17.62/16.36 -> 7.06/6.99 frames/s (-59.9%, -57.3%), and the 86-row prompt 1835/1856 -> 7375/6012 ms. With the helpers pinned but the request thread not (GUILD_HOST_AFFINITY=0) the runs went 17.58/17.16, the same as off, so the request pin is the cause. The bits are unchanged.", "where": "src/runtime/drama3.cpp:495-503 (the request-thread pin); the threads are started in src/core/expert_source.cpp:1296 (fill_many's mapped path, reached from drive at :3033); the switch is read in src/runtime/model.cpp:346-352", "fix": "At load, record whether the RAM copy holds every expert the GPU cache does not (the condition behind FileExpertSource's 'the rest are read from the files' message). In synthesize, pin the request thread only when that holds and helper_cpus is non-empty. Or start fill_many's threads with the process's allowed mask taken at load instead of the caller's, which would also cover the text decode's pin. Then re-run a --resident-budget-gib 6 pair (expect on = off, about 17 frames/s) and the default A/B (expect about +2.9%)."}
+- {"severity": "minor", "what": "Outside the layout the lane measured (workers one per core plus a free host sibling), the request-thread pin gains nothing and can cost. Emulated no-SMT (taskset -c 0-31), 6 pairs: mean -0.37% (se 0.88); with no free sibling the tower thread lands on CPU 0 next to the pinned request thread, and tower time rose in 6 of 6 pairs. GUILD_POOL_WORKERS=16, 4 pairs: -3.66, +0.15, -3.14, +0.10%; the two losses are runs where the OS had put the unpinned thread on a free node-1 core, which helps the 15/1 NUMA split of a 16-worker pool. These cases include CPUs without SMT, such as Intel's Core Ultra 200S.", "where": "src/runtime/drama3.cpp:501-503", "fix": "Pin the request thread only when m.helper_cpus is non-empty, the same rule the helpers already follow. This keeps the measured +2.9% on this PC and restores the old placement elsewhere."}
+- {"severity": "minor", "what": "The helper threads are hard-pinned to the host core's sibling, CPU 32 here. When another process keeps that CPU busy they cannot move away. With a busy loop pinned to CPU 32 in both arms: con - coff -1.35%, -0.31% (mean -0.83%); against the uncontended pinned runs -3.7%; tower time 1601 -> 1845 ms. This is the usual cost of hard pinning, and the text decode's CPU 0 pin has the same exposure.", "where": "src/runtime/drama3.cpp:48-56 (Beside pins itself to helper_cpus)", "fix": "Document it next to GUILD_HELPER_PIN. No code change needed."}
+- {"severity": "minor", "what": "The load line says \"a request's thread on the pool's host core (CPU 0) ...\" whenever GUILD_HELPER_PIN=1, including with GUILD_HOST_AFFINITY=0, when the request thread is not pinned.", "where": "src/runtime/model.cpp:1183-1191", "fix": "Word the line from both switches, or from the final gate once the fixes above are in."}
+- {"severity": "minor", "what": "pool_affinity_linux_test checks host_siblings against sysfs and checks pin_current_thread_to. It does not check ExpertPool::helper_cpus()'s policy: empty with pin=false, and empty with n_workers different from the core count.", "where": "src/kernels/cpu/pool_affinity_linux_test.cpp:323-370", "fix": "Construct pools with pin=false and with n_workers = cores - 1 and check helper_cpus() is empty; with the default, check it equals host_siblings."}
+- {"severity": "minor", "what": "A likely problem that was already there before this lane, from code reading only (not measured): GuildSession::generate pins its decode loop to the host core (GUILD_HOST_AFFINITY), and the same drive -> prefetch -> fill_many path would put the text decode's expert reads on CPU 0 when experts stream from the files on Linux.", "where": "src/runtime/session.cpp:676-680 with src/core/expert_source.cpp:1296", "fix": "Measure Qwen with a small --resident-budget-gib, GUILD_HOST_AFFINITY=0 against the default. If it reproduces, apply the fill_many mask fix (start its threads with the load-time process mask)."}

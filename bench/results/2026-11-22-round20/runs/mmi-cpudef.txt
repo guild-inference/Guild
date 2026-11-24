@@ -1,0 +1,28 @@
+guild experts: IQ3_S gate/up rows repacked for the CPU: skipped: the RAM budget holds only part of the experts
+guild verify: window up to 4 tokens, 47.6 MiB of device buffers
+guild prefill: chunks of 8192 tokens in the 6400 MiB of VRAM free
+guild prefill: chunks of 8192 tokens computed as chunks of 512 (--prefill-rows)
+guild performance: 0 measured formats, CPU 0.000 ms, GPU 0.000 ms, copy 0.000 ms; PCIe up to 0/256, GPU cache 0 slots (0 bytes)
+guild performance: CPU workers 4 + host 1; verifier capacity 4; drafter off; min draft probability 0.500; RAM expert backing 0 bytes
+guild verify: the CPU sums its experts' rows and 2048 floats a token cross PCIe, not 16384 (GUILD_HOST_COMBINE=0: the GPU sums them)
+guild verify: captured the 1-token window (upload no error, sync no error)
+guild verify: window up to 4 tokens, 49.6 MiB of device buffers
+guild prefill: chunks of 8192 tokens in the 4838 MiB of VRAM free
+guild prefill: chunks of 8192 tokens computed as chunks of 512 (--prefill-rows)
+guild performance: 0 measured formats, CPU 0.000 ms, GPU 0.000 ms, copy 0.000 ms; PCIe up to 0/256, GPU cache 0 slots (0 bytes)
+guild performance: CPU workers 4 + host 1; verifier capacity 4; drafter off; min draft probability 0.500; RAM expert backing 0 bytes
+guild verify: captured the 1-token window (upload no error, sync no error)
+guild experts: IQ3_S gate/up rows repacked for the CPU: skipped: the RAM budget holds only part of the experts
+[multi_model_isolation_test] 1. ScopedExpertLayout concurrent thread isolation...
+  -> PASSED
+[multi_model_isolation_test] 2. ModelExecutionState concurrent scope isolation...
+  -> PASSED
+[multi_model_isolation_test] 3. Real multi-model coexistence, concurrency, and teardown...
+  Model A isolated reference tokens: 271 248068 198 760 1156 369
+  -> GEXEC interleaved Model B coexisting with portable Model A verified
+  Model B reference tokens:          220 220 16 15 19 24
+  -> Sequential coexistence A -> B -> A verified (exact token match)
+  -> Resource exhaustion diagnostic verified: 'failed to allocate session buffer (5325 MiB)'
+  -> Concurrent execution of Model A and Model B verified (exact token match)
+  -> Asymmetric teardown (sessionA outlives modelA handle; Model A destroyed before Model B) verified
+[multi_model_isolation_test] ALL TESTS PASSED

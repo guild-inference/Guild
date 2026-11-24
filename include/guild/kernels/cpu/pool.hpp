@@ -94,6 +94,9 @@ struct CpuTopology {
     int e_cores = 0;               ///< Efficient cores
     std::vector<int> worker_cores; ///< Ordered CPU IDs; on Windows, group * 64 + processor within the group
     int host_core = -1;            ///< Logical core reserved for host thread
+    /// The host core's other logical CPUs (its SMT siblings) that this process may run on, in CPU order.  Linux
+    /// only (from the same sysfs package and core ids); empty on Windows, without SMT and without sysfs.
+    std::vector<int> host_siblings;
 };
 
 CpuTopology detect_cpu_topology(bool skip_first, PoolAffinity affinity = PoolAffinity::All);
@@ -136,6 +139,28 @@ ThreadAffinity pin_current_thread(int core);
 /// host processor is outside the current thread's eligibility mask.
 ThreadAffinity pin_current_thread_if_allowed(int core);
 void restore_thread_affinity(const ThreadAffinity& previous);
+/// Puts the calling thread on `cpus` for the rest of its life (a helper thread's place, ExpertPool::helper_cpus; no
+/// restore).  Linux only: false elsewhere, for an empty list or when the kernel refuses (the placement is unchanged).
+bool pin_current_thread_to(const std::vector<int>& cpus);
+/// The calling thread's placement, kept for the threads a thread pinned later starts (SpawnAffinity): its CPU mask
+/// on Linux.  Invalid elsewhere.
+ThreadAffinity current_thread_affinity();
+/// For the threads the calling thread starts while this lives: it runs on `affinity` (from current_thread_affinity)
+/// meanwhile, so they inherit that instead of its own mask, a single CPU when it is a request thread pinned to the
+/// pool's host core (GUILD_HOST_AFFINITY, GUILD_HELPER_PIN); its own mask comes back at the end.  A new Linux thread
+/// gets its mask at creation this way.  Setting it afterwards, pthread_setaffinity_np on the new thread's handle, is
+/// not safe: once that thread has exited, the handle's TID reads 0, and 0 is the calling thread (glibc 2.39: the
+/// caller's own mask changed).  Nothing changes for an invalid `affinity`, when the masks are equal, or outside Linux.
+class SpawnAffinity {
+public:
+    explicit SpawnAffinity(const ThreadAffinity& affinity);
+    ~SpawnAffinity();
+    SpawnAffinity(const SpawnAffinity&) = delete;
+    SpawnAffinity& operator=(const SpawnAffinity&) = delete;
+
+private:
+    ThreadAffinity own_; ///< the caller's mask to put back; invalid when nothing was changed
+};
 
 class ExpertPool {
 public:
@@ -199,6 +224,16 @@ public:
     }
     int host_core() const {
         return topo_.host_core;
+    }
+    /// Where a busy helper thread beside the decode (Drama 3's tower and codec threads) can run without sharing a
+    /// physical core with a worker: the host core's SMT siblings, when the workers are pinned one to each of the
+    /// other cores.  Empty (leave the thread to the OS) without SMT, on Windows, with the workers unpinned, with
+    /// fewer or more workers than cores (GUILD_POOL_WORKERS) or when a worker sits on one of them (the hybrid
+    /// layouts put workers on P-core siblings).  2x Xeon Gold 6130, Drama 3 with its request thread on the host
+    /// core: the two threads here rather than on two workers' siblings, 4 rounds, +0.7% frames/s (4 of 4).  Drama 3
+    /// pins its request thread to the host core only when this is not empty (drama3.cpp).
+    const std::vector<int>& helper_cpus() const {
+        return helper_cpus_;
     }
     /// Whether the host thread also drains.  Reported at startup, because "the engine adapts to the machine it
     /// is on" is only true if the engine says which adaptation it took.
@@ -426,7 +461,42 @@ private:
     // (kIdle, kWaitParked, kWaitDone, or its job), printed by the serve watchdog through `diag`
     static constexpr int32_t kParked = -1, kSleeping = -2, kBetween = -3, kIdle = -10, kWaitParked = -11,
                              kWaitDone = -12;
+    // A worker writes its state at wake, at every claim and at park.  With `ack_` (GUILD_POOL_ACK=1, below) the
+    // states are kWStride ints apart, each on a cache line of its own: adjacent, 31 workers' states share two lines,
+    // and every claim pulls a line other workers are writing (both sockets).  By default (`ack_` false) they are
+    // adjacent.  The padding's own effect was not measured: it was only ever measured together with the acks.
+    static constexpr size_t kWStride = 64 / sizeof(std::atomic<int32_t>);
     std::unique_ptr<std::atomic<int32_t>[]> wstate_;
+    size_t wstride_ = 1;
+    std::atomic<int32_t>& wstate(int i) {
+        return wstate_[(size_t) i * wstride_];
+    }
+    const std::atomic<int32_t>& wstate(int i) const {
+        return wstate_[(size_t) i * wstride_];
+    }
+    // THE PARK COUNT AS ACKS (GUILD_POOL_ACK=1, read once; OFF by default).  With `ack_`, a worker adds 1 to
+    // `parked_` when it starts and 1 each time it parks after draining an epoch, and does not subtract at wake: all
+    // n_ workers are parked after epoch e when `parked_ == n_ * (e + 1)` (both mod 2^32: the host waits for that
+    // before every publish, so no worker can skip an epoch, and n * (e mod 2^32) == n * e mod 2^32).  That is one
+    // locked add on the line every worker and the host share per worker and phase instead of two.  `ack_` false (the
+    // default): a subtract at wake and an add at park, and the host waits for `parked_ == n_`.
+    //
+    // **WHY THE ACKS ARE OFF: WITH THEM THE HOST WAITS FOR EVERY WORKER TO ACK EVERY EPOCH.**  A worker the OS has
+    // descheduled, or one asleep after `kSpinBeforeSleep` (between requests, and mid-request with most experts in
+    // VRAM), then holds up the whole layer until it runs again; without acks a worker that has not left the park
+    // counts as parked and holds up nothing.  2x Xeon Gold 6130 + GTX 1070, 31 workers, one binary with and without
+    // acks: with two busy loops pinned to two workers' CPUs, Drama 3 21.3 and 16.2 against 41.6 and 40.5 frames/s and
+    // Qwen3.8-Flash-Next 21.1 / 26.1 against 36.1 / 43.0 tok/s (prose / code); a task busy 2 ms every 20 ms on one
+    // worker's CPU, Drama 3 -2.9%; the workers sleeping between frames (GUILD_POOL_SPIN_US=1000), -1.3%.  A PC with
+    // no free SMT sibling (SMT off, 6-core 6-thread parts, VMs) or running a parallel build is in the first case.
+    // On the idle machine Drama 3's 40 pool calls a frame took 4.74-4.75 ms with acks against 4.88-4.90 without
+    // (GUILD_CPU_PROFILE), but four frames/s pairs did not resolve a gain (+0.21, +0.13, -0.95, +0.61 frames/s).
+    bool ack_ = false;
+    /// Workers parked for the current epoch (diagnostics; racy reads).
+    uint32_t parked_now() const {
+        const uint32_t p = parked_.load(std::memory_order_relaxed);
+        return ack_ ? p - (uint32_t) n_ * epoch_.load(std::memory_order_relaxed) : p;
+    }
     // The host writes these on every job it claims: not on the line of `wstate_`, which every worker reads at every
     // claim.
     alignas(64) std::atomic<int32_t> hstate_{kIdle};
@@ -508,6 +578,7 @@ private:
     std::vector<SplitBufMulti> split_multi_;
     PoolAffinity affinity_ = PoolAffinity::All;
     CpuTopology topo_;
+    std::vector<int> helper_cpus_;
 };
 
 } // namespace guild::kernels::cpu
